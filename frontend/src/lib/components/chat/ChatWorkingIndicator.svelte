@@ -16,6 +16,17 @@
   let now = $state(Date.now());
   let interrupting = $state(false);
 
+  // activeTurn reflects the current WIRE ROUND, not the user-typed
+  // logical turn. Each round (Claude `result` envelope, Codex
+  // `turn/completed`) is its own active turn from the frontend's
+  // POV — the multi-result-per-turn cascade flips this off between
+  // rounds and back on for the next round, which is what makes the
+  // working indicator and Stop button correctly reflect "model is
+  // engaged right now" rather than "user-typed prompt is in flight."
+  // The elapsed timer below naturally resets per round (anchors on
+  // activeTurn.startedAt, allocated by the per-round handler in
+  // turn_lifecycle.go). See internal/triage/AGENTS.md "Wire-round vs
+  // logical-turn".
   let activeTurn = $derived(getActiveTurn(pane.threadId));
   let isWorking = $derived(activeTurn !== null);
 
@@ -73,6 +84,7 @@
     aria-live="polite"
     data-testid="chat-working-indicator"
     data-turn-id={activeTurn?.turnId}
+    data-round-id={activeTurn?.turnId}
   >
     <span class="inline-flex items-center gap-[3px]" aria-hidden="true">
       <span class="h-1 w-1 rounded-full bg-fg-hint/65 animate-pulse"></span>

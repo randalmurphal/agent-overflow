@@ -76,10 +76,20 @@
   });
 
   let isDisabled = $derived(!pane.threadId);
-  // Mid-turn guard: block sends while a turn is in flight (any streaming text,
-  // any running tool, or an optimistic pending message). The user must press
-  // Interrupt first. Editing and uploading stay enabled so the next message can
-  // be prepared in advance.
+  // Mid-round guard: block sends while a wire round is in flight (the
+  // model is currently streaming text/tool work). The user must press
+  // Interrupt first. Editing and uploading stay enabled so the next
+  // message can be prepared in advance.
+  //
+  // BETWEEN rounds — Claude's multi-result-per-turn cascade emits the
+  // first `result` envelope, then the model is idle while a backgrounded
+  // task hasn't yet produced its notification — `getActiveTurn` returns
+  // null and `isTurnActive` is false, so the composer is enabled. The
+  // user can send a follow-up prompt during the gap, and the next round
+  // (provoked by the bg task notification or the user's new prompt)
+  // re-flips this on. This matches Claude Code's actual behaviour and
+  // is the canonical wire-round emission contract documented in
+  // internal/triage/AGENTS.md "Wire-round vs logical-turn".
   let isTurnActive = $derived(getActiveTurn(pane.threadId) !== null);
   let blockingApprovals = $derived(pane.pendingApprovals);
   let activeApproval = $derived(blockingApprovals[0]);

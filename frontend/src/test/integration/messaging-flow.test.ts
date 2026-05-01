@@ -574,4 +574,111 @@ describe('App integration — messaging flow', () => {
     );
     expect(launchStatus?.textContent?.trim()).toBe('…');
   });
+
+  // Multi-result-per-turn cascade: the backend emits one
+  // provider:turn_started/turn_completed pair per wire `result`
+  // envelope (see internal/triage/AGENTS.md "Wire-round vs
+  // logical-turn"). The frontend's working indicator + composer block
+  // must flip OFF between rounds — the model is genuinely idle while
+  // a backgrounded task hasn't yet produced its notification — and
+  // re-flip ON for round 2 when the task notification provokes
+  // another model call.
+  it('flips off between rounds in a multi-result-per-turn cascade and re-flips on round 2', async () => {
+    const { queryByTestId, findByTestId } = await mountWithActiveThread();
+    const paneMod = await import('../../lib/stores/panes.svelte');
+    const pane = paneMod.getMainPane();
+
+    // Round 1 begins.
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-1',
+      turnId: 'round-1',
+      turnIndex: 0,
+      startedAt: Date.now(),
+    });
+    await waitFor(() => expect(getActiveTurn(pane.threadId)?.turnId).toBe('round-1'));
+    expect(await findByTestId('chat-working-indicator')).toBeInTheDocument();
+
+    // Round 1 ends — model handed off to backgrounded work and is
+    // idle. Frontend MUST observe no active turn during the gap.
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-1',
+      turnId: 'round-1',
+      turnIndex: 0,
+      startedAt: Date.now(),
+      completedAt: Date.now() + 500,
+      stopReason: 'end_turn',
+    });
+    await waitFor(() => expect(getActiveTurn(pane.threadId)).toBeNull());
+    expect(queryByTestId('chat-working-indicator')).toBeNull();
+
+    // Round 2 begins (Claude system.init re-emit after a
+    // task_notification provoked another model call). Distinct
+    // turnId, fresh startedAt — the elapsed-time anchor resets and
+    // the indicator re-renders.
+    const round2StartedAt = Date.now() + 5_000;
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-1',
+      turnId: 'round-2',
+      turnIndex: 0,
+      startedAt: round2StartedAt,
+    });
+    await waitFor(() => expect(getActiveTurn(pane.threadId)?.turnId).toBe('round-2'));
+    expect(getActiveTurn(pane.threadId)?.startedAt).toBe(round2StartedAt);
+    expect(await findByTestId('chat-working-indicator')).toBeInTheDocument();
+
+    // Round 2 ends — the cascade is complete and the indicator
+    // hides for good.
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-1',
+      turnId: 'round-2',
+      turnIndex: 0,
+      startedAt: round2StartedAt,
+      completedAt: round2StartedAt + 800,
+      stopReason: 'end_turn',
+    });
+    await waitFor(() => expect(getActiveTurn(pane.threadId)).toBeNull());
+    expect(queryByTestId('chat-working-indicator')).toBeNull();
+  });
+
+  // Composer is enabled between rounds — the user can send a
+  // follow-up prompt during the bg-wait gap. Matches Claude Code's
+  // actual behaviour and is the canonical wire-round emission
+  // contract. Without this assertion, a regression that gates the
+  // composer on logical-turn-active would silently lock the user out
+  // of the gap window.
+  it('composer is enabled between rounds in a multi-result-per-turn cascade', async () => {
+    const { getByLabelText, getByTestId } = await mountWithActiveThread();
+    const paneMod = await import('../../lib/stores/panes.svelte');
+    const pane = paneMod.getMainPane();
+
+    // Round 1 starts → composer disabled (mid-round).
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-1',
+      turnId: 'round-1',
+      turnIndex: 0,
+      startedAt: Date.now(),
+    });
+    await waitFor(() => expect(getActiveTurn(pane.threadId)?.turnId).toBe('round-1'));
+
+    // Round 1 ends → composer should be enabled during the gap.
+    // The Send button flips back to its operational state and Enter
+    // is no longer blocked by the mid-turn guard.
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-1',
+      turnId: 'round-1',
+      turnIndex: 0,
+      startedAt: Date.now(),
+      completedAt: Date.now() + 500,
+      stopReason: 'end_turn',
+    });
+    await waitFor(() => expect(getActiveTurn(pane.threadId)).toBeNull());
+
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+    expect(textarea.disabled).toBe(false);
+    await fireEvent.input(textarea, { target: { value: 'follow-up between rounds' } });
+    await flush();
+
+    const sendBtn = getByTestId('composer-send') as HTMLButtonElement;
+    await waitFor(() => expect(sendBtn.disabled).toBe(false));
+  });
 });

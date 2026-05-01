@@ -275,14 +275,59 @@ One-to-one with a user → assistant round-trip. The authoritative
   frontend, updates turn row, force-closes orphan non-background
   running tool_calls.
 
+### Wire-round vs logical-turn cadence
+
+`provider:turn_started` and `provider:turn_completed` fire **per wire
+round**, not per logical turn. A round corresponds to one Claude
+`result` envelope (or one Codex `turn/completed`); a logical
+agent-overflow turn — one user-typed prompt — can span multiple
+rounds. The canonical multi-round case is Claude's CLI synthesizing a
+`type:"user"` envelope from a `task_notification`: the assistant's
+first `end_turn` lands as result envelope #1, the synthesized prompt
+provokes another model call, and the second response lands as result
+envelope #2 (the `interactive_outlives_taskoutput_monitor.ndjson`
+fixture captures seven such envelopes in one logical turn).
+
+Two cadences run in parallel:
+
+| Cadence | Driver | Granularity | What it controls |
+|---|---|---|---|
+| Frontend visibility | `currentRoundID` / `setOpenRound` / `takeOpenRound` | Per wire round | `provider:turn_started`/`provider:turn_completed` emissions — working indicator, Stop button, completion divider, composer block |
+| Persistence | `markTurnSettled` / `settleTurnRow` | Per logical turn (turnIndex) | `turns` row UPDATE, checkpoint capture, streaming-item settlement |
+
+Round entry points:
+
+- **`handleTurnStart`** opens round 1 of every logical turn. It calls
+  BOTH `setOpenTurn` (per-turn flow-control + counter re-init) AND
+  `setOpenRound` (per-round id allocation), then emits
+  `provider:turn_started` with the per-round uuid as TurnID.
+- **`handleInit` re-round branch** opens rounds 2+ when an
+  `EventInit` arrives for a thread whose current logical turn is
+  already settled (`settledTurns[turnKey]==true`). Calls
+  `setOpenRound` only — does NOT call `setOpenTurn`. This is
+  load-bearing: id-allocating counters must survive across the
+  multi-result-per-turn boundary so post-round-1 rows don't collide
+  with rows already persisted under the same logical turn (see
+  `internal/triage/multi_result_test.go`).
+- **`handleTurnComplete`** uses `takeOpenRound` (read-and-clear) to
+  decide whether to emit. An empty slot means a synthetic complete
+  already raced ahead (the fatal-error-then-real-result pattern in
+  `handleError`); the second wire complete then emits nothing, so
+  the frontend sees exactly one `turn_completed` per round.
+  Persistence work stays gated by `markTurnSettled` at logical-turn
+  granularity.
+
+The persisted `turns.turn_id` stays on `resolveTurnID` (logical-turn
+granularity) so multi-round logical turns share a single row.
+
 ### Invariant (load-bearing)
 
 > **Turn state is wire-pushed.** The UI's "Working…" indicator and
 > active-turn flag come exclusively from provider-pushed
-> `EventTurnStart` / `EventTurnComplete`. Never derive turn activity
-> from item state (e.g. "some tool_call is still running, so the
-> turn must be active"). A dropped completion must not freeze the
-> UI.
+> `EventTurnStart` / `EventTurnComplete` (per wire round; see above).
+> Never derive turn activity from item state (e.g. "some tool_call
+> is still running, so the turn must be active"). A dropped
+> completion must not freeze the UI.
 
 ### Turn-level projections
 

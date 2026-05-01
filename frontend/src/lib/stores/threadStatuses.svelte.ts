@@ -1,3 +1,4 @@
+import { SvelteMap } from 'svelte/reactivity';
 import type { ApprovalKind } from '../types/events';
 import type { Item } from '../types/models';
 
@@ -64,9 +65,22 @@ const awaitingInputIDsByThread = new Map<string, Set<string>>();
 const approvalThreadByID = new Map<string, string>();
 // activeTurnByThread is the global per-thread ActiveTurn registry —
 // the single source of truth for "is a turn in flight on this
-// thread?". $state-backed so chat-side derivations
-// (ChatWorkingIndicator, MessageTimeline) react when it changes.
-let activeTurnByThread: Map<string, ActiveTurn> = $state(new Map());
+// thread?". SvelteMap (from `svelte/reactivity`) is the
+// doc-recommended pattern for reactive Map state in Svelte 5: .set /
+// .delete are tracked individually, so writers don't have to rebuild
+// the binding via `new Map(prev).set(...)` on every update. Readers
+// (`getActiveTurn`, the OR projection in `recalculateThreadStatus`)
+// see the same value either way; only the write hot path benefits.
+//
+// Under the per-wire-round emission cadence (see
+// internal/triage/AGENTS.md "Wire-round vs logical-turn"), each entry
+// represents the CURRENT wire round — not the user-typed logical
+// turn. The two are decoupled on the backend; the frontend only
+// observes one signal stream and treats each round as its own active
+// turn. This is what flips the working indicator off between rounds
+// in Claude's multi-result-per-turn cascade so the UI reflects "model
+// is engaged right now" rather than "user-typed prompt is in flight."
+const activeTurnByThread = new SvelteMap<string, ActiveTurn>();
 const pendingSendThreads = new Set<string>();
 const planReadyThreads = new Set<string>();
 const errorThreads = new Set<string>();
@@ -172,11 +186,7 @@ export function setThreadStatus(threadId: string, status: ThreadLiveStatus): voi
  */
 export function clearThreadStatus(threadId: string): void {
   activeItemIDsByThread.delete(threadId);
-  if (activeTurnByThread.has(threadId)) {
-    const next = new Map(activeTurnByThread);
-    next.delete(threadId);
-    activeTurnByThread = next;
-  }
+  activeTurnByThread.delete(threadId);
   pendingSendThreads.delete(threadId);
   planReadyThreads.delete(threadId);
   for (const requestIdSet of [
@@ -260,15 +270,17 @@ export function projectTurnStarted(
   planReadyThreads.delete(threadId);
   errorThreads.delete(threadId);
   interruptedThreads.delete(threadId);
-  // Idempotent on (threadId, turnId): a Claude re-init / interrupt can
-  // re-emit EventTurnStart for the same turn. Preserving the original
-  // startedAt keeps the working-indicator's elapsed-seconds counter
-  // monotonically increasing instead of rewinding on each re-init.
+  // Idempotent on (threadId, turnId): under the per-wire-round
+  // emission cadence each round generates a fresh `turnId`, so a
+  // duplicate event for the SAME round (Codex retry-induced
+  // turn/started replay, defensive double-emit) still no-ops here
+  // while a new round REPLACES the prior entry. Preserving the
+  // original startedAt for an exact-match round keeps the working-
+  // indicator's elapsed-seconds counter monotonically increasing
+  // instead of rewinding on each duplicate.
   const existing = activeTurnByThread.get(threadId);
   if (existing && existing.turnId === turnId) return;
-  const next = new Map(activeTurnByThread);
-  next.set(threadId, { turnId, turnIndex, startedAt });
-  activeTurnByThread = next;
+  activeTurnByThread.set(threadId, { turnId, turnIndex, startedAt });
   recalculateThreadStatus(threadId);
 }
 
@@ -288,9 +300,7 @@ export function projectTurnCompleted(
   if (!threadId || !turnId) return;
   const current = activeTurnByThread.get(threadId);
   if (current && current.turnId === turnId) {
-    const next = new Map(activeTurnByThread);
-    next.delete(threadId);
-    activeTurnByThread = next;
+    activeTurnByThread.delete(threadId);
   }
   if (opts.errorMessage && opts.errorMessage.length > 0) {
     errorThreads.add(threadId);
@@ -492,7 +502,7 @@ export function getAllThreadStatuses(): Map<string, ThreadLiveStatus> {
  */
 export function resetForTest(): void {
   activeItemIDsByThread.clear();
-  activeTurnByThread = new Map();
+  activeTurnByThread.clear();
   pendingSendThreads.clear();
   planReadyThreads.clear();
   approvalIDsByThread.clear();

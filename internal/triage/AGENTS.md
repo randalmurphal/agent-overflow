@@ -141,10 +141,61 @@ Authoritative mental model:
   Authorized only by the wire-typed signals in Meta (invariant 25); no
   heuristic classifiers.
 - **Turn lifecycle** — `EventTurnStart` writes a `turns` row with
-  `completed_at=null`; `EventTurnComplete` updates it and emits
-  `provider:turn_completed` to the frontend. Triage force-closes any
-  `tool_call` row with `status='running' && !is_background &&
-  turn_index=currentTurn` as a safety net.
+  `completed_at=null`; `EventTurnComplete` updates it. Triage
+  force-closes any `tool_call` row with `status='running' &&
+  !is_background && turn_index=currentTurn` as a safety net.
+  Frontend emissions follow a separate per-wire-round cadence — see
+  "Wire-round vs logical-turn" below.
+
+⚠ **Wire-round vs logical-turn cadence**:
+
+`provider:turn_started` and `provider:turn_completed` fire **per wire
+round**, not per logical turn. A round corresponds to one Claude
+`result` envelope (or one Codex `turn/completed`); a logical
+agent-overflow turn — one user-typed prompt — can span multiple
+rounds when Claude's CLI synthesizes a `type:"user"` envelope from a
+`task_notification` and the model issues another response. The
+frontend uses these per-round emissions to drive its working
+indicator, Stop button, completion divider, and composer-block state
+— all of which want "model is engaged right now" semantics rather
+than "user-typed prompt is in flight."
+
+Two cadences run in parallel:
+
+| Cadence | Driver | Granularity | Owner |
+|---|---|---|---|
+| Frontend visibility | `currentRoundID` / `setOpenRound` / `takeOpenRound` | Per wire round | `provider:turn_started`/`provider:turn_completed` emissions |
+| Persistence | `markTurnSettled` / `settleTurnRow` | Per logical turn (turnIndex) | `turns` row UPDATE, checkpoint capture, streaming-item settlement |
+
+Round entry points:
+
+- **`handleTurnStart`** opens round 1 of every logical turn. It calls
+  BOTH `setOpenTurn` (per-turn flow-control + counter re-init) AND
+  `setOpenRound` (per-round id allocation), then emits
+  `provider:turn_started` with the per-round uuid as TurnID.
+- **`handleInit` re-round branch** (`maybeEmitReRoundOnInit`) opens
+  round 2+ when an `EventInit` arrives for a thread whose current
+  logical turn is already settled (`settledTurns[turnKey]==true`).
+  Calls `setOpenRound` ONLY — does **not** call `setOpenTurn`. This
+  is load-bearing: id-allocating counters (`segmentIndexByScope`,
+  `blockIndexByScope`, `errorSeqByScope`, `terminalInteractionSeq`)
+  must survive the multi-result-per-turn boundary so post-round-1
+  text/think/error rows don't collide with rows already persisted
+  under the same logical turn. See `multi_result_test.go` for the
+  regression coverage.
+- **`handleTurnComplete`** uses `takeOpenRound` (read-and-clear) to
+  decide whether to emit `provider:turn_completed`. An empty slot
+  means a synthetic complete already raced ahead (the
+  fatal-error-then-real-result pattern in `handleError`); the second
+  wire complete then emits nothing, so the frontend sees exactly one
+  `turn_completed` per round. Persistence work (settleTurnRow,
+  checkpoint, streaming settle) stays gated by `markTurnSettled` at
+  logical-turn granularity.
+
+Round id format: opaque per-round `uuid.NewString()` allocated in Go.
+Carried as `TurnStartedEvent.TurnID` / `TurnCompletedEvent.TurnID`.
+The persisted `turns.turn_id` stays on `resolveTurnID` (logical-turn
+granularity) so multi-round logical turns share a single row.
 
 ⚠ **Load-bearing invariants** (see
 [`invariants.md`](../../docs/architecture/invariants.md)):
@@ -155,6 +206,9 @@ Authoritative mental model:
 - Turn activity on the frontend is wire-pushed only — never derived
   from item state.
 - No session-liveness probing for turn state inference.
+- `setOpenTurn` does NOT fire from `handleInit` (re-round path).
+  Calling it there would reset the id-allocating counters and
+  re-introduce the multi-result-per-turn id-collision regression.
 
 ## Responsibility boundary
 
@@ -229,16 +283,22 @@ When adding a new map, ask **two** questions:
    `CleanupThread`. Otherwise, it's per-turn flow-control — clean it
    in `clearOpenTurn`.
 
-`handleTurnComplete` is **idempotent** against a second invocation for
-the same `(threadID, turnIndex)` via `markTurnSettled`. The first
-complete settles the turn (drains streaming, emits
-`provider:turn_completed`, captures the checkpoint). A second wire
-complete on the already-settled turn returns early. Turn token/cost
-accounting is captured on the first completion, while context-window
-meter updates arrive separately on `EventTokenUsage`.
-`setOpenTurn` clears the settled marker so a re-init (Claude
-`system.init` resend after interrupt; Codex `turn/started` resend) can
-re-settle the same turn.
+`handleTurnComplete` is **idempotent** at logical-turn granularity
+via `markTurnSettled`. The first complete drains streaming items,
+captures the per-turn checkpoint at the next user-send, and
+UPDATE-s the `turns` row. A second wire complete on the
+already-settled logical turn folds late token usage onto the existing
+row and otherwise no-ops. Turn token/cost accounting is captured on
+the first completion, while context-window meter updates arrive
+separately on `EventTokenUsage`. `setOpenTurn` clears the settled
+marker so a re-init (Claude `system.init` resend after interrupt;
+Codex `turn/started` resend) can re-settle the same turn.
+
+Frontend `provider:turn_completed` emissions are gated INDEPENDENTLY
+per wire round via `currentRoundID` / `takeOpenRound` (see
+"Wire-round vs logical-turn cadence" above) — so a multi-result-per-
+turn cascade emits one `turn_completed` per `result` envelope while
+persistence stays at one settle per logical turn.
 
 Cleanup paths:
 

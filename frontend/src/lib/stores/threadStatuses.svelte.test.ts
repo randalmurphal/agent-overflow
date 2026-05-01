@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import {
+  getActiveTurn,
   getThreadStatus,
   projectApprovalRequest,
   projectApprovalResolution,
@@ -223,6 +224,72 @@ describe('threadStatuses store', () => {
 
       projectApprovalResolution('thread-1', 'req-1');
       expect(getThreadStatus('thread-1')).toBe('running');
+    });
+
+    it('flips off between wire rounds and re-flips on round 2', () => {
+      // Pins the per-wire-round emission cadence (see
+      // internal/triage/AGENTS.md "Wire-round vs logical-turn"). The
+      // backend emits one provider:turn_started/turn_completed pair per
+      // wire `result` envelope; in Claude's multi-result-per-turn
+      // cascade two pairs flow per logical turn. Each round generates
+      // a distinct turnId — round 1 ends, getActiveTurn returns null
+      // (composer enabled, indicator off), round 2 starts with a new
+      // id and re-flips the indicator on.
+      projectTurnStarted('thread-1', 'round-1', 0, 1_000);
+      expect(getThreadStatus('thread-1')).toBe('running');
+      expect(getActiveTurn('thread-1')?.turnId).toBe('round-1');
+
+      // Round 1 completes — the model handed off to backgrounded work.
+      // Frontend sees no active turn during the gap.
+      projectTurnCompleted('thread-1', 'round-1');
+      expect(getThreadStatus('thread-1')).toBe('idle');
+      expect(getActiveTurn('thread-1')).toBeNull();
+
+      // Round 2 begins (Claude system.init re-emit after a
+      // task_notification provoked another model call). Fresh
+      // turnId — frontend treats it as a distinct active turn,
+      // resets startedAt anchor for the elapsed-time timer.
+      projectTurnStarted('thread-1', 'round-2', 0, 5_000);
+      expect(getThreadStatus('thread-1')).toBe('running');
+      const round2 = getActiveTurn('thread-1');
+      expect(round2?.turnId).toBe('round-2');
+      expect(round2?.startedAt).toBe(5_000);
+
+      projectTurnCompleted('thread-1', 'round-2');
+      expect(getActiveTurn('thread-1')).toBeNull();
+    });
+
+    it('round 2 turn_started replaces the round 1 entry without leaking', () => {
+      // Defensive case: if the round 1 turn_completed somehow gets
+      // dropped (transport hiccup, observer race), a round 2
+      // turn_started must still take over the slot rather than
+      // silently no-op. The idempotency guard keys on turnId — a
+      // different id replaces the prior entry.
+      projectTurnStarted('thread-1', 'round-1', 0, 1_000);
+      expect(getActiveTurn('thread-1')?.turnId).toBe('round-1');
+
+      projectTurnStarted('thread-1', 'round-2', 0, 5_000);
+      expect(getActiveTurn('thread-1')?.turnId).toBe('round-2');
+      expect(getActiveTurn('thread-1')?.startedAt).toBe(5_000);
+    });
+
+    it('duplicate turn_started for the same round preserves startedAt', () => {
+      // Claude `system.init` resend after interrupt or Codex
+      // turn/started replay can re-emit for the SAME round. The
+      // existing-turnId guard preserves the original startedAt so
+      // the elapsed-seconds counter stays monotonic.
+      projectTurnStarted('thread-1', 'round-1', 0, 1_000);
+      projectTurnStarted('thread-1', 'round-1', 0, 9_999);
+      expect(getActiveTurn('thread-1')?.startedAt).toBe(1_000);
+    });
+
+    it('turn_completed for a non-matching turnId leaves activeTurn untouched', () => {
+      // A late complete for a stale round id (e.g. the synthetic
+      // truncate-then-real-result race surviving a thread teardown
+      // and rebirth) must not clobber the current round's entry.
+      projectTurnStarted('thread-1', 'round-2', 0, 5_000);
+      projectTurnCompleted('thread-1', 'round-1');
+      expect(getActiveTurn('thread-1')?.turnId).toBe('round-2');
     });
   });
 

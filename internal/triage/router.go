@@ -17,6 +17,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
 
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
@@ -83,17 +84,39 @@ type Router struct {
 	// happens when Claude re-sends a system.init after an interrupt.
 	capturedTurns map[string]bool // key = threadID|turnIndex
 	// settledTurns marks turns whose handleTurnComplete has already run
-	// to completion (provider:turn_completed emitted, checkpoint
-	// captured, streaming items settled). A second EventTurnComplete for
-	// a settled turn is the multi-result-per-turn wire pattern (Claude
-	// CLI synthesizes a `type:"user"` envelope from a task_notification
-	// → second `result` envelope) or the synthetic-truncate-then-real
-	// race; in either case the second handler invocation is a no-op so
-	// the frontend doesn't see a duplicate provider:turn_completed and
-	// the checkpoint isn't captured twice. Cleared by setOpenTurn (so a
-	// re-init can re-settle the same turn) and CleanupThread (session
-	// teardown). Key = threadID|turnIndex.
+	// to completion (turns row UPDATE-d, checkpoint captured, streaming
+	// items settled). A second EventTurnComplete for a settled turn is
+	// the multi-result-per-turn wire pattern (Claude CLI synthesizes a
+	// `type:"user"` envelope from a task_notification → second `result`
+	// envelope) or the synthetic-truncate-then-real race; in either
+	// case the second handler invocation is a persistence no-op so
+	// the checkpoint isn't captured twice and the turns row isn't
+	// re-stamped. Cleared by setOpenTurn (so a re-init can re-settle
+	// the same turn) and CleanupThread (session teardown). Key =
+	// threadID|turnIndex.
+	//
+	// Note: this gate operates at LOGICAL-TURN granularity. The
+	// frontend-facing `provider:turn_completed` emission is gated
+	// independently per WIRE ROUND via currentRoundID/takeOpenRound
+	// below — so a multi-result-per-turn cascade emits one
+	// turn_completed per `result` envelope while persistence stays at
+	// one settle per logical turn.
 	settledTurns map[string]bool
+	// currentRoundID names the active wire-round for each thread.
+	// Frontend `provider:turn_started` / `provider:turn_completed`
+	// emissions are gated per round via this slot — handleTurnStart and
+	// the re-round branch of handleInit allocate a fresh round id;
+	// handleTurnComplete reads-and-clears it via takeOpenRound. A wire
+	// round corresponds to one Claude `result` envelope (or one Codex
+	// `turn/completed`); a logical agent-overflow turn can span multiple
+	// rounds when Claude's CLI synthesizes a `type:"user"` envelope from
+	// a task_notification and the model issues another response. The
+	// per-round cadence is what drives the working indicator, Stop
+	// button, completion divider, and composer-block state — all of
+	// which want "model is engaged right now" semantics rather than
+	// "user-typed prompt is in flight." Key = threadID. Cleared by
+	// takeOpenRound (every wire complete) and CleanupThread.
+	currentRoundID map[string]string
 	// turnSpans holds the active span for each in-flight turn so we can
 	// close it when the matching EventTurnComplete arrives. Keyed by
 	// threadID since the provider treats each thread as its own turn
@@ -202,6 +225,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		streamPersistBuffers:       make(map[string]*streamPersistBuffer),
 		capturedTurns:              make(map[string]bool),
 		settledTurns:               make(map[string]bool),
+		currentRoundID:             make(map[string]string),
 		turnSpans:                  make(map[string]trace.Span),
 		stoppedThreads:             make(map[string]struct{}),
 		unknownSessionStatusLogged: make(map[string]struct{}),
@@ -548,17 +572,73 @@ func (r *Router) drainCommittedToolPaths(threadID string, turnIndex int) []strin
 }
 
 func (r *Router) handleInit(evt provider.ProviderEvent) error {
-	if evt.Meta == nil {
-		return nil
-	}
-
-	var info provider.SessionInfo
-	if json.Unmarshal(evt.Meta, &info) == nil && info.SessionID != "" {
-		if err := r.store.UpdateSessionRef(evt.ThreadID, info.SessionID); err != nil {
-			log.Printf("triage: update session ref: %v", err)
+	if evt.Meta != nil {
+		var info provider.SessionInfo
+		if json.Unmarshal(evt.Meta, &info) == nil && info.SessionID != "" {
+			if err := r.store.UpdateSessionRef(evt.ThreadID, info.SessionID); err != nil {
+				log.Printf("triage: update session ref: %v", err)
+			}
 		}
 	}
+
+	r.maybeEmitReRoundOnInit(evt)
 	return nil
+}
+
+// maybeEmitReRoundOnInit detects the multi-result-per-turn re-round
+// case and emits a fresh `provider:turn_started` so the frontend
+// re-lights its working indicator for the next wire round.
+//
+// Claude's CLI synthesizes a `type:"user"` envelope from a
+// `task_notification` and follows it with a fresh `system.init`
+// envelope before the next `result`. agent-overflow only synthesizes
+// `EventTurnStart` once per user-typed send (in app_send.go), so this
+// re-round entry point is the ONLY place a second round of the same
+// logical turn can be opened. Critically, this path does NOT call
+// setOpenTurn — id-allocating counters (segmentIndexByScope,
+// blockIndexByScope, errorSeqByScope, terminalInteractionSeq) MUST
+// survive across the multi-result boundary, otherwise text/think/error
+// ids collide with rows already persisted under the same logical turn
+// (see internal/triage/multi_result_test.go).
+//
+// A real session start (no prior settled turn) yields no emission.
+// The settled-turn marker is the wire-typed signal that disambiguates
+// re-round from "fresh session attaching to a thread that has no
+// in-flight logical turn" — turn-marker-present means handleTurnComplete
+// has fired at least once for this logical turn, which is precisely
+// the condition for "Claude is starting a follow-up round."
+func (r *Router) maybeEmitReRoundOnInit(evt provider.ProviderEvent) {
+	// Resolve the logical-turn index: prefer the in-memory open turn
+	// (round 1 of the same logical turn opened by handleTurnStart but
+	// since closed by clearOpenTurn at handleTurnComplete will leave
+	// this empty); fall back to LastTurnIndex so a settled-turn check
+	// against the persisted row id can still run.
+	turnIndex, ok := r.openTurnIndex(evt.ThreadID)
+	if !ok {
+		last, err := r.store.LastTurnIndex(evt.ThreadID)
+		if err != nil {
+			return
+		}
+		turnIndex = last
+	}
+
+	r.mu.Lock()
+	settled := r.settledTurns[settledTurnKey(evt.ThreadID, turnIndex)]
+	r.mu.Unlock()
+	if !settled {
+		return
+	}
+
+	roundID := uuid.NewString()
+	r.setOpenRound(evt.ThreadID, roundID)
+
+	startedAt := eventTimestampMillis(evt)
+	r.emit("provider:turn_started", TurnStartedEvent{
+		ThreadID:  evt.ThreadID,
+		TurnID:    roundID,
+		TurnIndex: turnIndex,
+		StartedAt: startedAt,
+	})
 }
 
 func (r *Router) handleThreadModelUpdate(evt provider.ProviderEvent) error {

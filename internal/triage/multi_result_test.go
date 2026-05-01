@@ -272,6 +272,359 @@ func TestMultipleResultsPerTurn_ErrorRowsDoNotCollide(t *testing.T) {
 	}
 }
 
+// TestRoundEmissionPerWireResult pins the per-round emission cadence
+// for the multi-result-per-turn cascade. Each wire `result` envelope
+// (Claude) emits its own `provider:turn_started` / `provider:turn_completed`
+// pair so the frontend's working indicator, Stop button, and composer
+// block correctly track "model is engaged right now" — flipping off
+// between rounds and back on for the second model call provoked by
+// the CLI-synthesized `type:"user"` envelope.
+//
+// Persistence stays at LOGICAL-TURN granularity: the `turns` row is
+// UPDATE-d once (markTurnSettled gate), checkpoints capture once,
+// streaming items settle once. Late token usage from the second
+// `result` folds onto the existing turns row via persistLateTurnUsage.
+//
+// Wire shape modeled here (matches the Claude
+// interactive_outlives_taskoutput_monitor.ndjson fixture):
+//
+//	user-send → EventTurnStart (round 1 begins)
+//	... text/tool ...
+//	EventTurnComplete (round 1 ends; result envelope #1)
+//	EventInit (Claude system.init re-emit; round 2 begins)
+//	... text/tool ...
+//	EventTurnComplete (round 2 ends; result envelope #2)
+func TestRoundEmissionPerWireResult(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Round 1.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("first turn complete: %v", err)
+	}
+
+	// Round 2 begins via Claude system.init replay (EventInit). Under
+	// the per-round cadence this synthesizes a fresh provider:turn_started
+	// with a new round id, opens a new round slot, and DOES NOT call
+	// setOpenTurn (id-allocating counters survive — see
+	// TestMultipleResultsPerTurn_TextSegmentsDoNotCollide).
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventInit, ThreadID: "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("re-init: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("second turn complete: %v", err)
+	}
+
+	// Two starts, two completes — one per wire round.
+	starts := filterEmissions(*emissions, "provider:turn_started")
+	if len(starts) != 2 {
+		t.Fatalf("expected 2 provider:turn_started emissions (one per wire round), got %d: %+v", len(starts), starts)
+	}
+	completes := filterEmissions(*emissions, "provider:turn_completed")
+	if len(completes) != 2 {
+		t.Fatalf("expected 2 provider:turn_completed emissions (one per wire round), got %d: %+v", len(completes), completes)
+	}
+
+	// Round ids are distinct across rounds, and each completed pairs
+	// with its preceding start.
+	r1Start := starts[0].data.(TurnStartedEvent).TurnID
+	r1Complete := completes[0].data.(TurnCompletedEvent).TurnID
+	r2Start := starts[1].data.(TurnStartedEvent).TurnID
+	r2Complete := completes[1].data.(TurnCompletedEvent).TurnID
+	if r1Start == "" || r2Start == "" {
+		t.Fatalf("round ids must be non-empty: r1=%q r2=%q", r1Start, r2Start)
+	}
+	if r1Start == r2Start {
+		t.Errorf("round 1 and round 2 share the same id %q — each wire round must allocate a fresh uuid", r1Start)
+	}
+	if r1Complete != r1Start {
+		t.Errorf("round 1 complete TurnID = %q, want matching start id %q", r1Complete, r1Start)
+	}
+	if r2Complete != r2Start {
+		t.Errorf("round 2 complete TurnID = %q, want matching start id %q", r2Complete, r2Start)
+	}
+
+	// Persistence stays at logical-turn granularity: one turns row,
+	// stamped completed_at exactly once. A second UPDATE would have
+	// re-stamped completed_at on the second wire complete; the
+	// markTurnSettled gate guarantees it doesn't.
+	turn, found, err := st.GetTurn("t1:0")
+	if err != nil || !found {
+		t.Fatalf("get turns row: found=%v err=%v", found, err)
+	}
+	if turn.CompletedAt == nil {
+		t.Fatalf("expected completed_at set after first wire complete")
+	}
+}
+
+// TestRoundStartedAfterSystemInit pins the re-round path in
+// handleInit: when an EventInit arrives for a thread whose current
+// logical turn is already settled (provider:turn_completed has fired
+// at least once), a fresh provider:turn_started is emitted with a
+// per-round uuid as TurnID. This is what flips the frontend's
+// working indicator back on for the second model call in the
+// multi-result-per-turn pattern.
+func TestRoundStartedAfterSystemInit(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+	*emissions = nil // discard the round-1 turn_started/turn_completed
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventInit, ThreadID: "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("re-init: %v", err)
+	}
+
+	starts := filterEmissions(*emissions, "provider:turn_started")
+	if len(starts) != 1 {
+		t.Fatalf("expected 1 provider:turn_started after re-init, got %d: %+v", len(starts), starts)
+	}
+	payload := starts[0].data.(TurnStartedEvent)
+	if payload.TurnID == "" {
+		t.Errorf("re-round payload.TurnID is empty — handleInit must allocate a fresh round uuid")
+	}
+	if payload.TurnIndex != 0 {
+		t.Errorf("re-round payload.TurnIndex = %d, want 0 (same logical turn)", payload.TurnIndex)
+	}
+	if payload.ThreadID != "t1" {
+		t.Errorf("re-round payload.ThreadID = %q, want t1", payload.ThreadID)
+	}
+}
+
+// TestRoundEmission_RecoveryResume_OrphanCompleteIsSilent pins the
+// crash-recovery resume edge case: a fresh app/session starts up,
+// reattaches to a thread, fires EventInit (no settled marker —
+// CleanupThread wiped state on prior shutdown), and a real wire
+// EventTurnComplete eventually arrives without any preceding
+// EventTurnStart in this process. Per the wire-round emission
+// contract:
+//
+//   - EventInit yields no provider:turn_started (no settled marker).
+//   - EventTurnComplete finds an empty currentRoundID slot
+//     (takeOpenRound returns "") and skips the wire-round emission.
+//   - markTurnSettled gates persistence; the orphan complete folds
+//     late token usage onto whatever turns row exists (or is a
+//     no-op if no row exists).
+//
+// The frontend therefore observes nothing, and no panic occurs in
+// the LastTurnIndex fallback path even when no turn row exists yet
+// for the thread.
+func TestRoundEmission_RecoveryResume_OrphanCompleteIsSilent(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Fresh process attach: EventInit on a thread with no settled
+	// marker (no prior provider:turn_completed has run in THIS process).
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventInit, ThreadID: "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	// Real wire turn-complete arrives without any preceding TurnStart.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("orphan complete: %v", err)
+	}
+
+	starts := filterEmissions(*emissions, "provider:turn_started")
+	if len(starts) != 0 {
+		t.Errorf("expected 0 provider:turn_started emissions on recovery resume, got %d: %+v", len(starts), starts)
+	}
+	completes := filterEmissions(*emissions, "provider:turn_completed")
+	if len(completes) != 0 {
+		t.Errorf("expected 0 provider:turn_completed emissions on orphan complete (no open round), got %d: %+v", len(completes), completes)
+	}
+}
+
+// TestCurrentRoundIDIsBoundedByCleanupThread pins the round-id
+// leak guard. CleanupThread MUST wipe currentRoundID along with the
+// other per-thread maps so a long-running session bouncing across
+// many threads doesn't accumulate stale round entries.
+//
+// Mirrors TestCounterMapsBoundedByCleanupThread for the round-id
+// map specifically.
+func TestCurrentRoundIDIsBoundedByCleanupThread(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Open a round.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	router.mu.Lock()
+	openRound, hasOpenRound := router.currentRoundID["t1"]
+	router.mu.Unlock()
+	if !hasOpenRound || openRound == "" {
+		t.Fatalf("expected currentRoundID[t1] to be set after EventTurnStart, got %q (present=%v)", openRound, hasOpenRound)
+	}
+
+	router.CleanupThread("t1")
+
+	router.mu.Lock()
+	defer router.mu.Unlock()
+	if _, leaked := router.currentRoundID["t1"]; leaked {
+		t.Errorf("currentRoundID leaked entry for t1 past CleanupThread")
+	}
+	if got := len(router.currentRoundID); got != 0 {
+		t.Errorf("currentRoundID has %d entries past CleanupThread, want 0", got)
+	}
+}
+
+// TestRoundEmission_CrossThreadIsolation pins the per-thread keying
+// of currentRoundID: thread A's round id must never be returned for
+// thread B's takeOpenRound. Provider events are serialized per
+// thread, so this isolation isn't a concurrency requirement today —
+// but it's a correctness boundary the design depends on, and a
+// regression that swapped per-thread map access for a single global
+// slot would silently corrupt round routing without this assertion.
+func TestRoundEmission_CrossThreadIsolation(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	createTestThread(t, st, "t2")
+
+	// Open rounds on both threads.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("t1 turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t2", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("t2 turn start: %v", err)
+	}
+
+	starts := filterEmissions(*emissions, "provider:turn_started")
+	if len(starts) != 2 {
+		t.Fatalf("expected 2 provider:turn_started emissions (one per thread), got %d", len(starts))
+	}
+	t1Round := ""
+	t2Round := ""
+	for _, e := range starts {
+		payload := e.data.(TurnStartedEvent)
+		switch payload.ThreadID {
+		case "t1":
+			t1Round = payload.TurnID
+		case "t2":
+			t2Round = payload.TurnID
+		}
+	}
+	if t1Round == "" || t2Round == "" {
+		t.Fatalf("missing per-thread round id: t1=%q t2=%q", t1Round, t2Round)
+	}
+	if t1Round == t2Round {
+		t.Fatalf("threads share a round id %q — per-thread keying is broken", t1Round)
+	}
+
+	// Complete t1 — the emit MUST carry t1's round id, leaving t2's
+	// slot intact.
+	*emissions = nil
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("t1 turn complete: %v", err)
+	}
+	completes := filterEmissions(*emissions, "provider:turn_completed")
+	if len(completes) != 1 {
+		t.Fatalf("expected 1 provider:turn_completed for t1, got %d", len(completes))
+	}
+	if completes[0].data.(TurnCompletedEvent).TurnID != t1Round {
+		t.Errorf("t1 turn_completed TurnID = %q, want %q", completes[0].data.(TurnCompletedEvent).TurnID, t1Round)
+	}
+	// t2's slot must still be open.
+	router.mu.Lock()
+	t2RoundStillOpen := router.currentRoundID["t2"]
+	router.mu.Unlock()
+	if t2RoundStillOpen != t2Round {
+		t.Errorf("t2 round slot was disturbed: got %q, want %q", t2RoundStillOpen, t2Round)
+	}
+
+	// Complete t2 — emit must carry t2's round id, not t1's.
+	*emissions = nil
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t2",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("t2 turn complete: %v", err)
+	}
+	completes = filterEmissions(*emissions, "provider:turn_completed")
+	if len(completes) != 1 {
+		t.Fatalf("expected 1 provider:turn_completed for t2, got %d", len(completes))
+	}
+	if got := completes[0].data.(TurnCompletedEvent).TurnID; got != t2Round {
+		t.Errorf("t2 turn_completed TurnID = %q, want %q (cross-thread leak suspected)", got, t2Round)
+	}
+}
+
+// TestNoRoundEmissionOnRealSessionInit pins the negative case: an
+// EventInit for a thread with NO settled-turn marker (real session
+// start, not a re-round) MUST NOT emit provider:turn_started. The
+// settled-turn marker is the wire-typed signal that distinguishes
+// "Claude is starting a follow-up round of an in-flight logical
+// turn" from "fresh session attaching to a thread that has no
+// in-flight logical turn." Emitting from the latter case would lie
+// to the frontend about the model being engaged.
+func TestNoRoundEmissionOnRealSessionInit(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Fresh session: EventInit arrives before any EventTurnStart.
+	// Mirrors the recovery-resume path where the app reattaches to a
+	// thread whose last logical turn already completed (or was never
+	// started) before the previous session ended.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventInit, ThreadID: "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	starts := filterEmissions(*emissions, "provider:turn_started")
+	if len(starts) != 0 {
+		t.Errorf("expected 0 provider:turn_started for real session init, got %d: %+v (handleInit must only re-light when a prior round of THIS logical turn already settled)", len(starts), starts)
+	}
+}
+
 // TestSyntheticTruncatedTurnComplete_ThenRealResult_NoDuplicateEmission
 // pins the second known trigger of doubled-clearOpenTurn: a fatal
 // EventError synthesizes a truncated turn-complete (handleError →
@@ -482,6 +835,12 @@ func TestCounterMapsBoundedByCleanupThread(t *testing.T) {
 	}
 	if got := len(router.committedToolPaths); got != 0 {
 		t.Errorf("committedToolPaths leaked %d entries past CleanupThread", got)
+	}
+	// Per-wire-round id slot — every wire complete clears its own
+	// thread's slot via takeOpenRound, but CleanupThread is the safety
+	// net for sessions that ended mid-round (no final wire complete).
+	if got := len(router.currentRoundID); got != 0 {
+		t.Errorf("currentRoundID leaked %d entries past CleanupThread", got)
 	}
 }
 

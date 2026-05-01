@@ -70,6 +70,51 @@ describe('<ChatWorkingIndicator>', () => {
     expect(interrupt).toHaveBeenCalledWith('thread-1');
   });
 
+  // Pins the per-wire-round emission cadence (see
+  // internal/triage/AGENTS.md "Wire-round vs logical-turn"): the
+  // elapsed-time counter resets on each new round because each round
+  // gets a fresh `startedAt`. Verifies the indicator naturally tracks
+  // round-level state — round 1 ends, indicator hides; round 2
+  // starts at a new time, elapsed counter restarts at the round-2
+  // anchor.
+  it('elapsed timer resets per wire round', async () => {
+    const pane = await buildPane();
+
+    // Round 1 begins at t=7s; current clock is t=10s → 3s elapsed.
+    pane.setActiveTurn({ turnId: 'round-1', turnIndex: 0, startedAt: 7_000 });
+    const { getByTestId, queryByTestId } = render(ChatWorkingIndicator, { props: { pane } });
+    await tick();
+    expect(getByTestId('chat-working-indicator-elapsed').textContent).toBe('3s');
+
+    // Round 1 settles. Indicator hides.
+    pane.settleTurn({
+      turnId: 'round-1',
+      turnIndex: 0,
+      startedAt: 7_000,
+      completedAt: 11_000,
+      tokenUsage: null,
+      assistantMessageId: null,
+      aborted: false,
+      stopReason: '',
+      errorMessage: '',
+    });
+    await tick();
+    expect(queryByTestId('chat-working-indicator')).toBeNull();
+
+    // Time passes (model is idle while bg task settles). Clock now t=15s.
+    vi.advanceTimersByTime(5_000);
+
+    // Round 2 begins at t=15s. Indicator re-appears with a fresh 0s
+    // anchor — NOT the cumulative 8s since the round 1 startedAt.
+    pane.setActiveTurn({ turnId: 'round-2', turnIndex: 0, startedAt: 15_000 });
+    await tick();
+    expect(getByTestId('chat-working-indicator-elapsed').textContent).toBe('0s');
+
+    // The data-round-id attribute carries the round id so component
+    // tests can pin which round is currently rendered.
+    expect(getByTestId('chat-working-indicator').dataset.roundId).toBe('round-2');
+  });
+
   // Regression: previously the per-pane activeTurn was cleared on
   // switchThread while the global active-turn registry survived. After
   // switching back to the original thread the working indicator stayed

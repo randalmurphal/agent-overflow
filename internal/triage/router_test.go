@@ -2198,17 +2198,24 @@ func TestTurnCompleteWithoutAccumulatedText(t *testing.T) {
 		t.Errorf("expected 0 items, got %d", len(items))
 	}
 
-	// Empty turn produces no item upserts. Turn-lifecycle refactor adds a
-	// provider:turn_completed push so the frontend clears its working
-	// indicator even for turns that carry no text; assert that shape but
-	// nothing else.
+	// Empty turn produces no item upserts.
 	upserts := filterItemEventUpserts(*emissions)
 	if len(upserts) != 0 {
 		t.Errorf("expected 0 item upserts for empty turn, got %d: %+v", len(upserts), upserts)
 	}
+	// A bare EventTurnComplete arriving without a preceding
+	// EventTurnStart has no open wire round (currentRoundID is empty
+	// because setOpenRound was never called for this thread). Under
+	// the per-round emission cadence (see internal/triage/AGENTS.md
+	// "Wire-round vs logical-turn") the frontend therefore sees
+	// nothing — there was no turn_started to pair with, so there's
+	// nothing to clear. Persistence still ran (no items to settle, no
+	// turns row to update because turn_start never fired). The
+	// frontend's indicator stays in whatever state it was in,
+	// untouched by this orphan complete.
 	completed := filterEmissions(*emissions, "provider:turn_completed")
-	if len(completed) != 1 {
-		t.Errorf("expected 1 provider:turn_completed emission, got %d: %+v", len(completed), completed)
+	if len(completed) != 0 {
+		t.Errorf("expected 0 provider:turn_completed emissions for orphan complete, got %d: %+v", len(completed), completed)
 	}
 }
 

@@ -26,6 +26,18 @@ import (
 // `pane.activeTurn` on. Checkpoint failure is NOT fatal to the turn —
 // it surfaces as a `checkpoint:error` event the UI renders as a
 // dismissible banner, and the turn proceeds.
+//
+// Wire-round vs logical-turn cadence: this handler is the canonical
+// start of round 1 of every logical turn. It both seeds per-turn
+// flow-control state (setOpenTurn) AND opens a fresh wire round
+// (setOpenRound). The `provider:turn_started` payload carries the
+// per-round id as TurnID — the frontend treats each round as its own
+// active turn for indicator / composer / Stop-button purposes.
+// Subsequent rounds within the same logical turn are opened in
+// handleInit's re-round branch, which only calls setOpenRound (not
+// setOpenTurn) so id-allocating counters survive the multi-result-
+// per-turn cascade. See internal/triage/AGENTS.md "Wire-round vs
+// logical-turn".
 func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 	turnIndex := evt.TurnIndex
 	if turnIndex == 0 {
@@ -87,9 +99,16 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 		r.markAcceptedRevisionComments(evt.ThreadID, turnIndex, turnID, startedAt)
 	}
 
+	// Open the first wire round for this logical turn. Frontend
+	// idempotency keys on TurnID, so a fresh roundID per round means a
+	// duplicate EventTurnStart for the same logical turn (Codex retry,
+	// Claude system.init replay before any complete) replaces the prior
+	// active-turn entry rather than accumulating stale state.
+	roundID := uuid.NewString()
+	r.setOpenRound(evt.ThreadID, roundID)
 	r.emit("provider:turn_started", TurnStartedEvent{
 		ThreadID:  evt.ThreadID,
-		TurnID:    turnID,
+		TurnID:    roundID,
 		TurnIndex: turnIndex,
 		StartedAt: startedAt,
 	})
@@ -590,29 +609,56 @@ func checkpointWorkspacePath(t store.Thread) string {
 }
 
 func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
-	// Idempotent guard: a second EventTurnComplete on a turn that was
-	// ALREADY settled (provider:turn_completed already emitted, checkpoint
-	// already captured) is a wire-level artifact. Known sources:
+	// Two-cadence shape (see internal/triage/AGENTS.md "Wire-round vs
+	// logical-turn"):
+	//
+	//   1. Per-WIRE-ROUND emission (top of this handler).
+	//      `provider:turn_completed` fires once per `result` envelope so
+	//      the frontend's working indicator, Stop button, and composer
+	//      block correctly reflect "model is engaged right now."
+	//      takeOpenRound clears the round slot in the same critical
+	//      section it returns it; an empty slot means a synthetic
+	//      complete already raced ahead (handleError fatal path) — skip
+	//      the second emit so the frontend sees exactly one
+	//      turn_completed per round.
+	//
+	//   2. Per-LOGICAL-TURN persistence (markTurnSettled-gated below).
+	//      The `turns` row UPDATE, checkpoint capture, streaming-item
+	//      settlement, and force-close-orphans pass run once per
+	//      (thread, turn_index). A second wire complete for the same
+	//      logical turn — the multi-result-per-turn pattern, where
+	//      Claude's CLI synthesizes a `type:"user"` envelope from a
+	//      task_notification and emits another `result` — folds late
+	//      token usage onto the existing turns row and otherwise
+	//      no-ops.
+	//
+	// Known sources of a second wire complete on an already-settled
+	// logical turn:
 	//
 	//   1. Claude task_notification → CLI synthesizes a `type:"user"`
 	//      envelope → model emits another response → second `result`
 	//      envelope. Both `result`s belong to one logical agent-overflow
-	//      turn from the user's perspective; the first close already
-	//      drained streaming items, captured the per-turn checkpoint,
-	//      and emitted provider:turn_completed.
+	//      turn; persistence settles on the first. The wire-round emit
+	//      at the top fires for the second too (each round gets its
+	//      own indicator on/off).
 	//   2. handleError synthesizes a EventTurnComplete{truncated:true},
 	//      then a real wire EventTurnComplete arrives anyway because the
-	//      subprocess kept streaming.
-	//
-	// We can't gate on "openTurns is empty" alone because handleError's
-	// fatal-error branch deliberately clears the open turn BEFORE
-	// synthesizing — that synthesized complete is the FIRST settle for
-	// the turn and must run in full. So we track per-turn settled
-	// markers separately from openTurns; this guard only fires for the
-	// SECOND complete on the same (threadID, turnIndex).
+	//      subprocess kept streaming. takeOpenRound returns "" on the
+	//      second, so the wire-round emit is suppressed.
 	//
 	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
 	meta := decodeTurnCompleteMeta(evt.Meta)
+	now := eventTimestampMillis(evt)
+
+	// Per-round emission. Always runs before the markTurnSettled gate
+	// so a second `result` envelope for the same logical turn still
+	// emits the round-end signal. takeOpenRound is a read-and-clear:
+	// at most one emit per round, regardless of synthesis races.
+	roundID := r.takeOpenRound(evt.ThreadID)
+	if roundID != "" && err == nil {
+		r.emit("provider:turn_completed", r.buildRoundCompletedEvent(evt, roundID, turnIndex, now, meta))
+	}
+
 	if err == nil {
 		// markTurnSettled is sticky on partial failure (same trade-off as
 		// markTurnCaptured): once the FIRST handleTurnComplete reaches
@@ -625,7 +671,6 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 		}
 	}
 	var persistErr error
-	now := eventTimestampMillis(evt)
 	truncated := turnCompleteIsTruncated(meta)
 	if err != nil {
 		persistErr = err
@@ -708,21 +753,22 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 		}
 	}
 
-	// Settle the turns row + emit provider:turn_completed even on
-	// persist error so the frontend's working indicator clears.
-	// Persistence failures are logged inside settleTurnRow; we keep
-	// persistErr as the return so upstream (observability, error
-	// reporting) sees the real failure.
+	// Settle the turns row even on persist error so the persisted
+	// `completed_at` reflects whatever clock we have at the point the
+	// wire said the turn was over. Persistence failures are logged
+	// inside settleTurnRow; we keep persistErr as the return so
+	// upstream (observability, error reporting) sees the real failure.
+	// The frontend's working indicator was already cleared by the
+	// per-round `provider:turn_completed` emission at the top of this
+	// handler.
 	//
 	// Checkpoint capture for THIS turn does NOT happen here. It runs at
 	// the next handleTurnStart (capturePriorTurnCheckpoint), matching
-	// Claude Code's user-prompt-submit snapshot pattern. The turn-end
-	// emission still fires so the frontend can flip its working
-	// indicator off; the diff panel surfaces "what changed in this
-	// turn" by diffing the prior baseline against the current working
-	// tree until the next user-send commits a checkpoint.
-	settled := r.settleTurnRow(evt, turnIndex, now, meta, persistErr)
-	r.emit("provider:turn_completed", settled)
+	// Claude Code's user-prompt-submit snapshot pattern. The diff panel
+	// surfaces "what changed in this turn" by diffing the prior
+	// baseline against the current working tree until the next
+	// user-send commits a checkpoint.
+	r.settleTurnRow(evt, turnIndex, now, meta, persistErr)
 
 	r.clearOpenTurn(evt.ThreadID)
 	r.closeTurnSpan(evt.ThreadID, persistErr)
@@ -780,51 +826,101 @@ func forceCloseSummary(summary string) string {
 	return summary + forceCloseSuffix
 }
 
-// settleTurnRow updates the turns row and returns the frontend-facing
-// TurnCompletedEvent payload. Persists on best-effort: a persistence
-// failure logs but still yields a payload so the wire emission fires.
-// Missing turn rows (e.g. a turn_complete with no matching turn_start
-// because the first event arrived mid-crash-recovery) are tolerated —
-// the UPDATE's sql.ErrNoRows is logged and the payload still emits.
-func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now int64, meta turnCompleteMeta, persistErr error) TurnCompletedEvent {
+// turnCompleteFields holds the small set of derived values both
+// settleTurnRow (persistence) and buildRoundCompletedEvent (wire
+// payload) compute from the same EventTurnComplete inputs. Extracted
+// because the two consumers run in different cadences (logical-turn
+// vs wire-round) but the projection rules — stop_reason fallback to
+// "error" on persistErr, assistant_message_id resolution across
+// provider shapes, error_message derived from meta or persistErr,
+// turn-id resolution — are exactly the same.
+type turnCompleteFields struct {
+	logicalTurnID      string
+	stopReason         string
+	assistantMessageID string
+	errorMessage       string
+}
+
+func decodeTurnCompleteFields(evt provider.ProviderEvent, turnIndex int, meta turnCompleteMeta, persistErr error) turnCompleteFields {
 	stopReason := canonicalStopReason(meta)
 	if persistErr != nil && stopReason == "" {
 		stopReason = "error"
 	}
-	assistantMessageID := resolveAssistantMessageID(meta)
 	errorMessage := meta.Error
 	if errorMessage == "" && persistErr != nil {
 		errorMessage = persistErr.Error()
 	}
-	turnID := resolveTurnID(evt, turnIndex)
-
-	// Lookup started_at. A persisted row is the authoritative clock;
-	// fall back to `now` so the payload always carries a sensible
-	// StartedAt if the turns row was never written.
-	startedAt := now
-	if existing, found, err := r.store.GetTurn(turnID); err == nil && found {
-		startedAt = existing.StartedAt
+	return turnCompleteFields{
+		logicalTurnID:      resolveTurnID(evt, turnIndex),
+		stopReason:         stopReason,
+		assistantMessageID: resolveAssistantMessageID(meta),
+		errorMessage:       errorMessage,
 	}
+}
+
+// settleTurnRow updates the persisted `turns` row at logical-turn
+// granularity. Persists on best-effort: missing turn rows (e.g. a
+// turn_complete with no matching turn_start because the first event
+// arrived mid-crash-recovery) are tolerated — the UPDATE's
+// sql.ErrNoRows is logged and the function returns. The frontend-
+// facing `provider:turn_completed` emission has already fired by the
+// time this runs (see handleTurnComplete: takeOpenRound + emit at the
+// top, then markTurnSettled gate, then this).
+func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now int64, meta turnCompleteMeta, persistErr error) {
+	fields := decodeTurnCompleteFields(evt, turnIndex, meta, persistErr)
 
 	usageJSON := ""
 	if len(meta.Usage) > 0 {
 		usageJSON = string(meta.Usage)
 	}
 
-	if err := r.store.UpdateTurnCompleted(turnID, now, stopReason, assistantMessageID, usageJSON, errorMessage); err != nil {
-		log.Printf("triage: update turn %s: %v", turnID, err)
+	if err := r.store.UpdateTurnCompleted(fields.logicalTurnID, now, fields.stopReason, fields.assistantMessageID, usageJSON, fields.errorMessage); err != nil {
+		log.Printf("triage: update turn %s: %v", fields.logicalTurnID, err)
 	}
+}
 
+// buildRoundCompletedEvent builds the frontend-facing
+// TurnCompletedEvent payload for a single wire round. The TurnID is
+// the per-round uuid (allocated in handleTurnStart / handleInit
+// re-round) — the frontend treats each round as a distinct active
+// turn, replacing its activeTurn entry on each round-start and
+// clearing on the matching complete. StartedAt prefers the persisted
+// `turns` row's started_at (logical-turn clock) and falls back to
+// `now` when no row exists yet (mid-crash-recovery edge case).
+//
+// Pure projection — does not write the `turns` row. settleTurnRow
+// owns the UPDATE and runs once per logical turn under the
+// markTurnSettled gate.
+//
+// No persistErr parameter: this fires at the TOP of handleTurnComplete
+// before any persistence runs, so there is no upstream persistence
+// error to fold into the payload's stop_reason / error_message
+// fields. If a persistence failure occurs later in handleTurnComplete,
+// it surfaces through `persistErr` on the function return rather than
+// retroactively rewriting the wire-round emission the frontend has
+// already received.
+func (r *Router) buildRoundCompletedEvent(
+	evt provider.ProviderEvent,
+	roundID string,
+	turnIndex int,
+	now int64,
+	meta turnCompleteMeta,
+) TurnCompletedEvent {
+	fields := decodeTurnCompleteFields(evt, turnIndex, meta, nil)
+	startedAt := now
+	if existing, found, err := r.store.GetTurn(fields.logicalTurnID); err == nil && found {
+		startedAt = existing.StartedAt
+	}
 	return TurnCompletedEvent{
 		ThreadID:           evt.ThreadID,
-		TurnID:             turnID,
+		TurnID:             roundID,
 		TurnIndex:          turnIndex,
 		StartedAt:          startedAt,
 		CompletedAt:        now,
-		StopReason:         stopReason,
-		AssistantMessageID: assistantMessageID,
+		StopReason:         fields.stopReason,
+		AssistantMessageID: fields.assistantMessageID,
 		TokenUsage:         meta.Usage,
-		ErrorMessage:       errorMessage,
+		ErrorMessage:       fields.errorMessage,
 		Aborted:            meta.Aborted || meta.Truncated || meta.TurnStatus == "interrupted",
 	}
 }
@@ -918,6 +1014,55 @@ func (r *Router) markTurnSettled(threadID string, turnIndex int) bool {
 
 func settledTurnKey(threadID string, turnIndex int) string {
 	return fmt.Sprintf("%s|%d", threadID, turnIndex)
+}
+
+// setOpenRound records the active wire-round id for threadID. A round
+// begins on either:
+//
+//   - handleTurnStart (per user-typed send) — the canonical first
+//     round of every logical turn.
+//   - handleInit when the prior round of the same logical turn already
+//     settled — the re-round case for Claude's multi-result-per-turn
+//     wire pattern, where the CLI synthesizes a `type:"user"` envelope
+//     from a task_notification and emits a fresh `system.init`
+//     followed by another `result`. Each `result` is its own wire
+//     round from the model's POV.
+//
+// Round ids are uuids; the frontend treats each round as a distinct
+// active turn for indicator / composer / Stop-button purposes. The
+// persisted `turns` row id stays on `resolveTurnID` (logical-turn
+// granularity); only the wire payload's TurnID field carries the round
+// id. See internal/triage/AGENTS.md "Wire-round vs logical-turn" for
+// the full mental model.
+//
+// Overwrites any prior round id for the thread — a leaked round (e.g.
+// if currentTurnIndex failed in the prior handleTurnComplete and the
+// emit at the top was skipped) cannot survive into the next round.
+// CleanupThread also sweeps this map.
+func (r *Router) setOpenRound(threadID, roundID string) {
+	if threadID == "" || roundID == "" {
+		return
+	}
+	r.mu.Lock()
+	r.currentRoundID[threadID] = roundID
+	r.mu.Unlock()
+}
+
+// takeOpenRound returns the active wire-round id for threadID and
+// clears the slot in the same critical section. Empty string when no
+// round is open — the caller (handleTurnComplete) skips the per-round
+// `provider:turn_completed` emission in that case. The
+// "read-and-clear" semantics handle the synthetic-truncate-then-real
+// race naturally: the synthetic complete takes the slot and emits;
+// the real complete finds it empty and skips, so the frontend sees
+// exactly one `provider:turn_completed` per round even when handleError
+// synthesizes ahead of the wire's own turn-complete.
+func (r *Router) takeOpenRound(threadID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	roundID := r.currentRoundID[threadID]
+	delete(r.currentRoundID, threadID)
+	return roundID
 }
 
 // clearOpenTurn drops per-turn flow-control state at EventTurnComplete.
@@ -1204,6 +1349,12 @@ func (r *Router) CleanupThread(threadID string) {
 	}
 	deleteByPrefix(r.terminalInteractionSeq, prefix)
 	deleteByPrefix(r.settledTurns, prefix)
+	// currentRoundID is keyed by threadID — a single delete is the
+	// correct primitive. Cleared every wire-complete by takeOpenRound;
+	// CleanupThread is the safety net for sessions that ended without
+	// a final wire turn-complete (clean stdout EOF, host-side
+	// StopSession during a round).
+	delete(r.currentRoundID, threadID)
 	// Drop tool-path tracking for the thread. pendingToolPaths is
 	// keyed by `<threadID>|<itemID>` and committedToolPaths by
 	// `<threadID>|<turnIndex>` — both share the same `<threadID>|`

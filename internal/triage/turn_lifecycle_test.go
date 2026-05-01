@@ -228,7 +228,14 @@ func TestHandleEventTurnStart_InsertsTurnRow(t *testing.T) {
 		t.Errorf("started_at = %d, want %d", turn.StartedAt, startedAt.UnixMilli())
 	}
 
-	// Emission shape.
+	// Emission shape. The frontend payload's TurnID is a per-round
+	// uuid (allocated by setOpenRound at the top of handleTurnStart) —
+	// distinct from the persisted logical-turn id (`expectedTurnID =
+	// "t1:5"`) on purpose. Frontend idempotency keys on TurnID and
+	// each wire round (re-round, retry) needs its own visible
+	// identifier; persistence uses the logical id so all rounds of
+	// one logical turn share a single `turns` row. See
+	// internal/triage/AGENTS.md "Wire-round vs logical-turn".
 	started := filterEmissions(*emissions, "provider:turn_started")
 	if len(started) != 1 {
 		t.Fatalf("expected 1 provider:turn_started emission, got %d", len(started))
@@ -237,8 +244,11 @@ func TestHandleEventTurnStart_InsertsTurnRow(t *testing.T) {
 	if !ok {
 		t.Fatalf("emission payload type = %T, want TurnStartedEvent", started[0].data)
 	}
-	if payload.TurnID != expectedTurnID {
-		t.Errorf("payload.TurnID = %q, want %q", payload.TurnID, expectedTurnID)
+	if payload.TurnID == "" {
+		t.Errorf("payload.TurnID is empty — round id must be allocated on turn_start")
+	}
+	if payload.TurnID == expectedTurnID {
+		t.Errorf("payload.TurnID = %q must NOT equal the persisted logical id (per-round uuid expected)", payload.TurnID)
 	}
 	if payload.TurnIndex != 5 {
 		t.Errorf("payload.TurnIndex = %d, want 5", payload.TurnIndex)
@@ -324,7 +334,16 @@ func TestHandleEventTurnComplete_UpdatesTurnRow(t *testing.T) {
 		t.Errorf("error_message = %q, want empty for happy path", turn.ErrorMessage)
 	}
 
-	// Emission shape.
+	// Emission shape. The completed payload's TurnID is the per-round
+	// uuid that turn_started allocated — same round, same id —
+	// distinct from the persisted logical id ("t1:3"). See
+	// internal/triage/AGENTS.md "Wire-round vs logical-turn".
+	started := filterEmissions(*emissions, "provider:turn_started")
+	if len(started) != 1 {
+		t.Fatalf("expected 1 provider:turn_started emission, got %d", len(started))
+	}
+	startedRoundID := started[0].data.(TurnStartedEvent).TurnID
+
 	completed := filterEmissions(*emissions, "provider:turn_completed")
 	if len(completed) != 1 {
 		t.Fatalf("expected 1 provider:turn_completed emission, got %d", len(completed))
@@ -333,8 +352,11 @@ func TestHandleEventTurnComplete_UpdatesTurnRow(t *testing.T) {
 	if !ok {
 		t.Fatalf("payload type = %T, want TurnCompletedEvent", completed[0].data)
 	}
-	if payload.TurnID != "t1:3" {
-		t.Errorf("payload.TurnID = %q, want t1:3", payload.TurnID)
+	if payload.TurnID == "t1:3" {
+		t.Errorf("payload.TurnID = %q must NOT equal the persisted logical id (per-round uuid expected)", payload.TurnID)
+	}
+	if payload.TurnID != startedRoundID {
+		t.Errorf("payload.TurnID = %q, want matching round id from turn_started %q", payload.TurnID, startedRoundID)
 	}
 	if payload.StopReason != "end_turn" {
 		t.Errorf("payload.StopReason = %q, want end_turn", payload.StopReason)
@@ -661,12 +683,17 @@ func TestMarkUserInterrupt_ExemptsBackgroundedLaunches(t *testing.T) {
 // (see TestHandleEventTurnStart_InsertsTurnRow which exercises that
 // branch). This test exercises the Codex branch end-to-end:
 //   - EventTurnStart with evt.TurnID="turn-codex-1" inserts a turns
-//     row keyed by "turn-codex-1" (NOT "t1:0").
+//     row keyed by "turn-codex-1" (NOT "t1:0"). PERSISTED row id is
+//     the logical-turn id from resolveTurnID.
 //   - A follow-up EventTurnComplete with the SAME evt.TurnID updates
 //     that row rather than creating or touching a sibling.
 //   - The frontend payload (TurnStartedEvent / TurnCompletedEvent)
-//     carries the real wire id so the UI's `activeTurn.turnId` and
-//     `latestSettledTurn.turnId` round-trip correctly.
+//     carries a per-round uuid as TurnID — frontend idempotency keys
+//     on TurnID, so each wire round (re-round in the multi-result-
+//     per-turn pattern, retried turn/started in Codex, etc.) gets a
+//     fresh frontend-visible identifier even when the persisted row
+//     keeps the same logical id. See internal/triage/AGENTS.md
+//     "Wire-round vs logical-turn" for the cadence rules.
 //
 // Regression-guard rationale: the resolveTurnID helper is a single
 // `if id != "" return id` branch. If someone swaps the condition or
@@ -717,7 +744,12 @@ func TestHandleEventTurnStart_UsesWireTurnIDForCodex(t *testing.T) {
 		t.Errorf("resolveTurnID split the turn into a synthetic sibling row (id t1:0) — wire id %q should be the only row", wireTurnID)
 	}
 
-	// provider:turn_started payload carries the wire id.
+	// provider:turn_started payload carries a per-round uuid. The wire
+	// id ("turn-codex-1") survives on the persisted row (asserted
+	// above) but does NOT appear on the frontend payload — the
+	// frontend uses its own per-round identity for indicator /
+	// composer / Stop-button gating, decoupled from whatever the
+	// provider names the logical turn.
 	started := filterEmissions(*emissions, "provider:turn_started")
 	if len(started) != 1 {
 		t.Fatalf("expected 1 provider:turn_started emission, got %d", len(started))
@@ -726,9 +758,13 @@ func TestHandleEventTurnStart_UsesWireTurnIDForCodex(t *testing.T) {
 	if !ok {
 		t.Fatalf("started payload type = %T, want TurnStartedEvent", started[0].data)
 	}
-	if startedPayload.TurnID != wireTurnID {
-		t.Errorf("provider:turn_started TurnID = %q, want %q (wire id must win)", startedPayload.TurnID, wireTurnID)
+	if startedPayload.TurnID == "" {
+		t.Errorf("provider:turn_started TurnID is empty — frontend round id must be allocated")
 	}
+	if startedPayload.TurnID == wireTurnID {
+		t.Errorf("provider:turn_started TurnID = %q, want a per-round uuid distinct from the wire id (frontend round id MUST NOT leak the persisted logical-turn id)", startedPayload.TurnID)
+	}
+	startedRoundID := startedPayload.TurnID
 
 	// EventTurnComplete with the SAME wire id updates the EXISTING row
 	// rather than forking a new synthetic row. This is the round-trip
@@ -778,7 +814,10 @@ func TestHandleEventTurnStart_UsesWireTurnIDForCodex(t *testing.T) {
 		t.Error("EventTurnComplete with wire id spuriously created a synthetic sibling row (id t1:0)")
 	}
 
-	// provider:turn_completed payload carries the wire id.
+	// provider:turn_completed payload carries the SAME per-round uuid
+	// that turn_started emitted — the round opened by handleTurnStart
+	// closes here. A different value would mean the round bookkeeping
+	// (currentRoundID / takeOpenRound) is mis-routing rounds.
 	completed := filterEmissions(*emissions, "provider:turn_completed")
 	if len(completed) != 1 {
 		t.Fatalf("expected 1 provider:turn_completed emission, got %d", len(completed))
@@ -787,8 +826,11 @@ func TestHandleEventTurnStart_UsesWireTurnIDForCodex(t *testing.T) {
 	if !ok {
 		t.Fatalf("completed payload type = %T, want TurnCompletedEvent", completed[0].data)
 	}
-	if completedPayload.TurnID != wireTurnID {
-		t.Errorf("provider:turn_completed TurnID = %q, want %q (wire id must win)", completedPayload.TurnID, wireTurnID)
+	if completedPayload.TurnID == wireTurnID {
+		t.Errorf("provider:turn_completed TurnID = %q, want a per-round uuid distinct from the wire id (frontend round id MUST NOT leak the persisted logical-turn id)", completedPayload.TurnID)
+	}
+	if completedPayload.TurnID != startedRoundID {
+		t.Errorf("provider:turn_completed TurnID = %q, want matching round id from turn_started %q", completedPayload.TurnID, startedRoundID)
 	}
 	if completedPayload.AssistantMessageID != "codex-assist-1" {
 		t.Errorf("provider:turn_completed AssistantMessageID = %q, want codex-assist-1", completedPayload.AssistantMessageID)
