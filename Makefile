@@ -13,6 +13,15 @@ ifeq ($(PROVIDER_DEBUG),1)
 AGENT_OVERFLOW_DEBUG := provider
 endif
 
+# `make build-wsl WSL_BUILD_MODE=build:dev` produces a dev-mode bundle
+# with `import.meta.env.DEV=true` so UI render trace and other DEV-gated
+# code light up under the WSL launcher path. Default is the production
+# `build` script used by package:wsl:zip and direct distribution builds;
+# dev-wsl overrides to `build:dev` automatically. Allowed values are
+# enforced by the build-wsl recipe — only `build` and `build:dev` are
+# valid pnpm scripts here.
+WSL_BUILD_MODE ?= build
+
 GO_PACKAGE_ROOTS := . ./internal/... ./build/...
 
 ifeq ($(shell uname -s),Darwin)
@@ -114,7 +123,7 @@ dev-wsl:
 	fi
 	@set -e; \
 	DEV_VERSION=dev-$$(date +%Y%m%d%H%M%S)-$$$$; \
-	$(MAKE) build-wsl WSL_VERSION=$$DEV_VERSION WSL_FORCE_RELINK=1 UI_TRACE=$(UI_TRACE); \
+	$(MAKE) build-wsl WSL_VERSION=$$DEV_VERSION WSL_FORCE_RELINK=1 UI_TRACE=$(UI_TRACE) WSL_BUILD_MODE=build:dev; \
 	WIN_LAD=$$(/mnt/c/Windows/System32/cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r\n'); \
 	if [ -z "$$WIN_LAD" ]; then \
 		echo "ERROR: could not resolve %LOCALAPPDATA% via cmd.exe interop."; \
@@ -133,7 +142,8 @@ dev-wsl:
 # copy to the Windows desktop, double-click later) instead of launching
 # in place.
 build-wsl:
-	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) corepack pnpm run build
+	@case "$(WSL_BUILD_MODE)" in build|build:dev) ;; *) echo "ERROR: WSL_BUILD_MODE must be 'build' or 'build:dev', got '$(WSL_BUILD_MODE)'" >&2; exit 1;; esac
+	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) corepack pnpm run $(WSL_BUILD_MODE)
 	@if [ -n "$(WSL_FORCE_RELINK)" ]; then rm -f bin/agent-overflow.exe bin/agent-overflow-linux; fi
 	VERSION="$(WSL_VERSION)" wails3 task windows:build:wsl
 

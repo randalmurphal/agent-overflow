@@ -24,6 +24,7 @@ import (
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/shellenv"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/uikeys"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -50,24 +51,6 @@ const headlessShutdownTimeout = 10 * time.Second
 // then makes the resulting 127.0.0.1:<port> reachable from the Windows
 // WebView2.
 const bootstrapStdoutPrefix = "__AO_BOOTSTRAP__:"
-
-func browserKeybindings() map[string]func(application.Window) {
-	zoomIn := func(window application.Window) { window.ZoomIn() }
-	zoomOut := func(window application.Window) { window.ZoomOut() }
-	reload := func(window application.Window) { window.Reload() }
-	forceReload := func(window application.Window) { window.ForceReload() }
-	toggleFullscreen := func(window application.Window) { window.ToggleFullscreen() }
-
-	return map[string]func(application.Window){
-		"CmdOrCtrl+plus":    zoomIn,
-		"CmdOrCtrl+=":       zoomIn,
-		"CmdOrCtrl+-":       zoomOut,
-		"CmdOrCtrl+r":       reload,
-		"CmdOrCtrl+Shift+r": forceReload,
-		"F11":               toggleFullscreen,
-		"Ctrl+Command+F":    toggleFullscreen,
-	}
-}
 
 func main() {
 	flags, err := parseFlags(os.Args[1:])
@@ -205,7 +188,7 @@ func runClient(rawURL string) {
 		MinHeight:        600,
 		BackgroundColour: application.NewRGBA(22, 22, 30, 255),
 		URL:              stub.AppURL(),
-		KeyBindings:      browserKeybindings(),
+		KeyBindings:      uikeys.BrowserWithReload(stub.AppURL),
 	})
 
 	runErr := app.Run()
@@ -324,7 +307,7 @@ func runDesktop(listenAddr string) {
 		MinHeight:        600,
 		BackgroundColour: application.NewRGBA(22, 22, 30, 255),
 		URL:              appURL,
-		KeyBindings:      browserKeybindings(),
+		KeyBindings:      uikeys.BrowserWithReload(srv.AppURL),
 	})
 
 	runErr := app.Run()

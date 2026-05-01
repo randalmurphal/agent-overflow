@@ -45,8 +45,10 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/uikeys"
 	"agent-overflow/internal/wsldistro"
 	"agent-overflow/internal/wsllauncher"
 
@@ -344,6 +346,14 @@ type launcherApp struct {
 
 	mu       sync.Mutex
 	launcher *wsllauncher.Launcher
+
+	// backendURL holds the full http://127.0.0.1:<port>/?t=<token> URL
+	// once launchAndShow points the WebView at the WSL backend. Read by
+	// the reload keybinding (uikeys.BrowserWithReload) so Ctrl+R
+	// re-navigates with the token instead of reloading the SPA's
+	// scrubbed URL. atomic.Pointer because the writer is launchAndShow
+	// (goroutine) and the reader is the Wails event loop.
+	backendURL atomic.Pointer[string]
 }
 
 // PickDistro is bound to the picker HTML. It's invoked once when the
@@ -472,9 +482,31 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	// Hard-coding the IPv4 literal makes the WebView navigation
 	// race-free against the OS resolver and the dual-stack hosts file.
 	url := fmt.Sprintf("http://127.0.0.1:%d/?t=%s", bs.Port, bs.Token)
-	log.Printf("backend ready at %s", url)
+	// Same redaction shape probeBootstrap uses (line ~528). The token is
+	// the per-launch credential; leaking it through launcher.log (which
+	// persists in %APPDATA% across runs and is a likely artifact in user
+	// bug reports) would let an attacker with file-system read replay
+	// the session for as long as the backend is up.
+	log.Printf("backend ready at http://127.0.0.1:%d/ (token=%d bytes)", bs.Port, len(bs.Token))
+	// Publish the URL before SetURL so a reload that lands between
+	// SetURL and the SPA's first bootstrap fetch still finds the token.
+	a.backendURL.Store(&url)
 	a.window.SetURL(url)
 	return nil
+}
+
+// currentBackendURL returns the URL the WebView2 is currently pointed
+// at (after launchAndShow's SetURL), or "" before the WSL backend has
+// finished booting. Used by the reload keybinding so Ctrl+R re-navigates
+// with the bootstrap token instead of reloading the SPA's scrubbed URL.
+// "" before launch tells uikeys.BrowserWithReload to fall through to
+// the default window.Reload() — picker / loading / connectivity-error
+// pages are static and reload-safe.
+func (a *launcherApp) currentBackendURL() string {
+	if p := a.backendURL.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 // tolerantMultiWriter is io.MultiWriter without abort-on-first-error.
@@ -652,6 +684,14 @@ func buildApp(distros []wsllauncher.Distro, initialURL string, devMode bool) *la
 		// the WSL backend's localhost port. We can't use the WSL URL
 		// up front because we don't know the port until after Launch.
 		URL: initialURL,
+		// Without this the WebView2 swallows zoom/reload/fullscreen
+		// and there's no menu bar to fall back on. `make dev-wsl`
+		// makes this the only window the user touches, so the
+		// missing bindings were the most user-visible symptom.
+		// BrowserWithReload reads a.backendURL on each reload so
+		// Ctrl+R re-navigates with the bootstrap token after the SPA
+		// scrubs it from window.location — see uikeys.BrowserWithReload.
+		KeyBindings: uikeys.BrowserWithReload(a.currentBackendURL),
 	})
 
 	return a
