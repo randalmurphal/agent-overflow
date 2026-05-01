@@ -19,14 +19,17 @@
     findTimelineNodeIndex as findNodeIndexInList,
     groupItemsBySubagent,
     isToolTextBoundary as isToolTextBoundaryAt,
+    nodeContainsItem,
     nodeRole,
     timelineNodeItemId,
     timelineNodeKey,
+    timelineNodeTurnIndex,
     type TimelineNode,
   } from '../../utils/subagentGrouping';
   import { filterRedundantNotifications } from '../../utils/notificationFilter';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import Button from '../primitives/Button.svelte';
+  import InlineSubagentGroup from './InlineSubagentGroup.svelte';
   import ScrollToBottomButton from './ScrollToBottomButton.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
   import TimelineLeaf from './TimelineLeaf.svelte';
@@ -65,7 +68,7 @@
       const previous = groupedNodes[i];
       if (!previous) return false;
       if (previous.kind === 'leaf' && previous.item.turnIndex !== node.item.turnIndex) return false;
-      if (previous.kind === 'group' && previous.parent.turnIndex !== node.item.turnIndex) return false;
+      if (previous.kind !== 'leaf' && timelineNodeTurnIndex(previous) !== node.item.turnIndex) return false;
       const previousRole = nodeRole(previous);
       if (previousRole === 'tool') return true;
       if (previousRole === 'text') return false;
@@ -149,6 +152,15 @@
 
   function isToolTextBoundary(index: number): boolean {
     return isToolTextBoundaryAt(groupedNodes, index);
+  }
+
+  function hasPendingScrollCatchup(node: TimelineNode): boolean {
+    if (pane.pendingScrollCatchupItems.size === 0) return false;
+    if (pane.pendingScrollCatchupItems.has(timelineNodeItemId(node))) return true;
+    for (const itemId of pane.pendingScrollCatchupItems) {
+      if (nodeContainsItem(node, itemId)) return true;
+    }
+    return false;
   }
 
   // ============================================================
@@ -380,8 +392,10 @@
     {#snippet renderNode(node: TimelineNode, depth: number)}
       {#if node.kind === 'leaf'}
         <TimelineLeaf {pane} item={node.item} orphan={node.orphan === true} {onImageExpand} />
-      {:else}
+      {:else if node.kind === 'group'}
         <SubagentGroup {pane} group={node} {depth} {renderNode} />
+      {:else}
+        <InlineSubagentGroup group={node} {depth} {renderNode} />
       {/if}
     {/snippet}
 
@@ -400,9 +414,9 @@
     >
       {#snippet children(node: TimelineNode, index: number)}
         <!-- Outer per-row wrapper. We do NOT set data-item-id here:
-             TimelineLeaf and SubagentGroup own that attribute on their
-             own roots, and tests rely on the divider rendering BEFORE
-             the [data-item-id] node, not containing it.
+             only TimelineLeaf owns that attribute on its root. Structural
+             rows stay unanchored, and tests rely on the divider rendering
+             BEFORE the [data-item-id] node, not containing it.
 
              `class:invisible` masks newly-appended rows for one frame
              until `stickyBottomController` runs `scrollToLast`, which
@@ -413,7 +427,7 @@
         <div
           data-row-index={index}
           class:mt-4={isToolTextBoundary(index)}
-          class:invisible={pane.pendingScrollCatchupItems.has(timelineNodeItemId(node))}
+          class:invisible={hasPendingScrollCatchup(node)}
         >
           {#if index === 0}
             <!-- Top of timeline. Load-older button (when applicable) and

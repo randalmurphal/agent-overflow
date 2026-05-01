@@ -137,23 +137,7 @@ describe('<SubagentGroup>', () => {
     expect(queryByTestId('leaf')).toBeNull();
   });
 
-  it('describes coalesced multi-agent counts accurately', () => {
-    const group = mkGroup({
-      parentId: 'p1',
-      memberCount: 2,
-      children: [mkLeaf('c1', 'one')],
-      descendantCount: 1,
-    });
-    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group } });
-
-    expect(getByTestId('subagent-group-count').textContent?.trim()).toBe('2 agents · 1 entry');
-    expect(getByTestId('subagent-group-count')).toHaveAttribute(
-      'aria-label',
-      '2 agents and 1 timeline entry inside this subagent group',
-    );
-  });
-
-  it('renders the title as `<agent_type> (<Model>)` and the description as preview', () => {
+  it('renders the title as `<agent_type> (<Model>)`, description, and initializing latest-action row', () => {
     const group = mkGroup({
       parentId: 'p1',
       parentItem: mkAgentParent('p1', {
@@ -169,7 +153,8 @@ describe('<SubagentGroup>', () => {
     expect(label).toContain('Explore');
     expect(label).toContain('Opus 4.7');
 
-    expect(getByTestId('subagent-group-preview').textContent).toContain('Find foo');
+    expect(getByTestId('subagent-group-description').textContent).toContain('Find foo');
+    expect(getByTestId('subagent-group-preview').textContent).toContain('Initializing...');
   });
 
   it('falls back to "Agent" when subagent_type is missing', () => {
@@ -256,6 +241,24 @@ describe('<SubagentGroup>', () => {
     expect(badge).not.toBeNull();
   });
 
+  it('shows final elapsed time for terminal subagents when timestamps are valid', () => {
+    const parent = {
+      ...mkAgentParent('p-duration', {
+        status: 'completed',
+        input: { description: 'Timed run', subagent_type: 'Explore' },
+      }),
+      createdAt: 1_000,
+      updatedAt: 91_000,
+    };
+    const group = mkGroup({
+      parentId: 'p-duration',
+      parentItem: parent,
+    });
+    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group } });
+
+    expect(getByTestId('subagent-group-duration').textContent?.trim()).toBe('1m 30s');
+  });
+
   it('shows the "…" chip when the parent is a backgrounded launch', () => {
     const group = mkGroup({
       parentId: 'bg',
@@ -319,7 +322,7 @@ describe('<SubagentGroup>', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
   });
 
-  it('uses latestChildSummary for the preview when present, falling back to input.description', () => {
+  it('uses latestChildSummary for the stable latest-action row, falling back to initializing copy', () => {
     const withLatest = mkGroup({
       parentId: 'p',
       parentItem: mkAgentParent('p', {
@@ -330,7 +333,7 @@ describe('<SubagentGroup>', () => {
       latestChildSummary: 'Bash: pwd',
     });
     const { getByTestId, unmount } = render(SubagentGroupTestHarness, { props: { group: withLatest } });
-    expect(getByTestId('subagent-group-preview').textContent?.trim()).toBe('Bash: pwd');
+    expect(getByTestId('subagent-group-preview').textContent?.trim()).toBe('└ Bash: pwd');
     unmount();
 
     const noLatest = mkGroup({
@@ -343,7 +346,8 @@ describe('<SubagentGroup>', () => {
       latestChildSummary: '',
     });
     const second = render(SubagentGroupTestHarness, { props: { group: noLatest } });
-    expect(second.getByTestId('subagent-group-preview').textContent?.trim()).toBe('Just launched');
+    expect(second.getByTestId('subagent-group-description').textContent?.trim()).toBe('Just launched');
+    expect(second.getByTestId('subagent-group-preview').textContent?.trim()).toBe('└ Initializing...');
   });
 
   it('renders nested subagent groups recursively when expanded', async () => {
@@ -422,6 +426,7 @@ describe('<SubagentGroup>', () => {
     });
     const { getByTestId } = render(SubagentGroupTestHarness, { props: { group } });
     expect(getByTestId('subagent-group-label').textContent).toContain('Spawned');
-    expect(getByTestId('subagent-group-preview').textContent).toContain('Audit the new feature flags rollout');
+    expect(getByTestId('subagent-group-description').textContent).toContain('Audit the new feature flags rollout');
+    expect(getByTestId('subagent-group-preview').textContent).toContain('Initializing...');
   });
 });

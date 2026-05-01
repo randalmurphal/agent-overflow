@@ -6,6 +6,7 @@ import {
   nodeContainsItem,
   timelineNodeItemId,
   timelineNodeKey,
+  type InlineSubagentGroupNode,
   type SubagentGroupNode,
   type TimelineLeaf,
   type TimelineNode,
@@ -56,6 +57,13 @@ function expectGroup(node: TimelineNode): SubagentGroupNode {
   return node;
 }
 
+function expectInlineGroup(node: TimelineNode): InlineSubagentGroupNode {
+  if (node.kind !== 'inline_subagent_group') {
+    throw new Error(`expected inline_subagent_group node, got ${node.kind}`);
+  }
+  return node;
+}
+
 function expectLeaf(node: TimelineNode): TimelineLeaf {
   if (node.kind !== 'leaf') {
     throw new Error(`expected leaf node, got ${node.kind}`);
@@ -73,32 +81,33 @@ describe('groupItemsBySubagent', () => {
     expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['a', 'b']);
   });
 
-  it('renders a Claude inline Agent as a stable group before children arrive', () => {
+  it('renders a Claude inline Agent in a stable wrapper before children arrive', () => {
     const nodes = groupItemsBySubagent([inlineAgent('agent-1', 0)]);
 
-    const group = expectGroup(nodes[0]);
-    expect(group.parent.id).toBe('agent-1');
-    expect(group.memberCount).toBe(1);
-    expect(group.children).toEqual([]);
-    expect(group.descendantCount).toBe(0);
+    const wrapper = expectInlineGroup(nodes[0]);
+    expect(wrapper.groupKey).toBe('inline:assistant-1:agent-1');
+    expect(wrapper.memberCount).toBe(1);
+    expect(wrapper.members).toHaveLength(1);
+    expect(wrapper.members[0].parent.id).toBe('agent-1');
+    expect(wrapper.members[0].children).toEqual([]);
+    expect(wrapper.descendantCount).toBe(0);
   });
 
-  it('groups sibling inline Agents from the same assistant message under the first agent row', () => {
+  it('groups sibling inline Agents from the same assistant message as peer cards in one wrapper', () => {
     const nodes = groupItemsBySubagent([
       inlineAgent('agent-1', 0, 'assistant-1'),
       inlineAgent('agent-2', 1, 'assistant-1'),
     ]);
 
     expect(nodes).toHaveLength(1);
-    const group = expectGroup(nodes[0]);
-    expect(group.parent.id).toBe('agent-1');
-    expect(group.memberCount).toBe(2);
-    expect(group.children).toHaveLength(1);
-    expect(expectGroup(group.children[0]).parent.id).toBe('agent-2');
-    expect(nodeContainsItem(group, 'agent-2')).toBe(true);
+    const wrapper = expectInlineGroup(nodes[0]);
+    expect(wrapper.groupKey).toBe('inline:assistant-1:agent-1');
+    expect(wrapper.memberCount).toBe(2);
+    expect(wrapper.members.map((member) => member.parent.id)).toEqual(['agent-1', 'agent-2']);
+    expect(nodeContainsItem(wrapper, 'agent-2')).toBe(true);
   });
 
-  it('preserves chronological order between sibling inline Agents and first-agent children', () => {
+  it('keeps first-agent children inside the first agent card instead of hoisting them', () => {
     const nodes = groupItemsBySubagent([
       inlineAgent('agent-1', 0, 'assistant-1'),
       inlineAgent('agent-2', 1, 'assistant-1'),
@@ -111,11 +120,12 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    const group = expectGroup(nodes[0]);
-    expect(group.children.map((node) => timelineNodeItemId(node))).toEqual([
-      'agent-2',
+    const wrapper = expectInlineGroup(nodes[0]);
+    expect(wrapper.members.map((member) => member.parent.id)).toEqual(['agent-1', 'agent-2']);
+    expect(wrapper.members[0].children.map((node) => timelineNodeItemId(node))).toEqual([
       'child-of-agent-1',
     ]);
+    expect(wrapper.members[1].children).toEqual([]);
   });
 
   it('nests children only below inline Agent launch rows', () => {
@@ -131,9 +141,11 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    const group = expectGroup(nodes[0]);
+    const wrapper = expectInlineGroup(nodes[0]);
+    const group = wrapper.members[0];
     expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['child']);
     expect(group.descendantCount).toBe(1);
+    expect(wrapper.descendantCount).toBe(1);
     expect(group.latestChildSummary).toBe('Read: file.ts');
   });
 
@@ -209,7 +221,8 @@ describe('groupItemsBySubagent', () => {
     ]);
 
     expect(nodes).toHaveLength(1);
-    const group = expectGroup(nodes[0]);
+    const wrapper = expectInlineGroup(nodes[0]);
+    const group = wrapper.members[0];
     expect(group.children).toHaveLength(1);
     expect(expectGroup(group.children[0]).parent.id).toBe('agent-2');
     expect(findTimelineNodeIndex(nodes, 'agent-2')).toBe(0);
@@ -223,9 +236,29 @@ describe('groupItemsBySubagent', () => {
     ]);
 
     expect(nodes).toHaveLength(3);
-    expect(expectGroup(nodes[0]).parent.id).toBe('agent-1');
+    expect(expectInlineGroup(nodes[0]).members[0].parent.id).toBe('agent-1');
     expect(expectLeaf(nodes[1]).item.id).toBe('bash');
-    expect(expectGroup(nodes[2]).parent.id).toBe('agent-2');
+    const second = expectInlineGroup(nodes[2]);
+    expect(second.members[0].parent.id).toBe('agent-2');
+    expect(second.groupKey).toBe('inline:assistant-1:agent-2');
+  });
+
+  it('keeps non-contiguous inline wrapper keys stable when older history loads', () => {
+    const partial = groupItemsBySubagent([
+      mkItem({ id: 'bash', itemIndex: 1, kind: 'tool_call', toolName: 'Bash' }),
+      inlineAgent('agent-2', 2, 'assistant-1'),
+    ]);
+    const partialWrapper = expectInlineGroup(partial[1]);
+
+    const complete = groupItemsBySubagent([
+      inlineAgent('agent-1', 0, 'assistant-1'),
+      mkItem({ id: 'bash', itemIndex: 1, kind: 'tool_call', toolName: 'Bash' }),
+      inlineAgent('agent-2', 2, 'assistant-1'),
+    ]);
+    const completeWrapper = expectInlineGroup(complete[2]);
+
+    expect(partialWrapper.groupKey).toBe('inline:assistant-1:agent-2');
+    expect(completeWrapper.groupKey).toBe(partialWrapper.groupKey);
   });
 
   it('surfaces missing parents as orphan leaves instead of dropping them', () => {
@@ -245,7 +278,7 @@ describe('groupItemsBySubagent', () => {
       mkItem({ id: 'after', itemIndex: 2, summary: 'after' }),
     ]);
 
-    expect(timelineNodeKey(nodes[0])).toBe('g:thread-1:inline:assistant-1:agent-1');
+    expect(timelineNodeKey(nodes[0])).toBe('ig:thread-1:inline:assistant-1:agent-1');
     expect(timelineNodeItemId(nodes[0])).toBe('agent-1');
     expect(findTimelineNodeIndex(nodes, 'child')).toBe(0);
     expect(findTimelineNodeIndex(nodes, 'after')).toBe(1);

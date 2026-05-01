@@ -29,24 +29,35 @@ export function recordTimelineRenderTrace(
     itemCount: pane.items.length,
     timelineRevision: pane.timelineRevision,
     groupedNodeCount: groupedNodes.length,
-    nodes: groupedNodes.slice(0, MAX_TRACE_NODES).map((node) => (
-      node.kind === 'leaf'
-        ? {
-            kind: 'leaf',
-            itemId: node.item.id,
-            itemThreadId: node.item.threadId,
-            itemKind: node.item.kind,
-            turnIndex: node.item.turnIndex,
-            orphan: node.orphan === true,
-          }
-        : {
-            kind: 'group',
-            parentId: node.parent.id,
-            parentThreadId: node.parent.threadId,
-            childCount: node.children.length,
-            turnIndex: node.parent.turnIndex,
-          }
-    )),
+    nodes: groupedNodes.slice(0, MAX_TRACE_NODES).map((node) => {
+      if (node.kind === 'leaf') {
+        return {
+          kind: 'leaf',
+          itemId: node.item.id,
+          itemThreadId: node.item.threadId,
+          itemKind: node.item.kind,
+          turnIndex: node.item.turnIndex,
+          orphan: node.orphan === true,
+        };
+      }
+      if (node.kind === 'group') {
+        return {
+          kind: 'group',
+          parentId: node.parent.id,
+          parentThreadId: node.parent.threadId,
+          childCount: node.children.length,
+          turnIndex: node.parent.turnIndex,
+        };
+      }
+      return {
+        kind: 'inline_subagent_group',
+        groupKey: node.groupKey,
+        threadId: node.threadId,
+        memberCount: node.memberCount,
+        childCount: node.members.length,
+        turnIndex: node.members[0]?.parent.turnIndex ?? 0,
+      };
+    }),
     items: summarizeItemsForTrace(pane.items),
   });
   scheduleDomUiTrace('timeline', 'timeline.dom', () => ({

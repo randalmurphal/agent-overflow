@@ -24,6 +24,16 @@ beforeAll(() => {
   }
 });
 
+function inlineAgentMeta(assistantMessageId: string, description: string): string {
+  return JSON.stringify({
+    toolName: 'Agent',
+    assistant_message_id: assistantMessageId,
+    is_inline_subagent: true,
+    inline_subagent_group_id: assistantMessageId,
+    input: { description, subagent_type: 'Explore' },
+  });
+}
+
 describe('<MessageTimeline>', () => {
   beforeEach(async () => {
     resetBindingMocks();
@@ -189,6 +199,71 @@ describe('<MessageTimeline>', () => {
 
     const wrappers = container.querySelectorAll('[data-testid="message-timeline-node"]');
     expect(wrappers.length).toBe(50);
+  });
+
+  it('renders Claude inline subagents inside a non-collapsible structural wrapper', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({
+        id: 'agent-1',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        status: 'running',
+        summary: 'Agent: one',
+        meta: inlineAgentMeta('assistant-1', 'First agent'),
+      }),
+      makeItem({
+        id: 'agent-2',
+        itemIndex: 1,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        status: 'running',
+        summary: 'Agent: two',
+        meta: inlineAgentMeta('assistant-1', 'Second agent'),
+      }),
+    ]);
+
+    const { getByTestId, getAllByTestId, queryByTestId } = render(MessageTimeline, { props: { pane } });
+
+    expect(getByTestId('inline-subagent-group-label').textContent).toContain('Running Agents');
+    expect(getByTestId('inline-subagent-group-meta').textContent).toContain('2 agents');
+    expect(queryByTestId('inline-subagent-group-toggle')).toBeNull();
+    expect(getAllByTestId('subagent-group')).toHaveLength(2);
+    expect(getAllByTestId('subagent-group-preview').map((node) => node.textContent?.trim())).toEqual([
+      '└ Initializing...',
+      '└ Initializing...',
+    ]);
+  });
+
+  it('masks an inline wrapper while a newly-appended nested member is catching up to bottom', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({
+        id: 'agent-1',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        status: 'running',
+        summary: 'Agent: one',
+        meta: inlineAgentMeta('assistant-1', 'First agent'),
+      }),
+    ]);
+    const { container } = render(MessageTimeline, { props: { pane } });
+
+    pane.upsertItem(makeItem({
+      id: 'agent-2',
+      itemIndex: 1,
+      kind: 'tool_call',
+      toolName: 'Agent',
+      status: 'running',
+      summary: 'Agent: two',
+      meta: inlineAgentMeta('assistant-1', 'Second agent'),
+    }));
+    await tick();
+
+    const row = container.querySelector('[data-row-index="0"]');
+    if (!row) throw new Error('row 0 not found');
+    expect(pane.pendingScrollCatchupItems.has('agent-2')).toBe(true);
+    expect(row.classList.contains('invisible')).toBe(true);
   });
 
   describe('windowed history', () => {

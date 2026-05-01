@@ -5,6 +5,7 @@
   timeline dispatch.
 -->
 <script lang="ts">
+  import InlineSubagentGroup from './InlineSubagentGroup.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
   import type { SubagentGroupNode, TimelineNode } from '../../utils/subagentGrouping';
 
@@ -28,8 +29,10 @@
     <div data-testid="leaf" data-depth={depth} data-id={node.item.id}>
       {node.item.summary}
     </div>
-  {:else}
+  {:else if node.kind === 'group'}
     <SubagentGroup group={node} depth={depth} renderNode={renderNode} />
+  {:else}
+    <InlineSubagentGroup group={node} depth={depth} renderNode={renderNode} />
   {/if}
 {/snippet}
 

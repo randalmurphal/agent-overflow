@@ -8,14 +8,17 @@
 //     / itemIndex order — callers do not need to pre-sort).
 //   - Output: an array of TimelineNode roots. A `group` node wraps a parent
 //     item plus recursively-grouped children. A `leaf` node wraps a single
-//     item with nothing under it.
+//     item with nothing under it. A `inline_subagent_group` node is a
+//     structural Claude inline-agent wrapper whose children are real
+//     subagent groups.
 //
 // Rules:
 //   - Normal rows always stay leaves.
 //   - Claude inline Agent/Task launch rows are groups from first render, even
 //     before any child activity arrives.
-//   - More inline agents from the same Claude assistant message attach to the
-//     first group's body instead of causing top-level row topology churn.
+//   - Adjacent inline agents from the same Claude assistant message share a
+//     structural wrapper row keyed by that assistant message. The real agent
+//     cards remain peers inside the wrapper.
 //   - parentId children are nested only when their parent is one of those
 //     inline-agent launch rows. Children of non-agent parents stay flat.
 //   - Nesting is capped at MAX_DEPTH (3, matching forge). Descendants
@@ -33,12 +36,14 @@ import type { Item } from '../types/models';
 import { parseJsonObject } from './parseJsonObject';
 
 export const MAX_DEPTH = 3;
+const PREVIEW_MAX_CHARS = 160;
+const PREVIEW_SCAN_CHARS = 512;
 
 /**
  * A node in the timeline tree returned by `groupItemsBySubagent`.
  * Consumers should dispatch on `.kind`.
  */
-export type TimelineNode = TimelineLeaf | SubagentGroupNode;
+export type TimelineNode = TimelineLeaf | SubagentGroupNode | InlineSubagentGroupNode;
 
 export interface TimelineLeaf {
   kind: 'leaf';
@@ -56,8 +61,6 @@ export interface SubagentGroupNode {
   parent: Item;
   /** Stable structural key for virtualization and expansion state. */
   groupKey: string;
-  /** Number of inline Agent/Task launches represented by this group. */
-  memberCount?: number;
   /** Recursively grouped children, preserving chronological order. */
   children: TimelineNode[];
   /** Total child count (counts *all* descendants, not just immediate children). */
@@ -75,6 +78,20 @@ export interface SubagentGroupNode {
    * Empty when the group has no children with usable summaries yet.
    */
   latestChildSummary: string;
+}
+
+export interface InlineSubagentGroupNode {
+  kind: 'inline_subagent_group';
+  /** Stable structural key for the non-collapsible Claude inline wrapper. */
+  groupKey: string;
+  /** Thread id is carried directly because this node has no synthetic Item. */
+  threadId: string;
+  /** Real subagent cards represented by this wrapper, in timeline order. */
+  members: SubagentGroupNode[];
+  /** Number of inline Agent/Task launches represented by this wrapper. */
+  memberCount: number;
+  /** Total entries inside every represented subagent. */
+  descendantCount: number;
 }
 
 /**
@@ -98,8 +115,12 @@ function compareItems(a: Item, b: Item): number {
 function itemPreviewText(item: Item): string {
   const summary = item.summary ?? '';
   if (summary.length === 0) return '';
-  // Strip leading/trailing whitespace; collapse consecutive newlines.
-  return summary.replace(/\s+/g, ' ').trim();
+  const source = summary.length > PREVIEW_SCAN_CHARS
+    ? summary.slice(0, PREVIEW_SCAN_CHARS)
+    : summary;
+  const normalized = source.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= PREVIEW_MAX_CHARS) return normalized;
+  return `${normalized.slice(0, PREVIEW_MAX_CHARS).trimEnd()}...`;
 }
 
 /**
@@ -153,7 +174,9 @@ function subagentNodeGroupKey(item: Item, inlineGroupKey: string): string {
 }
 
 function timelineNodeRootItem(node: TimelineNode): Item {
-  return node.kind === 'leaf' ? node.item : node.parent;
+  if (node.kind === 'leaf') return node.item;
+  if (node.kind === 'group') return node.parent;
+  return node.members[0].parent;
 }
 
 /**
@@ -168,8 +191,15 @@ function* descendantItems(nodes: TimelineNode[]): Generator<Item> {
       yield node.item;
       continue;
     }
-    yield node.parent;
-    yield* descendantItems(node.children);
+    if (node.kind === 'group') {
+      yield node.parent;
+      yield* descendantItems(node.children);
+      continue;
+    }
+    for (const member of node.members) {
+      yield member.parent;
+      yield* descendantItems(member.children);
+    }
   }
 }
 
@@ -183,22 +213,23 @@ function* descendantItems(nodes: TimelineNode[]): Generator<Item> {
  * ordering the timeline uses everywhere else.
  */
 function pickLatestChildSummary(children: TimelineNode[]): string {
-  let bestActive: Item | null = null;
-  let bestTerminal: Item | null = null;
+  let bestActive: { item: Item; preview: string } | null = null;
+  let bestTerminal: { item: Item; preview: string } | null = null;
   for (const item of descendantItems(children)) {
-    if (!itemPreviewText(item)) continue;
+    const preview = itemPreviewText(item);
+    if (!preview) continue;
     if (isItemActive(item)) {
-      if (!bestActive || compareItems(item, bestActive) > 0) bestActive = item;
+      if (!bestActive || compareItems(item, bestActive.item) > 0) bestActive = { item, preview };
     } else if (!bestActive) {
       // Only track terminals while no active descendant is in the
       // running. Once an active candidate appears we stop bothering
       // with terminals — they can't beat an active winner regardless
       // of order.
-      if (!bestTerminal || compareItems(item, bestTerminal) > 0) bestTerminal = item;
+      if (!bestTerminal || compareItems(item, bestTerminal.item) > 0) bestTerminal = { item, preview };
     }
   }
   const winner = bestActive ?? bestTerminal;
-  return winner ? itemPreviewText(winner) : '';
+  return winner?.preview ?? '';
 }
 
 /**
@@ -209,6 +240,15 @@ function countDescendants(children: TimelineNode[]): number {
   for (const child of children) {
     n += 1;
     if (child.kind === 'group') n += countDescendants(child.children);
+    if (child.kind === 'inline_subagent_group') n += countDescendants(child.members);
+  }
+  return n;
+}
+
+function countSubagentEntries(members: SubagentGroupNode[]): number {
+  let n = 0;
+  for (const member of members) {
+    n += countDescendants(member.children);
   }
   return n;
 }
@@ -220,14 +260,21 @@ function countDescendants(children: TimelineNode[]): number {
  * stale-thread collisions when a snapshot is restored after a switch.
  */
 export function timelineNodeKey(node: TimelineNode): string {
-  return node.kind === 'group'
-    ? `g:${node.parent.threadId}:${node.groupKey}`
-    : `l:${node.item.threadId}:${node.item.id}`;
+  if (node.kind === 'leaf') return `l:${node.item.threadId}:${node.item.id}`;
+  if (node.kind === 'group') return `g:${node.parent.threadId}:${node.groupKey}`;
+  return `ig:${node.threadId}:${node.groupKey}`;
 }
 
 /** Item id of the leaf or group root. */
 export function timelineNodeItemId(node: TimelineNode): string {
-  return node.kind === 'leaf' ? node.item.id : node.parent.id;
+  if (node.kind === 'leaf') return node.item.id;
+  if (node.kind === 'group') return node.parent.id;
+  return node.members[0].parent.id;
+}
+
+/** Turn index of the leaf or structural node's first represented item. */
+export function timelineNodeTurnIndex(node: TimelineNode): number {
+  return timelineNodeRootItem(node).turnIndex;
 }
 
 /**
@@ -239,7 +286,7 @@ export function timelineNodeItemId(node: TimelineNode): string {
 export type NodeRole = 'tool' | 'text' | 'other';
 
 export function nodeRole(node: TimelineNode): NodeRole {
-  if (node.kind === 'group') return 'tool';
+  if (node.kind === 'group' || node.kind === 'inline_subagent_group') return 'tool';
   const k = node.item.kind;
   if (k === 'tool_call' || k === 'tool_completion' || k === 'terminal_interaction') return 'tool';
   if (k === 'assistant_text' || k === 'user_text') return 'text';
@@ -266,8 +313,11 @@ export function isToolTextBoundary(nodes: TimelineNode[], index: number): boolea
  */
 export function nodeContainsItem(node: TimelineNode, itemId: string): boolean {
   if (node.kind === 'leaf') return node.item.id === itemId;
-  return node.parent.id === itemId
-    || node.children.some((child) => nodeContainsItem(child, itemId));
+  if (node.kind === 'group') {
+    return node.parent.id === itemId
+      || node.children.some((child) => nodeContainsItem(child, itemId));
+  }
+  return node.members.some((member) => nodeContainsItem(member, itemId));
 }
 
 /**
@@ -301,23 +351,22 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
   // Measured (N=500 items, common no-subagent case): 25µs -> 3µs per call,
   // a ~9x win. Threads with subagents are the minority; the grouping logic
   // below is still exercised for them.
-  let canFastPath = true;
+  let hasGroupingSignals = false;
+  let alreadySorted = true;
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     const pid = item.parentId;
     if ((pid && pid.length > 0) || isClaudeInlineAgentLaunch(item)) {
-      canFastPath = false;
-      break;
+      hasGroupingSignals = true;
     }
     if (i > 0) {
       const prev = items[i - 1];
       if (compareItems(prev, item) > 0) {
-        canFastPath = false;
-        break;
+        alreadySorted = false;
       }
     }
   }
-  if (canFastPath) {
+  if (!hasGroupingSignals && alreadySorted) {
     const leaves: TimelineNode[] = new Array(items.length);
     for (let i = 0; i < items.length; i++) {
       leaves[i] = { kind: 'leaf', item: items[i] };
@@ -327,7 +376,7 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
 
   // Work on a shallow copy sorted in canonical order so callers may pass
   // any collection (e.g., a subset) without needing to pre-sort.
-  const sorted = [...items].sort(compareItems);
+  const sorted = alreadySorted ? items : [...items].sort(compareItems);
 
   const idSet = new Set(sorted.map((it) => it.id));
   const inlineAgentIDs = new Set<string>();
@@ -389,7 +438,6 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
         kind: 'group',
         parent: item,
         groupKey: subagentNodeGroupKey(item, inlineGroupKeyByItemID.get(item.id) ?? `item:${item.id}`),
-        memberCount: 1,
         children: flatChildren,
         descendantCount: flatChildren.length,
         latestChildSummary: pickLatestChildSummary(flatChildren),
@@ -401,27 +449,27 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
       kind: 'group',
       parent: item,
       groupKey: subagentNodeGroupKey(item, inlineGroupKeyByItemID.get(item.id) ?? `item:${item.id}`),
-      memberCount: 1,
       children,
       descendantCount: countDescendants(children),
       latestChildSummary: pickLatestChildSummary(children),
     };
   }
 
-  function buildInlineAgentGroup(members: Item[]): SubagentGroupNode {
-    const [parent, ...siblings] = members;
-    const firstChildren = (childrenByParent.get(parent.id) ?? []).map((child) => buildNode(child, 2));
-    const siblingNodes = siblings.map((member) => buildNode(member, 2));
-    const children = [...firstChildren, ...siblingNodes]
-      .sort((a, b) => compareItems(timelineNodeRootItem(a), timelineNodeRootItem(b)));
+  function buildInlineAgentWrapper(members: Item[]): InlineSubagentGroupNode {
+    const [first] = members;
+    const baseGroupKey = inlineGroupKeyByItemID.get(first.id) ?? `item:${first.id}`;
+    const groupKey = `${baseGroupKey}:${first.id}`;
+    const memberNodes = members
+      .map((member) => buildNode(member, 1))
+      .filter((node): node is SubagentGroupNode => node.kind === 'group')
+      .sort((a, b) => compareItems(a.parent, b.parent));
     return {
-      kind: 'group',
-      parent,
-      groupKey: subagentNodeGroupKey(parent, inlineGroupKeyByItemID.get(parent.id) ?? `item:${parent.id}`),
+      kind: 'inline_subagent_group',
+      groupKey,
+      threadId: first.threadId,
       memberCount: members.length,
-      children,
-      descendantCount: countDescendants(children),
-      latestChildSummary: pickLatestChildSummary(children),
+      members: memberNodes,
+      descendantCount: countSubagentEntries(memberNodes),
     };
   }
 
@@ -446,7 +494,7 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
         members.push(candidate);
         cursor += 1;
       }
-      roots.push(buildInlineAgentGroup(members));
+      roots.push(buildInlineAgentWrapper(members));
       index = cursor - 1;
       continue;
     }

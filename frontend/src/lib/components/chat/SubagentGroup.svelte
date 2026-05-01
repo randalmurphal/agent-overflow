@@ -33,6 +33,7 @@
   import CompletionBadge from './CompletionBadge.svelte';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import { parseJsonObject } from '../../utils/parseJsonObject';
+  import { formatElapsedSeconds } from '../../utils/format';
   import { displayModelLabel } from '../../utils/modelLabels';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { SubagentGroupNode, TimelineNode } from '../../utils/subagentGrouping';
@@ -155,11 +156,6 @@
   //      window before the first subagent assistant message lands.
   //   3. omitted otherwise.
   let modelLabel = $derived.by<string>(() => {
-    if ((parent.toolName ?? '') === 'collab_agent') {
-      const requested = readString(inputObject, 'model');
-      const effort = readString(inputObject, 'reasoningEffort');
-      return [requested, effort].filter(Boolean).join(' ');
-    }
     if ((parent.toolName ?? '') !== 'Agent') return '';
     const stamped = typeof parentMeta?.subagent_model === 'string' ? parentMeta.subagent_model : '';
     if (stamped) return displayModelLabel('claude', stamped);
@@ -168,10 +164,8 @@
     return '';
   });
 
-  // Preview: prefer the latest active descendant summary so the card
-  // tracks "what is the subagent doing right now". Fall back to the
-  // input description (Claude) / prompt (Codex) on launch — before
-  // any children attach.
+  // Description stays on the first header line. The latest-action row below
+  // is always present and swaps from "Initializing..." once child work lands.
   let inputDescription = $derived.by<string>(() => {
     const desc = readString(inputObject, 'description');
     if (desc) return desc;
@@ -181,9 +175,7 @@
   });
 
   let previewText = $derived.by<string>(() => {
-    if (group.latestChildSummary) return group.latestChildSummary;
-    if (inputDescription) return inputDescription;
-    return parent.summary?.trim() || '';
+    return group.latestChildSummary || 'Initializing...';
   });
 
   // ---- Status visualization (matches GenericToolCallRow) -----------
@@ -198,22 +190,37 @@
     return null;
   });
 
+  let now = $state(Date.now());
+  $effect(() => {
+    if (runningLabel === null) return;
+    now = Date.now();
+    const id = setInterval(() => {
+      now = Date.now();
+    }, 1_000);
+    return () => clearInterval(id);
+  });
+
+  let elapsedLabel = $derived.by<string>(() => {
+    const start = parent.createdAt;
+    if (!Number.isFinite(start) || start <= 0) return '';
+    const end = runningLabel !== null ? now : parent.updatedAt;
+    if (!Number.isFinite(end) || end <= start) return '';
+    return formatElapsedSeconds(Math.floor((end - start) / 1_000));
+  });
+
   let completionStatus = $derived(
     deriveCompletionStatus(parent, { meta: payloadMeta }),
   );
 
-  let memberCount = $derived(group.memberCount ?? 1);
   let entryCountLabel = $derived.by(() => {
-    const agentLabel = `${memberCount} ${memberCount === 1 ? 'agent' : 'agents'}`;
-    if (group.descendantCount === 0) return agentLabel;
+    if (group.descendantCount === 0) return '1 agent';
     const entryLabel = `${group.descendantCount} ${group.descendantCount === 1 ? 'entry' : 'entries'}`;
-    return `${agentLabel} · ${entryLabel}`;
+    return `1 agent · ${entryLabel}`;
   });
   let entryCountAriaLabel = $derived.by(() => {
-    const agentLabel = `${memberCount} ${memberCount === 1 ? 'agent' : 'agents'}`;
-    if (group.descendantCount === 0) return `${agentLabel} represented in this group`;
+    if (group.descendantCount === 0) return '1 agent represented in this group';
     const entryLabel = `${group.descendantCount} ${group.descendantCount === 1 ? 'timeline entry' : 'timeline entries'}`;
-    return `${agentLabel} and ${entryLabel} inside this subagent group`;
+    return `1 agent and ${entryLabel} inside this subagent group`;
   });
 </script>
 
@@ -241,16 +248,24 @@
       onToggle={() => toggle()}
     >
       <ToolKindIcon kind="robot" ariaLabel="Subagent" />
-      <span
-        class="text-[11px] font-medium text-fg-muted shrink-0 uppercase tracking-[0.04em]"
-        data-testid="subagent-group-label"
-      >
-        {label}{#if modelLabel}<span class="ml-1 text-fg-hint normal-case tracking-normal">({modelLabel})</span>{/if}
-      </span>
-      <span class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75" data-testid="subagent-group-preview">
-        {#if previewText}
+      <span class="min-w-0 flex-1">
+        <span class="flex min-w-0 items-center gap-2">
+          <span
+            class="text-[11px] font-medium text-fg-muted shrink-0 uppercase tracking-[0.04em]"
+            data-testid="subagent-group-label"
+          >
+            {label}{#if modelLabel}<span class="ml-1 text-fg-hint normal-case tracking-normal">({modelLabel})</span>{/if}
+          </span>
+          {#if inputDescription}
+            <span class="min-w-0 truncate text-[12px] text-fg-muted/75" data-testid="subagent-group-description">
+              {inputDescription}
+            </span>
+          {/if}
+        </span>
+        <span class="mt-0.5 block min-w-0 truncate text-[11px] text-fg-hint/85" data-testid="subagent-group-preview">
+          <span aria-hidden="true">└</span>
           {previewText}
-        {/if}
+        </span>
       </span>
       {#snippet actions()}
         <span
@@ -285,6 +300,14 @@
             status={completionStatus}
             class="opacity-80 transition-opacity group-hover/tool:opacity-100"
           />
+        {/if}
+        {#if elapsedLabel}
+          <span
+            class="shrink-0 tabular-nums text-[10px] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
+            data-testid="subagent-group-duration"
+          >
+            {elapsedLabel}
+          </span>
         {/if}
       {/snippet}
     </TranscriptDisclosureHeader>
