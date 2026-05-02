@@ -1045,11 +1045,6 @@ func (r *Router) setOpenRound(threadID, roundID string) {
 	}
 	r.mu.Lock()
 	r.currentRoundID[threadID] = roundID
-	// A fresh round means the flush trigger is eligible to fire again.
-	// Drop the prior round's marker so fireFlushTriggerOnce sees a
-	// clean slot even though the comparison `marker == roundID` would
-	// already fail with the old value still there.
-	r.clearFlushTriggerForRoundLocked(threadID)
 	r.mu.Unlock()
 }
 

@@ -212,33 +212,31 @@ func (r *Router) QueuedFlushItems(threadID string) []QueuedFlushItem {
 	return out
 }
 
-// fireFlushTriggerOnce checks the trigger predicate and, when it
-// fires, consumes the queued batch and invokes the registered
-// dispatcher. The trigger fires AT MOST ONCE per wire round —
-// flushTriggerFiredByRound tracks the round id at which the trigger
-// last fired so subsequent tool_use events in the same round are
-// no-ops.
+// tryFlushQueue drains the per-thread flush queue when it has items
+// and a dispatcher is wired. Idempotent across repeated calls — once
+// the batch is consumed the queue is empty and subsequent calls
+// no-op until new items are registered. The wire-round id is no
+// longer load-bearing for suppression (a per-round marker used to
+// short-circuit subsequent calls within the same round, but that
+// blocked any user message queued AFTER the first drain from ever
+// flushing in the same round); the maybeFireFlushTrigger gate above
+// still requires a non-empty roundID so we don't drain into a closed
+// round.
 //
 // Returns true when the dispatcher was invoked; false otherwise (no
-// items, dispatcher unset, or trigger already fired this round). The
-// boolean is informational — handleToolStart doesn't branch on it
-// (the caller continues with normal tool routing regardless), but
-// tests assert against it to confirm the trigger actually fired.
+// items, no dispatcher, empty threadID). The boolean is
+// informational — handleToolStart doesn't branch on it.
 //
 // Dispatcher invocation happens AFTER r.mu is released so the
 // dispatcher can call back into the router (RegisterPendingSend,
 // PersistItem) without re-entrancy. The batch is copied out under
 // r.mu so a concurrent CleanupThread between unlock and dispatch
 // doesn't observe a partially-cleared queue.
-func (r *Router) fireFlushTriggerOnce(threadID, roundID string) bool {
-	if threadID == "" || roundID == "" {
+func (r *Router) tryFlushQueue(threadID string) bool {
+	if threadID == "" {
 		return false
 	}
 	r.mu.Lock()
-	if r.flushTriggerFiredByRound[threadID] == roundID {
-		r.mu.Unlock()
-		return false
-	}
 	queue, ok := r.queuedFlushItems[threadID]
 	if !ok || len(queue) == 0 {
 		r.mu.Unlock()
@@ -249,10 +247,6 @@ func (r *Router) fireFlushTriggerOnce(threadID, roundID string) bool {
 		r.mu.Unlock()
 		return false
 	}
-	// Mark fired and consume the batch atomically with the predicate
-	// check — a duplicate event for the same round must observe a
-	// matching marker and skip.
-	r.flushTriggerFiredByRound[threadID] = roundID
 	batch := make([]QueuedFlushItem, len(queue))
 	copy(batch, queue)
 	delete(r.queuedFlushItems, threadID)
@@ -262,22 +256,10 @@ func (r *Router) fireFlushTriggerOnce(threadID, roundID string) bool {
 	return true
 }
 
-// clearFlushQueueLocked drops every queued item and the trigger-fired
-// marker for threadID. Caller MUST hold r.mu. Called by CleanupThread
-// — the queue and the marker are session-scoped, so a torn-down
-// session must not leak entries into a fresh one.
+// clearFlushQueueLocked drops every queued item for threadID. Caller
+// MUST hold r.mu. Called by CleanupThread — the queue is
+// session-scoped, so a torn-down session must not leak entries into
+// a fresh one.
 func (r *Router) clearFlushQueueLocked(threadID string) {
 	delete(r.queuedFlushItems, threadID)
-	delete(r.flushTriggerFiredByRound, threadID)
-}
-
-// clearFlushTriggerForRoundLocked drops the trigger-fired marker for
-// threadID. Caller MUST hold r.mu. Called by setOpenRound when a new
-// wire round opens — proactive cleanup so the marker doesn't carry a
-// stale round id across boundaries. The comparison logic in
-// fireFlushTriggerOnce would also work without this clear (a new
-// roundID never matches the old marker), but explicit cleanup keeps
-// the invariant readable.
-func (r *Router) clearFlushTriggerForRoundLocked(threadID string) {
-	delete(r.flushTriggerFiredByRound, threadID)
 }

@@ -98,7 +98,17 @@ func TestHandleToolStart_NoOpenRound_DoesNotFireTrigger(t *testing.T) {
 	}
 }
 
-func TestHandleToolStart_SecondToolSameRound_DoesNotFireTwice(t *testing.T) {
+// TestHandleToolStart_SecondToolSameRound_FiresWhenNewItemsArrived
+// is the regression guard for the per-round suppression bug. The
+// previous design fired AT MOST ONCE per round; if the user queued
+// a second message within the same wire round, the next top-level
+// tool_use silently no-op'd and the message stayed in Zone 1 until
+// the round closed. Reported with a real reproduction: subagents
+// flushed test1 at the post-subagent seam, the user queued test2
+// during the next bash sequence, and the bash's tool_start was
+// suppressed. Now the trigger drains whenever the queue has items
+// and a top-level tool_use lands in an open round.
+func TestHandleToolStart_SecondToolSameRound_FiresWhenNewItemsArrived(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	rec := &recordingDispatcher{}
@@ -116,11 +126,44 @@ func TestHandleToolStart_SecondToolSameRound_DoesNotFireTwice(t *testing.T) {
 	}
 
 	calls := rec.snapshot()
-	if len(calls) != 1 {
-		t.Fatalf("dispatcher calls: got %d, want 1 (only first tool of the round triggers)", len(calls))
+	if len(calls) != 2 {
+		t.Fatalf("dispatcher calls: got %d, want 2 (each top-level tool_use with new queued items must drain)", len(calls))
 	}
-	if !router.HasQueuedFlushItems("t1") {
-		t.Errorf("queue:1 was registered after the first tool fired but should still be queued — second tool of same round must not trigger")
+	if calls[0].Items[0].ID != "queue:0" {
+		t.Errorf("first dispatch: got %q, want queue:0", calls[0].Items[0].ID)
+	}
+	if calls[1].Items[0].ID != "queue:1" {
+		t.Errorf("second dispatch: got %q, want queue:1 — message queued mid-round was locked out", calls[1].Items[0].ID)
+	}
+	if router.HasQueuedFlushItems("t1") {
+		t.Errorf("queue should be empty after both drains")
+	}
+}
+
+// TestHandleToolStart_SecondToolSameRound_NoNewItemsNoOp pins that
+// the queue-empty check still suppresses redundant dispatches. Two
+// tool_starts back-to-back with no intervening register: the second
+// finds the queue empty and no-ops, even with the per-round marker
+// gone.
+func TestHandleToolStart_SecondToolSameRound_NoNewItemsNoOp(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	rec := &recordingDispatcher{}
+	router.SetFlushDispatcher(rec.dispatch)
+
+	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
+	router.setOpenRound("t1", "round-A")
+
+	if err := router.Handle(makeToolStartEvent("t1", "tool-1")); err != nil {
+		t.Fatalf("handle first tool start: %v", err)
+	}
+	if err := router.Handle(makeToolStartEvent("t1", "tool-2")); err != nil {
+		t.Fatalf("handle second tool start: %v", err)
+	}
+
+	calls := rec.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("dispatcher calls: got %d, want 1 (queue is empty after first drain)", len(calls))
 	}
 }
 

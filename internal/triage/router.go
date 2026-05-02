@@ -208,12 +208,6 @@ type Router struct {
 	// tool-free text-only rounds), so NOT swept by clearOpenTurn —
 	// only by CleanupThread on session teardown. See flush_queue.go.
 	queuedFlushItems map[string][]QueuedFlushItem
-	// flushTriggerFiredByRound records the wire-round id at which the
-	// flush trigger last fired for each thread. fireFlushTriggerOnce
-	// compares against the current round id to enforce "trigger fires
-	// at most once per round." Cleared by setOpenRound (proactive
-	// per-round cleanup) and CleanupThread (session teardown).
-	flushTriggerFiredByRound map[string]string
 	// dispatchFlush is the app-layer callback invoked when the trigger
 	// fires. Wired via SetFlushDispatcher; nil disables dispatch.
 	// Triage releases r.mu before invoking so the dispatcher can call
@@ -270,7 +264,6 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		pendingByThread:            make(map[string][]pendingSend),
 		wireOnlyUserTextSeen:       make(map[string]map[string]struct{}),
 		queuedFlushItems:           make(map[string][]QueuedFlushItem),
-		flushTriggerFiredByRound:   make(map[string]string),
 	}
 }
 
@@ -494,20 +487,21 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 //     tool use happens inside its parent Task tool's execution and
 //     doesn't signal a top-level model→user seam.
 //   - currentRoundID is non-empty — there's an active wire round to
-//     anchor the "fired this round" marker. A tool_start with no
-//     open round (mid-init replay or a Codex-only edge case) would
-//     have no round id to compare against on the next tool_start, so
-//     the marker would re-fire repeatedly within the same logical
-//     round; better to skip until the round is properly open.
-//   - fireFlushTriggerOnce internally short-circuits on already-fired
-//     /empty-queue/no-dispatcher.
+//     drain into. A tool_start with no open round (mid-init replay
+//     or a Codex-only edge case) is skipped so we don't write to a
+//     closed round.
+//   - tryFlushQueue internally short-circuits on empty-queue /
+//     no-dispatcher. Multiple drains per round are allowed: the
+//     queue-empty check provides idempotency, and a user who queues
+//     a second message after the first drain expects it to flow
+//     through at the next seam, not be silently locked out.
 //
-// The actual dispatch runs synchronously (in fireFlushTriggerOnce
-// after r.mu is released). Errors raised by the dispatcher do not
-// propagate through this path — the dispatcher is expected to surface
-// them on its own (toast / error row); a dispatcher panic would
-// bubble up here and abort the rest of handleToolStart, which is the
-// correct behaviour because a dispatcher panic indicates an
+// The actual dispatch runs synchronously (in tryFlushQueue after
+// r.mu is released). Errors raised by the dispatcher do not
+// propagate through this path — the dispatcher is expected to
+// surface them on its own (toast / error row); a dispatcher panic
+// would bubble up here and abort the rest of handleToolStart, which
+// is the correct behaviour because a dispatcher panic indicates an
 // unrecoverable wiring bug.
 func (r *Router) maybeFireFlushTrigger(evt provider.ProviderEvent) {
 	parentToolUseID := strings.TrimSpace(evt.ParentToolUseID)
@@ -535,7 +529,7 @@ func (r *Router) maybeFireFlushTrigger(evt provider.ProviderEvent) {
 		log.Printf("triage: flush trigger fire-attempt thread=%s tool=%s round=%s — queue has %d item(s)",
 			evt.ThreadID, evt.ItemID, roundID, r.QueuedFlushItemCount(evt.ThreadID))
 	}
-	r.fireFlushTriggerOnce(evt.ThreadID, roundID)
+	r.tryFlushQueue(evt.ThreadID)
 }
 
 func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {

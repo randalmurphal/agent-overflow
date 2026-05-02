@@ -8,7 +8,7 @@ import (
 
 // recordingDispatcher captures every dispatch call so tests can assert
 // on the (threadID, batch) pairs the router produced. Locks because
-// fireFlushTriggerOnce can be called from concurrent test goroutines.
+// tryFlushQueue can be called from concurrent test goroutines.
 type recordingDispatcher struct {
 	mu    sync.Mutex
 	calls []dispatchCall
@@ -204,7 +204,7 @@ func TestQueuedFlushItems_ReturnsCopySnapshot(t *testing.T) {
 	}
 }
 
-func TestFireFlushTriggerOnce_FiresAndConsumes(t *testing.T) {
+func TestTryFlushQueue_FiresAndConsumes(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 	rec := &recordingDispatcher{}
 	router.SetFlushDispatcher(rec.dispatch)
@@ -212,7 +212,7 @@ func TestFireFlushTriggerOnce_FiresAndConsumes(t *testing.T) {
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
 	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "second"))
 
-	if !router.fireFlushTriggerOnce("t1", "round-A") {
+	if !router.tryFlushQueue("t1") {
 		t.Fatalf("fire: returned false, expected true")
 	}
 	calls := rec.snapshot()
@@ -230,44 +230,35 @@ func TestFireFlushTriggerOnce_FiresAndConsumes(t *testing.T) {
 	}
 }
 
-func TestFireFlushTriggerOnce_SecondCallSameRound_NoOp(t *testing.T) {
+// TestTryFlushQueue_SecondCallWithNewItems_FiresAgain is the regression
+// guard for the per-round suppression bug. The original
+// fireFlushTriggerOnce tracked a "fired this round" marker so a
+// second call within the same round no-op'd. That blocked any user
+// message queued AFTER the first drain from ever reaching the
+// provider while the round stayed open — observed in production with
+// a long-running multi-bash sequence (subagents + 2 inline bashes):
+// the first-seam flush set the marker, the user queued a second
+// message during the first bash, and the second bash's trigger was
+// silently suppressed. The marker is now removed; the queue-empty
+// check provides idempotency.
+func TestTryFlushQueue_SecondCallWithNewItems_FiresAgain(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 	rec := &recordingDispatcher{}
 	router.SetFlushDispatcher(rec.dispatch)
 
-	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "x"))
-	if !router.fireFlushTriggerOnce("t1", "round-A") {
+	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
+	if !router.tryFlushQueue("t1") {
 		t.Fatalf("first fire: returned false")
 	}
 
-	// Re-register an item in the same round; the trigger must not
-	// fire again until the next round.
-	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "y"))
+	// User queues a second message after the first drain. Within the
+	// same wire round, the next top-level tool_use must drain again —
+	// otherwise the second message is locked out for the rest of the
+	// round (the production bug).
+	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "second"))
 
-	if router.fireFlushTriggerOnce("t1", "round-A") {
-		t.Errorf("second fire same round: returned true, want false")
-	}
-	if len(rec.snapshot()) != 1 {
-		t.Errorf("dispatch should have fired exactly once for round-A")
-	}
-	if !router.HasQueuedFlushItems("t1") {
-		t.Errorf("queue should retain queue:1 since trigger did not fire again")
-	}
-}
-
-func TestFireFlushTriggerOnce_DifferentRound_FiresAgain(t *testing.T) {
-	router, _, _ := newTestRouter(t)
-	rec := &recordingDispatcher{}
-	router.SetFlushDispatcher(rec.dispatch)
-
-	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "x"))
-	if !router.fireFlushTriggerOnce("t1", "round-A") {
-		t.Fatalf("first fire: returned false")
-	}
-
-	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "y"))
-	if !router.fireFlushTriggerOnce("t1", "round-B") {
-		t.Errorf("fire on different round: returned false, want true")
+	if !router.tryFlushQueue("t1") {
+		t.Fatalf("second fire (new items, same round): returned false — per-round suppression regressed")
 	}
 	calls := rec.snapshot()
 	if len(calls) != 2 {
@@ -276,14 +267,38 @@ func TestFireFlushTriggerOnce_DifferentRound_FiresAgain(t *testing.T) {
 	if calls[1].Items[0].ID != "queue:1" {
 		t.Errorf("second dispatch item: got %q, want queue:1", calls[1].Items[0].ID)
 	}
+	if router.HasQueuedFlushItems("t1") {
+		t.Errorf("queue should be empty after second fire")
+	}
 }
 
-func TestFireFlushTriggerOnce_EmptyQueue_NoOp(t *testing.T) {
+func TestTryFlushQueue_SecondCallEmptyQueue_NoOp(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 	rec := &recordingDispatcher{}
 	router.SetFlushDispatcher(rec.dispatch)
 
-	if router.fireFlushTriggerOnce("t1", "round-A") {
+	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "x"))
+	if !router.tryFlushQueue("t1") {
+		t.Fatalf("first fire: returned false")
+	}
+
+	// No new items — the second call sees an empty queue and no-ops.
+	// This is the natural idempotency the queue-empty check provides;
+	// the previous per-round marker was redundant for this case.
+	if router.tryFlushQueue("t1") {
+		t.Errorf("second fire (empty queue): returned true, want false")
+	}
+	if len(rec.snapshot()) != 1 {
+		t.Errorf("dispatch should have fired exactly once when queue stays empty after first drain")
+	}
+}
+
+func TestTryFlushQueue_EmptyQueue_NoOp(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+	rec := &recordingDispatcher{}
+	router.SetFlushDispatcher(rec.dispatch)
+
+	if router.tryFlushQueue("t1") {
 		t.Errorf("fire on empty queue: returned true, want false")
 	}
 	if len(rec.snapshot()) != 0 {
@@ -291,13 +306,13 @@ func TestFireFlushTriggerOnce_EmptyQueue_NoOp(t *testing.T) {
 	}
 }
 
-func TestFireFlushTriggerOnce_NilDispatcher_DoesNotConsume(t *testing.T) {
+func TestTryFlushQueue_NilDispatcher_DoesNotConsume(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 	router.SetFlushDispatcher(nil)
 
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "x"))
 
-	if router.fireFlushTriggerOnce("t1", "round-A") {
+	if router.tryFlushQueue("t1") {
 		t.Errorf("fire with nil dispatcher: returned true, want false")
 	}
 	// Items must remain queued — without a dispatcher there's no one
@@ -307,49 +322,28 @@ func TestFireFlushTriggerOnce_NilDispatcher_DoesNotConsume(t *testing.T) {
 	}
 }
 
-func TestFireFlushTriggerOnce_RejectsEmptyIDs(t *testing.T) {
+func TestTryFlushQueue_RejectsEmptyThreadID(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 	rec := &recordingDispatcher{}
 	router.SetFlushDispatcher(rec.dispatch)
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "x"))
 
-	if router.fireFlushTriggerOnce("", "round-A") {
+	if router.tryFlushQueue("") {
 		t.Errorf("empty threadID: returned true")
 	}
-	if router.fireFlushTriggerOnce("t1", "") {
-		t.Errorf("empty roundID: returned true")
-	}
 	if !router.HasQueuedFlushItems("t1") {
-		t.Errorf("queue mutated by rejected fire calls")
+		t.Errorf("queue mutated by rejected fire call")
 	}
 }
 
-func TestSetOpenRound_ClearsTriggerFiredMarker(t *testing.T) {
-	router, _, _ := newTestRouter(t)
-	rec := &recordingDispatcher{}
-	router.SetFlushDispatcher(rec.dispatch)
-
-	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "x"))
-	router.fireFlushTriggerOnce("t1", "round-A")
-
-	// setOpenRound on a new round id should drop the marker so the
-	// next fire on round-B isn't blocked by the prior comparison.
-	router.setOpenRound("t1", "round-B")
-	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "y"))
-
-	if !router.fireFlushTriggerOnce("t1", "round-B") {
-		t.Errorf("fire on round-B after setOpenRound: returned false, want true")
-	}
-}
-
-func TestCleanupThread_SweepsQueueAndTriggerMarker(t *testing.T) {
+func TestCleanupThread_SweepsQueue(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	rec := &recordingDispatcher{}
 	router.SetFlushDispatcher(rec.dispatch)
 
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "x"))
-	router.fireFlushTriggerOnce("t1", "round-A") // seeds flushTriggerFiredByRound
+	router.tryFlushQueue("t1")
 	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "y"))
 
 	if !router.HasQueuedFlushItems("t1") {
@@ -362,13 +356,11 @@ func TestCleanupThread_SweepsQueueAndTriggerMarker(t *testing.T) {
 		t.Errorf("CleanupThread did not sweep queuedFlushItems")
 	}
 
-	// After CleanupThread, the trigger-fired marker is also gone — a
-	// fresh session re-attaching to the same threadID (which clears
-	// the stoppedThreads flag via EventInit, then opens a new round)
-	// must be able to fire its first-round trigger.
+	// A fresh registration after cleanup must drain normally — no
+	// stale state from the prior session blocks the new flush.
 	router.RegisterQueueItem("t1", makeQueueItem("queue:2", "z"))
-	if !router.fireFlushTriggerOnce("t1", "round-A") {
-		t.Errorf("fire after CleanupThread on same roundID: returned false — trigger marker not swept")
+	if !router.tryFlushQueue("t1") {
+		t.Errorf("fire after CleanupThread: returned false")
 	}
 }
 
