@@ -9,7 +9,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/google/uuid v1.6.0
 	github.com/rjeczalik/notify v0.9.3
-	github.com/wailsapp/wails/v3 v3.0.0-alpha.78
+	github.com/wailsapp/wails/v3 v3.0.0-alpha.79
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0

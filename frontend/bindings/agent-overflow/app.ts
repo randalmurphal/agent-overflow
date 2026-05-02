@@ -498,6 +498,10 @@ export function GetProviderStatuses(): $CancellablePromise<provider$0.ProviderSt
  * Used by the frontend on bootstrap and thread-switch to seed its
  * per-thread mirror; also by remote `--connect` clients attaching
  * mid-session. Read-only — no emission.
+ * 
+ * LocalOnly: the snapshot exposes the user's drafted-but-not-yet-sent
+ * prompts, attachment IDs, and plan refs. Same disclosure shape as
+ * the diff bindings, hence loopback-only at the transport layer.
  */
 export function GetQueueState(threadID: string): $CancellablePromise<$models.QueuedItem[]> {
     return $Call.ByID(3079581691, threadID).then(($result: any) => {
@@ -1155,9 +1159,9 @@ export function ReconnectSession(threadID: string): $CancellablePromise<void> {
  * The wire-shape options carry attachment IDs and plan refs but NOT
  * resolved attachments / plans — the dispatcher re-resolves at
  * trigger-fire time so attachment validation reflects current store
- * state. Validation here is intentionally light: only the
- * pre-conditions that prevent a hopelessly broken queue entry from
- * landing (empty thread id, attachment count cap, plan-ref shape).
+ * state. Validation establishes resource bounds (queue length,
+ * message size, attachment count) AND shape preconditions (existing
+ * thread, plan-ref shape).
  * 
  * Returns the resolved QueuedItem with the assigned id and
  * EnqueuedAt timestamp so the frontend can mirror the same row
