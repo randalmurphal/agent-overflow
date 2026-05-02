@@ -26,6 +26,25 @@
 // structural type so we don't depend on the internal path.
 type ThemeOverride = Record<string, Record<string, string>>;
 
+// `svelte-streamdown` bundles 28 shiki grammars by default. `diff`
+// is not one of them — without this addition, fenced ` ```diff `
+// blocks emitted by agents fall through to plaintext and the
+// `+`/`-` prefixes render unhighlighted. Adding a single
+// `LanguageInfo` entry here registers the grammar with the
+// library's HighlighterManager, lazy-loaded on first use.
+//
+// Keep this list short — every entry pays a per-thread shiki
+// dynamic import the first time the language is seen. Add one
+// only when an agent regularly emits a fenced block in that
+// language and the fallback (plaintext) is genuinely worse.
+export const extraShikiLanguages = [
+  {
+    id: 'diff',
+    aliases: ['patch'],
+    import: () => import('@shikijs/langs/diff'),
+  },
+];
+
 export const chatMarkdownTheme: ThemeOverride = {
   code: {
     // Drop the border + rounded-xl card; use a single rounded-md

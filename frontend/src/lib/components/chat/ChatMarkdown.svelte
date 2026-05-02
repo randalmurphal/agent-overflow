@@ -32,7 +32,7 @@
   import StreamdownCodeHost from './markdown/StreamdownCodeHost.svelte';
   import StreamdownMermaidHost from './markdown/StreamdownMermaidHost.svelte';
   import StreamdownMathHost from './markdown/StreamdownMathHost.svelte';
-  import { chatMarkdownTheme } from './markdown/streamdownTheme';
+  import { chatMarkdownTheme, extraShikiLanguages } from './markdown/streamdownTheme';
   import { enhancePathLinks, ensureMarkdownCopyDelegate } from '../../utils/markdownEnhance';
 
   let {
@@ -84,6 +84,7 @@
     parseIncompleteMarkdown={streaming}
     baseTheme="tailwind"
     theme={chatMarkdownTheme}
+    shikiLanguages={extraShikiLanguages}
     allowedLinkPrefixes={['*']}
     allowedImagePrefixes={['*']}
     renderHtml={false}
