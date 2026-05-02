@@ -221,13 +221,13 @@ func TestOpen_RejectsWorkspaceEscape(t *testing.T) {
 }
 
 // TestDefaultObserveFastExit_NonZeroExitWithinWindow exercises the
-// real (non-stubbed) watcher against a fast-failing binary. /bin/false
+// real (non-stubbed) watcher against a fast-failing binary. `false`
 // exits 1 inside fastExitWindow → defaultObserveFastExit must surface
 // the exit code as an error so the frontend can toast it.
 func TestDefaultObserveFastExit_NonZeroExitWithinWindow(t *testing.T) {
-	cmd := exec.Command("/bin/false")
+	cmd := exec.Command("false")
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("Start /bin/false: %v", err)
+		t.Fatalf("Start false: %v", err)
 	}
 	err := defaultObserveFastExit(cmd, "VS Code")
 	if err == nil {
@@ -243,9 +243,9 @@ func TestDefaultObserveFastExit_NonZeroExitWithinWindow(t *testing.T) {
 // open IPC to a running window. Treat as success — no error, no
 // noise.
 func TestDefaultObserveFastExit_ZeroExitWithinWindow(t *testing.T) {
-	cmd := exec.Command("/bin/true")
+	cmd := exec.Command("true")
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("Start /bin/true: %v", err)
+		t.Fatalf("Start true: %v", err)
 	}
 	if err := defaultObserveFastExit(cmd, "VS Code"); err != nil {
 		t.Fatalf("zero-exit must return nil; got %v", err)
@@ -259,9 +259,9 @@ func TestDefaultObserveFastExit_ZeroExitWithinWindow(t *testing.T) {
 // the goroutine non-leaky).
 func TestDefaultObserveFastExit_StillRunningAtWindow(t *testing.T) {
 	// sleep 5s — way past the 750ms window.
-	cmd := exec.Command("/bin/sleep", "5")
+	cmd := exec.Command("sleep", "5")
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("Start /bin/sleep: %v", err)
+		t.Fatalf("Start sleep: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
