@@ -2,9 +2,17 @@
 // keyboard navigation. The dispatcher (handleMentionPopoverKeydown)
 // is tested separately with a stubbed mentions handle.
 
-import { describe, expect, it, vi } from 'vitest';
-import { popoverNav, handleMentionPopoverKeydown } from './composerKeyboard';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  popoverNav,
+  handleMentionPopoverKeydown,
+  shouldRetractQueueOnUpArrow,
+} from './composerKeyboard';
 import type { ComposerMentionsHandle } from './composerMentions.svelte';
+import {
+  replaceQueueForThread,
+  resetSendQueueForTest,
+} from '../../stores/sendQueue.svelte';
 
 describe('popoverNav', () => {
   describe('empty list', () => {
@@ -190,5 +198,135 @@ describe('handleMentionPopoverKeydown', () => {
     // Mention wins — slash insert was not called.
     expect(mentions.insertMention).toHaveBeenCalled();
     expect(mentions.insertSlashCommand).not.toHaveBeenCalled();
+  });
+});
+
+describe('shouldRetractQueueOnUpArrow', () => {
+  beforeEach(() => {
+    resetSendQueueForTest();
+  });
+
+  afterEach(() => {
+    resetSendQueueForTest();
+  });
+
+  function makeUpArrow(opts: Partial<KeyboardEventInit> = {}): KeyboardEvent {
+    return new KeyboardEvent('keydown', {
+      key: 'ArrowUp',
+      bubbles: true,
+      cancelable: true,
+      ...opts,
+    });
+  }
+
+  function seedQueue(threadId: string): void {
+    replaceQueueForThread(threadId, [
+      {
+        id: 'q-1',
+        threadId,
+        message: 'queued',
+        attachmentIds: [],
+        sourceProposedPlan: null,
+        revisionSourceProposedPlan: null,
+        revisionSourceCommentIds: undefined,
+        enqueuedAt: 1,
+      },
+    ]);
+  }
+
+  it('returns true for plain ArrowUp on an empty composer with queued items', () => {
+    seedQueue('thread-1');
+    const event = makeUpArrow();
+    expect(
+      shouldRetractQueueOnUpArrow({
+        event,
+        threadId: 'thread-1',
+        hasDraftContent: false,
+      }),
+    ).toBe(true);
+  });
+
+  it('returns false for any modifier key', () => {
+    seedQueue('thread-1');
+    for (const mod of [{ ctrlKey: true }, { metaKey: true }, { altKey: true }, { shiftKey: true }]) {
+      const event = makeUpArrow(mod);
+      expect(
+        shouldRetractQueueOnUpArrow({
+          event,
+          threadId: 'thread-1',
+          hasDraftContent: false,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it('returns false for non-ArrowUp keys', () => {
+    seedQueue('thread-1');
+    for (const key of ['ArrowDown', 'ArrowLeft', 'Enter', 'Escape', 'a']) {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      expect(
+        shouldRetractQueueOnUpArrow({
+          event,
+          threadId: 'thread-1',
+          hasDraftContent: false,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it('returns false when the composer has draft content', () => {
+    seedQueue('thread-1');
+    expect(
+      shouldRetractQueueOnUpArrow({
+        event: makeUpArrow(),
+        threadId: 'thread-1',
+        hasDraftContent: true,
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false when no thread is selected', () => {
+    seedQueue('thread-1');
+    expect(
+      shouldRetractQueueOnUpArrow({
+        event: makeUpArrow(),
+        threadId: null,
+        hasDraftContent: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false when the queue is empty', () => {
+    expect(
+      shouldRetractQueueOnUpArrow({
+        event: makeUpArrow(),
+        threadId: 'thread-1',
+        hasDraftContent: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false when the cursor is not at (0, 0)', () => {
+    seedQueue('thread-1');
+    const textarea = document.createElement('textarea');
+    textarea.value = '   ';
+    textarea.setSelectionRange(2, 2);
+    document.body.appendChild(textarea);
+    try {
+      const event = new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true });
+      // Need the event's `target` to point at the textarea — happy-dom
+      // gives us that when we dispatch through it, but the predicate is
+      // pure so we just stamp it directly.
+      Object.defineProperty(event, 'target', { value: textarea, configurable: true });
+      expect(
+        shouldRetractQueueOnUpArrow({
+          event,
+          threadId: 'thread-1',
+          hasDraftContent: false,
+        }),
+      ).toBe(false);
+    } finally {
+      textarea.remove();
+    }
   });
 });

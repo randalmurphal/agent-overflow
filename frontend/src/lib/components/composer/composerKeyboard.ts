@@ -12,6 +12,15 @@
 // etc.
 
 import type { ComposerMentionsHandle } from './composerMentions.svelte';
+import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
+import {
+  combineForRetract,
+  hasRetractableQueueItems,
+  undoQueuedItems,
+} from '../../stores/sendQueue.svelte';
+import { ListAttachments } from '../../stores/bindings';
+import type { Attachment } from '../../types/attachment';
+import { errString } from '../../utils/errors';
 
 export type PopoverAction =
   | { kind: 'move'; nextIndex: number }
@@ -118,4 +127,119 @@ export function handleMentionPopoverKeydown(
   }
 
   return false;
+}
+
+// ---- UP-arrow queue retract ----
+
+export interface QueueRetractTriggerArgs {
+  /** Raw keydown event. */
+  event: KeyboardEvent;
+  /** Active thread id, or null if no thread is selected. */
+  threadId: string | null;
+  /** True when the composer draft has any user content (text, attachments,
+   *  or terminal chips). Retract only fires when the composer is empty so
+   *  legitimate typing isn't clobbered. */
+  hasDraftContent: boolean;
+}
+
+/**
+ * Predicate for whether a keydown should trigger queue retract.
+ *
+ * Mirrors Claude TUI's `popAllEditable`: when the composer is empty and
+ * Zone 1 of the per-thread send queue has items, plain UP-arrow drops
+ * every queued item and merges them into one editable composer draft.
+ *
+ * Conditions (all must hold):
+ *   1. The key is plain ArrowUp (no Ctrl/Cmd/Alt/Shift).
+ *   2. A thread is active.
+ *   3. The composer has no draft content.
+ *   4. Zone 1 has at least one retractable item.
+ *   5. The cursor is at the start of the textarea (selectionStart === 0
+ *      and selectionEnd === 0). For an empty textarea this is the only
+ *      possible cursor position; the explicit check defends against the
+ *      edge case where a multi-line empty value somehow ends up with a
+ *      non-zero caret index.
+ *
+ * If any check fails the predicate returns false and the caller must
+ * NOT preventDefault — the textarea's native UP behaviour (cursor
+ * navigation) is what the user expects.
+ */
+export function shouldRetractQueueOnUpArrow(args: QueueRetractTriggerArgs): boolean {
+  const { event, threadId, hasDraftContent } = args;
+  if (event.key !== 'ArrowUp') return false;
+  if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return false;
+  if (!threadId) return false;
+  if (hasDraftContent) return false;
+  if (!hasRetractableQueueItems(threadId)) return false;
+  const target = event.target;
+  if (target instanceof HTMLTextAreaElement) {
+    const start = target.selectionStart ?? 0;
+    const end = target.selectionEnd ?? 0;
+    if (start !== 0 || end !== 0) return false;
+  }
+  return true;
+}
+
+export interface QueueRetractDeps {
+  threadId: string;
+  draft: ComposerDraftStore;
+  textarea: HTMLTextAreaElement | undefined;
+  /** Surface RPC failures to the user. The composer wires this to
+   *  `pane.setGeneralError` so the error appears in the same row used
+   *  by send / interrupt failures. */
+  reportError: (message: string) => void;
+}
+
+/**
+ * Drive the retract: fetch the thread's attachment records (queue items
+ * carry only ids, so we resolve them once), drop every Zone 1 item via
+ * the backend RPC, combine the dropped items into a single draft
+ * snapshot, and restore that snapshot to the composer.
+ *
+ * On failure the draft is left untouched and the error surfaces via
+ * `reportError`. If the queue raced and is empty by the time the RPC
+ * lands the function returns silently — the predicate's condition is no
+ * longer true and the user's next keystroke can take a different path.
+ */
+export async function performQueueRetract(deps: QueueRetractDeps): Promise<void> {
+  const { threadId, draft, textarea, reportError } = deps;
+  let attachments: Attachment[] = [];
+  try {
+    const records = (await ListAttachments(threadId)) as Attachment[] | null;
+    attachments = records ?? [];
+  } catch (err) {
+    reportError(`Failed to retract queued messages: ${errString(err)}`);
+    return;
+  }
+
+  let items: Awaited<ReturnType<typeof undoQueuedItems>>;
+  try {
+    items = await undoQueuedItems(threadId);
+  } catch (err) {
+    reportError(`Failed to retract queued messages: ${errString(err)}`);
+    return;
+  }
+  if (items.length === 0) return;
+
+  const attachmentById = new Map<string, Attachment>();
+  for (const attachment of attachments) {
+    attachmentById.set(attachment.id, attachment);
+  }
+  const snapshot = combineForRetract(items, (id) => attachmentById.get(id));
+
+  try {
+    await draft.restoreDraftFor(threadId, snapshot);
+  } catch (err) {
+    // restoreDraftFor itself swallows save failures and records them on
+    // the draft store, but we still guard against unexpected throws so a
+    // bug there doesn't leave the focus / cursor in an odd state.
+    reportError(`Failed to restore retracted draft: ${errString(err)}`);
+    return;
+  }
+
+  if (textarea) {
+    textarea.focus();
+    const end = textarea.value.length;
+    textarea.setSelectionRange(end, end);
+  }
 }

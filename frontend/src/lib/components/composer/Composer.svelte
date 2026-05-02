@@ -16,7 +16,11 @@
   import BackgroundTaskTray from './BackgroundTaskTray.svelte';
   import ComposerPendingApprovalPanel from './ComposerPendingApprovalPanel.svelte';
   import ComposerPendingUserInputPanel from './ComposerPendingUserInputPanel.svelte';
-  import { handleMentionPopoverKeydown } from './composerKeyboard';
+  import {
+    handleMentionPopoverKeydown,
+    performQueueRetract,
+    shouldRetractQueueOnUpArrow,
+  } from './composerKeyboard';
   import { createComposerImagePlaceholders } from './composerImagePlaceholders';
   import { createComposerMentions } from './composerMentions.svelte';
   import { createComposerUploads } from './composerUploads.svelte';
@@ -377,6 +381,32 @@
     // Popover dispatch (mention + slash) short-circuits when the keystroke
     // was consumed; otherwise we fall through to the send guard below.
     if (handleMentionPopoverKeydown(e, mentions)) return;
+
+    // UP-arrow retract: when the composer is empty and Zone 1 has
+    // queued items, plain UP drops every queued item and merges them
+    // into one editable draft (Claude TUI's `popAllEditable`). The
+    // predicate gates on no-modifiers / empty-composer / non-empty-queue
+    // so legit cursor navigation isn't intercepted. Runs AFTER popover
+    // dispatch — an open mention/slash popover owns ArrowUp for its
+    // own active-index navigation.
+    if (
+      pane.threadId
+      && shouldRetractQueueOnUpArrow({
+        event: e,
+        threadId: pane.threadId,
+        hasDraftContent,
+      })
+    ) {
+      e.preventDefault();
+      const threadIdForRetract = pane.threadId;
+      void performQueueRetract({
+        threadId: threadIdForRetract,
+        draft,
+        textarea,
+        reportError: (msg) => pane.setGeneralError(msg),
+      });
+      return;
+    }
 
     if (imagePlaceholders.handleAtomicPlaceholderKeydown(e)) return;
 
