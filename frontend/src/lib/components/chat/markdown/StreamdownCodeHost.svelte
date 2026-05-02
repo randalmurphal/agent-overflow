@@ -26,15 +26,20 @@
   let { token, id }: { token: Tokens.Code; id: string } = $props();
 </script>
 
+<!-- Named Tailwind group (`group/codeblock`) so the hover scope is
+     this code block specifically. Unnamed `group-hover:` would also
+     match an outer `class="group"` (AssistantMessage.svelte:24 has
+     one for its timestamp/copy-row chrome), revealing every code
+     block's copy button whenever any part of the message is hovered. -->
 <div
-  class="streamdown-code-host group relative"
+  class="streamdown-code-host group/codeblock relative"
   data-code-source={token.text}
   data-code-lang={token.lang ?? ''}
 >
   <Code {token} {id} />
 
   <div
-    class="absolute top-1 right-1 z-10 opacity-0 transition-opacity duration-150 ease-out group-hover:opacity-100 focus-within:opacity-100"
+    class="absolute top-1 right-1 z-10 opacity-0 transition-opacity duration-150 ease-out group-hover/codeblock:opacity-100 focus-within:opacity-100"
   >
     <CopyButton
       text={token.text}
