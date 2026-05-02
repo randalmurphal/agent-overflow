@@ -155,15 +155,11 @@ export async function undoQueuedItems(threadId: string): Promise<QueueItem[]> {
   return wire.map(queueItemFromWire);
 }
 
-/** Fetch the current Zone 1 snapshot from the backend. Used on
- * bootstrap / thread switch to seed the local mirror; remote
- * `--connect` clients also call this when attaching mid-session. */
-export async function fetchQueueState(threadId: string): Promise<QueueItem[]> {
-  if (!threadId) return [];
-  const wire = await bindings.GetQueueState(threadId);
-  if (!wire || wire.length === 0) return [];
-  return wire.map(queueItemFromWire);
-}
+// Note: `bindings.GetQueueState` exists for remote-client / re-attach
+// bootstrap, but no caller wires it today (events drive Zone 1 in the
+// running session). Re-add a `fetchQueueState` wrapper here when the
+// bootstrap path needs it; keeping a dead helper around invites
+// confusion about which API the composer should call.
 
 // ---- Event-handler surface (called from events.ts) -------------------
 
@@ -299,8 +295,10 @@ function queueItemFromWire(item: WireQueuedItem): QueueItem {
 // ---- Test-only helpers -----------------------------------------------
 
 /** Wipe every thread's queue + Zone 2. Production code uses
- * `clearForThread`; tests use this for fresh-fixture isolation. */
-export function resetSendQueueForTest(): void {
+ * `clearForThread`; tests use this for fresh-fixture isolation.
+ * Named to match the `resetForTest` convention in every other store
+ * in this directory (threadStatuses.svelte.ts, threads.svelte.ts). */
+export function resetForTest(): void {
   queueByThread.clear();
   flushedByThread.clear();
 }

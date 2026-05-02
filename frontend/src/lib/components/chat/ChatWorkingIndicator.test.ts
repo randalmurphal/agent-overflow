@@ -7,7 +7,7 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import {
   getQueueForThread,
   replaceQueueForThread,
-  resetSendQueueForTest,
+  resetForTest as resetSendQueueForTest,
   type QueueItem,
 } from '../../stores/sendQueue.svelte';
 import {

@@ -174,6 +174,20 @@ func (r *Router) HasQueuedFlushItems(threadID string) bool {
 	return len(r.queuedFlushItems[threadID]) > 0
 }
 
+// QueuedFlushItemCount returns the number of pending queue entries
+// for threadID. Used by the App-level RegisterQueueItem RPC to
+// enforce a per-thread length cap before appending — bounded
+// router-memory consumption is a security concern (DoS resistance)
+// and the cap lives at the App boundary, not in triage.
+func (r *Router) QueuedFlushItemCount(threadID string) int {
+	if threadID == "" {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.queuedFlushItems[threadID])
+}
+
 // QueuedFlushItems returns a copy of the per-thread flush queue.
 // Callers receive a fresh slice they may mutate without affecting
 // router state; the underlying QueuedFlushItem values share their

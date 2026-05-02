@@ -27,7 +27,7 @@ import { resetRuntimeModeDraftsForTest } from '../../lib/stores/runtimeModeDraft
 import {
   getQueueForThread,
   replaceQueueForThread,
-  resetSendQueueForTest,
+  resetForTest as resetSendQueueForTest,
 } from '../../lib/stores/sendQueue.svelte';
 import { getThreads } from '../../lib/stores/threads.svelte';
 

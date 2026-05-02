@@ -332,6 +332,49 @@ func (a *App) resolveSendMessageAttachments(threadID string, attachmentIDs []str
 	return providerAttachments, persistedAttachments, nil
 }
 
+// nextSequenceForScope returns the next available sequence number for
+// `user:<turnIndex>:<scope>:<n>` ids on the given thread/turn. Used
+// by both the steer (`:steer:<n>`) and flush (`:flush:<n>`) paths to
+// allocate non-colliding mid-turn user-message ids without each
+// repeating the same MAX-by-suffix scan.
+//
+// Returns 1 on an empty turn (highest+1 with highest=0). Unparsable
+// suffixes are skipped so a future id-format extension doesn't crash
+// this counter.
+func (a *App) nextSequenceForScope(threadID string, turnIndex int, scope string) (int, error) {
+	prefix := fmt.Sprintf("user:%d:%s:", turnIndex, scope)
+	items, err := a.store.ListItemsForTurn(threadID, turnIndex)
+	if err != nil {
+		return 0, err
+	}
+	highest := 0
+	for _, it := range items {
+		if !strings.HasPrefix(it.ID, prefix) {
+			continue
+		}
+		var n int
+		if _, scanErr := fmt.Sscanf(it.ID[len(prefix):], "%d", &n); scanErr != nil {
+			continue
+		}
+		if n > highest {
+			highest = n
+		}
+	}
+	return highest + 1, nil
+}
+
+// nextSequencedUserItemID formats the next sequenced id for the given
+// scope (`steer` or `flush`). Wrapper around nextSequenceForScope so
+// callers that want the formatted id don't have to do their own
+// Sprintf.
+func (a *App) nextSequencedUserItemID(threadID string, turnIndex int, scope string) (string, error) {
+	seq, err := a.nextSequenceForScope(threadID, turnIndex, scope)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("user:%d:%s:%d", turnIndex, scope, seq), nil
+}
+
 func marshalUserMessageMeta(attachments []store.Attachment, sourcePlan, revisionSourcePlan *SourceProposedPlan, revisionCommentIDs []string) (string, error) {
 	if len(attachments) == 0 && sourcePlan == nil && revisionSourcePlan == nil && len(revisionCommentIDs) == 0 {
 		return "", nil

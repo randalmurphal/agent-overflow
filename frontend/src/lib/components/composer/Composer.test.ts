@@ -21,7 +21,7 @@ import {
 import {
   getQueueForThread,
   replaceQueueForThread,
-  resetSendQueueForTest,
+  resetForTest as resetSendQueueForTest,
 } from '../../stores/sendQueue.svelte';
 import { resetForTest as resetThreadStatuses } from '../../stores/threadStatuses.svelte';
 import {

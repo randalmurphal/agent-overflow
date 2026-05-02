@@ -192,22 +192,6 @@ func (a *App) dispatchFlush(threadID string, items []triage.QueuedFlushItem) {
 	}
 }
 
-// dispatchFlushItem is preserved for callers that still drive the
-// per-item path without a pre-allocated id (test-only entrypoint).
-// Production goes through dispatchFlush → dispatchFlushItemWithID so
-// the QueueFlushedEvent emission can carry the userItemId.
-func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) error {
-	turnIndex, err := a.resolveFlushTurnIndex(threadID)
-	if err != nil {
-		return fmt.Errorf("resolve turn index: %w", err)
-	}
-	flushItemID, err := a.nextFlushUserItemID(threadID, turnIndex)
-	if err != nil {
-		return fmt.Errorf("allocate item id: %w", err)
-	}
-	return a.dispatchFlushItemWithID(threadID, item, turnIndex, flushItemID)
-}
-
 // dispatchFlushItemWithID is the per-item flush path with the
 // userItemId pre-allocated. Splits id allocation from the dispatch
 // body so the batch-level dispatchFlush can emit the
@@ -331,25 +315,7 @@ func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushIt
 //
 // Returns 1 for an empty turn (highest+1 with highest=0).
 func (a *App) firstFlushSequenceForTurn(threadID string, turnIndex int) (int, error) {
-	prefix := fmt.Sprintf("user:%d:flush:", turnIndex)
-	items, err := a.store.ListItemsForTurn(threadID, turnIndex)
-	if err != nil {
-		return 0, err
-	}
-	highest := 0
-	for _, it := range items {
-		if !strings.HasPrefix(it.ID, prefix) {
-			continue
-		}
-		var n int
-		if _, scanErr := fmt.Sscanf(it.ID[len(prefix):], "%d", &n); scanErr != nil {
-			continue
-		}
-		if n > highest {
-			highest = n
-		}
-	}
-	return highest + 1, nil
+	return a.nextSequenceForScope(threadID, turnIndex, "flush")
 }
 
 // resolveFlushTurnIndex picks the turn index to attribute the
@@ -470,9 +436,9 @@ func (a *App) persistFlushDispatchError(threadID string, turnIndex int, dispatch
 // The wire-shape options carry attachment IDs and plan refs but NOT
 // resolved attachments / plans — the dispatcher re-resolves at
 // trigger-fire time so attachment validation reflects current store
-// state. Validation here is intentionally light: only the
-// pre-conditions that prevent a hopelessly broken queue entry from
-// landing (empty thread id, attachment count cap, plan-ref shape).
+// state. Validation establishes resource bounds (queue length,
+// message size, attachment count) AND shape preconditions (existing
+// thread, plan-ref shape).
 //
 // Returns the resolved QueuedItem with the assigned id and
 // EnqueuedAt timestamp so the frontend can mirror the same row
@@ -486,11 +452,27 @@ func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessag
 	if strings.TrimSpace(threadID) == "" {
 		return QueuedItem{}, fmt.Errorf("register queue item: empty thread id")
 	}
+	// Resource caps. The queue lives in router memory until either a
+	// flush trigger fires or the session is torn down — without a
+	// length cap a misbehaving client (or a bug that registers in a
+	// loop) wedges the backend by appending forever. The per-message
+	// byte cap protects against an unbounded payload riding the wire
+	// frame.
+	if len(message) > maxQueueMessageBytes() {
+		return QueuedItem{}, fmt.Errorf("register queue item: message too long: %d bytes (max %d)", len(message), maxQueueMessageBytes())
+	}
 	if len(opts.AttachmentIDs) > maxQueueAttachmentCount() {
 		return QueuedItem{}, fmt.Errorf("register queue item: too many attachments: got %d, max %d", len(opts.AttachmentIDs), maxQueueAttachmentCount())
 	}
 	if opts.RevisionSourceProposedPlan == nil && len(opts.RevisionSourceCommentIDs) > 0 {
 		return QueuedItem{}, fmt.Errorf("register queue item: revision comments require a source proposed plan")
+	}
+	// Thread-existence check: a stale or attacker-supplied threadID
+	// would otherwise grow a permanent in-memory queue entry that
+	// CleanupThread never sweeps (no session ever attached). Same
+	// validation as Send / Steer.
+	if _, err := a.store.GetThread(threadID); err != nil {
+		return QueuedItem{}, fmt.Errorf("register queue item: %w", err)
 	}
 
 	if a.triage == nil {
@@ -498,6 +480,10 @@ func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessag
 		// Mirrors the lazy-init pattern on Send and Steer.
 		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
 		a.triage.SetFlushDispatcher(a.dispatchFlush)
+	}
+
+	if a.triage.QueuedFlushItemCount(threadID) >= maxQueueLength() {
+		return QueuedItem{}, fmt.Errorf("register queue item: queue full (max %d items per thread)", maxQueueLength())
 	}
 
 	id := newQueueItemID()
@@ -546,6 +532,9 @@ func (a *App) UndoQueuedItems(threadID string) ([]QueuedItem, error) {
 	if strings.TrimSpace(threadID) == "" {
 		return nil, fmt.Errorf("undo queued items: empty thread id")
 	}
+	if _, err := a.store.GetThread(threadID); err != nil {
+		return nil, fmt.Errorf("undo queued items: %w", err)
+	}
 	if a.triage == nil {
 		return nil, nil
 	}
@@ -567,9 +556,16 @@ func (a *App) UndoQueuedItems(threadID string) ([]QueuedItem, error) {
 // Used by the frontend on bootstrap and thread-switch to seed its
 // per-thread mirror; also by remote `--connect` clients attaching
 // mid-session. Read-only — no emission.
+//
+// LocalOnly: the snapshot exposes the user's drafted-but-not-yet-sent
+// prompts, attachment IDs, and plan refs. Same disclosure shape as
+// the diff bindings, hence loopback-only at the transport layer.
 func (a *App) GetQueueState(threadID string) ([]QueuedItem, error) {
 	if strings.TrimSpace(threadID) == "" {
 		return nil, fmt.Errorf("get queue state: empty thread id")
+	}
+	if _, err := a.store.GetThread(threadID); err != nil {
+		return nil, fmt.Errorf("get queue state: %w", err)
 	}
 	if a.triage == nil {
 		return nil, nil
@@ -644,37 +640,31 @@ func newQueueItemID() string {
 
 // maxQueueAttachmentCount caps the per-item attachment count at the
 // same limit the live send path enforces (attachmentstore.DefaultMaxCount).
-// Wired through a tiny accessor so a future per-mode override has a
-// single change site.
 func maxQueueAttachmentCount() int {
 	return attachmentstore.DefaultMaxCount
 }
 
-// nextFlushUserItemID is the analog of nextSteerUserItemID for flush
-// drains. Format: `user:<turnIndex>:flush:<n>`. Sortable; never
-// collides with the seed `user:<turnIndex>` row or with `:steer:<n>`
-// rows. Reads existing rows so a session reopen sees the right next
-// sequence even after a restart.
+// maxQueueLength caps the number of pending queue entries per thread.
+// Bounded by user attention in normal operation (single-digit N); the
+// cap exists to fail loudly rather than silently grow router memory
+// when a client misbehaves or a bug puts RegisterQueueItem in a loop.
+const queueMaxLength = 64
+
+func maxQueueLength() int { return queueMaxLength }
+
+// maxQueueMessageBytes caps the in-flight message text per queue
+// entry. Chat-shaped messages comfortably fit; the cap protects
+// against a 16 MiB-frame DoS vector. Attachments ride the existing
+// UploadAttachment path and are not subject to this cap.
+const queueMaxMessageBytes = 512 * 1024 // 512 KiB
+
+func maxQueueMessageBytes() int { return queueMaxMessageBytes }
+
+// nextFlushUserItemID is the flush-scope wrapper around
+// nextSequencedUserItemID. Format: `user:<turnIndex>:flush:<n>`.
+// Sortable; never collides with the seed `user:<turnIndex>` row or
+// with `:steer:<n>` rows. Reads existing rows so a session reopen
+// sees the right next sequence even after a restart.
 func (a *App) nextFlushUserItemID(threadID string, turnIndex int) (string, error) {
-	prefix := fmt.Sprintf("user:%d:flush:", turnIndex)
-	items, err := a.store.ListItemsForTurn(threadID, turnIndex)
-	if err != nil {
-		return "", err
-	}
-	highest := 0
-	for _, it := range items {
-		if !strings.HasPrefix(it.ID, prefix) {
-			continue
-		}
-		// Parse the trailing integer; ignore unparsable suffixes so a
-		// future id-format extension doesn't crash this counter.
-		var n int
-		if _, scanErr := fmt.Sscanf(it.ID[len(prefix):], "%d", &n); scanErr != nil {
-			continue
-		}
-		if n > highest {
-			highest = n
-		}
-	}
-	return fmt.Sprintf("%s%d", prefix, highest+1), nil
+	return a.nextSequencedUserItemID(threadID, turnIndex, "flush")
 }

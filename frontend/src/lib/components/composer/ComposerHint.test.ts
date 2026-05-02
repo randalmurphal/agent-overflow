@@ -12,7 +12,7 @@ import { buildPane, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import {
   replaceQueueForThread,
-  resetSendQueueForTest,
+  resetForTest as resetSendQueueForTest,
   type QueueItem,
 } from '../../stores/sendQueue.svelte';
 import type { Attachment } from '../../types/attachment';

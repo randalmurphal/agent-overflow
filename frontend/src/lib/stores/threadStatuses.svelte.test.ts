@@ -22,7 +22,7 @@ import {
 import {
   getQueueForThread,
   replaceQueueForThread,
-  resetSendQueueForTest,
+  resetForTest as resetSendQueueForTest,
   type QueueItem,
 } from './sendQueue.svelte';
 

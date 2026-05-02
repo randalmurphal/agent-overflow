@@ -217,34 +217,13 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	return userItem, nil
 }
 
-// nextSteerUserItemID returns the next deterministic id for a steer
-// user_text row on (threadID, turnIndex). The original turn-opening
-// user message lives at `user:<turnIndex>`; subsequent steers count up
-// from `user:<turnIndex>:steer:1` so the ids stay sortable and never
-// collide with the seed row. Reads existing rows so a session reopen
-// sees the right next sequence even after a restart.
+// nextSteerUserItemID is the steer-scope wrapper around
+// nextSequencedUserItemID. The original turn-opening user message
+// lives at `user:<turnIndex>`; subsequent steers count up from
+// `user:<turnIndex>:steer:1` so the ids stay sortable and never
+// collide with the seed row.
 func (a *App) nextSteerUserItemID(threadID string, turnIndex int) (string, error) {
-	prefix := fmt.Sprintf("user:%d:steer:", turnIndex)
-	items, err := a.store.ListItemsForTurn(threadID, turnIndex)
-	if err != nil {
-		return "", err
-	}
-	highest := 0
-	for _, it := range items {
-		if !strings.HasPrefix(it.ID, prefix) {
-			continue
-		}
-		// Parse the trailing integer; ignore unparsable suffixes so a
-		// future id-format extension can't crash this counter.
-		var n int
-		if _, scanErr := fmt.Sscanf(it.ID[len(prefix):], "%d", &n); scanErr != nil {
-			continue
-		}
-		if n > highest {
-			highest = n
-		}
-	}
-	return fmt.Sprintf("%s%d", prefix, highest+1), nil
+	return a.nextSequencedUserItemID(threadID, turnIndex, "steer")
 }
 
 // errIsNoActiveTurn reports whether err signals the "active turn ended

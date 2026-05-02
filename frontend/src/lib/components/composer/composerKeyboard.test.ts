@@ -11,7 +11,7 @@ import {
 import type { ComposerMentionsHandle } from './composerMentions.svelte';
 import {
   replaceQueueForThread,
-  resetSendQueueForTest,
+  resetForTest as resetSendQueueForTest,
 } from '../../stores/sendQueue.svelte';
 
 describe('popoverNav', () => {

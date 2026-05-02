@@ -9,7 +9,7 @@ import {
   hasRetractableQueueItems,
   markItemsFlushed,
   replaceQueueForThread,
-  resetSendQueueForTest,
+  resetForTest as resetSendQueueForTest,
   type QueueItem,
 } from './sendQueue.svelte';
 import type { Attachment } from '../types/attachment';
