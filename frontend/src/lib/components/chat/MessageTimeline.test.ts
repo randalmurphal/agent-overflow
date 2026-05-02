@@ -5,6 +5,10 @@ import { loadSettings } from '../../stores/settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { createThreadPane } from '../../stores/thread.svelte';
+import {
+  projectTurnCompleted,
+  projectTurnStarted,
+} from '../../stores/threadStatuses.svelte';
 import { getToasts } from '../../stores/toast.svelte';
 import MessageTimeline, { clearMessageTimelineScrollSnapshotsForTest } from './MessageTimeline.svelte';
 
@@ -465,6 +469,13 @@ describe('<MessageTimeline>', () => {
 
       const divider = getByTestId('response-divider');
       expect(divider).toBeInTheDocument();
+      // The single assistant_text in this turn is also the final one,
+      // and there's no active turn — so the pill is visible. The DOM
+      // always carries the "Response" text (visibility-toggled, not
+      // conditionally rendered), so `data-final-response` is the
+      // discriminator, not `textContent`.
+      expect(divider.getAttribute('data-final-response')).toBe('true');
+      expect(divider.querySelector('.invisible')).toBeNull();
 
       // Pin the reading order: divider sits BEFORE the assistant leaf.
       // The leaf is wrapped in a [data-item-id] div inside a
@@ -483,9 +494,12 @@ describe('<MessageTimeline>', () => {
         makeItem({ id: 'text:0:0', kind: 'assistant_text', summary: 'hi' }),
       ]);
 
-      const { queryAllByTestId } = render(MessageTimeline, { props: { pane } });
+      const { container, queryAllByTestId } = render(MessageTimeline, { props: { pane } });
 
       expect(queryAllByTestId('response-divider')).toHaveLength(0);
+      // Pin the silent contract: a no-tool turn shows no Response cue
+      // anywhere — neither a divider nor a stray pill marker.
+      expect(container.querySelector('[data-final-response]')).toBeNull();
     });
 
     it('renders only one response divider for consecutive assistant text after tools', async () => {
@@ -515,6 +529,177 @@ describe('<MessageTimeline>', () => {
       const { queryAllByTestId } = render(MessageTimeline, { props: { pane } });
 
       expect(queryAllByTestId('response-divider')).toHaveLength(1);
+    });
+
+    it('shows the "Response" pill only on the final wire round of a settled turn', async () => {
+      // Two wire rounds inside one logical turn: each round ends with
+      // assistant_text after a tool. Only the SECOND round's divider
+      // should carry the "Response" pill — the first round's divider
+      // is just a plain line.
+      const pane = await buildPane(undefined, [
+        makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),
+        makeItem({
+          id: 'tool:0:0',
+          itemIndex: 1,
+          kind: 'tool_call',
+          toolName: 'Bash',
+          summary: 'ls',
+        }),
+        makeItem({
+          id: 'text:0:0',
+          itemIndex: 2,
+          kind: 'assistant_text',
+          summary: 'mid-turn observation',
+        }),
+        makeItem({
+          id: 'tool:0:1',
+          itemIndex: 3,
+          kind: 'tool_call',
+          toolName: 'Bash',
+          summary: 'cat README',
+        }),
+        makeItem({
+          id: 'text:0:1',
+          itemIndex: 4,
+          kind: 'assistant_text',
+          summary: 'final answer',
+        }),
+      ]);
+
+      const { queryAllByTestId } = render(MessageTimeline, { props: { pane } });
+
+      const dividers = queryAllByTestId('response-divider');
+      expect(dividers).toHaveLength(2);
+      expect(dividers[0].getAttribute('data-final-response')).toBe('false');
+      expect(dividers[0].querySelector('.invisible')).not.toBeNull();
+      expect(dividers[1].getAttribute('data-final-response')).toBe('true');
+      expect(dividers[1].querySelector('.invisible')).toBeNull();
+    });
+
+    it('suppresses the "Response" pill while the turn is still in flight', async () => {
+      const thread = makeThread();
+      const pane = await buildPane(thread, [
+        makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),
+        makeItem({
+          id: 'tool:0:0',
+          itemIndex: 1,
+          kind: 'tool_call',
+          toolName: 'Bash',
+          summary: 'ls',
+        }),
+        makeItem({
+          id: 'text:0:0',
+          itemIndex: 2,
+          kind: 'assistant_text',
+          summary: 'streaming so far',
+        }),
+      ]);
+      // Mark turn 0 as in flight: more rounds may yet arrive, so the
+      // current "last assistant_text" is not necessarily final.
+      projectTurnStarted(thread.id, 'turn-0', 0, Date.now());
+
+      const { getByTestId } = render(MessageTimeline, { props: { pane } });
+
+      const divider = getByTestId('response-divider');
+      expect(divider.getAttribute('data-final-response')).toBe('false');
+      expect(divider.querySelector('.invisible')).not.toBeNull();
+
+      // Once the turn settles, the pill materialises on the SAME
+      // divider element — no new rows inserted, no row shell mutation,
+      // just the visibility class flipping. Pinning element identity
+      // protects the load-bearing "no late transcript adornments"
+      // contract that the chat row contract spells out.
+      projectTurnCompleted(thread.id, 'turn-0');
+      await tick();
+      const settledDivider = getByTestId('response-divider');
+      expect(settledDivider).toBe(divider);
+      expect(settledDivider.getAttribute('data-final-response')).toBe('true');
+      expect(settledDivider.querySelector('.invisible')).toBeNull();
+    });
+
+    it('marks the final assistant_text of every settled turn in a multi-turn thread', async () => {
+      // Two completed turns, each ending with an assistant_text after a
+      // tool. Both turns are settled (no active turn entry), so each
+      // should get a "Response" pill on its own final divider.
+      const pane = await buildPane(undefined, [
+        makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),
+        makeItem({
+          id: 'tool:0:0',
+          itemIndex: 1,
+          kind: 'tool_call',
+          toolName: 'Bash',
+          summary: 'ls',
+        }),
+        makeItem({
+          id: 'text:0:0',
+          itemIndex: 2,
+          kind: 'assistant_text',
+          summary: 'turn 0 final',
+        }),
+        makeItem({
+          id: 'user:1',
+          turnIndex: 1,
+          itemIndex: 0,
+          kind: 'user_text',
+          role: 'user',
+          summary: 'follow up',
+        }),
+        makeItem({
+          id: 'tool:1:0',
+          turnIndex: 1,
+          itemIndex: 1,
+          kind: 'tool_call',
+          toolName: 'Bash',
+          summary: 'cat',
+        }),
+        makeItem({
+          id: 'text:1:0',
+          turnIndex: 1,
+          itemIndex: 2,
+          kind: 'assistant_text',
+          summary: 'turn 1 final',
+        }),
+      ]);
+
+      const { queryAllByTestId } = render(MessageTimeline, { props: { pane } });
+
+      const dividers = queryAllByTestId('response-divider');
+      expect(dividers).toHaveLength(2);
+      for (const divider of dividers) {
+        expect(divider.getAttribute('data-final-response')).toBe('true');
+        expect(divider.querySelector('.invisible')).toBeNull();
+      }
+    });
+
+    it('treats an inline subagent group as tool activity for the trailing pill', async () => {
+      // Common Claude turn shape: user → inline Agent (subagent) →
+      // assistant_text summary. The subagent group counts as tool
+      // activity (`nodeRole(group) === 'tool'`), so the trailing
+      // assistant_text gets a divider AND the Response pill — exactly
+      // like a Bash-then-text turn.
+      const pane = await buildPane(undefined, [
+        makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'investigate' }),
+        makeItem({
+          id: 'agent:0',
+          itemIndex: 1,
+          kind: 'tool_call',
+          toolName: 'Agent',
+          summary: 'Agent: explore',
+          meta: inlineAgentMeta('msg-0', 'explore the auth module'),
+        }),
+        makeItem({
+          id: 'text:0:0',
+          itemIndex: 2,
+          kind: 'assistant_text',
+          summary: 'subagent finished — here is the answer',
+        }),
+      ]);
+
+      const { getByTestId } = render(MessageTimeline, { props: { pane } });
+
+      const divider = getByTestId('response-divider');
+      expect(divider.getAttribute('data-final-response')).toBe('true');
+      expect(divider.querySelector('.invisible')).toBeNull();
     });
   });
 

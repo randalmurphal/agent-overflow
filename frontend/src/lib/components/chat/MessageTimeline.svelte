@@ -16,6 +16,7 @@
     setThreadScrollSnapshot,
   } from '../../utils/threadScrollSnapshots';
   import {
+    finalAssistantTextIdsByTurn,
     findTimelineNodeIndex as findNodeIndexInList,
     groupItemsBySubagent,
     isToolTextBoundary as isToolTextBoundaryAt,
@@ -61,7 +62,7 @@
     onImageExpand?: (preview: ExpandedImagePreview) => void;
   } = $props();
 
-  function shouldRenderResponseDividerBefore(index: number, node: TimelineNode): boolean {
+  function shouldRenderTurnBoundaryBefore(index: number, node: TimelineNode): boolean {
     if (node.kind !== 'leaf' || node.item.kind !== 'assistant_text') return false;
     for (let i = index - 1; i >= 0; i -= 1) {
       const previous = groupedNodes[i];
@@ -95,6 +96,10 @@
 
   let groupedNodes = $derived<TimelineNode[]>(
     groupItemsBySubagent(filterRedundantNotifications(pane.items)),
+  );
+
+  let finalAssistantTextIds = $derived(
+    finalAssistantTextIdsByTurn(groupedNodes, getActiveTurn(pane.threadId)?.turnIndex ?? null),
   );
 
   const stick = createStickyBottomController({
@@ -459,11 +464,21 @@
           {/if}
 
           <div class="mx-auto w-full max-w-[62rem] px-6">
-            {#if shouldRenderResponseDividerBefore(index, node)}
-              <div data-testid="response-divider">
+            {#if shouldRenderTurnBoundaryBefore(index, node)}
+              {@const showResponsePill = node.kind === 'leaf' && finalAssistantTextIds.has(node.item.id)}
+              <!-- Pill is rendered unconditionally and toggled via
+                   `invisible` so toggling the label cannot change row
+                   geometry (height OR flex-line widths). virtua's row
+                   measurement stays stable across the in-flight →
+                   settled transition. -->
+              <div data-testid="response-divider" data-final-response={showResponsePill ? 'true' : 'false'}>
                 <div class="my-3 flex items-center gap-3">
                   <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
-                  <span class="rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-text-secondary">
+                  <span
+                    class="rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-text-secondary"
+                    class:invisible={!showResponsePill}
+                    aria-hidden={!showResponsePill}
+                  >
                     Response
                   </span>
                   <span class="h-px flex-1 bg-border" aria-hidden="true"></span>

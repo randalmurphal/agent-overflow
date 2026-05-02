@@ -31,8 +31,13 @@ Every row rendered inside `<VList>`'s children snippet:
   search, and row-boundary markers anchor on. `SubagentGroup` is
   structural and does not carry `data-item-id`; response dividers
   therefore can only ever sit before a leaf, not before a subagent card.
-  `shouldRenderResponseDividerBefore` in `MessageTimeline.svelte`
-  enforces that contract by returning false for non-leaf nodes.
+  `shouldRenderTurnBoundaryBefore` in `MessageTimeline.svelte`
+  enforces that contract by returning false for non-leaf nodes. The
+  divider always renders the "Response" pill in the DOM and toggles
+  visibility via `class:invisible`, so promoting an intermediate
+  divider to "final" on turn settle never changes row geometry —
+  satisfies the "no late transcript adornments on completion" rule
+  in `frontend/CLAUDE.md`.
 - Keeps its outer shell stable after first render. If a tool row might
   eventually have payload, render the header affordance from the start
   and disable the action until the body exists. Do not swap static rows

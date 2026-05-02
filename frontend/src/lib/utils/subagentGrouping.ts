@@ -308,6 +308,37 @@ export function isToolTextBoundary(nodes: TimelineNode[], index: number): boolea
 }
 
 /**
+ * Item ids that are the LAST top-level `assistant_text` in their turn,
+ * excluding any turn currently in flight. The "Response" pill divider
+ * uses this to label only the closing assistant message of a settled
+ * turn; intermediate text-after-tool boundaries inside the same turn
+ * render the divider as a plain line. Excluding the in-flight turn is
+ * load-bearing because providers emit per-wire-round (see
+ * internal/triage/CLAUDE.md § Wire-round vs logical-turn): more rounds
+ * may still arrive and promote a different message to "final."
+ *
+ * Subagent-group descendants are intentionally invisible to this walk —
+ * the divider can only sit before a top-level leaf (chat row contract),
+ * so a turn whose only trailing assistant_text lives inside a group
+ * gets no pill.
+ */
+export function finalAssistantTextIdsByTurn(
+  nodes: readonly TimelineNode[],
+  activeTurnIndex: number | null,
+): Set<string> {
+  const lastByTurn = new Map<number, string>();
+  for (const node of nodes) {
+    if (node.kind !== 'leaf') continue;
+    if (node.item.kind !== 'assistant_text') continue;
+    lastByTurn.set(node.item.turnIndex, node.item.id);
+  }
+  if (activeTurnIndex !== null) {
+    lastByTurn.delete(activeTurnIndex);
+  }
+  return new Set(lastByTurn.values());
+}
+
+/**
  * Recursive containment check: does `node` (or any descendant of a group
  * node) carry an item with this id?
  */

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  finalAssistantTextIdsByTurn,
   findTimelineNodeIndex,
   groupItemsBySubagent,
   isToolTextBoundary,
@@ -294,5 +295,57 @@ describe('groupItemsBySubagent', () => {
     expect(isToolTextBoundary(nodes, 0)).toBe(false);
     expect(isToolTextBoundary(nodes, 1)).toBe(true);
     expect(isToolTextBoundary(nodes, 2)).toBe(true);
+  });
+});
+
+describe('finalAssistantTextIdsByTurn', () => {
+  it('picks the last assistant_text per settled turn', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({ id: 'u0', kind: 'user_text', role: 'user' }),
+      mkItem({ id: 't0:0', itemIndex: 1, kind: 'assistant_text', summary: 'mid' }),
+      mkItem({ id: 't0:1', itemIndex: 2, kind: 'assistant_text', summary: 'final-of-0' }),
+      mkItem({ id: 'u1', turnIndex: 1, kind: 'user_text', role: 'user' }),
+      mkItem({ id: 't1:0', turnIndex: 1, itemIndex: 1, kind: 'assistant_text', summary: 'final-of-1' }),
+    ]);
+
+    const ids = finalAssistantTextIdsByTurn(nodes, null);
+    expect(ids).toEqual(new Set(['t0:1', 't1:0']));
+  });
+
+  it('omits the in-flight turn so the closing message of an unfinished turn is not labelled', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({ id: 't0:0', kind: 'assistant_text', summary: 'final-of-0' }),
+      mkItem({ id: 't1:0', turnIndex: 1, kind: 'assistant_text', summary: 'streaming' }),
+    ]);
+
+    const ids = finalAssistantTextIdsByTurn(nodes, 1);
+    expect(ids).toEqual(new Set(['t0:0']));
+  });
+
+  it('returns the empty set when no leaves are assistant_text', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({ id: 'u0', kind: 'user_text', role: 'user' }),
+      mkItem({ id: 'tool:0', itemIndex: 1, kind: 'tool_call', toolName: 'Bash', summary: 'ls' }),
+    ]);
+
+    expect(finalAssistantTextIdsByTurn(nodes, null).size).toBe(0);
+  });
+
+  it('skips assistant_text nested inside subagent groups (chat row contract)', () => {
+    // The "Response" pill divider can only sit before a top-level leaf
+    // (chat row contract), so a turn whose only trailing assistant_text
+    // lives inside a subagent group must not appear here.
+    const nodes = groupItemsBySubagent([
+      inlineAgent('agent-0', 0),
+      mkItem({
+        id: 'inside',
+        itemIndex: 1,
+        parentId: 'agent-0',
+        kind: 'assistant_text',
+        summary: 'subagent text',
+      }),
+    ]);
+
+    expect(finalAssistantTextIdsByTurn(nodes, null).size).toBe(0);
   });
 });
