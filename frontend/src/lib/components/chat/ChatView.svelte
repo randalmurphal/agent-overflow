@@ -4,6 +4,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import MessageTimeline from './MessageTimeline.svelte';
   import Composer from '../composer/Composer.svelte';
+  import ComposerHint from '../composer/ComposerHint.svelte';
   import SendQueuePreview from '../composer/SendQueuePreview.svelte';
   import BelowComposerBar from '../composer/belowbar/BelowComposerBar.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
@@ -322,6 +323,9 @@
           </div>
           <div class="pointer-events-auto">
             <BelowComposerBar {pane} />
+          </div>
+          <div class="pointer-events-auto">
+            <ComposerHint {pane} {draft} />
           </div>
         </div>
       </div>
