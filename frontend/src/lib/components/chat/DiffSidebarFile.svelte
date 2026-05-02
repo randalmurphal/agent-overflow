@@ -17,6 +17,7 @@
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import EditorLink from '../common/EditorLink.svelte';
   import Icon from '../primitives/Icon.svelte';
+  import ToolKindIcon from './ToolKindIcon.svelte';
   import DiffLineContent from './DiffLineContent.svelte';
   import type { PatchFile, PatchLine, SplitDiffRow } from '../../utils/patchFiles';
   import { buildSplitRows, stripPatchLinePrefix } from '../../utils/patchFiles';
@@ -69,13 +70,18 @@
 
   let wrapClass = $derived(wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre');
 
-  let kindBadgeClasses = $derived.by(() => {
-    switch (file.kind) {
-      case 'added': return 'bg-success/20 text-success';
-      case 'deleted': return 'bg-error/20 text-error';
-      case 'renamed': return 'bg-accent/30 text-accent';
-      default: return 'bg-warning/20 text-warning';
-    }
+  // Renamed files show `old → new` so the change kind reads from the
+  // path itself; +/- counts convey added (all-add) / deleted
+  // (all-del) / modified (mix). No separate kind chip pill.
+  let displayPath = $derived.by(() => {
+    if (file.kind !== 'renamed') return file.path;
+    const renameLine = file.lines.find(
+      (l) => l.type === 'meta' && l.content.startsWith('rename from '),
+    );
+    if (!renameLine) return file.path;
+    const previousPath = renameLine.content.slice('rename from '.length).trim();
+    if (!previousPath) return file.path;
+    return `${previousPath} → ${file.path}`;
   });
 
   // Filter out the `meta` lines (diff/index/+++/--- headers) so the
@@ -112,25 +118,34 @@
   let safeId = $derived(file.path.replace(/[^A-Za-z0-9_-]/g, '_'));
 </script>
 
+<!--
+  Per-file row in the diff sidebar. Visual style mirrors the inline
+  DiffFileBlock: chevron + ToolKindIcon + path + +/- counts +
+  EditorLink. No "modified"/"added" kind chip pill (the +/- counts
+  and the rename-aware path display convey the kind without an
+  explicit badge), no card border around the file row. Body indents
+  under the chevron column with a left rule so a multi-file sidebar
+  still reads as a list while staying lighter visually.
+-->
 <section
   bind:this={containerEl}
   data-file-path={file.path}
   data-testid="diff-sidebar-file"
-  class="rounded-[var(--radius-control)] border border-border-subtle bg-card/15 mb-2"
+  class="group/diff-sidebar-file mb-2"
 >
-  <header class="group/diff-sidebar-file flex items-center gap-2 px-2.5 py-1.5 text-[13px] hover:bg-surface-2/25 transition-colors">
+  <header class="flex items-center gap-2 px-1 py-1 text-[13px] hover:bg-surface-2/20 rounded-[var(--radius-control)] transition-colors">
     <button
       type="button"
       onclick={() => onToggle(file.path)}
       aria-expanded={expanded}
       aria-controls="diff-sidebar-file-{safeId}"
-      class="flex flex-1 min-w-0 items-center gap-2 text-left cursor-pointer bg-transparent border-0 p-0"
+      class="flex flex-1 min-w-0 items-center gap-2 text-left cursor-pointer bg-transparent border-0 p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded"
     >
-      <span class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150" class:rotate-90={expanded}>
+      <span class="flex size-3 shrink-0 items-center justify-center text-fg-subtle/60 select-none transition-transform duration-150" class:rotate-90={expanded}>
         <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
       </span>
-      <span class="font-mono text-[12px] text-fg-muted truncate">{file.path}</span>
-      <span class="px-1.5 py-0.5 rounded-[var(--radius-field)] text-[10px] font-medium {kindBadgeClasses}">{file.kind}</span>
+      <ToolKindIcon kind="file" ariaLabel="File" />
+      <span class="min-w-0 flex-1 truncate font-mono text-[12px] text-fg-muted/85">{displayPath}</span>
       <span class="ml-auto flex gap-2 text-[11px] shrink-0 tabular-nums">
         {#if file.additions > 0}<span class="text-success">+{file.additions}</span>{/if}
         {#if file.deletions > 0}<span class="text-error">-{file.deletions}</span>{/if}
@@ -146,7 +161,7 @@
   </header>
 
   {#if expanded}
-    <div id="diff-sidebar-file-{safeId}" class="border-t border-border-subtle bg-surface-0/50">
+    <div id="diff-sidebar-file-{safeId}" class="ml-5 border-l border-border-subtle bg-surface-0/35">
       {#if shouldRender}
         {#if viewMode === 'split'}
           <div class="grid grid-cols-2 gap-px bg-border-subtle font-mono text-[11px] leading-tight {wrapClass}">
