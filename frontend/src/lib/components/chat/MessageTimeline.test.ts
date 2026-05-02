@@ -473,12 +473,11 @@ describe('<MessageTimeline>', () => {
       const divider = getByTestId('response-divider');
       expect(divider).toBeInTheDocument();
       // The single assistant_text in this turn is also the final one,
-      // and there's no active turn — so the pill is visible. The DOM
-      // always carries the "Response" text (visibility-toggled, not
-      // conditionally rendered), so `data-final-response` is the
-      // discriminator, not `textContent`.
+      // and there's no active turn — so the pill is rendered. The
+      // labeled and unlabeled branches share a pinned wrapper height,
+      // so toggling between them doesn't shift row geometry.
       expect(divider.getAttribute('data-final-response')).toBe('true');
-      expect(divider.querySelector('.invisible')).toBeNull();
+      expect(divider.textContent).toContain('Response');
 
       // Pin the reading order: divider sits BEFORE the assistant leaf.
       // The leaf is wrapped in a [data-item-id] div inside a
@@ -574,9 +573,26 @@ describe('<MessageTimeline>', () => {
       const dividers = queryAllByTestId('response-divider');
       expect(dividers).toHaveLength(2);
       expect(dividers[0].getAttribute('data-final-response')).toBe('false');
-      expect(dividers[0].querySelector('.invisible')).not.toBeNull();
+      expect(dividers[0].textContent).not.toContain('Response');
       expect(dividers[1].getAttribute('data-final-response')).toBe('true');
-      expect(dividers[1].querySelector('.invisible')).toBeNull();
+      expect(dividers[1].textContent).toContain('Response');
+
+      // Pin the structural shape of each branch: unlabeled mode is one
+      // full-width line (one `h-px` span), labeled mode is two
+      // (line | gap | pill | gap | line). A regression that swaps the
+      // conditional or accidentally renders both flank lines without
+      // the pill would leave the empty-divider void back in the UI.
+      expect(dividers[0].querySelectorAll('span.h-px')).toHaveLength(1);
+      expect(dividers[1].querySelectorAll('span.h-px')).toHaveLength(2);
+
+      // Pin the geometry contract: both branches share the same
+      // wrapper height class. Without this, virtua re-measures to a
+      // different height when an intermediate divider promotes to
+      // "final" on settle — exactly the bug the row contract forbids.
+      for (const divider of dividers) {
+        const inner = divider.querySelector('div');
+        expect(inner?.classList.contains('h-[1.625rem]')).toBe(true);
+      }
     });
 
     it('suppresses the "Response" pill while the turn is still in flight', async () => {
@@ -605,19 +621,22 @@ describe('<MessageTimeline>', () => {
 
       const divider = getByTestId('response-divider');
       expect(divider.getAttribute('data-final-response')).toBe('false');
-      expect(divider.querySelector('.invisible')).not.toBeNull();
+      expect(divider.textContent).not.toContain('Response');
 
       // Once the turn settles, the pill materialises on the SAME
       // divider element — no new rows inserted, no row shell mutation,
-      // just the visibility class flipping. Pinning element identity
-      // protects the load-bearing "no late transcript adornments"
-      // contract that the chat row contract spells out.
+      // just the inner branch swapping the continuous line for the
+      // labeled "line | gap | pill | gap | line" structure. The
+      // wrapper's pinned height (h-[1.625rem]) keeps the row geometry
+      // identical across the swap, protecting the load-bearing "no
+      // late transcript adornments" contract that the chat row
+      // contract spells out.
       projectTurnCompleted(thread.id, 'turn-0');
       await tick();
       const settledDivider = getByTestId('response-divider');
       expect(settledDivider).toBe(divider);
       expect(settledDivider.getAttribute('data-final-response')).toBe('true');
-      expect(settledDivider.querySelector('.invisible')).toBeNull();
+      expect(settledDivider.textContent).toContain('Response');
     });
 
     it('marks the final assistant_text of every settled turn in a multi-turn thread', async () => {
@@ -670,7 +689,7 @@ describe('<MessageTimeline>', () => {
       expect(dividers).toHaveLength(2);
       for (const divider of dividers) {
         expect(divider.getAttribute('data-final-response')).toBe('true');
-        expect(divider.querySelector('.invisible')).toBeNull();
+        expect(divider.textContent).toContain('Response');
       }
     });
 
@@ -702,7 +721,7 @@ describe('<MessageTimeline>', () => {
 
       const divider = getByTestId('response-divider');
       expect(divider.getAttribute('data-final-response')).toBe('true');
-      expect(divider.querySelector('.invisible')).toBeNull();
+      expect(divider.textContent).toContain('Response');
     });
   });
 

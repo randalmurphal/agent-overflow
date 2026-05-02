@@ -33,11 +33,17 @@ Every row rendered inside `<VList>`'s children snippet:
   therefore can only ever sit before a leaf, not before a subagent card.
   `shouldRenderTurnBoundaryBefore` in `MessageTimeline.svelte`
   enforces that contract by returning false for non-leaf nodes. The
-  divider always renders the "Response" pill in the DOM and toggles
-  visibility via `class:invisible`, so promoting an intermediate
-  divider to "final" on turn settle never changes row geometry —
-  satisfies the "no late transcript adornments on completion" rule
-  in `frontend/CLAUDE.md`.
+  divider has two visual modes — labeled (`line | gap | pill | gap |
+  line`) when the leaf is the final assistant_text of a settled turn,
+  unlabeled (one continuous full-width line) otherwise. Both modes
+  share a fixed wrapper height (`h-[1.625rem]`); the pill uses
+  `leading-tight` to keep its content inside that wrapper across
+  font-loading variance. Promoting an intermediate divider to "final"
+  on turn settle therefore swaps the inner branch without changing row
+  geometry — satisfies the "no late transcript adornments on
+  completion" rule in `frontend/CLAUDE.md`. Tests discriminate the two
+  modes via `data-final-response` on the wrapper plus presence/absence
+  of "Response" in `divider.textContent`.
 - Keeps its outer shell stable after first render. If a tool row might
   eventually have payload, render the header affordance from the start
   and disable the action until the body exists. Do not swap static rows

@@ -466,22 +466,32 @@
           <div class="mx-auto w-full max-w-[62rem] px-6">
             {#if shouldRenderTurnBoundaryBefore(index, node)}
               {@const showResponsePill = node.kind === 'leaf' && finalAssistantTextIds.has(node.item.id)}
-              <!-- Pill is rendered unconditionally and toggled via
-                   `invisible` so toggling the label cannot change row
-                   geometry (height OR flex-line widths). virtua's row
-                   measurement stays stable across the in-flight →
-                   settled transition. -->
+              <!-- Two visual modes share a fixed wrapper height
+                   (`h-[1.625rem]` = 26px = pill chrome: text-[10px]
+                   × leading-tight ≈ 12px + py-1 8px + 2× 1px border).
+                   Labeled mode renders `line | gap | pill | gap | line`,
+                   unlabeled mode renders one continuous full-width line.
+                   The pill's `leading-tight` keeps its content inside
+                   the fixed wrapper across font-loading variance.
+                   Fixed `h-` (not the codebase's usual `min-h-` slot
+                   convention) is deliberate: both branches MUST be the
+                   exact same height so promoting an intermediate
+                   divider to "final" on turn settle never shifts row
+                   geometry — satisfies the "no late transcript
+                   adornments on completion" rule in
+                   `frontend/CLAUDE.md`. Re-derive 1.625rem if the pill
+                   classes above change. -->
               <div data-testid="response-divider" data-final-response={showResponsePill ? 'true' : 'false'}>
-                <div class="my-3 flex items-center gap-3">
+                <div class="my-3 flex h-[1.625rem] items-center gap-3">
                   <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
-                  <span
-                    class="rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-text-secondary"
-                    class:invisible={!showResponsePill}
-                    aria-hidden={!showResponsePill}
-                  >
-                    Response
-                  </span>
-                  <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
+                  {#if showResponsePill}
+                    <span
+                      class="rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[10px] uppercase leading-tight tracking-[0.14em] text-text-secondary"
+                    >
+                      Response
+                    </span>
+                    <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
+                  {/if}
                 </div>
               </div>
             {/if}
