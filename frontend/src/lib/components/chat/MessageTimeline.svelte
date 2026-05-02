@@ -98,6 +98,34 @@
     groupItemsBySubagent(filterRedundantNotifications(pane.items)),
   );
 
+  // The composer-padding spacer used to live inside the *last* data row's
+  // wrapper, conditional on `index === groupedNodes.length - 1`. Every new
+  // top-level append migrated the spacer between two rows: the old-last
+  // shrank by ~composer-height, the new-last grew by the same amount,
+  // virtua's per-row ResizeObserver fired for both, and its position
+  // cache walked twice per append. With rapid tool-call bursts, that
+  // double-measure-per-append showed up as visible row jitter even
+  // though the visible scroll height delta was correct.
+  //
+  // The spacer is now its own DisplayNode kind, always at the end of the
+  // virtua data array under a stable key. Real rows never re-measure on
+  // append (only the new row mounts), and `getLastIndex` points at the
+  // spacer so `scrollToIndex(last, {align:'end'})` keeps the user's last
+  // real row sitting just above the absolute composer overlay.
+  type BottomSpacerNode = { kind: 'bottom_spacer' };
+  type DisplayNode = TimelineNode | BottomSpacerNode;
+
+  // The spacer is a singleton — one stable identity reused across renders
+  // so virtua never sees the spacer "change" and can keep its DOM mounted.
+  // Defined at module scope (effectively) via a const captured by the
+  // derived; allocating a fresh object each derive would still let virtua
+  // dedupe on key, but reusing the literal keeps the diff trivially obvious.
+  const SPACER_NODE: BottomSpacerNode = { kind: 'bottom_spacer' };
+
+  let displayNodes = $derived<DisplayNode[]>(
+    groupedNodes.length === 0 ? [] : [...groupedNodes, SPACER_NODE],
+  );
+
   let finalAssistantTextIds = $derived(
     finalAssistantTextIdsByTurn(groupedNodes, getActiveTurn(pane.threadId)?.turnIndex ?? null),
   );
@@ -105,7 +133,11 @@
   const stick = createStickyBottomController({
     getScrollEl: () => scrollEl,
     getListHandle: () => listRef,
-    getLastIndex: () => groupedNodes.length - 1,
+    // Scroll target is the spacer (last entry in displayNodes). `align:'end'`
+    // pins the spacer's bottom to the viewport bottom; the last *real* row
+    // therefore sits exactly composer-height above the viewport bottom —
+    // i.e. just above the absolute composer overlay.
+    getLastIndex: () => displayNodes.length - 1,
     // Unmask rows that `upsertItemsBatch` flagged for visibility-masking
     // while sticky. Fires from every settle path of the controller —
     // success, bail, and the synchronous forceStick — so the registry can
@@ -166,8 +198,13 @@
   // already exists must not mask when one of its descendants arrives —
   // hiding stable history while a child row catches up was the bug
   // that made running subagent cards flicker per child append.
+  //
+  // The set is a SvelteSet; per-row `.has()` reads subscribe only to
+  // that id's membership, so add/remove of a sibling id doesn't
+  // invalidate every visible row's class:invisible derivation. The
+  // earlier `.size === 0` short-circuit was removed because reading
+  // size subscribes to *all* changes, which defeats that fine grain.
   function hasPendingScrollCatchup(node: TimelineNode): boolean {
-    if (pane.pendingScrollCatchupItems.size === 0) return false;
     return pane.pendingScrollCatchupItems.has(timelineNodeItemId(node));
   }
 
@@ -212,8 +249,13 @@
         return;
       }
       const offset = listRef.getScrollOffset();
-      const idx = listRef.findItemIndex(offset);
-      if (idx < 0) return;
+      const rawIdx = listRef.findItemIndex(offset);
+      if (rawIdx < 0) return;
+      // Clamp into the real-row range. virtua's data array now ends with
+      // the synthetic spacer node, so a near-bottom scroll position can
+      // resolve to that index — fall back to the last real row so the
+      // snapshot anchors to a row a future restore can actually find.
+      const idx = Math.min(rawIdx, groupedNodes.length - 1);
       const node = groupedNodes[idx];
       if (!node) return;
       const itemId = timelineNodeItemId(node);
@@ -409,8 +451,8 @@
 
     <VList
       bind:this={listRef}
-      data={groupedNodes}
-      getKey={(node) => timelineNodeKey(node)}
+      data={displayNodes}
+      getKey={(node) => (node.kind === 'bottom_spacer' ? 'bottom_spacer' : timelineNodeKey(node))}
       itemSize={ESTIMATED_ROW_SIZE}
       bufferSize={BUFFER_SIZE_PX}
       ssrCount={IS_TEST ? 100_000 : undefined}
@@ -420,7 +462,23 @@
       role="log"
       aria-label="Message History"
     >
-      {#snippet children(node: TimelineNode, index: number)}
+      {#snippet children(node: DisplayNode, index: number)}
+        {#if node.kind === 'bottom_spacer'}
+          <!-- Synthetic spacer always at the end of displayNodes. Lives
+               in the virtualized data array under a stable getKey so
+               virtua never sees it move (it stays at the same DOM
+               identity across appends, no remount, no migration of the
+               composer-padding height between two real rows). The height
+               itself is the same calc the row-embedded version used.
+               `aria-hidden` keeps it out of the message-history role
+               announcement; no `data-row-index` so the load-older /
+               turn-divider plumbing only ever sees real rows. -->
+          <div
+            aria-hidden="true"
+            data-testid="bottom-spacer"
+            style:height={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}
+          ></div>
+        {:else}
         <!-- Outer per-row wrapper. We do NOT set data-item-id here:
              only TimelineLeaf owns that attribute on its root. Structural
              rows stay unanchored, and tests rely on the divider rendering
@@ -498,17 +556,18 @@
             <div data-testid="message-timeline-node">
               {@render renderNode(node, 1)}
             </div>
-
-            {#if index === groupedNodes.length - 1}
-              <!-- Bottom spacer consumes the measured ChatView overlay
-                   height. Live turn UI is intentionally outside VList. -->
-              <div
-                aria-hidden="true"
-                style:height={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}
-              ></div>
-            {/if}
+            <!-- Bottom-padding spacer used to live here, gated on
+                 `index === groupedNodes.length - 1`. It now lives as
+                 the synthetic `bottom_spacer` DisplayNode at the end of
+                 the virtua data array — see the {#if node.kind ===
+                 'bottom_spacer'} branch above. Migrating it out of the
+                 last-row wrapper means appends no longer shrink the
+                 outgoing-last row and grow the incoming-last row in
+                 the same frame, which used to cost two RO-driven
+                 measurement passes per append. -->
           </div>
         </div>
+        {/if}
       {/snippet}
     </VList>
   {/if}

@@ -256,6 +256,11 @@ describe('createStickyBottomController', () => {
       expect(controller.intent).toBe('stick');
       expect(handle.scrollToIndex).not.toHaveBeenCalled();
 
+      // Bump size so the rAF-deferred path the pointerUp resume goes
+      // through actually has growth to react to. Without this, the
+      // controller short-circuits the no-op scroll (we're already at
+      // the geometric bottom and nothing changed) — covered separately.
+      handle._size += 100;
       firePointerUp(scrollEl);
       // pointerUp triggers notifyContentMaybeGrew on auto-scroll resume —
       // which is rAF-deferred, so flush a frame before asserting.
@@ -273,7 +278,9 @@ describe('createStickyBottomController', () => {
   });
 
   describe('notifyContentMaybeGrew', () => {
-    it('scrolls to last when sticky (after rAF)', async () => {
+    it('scrolls to last when sticky AND content grew (after rAF)', async () => {
+      // Simulate a new row landing in virtua's cache.
+      handle._size += 100;
       controller.notifyContentMaybeGrew();
       // Deferred: not called synchronously.
       expect(handle.scrollToIndex).not.toHaveBeenCalled();
@@ -281,7 +288,30 @@ describe('createStickyBottomController', () => {
       expect(handle.scrollToIndex).toHaveBeenCalledWith(lastIndex, { align: 'end' });
     });
 
+    it('skips the scroll write when at-bottom and no growth', async () => {
+      // Default mock geometry already has us at the bottom (offset 400 +
+      // viewport 600 = size 1000). Nothing has grown since `attach()`
+      // seeded lastObservedScrollSize, so the rAF should short-circuit
+      // without touching scrollToIndex. Auto-follow that fires on every
+      // streaming chunk and every status flip would otherwise issue a
+      // no-op scrollToIndex per frame, which churns virtua's layout.
+      controller.notifyContentMaybeGrew();
+      await nextFrame();
+      expect(handle.scrollToIndex).not.toHaveBeenCalled();
+    });
+
+    it('still scrolls when at-bottom drifts away (e.g. row above shrank)', async () => {
+      // Distance-from-bottom > threshold despite no scroll-size growth
+      // (e.g. an above-viewport row collapsed). The controller should
+      // re-pin to the new bottom rather than treat it as a no-op.
+      handle._offset = 100;
+      controller.notifyContentMaybeGrew();
+      await nextFrame();
+      expect(handle.scrollToIndex).toHaveBeenCalledWith(lastIndex, { align: 'end' });
+    });
+
     it('coalesces multiple calls in the same frame into one scroll', async () => {
+      handle._size += 100;
       controller.notifyContentMaybeGrew();
       controller.notifyContentMaybeGrew();
       controller.notifyContentMaybeGrew();
@@ -298,6 +328,7 @@ describe('createStickyBottomController', () => {
 
     it('does nothing when pause-lease is held', async () => {
       const release = controller.pauseAutoScroll();
+      handle._size += 100; // pretend content grew during the lease
       controller.notifyContentMaybeGrew();
       await nextFrame();
       expect(handle.scrollToIndex).not.toHaveBeenCalled();
@@ -331,6 +362,7 @@ describe('createStickyBottomController', () => {
     it('lease is depth-counted and idempotent', async () => {
       const r1 = controller.pauseAutoScroll();
       const r2 = controller.pauseAutoScroll();
+      handle._size += 100; // ensure the post-release rAF has growth to react to
       controller.notifyContentMaybeGrew();
       await nextFrame();
       expect(handle.scrollToIndex).not.toHaveBeenCalled();
@@ -359,6 +391,11 @@ describe('createStickyBottomController', () => {
       controller.notifyContentMaybeGrew();
       await nextFrame();
       expect(handle.scrollToIndex).not.toHaveBeenCalled();
+
+      // Simulate the chat column shrinking while the lease was held —
+      // viewport drops, so the user is no longer at the geometric
+      // bottom. The release path should observe the drift and re-pin.
+      handle._viewport = 400;
 
       release();
       await nextFrame();
@@ -419,10 +456,13 @@ describe('createStickyBottomController', () => {
     it('re-pins to the bottom when the wrapper resizes while sticky', async () => {
       expect(lastROCallback).not.toBeNull();
       // Simulate the chat column shrinking (terminal drawer opens,
-      // window dragged smaller, sidebar fly-in narrows the column).
+      // window dragged smaller, sidebar fly-in narrows the column) —
+      // viewport drops, the user is no longer at the geometric bottom,
+      // and the controller's no-op short-circuit should NOT fire.
       // The RO entries argument is unused by the controller — it just
       // calls notifyContentMaybeGrew unconditionally and lets the
       // controller decide whether to scroll based on intent + lease.
+      handle._viewport = 400;
       lastROCallback!([], {} as ResizeObserver);
       await nextFrame();
       expect(handle.scrollToIndex).toHaveBeenCalledTimes(1);

@@ -169,7 +169,36 @@ export function createStickyBottomController(
         return;
       }
       const handle = options.getListHandle();
-      if (handle) scrollToLast(handle);
+      if (!handle) {
+        options.onScrollSettled?.();
+        return;
+      }
+      // No-op short-circuit. The auto-follow effect tracks
+      // `liveDeltaRevision`, `timelineRevision`, and `items.length` —
+      // every streaming chunk and every in-place status change (e.g.
+      // running → done badge swap) bumps a revision and reaches this
+      // rAF. Most of those don't actually grow the scroll surface.
+      // Issuing `scrollToIndex` per frame anyway makes virtua re-walk
+      // its per-row cache and forces a layout pass even when the
+      // scroll write is a no-op — a measurable contributor to
+      // perceived jitter when many tools complete in quick succession.
+      // We still scroll when (a) the surface grew since the last
+      // write, or (b) we've drifted off the bottom (e.g. a row above
+      // the viewport just shrank). Otherwise we skip the write and
+      // just settle so any visibility masks unmask in the next paint.
+      const currentSize = handle.getScrollSize();
+      const sizeGrew = lastObservedScrollSize === -1 || currentSize > lastObservedScrollSize;
+      const offset = handle.getScrollOffset();
+      const viewport = handle.getViewportSize();
+      const distanceFromBottom = currentSize - offset - viewport;
+      if (!sizeGrew && distanceFromBottom <= threshold) {
+        // Re-seed so the next no-growth event still exits via this
+        // branch instead of misclassifying a stale baseline as growth.
+        lastObservedScrollSize = currentSize;
+        options.onScrollSettled?.();
+        return;
+      }
+      scrollToLast(handle);
       options.onScrollSettled?.();
     });
   }

@@ -11,6 +11,7 @@ import type {
 } from '../types/events';
 import type { ChannelMessage } from '../types/discussion';
 import type { DesignArtifact, DesignOptionsRequest, DesignViewport } from '../types/design';
+import { SvelteSet } from 'svelte/reactivity';
 import {
   GetThreadItem,
   ListItemsBeforeTurn,
@@ -344,7 +345,13 @@ export function createThreadPane() {
   // wrong-position flash before `stickyBottomController` runs `scrollToLast`.
   // Cleared by `onScrollSettled` from the controller (success branch, bail
   // branch, and `forceStick`) and by `clearRowUiState` on thread switch.
-  let pendingScrollCatchupItems: Set<string> = $state(new Set());
+  //
+  // SvelteSet (vs `$state(new Set())`) keeps the per-row `.has(id)` reads in
+  // the timeline template subscribed only to that id's membership. Adding a
+  // sibling id therefore re-runs only that sibling's row binding, not every
+  // visible row's class:invisible derivation — important when a fresh batch
+  // of tool_call rows lands per-frame.
+  const pendingScrollCatchupItems: SvelteSet<string> = new SvelteSet();
   const itemStatusById: Map<string, Item['status']> = new Map();
   const itemIndexById: Map<string, number> = new Map();
   const itemSummaryById: Map<string, string> = new Map();
@@ -723,7 +730,7 @@ export function createThreadPane() {
   function clearRowUiState(): void {
     expansionStates.clear();
     subagentGroupExpanded = new Set();
-    pendingScrollCatchupItems = new Set();
+    pendingScrollCatchupItems.clear();
     disposeAttachmentBlobs();
   }
 
@@ -982,9 +989,7 @@ export function createThreadPane() {
     items = next;
     timelineRevision++;
     if (newlyAppendedItemIds.length > 0) {
-      const nextSet = new Set(pendingScrollCatchupItems);
-      for (const id of newlyAppendedItemIds) nextSet.add(id);
-      pendingScrollCatchupItems = nextSet;
+      for (const id of newlyAppendedItemIds) pendingScrollCatchupItems.add(id);
     }
   }
 
@@ -1601,7 +1606,7 @@ export function createThreadPane() {
     },
     clearPendingScrollCatchup(): void {
       if (pendingScrollCatchupItems.size === 0) return;
-      pendingScrollCatchupItems = new Set();
+      pendingScrollCatchupItems.clear();
     },
 
     setGeneralError(message: string | null): void {

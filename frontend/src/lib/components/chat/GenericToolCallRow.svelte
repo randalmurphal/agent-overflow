@@ -18,6 +18,15 @@
   import AnsiText from './AnsiText.svelte';
   import EditorLink from '../common/EditorLink.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
+  import { formatElapsedSeconds } from '../../utils/format';
+
+  // Threshold (ms) at which the running row starts displaying elapsed
+  // time in the duration slot. Sub-2s tools (most Read/Edit/Write/etc.)
+  // would just churn the digits up to "1s" and finish before anyone
+  // could read it; gating on >=2s keeps the transcript quiet for the
+  // common case while still surfacing progress on slow Bash/MultiEdit/
+  // network-bound tools.
+  const RUNNING_ELAPSED_THRESHOLD_MS = 2_000;
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
@@ -83,6 +92,35 @@
   });
 
   let completionStatus = $derived(deriveCompletionStatus(item, { meta: summaryMeta }));
+
+  // Wall-clock ticker, paused when the row isn't running. Mirrors the
+  // SubagentGroup elapsed-display pattern: the interval clears on
+  // running → done (because the effect re-runs when runningLabel
+  // flips) and on virtua remount (effect cleanup). Only one timer per
+  // visible running row; rows scrolled past `bufferSize=900` stop
+  // ticking entirely.
+  let now = $state(Date.now());
+  $effect(() => {
+    if (runningLabel === null) return;
+    now = Date.now();
+    const id = setInterval(() => {
+      now = Date.now();
+    }, 1_000);
+    return () => clearInterval(id);
+  });
+
+  // Elapsed seconds string while the tool is running, gated on
+  // RUNNING_ELAPSED_THRESHOLD_MS so quick tools don't flash a "1s"
+  // before completing. Empty when running but under threshold so the
+  // reserved-width duration slot stays visually empty in that window.
+  let runningElapsedLabel = $derived.by<string>(() => {
+    if (runningLabel === null) return '';
+    const start = item.createdAt;
+    if (!Number.isFinite(start) || start <= 0) return '';
+    const elapsedMs = now - start;
+    if (elapsedMs < RUNNING_ELAPSED_THRESHOLD_MS) return '';
+    return formatElapsedSeconds(Math.floor(elapsedMs / 1_000));
+  });
 
   let deferredOutputState = $derived.by(() => {
     if (!itemMeta) return '';
@@ -153,41 +191,56 @@
     />
   {/if}
   <ToolDecisionChip decision={item.decision} />
-  {#if runningLabel !== null}
-    {#if isBackgroundedLaunch}
-      <span
-        class="shrink-0 text-[20px] leading-none text-accent opacity-90 transition-opacity group-hover/tool:opacity-100"
-        data-testid="tool-call-card-status"
-        data-status={item.status}
-        title="Running in background"
-        aria-label="Backgrounded"
-      >
-        …
-      </span>
-    {:else}
-      <span
-        class="shrink-0 text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
-        data-testid="tool-call-card-status"
-        data-status={item.status}
-      >
-        {runningLabel}
-      </span>
+  <!-- Reserved-width status slot. Mirrors SubagentGroup so the running
+       label and the completion badge swap without shifting the duration
+       and time chrome to their right on the running → done transition.
+       `min-w-[3.5rem]` covers the wider of the two ("running" text);
+       `justify-end` anchors both variants to the slot's right edge so
+       the visible right-of-status boundary stays put. -->
+  <span
+    class="inline-flex shrink-0 items-center justify-end min-w-[3.5rem]"
+    data-testid="tool-call-card-status-slot"
+  >
+    {#if runningLabel !== null}
+      {#if isBackgroundedLaunch}
+        <span
+          class="text-[20px] leading-none text-accent opacity-90 transition-opacity group-hover/tool:opacity-100"
+          data-testid="tool-call-card-status"
+          data-status={item.status}
+          title="Running in background"
+          aria-label="Backgrounded"
+        >
+          …
+        </span>
+      {:else}
+        <span
+          class="text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
+          data-testid="tool-call-card-status"
+          data-status={item.status}
+        >
+          {runningLabel}
+        </span>
+      {/if}
+    {:else if completionStatus !== null}
+      <CompletionBadge
+        status={completionStatus}
+        class="opacity-80 transition-opacity group-hover/tool:opacity-100"
+      />
     {/if}
-  {/if}
-  {#if durationMs !== null}
-    <span
-      class="shrink-0 tabular-nums text-[10px] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
-      data-testid="tool-call-card-duration"
-    >
-      {formatDuration(durationMs)}
-    </span>
-  {/if}
-  {#if runningLabel === null && completionStatus !== null}
-    <CompletionBadge
-      status={completionStatus}
-      class="opacity-80 transition-opacity group-hover/tool:opacity-100"
-    />
-  {/if}
+  </span>
+  <!-- Always-rendered duration slot. While running, shows wall-clock
+       elapsed once the tool has been alive for >= 2s (sub-2s tools
+       complete before the digits would update). On completion, swaps
+       to the provider-stamped exact `summaryMeta.durationMs` so the
+       transcript shows precise final duration. The reserved width
+       keeps the slot from materializing on completion and shoving
+       the time chip leftward. -->
+  <span
+    class="shrink-0 inline-block min-w-[3rem] text-right tabular-nums text-[10px] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
+    data-testid="tool-call-card-duration"
+  >
+    {durationMs !== null ? formatDuration(durationMs) : runningElapsedLabel}
+  </span>
   <time
     class="shrink-0 tabular-nums text-[10px] text-fg-hint"
     datetime={new Date(item.createdAt).toISOString()}
