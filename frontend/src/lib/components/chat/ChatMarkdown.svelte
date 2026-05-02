@@ -32,6 +32,7 @@
   import StreamdownCodeHost from './markdown/StreamdownCodeHost.svelte';
   import StreamdownMermaidHost from './markdown/StreamdownMermaidHost.svelte';
   import StreamdownMathHost from './markdown/StreamdownMathHost.svelte';
+  import { chatMarkdownTheme } from './markdown/streamdownTheme';
   import { enhancePathLinks, ensureMarkdownCopyDelegate } from '../../utils/markdownEnhance';
 
   let {
@@ -82,9 +83,11 @@
     content={source}
     parseIncompleteMarkdown={streaming}
     baseTheme="tailwind"
+    theme={chatMarkdownTheme}
     allowedLinkPrefixes={['*']}
     allowedImagePrefixes={['*']}
     renderHtml={false}
+    controls={{ code: false, table: false }}
     components={{
       code: StreamdownCodeHost,
       mermaid: StreamdownMermaidHost,
