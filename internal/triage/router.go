@@ -510,12 +510,30 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 // correct behaviour because a dispatcher panic indicates an
 // unrecoverable wiring bug.
 func (r *Router) maybeFireFlushTrigger(evt provider.ProviderEvent) {
-	if strings.TrimSpace(evt.ParentToolUseID) != "" {
+	parentToolUseID := strings.TrimSpace(evt.ParentToolUseID)
+	if parentToolUseID != "" {
+		// Subagent inner tool_use — not a top-level seam by design.
+		// Logged only when the queue has items so a reproduction
+		// trace shows why a queued message is sitting through the
+		// subagent. Bounded by user-typed message frequency, not log
+		// spam.
+		if r.QueuedFlushItemCount(evt.ThreadID) > 0 {
+			log.Printf("triage: flush trigger skipped (subagent tool_use) thread=%s tool=%s parent=%s — queue has %d item(s)",
+				evt.ThreadID, evt.ItemID, parentToolUseID, r.QueuedFlushItemCount(evt.ThreadID))
+		}
 		return
 	}
 	roundID := r.openRoundID(evt.ThreadID)
 	if roundID == "" {
+		if r.QueuedFlushItemCount(evt.ThreadID) > 0 {
+			log.Printf("triage: flush trigger skipped (no open round) thread=%s tool=%s — queue has %d item(s)",
+				evt.ThreadID, evt.ItemID, r.QueuedFlushItemCount(evt.ThreadID))
+		}
 		return
+	}
+	if r.QueuedFlushItemCount(evt.ThreadID) > 0 {
+		log.Printf("triage: flush trigger fire-attempt thread=%s tool=%s round=%s — queue has %d item(s)",
+			evt.ThreadID, evt.ItemID, roundID, r.QueuedFlushItemCount(evt.ThreadID))
 	}
 	r.fireFlushTriggerOnce(evt.ThreadID, roundID)
 }

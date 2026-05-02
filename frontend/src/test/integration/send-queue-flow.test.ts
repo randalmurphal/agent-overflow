@@ -243,9 +243,9 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
     expect(getFlushedForThread('thread-1')).toHaveLength(1);
   });
 
-  // ---- T4 — item_event upsert with provider_item_id clears Zone 2 ------
+  // ---- T4 — item_event upsert clears Zone 2 on chat-row appearance -----
 
-  it('T4: provider:item_event upsert with provider_item_id clears the matching Zone 2 entry', async () => {
+  it('T4: provider:item_event upsert for a flushed userItemId clears the matching Zone 2 entry on first sight', async () => {
     await mountWithActiveThread();
 
     // Seed Zone 2 directly via the event channel so the test exercises
@@ -263,9 +263,12 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
       'user:0:flush:2',
     ]);
 
-    // Wire echo lands for q-1: an item_event upsert carrying the
-    // matching userItemId AND `provider_item_id` in Meta. The Zone 2
-    // entry for that user message drops.
+    // The dispatcher's optimistic PersistItem emits an item_event
+    // upsert at flush time — the row appears in chat with whatever
+    // meta the dispatcher seeded (no provider_item_id yet). Zone 2
+    // clears immediately so the queue overlay and the chat-row
+    // appearance read as one transition rather than separated by the
+    // wire round-trip.
     //
     // events.ts coalesces upserts behind requestAnimationFrame +
     // 50 ms timeout; happy-dom doesn't tick raf from svelte's tick(),
@@ -280,7 +283,7 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
       role: 'user',
       status: 'completed',
       summary: 'in-flight',
-      meta: JSON.stringify({ provider_item_id: 'wire-echo-001' }),
+      meta: '{}',
       createdAt: 1,
       updatedAt: 1,
     });
@@ -290,26 +293,63 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
       ]);
     });
 
-    // An upsert WITHOUT provider_item_id (e.g. an early streaming
-    // snapshot before the wire echo arrives) must NOT drop Zone 2.
+    // The wire echo lands later carrying `provider_item_id` in Meta.
+    // Zone 2 is already empty for q-1 (cleared on the optimistic
+    // upsert above). The duplicate confirm is a no-op — q-2 stays
+    // pending because no upsert arrived for it.
     emitItemEventUpsert({
-      id: 'user:0:flush:2',
+      id: 'user:0:flush:1',
       threadId: 'thread-1',
       turnIndex: 0,
-      itemIndex: 2,
+      itemIndex: 1,
       kind: 'user_text',
       role: 'user',
       status: 'completed',
-      summary: 'still pending',
-      meta: '{}',
+      summary: 'in-flight',
+      meta: JSON.stringify({ provider_item_id: 'wire-echo-001' }),
       createdAt: 1,
-      updatedAt: 1,
+      updatedAt: 2,
     });
-    // Same coalescing window — give the queue time to flush before
-    // asserting the no-op outcome.
     await new Promise<void>((r) => setTimeout(r, 60));
     expect(getFlushedForThread('thread-1').map((f) => f.userItemId)).toEqual([
       'user:0:flush:2',
+    ]);
+  });
+
+  // ---- T4b — non-flush user_text upsert never clears Zone 2 ------------
+
+  it('T4b: a non-flush user_text upsert (no `:flush:` in id) leaves Zone 2 untouched', async () => {
+    await mountWithActiveThread();
+
+    emitWailsEvent('provider:queue_flushed', {
+      threadId: 'thread-1',
+      items: [
+        { queueItemId: 'q-1', userItemId: 'user:0:flush:1', message: 'queued' },
+      ],
+    });
+    await flush();
+    expect(getFlushedForThread('thread-1')).toHaveLength(1);
+
+    // The user-typed `user:0` row arrives via its own send/replay
+    // path. Its id has no `:flush:` scope, so the Zone 2 confirm
+    // gate must skip it — confirming on this would clear an
+    // unrelated queued message's marker.
+    emitItemEventUpsert({
+      id: 'user:0',
+      threadId: 'thread-1',
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      status: 'completed',
+      summary: 'unrelated',
+      meta: JSON.stringify({ provider_item_id: 'wire-echo-original' }),
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await new Promise<void>((r) => setTimeout(r, 60));
+    expect(getFlushedForThread('thread-1').map((f) => f.userItemId)).toEqual([
+      'user:0:flush:1',
     ]);
   });
 

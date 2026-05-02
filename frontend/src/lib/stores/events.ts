@@ -403,37 +403,26 @@ function applyItemUpserts(items: Item[]): void {
       itemsByThread.set(item.threadId, [item]);
     }
     // Zone 2 → chat-history transition: when a user_text row whose
-    // id matches a flushed entry's userItemId arrives with
-    // `provider_item_id` in its Meta, the wire echo has confirmed
-    // the flush. Drop the Zone 2 marker so the queue overlay
-    // releases the item. Detection is by ID prefix + Meta inspection;
-    // non-flush rows fall through cheaply (the early ID prefix check
-    // short-circuits).
+    // id contains the `:flush:` scope appears in the timeline, the
+    // queued message is now visible to the user as a chat row — Zone
+    // 2's "in flight, headed to history" semantic is satisfied. Drop
+    // the marker on the optimistic upsert (emitted from the
+    // dispatcher's PersistItem at flush time) so the chat-row
+    // appearance and Zone 2 clearance read as one transition rather
+    // than separated by the wire round-trip.
+    //
+    // The wire echo's later upsert (with `provider_item_id` stamped
+    // onto Meta) still flows through here for downstream consumers,
+    // but Zone 2 is already empty by then — confirmFlushedByUserItemId
+    // is idempotent on a missing entry.
     if (item.kind === 'user_text' && item.id.includes(':flush:')) {
-      if (queueItemMetaHasProviderID(item.meta)) {
-        confirmFlushedByUserItemId(item.threadId, item.id);
-      }
+      confirmFlushedByUserItemId(item.threadId, item.id);
     }
   }
   for (const pane of getAllPanes().values()) {
     const threadItems = pane.threadId ? itemsByThread.get(pane.threadId) : undefined;
     if (!threadItems) continue;
     pane.upsertItems(threadItems);
-  }
-}
-
-// queueItemMetaHasProviderID checks whether an item's Meta JSON
-// carries a `provider_item_id`. Inlined here rather than in a shared
-// util because the only caller is the Zone 2 confirmation path; a
-// silent JSON parse error is treated as "no provider_item_id" so a
-// malformed meta never blocks the rest of the upsert pipeline.
-function queueItemMetaHasProviderID(meta: string | undefined | null): boolean {
-  if (!meta || meta === '{}') return false;
-  try {
-    const parsed = JSON.parse(meta);
-    return typeof parsed?.provider_item_id === 'string' && parsed.provider_item_id.length > 0;
-  } catch {
-    return false;
   }
 }
 

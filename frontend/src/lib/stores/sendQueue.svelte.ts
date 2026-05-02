@@ -15,16 +15,18 @@ import * as bindings from './bindings';
  * `provider:queue_state_changed` events; Zone 1 is therefore a
  * reactive projection of the backend, not authoritative.
  *
- * Zone 2 — "flushed, awaiting wire-echo confirmation". The trigger
- * fired and the dispatcher began writing the user message to the
- * provider; the optimistic `user_text` row is already persisted and
- * visible in the timeline, but the wire echo (Claude
- * `--replay-user-messages`, Codex `item/completed userMessage`) has
- * not yet arrived to stamp `provider_item_id` onto the row. Zone 2
- * is the visual reminder of "in flight". Populated by
- * `provider:queue_flushed`; cleared per-item when the matching
- * timeline row's Meta carries a `provider_item_id`, or in bulk on
- * thread switch / session teardown.
+ * Zone 2 — "flushed, headed to history". The trigger fired and the
+ * dispatcher began writing the user message to the provider. Zone 2
+ * is the brief handoff between the queue overlay and the chat row:
+ * populated by `provider:queue_flushed`, cleared as soon as the
+ * matching timeline row appears (the optimistic `user_text` upsert
+ * the dispatcher emits from PersistItem). The wire echo (Claude
+ * `--replay-user-messages`, Codex `item/completed userMessage`)
+ * still stamps `provider_item_id` onto the row's Meta downstream for
+ * traceability and de-dup, but Zone 2 no longer waits for it —
+ * coupling Zone 2 to the wire round-trip surfaced as a multi-second
+ * gap between the chat row landing and the queue overlay clearing.
+ * Bulk-cleared on thread switch / session teardown.
  *
  * The store does not own dispatch decisions. RegisterQueueItem and
  * UndoQueuedItems both go through the backend RPC; the backend's
@@ -199,9 +201,11 @@ export function markItemsFlushed(
 }
 
 /** Remove a Zone 2 entry by userItemId. Called when a timeline
- * `provider:item_event` upsert arrives with the matching id and
- * `provider_item_id` stamped onto its Meta — i.e., the wire echo
- * has confirmed the flush. */
+ * `provider:item_event` upsert arrives with the matching id — the
+ * dispatcher's optimistic PersistItem makes the row appear in chat,
+ * which is the user-visible signal that the queued message has
+ * landed. The wire echo arrives later and re-upserts (with
+ * `provider_item_id`) but Zone 2 is already empty by then. */
 export function confirmFlushedByUserItemId(
   threadId: string,
   userItemId: string,
