@@ -238,11 +238,23 @@ func isReplayEnvelope(raw map[string]json.RawMessage) bool {
 // EventUserText. The replay shape (per @anthropic-ai/claude-agent-sdk
 // `SDKUserMessageReplaySchema`) carries `message.content` as a plain
 // string, but we accept the array shape `[{type:"text",text:"..."}]`
-// defensively too — extractToolResultText already covers both. The
-// SDK message uuid (`message.id`) lands in `meta.provider_item_id` so
-// triage's pending-send correlator (Phase E) can stamp it onto the
-// AO-owned `user:<turnIndex>` row. When `message.id` is absent the
-// meta omits the key — never empty-string.
+// defensively too — extractToolResultText already covers both.
+//
+// `provider_item_id` resolution: top-level `uuid` is the source for
+// every replay shape current Claude releases emit (queued_command at
+// claude-code-source-code/src/QueryEngine.ts:880-892, initial-user ack
+// at QueryEngine.ts:738-749 yielding `message: msgToAck.message` whose
+// inner shape is `{role, content}` only — see
+// utils/messages.ts:502-507 `createUserMessage`, which never sets
+// `message.id`). The `message.id` preference is a defensive carve-out
+// for a hypothetical future SDK shape that exposes the API-assigned id
+// alongside the SDK uuid; if such a shape lands we want the more
+// specific identifier. Until then, the uuid fallback is the
+// load-bearing path. Without it, queued messages flushed via stdin
+// arrive with no stable handle — triage's pending-send correlator
+// (handle_user_text.go) pops the FIFO entry but the merge no-ops on
+// empty id, no upsert emits, and the frontend's queue-confirm path
+// stays stuck.
 func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
 	msgRaw, ok := raw["message"]
 	if !ok {
@@ -258,14 +270,11 @@ func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage
 
 	content := extractToolResultText(msg.Content)
 
-	// `message.id` is the SDK-assigned uuid for the user envelope. When
-	// present it lands in meta as `provider_item_id`; absent / empty omits
-	// the key entirely (never empty-string). Phase E reads this to stamp
-	// the AO-owned `user:<turnIndex>` row, so the meta key has to be the
-	// stable handle, not the uuid baked into Content.
+	providerItemID := firstNonEmpty(msg.ID, readRawString(raw["uuid"]))
+
 	var meta json.RawMessage
-	if msg.ID != "" {
-		marshaled, err := json.Marshal(map[string]string{"provider_item_id": msg.ID})
+	if providerItemID != "" {
+		marshaled, err := json.Marshal(map[string]string{"provider_item_id": providerItemID})
 		if err == nil {
 			meta = marshaled
 		}

@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 // TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex pins the
@@ -228,6 +230,123 @@ func TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex(t *testing.T) {
 	// a later wire user_text.
 	if app.triage.HasPendingSendForThread(thread.ID) {
 		t.Errorf("pending-send markers should be drained after both wire echoes")
+	}
+}
+
+// TestParserToTriageSeam_QueuedCommandReplay_StampsRow pins the
+// parser → triage seam for the Claude `queued_command` replay shape —
+// the exact path that produced the Zone 2-stuck bug. The seam crosses
+// two packages: the parser (provider/claude) decodes the NDJSON
+// envelope into an EventUserText with `provider_item_id` in meta, and
+// triage (handle_user_text.go) consumes the matching pending-send
+// FIFO entry and stamps that id onto the AO-owned row. A regression
+// at either side — parser drops the meta, triage stops popping the
+// FIFO, the meta key gets renamed — would land here, where neither
+// the parser-only tests (parse_user_replay_test.go) nor the
+// triage-only tests (handle_user_text_test.go) can see it.
+//
+// This is the missing seam test that would have caught the original
+// bug: before the fix, the queued_command shape produced empty
+// `provider_item_id`, the triage merge no-op'd, and no upsert
+// emission carried the stamp downstream.
+func TestParserToTriageSeam_QueuedCommandReplay_StampsRow(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	thread := testThread("parser-triage-seam")
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	const aoItemID = "user:0:flush:1"
+	const wireUUID = "queue-uuid-7777"
+
+	// Stand the dispatcher's optimistic-persist + register-pending
+	// state up by hand. The end-to-end Codex test above seeds this via
+	// a real Steer; for this test we want to focus on the parser →
+	// triage seam, not the dispatcher.
+	now := time.Now().UnixMilli()
+	if err := app.triage.PersistItem(store.Item{
+		ID:        aoItemID,
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "queued message",
+		Meta:      `{"attachments":[]}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("PersistItem: %v", err)
+	}
+	app.triage.RegisterPendingSend(thread.ID, aoItemID, 0)
+
+	// Reset captures so the assertions below only see emissions
+	// driven by the parser → triage flow.
+	rec.calls = rec.calls[:0]
+
+	// Parse the queued_command replay shape Claude actually emits.
+	// `message` carries `{role, content}` only — no `id` field. The
+	// stable id lives at the envelope's top-level `uuid`. See
+	// claude-code-source-code/src/QueryEngine.ts:880-892.
+	parser := claude.NewParser()
+	line := []byte(`{"type":"user","isReplay":true,"uuid":"` + wireUUID + `","session_id":"sess-x","parent_tool_use_id":null,"message":{"role":"user","content":"queued message"}}`)
+	events, err := parser.ParseLine(thread.ID, line)
+	if err != nil {
+		t.Fatalf("parser.ParseLine: %v", err)
+	}
+	if len(events) != 1 || events[0].Kind != provider.EventUserText {
+		t.Fatalf("expected 1 EventUserText, got %d events: %+v", len(events), events)
+	}
+
+	if err := app.triage.Handle(events[0]); err != nil {
+		t.Fatalf("triage.Handle: %v", err)
+	}
+
+	// Row's meta should now carry the wire uuid as provider_item_id,
+	// preserving the existing attachments slot.
+	persisted, found, err := app.store.GetThreadItem(thread.ID, aoItemID)
+	if err != nil || !found {
+		t.Fatalf("GetThreadItem: found=%v err=%v", found, err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(persisted.Meta), &meta); err != nil {
+		t.Fatalf("decode persisted meta %q: %v", persisted.Meta, err)
+	}
+	if got, _ := meta["provider_item_id"].(string); got != wireUUID {
+		t.Fatalf("meta.provider_item_id: got %q, want %q (full meta: %s)", got, wireUUID, persisted.Meta)
+	}
+	if _, ok := meta["attachments"]; !ok {
+		t.Fatalf("attachments slot lost during meta merge: %s", persisted.Meta)
+	}
+
+	// And the upsert with the merged meta must reach the frontend so
+	// the queue-confirm overlay can clear. Without this emission, the
+	// Zone 2 marker would stay stuck — the original bug.
+	var sawStampedUpsert bool
+	for _, c := range rec.calls {
+		if c.Channel != "provider:item_event" {
+			continue
+		}
+		ev, ok := c.Data.(triage.ItemStreamEvent)
+		if !ok || ev.Action != "upsert" || ev.Item == nil {
+			continue
+		}
+		if ev.Item.ID != aoItemID {
+			continue
+		}
+		var emittedMeta map[string]any
+		if err := json.Unmarshal([]byte(ev.Item.Meta), &emittedMeta); err != nil {
+			t.Fatalf("decode emitted meta %q: %v", ev.Item.Meta, err)
+		}
+		if got, _ := emittedMeta["provider_item_id"].(string); got == wireUUID {
+			sawStampedUpsert = true
+			break
+		}
+	}
+	if !sawStampedUpsert {
+		t.Fatalf("expected provider:item_event upsert for %s with provider_item_id=%q", aoItemID, wireUUID)
 	}
 }
 

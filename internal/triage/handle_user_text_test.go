@@ -280,6 +280,99 @@ func TestHandleUserText_NoPending_NoProviderItemID_NoOp(t *testing.T) {
 	}
 }
 
+// TestHandleUserText_PendingSendMatch_EmptyProviderItemID_LogsAndNoOp
+// pins the defensive log branch in attachProviderItemIDToUserRow:
+// when the wire echo arrives with no provider_item_id (parser gap for
+// a new wire shape — historically the queued_command replay shape),
+// the FIFO entry is consumed but meta-merge no-ops on empty id. The
+// row stays unchanged, no upsert emits, and the frontend's
+// queue-confirm overlay would stay stuck. The branch logs loud so the
+// gap is observable instead of presenting as a silent stuck UI.
+func TestHandleUserText_PendingSendMatch_EmptyProviderItemID_LogsAndNoOp(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	router.RegisterPendingSend("t1", "user:0", 0)
+	seedUserTextRow(t, st, "t1", 0, "queued message", `{"attachments":[]}`)
+	*emissions = (*emissions)[:0]
+
+	var logBuf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(prev)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "queued message",
+		Meta:      nil,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	if !strings.Contains(logBuf.String(), "queue-confirm path will not fire") {
+		t.Fatalf("expected log line about queue-confirm path, got: %q", logBuf.String())
+	}
+
+	if router.HasPendingSendForThread("t1") {
+		t.Fatalf("FIFO should be drained — pending entry must have been popped")
+	}
+
+	persisted, found, err := st.GetThreadItem("t1", "user:0")
+	if err != nil || !found {
+		t.Fatalf("seed row should still exist: found=%v err=%v", found, err)
+	}
+	if persisted.Meta != `{"attachments":[]}` {
+		t.Fatalf("row Meta should be unchanged on empty-id branch, got %q", persisted.Meta)
+	}
+
+	for _, e := range *emissions {
+		if e.eventName != "provider:item_event" {
+			continue
+		}
+		ev, ok := e.data.(ItemStreamEvent)
+		if !ok {
+			continue
+		}
+		if ev.Action == itemStreamActionUpsert && ev.Item != nil && ev.Item.Kind == "user_text" {
+			t.Fatalf("no user_text upsert should be emitted on empty-id branch, got: %+v", ev)
+		}
+	}
+}
+
+// TestHandleUserText_PendingSendMatch_DuplicateProviderItemID_NoLog
+// pins the legitimate-duplicate sibling: when the same wire echo
+// arrives twice (session-resume replay landing on an already-stamped
+// row), the merge no-ops because the id already matches. No log
+// fires — the empty-id log is reserved for the parser-gap signal.
+func TestHandleUserText_PendingSendMatch_DuplicateProviderItemID_NoLog(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	router.RegisterPendingSend("t1", "user:0", 0)
+	seedUserTextRow(t, st, "t1", 0, "hello", `{"provider_item_id":"msg_existing"}`)
+
+	var logBuf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(prev)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "hello",
+		Meta:      json.RawMessage(`{"provider_item_id":"msg_existing"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	if strings.Contains(logBuf.String(), "queue-confirm path will not fire") {
+		t.Fatalf("duplicate-id branch must not emit the empty-id warning, got: %q", logBuf.String())
+	}
+}
+
 func TestHandleUserText_PendingMatchWithMissingTargetRow_LogsAndReturns(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")

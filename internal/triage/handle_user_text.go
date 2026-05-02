@@ -96,8 +96,19 @@ func (r *Router) attachProviderItemIDToUserRow(threadID, aoItemID, providerItemI
 		return fmt.Errorf("triage: merge provider_item_id into %s/%s meta: %w", threadID, aoItemID, err)
 	}
 	if mergedMeta == existing.Meta {
-		// Nothing to change — provider_item_id was empty or already set
-		// to the same value. Skip the redundant write + emit.
+		if providerItemID == "" {
+			// We popped a pending-send marker but the wire echo carried
+			// no stable id, so meta isn't updated and no upsert emits.
+			// The frontend's queue-confirm gate keys on the meta-stamp,
+			// so this leaves the queue overlay stuck until the thread
+			// is reloaded. Loud log because the most likely cause is a
+			// parser gap for a new wire shape — a silent stuck-UI is
+			// the worst presentation.
+			log.Printf("triage: handleUserText popped pending entry %s/%s but wire echo carried no provider_item_id — queue-confirm path will not fire; check parser coverage for the wire shape", threadID, aoItemID)
+		}
+		// Otherwise: provider_item_id was already set to the same value
+		// (genuine duplicate, e.g. session-resume replay). Skip the
+		// redundant write + emit.
 		return nil
 	}
 

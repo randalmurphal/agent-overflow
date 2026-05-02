@@ -7,12 +7,16 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// TestParseUser_ReplayEnvelopeEmitsEventUserText covers the canonical
-// SDK shape (`SDKUserMessageReplaySchema`): `isReplay:true` with
-// `message.content` as a plain string. The parser promotes this to a
-// single EventUserText whose meta carries `provider_item_id` set to
-// `message.id`. Phase E reads that key to stamp the AO-owned
-// `user:<turnIndex>` row.
+// TestParseUser_ReplayEnvelopeEmitsEventUserText pins the parser's
+// defensive `message.id` preference. The envelope here (`message.id`
+// populated, top-level `uuid` absent) does NOT match a wire shape
+// current Claude releases emit — `createUserMessage`
+// (claude-code-source-code/src/utils/messages.ts:502-507) never sets
+// `message.id`, and `SDKUserMessageReplaySchema`
+// (coreSchemas.ts:1297-1303) makes top-level `uuid` required. The
+// test guards the parser's behaviour for a hypothetical future SDK
+// shape that surfaces the API-assigned id; the queued_command and
+// initial-ack tests below cover the shapes Claude actually emits.
 func TestParseUser_ReplayEnvelopeEmitsEventUserText(t *testing.T) {
 	parser := NewParser()
 	line := []byte(`{"type":"user","isReplay":true,"message":{"id":"msg_abc123","content":"hello world"}}`)
@@ -74,11 +78,13 @@ func TestParseUser_ReplayEnvelopeWithBlockContent(t *testing.T) {
 }
 
 // TestParseUser_ReplayEnvelopeMissingMessageID covers the
-// missing-uuid case — the parser must still emit EventUserText
-// (the wire echo carries semantic value) but must NOT emit an
-// empty-string `provider_item_id`. Phase E treats absence-of-key
-// and empty-string differently; we collapse them here so triage
-// sees one shape.
+// no-identifier case — neither `message.id` nor top-level `uuid` is
+// present. The parser must still emit EventUserText (the wire echo
+// carries semantic value) but must NOT emit an empty-string
+// `provider_item_id`. Phase E treats absence-of-key and empty-string
+// differently; we collapse them here so triage sees one shape. In
+// practice the SDK schema makes top-level `uuid` required, so this is
+// a defensive-shape case rather than something the CLI emits.
 func TestParseUser_ReplayEnvelopeMissingMessageID(t *testing.T) {
 	parser := NewParser()
 	line := []byte(`{"type":"user","isReplay":true,"message":{"content":"no uuid"}}`)
@@ -111,6 +117,73 @@ func TestParseUser_ReplayEnvelopeMissingMessageID(t *testing.T) {
 		if s, isStr := v.(string); !isStr || s == "" {
 			t.Fatalf("meta.provider_item_id present but empty/invalid: %v", v)
 		}
+	}
+}
+
+// TestParseUser_ReplayEnvelopeQueuedCommandShape pins the
+// `queued_command` SDK path: when Claude echoes back a user message
+// that was written to stdin while a turn was running (the path AO's
+// flush dispatcher uses), the replay envelope sets ONLY top-level
+// `uuid` — `message` carries `{role, content}` with no `id` field.
+// See claude-code-source-code/src/QueryEngine.ts:880-892. The parser
+// must fall back to top-level `uuid` so triage's pending-send
+// correlator gets a stable handle to stamp onto the AO row;
+// otherwise the frontend Zone 2 confirm marker stays stuck because
+// the meta-stamp path no-ops on empty id.
+func TestParseUser_ReplayEnvelopeQueuedCommandShape(t *testing.T) {
+	parser := NewParser()
+	line := []byte(`{"type":"user","isReplay":true,"uuid":"queue-uuid-123","session_id":"sess-1","parent_tool_use_id":null,"message":{"role":"user","content":"queued message"}}`)
+
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+
+	got := events[0]
+	if got.Kind != provider.EventUserText {
+		t.Fatalf("Kind: got %q, want %q", got.Kind, provider.EventUserText)
+	}
+	if got.Content != "queued message" {
+		t.Fatalf("Content: got %q, want %q", got.Content, "queued message")
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal(got.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["provider_item_id"] != "queue-uuid-123" {
+		t.Fatalf("meta.provider_item_id: got %v, want queue-uuid-123 (top-level uuid fallback)", meta["provider_item_id"])
+	}
+}
+
+// TestParseUser_ReplayEnvelopePrefersMessageIDOverTopLevelUUID pins
+// the preference order in the defensive scenario where both ids are
+// populated. Today current Claude releases never set `message.id`
+// (see TestParseUser_ReplayEnvelopeEmitsEventUserText), so this
+// preference rule is a guard for a hypothetical future SDK shape that
+// exposes the API-assigned id alongside the SDK uuid — when both are
+// present we want the more specific identifier.
+func TestParseUser_ReplayEnvelopePrefersMessageIDOverTopLevelUUID(t *testing.T) {
+	parser := NewParser()
+	line := []byte(`{"type":"user","isReplay":true,"uuid":"top-level-uuid","message":{"id":"msg_api_id","content":"both ids"}}`)
+
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["provider_item_id"] != "msg_api_id" {
+		t.Fatalf("meta.provider_item_id: got %v, want msg_api_id (message.id must win over top-level uuid)", meta["provider_item_id"])
 	}
 }
 
