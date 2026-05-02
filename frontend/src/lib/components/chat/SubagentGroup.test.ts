@@ -241,6 +241,59 @@ describe('<SubagentGroup>', () => {
     expect(badge).not.toBeNull();
   });
 
+  it('keeps the status slot wrapper present in both running and completed states', () => {
+    // Stability guard: the running label and CompletionBadge live in
+    // the SAME slot wrapper so the running → terminal transition does
+    // not shift adjacent chrome (entry-count, elapsed). The slot
+    // wrapper carries `subagent-group-status-slot` and a min-width
+    // class; the inner content swaps under it.
+    const running = mkGroup({
+      parentId: 'p-run-slot',
+      parentItem: mkAgentParent('p-run-slot', {
+        status: 'running',
+        input: { description: 'Stable slot', subagent_type: 'Explore' },
+      }),
+    });
+    const { getByTestId: runningGet, unmount } = render(SubagentGroupTestHarness, { props: { group: running } });
+    const runningSlot = runningGet('subagent-group-status-slot');
+    expect(runningSlot).not.toBeNull();
+    expect(runningSlot.className).toContain('min-w-');
+    unmount();
+
+    const completed = mkGroup({
+      parentId: 'p-done-slot',
+      parentItem: mkAgentParent('p-done-slot', {
+        status: 'completed',
+        input: { description: 'Stable slot done', subagent_type: 'Explore' },
+      }),
+    });
+    const { getByTestId: doneGet } = render(SubagentGroupTestHarness, { props: { group: completed } });
+    const doneSlot = doneGet('subagent-group-status-slot');
+    expect(doneSlot).not.toBeNull();
+    expect(doneSlot.className).toContain('min-w-');
+  });
+
+  it('always renders the elapsed slot so it never appears mid-run as a layout shift', () => {
+    // The elapsed-time chip is rendered with a reserved slot even
+    // before the first second tick produces a non-empty label, so
+    // its first-paint mount does not push adjacent chrome rightward.
+    const fresh = mkGroup({
+      parentId: 'p-fresh',
+      parentItem: {
+        ...mkAgentParent('p-fresh', {
+          status: 'running',
+          input: { description: 'Just started', subagent_type: 'Explore' },
+        }),
+        createdAt: 0,
+        updatedAt: 0,
+      },
+    });
+    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group: fresh } });
+    const slot = getByTestId('subagent-group-duration');
+    expect(slot).not.toBeNull();
+    expect(slot.className).toContain('min-w-');
+  });
+
   it('shows final elapsed time for terminal subagents when timestamps are valid', () => {
     const parent = {
       ...mkAgentParent('p-duration', {

@@ -602,6 +602,58 @@ describe('scroll integration — visibility-mask flicker fix', () => {
     }
   });
 
+  it('does not mask an inline-agent wrapper when one of its descendants is freshly appended', async () => {
+    // Regression: 9e0a51a rewrote the mask predicate to recurse via
+    // nodeContainsItem, which made every running subagent's wrapper go
+    // visibility:hidden each time the agent emitted a child item
+    // (assistant text, sub-tool_call, thinking). The wrapper masked,
+    // unmasked, masked again — visible flicker on the agent card.
+    // Mask must apply only to the freshly-appended row's own anchor id,
+    // never to ancestor wrappers.
+    const inlineMeta = JSON.stringify({
+      is_inline_subagent: true,
+      inline_subagent_group_id: 'assistant-1',
+    });
+    const pane = await buildPane(makeThread(), [
+      makeItem({ id: 'seed', summary: 'seed' }),
+      makeItem({
+        id: 'agent-1',
+        itemIndex: 1,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        status: 'streaming',
+        summary: 'Agent: working',
+        meta: inlineMeta,
+      }),
+    ]);
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+
+    // Append a streaming child INSIDE the running agent. The id lands
+    // in pendingScrollCatchupItems just like any new top-level item.
+    pane.upsertItem(makeItem({
+      id: 'agent-1-child',
+      itemIndex: 2,
+      kind: 'assistant_text',
+      summary: 'subagent says hi',
+      parentId: 'agent-1',
+    }));
+    expect(pane.pendingScrollCatchupItems.has('agent-1-child')).toBe(true);
+
+    await tick();
+
+    // The inline-agent wrapper is rendered as a top-level VList row.
+    // It must not carry `invisible` just because its descendant is in
+    // the registry — that's the bug we're guarding.
+    const wrapperRow = container
+      .querySelector('[data-testid="inline-subagent-group"]')
+      ?.closest('[data-row-index]') as HTMLElement | null;
+    expect(wrapperRow).not.toBeNull();
+    expect(wrapperRow?.classList.contains('invisible')).toBe(false);
+  });
+
   it('does not mark items when an existing id is updated in place', async () => {
     // The new-item branch of upsertItemsBatch is the only marking site;
     // updates to already-tracked ids (delta-driven status changes,

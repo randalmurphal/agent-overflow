@@ -235,7 +235,15 @@ describe('<MessageTimeline>', () => {
     ]);
   });
 
-  it('masks an inline wrapper while a newly-appended nested member is catching up to bottom', async () => {
+  it('does NOT mask an inline wrapper just because one of its members is newly appended', async () => {
+    // Earlier in the project's life this test asserted the opposite —
+    // that the wrapper masked when a new sibling member arrived — by
+    // way of a `nodeContainsItem` recursion in the mask predicate.
+    // That made every running subagent's wrapper flash invisible for
+    // one frame on every descendant append (commit 9e0a51a). The mask
+    // is meant to hide a freshly-mounted top-level row's wrong-
+    // position flash, not the stable wrapper around it; virtua's
+    // ResizeObserver handles the wrapper's height growth on its own.
     const pane = await buildPane(undefined, [
       makeItem({
         id: 'agent-1',
@@ -263,7 +271,10 @@ describe('<MessageTimeline>', () => {
     const row = container.querySelector('[data-row-index="0"]');
     if (!row) throw new Error('row 0 not found');
     expect(pane.pendingScrollCatchupItems.has('agent-2')).toBe(true);
-    expect(row.classList.contains('invisible')).toBe(true);
+    // The wrapper's anchor id is `agent-1` (the first member, stable
+    // since the wrapper was first built). Only that id triggers the
+    // mask; appending `agent-2` as a second member never does.
+    expect(row.classList.contains('invisible')).toBe(false);
   });
 
   describe('windowed history', () => {

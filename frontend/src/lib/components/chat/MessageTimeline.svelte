@@ -19,7 +19,6 @@
     findTimelineNodeIndex as findNodeIndexInList,
     groupItemsBySubagent,
     isToolTextBoundary as isToolTextBoundaryAt,
-    nodeContainsItem,
     nodeRole,
     timelineNodeItemId,
     timelineNodeKey,
@@ -154,13 +153,17 @@
     return isToolTextBoundaryAt(groupedNodes, index);
   }
 
+  // Mask only the freshly-appended row itself, never the wrappers
+  // around it. `pendingScrollCatchupItems` tracks NEW top-level items
+  // queued for the deferred-rAF scrollToLast; `timelineNodeItemId`
+  // returns the id of the row's anchor item (leaf id, group parent id,
+  // or first member of an inline-agent wrapper). A wrapper that
+  // already exists must not mask when one of its descendants arrives —
+  // hiding stable history while a child row catches up was the bug
+  // that made running subagent cards flicker per child append.
   function hasPendingScrollCatchup(node: TimelineNode): boolean {
     if (pane.pendingScrollCatchupItems.size === 0) return false;
-    if (pane.pendingScrollCatchupItems.has(timelineNodeItemId(node))) return true;
-    for (const itemId of pane.pendingScrollCatchupItems) {
-      if (nodeContainsItem(node, itemId)) return true;
-    }
-    return false;
+    return pane.pendingScrollCatchupItems.has(timelineNodeItemId(node));
   }
 
   // ============================================================

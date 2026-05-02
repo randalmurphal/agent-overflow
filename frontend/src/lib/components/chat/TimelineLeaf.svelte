@@ -11,6 +11,7 @@
   import ToolCallCard from './ToolCallCard.svelte';
   import UserMessage from './UserMessage.svelte';
   import { parseJsonObject } from '../../utils/parseJsonObject';
+  import { resolveDisplayItem } from '../../utils/resolveDisplayItem';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
 
   let {
@@ -25,13 +26,7 @@
     onImageExpand?: (preview: ExpandedImagePreview) => void;
   } = $props();
 
-  const displayItem = $derived.by(() => {
-    const liveSummary = pane.liveItemSummaries[item.id];
-    if (liveSummary === undefined) {
-      return item;
-    }
-    return { ...item, summary: liveSummary };
-  });
+  const displayItem = $derived(resolveDisplayItem(item, pane.liveItemSummaries[item.id]));
 
   // Notification kind is encoded on meta.kind for sub-discrimination —
   // session-died notifications carry their own renderer (the historical
