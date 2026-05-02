@@ -209,8 +209,8 @@ Every task leaves these passing:
 
 - `make go-build`
 - `make go-test`
-- `cd frontend && corepack pnpm run check`
-- `cd frontend && corepack pnpm run build`
+- `cd frontend && pnpm run check`
+- `cd frontend && pnpm run build`
 
 If any are broken, fix them before the commit lands. "Out of scope" is
 not a valid reason to leave a check red — see the Ownership section of

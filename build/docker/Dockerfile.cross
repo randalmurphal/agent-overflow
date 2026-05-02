@@ -24,9 +24,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgtk-4-dev libwebkitgtk-6.0-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node directly so the cross image matches the repo's Node 24 floor
-# and has Corepack available for the pinned pnpm version.
+# Install Node directly so the cross image matches the repo's Node 24 floor,
+# then install the pinned pnpm globally via npm.
 ARG NODE_VERSION=24.14.1
+ARG PNPM_VERSION=10.33.2
 RUN NODE_ARCH=$(case "${TARGETARCH}" in arm64) echo "arm64" ;; *) echo "x64" ;; esac) && \
     NODE_TARBALL="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" && \
     curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}" && \
@@ -35,9 +36,9 @@ RUN NODE_ARCH=$(case "${TARGETARCH}" in arm64) echo "arm64" ;; *) echo "x64" ;; 
     tar -xJf "${NODE_TARBALL}" -C /opt && \
     rm "${NODE_TARBALL}" SHASUMS256.txt \
     && ln -s /opt/node-v${NODE_VERSION}-linux-${NODE_ARCH}/bin/node /usr/local/bin/node \
-    && ln -s /opt/node-v${NODE_VERSION}-linux-${NODE_ARCH}/bin/corepack /usr/local/bin/corepack \
-    && corepack enable \
-    && corepack prepare pnpm@10.33.2 --activate
+    && ln -s /opt/node-v${NODE_VERSION}-linux-${NODE_ARCH}/bin/npm /usr/local/bin/npm \
+    && npm install -g pnpm@${PNPM_VERSION} \
+    && ln -s /opt/node-v${NODE_VERSION}-linux-${NODE_ARCH}/bin/pnpm /usr/local/bin/pnpm
 
 # Install Zig - automatically selects correct binary for host architecture
 ARG ZIG_VERSION=0.14.0

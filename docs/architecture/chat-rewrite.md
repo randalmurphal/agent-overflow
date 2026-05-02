@@ -1869,7 +1869,7 @@ One sequential pass. Each step ends with green tests.
 - Bash exit codes don't flip status to errored. Only is_error does.
 - No `pane.activeToolCalls`, no `pane.streamingContent`, no
   `pendingMessage`, no `payloadMetas` map. Grep returns zero hits.
-- Frontend `corepack pnpm run check` clean. `make go-test` green.
+- Frontend `pnpm run check` clean. `make go-test` green.
 - Integration test covers: send message → tool call → tool result →
   assistant text → turn complete → reload thread → verify identical
   render. Plus: backgrounded command → user sends new message →

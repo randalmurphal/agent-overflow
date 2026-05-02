@@ -5,7 +5,7 @@ Built on Go 1.25, Wails v3, and Svelte 5.
 
 ## Setup
 
-Requires Go 1.25+ and Node 24+ with Corepack. On Linux, Wails v3 also needs
+Requires Go 1.25+, Node 24+, and pnpm 10+. On Linux, Wails v3 also needs
 `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `pkg-config`, and `gcc`
 (install via your distro's package manager).
 

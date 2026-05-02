@@ -46,5 +46,5 @@ To pull a newer Nerd Fonts release:
 3. Convert each to woff2 with the snippet above.
 4. Replace the woff2 files in this directory and update the version
    pin recorded above.
-5. Re-run `corepack pnpm run build` and confirm the lazy chunk still
+5. Re-run `pnpm run build` and confirm the lazy chunk still
    contains all four files.

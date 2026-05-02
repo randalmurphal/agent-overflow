@@ -77,7 +77,7 @@ test-race:
 
 install:
 	go install tool
-	cd frontend && corepack pnpm install --frozen-lockfile
+	cd frontend && pnpm install --frozen-lockfile
 
 dev:
 	AGENT_OVERFLOW_DEBUG=$(AGENT_OVERFLOW_DEBUG) VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) wails3 dev
@@ -143,7 +143,7 @@ dev-wsl:
 # in place.
 build-wsl:
 	@case "$(WSL_BUILD_MODE)" in build|build:dev) ;; *) echo "ERROR: WSL_BUILD_MODE must be 'build' or 'build:dev', got '$(WSL_BUILD_MODE)'" >&2; exit 1;; esac
-	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) corepack pnpm run $(WSL_BUILD_MODE)
+	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) pnpm run $(WSL_BUILD_MODE)
 	@if [ -n "$(WSL_FORCE_RELINK)" ]; then rm -f bin/agent-overflow.exe bin/agent-overflow-linux; fi
 	VERSION="$(WSL_VERSION)" wails3 task windows:build:wsl
 
@@ -152,8 +152,8 @@ build:
 
 test:
 	$(MAKE) go-test
-	cd frontend && corepack pnpm test
+	cd frontend && pnpm test
 
 check:
 	$(MAKE) go-build
-	cd frontend && corepack pnpm run check
+	cd frontend && pnpm run check
