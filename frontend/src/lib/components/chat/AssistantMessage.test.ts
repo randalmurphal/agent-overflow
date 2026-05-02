@@ -48,6 +48,26 @@ describe('<AssistantMessage>', () => {
     });
   });
 
+  it('renders blank-line markdown as adjacent paragraph elements', async () => {
+    const { getByTestId } = render(AssistantMessage, {
+      props: {
+        item: makeItem({
+          status: 'completed',
+          summary: 'first paragraph\n\nsecond paragraph',
+        }),
+      },
+    });
+
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const paragraphs = [...body.querySelectorAll('.markdown-body > p')];
+      expect(paragraphs.map((node) => node.textContent)).toEqual([
+        'first paragraph',
+        'second paragraph',
+      ]);
+    });
+  });
+
   it('shows its timestamp without requiring row hover', () => {
     const createdAt = Date.UTC(2026, 0, 2, 15, 4);
     const { container } = render(AssistantMessage, {

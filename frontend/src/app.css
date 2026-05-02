@@ -143,8 +143,9 @@ pre, code, kbd, samp, .ansi-body {
  * chat surface.
  */
 .markdown-body {
+  --markdown-body-line-height: 1.65;
   font-size: var(--text-sm);
-  line-height: 1.65;
+  line-height: var(--markdown-body-line-height);
 }
 .markdown-body > :first-child { margin-top: 0; }
 .markdown-body > :last-child { margin-bottom: 0; }
@@ -164,8 +165,11 @@ pre, code, kbd, samp, .ansi-body {
   margin: 0.5rem 0 0.125rem;
 }
 .markdown-body p {
-  margin: 0.25rem 0;
+  margin: 0;
   white-space: pre-wrap;
+}
+.markdown-body p + p {
+  margin-top: calc(var(--markdown-body-line-height) * 1em);
 }
 .markdown-body ul,
 .markdown-body ol {
