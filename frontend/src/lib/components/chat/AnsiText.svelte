@@ -1,9 +1,28 @@
 <script lang="ts">
+  // Renders a string of ANSI-coloured text into spans. The naive
+  // approach — `<pre>{@html html}</pre>` — wholesale-replaces the
+  // entire `<pre>`'s children every time `source` updates by even
+  // one character, which destroys text selection and forces the
+  // browser to redo layout for the entire block on every chunk.
+  //
+  // We keep the synchronous string build (it's cheap) but apply the
+  // result through Idiomorph, which diffs the new HTML against the
+  // live DOM and patches only the changed nodes. Stable runs of text
+  // and color spans survive the morph, so a user mid-selection
+  // doesn't lose their selection on the next chunk and the browser
+  // doesn't re-tokenize unchanged spans.
+  //
+  // Idiomorph is a 3 KB dependency, used in production by Basecamp's
+  // Turbo 8 (which switched from morphdom for exactly this pattern).
+  // Trade-off: parses each new HTML string into a temp tree to diff;
+  // negligible cost for the line counts we render here.
+
+  import { Idiomorph } from 'idiomorph';
   import { escapeHtml } from '../../utils/markdownRender';
 
   let { source, class: className = '' }: { source: string; class?: string } = $props();
 
-  const html = $derived(renderAnsi(source));
+  let root: HTMLPreElement | undefined = $state();
 
   function renderAnsi(input: string): string {
     const stripped = input.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '').replace(/\x1b_[\s\S]*?\x1b\\/g, '');
@@ -50,7 +69,17 @@
     if (foreground) classes.push(`ansi-fg-${foreground}`);
     return classes.join(' ');
   }
+
+  $effect(() => {
+    const html = renderAnsi(source);
+    if (!root) return;
+    // Build the next tree in a detached host with the same tag so
+    // Idiomorph can morph attributes safely (it normally morphs the
+    // root too; we only want innerHTML morphing here).
+    const next = document.createElement('pre');
+    next.innerHTML = html;
+    Idiomorph.morph(root, next, { morphStyle: 'innerHTML' });
+  });
 </script>
 
-<pre class={['ansi-body', className].filter(Boolean).join(' ')}>{@html html}</pre>
-
+<pre bind:this={root} class={['ansi-body', className].filter(Boolean).join(' ')}></pre>

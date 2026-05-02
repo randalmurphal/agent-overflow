@@ -37,14 +37,17 @@
   let modalOpen: boolean = $derived(modalHtml.length > 0);
 
   // Inline delegated listener: filter every contextmenu event for one
-  // that lands on a rendered mermaid block. `ChatMarkdown` writes
-  // `data-rendered-mermaid` after replacing a complete Mermaid source
-  // block with its SVG projection.
+  // that lands on a rendered mermaid block. The selector matches the
+  // wrapper emitted by `StreamdownMermaidHost.svelte`, which stamps
+  // `data-mermaid-source` on a `<div class="mermaid streamdown-mermaid-host">`
+  // sitting around svelte-streamdown's Mermaid renderer. The SVG lives
+  // a few levels in (Streamdown's Mermaid creates its own container +
+  // panzoom svg).
   function handleInlineContextMenu(e: MouseEvent): void {
     if (!(e.target instanceof Element)) return;
-    const pre = e.target.closest<HTMLElement>('pre.mermaid[data-rendered-mermaid]');
-    if (!pre) return;
-    const svg = pre.querySelector<SVGSVGElement>('svg');
+    const host = e.target.closest<HTMLElement>('[data-mermaid-source]');
+    if (!host) return;
+    const svg = host.querySelector<SVGSVGElement>('svg');
     if (!svg) return;
     e.preventDefault();
     menu = { x: e.clientX, y: e.clientY, svg, context: 'inline' };
@@ -72,11 +75,12 @@
         result = await copyAsSVG(current.svg);
         break;
       case 'copy-source': {
-        // The inline block carries the original Mermaid source on a
-        // data attribute while it is mounted. The modal copy does
-        // not, so copying from the modal falls back to SVG.
-        const pre = current.svg.closest<HTMLElement>('pre.mermaid[data-rendered-mermaid]');
-        const raw = pre?.dataset.mermaidSource ?? null;
+        // The inline wrapper carries the original Mermaid source on
+        // a `data-mermaid-source` attribute (see StreamdownMermaidHost).
+        // The modal copy doesn't have this — it only holds the
+        // already-rendered SVG — so it falls back to SVG.
+        const host = current.svg.closest<HTMLElement>('[data-mermaid-source]');
+        const raw = host?.dataset.mermaidSource ?? null;
         if (raw) {
           result = await copySource(raw);
         } else {
@@ -85,8 +89,8 @@
         break;
       }
       case 'expand': {
-        const pre = current.svg.closest<HTMLElement>('pre.mermaid');
-        if (pre) modalHtml = pre.innerHTML;
+        const host = current.svg.closest<HTMLElement>('[data-mermaid-source]');
+        if (host) modalHtml = host.innerHTML;
         break;
       }
       case 'close':

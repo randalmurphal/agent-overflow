@@ -1,11 +1,38 @@
-<script module lang="ts">
-  let nextMarkdownInstanceID = 0;
-</script>
-
 <script lang="ts">
-  import { onDestroy, tick } from 'svelte';
-  import { disposeMarkdownEnhancements, enhanceMarkdown } from '../../utils/markdownEnhance';
-  import { renderMarkdown } from '../../utils/markdownRender';
+  // Streaming-aware markdown renderer.
+  //
+  // Powered by `svelte-streamdown`, which mounts a Svelte component tree
+  // directly off marked tokens — every paragraph, code block, math block,
+  // diagram, etc. is its own keyed Svelte child. The DOM is reactive but
+  // node identity is preserved across content updates, so:
+  //   - text selection survives streaming chunks
+  //   - shiki-highlighted code blocks don't flash back to plain text
+  //     between updates
+  //   - mermaid SVGs render once and stay mounted
+  //   - katex output isn't re-typeset on every chunk
+  //
+  // Replaces the legacy `marked → DOMPurify → {@html}` wholesale-replace
+  // pipeline plus our hand-rolled `enhanceMarkdown` post-processor for
+  // shiki / mermaid / katex / copy buttons. The library handles all four
+  // natively as opt-in components.
+  //
+  // What we still own as a post-process pass:
+  //   - **Path linkification** — wrapping `src/lib/foo.ts:42` style
+  //     paths that appear in PROSE TEXT (not as markdown links) with
+  //     editor-open anchors. The library doesn't know about our
+  //     project-relative path resolution, and walking text nodes after
+  //     render is the simplest correct path. Skipped while streaming
+  //     for the same reason as before — the source is moving and
+  //     re-walking on every chunk would burn cycles.
+  //   - **Markdown-aware copy** — the document-level `copy` delegate
+  //     reads `.markdown-body` and serializes the selected range back
+  //     to markdown. Outer wrapper still carries that class.
+
+  import { Streamdown } from 'svelte-streamdown';
+  import StreamdownCodeHost from './markdown/StreamdownCodeHost.svelte';
+  import StreamdownMermaidHost from './markdown/StreamdownMermaidHost.svelte';
+  import StreamdownMathHost from './markdown/StreamdownMathHost.svelte';
+  import { enhancePathLinks, ensureMarkdownCopyDelegate } from '../../utils/markdownEnhance';
 
   let {
     source,
@@ -16,94 +43,52 @@
     source: string;
     streaming?: boolean;
     /** Absolute base directory for resolving relative file paths the
-     *  linkifier finds in the rendered text. Pass `pane.thread.workspacePath`
+     *  linkifier finds in prose text. Pass `pane.thread.workspacePath`
      *  from per-thread surfaces; non-thread surfaces (design previews,
-     *  notebook cells) leave empty and accept that relative-path
-     *  click-to-open will surface a clear "requires workspacePath" error. */
+     *  notebook cells) leave empty and accept that relative-path click-
+     *  to-open will surface a clear "requires workspacePath" error. */
     workspacePath?: string;
     class?: string;
   } = $props();
 
-  let root: HTMLDivElement | undefined;
-  let generation = 0;
-  let renderFrame: number | null = null;
-  let html = $state('');
-  const renderScope = `markdown-${nextMarkdownInstanceID++}`;
+  let root: HTMLDivElement | undefined = $state();
 
+  // Install the markdown-aware copy delegate once per page lifetime.
+  // Lives on document; subsequent ChatMarkdown mounts are no-ops here.
   $effect(() => {
-    const currentSource = source;
-    const currentStreaming = streaming;
-    if (renderFrame !== null) {
-      cancelAnimationFrame(renderFrame);
-      renderFrame = null;
-    }
-
-    const render = () => {
-      renderFrame = null;
-      html = renderMarkdown(currentSource);
-    };
-
-    if (currentStreaming) {
-      renderFrame = requestAnimationFrame(render);
-    } else {
-      render();
-    }
-
-    return () => {
-      if (renderFrame !== null) {
-        cancelAnimationFrame(renderFrame);
-        renderFrame = null;
-      }
-    };
+    ensureMarkdownCopyDelegate();
   });
 
-  onDestroy(() => {
-    if (renderFrame !== null) {
-      cancelAnimationFrame(renderFrame);
-    }
-    if (root) disposeMarkdownEnhancements(root);
-  });
-
+  // Path-link enrichment runs after Streamdown has settled the DOM for
+  // a given source. Skipped during streaming because (a) text nodes are
+  // mutating and walking them mid-stream would re-linkify partial
+  // paths repeatedly, and (b) the user can't click yet anyway. Once
+  // streaming flips off, the source is settled and we walk the rendered
+  // tree once. Subsequent source changes (rare on a completed item)
+  // re-run the walker; the linkifier skips already-converted anchors.
   $effect(() => {
-    const currentGeneration = ++generation;
-    const currentHtml = html;
-    const currentStreaming = streaming;
-    // Capture synchronously so the dependency lands on the effect
-    // graph; the value is read again in the async `tick().then(...)`
-    // body, which runs outside the tracked scope.
-    const currentWorkspace = workspacePath;
-    const node = root;
-
-    if (!node || !currentHtml) {
-      return;
-    }
-
-    let disposed = false;
-    tick().then(async () => {
-      if (disposed || currentGeneration !== generation || !root) {
-        return;
-      }
-      await enhanceMarkdown(root, {
-        generation: currentGeneration,
-        renderScope,
-        streaming: currentStreaming,
-        isCurrent: (candidate) => candidate === generation,
-        workspacePath: currentWorkspace,
-      });
-    });
-
-    return () => {
-      disposed = true;
-      // Unmount the prior generation's CopyButtons before {@html}
-      // replaces their host nodes. enhanceMarkdown will also dispose
-      // at the start of the next pass — this cleanup additionally
-      // covers the unmount path.
-      if (root) disposeMarkdownEnhancements(root);
-    };
+    void source;
+    if (streaming) return;
+    if (!root) return;
+    enhancePathLinks(root, workspacePath);
   });
-
 </script>
 
-<div bind:this={root} class={['markdown-body', className].filter(Boolean).join(' ')}>
-  {@html html}
+<div
+  bind:this={root}
+  class={['markdown-body', className].filter(Boolean).join(' ')}
+>
+  <Streamdown
+    content={source}
+    parseIncompleteMarkdown={streaming}
+    baseTheme="tailwind"
+    allowedLinkPrefixes={['*']}
+    allowedImagePrefixes={['*']}
+    renderHtml={false}
+    components={{
+      code: StreamdownCodeHost,
+      mermaid: StreamdownMermaidHost,
+      math: StreamdownMathHost,
+    }}
+  />
 </div>

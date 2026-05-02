@@ -73,26 +73,32 @@ Every row rendered inside `<VList>`'s children snippet:
   `markdownEnhance.ts` cache the underlying highlighter / mermaid
   instance so per-row remount is just DOM work.
 
-## Markdown enhancement caches
+## Markdown rendering pipeline
 
-`markdownEnhance.ts` carries module-level caches that make per-row
-remount cheap and bound the cost of repeated content:
+`ChatMarkdown.svelte` mounts `<Streamdown>` (svelte-streamdown), which
+owns marked-based parsing, shiki highlighting, KaTeX typesetting,
+mermaid rendering, and `parseIncompleteMarkdown` auto-close for
+streaming sources. Three thin Svelte hosts under
+`components/chat/markdown/` wrap the library's built-in Code, Mermaid,
+and Math components and stamp the original source onto a wrapping
+element (`data-code-source` / `data-mermaid-source` / `data-math-source`
++ legacy `math-inline` / `math-display` / `mermaid` classes) so
+`markdownSerialize.ts`'s copy-as-markdown round-trip and
+`DiagramInteractionHost`'s right-click "copy source" still work.
 
-- **Shiki highlighter** — single instance constructed lazily on first
-  use, reused across every code block in every row. Languages and
-  themes are loaded once.
-- **Mermaid SVG cache** — `Map<sourceHash, Promise<string>>` keyed by
-  a fast hash of the diagram source. Bounded LRU (50 entries). The
-  cache holds **promises**, not strings, so a remount that races a
-  first render reuses the same in-flight render rather than starting
-  a parallel one. Module exposes `__resetMermaidSvgCacheForTest()`
-  for unit tests; production code never calls it.
-- **Mermaid source data attribute** — `enhanceMarkdown` writes the
-  raw diagram source to `pre.dataset.mermaidSource` after rendering
-  the SVG. Both the copy-as-markdown serializer and
-  `DiagramInteractionHost`'s `copy-source` action read from there;
-  a data attribute survives `Range.cloneContents`, where a WeakMap
-  lookup keyed on the original element wouldn't.
+`markdownEnhance.ts` is now a thin file that re-exports the markdown-
+aware copy delegate (`ensureMarkdownCopyDelegate`) and ships
+`enhancePathLinks(container, workspacePath)` for the project-relative
+path linkifier — the only post-Streamdown enhancement we still own.
+The path linkifier walks text nodes for `src/lib/foo.ts:L:C` style
+patterns, replacing them with `<a class="editor-link">` anchors that a
+document-level click delegate routes to the `OpenInEditor` binding.
+ChatMarkdown calls it from a `$effect` once `streaming` flips false.
+
+All other module-level caches (shiki highlighter, mermaid SVG promise
+cache, language extension map) live inside `svelte-streamdown` itself.
+Per-row remount is still cheap because Streamdown's caches survive
+component remounts at the library level.
 
 ## Test environment notes
 

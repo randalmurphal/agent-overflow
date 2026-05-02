@@ -14,13 +14,20 @@ export default defineConfig({
     // Without this Vitest would resolve `svelte`'s `default` export, which
     // points at index-server.js and throws lifecycle_function_unavailable.
     conditions: ['browser'],
-    alias: {
-      '@wailsio/runtime': resolve(__dirname, 'src/test/mocks/wailsio-runtime.ts'),
+    alias: [
+      { find: '@wailsio/runtime', replacement: resolve(__dirname, 'src/test/mocks/wailsio-runtime.ts') },
       // Matches the relative path that lib/stores/bindings.ts imports from.
       // Both the worktree path and any nested depth resolve to the mock.
-      '../../../bindings/agent-overflow/app.js': resolve(__dirname, 'src/test/mocks/bindings-app.ts'),
-      '../../../bindings/agent-overflow/internal/provider/models.js': resolve(__dirname, 'src/test/mocks/bindings-models.ts'),
-    },
+      { find: '../../../bindings/agent-overflow/app.js', replacement: resolve(__dirname, 'src/test/mocks/bindings-app.ts') },
+      { find: '../../../bindings/agent-overflow/internal/provider/models.js', replacement: resolve(__dirname, 'src/test/mocks/bindings-models.ts') },
+      // Vitest's loader can't parse raw CSS imported outside of a
+      // Svelte `<style>` block — `svelte-streamdown`'s Math element
+      // does `import 'katex/dist/katex.min.css'`, which would crash
+      // component tests with "Unknown file extension '.css'". Stub it
+      // explicitly. (Other CSS imports flow through vite-plugin-svelte
+      // or `?raw`, which are handled correctly already.)
+      { find: 'katex/dist/katex.min.css', replacement: resolve(__dirname, 'src/test/mocks/empty-css.ts') },
+    ],
   },
   test: {
     environment: 'happy-dom',

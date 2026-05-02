@@ -48,6 +48,16 @@ export default defineConfig({
               name: "transport-vendor",
               test: /src\/lib\/transport\//,
             },
+            // svelte-streamdown ships a sizeable amount of code
+            // (Streamdown core + marked + Element renderers + token
+            // utilities) and only the chat surface uses it. Splitting
+            // it off keeps the main `index.js` bundle from ballooning
+            // on initial load and means library upgrades don't bust
+            // unrelated chunks.
+            {
+              name: "markdown-vendor",
+              test: /node_modules\/(svelte-streamdown|marked|idiomorph)\//,
+            },
           ],
         },
       },

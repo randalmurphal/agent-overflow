@@ -188,10 +188,10 @@ What NOT to add:
   Code chat) accept the same tradeoff. Revisit only if user
   feedback surfaces real keyboard-navigation pain.
 - **`shiki` is still a dependency.** The Go-side SSR plan moved diff
-  highlighting off the client, but `markdownEnhance.ts` still
-  dynamically imports `shiki` for code blocks inside assistant
-  markdown (and a small set of payload expansions). Module-level
-  caches keep per-row remount cheap.
+  highlighting off the client, but `svelte-streamdown` ships a
+  `HighlighterManager` that dynamically loads shiki for code blocks
+  inside assistant markdown (and a small set of payload expansions).
+  Module-level caches inside the library keep per-row remount cheap.
 
 ## Raw-content rendering
 
@@ -200,10 +200,27 @@ content, and payload data; the frontend owns rendering as a viewport-local
 projection.
 
 Assistant text, discussion messages, and proposed plans render through
-`ChatMarkdown.svelte`. The cheap markdown pass is synchronous; heavy
-enrichments such as Shiki, Mermaid, and KaTeX are dynamically imported
-from the mounted row and discarded if the source changes. ANSI-like
-payloads render through `AnsiText.svelte` from raw bytes.
+`ChatMarkdown.svelte`, which mounts a `<Streamdown>` (`svelte-streamdown`)
+with our own thin host wrappers (`StreamdownCodeHost`, `StreamdownMermaidHost`,
+`StreamdownMathHost`) that re-stamp the original source on `data-code-source`,
+`data-mermaid-source`, and `data-math-source` so `markdownSerialize.ts`'s
+copy-as-markdown round-trip keeps working. Streamdown owns markdown
+parsing (via `marked`), shiki highlighting, KaTeX typesetting, mermaid
+rendering, link/image URL prefix safety, and graceful incomplete-token
+auto-close while streaming (`parseIncompleteMarkdown={streaming}`).
+The library uses a token-keyed `{#each}` over marked blocks under the
+hood, so DOM identity is preserved across content updates — text
+selection, scroll-within-code, and previously-rendered shiki/mermaid
+nodes all survive streaming chunks. Two custom post-process passes
+remain in `markdownEnhance.ts`: project-relative path linkification
+(`enhancePathLinks`) and the document-level markdown-aware copy
+delegate (`ensureMarkdownCopyDelegate`).
+
+ANSI-like payloads render through `AnsiText.svelte`, which builds an
+HTML string from raw bytes and applies it to a stable `<pre>` via
+`Idiomorph.morph(...)`. Idiomorph diffs the live DOM against the new
+HTML and patches only changed nodes — text selection survives streaming
+chunks, no per-line re-tokenization on each update.
 
 Do not add a server-rendered chat HTML field or a global DOM observer.
 Copy/download paths read raw `summary` / `content` / `data`.

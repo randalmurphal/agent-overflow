@@ -4,7 +4,13 @@ import { makeItem } from '../../../test/helpers/chat';
 import AssistantMessage from './AssistantMessage.svelte';
 
 describe('<AssistantMessage>', () => {
-  it('keeps one stable body wrapper for raw streaming text', async () => {
+  it('renders incomplete markdown by auto-closing the dangling marker during stream', async () => {
+    // Streamdown's `parseIncompleteMarkdown` flag (we set it from
+    // `streaming`) auto-closes unterminated tokens so a partial bold
+    // span (`**markdown`) renders bold immediately rather than
+    // showing raw asterisks until the closer arrives. This gives a
+    // smoother streaming UX than the legacy behaviour of waiting for
+    // the closer.
     const { getByTestId } = render(AssistantMessage, {
       props: {
         item: makeItem({
@@ -17,7 +23,10 @@ describe('<AssistantMessage>', () => {
     const body = getByTestId('assistant-message-body');
     expect(body.getAttribute('data-render-mode')).toBe('client-markdown');
     await waitFor(() => {
-      expect(body.textContent).toContain('streaming **markdown');
+      // Auto-closed asterisks are gone; the text content reads as the
+      // user-visible string, with `markdown` inside a strong element.
+      expect(body.textContent).toContain('streaming markdown');
+      expect(body.querySelector('strong')?.textContent).toBe('markdown');
     });
   });
 
@@ -44,7 +53,12 @@ describe('<AssistantMessage>', () => {
     expect(updatedBody).toBe(originalBody);
     expect(updatedBody.getAttribute('data-render-mode')).toBe('client-markdown');
     await waitFor(() => {
-      expect(updatedBody.innerHTML).toContain('<strong>markdown</strong>');
+      // Streamdown emits `<strong data-streamdown-strong=... class=...>`
+      // — anchor on the wrapping element + its text rather than an
+      // exact-string innerHTML match.
+      const strong = updatedBody.querySelector('strong');
+      expect(strong).not.toBeNull();
+      expect(strong?.textContent).toBe('markdown');
     });
   });
 
@@ -60,8 +74,12 @@ describe('<AssistantMessage>', () => {
 
     const body = getByTestId('assistant-message-body');
     await waitFor(() => {
-      const paragraphs = [...body.querySelectorAll('.markdown-body > p')];
-      expect(paragraphs.map((node) => node.textContent)).toEqual([
+      // svelte-streamdown emits each markdown block via marked tokens
+      // → a stable `[data-streamdown-paragraph]` element. We anchor on
+      // that attribute instead of a positional `.markdown-body > p`
+      // selector because Streamdown wraps its output in its own div.
+      const paragraphs = [...body.querySelectorAll('p[data-streamdown-paragraph]')];
+      expect(paragraphs.map((node) => node.textContent?.trim())).toEqual([
         'first paragraph',
         'second paragraph',
       ]);
