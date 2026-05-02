@@ -187,6 +187,39 @@ type Router struct {
 	// the top of Handle and decremented via defer so a panic still
 	// releases the wait.
 	inflight sync.WaitGroup
+	// pendingByThread is the FIFO of AO-initiated user sends awaiting
+	// wire confirmation, keyed by threadID. Triage's send path appends
+	// an entry when it dispatches a user message; the matching wire
+	// EventUserText pops the head. Bounded by user attention (typically
+	// 0-1 entries per thread). Lifecycle: user-send-time carry-over —
+	// swept at CleanupThread as a safety net. See pending_send.go.
+	pendingByThread map[string][]pendingSend
+	// wireOnlyUserTextSeen dedupes wire EventUserText events that don't
+	// match any pending AO send (the "agent prompted itself" or
+	// session-resume replay case). Outer key = threadID; inner set =
+	// providerItemIDs we've already observed. Cleared by CleanupThread.
+	wireOnlyUserTextSeen map[string]map[string]struct{}
+	// queuedFlushItems is the per-thread "queued user message awaiting
+	// first-tool-use flush" state. Populated when the user types into
+	// the composer mid-turn and submits; drained when the trigger fires
+	// from handleToolStart on the first non-subagent tool_use of a wire
+	// round. Lifecycle: spans turn boundaries by design (a queue can
+	// outlive the round it was registered in if the model produces
+	// tool-free text-only rounds), so NOT swept by clearOpenTurn —
+	// only by CleanupThread on session teardown. See flush_queue.go.
+	queuedFlushItems map[string][]QueuedFlushItem
+	// flushTriggerFiredByRound records the wire-round id at which the
+	// flush trigger last fired for each thread. fireFlushTriggerOnce
+	// compares against the current round id to enforce "trigger fires
+	// at most once per round." Cleared by setOpenRound (proactive
+	// per-round cleanup) and CleanupThread (session teardown).
+	flushTriggerFiredByRound map[string]string
+	// dispatchFlush is the app-layer callback invoked when the trigger
+	// fires. Wired via SetFlushDispatcher; nil disables dispatch.
+	// Triage releases r.mu before invoking so the dispatcher can call
+	// back into the router (RegisterPendingSend, PersistItem) without
+	// re-entrancy. See flush_queue.go.
+	dispatchFlush FlushDispatcher
 }
 
 // NewRouter creates a triage router. Telemetry is off by default; wire a
@@ -234,6 +267,10 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		pendingToolPaths:           make(map[string][]string),
 		committedToolPaths:         make(map[string][]string),
 		openAPIRetryRows:           make(map[string]bool),
+		pendingByThread:            make(map[string][]pendingSend),
+		wireOnlyUserTextSeen:       make(map[string]map[string]struct{}),
+		queuedFlushItems:           make(map[string][]QueuedFlushItem),
+		flushTriggerFiredByRound:   make(map[string]string),
 	}
 }
 
@@ -365,6 +402,8 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		return r.handleSubagentNotification(evt)
 	case provider.EventTerminalInteraction:
 		return r.handleTerminalInteraction(evt)
+	case provider.EventUserText:
+		return r.handleUserText(evt)
 	case provider.EventDiff:
 		return r.handleDiff(evt)
 	case provider.EventCommandOutput:
@@ -413,6 +452,18 @@ func (r *Router) settleStreamingBeforeTimelineBoundary(evt provider.ProviderEven
 }
 
 func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
+	// Flush-queue trigger: the first non-subagent tool_use of a wire
+	// round is the seam where AO drains queued user messages onto the
+	// provider. Subagent tool_use (ParentToolUseID != "") fires inside
+	// a Task tool execution and does NOT signal a top-level seam, so
+	// it never triggers the flush. Fires BEFORE persistence /
+	// streaming-settle so the dispatcher's stdin/RPC write races
+	// against Claude's mid-loop drain (query.ts:1547+) with as much
+	// runway as possible — the trigger position can't beat IPC
+	// latency, but earlier-in-handler is better than later. See
+	// flush_queue.go for the detailed rationale.
+	r.maybeFireFlushTrigger(evt)
+
 	r.settleStreamingBeforeTimelineBoundary(evt, "tool start")
 	r.observeCodexTopLevelToolBoundary(evt)
 	if r.observeCodexToolStart(evt) {
@@ -434,6 +485,39 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	}
 	r.stageToolPaths(evt)
 	return r.emitInline(evt)
+}
+
+// maybeFireFlushTrigger drives the flush-queue trigger from a wire
+// EventToolStart. Predicates:
+//
+//   - ParentToolUseID == "" — top-level tool use only. A subagent's
+//     tool use happens inside its parent Task tool's execution and
+//     doesn't signal a top-level model→user seam.
+//   - currentRoundID is non-empty — there's an active wire round to
+//     anchor the "fired this round" marker. A tool_start with no
+//     open round (mid-init replay or a Codex-only edge case) would
+//     have no round id to compare against on the next tool_start, so
+//     the marker would re-fire repeatedly within the same logical
+//     round; better to skip until the round is properly open.
+//   - fireFlushTriggerOnce internally short-circuits on already-fired
+//     /empty-queue/no-dispatcher.
+//
+// The actual dispatch runs synchronously (in fireFlushTriggerOnce
+// after r.mu is released). Errors raised by the dispatcher do not
+// propagate through this path — the dispatcher is expected to surface
+// them on its own (toast / error row); a dispatcher panic would
+// bubble up here and abort the rest of handleToolStart, which is the
+// correct behaviour because a dispatcher panic indicates an
+// unrecoverable wiring bug.
+func (r *Router) maybeFireFlushTrigger(evt provider.ProviderEvent) {
+	if strings.TrimSpace(evt.ParentToolUseID) != "" {
+		return
+	}
+	roundID := r.openRoundID(evt.ThreadID)
+	if roundID == "" {
+		return
+	}
+	r.fireFlushTriggerOnce(evt.ThreadID, roundID)
 }
 
 func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
@@ -571,6 +655,35 @@ func (r *Router) drainCommittedToolPaths(threadID string, turnIndex int) []strin
 	return paths
 }
 
+// handleInit reacts to a wire `system/init` envelope (Claude only — Codex
+// has no equivalent). Three cases share this entry point:
+//
+//  1. **Fresh AO send** — the send path registered a pending-send marker
+//     before writing to stdin, and the provider has just acknowledged the
+//     session by emitting `system/init`. We route through handleTurnStart
+//     to open round 1 of the logical turn, fire plan/comment acceptance,
+//     and emit `provider:turn_started`. This is the wire-driven
+//     replacement for the synthetic EventTurnStart that app_send.go used
+//     to emit after a successful stdin write. The pending-send marker is
+//     NOT consumed here — handleUserText pops it when the matching
+//     replay envelope arrives.
+//
+//  2. **Cascade re-round** — Claude's CLI synthesizes a `type:"user"`
+//     envelope from a task_notification and follows it with a fresh
+//     `system/init` before the next `result`. The current logical turn
+//     is already settled, so maybeEmitReRoundOnInit opens a new wire
+//     round (setOpenRound only — never setOpenTurn, see invariant
+//     "setOpenTurn does NOT fire from handleInit").
+//
+//  3. **Idle session attach** — the app reattaches to a thread on
+//     startup or session resume with no AO send in flight. Both the
+//     pending-send check and the settled-turn check fail, so this
+//     handler is a no-op beyond the session_ref update.
+//
+// Pending-send takes precedence over the settled-turn check because an
+// AO send launched during a cascade settle window is round 1 of a NEW
+// logical turn (handleTurnStart territory), not round 2+ of the
+// previous logical turn (re-round territory).
 func (r *Router) handleInit(evt provider.ProviderEvent) error {
 	if evt.Meta != nil {
 		var info provider.SessionInfo
@@ -579,6 +692,10 @@ func (r *Router) handleInit(evt provider.ProviderEvent) error {
 				log.Printf("triage: update session ref: %v", err)
 			}
 		}
+	}
+
+	if r.HasPendingSendForThread(evt.ThreadID) {
+		return r.handleTurnStart(evt)
 	}
 
 	r.maybeEmitReRoundOnInit(evt)
@@ -591,10 +708,12 @@ func (r *Router) handleInit(evt provider.ProviderEvent) error {
 //
 // Claude's CLI synthesizes a `type:"user"` envelope from a
 // `task_notification` and follows it with a fresh `system.init`
-// envelope before the next `result`. agent-overflow only synthesizes
-// `EventTurnStart` once per user-typed send (in app_send.go), so this
-// re-round entry point is the ONLY place a second round of the same
-// logical turn can be opened. Critically, this path does NOT call
+// envelope before the next `result`. Round 1 of every Claude logical
+// turn is opened from `handleInit`'s pending-send branch (which calls
+// handleTurnStart); Codex's round 1 is opened from the wire
+// `EventTurnStart`. This re-round entry point is the ONLY place a
+// second round of the same logical turn can be opened.
+// Critically, this path does NOT call
 // setOpenTurn — id-allocating counters (segmentIndexByScope,
 // blockIndexByScope, errorSeqByScope, terminalInteractionSeq) MUST
 // survive across the multi-result boundary, otherwise text/think/error

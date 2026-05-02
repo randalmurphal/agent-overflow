@@ -337,6 +337,12 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 		ItemsPersisted:    telemetryMetrics.ItemsPersisted,
 		PayloadsPersisted: telemetryMetrics.PayloadsPersisted,
 	})
+	// Flush-queue dispatcher: invoked by the trigger in
+	// triage.handleToolStart on the first non-subagent tool_use of a
+	// wire round. Drains queued user messages onto the provider —
+	// Send for Claude, Steer (with Send fallback on ErrNoActiveTurn)
+	// for Codex. See app_flush_queue.go for the per-item flow.
+	a.triage.SetFlushDispatcher(a.dispatchFlush)
 	if err := st.ReconcileProposedPlanStateFromAcceptedTurns(time.Now().UnixMilli()); err != nil {
 		log.Printf("app: reconcile proposed plan state: %v", err)
 	}

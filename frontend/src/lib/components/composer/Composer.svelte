@@ -20,7 +20,7 @@
   import { createComposerImagePlaceholders } from './composerImagePlaceholders';
   import { createComposerMentions } from './composerMentions.svelte';
   import { createComposerUploads } from './composerUploads.svelte';
-  import { dispatchInterrupt, dispatchSend } from './composerSend';
+  import { dispatchInterrupt, dispatchSend, dispatchSteer } from './composerSend';
   import { RespondToApproval, RespondToUserInput, type ApprovalResponse, type UserInputResponse } from '../../stores/bindings';
   import {
     getPlanComments,
@@ -30,7 +30,7 @@
     retainProposedPlanEventListener,
   } from '../../stores/proposedPlans.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { enqueue as enqueueQueuedMessage } from '../../stores/sendQueue.svelte';
+  import { registerQueueItem } from '../../stores/sendQueue.svelte';
   import {
     hasRuntimeModeDraft,
     runtimeModeForThread,
@@ -238,39 +238,35 @@
     // pick the winner.
     const draftSourcePlan = draft.sourceProposedPlan ?? null;
 
-    // Mid-round path: stash the message in the per-thread queue
-    // instead of dispatching. The drain trigger inside
-    // applyTurnCompleted (see frontend/src/lib/stores/events.ts) pops
-    // the head on every wire-round completion regardless of cause
-    // (success, error, abort). Stop-with-queue ("user hits Esc with
-    // a message queued") falls out of the same rule because
-    // InterruptTurn → backend emits an aborted `turn_completed` →
-    // drain fires → queued item is sent. The composer textarea
-    // clears immediately so the user can stack the next message.
+    // Mid-round path: backend owns the queue. Both providers go
+    // through the same `RegisterQueueItem` RPC; the trigger fires on
+    // the first non-subagent tool_use of the round (see
+    // internal/triage/flush_queue.go) and the dispatcher delivers
+    // each queued message via Send (Claude) or Steer with Send
+    // fallback (Codex). The Composer is intentionally
+    // provider-agnostic here — provider branching previously needed
+    // to choose between Steer and a frontend-side queue, but the
+    // unified backend queue removes that choice.
     if (isTurnActive) {
-      // Capture the staged runtime-mode override at enqueue time, not
-      // at drain time — by then the user could have toggled
-      // AccessToggle again or the draft could have moved on. The
-      // drain path replays this captured value via
-      // sendQueueDrain.svelte.ts and clears the draft on success;
-      // matches the dispatch-path behaviour in composerSend.ts.
-      const queuedThread = pane.thread;
-      const runtimeMode = queuedThread && hasRuntimeModeDraft(queuedThread)
-        ? runtimeModeForThread(queuedThread)
+      const revisionPlanForMidTurn = sourceForSend && (hasDraftContentForSend || commentsForSend.length > 0)
+        ? sourceForSend
         : undefined;
-      enqueueQueuedMessage(pane.threadId, {
-        message,
-        attachments: draft.attachments,
-        terminalChips: draft.terminalChips,
-        sourceProposedPlan: draftSourcePlan,
-        revisionSourceProposedPlan: sourceForSend && (hasDraftContentForSend || commentsForSend.length > 0)
-          ? sourceForSend
-          : undefined,
-        revisionSourceCommentIds: commentsForSend.length > 0
-          ? commentsForSend.map((comment) => comment.id)
-          : undefined,
-        runtimeMode,
-      });
+      const revisionCommentIdsForMidTurn = commentsForSend.length > 0
+        ? commentsForSend.map((comment) => comment.id)
+        : undefined;
+      const midTurnThreadId = pane.threadId;
+
+      try {
+        await registerQueueItem(midTurnThreadId, message, {
+          attachmentIds: draft.attachments.map((attachment) => attachment.id),
+          sourceProposedPlan: draftSourcePlan ?? null,
+          revisionSourceProposedPlan: revisionPlanForMidTurn ?? null,
+          revisionSourceCommentIds: revisionCommentIdsForMidTurn,
+        });
+      } catch (err) {
+        pane.setGeneralError(`Failed to queue message: ${String(err)}`);
+        return;
+      }
       draft.setContent('');
       await draft.clearAfterSend();
       resetTextareaHeight();

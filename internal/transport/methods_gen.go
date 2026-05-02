@@ -61,6 +61,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetPayloadData", ID: 3448919335}, // main.App.GetPayloadData
 	{Name: "GetPayloadPreview", ID: 4070214921}, // main.App.GetPayloadPreview
 	{Name: "GetProviderStatuses", ID: 3829328996}, // main.App.GetProviderStatuses
+	{Name: "GetQueueState", ID: 3079581691}, // main.App.GetQueueState
 	{Name: "GetRemoteEndpointToken", ID: 3604571249}, // main.App.GetRemoteEndpointToken
 	{Name: "GetSessionAgentDiff", ID: 2631559849}, // main.App.GetSessionAgentDiff
 	{Name: "GetSettings", ID: 2554697378}, // main.App.GetSettings
@@ -118,6 +119,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ProbeClaudeAccount", ID: 1313986574}, // main.App.ProbeClaudeAccount
 	{Name: "ReconfigureObservability", ID: 225050321}, // main.App.ReconfigureObservability
 	{Name: "ReconnectSession", ID: 1420075138}, // main.App.ReconnectSession
+	{Name: "RegisterQueueItem", ID: 1034543696}, // main.App.RegisterQueueItem
 	{Name: "RenameProject", ID: 3728890856}, // main.App.RenameProject
 	{Name: "RenameThread", ID: 727416435}, // main.App.RenameThread
 	{Name: "ReplayManager", ID: 3320777729}, // main.App.ReplayManager
@@ -142,6 +144,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "StartDiscussion", ID: 3188309099}, // main.App.StartDiscussion
 	{Name: "StartDiscussionByID", ID: 2336869067}, // main.App.StartDiscussionByID
 	{Name: "StartSession", ID: 2850159713}, // main.App.StartSession
+	{Name: "SteerMessageWithOptions", ID: 1698485705}, // main.App.SteerMessageWithOptions
 	{Name: "StopClaudeTask", ID: 536320598}, // main.App.StopClaudeTask
 	{Name: "StopSession", ID: 3838500111}, // main.App.StopSession
 	{Name: "SwitchThread", ID: 3897387725}, // main.App.SwitchThread
@@ -149,6 +152,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "TouchRemoteEndpoint", ID: 2647456459}, // main.App.TouchRemoteEndpoint
 	{Name: "UnarchiveProject", ID: 2561521885}, // main.App.UnarchiveProject
 	{Name: "UnarchiveThread", ID: 3655125512}, // main.App.UnarchiveThread
+	{Name: "UndoQueuedItems", ID: 3976043546}, // main.App.UndoQueuedItems
 	{Name: "UnpinThread", ID: 3175043037}, // main.App.UnpinThread
 	{Name: "UpdateContextSettingsProfile", ID: 1472386383}, // main.App.UpdateContextSettingsProfile
 	{Name: "UpdateDiscussion", ID: 1706395020}, // main.App.UpdateDiscussion

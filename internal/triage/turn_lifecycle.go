@@ -1045,6 +1045,11 @@ func (r *Router) setOpenRound(threadID, roundID string) {
 	}
 	r.mu.Lock()
 	r.currentRoundID[threadID] = roundID
+	// A fresh round means the flush trigger is eligible to fire again.
+	// Drop the prior round's marker so fireFlushTriggerOnce sees a
+	// clean slot even though the comparison `marker == roundID` would
+	// already fail with the old value still there.
+	r.clearFlushTriggerForRoundLocked(threadID)
 	r.mu.Unlock()
 }
 
@@ -1063,6 +1068,19 @@ func (r *Router) takeOpenRound(threadID string) string {
 	roundID := r.currentRoundID[threadID]
 	delete(r.currentRoundID, threadID)
 	return roundID
+}
+
+// openRoundID returns the active wire-round id for threadID without
+// clearing the slot. Read-only counterpart to takeOpenRound for
+// callers that observe the round id mid-round (handleToolStart's
+// flush trigger). Returns "" when no round is open — the caller
+// short-circuits in that case (a tool_start with no open round means
+// the wire is mid-init and the trigger would have nowhere to anchor
+// its "fired this round" marker).
+func (r *Router) openRoundID(threadID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.currentRoundID[threadID]
 }
 
 // clearOpenTurn drops per-turn flow-control state at EventTurnComplete.
@@ -1369,6 +1387,18 @@ func (r *Router) CleanupThread(threadID string) {
 	// cause the first yield in the new session to stamp a row that
 	// belongs to an entirely different process id.
 	delete(r.codexBackground, threadID)
+	// Pending-send registry + wire-only dedup are user-send-time
+	// carry-over (see internal/triage/CLAUDE.md correlation taxonomy):
+	// the queue can outlive any single turn, but a torn-down session
+	// must not leak entries into a fresh one. Both sweeps share the
+	// thread-key path used elsewhere in this routine.
+	r.clearPendingSendsLocked(threadID)
+	r.clearWireOnlyUserTextLocked(threadID)
+	// Flush-queue + trigger-fired marker are session-scoped: a torn-down
+	// session must not deliver yesterday's queued user text to a fresh
+	// session that re-attaches to the same threadID, and a stale fired
+	// marker must not block the next session's first-round trigger.
+	r.clearFlushQueueLocked(threadID)
 	r.mu.Unlock()
 
 	if orphanSpan != nil {

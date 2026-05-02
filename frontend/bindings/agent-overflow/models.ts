@@ -733,6 +733,73 @@ export class PayloadPreview {
 }
 
 /**
+ * QueuedItem is the wire-side projection of a triage QueuedFlushItem,
+ * used by the frontend to mirror the backend's per-thread queue. The
+ * wire shape mirrors SendMessageOptions's data fields plus the
+ * frontend-allocated id and stamped enqueuedAt — together they're
+ * enough for both the queue overlay rendering and the UP-arrow
+ * retract path that re-hydrates the composer draft.
+ * 
+ * AttachmentIDs (not full Attachment records) ride the wire because
+ * the frontend already has the full records in its attachment store
+ * keyed by id; cross-wire transmission would duplicate bytes for no
+ * gain. Plan refs are passed by value because they're tiny and
+ * already used as plain JSON across the existing send path.
+ */
+export class QueuedItem {
+    "id": string;
+    "threadId": string;
+    "message": string;
+    "attachmentIds"?: string[];
+    "sourceProposedPlan"?: SourceProposedPlan | null;
+    "revisionSourceProposedPlan"?: SourceProposedPlan | null;
+    "revisionSourceCommentIds"?: string[];
+    "enqueuedAt": number;
+
+    /** Creates a new QueuedItem instance. */
+    constructor($$source: Partial<QueuedItem> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("message" in $$source)) {
+            this["message"] = "";
+        }
+        if (!("enqueuedAt" in $$source)) {
+            this["enqueuedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new QueuedItem instance from a string or object.
+     */
+    static createFrom($$source: any = {}): QueuedItem {
+        const $$createField3_0 = $$createType4;
+        const $$createField4_0 = $$createType8;
+        const $$createField5_0 = $$createType8;
+        const $$createField6_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("attachmentIds" in $$parsedSource) {
+            $$parsedSource["attachmentIds"] = $$createField3_0($$parsedSource["attachmentIds"]);
+        }
+        if ("sourceProposedPlan" in $$parsedSource) {
+            $$parsedSource["sourceProposedPlan"] = $$createField4_0($$parsedSource["sourceProposedPlan"]);
+        }
+        if ("revisionSourceProposedPlan" in $$parsedSource) {
+            $$parsedSource["revisionSourceProposedPlan"] = $$createField5_0($$parsedSource["revisionSourceProposedPlan"]);
+        }
+        if ("revisionSourceCommentIds" in $$parsedSource) {
+            $$parsedSource["revisionSourceCommentIds"] = $$createField6_0($$parsedSource["revisionSourceCommentIds"]);
+        }
+        return new QueuedItem($$parsedSource as Partial<QueuedItem>);
+    }
+}
+
+/**
  * RemoteEndpointSummary is the wire shape returned by
  * ListRemoteEndpoints. It mirrors settings.RemoteEndpoint with the
  * Token deliberately omitted: a LAN-attached token-holder calling

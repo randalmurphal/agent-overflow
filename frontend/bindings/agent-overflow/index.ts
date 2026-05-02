@@ -22,6 +22,7 @@ export {
     PayloadChunk,
     PayloadContent,
     PayloadPreview,
+    QueuedItem,
     RemoteEndpointSummary,
     SendMessageOptions,
     SourceProposedPlan,

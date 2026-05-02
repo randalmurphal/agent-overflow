@@ -20,10 +20,31 @@ import {
   resetForTest,
 } from './threadStatuses.svelte';
 import {
-  enqueue as enqueueQueueItem,
   getQueueForThread,
+  replaceQueueForThread,
   resetSendQueueForTest,
+  type QueueItem,
 } from './sendQueue.svelte';
+
+// Test-only convenience helper: build a QueueItem from a partial
+// shape and replace the thread's Zone 1 mirror with it. Test code
+// used to call `enqueue(threadId, draft)` to drive the old
+// frontend-owned queue; in the new architecture Zone 1 mirrors
+// backend state, so tests seed it via replaceQueueForThread directly.
+function seedQueueItem(threadId: string, partial: Partial<QueueItem> & { message: string }): void {
+  const item: QueueItem = {
+    id: partial.id ?? `queue:${Math.random().toString(36).slice(2)}`,
+    threadId,
+    message: partial.message,
+    attachmentIds: partial.attachmentIds ?? [],
+    sourceProposedPlan: partial.sourceProposedPlan ?? null,
+    revisionSourceProposedPlan: partial.revisionSourceProposedPlan ?? null,
+    revisionSourceCommentIds: partial.revisionSourceCommentIds,
+    enqueuedAt: partial.enqueuedAt ?? Date.now(),
+  };
+  const current = getQueueForThread(threadId);
+  replaceQueueForThread(threadId, [...current, item]);
+}
 import { makeItem } from '../../test/helpers/chat';
 
 describe('threadStatuses store', () => {
@@ -510,18 +531,8 @@ describe('threadStatuses store', () => {
 
   describe('clearThreadStatus sweeps the send queue', () => {
     it('drops queued items for the cleared thread only', () => {
-      enqueueQueueItem('thread-1', {
-        message: 'queued for 1',
-        attachments: [],
-        terminalChips: [],
-        sourceProposedPlan: null,
-      });
-      enqueueQueueItem('thread-2', {
-        message: 'queued for 2',
-        attachments: [],
-        terminalChips: [],
-        sourceProposedPlan: null,
-      });
+      seedQueueItem('thread-1', { message: 'queued for 1' });
+      seedQueueItem('thread-2', { message: 'queued for 2' });
 
       clearThreadStatus('thread-1');
       expect(getQueueForThread('thread-1')).toEqual([]);

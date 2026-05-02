@@ -15,7 +15,12 @@ import type {
 import type { Item, Thread } from '../types/models';
 import type { DesignArtifact, DesignChoiceResolved, DesignOptionsRequest } from '../types/design';
 import { transportGapChannel } from '../transport/wsClient';
-import { tryDrainNextQueued } from './sendQueueDrain.svelte';
+import {
+  confirmFlushedByUserItemId,
+  markItemsFlushed,
+  replaceQueueForThread,
+  type QueueItem as SendQueueItem,
+} from './sendQueue.svelte';
 import { getAllPanes } from './panes.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
 import { addToast } from './toast.svelte';
@@ -397,11 +402,38 @@ function applyItemUpserts(items: Item[]): void {
     } else {
       itemsByThread.set(item.threadId, [item]);
     }
+    // Zone 2 → chat-history transition: when a user_text row whose
+    // id matches a flushed entry's userItemId arrives with
+    // `provider_item_id` in its Meta, the wire echo has confirmed
+    // the flush. Drop the Zone 2 marker so the queue overlay
+    // releases the item. Detection is by ID prefix + Meta inspection;
+    // non-flush rows fall through cheaply (the early ID prefix check
+    // short-circuits).
+    if (item.kind === 'user_text' && item.id.includes(':flush:')) {
+      if (queueItemMetaHasProviderID(item.meta)) {
+        confirmFlushedByUserItemId(item.threadId, item.id);
+      }
+    }
   }
   for (const pane of getAllPanes().values()) {
     const threadItems = pane.threadId ? itemsByThread.get(pane.threadId) : undefined;
     if (!threadItems) continue;
     pane.upsertItems(threadItems);
+  }
+}
+
+// queueItemMetaHasProviderID checks whether an item's Meta JSON
+// carries a `provider_item_id`. Inlined here rather than in a shared
+// util because the only caller is the Zone 2 confirmation path; a
+// silent JSON parse error is treated as "no provider_item_id" so a
+// malformed meta never blocks the rest of the upsert pipeline.
+function queueItemMetaHasProviderID(meta: string | undefined | null): boolean {
+  if (!meta || meta === '{}') return false;
+  try {
+    const parsed = JSON.parse(meta);
+    return typeof parsed?.provider_item_id === 'string' && parsed.provider_item_id.length > 0;
+  } catch {
+    return false;
   }
 }
 
@@ -650,15 +682,15 @@ function applyTurnCompleted(evt: TurnCompletedEvent): void {
     pane.settleTurn(settled);
   }
   syncLatestTurnCompleted(evt);
-  // Drain the next queued user message — uniform across success, error,
-  // and abort. Stop-with-queue ("user hit Esc with messages queued") falls
-  // out of this rule: InterruptTurn → backend emits an aborted
-  // `turn_completed` → drain fires → first queued item is sent. No
-  // special-case wiring. Both reference UIs trigger drain at the same
-  // boundary (Claude Code's `useQueueProcessor` flips on `!isQueryActive`;
-  // Codex's `maybe_send_next_queued_input` is called from every
-  // state-clearing transition).
-  void tryDrainNextQueued(evt.threadId);
+  // Send-queue drain is owned by the BACKEND in the new architecture:
+  // the trigger fires on the first non-subagent tool_use of the next
+  // round (see internal/triage/flush_queue.go) and the dispatcher
+  // delivers each queued message via Send / Steer. Frontend just
+  // mirrors backend state via `provider:queue_state_changed` and
+  // `provider:queue_flushed` (handled in applyQueueStateChanged /
+  // applyQueueFlushed below) and clears Zone 2 entries when the
+  // matching `provider:item_event` upsert proves the wire echo
+  // arrived (see applyItemStreamEvent → confirmFlushedByUserItemId).
 }
 
 /**
@@ -763,6 +795,20 @@ export function setupEventListeners(): () => void {
   const cancelTodoUpdate = wailsEventOn<TodoUpdateEvent>(
     'provider:todo_update',
     applyTodoUpdate,
+  );
+
+  // provider:queue_state_changed — backend per-thread queue snapshot.
+  // Authoritative replacement of the frontend's Zone 1 mirror;
+  // arrives on RegisterQueueItem / UndoQueuedItems and after the
+  // flush trigger drains the batch. provider:queue_flushed precedes
+  // it on flush so Zone 2 fills before Zone 1 collapses.
+  const cancelQueueStateChanged = wailsEventOn<QueueStateChangedPayload>(
+    'provider:queue_state_changed',
+    applyQueueStateChanged,
+  );
+  const cancelQueueFlushed = wailsEventOn<QueueFlushedPayload>(
+    'provider:queue_flushed',
+    applyQueueFlushed,
   );
 
   const cancelThreadUpdated = wailsEventOn<Thread>('thread:updated', applyThreadUpdated);
@@ -931,6 +977,8 @@ export function setupEventListeners(): () => void {
     cancelSessionDied();
     cancelSubagentNotification();
     cancelTodoUpdate();
+    cancelQueueStateChanged();
+    cancelQueueFlushed();
     cancelThreadUpdated();
     cancelDefaultSwapped();
     cancelTransportGap();
@@ -940,4 +988,45 @@ export function setupEventListeners(): () => void {
     cancelModeChanged();
     cancelRuntimeModeChanged();
   };
+}
+
+interface QueueStateChangedPayload {
+  threadId: string;
+  items: Array<{
+    id: string;
+    threadId: string;
+    message: string;
+    attachmentIds?: string[];
+    sourceProposedPlan?: SendQueueItem['sourceProposedPlan'];
+    revisionSourceProposedPlan?: SendQueueItem['revisionSourceProposedPlan'];
+    revisionSourceCommentIds?: string[];
+    enqueuedAt: number;
+  }>;
+}
+
+interface QueueFlushedPayload {
+  threadId: string;
+  items: Array<{ queueItemId: string; userItemId: string; message: string }>;
+}
+
+function applyQueueStateChanged(evt: QueueStateChangedPayload | undefined): void {
+  if (!evt || !evt.threadId) return;
+  const items: SendQueueItem[] = (evt.items ?? []).map((item) => ({
+    id: item.id,
+    threadId: item.threadId,
+    message: item.message,
+    attachmentIds: item.attachmentIds ? [...item.attachmentIds] : [],
+    sourceProposedPlan: item.sourceProposedPlan ?? null,
+    revisionSourceProposedPlan: item.revisionSourceProposedPlan ?? null,
+    revisionSourceCommentIds: item.revisionSourceCommentIds
+      ? [...item.revisionSourceCommentIds]
+      : undefined,
+    enqueuedAt: item.enqueuedAt,
+  }));
+  replaceQueueForThread(evt.threadId, items);
+}
+
+function applyQueueFlushed(evt: QueueFlushedPayload | undefined): void {
+  if (!evt || !evt.threadId || !evt.items || evt.items.length === 0) return;
+  markItemsFlushed(evt.threadId, evt.items);
 }

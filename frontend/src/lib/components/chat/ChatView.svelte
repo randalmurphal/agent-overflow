@@ -314,7 +314,7 @@
         >
           <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6">
             <ChatWorkingIndicator {pane} />
-            <SendQueuePreview {pane} {draft} />
+            <SendQueuePreview {pane} />
             <LiveTodoPanel {pane} />
           </div>
           <div class="pointer-events-auto">

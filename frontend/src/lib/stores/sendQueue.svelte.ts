@@ -2,202 +2,305 @@ import { SvelteMap } from 'svelte/reactivity';
 import type { Attachment } from '../types/attachment';
 import type { TerminalChip } from '../types/draft';
 import type { SourceProposedPlan } from '../types/models';
+import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
+import * as bindings from './bindings';
 
 /**
- * QueueItem captures a user-typed message that the user submitted while a
- * wire round was already in flight. The frontend holds the message in an
- * ephemeral per-thread queue and dispatches the head-of-line item on the
- * next `provider:turn_completed` regardless of cause (success, error,
- * abort). Mirrors the per-message queue both reference UIs maintain —
- * Claude Code's `commandQueue` and Codex's `VecDeque<QueuedUserMessage>`.
+ * Two-zone send queue.
  *
- * Attachments are captured as full `Attachment` objects (not just ids)
- * because click-to-edit pulls them back into the composer via
- * `draft.restoreDraftFor`, which expects the snapshot shape used by
- * `composerDraft.svelte.ts`. Re-fetching attachments by id at edit time
- * would round-trip through the backend and could fail if the attachment
- * record was evicted or rebound. The plan-revision metadata
- * (`revisionSourceProposedPlan`, `revisionSourceCommentIds`) is send-only:
- * it travels with the message to the backend but is intentionally NOT
- * restored to the composer on click-to-edit because it isn't part of the
- * editable composer surface.
+ * Zone 1 — "queued, retractable". The user typed during a wire round
+ * and the message is sitting in the backend's per-thread queue
+ * waiting for the first non-subagent tool_use of the round to fire
+ * the flush trigger. The frontend MIRRORS this state via
+ * `provider:queue_state_changed` events; Zone 1 is therefore a
+ * reactive projection of the backend, not authoritative.
+ *
+ * Zone 2 — "flushed, awaiting wire-echo confirmation". The trigger
+ * fired and the dispatcher began writing the user message to the
+ * provider; the optimistic `user_text` row is already persisted and
+ * visible in the timeline, but the wire echo (Claude
+ * `--replay-user-messages`, Codex `item/completed userMessage`) has
+ * not yet arrived to stamp `provider_item_id` onto the row. Zone 2
+ * is the visual reminder of "in flight". Populated by
+ * `provider:queue_flushed`; cleared per-item when the matching
+ * timeline row's Meta carries a `provider_item_id`, or in bulk on
+ * thread switch / session teardown.
+ *
+ * The store does not own dispatch decisions. RegisterQueueItem and
+ * UndoQueuedItems both go through the backend RPC; the backend's
+ * `provider:queue_state_changed` echo is what mutates Zone 1 here.
+ * Optimistic local mutation is intentionally NOT done — the backend
+ * is the source of truth and racing it would violate Core Principle
+ * 1 ("Go is triage + pipe").
  */
+
+/** Wire-side queue item shape — what the frontend stores in Zone 1
+ * after `provider:queue_state_changed` arrives, and what
+ * RegisterQueueItem returns. Carries attachment IDs (not full
+ * Attachment records) — the attachment store keys lookups by ID. */
 export interface QueueItem {
   id: string;
+  threadId: string;
   message: string;
-  attachments: readonly Attachment[];
-  terminalChips: readonly TerminalChip[];
-  sourceProposedPlan: SourceProposedPlan | null;
-  revisionSourceProposedPlan?: SourceProposedPlan;
+  attachmentIds: readonly string[];
+  sourceProposedPlan?: SourceProposedPlan | null;
+  revisionSourceProposedPlan?: SourceProposedPlan | null;
   revisionSourceCommentIds?: readonly string[];
-  // Snapshot of the user's staged AccessToggle override at enqueue
-  // time. The dispatch path reads `runtimeModeForThread` and clears
-  // the draft after success; the drain path replays this captured
-  // value so a staged mode change isn't silently dropped between
-  // enqueue and drain. Undefined means "no staged override" — the
-  // backend keeps the thread's persisted runtime mode.
-  runtimeMode?: string;
   enqueuedAt: number;
 }
 
-/**
- * Snapshot shape consumed by `draft.restoreDraftFor`. Click-to-edit pops
- * a queued item, builds this snapshot via `snapshotFromQueueItem`, and
- * pushes it back into the composer draft store. Plan-revision metadata
- * is excluded by design — it isn't editable composer state.
- */
-export interface QueueItemDraftSnapshot {
+/** Zone 2 entry. Carries the queue id (frontend-allocated) and the
+ * backend-allocated `user:<turnIndex>:flush:<n>` id so the
+ * "this row's Meta has provider_item_id" detection can clear the
+ * marker. */
+export interface FlushedItem {
+  queueItemId: string;
+  userItemId: string;
+  message: string;
+  flushedAt: number;
+}
+
+/** Snapshot shape consumed by `composerDraft.restoreDraftFor`. The
+ * UP-arrow retract path collapses every Zone 1 item into one
+ * snapshot — the Claude TUI's `popAllEditable` shape. Plan-revision
+ * metadata is intentionally dropped (send-only routing data; not
+ * part of the editable composer surface). */
+export interface QueueDraftSnapshot {
   content: string;
   attachments: Attachment[];
   terminalChips: TerminalChip[];
   sourceProposedPlan: SourceProposedPlan | null;
 }
 
-// SvelteMap (`svelte/reactivity`) is the doc-recommended pattern for
-// reactive Map state in Svelte 5: per-key .set / .delete are tracked
-// individually so writers don't have to rebuild the binding on every
-// update. Mirrors `activeTurnByThread` in `threadStatuses.svelte.ts`.
-//
-// Inner arrays are immutable: every mutation replaces the array via
-// `.set(threadId, next)`. Readers that bind via `getQueueForThread`
-// observe the swap and re-render. We never push/splice in place.
 const queueByThread = new SvelteMap<string, readonly QueueItem[]>();
+const flushedByThread = new SvelteMap<string, readonly FlushedItem[]>();
 
-const EMPTY: readonly QueueItem[] = Object.freeze([]);
+const EMPTY_QUEUE: readonly QueueItem[] = Object.freeze([]);
+const EMPTY_FLUSHED: readonly FlushedItem[] = Object.freeze([]);
 
-/**
- * Read the current queue for a thread. Always returns a stable empty
- * array sentinel when the thread has no queue, so callers can safely
- * `{#each ...}` without an undefined guard.
- */
-export function getQueueForThread(threadId: string): readonly QueueItem[] {
-  if (!threadId) return EMPTY;
-  return queueByThread.get(threadId) ?? EMPTY;
+// ---- Zone 1 (queued) reads ------------------------------------------
+
+/** Read the current Zone 1 list for a thread. Stable empty array
+ * sentinel when none — callers can `{#each ...}` without an
+ * undefined guard. */
+export function getQueueForThread(threadId: string | null | undefined): readonly QueueItem[] {
+  if (!threadId) return EMPTY_QUEUE;
+  return queueByThread.get(threadId) ?? EMPTY_QUEUE;
 }
 
+/** Read the current Zone 2 list for a thread. */
+export function getFlushedForThread(threadId: string | null | undefined): readonly FlushedItem[] {
+  if (!threadId) return EMPTY_FLUSHED;
+  return flushedByThread.get(threadId) ?? EMPTY_FLUSHED;
+}
+
+/** True when EITHER zone has at least one entry. Used by the working
+ * indicator's bridge predicate so the spinner stays visible while
+ * any in-flight queue activity exists. */
 export function hasQueueItems(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
-  const items = queueByThread.get(threadId);
-  return !!items && items.length > 0;
+  const q = queueByThread.get(threadId);
+  if (q && q.length > 0) return true;
+  const f = flushedByThread.get(threadId);
+  return !!f && f.length > 0;
 }
 
-/**
- * Append a new queued message at the tail. Mints a fresh id and
- * timestamp; returns the id so the caller (Composer) can address the
- * item later if needed (rarely useful — cancel/edit happens through
- * the row's own button).
- */
-export function enqueue(
+/** True only when Zone 1 (the retractable queue) has items. The
+ * UP-arrow retract handler gates on this; Zone 2 items are not
+ * retractable. */
+export function hasRetractableQueueItems(threadId: string | null | undefined): boolean {
+  if (!threadId) return false;
+  const q = queueByThread.get(threadId);
+  return !!q && q.length > 0;
+}
+
+// ---- Backend RPC mutations ------------------------------------------
+
+/** Register a queued user message via the backend RPC. Backend
+ * stores the item, emits `provider:queue_state_changed`, and the
+ * event handler in events.ts updates Zone 1. Returns the
+ * backend-resolved id+timestamp so the caller can reconcile
+ * optimistically if needed. */
+export async function registerQueueItem(
   threadId: string,
-  draft: Omit<QueueItem, 'id' | 'enqueuedAt'>,
-): string {
-  if (!threadId) throw new Error('sendQueue.enqueue: threadId is required');
-  const id = crypto.randomUUID();
-  const item: QueueItem = {
-    id,
-    enqueuedAt: Date.now(),
-    message: draft.message,
-    attachments: [...draft.attachments],
-    terminalChips: [...draft.terminalChips],
-    sourceProposedPlan: draft.sourceProposedPlan ?? null,
-    revisionSourceProposedPlan: draft.revisionSourceProposedPlan,
-    revisionSourceCommentIds: draft.revisionSourceCommentIds
-      ? [...draft.revisionSourceCommentIds]
+  message: string,
+  options: {
+    attachmentIds?: readonly string[];
+    sourceProposedPlan?: SourceProposedPlan | null;
+    revisionSourceProposedPlan?: SourceProposedPlan | null;
+    revisionSourceCommentIds?: readonly string[];
+  } = {},
+): Promise<QueueItem> {
+  if (!threadId) {
+    throw new Error('sendQueue.registerQueueItem: threadId is required');
+  }
+  const wire = await bindings.RegisterQueueItem(threadId, message, {
+    attachmentIds: options.attachmentIds ? [...options.attachmentIds] : undefined,
+    sourceProposedPlan: options.sourceProposedPlan ?? undefined,
+    revisionSourceProposedPlan: options.revisionSourceProposedPlan ?? undefined,
+    revisionSourceCommentIds: options.revisionSourceCommentIds
+      ? [...options.revisionSourceCommentIds]
       : undefined,
-    runtimeMode: draft.runtimeMode,
-  };
-  const current = queueByThread.get(threadId) ?? EMPTY;
-  queueByThread.set(threadId, [...current, item]);
-  return id;
+  });
+  return queueItemFromWire(wire);
 }
 
-/**
- * Insert a fully-formed item at the head. Used by the drain failure
- * path to return the item that was just popped back to the front so
- * the user's next attempt picks it up first. Preserves the original
- * id/enqueuedAt so the queue preview doesn't visibly reshuffle.
- */
-export function enqueueAtFront(threadId: string, item: QueueItem): void {
+/** Drop every Zone 1 item via the backend RPC. Returns the dropped
+ * items so the UP-arrow retract handler can combine them into a
+ * single composer draft. */
+export async function undoQueuedItems(threadId: string): Promise<QueueItem[]> {
+  if (!threadId) return [];
+  const wire = await bindings.UndoQueuedItems(threadId);
+  if (!wire || wire.length === 0) return [];
+  return wire.map(queueItemFromWire);
+}
+
+/** Fetch the current Zone 1 snapshot from the backend. Used on
+ * bootstrap / thread switch to seed the local mirror; remote
+ * `--connect` clients also call this when attaching mid-session. */
+export async function fetchQueueState(threadId: string): Promise<QueueItem[]> {
+  if (!threadId) return [];
+  const wire = await bindings.GetQueueState(threadId);
+  if (!wire || wire.length === 0) return [];
+  return wire.map(queueItemFromWire);
+}
+
+// ---- Event-handler surface (called from events.ts) -------------------
+
+/** Replace the entire Zone 1 list for a thread. Called by the
+ * `provider:queue_state_changed` handler — the snapshot in the event
+ * payload is authoritative. */
+export function replaceQueueForThread(
+  threadId: string,
+  items: readonly QueueItem[],
+): void {
   if (!threadId) return;
-  const current = queueByThread.get(threadId) ?? EMPTY;
-  queueByThread.set(threadId, [item, ...current]);
-}
-
-/**
- * Remove and return the head-of-line item. Returns undefined when the
- * queue is empty; the drain trigger uses that to short-circuit.
- */
-export function popFront(threadId: string): QueueItem | undefined {
-  if (!threadId) return undefined;
-  const current = queueByThread.get(threadId);
-  if (!current || current.length === 0) return undefined;
-  const [head, ...rest] = current;
-  if (rest.length === 0) {
+  if (items.length === 0) {
     queueByThread.delete(threadId);
-  } else {
-    queueByThread.set(threadId, rest);
+    return;
   }
-  return head;
+  queueByThread.set(threadId, items);
 }
 
-/**
- * Remove and return a specific item by id. Click-to-edit uses this to
- * lift any queued item (not just the head) back into the composer.
- */
-export function popItem(threadId: string, itemId: string): QueueItem | undefined {
-  if (!threadId || !itemId) return undefined;
-  const current = queueByThread.get(threadId);
-  if (!current || current.length === 0) return undefined;
-  const idx = current.findIndex((entry) => entry.id === itemId);
-  if (idx < 0) return undefined;
-  const removed = current[idx];
-  const next = [...current.slice(0, idx), ...current.slice(idx + 1)];
+/** Move a batch of items to Zone 2. Called by the
+ * `provider:queue_flushed` handler. Items are added to Zone 2 with
+ * the wall clock at handler time; the flushedAt is informational
+ * only. */
+export function markItemsFlushed(
+  threadId: string,
+  items: readonly { queueItemId: string; userItemId: string; message: string }[],
+): void {
+  if (!threadId || items.length === 0) return;
+  const now = Date.now();
+  const additions: FlushedItem[] = items.map((item) => ({
+    queueItemId: item.queueItemId,
+    userItemId: item.userItemId,
+    message: item.message,
+    flushedAt: now,
+  }));
+  const current = flushedByThread.get(threadId) ?? EMPTY_FLUSHED;
+  flushedByThread.set(threadId, [...current, ...additions]);
+}
+
+/** Remove a Zone 2 entry by userItemId. Called when a timeline
+ * `provider:item_event` upsert arrives with the matching id and
+ * `provider_item_id` stamped onto its Meta — i.e., the wire echo
+ * has confirmed the flush. */
+export function confirmFlushedByUserItemId(
+  threadId: string,
+  userItemId: string,
+): void {
+  if (!threadId || !userItemId) return;
+  const current = flushedByThread.get(threadId);
+  if (!current || current.length === 0) return;
+  const next = current.filter((entry) => entry.userItemId !== userItemId);
+  if (next.length === current.length) return; // no match, no mutation
   if (next.length === 0) {
-    queueByThread.delete(threadId);
+    flushedByThread.delete(threadId);
   } else {
-    queueByThread.set(threadId, next);
+    flushedByThread.set(threadId, next);
   }
-  return removed;
 }
 
-/**
- * Drop a specific item. Returns true when an item was removed, false
- * otherwise (item already gone, queue empty, ids mismatched).
- */
-export function cancelItem(threadId: string, itemId: string): boolean {
-  return popItem(threadId, itemId) !== undefined;
-}
-
-/**
- * Wipe the queue for a thread. Called from `clearThreadStatus` when a
- * thread is archived/deleted; the in-memory queue should not outlive
- * its thread.
- */
+/** Drop every entry in both zones for a thread. Called from
+ * `clearThreadStatus` on thread archive/delete; also from the
+ * thread-switch path so a previously-loaded thread's queue doesn't
+ * bleed into the next. */
 export function clearForThread(threadId: string): void {
   if (!threadId) return;
   queueByThread.delete(threadId);
+  flushedByThread.delete(threadId);
 }
 
-/**
- * Build the snapshot a composer draft store can restore. Click-to-edit
- * pops the item, builds this, then hands it to
- * `draft.restoreDraftFor(threadId, snapshot)`. Plan-revision metadata
- * is intentionally dropped — it isn't editable composer state, it's
- * send-only routing.
- */
-export function snapshotFromQueueItem(item: QueueItem): QueueItemDraftSnapshot {
+/** Build a draft snapshot from the union of Zone 1 items, in
+ * arrival order. The UP-arrow retract handler uses this — every
+ * queued message becomes one editable composer entry. Plan-revision
+ * metadata is dropped because it isn't part of the composer's
+ * editable surface (matches the user's "retract restores text +
+ * attachments" expectation).
+ *
+ * Resolves attachment records via the supplied lookup so the
+ * snapshot carries full Attachment objects (the shape
+ * `composerDraft.restoreDraftFor` expects). */
+export function combineForRetract(
+  items: readonly QueueItem[],
+  resolveAttachment: (id: string) => Attachment | undefined,
+): QueueDraftSnapshot {
+  const messages = items.map((item) => item.message).filter((line) => line.length > 0);
+  const content = messages.join('\n\n');
+
+  const seen = new Set<string>();
+  const attachments: Attachment[] = [];
+  for (const item of items) {
+    for (const id of item.attachmentIds) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const a = resolveAttachment(id);
+      if (a) attachments.push(a);
+    }
+  }
+
+  // Plan refs: take the first non-null sourceProposedPlan; combining
+  // multiple is not meaningful (different plans would imply different
+  // implementation contexts).
+  let sourcePlan: SourceProposedPlan | null = null;
+  for (const item of items) {
+    if (item.sourceProposedPlan) {
+      sourcePlan = item.sourceProposedPlan;
+      break;
+    }
+  }
+
   return {
-    content: item.message,
-    attachments: [...item.attachments],
-    terminalChips: [...item.terminalChips],
-    sourceProposedPlan: item.sourceProposedPlan ?? null,
+    content,
+    attachments,
+    terminalChips: [],
+    sourceProposedPlan: sourcePlan,
   };
 }
 
-/**
- * Test-only helper. Wipes every thread's queue. Production code uses
- * `clearForThread`.
- */
+// ---- Internal helpers ------------------------------------------------
+
+function queueItemFromWire(item: WireQueuedItem): QueueItem {
+  return {
+    id: item.id,
+    threadId: item.threadId,
+    message: item.message,
+    attachmentIds: item.attachmentIds ? [...item.attachmentIds] : [],
+    sourceProposedPlan: item.sourceProposedPlan ?? null,
+    revisionSourceProposedPlan: item.revisionSourceProposedPlan ?? null,
+    revisionSourceCommentIds: item.revisionSourceCommentIds
+      ? [...item.revisionSourceCommentIds]
+      : undefined,
+    enqueuedAt: item.enqueuedAt,
+  };
+}
+
+// ---- Test-only helpers -----------------------------------------------
+
+/** Wipe every thread's queue + Zone 2. Production code uses
+ * `clearForThread`; tests use this for fresh-fixture isolation. */
 export function resetSendQueueForTest(): void {
   queueByThread.clear();
+  flushedByThread.clear();
 }

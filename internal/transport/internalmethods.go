@@ -136,7 +136,16 @@ var LocalOnlyMethods = map[string]bool{
 	"ReconnectSession":            true,
 	"SendMessage":                 true,
 	"SendMessageWithOptions":      true,
+	"SteerMessageWithOptions":     true,
 	"SendPlanRevisionComments":    true,
+	// Flush-queue surface: RegisterQueueItem stages a user message
+	// awaiting first-tool-use trigger fire (and the dispatcher then
+	// writes to the local provider's stdin / JSON-RPC). UndoQueuedItems
+	// drops them. Both manipulate state that the dispatcher will
+	// later use to drive the local provider subprocess — same
+	// session-control threat shape as Send / Steer / Interrupt.
+	"RegisterQueueItem": true,
+	"UndoQueuedItems":   true,
 	"StartDiscussion":             true,
 	"StartDiscussionByID":         true,
 	"UpdateThreadMode":            true,

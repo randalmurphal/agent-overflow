@@ -1,96 +1,94 @@
 <script lang="ts">
-  // Queued user-message preview. Rendered inside the composerOverlay
-  // (ChatView.svelte) between the working indicator and LiveTodoPanel.
-  // Items live in `sendQueue.svelte.ts` — an in-memory per-thread
-  // SvelteMap keyed by threadId. Click a row to lift it back into the
-  // composer for editing; click × to drop it.
+  // Send-queue overlay. Renders inside the composerOverlay
+  // (ChatView.svelte) between the working indicator and the composer
+  // textarea. Two visually distinct zones in arrival order:
   //
-  // Mirrors Codex's `pending_input_preview.rs` and Claude Code's
-  // `PromptInputQueuedCommands.tsx` — `↳` prefix, dim italic body,
-  // line-clamped to keep long messages readable. Empty state renders
-  // nothing (no placeholder card / no "No queued messages" text), so
-  // the composer overlay's measured height shrinks to zero when no
-  // items are queued and the timeline reclaims that vertical space.
+  //  - Zone 1 — backend-queued items waiting for the next round's
+  //    first non-subagent tool_use to fire the flush trigger. Still
+  //    retractable: the UP-arrow handler in the composer pulls every
+  //    queued item back into one editable composer draft (Claude
+  //    TUI's `popAllEditable` behaviour). Rendered with `↳` prefix +
+  //    dim italic — same style as the previous architecture's queued
+  //    look so the muscle memory of "italic ↳ = queued" is preserved.
+  //  - Zone 2 — items the dispatcher has flushed to the provider but
+  //    whose wire echo (Claude `--replay-user-messages` envelope or
+  //    Codex `item/completed userMessage`) has not yet stamped
+  //    `provider_item_id` onto the optimistic timeline row. Rendered
+  //    with `⟳` prefix + lower opacity — the visual delta from Zone 1
+  //    signals "no longer retractable, on its way." Drops as soon as
+  //    the matching `provider:item_event` upsert proves the wire
+  //    confirmed delivery (events.ts → confirmFlushedByUserItemId).
   //
-  // Lives OUTSIDE `<VList>` — the chat scroll surface stays clean of
-  // queued items and never measures them as transcript rows.
-  // composerOverlay's ResizeObserver picks up our height changes and
-  // updates `--composer-height` so the timeline bottom padding tracks.
+  // Empty state renders nothing — composerOverlay's ResizeObserver
+  // shrinks `--composer-height` so the timeline reclaims the vertical
+  // space.
+  //
+  // Lives OUTSIDE `<VList>` per chat/CLAUDE.md "Render OUTSIDE the
+  // virtualizer" rule. Height changes propagate via
+  // `--composer-height`. No transition:slide adjacent to the scroll
+  // area — see chat/CLAUDE.md "No transition:slide" rule.
 
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
   import {
-    cancelItem,
+    getFlushedForThread,
     getQueueForThread,
-    popItem,
-    snapshotFromQueueItem,
-    type QueueItem,
   } from '../../stores/sendQueue.svelte';
   import { getActiveTurn, hasPendingSend } from '../../stores/threadStatuses.svelte';
-  import Icon from '../primitives/Icon.svelte';
-  import X from 'lucide-svelte/icons/x';
 
   interface Props {
     pane: ThreadPane;
-    draft: ComposerDraftStore;
   }
 
-  let { pane, draft }: Props = $props();
+  let { pane }: Props = $props();
 
-  let items = $derived(getQueueForThread(pane.threadId ?? ''));
-  // Pull up against the working indicator (mb-6) when the indicator is
-  // showing. Same trick LiveTodoPanel uses; both want to read as
+  let queued = $derived(getQueueForThread(pane.threadId ?? ''));
+  let flushed = $derived(getFlushedForThread(pane.threadId ?? ''));
+  let hasAny = $derived(queued.length > 0 || flushed.length > 0);
+
+  // Pull up against the working indicator (mb-6) when the indicator
+  // is showing — same trick LiveTodoPanel uses so both read as
   // adjacent lines of one logical "what's happening" block.
   let pulledUp = $derived(
     getActiveTurn(pane.threadId) !== null
     || hasPendingSend(pane.threadId),
   );
-
-  function handleEdit(item: QueueItem): void {
-    if (!pane.threadId) return;
-    const removed = popItem(pane.threadId, item.id);
-    if (!removed) return;
-    void draft.restoreDraftFor(pane.threadId, snapshotFromQueueItem(removed));
-  }
-
-  function handleCancel(itemId: string): void {
-    if (!pane.threadId) return;
-    cancelItem(pane.threadId, itemId);
-  }
 </script>
 
-{#if items.length > 0 && pane.threadId}
+{#if hasAny && pane.threadId}
   <div
     class={`mb-2 flex flex-col gap-1 pl-1.5 text-[12px] ${pulledUp ? '-mt-5' : ''}`}
     data-testid="send-queue-preview"
     aria-label="Queued messages"
   >
-    {#each items as item (item.id)}
-      <div
-        class="group flex items-start gap-2"
-        data-testid="send-queue-preview-row"
-      >
-        <span class="select-none pt-0.5 text-fg-hint/55" aria-hidden="true">↳</span>
-        <button
-          type="button"
-          onclick={() => handleEdit(item)}
-          class="line-clamp-3 flex-1 cursor-text rounded px-1 py-0.5 text-left italic text-fg-muted/85 transition-colors hover:bg-surface-2/40 hover:text-fg-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35"
-          aria-label="Edit queued message"
-          data-testid="send-queue-preview-edit"
-        >
-          {item.message}
-        </button>
-        <button
-          type="button"
-          onclick={() => handleCancel(item.id)}
-          class="invisible mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-fg-hint/65 transition-colors hover:bg-surface-2/50 hover:text-fg-muted focus-visible:visible focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 group-hover:visible"
-          aria-label="Remove from queue"
-          title="Remove from queue"
-          data-testid="send-queue-preview-cancel"
-        >
-          <Icon icon={X} size={11} strokeWidth={2.25} />
-        </button>
+    {#if flushed.length > 0}
+      <div class="flex flex-col gap-1" data-testid="send-queue-zone-flushed">
+        {#each flushed as item (item.userItemId)}
+          <div
+            class="flex items-start gap-2"
+            data-testid="send-queue-preview-flushed-row"
+          >
+            <span class="select-none pt-0.5 text-fg-hint/40" aria-hidden="true">⟳</span>
+            <span class="line-clamp-3 flex-1 px-1 py-0.5 italic text-fg-muted/55">
+              {item.message}
+            </span>
+          </div>
+        {/each}
       </div>
-    {/each}
+    {/if}
+    {#if queued.length > 0}
+      <div class="flex flex-col gap-1" data-testid="send-queue-zone-queued">
+        {#each queued as item (item.id)}
+          <div
+            class="flex items-start gap-2"
+            data-testid="send-queue-preview-row"
+          >
+            <span class="select-none pt-0.5 text-fg-hint/55" aria-hidden="true">↳</span>
+            <span class="line-clamp-3 flex-1 px-1 py-0.5 italic text-fg-muted/85">
+              {item.message}
+            </span>
+          </div>
+        {/each}
+      </div>
+    {/if}
   </div>
 {/if}

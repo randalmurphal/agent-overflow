@@ -242,6 +242,7 @@ export {
 import {
   CreateThread as CreateThreadRaw,
   SendMessageWithOptions as SendMessageWithOptionsRaw,
+  SteerMessageWithOptions as SteerMessageWithOptionsRaw,
   UpdateContextSettingsProfile as UpdateContextSettingsProfileRaw,
   UpdateThreadContextSettings as UpdateThreadContextSettingsRaw,
 } from '../../../bindings/agent-overflow/app.js';
@@ -307,6 +308,61 @@ export function SendMessageWithOptions(
     content,
     new SendMessageOptionsClass(opts),
   ) as unknown as Promise<Thread>;
+}
+
+/**
+ * SteerMessageWithOptions is the Codex-only mid-turn-injection
+ * counterpart to SendMessageWithOptions. The active-turn check is the
+ * caller's responsibility — see Composer.svelte's
+ * `dispatchSteerOrEnqueue` for the routing decision (Codex active turn
+ * → here; Claude active turn → enqueue path).
+ */
+export function SteerMessageWithOptions(
+  threadId: string,
+  content: string,
+  opts: SendMessageOptions,
+): Promise<Thread> {
+  return SteerMessageWithOptionsRaw(
+    threadId,
+    content,
+    new SendMessageOptionsClass(opts),
+  ) as unknown as Promise<Thread>;
+}
+
+/**
+ * Send-queue surface — backend-owned per-thread queue for messages
+ * the user submits while a wire round is in flight. The trigger fires
+ * on the first non-subagent tool_use of the round and the dispatcher
+ * delivers each queued message to the provider; until then, items
+ * sit in `RegisterQueueItem` and can be retracted via
+ * `UndoQueuedItems`. `GetQueueState` is the bootstrap snapshot for
+ * remote / re-attached clients.
+ */
+import {
+  RegisterQueueItem as RegisterQueueItemRaw,
+  UndoQueuedItems as UndoQueuedItemsRaw,
+  GetQueueState as GetQueueStateRaw,
+} from '../../../bindings/agent-overflow/app.js';
+import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
+
+export function RegisterQueueItem(
+  threadId: string,
+  message: string,
+  opts: SendMessageOptions,
+): Promise<WireQueuedItem> {
+  return RegisterQueueItemRaw(
+    threadId,
+    message,
+    new SendMessageOptionsClass(opts),
+  ) as unknown as Promise<WireQueuedItem>;
+}
+
+export function UndoQueuedItems(threadId: string): Promise<WireQueuedItem[]> {
+  return UndoQueuedItemsRaw(threadId) as unknown as Promise<WireQueuedItem[]>;
+}
+
+export function GetQueueState(threadId: string): Promise<WireQueuedItem[]> {
+  return GetQueueStateRaw(threadId) as unknown as Promise<WireQueuedItem[]>;
 }
 
 // Turn lifecycle `Turn` model is re-exported from the generated

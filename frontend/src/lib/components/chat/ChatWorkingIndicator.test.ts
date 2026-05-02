@@ -5,9 +5,10 @@ import ChatWorkingIndicator from './ChatWorkingIndicator.svelte';
 import { buildPane } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import {
-  enqueue as enqueueQueueItem,
-  popFront as popQueueFront,
+  getQueueForThread,
+  replaceQueueForThread,
   resetSendQueueForTest,
+  type QueueItem,
 } from '../../stores/sendQueue.svelte';
 import {
   clearPendingSend,
@@ -16,12 +17,25 @@ import {
 } from '../../stores/threadStatuses.svelte';
 
 function enqueueSimple(threadId: string, message: string): void {
-  enqueueQueueItem(threadId, {
+  const item: QueueItem = {
+    id: `queue:${message}-${Math.random()}`,
+    threadId,
     message,
-    attachments: [],
-    terminalChips: [],
+    attachmentIds: [],
     sourceProposedPlan: null,
-  });
+    revisionSourceProposedPlan: null,
+    enqueuedAt: Date.now(),
+  };
+  const current = getQueueForThread(threadId);
+  replaceQueueForThread(threadId, [...current, item]);
+}
+
+function popQueueFront(threadId: string): QueueItem | undefined {
+  const current = getQueueForThread(threadId);
+  if (current.length === 0) return undefined;
+  const [head, ...rest] = current;
+  replaceQueueForThread(threadId, rest);
+  return head;
 }
 
 describe('<ChatWorkingIndicator>', () => {
@@ -218,10 +232,13 @@ describe('<ChatWorkingIndicator>', () => {
       enqueueSimple(tid, 'q1');
       const popped = popQueueFront(tid);
       projectSendStarted(tid);
-      // Failure: restore + clear pendingSend.
+      // Failure: restore + clear pendingSend. In the new architecture
+      // the backend owns drain failure recovery; this test only
+      // exercises the bridge predicate, so we seed the restored
+      // state directly via the snapshot replace API.
       if (popped) {
-        const { enqueueAtFront } = await import('../../stores/sendQueue.svelte');
-        enqueueAtFront(tid, popped);
+        const current = getQueueForThread(tid);
+        replaceQueueForThread(tid, [popped, ...current]);
       }
       clearPendingSend(tid);
 

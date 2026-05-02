@@ -998,13 +998,13 @@ describe('<Composer>', () => {
     // Image placeholders are appended by composeOutgoingMessage so the
     // provider receives a textual marker for each attachment.
     expect(item.message).toBe('Refine the plan [Image #1]');
-    expect(item.attachments.map((attachment) => attachment.id)).toEqual(['att-1']);
+    expect([...item.attachmentIds]).toEqual(['att-1']);
     expect(item.revisionSourceProposedPlan).toMatchObject({
       threadId: 'thread-1',
       itemId: 'plan-1',
       payloadId: 'payload-1',
     });
-    expect(item.revisionSourceCommentIds).toEqual(['comment-1']);
+    expect([...(item.revisionSourceCommentIds ?? [])]).toEqual(['comment-1']);
   });
 
   it('still dispatches SendMessage when no turn is active', async () => {
@@ -1022,26 +1022,14 @@ describe('<Composer>', () => {
     expect(getQueueForThread('thread-1')).toEqual([]);
   });
 
-  it('captures the staged runtimeMode on the queued item so drain replays it', async () => {
-    // Regression: dispatchSend reads runtimeModeForThread and clears
-    // the draft after success. The enqueue branch had been silently
-    // dropping the staged mode, so a user who toggled AccessToggle,
-    // typed mid-round, and let the queue drain would send with the
-    // OLD mode. Pin the capture-at-enqueue contract.
-    const pane = await buildPane(makeTestThread({ runtimeMode: 'approval-required' }));
-    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
-    const draft = await buildDraft();
-    setRuntimeModeDraft('thread-1', 'auto-accept-edits');
-
-    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'queued mode change' } });
-    await fireEvent.click(getByTestId('composer-send'));
-    await tick();
-
-    const queue = getQueueForThread('thread-1');
-    expect(queue).toHaveLength(1);
-    expect(queue[0].runtimeMode).toBe('auto-accept-edits');
-  });
+  // Note: the old test "captures the staged runtimeMode on the queued
+  // item so drain replays it" was removed when the queue moved to the
+  // backend. RuntimeMode is no longer a QueueItem field — staged
+  // overrides apply at registerQueueItem-call time via the backend
+  // RegisterQueueItem path, which doesn't carry a separate runtimeMode
+  // arg today (the dispatcher reads the thread's persisted Mode at
+  // dispatch time). Re-add a runtimeMode-on-flush carry-over test only
+  // when we wire mid-flush mode override delivery.
 
   it('refuses to enqueue when a blocking approval is pending', async () => {
     // canSend gates on `!hasBlockingPrompt`, so a click during a
@@ -1073,6 +1061,81 @@ describe('<Composer>', () => {
 
     expect(send).not.toHaveBeenCalled();
     expect(getQueueForThread('thread-1')).toEqual([]);
+  });
+
+  it('routes Codex mid-turn sends through SteerMessageWithOptions and skips the queue', async () => {
+    // Phase D: Codex's `turn/steer` is the wire-level analog of
+    // Claude Code's per-thread queue. The pending_input vec on the
+    // server side IS the queue; doing it in the client too would
+    // double-count and break Stop+queue semantics. Pin this routing
+    // so the Codex composer never silently drops messages into the
+    // client queue when the wire would have accepted them.
+    const pane = await buildPane(makeTestThread({ provider: 'codex' }));
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    const draft = await buildDraft();
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ provider: 'codex', runtimeMode: 'full-access' }));
+    const steer = setBindingMock('SteerMessageWithOptions', async () =>
+      makeTestThread({ provider: 'codex', runtimeMode: 'full-access' }));
+
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, { target: { value: 'steer me' } });
+    await fireEvent.click(getByTestId('composer-send'));
+    await tick();
+
+    expect(send).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(steer).toHaveBeenCalledWith('thread-1', 'steer me', expect.objectContaining({ attachmentIds: [] })),
+    );
+    expect(getQueueForThread('thread-1')).toEqual([]);
+    expect(draft.content).toBe('');
+  });
+
+  it('falls back to the queue when Codex steer races a turn that just ended', async () => {
+    // Race: between the frontend reading getActiveTurn and the steer
+    // RPC arriving, Codex's app-server emitted turn/completed and
+    // returns NoActiveTurn / ExpectedTurnMismatch. The user's typed
+    // content must not be dropped — the queued item drains on the
+    // next provider:turn_completed just like a Claude mid-turn
+    // enqueue would.
+    const pane = await buildPane(makeTestThread({ provider: 'codex' }));
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    const draft = await buildDraft();
+    const steer = setBindingMock('SteerMessageWithOptions', async () => {
+      throw new Error('codex: turn/steer: NoActiveTurn');
+    });
+
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'race me' } });
+    await fireEvent.click(getByTestId('composer-send'));
+    await tick();
+    await waitFor(() => expect(steer).toHaveBeenCalled());
+    await tick();
+
+    const queued = getQueueForThread('thread-1');
+    expect(queued.map((item) => item.message)).toEqual(['race me']);
+  });
+
+  it('keeps the existing enqueue path for Claude mid-turn sends', async () => {
+    // Claude has no steer primitive — its per-thread queue + drain
+    // on provider:turn_completed remains the single mid-turn path.
+    // Pin so Phase D doesn't accidentally start calling Steer for
+    // Claude threads.
+    const pane = await buildPane(makeTestThread({ provider: 'claude' }));
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    const draft = await buildDraft();
+    const steer = setBindingMock('SteerMessageWithOptions', async () =>
+      makeTestThread({ provider: 'claude', runtimeMode: 'full-access' }));
+
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'claude queue' } });
+    await fireEvent.click(getByTestId('composer-send'));
+    await tick();
+
+    expect(steer).not.toHaveBeenCalled();
+    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['claude queue']);
   });
 
   it('autosizes multiline input and clamps at the maximum composer height', async () => {
