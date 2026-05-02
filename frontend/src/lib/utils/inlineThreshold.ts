@@ -37,3 +37,21 @@ export function truncateForPreview(text: string, max = MAX_INLINE_BYTES): string
   if (text.length <= max) return text;
   return text.slice(0, max) + '…';
 }
+
+/**
+ * Hard line-count cap for an inline diff file block. At or below this,
+ * the full file diff renders inline with no internal scroll. Above
+ * this, the block renders a small teaser + a "Show full diff in side
+ * panel" CTA — keeps the chat scroll surface as the only scroll
+ * container, and pushes large diffs to the proper viewer (the diff
+ * sidebar). Picked by feel — ~3 viewport-heights of one diff at the
+ * timeline's text-xs leading-tight font sizing. Tunable.
+ */
+export const MAX_INLINE_DIFF_LINES = 200;
+
+/**
+ * Number of lines rendered as the teaser when a file exceeds
+ * MAX_INLINE_DIFF_LINES. Just enough to give context (path + first
+ * hunk's intent) without consuming serious vertical real estate.
+ */
+export const DIFF_TEASER_LINE_COUNT = 30;

@@ -129,7 +129,7 @@ describe('<MessageTimeline>', () => {
     expect(queryByTestId('tool-call-card')).toBeNull();
   });
 
-  it('renders inline tool-result diff chips without an end-of-turn diff summary', async () => {
+  it('renders one DiffFileBlock per file for multi-file tool_result rows', async () => {
     const pane = await buildPane(undefined, [
       makeItem({
         id: 'tool-1',
@@ -150,10 +150,13 @@ describe('<MessageTimeline>', () => {
       }),
     ]);
 
-    const { getByTestId, queryByTestId } = render(MessageTimeline, { props: { pane } });
+    const { getAllByTestId, queryByTestId } = render(MessageTimeline, { props: { pane } });
 
-    expect(getByTestId('tool-result-inline-diffs').textContent ?? '').toContain('src/a.ts');
-    expect(getByTestId('tool-result-inline-diffs').textContent ?? '').toContain('src/b.ts');
+    // No outer card chrome, no decision/completion badge, no chip
+    // strip. Each file is its own DiffFileBlock keyed by data-file-path.
+    const blocks = getAllByTestId('diff-file-block');
+    const paths = blocks.map((el) => el.getAttribute('data-file-path'));
+    expect(paths).toEqual(['src/a.ts', 'src/b.ts']);
     expect(queryByTestId('turn-diff-badge')).toBeNull();
   });
 

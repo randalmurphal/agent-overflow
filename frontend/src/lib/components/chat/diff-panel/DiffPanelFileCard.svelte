@@ -32,7 +32,7 @@
   <!--
     Header: button toggles open/closed, EditorLink sibling opens the
     file in the user's editor. Same dual-control layout used by
-    DiffPreview to avoid nested interactives.
+    DiffFileBlock to avoid nested interactives.
   -->
   <div class="group/diff-panel-file flex w-full items-center gap-2 px-3 py-2 hover:bg-surface-2/40">
     <button

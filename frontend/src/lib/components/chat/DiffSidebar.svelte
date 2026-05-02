@@ -5,7 +5,7 @@
    * body is mutex'd against PlanSidebar and DiffPanelDrawer.
    *
    * Patch text comes from the existing `createPayloadExpansion`
-   * helper — same lazy fetch as inline DiffPreview (32 KiB preview
+   * helper — same lazy fetch as inline DiffFileStack (32 KiB preview
    * → 256 KiB chunks → showFull). Multi-file payloads (Claude
    * `file_change` tool_results) are split via parsePatchFiles and
    * rendered as a stacked virtualized list.

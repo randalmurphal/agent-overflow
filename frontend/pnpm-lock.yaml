@@ -17,6 +17,9 @@ importers:
       '@formkit/auto-animate':
         specifier: 0.9.0
         version: 0.9.0
+      '@shikijs/langs':
+        specifier: 4.0.2
+        version: 4.0.2
       '@wailsio/runtime':
         specifier: 3.0.0-alpha.79
         version: 3.0.0-alpha.79

@@ -59,8 +59,11 @@ Every row rendered inside `<VList>`'s children snippet:
   keyed on `item.id` / `payloadId` and survive remount. See:
   - `pane.expansionStateFor(item)` — payload expansion handle
     (preview/full toggle, loaded chunks). Used by
-    `GenericToolCallRow`, `CommandOutput`, `DiffPreview`,
-    `ToolResultCard`, `ThinkingBlock`, `LazyContentBlock`.
+    `GenericToolCallRow`, `CommandOutput`, `DiffFileStack`,
+    `ThinkingBlock`, `LazyContentBlock`. Diff rows render
+    always-inline through `DiffFileBlock`, so the body of the
+    expansion handle here is just the lazy fetch — there is no
+    user-facing expand/collapse for diffs.
   - `pane.attachmentCacheFor(itemId)` — image-attachment blob URL
     cache. `UserMessage` threads this into `createAttachmentPreviews`
     so a user-message row doesn't re-fetch `GetAttachmentData` on

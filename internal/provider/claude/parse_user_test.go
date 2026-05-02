@@ -3,6 +3,8 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -130,6 +132,48 @@ func TestAppendToolResultBlock_InlineToolNoBackgroundFlag(t *testing.T) {
 	}
 	if v, ok := meta["is_background"]; ok && v != false {
 		t.Fatalf("inline tool should not carry is_background=true, got %v", v)
+	}
+}
+
+// TestAppendToolResultBlock_BareToolUseResultPlumbedToMeta pins the
+// fix for: Edit / Write / MultiEdit / NotebookEdit ship a bare-object
+// `tool_use_result` (e.g. {filePath, structuredPatch, ...}) with no
+// `tool_use_id` field. `indexToolUseResults` returns an empty map for
+// that shape (it indexes only by tool_use_id), so the resolution must
+// fall back to `raw["tool_use_result"]`. Without this fallback, the
+// triage Claude file-change extractor never sees the structured
+// patch and no diff renders in the UI.
+func TestAppendToolResultBlock_BareToolUseResultPlumbedToMeta(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-edit","name":"Edit","input":{"file_path":"/tmp/scratch.txt","old_string":"a","new_string":"b"}}]}}`)); err != nil {
+		t.Fatalf("assistant tool_use: %v", err)
+	}
+
+	// Bare-object tool_use_result with no tool_use_id field — the
+	// shape FileEditTool/types.ts ships per claude-code-source-code.
+	line := []byte(`{"type":"user","tool_use_result":{"filePath":"/tmp/scratch.txt","oldString":"a","newString":"b","structuredPatch":[{"oldStart":1,"oldLines":1,"newStart":1,"newLines":1,"lines":["-a","+b"]}]},"message":{"role":"user","content":[{"tool_use_id":"tool-edit","type":"tool_result","content":"The file /tmp/scratch.txt has been updated successfully."}]}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	var meta map[string]json.RawMessage
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	tur, ok := meta["tool_use_result"]
+	if !ok {
+		t.Fatalf("expected tool_use_result in meta, got keys %v", slices.Sorted(maps.Keys(meta)))
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(tur, &payload); err != nil {
+		t.Fatalf("unmarshal tool_use_result: %v", err)
+	}
+	if _, ok := payload["structuredPatch"]; !ok {
+		t.Fatalf("expected structuredPatch in tool_use_result, got keys %v", slices.Sorted(maps.Keys(payload)))
 	}
 }
 

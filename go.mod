@@ -8,6 +8,7 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
 	github.com/google/uuid v1.6.0
+	github.com/pmezard/go-difflib v1.0.0
 	github.com/rjeczalik/notify v0.9.3
 	github.com/wailsapp/wails/v3 v3.0.0-alpha.79
 	go.opentelemetry.io/otel v1.43.0

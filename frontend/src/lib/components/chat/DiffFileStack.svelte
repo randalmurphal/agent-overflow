@@ -1,0 +1,107 @@
+<script lang="ts">
+  /*
+   * Renders a tool_result row whose payload is a multi-file unified
+   * diff (Claude Edit/Write/MultiEdit/NotebookEdit, Codex apply_patch
+   * with N files). Stacks one DiffFileBlock per file inside, no outer
+   * wrapper card — each block is a self-contained tool-call-style row.
+   *
+   * Lazy-fetches the payload preview on mount via a LOCAL
+   * createPayloadExpansion handle. We deliberately don't reach into
+   * the pane's expansion-state registry here: the registry's
+   * payloadId lookup goes through `getCurrentItem()` against
+   * pane.items, which can be slightly behind the prop the parent
+   * already has. Reading payloadId directly from the prop makes the
+   * fetch fire reliably the moment we mount.
+   *
+   * The 32 KiB preview is sufficient for any file ≤200 lines (the
+   * inline cap) at typical diff densities. Larger files render a
+   * teaser inside DiffFileBlock and direct the user to the sidebar.
+   *
+   * Each file's slice is computed via `parsePatchFiles(payloadData)`
+   * + match by path. Files in `meta.inlineDiff.files` without a
+   * matching parsed entry (summary-only path: NotebookEdit pre-
+   * upgrade, Codex pre-upgrade) render a header-only placeholder
+   * PatchFile so the row still appears with its metadata.
+   */
+  import { untrack } from 'svelte';
+  import type { Item, ToolInlineDiffFile, ToolResultMeta } from '../../types/models';
+  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
+  import { parsePatchFiles, type PatchFile, type PatchLine } from '../../utils/patchFiles';
+  import { createPayloadExpansion } from './payloadExpansion.svelte';
+  import DiffFileBlock from './DiffFileBlock.svelte';
+
+  interface Props {
+    pane?: ThreadPane;
+    item: Item;
+    meta: ToolResultMeta;
+    payloadId?: string;
+  }
+
+  let { pane, item, meta, payloadId }: Props = $props();
+
+  // Local expansion handle. Reads payloadId/threadId straight off the
+  // props — no pane-registry indirection — so the fetch fires
+  // reliably as soon as the component mounts with a valid payloadId.
+  // The cost is one expansion handle per row mount (vs. a shared
+  // pane-keyed handle); for diff rows this is fine because each row
+  // owns one fetch and there's no expand/collapse interaction sharing
+  // state across mounts.
+  const expansion = createPayloadExpansion(
+    () => payloadId,
+    () => item.threadId,
+    {
+      payloadVersion: () => item.updatedAt,
+    },
+  );
+
+  // Auto-trigger the preview fetch on mount and on any subsequent
+  // payloadId change. Untracked because expand() mutates internal
+  // $state we don't want re-firing this effect.
+  $effect(() => {
+    const id = payloadId;
+    if (!id) return;
+    untrack(() => {
+      void expansion.expand();
+    });
+  });
+
+  let payloadData: string | null = $derived(expansion.displayData);
+
+  let parsedByPath = $derived.by(() => {
+    if (!payloadData) return new Map<string, PatchFile>();
+    const map = new Map<string, PatchFile>();
+    for (const file of parsePatchFiles(payloadData)) {
+      map.set(file.path, file);
+    }
+    return map;
+  });
+
+  let renderableFiles = $derived.by(() => {
+    const files = meta.inlineDiff?.files ?? [];
+    return files.map((metaFile) => ({
+      path: metaFile.path,
+      file: parsedByPath.get(metaFile.path) ?? fallbackFromMeta(metaFile),
+    }));
+  });
+
+  function fallbackFromMeta(metaFile: ToolInlineDiffFile): PatchFile {
+    return {
+      path: metaFile.path,
+      kind: metaFile.kind ?? 'modified',
+      additions: metaFile.insertions ?? 0,
+      deletions: metaFile.deletions ?? 0,
+      lines: [] as PatchLine[],
+    };
+  }
+</script>
+
+{#each renderableFiles as { path, file } (path)}
+  <DiffFileBlock
+    {pane}
+    {file}
+    {payloadId}
+    threadId={item.threadId}
+    workspacePath={paneWorkspacePath(pane)}
+    toolName={item.toolName}
+  />
+{/each}

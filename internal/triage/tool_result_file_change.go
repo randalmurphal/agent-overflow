@@ -37,7 +37,28 @@ type ToolInlineDiffFile struct {
 }
 
 func (r *Router) persistFileChangeToolResult(evt provider.ProviderEvent) error {
-	if !isFileChangeItemType(evt.ItemType) || evt.ItemID == "" || len(evt.Meta) == 0 {
+	if evt.ItemID == "" || len(evt.Meta) == 0 {
+		return nil
+	}
+
+	// Resolve the tool name. Codex and the Claude EventToolStart path
+	// stamp ItemType directly. Claude's EventToolComplete leaves
+	// ItemType empty (parse_user.go's appendToolResultCompletion never
+	// sets it), so we recover the tool name from the persisted
+	// tool_call row's ToolName. Same lookup also surfaces the file
+	// path the tool committed to write at start, used as a fallback
+	// for the new Claude extractor when tool_use_result.filePath is
+	// missing on older wire shapes.
+	toolName := evt.ItemType
+	claudeFallbackFilePath := ""
+	if toolName == "" && evt.Kind == provider.EventToolComplete {
+		if existing, found, err := r.store.GetThreadItem(evt.ThreadID, evt.ItemID); err == nil && found {
+			toolName = existing.ToolName
+			claudeFallbackFilePath = extractClaudeLaunchFilePath(existing.Meta)
+		}
+	}
+
+	if !isFileChangeItemType(toolName) {
 		return nil
 	}
 
@@ -46,7 +67,16 @@ func (r *Router) persistFileChangeToolResult(evt provider.ProviderEvent) error {
 		return fmt.Errorf("lookup thread for tool result: %w", err)
 	}
 
-	meta, diffData, ok := extractFileChangeToolResult(evt.Meta, thread.WorkspacePath)
+	var (
+		meta     ToolResultMeta
+		diffData []byte
+		ok       bool
+	)
+	if isClaudeFilePathTool(toolName) {
+		meta, diffData, ok = extractClaudeFileChangeToolResult(evt.Meta, toolName, claudeFallbackFilePath, thread.WorkspacePath)
+	} else {
+		meta, diffData, ok = extractFileChangeToolResult(evt.Meta, thread.WorkspacePath)
+	}
 	if !ok {
 		return nil
 	}
@@ -475,10 +505,6 @@ func displayInlineDiffPath(file ToolInlineDiffFile) string {
 
 func formatInlineDiffCounts(insertions, deletions int) string {
 	return fmt.Sprintf("(+%d -%d)", insertions, deletions)
-}
-
-func isFileChangeItemType(itemType string) bool {
-	return isCodexFileChangeItem(itemType)
 }
 
 func toolResultPayloadID(itemID string) string {

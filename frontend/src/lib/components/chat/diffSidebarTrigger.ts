@@ -1,9 +1,9 @@
 // Helper to route a payload-id (and optional file path) into the
-// per-tool diff sidebar. Centralized so DiffPreview, ToolResultCard
-// chips, and any future inline trigger share one entry point — the
-// pane setter takes care of mutex (closes Plan + checkpoint drawer).
+// per-tool diff sidebar. Centralized so DiffFileBlock, DiffFileStack,
+// and any future inline trigger share one entry point — the pane
+// setter takes care of mutex (closes Plan + checkpoint drawer).
 //
-// Cmd/Ctrl+click on the inline DiffPreview header also routes here,
+// Cmd/Ctrl+click on the inline DiffFileBlock header also routes here,
 // so the same path covers both the explicit icon button and the
 // modifier-click affordance.
 

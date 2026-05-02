@@ -136,6 +136,15 @@ export interface PayloadMeta {
   createdAt: number;
 }
 
+// DiffMeta and ToolInlineDiffMeta look similar but map to different
+// backend wire shapes — keep them separate. DiffMeta is single-file
+// (e.g. per-turn EventDiff upgrade path) and carries the patch text
+// inline in `preview`. ToolInlineDiffMeta is multi-file (Codex
+// apply_patch with N files; Claude Edit/Write/MultiEdit produce a
+// single-entry list through the same shape) and the patch text lives
+// in the lazy-loaded payload — only metadata is here. ToolCallCard
+// normalizes both into a per-file render via DiffFileBlock; don't
+// merge the types.
 export interface DiffMeta {
   filePath: string;
   changeKind: "added" | "modified" | "deleted" | "renamed";

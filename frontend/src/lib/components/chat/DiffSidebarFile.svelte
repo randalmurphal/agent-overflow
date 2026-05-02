@@ -17,9 +17,10 @@
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import EditorLink from '../common/EditorLink.svelte';
   import Icon from '../primitives/Icon.svelte';
+  import DiffLineContent from './DiffLineContent.svelte';
   import type { PatchFile, PatchLine, SplitDiffRow } from '../../utils/patchFiles';
   import { buildSplitRows, stripPatchLinePrefix } from '../../utils/patchFiles';
-  import { fontStyleClass, lineTintClass } from '../../utils/diffLineTint';
+  import { lineTintClass } from '../../utils/diffLineTint';
   import type { FileVirtualizerHandle } from '../../utils/diffSidebarVirtualizer.svelte';
   import { languageFromPath } from '../../utils/diffLanguage';
   import type { DiffTheme } from '../../utils/diffHighlighterPool';
@@ -144,11 +145,6 @@
     />
   </header>
 
-  {#snippet lineContent(line: PatchLine)}
-    {@const tokens = getTokens(line)}
-    {#if line.type === 'add' || line.type === 'del'}{line.content.charAt(0)}{/if}{#if tokens && tokens.length > 0 && line.type !== 'meta'}{#each tokens as token, ti (ti)}<span style:color={token.color} class={fontStyleClass(token.fontStyle)}>{token.content}</span>{/each}{:else}{line.type === 'add' || line.type === 'del' ? line.content.slice(1) : line.content}{/if}
-  {/snippet}
-
   {#if expanded}
     <div id="diff-sidebar-file-{safeId}" class="border-t border-border-subtle bg-surface-0/50">
       {#if shouldRender}
@@ -156,17 +152,17 @@
           <div class="grid grid-cols-2 gap-px bg-border-subtle font-mono text-[11px] leading-tight {wrapClass}">
             {#each splitRows as row, i (i)}
               <div class="px-2 py-px {row.left ? lineTintClass(row.left.type) : 'bg-surface-0/40'} {row.left?.type === 'context' ? 'bg-surface-0' : ''}">
-                {#if row.left}{@render lineContent(row.left)}{:else}{' '}{/if}
+                {#if row.left}<DiffLineContent line={row.left} tokens={getTokens(row.left)} />{:else}{' '}{/if}
               </div>
               <div class="px-2 py-px {row.right ? lineTintClass(row.right.type) : 'bg-surface-0/40'} {row.right?.type === 'context' ? 'bg-surface-0' : ''}">
-                {#if row.right}{@render lineContent(row.right)}{:else}{' '}{/if}
+                {#if row.right}<DiffLineContent line={row.right} tokens={getTokens(row.right)} />{:else}{' '}{/if}
               </div>
             {/each}
           </div>
         {:else}
           <pre class="overflow-auto px-3 py-2 font-mono text-[11px] leading-tight {wrapClass}">{#each displayLines as line, i (i)}<span
               class="block {lineTintClass(line.type)}"
-            >{@render lineContent(line)}
+            ><DiffLineContent {line} tokens={getTokens(line)} />
 </span>{/each}</pre>
         {/if}
       {:else if cachedHeight !== undefined}

@@ -11,11 +11,14 @@
     ToolResultMeta,
   } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath } from '../../stores/thread.svelte';
   import { parseJsonObject } from '../../utils/parseJsonObject';
+  import { parsePatchFiles, type PatchFile, type PatchLine } from '../../utils/patchFiles';
   import AskUserQuestionCard from './AskUserQuestionCard.svelte';
   import CollabToolRow from './CollabToolRow.svelte';
   import CommandOutput from './CommandOutput.svelte';
-  import DiffPreview from './DiffPreview.svelte';
+  import DiffFileBlock from './DiffFileBlock.svelte';
+  import DiffFileStack from './DiffFileStack.svelte';
   import GenericToolCallRow from './GenericToolCallRow.svelte';
   import ProposedPlanCard from './ProposedPlanCard.svelte';
   import ToolResultCard from './ToolResultCard.svelte';
@@ -75,6 +78,29 @@
   let isCollabControlRow = $derived(
     pane.thread?.provider === 'codex' && isCodexCollabControlToolName(item.toolName),
   );
+
+  // Single-file PatchFile derived from a `payloadKind === 'diff'`
+  // DiffMeta. The meta carries a complete (or sliced) unified-diff
+  // text in `preview`; parsePatchFiles handles either single- or
+  // multi-file patches but DiffMeta is single-file by contract.
+  // Falls back to a header-only PatchFile if the preview wasn't a
+  // parseable diff (rare; surfaces as a metadata-only row).
+  let diffMetaPatchFile = $derived.by<PatchFile | null>(() => {
+    if (!diffMeta) return null;
+    const parsed = parsePatchFiles(diffMeta.preview);
+    if (parsed.length > 0 && parsed[0]) return parsed[0];
+    return {
+      path: diffMeta.filePath,
+      kind: diffMeta.changeKind,
+      additions: diffMeta.insertions,
+      deletions: diffMeta.deletions,
+      lines: [] as PatchLine[],
+    };
+  });
+
+  let hasInlineDiffFiles = $derived(
+    Boolean(toolResultMeta?.inlineDiff?.files && toolResultMeta.inlineDiff.files.length > 0),
+  );
 </script>
 
 {#if item.toolName === 'AskUserQuestion'}
@@ -89,14 +115,29 @@
   <CollabToolRow {item} />
 {:else if planMeta && payloadId}
   <ProposedPlanCard {pane} {item} {payloadId} meta={planMeta} />
-{:else if diffMeta && payloadId}
-  <DiffPreview {pane} {item} meta={diffMeta} {payloadId} />
+{:else if diffMetaPatchFile}
+  <!-- Single-file diff payload (Claude legacy `payloadKind=diff`,
+       per-turn EventDiff upgrade). The patch text is in the meta's
+       preview field; no payload fetch is needed for inline render. -->
+  <DiffFileBlock
+    {pane}
+    file={diffMetaPatchFile}
+    {payloadId}
+    threadId={item.threadId}
+    workspacePath={paneWorkspacePath(pane)}
+    toolName={item.toolName}
+  />
+{:else if toolResultMeta && hasInlineDiffFiles}
+  <!-- Multi-file diff (Claude Edit/Write/MultiEdit/NotebookEdit;
+       Codex apply_patch with N files). One DiffFileBlock per file,
+       no outer wrapper — each file is its own self-contained row.
+       DiffFileStack handles the lazy payload fetch and per-file
+       slicing via parsePatchFiles + path-match. -->
+  <DiffFileStack {pane} {item} meta={toolResultMeta} {payloadId} />
 {:else if toolResultMeta}
-  <!-- File-change / command-mutation helpers mark lifecycle rows as
-       tool_result; render the rich card even before a payload id exists so
-       exact-patch rows keep a stable disabled disclosure shell. Gating on
-       payloadKind (not just a successful JSON parse) avoids tool_call_result
-       payloads coincidentally matching the ToolResultMeta shape. -->
+  <!-- Non-diff tool_result fallthrough: an entry that lacks an
+       inlineDiff.files — kept for any legacy producer that emits
+       a ToolResultMeta with detail/preview text only. -->
   <ToolResultCard {pane} {item} meta={toolResultMeta} {payloadId} />
 {:else if isCommandRow}
   <CommandOutput {pane} {item} meta={commandMeta} {payloadId} />

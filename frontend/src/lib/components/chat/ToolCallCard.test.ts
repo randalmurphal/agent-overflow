@@ -663,7 +663,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(container.textContent).toContain("Edit applied");
   });
 
-  it("delegates exact-patch tool_result rows before the patch payload arrives", async () => {
+  it("delegates exact-patch tool_result rows to a DiffFileBlock per file", async () => {
     const pane = await buildPane();
     const item = makeItem({
       id: "tool-result-pending-payload",
@@ -690,12 +690,16 @@ describe("<ToolCallCard> header dispatcher", () => {
       }),
     });
 
-    const { getByTestId, queryByTestId } = render(ToolCallCard, {
+    const { getAllByTestId, queryByTestId } = render(ToolCallCard, {
       props: { pane, item },
     });
 
+    // No outer card wrapper / generic tool-call shell — diff rows
+    // render as standalone DiffFileBlocks per file.
     expect(queryByTestId("tool-call-card")).toBeNull();
-    expect(getByTestId("tool-result-patch-toggle")).toHaveAttribute("aria-disabled", "true");
+    const blocks = getAllByTestId("diff-file-block");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toHaveAttribute("data-file-path", "src/file.ts");
   });
 
   it("keeps rich tool_result rendering for command-named tool rows", async () => {

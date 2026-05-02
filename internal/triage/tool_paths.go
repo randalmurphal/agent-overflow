@@ -64,6 +64,10 @@ func extractToolPaths(evt provider.ProviderEvent) []string {
 	return nil
 }
 
+// isClaudeFilePathTool reports whether the given item type is one of
+// Claude's file-edit tools (Edit / Write / MultiEdit / NotebookEdit)
+// — the same set drives both path tracking and file_change tool_result
+// dispatch.
 func isClaudeFilePathTool(itemType string) bool {
 	_, ok := claudeFilePathTools[itemType]
 	return ok
@@ -73,6 +77,18 @@ func isCodexFileChangeItem(itemType string) bool {
 	// Codex emits both `fileChange` (v2) and `file_change` (legacy) — handle
 	// both so a wire-format change in upstream doesn't silently drop tracking.
 	return itemType == "fileChange" || itemType == "file_change"
+}
+
+// isFileChangeItemType is the unified predicate for the file_change
+// tool_result extractor. Both providers route through
+// persistFileChangeToolResult; this is the gate that determines
+// whether to attempt extraction at all. Codex stamps `fileChange` /
+// `file_change` directly on EventToolStart's ItemType; Claude stamps
+// the tool name (`Edit`, etc.). The dispatcher in tool_result_file_change.go
+// uses this predicate AFTER resolving an empty ItemType from the
+// persisted launch row's ToolName.
+func isFileChangeItemType(itemType string) bool {
+	return isCodexFileChangeItem(itemType) || isClaudeFilePathTool(itemType)
 }
 
 // claudeToolPaths reads the file_path field from a Claude tool_use Meta.
@@ -193,6 +209,57 @@ func normalizeWorkspaceRelativePaths(raw []string, workspace string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// normalizeDisplayPath is the display-friendly path normalizer used
+// by the file_change tool_result extractors. Returns:
+//   - the workspace-relative form when the path is inside the
+//     workspace (e.g. `src/app.ts` rather than the full absolute)
+//   - the cleaned absolute path when it's outside the workspace —
+//     this lets diffs against test files (e.g. `/tmp/scratch.txt`)
+//     still render with their actual location instead of being
+//     silently dropped
+//   - "" only for empty input or paths with embedded control bytes
+//
+// Unlike normalizeWorkspaceRelativePath (used for `committedToolPaths`
+// + checkpoint revert, which IS workspace-scoped by design), this
+// preserves outside-workspace paths because diff display is not.
+// The `.git` rejection and pathspec-magic guards from the strict
+// variant don't apply here: those exist to defend against a
+// malicious agent corrupting THIS repo's git state, which only
+// matters for paths inside the workspace.
+func normalizeDisplayPath(path, workspace string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	// Same control-byte rejection as the strict variant — NUL would
+	// fragment paths in shell-adjacent tooling, other low control
+	// bytes are functionally never legitimate filenames.
+	for i := 0; i < len(path); i++ {
+		if path[i] < 0x20 {
+			return ""
+		}
+	}
+	if filepath.IsAbs(path) {
+		// Prefer workspace-relative when the path is inside the
+		// workspace; otherwise keep it absolute so users see the
+		// actual file location.
+		if workspace != "" {
+			if rel, err := filepath.Rel(workspace, path); err == nil {
+				relSlash := filepath.ToSlash(rel)
+				if relSlash != ".." && relSlash != "." && !strings.HasPrefix(relSlash, "../") {
+					return relSlash
+				}
+			}
+		}
+		return filepath.ToSlash(filepath.Clean(path))
+	}
+	clean := filepath.ToSlash(filepath.Clean(path))
+	if clean == "." || clean == "" {
+		return ""
+	}
+	return clean
 }
 
 func normalizeWorkspaceRelativePath(path, workspace string) string {

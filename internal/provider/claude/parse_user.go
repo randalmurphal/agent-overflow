@@ -115,9 +115,21 @@ func (p *Parser) appendToolResultBlock(
 
 	content := extractToolResultText(block["content"])
 
-	taskOutputMeta := toolUseResults[toolUseID]
-	if len(taskOutputMeta) == 0 {
-		taskOutputMeta = raw["tool_use_result"]
+	// Resolve the structured `tool_use_result` sibling for this
+	// block. `indexToolUseResults` succeeds when the wire shape
+	// is an array or a map keyed by tool_use_id, but Claude's
+	// most common shape — a bare object like
+	// `{filePath, structuredPatch, ...}` for Edit/Write/MultiEdit
+	// or `{stdout, exit_code, ...}` for Bash — carries no
+	// `tool_use_id` field and falls through the indexer with an
+	// empty result. The fallback to `raw["tool_use_result"]` covers
+	// that case: a single tool_use_result paired with a single
+	// tool_result block IS for that block. Used for both the
+	// standard EventToolComplete meta and the TaskOutput
+	// enrichment path below.
+	toolUseResultRaw := toolUseResults[toolUseID]
+	if len(toolUseResultRaw) == 0 {
+		toolUseResultRaw = raw["tool_use_result"]
 	}
 
 	// Always emit `EventToolComplete` for the tool's own id — no
@@ -129,7 +141,7 @@ func (p *Parser) appendToolResultBlock(
 	events = appendToolResultCompletion(
 		events, threadID, toolUseID, now, line,
 		isBackground,
-		block, content, toolUseResults[toolUseID],
+		block, content, toolUseResultRaw,
 	)
 	// The tool_use_id → is_background correlation is a one-shot: once
 	// the placeholder tool_result echoes, the flag has served its
@@ -147,7 +159,7 @@ func (p *Parser) appendToolResultBlock(
 	// sibling row idempotently in triage.
 	events = p.appendTaskOutputCompletion(
 		events, threadID, now, line,
-		block, content, taskOutputMeta,
+		block, content, toolUseResultRaw,
 	)
 
 	return events
