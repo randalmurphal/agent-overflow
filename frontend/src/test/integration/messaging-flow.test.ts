@@ -129,7 +129,16 @@ describe('App integration — messaging flow', () => {
     expect(textarea.value).toBe('');
   });
 
-  it('drains queued messages in FIFO order across successive turn_completes', async () => {
+  // The drain tests below cover frontend-side drain behavior that
+  // moved to the backend in Phases G1–G6. The trigger now fires on the
+  // first non-subagent tool_use of a wire round (see
+  // internal/triage/router.go) and the dispatcher delivers each item
+  // via Send/Steer, emitting provider:queue_flushed. The frontend no
+  // longer drains on provider:turn_completed. These tests are pinned
+  // skipped here pending the G11 rewrite that drives drain via the
+  // new backend events instead. The triage-side drain coverage lives
+  // in internal/triage/flush_queue_test.go.
+  it.skip('drains queued messages in FIFO order across successive turn_completes', async () => {
     const { getByLabelText, getByTestId } = await mountWithActiveThread();
     const sendMock = setBindingMock('SendMessageWithOptions', async () => makeThread({ id: 'thread-1' }));
     const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
@@ -194,7 +203,7 @@ describe('App integration — messaging flow', () => {
     expect(hasQueueItems('thread-1')).toBe(false);
   });
 
-  it('Stop with a queued message drains it on the aborted turn_completed', async () => {
+  it.skip('Stop with a queued message drains it on the aborted turn_completed', async () => {
     // The user hits Esc / Stop while a message is queued. Backend
     // emits InterruptTurn → aborted turn_completed → drain fires
     // (uniform rule). Both reference UIs have the same UX: the
@@ -231,7 +240,7 @@ describe('App integration — messaging flow', () => {
     expect(sendMock.mock.calls[0][1]).toBe('queued before stop');
   });
 
-  it('drain failure re-inserts the item at the front and surfaces an error', async () => {
+  it.skip('drain failure re-inserts the item at the front and surfaces an error', async () => {
     const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { getByLabelText } = await mountWithActiveThread();
     const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
@@ -267,7 +276,7 @@ describe('App integration — messaging flow', () => {
     consoleErr.mockRestore();
   });
 
-  it('drain failure restores the failed head at the FRONT, not the tail (multi-item)', async () => {
+  it.skip('drain failure restores the failed head at the FRONT, not the tail (multi-item)', async () => {
     // Single-item failure tests can't distinguish front from tail.
     // Pin the contract that a failed drain re-inserts at index 0 so
     // a refactor swapping `enqueueAtFront` for `enqueue` (tail) gets

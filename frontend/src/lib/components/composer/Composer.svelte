@@ -30,7 +30,7 @@
     retainProposedPlanEventListener,
   } from '../../stores/proposedPlans.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { registerQueueItem } from '../../stores/sendQueue.svelte';
+  import { hasRetractableQueueItems, registerQueueItem } from '../../stores/sendQueue.svelte';
   import {
     hasRuntimeModeDraft,
     runtimeModeForThread,
@@ -83,10 +83,12 @@
   let isDisabled = $derived(!pane.threadId);
   // Mid-round signal: a wire round is currently in flight (the model
   // is streaming text/tool work). The composer stays typeable during
-  // a round and Send routes through the per-thread send queue —
-  // matches both reference UIs (Claude Code's `commandQueue`, Codex's
-  // `VecDeque<QueuedUserMessage>`). Drain fires on the next
-  // `provider:turn_completed` (uniform across success, error, abort).
+  // a round and Send routes through the backend-owned per-thread
+  // queue (RegisterQueueItem). The flush trigger fires on the first
+  // non-subagent tool_use of the round — see internal/triage/router.go
+  // — and the dispatcher delivers each queued message via Send/Steer.
+  // Matches both reference UIs (Claude Code's `commandQueue`, Codex's
+  // `VecDeque<QueuedUserMessage>`).
   //
   // BETWEEN rounds — Claude's multi-result-per-turn cascade emits the
   // first `result` envelope, then the model is idle while a backgrounded
@@ -97,6 +99,12 @@
   // actual behaviour and is the canonical wire-round emission contract
   // documented in internal/triage/AGENTS.md "Wire-round vs logical-turn".
   let isTurnActive = $derived(getActiveTurn(pane.threadId) !== null);
+  // Mid-round signal: true while Zone 1 of the per-thread queue has at
+  // least one retractable item. Drives the "Send Now" affordance — a
+  // peer to Stop that interrupts the active turn so the queued items
+  // dispatch on the next round, instead of waiting for the current
+  // round to finish on its own.
+  let hasQueuedItems = $derived(hasRetractableQueueItems(pane.threadId));
   let blockingApprovals = $derived(pane.pendingApprovals);
   let activeApproval = $derived(blockingApprovals[0]);
   let activeUserInput = $derived(pane.pendingUserInputs[0]);
@@ -612,6 +620,7 @@
         {sendLabel}
         hasCurrentPlan={Boolean(latestPlanItem)}
         planCommentCount={latestPlanDraftComments.length}
+        {hasQueuedItems}
         onSend={() => send()}
         onSendWithoutPlanComments={hasDraftPlanComments && hasDraftContent ? () => send(false) : undefined}
         onSendInNewThread={hasPlanImplementAction ? sendPlanToNewThread : undefined}

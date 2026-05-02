@@ -314,3 +314,12 @@ export const UpdateProposedPlanComment = dispatch('UpdateProposedPlanComment');
 export const DeleteProposedPlanComment = dispatch('DeleteProposedPlanComment');
 export const ListLiveBackgroundTasks = dispatch('ListLiveBackgroundTasks');
 export const GetThreadItem = dispatch('GetThreadItem');
+
+// Send-queue (per-thread mid-turn queue; backend-owned). Tests that
+// exercise mid-turn submits must mock RegisterQueueItem to return the
+// wire item AND seed the local store via replaceQueueForThread, so the
+// backend echo is faithfully simulated. UndoQueuedItems is mocked when
+// a test exercises the retract path.
+export const RegisterQueueItem = dispatch('RegisterQueueItem');
+export const UndoQueuedItems = dispatch('UndoQueuedItems');
+export const GetQueueState = dispatch('GetQueueState');

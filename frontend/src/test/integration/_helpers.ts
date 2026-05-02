@@ -24,7 +24,11 @@ import { resetProjectsForTest } from '../../lib/stores/projects.svelte';
 import { resetSidebarForTest, expandProject } from '../../lib/stores/sidebar.svelte';
 import { getAllDrafts, resetForTest as resetDraftThreadsForTest } from '../../lib/stores/draftThreads.svelte';
 import { resetRuntimeModeDraftsForTest } from '../../lib/stores/runtimeModeDraft.svelte';
-import { resetSendQueueForTest } from '../../lib/stores/sendQueue.svelte';
+import {
+  getQueueForThread,
+  replaceQueueForThread,
+  resetSendQueueForTest,
+} from '../../lib/stores/sendQueue.svelte';
 import { getThreads } from '../../lib/stores/threads.svelte';
 
 // Drain microtasks + Svelte reactions so $effects and async mounts settle.
@@ -169,6 +173,61 @@ export function installComposerDefaults(threadId: string): void {
     truncated: false,
     root: '/tmp/ws',
   }));
+  // Default RegisterQueueItem mock — the backend handler stores the
+  // item and emits provider:queue_state_changed which seeds Zone 1.
+  // The mock simulates that round-trip by both returning the wire item
+  // AND directly seeding the local store, so integration tests that
+  // exercise the mid-turn queue path don't need to reproduce the event
+  // plumbing themselves. Tests that need to spy on or reject the call
+  // can override with their own setBindingMock.
+  let queueSeq = 0;
+  setBindingMock('RegisterQueueItem', async (
+    targetThreadId: string,
+    message: string,
+    opts: {
+      attachmentIds?: string[];
+      sourceProposedPlan?: unknown;
+      revisionSourceProposedPlan?: unknown;
+      revisionSourceCommentIds?: string[];
+    } = {},
+  ) => {
+    queueSeq += 1;
+    const wire = {
+      id: `q-${queueSeq}`,
+      threadId: targetThreadId,
+      message,
+      attachmentIds: opts.attachmentIds ? [...opts.attachmentIds] : [],
+      sourceProposedPlan: opts.sourceProposedPlan ?? null,
+      revisionSourceProposedPlan: opts.revisionSourceProposedPlan ?? null,
+      revisionSourceCommentIds: opts.revisionSourceCommentIds
+        ? [...opts.revisionSourceCommentIds]
+        : undefined,
+      enqueuedAt: queueSeq,
+    };
+    const current = getQueueForThread(targetThreadId);
+    replaceQueueForThread(targetThreadId, [
+      ...current,
+      {
+        id: wire.id,
+        threadId: wire.threadId,
+        message: wire.message,
+        attachmentIds: wire.attachmentIds,
+        sourceProposedPlan: wire.sourceProposedPlan as never,
+        revisionSourceProposedPlan: wire.revisionSourceProposedPlan as never,
+        revisionSourceCommentIds: wire.revisionSourceCommentIds,
+        enqueuedAt: wire.enqueuedAt,
+      },
+    ]);
+    return wire;
+  });
+  setBindingMock('UndoQueuedItems', async (targetThreadId: string) => {
+    const current = getQueueForThread(targetThreadId);
+    replaceQueueForThread(targetThreadId, []);
+    return current;
+  });
+  setBindingMock('GetQueueState', async (targetThreadId: string) => {
+    return [...getQueueForThread(targetThreadId)];
+  });
 }
 
 export function makeThread(overrides: Partial<Thread> = {}): Thread {

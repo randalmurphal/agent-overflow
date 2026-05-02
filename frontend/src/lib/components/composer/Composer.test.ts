@@ -20,6 +20,7 @@ import {
 } from '../../stores/proposedPlans.svelte';
 import {
   getQueueForThread,
+  replaceQueueForThread,
   resetSendQueueForTest,
 } from '../../stores/sendQueue.svelte';
 import { resetForTest as resetThreadStatuses } from '../../stores/threadStatuses.svelte';
@@ -103,6 +104,52 @@ describe('<Composer>', () => {
       filename: string,
       _mimeType: string,
     ) => makeAttachment(`att-${filename}`, filename));
+    // Default RegisterQueueItem mock simulates the backend round-trip:
+    // returns a wire item AND seeds the local queue store, mirroring
+    // the production flow where the backend stores the item and emits
+    // provider:queue_state_changed which seeds the store via the events
+    // handler. Tests that need a different backend behaviour (e.g.
+    // rejection) can override with their own setBindingMock.
+    let defaultQueueSeq = 0;
+    setBindingMock('RegisterQueueItem', async (
+      threadId: string,
+      message: string,
+      opts: {
+        attachmentIds?: string[];
+        sourceProposedPlan?: unknown;
+        revisionSourceProposedPlan?: unknown;
+        revisionSourceCommentIds?: string[];
+      } = {},
+    ) => {
+      defaultQueueSeq += 1;
+      const wire = {
+        id: `q-${defaultQueueSeq}`,
+        threadId,
+        message,
+        attachmentIds: opts.attachmentIds ? [...opts.attachmentIds] : [],
+        sourceProposedPlan: opts.sourceProposedPlan ?? null,
+        revisionSourceProposedPlan: opts.revisionSourceProposedPlan ?? null,
+        revisionSourceCommentIds: opts.revisionSourceCommentIds
+          ? [...opts.revisionSourceCommentIds]
+          : undefined,
+        enqueuedAt: defaultQueueSeq,
+      };
+      const current = getQueueForThread(threadId);
+      replaceQueueForThread(threadId, [
+        ...current,
+        {
+          id: wire.id,
+          threadId: wire.threadId,
+          message: wire.message,
+          attachmentIds: wire.attachmentIds,
+          sourceProposedPlan: wire.sourceProposedPlan as never,
+          revisionSourceProposedPlan: wire.revisionSourceProposedPlan as never,
+          revisionSourceCommentIds: wire.revisionSourceCommentIds,
+          enqueuedAt: wire.enqueuedAt,
+        },
+      ]);
+      return wire;
+    });
   });
 
   it('disables input when no thread is selected', async () => {
@@ -880,6 +927,74 @@ describe('<Composer>', () => {
     expect(interrupt).toHaveBeenCalledWith('thread-1');
   });
 
+  it('hides the Send Now button when no items are queued', async () => {
+    const pane = await buildPane();
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    const draft = await buildDraft();
+
+    const { queryByTestId } = render(Composer, { props: { pane, draft } });
+
+    // Active turn but Zone 1 is empty — no Send Now affordance.
+    expect(queryByTestId('composer-send-now')).toBeNull();
+  });
+
+  it('hides the Send Now button when no turn is active even if items are queued', async () => {
+    const pane = await buildPane();
+    // No setActiveTurn — pane is idle. Seed Zone 1 directly to
+    // simulate a stale-but-present queue entry; in practice the
+    // backend drains on round completion, but the visibility rule
+    // must explicitly gate on isTurnActive too.
+    replaceQueueForThread('thread-1', [
+      {
+        id: 'q-1',
+        threadId: 'thread-1',
+        message: 'queued',
+        attachmentIds: [],
+        sourceProposedPlan: null,
+        revisionSourceProposedPlan: null,
+        revisionSourceCommentIds: undefined,
+        enqueuedAt: 1,
+      },
+    ]);
+    const draft = await buildDraft();
+
+    const { queryByTestId } = render(Composer, { props: { pane, draft } });
+
+    expect(queryByTestId('composer-send-now')).toBeNull();
+  });
+
+  it('shows the Send Now button when a turn is active and items are queued', async () => {
+    const pane = await buildPane();
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    const draft = await buildDraft();
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+
+    // Queue a message during the active turn — the default
+    // RegisterQueueItem mock seeds Zone 1, so the Send Now button
+    // should now be visible alongside Stop.
+    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'queue then send now' } });
+    await fireEvent.click(getByTestId('composer-send'));
+    await tick();
+
+    expect(getByTestId('composer-send-now')).toBeTruthy();
+  });
+
+  it('clicking Send Now interrupts the active turn', async () => {
+    const pane = await buildPane();
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    const draft = await buildDraft();
+    const interrupt = setBindingMock('InterruptTurn', async () => {});
+
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'queue first' } });
+    await fireEvent.click(getByTestId('composer-send'));
+    await tick();
+
+    await fireEvent.click(getByTestId('composer-send-now'));
+
+    expect(interrupt).toHaveBeenCalledWith('thread-1');
+  });
+
   it('renders the background tray inside the composer card before the input', async () => {
     const pane = await buildPane();
     setBindingMock('ListLiveBackgroundTasks', async () => [{
@@ -1063,13 +1178,14 @@ describe('<Composer>', () => {
     expect(getQueueForThread('thread-1')).toEqual([]);
   });
 
-  it('routes Codex mid-turn sends through SteerMessageWithOptions and skips the queue', async () => {
-    // Phase D: Codex's `turn/steer` is the wire-level analog of
-    // Claude Code's per-thread queue. The pending_input vec on the
-    // server side IS the queue; doing it in the client too would
-    // double-count and break Stop+queue semantics. Pin this routing
-    // so the Codex composer never silently drops messages into the
-    // client queue when the wire would have accepted them.
+  it('routes Codex mid-turn sends through the unified backend queue', async () => {
+    // Phase G6 collapsed the Codex steer fast-path into the same
+    // backend-owned queue both providers now share. The dispatcher
+    // delivers each queued item via Steer (with Send fallback) for
+    // Codex; the Composer is provider-agnostic and never calls
+    // SteerMessageWithOptions directly. Pin so a future regression
+    // doesn't reintroduce a frontend-side steer dispatch that
+    // double-counts against the backend queue.
     const pane = await buildPane(makeTestThread({ provider: 'codex' }));
     pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
     const draft = await buildDraft();
@@ -1081,41 +1197,14 @@ describe('<Composer>', () => {
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
     const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
 
-    await fireEvent.input(textarea, { target: { value: 'steer me' } });
+    await fireEvent.input(textarea, { target: { value: 'queue me' } });
     await fireEvent.click(getByTestId('composer-send'));
     await tick();
 
     expect(send).not.toHaveBeenCalled();
-    await waitFor(() =>
-      expect(steer).toHaveBeenCalledWith('thread-1', 'steer me', expect.objectContaining({ attachmentIds: [] })),
-    );
-    expect(getQueueForThread('thread-1')).toEqual([]);
+    expect(steer).not.toHaveBeenCalled();
+    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queue me']);
     expect(draft.content).toBe('');
-  });
-
-  it('falls back to the queue when Codex steer races a turn that just ended', async () => {
-    // Race: between the frontend reading getActiveTurn and the steer
-    // RPC arriving, Codex's app-server emitted turn/completed and
-    // returns NoActiveTurn / ExpectedTurnMismatch. The user's typed
-    // content must not be dropped — the queued item drains on the
-    // next provider:turn_completed just like a Claude mid-turn
-    // enqueue would.
-    const pane = await buildPane(makeTestThread({ provider: 'codex' }));
-    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
-    const draft = await buildDraft();
-    const steer = setBindingMock('SteerMessageWithOptions', async () => {
-      throw new Error('codex: turn/steer: NoActiveTurn');
-    });
-
-    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'race me' } });
-    await fireEvent.click(getByTestId('composer-send'));
-    await tick();
-    await waitFor(() => expect(steer).toHaveBeenCalled());
-    await tick();
-
-    const queued = getQueueForThread('thread-1');
-    expect(queued.map((item) => item.message)).toEqual(['race me']);
   });
 
   it('keeps the existing enqueue path for Claude mid-turn sends', async () => {
