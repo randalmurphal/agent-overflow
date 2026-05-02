@@ -10,10 +10,7 @@ import type { Item, Thread } from '../../lib/types/models';
 import { setBindingMock } from '../mocks/bindings-app';
 import { emitWailsEvent } from '../mocks/wailsio-runtime';
 import { emitItemEventDelta, emitItemEventUpsert } from '../helpers/chat';
-import {
-  getQueueForThread,
-  hasQueueItems,
-} from '../../lib/stores/sendQueue.svelte';
+import { getQueueForThread } from '../../lib/stores/sendQueue.svelte';
 import { getActiveTurn } from '../../lib/stores/threadStatuses.svelte';
 import {
   flush,
@@ -129,196 +126,13 @@ describe('App integration — messaging flow', () => {
     expect(textarea.value).toBe('');
   });
 
-  // The drain tests below cover frontend-side drain behavior that
-  // moved to the backend in Phases G1–G6. The trigger now fires on the
-  // first non-subagent tool_use of a wire round (see
-  // internal/triage/router.go) and the dispatcher delivers each item
-  // via Send/Steer, emitting provider:queue_flushed. The frontend no
-  // longer drains on provider:turn_completed. These tests are pinned
-  // skipped here pending the G11 rewrite that drives drain via the
-  // new backend events instead. The triage-side drain coverage lives
-  // in internal/triage/flush_queue_test.go.
-  it.skip('drains queued messages in FIFO order across successive turn_completes', async () => {
-    const { getByLabelText, getByTestId } = await mountWithActiveThread();
-    const sendMock = setBindingMock('SendMessageWithOptions', async () => makeThread({ id: 'thread-1' }));
-    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
-
-    // First send while idle — dispatches normally and the backend
-    // would emit turn_started / turn_completed. We simulate just
-    // enough lifecycle for the queue tests below.
-    await fireEvent.input(textarea, { target: { value: 'first' } });
-    await flush();
-    await fireEvent.click(getByTestId('composer-send'));
-    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(1));
-
-    emitWailsEvent('provider:turn_started', {
-      threadId: 'thread-1',
-      turnId: 'round-1',
-      turnIndex: 0,
-      startedAt: 1,
-    });
-    await flush();
-
-    // Mid-round, queue two more messages.
-    await fireEvent.input(textarea, { target: { value: 'second' } });
-    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
-    await flush();
-    await fireEvent.input(textarea, { target: { value: 'third' } });
-    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
-    await flush();
-
-    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['second', 'third']);
-
-    // Round 1 ends → drain fires for 'second'.
-    emitWailsEvent('provider:turn_completed', {
-      threadId: 'thread-1',
-      turnId: 'round-1',
-      turnIndex: 0,
-      startedAt: 1,
-      completedAt: 100,
-      stopReason: 'end_turn',
-    });
-    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(2));
-    expect(sendMock.mock.calls[1][1]).toBe('second');
-    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['third']);
-
-    // Round 2 (the dispatched 'second') begins and ends → drain
-    // fires for 'third'.
-    emitWailsEvent('provider:turn_started', {
-      threadId: 'thread-1',
-      turnId: 'round-2',
-      turnIndex: 1,
-      startedAt: 200,
-    });
-    emitWailsEvent('provider:turn_completed', {
-      threadId: 'thread-1',
-      turnId: 'round-2',
-      turnIndex: 1,
-      startedAt: 200,
-      completedAt: 300,
-      stopReason: 'end_turn',
-    });
-    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(3));
-    expect(sendMock.mock.calls[2][1]).toBe('third');
-    expect(hasQueueItems('thread-1')).toBe(false);
-  });
-
-  it.skip('Stop with a queued message drains it on the aborted turn_completed', async () => {
-    // The user hits Esc / Stop while a message is queued. Backend
-    // emits InterruptTurn → aborted turn_completed → drain fires
-    // (uniform rule). Both reference UIs have the same UX: the
-    // queued message is what the user wants to send next, even if
-    // they're cancelling the current round.
-    const { getByLabelText } = await mountWithActiveThread();
-    const sendMock = setBindingMock('SendMessageWithOptions', async () => makeThread({ id: 'thread-1' }));
-    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
-
-    emitWailsEvent('provider:turn_started', {
-      threadId: 'thread-1',
-      turnId: 'long-running',
-      turnIndex: 0,
-      startedAt: 1,
-    });
-    await flush();
-
-    await fireEvent.input(textarea, { target: { value: 'queued before stop' } });
-    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
-    await flush();
-    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queued before stop']);
-
-    // Aborted turn_completed (the wire shape Stop produces).
-    emitWailsEvent('provider:turn_completed', {
-      threadId: 'thread-1',
-      turnId: 'long-running',
-      turnIndex: 0,
-      startedAt: 1,
-      completedAt: 10,
-      stopReason: 'interrupted',
-      aborted: true,
-    });
-    await waitFor(() => expect(sendMock).toHaveBeenCalled());
-    expect(sendMock.mock.calls[0][1]).toBe('queued before stop');
-  });
-
-  it.skip('drain failure re-inserts the item at the front and surfaces an error', async () => {
-    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { getByLabelText } = await mountWithActiveThread();
-    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
-
-    emitWailsEvent('provider:turn_started', {
-      threadId: 'thread-1',
-      turnId: 'r-1',
-      turnIndex: 0,
-      startedAt: 1,
-    });
-    await flush();
-
-    await fireEvent.input(textarea, { target: { value: 'will fail to drain' } });
-    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
-    await flush();
-
-    // Round ends → drain attempts to send; SendMessageWithOptions
-    // throws. The drain helper restores the popped item to the
-    // front so the user's work isn't lost.
-    setBindingMock('SendMessageWithOptions', async () => {
-      throw new Error('rpc down');
-    });
-    emitWailsEvent('provider:turn_completed', {
-      threadId: 'thread-1',
-      turnId: 'r-1',
-      turnIndex: 0,
-      startedAt: 1,
-      completedAt: 10,
-      stopReason: 'end_turn',
-    });
-    await waitFor(() => expect(consoleErr).toHaveBeenCalled());
-    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['will fail to drain']);
-    consoleErr.mockRestore();
-  });
-
-  it.skip('drain failure restores the failed head at the FRONT, not the tail (multi-item)', async () => {
-    // Single-item failure tests can't distinguish front from tail.
-    // Pin the contract that a failed drain re-inserts at index 0 so
-    // a refactor swapping `enqueueAtFront` for `enqueue` (tail) gets
-    // caught. Without front insertion the user would end up with
-    // their queued items reordered after a transient RPC error.
-    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { getByLabelText } = await mountWithActiveThread();
-    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
-
-    emitWailsEvent('provider:turn_started', {
-      threadId: 'thread-1',
-      turnId: 'r-multi',
-      turnIndex: 0,
-      startedAt: 1,
-    });
-    await flush();
-
-    await fireEvent.input(textarea, { target: { value: 'failing' } });
-    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
-    await flush();
-    await fireEvent.input(textarea, { target: { value: 'later' } });
-    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
-    await flush();
-    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['failing', 'later']);
-
-    setBindingMock('SendMessageWithOptions', async () => {
-      throw new Error('rpc down');
-    });
-    emitWailsEvent('provider:turn_completed', {
-      threadId: 'thread-1',
-      turnId: 'r-multi',
-      turnIndex: 0,
-      startedAt: 1,
-      completedAt: 10,
-      stopReason: 'end_turn',
-    });
-    await waitFor(() => expect(consoleErr).toHaveBeenCalled());
-    // 'failing' restored at the front; 'later' stays in its original slot.
-    // If the drain pushed to the tail this would read ['later', 'failing'].
-    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['failing', 'later']);
-    consoleErr.mockRestore();
-  });
+  // The legacy frontend-driven drain tests have been removed: the
+  // backend now owns the queue (Phases G1–G6) and the trigger fires
+  // on the first non-subagent tool_use of a wire round, not on
+  // turn_completed. End-to-end queue coverage lives in
+  // src/test/integration/send-queue-flow.test.ts (frontend events ↔
+  // store ↔ UI) and internal/triage/flush_queue_test.go +
+  // app_flush_queue_test.go (backend trigger + dispatcher).
 
   it('queued items survive a thread switch A → B → A', async () => {
     // Mount thread-1 first.
