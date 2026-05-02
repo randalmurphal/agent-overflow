@@ -19,6 +19,19 @@ export default defineConfig({
     },
   },
   plugins: [tailwindcss(), svelte()],
+  server: {
+    watch: {
+      // Belt-and-braces: `.claude/worktrees/agent-*/` and
+      // `.playwright-mcp/` live above this config's project root
+      // (frontend/), so Vite's chokidar watcher should not see them
+      // anyway. We pin the ignore here so a future config change
+      // (e.g. adjusting root or adding fs.allow) can't accidentally
+      // pull thousands of worktree files into the watcher and crash
+      // the dev server. The Wails3 dev_mode watcher in build/config.yml
+      // carries the load-bearing exclude.
+      ignored: ['**/.claude/**', '**/.playwright-mcp/**'],
+    },
+  },
   build: {
     rolldownOptions: {
       output: {

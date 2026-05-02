@@ -171,6 +171,21 @@ and [invariant 25](docs/architecture/invariants.md#25-codex-backgrounding-uses-w
   unregistered and LAN-blocked methods, so the privileged surface
   stays unenumerable from the wire.
 
+- **`.claude/` and `.playwright-mcp/` MUST stay excluded from the
+  Wails3 dev watcher.** Claude Code's parallel-agent harness creates
+  full-repo worktrees under `.claude/worktrees/agent-*/` whenever an
+  agent is spawned with `isolation: "worktree"`. Each contains
+  hundreds of `.go` / `.ts` files matching the dev_mode
+  watched_extension patterns; without the explicit exclude in
+  `build/config.yml#dev_mode.ignore.dir`, Wails3 registers thousands
+  of fsnotify watches at startup and the dev process crashes (incident
+  2026-05-02 — backend rebuild storm + WebSocket disconnect cascade,
+  visible as repeated HMR-update messages in the dev log). `git_ignore:
+  true` is set, but it has not been enough on its own — keep the
+  explicit dir-level exclude in place. The same exclusion is mirrored
+  defensively in `frontend/vite.config.ts#server.watch.ignored` even
+  though those paths sit outside Vite's project root.
+
 ## Deferred (Not Currently in Scope)
 
 These are intentional non-goals for the current phase — don't implement

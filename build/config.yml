@@ -41,6 +41,19 @@ dev_mode:
       - node_modules
       - frontend
       - bin
+      # `.claude/worktrees/agent-*/` are full repo checkouts spawned by
+      # Claude Code's parallel-agent harness. Each contains hundreds of
+      # `.go` / `.ts` files matching the watched_extension patterns
+      # below; without this explicit exclude, Wails3's fsnotify watcher
+      # registers thousands of watches at startup, hits OS file-handle
+      # limits, and the dev process either fails to start or fires HMR
+      # storms when a new worktree is created mid-session. `git_ignore`
+      # below should cover this since `.claude/` is in `.gitignore`,
+      # but the explicit entry is the load-bearing one — relying on
+      # gitignore parsing alone has produced crashes (see incident
+      # 2026-05-02).
+      - .claude
+      - .playwright-mcp
     file:
       - .DS_Store
       - .gitignore
