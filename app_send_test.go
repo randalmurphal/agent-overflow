@@ -205,18 +205,30 @@ func TestSendMessageWithOptionsImplementSwitchesPlanModeToChat(t *testing.T) {
 	if updated.Mode != "chat" {
 		t.Errorf("returned thread mode = %q, want chat", updated.Mode)
 	}
-	if updated.HasActionableProposedPlan {
-		t.Error("returned thread.HasActionableProposedPlan = true, want false (plan was just implemented)")
+
+	// Phase F: plan acceptance now fires from the wire-driven turn-start
+	// path (handleInit + pending-send). The test's passthrough Claude
+	// binary doesn't emit system/init, so simulate the wire envelope to
+	// drive plan acceptance through the same code path production hits.
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventInit,
+		ThreadID:  thread.ID,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("simulate wire init: %v", err)
 	}
 
-	// Re-read from DB so we know the chat-mode flip is durable, not just
-	// in the returned struct.
+	// HasActionableProposedPlan is computed off the persisted plan state
+	// at GetThread time, so re-fetch after the wire-driven mark fires.
 	stored, err := app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
 	if stored.Mode != "chat" {
 		t.Errorf("stored thread mode = %q, want chat", stored.Mode)
+	}
+	if stored.HasActionableProposedPlan {
+		t.Error("stored thread.HasActionableProposedPlan = true, want false (plan was just implemented)")
 	}
 	state, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
 	if err != nil {
@@ -373,6 +385,16 @@ func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
 		t.Fatalf("SendMessageWithOptions() error = %v", err)
 	}
 
+	// Phase F: drive the wire-init that triggers plan acceptance, since
+	// the passthrough Claude binary doesn't emit system/init.
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventInit,
+		ThreadID:  thread.ID,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("simulate wire init: %v", err)
+	}
+
 	items, err := app.store.ListItems(thread.ID)
 	if err != nil {
 		t.Fatalf("ListItems: %v", err)
@@ -471,6 +493,15 @@ func TestSendMessageWithOptionsPersistsCrossThreadSourceProposedPlan(t *testing.
 	})
 	if err != nil {
 		t.Fatalf("SendMessageWithOptions() error = %v", err)
+	}
+
+	// Phase F: drive the wire-init that triggers plan acceptance.
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventInit,
+		ThreadID:  targetThread.ID,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("simulate wire init: %v", err)
 	}
 
 	state, found, err := app.store.GetProposedPlanState(sourceThread.ID, "plan-item")
@@ -680,6 +711,19 @@ func TestSendMessageFirstTurnCapturesInitialAndCompletedCheckpoints(t *testing.T
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 
+	// Phase F: turn-start (and thus baseline checkpoint capture) is now
+	// wire-driven from system/init plus the pending-send marker. The
+	// passthrough Claude binary doesn't emit system/init, so simulate
+	// the wire envelope to drive handleTurnStart through its production
+	// path.
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventInit,
+		ThreadID:  thread.ID,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("simulate wire init (first send): %v", err)
+	}
+
 	items, err := app.store.ListItems(thread.ID)
 	if err != nil {
 		t.Fatalf("ListItems() error = %v", err)
@@ -717,6 +761,13 @@ func TestSendMessageFirstTurnCapturesInitialAndCompletedCheckpoints(t *testing.T
 	// including the agent-output.txt written during turn 0.
 	if err := app.SendMessage(thread.ID, "second turn", nil); err != nil {
 		t.Fatalf("SendMessage(second) error = %v", err)
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventInit,
+		ThreadID:  thread.ID,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("simulate wire init (second send): %v", err)
 	}
 	if _, ok, err := app.store.GetCheckpointByTurnCount(thread.ID, 1); err != nil || !ok {
 		t.Fatalf("checkpoint turn 1 missing after second user-send: ok=%v err=%v", ok, err)
@@ -1734,5 +1785,179 @@ func TestSendMessagePersistsUserItemOnSuccess(t *testing.T) {
 	}
 	if userItem.Summary != "hello world" {
 		t.Fatalf("summary = %q, want hello world", userItem.Summary)
+	}
+}
+
+// TestSendMessageDoesNotEmitSyntheticTurnStart pins the Phase F deletion
+// of the synthetic EventTurnStart. Pre-Phase-F, a successful Claude
+// send drove turn-start by manually calling triage.Handle with
+// EventTurnStart; post-Phase-F, both providers derive turn-start from
+// native wire events (Claude's system/init, Codex's turn/started) so
+// the synthetic emission is gone. A regression that re-introduces the
+// synthetic emission would emit provider:turn_started before the wire
+// init arrived, breaking the wire-driven contract this phase
+// established.
+func TestSendMessageDoesNotEmitSyntheticTurnStart(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-no-synthetic-turn-start")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	var mu sync.Mutex
+	var emissions []string
+	app.triage = triage.NewRouter(app.store, func(name string, _ any) {
+		mu.Lock()
+		emissions = append(emissions, name)
+		mu.Unlock()
+	})
+
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{
+			Binary:  writeClaudePassthroughBinary(t),
+			WorkDir: thread.WorkspacePath,
+		},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "tok",
+		claude:   sess,
+	}
+
+	if err := app.SendMessage(thread.ID, "hello", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, name := range emissions {
+		if name == "provider:turn_started" {
+			t.Fatalf("provider:turn_started emitted on bare send — Phase F removed the synthetic EventTurnStart, turn-start must wait for wire system/init (emissions=%v)", emissions)
+		}
+	}
+}
+
+// TestSendMessageRegistersPendingSend pins the post-Phase-F send
+// contract: a successful Claude send must register a pending-send
+// marker BEFORE returning from sendMessage. Without the marker,
+// triage.handleInit can't tell a fresh AO send from an idle reconnect
+// when the wire system/init arrives, and turn-start would never fire
+// for Claude.
+func TestSendMessageRegistersPendingSend(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-pending-send-registered")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{
+			Binary:  writeClaudePassthroughBinary(t),
+			WorkDir: thread.WorkspacePath,
+		},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "tok",
+		claude:   sess,
+	}
+
+	if app.triage.HasPendingSendForThread(thread.ID) {
+		t.Fatal("setup: thread should have no pending sends before SendMessage")
+	}
+	if err := app.SendMessage(thread.ID, "hello", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if !app.triage.HasPendingSendForThread(thread.ID) {
+		t.Fatalf("RegisterPendingSend was not called by the send path — Phase F's wire-driven turn-start can't run without the marker")
+	}
+}
+
+// TestSendMessageClearsPendingSendOnFailure pins the cleanup contract:
+// when sendToProvider fails, the send path must drop the pending-send
+// marker via ClearPendingSendForFailure. Without this, the marker
+// would persist; a later wire init for a different (or orphaned) send
+// could mis-route through the handleTurnStart path on stale state.
+func TestSendMessageClearsPendingSendOnFailure(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-pending-send-cleared-on-failure")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+
+	// Closed Claude session so sendToProvider's WriteLine returns "process
+	// already exited". Mirrors TestSendMessagePersistsUserItemAndError-
+	// WhenProviderSendFails.
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{
+			Binary:  writeClaudePassthroughBinary(t),
+			WorkDir: thread.WorkspacePath,
+		},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if err := sess.Close(); err != nil {
+		t.Logf("close: %v (expected)", err)
+	}
+
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "tok",
+		claude:   sess,
+	}
+
+	if err := app.SendMessage(thread.ID, "doomed", nil); err == nil {
+		t.Fatal("expected SendMessage to fail with closed session")
+	}
+
+	if app.triage.HasPendingSendForThread(thread.ID) {
+		t.Errorf("ClearPendingSendForFailure was not called by the send-failure path — marker leaked into idle state")
+	}
+
+	// Existing optimistic-send contract must still hold: the error item
+	// is persisted alongside the orphan user_text. Pinning this here so
+	// the cleanup change can't accidentally short-circuit the existing
+	// failure persistence.
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	var sawError bool
+	for _, item := range items {
+		if item.Kind == "error" {
+			sawError = true
+			break
+		}
+	}
+	if !sawError {
+		t.Error("expected error item after failed send — existing optimistic-send contract regressed")
 	}
 }

@@ -660,6 +660,7 @@ func TestBuildArgsDefault(t *testing.T) {
 		"--verbose",
 		"--permission-prompt-tool", "stdio",
 		"--include-partial-messages",
+		"--replay-user-messages",
 	}
 	if len(args) != len(expected) {
 		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)

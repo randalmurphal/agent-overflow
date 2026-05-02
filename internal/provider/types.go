@@ -141,6 +141,13 @@ const (
 	// changing the parser.
 	EventTerminalInteraction EventKind = "terminal_interaction"
 
+	// EventUserText is the wire-confirmation envelope for an AO-initiated
+	// user message. The triage router uses it to correlate the wire-side
+	// echo of a user prompt back to the in-memory pending-send registered
+	// by the send path. Phase A introduces only the constant + dispatch
+	// stub; emission sites land in later phases.
+	EventUserText EventKind = "user_text"
+
 	// Heavy events — persisted to SQLite, meta emitted to frontend.
 	EventDiff          EventKind = "diff"
 	EventCommandOutput EventKind = "command_output"
@@ -180,6 +187,7 @@ var AllEventKinds = []EventKind{
 	EventBackgroundTaskNotification,
 	EventSubagentNotification,
 	EventTerminalInteraction,
+	EventUserText,
 	EventDiff,
 	EventCommandOutput,
 	EventThinking,

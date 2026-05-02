@@ -174,9 +174,23 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 	case "assistant":
 		return p.parseAssistant(threadID, raw, now, line)
 	case "user":
-		// Claude echoes tool results via the user role. Pick them up so
-		// the triage layer can persist tool-call completions instead of
-		// relying on the implicit signal at `result` (turn end).
+		// Two distinct shapes share the `user` envelope:
+		//   1. CLI replay echoes (only present with --replay-user-messages):
+		//      `isReplay:true`, `message.content` is a plain string. We
+		//      promote these to EventUserText so triage's pending-send
+		//      correlation can match the AO-initiated prompt to its wire
+		//      echo. The replay branch is checked BEFORE parseUser so a
+		//      pathological future shape (replay flag AND tool_result
+		//      content) cannot double-emit; replay wins.
+		//   2. tool_result echoes (the long-standing path): the model has
+		//      finished a tool call; parseUser emits one EventToolComplete
+		//      per result block.
+		// Non-replay string-content user messages still drop silently
+		// inside parseUser today — the replay flag is what gives us a
+		// confirmation point.
+		if isReplayEnvelope(raw) {
+			return p.parseUserReplay(threadID, raw, now, line)
+		}
 		return p.parseUser(threadID, raw, now, line)
 	case "result":
 		return p.parseResult(threadID, raw, now, line)
@@ -200,6 +214,71 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 		// Unknown type — skip gracefully.
 		return nil, nil
 	}
+}
+
+// isReplayEnvelope reports whether a `user` envelope is the CLI's
+// replay echo of an AO-initiated user message — the wire signal we get
+// when the session was spawned with `--replay-user-messages`. Only
+// `isReplay==true` qualifies; absence of the field, false, or any
+// non-bool shape returns false so the existing tool_result path stays
+// untouched.
+func isReplayEnvelope(raw map[string]json.RawMessage) bool {
+	flagRaw, ok := raw["isReplay"]
+	if !ok {
+		return false
+	}
+	var isReplay bool
+	if err := json.Unmarshal(flagRaw, &isReplay); err != nil {
+		return false
+	}
+	return isReplay
+}
+
+// parseUserReplay promotes a replay-echo user envelope to a single
+// EventUserText. The replay shape (per @anthropic-ai/claude-agent-sdk
+// `SDKUserMessageReplaySchema`) carries `message.content` as a plain
+// string, but we accept the array shape `[{type:"text",text:"..."}]`
+// defensively too — extractToolResultText already covers both. The
+// SDK message uuid (`message.id`) lands in `meta.provider_item_id` so
+// triage's pending-send correlator (Phase E) can stamp it onto the
+// AO-owned `user:<turnIndex>` row. When `message.id` is absent the
+// meta omits the key — never empty-string.
+func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
+	msgRaw, ok := raw["message"]
+	if !ok {
+		return nil, nil
+	}
+	var msg struct {
+		ID      string          `json:"id"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(msgRaw, &msg); err != nil {
+		return nil, nil
+	}
+
+	content := extractToolResultText(msg.Content)
+
+	// `message.id` is the SDK-assigned uuid for the user envelope. When
+	// present it lands in meta as `provider_item_id`; absent / empty omits
+	// the key entirely (never empty-string). Phase E reads this to stamp
+	// the AO-owned `user:<turnIndex>` row, so the meta key has to be the
+	// stable handle, not the uuid baked into Content.
+	var meta json.RawMessage
+	if msg.ID != "" {
+		marshaled, err := json.Marshal(map[string]string{"provider_item_id": msg.ID})
+		if err == nil {
+			meta = marshaled
+		}
+	}
+
+	return []provider.ProviderEvent{{
+		Kind:      provider.EventUserText,
+		ThreadID:  threadID,
+		Content:   content,
+		Meta:      meta,
+		Timestamp: now,
+		Raw:       line,
+	}}, nil
 }
 
 // markBackground records that the given tool_use ID was launched with

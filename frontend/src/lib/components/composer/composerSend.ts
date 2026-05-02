@@ -10,6 +10,7 @@ import {
   InterruptTurn,
   PrepareThreadWorktree,
   SendMessageWithOptions,
+  SteerMessageWithOptions,
 } from '../../stores/bindings';
 import type { Attachment } from '../../types/attachment';
 import type { TerminalChip } from '../../types/draft';
@@ -182,5 +183,86 @@ export async function dispatchInterrupt(
   } catch (err) {
     console.error('Failed to interrupt turn:', err);
     reportError(`Failed to interrupt: ${errString(err)}`);
+  }
+}
+
+export interface SteerOptions {
+  threadId: string;
+  message: string;
+  attachmentIds: string[];
+  runtimeMode?: string;
+  sourceProposedPlan?: SourceProposedPlan;
+  revisionSourceProposedPlan?: SourceProposedPlan;
+  revisionSourceCommentIds?: string[];
+  /**
+   * Fallback when the backend reports the active turn ended before the
+   * steer arrived (race window between the frontend reading
+   * `getActiveTurn` and this RPC landing). The composer wires this to
+   * an `enqueueQueuedMessage` call so the user's message survives the
+   * race — the queued item drains on the next `provider:turn_completed`
+   * just like a Claude mid-turn enqueue.
+   */
+  enqueueOnRace: () => void;
+  reportError: (message: string) => void;
+  /**
+   * Restore the composer to the snapshot captured before clearing so a
+   * non-race steer failure leaves the user's typed content visible
+   * rather than silently dropped. The composer's idle-send path uses
+   * the same pattern.
+   */
+  restoreDraft: () => Promise<void>;
+}
+
+/**
+ * Heuristic match against the backend's "no active turn" error wires.
+ * The Go side returns `codex.ErrNoActiveTurn` (`"codex: no active turn
+ * to steer"`) when the local session has no in-flight turn id, and
+ * Codex's app-server returns `NoActiveTurn` / `ExpectedTurnMismatch`
+ * inside a `codex: turn/steer: ...` wrapper when the server has
+ * already moved past the turn the frontend was tracking. Both shapes
+ * mean "fall back to the queue" — losing the message because of a
+ * timing race would be the worst possible UX.
+ */
+function isSteerRaceError(err: unknown): boolean {
+  const message = errString(err).toLowerCase();
+  if (!message) return false;
+  return (
+    message.includes('no active turn')
+    || message.includes('noactiveturn')
+    || message.includes('expectedturnmismatch')
+    || message.includes('expected turn mismatch')
+  );
+}
+
+/**
+ * Drive a Codex `turn/steer` mid-turn injection. Mirrors the validation
+ * shape of `dispatchSend` (worktree-prep / draft-thread promotion are
+ * unnecessary mid-turn — the thread is fully established by definition)
+ * and routes the wire payload through the shared `buildSendOptions`
+ * helper so the precedence rule (revision wins over source-plan) and
+ * runtime-mode handling stay aligned with the idle-send path.
+ *
+ * On a "no active turn" race, falls back to the per-thread queue so
+ * the user's message lands on the next round.
+ */
+export async function dispatchSteer(opts: SteerOptions): Promise<void> {
+  const sendOptions = buildSendOptions({
+    attachmentIds: opts.attachmentIds,
+    runtimeMode: opts.runtimeMode,
+    sourceProposedPlan: opts.sourceProposedPlan,
+    revisionSourceProposedPlan: opts.revisionSourceProposedPlan,
+    revisionSourceCommentIds: opts.revisionSourceCommentIds,
+  });
+  try {
+    await SteerMessageWithOptions(opts.threadId, opts.message, sendOptions);
+  } catch (err) {
+    if (isSteerRaceError(err)) {
+      console.warn('Steer raced with turn end; falling back to queue:', err);
+      opts.enqueueOnRace();
+      return;
+    }
+    console.error('Failed to steer message:', err);
+    await opts.restoreDraft();
+    opts.reportError(`Failed to send mid-turn message: ${errString(err)}`);
   }
 }

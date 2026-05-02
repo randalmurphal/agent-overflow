@@ -173,6 +173,149 @@ func TestClassifyNotification_ItemCompletedPlan(t *testing.T) {
 	}
 }
 
+// TestClassifyItemCompleted_UserMessage_EmitsEventUserText covers the
+// canonical Codex `userMessage` shape: `item/completed` with
+// `item.content` as a `[{type:"text",text:"..."}]` array. The
+// classifier promotes this to a single EventUserText whose meta
+// carries `provider_item_id` set to `item.id`. Phase E reads that
+// key to stamp the AO-owned `user:<turnIndex>` row.
+func TestClassifyItemCompleted_UserMessage_EmitsEventUserText(t *testing.T) {
+	params := `{"turnId":"turn-9","item":{"id":"item-abc","type":"userMessage","content":[{"type":"text","text":"hi from user"}]}}`
+	events := ClassifyNotification("thread-1", "item/completed", json.RawMessage(params))
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	evt := events[0]
+	if evt.Kind != provider.EventUserText {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventUserText)
+	}
+	if evt.Content != "hi from user" {
+		t.Fatalf("content: got %q, want %q", evt.Content, "hi from user")
+	}
+	if evt.TurnID != "turn-9" {
+		t.Fatalf("turnID: got %q, want %q", evt.TurnID, "turn-9")
+	}
+	if evt.ItemID != "" {
+		t.Fatalf("itemID: got %q, want empty (triage owns the AO row id)", evt.ItemID)
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["provider_item_id"] != "item-abc" {
+		t.Fatalf("meta.provider_item_id: got %v, want item-abc", meta["provider_item_id"])
+	}
+}
+
+// TestClassifyItemCompleted_UserMessage_StringContent covers the
+// defensive secondary shape — `content` as a plain string. Real
+// Codex captures haven't shown this for userMessage, but the wire
+// schema's content union allows it (matches Claude's SDK replay
+// shape) so we accept it rather than drop on the assumption that
+// only the array form lands.
+func TestClassifyItemCompleted_UserMessage_StringContent(t *testing.T) {
+	params := `{"turnId":"turn-9","item":{"id":"item-str","type":"userMessage","content":"hi"}}`
+	events := ClassifyNotification("thread-1", "item/completed", json.RawMessage(params))
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	if events[0].Kind != provider.EventUserText {
+		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventUserText)
+	}
+	if events[0].Content != "hi" {
+		t.Fatalf("content: got %q, want %q", events[0].Content, "hi")
+	}
+}
+
+// TestClassifyItemCompleted_UserMessage_MissingItemID covers the
+// missing-uuid case — the classifier must still emit EventUserText
+// (the wire echo carries semantic value) but must NOT emit an
+// empty-string `provider_item_id`. Phase E treats absence-of-key
+// and empty-string differently; we collapse them here so triage
+// sees one shape.
+func TestClassifyItemCompleted_UserMessage_MissingItemID(t *testing.T) {
+	params := `{"turnId":"turn-9","item":{"type":"userMessage","content":[{"type":"text","text":"no uuid"}]}}`
+	events := ClassifyNotification("thread-1", "item/completed", json.RawMessage(params))
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	if events[0].Kind != provider.EventUserText {
+		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventUserText)
+	}
+	if events[0].Content != "no uuid" {
+		t.Fatalf("content: got %q, want %q", events[0].Content, "no uuid")
+	}
+
+	// Either absent meta or meta without provider_item_id is acceptable;
+	// what is NOT acceptable is meta carrying an empty-string value for
+	// the key.
+	if len(events[0].Meta) == 0 {
+		return
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if v, ok := meta["provider_item_id"]; ok {
+		if s, isStr := v.(string); !isStr || s == "" {
+			t.Fatalf("meta.provider_item_id present but empty/invalid: %v", v)
+		}
+	}
+}
+
+// TestClassifyItemCompleted_UserMessage_MultiTextBlocks covers the
+// concatenation rule: every text block's `text` field is appended in
+// order with no separator. Image and other non-text blocks are
+// silently skipped — mirrors extractToolResultText in
+// claude/parse_user.go so the receive-side promotion behaves the
+// same on both providers.
+func TestClassifyItemCompleted_UserMessage_MultiTextBlocks(t *testing.T) {
+	params := `{"turnId":"turn-9","item":{"id":"item-multi","type":"userMessage","content":[{"type":"text","text":"hello "},{"type":"image","source":"data:..."},{"type":"text","text":"world"}]}}`
+	events := ClassifyNotification("thread-1", "item/completed", json.RawMessage(params))
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	if events[0].Kind != provider.EventUserText {
+		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventUserText)
+	}
+	if events[0].Content != "hello world" {
+		t.Fatalf("content: got %q, want %q", events[0].Content, "hello world")
+	}
+}
+
+// TestClassifyItemNotification_UserMessageStarted_StillDropped pins
+// today's behavior: `item/started` for `userMessage` returns no
+// events. The started event is the in-flight half of the user
+// envelope and has no UI signal we want — only the completed half
+// promotes to EventUserText.
+func TestClassifyItemNotification_UserMessageStarted_StillDropped(t *testing.T) {
+	params := `{"turnId":"turn-9","item":{"id":"item-abc","type":"userMessage","content":[{"type":"text","text":"hi from user"}]}}`
+	events := ClassifyNotification("thread-1", "item/started", json.RawMessage(params))
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events for item/started userMessage, got %d: %+v", len(events), events)
+	}
+}
+
+// TestClassifyItemCompleted_AgentMessageStillDropped pins that the
+// userMessage carve-out hasn't accidentally swallowed other non-tool
+// types. agentMessage (the assistant text channel) has its own
+// triage path via `item/agentMessage/delta` and must not produce
+// anything from `item/completed`. If a future refactor drops the
+// `isNonToolCodexItemType` guard, this test fails before behavior
+// changes silently.
+func TestClassifyItemCompleted_AgentMessageStillDropped(t *testing.T) {
+	params := `{"turnId":"turn-9","item":{"id":"agent-1","type":"agentMessage","text":"final answer"}}`
+	events := ClassifyNotification("thread-1", "item/completed", json.RawMessage(params))
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events for item/completed agentMessage, got %d: %+v", len(events), events)
+	}
+}
+
 func TestClassifyNotification_ErrorWithWillRetry(t *testing.T) {
 	params := `{"error":{"message":"Reconnecting... 2/5"},"willRetry":true}`
 	events := ClassifyNotification("t1", "error", json.RawMessage(params))

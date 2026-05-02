@@ -265,13 +265,17 @@ func TestItemStartedDropsNonToolTypes(t *testing.T) {
 }
 
 // TestItemCompletedDropsNonToolContentTypes mirrors the started filter:
-// completions for userMessage / agentMessage / reasoning / todoList must
-// not settle as tool_call rows. Plan is deliberately exempt — it's
-// re-routed to EventProposedPlan by classifyItemCompleted (covered by
-// TestItemCompletedPlan below if present, otherwise by the plan payload
-// tests in triage).
+// completions for agentMessage / reasoning / todoList must not settle as
+// tool_call rows. Two carve-outs:
+//   - plan re-routes to EventProposedPlan (covered by
+//     TestClassifyNotification_ItemCompletedPlan).
+//   - userMessage promotes to EventUserText (covered by the
+//     TestClassifyItemCompleted_UserMessage_* family in
+//     protocol_test.go); see classifyItemCompleted's userMessage
+//     branch and parse_user.go's `isReplay:true` mirror on the
+//     Claude side.
 func TestItemCompletedDropsNonToolContentTypes(t *testing.T) {
-	cases := []string{"userMessage", "agentMessage", "assistantMessage", "reasoning", "todoList"}
+	cases := []string{"agentMessage", "assistantMessage", "reasoning", "todoList"}
 	for _, itemType := range cases {
 		t.Run(itemType, func(t *testing.T) {
 			params := json.RawMessage(`{"item":{"id":"item-X","type":"` + itemType + `"}}`)

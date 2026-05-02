@@ -269,6 +269,14 @@ func buildArgs(cfg Config) []string {
 		// messages). These already flow through parseStreamEvent, so no new
 		// routing is needed; the flag simply increases stream fidelity.
 		"--include-partial-messages",
+		// Always-on. The CLI replay echo gives us a wire-confirmation point
+		// that triage's pending-send correlation pairs with the AO-initiated
+		// send. Without the flag, AO has no signal that the model actually
+		// received the message; with the flag, the wire echoes user text
+		// whose `isReplay:true` envelope we promote to `EventUserText`. The
+		// flag is purely additive — non-replay user envelopes (tool_result
+		// blocks) are unchanged.
+		"--replay-user-messages",
 	}
 
 	if cfg.Model != "" {

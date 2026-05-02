@@ -229,16 +229,33 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	}
 	userMsgKept = true
 
-	// Plan-implemented marking happens via EventTurnStart (synthesized
-	// for Claude below; native for Codex on turn/started). Pre-send
-	// marking would hide the Implement button before sendToProvider's
-	// outcome is known, so a transient send failure could not be
-	// retried. Restart durability comes from
+	// Register the pending-send marker BEFORE sendToProvider writes to
+	// stdin. The wire-init from Claude (or wire turn/started from Codex)
+	// can otherwise race ahead of the marker and miss the
+	// pending-send-present branch in handleInit / handleUserText. The
+	// marker is consumed by handleUserText when the matching replay
+	// envelope arrives, or cleared on send failure below.
+	a.triage.RegisterPendingSend(threadID, userItem.ID, turnIndex)
+
+	// Plan-implemented marking happens via the wire-driven turn-start
+	// path: Claude's `system/init` (consumed by triage.handleInit when a
+	// pending-send is present, which routes to handleTurnStart) for
+	// Claude, and the native `turn/started` for Codex. Pre-send marking
+	// would hide the Implement button before sendToProvider's outcome
+	// is known, so a transient send failure could not be retried.
+	// Restart durability comes from
 	// ReconcileProposedPlanStateFromAcceptedTurns, which LEFT-JOINs
 	// turns and excludes user_text rows with sibling kind='error' so a
 	// failed-send remains retryable across restarts too.
 
 	if err := sendToProvider(sess, threadID, content, provider.NormalizeInteractionMode(thread.Mode), providerAttachments); err != nil {
+		// Drop the pending-send marker before persisting the error row.
+		// Without this, the marker would still be live when the next AO
+		// send registers a new entry, and a stale wire init for an
+		// orphaned subprocess could hijack the new send's turn-start
+		// path.
+		a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
+
 		// Allocate an error id from the same per-turn counter the
 		// EventError handler uses so a subsequent provider error on
 		// the same turn doesn't collide on "error:<turn>:0".
@@ -273,19 +290,11 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		return store.Item{}, err
 	}
 
-	// Synthesize EventTurnStart only after a successful provider write for
-	// providers that don't emit their own turn/started wire notification.
-	// Codex emits the authoritative provider-assigned turn_id itself.
-	if thread.Provider != "codex" {
-		if err := a.triage.Handle(provider.ProviderEvent{
-			Kind:      provider.EventTurnStart,
-			ThreadID:  threadID,
-			TurnIndex: turnIndex,
-			Timestamp: time.Now(),
-		}); err != nil {
-			return store.Item{}, fmt.Errorf("send message: turn start: %w", err)
-		}
-	}
+	// Wire-driven turn-start: both providers now derive round 1 of the
+	// logical turn from native wire signals — Claude from `system/init`
+	// (routed through triage.handleInit when a pending-send is present),
+	// Codex from `turn/started`. There is no synthetic EventTurnStart
+	// emission here.
 
 	a.maybeGenerateThreadTitleWithAttachments(thread, content, hasPriorItems, persistedAttachments)
 	return userItem, nil

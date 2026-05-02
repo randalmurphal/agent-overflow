@@ -165,7 +165,13 @@ func classifyTurnCompleted(threadID string, params json.RawMessage, now time.Tim
 // as tool_call rows. These are content channels with their own
 // dedicated triage paths:
 //
-//   - userMessage:             persisted by app.PersistItem on SendMessage
+//   - userMessage:             item/started is noise (the in-flight
+//                              half has no UI signal); item/completed
+//                              is special-cased to emit EventUserText
+//                              so triage's pending-send correlator can
+//                              stamp the AO-owned `user:<turnIndex>`
+//                              row (mirrors Claude's `isReplay:true`
+//                              promotion in parse_user.go).
 //   - agentMessage / assistantMessage: written by handleTextDelta from the
 //     item/agentMessage/delta stream; settled on
 //     turn/completed
@@ -407,8 +413,14 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 	}
 	// Plan is the one non-tool type we DO route here — as a proposed-plan
 	// event, not as a tool_call completion. The remaining non-tool types
-	// (userMessage / agentMessage / reasoning / todoList) are handled by
-	// their own triage paths and must not settle a tool_call row.
+	// (agentMessage / reasoning / todoList) are handled by their own
+	// triage paths and must not settle a tool_call row. userMessage is
+	// the second carve-out: every wire echo of an AO-initiated send (or
+	// a future cascade injection like the Codex-side equivalent of
+	// task_notification) is promoted to EventUserText so triage's
+	// pending-send correlator can stamp the AO-owned `user:<turnIndex>`
+	// row. This is the receive-side mirror of Claude's `isReplay:true`
+	// promotion in parse_user.go.
 	if itemType == "plan" {
 		planMarkdown := extractCodexPlanMarkdown(params)
 		if planMarkdown == "" {
@@ -422,6 +434,29 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 			ItemType:  itemType,
 			Content:   planMarkdown,
 			Meta:      params,
+			Timestamp: now,
+		}}
+	}
+	if itemType == "userMessage" {
+		content := extractCodexUserMessageText(item)
+		// item.id is the Codex-assigned uuid for the user envelope. When
+		// present it lands in meta as `provider_item_id`; absent / empty
+		// omits the key entirely (never empty-string). Phase E reads
+		// this to stamp the AO-owned `user:<turnIndex>` row, so the
+		// meta key has to be the stable handle, not a synthesized id.
+		var meta json.RawMessage
+		if itemID != "" {
+			marshaled, err := json.Marshal(map[string]string{"provider_item_id": itemID})
+			if err == nil {
+				meta = marshaled
+			}
+		}
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventUserText,
+			ThreadID:  threadID,
+			TurnID:    turnID,
+			Content:   content,
+			Meta:      meta,
 			Timestamp: now,
 		}}
 	}
@@ -759,6 +794,49 @@ func readNestedString(data json.RawMessage, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// extractCodexUserMessageText flattens the content of a Codex
+// `userMessage` item into a plain string. Codex emits content in two
+// shapes: a plain string (the simplest case, also matches Claude's
+// SDK replay envelope) or an array of blocks
+// `[{type:"text",text:"..."}, ...]`. Image blocks are silently
+// skipped — the rendered transcript shows them out-of-band, so
+// concatenating a JSON dump into the user-text body would just add
+// noise. Mirrors `extractToolResultText` in claude/parse_user.go;
+// kept separate from `contentBlocksText` because the MCP path falls
+// back to `compactJSON` for unknown blocks (which is wrong for user
+// text — we want a clean drop, not JSON spillover).
+func extractCodexUserMessageText(item map[string]json.RawMessage) string {
+	if item == nil {
+		return ""
+	}
+	contentRaw, ok := item["content"]
+	if !ok || len(contentRaw) == 0 {
+		return ""
+	}
+	var asString string
+	if json.Unmarshal(contentRaw, &asString) == nil {
+		return asString
+	}
+	var blocks []map[string]json.RawMessage
+	if json.Unmarshal(contentRaw, &blocks) != nil {
+		return ""
+	}
+	var builder []byte
+	for _, block := range blocks {
+		if readRawString(block, "type") != "text" {
+			// image / other non-text blocks: no text body to extract.
+			continue
+		}
+		var text string
+		if rawText, present := block["text"]; present {
+			if json.Unmarshal(rawText, &text) == nil {
+				builder = append(builder, text...)
+			}
+		}
+	}
+	return string(builder)
 }
 
 func extractCodexPlanMarkdown(data json.RawMessage) string {

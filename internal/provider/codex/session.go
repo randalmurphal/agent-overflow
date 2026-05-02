@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -33,6 +34,12 @@ const (
 // by the auto-deny timeout). Prevents a second write landing at the
 // provider with a stale decision.
 var ErrApprovalAlreadyResolved = fmt.Errorf("codex: approval already resolved: %w", provider.ErrStaleInteractiveRequest)
+
+// ErrNoActiveTurn is returned by Steer when there is no active turn to
+// steer into. The app layer treats this as a "fall back to Send" signal
+// (race window: turn just ended between the frontend reading the
+// active-turn registry and the steer RPC arriving here).
+var ErrNoActiveTurn = errors.New("codex: no active turn to steer")
 
 // DynamicToolHandler is called when the provider invokes a dynamic tool (item/tool/call
 // or dynamicToolCall). The handler receives the tool name and arguments, and returns
@@ -282,24 +289,9 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 // turn ID locally so Interrupt has something to cancel even if the
 // notification has not yet arrived.
 func (s *Session) Send(ctx context.Context, content string, opts provider.SendOptions) error {
-	attachments := opts.Attachments
-	input := make([]map[string]any, 0, 1+len(attachments))
-	if strings.TrimSpace(content) != "" {
-		input = append(input, map[string]any{
-			"type":          "text",
-			"text":          content,
-			"text_elements": []any{},
-		})
-	}
-	for _, attachment := range attachments {
-		encoded := base64.StdEncoding.EncodeToString(attachment.Data)
-		input = append(input, map[string]any{
-			"type": "image",
-			"url":  "data:" + attachment.MimeType + ";base64," + encoded,
-		})
-	}
-	if len(input) == 0 {
-		return fmt.Errorf("codex: turn/start requires text or image input")
+	input, err := buildTurnInput(content, opts.Attachments)
+	if err != nil {
+		return err
 	}
 
 	params := map[string]any{
@@ -338,6 +330,58 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		s.mu.Unlock()
 	}
 
+	return nil
+}
+
+// Steer injects user input into the currently-active turn's
+// pending_input queue via Codex's `turn/steer` JSON-RPC. Mid-turn
+// injection lets the user "steer" the model without spawning a new
+// turn — Codex drains pending_input on the next iteration of its
+// run_turn loop, and the app-server confirms the inject by emitting
+// a wire-typed `item/completed userMessage` inside the same active
+// turn (which our triage handleUserText path correlates with the
+// pending-send marker).
+//
+// REQUIRES an active turn — returns ErrNoActiveTurn if no turn is
+// currently in flight, so the caller can fall back to Send rather
+// than racing the wire. The caller should also fall back when the
+// app-server returns NoActiveTurn or ExpectedTurnMismatch (race
+// window: turn ended or a new turn started between the frontend
+// reading the active-turn registry and the steer RPC arriving here).
+//
+// DOES NOT take effort / approvalPolicy / sandboxPolicy /
+// collaborationMode — those are turn-creation params for turn/start,
+// not steer. Steer's contract is "inject input into an existing
+// turn's input queue"; per-turn settings are fixed at the turn's
+// creation.
+//
+// Wire shape per
+// codex-rs/app-server-protocol/src/protocol/v2.rs:5192-5209
+// (TurnSteerParams). Server-side reference:
+// codex-rs/core/src/session/mod.rs:2983 (errors NoActiveTurn if no
+// turn is running, ExpectedTurnMismatch if the turn id has rolled).
+func (s *Session) Steer(ctx context.Context, content string, opts provider.SendOptions) error {
+	s.mu.Lock()
+	expectedTurnID := s.activeTurnID
+	s.mu.Unlock()
+	if expectedTurnID == "" {
+		return ErrNoActiveTurn
+	}
+
+	input, err := buildTurnInput(content, opts.Attachments)
+	if err != nil {
+		return fmt.Errorf("codex: turn/steer: %w", err)
+	}
+
+	params := map[string]any{
+		"threadId":       s.codexThreadID,
+		"input":          input,
+		"expectedTurnId": expectedTurnID,
+	}
+
+	if _, err := s.sendRequest(ctx, "turn/steer", params); err != nil {
+		return fmt.Errorf("codex: turn/steer: %w", err)
+	}
 	return nil
 }
 
@@ -1431,6 +1475,34 @@ func (s *Session) writeDrainResponse(requestID string, p *pendingApproval, decis
 const resolvedApprovalsSoftCap = 1000
 
 // -- helpers --
+
+// buildTurnInput shapes the user content + attachments into the input
+// array Codex's turn/start and turn/steer both accept (the wire schema
+// for the inner UserInput is identical between the two methods —
+// codex-rs/app-server-protocol/src/protocol/v2.rs UserInput type). Empty
+// content with no attachments is rejected here so neither caller has to
+// branch on it.
+func buildTurnInput(content string, attachments []provider.ImageAttachment) ([]map[string]any, error) {
+	input := make([]map[string]any, 0, 1+len(attachments))
+	if strings.TrimSpace(content) != "" {
+		input = append(input, map[string]any{
+			"type":          "text",
+			"text":          content,
+			"text_elements": []any{},
+		})
+	}
+	for _, attachment := range attachments {
+		encoded := base64.StdEncoding.EncodeToString(attachment.Data)
+		input = append(input, map[string]any{
+			"type": "image",
+			"url":  "data:" + attachment.MimeType + ";base64," + encoded,
+		})
+	}
+	if len(input) == 0 {
+		return nil, fmt.Errorf("codex: turn input requires text or image")
+	}
+	return input, nil
+}
 
 func buildApprovalEvent(threadID, turnID, itemID string, meta json.RawMessage, raw json.RawMessage) provider.ProviderEvent {
 	return provider.ProviderEvent{

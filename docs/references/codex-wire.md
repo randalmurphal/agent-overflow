@@ -233,6 +233,21 @@ They're progress/transient signals that would bloat the item
 timeline. Card-level updates come through `item/started` +
 `item/completed` upserts.
 
+### `userMessage` is promoted, not dropped
+
+`userMessage` lives in the `nonToolItemTypes` deny-list because we
+must NOT settle a tool_call row for it, but it is no longer silently
+dropped on `item/completed`. The classifier promotes the wire echo
+to `EventUserText` carrying `meta.provider_item_id = item.id`, so
+triage's pending-send correlator can stamp the AO-owned
+`user:<turnIndex>` row when an AO-initiated send round-trips —
+or when a future cascade injection (the Codex equivalent of
+Claude's `task_notification` echo, e.g. an MCP-injected user
+input) lands. The `item/started userMessage` half is still
+dropped: there is no UI signal for the in-flight envelope.
+Mirrors the Claude side's `isReplay:true` promotion in
+`internal/provider/claude/parse_user.go`.
+
 ### `status` values (per ItemType)
 
 Each ItemType has its own status enum:
