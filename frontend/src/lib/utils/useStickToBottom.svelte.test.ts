@@ -164,6 +164,39 @@ describe('createUseStickToBottomController', () => {
       // target = max(0, scrollHeight - 1 - clientHeight) = 1000 - 1 - 600 = 399
       expect(geom.scrollTop).toBe(399);
     });
+
+    it('escape suppresses both first-fire snap AND positive-delta spring chase', async () => {
+      // Regression for the open-thread scroll animation: MessageTimeline's
+      // $effect.pre calls setEscapedFromLock(true) on every threadId
+      // change so virtua's incremental row remeasurement (positive-delta
+      // RO fires) doesn't auto-chase the bottom from scrollTop=0. This
+      // test locks that contract at the controller level: while escaped,
+      // neither the first RO fire nor any subsequent positive delta is
+      // allowed to advance scrollTop. Only an explicit forceStick can
+      // resume bottom-following.
+      controller.setEscapedFromLock(true);
+      geom.scrollTop = 0;
+      const ro = getRO();
+      // First fire — would snap to bottom in the default sticky state,
+      // but escape must hold.
+      ro.fire(contentEl, 800);
+      expect(geom.scrollTop).toBe(0);
+
+      // Subsequent positive-delta fire (virtua finishes measuring more
+      // rows). Spring would chase if escape were false.
+      ro.fire(contentEl, 1000);
+      // Allow rAF + tick for any spring that wrongly fired.
+      await nextFrame();
+      await nextFrame();
+      expect(geom.scrollTop).toBe(0);
+      expect(controller.escapedFromLock).toBe(true);
+
+      // forceStick(instant) clears escape and snaps to target — this is
+      // what restoreInitialPosition does for a bottom snapshot.
+      controller.forceStick({ animation: 'instant' });
+      expect(geom.scrollTop).toBe(399);
+      expect(controller.escapedFromLock).toBe(false);
+    });
   });
 
   describe('wheel handler', () => {
@@ -332,12 +365,12 @@ describe('createUseStickToBottomController', () => {
     });
 
     it('subsequent user scroll back to the tagged scrollTop value is honored, not silently ignored', async () => {
-      // Regression guard: the tag is captured-and-consumed synchronously
-      // (line 342-343 of the controller), so it suppresses exactly ONE
-      // scroll event. A regression that moved the consume to inside the
-      // setTimeout callback would silently swallow a later genuine user
-      // scroll back to the same scrollTop value — the very scenario the
-      // synchronous consume defends against.
+      // Regression guard: the tag is captured-and-consumed synchronously,
+      // so it suppresses exactly ONE scroll event. A regression that
+      // moved the consume to inside the setTimeout callback would
+      // silently swallow a later genuine user scroll back to the same
+      // scrollTop value — the very scenario the synchronous consume
+      // defends against.
       const ro = getRO();
       ro.fire(contentEl, 800); // initial RO write tags scrollTop=399
       // First scroll event consumes the tag.
@@ -345,18 +378,24 @@ describe('createUseStickToBottomController', () => {
       await nextTimer();
       expect(controller.escapedFromLock).toBe(false);
 
-      // Now: user explicitly escapes (wheel-up flips to free), then
-      // genuinely scrolls back to scrollTop=399 by hand. With the tag
-      // properly consumed by the first event, the scroll handler must
-      // observe near-bottom + escapedFromLock and re-stick. If the tag
-      // were still set, the second scroll would be ignored and re-stick
-      // would never fire.
+      // User explicitly escapes, then genuinely moves AWAY and then
+      // BACK to the tagged value by hand. The direction gate on the
+      // re-stick path requires DOWN motion (scrollTop increasing) for
+      // re-stick to fire, so we simulate a real away-then-back gesture
+      // rather than a same-position re-fire. With the tag properly
+      // consumed by the first event, the back-scroll must re-stick. If
+      // the tag were still set, the back-scroll would be ignored and
+      // re-stick would never fire.
       controller.setEscapedFromLock(true);
       expect(controller.escapedFromLock).toBe(true);
-      // scrollTop is already at 399 (the tagged value); fire scroll.
+      geom.scrollTop = 100;
       fireScroll(scrollEl);
       await nextTimer();
-      // Re-stick path observes near-bottom and clears escape.
+      geom.scrollTop = 399;
+      fireScroll(scrollEl);
+      await nextTimer();
+      // Re-stick path observes near-bottom + DOWN direction and clears
+      // escape.
       expect(controller.escapedFromLock).toBe(false);
     });
   });
@@ -402,12 +441,72 @@ describe('createUseStickToBottomController', () => {
       expect(controller.escapedFromLock).toBe(true);
       expect(controller.isSticky).toBe(false);
 
-      // User scrolls back to bottom.
-      geom.scrollTop = 399;
+      // User scrolls back to within the small re-stick band.
+      // distance = 1000 - 396 - 600 = 4, ≤ RE_STICK_OFFSET_PX(5).
+      // Using 396 (not 399) deliberately exercises the new tight band:
+      // an old test using scrollTop=399 (distance=1) would have passed
+      // even with the buggy `isNearBottomState` check (1 ≤ 70).
+      geom.scrollTop = 396;
       fireScroll(scrollEl);
       await nextTimer();
       expect(controller.escapedFromLock).toBe(false);
       expect(controller.isSticky).toBe(true);
+    });
+
+    it('a small wheel-up that lands within the geometric near-bottom band but outside the re-stick band stays escaped', async () => {
+      // Regression: STICK_TO_BOTTOM_OFFSET_PX (70) is used for button
+      // visibility / negative-delta repin. The scroll handler's re-stick
+      // path uses a much smaller RE_STICK_OFFSET_PX (5). With the old
+      // code, a wheel-up of 30px on a sticky session would set escape
+      // and then the same scroll event would observe distance=30 ≤ 70
+      // and immediately re-stick — undoing the user's gesture.
+      const ro = getRO();
+      ro.fire(contentEl, 800); // initial, geom.scrollTop=399 (target=399, distance=1)
+      // First scroll event consumes the programmatic-write tag.
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.isSticky).toBe(true);
+      expect(controller.escapedFromLock).toBe(false);
+
+      // User wheels up by ~30px. distance from bottom is now 31 — well
+      // inside isNearBottomState's 70px band, but outside re-stick's
+      // small band, so the escape must persist.
+      geom.scrollTop = 369; // distance = 1000 - 369 - 600 = 31
+      fireWheel(scrollEl, -30, scrollEl);
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
+    });
+
+    it('wheel-up gesture is NOT undone by its own scroll event landing within the re-stick band', async () => {
+      // Regression for "scroll up one notch yanks back to bottom while
+      // streaming". Even with RE_STICK_OFFSET_PX small, a sticky user
+      // who wheels up by a tiny amount (1–5 px on a high-resolution
+      // trackpad, or because the thread isn't very tall) lands inside
+      // the re-stick band, and the scroll event from the wheel itself
+      // would observe `escapedFromLock=true && distance<=threshold`
+      // and re-stick — exactly undoing the escape on the same gesture
+      // that set it. The fix is the direction gate: re-stick fires only
+      // on DOWN-direction scrolls (scrollTop INCREASING), never on the
+      // user's UP gesture itself.
+      const ro = getRO();
+      ro.fire(contentEl, 800); // initial, scrollTop=399, sticky
+      fireScroll(scrollEl); // consumes tag
+      await nextTimer();
+      expect(controller.isSticky).toBe(true);
+
+      // User wheels up by 3 px. distance = 1000 - 396 - 600 = 4, well
+      // inside the 5 px re-stick band; without direction gating, the
+      // post-wheel scroll event would re-stick.
+      geom.scrollTop = 396;
+      fireWheel(scrollEl, -3, scrollEl);
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
     });
   });
 
@@ -665,9 +764,15 @@ describe('createUseStickToBottomController', () => {
       fireWheel(scrollEl, -50, scrollEl);
       expect(controller.escapedFromLock).toBe(true);
 
-      // Now actually fire a scroll event after moving back to bottom.
-      // The scroll handler (defer 1ms) sees isNearBottomState true +
-      // escapedFromLockState true and clears both.
+      // Simulate the user actually moving away and then back to bottom.
+      // The re-stick path's direction gate requires scrollTop to be
+      // INCREASING (DOWN gesture) — same-scrollTop scrolls or UP
+      // scrolls don't trigger it.
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
       geom.scrollTop = 399;
       fireScroll(scrollEl);
       await nextTimer();

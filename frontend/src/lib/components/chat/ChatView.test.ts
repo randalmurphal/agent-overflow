@@ -204,8 +204,15 @@ describe('<ChatView>', () => {
     const active = render(ChatView, { props: { pane: activePane } });
     await tick();
 
-    expect(active.getByTestId('message-timeline-scroll').parentElement)
-      .toHaveClass('chat-surface-ground');
+    // The scroll element is now wrapped in a non-scrolling
+    // `relative h-full` container that anchors the floating
+    // ScrollToBottomButton outside the scroll viewport. We check the
+    // chat-surface-ground class on the nearest ancestor with that
+    // class, not strictly the parentElement, so the wrapper insertion
+    // doesn't break the contract this test cares about: the timeline
+    // ground sits behind the timeline.
+    expect(active.getByTestId('message-timeline-scroll').closest('.chat-surface-ground'))
+      .not.toBeNull();
     active.unmount();
 
     const emptyPane = createThreadPane();

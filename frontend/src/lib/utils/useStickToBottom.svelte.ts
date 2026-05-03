@@ -26,7 +26,23 @@
 
 const DEFAULT_SPRING = { damping: 0.7, stiffness: 0.05, mass: 1.25 } as const;
 const SIXTY_FPS_INTERVAL_MS = 1000 / 60;
+// "Near bottom" threshold for the geometric flag (button visibility,
+// negative-delta repin). Loose on purpose: when the user is within 70px,
+// the bottom is essentially in view and the scroll-to-bottom chip is
+// noise.
 const STICK_TO_BOTTOM_OFFSET_PX = 70;
+// Re-stick threshold for the SCROLL HANDLER's "user scrolled back" path.
+// Must be small: a 70px tolerance means a user wheel-up of 30–50px lands
+// inside the threshold, so the same scroll handler that observed the
+// escape immediately re-sticks them — their gesture is undone. Keep this
+// near-zero so re-stick only triggers when the user has actually scrolled
+// essentially all the way back to the bottom. The minimum useful value
+// is 1: at sticky-bottom, `targetScrollTop()` returns
+// `scrollHeight - 1 - clientHeight` (the load-bearing -1), so the
+// distance-to-bottom from a sticky session reads as 1 px. 5 leaves
+// margin for sub-pixel rounding while still excluding any deliberate
+// wheel/touch gesture wider than a few pixels.
+const RE_STICK_OFFSET_PX = 5;
 const RETAIN_ANIMATION_DURATION_MS = 350;
 const RESIZE_CLEAR_PADDING_MS = 1;
 // Spring arrival thresholds: distance ≤1px from target AND velocity below
@@ -165,6 +181,17 @@ export function createUseStickToBottomController(
   let lastGrewAt = 0;
   let stopRequested = false;
   let touchStartY: number | null = null;
+  // Last user-driven (untagged) scrollTop seen by the scroll handler.
+  // Used by the re-stick path to gate on direction: only DOWN-direction
+  // scrolls (scrollTop INCREASING) can re-engage auto-follow. Without
+  // this, the scroll event triggered by a wheel-up gesture itself would
+  // observe `escapedFromLockState=true && distanceFromBottom<=threshold`
+  // (because the user just barely moved away from the bottom) and
+  // immediately re-stick — undoing the escape on the same gesture that
+  // set it. Seeded to the current scrollTop on attach so the very first
+  // user scroll already has a meaningful direction baseline; reset to
+  // -1 on detach (re-seeded by the next attach).
+  let lastUntaggedScrollTop = -1;
 
   // ===== Geometry =====
   function targetScrollTop(): number {
@@ -363,12 +390,26 @@ export function createUseStickToBottomController(
     const tag = ignoreScrollToTop;
     ignoreScrollToTop = -1;
     refreshIsNearBottom();
+    // Tagged programmatic write — bail synchronously without scheduling
+    // the deferral timer. Steady-state streaming fires ~60 spring writes
+    // per second; allocating a closure + timer registration for each one
+    // just to no-op inside the callback was ~60 throwaway allocs/sec.
+    // The 1 ms RO-race deferral below isn't needed for tagged writes —
+    // the tag is set synchronously by writeScrollTop, so we already know
+    // this event reflects our own write, not user intent.
+    if (scrollTopAtEvent === tag) return;
+    // Capture direction baseline BEFORE the deferral. We're inside the
+    // synchronous handler for the current scroll event; this scrollTop
+    // is what the user just produced. Used by the deferred re-stick
+    // check to distinguish "user scrolled DOWN toward bottom" (re-stick
+    // candidate) from "user scrolled UP" (must NOT re-stick — undoing
+    // the wheel handler's just-set escape on the same gesture).
+    const previousUntagged = lastUntaggedScrollTop;
+    lastUntaggedScrollTop = scrollTopAtEvent;
     // Defer 1ms so a concurrent RO callback can update resizeDifference
     // before we interpret direction. Mirrors upstream.
     setTimeout(() => {
       if (!scrollEl) return;
-      // Tagged programmatic write — ignore.
-      if (scrollTopAtEvent === tag) return;
       // RO race — content just resized; the scroll event reflects layout,
       // not user intent. Most importantly: virtua's $fixScrollJump can
       // adjust scrollTop to keep above-viewport rows stable, which would
@@ -384,11 +425,29 @@ export function createUseStickToBottomController(
         return;
       }
 
-      // Re-stick: user scrolled BACK near the bottom by hand (touch,
-      // scrollbar drag, keyboard). Restore intent flag so the spring
-      // can resume on the next content grow. Don't start the spring
-      // here — they're already there.
-      if (isNearBottomState && escapedFromLockState) {
+      // Re-stick: user scrolled BACK essentially to the bottom by hand
+      // (touch, scrollbar drag, keyboard). Restore intent flag so the
+      // spring can resume on the next content grow. Don't start the
+      // spring here — they're already there.
+      //
+      // Two gates:
+      //   1. Direction. The scroll event from a wheel-up gesture itself
+      //      arrives RIGHT AFTER handleWheel set escape; if we re-sticked
+      //      whenever the user happens to land near the bottom, that
+      //      same event would undo the escape. Skip re-stick when
+      //      scrollTop is decreasing (UP direction); only DOWN-direction
+      //      scrolls toward the bottom can re-engage auto-follow.
+      //   2. RE_STICK_OFFSET_PX (small) rather than the looser
+      //      isNearBottomState (70px). Even on a DOWN scroll, only
+      //      essentially-at-bottom positions count.
+      const scrolledDown = previousUntagged < 0
+        ? false
+        : scrollTopAtEvent > previousUntagged;
+      if (
+        scrolledDown
+        && escapedFromLockState
+        && distanceFromBottom() <= RE_STICK_OFFSET_PX
+      ) {
         escapedFromLockState = false;
         isAtBottomState = true;
       }
@@ -512,6 +571,11 @@ export function createUseStickToBottomController(
       nextScrollEl.removeEventListener('touchend', handleTouchEnd);
       nextScrollEl.removeEventListener('touchcancel', handleTouchEnd);
     };
+    // Seed the direction baseline from the live scrollTop so the very
+    // first user scroll already has something to compare against; the
+    // re-stick direction gate would otherwise treat the first scroll
+    // as "no direction info" and never fire on it.
+    lastUntaggedScrollTop = nextScrollEl.scrollTop;
     refreshIsNearBottom();
   }
 
@@ -535,6 +599,7 @@ export function createUseStickToBottomController(
     previousHeight = undefined;
     lastTickAt = null;
     touchStartY = null;
+    lastUntaggedScrollTop = -1;
     scrollEl = undefined;
     contentEl = undefined;
   }

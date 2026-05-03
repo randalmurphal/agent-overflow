@@ -80,8 +80,11 @@
     return false;
   }
 
-  // Outer scroll container. We own scrolling here; <Virtualizer> renders
+  // Inner scroll container. We own scrolling here; <Virtualizer> renders
   // its measured rows inside `contentEl` and reads/writes via scrollRef.
+  // The element is wrapped in a non-scrolling `relative flex h-full
+  // flex-col` shell that anchors the floating <ScrollToBottomButton>
+  // outside the scroll content (see template comment for why).
   let scrollEl: HTMLDivElement | undefined = $state(undefined);
   // Wrapper around <Virtualizer>. The controller's content RO observes
   // this element so any size change (row growth, expand toggle, virtua's
@@ -224,13 +227,29 @@
   }
 
   // Persist + reset state on thread change BEFORE the new thread's
-  // effects run. Mirrors the old thread-switch effect.pre.
+  // effects run, AND suspend auto-follow until restoreInitialPosition
+  // takes over.
+  // Without this, virtua's per-row measurements grow contentEl over
+  // multiple frames as it remeasures; the controller's content-RO sees
+  // positive deltas and the spring chases the bottom — visible to the
+  // user as a top→bottom scroll animation on every thread open. The
+  // existing $effect that calls restoreInitialPosition runs only after
+  // pane.loading flips false, which is too late: the spring has already
+  // started. Setting escapedFromLockState=true synchronously here
+  // short-circuits startSpringIfNeeded; restoreInitialPosition then
+  // either calls forceStick({animation:'instant'}) (clears escape, snaps
+  // to bottom) or stopScroll() + setEscapedFromLock(true) +
+  // scrollToIndex() (keeps escape true, jumps to anchor) — both leave
+  // the controller in the correct end state without any visible transit.
   $effect.pre(() => {
     const nextThreadId = pane.threadId;
-    if (scrollSnapshotThreadId && scrollSnapshotThreadId !== nextThreadId) {
-      saveScrollSnapshotForThread(scrollSnapshotThreadId, true);
-      restoredThreadId = null;
-      restoreToken += 1;
+    if (scrollSnapshotThreadId !== nextThreadId) {
+      if (scrollSnapshotThreadId) {
+        saveScrollSnapshotForThread(scrollSnapshotThreadId, true);
+        restoredThreadId = null;
+        restoreToken += 1;
+      }
+      stick.setEscapedFromLock(true);
     }
     scrollSnapshotThreadId = nextThreadId;
   });
@@ -366,138 +385,152 @@
   });
 </script>
 
-<!-- Outer wrapper IS the scroll container. <Virtualizer scrollRef={scrollEl}>
-     reads/writes via this element; the controller's wheel/scroll/keydown/
-     touch listeners and content ResizeObserver bind here too. The
-     padding-bottom (= composer height + visual breathing room) keeps the
-     last message clear of the absolute composer overlay without putting
-     a synthetic spacer row inside the virtualized data. -->
-<div
-  bind:this={scrollEl}
-  class="relative h-full overflow-y-auto"
-  style:overscroll-behavior-y="contain"
-  style:padding-bottom={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}
-  tabindex="-1"
-  data-testid="message-timeline-scroll"
-  role="log"
-  aria-label="Message History"
->
-  {#if pane.loading}
-    <div class="flex items-center justify-center h-full text-fg-subtle text-sm" role="status" aria-live="polite">
-      <span class="animate-pulse">Loading thread...</span>
-    </div>
-  {:else if pane.items.length === 0 && !getActiveTurn(pane.threadId)}
-    <div class="flex items-center justify-center h-full text-fg-subtle text-sm">
-      No messages yet. Send a message to get started.
-    </div>
-  {:else if pane.items.length === 0 && getActiveTurn(pane.threadId)}
-    <!-- Active turn but no items yet. The working/todo UI lives in the
-         ChatView bottom overlay, outside the virtualized history. -->
-    <div class="mx-auto w-full max-w-[62rem] px-6 pt-8"></div>
-  {:else}
-    {#snippet renderNode(node: TimelineNode, depth: number)}
-      {#if node.kind === 'leaf'}
-        <TimelineLeaf {pane} item={node.item} orphan={node.orphan === true} {onImageExpand} />
-      {:else if node.kind === 'group'}
-        <SubagentGroup {pane} group={node} {depth} {renderNode} />
-      {:else}
-        <InlineSubagentGroup group={node} {depth} {renderNode} />
-      {/if}
-    {/snippet}
+<!-- Outer wrapper does NOT scroll; it provides the relative containing
+     block for the floating scroll-to-bottom chip. The chip MUST sit
+     outside the scroll container: `position:absolute; bottom:X` inside
+     an `overflow:auto` parent renders in scroll-content space, not
+     viewport space, so the chip would otherwise scroll with the
+     transcript and ride up off-screen as the user scrolls or as
+     auto-follow drives scrollTop downward (browser-confirmed). The
+     inner div is the actual scroll container that <Virtualizer
+     scrollRef={scrollEl}> reads/writes via, that the controller's
+     wheel/scroll/keydown/touch listeners and content ResizeObserver
+     bind to. The padding-bottom (= composer height + visual breathing
+     room) keeps the last message clear of the absolute composer
+     overlay without putting a synthetic spacer row inside the
+     virtualized data. Layout shape mirrors discussion/ChannelView.svelte
+     (`relative flex h-full flex-col` + `flex-1 min-h-0 overflow-y-auto`)
+     so the two surfaces stay in lockstep. -->
+<div class="relative flex h-full flex-col">
+  <div
+    bind:this={scrollEl}
+    class="flex-1 min-h-0 overflow-y-auto"
+    style:overscroll-behavior-y="contain"
+    style:padding-bottom={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}
+    tabindex="-1"
+    data-testid="message-timeline-scroll"
+    role="log"
+    aria-label="Message History"
+  >
+    {#if pane.loading}
+      <div class="flex items-center justify-center h-full text-fg-subtle text-sm" role="status" aria-live="polite">
+        <span class="animate-pulse">Loading thread...</span>
+      </div>
+    {:else if pane.items.length === 0 && !getActiveTurn(pane.threadId)}
+      <div class="flex items-center justify-center h-full text-fg-subtle text-sm">
+        No messages yet. Send a message to get started.
+      </div>
+    {:else if pane.items.length === 0 && getActiveTurn(pane.threadId)}
+      <!-- Active turn but no items yet. The working/todo UI lives in the
+           ChatView bottom overlay, outside the virtualized history. -->
+      <div class="mx-auto w-full max-w-[62rem] px-6 pt-8"></div>
+    {:else}
+      {#snippet renderNode(node: TimelineNode, depth: number)}
+        {#if node.kind === 'leaf'}
+          <TimelineLeaf {pane} item={node.item} orphan={node.orphan === true} {onImageExpand} />
+        {:else if node.kind === 'group'}
+          <SubagentGroup {pane} group={node} {depth} {renderNode} />
+        {:else}
+          <InlineSubagentGroup group={node} {depth} {renderNode} />
+        {/if}
+      {/snippet}
 
-    <!-- contentEl is the controller's content-RO observation target.
-         Virtua's container has `contain: size; height: totalSize+'px'`,
-         so contentEl.scrollHeight reflects virtua's totalSize exactly. -->
-    <div bind:this={contentEl}>
-      <Virtualizer
-        bind:this={listRef}
-        scrollRef={scrollEl}
-        data={groupedNodes}
-        getKey={(node) => timelineNodeKey(node)}
-        itemSize={ESTIMATED_ROW_SIZE}
-        bufferSize={BUFFER_SIZE_PX}
-        ssrCount={IS_TEST ? 100_000 : undefined}
-        onscroll={handleVirtuaScroll}
-        onscrollend={handleVirtuaScrollEnd}
-      >
-        {#snippet children(node: TimelineNode, index: number)}
-          <!-- Outer per-row wrapper. We do NOT set data-item-id here:
-               only TimelineLeaf owns that attribute on its root. Structural
-               rows stay unanchored, and tests rely on the divider rendering
-               BEFORE the [data-item-id] node, not containing it. -->
-          <div data-row-index={index} class:mt-4={isToolTextBoundary(index)}>
-            {#if index === 0}
-              <!-- Top of timeline. Load-older button (when applicable) and
-                   a small top breathing-room spacer ride inside the first
-                   row. When user scrolls to the very top, the button is
-                   the first thing they see. After load-older completes,
-                   the explicit scrollToIndex re-anchors them to where they
-                   were reading — the button moves up out of view. -->
-              <div class="pt-6 mx-auto w-full max-w-[62rem] px-6">
-                {#if pane.hasMoreHistory}
-                  <div class="mb-3 flex justify-center">
-                    <Button
-                      variant="secondary"
-                      size="xs"
-                      onclick={handleLoadOlder}
-                      loading={pane.loadingOlder}
-                      testId="load-older-messages"
-                    >
-                      {#snippet children()}
-                        {pane.loadingOlder ? 'Loading…' : 'Load older messages'}
-                      {/snippet}
-                    </Button>
-                  </div>
-                {/if}
-              </div>
-            {/if}
-
-            <div class="mx-auto w-full max-w-[62rem] px-6">
-              {#if shouldRenderTurnBoundaryBefore(index, node)}
-                {@const showResponsePill = node.kind === 'leaf' && finalAssistantTextIds.has(node.item.id)}
-                <!-- Two visual modes share a fixed wrapper height
-                     (`h-[1.625rem]` = 26px = pill chrome: text-[10px]
-                     × leading-tight ≈ 12px + py-1 8px + 2× 1px border).
-                     Labeled mode renders `line | gap | pill | gap | line`,
-                     unlabeled mode renders one continuous full-width line.
-                     The pill's `leading-tight` keeps its content inside
-                     the fixed wrapper across font-loading variance.
-                     Fixed `h-` (not the codebase's usual `min-h-` slot
-                     convention) is deliberate: both branches MUST be the
-                     exact same height so promoting an intermediate
-                     divider to "final" on turn settle never shifts row
-                     geometry — satisfies the "no late transcript
-                     adornments on completion" rule in
-                     `frontend/CLAUDE.md`. Re-derive 1.625rem if the pill
-                     classes above change. -->
-                <div data-testid="response-divider" data-final-response={showResponsePill ? 'true' : 'false'}>
-                  <div class="my-3 flex h-[1.625rem] items-center gap-3">
-                    <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
-                    {#if showResponsePill}
-                      <span
-                        class="rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[10px] uppercase leading-tight tracking-[0.14em] text-text-secondary"
+      <!-- contentEl is the controller's content-RO observation target.
+           Virtua's container has `contain: size; height: totalSize+'px'`,
+           so contentEl.scrollHeight reflects virtua's totalSize exactly. -->
+      <div bind:this={contentEl}>
+        <Virtualizer
+          bind:this={listRef}
+          scrollRef={scrollEl}
+          data={groupedNodes}
+          getKey={(node) => timelineNodeKey(node)}
+          itemSize={ESTIMATED_ROW_SIZE}
+          bufferSize={BUFFER_SIZE_PX}
+          ssrCount={IS_TEST ? 100_000 : undefined}
+          onscroll={handleVirtuaScroll}
+          onscrollend={handleVirtuaScrollEnd}
+        >
+          {#snippet children(node: TimelineNode, index: number)}
+            <!-- Outer per-row wrapper. We do NOT set data-item-id here:
+                 only TimelineLeaf owns that attribute on its root. Structural
+                 rows stay unanchored, and tests rely on the divider rendering
+                 BEFORE the [data-item-id] node, not containing it. -->
+            <div data-row-index={index} class:mt-4={isToolTextBoundary(index)}>
+              {#if index === 0}
+                <!-- Top of timeline. Load-older button (when applicable) and
+                     a small top breathing-room spacer ride inside the first
+                     row. When user scrolls to the very top, the button is
+                     the first thing they see. After load-older completes,
+                     the explicit scrollToIndex re-anchors them to where they
+                     were reading — the button moves up out of view. -->
+                <div class="pt-6 mx-auto w-full max-w-[62rem] px-6">
+                  {#if pane.hasMoreHistory}
+                    <div class="mb-3 flex justify-center">
+                      <Button
+                        variant="secondary"
+                        size="xs"
+                        onclick={handleLoadOlder}
+                        loading={pane.loadingOlder}
+                        testId="load-older-messages"
                       >
-                        Response
-                      </span>
-                      <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
-                    {/if}
-                  </div>
+                        {#snippet children()}
+                          {pane.loadingOlder ? 'Loading…' : 'Load older messages'}
+                        {/snippet}
+                      </Button>
+                    </div>
+                  {/if}
                 </div>
               {/if}
-              <div data-testid="message-timeline-node">
-                {@render renderNode(node, 1)}
+
+              <div class="mx-auto w-full max-w-[62rem] px-6">
+                {#if shouldRenderTurnBoundaryBefore(index, node)}
+                  {@const showResponsePill = node.kind === 'leaf' && finalAssistantTextIds.has(node.item.id)}
+                  <!-- Two visual modes share a fixed wrapper height
+                       (`h-[1.625rem]` = 26px = pill chrome: text-[10px]
+                       × leading-tight ≈ 12px + py-1 8px + 2× 1px border).
+                       Labeled mode renders `line | gap | pill | gap | line`,
+                       unlabeled mode renders one continuous full-width line.
+                       The pill's `leading-tight` keeps its content inside
+                       the fixed wrapper across font-loading variance.
+                       Fixed `h-` (not the codebase's usual `min-h-` slot
+                       convention) is deliberate: both branches MUST be the
+                       exact same height so promoting an intermediate
+                       divider to "final" on turn settle never shifts row
+                       geometry — satisfies the "no late transcript
+                       adornments on completion" rule in
+                       `frontend/CLAUDE.md`. Re-derive 1.625rem if the pill
+                       classes above change. -->
+                  <div data-testid="response-divider" data-final-response={showResponsePill ? 'true' : 'false'}>
+                    <div class="my-3 flex h-[1.625rem] items-center gap-3">
+                      <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
+                      {#if showResponsePill}
+                        <span
+                          class="rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[10px] uppercase leading-tight tracking-[0.14em] text-text-secondary"
+                        >
+                          Response
+                        </span>
+                        <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
+                      {/if}
+                    </div>
+                  </div>
+                {/if}
+                <div data-testid="message-timeline-node">
+                  {@render renderNode(node, 1)}
+                </div>
               </div>
             </div>
-          </div>
-        {/snippet}
-      </Virtualizer>
-    </div>
-  {/if}
+          {/snippet}
+        </Virtualizer>
+      </div>
+    {/if}
+  </div>
 
   <!-- Visible when NOT at bottom (intent-or-geometry); the chip is the
        user's escape hatch when they've drifted away. Wiring this to
        `!isSticky` would also pop the chip during sidebar/drawer resize
        leases (pauseDepth > 0) even though the user is geometrically
-       glued to the bottom — clearly not desired. -->
+       glued to the bottom — clearly not desired. Anchored to the outer
+       wrapper (which does not scroll), so the chip stays fixed in the
+       visible area regardless of transcript scrollTop. -->
   <ScrollToBottomButton visible={!stick.isAtBottom} onClick={() => stick.forceStick()} />
 </div>

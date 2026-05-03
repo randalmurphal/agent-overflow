@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy, tick, untrack } from 'svelte';
   import type { ChannelMessage } from '../../types/discussion';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { GetChannelMessages, PostChannelMessage } from '../../stores/bindings';
@@ -51,6 +51,12 @@
     // state that pollOnce reads/writes, or we loop on every new message.
     if (!channelId) return;
     untrack(() => {
+      // Suspend auto-follow until the initial poll lands and we explicitly
+      // forceStick. Without this, mergeChannelMessages grows contentEl in
+      // one or two frames and the spring chases the bottom — visible as a
+      // scrolling animation when opening the channel. Mirrors the chat
+      // surface's MessageTimeline.$effect.pre fix.
+      stick.setEscapedFromLock(true);
       // Only wipe the channel buffer when we're switching to a different
       // channel — re-entry of the same channel preserves whatever status
       // the caller pre-seeded (e.g. `concluded` after a prior run).
@@ -115,6 +121,15 @@
       if (generation === pollGeneration) {
         if (initial) {
           loadingInitial = false;
+          // The $effect on channelId set escapedFromLock=true to suppress
+          // the open-channel scroll animation. Now that the initial batch
+          // of messages is in the DOM, snap to bottom instantly. Awaiting
+          // tick ensures the {#each} re-render has flushed before we read
+          // scrollHeight.
+          await tick();
+          if (generation === pollGeneration) {
+            stick.forceStick({ animation: 'instant' });
+          }
         }
         // Exponential backoff on consecutive failures so a stuck backend
         // doesn't spam the binding every 2.5s. Cap at 40s — long enough

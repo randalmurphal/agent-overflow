@@ -277,6 +277,50 @@ describe('scroll integration — auto-follow + button', () => {
     // signal that the user is no longer at-or-near the bottom).
     expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull();
   });
+
+  it('renders the scroll-to-bottom chip OUTSIDE the scroll container', async () => {
+    // Regression: position:absolute inside an overflow:auto parent
+    // anchors the absolute child in scroll-content space, not viewport
+    // space, so the chip would scroll with the transcript and ride up
+    // off-screen as scrollTop grows. The fix wraps the scroll element
+    // in a non-scrolling `relative` container and renders the chip as
+    // a sibling of the scroll element. This test asserts the DOM
+    // shape so that contract isn't quietly broken later.
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'a' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
+    ]);
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+
+    const scrollEl = container.querySelector('[data-testid="message-timeline-scroll"]') as HTMLElement;
+    expect(scrollEl).not.toBeNull();
+    // Force the chip visible: stub scrollable geometry, fire a wheel-up
+    // gesture, then a scroll event so isNearBottomState refreshes to
+    // false (intent + geometry both away from bottom → chip visible).
+    Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 1000 });
+    Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, get: () => 600 });
+    Object.defineProperty(scrollEl, 'scrollTop', { configurable: true, get: () => 0, set: () => {} });
+    scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -50, bubbles: true }));
+    scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await tick();
+    await tick();
+
+    const chip = container.querySelector('[data-testid="scroll-to-bottom"]') as HTMLElement | null;
+    expect(chip).not.toBeNull();
+    // The chip must NOT be a descendant of the scroll element. If it
+    // is, scrolling moves it.
+    expect(scrollEl.contains(chip)).toBe(false);
+    // It also must be a sibling of the scroll element inside the same
+    // non-scrolling positioned wrapper — so its `position:absolute`
+    // anchors to the wrapper's padding edge. A regression that hoisted
+    // the chip elsewhere (e.g., to document.body) would still pass the
+    // non-containment check above but break the absolute-positioning
+    // contract the wrapper exists to provide.
+    expect(chip!.parentElement).toBe(scrollEl.parentElement);
+  });
 });
 
 describe('scroll integration — mid-list inserts re-sort and re-index', () => {
