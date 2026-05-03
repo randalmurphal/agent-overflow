@@ -79,6 +79,7 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		taskID := readRawString(raw["task_id"])
 		toolUseID := firstNonEmpty(readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
 		p.rememberTaskToolUse(taskID, toolUseID)
+		taskRef := p.taskToolUseRef(taskID)
 		if taskID == "" || toolUseID == "" {
 			return nil, nil
 		}
@@ -89,15 +90,20 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		// correlate back to the original tool_use item. The event is
 		// minimal (no toolName/input) — triage merges task_id into the
 		// existing item meta without clobbering the launch summary.
-		meta, _ := json.Marshal(map[string]any{
+		metaFields := map[string]any{
 			"task_id": taskID,
-		})
+		}
+		if taskRef.ParentToolUseID != "" {
+			metaFields["parent_tool_use_id"] = taskRef.ParentToolUseID
+		}
+		meta, _ := json.Marshal(metaFields)
 		return []provider.ProviderEvent{{
-			Kind:      provider.EventToolStart,
-			ThreadID:  threadID,
-			ItemID:    toolUseID,
-			Meta:      meta,
-			Timestamp: now,
+			Kind:            provider.EventToolStart,
+			ThreadID:        threadID,
+			ItemID:          toolUseID,
+			Meta:            meta,
+			ParentToolUseID: taskRef.ParentToolUseID,
+			Timestamp:       now,
 		}}, nil
 
 	case "task_updated":
@@ -154,7 +160,9 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 	// id inline. Emit a terminal keyed only by task_id so triage can
 	// look the row up via items.meta.task_id. If triage finds no match
 	// the event is dropped there.
-	toolUseID := firstNonEmpty(p.taskToolUse(taskID), readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
+	taskRef := p.taskToolUseRef(taskID)
+	toolUseID := firstNonEmpty(taskRef.ToolUseID, readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
+	parentToolUseID := firstNonEmpty(taskRef.ParentToolUseID, readRawString(raw["parent_tool_use_id"]), readRawString(raw["parentToolUseId"]))
 
 	metaFields := map[string]any{
 		"task_id": taskID,
@@ -163,6 +171,9 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 	}
 	if toolUseID != "" {
 		metaFields["tool_use_id"] = toolUseID
+	}
+	if parentToolUseID != "" {
+		metaFields["parent_tool_use_id"] = parentToolUseID
 	}
 	if status != "completed" {
 		metaFields["is_error"] = true
@@ -173,12 +184,13 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 	meta, _ := json.Marshal(metaFields)
 
 	return []provider.ProviderEvent{{
-		Kind:      provider.EventBackgroundTaskTerminal,
-		ThreadID:  threadID,
-		ItemID:    toolUseID,
-		Content:   firstNonEmpty(readRawString(patch["description"]), readRawString(raw["summary"])),
-		Meta:      meta,
-		Timestamp: now,
+		Kind:            provider.EventBackgroundTaskTerminal,
+		ThreadID:        threadID,
+		ItemID:          toolUseID,
+		Content:         firstNonEmpty(readRawString(patch["description"]), readRawString(raw["summary"])),
+		Meta:            meta,
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       now,
 	}}, nil
 }
 
@@ -192,11 +204,13 @@ func (p *Parser) parseTaskNotificationEvent(threadID string, raw map[string]json
 	if taskID == "" {
 		return nil, nil
 	}
+	taskRef := p.taskToolUseRef(taskID)
 	toolUseID := firstNonEmpty(
 		readRawString(raw["tool_use_id"]),
 		readRawString(raw["toolUseId"]),
-		p.taskToolUse(taskID),
+		taskRef.ToolUseID,
 	)
+	parentToolUseID := firstNonEmpty(taskRef.ParentToolUseID, readRawString(raw["parent_tool_use_id"]), readRawString(raw["parentToolUseId"]))
 	status := strings.TrimSpace(firstNonEmpty(readRawString(raw["status"]), readRawString(raw["patch"])))
 	summary := readRawString(raw["summary"])
 	outputFile := firstNonEmpty(readRawString(raw["output_file"]), readRawString(raw["outputFile"]))
@@ -208,6 +222,9 @@ func (p *Parser) parseTaskNotificationEvent(threadID string, raw map[string]json
 	if toolUseID != "" {
 		metaFields["tool_use_id"] = toolUseID
 	}
+	if parentToolUseID != "" {
+		metaFields["parent_tool_use_id"] = parentToolUseID
+	}
 	if status != "" {
 		metaFields["status"] = status
 	}
@@ -217,12 +234,13 @@ func (p *Parser) parseTaskNotificationEvent(threadID string, raw map[string]json
 	meta, _ := json.Marshal(metaFields)
 
 	return []provider.ProviderEvent{{
-		Kind:      provider.EventBackgroundTaskNotification,
-		ThreadID:  threadID,
-		ItemID:    toolUseID,
-		Content:   summary,
-		Meta:      meta,
-		Timestamp: now,
+		Kind:            provider.EventBackgroundTaskNotification,
+		ThreadID:        threadID,
+		ItemID:          toolUseID,
+		Content:         summary,
+		Meta:            meta,
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       now,
 	}}, nil
 }
 

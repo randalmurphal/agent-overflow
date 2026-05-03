@@ -169,4 +169,66 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     await fireEvent.click(toggle);
     expect(queryByTestId('tool-call-card-body')).toBeNull();
   });
+
+  it('renders Claude Agent JSONL payloads as transcript entries', async () => {
+    setBindingMock('GetPayloadPreview', vi.fn(async () => ({
+      data: [
+        JSON.stringify({
+          isSidechain: true,
+          agentId: 'agent-1',
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'tool-1',
+                name: 'Bash',
+                input: { command: 'echo done' },
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          isSidechain: true,
+          agentId: 'agent-1',
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'tool-1',
+                content: 'done',
+                is_error: false,
+              },
+            ],
+          },
+        }),
+      ].join('\n'),
+      totalSize: 400,
+      nextOffset: 400,
+      isComplete: true,
+    })));
+    const item = makeItem({
+      kind: 'tool_completion',
+      status: 'completed',
+      toolName: 'Agent',
+      summary: 'Agent: worker -> done',
+      payloadId: 'agent-jsonl',
+    });
+    const { getByTestId, getAllByTestId, queryByText } = render(GenericToolCallRow, {
+      props: { item },
+    });
+
+    await fireEvent.click(getByTestId('tool-call-card-toggle'));
+
+    await waitFor(() => {
+      expect(getByTestId('claude-subagent-transcript')).toBeInTheDocument();
+    });
+    expect(getAllByTestId('claude-subagent-transcript-entry')).toHaveLength(2);
+    expect(queryByText(/"isSidechain"/)).toBeNull();
+    expect(queryByText('echo done')).toBeInTheDocument();
+    expect(queryByText('done')).toBeInTheDocument();
+  });
 });

@@ -19,12 +19,14 @@ import (
 // message so the complete-side event carries the same `is_background` hint
 // without re-parsing the original input.
 //
-// Correlation state is intentionally minimal. Two maps are enough:
+// Correlation state is intentionally minimal:
 // `backgroundToolUses` tags tool_use ids started with
 // `run_in_background:true` so the immediate placeholder `tool_result`
 // can propagate `is_background:true` on its completion meta.
-// `taskToolUses` correlates `system/task_*` envelopes back to the
-// originating `tool_use_id`. Any dedup for
+// `toolUseParents` tags subagent-emitted tool_use ids with their
+// parent Task/Agent tool_use id, and `taskToolUses` correlates
+// `system/task_*` envelopes back to the originating tool_use and that
+// parent. Any dedup for
 // `EventBackgroundTaskTerminal` — both `task_updated` and TaskOutput
 // can arrive for the same task_id — is NOT the parser's job; triage's
 // `AppendCompletionItem` is idempotent. See
@@ -44,10 +46,16 @@ type Parser struct {
 	// row to complete. See parse_assistant.go appendTodoWriteEvent and
 	// parse_user.go appendToolResultCompletion.
 	todoWriteToolUses map[string]bool
+	// toolUseParents correlates subagent-emitted tool_use ids back to
+	// their parent Agent/Task tool_use id. Claude's later task_started
+	// envelopes only echo task_id + tool_use_id, so this is the bridge
+	// that lets task_updated / task_notification preserve ownership.
+	toolUseParents map[string]string
 	// taskToolUses correlates Claude background task lifecycle messages
 	// (task_started/task_updated/TaskOutput) back to the originating
-	// tool_use id so we can target the right timeline row.
-	taskToolUses map[string]string
+	// tool_use id and parent so we can target and group the right
+	// timeline row.
+	taskToolUses map[string]taskToolUseRef
 	// subagentModelStamped dedupes per-parent_tool_use_id meta-update
 	// emissions of `subagent_model`. Subagent assistant messages all
 	// carry the same `message.model`, so we only emit the meta merge
@@ -113,6 +121,7 @@ func (p *Parser) Close() {
 	}
 	p.backgroundToolUses = nil
 	p.todoWriteToolUses = nil
+	p.toolUseParents = nil
 	p.taskToolUses = nil
 	p.subagentModelStamped = nil
 	p.streamBlockTypes = nil
@@ -284,13 +293,13 @@ func (p *Parser) clearTodoWrite(toolUseID string) {
 	delete(p.todoWriteToolUses, toolUseID)
 }
 
-// parserTaskMapCap bounds the taskToolUses map so an abandoned task —
-// one that never clears from the correlation table — cannot grow the
-// parser's per-session state without bound. When the cap is hit the
-// map is replaced wholesale, which may lose a late-arriving lookup
-// for an ancient task; that is benign because the corresponding store
-// row is already terminal, and the cap is well above any realistic
-// in-flight task fan-out.
+// parserTaskMapCap bounds parser correlation maps such as
+// taskToolUses, toolUseParents, and todoWriteToolUses so abandoned
+// entries cannot grow the parser's per-session state without bound.
+// When the cap is hit the map is replaced wholesale, which may lose a
+// late-arriving lookup for an ancient task; that is benign because the
+// corresponding store row is already terminal, and the cap is well
+// above any realistic in-flight task fan-out.
 const parserTaskMapCap = 1024
 
 // parserStreamBlockCap bounds streamBlockTypes for the same reason —
@@ -300,22 +309,56 @@ const parserTaskMapCap = 1024
 // pathological case.
 const parserStreamBlockCap = 1024
 
+type taskToolUseRef struct {
+	ToolUseID       string
+	ParentToolUseID string
+}
+
+func (p *Parser) rememberToolUseParent(toolUseID, parentToolUseID string) {
+	if p == nil || toolUseID == "" || parentToolUseID == "" {
+		return
+	}
+	if p.toolUseParents == nil {
+		p.toolUseParents = make(map[string]string)
+	}
+	if len(p.toolUseParents) >= parserTaskMapCap {
+		p.toolUseParents = make(map[string]string)
+	}
+	p.toolUseParents[toolUseID] = parentToolUseID
+	for taskID, ref := range p.taskToolUses {
+		if ref.ToolUseID == toolUseID && ref.ParentToolUseID == "" {
+			ref.ParentToolUseID = parentToolUseID
+			p.taskToolUses[taskID] = ref
+		}
+	}
+}
+
+func (p *Parser) toolUseParent(toolUseID string) string {
+	if p == nil || toolUseID == "" || p.toolUseParents == nil {
+		return ""
+	}
+	return p.toolUseParents[toolUseID]
+}
+
 func (p *Parser) rememberTaskToolUse(taskID, toolUseID string) {
-	if taskID == "" || toolUseID == "" {
+	if p == nil || taskID == "" || toolUseID == "" {
 		return
 	}
 	if p.taskToolUses == nil {
-		p.taskToolUses = make(map[string]string)
+		p.taskToolUses = make(map[string]taskToolUseRef)
 	}
 	if len(p.taskToolUses) >= parserTaskMapCap {
-		p.taskToolUses = make(map[string]string)
+		p.taskToolUses = make(map[string]taskToolUseRef)
 	}
-	p.taskToolUses[taskID] = toolUseID
+	p.taskToolUses[taskID] = taskToolUseRef{
+		ToolUseID:       toolUseID,
+		ParentToolUseID: p.toolUseParent(toolUseID),
+	}
 }
 
-func (p *Parser) taskToolUse(taskID string) string {
-	if taskID == "" || p.taskToolUses == nil {
-		return ""
+func (p *Parser) taskToolUseRef(taskID string) taskToolUseRef {
+	if p == nil || taskID == "" || p.taskToolUses == nil {
+		return taskToolUseRef{}
 	}
 	return p.taskToolUses[taskID]
 }

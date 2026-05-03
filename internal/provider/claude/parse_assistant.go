@@ -250,6 +250,8 @@ func (p *Parser) appendToolUseEvent(
 	now time.Time,
 	block assistantContentBlock,
 ) []provider.ProviderEvent {
+	p.rememberToolUseParent(block.ID, parentToolUseID)
+
 	if block.Name == "ExitPlanMode" {
 		return appendExitPlanModeEvent(events, threadID, parentToolUseID, now, block)
 	}

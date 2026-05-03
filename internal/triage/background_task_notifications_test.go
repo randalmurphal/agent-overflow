@@ -94,6 +94,94 @@ func TestBackgroundTaskNotification_PersistsNotificationWithoutMutatingLifecycle
 	}
 }
 
+func TestBackgroundTaskNotification_DrainedStashWithoutLaunchDoesNotCreateRows(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  string
+		isError bool
+	}{
+		{name: "completed", status: "completed"},
+		{name: "failed", status: "failed", isError: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			router, st, _ := newTestRouter(t)
+			createTestThread(t, st, "t1")
+
+			stashFields := map[string]any{
+				"task_id": "hidden-task",
+				"status":  tc.status,
+				"source":  "task_updated",
+			}
+			if tc.isError {
+				stashFields["is_error"] = true
+			}
+			stashMeta, _ := json.Marshal(stashFields)
+			if err := router.Handle(provider.ProviderEvent{
+				Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1",
+				Meta: stashMeta, Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("task_updated stash: %v", err)
+			}
+			if _, found, err := st.GetPendingBackgroundTerminal("t1", "hidden-task"); err != nil {
+				t.Fatalf("read stash: %v", err)
+			} else if !found {
+				t.Fatal("expected hidden-task stash before notification")
+			}
+
+			notificationMeta, _ := json.Marshal(map[string]any{
+				"task_id": "hidden-task",
+				"status":  tc.status,
+			})
+			if err := router.Handle(provider.ProviderEvent{
+				Kind: provider.EventBackgroundTaskNotification, ThreadID: "t1",
+				Meta: notificationMeta, Content: "hidden task " + tc.status, Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("task_notification drain: %v", err)
+			}
+
+			if _, found, err := st.GetPendingBackgroundTerminal("t1", "hidden-task"); err != nil {
+				t.Fatalf("read drained stash: %v", err)
+			} else if found {
+				t.Fatal("expected hidden-task stash to be drained")
+			}
+			items, err := st.ListItems("t1")
+			if err != nil {
+				t.Fatalf("list items: %v", err)
+			}
+			if len(items) != 0 {
+				t.Fatalf("hidden task notification must not synthesize parent rows, got %+v", items)
+			}
+		})
+	}
+}
+
+func TestBackgroundTaskNotification_WithoutLaunchOrStashDoesNotCreateRow(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	notificationMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "hidden-stopped-task",
+		"tool_use_id": "hidden-child-tool",
+		"status":      "stopped",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskNotification, ThreadID: "t1",
+		ItemID: "hidden-child-tool", Meta: notificationMeta, Content: "hidden task stopped", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_notification: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("hidden task notification must not create parent rows, got %+v", items)
+	}
+}
+
 func TestBackgroundTaskNotification_OutputFileFeedsLaterTerminal(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -177,12 +265,28 @@ func TestBackgroundTaskNotification_OutputFileFeedsLaterTerminal(t *testing.T) {
 	if done.PayloadID != notification.PayloadID {
 		t.Fatalf("completion payload = %q, want %q", done.PayloadID, notification.PayloadID)
 	}
+	if done.PayloadKind != "command_output" {
+		t.Fatalf("completion payload kind = %q, want command_output", done.PayloadKind)
+	}
+	if notification.PayloadKind != "command_output" {
+		t.Fatalf("notification payload kind = %q, want command_output", notification.PayloadKind)
+	}
 	doneData, err := st.GetPayloadData(done.PayloadID)
 	if err != nil {
 		t.Fatalf("read completion payload: %v", err)
 	}
 	if string(doneData) != "line 1\nline 2\n" {
 		t.Fatalf("completion payload = %q", string(doneData))
+	}
+	var commandMeta CommandOutputMeta
+	if err := json.Unmarshal([]byte(done.PayloadMeta), &commandMeta); err != nil {
+		t.Fatalf("decode completion payload meta: %v", err)
+	}
+	if commandMeta.Command != "sleep 5; echo done" {
+		t.Fatalf("completion command = %q, want sleep 5; echo done", commandMeta.Command)
+	}
+	if commandMeta.Preview != "line 1\nline 2\n" {
+		t.Fatalf("completion preview = %q, want output preview", commandMeta.Preview)
 	}
 	doneMeta := decodeItemMetaMap(t, done.Meta)
 	if got := doneMeta["output_file"]; got != outputPath {

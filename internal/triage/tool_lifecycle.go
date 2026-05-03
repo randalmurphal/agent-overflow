@@ -35,21 +35,20 @@ const (
 	statusStreaming = "streaming"
 	statusCompleted = "completed"
 	statusErrored   = "errored"
-	// statusKilled is a distinct terminal state for user-initiated stops
-	// (Claude's stop_task control_request). It stays separate from
-	// statusErrored so the UI can render a gray "Stopped" badge rather
-	// than the red "Failed" bucket — the task didn't fail, the user
-	// cancelled it. Added alongside the Phase 1 stop_task primitive; see
-	// docs/archive/background-tasks-plan.md.
+	// statusKilled is a distinct terminal state for provider-reported
+	// stopped/killed tasks. It stays separate from statusErrored so the
+	// UI can render a gray "Stopped" badge rather than the red "Failed"
+	// bucket.
 	statusKilled = "killed"
 )
 
 type toolStartMeta struct {
-	ToolName      string          `json:"toolName"`
-	Input         json.RawMessage `json:"input"`
-	IsBackground  bool            `json:"is_background"`
-	TaskID        string          `json:"task_id"`
-	SubagentModel string          `json:"subagent_model"`
+	ToolName        string          `json:"toolName"`
+	Input           json.RawMessage `json:"input"`
+	IsBackground    bool            `json:"is_background"`
+	TaskID          string          `json:"task_id"`
+	SubagentModel   string          `json:"subagent_model"`
+	ParentToolUseID string          `json:"parent_tool_use_id"`
 }
 
 type toolCompleteMeta struct {
@@ -86,7 +85,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 	// preserves the existing summary, tool_name, and status.
 	metaUpdateOnly := strings.TrimSpace(meta.ToolName) == "" &&
 		len(meta.Input) == 0 &&
-		(meta.TaskID != "" || meta.SubagentModel != "")
+		(meta.TaskID != "" || meta.SubagentModel != "" || meta.ParentToolUseID != "")
 
 	existing, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
 	if err != nil {
@@ -103,15 +102,24 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 			// than fabricate a ghost tool_call row.
 			return nil
 		}
-		mergedMeta, err := mergeItemMetaCorrelationFields(existing.Meta, meta.TaskID, meta.SubagentModel)
+		parentToolUseID := stringsx.FirstNonEmptyTrimmed(eventParentID(evt), meta.ParentToolUseID)
+		mergedMeta, err := mergeItemMetaCorrelationFields(existing.Meta, itemMetaCorrelationFields{
+			TaskID:          meta.TaskID,
+			SubagentModel:   meta.SubagentModel,
+			ParentToolUseID: parentToolUseID,
+		})
 		if err != nil {
 			log.Printf("triage: merge correlation fields into item meta %s: %v", itemID, err)
 			return nil
 		}
-		if mergedMeta == existing.Meta {
+		parentChanged := parentToolUseID != "" && existing.ParentID == ""
+		if mergedMeta == existing.Meta && !parentChanged {
 			return nil
 		}
 		existing.Meta = mergedMeta
+		if parentChanged {
+			existing.ParentID = parentToolUseID
+		}
 		existing.UpdatedAt = now
 		return r.persistItem(existing, nil)
 	}
@@ -357,14 +365,15 @@ func (r *Router) isCodexThread(threadID string) (bool, error) {
 // parse_system (for task_updated) and parse_user (for TaskOutput
 // enrichment) emit: docs/architecture/turn-lifecycle.md §Task lifecycle.
 type backgroundTaskTerminalMeta struct {
-	TaskID     string `json:"task_id"`
-	ToolUseID  string `json:"tool_use_id,omitempty"`
-	Status     string `json:"status"`
-	Source     string `json:"source,omitempty"`
-	IsError    bool   `json:"is_error,omitempty"`
-	ExitCode   *int   `json:"exit_code,omitempty"`
-	OutputFile string `json:"output_file,omitempty"`
-	EndTime    int64  `json:"end_time,omitempty"`
+	TaskID          string `json:"task_id"`
+	ToolUseID       string `json:"tool_use_id,omitempty"`
+	ParentToolUseID string `json:"parent_tool_use_id,omitempty"`
+	Status          string `json:"status"`
+	Source          string `json:"source,omitempty"`
+	IsError         bool   `json:"is_error,omitempty"`
+	ExitCode        *int   `json:"exit_code,omitempty"`
+	OutputFile      string `json:"output_file,omitempty"`
+	EndTime         int64  `json:"end_time,omitempty"`
 }
 
 func decodeBackgroundTaskTerminalMeta(raw json.RawMessage) backgroundTaskTerminalMeta {
@@ -393,12 +402,14 @@ func decodeBackgroundTaskTerminalMeta(raw json.RawMessage) backgroundTaskTermina
 //     chat-side `tool_completion` sibling is NOT written here — it
 //     comes later via task_notification or TaskOutput drain.
 //
-//   - source="task_updated", status="killed": user-initiated stop
-//     (StopClaudeTask → stop_task control_request → CLI replies
-//     task_updated{killed}). The user already knows the process was
-//     stopped — there's nothing for the agent to "observe". Write
-//     the sibling immediately so chat shows the killed badge without
-//     waiting for the next turn's task_notification.
+//   - source="task_updated", status="killed": Claude reports that the
+//     provider killed/stopped the background process. For visible
+//     launches this includes user stops (StopClaudeTask → stop_task
+//     control_request → CLI replies task_updated{killed}), and should
+//     render immediately without waiting for a later task_notification.
+//     If the launch is not visible in this parent thread, the signal
+//     is dropped by writeBackgroundCompletionSibling rather than
+//     creating a standalone orphan row.
 //
 //   - source anything else (today: "task_output"): AGENT observed
 //     via TaskOutput tool_result. Triage drains the stash if present,
@@ -571,10 +582,10 @@ func (r *Router) observeBackgroundTaskTerminal(evt provider.ProviderEvent, meta 
 //   - recoverOrphanedBackgroundTasks (startup synthesised drain)
 //
 // Launch resolution prefers the event's tool_use_id, then meta, then
-// the items.meta.task_id index. When no launch exists, the sibling is
-// written standalone with id `complete:by-task:<task_id>` and an empty
-// CompletionOf — the frontend renders these as standalone background
-// completion cards rather than folding them under a parent launch.
+// the items.meta.task_id index. A launch is required: Claude can emit
+// task lifecycle signals for background work owned by a subagent whose
+// private transcript was never projected into the parent thread. Those
+// signals are real, but they are not parent-level tool rows.
 func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, meta backgroundTaskTerminalMeta, stashWasDrained bool) error {
 	launch, launchFound, err := r.resolveBackgroundTaskLaunch(evt.ThreadID, evt.ItemID, meta.ToolUseID, meta.TaskID)
 	if err != nil {
@@ -585,6 +596,9 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 		// future kind that adopts task_id mustn't be folded in.
 		launchFound = false
 		launch = store.Item{}
+	}
+	if !launchFound {
+		return nil
 	}
 
 	var notification store.Item
@@ -605,16 +619,10 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 	now := eventTimestampMillis(evt)
 	status := backgroundTerminalStatus(meta)
 	completionID := backgroundCompletionID(launch.ID, meta.TaskID)
-	launchTurnIndex := 0
-	parentID := ""
-	toolName := ""
-	launchSummary := ""
-	if launchFound {
-		launchTurnIndex = launch.TurnIndex
-		parentID = launch.ParentID
-		toolName = launch.ToolName
-		launchSummary = launch.Summary
-	}
+	launchTurnIndex := launch.TurnIndex
+	parentID := stringsx.FirstNonEmptyTrimmed(launch.ParentID, eventParentID(evt), meta.ParentToolUseID)
+	toolName := launch.ToolName
+	launchSummary := launch.Summary
 	turnIndex, err := r.backgroundCompletionTurnIndex(evt.ThreadID, launchTurnIndex)
 	if err != nil {
 		log.Printf("triage: background task terminal turn index %s: %v", completionID, err)
@@ -630,7 +638,7 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 		Summary:      buildBackgroundTerminalSummary(launchSummary, evt.Content, meta),
 		ParentID:     parentID,
 		IsBackground: true,
-		CompletionOf: launch.ID, // empty when launch missing — standalone row
+		CompletionOf: launch.ID,
 		ToolName:     toolName,
 		CreatedAt:    now,
 		UpdatedAt:    now,
@@ -672,15 +680,11 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 	}
 
 	var payload *store.Payload
-	payloadKey := launch.ID
-	if payloadKey == "" {
-		payloadKey = "by-task:" + meta.TaskID
-	}
 	if completion.PayloadID == "" && meta.OutputFile != "" {
-		payload = r.backgroundOutputFilePayload(payloadKey, meta.OutputFile, now)
+		payload = r.backgroundOutputFilePayload(launch, meta.OutputFile, meta.ExitCode, now)
 	}
 	if payload == nil && completion.PayloadID == "" {
-		payload = backgroundTerminalPayload(payloadKey, evt, meta, now)
+		payload = backgroundTerminalPayload(launch.ID, evt, meta, now)
 	}
 	if payload == nil && existing != nil && existing.PayloadID != "" {
 		completion.PayloadID = existing.PayloadID
@@ -734,15 +738,14 @@ func mergeStashIntoTerminalMeta(meta *backgroundTaskTerminalMeta, stash store.Pe
 // backgroundTerminalStatus maps the task-lifecycle status to the
 // canonical item status enum. task_updated uses completed | failed |
 // killed — TaskOutput uses completed with an is_error / exit_code
-// signal. `killed` maps to its own statusKilled (user-initiated stop
-// via stop_task control_request); every other non-completed status
-// collapses to statusErrored so the UI renders a distinct "failed"
-// badge.
+// signal. `killed` maps to its own statusKilled for provider-reported
+// stopped/killed tasks; every other non-completed status collapses to
+// statusErrored so the UI renders a distinct "failed" badge.
 func backgroundTerminalStatus(meta backgroundTaskTerminalMeta) string {
 	// `killed` takes precedence over the generic IsError / ExitCode
 	// flags: the parser sets is_error=true for every non-completed
 	// terminal (so triage has a uniform "this row did not succeed"
-	// marker), but a user-initiated stop is still distinct from a
+	// marker), but a provider stop/kill is still distinct from a
 	// runtime failure and must render as Stopped, not Failed.
 	//
 	// `stopped` is the SDK-normalized form of `killed` — `print.ts`
@@ -1183,13 +1186,21 @@ func (r *Router) findToolCallByTaskID(threadID, taskID string) (store.Item, bool
 }
 
 // mergeItemMetaCorrelationFields merges optional correlation fields
-// (task_id, subagent_model) into an existing items.meta JSON blob,
-// preserving every other field. Returns the original string unchanged
-// when none of the supplied values would change the blob, so callers
-// can skip an unnecessary upsert. Empty arguments are treated as "no
-// change for that field" — pass "" to leave the existing value alone.
-func mergeItemMetaCorrelationFields(existing, taskID, subagentModel string) (string, error) {
-	if taskID == "" && subagentModel == "" {
+// itemMetaCorrelationFields is the meta-only correlation payload triage
+// merges into an existing tool_call row. Empty fields mean "leave the
+// existing value alone".
+type itemMetaCorrelationFields struct {
+	TaskID          string
+	SubagentModel   string
+	ParentToolUseID string
+}
+
+// mergeItemMetaCorrelationFields merges optional correlation fields into
+// an existing items.meta JSON blob, preserving every other field. Returns
+// the original string unchanged when none of the supplied values would
+// change the blob, so callers can skip an unnecessary upsert.
+func mergeItemMetaCorrelationFields(existing string, fields itemMetaCorrelationFields) (string, error) {
+	if fields.TaskID == "" && fields.SubagentModel == "" && fields.ParentToolUseID == "" {
 		return existing, nil
 	}
 	if existing == "" {
@@ -1202,8 +1213,8 @@ func mergeItemMetaCorrelationFields(existing, taskID, subagentModel string) (str
 		parsed = map[string]json.RawMessage{}
 	}
 	changed := false
-	if taskID != "" {
-		next, ok, err := setStringFieldIfChanged(parsed, "task_id", taskID)
+	if fields.TaskID != "" {
+		next, ok, err := setStringFieldIfChanged(parsed, "task_id", fields.TaskID)
 		if err != nil {
 			return existing, err
 		}
@@ -1212,8 +1223,18 @@ func mergeItemMetaCorrelationFields(existing, taskID, subagentModel string) (str
 			changed = true
 		}
 	}
-	if subagentModel != "" {
-		next, ok, err := setStringFieldIfChanged(parsed, "subagent_model", subagentModel)
+	if fields.SubagentModel != "" {
+		next, ok, err := setStringFieldIfChanged(parsed, "subagent_model", fields.SubagentModel)
+		if err != nil {
+			return existing, err
+		}
+		if ok {
+			parsed = next
+			changed = true
+		}
+	}
+	if fields.ParentToolUseID != "" {
+		next, ok, err := setStringFieldIfChanged(parsed, "parent_tool_use_id", fields.ParentToolUseID)
 		if err != nil {
 			return existing, err
 		}

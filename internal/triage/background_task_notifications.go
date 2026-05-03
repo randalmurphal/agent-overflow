@@ -17,11 +17,12 @@ import (
 const claudeTaskOutputFileMaxBytes = 8 * 1024 * 1024
 
 type backgroundTaskNotificationMeta struct {
-	TaskID     string `json:"task_id"`
-	ToolUseID  string `json:"tool_use_id,omitempty"`
-	Status     string `json:"status,omitempty"`
-	Source     string `json:"source,omitempty"`
-	OutputFile string `json:"output_file,omitempty"`
+	TaskID          string `json:"task_id"`
+	ToolUseID       string `json:"tool_use_id,omitempty"`
+	ParentToolUseID string `json:"parent_tool_use_id,omitempty"`
+	Status          string `json:"status,omitempty"`
+	Source          string `json:"source,omitempty"`
+	OutputFile      string `json:"output_file,omitempty"`
 }
 
 func decodeBackgroundTaskNotificationMeta(raw json.RawMessage) backgroundTaskNotificationMeta {
@@ -43,11 +44,15 @@ func decodeBackgroundTaskNotificationMeta(raw json.RawMessage) backgroundTaskNot
 //
 // Three cases:
 //
-//  1. Stash present (launch is backgrounded, host saw task_updated): the
-//     agent is observing completion now (the queued attachment will
-//     surface to the model on the next iteration). Drain the stash and
-//     write the sibling at the current write head via
-//     writeBackgroundCompletionSibling. Tray gets the "drained" event.
+//  1. Stash present with a resolved launch: the agent is observing
+//     completion now (the queued attachment will surface to the model
+//     on the next iteration). Drain the stash and write the sibling at
+//     the current write head via writeBackgroundCompletionSibling. Tray
+//     gets the "drained" event after the sibling is written.
+//
+//     No resolved launch means hidden subagent work that never had a
+//     parent-thread row. Drain/drop it without writing a notification
+//     row or completion sibling.
 //
 //  2. Sibling already exists (TaskOutput drained first): upgrade its
 //     payload from output_file via
@@ -73,6 +78,16 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	if err != nil {
 		return err
 	}
+	if found && launch.Kind != itemKindToolCall {
+		found = false
+		launch = store.Item{}
+	}
+	if !found {
+		if _, _, err := r.store.TakePendingBackgroundTerminal(evt.ThreadID, meta.TaskID); err != nil {
+			log.Printf("triage: drain hidden task_notification stash %s: %v", meta.TaskID, err)
+		}
+		return nil
+	}
 
 	now := eventTimestampMillis(evt)
 	turnIndex, err := r.notificationTurnIndex(evt.ThreadID, launch, found)
@@ -93,8 +108,10 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		Meta:      backgroundNotificationItemMeta(meta, "ready", ""),
 	}
 	if found {
-		notification.ParentID = launch.ParentID
+		notification.ParentID = stringsxFirst(launch.ParentID, eventParentID(evt), meta.ParentToolUseID)
 		notification.ToolName = launch.ToolName
+	} else {
+		notification.ParentID = stringsxFirst(eventParentID(evt), meta.ParentToolUseID)
 	}
 	if persisted, ok, err := r.store.GetThreadItem(evt.ThreadID, notification.ID); err != nil {
 		return fmt.Errorf("task notification existing lookup %s: %w", notification.ID, err)
@@ -123,7 +140,7 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 			return err
 		}
 
-		payload, readErr := buildBackgroundOutputFilePayload(payloadIDForBackgroundOutput(launch, found, meta), meta.OutputFile, now)
+		payload, readErr := buildBackgroundOutputFilePayload(payloadIDForBackgroundOutput(launch, found, meta), launch, meta.OutputFile, nil, now)
 		if readErr != nil {
 			outputState = "error"
 			readErrorString = readErr.Error()
@@ -170,10 +187,11 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	terminalMeta.Source = "task_notification"
 
 	syntheticEvt := provider.ProviderEvent{
-		ThreadID:  evt.ThreadID,
-		ItemID:    stringsxFirst(evt.ItemID, terminalMeta.ToolUseID, launch.ID),
-		Content:   evt.Content,
-		Timestamp: evt.Timestamp,
+		ThreadID:        evt.ThreadID,
+		ItemID:          stringsxFirst(evt.ItemID, terminalMeta.ToolUseID, launch.ID),
+		Content:         evt.Content,
+		ParentToolUseID: stringsxFirst(eventParentID(evt), meta.ParentToolUseID),
+		Timestamp:       evt.Timestamp,
 	}
 	return r.writeBackgroundCompletionSibling(syntheticEvt, terminalMeta, true)
 }
@@ -183,10 +201,11 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 // merge it with stash data uniformly.
 func terminalMetaFromNotification(meta backgroundTaskNotificationMeta) backgroundTaskTerminalMeta {
 	return backgroundTaskTerminalMeta{
-		TaskID:     meta.TaskID,
-		ToolUseID:  meta.ToolUseID,
-		Status:     meta.Status,
-		OutputFile: meta.OutputFile,
+		TaskID:          meta.TaskID,
+		ToolUseID:       meta.ToolUseID,
+		ParentToolUseID: meta.ParentToolUseID,
+		Status:          meta.Status,
+		OutputFile:      meta.OutputFile,
 	}
 }
 
@@ -273,8 +292,8 @@ func notificationOutputState(raw string) (string, string) {
 	return state, readError
 }
 
-func (r *Router) backgroundOutputFilePayload(launchID, outputFile string, now int64) *store.Payload {
-	payload, err := buildBackgroundOutputFilePayload("tool-call-result:"+launchID, outputFile, now)
+func (r *Router) backgroundOutputFilePayload(launch store.Item, outputFile string, exitCode *int, now int64) *store.Payload {
+	payload, err := buildBackgroundOutputFilePayload("tool-call-result:"+launch.ID, launch, outputFile, exitCode, now)
 	if err != nil {
 		log.Printf("triage: read Claude background output file %q: %v", outputFile, err)
 		return nil
@@ -282,13 +301,33 @@ func (r *Router) backgroundOutputFilePayload(launchID, outputFile string, now in
 	return payload
 }
 
-func buildBackgroundOutputFilePayload(payloadID, outputFile string, now int64) (*store.Payload, error) {
+func buildBackgroundOutputFilePayload(payloadID string, launch store.Item, outputFile string, exitCode *int, now int64) (*store.Payload, error) {
 	data, meta, err := readClaudeTaskOutputFile(outputFile, claudeTaskOutputFileMaxBytes)
 	if err != nil {
 		return nil, err
 	}
 	meta["outputFile"] = outputFile
 	meta["outputFileState"] = "loaded"
+
+	if isCommandOutputLaunch(launch) {
+		code := 0
+		if exitCode != nil {
+			code = *exitCode
+		}
+		commandMeta := ExtractCommandOutputMeta(string(data), commandFromLaunch(launch), code)
+		commandMetaJSON, err := json.Marshal(commandMeta)
+		if err != nil {
+			return nil, fmt.Errorf("marshal command output payload meta: %w", err)
+		}
+		return &store.Payload{
+			ID:        payloadID,
+			Kind:      "command_output",
+			Meta:      string(commandMetaJSON),
+			Data:      data,
+			CreatedAt: now,
+		}, nil
+	}
+
 	metaJSON, err := json.Marshal(meta)
 	if err != nil {
 		return nil, fmt.Errorf("marshal output_file payload meta: %w", err)
@@ -300,6 +339,34 @@ func buildBackgroundOutputFilePayload(payloadID, outputFile string, now int64) (
 		Data:      data,
 		CreatedAt: now,
 	}, nil
+}
+
+func isCommandOutputLaunch(launch store.Item) bool {
+	switch strings.TrimSpace(launch.ToolName) {
+	case "Bash", "command_execution", "exec_command":
+		return true
+	default:
+		return false
+	}
+}
+
+func commandFromLaunch(launch store.Item) string {
+	var meta struct {
+		Input struct {
+			Command string `json:"command"`
+		} `json:"input"`
+	}
+	if json.Unmarshal([]byte(launch.Meta), &meta) == nil {
+		if command := strings.TrimSpace(meta.Input.Command); command != "" {
+			return command
+		}
+	}
+	summary := strings.TrimSpace(launch.Summary)
+	prefix := strings.TrimSpace(launch.ToolName) + ": "
+	if strings.HasPrefix(summary, prefix) {
+		return strings.TrimSpace(strings.TrimPrefix(summary, prefix))
+	}
+	return summary
 }
 
 func readClaudeTaskOutputFile(path string, maxBytes int64) ([]byte, map[string]any, error) {
@@ -488,6 +555,9 @@ func backgroundNotificationItemMeta(meta backgroundTaskNotificationMeta, outputS
 	if meta.ToolUseID != "" {
 		fields["tool_use_id"] = meta.ToolUseID
 	}
+	if meta.ParentToolUseID != "" {
+		fields["parent_tool_use_id"] = meta.ParentToolUseID
+	}
 	if meta.Status != "" {
 		fields["status"] = meta.Status
 	}
@@ -521,6 +591,9 @@ func backgroundNotificationCompletionMeta(
 	if readError != "" {
 		fields["notification_output_error"] = readError
 	}
+	if meta.ParentToolUseID != "" {
+		fields["parent_tool_use_id"] = meta.ParentToolUseID
+	}
 	data, err := json.Marshal(fields)
 	if err != nil {
 		return "{}"
@@ -536,6 +609,9 @@ func backgroundCompletionItemMeta(meta backgroundTaskTerminalMeta, rich bool) st
 	}
 	if meta.ToolUseID != "" {
 		fields["tool_use_id"] = meta.ToolUseID
+	}
+	if meta.ParentToolUseID != "" {
+		fields["parent_tool_use_id"] = meta.ParentToolUseID
 	}
 	if meta.OutputFile != "" {
 		fields["output_file"] = meta.OutputFile

@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"encoding/json"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -35,6 +36,79 @@ func TestParseAssistantCarriesParentToolUseIDOnToolStart(t *testing.T) {
 	}
 	if evt.ParentToolUseID != "task_tool_123" {
 		t.Errorf("parentToolUseID: got %q, want %q", evt.ParentToolUseID, "task_tool_123")
+	}
+}
+
+func TestSubagentBackgroundTaskLifecycleKeepsParentToolUseID(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","parent_tool_use_id":"agent-parent","message":{"id":"msg-child","role":"assistant","content":[{"type":"tool_use","id":"inner-bg","name":"Bash","input":{"command":"sleep 30","run_in_background":true}}]}}`)); err != nil {
+		t.Fatalf("assistant tool_use: %v", err)
+	}
+
+	startEvents, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"task-inner","tool_use_id":"inner-bg"}`))
+	if err != nil {
+		t.Fatalf("task_started: %v", err)
+	}
+	if len(startEvents) != 1 {
+		t.Fatalf("expected 1 task_started event, got %+v", startEvents)
+	}
+	if startEvents[0].ParentToolUseID != "agent-parent" {
+		t.Fatalf("task_started ParentToolUseID = %q, want agent-parent", startEvents[0].ParentToolUseID)
+	}
+	var startMeta map[string]any
+	if err := json.Unmarshal(startEvents[0].Meta, &startMeta); err != nil {
+		t.Fatalf("task_started meta: %v", err)
+	}
+	if startMeta["parent_tool_use_id"] != "agent-parent" {
+		t.Fatalf("task_started meta parent_tool_use_id = %v, want agent-parent", startMeta["parent_tool_use_id"])
+	}
+
+	terminalEvents, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_updated","task_id":"task-inner","patch":{"status":"killed"}}`))
+	if err != nil {
+		t.Fatalf("task_updated: %v", err)
+	}
+	if len(terminalEvents) != 1 {
+		t.Fatalf("expected 1 task_updated event, got %+v", terminalEvents)
+	}
+	if terminalEvents[0].ParentToolUseID != "agent-parent" {
+		t.Fatalf("task_updated ParentToolUseID = %q, want agent-parent", terminalEvents[0].ParentToolUseID)
+	}
+	var terminalMeta map[string]any
+	if err := json.Unmarshal(terminalEvents[0].Meta, &terminalMeta); err != nil {
+		t.Fatalf("task_updated meta: %v", err)
+	}
+	if terminalMeta["parent_tool_use_id"] != "agent-parent" {
+		t.Fatalf("task_updated meta parent_tool_use_id = %v, want agent-parent", terminalMeta["parent_tool_use_id"])
+	}
+}
+
+func TestSubagentBackgroundTaskLifecycleBackfillsLateParentToolUseID(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"task-inner","tool_use_id":"inner-bg"}`)); err != nil {
+		t.Fatalf("task_started: %v", err)
+	}
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","parent_tool_use_id":"agent-parent","message":{"id":"msg-child","role":"assistant","content":[{"type":"tool_use","id":"inner-bg","name":"Bash","input":{"command":"sleep 30","run_in_background":true}}]}}`)); err != nil {
+		t.Fatalf("assistant tool_use: %v", err)
+	}
+
+	terminalEvents, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_updated","task_id":"task-inner","patch":{"status":"killed"}}`))
+	if err != nil {
+		t.Fatalf("task_updated: %v", err)
+	}
+	if len(terminalEvents) != 1 {
+		t.Fatalf("expected 1 task_updated event, got %+v", terminalEvents)
+	}
+	if terminalEvents[0].ParentToolUseID != "agent-parent" {
+		t.Fatalf("task_updated ParentToolUseID = %q, want agent-parent", terminalEvents[0].ParentToolUseID)
+	}
+	var terminalMeta map[string]any
+	if err := json.Unmarshal(terminalEvents[0].Meta, &terminalMeta); err != nil {
+		t.Fatalf("task_updated meta: %v", err)
+	}
+	if terminalMeta["parent_tool_use_id"] != "agent-parent" {
+		t.Fatalf("task_updated meta parent_tool_use_id = %v, want agent-parent", terminalMeta["parent_tool_use_id"])
 	}
 }
 

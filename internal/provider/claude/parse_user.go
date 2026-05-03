@@ -192,7 +192,8 @@ func (p *Parser) appendTaskOutputCompletion(
 		return events
 	}
 
-	originalToolUseID := p.taskToolUse(taskOutput.TaskID)
+	taskRef := p.taskToolUseRef(taskOutput.TaskID)
+	originalToolUseID := taskRef.ToolUseID
 
 	status := "completed"
 	if taskOutput.IsError {
@@ -206,6 +207,9 @@ func (p *Parser) appendTaskOutputCompletion(
 	if originalToolUseID != "" {
 		metaFields["tool_use_id"] = originalToolUseID
 	}
+	if taskRef.ParentToolUseID != "" {
+		metaFields["parent_tool_use_id"] = taskRef.ParentToolUseID
+	}
 	if taskOutput.IsError {
 		metaFields["is_error"] = true
 	}
@@ -218,13 +222,14 @@ func (p *Parser) appendTaskOutputCompletion(
 	meta, _ := json.Marshal(metaFields)
 
 	events = append(events, provider.ProviderEvent{
-		Kind:      provider.EventBackgroundTaskTerminal,
-		ThreadID:  threadID,
-		ItemID:    originalToolUseID,
-		Content:   firstNonEmpty(taskOutput.Output, taskOutput.Summary, content),
-		Meta:      meta,
-		Timestamp: now,
-		Raw:       line,
+		Kind:            provider.EventBackgroundTaskTerminal,
+		ThreadID:        threadID,
+		ItemID:          originalToolUseID,
+		Content:         firstNonEmpty(taskOutput.Output, taskOutput.Summary, content),
+		Meta:            meta,
+		ParentToolUseID: taskRef.ParentToolUseID,
+		Timestamp:       now,
+		Raw:             line,
 	})
 	// TaskOutput enrichment does not clear backgroundToolUses — the
 	// original backgrounded tool_use's placeholder tool_result is what

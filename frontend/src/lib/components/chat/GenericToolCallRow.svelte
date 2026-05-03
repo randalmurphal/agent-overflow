@@ -16,10 +16,12 @@
     keepExpandedPayloadFresh,
   } from './payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
+  import ClaudeSubagentTranscript from './ClaudeSubagentTranscript.svelte';
   import EditorLink from '../common/EditorLink.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import { isCodexSubagentLaunchItem } from '../../utils/subagentLaunch';
+  import { parseClaudeSubagentTranscript } from '../../utils/claudeSubagentTranscript';
 
   // Threshold (ms) at which the running row starts displaying elapsed
   // time in the duration slot. Sub-2s tools (most Read/Edit/Write/etc.)
@@ -142,6 +144,12 @@
   // redundant noise. Render the row collapsed-only — the completion
   // badge and timestamp still convey "model checked the output".
   let suppressBodyExpansion = $derived(item.toolName === 'TaskOutput');
+  let subagentTranscriptEntries = $derived.by(() => {
+    if (item.toolName !== 'Agent') return null;
+    const data = expansion.displayData;
+    if (data === null) return null;
+    return parseClaudeSubagentTranscript(data);
+  });
 
   let hasExpandableBody = $derived(
     !suppressBodyExpansion &&
@@ -296,12 +304,18 @@
           </button>
         </div>
       {:else if expansion.displayData !== null}
-        <div
-          class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 text-[11px] leading-relaxed text-fg-muted"
-          data-testid="tool-call-card-output"
-        >
-          <AnsiText source={expansion.displayData} />
-        </div>
+        {#if subagentTranscriptEntries !== null}
+          <div class="max-h-80 overflow-auto" data-testid="tool-call-card-output">
+            <ClaudeSubagentTranscript entries={subagentTranscriptEntries} />
+          </div>
+        {:else}
+          <div
+            class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 text-[11px] leading-relaxed text-fg-muted"
+            data-testid="tool-call-card-output"
+          >
+            <AnsiText source={expansion.displayData} />
+          </div>
+        {/if}
         {#if expansion.hasMore}
           <button
             type="button"

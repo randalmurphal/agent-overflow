@@ -392,15 +392,18 @@ func TestParseStreamEvent(t *testing.T) {
 	}
 }
 
-func TestParseStreamEventNoDelta(t *testing.T) {
-	line := []byte(`{"type":"stream_event","event":"message_start","data":{"type":"message_start"}}`)
-
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(events) != 0 {
-		t.Errorf("expected 0 events, got %d", len(events))
+func TestParseStreamEventMessageBoundariesDoNotEmitLifecycleEvents(t *testing.T) {
+	for _, line := range [][]byte{
+		[]byte(`{"type":"stream_event","event":"message_start","data":{"type":"message_start"}}`),
+		[]byte(`{"type":"stream_event","event":"message_stop","data":{"type":"message_stop"}}`),
+	} {
+		events, err := ParseLine(testThread, line)
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if len(events) != 0 {
+			t.Errorf("expected 0 events, got %d", len(events))
+		}
 	}
 }
 

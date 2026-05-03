@@ -82,6 +82,7 @@ const approvalThreadByID = new Map<string, string>();
 // in Claude's multi-result-per-turn cascade so the UI reflects "model
 // is engaged right now" rather than "user-typed prompt is in flight."
 const activeTurnByThread = new SvelteMap<string, ActiveTurn>();
+const completedTurnIDsByThread = new Map<string, Set<string>>();
 const pendingSendThreads = new Set<string>();
 const planReadyThreads = new Set<string>();
 const errorThreads = new Set<string>();
@@ -190,6 +191,7 @@ export function setThreadStatus(threadId: string, status: ThreadLiveStatus): voi
 export function clearThreadStatus(threadId: string): void {
   activeItemIDsByThread.delete(threadId);
   activeTurnByThread.delete(threadId);
+  completedTurnIDsByThread.delete(threadId);
   pendingSendThreads.delete(threadId);
   planReadyThreads.delete(threadId);
   for (const requestIdSet of [
@@ -303,6 +305,10 @@ export function projectTurnStarted(
   // both acceptance and rejection cases.
   pendingSendThreads.delete(threadId);
   planReadyThreads.delete(threadId);
+  if (hasCompletedTurnID(threadId, turnId)) {
+    recalculateThreadStatus(threadId);
+    return;
+  }
   errorThreads.delete(threadId);
   interruptedThreads.delete(threadId);
   // Idempotent on (threadId, turnId): under the per-wire-round
@@ -333,6 +339,7 @@ export function projectTurnCompleted(
   opts: { aborted?: boolean; errorMessage?: string } = {},
 ): void {
   if (!threadId || !turnId) return;
+  markCompletedTurnID(threadId, turnId);
   const current = activeTurnByThread.get(threadId);
   if (current && current.turnId === turnId) {
     activeTurnByThread.delete(threadId);
@@ -345,6 +352,22 @@ export function projectTurnCompleted(
     errorThreads.delete(threadId);
   }
   recalculateThreadStatus(threadId);
+}
+
+function markCompletedTurnID(threadId: string, turnId: string): void {
+  let completed = completedTurnIDsByThread.get(threadId);
+  if (!completed) {
+    completed = new Set<string>();
+    completedTurnIDsByThread.set(threadId, completed);
+  }
+  completed.add(turnId);
+  if (completed.size <= 128) return;
+  const oldest = completed.values().next().value;
+  if (typeof oldest === 'string') completed.delete(oldest);
+}
+
+function hasCompletedTurnID(threadId: string, turnId: string): boolean {
+  return completedTurnIDsByThread.get(threadId)?.has(turnId) === true;
 }
 
 /**
@@ -539,6 +562,7 @@ export function getAllThreadStatuses(): Map<string, ThreadLiveStatus> {
 export function resetForTest(): void {
   activeItemIDsByThread.clear();
   activeTurnByThread.clear();
+  completedTurnIDsByThread.clear();
   pendingSendThreads.clear();
   planReadyThreads.clear();
   approvalIDsByThread.clear();

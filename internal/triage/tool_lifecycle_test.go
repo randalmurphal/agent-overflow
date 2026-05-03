@@ -941,7 +941,9 @@ func TestSubagentModelMergesIntoItemMetaWithoutClobber(t *testing.T) {
 // the only structured handle to existing fields. Tested directly
 // because the persistence layer rejects malformed JSON at insert time.
 func TestMergeItemMetaCorrelationFieldsRebuildsMalformedExisting(t *testing.T) {
-	out, err := mergeItemMetaCorrelationFields(`{"toolName":"Agent","input":{`, "", "claude-opus-4-7")
+	out, err := mergeItemMetaCorrelationFields(`{"toolName":"Agent","input":{`, itemMetaCorrelationFields{
+		SubagentModel: "claude-opus-4-7",
+	})
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
@@ -1097,6 +1099,65 @@ func TestTaskUpdatedUnmatchedMetaTaskIDIsDropped(t *testing.T) {
 	}
 	if len(items) != 0 {
 		t.Errorf("expected no rows for unmatched meta.task_id, got %+v", items)
+	}
+}
+
+func TestKilledTaskUpdatedWithoutLaunchDoesNotCreateOrphanCompletion(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "missing-killed-task",
+		"tool_use_id": "hidden-child-tool",
+		"status":      "killed",
+		"is_error":    true,
+		"source":      "task_updated",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "hidden-child-tool",
+		Meta: terminalMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("unmatched killed terminal: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected no orphan rows for hidden killed task, got %+v", items)
+	}
+	if _, found, err := st.GetPendingBackgroundTerminal("t1", "missing-killed-task"); err != nil {
+		t.Fatalf("read stash: %v", err)
+	} else if found {
+		t.Fatal("killed task_updated should not leave a stash")
+	}
+}
+
+func TestTaskOutputWithoutLaunchDoesNotCreateOrphanCompletion(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "missing-output-task",
+		"tool_use_id": "hidden-child-tool",
+		"status":      "failed",
+		"is_error":    true,
+		"source":      "task_output",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "hidden-child-tool",
+		Meta: terminalMeta, Content: "tool failed", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("unmatched task_output terminal: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected no orphan rows for hidden task_output terminal, got %+v", items)
 	}
 }
 

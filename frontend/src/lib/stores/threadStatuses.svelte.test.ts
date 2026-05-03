@@ -204,6 +204,24 @@ describe('threadStatuses store', () => {
       expect(getThreadStatus('thread-1')).toBe('idle');
     });
 
+    it('ignores a late turn_started for a round that already completed', () => {
+      projectTurnCompleted('thread-1', 'round-1');
+
+      projectTurnStarted('thread-1', 'round-1', 0, 100);
+
+      expect(getActiveTurn('thread-1')).toBeNull();
+      expect(getThreadStatus('thread-1')).toBe('idle');
+    });
+
+    it('preserves a completed-before-started error state', () => {
+      projectTurnCompleted('thread-1', 'round-1', { errorMessage: 'boom' });
+
+      projectTurnStarted('thread-1', 'round-1', 0, 100);
+
+      expect(getActiveTurn('thread-1')).toBeNull();
+      expect(getThreadStatus('thread-1')).toBe('error');
+    });
+
     it('aborted turn flips to interrupted', () => {
       projectTurnStarted('thread-1', 'turn-1', 0, 0);
       projectTurnCompleted('thread-1', 'turn-1', { aborted: true });
