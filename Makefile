@@ -119,6 +119,12 @@ dev:
 # The normal package path may use a stable VERSION; dev mode cannot,
 # or the launcher will correctly skip reinstalling what it thinks is
 # the same embedded payload.
+#
+# Debug env has two WSLENV hops in this target:
+#   1. WSL shell -> Windows launcher (.exe launched through interop).
+#   2. Windows launcher -> WSL backend (wsl.exe child).
+# The launcher already handles hop 2, but hop 1 must be whitelisted here
+# or Windows never receives AGENT_OVERFLOW_DEBUG in the first place.
 dev-wsl:
 	@if [ -z "$$WSL_DISTRO_NAME" ]; then \
 		echo "ERROR: WSL_DISTRO_NAME is unset. Run this target from inside a WSL shell."; \
@@ -138,7 +144,16 @@ dev-wsl:
 	find "$$WIN_DEV_DIR_LINUX" -maxdepth 1 -name 'agent-overflow-dev-*.exe' ! -name "agent-overflow-$$DEV_VERSION.exe" -delete 2>/dev/null || true; \
 	cp bin/agent-overflow.exe "$$WIN_DEV_EXE_LINUX"; \
 	echo "Launching $$WIN_DEV_EXE_LINUX --distro $$WSL_DISTRO_NAME"; \
-	AGENT_OVERFLOW_DEBUG="$(AGENT_OVERFLOW_DEBUG)" "$$WIN_DEV_EXE_LINUX" --distro "$$WSL_DISTRO_NAME"
+	if [ -n "$(AGENT_OVERFLOW_DEBUG)" ]; then \
+		DEBUG_WSLENV="$$WSLENV"; \
+		case ":$$DEBUG_WSLENV:" in \
+			*:AGENT_OVERFLOW_DEBUG:*) ;; \
+			*) DEBUG_WSLENV="AGENT_OVERFLOW_DEBUG$${DEBUG_WSLENV:+:$$DEBUG_WSLENV}" ;; \
+		esac; \
+		WSLENV="$$DEBUG_WSLENV" AGENT_OVERFLOW_DEBUG="$(AGENT_OVERFLOW_DEBUG)" "$$WIN_DEV_EXE_LINUX" --distro "$$WSL_DISTRO_NAME"; \
+	else \
+		"$$WIN_DEV_EXE_LINUX" --distro "$$WSL_DISTRO_NAME"; \
+	fi
 
 # build-wsl: cross-compiles the Linux ELF backend + Windows .exe launcher
 # without running. Use this when you want to hand the .exe off (e.g.
