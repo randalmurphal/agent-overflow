@@ -1,16 +1,19 @@
 .PHONY: install dev dev-wsl build build-wsl test check go-build go-test test-race
 
-# `make dev DEBUG=1` enables lightweight frontend UI render tracing.
-# `UI_TRACE=1` is the explicit form; DEBUG=1 is the short dev-mode alias.
+# `make dev DEBUG=1` / `make dev-wsl DEBUG=1` enables every debug surface
+# wired through this Makefile: frontend UI render tracing and raw provider
+# stdio capture. Use UI_TRACE=1 or PROVIDER_DEBUG=1 for narrower captures.
 UI_TRACE ?= $(DEBUG)
 
-# `make dev PROVIDER_DEBUG=1` enables raw provider stdio capture. Logs
-# land in <dbDir>/logs/provider-events-YYYY-MM-DD.ndjson (one JSON object
-# per line: {ts, threadId, direction, provider, data}). This is the
-# Makefile shorthand for AGENT_OVERFLOW_DEBUG=provider; if you've already
-# set that env var directly it passes through unchanged.
+# Raw provider stdio capture logs land in
+# <dbDir>/logs/provider-events-YYYY-MM-DD.ndjson (one JSON object per line:
+# {ts, threadId, direction, provider, data}). PROVIDER_DEBUG=1 is the narrow
+# shorthand for AGENT_OVERFLOW_DEBUG=provider; DEBUG=1 broadens that to `all`.
 ifeq ($(PROVIDER_DEBUG),1)
 AGENT_OVERFLOW_DEBUG := provider
+endif
+ifeq ($(DEBUG),1)
+AGENT_OVERFLOW_DEBUG := all
 endif
 
 # `make build-wsl WSL_BUILD_MODE=build:dev` produces a dev-mode bundle
