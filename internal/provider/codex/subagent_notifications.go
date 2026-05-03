@@ -56,16 +56,28 @@ var subagentNotificationPattern = regexp.MustCompile(`(?s)<subagent_notification
 // field is accepted as a fallback so pre-rename Codex builds still
 // round-trip correctly.
 func parseSubagentNotifications(text string) []subagentNotification {
+	notifications, _ := parseSubagentNotificationsWithCarrierRemainder(text)
+	return notifications
+}
+
+func parseSubagentNotificationsWithCarrierRemainder(text string) ([]subagentNotification, string) {
 	if text == "" || !strings.Contains(text, "<subagent_notification>") {
-		return nil
+		return nil, text
 	}
-	matches := subagentNotificationPattern.FindAllStringSubmatch(text, -1)
+	matches := subagentNotificationPattern.FindAllStringSubmatchIndex(text, -1)
 	if len(matches) == 0 {
-		return nil
+		return nil, text
 	}
 	notifications := make([]subagentNotification, 0, len(matches))
+	var remainder strings.Builder
+	lastEnd := 0
 	for _, match := range matches {
-		body := strings.TrimSpace(match[1])
+		if len(match) < 4 {
+			continue
+		}
+		start, end := match[0], match[1]
+		bodyStart, bodyEnd := match[2], match[3]
+		body := strings.TrimSpace(text[bodyStart:bodyEnd])
 		if body == "" {
 			continue
 		}
@@ -84,6 +96,8 @@ func parseSubagentNotifications(text string) []subagentNotification {
 		if agentPath == "" || status == "" {
 			continue
 		}
+		remainder.WriteString(text[lastEnd:start])
+		lastEnd = end
 		delete(raw, "agent_path")
 		delete(raw, "agent_id")
 		delete(raw, "status")
@@ -99,9 +113,10 @@ func parseSubagentNotifications(text string) []subagentNotification {
 		})
 	}
 	if len(notifications) == 0 {
-		return nil
+		return nil, text
 	}
-	return notifications
+	remainder.WriteString(text[lastEnd:])
+	return notifications, remainder.String()
 }
 
 func normalizeSubagentStatus(raw any) (status string, message any, hasMessage bool) {
@@ -158,20 +173,30 @@ func canonicalSubagentStatus(status string) string {
 // a notification split across multiple entries (shouldn't happen today
 // but cheap to tolerate) is still detected.
 func extractSubagentNotificationsFromUserMessage(params json.RawMessage) []subagentNotification {
+	notifications, _ := extractSubagentNotificationsAndRemainderFromUserMessage(params)
+	return notifications
+}
+
+func isSubagentNotificationOnlyUserMessage(params json.RawMessage) bool {
+	notifications, remainder := extractSubagentNotificationsAndRemainderFromUserMessage(params)
+	return len(notifications) > 0 && strings.TrimSpace(remainder) == ""
+}
+
+func extractSubagentNotificationsAndRemainderFromUserMessage(params json.RawMessage) ([]subagentNotification, string) {
 	item := readNestedObject(params, "item")
 	if item == nil {
-		return nil
+		return nil, ""
 	}
 	if readRawString(item, "type") != "userMessage" {
-		return nil
+		return nil, ""
 	}
 	contentRaw, ok := item["content"]
 	if !ok {
-		return nil
+		return nil, ""
 	}
 	var content []map[string]json.RawMessage
 	if err := json.Unmarshal(contentRaw, &content); err != nil {
-		return nil
+		return nil, ""
 	}
 	var builder strings.Builder
 	for _, entry := range content {
@@ -198,7 +223,7 @@ func extractSubagentNotificationsFromUserMessage(params json.RawMessage) []subag
 		}
 		builder.WriteString(text)
 	}
-	return parseSubagentNotifications(builder.String())
+	return parseSubagentNotificationsWithCarrierRemainder(builder.String())
 }
 
 // buildSubagentNotificationMeta serialises a parsed subagentNotification

@@ -36,8 +36,10 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 	}
 	providerItemID := readProviderItemIDFromMeta(evt.Meta)
 
-	if pending, ok := r.consumePendingSendHead(evt.ThreadID); ok {
-		return r.attachProviderItemIDToUserRow(evt.ThreadID, pending.AOItemID, providerItemID, evt)
+	if eventParentID(evt) == "" {
+		if pending, ok := r.consumePendingSendHead(evt.ThreadID); ok {
+			return r.attachProviderItemIDToUserRow(evt.ThreadID, pending.AOItemID, providerItemID, evt)
+		}
 	}
 
 	if providerItemID == "" {
@@ -188,6 +190,7 @@ func (r *Router) persistWireOnlyUserText(evt provider.ProviderEvent, providerIte
 		Role:      "user",
 		Status:    statusCompleted,
 		Summary:   evt.Content,
+		ParentID:  eventParentID(evt),
 		Meta:      string(metaBytes),
 		CreatedAt: now,
 		UpdatedAt: now,

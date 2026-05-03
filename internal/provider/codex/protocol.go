@@ -166,12 +166,12 @@ func classifyTurnCompleted(threadID string, params json.RawMessage, now time.Tim
 // dedicated triage paths:
 //
 //   - userMessage:             item/started is noise (the in-flight
-//                              half has no UI signal); item/completed
-//                              is special-cased to emit EventUserText
-//                              so triage's pending-send correlator can
-//                              stamp the AO-owned `user:<turnIndex>`
-//                              row (mirrors Claude's `isReplay:true`
-//                              promotion in parse_user.go).
+//     half has no UI signal); item/completed
+//     is special-cased to emit EventUserText
+//     so triage's pending-send correlator can
+//     stamp the AO-owned `user:<turnIndex>`
+//     row (mirrors Claude's `isReplay:true`
+//     promotion in parse_user.go).
 //   - agentMessage / assistantMessage: written by handleTextDelta from the
 //     item/agentMessage/delta stream; settled on
 //     turn/completed
@@ -909,6 +909,15 @@ func firstRaw(m map[string]json.RawMessage, keys ...string) json.RawMessage {
 	return nil
 }
 
+func firstRawString(m map[string]json.RawMessage, keys ...string) string {
+	for _, key := range keys {
+		if value := readRawString(m, key); strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // parseCodexRetryCounts extracts an "N/M" attempt/total pair from a
 // Codex retry message ("Reconnecting... 2/5"). Returns zeros when no
 // pair is found — the caller treats unknown counts as "show on every
@@ -1159,6 +1168,12 @@ func collabAgentMetaExtras(item map[string]json.RawMessage) map[string]any {
 	}
 	if reasoningEffort := readRawString(item, "reasoningEffort"); reasoningEffort != "" {
 		input["reasoningEffort"] = reasoningEffort
+	}
+	if nickname := firstRawString(item, "newAgentNickname", "agentNickname", "nickname"); nickname != "" {
+		input["newAgentNickname"] = nickname
+	}
+	if role := firstRawString(item, "newAgentRole", "agentRole", "agent_type", "agentType"); role != "" {
+		input["newAgentRole"] = role
 	}
 	if receiverThreadIDs := readRawStringArray(item, "receiverThreadIds"); len(receiverThreadIDs) > 0 {
 		input["receiverThreadIds"] = receiverThreadIDs

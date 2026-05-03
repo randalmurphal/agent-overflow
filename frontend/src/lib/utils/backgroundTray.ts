@@ -3,6 +3,7 @@
 // component and so the .svelte file stays under the 300-line ceiling.
 
 import type { Item } from '../types/models';
+import { isCodexSubagentLaunchItem } from './subagentLaunch';
 
 export interface TrayTask {
   /** Stable id used for the row key and scroll-to-item request. */
@@ -60,14 +61,14 @@ export function extractClaudeTaskID(item: Item): string | null {
 }
 
 /**
- * Codex subagent rows have `toolName === 'collab_agent'` — spawned
- * child threads with no client-side kill path. The Stop-all button
+ * Codex subagent rows are detected from the normalized spawn-agent
+ * launch metadata. They represent child threads with no client-side kill path. The Stop-all button
  * must hide when the tray only contains these, because neither
  * StopClaudeTask nor CleanCodexBackgroundTerminals can touch them.
  */
 export function isCodexSubagentTask(task: TrayTask): boolean {
-  const tool = task.launch?.toolName ?? task.completion?.toolName ?? '';
-  return tool === 'collab_agent';
+  const item = task.launch ?? task.completion;
+  return item ? isCodexSubagentLaunchItem(item) : false;
 }
 
 /**

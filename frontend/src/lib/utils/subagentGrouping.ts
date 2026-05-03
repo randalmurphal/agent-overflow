@@ -1,7 +1,8 @@
 // Pure projection utility for turning a flat timeline of Items into stable
-// transcript nodes. The only structural grouping allowed here is Claude
-// inline Agent/Task tool calls. Generic parentId nesting is deliberately not
-// used because it can make an already-rendered row flip from leaf -> group.
+// transcript nodes. The only structural grouping allowed here is provider
+// subagent launches: Claude inline Agent/Task rows and Codex spawn_agent
+// rows. Generic parentId nesting is deliberately not used because it can make
+// an already-rendered row flip from leaf -> group.
 //
 // Contract:
 //   - Input: a chronologically-ordered list of Items (preserves turnIndex
@@ -16,11 +17,13 @@
 //   - Normal rows always stay leaves.
 //   - Claude inline Agent/Task launch rows are groups from first render, even
 //     before any child activity arrives.
+//   - Codex spawn_agent launch rows are groups from first render so child
+//     prompt echoes and tool activity live inside the dropdown.
 //   - Adjacent inline agents from the same Claude assistant message share a
 //     structural wrapper row keyed by that assistant message. The real agent
 //     cards remain peers inside the wrapper.
 //   - parentId children are nested only when their parent is one of those
-//     inline-agent launch rows. Children of non-agent parents stay flat.
+//     subagent launch rows. Children of non-agent parents stay flat.
 //   - Nesting is capped at MAX_DEPTH (3, matching forge). Descendants
 //     beyond that depth collapse upward into their deepest allowed group
 //     as leaf siblings.
@@ -34,6 +37,7 @@
 
 import type { Item } from '../types/models';
 import { parseJsonObject } from './parseJsonObject';
+import { codexSubagentLaunchInfo, isCodexSubagentLaunchItem } from './subagentLaunch';
 
 export const MAX_DEPTH = 3;
 const PREVIEW_MAX_CHARS = 160;
@@ -167,6 +171,35 @@ function inlineAgentInfo(item: Item): InlineAgentInfo | null {
 
 function isClaudeInlineAgentLaunch(item: Item): boolean {
   return inlineAgentInfo(item) !== null;
+}
+
+function isSubagentLaunch(item: Item): boolean {
+  return isClaudeInlineAgentLaunch(item) || isCodexSubagentLaunchItem(item);
+}
+
+function normalizedText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function codexPromptEchoParentID(item: Item, promptByParentID: Map<string, string>): string {
+  if (item.kind !== 'user_text') return '';
+  const parentID = item.parentId ?? '';
+  if (!parentID) return '';
+  const prompt = promptByParentID.get(parentID);
+  if (!prompt) return '';
+  return normalizedText(item.summary) === normalizedText(prompt) ? parentID : '';
+}
+
+function shouldHideCodexWaitCarrier(item: Item, payloadIDsResolvedByTargetCompletion: Set<string>): boolean {
+  if (!item.payloadId || !payloadIDsResolvedByTargetCompletion.has(item.payloadId)) return false;
+  if (item.kind === 'terminal_interaction') return true;
+  return item.kind === 'tool_completion' && item.toolName === 'wait_agent';
+}
+
+function itemProcessID(item: Item): string {
+  const meta = parseJsonObject(item.meta);
+  const processID = meta?.process_id;
+  return typeof processID === 'string' ? processID.trim() : '';
 }
 
 function subagentNodeGroupKey(item: Item, inlineGroupKey: string): string {
@@ -368,7 +401,7 @@ export function findTimelineNodeIndex(nodes: TimelineNode[], itemId: string): nu
 export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
   if (items.length === 0) return [];
 
-  // Fast path: if no item declares a parentId, no item is an inline Agent,
+  // Fast path: if no item declares a parentId, no item is a subagent launch,
   // AND the input is already in canonical order, there is nothing to group.
   // Skip the sort, id-set build, and grouping walk entirely — just wrap
   // each item as a leaf. ThreadPane.upsertItem maintains canonical order
@@ -387,7 +420,7 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     const pid = item.parentId;
-    if ((pid && pid.length > 0) || isClaudeInlineAgentLaunch(item)) {
+    if ((pid && pid.length > 0) || item.completionOf || item.kind === 'terminal_interaction' || item.toolName === 'wait_agent' || isSubagentLaunch(item)) {
       hasGroupingSignals = true;
     }
     if (i > 0) {
@@ -407,21 +440,53 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
 
   // Work on a shallow copy sorted in canonical order so callers may pass
   // any collection (e.g., a subset) without needing to pre-sort.
-  const sorted = alreadySorted ? items : [...items].sort(compareItems);
+  const sortedWithCarriers = alreadySorted ? items : [...items].sort(compareItems);
+  const promptByCodexSpawnID = new Map<string, string>();
+  const payloadIDsResolvedByTargetCompletion = new Set<string>();
+  const processIDsResolvedByCommandCompletion = new Set<string>();
+  for (const item of sortedWithCarriers) {
+    if (isCodexSubagentLaunchItem(item)) {
+      const prompt = codexSubagentLaunchInfo(item).prompt;
+      if (prompt) promptByCodexSpawnID.set(item.id, prompt);
+      continue;
+    }
+    if (item.kind === 'tool_completion' && item.completionOf && item.toolName !== 'wait_agent' && item.payloadId) {
+      payloadIDsResolvedByTargetCompletion.add(item.payloadId);
+    }
+    if (item.kind === 'tool_completion' && item.completionOf && item.toolName === 'command_execution') {
+      const processID = itemProcessID(item);
+      if (processID) processIDsResolvedByCommandCompletion.add(processID);
+    }
+  }
+  const hiddenCodexPromptEchoParents = new Set<string>();
+  const sorted = sortedWithCarriers.filter((item) => {
+    const promptEchoParentID = codexPromptEchoParentID(item, promptByCodexSpawnID);
+    if (promptEchoParentID && !hiddenCodexPromptEchoParents.has(promptEchoParentID)) {
+      hiddenCodexPromptEchoParents.add(promptEchoParentID);
+      return false;
+    }
+    if (shouldHideCodexWaitCarrier(item, payloadIDsResolvedByTargetCompletion)) return false;
+    if (item.kind === 'terminal_interaction' && processIDsResolvedByCommandCompletion.has(itemProcessID(item))) return false;
+    return true;
+  });
 
   const idSet = new Set(sorted.map((it) => it.id));
-  const inlineAgentIDs = new Set<string>();
+  const subagentLaunchIDs = new Set<string>();
   const inlineGroupKeyByItemID = new Map<string, string>();
 
   for (const item of sorted) {
+    if (isCodexSubagentLaunchItem(item)) {
+      subagentLaunchIDs.add(item.id);
+      continue;
+    }
     const info = inlineAgentInfo(item);
     if (!info) continue;
     const key = info.groupKey;
-    inlineAgentIDs.add(item.id);
+    subagentLaunchIDs.add(item.id);
     inlineGroupKeyByItemID.set(item.id, key);
   }
 
-  // Index children by parentId, but only for stable inline-agent launch
+  // Index children by parentId, but only for stable subagent launch
   // parents. Generic parentId nesting stays flat by design.
   const childrenByParent = new Map<string, Item[]>();
   const orphanIds = new Set<string>();
@@ -433,7 +498,7 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
       orphanIds.add(item.id);
       continue;
     }
-    if (!inlineAgentIDs.has(pid)) continue;
+    if (!subagentLaunchIDs.has(pid)) continue;
     const bucket = childrenByParent.get(pid);
     if (bucket) {
       bucket.push(item);
@@ -449,7 +514,7 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
 
   function buildNode(item: Item, depth: number): TimelineNode {
     const childItems = childrenByParent.get(item.id);
-    if ((!childItems || childItems.length === 0) && !inlineAgentIDs.has(item.id)) {
+    if ((!childItems || childItems.length === 0) && !subagentLaunchIDs.has(item.id)) {
       return { kind: 'leaf', item };
     }
 
@@ -510,7 +575,7 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
     const inlineKey = inlineGroupKeyByItemID.get(item.id);
     if (inlineKey) {
       const pid = item.parentId ?? '';
-      if (pid && inlineAgentIDs.has(pid)) {
+      if (pid && subagentLaunchIDs.has(pid)) {
         continue;
       }
       const members = [item];
@@ -519,7 +584,7 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
         const candidate = sorted[cursor];
         const candidateInlineKey = inlineGroupKeyByItemID.get(candidate.id);
         const candidateParentID = candidate.parentId ?? '';
-        if (candidateInlineKey !== inlineKey || (candidateParentID && inlineAgentIDs.has(candidateParentID))) {
+        if (candidateInlineKey !== inlineKey || (candidateParentID && subagentLaunchIDs.has(candidateParentID))) {
           break;
         }
         members.push(candidate);
@@ -532,7 +597,7 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
 
     const pid = item.parentId ?? '';
     if (!pid) {
-      roots.push({ kind: 'leaf', item });
+      roots.push(buildNode(item, 0));
       continue;
     }
     if (orphanIds.has(item.id)) {
@@ -541,10 +606,10 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
       roots.push({ kind: 'leaf', item, orphan: true });
       continue;
     }
-    if (!inlineAgentIDs.has(pid)) {
+    if (!subagentLaunchIDs.has(pid)) {
       roots.push({ kind: 'leaf', item });
     }
-    // Otherwise child is consumed by its inline-agent group above.
+    // Otherwise child is consumed by its subagent group above.
   }
 
   return roots;

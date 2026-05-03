@@ -806,23 +806,38 @@ func (s *Session) dispatchLine(line []byte) {
 		// EventSubagentNotification so the triage pass-through emits a
 		// `provider:subagent_notification` event for the frontend
 		// tray / subagent UI to surface.
-		if msg.Method == "item/completed" {
-			if notifications := extractSubagentNotificationsFromUserMessage(msg.Params); len(notifications) > 0 {
-				for _, n := range notifications {
-					parentItemID := s.parentToolUseForAgentPath(n.AgentPath)
-					s.onEvent(provider.ProviderEvent{
-						Kind:      provider.EventSubagentNotification,
-						ThreadID:  s.threadID,
-						ItemID:    parentItemID,
-						Meta:      buildSubagentNotificationMeta(n),
-						Timestamp: time.Now(),
-					})
+		suppressSubagentNotificationCarrier := false
+		if msg.Method == "item/completed" && hasProviderEventKind(events, provider.EventUserText) {
+			if notifications, remainder := extractSubagentNotificationsAndRemainderFromUserMessage(msg.Params); len(notifications) > 0 {
+				// Codex-injected subagent notifications are standalone
+				// contextual user fragments. If a tag appears inside
+				// ordinary user prose, treat it as literal text rather
+				// than a forgeable control message.
+				suppressSubagentNotificationCarrier = strings.TrimSpace(remainder) == "" &&
+					s.allSubagentNotificationsResolveToParent(notifications)
+				if suppressSubagentNotificationCarrier {
+					for _, n := range notifications {
+						parentItemID := s.parentToolUseForAgentPath(n.AgentPath)
+						if parentItemID == "" {
+							parentItemID = s.parentToolUseForProviderThread(n.AgentPath)
+						}
+						s.onEvent(provider.ProviderEvent{
+							Kind:      provider.EventSubagentNotification,
+							ThreadID:  s.threadID,
+							ItemID:    parentItemID,
+							Meta:      buildSubagentNotificationMeta(n),
+							Timestamp: time.Now(),
+						})
+					}
 				}
 			}
 		}
 
 		for i := range events {
 			evt := &events[i]
+			if suppressSubagentNotificationCarrier && evt.Kind == provider.EventUserText {
+				continue
+			}
 			if parentToolUseID != "" {
 				evt.ParentToolUseID = parentToolUseID
 			}
@@ -863,6 +878,31 @@ func (s *Session) dispatchLine(line []byte) {
 		}
 		return
 	}
+}
+
+func (s *Session) allSubagentNotificationsResolveToParent(notifications []subagentNotification) bool {
+	if len(notifications) == 0 {
+		return false
+	}
+	for _, notification := range notifications {
+		if s.parentToolUseForAgentPath(notification.AgentPath) != "" {
+			continue
+		}
+		if s.parentToolUseForProviderThread(notification.AgentPath) != "" {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func hasProviderEventKind(events []provider.ProviderEvent, kind provider.EventKind) bool {
+	for i := range events {
+		if events[i].Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Session) classifyNotificationWithBufferedPlan(method string, params json.RawMessage) []provider.ProviderEvent {

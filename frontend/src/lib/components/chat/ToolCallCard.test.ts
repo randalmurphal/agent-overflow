@@ -780,7 +780,7 @@ describe("<ToolCallCard> backgrounded status label", () => {
     expect(queryByTestId("tool-call-backgrounded-badge")).toBeNull();
   });
 
-  it('shows "…" for backgrounded Codex subagent launches too', async () => {
+  it('does not show "…" for Codex subagent launch history rows', async () => {
     const pane = await buildPane();
     const item = makeItem({
       id: "spawn-bg",
@@ -791,9 +791,10 @@ describe("<ToolCallCard> backgrounded status label", () => {
       isBackground: true,
     });
 
-    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+    const { queryByTestId, getByTestId } = render(ToolCallCard, { props: { pane, item } });
 
-    expect(getByTestId("tool-call-card-status").textContent?.trim()).toBe("…");
+    expect(queryByTestId("tool-call-card-status")).toBeNull();
+    expect(getByTestId("tool-call-card-duration").textContent?.trim()).toBe("");
   });
 
   it('renders the Bash command label when !isBackground && status === "running"', async () => {

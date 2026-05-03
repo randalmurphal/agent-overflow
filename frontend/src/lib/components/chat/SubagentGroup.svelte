@@ -24,9 +24,9 @@
   //   - per-subagent model is read from `parent.meta.subagent_model`,
   //     stamped by the Claude parser on the first subagent assistant
   //     envelope.
-  // Status visualization (running affordance, CompletionBadge, `…`
-  // background chip) is byte-for-byte the same as a regular tool call —
-  // we deliberately do not invent new badges.
+  // Status visualization generally mirrors a regular tool call. Codex
+  // spawn_agent groups are the exception: the tray carries their running
+  // process state, so the transcript header stays informational.
 
   import type { Snippet } from 'svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
@@ -38,6 +38,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { SubagentGroupNode, TimelineNode } from '../../utils/subagentGrouping';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
+  import { codexSubagentLaunchInfo, isCodexSubagentLaunchItem } from '../../utils/subagentLaunch';
 
   let {
     pane,
@@ -100,6 +101,10 @@
   let parent = $derived(group.parent);
   let parentMeta = $derived(parseJsonObject(parent.meta));
   let payloadMeta = $derived(parseJsonObject(parent.payloadMeta));
+  let isCodexSubagentLaunch = $derived(isCodexSubagentLaunchItem(parent));
+  let codexLaunchInfo = $derived.by(() => (
+    isCodexSubagentLaunch ? codexSubagentLaunchInfo(parent) : null
+  ));
 
   // Tool input lives in payloadMeta.input under both providers
   // (`marshalToolMeta` for Claude; Codex's `enrichItemMeta` puts the
@@ -119,16 +124,14 @@
   }
 
   // Title-cased label. Claude `Agent` uses `subagent_type` (e.g.
-  // "Explore"); Codex `collab_agent` uses the wire `tool` value
-  // (e.g. "spawnAgent"). Either way, fall back to "Agent" / "Subagent"
-  // so the row never renders an empty label.
+  // "Explore"); Codex spawn_agent rows use the normalized spawn title
+  // ("Spawned <agent>"). Either way, fall back so the row never renders
+  // an empty label.
   let label = $derived.by<string>(() => {
+    if (isCodexSubagentLaunch) return codexLaunchInfo?.title ?? 'Spawned agent';
     const toolName = (parent.toolName ?? '').trim();
     if (toolName === 'Agent') {
       return titleCase(readString(inputObject, 'subagent_type') || 'Agent');
-    }
-    if (toolName === 'collab_agent') {
-      return 'Spawned';
     }
     // Defensive: any other tool that nonetheless declared children
     // (rare but possible if the provider tags parent_tool_use_id
@@ -156,6 +159,7 @@
   //      window before the first subagent assistant message lands.
   //   3. omitted otherwise.
   let modelLabel = $derived.by<string>(() => {
+    if (isCodexSubagentLaunch) return codexLaunchInfo?.modelAffix ?? '';
     if ((parent.toolName ?? '') !== 'Agent') return '';
     const stamped = typeof parentMeta?.subagent_model === 'string' ? parentMeta.subagent_model : '';
     if (stamped) return displayModelLabel('claude', stamped);
@@ -167,6 +171,7 @@
   // Description stays on the first header line. The latest-action row below
   // is always present and swaps from "Initializing..." once child work lands.
   let inputDescription = $derived.by<string>(() => {
+    if (isCodexSubagentLaunch) return '';
     const desc = readString(inputObject, 'description');
     if (desc) return desc;
     const prompt = readString(inputObject, 'prompt');
@@ -175,6 +180,11 @@
   });
 
   let previewText = $derived.by<string>(() => {
+    if (isCodexSubagentLaunch) {
+      const prompt = codexLaunchInfo?.prompt ?? '';
+      if (prompt.length === 0) return '';
+      return prompt.length > 160 ? `${prompt.slice(0, 160).trimEnd()}...` : prompt;
+    }
     return group.latestChildSummary || 'Initializing...';
   });
 
@@ -183,8 +193,8 @@
   let isBackgroundedLaunch = $derived(
     parent.kind === 'tool_call' && parent.isBackground === true,
   );
-
   let runningLabel = $derived.by<string | null>(() => {
+    if (isCodexSubagentLaunch) return null;
     if (isBackgroundedLaunch) return '…';
     if (parent.status === 'running' || parent.status === 'streaming') return 'running';
     return null;
@@ -201,6 +211,7 @@
   });
 
   let elapsedLabel = $derived.by<string>(() => {
+    if (isCodexSubagentLaunch) return '';
     const start = parent.createdAt;
     if (!Number.isFinite(start) || start <= 0) return '';
     const end = runningLabel !== null ? now : parent.updatedAt;
@@ -251,7 +262,8 @@
       <span class="min-w-0 flex-1">
         <span class="flex min-w-0 items-center gap-2">
           <span
-            class="text-[11px] font-medium text-fg-muted shrink-0 uppercase tracking-[0.04em]"
+            class="text-[11px] font-medium text-fg-muted shrink-0 tracking-[0.04em]"
+            class:uppercase={!isCodexSubagentLaunch}
             data-testid="subagent-group-label"
           >
             {label}{#if modelLabel}<span class="ml-1 text-fg-hint normal-case tracking-normal">({modelLabel})</span>{/if}
@@ -335,6 +347,14 @@
         aria-label="Subagent Timeline"
         data-testid="subagent-group-body"
       >
+        {#if isCodexSubagentLaunch && codexLaunchInfo?.prompt}
+          <div
+            class="mb-2 rounded-[var(--radius-control)] bg-surface-1/35 px-2 py-1.5 text-[11px] leading-relaxed text-fg-subtle"
+            data-testid="codex-subagent-full-prompt"
+          >
+            {codexLaunchInfo.prompt}
+          </div>
+        {/if}
         {#if group.children.length === 0}
           <p class="text-xs text-text-secondary italic">No child entries captured.</p>
         {:else}

@@ -159,7 +159,7 @@ describe('groupItemsBySubagent', () => {
     expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['parent', 'child']);
   });
 
-  it('keeps backgrounded Claude agents and Codex spawn_agent rows flat', () => {
+  it('keeps backgrounded Claude agents flat but renders Codex spawn rows as subagent groups', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'background-agent',
@@ -173,15 +173,139 @@ describe('groupItemsBySubagent', () => {
         id: 'codex-agent',
         itemIndex: 1,
         kind: 'tool_call',
-        toolName: 'spawn_agent',
-        meta: toolMeta({ toolName: 'spawn_agent' }),
+        toolName: 'collab_agent',
+        isBackground: true,
+        meta: toolMeta({ toolName: 'collab_agent', input: { tool: 'spawn_agent' } }),
       }),
     ]);
 
-    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual([
-      'background-agent',
-      'codex-agent',
+    expect(expectLeaf(nodes[0]).item.id).toBe('background-agent');
+    const group = expectGroup(nodes[1]);
+    expect(group.parent.id).toBe('codex-agent');
+    expect(group.groupKey).toBe('item:codex-agent:codex-agent');
+    expect(group.children).toEqual([]);
+  });
+
+  it('recognizes Codex spawn metadata from meta when payloadMeta has no input', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'codex-agent',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'collab_agent',
+        payloadMeta: toolMeta({ lineCount: 1 }),
+        meta: toolMeta({ toolName: 'collab_agent', input: { tool: 'spawn_agent' } }),
+      }),
     ]);
+
+    expect(expectGroup(nodes[0]).parent.id).toBe('codex-agent');
+  });
+
+  it('uses the parent spawn prompt as Codex dropdown metadata instead of a child user row', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'codex-agent',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'collab_agent',
+        isBackground: true,
+        meta: toolMeta({ toolName: 'collab_agent', input: { tool: 'spawn_agent', prompt: 'Inspect the parser' } }),
+      }),
+      mkItem({
+        id: 'child-prompt',
+        itemIndex: 1,
+        kind: 'user_text',
+        role: 'user',
+        parentId: 'codex-agent',
+        summary: 'Inspect the parser',
+      }),
+    ]);
+
+    expect(nodes).toHaveLength(1);
+    const group = expectGroup(nodes[0]);
+    expect(group.parent.id).toBe('codex-agent');
+    expect(group.children).toEqual([]);
+    expect(group.latestChildSummary).toBe('');
+  });
+
+  it('only hides the first Codex spawn prompt echo per parent', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'codex-agent',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'collab_agent',
+        isBackground: true,
+        meta: toolMeta({ toolName: 'collab_agent', input: { tool: 'spawn_agent', prompt: 'Repeatable prompt' } }),
+      }),
+      mkItem({
+        id: 'initial-prompt-echo',
+        itemIndex: 1,
+        kind: 'user_text',
+        role: 'user',
+        parentId: 'codex-agent',
+        summary: 'Repeatable prompt',
+      }),
+      mkItem({
+        id: 'later-repeated-message',
+        itemIndex: 2,
+        kind: 'user_text',
+        role: 'user',
+        parentId: 'codex-agent',
+        summary: 'Repeatable prompt',
+      }),
+    ]);
+
+    const group = expectGroup(nodes[0]);
+    expect(group.children.map((node) => timelineNodeItemId(node))).toEqual([
+      'later-repeated-message',
+    ]);
+  });
+
+  it('hides Codex wait carriers when a target subagent completion uses the same payload', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'complete-wait-1',
+        itemIndex: 0,
+        kind: 'tool_completion',
+        toolName: 'wait_agent',
+        completionOf: 'wait-1',
+        payloadId: 'payload-final',
+        payloadKind: 'tool_call_result',
+      }),
+      mkItem({
+        id: 'complete-spawn-1',
+        itemIndex: 1,
+        kind: 'tool_completion',
+        toolName: 'collab_agent',
+        completionOf: 'spawn-1',
+        payloadId: 'payload-final',
+        payloadKind: 'tool_call_result',
+      }),
+    ]);
+
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['complete-spawn-1']);
+  });
+
+  it('hides terminal wait carriers when a target command completion resolves the same process', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'waited-pid-1',
+        itemIndex: 0,
+        kind: 'terminal_interaction',
+        meta: JSON.stringify({ process_id: 'pid-1' }),
+      }),
+      mkItem({
+        id: 'complete-cmd-1',
+        itemIndex: 1,
+        kind: 'tool_completion',
+        toolName: 'command_execution',
+        completionOf: 'cmd-1',
+        meta: JSON.stringify({ process_id: 'pid-1' }),
+      }),
+    ]);
+
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['complete-cmd-1']);
   });
 
   it('keeps foreground Agent-named rows flat without the inline marker', () => {

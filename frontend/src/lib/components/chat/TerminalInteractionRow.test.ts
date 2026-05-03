@@ -52,7 +52,7 @@ describe('<TerminalInteractionRow>', () => {
     expect(row.className).toContain('text-fg-subtle');
   });
 
-  it('renders attached command output when the wait row carries a command payload', () => {
+  it('renders attached command output as the primary command row', () => {
     const item = makeItem({
       payloadKind: 'command_output',
       payloadId: 'command-output:waited:pid-42:0:0',
@@ -63,8 +63,10 @@ describe('<TerminalInteractionRow>', () => {
         preview: 'done\n',
       }),
     });
-    const { getByRole, getByTestId } = render(TerminalInteractionRow, { props: { item } });
+    const { getByRole, getByTestId, queryByTestId } = render(TerminalInteractionRow, { props: { item } });
 
+    expect(queryByTestId('terminal-interaction-row')).toBeNull();
+    expect(getByTestId('command-output-row')).toBeInTheDocument();
     const toggle = getByRole('button', { name: /Toggle command output: sleep 1; echo done/i });
     expect(toggle.textContent).toContain('sleep 1; echo done');
     // exit-code text is gone; the unified completion badge carries the

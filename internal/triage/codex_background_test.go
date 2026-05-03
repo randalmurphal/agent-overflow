@@ -210,11 +210,11 @@ func TestCodexLiveCommandOutputIsBounded(t *testing.T) {
 		t.Fatalf("terminal interaction: %v", err)
 	}
 
-	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
-	if len(waits) != 1 {
-		t.Fatalf("wait rows = %d, want 1", len(waits))
+	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("cmd-bg"))
+	if err != nil || !found {
+		t.Fatalf("command completion missing: found=%v err=%v", found, err)
 	}
-	data, err := st.GetPayloadData(waits[0].PayloadID)
+	data, err := st.GetPayloadData(completion.PayloadID)
 	if err != nil {
 		t.Fatalf("payload data: %v", err)
 	}
@@ -317,20 +317,22 @@ func TestCodexTerminalInteractionAttachesCompletedOutputAndClearsTray(t *testing
 		t.Fatalf("terminal interaction: %v", err)
 	}
 
-	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
-	if len(waits) != 1 {
-		t.Fatalf("wait rows = %d, want 1", len(waits))
+	if waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction)); len(waits) != 0 {
+		t.Fatalf("completion wait should render as command completion, got wait rows %+v", waits)
 	}
-	wait := waits[0]
-	if wait.PayloadKind != "command_output" {
-		t.Fatalf("wait payload kind = %q, want command_output", wait.PayloadKind)
+	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("cmd-bg"))
+	if err != nil || !found {
+		t.Fatalf("command completion missing: found=%v err=%v", found, err)
 	}
-	data, err := st.GetPayloadData(wait.PayloadID)
+	if completion.PayloadKind != "command_output" {
+		t.Fatalf("completion payload kind = %q, want command_output", completion.PayloadKind)
+	}
+	data, err := st.GetPayloadData(completion.PayloadID)
 	if err != nil {
-		t.Fatalf("wait payload data: %v", err)
+		t.Fatalf("completion payload data: %v", err)
 	}
 	if string(data) != "done\n" {
-		t.Fatalf("wait payload = %q, want done newline", string(data))
+		t.Fatalf("completion payload = %q, want done newline", string(data))
 	}
 	live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
 	if len(live) != 0 {
@@ -384,18 +386,22 @@ func TestCodexTerminalInteractionWhileRunningAttachesCompletionBeforeNextText(t 
 	if len(waits) != 1 {
 		t.Fatalf("wait rows = %d, want 1", len(waits))
 	}
-	if waits[0].PayloadID == "" {
-		t.Fatalf("wait row missing command payload")
+	if waits[0].PayloadID != "" {
+		t.Fatalf("wait row should stay a marker; got payload %q", waits[0].PayloadID)
 	}
-	if waits[0].PayloadKind != "command_output" {
-		t.Fatalf("wait payload kind = %q, want command_output", waits[0].PayloadKind)
+	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("cmd-bg"))
+	if err != nil || !found {
+		t.Fatalf("command completion missing: found=%v err=%v", found, err)
 	}
-	data, err := st.GetPayloadData(waits[0].PayloadID)
+	if completion.PayloadKind != "command_output" {
+		t.Fatalf("completion payload kind = %q, want command_output", completion.PayloadKind)
+	}
+	data, err := st.GetPayloadData(completion.PayloadID)
 	if err != nil {
-		t.Fatalf("wait payload data: %v", err)
+		t.Fatalf("completion payload data: %v", err)
 	}
 	if string(data) != "late\n" {
-		t.Fatalf("wait payload = %q, want late newline", string(data))
+		t.Fatalf("completion payload = %q, want late newline", string(data))
 	}
 	live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
 	if len(live) != 0 {
@@ -537,18 +543,25 @@ func TestCodexTerminalInteractionDoesNotAttachAfterLaterToolStart(t *testing.T) 
 		t.Fatalf("second terminal interaction: %v", err)
 	}
 	waits = findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
-	if len(waits) != 2 {
-		t.Fatalf("wait rows after second poll = %d, want 2", len(waits))
+	if len(waits) != 1 {
+		t.Fatalf("wait rows after second poll = %d, want 1 stale marker", len(waits))
 	}
-	if waits[1].PayloadKind != "command_output" {
-		t.Fatalf("second wait payload kind = %q, want command_output", waits[1].PayloadKind)
+	if waits[0].PayloadID != "" {
+		t.Fatalf("stale wait row was mutated with payload %q", waits[0].PayloadID)
 	}
-	data, err := st.GetPayloadData(waits[1].PayloadID)
+	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("cmd-bg"))
+	if err != nil || !found {
+		t.Fatalf("command completion missing: found=%v err=%v", found, err)
+	}
+	if completion.PayloadKind != "command_output" {
+		t.Fatalf("completion payload kind = %q, want command_output", completion.PayloadKind)
+	}
+	data, err := st.GetPayloadData(completion.PayloadID)
 	if err != nil {
-		t.Fatalf("second wait payload data: %v", err)
+		t.Fatalf("completion payload data: %v", err)
 	}
 	if string(data) != "late failure\n" {
-		t.Fatalf("second wait payload = %q, want late failure newline", string(data))
+		t.Fatalf("completion payload = %q, want late failure newline", string(data))
 	}
 }
 
@@ -598,15 +611,22 @@ func TestCodexTerminalInteractionAttachesWhenProcessIDArrivesOnCompletion(t *tes
 	if len(waits) != 1 {
 		t.Fatalf("wait rows = %d, want 1", len(waits))
 	}
-	if waits[0].PayloadKind != "command_output" {
-		t.Fatalf("wait payload kind = %q, want command_output", waits[0].PayloadKind)
+	if waits[0].PayloadID != "" {
+		t.Fatalf("wait row should stay a marker; got payload %q", waits[0].PayloadID)
 	}
-	data, err := st.GetPayloadData(waits[0].PayloadID)
+	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("cmd-bg"))
+	if err != nil || !found {
+		t.Fatalf("command completion missing: found=%v err=%v", found, err)
+	}
+	if completion.PayloadKind != "command_output" {
+		t.Fatalf("completion payload kind = %q, want command_output", completion.PayloadKind)
+	}
+	data, err := st.GetPayloadData(completion.PayloadID)
 	if err != nil {
-		t.Fatalf("wait payload data: %v", err)
+		t.Fatalf("completion payload data: %v", err)
 	}
 	if string(data) != "late pid\n" {
-		t.Fatalf("wait payload = %q, want late pid newline", string(data))
+		t.Fatalf("completion payload = %q, want late pid newline", string(data))
 	}
 }
 
@@ -787,6 +807,82 @@ func TestCodexSubagentWaitCompletionCarriesFinalOutputPayload(t *testing.T) {
 	}
 	if string(data) != "Final child output" {
 		t.Fatalf("payload = %q, want final child output", string(data))
+	}
+}
+
+func TestCodexSubagentWaitCompletionReusesPayloadForOutOfOrderChildren(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	if err := st.UpdateProvider("t1", "codex"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildCollabAgentMetaWithMessage(t, "collab_agent", "spawn_agent", "child-b", "running", "")
+	var spawn map[string]any
+	if err := json.Unmarshal(spawnMeta, &spawn); err != nil {
+		t.Fatalf("spawn meta unmarshal: %v", err)
+	}
+	input := spawn["input"].(map[string]any)
+	input["receiverThreadIds"] = []string{"child-b", "child-a"}
+	agents := input["agentsStates"].(map[string]any)
+	agents["child-a"] = map[string]any{"status": "running"}
+	spawnMeta, _ = json.Marshal(spawn)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-multi",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-multi",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+
+	waitMeta := buildCollabAgentMetaWithMessage(t, "wait_agent", "wait_agent", "child-a", "completed", "A done")
+	var wait map[string]any
+	if err := json.Unmarshal(waitMeta, &wait); err != nil {
+		t.Fatalf("wait meta unmarshal: %v", err)
+	}
+	waitInput := wait["input"].(map[string]any)
+	waitInput["receiverThreadIds"] = []string{"child-a", "child-b"}
+	waitInput["agentsStates"] = map[string]any{
+		"child-a": map[string]any{"status": "completed", "message": "A done"},
+		"child-b": map[string]any{"status": "completed", "message": "B done"},
+	}
+	waitMeta, _ = json.Marshal(wait)
+	content := "Agent child-a (completed):\nA done\n\nAgent child-b (completed):\nB done"
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "wait-multi",
+		ItemType: "wait_agent", TurnID: "turn-0", Meta: waitMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("wait start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "wait-multi",
+		ItemType: "wait_agent", TurnID: "turn-0", Content: content,
+		Meta: waitMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("wait complete: %v", err)
+	}
+
+	waitRow, found, err := st.GetThreadItem("t1", nextToolCompletionID("wait-multi"))
+	if err != nil || !found {
+		t.Fatalf("wait row missing: found=%v err=%v", found, err)
+	}
+	subagentSibling, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-multi"))
+	if err != nil || !found {
+		t.Fatalf("subagent sibling missing: found=%v err=%v", found, err)
+	}
+	if subagentSibling.PayloadID != waitRow.PayloadID {
+		t.Fatalf("sibling payload id = %q, want shared wait payload %q", subagentSibling.PayloadID, waitRow.PayloadID)
 	}
 }
 

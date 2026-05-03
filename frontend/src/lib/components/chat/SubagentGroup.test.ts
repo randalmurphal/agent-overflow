@@ -65,7 +65,11 @@ interface AgentParentInput {
   prompt?: string;
   subagent_type?: string;
   model?: string;
+  reasoningEffort?: string;
   tool?: string;
+  receiverThreadIds?: string[];
+  newAgentNickname?: string;
+  newAgentRole?: string;
 }
 
 interface AgentParentOverrides {
@@ -469,17 +473,44 @@ describe('<SubagentGroup>', () => {
     expect(queryByTestId('leaf')).toBeNull();
   });
 
-  it('renders Codex collab_agent with title-cased tool label and prompt preview', () => {
+  it('renders Codex spawn_agent as a stable spawned-agent row with prompt preview', async () => {
     const group = mkGroup({
       parentId: 'codex-1',
       parentItem: mkAgentParent('codex-1', {
         toolName: 'collab_agent',
-        input: { tool: 'spawnAgent', prompt: 'Audit the new feature flags rollout' },
+        input: {
+          tool: 'spawnAgent',
+          prompt: 'Audit the new feature flags rollout',
+          model: 'gpt-5.5',
+          reasoningEffort: 'high',
+          receiverThreadIds: ['child-1'],
+          newAgentNickname: 'Galileo',
+          newAgentRole: 'explorer',
+        },
       }),
     });
-    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group } });
-    expect(getByTestId('subagent-group-label').textContent).toContain('Spawned');
-    expect(getByTestId('subagent-group-description').textContent).toContain('Audit the new feature flags rollout');
-    expect(getByTestId('subagent-group-preview').textContent).toContain('Initializing...');
+    const { getByTestId, queryByTestId } = render(SubagentGroupTestHarness, { props: { group } });
+    expect(getByTestId('subagent-group-label').textContent).toContain('Spawned Galileo [explorer](gpt-5.5 high)');
+    expect(queryByTestId('subagent-group-description')).toBeNull();
+    expect(getByTestId('subagent-group-preview').textContent).toContain('Audit the new feature flags rollout');
+
+    await fireEvent.click(getByTestId('subagent-group-toggle'));
+    expect(getByTestId('codex-subagent-full-prompt').textContent).toContain('Audit the new feature flags rollout');
+  });
+
+  it('omits the background ellipsis and timer for Codex spawned-agent history rows', () => {
+    const group = mkGroup({
+      parentId: 'codex-1',
+      parentItem: mkAgentParent('codex-1', {
+        toolName: 'collab_agent',
+        status: 'running',
+        isBackground: true,
+        input: { tool: 'spawnAgent', prompt: 'Audit the parser' },
+      }),
+    });
+    const { queryByTestId, getByTestId } = render(SubagentGroupTestHarness, { props: { group } });
+
+    expect(queryByTestId('subagent-group-status')).toBeNull();
+    expect(getByTestId('subagent-group-duration').textContent?.trim()).toBe('');
   });
 });

@@ -210,6 +210,66 @@ func TestHandleUserText_NoPending_PersistsWireOnlyRow(t *testing.T) {
 	}
 }
 
+func TestHandleUserText_NoPending_SubagentPromptPersistsUnderParent(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 2)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:            provider.EventUserText,
+		ThreadID:        "t1",
+		Content:         "Inspect the parser",
+		ParentToolUseID: "spawn-1",
+		Meta:            json.RawMessage(`{"provider_item_id":"child_prompt_1"}`),
+		Timestamp:       time.UnixMilli(1_700_000_000_000),
+	}); err != nil {
+		t.Fatalf("Handle EventUserText: %v", err)
+	}
+
+	persisted, found, err := st.GetThreadItem("t1", "user:wire:child_prompt_1")
+	if err != nil || !found {
+		t.Fatalf("expected subagent prompt row to exist: found=%v err=%v", found, err)
+	}
+	if persisted.ParentID != "spawn-1" {
+		t.Fatalf("ParentID = %q, want spawn-1", persisted.ParentID)
+	}
+}
+
+func TestHandleUserText_SubagentPromptDoesNotConsumePendingSend(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 2)
+	router.RegisterPendingSend("t1", "user:2", 2)
+	seedUserTextRow(t, st, "t1", 2, "top-level prompt", "")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:            provider.EventUserText,
+		ThreadID:        "t1",
+		Content:         "Inspect the parser",
+		ParentToolUseID: "spawn-1",
+		Meta:            json.RawMessage(`{"provider_item_id":"child_prompt_1"}`),
+		Timestamp:       time.UnixMilli(1_700_000_000_000),
+	}); err != nil {
+		t.Fatalf("Handle child EventUserText: %v", err)
+	}
+
+	child, found, err := st.GetThreadItem("t1", "user:wire:child_prompt_1")
+	if err != nil || !found {
+		t.Fatalf("expected subagent prompt row to exist: found=%v err=%v", found, err)
+	}
+	if child.ParentID != "spawn-1" {
+		t.Fatalf("child ParentID = %q, want spawn-1", child.ParentID)
+	}
+
+	pending, ok := router.consumePendingSendHead("t1")
+	if !ok {
+		t.Fatalf("pending send was consumed by child prompt")
+	}
+	if pending.AOItemID != "user:2" {
+		t.Fatalf("pending AOItemID = %q, want user:2", pending.AOItemID)
+	}
+}
+
 func TestHandleUserText_NoPending_DedupsRepeatedProviderItemID(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

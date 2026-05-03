@@ -103,19 +103,31 @@ describe('isCodexSubagentTask', () => {
   it('detects Codex subagent rows by toolName=collab_agent on the launch', () => {
     expect(
       isCodexSubagentTask(makeTrayTask({
-        launch: makeItem({ id: 'L', toolName: 'collab_agent' }),
+        launch: makeItem({
+          id: 'L',
+          toolName: 'collab_agent',
+          meta: JSON.stringify({ input: { tool: 'spawn_agent' } }),
+        }),
       })),
     ).toBe(true);
   });
 
-  it('falls back to the completion toolName when launch is null (orphan completion)', () => {
+  it('does not classify orphan completions as launch-only Codex subagent tasks', () => {
+    const completion = makeItem({
+      id: 'C',
+      kind: 'tool_completion',
+      toolName: 'collab_agent',
+      completionOf: 'L',
+      status: 'completed',
+    });
+
     expect(
       isCodexSubagentTask(makeTrayTask({
         launch: null,
-        completion: makeItem({ id: 'C', toolName: 'collab_agent', status: 'completed' }),
-        anchor: makeItem({ id: 'C', toolName: 'collab_agent', status: 'completed' }),
+        completion,
+        anchor: completion,
       })),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('returns false for unifiedExec rows (no toolName, or other Codex tools)', () => {
@@ -163,7 +175,12 @@ describe('isCodexStoppableTask', () => {
   it('returns false for Codex subagents even when they are background rows', () => {
     expect(
       isCodexStoppableTask(makeTrayTask({
-        launch: makeItem({ id: 'agent', isBackground: true, toolName: 'collab_agent' }),
+        launch: makeItem({
+          id: 'agent',
+          isBackground: true,
+          toolName: 'collab_agent',
+          meta: JSON.stringify({ input: { tool: 'spawn_agent' } }),
+        }),
       })),
     ).toBe(false);
   });

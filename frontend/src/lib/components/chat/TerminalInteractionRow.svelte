@@ -31,23 +31,33 @@
    */
 </script>
 
-<div class="mb-1.5">
-  <div
-    class="flex items-center gap-1.5 px-2 py-1 text-[11px] italic text-fg-subtle"
-    data-testid="terminal-interaction-row"
-  >
-    <Icon icon={Timer} size={11} strokeWidth={2} class="opacity-70 shrink-0" />
-    <span>{rowLabel}</span>
-  </div>
-  {#if shouldRenderCommandShell}
-    <div class="ml-5">
-      <CommandOutput
-        {pane}
-        item={item}
-        meta={commandOutputMeta}
-        payloadId={item.payloadId}
-        showCompletionBadge={Boolean(item.payloadId)}
-      />
+{#if item.payloadKind === 'command_output'}
+  <CommandOutput
+    {pane}
+    item={item}
+    meta={commandOutputMeta}
+    payloadId={item.payloadId}
+    showCompletionBadge={Boolean(item.payloadId)}
+  />
+{:else}
+  <div class="mb-1.5">
+    <div
+      class="flex items-center gap-1.5 px-2 py-1 text-[11px] italic text-fg-subtle"
+      data-testid="terminal-interaction-row"
+    >
+      <Icon icon={Timer} size={11} strokeWidth={2} class="opacity-70 shrink-0" />
+      <span>{rowLabel}</span>
     </div>
-  {/if}
-</div>
+    {#if shouldRenderCommandShell}
+      <div class="ml-5">
+        <CommandOutput
+          {pane}
+          item={item}
+          meta={commandOutputMeta}
+          payloadId={item.payloadId}
+          showCompletionBadge={Boolean(item.payloadId)}
+        />
+      </div>
+    {/if}
+  </div>
+{/if}

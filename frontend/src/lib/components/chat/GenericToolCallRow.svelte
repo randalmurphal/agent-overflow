@@ -19,6 +19,7 @@
   import EditorLink from '../common/EditorLink.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
+  import { isCodexSubagentLaunchItem } from '../../utils/subagentLaunch';
 
   // Threshold (ms) at which the running row starts displaying elapsed
   // time in the duration slot. Sub-2s tools (most Read/Edit/Write/etc.)
@@ -76,16 +77,17 @@
     return null;
   });
 
-  // Backgrounded launch rows are stable transcript records — they keep
-  // the `…` affordance for the lifetime of the row regardless of any
-  // status drift. The actual completion lands as a sibling
-  // tool_completion row that runs through `deriveCompletionStatus` and
-  // renders the unified badge.
+  // Backgrounded launch rows are stable transcript records. Regular
+  // backgrounded tools keep the `…` affordance for the lifetime of the
+  // row; Codex spawn_agent rows are informational child-thread markers,
+  // so their running state lives in the tray instead.
   let isBackgroundedLaunch = $derived(
     item.kind === 'tool_call' && item.isBackground === true,
   );
+  let isCodexSubagentLaunch = $derived(isCodexSubagentLaunchItem(item));
 
   let runningLabel = $derived.by<string | null>(() => {
+    if (isCodexSubagentLaunch) return null;
     if (isBackgroundedLaunch) return '…';
     if (item.status === 'running' || item.status === 'streaming') return 'running';
     return null;

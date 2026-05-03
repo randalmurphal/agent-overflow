@@ -143,7 +143,7 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 
 	// item/completed for the unifiedExec arrives "eventually" after the
 	// command exits. Backgrounded Codex completions update the live tray;
-	// they do not synthesize transcript siblings.
+	// transcript history is written only once the model explicitly polls.
 	completeMeta, _ := json.Marshal(map[string]any{
 		"source":      "unifiedExecStartup",
 		"item_status": "completed",
@@ -178,18 +178,22 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 		t.Fatalf("terminal interaction: %v", err)
 	}
 	waits := findItemsByKindE2E(t, app.store, thread.ID, string(provider.ItemTerminalInteraction))
-	if len(waits) != 1 {
-		t.Fatalf("wait rows = %d, want 1", len(waits))
+	if len(waits) != 0 {
+		t.Fatalf("completed poll should render as command completion, got wait rows %+v", waits)
 	}
-	if waits[0].PayloadKind != "command_output" {
-		t.Fatalf("wait payload kind = %q, want command_output", waits[0].PayloadKind)
+	completion, found, err := app.store.GetThreadItem(thread.ID, "complete:cmd-e2e")
+	if err != nil || !found {
+		t.Fatalf("command completion missing: found=%v err=%v", found, err)
 	}
-	data, err := app.store.GetPayloadData(waits[0].PayloadID)
+	if completion.PayloadKind != "command_output" {
+		t.Fatalf("completion payload kind = %q, want command_output", completion.PayloadKind)
+	}
+	data, err := app.store.GetPayloadData(completion.PayloadID)
 	if err != nil {
-		t.Fatalf("wait payload: %v", err)
+		t.Fatalf("completion payload: %v", err)
 	}
 	if string(data) != "server ready\n" {
-		t.Fatalf("wait payload = %q, want server ready newline", string(data))
+		t.Fatalf("completion payload = %q, want server ready newline", string(data))
 	}
 }
 

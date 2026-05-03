@@ -209,6 +209,18 @@ func TestClassifyItemCompleted_UserMessage_EmitsEventUserText(t *testing.T) {
 	}
 }
 
+func TestClassifyItemCompleted_UserMessage_SubagentNotificationStillEmitsUserText(t *testing.T) {
+	params := `{"turnId":"turn-9","item":{"id":"item-subagent-note","type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_path\":\"child-1\",\"status\":\"completed\"}</subagent_notification>"}]}}`
+	events := ClassifyNotification("thread-1", "item/completed", json.RawMessage(params))
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 user text event before session-level carrier suppression, got %d: %+v", len(events), events)
+	}
+	if events[0].Kind != provider.EventUserText {
+		t.Fatalf("event kind = %v, want EventUserText", events[0].Kind)
+	}
+}
+
 // TestClassifyItemCompleted_UserMessage_StringContent covers the
 // defensive secondary shape — `content` as a plain string. Real
 // Codex captures haven't shown this for userMessage, but the wire
@@ -469,7 +481,7 @@ func TestReadTopLevelBool(t *testing.T) {
 }
 
 func TestClassifyNotification_CollabSpawnUsesCollabAgentType(t *testing.T) {
-	params := json.RawMessage(`{"item":{"id":"call-1","type":"collabAgentToolCall","tool":"spawnAgent","prompt":"Refactor auth","receiverThreadIds":["child-1"],"status":"completed"}}`)
+	params := json.RawMessage(`{"item":{"id":"call-1","type":"collabAgentToolCall","tool":"spawnAgent","prompt":"Refactor auth","receiverThreadIds":["child-1"],"newAgentNickname":"Galileo","newAgentRole":"explorer","status":"completed"}}`)
 	events := ClassifyNotification("t1", "item/completed", params)
 
 	if len(events) != 1 {
@@ -492,6 +504,9 @@ func TestClassifyNotification_CollabSpawnUsesCollabAgentType(t *testing.T) {
 	}
 	if input["prompt"] != "Refactor auth" {
 		t.Fatalf("prompt: got %v, want %q", input["prompt"], "Refactor auth")
+	}
+	if input["newAgentNickname"] != "Galileo" || input["newAgentRole"] != "explorer" {
+		t.Fatalf("agent metadata not surfaced: %+v", input)
 	}
 }
 

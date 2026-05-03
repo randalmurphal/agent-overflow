@@ -24,7 +24,9 @@ import (
 //     "Interacted with background terminal" marker, but never persist
 //     stdin bytes because interactive input can contain secrets.
 //
-// Completed command output can attach to either marker as a payload.
+// Completed command output observed by an empty poll is persisted as the
+// command completion row. Interactive markers can still carry completed
+// output payloads for legacy/non-poll signals.
 
 // terminalInteractionMeta is the Meta shape populated by
 // buildTerminalInteractionMeta in the Codex parser. Only the fields we
@@ -44,8 +46,10 @@ func decodeTerminalInteractionMeta(raw json.RawMessage) terminalInteractionMeta 
 }
 
 // handleTerminalInteraction routes Codex's `TerminalInteractionNotification`
-// events. Both polling and interactive variants persist timeline rows; the
-// interactive variant records only `has_stdin` and never stores stdin text.
+// events. Polling variants persist timeline rows while the command is still
+// running; when a poll observes completed output, the command completion row
+// is persisted instead. The interactive variant records only `has_stdin` and
+// never stores stdin text.
 //
 // Correlation rules:
 //
@@ -132,6 +136,15 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		item.PayloadID = existing.PayloadID
 	} else if err != nil {
 		return fmt.Errorf("terminal_interaction existing lookup %s: %w", item.ID, err)
+	}
+	if isPoll {
+		if tracker, ok := r.codexCompletedUnifiedExecTrackerForProcess(evt.ThreadID, meta.ProcessID); ok {
+			if err := r.persistCodexUnifiedExecCompletion(evt, tracker, turnIndex); err != nil {
+				return err
+			}
+			r.clearCodexCompletedOutputTracker(evt.ThreadID, meta.ProcessID)
+			return nil
+		}
 	}
 	payload, outputSummary := r.codexCompletedOutputPayloadForProcess(evt.ThreadID, meta.ProcessID, item.ID, evt.Meta, now)
 	if outputSummary != "" {
