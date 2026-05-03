@@ -4,7 +4,7 @@ Chat-surface components. The owning module is `MessageTimeline.svelte`.
 
 ## Scroll contract
 
-See `frontend/AGENTS.md` § Chat scroll architecture for the high-level
+See `frontend/AGENTS.md` § Scroll architecture for the high-level
 shape. Operational rules for code in this directory:
 
 - Use `listRef.findItemIndex(offset)` / `listRef.getItemOffset(index)` /

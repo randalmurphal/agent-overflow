@@ -6,7 +6,7 @@
   import { getSettings } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
-  import { createStickToBottomController } from '../../utils/stickToBottom.svelte';
+  import { createUseStickToBottomController } from '../../utils/useStickToBottom.svelte';
   import { relativeTime } from '../../utils/format';
   import Button from '../primitives/Button.svelte';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
@@ -36,10 +36,9 @@
   let posting = $state(false);
   let pollError = $state<string | null>(null);
   let loadingInitial = $state(true);
-  let scrollContainer: HTMLDivElement | undefined = $state(undefined);
-  const stickToBottom = createStickToBottomController({
-    getContainer: () => scrollContainer,
-  });
+  let scrollEl: HTMLDivElement | undefined = $state(undefined);
+  let contentEl: HTMLDivElement | undefined = $state(undefined);
+  const stick = createUseStickToBottomController();
 
   let messages = $derived(pane.channelMessages);
   let status = $derived(pane.channelStatus ?? 'open');
@@ -80,7 +79,7 @@
       clearTimeout(pollTimer);
       pollTimer = null;
     }
-    stickToBottom.destroy();
+    stick.detach();
   });
 
   async function pollOnce(generation: number, initial: boolean): Promise<void> {
@@ -129,21 +128,22 @@
     }
   }
 
-  // Attach the controller's listeners once the scroll container is bound.
-  // `void` makes the reactive read explicit so the compiler tracks the
-  // dependency reliably across Svelte versions.
+  // Publish the controller on the pane so external surfaces (sidebar
+  // resizers, resizable drawers) can acquire a `pauseAutoScroll()` lease
+  // during gestures. The effect's return function detaches symmetrically
+  // when the pane reference changes and on component teardown, so a
+  // stale pointer to a torn-down controller can't leak.
   $effect(() => {
-    void scrollContainer;
-    stickToBottom.attach();
+    pane.attachScrollController(stick);
+    return () => pane.detachScrollController(stick);
   });
 
+  // Bind the controller to the actual DOM elements. The content RO,
+  // wheel/scroll/keydown/touch listeners, and spring driver all start
+  // here. Re-runs if either ref changes (thread switch / HMR).
   $effect(() => {
-    // Notify the controller whenever the message list grows. The
-    // controller decides whether to actually scroll based on intent
-    // (sticky vs free), pause leases, and pointer state.
-    const len = messages.length;
-    if (len === 0) return;
-    untrack(() => stickToBottom.notifyContentMaybeGrew());
+    if (!scrollEl || !contentEl) return;
+    stick.attach(scrollEl, contentEl);
   });
 
   async function handlePost(): Promise<void> {
@@ -154,7 +154,7 @@
     composing = '';
     // Posting is an explicit "I want to follow this conversation" signal —
     // re-arm stickiness even if the user had scrolled up.
-    stickToBottom.forceStick();
+    stick.forceStick();
     try {
       await PostChannelMessage(channelId, content);
       // Immediate poll to surface our message rather than wait for interval.
@@ -219,41 +219,43 @@
 
   <div class="relative flex-1 min-h-0 flex flex-col">
     <div
-      bind:this={scrollContainer}
-      class="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-3"
+      bind:this={scrollEl}
+      class="flex-1 min-h-0 overflow-y-auto px-5 py-4"
       role="log"
       aria-live="polite"
       aria-label="Discussion Channel Messages"
       data-testid="channel-message-list"
     >
-      {#if loadingInitial}
-        <div class="text-[12px] text-fg-subtle">Loading channel messages…</div>
-      {:else if messages.length === 0}
-        <div class="text-[12px] text-fg-subtle">
-          No messages yet. Participants will begin speaking as their turns complete.
-        </div>
-      {:else}
-        {#each messages as msg (msg.id || msg.sequence)}
-          <div class="rounded-[var(--radius-card)] border {messageAccentClass(msg)} px-3.5 py-2.5">
-            <div class="flex items-center gap-2 mb-1.5">
-              <span class="rounded-[var(--radius-field)] border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] {roleBadgeClass(msg)}">
-                {roleLabel(msg)}
-              </span>
-              <span class="text-[11px] text-fg-hint tabular-nums">#{msg.sequence}</span>
-              <span class="ml-auto text-[11px] text-fg-hint">
-                {relativeTime(msg.createdAt, getSettings().timestampFormat)}
-              </span>
-            </div>
-            <ChatMarkdown
-              source={msg.content}
-              workspacePath={paneWorkspacePath(pane)}
-              class="text-[13px] text-fg break-words"
-            />
+      <div bind:this={contentEl} class="space-y-3">
+        {#if loadingInitial}
+          <div class="text-[12px] text-fg-subtle">Loading channel messages…</div>
+        {:else if messages.length === 0}
+          <div class="text-[12px] text-fg-subtle">
+            No messages yet. Participants will begin speaking as their turns complete.
           </div>
-        {/each}
-      {/if}
+        {:else}
+          {#each messages as msg (msg.id || msg.sequence)}
+            <div class="rounded-[var(--radius-card)] border {messageAccentClass(msg)} px-3.5 py-2.5">
+              <div class="flex items-center gap-2 mb-1.5">
+                <span class="rounded-[var(--radius-field)] border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] {roleBadgeClass(msg)}">
+                  {roleLabel(msg)}
+                </span>
+                <span class="text-[11px] text-fg-hint tabular-nums">#{msg.sequence}</span>
+                <span class="ml-auto text-[11px] text-fg-hint">
+                  {relativeTime(msg.createdAt, getSettings().timestampFormat)}
+                </span>
+              </div>
+              <ChatMarkdown
+                source={msg.content}
+                workspacePath={paneWorkspacePath(pane)}
+                class="text-[13px] text-fg break-words"
+              />
+            </div>
+          {/each}
+        {/if}
+      </div>
     </div>
-    <ScrollToBottomButton visible={!stickToBottom.isSticky} onClick={() => stickToBottom.forceStick()} />
+    <ScrollToBottomButton visible={!stick.isAtBottom} onClick={() => stick.forceStick()} />
   </div>
 
   <div class="border-t border-border-subtle px-5 py-3 shrink-0">

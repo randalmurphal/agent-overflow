@@ -6,14 +6,6 @@
   // existing precedent for "custom button when chrome diverges from the
   // primitive."
   //
-  // `data-scroll-anchor-ignore` opts the chip out of the click-anchor
-  // pass on `stickToBottom.svelte.ts` (the controller used by ChannelView
-  // / Discussion mode). The chat timeline's `useStickToBottom` does not
-  // implement click-anchor compensation — virtua's per-row jump-
-  // correction handles the same case generically — so on MessageTimeline
-  // this attribute is a no-op. Kept for consistency because the chip is
-  // shared across both surfaces.
-  //
   // Positioning: the chip floats just above the composer overlay. The
   // composer is absolutely positioned at `bottom-0` of the timeline's
   // relative parent and grows upward with content (attachment tray,
@@ -42,7 +34,6 @@
     onclick={onClick}
     aria-label="Scroll to latest"
     title="Scroll to latest"
-    data-scroll-anchor-ignore
     data-testid="scroll-to-bottom"
     transition:fade={{ duration: 120 }}
     style="bottom: calc(var(--composer-height, 0px) + 1rem);"

@@ -26,14 +26,6 @@ describe('<ScrollToBottomButton>', () => {
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 
-  it('carries data-scroll-anchor-ignore so the click-anchor handler skips it', () => {
-    const { getByTestId } = render(ScrollToBottomButton, {
-      props: { visible: true, onClick: () => {} },
-    });
-    const button = getByTestId('scroll-to-bottom');
-    expect(button.hasAttribute('data-scroll-anchor-ignore')).toBe(true);
-  });
-
   it('exposes an aria-label and title for accessibility', () => {
     const { getByTestId } = render(ScrollToBottomButton, {
       props: { visible: true, onClick: () => {} },

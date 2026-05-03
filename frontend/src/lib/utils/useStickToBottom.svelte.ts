@@ -1,21 +1,29 @@
-// Spring-driven sticky-bottom controller for the chat timeline.
+// Spring-driven sticky-bottom controller, shared by chat MessageTimeline
+// and Discussion ChannelView.
 //
-// Port of stackblitz-labs/use-stick-to-bottom adapted to Svelte 5 + virtua.
-// Owns the user's intent ("glued to bottom" or "free") and a velocity
-// spring that smoothly chases the bottom while content grows. A
-// ResizeObserver on the content element triggers the spring within the
-// same render cycle as a layout change — there's no rAF gap between
-// content arriving and the scroll position catching up.
+// Port of stackblitz-labs/use-stick-to-bottom adapted to Svelte 5. Owns
+// the user's intent ("glued to bottom" or "free") and a velocity spring
+// that smoothly chases the bottom while content grows. A ResizeObserver
+// on the content element triggers the spring within the same render
+// cycle as a layout change — there's no rAF gap between content arriving
+// and the scroll position catching up.
 //
 // Unlike the previous controller, this owns the scroll element directly.
 // MessageTimeline pairs it with virtua's <Virtualizer scrollRef={scrollEl}>
 // so virtua does its measurement work without owning the scroll container.
+// ChannelView is virtua-free — the contentEl is just a `<div>` wrapping
+// the `{#each}` over channel messages — and the same controller works
+// because the algorithm is agnostic to what's inside contentEl.
 //
 // External consumers (sidebar resizers, ChatView composer-height
 // publication, scrollLeaseDuringTransition helper) speak to this through
 // the PaneScrollController interface — pauseAutoScroll() returns a
 // depth-counted lease, notifyContentMaybeGrew() handles geometry changes
-// outside the content element (composer growth/shrink).
+// outside the content element (composer growth/shrink). Discussion does
+// not currently call notifyContentMaybeGrew because its textarea sits in
+// a separate `shrink-0` flex section that doesn't change the scroll
+// container's clientHeight; if Discussion ever grows a similar
+// composer-height story it would call notify the same way ChatView does.
 
 const DEFAULT_SPRING = { damping: 0.7, stiffness: 0.05, mass: 1.25 } as const;
 const SIXTY_FPS_INTERVAL_MS = 1000 / 60;
@@ -365,7 +373,11 @@ export function createUseStickToBottomController(
       // RO race — content just resized; the scroll event reflects layout,
       // not user intent. Most importantly: virtua's $fixScrollJump can
       // adjust scrollTop to keep above-viewport rows stable, which would
-      // otherwise look like an up-gesture.
+      // otherwise look like an up-gesture. For non-virtua consumers
+      // (Discussion's ChannelView) this gate is a 1ms suppression window
+      // after each content-RO fire — vanishingly unlikely to swallow a
+      // real user gesture, since the window only opens immediately after
+      // a layout change.
       if (resizeDifference !== 0) return;
 
       if (isSelectingInside(scrollEl)) {

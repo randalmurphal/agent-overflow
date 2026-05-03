@@ -65,7 +65,7 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 - `app.Event.On('error', ...)` — toast + status bar.
 - Custom event names per feature are defined in `stores/events.ts`.
 
-## Chat scroll architecture
+## Scroll architecture
 
 The MessageTimeline scroll surface is built on **`virtua/svelte`**'s
 `<Virtualizer scrollRef={ourScrollEl}>`. Virtua owns geometry and per-row
@@ -88,21 +88,16 @@ flicker source. The frontend layers on top:
   one place virtua writes scrollTop is `listRef.scrollToIndex(...)`,
   which MUST be preceded by `stick.stopScroll()` so the spring stops
   fighting the jump. Never write `scrollTop` directly.
-- **`scrollIntentCore.svelte.ts`** — shared state machine used by
-  Discussion-mode's `stickToBottom.svelte.ts`. The chat surface used
-  to share it too, but the spring controller has its own gesture model
-  (intent comes from wheel/key/touch/selection only — never from a
-  scrollTop direction inference, which is critical to surviving virtua's
-  `$fixScrollJump` writes). The two surfaces are now legitimately
-  distinct.
-- **`pane.scrollController`** — registration slot. MessageTimeline
-  publishes its `useStickToBottom` controller on mount; external
+- **`pane.scrollController`** — registration slot. Both
+  `MessageTimeline.svelte` (chat) and `ChannelView.svelte` (Discussion)
+  publish their `useStickToBottom` controller on mount; external
   surfaces (sidebar resizers, resizable drawers) acquire
   `pauseAutoScroll()` during their drag to keep auto-follow from
   yanking the user mid-gesture. The lease is depth-counted and
   idempotent. The pane only knows the minimal `PaneScrollController`
   interface (`pauseAutoScroll(): () => void` +
-  `notifyContentMaybeGrew(): void`).
+  `notifyContentMaybeGrew(): void`), so a single set of resizer/drawer
+  hooks works on both surfaces.
 - **`threadScrollSnapshots.ts`** — per-thread LRU of
   `{kind:'bottom'} | {kind:'anchor', itemId, offsetTop}`. Snapshots are
   semantic (item id + offset), not virtua's internal cache shape, so
@@ -154,9 +149,17 @@ flicker source. The frontend layers on top:
   deliberately large enough that a multi-thousand-line diff doesn't
   self-evict during initial render.
 
-`ChannelView.svelte` (Discussion mode) uses a different controller —
-`stickToBottom.svelte.ts` — because it scrolls a plain DOM container,
-not a virtua list. The two controllers serve different surfaces.
+`ChannelView.svelte` (Discussion mode) shares the same
+`useStickToBottom` controller. It scrolls a plain DOM container with no
+virtualizer, but the controller's content-element ResizeObserver is
+agnostic to what's inside contentEl — so the spring chases the bottom
+the same way as the chat surface. Discussion's contentEl wraps the
+`{#each}` over channel messages; the scroll element is the surrounding
+`overflow-y-auto` div. The intervening
+`<div bind:this={contentEl} class="space-y-3">` is intentional — it
+gives the content-RO a target whose height tracks message-list growth
+without including the scroll container's padding, mirroring chat's
+`<div bind:this={contentEl}>` wrapper around the `<Virtualizer>`.
 
 What NOT to add:
 - Manual `scrollTop` writes outside the controller.
@@ -219,6 +222,19 @@ What NOT to add:
   `HighlighterManager` that dynamically loads shiki for code blocks
   inside assistant markdown (and a small set of payload expansions).
   Module-level caches inside the library keep per-row remount cheap.
+- **Click-anchor preservation and pointerdown-defers-forceStick are
+  deliberately NOT implemented in `useStickToBottom`.** The legacy
+  Discussion controller had both: clicking a `<details>` / `<button>`
+  inside a message would adjust `scrollTop` to keep the clicked element
+  fixed in viewport, and a `forceStick` while the user was mid-drag of
+  the scrollbar would defer until pointerup. Neither is reproduced in
+  the unified controller: chat's transcript rows don't expand-collapse
+  in place (every disclosure has a stable header that's part of the
+  row's first-paint shell), and Discussion message bodies are plain
+  Markdown without expandable affordances. The pointerdown-defer is a
+  rare-input-mode case (mouse-drag of scrollbar + concurrent post)
+  with no recorded user impact in the chat surface; treat as an
+  accepted simplification for the unification.
 
 ## Raw-content rendering
 

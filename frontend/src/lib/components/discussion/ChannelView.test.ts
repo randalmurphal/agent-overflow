@@ -6,6 +6,7 @@ import { loadSettings } from '../../stores/settings.svelte';
 import type { ChannelMessage } from '../../types/discussion';
 import type { Thread } from '../../types/models';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
+import { resetUseStickToBottomModuleStateForTest } from '../../utils/useStickToBottom.svelte';
 
 // Stub Element.animate for Svelte transitions (reused by Markdown's nested components).
 if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
@@ -17,6 +18,44 @@ if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
       effect: null, startTime: 0, currentTime: 0, playState: 'finished', playbackRate: 1,
     };
   };
+}
+
+// Controllable ResizeObserver. The global stub from `test/setup.ts` is a
+// no-op; happy-dom's native RO doesn't fire on stubbed-getter geometry
+// changes either. We install our own observer so wheel-up + escape +
+// content-grow tests can fire the RO callback explicitly with a
+// chosen height — that's the only way to exercise the spring-driver
+// path without a real layout engine.
+class FireableResizeObserver {
+  static instances: FireableResizeObserver[] = [];
+  callback: ResizeObserverCallback;
+  observed: Element[] = [];
+  constructor(cb: ResizeObserverCallback) {
+    this.callback = cb;
+    FireableResizeObserver.instances.push(this);
+  }
+  observe(el: Element): void {
+    this.observed.push(el);
+  }
+  unobserve(): void {}
+  disconnect(): void {
+    this.observed = [];
+  }
+  fire(el: Element, height: number): void {
+    this.callback(
+      [
+        {
+          target: el,
+          contentRect: {
+            height, width: 0, top: 0, left: 0, right: 0, bottom: 0, x: 0, y: 0,
+            toJSON: () => ({}),
+          } as DOMRectReadOnly,
+          borderBoxSize: [], contentBoxSize: [], devicePixelContentBoxSize: [],
+        } as ResizeObserverEntry,
+      ],
+      this as unknown as ResizeObserver,
+    );
+  }
 }
 
 function makeThread(): Thread {
@@ -59,13 +98,33 @@ async function buildPane(thread = makeThread()) {
 }
 
 describe('<ChannelView>', () => {
+  let originalRO: typeof ResizeObserver | undefined;
+
   beforeEach(async () => {
     vi.useFakeTimers();
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
+    // Reset the useStickToBottom module-global mouseDown flag. Without
+    // this, a prior test (or a prior file in the same Vitest worker)
+    // that fired mousedown without a matching mouseup/click would leak
+    // mouseDown=true into this file, where the controller's
+    // isSelectingInside() would silently pause the spring.
+    resetUseStickToBottomModuleStateForTest();
+    // Install the controllable RO. Tests that don't need to fire it
+    // (the existing six cases) just don't call .fire() — observe is
+    // a no-op so they're undisturbed.
+    FireableResizeObserver.instances = [];
+    originalRO = globalThis.ResizeObserver;
+    (globalThis as unknown as { ResizeObserver: typeof FireableResizeObserver }).ResizeObserver
+      = FireableResizeObserver;
   });
 
   afterEach(() => {
+    if (originalRO) {
+      (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver
+        = originalRO;
+    }
+    FireableResizeObserver.instances = [];
     vi.useRealTimers();
   });
 
@@ -184,28 +243,25 @@ describe('<ChannelView>', () => {
     expect(pane.channelMessages.map((m) => m.sequence)).toEqual([1, 2, 3]);
   });
 
-  it('stays put when a wheel-up gesture flips intent to free, durably across subsequent message arrivals', async () => {
-    // The intent model deliberately ignores "scrollTop changed without a
-    // user gesture" — only real gestures (wheel/key/touch/drag) flip
-    // intent away from sticky. Here we simulate a wheel-up gesture
-    // before the auto-scroll rAF fires; the controller flips to free
-    // and the rAF re-checks intent at the top, bailing out. The second
-    // assertion exercises durability: a later message arrival must NOT
-    // resurrect stickiness — the floating button is the only re-arm.
+  it('reveals the scroll-to-bottom chip after a wheel-up gesture, ignores content arrivals while escaped, and hides it on forceStick', async () => {
+    // The unified controller (useStickToBottom) treats wheel-up as the
+    // canonical "I want to read above" intent signal — escapedFromLock
+    // flips synchronously, geometric near-bottom flips false, the chip
+    // becomes visible, and the spring-driver's RO callback path bails
+    // out for as long as escapedFromLock stays true. Clicking the chip
+    // calls forceStick which slams scrollTop back to bottom and clears
+    // the escape, so the chip hides.
     const pane = await buildPane();
     let callCount = 0;
     setBindingMock('GetChannelMessages', async () => {
       callCount++;
-      if (callCount === 1) {
-        return [makeMsg({ id: 'a', sequence: 1, content: 'first' })];
-      }
-      if (callCount === 2) {
-        return [makeMsg({ id: 'b', sequence: 2, content: 'second' })];
-      }
-      return [makeMsg({ id: 'c', sequence: 3, content: 'third' })];
+      if (callCount === 1) return [makeMsg({ id: 'a', sequence: 1, content: 'first' })];
+      return [makeMsg({ id: 'b', sequence: 2, content: 'second' })];
     });
 
-    const { getByTestId } = render(ChannelView, { props: { pane, channelId: 'channel-1' } });
+    const { getByTestId, queryByTestId } = render(ChannelView, {
+      props: { pane, channelId: 'channel-1' },
+    });
     const scroll = getByTestId('channel-message-list') as HTMLElement;
     let scrollHeightValue = 1000;
     Object.defineProperty(scroll, 'scrollHeight', {
@@ -217,32 +273,96 @@ describe('<ChannelView>', () => {
       get: () => 600,
     });
 
+    // Initial state: sticky + at-bottom, chip hidden. Fire the
+    // first-mount RO callback so the controller seeds previousHeight.
     await vi.advanceTimersByTimeAsync(0);
     for (let i = 0; i < 5; i++) await Promise.resolve();
-    scroll.scrollTop = 400;
-    await fireEvent.scroll(scroll);
+    const ro = FireableResizeObserver.instances.at(-1);
+    if (!ro) throw new Error('expected useStickToBottom to install a ResizeObserver');
+    const contentEl = ro.observed[0] as HTMLElement;
+    ro.fire(contentEl, 400);
+    expect(queryByTestId('scroll-to-bottom')).toBeNull();
 
+    // User scrolls up partway, then lifts a real wheel-up gesture. The
+    // wheel-up is the intent signal that flips escapedFromLock; without
+    // it, the controller would treat scrollTop changes as RO-correlated
+    // and would not change intent.
+    scroll.scrollTop = 200;
+    await fireEvent.scroll(scroll);
+    await fireEvent.wheel(scroll, { deltaY: -100 });
+    await vi.advanceTimersByTimeAsync(16);
+    for (let i = 0; i < 3; i++) await Promise.resolve();
+
+    // Distance from bottom is 1000-200-600 = 200 (>70 threshold), and the
+    // wheel-up has flipped escapedFromLock + cleared isAtBottomState,
+    // so both inputs to `stick.isAtBottom` are false. Chip is visible.
+    expect(getByTestId('scroll-to-bottom')).toBeInTheDocument();
+
+    // Subsequent poll cycle: a new message arrives, contentEl grows,
+    // and the RO fires a positive delta. The escape state must block
+    // the spring — scrollTop stays at 200 and the chip stays visible.
     scrollHeightValue = 1100;
     await vi.advanceTimersByTimeAsync(2500);
     for (let i = 0; i < 5; i++) await Promise.resolve();
-
-    // Real user gesture: wheel up. Sets intent='free' synchronously.
-    await fireEvent.wheel(scroll, { deltaY: -100 });
-    scroll.scrollTop = 350;
-    await fireEvent.scroll(scroll);
+    ro.fire(contentEl, 500);
     await vi.advanceTimersByTimeAsync(16);
     for (let i = 0; i < 3; i++) await Promise.resolve();
+    expect(scroll.scrollTop).toBe(200);
+    expect(getByTestId('scroll-to-bottom')).toBeInTheDocument();
 
-    expect(scroll.scrollTop).toBe(350);
+    // Click the chip → forceStick: clears escape, writes scrollTop to
+    // target (= scrollHeight - 1 - clientHeight = 499), hides chip.
+    await fireEvent.click(getByTestId('scroll-to-bottom'));
+    await vi.advanceTimersByTimeAsync(16);
+    for (let i = 0; i < 3; i++) await Promise.resolve();
+    expect(scroll.scrollTop).toBe(499);
+    expect(queryByTestId('scroll-to-bottom')).toBeNull();
+  });
 
-    // Durability: another poll cycle delivers a new message and grows
-    // scrollHeight. Intent must stay free; scrollTop must not move.
-    scrollHeightValue = 1250;
-    await vi.advanceTimersByTimeAsync(2500);
+  it('re-arms stickiness when the user posts a message while escaped', async () => {
+    // Posting is an explicit "I want to follow this conversation"
+    // signal — handlePost calls stick.forceStick() before awaiting the
+    // PostChannelMessage binding. This regression-guards that wiring.
+    const pane = await buildPane();
+    setBindingMock('GetChannelMessages', async () => [
+      makeMsg({ id: 'a', sequence: 1, content: 'first' }),
+    ]);
+    setBindingMock('PostChannelMessage', async () => {});
+
+    const { container, getByRole, getByTestId, queryByTestId } = render(ChannelView, {
+      props: { pane, channelId: 'channel-1' },
+    });
+    const scroll = getByTestId('channel-message-list') as HTMLElement;
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, get: () => 1000 });
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, get: () => 600 });
+
+    await vi.advanceTimersByTimeAsync(0);
     for (let i = 0; i < 5; i++) await Promise.resolve();
+    const ro = FireableResizeObserver.instances.at(-1);
+    if (!ro) throw new Error('expected useStickToBottom to install a ResizeObserver');
+    const contentEl = ro.observed[0] as HTMLElement;
+    ro.fire(contentEl, 400);
+
+    // Escape via wheel-up; verify chip becomes visible.
+    scroll.scrollTop = 100;
+    await fireEvent.scroll(scroll);
+    await fireEvent.wheel(scroll, { deltaY: -100 });
+    await vi.advanceTimersByTimeAsync(16);
+    for (let i = 0; i < 3; i++) await Promise.resolve();
+    expect(getByTestId('scroll-to-bottom')).toBeInTheDocument();
+
+    // User types and clicks Post. handlePost calls stick.forceStick()
+    // synchronously, which slams scrollTop to target = 1000 - 1 - 600
+    // = 399 and clears the escape. The chip must hide.
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Channel Message Input"]',
+    )!;
+    await fireEvent.input(textarea, { target: { value: 'follow up' } });
+    await fireEvent.click(getByRole('button', { name: /post/i }));
     await vi.advanceTimersByTimeAsync(16);
     for (let i = 0; i < 3; i++) await Promise.resolve();
 
-    expect(scroll.scrollTop).toBe(350);
+    expect(scroll.scrollTop).toBe(399);
+    expect(queryByTestId('scroll-to-bottom')).toBeNull();
   });
 });

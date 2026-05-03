@@ -176,10 +176,18 @@ export type LoadOlderResult = {
  * for outside surfaces (resizers, drawers) and a re-pin nudge for
  * surfaces whose layout change isn't visible to the controller's own
  * content ResizeObserver (e.g. composer growth changes the outer
- * padding-bottom but not the contentEl's scrollHeight). The actual
- * controller (useStickToBottom for chat, stickToBottom for DOM
- * Discussion) has more methods but they're consumed inside the timeline
- * component directly, not via this seam.
+ * padding-bottom but not the contentEl's scrollHeight). The concrete
+ * controller (`useStickToBottom`) has more methods, but only this
+ * narrow seam crosses the pane boundary — chat MessageTimeline and
+ * Discussion ChannelView both register the same controller shape so
+ * one set of resizer/drawer hooks works on both surfaces.
+ *
+ * `notifyContentMaybeGrew` is currently called only from chat's
+ * `ChatView` (composer-overlay growth changes the timeline's bottom
+ * padding without growing the contentEl). Discussion does not call it
+ * today — its textarea sits in a separate `shrink-0` flex section —
+ * but the seam is here so a future Discussion composer-height story
+ * could reach the controller the same way chat does.
  */
 export interface PaneScrollController {
   pauseAutoScroll(): () => void;
