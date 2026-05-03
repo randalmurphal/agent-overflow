@@ -1,6 +1,6 @@
 // Integration tests for the chat scroll system after the virtua/svelte
 // rebuild. These tests cover the seams between MessageTimeline,
-// stickyBottomController, the per-thread snapshot store, and the layout
+// useStickToBottom, the per-thread snapshot store, and the layout
 // surrounding the timeline (absolute composer, reserved-slot banners).
 //
 // What is NOT tested here:
@@ -8,9 +8,9 @@
 //     library (see /inokawa/virtua tests upstream); duplicating those
 //     assertions in a happy-dom env that lacks real layout would be
 //     fiction.
-//   - Pure controller behavior (intent transitions, gesture handling,
-//     pause-lease semantics) — covered exhaustively in
-//     `stickyBottomController.svelte.test.ts`.
+//   - Pure controller behavior (spring physics, content RO, gesture
+//     handlers, pause-lease semantics) — covered exhaustively in
+//     `useStickToBottom.svelte.test.ts`.
 //
 // What IS tested here:
 //   - Per-thread snapshot save/restore round-trip through a real virtua
@@ -26,6 +26,7 @@ import { tick } from 'svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
+import type { PaneScrollController } from '../../stores/thread.svelte';
 import {
   clearThreadScrollSnapshotsForTest,
   getThreadScrollSnapshot,
@@ -251,13 +252,29 @@ describe('scroll integration — auto-follow + button', () => {
 
     const wrapper = container.querySelector('[data-testid="message-timeline-scroll"]') as HTMLElement;
     expect(wrapper).not.toBeNull();
+    // The spring controller's wheel handler short-circuits when the
+    // container isn't scrollable (`scrollHeight <= clientHeight`).
+    // happy-dom returns 0 for both unless we override, so the test
+    // wheel would otherwise be ignored. Stub geometry so the wheel
+    // handler proceeds to flip escapedFromLock — and so the scroll
+    // event fired below refreshes `isNearBottomState` to false (we want
+    // `isAtBottom` to be false after escape, which requires both intent
+    // and geometry to be away from the bottom).
+    Object.defineProperty(wrapper, 'scrollHeight', { configurable: true, get: () => 1000 });
+    Object.defineProperty(wrapper, 'clientHeight', { configurable: true, get: () => 600 });
+    Object.defineProperty(wrapper, 'scrollTop', { configurable: true, get: () => 0, set: () => {} });
     wrapper.dispatchEvent(new WheelEvent('wheel', { deltaY: -50, bubbles: true }));
+    // Fire a scroll event so the controller refreshes isNearBottomState
+    // from the new (stubbed) geometry. The wheel handler itself only
+    // flips escapedFromLock; the scroll handler is what re-reads
+    // distanceFromBottom and sets isNearBottomState=false (distance=400).
+    wrapper.dispatchEvent(new Event('scroll', { bubbles: true }));
     await tick();
     await tick();
 
     // After the gesture the chip's button is in the DOM (it may still
     // be in a fade-in transition; what matters is presence as a
-    // signal that intent flipped to free).
+    // signal that the user is no longer at-or-near the bottom).
     expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull();
   });
 });
@@ -365,314 +382,105 @@ describe('scroll integration — load older noop / error paths', () => {
   });
 });
 
-// Wait for stickyBottomController's deferred rAF + a microtask drain.
-// Mirrors the helper used in stickyBottomController.svelte.test.ts:72.
-function nextFrame(): Promise<void> {
-  return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-}
+// The 'visibility-mask flicker fix' suite was deleted. The mask was a
+// rAF-gap mitigation; the new useStickToBottom controller eliminates the
+// gap by writing scrollTop in the same paint cycle as the layout change
+// (content ResizeObserver fires synchronously before paint). New
+// regression scenarios live in the no-jitter / R4 / smooth-fight tests
+// below.
 
-describe('scroll integration — visibility-mask flicker fix', () => {
-  // The fix: items appended to a sticky timeline render `visibility: hidden`
-  // for one frame so the browser doesn't paint a wrong-position flash before
-  // `stickyBottomController.scrollToLast` runs. The mask is cleared by the
-  // controller's `onScrollSettled` callback (success branch + bail branch +
-  // forceStick). These tests assert the registry contract end-to-end through
-  // a real MessageTimeline mount, since that's where the wiring lives.
+describe('scroll integration — useStickToBottom wiring', () => {
+  // Controller-internal behavior (spring physics, content-RO, gesture
+  // handlers, pause-lease semantics, programmatic-write tagging) is
+  // covered exhaustively in `useStickToBottom.svelte.test.ts` against
+  // raw scrollEl/contentEl divs with stubbed geometry.
+  //
+  // What we assert HERE is that MessageTimeline actually wires the
+  // controller into the pane registry on mount and tears it down on
+  // unmount — the seam external surfaces (sidebar resizers, drawers,
+  // ChatView composer-height publication) depend on. Without this
+  // wiring, `pane.scrollController?.pauseAutoScroll()` is a silent
+  // no-op and the resizer-drag-during-stream regression resurfaces.
 
-  it('marks an in-stream append while sticky and clears it after the rAF settles', async () => {
-    const pane = await buildPane(makeThread(), [
-      makeItem({ id: 'seed', summary: 'seed' }),
+  it('publishes a controller on mount that satisfies PaneScrollController', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'a' }),
     ]);
-
-    const { container } = render(MessageTimeline, { props: { pane } });
-    await tick();
-    await tick();
-
-    pane.upsertItem(makeItem({ id: 'fresh', itemIndex: 1, summary: 'fresh' }));
-    // Synchronous read — verify the registry update before yielding to the
-    // event loop. happy-dom's rAF can fire during `await tick()` and would
-    // otherwise race the controller's onScrollSettled clear against this
-    // assertion.
-    expect(pane.pendingScrollCatchupItems.has('fresh')).toBe(true);
-
-    // The items.length effect wired up in MessageTimeline calls
-    // notifyContentMaybeGrew, which schedules the deferred rAF. After that
-    // rAF fires, onScrollSettled runs pane.clearPendingScrollCatchup, the
-    // registry empties, and the row's wrapper drops the `invisible` class.
-    // The `class:invisible` lives on the outer `[data-row-index]` wrapper,
-    // not the `[data-item-id]` leaf root — `closest` below walks up to the
-    // wrapper that owns the masking class.
-    await tick();
-    await nextFrame();
-    await tick();
-
-    expect(pane.pendingScrollCatchupItems.has('fresh')).toBe(false);
-    const freshRowAfter = container
-      .querySelector('[data-item-id="fresh"]')
-      ?.closest('[data-row-index]') as HTMLElement | null;
-    expect(freshRowAfter?.classList.contains('invisible')).toBe(false);
-  });
-
-  it('does not mark items when the controller is in free intent', async () => {
-    const pane = await buildPane(makeThread(), [
-      makeItem({ id: 'seed', summary: 'seed' }),
-    ]);
-
-    const { container } = render(MessageTimeline, { props: { pane } });
-    await tick();
-    await tick();
-
-    // Flip to free via a wheel-up gesture on the timeline wrapper —
-    // matches the path that flips intent in real usage.
-    const wrapper = container.querySelector('[data-testid="message-timeline-scroll"]') as HTMLElement;
-    wrapper.dispatchEvent(new WheelEvent('wheel', { deltaY: -50, bubbles: true }));
-    await tick();
-
-    pane.upsertItem(makeItem({ id: 'fresh', itemIndex: 1, summary: 'fresh' }));
-    expect(pane.pendingScrollCatchupItems.has('fresh')).toBe(false);
-
-    await tick();
-    const freshRow = container
-      .querySelector('[data-item-id="fresh"]')
-      ?.closest('[data-row-index]') as HTMLElement | null;
-    expect(freshRow?.classList.contains('invisible')).toBe(false);
-  });
-
-  it('does not mark items in the initial-load batch (items.length === 0 before upsert)', async () => {
-    // buildPane runs switchThread which performs an initial mass-upsert.
-    // No controller is attached at that point, so the sticky-gate is moot —
-    // but the items.length-was-zero gate is the canonical guard. Explicitly
-    // upsert into a pane with zero items AFTER the controller is attached
-    // (by running through MessageTimeline's mount tick) and assert the gate
-    // holds. This protects against a future refactor that drops the gate.
-    const pane = await buildPane(makeThread(), []);
-
-    const { container } = render(MessageTimeline, { props: { pane } });
-    await tick();
-    await tick();
-    expect(pane.items).toHaveLength(0);
-
-    pane.upsertItem(makeItem({ id: 'first', summary: 'first' }));
-    expect(pane.pendingScrollCatchupItems.has('first')).toBe(false);
-
-    await tick();
-    const firstRow = container
-      .querySelector('[data-item-id="first"]')
-      ?.closest('[data-row-index]') as HTMLElement | null;
-    expect(firstRow?.classList.contains('invisible')).toBe(false);
-  });
-
-  it('marks every item when multiple appends arrive in rapid succession and clears them in a single rAF', async () => {
-    const pane = await buildPane(makeThread(), [
-      makeItem({ id: 'seed', summary: 'seed' }),
-    ]);
+    expect(pane.scrollController).toBeNull();
 
     render(MessageTimeline, { props: { pane } });
     await tick();
     await tick();
-
-    pane.upsertItem(makeItem({ id: 'fresh-1', itemIndex: 1, summary: 'one' }));
-    pane.upsertItem(makeItem({ id: 'fresh-2', itemIndex: 2, summary: 'two' }));
-    expect(pane.pendingScrollCatchupItems.has('fresh-1')).toBe(true);
-    expect(pane.pendingScrollCatchupItems.has('fresh-2')).toBe(true);
-
-    await tick();
-    await nextFrame();
-    await tick();
-
-    expect(pane.pendingScrollCatchupItems.size).toBe(0);
+    expect(pane.scrollController).not.toBeNull();
+    // The published controller satisfies the PaneScrollController contract —
+    // depth-counted lease + grow notification — that sidebar resizers,
+    // resizable drawers, and ChatView's composer-height publication depend on.
+    expect(typeof pane.scrollController?.pauseAutoScroll).toBe('function');
+    expect(typeof pane.scrollController?.notifyContentMaybeGrew).toBe('function');
   });
 
-  it('clears pending items when the rAF bail branch fires after the user scrolls away', async () => {
-    const pane = await buildPane(makeThread(), [
-      makeItem({ id: 'seed', summary: 'seed' }),
-    ]);
-
-    const { container } = render(MessageTimeline, { props: { pane } });
-    await tick();
-    await tick();
-
-    pane.upsertItem(makeItem({ id: 'fresh', itemIndex: 1, summary: 'fresh' }));
-    expect(pane.pendingScrollCatchupItems.has('fresh')).toBe(true);
-
-    // Flip to free BEFORE the rAF fires. The rAF callback's
-    // `!core.canAutoScroll()` bail must still call onScrollSettled,
-    // otherwise the row stays hidden forever (until thread switch).
-    const wrapper = container.querySelector('[data-testid="message-timeline-scroll"]') as HTMLElement;
-    wrapper.dispatchEvent(new WheelEvent('wheel', { deltaY: -50, bubbles: true }));
-
-    await tick();
-    await nextFrame();
-    await tick();
-
-    expect(pane.pendingScrollCatchupItems.has('fresh')).toBe(false);
-  });
-
-  it('clearPendingScrollCatchup empties the registry directly', async () => {
-    // Registry-level contract test: independent of the controller
-    // wiring, the pane method must drop entries idempotently.
-    const pane = await buildPane(makeThread(), [
-      makeItem({ id: 'seed', summary: 'seed' }),
+  it('the published controller honors a pauseAutoScroll lease (no throw, depth-counted release)', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'a' }),
     ]);
     render(MessageTimeline, { props: { pane } });
     await tick();
     await tick();
 
-    pane.upsertItem(makeItem({ id: 'fresh', itemIndex: 1, summary: 'fresh' }));
-    expect(pane.pendingScrollCatchupItems.size).toBeGreaterThan(0);
-
-    pane.clearPendingScrollCatchup();
-    expect(pane.pendingScrollCatchupItems.size).toBe(0);
-
-    // Idempotent — calling on an empty registry is a no-op.
-    pane.clearPendingScrollCatchup();
-    expect(pane.pendingScrollCatchupItems.size).toBe(0);
+    const ctrl = pane.scrollController;
+    expect(ctrl).not.toBeNull();
+    if (!ctrl) return;
+    const release1 = ctrl.pauseAutoScroll();
+    const release2 = ctrl.pauseAutoScroll();
+    // Idempotent dispose — calling release twice doesn't underflow.
+    release1();
+    release1();
+    release2();
+    // notifyContentMaybeGrew after release should not throw even when
+    // the controller's geometry is unmeasured (happy-dom).
+    expect(() => ctrl.notifyContentMaybeGrew()).not.toThrow();
   });
 
-  it('thread switch wipes the pending registry alongside other per-row UI state', async () => {
-    // Note: makeThread()/makeItem() default to id='thread-1' / threadId='thread-1'.
-    // upsertItemsBatch filters incoming items whose threadId doesn't match
-    // the pane's current thread, so the seed/fresh items must use the same
-    // threadId as the thread the pane is currently on.
-    const pane = await buildPane(makeThread({ id: 'thread-a' }), [
-      makeItem({ id: 'seed', threadId: 'thread-a', summary: 'seed' }),
+  it('mid-stream upsertItem leaves the controller sticky (no scrollTop-direction inference)', async () => {
+    // Replaces the deleted visibility-mask test that asserted appending
+    // a child to a running inline subagent doesn't flicker. Under the new
+    // architecture there is no mask — the guarantee is structural: the
+    // spring controller does NOT infer up-gesture from scrollTop direction
+    // (R4 mitigation), so virtua's $fixScrollJump or any per-row resize
+    // that nudges scrollTop cannot flip escapedFromLock. Mid-stream
+    // upserts therefore leave intent/stickiness untouched.
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'agent-1', itemIndex: 0, summary: 'first' }),
     ]);
     render(MessageTimeline, { props: { pane } });
     await tick();
     await tick();
 
-    pane.upsertItem(makeItem({ id: 'fresh', threadId: 'thread-a', itemIndex: 1, summary: 'fresh' }));
-    expect(pane.pendingScrollCatchupItems.size).toBeGreaterThan(0);
+    // The pane interface only exposes pauseAutoScroll / notifyContentMaybeGrew
+    // (PaneScrollController is narrow by design — see thread.svelte.ts);
+    // peek at the underlying spring controller's intent state to verify
+    // stickiness survives the upsert without inferring up-gesture from
+    // scrollTop direction.
+    const ctrl = pane.scrollController as
+      | (PaneScrollController & { isSticky: boolean; escapedFromLock: boolean })
+      | null;
+    expect(ctrl).not.toBeNull();
+    if (!ctrl) return;
+    // Baseline: no explicit escape was triggered, no leases held.
+    expect(ctrl.isSticky).toBe(true);
+    expect(ctrl.escapedFromLock).toBe(false);
 
-    await pane.switchThread(makeThread({ id: 'thread-b' }));
-    expect(pane.pendingScrollCatchupItems.size).toBe(0);
-  });
-
-  it('forceStick clears pending items via the synchronous settle path', async () => {
-    // Race the controller's rAF: the user is sticky, items get marked,
-    // then the user clicks ScrollToBottomButton (which calls forceStick)
-    // before the rAF fires. forceStick's synchronous onScrollSettled must
-    // unmask, otherwise rows hang in `visibility: hidden` until the
-    // already-stale rAF hits its bail-branch settle. Tested through the
-    // real controller (not MessageTimeline) so we can drive forceStick
-    // synchronously without yielding to the rAF queue.
-    const { createStickyBottomController } = await import('../../utils/stickyBottomController.svelte');
-    const pane = await buildPane(makeThread(), [
-      makeItem({ id: 'seed', summary: 'seed' }),
-    ]);
-
-    let offset = 0;
-    const handle = {
-      getCache: vi.fn(() => ({}) as never),
-      getScrollOffset: () => offset,
-      getScrollSize: () => 1000,
-      getViewportSize: () => 600,
-      findItemIndex: vi.fn(() => 0),
-      getItemOffset: vi.fn(() => 0),
-      getItemSize: vi.fn(() => 90),
-      scrollToIndex: vi.fn(),
-      scrollTo: vi.fn((next: number) => { offset = next; }),
-      scrollBy: vi.fn(),
-    };
-    const wrapperEl = document.createElement('div');
-    document.body.appendChild(wrapperEl);
-
-    const controller = createStickyBottomController({
-      getScrollEl: () => wrapperEl,
-      getListHandle: () => handle,
-      getLastIndex: () => Math.max(0, pane.items.length - 1),
-      onScrollSettled: () => pane.clearPendingScrollCatchup(),
-    });
-    controller.attach();
-    pane.attachScrollController(controller);
-
-    try {
-      // Sticky by default; an in-stream append populates the registry.
-      pane.upsertItem(makeItem({ id: 'fresh', itemIndex: 1, summary: 'fresh' }));
-      expect(pane.pendingScrollCatchupItems.has('fresh')).toBe(true);
-
-      // forceStick fires synchronously — registry must clear without
-      // waiting for the rAF.
-      controller.forceStick();
-      expect(pane.pendingScrollCatchupItems.size).toBe(0);
-    } finally {
-      pane.detachScrollController(controller);
-      controller.destroy();
-      wrapperEl.remove();
-    }
-  });
-
-  it('does not mask an inline-agent wrapper when one of its descendants is freshly appended', async () => {
-    // Regression: 9e0a51a rewrote the mask predicate to recurse via
-    // nodeContainsItem, which made every running subagent's wrapper go
-    // visibility:hidden each time the agent emitted a child item
-    // (assistant text, sub-tool_call, thinking). The wrapper masked,
-    // unmasked, masked again — visible flicker on the agent card.
-    // Mask must apply only to the freshly-appended row's own anchor id,
-    // never to ancestor wrappers.
-    const inlineMeta = JSON.stringify({
-      is_inline_subagent: true,
-      inline_subagent_group_id: 'assistant-1',
-    });
-    const pane = await buildPane(makeThread(), [
-      makeItem({ id: 'seed', summary: 'seed' }),
-      makeItem({
-        id: 'agent-1',
-        itemIndex: 1,
-        kind: 'tool_call',
-        toolName: 'Agent',
-        status: 'streaming',
-        summary: 'Agent: working',
-        meta: inlineMeta,
-      }),
-    ]);
-
-    const { container } = render(MessageTimeline, { props: { pane } });
+    // Stream a second item in (simulates an inline subagent's child
+    // member arriving mid-turn, or a new tool_call from the provider).
+    pane.upsertItem(makeItem({ id: 'agent-2', itemIndex: 1, summary: 'second' }));
     await tick();
     await tick();
 
-    // Append a streaming child INSIDE the running agent. The id lands
-    // in pendingScrollCatchupItems just like any new top-level item.
-    pane.upsertItem(makeItem({
-      id: 'agent-1-child',
-      itemIndex: 2,
-      kind: 'assistant_text',
-      summary: 'subagent says hi',
-      parentId: 'agent-1',
-    }));
-    expect(pane.pendingScrollCatchupItems.has('agent-1-child')).toBe(true);
-
-    await tick();
-
-    // The inline-agent wrapper is rendered as a top-level VList row.
-    // It must not carry `invisible` just because its descendant is in
-    // the registry — that's the bug we're guarding.
-    const wrapperRow = container
-      .querySelector('[data-testid="inline-subagent-group"]')
-      ?.closest('[data-row-index]') as HTMLElement | null;
-    expect(wrapperRow).not.toBeNull();
-    expect(wrapperRow?.classList.contains('invisible')).toBe(false);
-  });
-
-  it('does not mark items when an existing id is updated in place', async () => {
-    // The new-item branch of upsertItemsBatch is the only marking site;
-    // updates to already-tracked ids (delta-driven status changes,
-    // out-of-order tail corrections) take the existing-id branch and
-    // must not re-add the row to the pending registry — otherwise a
-    // mid-flight tool result update would re-hide a visible row.
-    const pane = await buildPane(makeThread(), [
-      makeItem({ id: 'seed', summary: 'seed' }),
-    ]);
-
-    render(MessageTimeline, { props: { pane } });
-    await tick();
-    await tick();
-
-    expect(pane.pendingScrollCatchupItems.has('seed')).toBe(false);
-
-    // Same id → existing-id branch in upsertItemsBatch.
-    pane.upsertItem(makeItem({ id: 'seed', summary: 'seed (updated)' }));
-    expect(pane.pendingScrollCatchupItems.has('seed')).toBe(false);
-    expect(pane.pendingScrollCatchupItems.size).toBe(0);
+    // The upsert path must not have flipped escape or torn the lease.
+    // If a future regression infers up-gesture from a virtua jump-correction
+    // write, this assertion fails.
+    expect(ctrl.isSticky).toBe(true);
+    expect(ctrl.escapedFromLock).toBe(false);
   });
 });
+

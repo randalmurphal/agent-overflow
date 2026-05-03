@@ -1,19 +1,20 @@
-// Shared core for the chat-surface sticky-bottom controllers
-// (`stickyBottomController.svelte.ts` for the virtua VList, and
-// `stickToBottom.svelte.ts` for plain DOM scroll containers like the
-// Discussion-mode ChannelView).
+// Shared core for the Discussion-mode `stickToBottom.svelte.ts` plain-DOM
+// scroll controller (ChannelView). The chat surface used to share this
+// too via `stickyBottomController`, but the spring controller in
+// `useStickToBottom.svelte.ts` has its own gesture model — the two
+// surfaces are now legitimately distinct.
 //
 // Owns the user-intent state machine — what it means to be `'stick'` vs
 // `'free'`, when wheel/keyboard/touch gestures flip between them, the
 // down-gesture window for restick — plus the pause-lease semantics. The
-// surface-specific controllers stay thin wrappers that supply geometry
+// surface-specific controller stays a thin wrapper that supplies geometry
 // (scroll offset / size / viewport) and the actual scroll-write call,
-// then call into this core for everything else.
+// then calls into this core for everything else.
 //
-// Why this lives separately: the two controllers are 80% the same code.
-// A future change to "what counts as a down-gesture" or "how long the
-// restick window is" would otherwise have to land in both files. The
-// shared core makes that change a one-line edit.
+// Why this still lives separately: keeping the gesture/intent state
+// machine in one file makes future Discussion-mode changes (e.g. "what
+// counts as a down-gesture" or "how long the restick window is") a
+// one-line edit.
 
 export type StickIntent = 'stick' | 'free';
 

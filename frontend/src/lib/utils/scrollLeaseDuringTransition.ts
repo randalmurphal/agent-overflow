@@ -2,8 +2,9 @@
  * Acquires the active pane's `pauseAutoScroll()` lease for a brief window
  * to absorb a layout-changing UI gesture (drawer toggle, sidebar
  * fly-in/out, panel mount/unmount). The chat column's `clientHeight` /
- * `clientWidth` is changing while this lease is held, so the auto-follow
- * `$effect` cannot yank the viewport mid-transition.
+ * `clientWidth` changes while this lease is held, so the controller's
+ * spring chase + content-RO re-pin both no-op for the duration —
+ * preventing the viewport from yanking mid-transition.
  *
  * - Default settle window: two `requestAnimationFrame` ticks. Long enough
  *   for layout + virtua's per-row ResizeObserver to fire after the

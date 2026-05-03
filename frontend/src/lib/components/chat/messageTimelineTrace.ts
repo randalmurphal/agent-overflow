@@ -3,7 +3,7 @@
 // integration. Production builds short-circuit at the
 // `isUiRenderTraceEnabled()` check, so this module is dev-only payload.
 
-import type { VListHandle } from 'virtua/svelte';
+import type { VirtualizerHandle } from 'virtua/svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { TimelineNode } from '../../utils/subagentGrouping';
 import {
@@ -21,7 +21,7 @@ export function recordTimelineRenderTrace(
   pane: ThreadPane,
   groupedNodes: readonly TimelineNode[],
   scrollEl: HTMLElement | undefined,
-  listRef: VListHandle | undefined,
+  listRef: VirtualizerHandle | undefined,
 ): void {
   if (!isUiRenderTraceEnabled()) return;
   recordUiTrace('timeline.state', {

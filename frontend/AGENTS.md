@@ -68,27 +68,41 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 ## Chat scroll architecture
 
 The MessageTimeline scroll surface is built on **`virtua/svelte`**'s
-`<VList>`. Virtua owns geometry and per-row anchor preservation
-(ResizeObserver + binary-searched jump-correction). The frontend layers
-on top:
+`<Virtualizer scrollRef={ourScrollEl}>`. Virtua owns geometry and per-row
+anchor preservation (ResizeObserver + binary-searched jump-correction);
+the frontend owns the scroll container itself, which is the outer
+`<div class="overflow-y-auto">` in `MessageTimeline.svelte`. Owning the
+container is what lets the spring controller observe content growth
+**before paint** (single content-element ResizeObserver) and write
+`scrollTop` synchronously in the same paint cycle — eliminating the
+rAF gap between content layout and scroll correction that was the
+flicker source. The frontend layers on top:
 
-- **`stickyBottomController.svelte.ts`** — single owner of intent
-  (`'stick' | 'free'`) and the only writer to scroll position outside
-  virtua's internals. Programmatic scrolls go through
-  `forceStick()` / `notifyContentMaybeGrew()` / `pauseAutoScroll()` or
-  directly via `vlist.scrollToIndex(...)`. Never write `scrollTop`.
-- **`scrollIntentCore.svelte.ts`** — shared state machine (intent
-  transitions, gesture interpretation, pause-lease, down-gesture window)
-  used by both `stickyBottomController` (virtua) and `stickToBottom`
-  (DOM container, ChannelView). A change to "what counts as a down
-  gesture" or "how long the restick window is" lands in one file, not
-  both controllers.
+- **`useStickToBottom.svelte.ts`** — Svelte-5 port of stackblitz-labs'
+  `use-stick-to-bottom`. Single owner of intent (`isAtBottom` flag) and
+  the only writer to `scrollTop` outside virtua's internals. Spring
+  driver (`damping=0.7`, `stiffness=0.05`, `mass=1.25`) chases the moving
+  bottom while content keeps growing for ~350ms after the last grow
+  event. Programmatic scrolls go through `forceStick({animation})` /
+  `notifyContentMaybeGrew()` / `pauseAutoScroll()` / `stopScroll()`; the
+  one place virtua writes scrollTop is `listRef.scrollToIndex(...)`,
+  which MUST be preceded by `stick.stopScroll()` so the spring stops
+  fighting the jump. Never write `scrollTop` directly.
+- **`scrollIntentCore.svelte.ts`** — shared state machine used by
+  Discussion-mode's `stickToBottom.svelte.ts`. The chat surface used
+  to share it too, but the spring controller has its own gesture model
+  (intent comes from wheel/key/touch/selection only — never from a
+  scrollTop direction inference, which is critical to surviving virtua's
+  `$fixScrollJump` writes). The two surfaces are now legitimately
+  distinct.
 - **`pane.scrollController`** — registration slot. MessageTimeline
-  publishes its sticky controller on mount; external surfaces (sidebar
-  resizers, resizable drawers) acquire `pauseAutoScroll()` during their
-  drag to keep auto-follow from yanking the user mid-gesture. The lease
-  is depth-counted and idempotent. The pane only knows the minimal
-  `PaneScrollController` interface (`pauseAutoScroll(): () => void`).
+  publishes its `useStickToBottom` controller on mount; external
+  surfaces (sidebar resizers, resizable drawers) acquire
+  `pauseAutoScroll()` during their drag to keep auto-follow from
+  yanking the user mid-gesture. The lease is depth-counted and
+  idempotent. The pane only knows the minimal `PaneScrollController`
+  interface (`pauseAutoScroll(): () => void` +
+  `notifyContentMaybeGrew(): void`).
 - **`threadScrollSnapshots.ts`** — per-thread LRU of
   `{kind:'bottom'} | {kind:'anchor', itemId, offsetTop}`. Snapshots are
   semantic (item id + offset), not virtua's internal cache shape, so
@@ -119,8 +133,8 @@ on top:
   thread. Open transcript rows are user-owned UI state; collapsing one
   from an unrelated row's load changes timeline height outside the
   user's interaction path and fights virtua.
-- **Stable transcript rows.** Anything rendered inside `<VList>` is a
-  stable history record. A row may update text/content in place, but it
+- **Stable transcript rows.** Anything rendered inside `<Virtualizer>`
+  is a stable history record. A row may update text/content in place, but it
   should not change its outer shell after first render: no static
   div-to-button swaps, no late chevron insertion, no completion-time
   summary cards appended inside history, and no live working/todo UI in
@@ -149,6 +163,15 @@ What NOT to add:
 - A row-height signature cache. virtua re-measures via ResizeObserver.
 - A scroll-anchor compensation pass on top of virtua's jump algorithm.
 - A second virtualizer over the same data.
+- A length-watching auto-follow `$effect` that calls
+  `listRef.scrollToIndex(last, 'end')` on streaming. The content-RO inside
+  `useStickToBottom` reproduces this synchronously before paint; a
+  duplicate effect re-introduces the rAF gap that this architecture
+  eliminated.
+- `smooth: true` on any `listRef.scrollToIndex(...)` call. Virtua's
+  smooth path uses the native `scrollTo({behavior:'smooth'})` which
+  fights the spring driver. Always pair `scrollToIndex` with a preceding
+  `stick.stopScroll()`.
 - `transition:slide` adjacent to the scroll area — animated height
   shifts visible content under the user's cursor.
 - Late transcript adornments on completion. If the UI needs a marker,
@@ -166,10 +189,14 @@ What NOT to add:
   browser-native find which only sees mounted rows.
 - A search hit calls `pane.requestScrollToItem(itemId)`;
   `MessageTimeline` reacts by paging older items in via
-  `pane.loadUntilItem(id)` and then `vlist.scrollToIndex(idx, { align:
-  'center', smooth: true })`. The two-step (load-then-scroll) is
-  necessary because virtua only knows about items present in
-  `pane.items`.
+  `pane.loadUntilItem(id)` and then, after `stick.stopScroll()` +
+  `stick.setEscapedFromLock(true)`, `listRef.scrollToIndex(idx, { align:
+  'center' })`. The two-step (load-then-scroll) is necessary because
+  virtua only knows about items present in `pane.items`. Never pass
+  `smooth: true` — virtua's smooth path uses
+  `scrollEl.scrollTo({behavior:'smooth'})` which races the spring; if
+  smooth-to-hit is wanted later, route through a controller-owned
+  `springTo(target)` API.
 
 ## Accepted scroll-surface tradeoffs
 

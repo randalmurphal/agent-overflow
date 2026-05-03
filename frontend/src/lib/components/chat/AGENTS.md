@@ -9,21 +9,31 @@ shape. Operational rules for code in this directory:
 
 - Use `listRef.findItemIndex(offset)` / `listRef.getItemOffset(index)` /
   `listRef.scrollToIndex(...)` for anything that needs to know "where am
-  I in the timeline" or "go to row X". Don't query the DOM for
-  first-visible-item or write `scrollTop` directly.
-- Programmatic scrolls go through `stickyBottomController` (`forceStick`,
-  `notifyContentMaybeGrew`, `pauseAutoScroll`) or directly via
-  `vlist.scrollToIndex(...)`. Never `el.scrollIntoView()` on a row that
-  lives inside the virtualizer; virtua won't see it and will fight the
-  scroll.
+  I in the timeline" or "go to row X". `listRef` is now a
+  `VirtualizerHandle` (we use `<Virtualizer>` with our own `scrollRef`
+  rather than `<VList>` which would own the scroller). Don't query the
+  DOM for first-visible-item or write `scrollTop` directly.
+- Programmatic scrolls go through `useStickToBottom` (`forceStick`,
+  `notifyContentMaybeGrew`, `pauseAutoScroll`, `stopScroll`) or directly
+  via `listRef.scrollToIndex(...)`. **Always call `stick.stopScroll()`
+  BEFORE any `listRef.scrollToIndex(...)` and never pass `smooth: true`**
+  — virtua's smooth path uses `scrollEl.scrollTo({behavior:'smooth'})`
+  natively, which would fight the spring. Never `el.scrollIntoView()`
+  on a row that lives inside the virtualizer; virtua won't see it and
+  will fight the scroll.
 - Don't add a parallel virtualizer over `pane.items` or `groupedNodes`.
+- The auto-follow `$effect` is gone. Streaming flow is: text rewrites in
+  the streaming row → row's height changes → virtua's per-row RO bumps
+  `totalSize` → `contentEl.scrollHeight` changes → our content-RO fires
+  before paint → spring slams to new target in the same paint. Don't
+  reintroduce a length-watching effect that calls `scrollToIndex(last)`.
 - Scroll-behavior tests live in `scroll.test.ts`. Component-shape tests
   for individual rows (TimelineLeaf, SubagentGroup, CommandOutput, etc.)
   stay in their own `*.test.ts` files.
 
 ## Row contract
 
-Every row rendered inside `<VList>`'s children snippet:
+Every row rendered inside `<Virtualizer>`'s children snippet:
 
 - Lives inside a `[data-row-index]` outer wrapper. The wrapper is
   structural and intentionally has NO `data-item-id`. Only `TimelineLeaf`
@@ -122,10 +132,18 @@ virtua mount zero rows. `MessageTimeline.svelte` switches virtua into
 tests can assert on rendered DOM. Production (`vite dev` / `vite build`)
 sees the default `undefined`, leaving virtua free to virtualize.
 
-`stickyBottomController.svelte.test.ts` covers the controller's intent
-state machine in isolation. `scroll.test.ts` covers the
-MessageTimeline-level integration: snapshot save/restore, load-older
-flow, scroll-to-item routing, and layout invariants (composer-height
-variable, reserved-slot banners). Heavy reliance on real layout is
-avoided — assertions are written so they hold under happy-dom's missing
-geometry.
+`useStickToBottom.svelte.test.ts` covers the spring controller's full
+state machine in isolation: spring tick + arrival, content-RO
+positive/negative deltas, wheel/scroll/keydown/touchmove gesture
+handlers, programmatic-write tagging (`ignoreScrollToTop`), pause-lease
+depth-counting, and lifecycle (re-attach detaches old listeners; detach
+clears all timers). Geometry is stubbed per-test via
+`Object.defineProperty` on `scrollHeight`/`clientHeight`/`scrollTop`,
+and `performance.now` is mocked to advance 16.67ms per `nextFrame()` so
+spring physics are deterministic.
+
+`scroll.test.ts` covers the MessageTimeline-level integration: snapshot
+save/restore, load-older flow, scroll-to-item routing, and layout
+invariants (composer-height variable, reserved-slot banners). Heavy
+reliance on real layout is avoided — assertions are written so they
+hold under happy-dom's missing geometry.

@@ -1,7 +1,8 @@
 // Intent-based scroll stickiness for plain DOM scroll containers.
-// Used by Discussion-mode ChannelView which scrolls a regular div, not
-// a virtua VList. (The chat timeline uses stickyBottomController.svelte.ts
-// — a virtua-specific sibling — for the same purpose.)
+// Used by Discussion-mode ChannelView which scrolls a regular div.
+// (The chat timeline uses useStickToBottom.svelte.ts — a spring-driven
+// controller with a content-element ResizeObserver for the virtua
+// `<Virtualizer>` integration. Distinct surfaces, distinct algorithms.)
 //
 // Stickiness is mutated only by user gestures or explicit forceStick() —
 // pure content growth never sticks and async layout never unsticks.
@@ -10,12 +11,12 @@
 // bottom and silently lost the pin every time.
 //
 // Intent state, gesture interpretation (wheel/key/touch), and the
-// pause-lease live in scrollIntentCore.svelte.ts and are shared with
-// stickyBottomController. This file is the DOM-container glue:
-// scrollHeight/scrollTop/clientHeight reads, the rAF + settle re-check
-// for async layout, the pointer handler that interprets net-scroll, and
-// the click-anchor compensation pass that keeps a clicked summary/
-// button pinned while expand/collapse changes layout.
+// pause-lease live in scrollIntentCore.svelte.ts. This file is the
+// DOM-container glue: scrollHeight/scrollTop/clientHeight reads, the
+// rAF + settle re-check for async layout, the pointer handler that
+// interprets net-scroll, and the click-anchor compensation pass that
+// keeps a clicked summary/button pinned while expand/collapse changes
+// layout.
 
 import {
   createScrollIntentCore,

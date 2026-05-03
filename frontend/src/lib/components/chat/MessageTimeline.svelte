@@ -7,10 +7,10 @@
 
 <script lang="ts">
   import { onDestroy, tick } from 'svelte';
-  import { VList, type VListHandle } from 'virtua/svelte';
+  import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { createStickyBottomController } from '../../utils/stickyBottomController.svelte';
+  import { createUseStickToBottomController } from '../../utils/useStickToBottom.svelte';
   import {
     getThreadScrollSnapshot,
     setThreadScrollSnapshot,
@@ -76,12 +76,16 @@
     return false;
   }
 
-  // The wrapper div around <VList> that catches gesture events for the
-  // sticky controller. virtua owns the inner scroll element; we attach
-  // listeners on the outer wrapper and let events bubble.
+  // Outer scroll container. We own scrolling here; <Virtualizer> renders
+  // its measured rows inside `contentEl` and reads/writes via scrollRef.
   let scrollEl: HTMLDivElement | undefined = $state(undefined);
-  // Imperative handle into virtua. Set once VList mounts.
-  let listRef: VListHandle | undefined = $state(undefined);
+  // Wrapper around <Virtualizer>. The controller's content RO observes
+  // this element so any size change (row growth, expand toggle, virtua's
+  // totalSize bump) fires synchronously before the same paint that
+  // displays the change.
+  let contentEl: HTMLDivElement | undefined = $state(undefined);
+  // Imperative handle into virtua. Set once Virtualizer mounts.
+  let listRef: VirtualizerHandle | undefined = $state(undefined);
 
   let restoredThreadId: string | null = $state(null);
   // Tracks which thread we last persisted into the snapshot store via
@@ -98,52 +102,11 @@
     groupItemsBySubagent(filterRedundantNotifications(pane.items)),
   );
 
-  // The composer-padding spacer used to live inside the *last* data row's
-  // wrapper, conditional on `index === groupedNodes.length - 1`. Every new
-  // top-level append migrated the spacer between two rows: the old-last
-  // shrank by ~composer-height, the new-last grew by the same amount,
-  // virtua's per-row ResizeObserver fired for both, and its position
-  // cache walked twice per append. With rapid tool-call bursts, that
-  // double-measure-per-append showed up as visible row jitter even
-  // though the visible scroll height delta was correct.
-  //
-  // The spacer is now its own DisplayNode kind, always at the end of the
-  // virtua data array under a stable key. Real rows never re-measure on
-  // append (only the new row mounts), and `getLastIndex` points at the
-  // spacer so `scrollToIndex(last, {align:'end'})` keeps the user's last
-  // real row sitting just above the absolute composer overlay.
-  type BottomSpacerNode = { kind: 'bottom_spacer' };
-  type DisplayNode = TimelineNode | BottomSpacerNode;
-
-  // The spacer is a singleton — one stable identity reused across renders
-  // so virtua never sees the spacer "change" and can keep its DOM mounted.
-  // Defined at module scope (effectively) via a const captured by the
-  // derived; allocating a fresh object each derive would still let virtua
-  // dedupe on key, but reusing the literal keeps the diff trivially obvious.
-  const SPACER_NODE: BottomSpacerNode = { kind: 'bottom_spacer' };
-
-  let displayNodes = $derived<DisplayNode[]>(
-    groupedNodes.length === 0 ? [] : [...groupedNodes, SPACER_NODE],
-  );
-
   let finalAssistantTextIds = $derived(
     finalAssistantTextIdsByTurn(groupedNodes, getActiveTurn(pane.threadId)?.turnIndex ?? null),
   );
 
-  const stick = createStickyBottomController({
-    getScrollEl: () => scrollEl,
-    getListHandle: () => listRef,
-    // Scroll target is the spacer (last entry in displayNodes). `align:'end'`
-    // pins the spacer's bottom to the viewport bottom; the last *real* row
-    // therefore sits exactly composer-height above the viewport bottom —
-    // i.e. just above the absolute composer overlay.
-    getLastIndex: () => displayNodes.length - 1,
-    // Unmask rows that `upsertItemsBatch` flagged for visibility-masking
-    // while sticky. Fires from every settle path of the controller —
-    // success, bail, and the synchronous forceStick — so the registry can
-    // never strand rows hidden.
-    onScrollSettled: () => pane.clearPendingScrollCatchup(),
-  });
+  const stick = createUseStickToBottomController();
 
   // Publish the controller on the pane so external surfaces (sidebar
   // resizers, resizable drawers) can acquire a `pauseAutoScroll()` lease
@@ -156,10 +119,12 @@
     return () => pane.detachScrollController(stick);
   });
 
+  // Bind the controller to the actual DOM elements. The content RO,
+  // wheel/scroll/keydown/touch listeners, and spring driver all start
+  // here. Re-runs if either ref changes (thread switch / HMR).
   $effect(() => {
-    void scrollEl;
-    void listRef;
-    stick.attach();
+    if (!scrollEl || !contentEl) return;
+    stick.attach(scrollEl, contentEl);
   });
 
   // Diagnostic UI render trace — extracted to messageTimelineTrace.ts.
@@ -190,35 +155,18 @@
     return isToolTextBoundaryAt(groupedNodes, index);
   }
 
-  // Mask only the freshly-appended row itself, never the wrappers
-  // around it. `pendingScrollCatchupItems` tracks NEW top-level items
-  // queued for the deferred-rAF scrollToLast; `timelineNodeItemId`
-  // returns the id of the row's anchor item (leaf id, group parent id,
-  // or first member of an inline-agent wrapper). A wrapper that
-  // already exists must not mask when one of its descendants arrives —
-  // hiding stable history while a child row catches up was the bug
-  // that made running subagent cards flicker per child append.
-  //
-  // The set is a SvelteSet; per-row `.has()` reads subscribe only to
-  // that id's membership, so add/remove of a sibling id doesn't
-  // invalidate every visible row's class:invisible derivation. The
-  // earlier `.size === 0` short-circuit was removed because reading
-  // size subscribes to *all* changes, which defeats that fine grain.
-  function hasPendingScrollCatchup(node: TimelineNode): boolean {
-    return pane.pendingScrollCatchupItems.has(timelineNodeItemId(node));
-  }
-
   // ============================================================
-  // VList scroll callbacks → controller
+  // Virtualizer scroll callbacks → snapshot persist
   // ============================================================
+  // The native scroll listener bound by the controller drives intent.
+  // Virtualizer's callbacks here are only for snapshot persistence so
+  // back-button / thread-switch returns to the same place.
 
-  function handleListScroll(offset: number): void {
-    stick.onScroll(offset);
+  function handleVirtuaScroll(_offset: number): void {
     saveScrollSnapshot();
   }
 
-  function handleListScrollEnd(): void {
-    stick.onScrollEnd();
+  function handleVirtuaScrollEnd(): void {
     saveScrollSnapshot();
   }
 
@@ -244,17 +192,13 @@
     // exactly that and re-throw anything else so a real regression in a
     // future virtua version doesn't disappear silently.
     try {
-      if (stick.isAtBottom()) {
+      if (stick.isAtBottom) {
         setThreadScrollSnapshot(threadId, { kind: 'bottom' });
         return;
       }
       const offset = listRef.getScrollOffset();
       const rawIdx = listRef.findItemIndex(offset);
       if (rawIdx < 0) return;
-      // Clamp into the real-row range. virtua's data array now ends with
-      // the synthetic spacer node, so a near-bottom scroll position can
-      // resolve to that index — fall back to the last real row so the
-      // snapshot anchors to a row a future restore can actually find.
       const idx = Math.min(rawIdx, groupedNodes.length - 1);
       const node = groupedNodes[idx];
       if (!node) return;
@@ -305,7 +249,7 @@
 
       const snap = getThreadScrollSnapshot(threadId);
       if (!snap || snap.kind === 'bottom') {
-        stick.forceStick();
+        stick.forceStick({ animation: 'instant' });
         saveScrollSnapshot();
         return;
       }
@@ -315,7 +259,7 @@
       const found = await pane.loadUntilItem(snap.itemId);
       if (token !== restoreToken || pane.threadId !== threadId || !listRef) return;
       if (!found) {
-        stick.forceStick();
+        stick.forceStick({ animation: 'instant' });
         saveScrollSnapshot();
         return;
       }
@@ -323,36 +267,22 @@
       if (token !== restoreToken || pane.threadId !== threadId || !listRef) return;
       const idx = findTimelineNodeIndex(snap.itemId);
       if (idx < 0) {
-        stick.forceStick();
+        stick.forceStick({ animation: 'instant' });
         saveScrollSnapshot();
         return;
       }
+      // User wasn't at bottom when they left — explicit jump elsewhere
+      // must not restick. stopScroll cancels any in-flight spring before
+      // virtua's scrollToIndex writes scrollTop, then setEscapedFromLock
+      // ensures the resulting near-bottom check doesn't auto-restick.
+      stick.stopScroll();
+      stick.setEscapedFromLock(true);
       listRef.scrollToIndex(idx, { align: 'start', offset: -snap.offsetTop });
-      // After programmatic scroll, intent should be 'free' since the user
-      // wasn't at the bottom when they left the thread. Don't force-stick.
       saveScrollSnapshot();
     } finally {
       release();
     }
   }
-
-  // ============================================================
-  // Auto-follow on growth
-  // ============================================================
-  // virtua's per-row ResizeObserver absorbs above-viewport height changes
-  // silently. For below-viewport / append growth, the controller decides
-  // whether to follow based on intent. Tracks length, revision, the
-  // active turn, AND liveDeltaRevision so streaming chunks (which grow an
-  // existing row in place without bumping items.length or timelineRevision)
-  // still re-pin to the new bottom while sticky.
-  $effect(() => {
-    pane.items.length;
-    pane.timelineRevision;
-    pane.liveDeltaRevision;
-    getActiveTurn(pane.threadId)?.turnId;
-    if (pane.threadId !== restoredThreadId) return;
-    stick.notifyContentMaybeGrew();
-  });
 
   // ============================================================
   // Load older
@@ -370,6 +300,11 @@
     const anchorOffsetTop = node ? listRef.getItemOffset(firstIdxBefore) - offsetBefore : 0;
 
     const release = stick.pauseAutoScroll();
+    // The user is reading older — must not auto-restick from the
+    // post-prepend scrollHeight jump. Without this, the controller's
+    // content RO would observe the positive delta and the spring would
+    // yank the user to the new bottom.
+    stick.setEscapedFromLock(true);
     const myToken = ++restoreToken;
     try {
       const result = await pane.loadOlder();
@@ -378,6 +313,7 @@
       if (!anchorId) return;
       const newIdx = findTimelineNodeIndex(anchorId);
       if (newIdx < 0) return;
+      stick.stopScroll();
       listRef.scrollToIndex(newIdx, { align: 'start', offset: -anchorOffsetTop });
       saveScrollSnapshot();
     } finally {
@@ -401,7 +337,14 @@
     await tick();
     if (myToken !== restoreToken || !listRef) return;
     const idx = findTimelineNodeIndex(id);
-    if (idx >= 0) listRef.scrollToIndex(idx, { align: 'center', smooth: true });
+    if (idx < 0) return;
+    // Programmatic jump elsewhere — cancel spring + escape so the new
+    // position holds. `smooth: true` would route through the browser's
+    // native smooth scroll (scrollEl.scrollTo({behavior:'smooth'})),
+    // which would race the spring driver — drop it.
+    stick.stopScroll();
+    stick.setEscapedFromLock(true);
+    listRef.scrollToIndex(idx, { align: 'center' });
   }
 
   let lastHandledScrollNonce = 0;
@@ -415,16 +358,26 @@
 
   onDestroy(() => {
     if (restoredThreadId) saveScrollSnapshotForThread(restoredThreadId, true);
-    // Controller detach is handled by the registration $effect's return
-    // function; we only need to dispose the controller's own listeners.
-    stick.destroy();
+    stick.detach();
   });
 </script>
 
-<!-- Outer wrapper: catches gesture events for the sticky controller and
-     carries the timeline test id stably across loading / empty / populated
-     states. The inner VList owns the actual scroll element. -->
-<div bind:this={scrollEl} class="relative h-full" tabindex="-1" data-testid="message-timeline-scroll">
+<!-- Outer wrapper IS the scroll container. <Virtualizer scrollRef={scrollEl}>
+     reads/writes via this element; the controller's wheel/scroll/keydown/
+     touch listeners and content ResizeObserver bind here too. The
+     padding-bottom (= composer height + visual breathing room) keeps the
+     last message clear of the absolute composer overlay without putting
+     a synthetic spacer row inside the virtualized data. -->
+<div
+  bind:this={scrollEl}
+  class="relative h-full overflow-y-auto"
+  style:overscroll-behavior-y="contain"
+  style:padding-bottom={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}
+  tabindex="-1"
+  data-testid="message-timeline-scroll"
+  role="log"
+  aria-label="Message History"
+>
   {#if pane.loading}
     <div class="flex items-center justify-center h-full text-fg-subtle text-sm" role="status" aria-live="polite">
       <span class="animate-pulse">Loading thread...</span>
@@ -436,8 +389,7 @@
   {:else if pane.items.length === 0 && getActiveTurn(pane.threadId)}
     <!-- Active turn but no items yet. The working/todo UI lives in the
          ChatView bottom overlay, outside the virtualized history. -->
-    <div class="mx-auto w-full max-w-[62rem] px-6 pt-8" style:padding-bottom={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}>
-    </div>
+    <div class="mx-auto w-full max-w-[62rem] px-6 pt-8"></div>
   {:else}
     {#snippet renderNode(node: TimelineNode, depth: number)}
       {#if node.kind === 'leaf'}
@@ -449,128 +401,99 @@
       {/if}
     {/snippet}
 
-    <VList
-      bind:this={listRef}
-      data={displayNodes}
-      getKey={(node) => (node.kind === 'bottom_spacer' ? 'bottom_spacer' : timelineNodeKey(node))}
-      itemSize={ESTIMATED_ROW_SIZE}
-      bufferSize={BUFFER_SIZE_PX}
-      ssrCount={IS_TEST ? 100_000 : undefined}
-      onscroll={handleListScroll}
-      onscrollend={handleListScrollEnd}
-      style="height: 100%; overflow-x: hidden; overscroll-behavior-y: contain;"
-      role="log"
-      aria-label="Message History"
-    >
-      {#snippet children(node: DisplayNode, index: number)}
-        {#if node.kind === 'bottom_spacer'}
-          <!-- Synthetic spacer always at the end of displayNodes. Lives
-               in the virtualized data array under a stable getKey so
-               virtua never sees it move (it stays at the same DOM
-               identity across appends, no remount, no migration of the
-               composer-padding height between two real rows). The height
-               itself is the same calc the row-embedded version used.
-               `aria-hidden` keeps it out of the message-history role
-               announcement; no `data-row-index` so the load-older /
-               turn-divider plumbing only ever sees real rows. -->
-          <div
-            aria-hidden="true"
-            data-testid="bottom-spacer"
-            style:height={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}
-          ></div>
-        {:else}
-        <!-- Outer per-row wrapper. We do NOT set data-item-id here:
-             only TimelineLeaf owns that attribute on its root. Structural
-             rows stay unanchored, and tests rely on the divider rendering
-             BEFORE the [data-item-id] node, not containing it.
-
-             `class:invisible` masks newly-appended rows for one frame
-             until `stickyBottomController` runs `scrollToLast`, which
-             clears `pendingScrollCatchupItems` via `onScrollSettled`.
-             Live working/todo UI lives outside VList; masking here
-             only hides the freshly-mounted transcript row while the
-             sticky controller catches up. -->
-        <div
-          data-row-index={index}
-          class:mt-4={isToolTextBoundary(index)}
-          class:invisible={hasPendingScrollCatchup(node)}
-        >
-          {#if index === 0}
-            <!-- Top of timeline. Load-older button (when applicable) and
-                 a small top breathing-room spacer ride inside the first
-                 row. When user scrolls to the very top, the button is
-                 the first thing they see. After load-older completes,
-                 the explicit scrollToIndex re-anchors them to where they
-                 were reading — the button moves up out of view. -->
-            <div class="pt-6 mx-auto w-full max-w-[62rem] px-6">
-              {#if pane.hasMoreHistory}
-                <div class="mb-3 flex justify-center">
-                  <Button
-                    variant="secondary"
-                    size="xs"
-                    onclick={handleLoadOlder}
-                    loading={pane.loadingOlder}
-                    testId="load-older-messages"
-                  >
-                    {#snippet children()}
-                      {pane.loadingOlder ? 'Loading…' : 'Load older messages'}
-                    {/snippet}
-                  </Button>
-                </div>
-              {/if}
-            </div>
-          {/if}
-
-          <div class="mx-auto w-full max-w-[62rem] px-6">
-            {#if shouldRenderTurnBoundaryBefore(index, node)}
-              {@const showResponsePill = node.kind === 'leaf' && finalAssistantTextIds.has(node.item.id)}
-              <!-- Two visual modes share a fixed wrapper height
-                   (`h-[1.625rem]` = 26px = pill chrome: text-[10px]
-                   × leading-tight ≈ 12px + py-1 8px + 2× 1px border).
-                   Labeled mode renders `line | gap | pill | gap | line`,
-                   unlabeled mode renders one continuous full-width line.
-                   The pill's `leading-tight` keeps its content inside
-                   the fixed wrapper across font-loading variance.
-                   Fixed `h-` (not the codebase's usual `min-h-` slot
-                   convention) is deliberate: both branches MUST be the
-                   exact same height so promoting an intermediate
-                   divider to "final" on turn settle never shifts row
-                   geometry — satisfies the "no late transcript
-                   adornments on completion" rule in
-                   `frontend/CLAUDE.md`. Re-derive 1.625rem if the pill
-                   classes above change. -->
-              <div data-testid="response-divider" data-final-response={showResponsePill ? 'true' : 'false'}>
-                <div class="my-3 flex h-[1.625rem] items-center gap-3">
-                  <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
-                  {#if showResponsePill}
-                    <span
-                      class="rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[10px] uppercase leading-tight tracking-[0.14em] text-text-secondary"
+    <!-- contentEl is the controller's content-RO observation target.
+         Virtua's container has `contain: size; height: totalSize+'px'`,
+         so contentEl.scrollHeight reflects virtua's totalSize exactly. -->
+    <div bind:this={contentEl}>
+      <Virtualizer
+        bind:this={listRef}
+        scrollRef={scrollEl}
+        data={groupedNodes}
+        getKey={(node) => timelineNodeKey(node)}
+        itemSize={ESTIMATED_ROW_SIZE}
+        bufferSize={BUFFER_SIZE_PX}
+        ssrCount={IS_TEST ? 100_000 : undefined}
+        onscroll={handleVirtuaScroll}
+        onscrollend={handleVirtuaScrollEnd}
+      >
+        {#snippet children(node: TimelineNode, index: number)}
+          <!-- Outer per-row wrapper. We do NOT set data-item-id here:
+               only TimelineLeaf owns that attribute on its root. Structural
+               rows stay unanchored, and tests rely on the divider rendering
+               BEFORE the [data-item-id] node, not containing it. -->
+          <div data-row-index={index} class:mt-4={isToolTextBoundary(index)}>
+            {#if index === 0}
+              <!-- Top of timeline. Load-older button (when applicable) and
+                   a small top breathing-room spacer ride inside the first
+                   row. When user scrolls to the very top, the button is
+                   the first thing they see. After load-older completes,
+                   the explicit scrollToIndex re-anchors them to where they
+                   were reading — the button moves up out of view. -->
+              <div class="pt-6 mx-auto w-full max-w-[62rem] px-6">
+                {#if pane.hasMoreHistory}
+                  <div class="mb-3 flex justify-center">
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      onclick={handleLoadOlder}
+                      loading={pane.loadingOlder}
+                      testId="load-older-messages"
                     >
-                      Response
-                    </span>
-                    <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
-                  {/if}
-                </div>
+                      {#snippet children()}
+                        {pane.loadingOlder ? 'Loading…' : 'Load older messages'}
+                      {/snippet}
+                    </Button>
+                  </div>
+                {/if}
               </div>
             {/if}
-            <div data-testid="message-timeline-node">
-              {@render renderNode(node, 1)}
+
+            <div class="mx-auto w-full max-w-[62rem] px-6">
+              {#if shouldRenderTurnBoundaryBefore(index, node)}
+                {@const showResponsePill = node.kind === 'leaf' && finalAssistantTextIds.has(node.item.id)}
+                <!-- Two visual modes share a fixed wrapper height
+                     (`h-[1.625rem]` = 26px = pill chrome: text-[10px]
+                     × leading-tight ≈ 12px + py-1 8px + 2× 1px border).
+                     Labeled mode renders `line | gap | pill | gap | line`,
+                     unlabeled mode renders one continuous full-width line.
+                     The pill's `leading-tight` keeps its content inside
+                     the fixed wrapper across font-loading variance.
+                     Fixed `h-` (not the codebase's usual `min-h-` slot
+                     convention) is deliberate: both branches MUST be the
+                     exact same height so promoting an intermediate
+                     divider to "final" on turn settle never shifts row
+                     geometry — satisfies the "no late transcript
+                     adornments on completion" rule in
+                     `frontend/CLAUDE.md`. Re-derive 1.625rem if the pill
+                     classes above change. -->
+                <div data-testid="response-divider" data-final-response={showResponsePill ? 'true' : 'false'}>
+                  <div class="my-3 flex h-[1.625rem] items-center gap-3">
+                    <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
+                    {#if showResponsePill}
+                      <span
+                        class="rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[10px] uppercase leading-tight tracking-[0.14em] text-text-secondary"
+                      >
+                        Response
+                      </span>
+                      <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
+                    {/if}
+                  </div>
+                </div>
+              {/if}
+              <div data-testid="message-timeline-node">
+                {@render renderNode(node, 1)}
+              </div>
             </div>
-            <!-- Bottom-padding spacer used to live here, gated on
-                 `index === groupedNodes.length - 1`. It now lives as
-                 the synthetic `bottom_spacer` DisplayNode at the end of
-                 the virtua data array — see the {#if node.kind ===
-                 'bottom_spacer'} branch above. Migrating it out of the
-                 last-row wrapper means appends no longer shrink the
-                 outgoing-last row and grow the incoming-last row in
-                 the same frame, which used to cost two RO-driven
-                 measurement passes per append. -->
           </div>
-        </div>
-        {/if}
-      {/snippet}
-    </VList>
+        {/snippet}
+      </Virtualizer>
+    </div>
   {/if}
 
-  <ScrollToBottomButton visible={!stick.isSticky} onClick={() => stick.forceStick()} />
+  <!-- Visible when NOT at bottom (intent-or-geometry); the chip is the
+       user's escape hatch when they've drifted away. Wiring this to
+       `!isSticky` would also pop the chip during sidebar/drawer resize
+       leases (pauseDepth > 0) even though the user is geometrically
+       glued to the bottom — clearly not desired. -->
+  <ScrollToBottomButton visible={!stick.isAtBottom} onClick={() => stick.forceStick()} />
 </div>

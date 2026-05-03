@@ -65,14 +65,25 @@
       if (!entry) return;
       const next = Math.round(entry.contentRect.height);
       if (next > 0 && next !== composerHeight) {
+        // ORDERING IS LOAD-BEARING: write `composerHeight = next` BEFORE
+        // calling `notifyContentMaybeGrew()`. The composer overlay sits
+        // OUTSIDE the timeline's `contentEl` (which is what the spring
+        // controller's content-RO observes), so growing the composer does
+        // not fire that RO. The flow is:
+        //   1. write composerHeight → reactive style update writes a new
+        //      `padding-bottom` on the scroll wrapper → browser begins a
+        //      layout pass that will change `scrollHeight`.
+        //   2. notifyContentMaybeGrew() stamps `resizeDifference = 1` and
+        //      writes `scrollTop = target` synchronously. The stamp
+        //      prevents the layout-flush `scroll` event from being
+        //      mis-classified as a user-driven scroll (which would set
+        //      `escapedFromLock = true` and break stickiness for the
+        //      rest of the session).
+        // If you flip the order — call notify first, then mutate
+        // composerHeight — the new scrollHeight isn't materialized yet,
+        // `target` reads stale geometry, and the subsequent layout flush
+        // emits an untagged scroll event. Don't rearrange.
         composerHeight = next;
-        // The inner timeline content's padding-bottom tracks
-        // --composer-height, so composer growth (attachment tray,
-        // textarea autosize, approval panel) grows scrollSize without
-        // changing the scroll wrapper's clientHeight. The auto-follow
-        // $effect doesn't depend on composer height — nudge the
-        // controller so a sticky user stays pinned to the new bottom
-        // instead of having the last row slide behind the composer.
         pane.scrollController?.notifyContentMaybeGrew();
       }
     });
