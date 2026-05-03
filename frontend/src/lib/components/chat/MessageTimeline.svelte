@@ -40,10 +40,14 @@
   // per-item ResizeObserver virtua wraps each row in; this constant only
   // matters for the first render before measurements stabilise.
   const ESTIMATED_ROW_SIZE = 90;
-  // Extra buffer rendered above + below the viewport. Larger than virtua's
-  // default 200px so the row at the user's anchor position is reliably in
-  // the DOM during scroll, which keeps gesture-driven anchoring smooth.
-  const BUFFER_SIZE_PX = 900;
+  // Extra buffer rendered above + below the viewport. Sized for two viewports
+  // worth of rows on each side so fast scrolls (trackpad fling, scrollbar
+  // drag) don't outrun the rendered window — that was the source of the
+  // "text disappears under the composer then reappears" flicker. Each
+  // ~90px row × 1800px = ~20 extra rows per side. Trade ~4MB of mounted
+  // DOM/component state for the smoother scroll. Revisit only if it's
+  // ever measured to hurt mount-time on first-open.
+  const BUFFER_SIZE_PX = 1800;
   // Visual breathing room between the last message and the composer
   // overlay; combined with the --composer-height variable from ChatView.
   const BOTTOM_PAD_PX = 24;
