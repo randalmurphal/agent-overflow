@@ -60,13 +60,18 @@
     return () => virtualizer.unregister(path);
   });
 
-  // File-level visibility gate. `isVisible(unregistered) === false`
-  // until the IntersectionObserver fires its first batch — meaning
-  // a freshly-registered file shows the placeholder skeleton
-  // briefly until the observer catches up (typically <16ms).
-  let inViewport = $derived(virtualizer.isVisible(file.path));
+  // Render the body whenever the file is expanded. The
+  // IntersectionObserver-based virtualization gate previously gated
+  // body rendering on `expanded && inViewport`, but the observer
+  // hadn't reliably fired before the user looked at the sidebar in
+  // some cases — the body would stay stuck on the empty placeholder
+  // until the first scroll-triggered tick. Visibility data is still
+  // collected (cachedHeight, visiblePaths) so the body's tokenizer
+  // dispatcher can keep gating Shiki worker calls on actual
+  // viewport intersection; rendering itself stays unconditional once
+  // the user opens a file.
   let cachedHeight = $derived(virtualizer.height(file.path));
-  let shouldRender = $derived(expanded && inViewport);
+  let shouldRender = $derived(expanded);
 
   let wrapClass = $derived(wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre');
 
@@ -84,13 +89,41 @@
     return `${previousPath} → ${file.path}`;
   });
 
-  // Filter out the `meta` lines (diff/index/+++/--- headers) so the
-  // body shows hunks + content. Hunk headers (`@@`) are kept — they
-  // are useful navigational anchors.
-  let displayLines = $derived(file.lines.filter((line) => {
-    if (line.type !== 'meta') return true;
-    return line.content.startsWith('@@');
-  }));
+  // Drop ALL meta lines (`diff --git`, `---`, `+++`, `@@` hunk
+  // headers) from the visible stream. The header above already
+  // identifies the file; hunk headers are noisy as raw text and
+  // don't help a reader scanning a rendered diff. Hunk separators
+  // (`⋮`) below mark gaps between hunks visually instead.
+  let displayLines = $derived(file.lines.filter((line) => line.type !== 'meta'));
+
+  // Track hunk boundaries so the body can interleave separator rows
+  // between hunks (gives the reader a visual cue when line numbers
+  // jump). Each entry is the index in `displayLines` AFTER which a
+  // separator should appear; the first hunk doesn't get a leading
+  // separator.
+  let separatorAfter = $derived.by((): Set<number> => {
+    const out = new Set<number>();
+    let displayIdx = -1;
+    let seenFirstHunk = false;
+    let pendingSeparator = false;
+    for (const line of file.lines) {
+      if (line.type === 'meta') {
+        if (line.content.startsWith('@@')) {
+          if (seenFirstHunk) pendingSeparator = true;
+          seenFirstHunk = true;
+        }
+        continue;
+      }
+      displayIdx += 1;
+      if (pendingSeparator) {
+        // The separator visually sits BEFORE the new hunk's first
+        // line — i.e. AFTER the previous displayed line.
+        out.add(displayIdx - 1);
+        pendingSeparator = false;
+      }
+    }
+    return out;
+  });
 
   let splitRows: SplitDiffRow[] = $derived(viewMode === 'split' ? buildSplitRows(displayLines) : []);
 
@@ -175,10 +208,22 @@
             {/each}
           </div>
         {:else}
-          <pre class="overflow-auto px-3 py-2 font-mono text-[11px] leading-tight {wrapClass}">{#each displayLines as line, i (i)}<span
-              class="block {lineTintClass(line.type)}"
-            ><DiffLineContent {line} tokens={getTokens(line)} />
-</span>{/each}</pre>
+          <div class="px-3 py-2 font-mono text-[11px] leading-tight {wrapClass}">
+            {#each displayLines as line, i (i)}
+              <div class="block {lineTintClass(line.type)}"><DiffLineContent {line} tokens={getTokens(line)} /></div>
+              {#if separatorAfter.has(i)}
+                <div
+                  class="my-1 flex items-center gap-2 select-none"
+                  aria-hidden="true"
+                  data-testid="diff-sidebar-hunk-separator"
+                >
+                  <span class="flex-1 border-t border-border-subtle"></span>
+                  <span class="text-[10px] text-fg-subtle/60">⋮</span>
+                  <span class="flex-1 border-t border-border-subtle"></span>
+                </div>
+              {/if}
+            {/each}
+          </div>
         {/if}
       {:else if cachedHeight !== undefined}
         <!-- Out-of-viewport placeholder preserves layout via measured height. -->
