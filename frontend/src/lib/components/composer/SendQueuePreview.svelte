@@ -30,7 +30,7 @@
   // shrinks `--composer-height` so the timeline reclaims the vertical
   // space.
   //
-  // Lives OUTSIDE `<VList>` per chat/CLAUDE.md "Render OUTSIDE the
+  // Lives OUTSIDE `<Virtualizer>` per chat/CLAUDE.md "Render OUTSIDE the
   // virtualizer" rule. Height changes propagate via
   // `--composer-height`. No transition:slide / transition:fade
   // adjacent to the scroll area — see chat/CLAUDE.md "No

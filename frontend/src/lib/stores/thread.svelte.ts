@@ -391,8 +391,10 @@ export function createThreadPane() {
    */
   function activatePanel(target: RhsPanel | null): void {
     // Right-edge sidebars (plan / diff / diff-payload) reflow the chat
-    // column when they open or close. Hold a brief lease so the
-    // auto-follow $effect doesn't yank the timeline mid-transition.
+    // column when they open or close. Hold a brief lease so the spring
+    // controller's chase + content-RO re-pin both no-op while the
+    // column's clientWidth is settling — preventing the timeline from
+    // yanking mid-transition.
     const current = rhsPanelSlot.activePanel;
     const willChange = !sameRhsPanel(current, target);
     if (!willChange) {
@@ -1773,8 +1775,8 @@ export function createThreadPane() {
 
     toggleTerminal(): void {
       // Bottom drawer mount/unmount reflows the chat column. Hold a
-      // brief lease so the auto-follow $effect can't yank the viewport
-      // while the column's clientHeight is settling.
+      // brief lease so the spring controller's chase + content-RO
+      // re-pin both no-op while the column's clientHeight is settling.
       leaseDuringSettle(scrollController);
       showTerminal = !showTerminal;
     },

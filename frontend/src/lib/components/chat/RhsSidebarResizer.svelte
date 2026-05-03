@@ -29,9 +29,10 @@
      * Active pane whose timeline scroll-controller should suspend
      * auto-follow during the drag. RHS panel resize narrows/widens the
      * chat column, reflowing every paragraph row. Without this lease a
-     * concurrent stream chunk could call `scrollToIndex(last, 'end')`
-     * mid-drag and yank the user. Idempotent — no-op when the pane has
-     * no registered controller.
+     * concurrent stream chunk would fire the controller's content-RO
+     * and the spring driver would write `scrollTop` mid-drag, yanking
+     * the user. Idempotent — no-op when the pane has no registered
+     * controller.
      */
     pane?: ThreadPane;
   }
