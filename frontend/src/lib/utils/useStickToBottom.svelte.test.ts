@@ -602,4 +602,78 @@ describe('createUseStickToBottomController', () => {
       newScrollEl.remove();
     });
   });
+
+  describe('architectural invariants', () => {
+    // These tests lock in the design choice that distinguishes the
+    // unified controller from its predecessors: intent (escapedFromLock,
+    // isAtBottomState) is mutated only by explicit signals — gestures,
+    // forceStick, stopScroll, the scroll handler's escape→re-stick
+    // path. Pure geometry mutation does not cross the boundary. If a
+    // future change reintroduces a "scrollTop direction" inference,
+    // these tests fail.
+
+    it('mutating scrollTop without firing any event never flips escapedFromLock', () => {
+      // Start sticky + at-bottom.
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+
+      // Pure geometry mutation: change scrollTop directly. No scroll
+      // event, no wheel event, no key, no touch.
+      geom.scrollTop = 50;
+      // (no fireScroll / fireWheel / fireKey / fireTouchMove here)
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('mutating scrollHeight without firing any event never flips escapedFromLock', () => {
+      expect(controller.escapedFromLock).toBe(false);
+
+      // Pure geometry mutation: content extended, but no RO callback,
+      // no scroll event triggered. The controller doesn't poll
+      // geometry on a timer; it observes signals.
+      geom.scrollHeight = 5000;
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('geometric near-bottom alone never flips isAtBottomState true after escape', async () => {
+      // Escape via wheel. isAtBottomState is now false; near-bottom is
+      // recomputed from geometry on each scroll event.
+      fireWheel(scrollEl, -50, scrollEl);
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Mutate scrollTop to put us geometrically right at bottom WITHOUT
+      // firing a scroll event. The geometric near-bottom would be true
+      // if computed, but no signal is firing to recompute it AND the
+      // intent flag (isAtBottomState) is governed only by the scroll
+      // handler's "user scrolled back" path, the forceStick path, or
+      // the content RO's negative-delta restick path — none of which
+      // are triggered here.
+      geom.scrollTop = 399;
+
+      // Without a scroll event firing the re-stick path, isSticky stays
+      // false even though geometrically we'd be at-bottom.
+      expect(controller.isSticky).toBe(false);
+    });
+
+    it('only the scroll handler\'s near-bottom + escaped path resurrects intent', async () => {
+      // Companion to the test above: this proves the design DOES
+      // re-stick when the user actually scrolls back, so the previous
+      // assertion is about the absence of polling, not a regression.
+      fireWheel(scrollEl, -50, scrollEl);
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Now actually fire a scroll event after moving back to bottom.
+      // The scroll handler (defer 1ms) sees isNearBottomState true +
+      // escapedFromLockState true and clears both.
+      geom.scrollTop = 399;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+  });
 });

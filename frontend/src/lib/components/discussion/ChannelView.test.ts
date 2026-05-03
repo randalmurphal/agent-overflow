@@ -365,4 +365,76 @@ describe('<ChannelView>', () => {
     expect(scroll.scrollTop).toBe(399);
     expect(queryByTestId('scroll-to-bottom')).toBeNull();
   });
+
+  it('re-pins scrollTop when the composer section resizes (concluded toggle)', async () => {
+    // The composer section sits in a sibling flex region below the
+    // scroll container. When it grows or shrinks (e.g., the
+    // concluded toggle swaps the textarea+button for a "Discussion has
+    // concluded" paragraph), the scroll container's clientHeight
+    // changes — but useStickToBottom's content RO doesn't fire because
+    // contentEl didn't change. ChannelView installs a second RO on the
+    // composer section that calls notifyContentMaybeGrew(), and the
+    // controller writes scrollTop = max(0, scrollHeight - 1 -
+    // clientHeight) so the user stays pinned to the last message.
+    const pane = await buildPane();
+    setBindingMock('GetChannelMessages', async () => [
+      makeMsg({ id: 'a', sequence: 1, content: 'first' }),
+    ]);
+
+    const { getByTestId } = render(ChannelView, {
+      props: { pane, channelId: 'channel-1' },
+    });
+    const scroll = getByTestId('channel-message-list') as HTMLElement;
+    let scrollHeightValue = 1000;
+    let clientHeightValue = 600;
+    Object.defineProperty(scroll, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeightValue,
+    });
+    Object.defineProperty(scroll, 'clientHeight', {
+      configurable: true,
+      get: () => clientHeightValue,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+
+    // Two ROs are installed: the controller's contentEl RO and
+    // ChannelView's composer-section RO. Identify the composer RO by
+    // its testid'd target so a future style refactor (border-t →
+    // something else) doesn't silently misroute the lookup.
+    const composerSection = getByTestId('channel-composer-section');
+    const composerRO = FireableResizeObserver.instances.find(
+      (r) => r.observed[0] === composerSection,
+    );
+    if (!composerRO) throw new Error('expected ChannelView to install a composer RO');
+    const composerEl = composerRO.observed[0] as HTMLElement;
+
+    // Seed: user is sticky + at-bottom. Fire the content RO once so
+    // previousHeight is set inside the controller.
+    const contentRO = FireableResizeObserver.instances.find((r) => r !== composerRO);
+    if (!contentRO) throw new Error('expected useStickToBottom to install a content RO');
+    contentRO.fire(contentRO.observed[0], 400);
+    scroll.scrollTop = 399; // = scrollHeight - 1 - clientHeight
+    await fireEvent.scroll(scroll);
+    await vi.advanceTimersByTimeAsync(16);
+    for (let i = 0; i < 3; i++) await Promise.resolve();
+
+    // Now simulate the concluded toggle shrinking the composer (the
+    // <p> "Discussion has concluded" line is shorter than the
+    // textarea+button). clientHeight grows because flex re-distributes
+    // the freed space to the scroll container. Without notify, the
+    // controller wouldn't know; with notify, scrollTop is re-pinned to
+    // the new target.
+    clientHeightValue = 640;
+    composerRO.fire(composerEl, 28);
+
+    // notifyContentMaybeGrew runs synchronously inside the RO callback,
+    // so the re-pin is observable on the next microtask.
+    for (let i = 0; i < 3; i++) await Promise.resolve();
+
+    // New target = 1000 - 1 - 640 = 359. Controller wrote scrollTop to
+    // this value via the notify path.
+    expect(scroll.scrollTop).toBe(359);
+  });
 });

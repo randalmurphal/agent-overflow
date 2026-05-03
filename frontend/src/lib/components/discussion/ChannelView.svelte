@@ -38,6 +38,7 @@
   let loadingInitial = $state(true);
   let scrollEl: HTMLDivElement | undefined = $state(undefined);
   let contentEl: HTMLDivElement | undefined = $state(undefined);
+  let composerEl: HTMLDivElement | undefined = $state(undefined);
   const stick = createUseStickToBottomController();
 
   let messages = $derived(pane.channelMessages);
@@ -144,6 +145,25 @@
   $effect(() => {
     if (!scrollEl || !contentEl) return;
     stick.attach(scrollEl, contentEl);
+  });
+
+  // Composer-section RO. Discussion's textarea + button live in a
+  // sibling flex section that's NOT inside the controller's contentEl,
+  // so a height change there (e.g. the concluded-toggle swapping the
+  // textarea+button for a "Discussion has concluded" paragraph)
+  // shrinks/grows the scrollEl's clientHeight without firing the
+  // content RO. notifyContentMaybeGrew re-pins scrollTop to the new
+  // target so a sticky user doesn't drift away from the last message.
+  // The textarea itself is `rows={1}` with no autosize, so the more
+  // dramatic Shift+Enter case doesn't actually change height — but the
+  // RO costs nothing per-event and future-proofs against a textarea
+  // that grows.
+  $effect(() => {
+    if (!composerEl) return;
+    const observed = composerEl;
+    const ro = new ResizeObserver(() => stick.notifyContentMaybeGrew());
+    ro.observe(observed);
+    return () => ro.disconnect();
   });
 
   async function handlePost(): Promise<void> {
@@ -258,7 +278,11 @@
     <ScrollToBottomButton visible={!stick.isAtBottom} onClick={() => stick.forceStick()} />
   </div>
 
-  <div class="border-t border-border-subtle px-5 py-3 shrink-0">
+  <div
+    bind:this={composerEl}
+    class="border-t border-border-subtle px-5 py-3 shrink-0"
+    data-testid="channel-composer-section"
+  >
     {#if concluded}
       <p class="text-[12px] text-fg-muted">
         This discussion has concluded. Posting is disabled.

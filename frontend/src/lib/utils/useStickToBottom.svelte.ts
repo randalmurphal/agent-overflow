@@ -19,11 +19,10 @@
 // publication, scrollLeaseDuringTransition helper) speak to this through
 // the PaneScrollController interface — pauseAutoScroll() returns a
 // depth-counted lease, notifyContentMaybeGrew() handles geometry changes
-// outside the content element (composer growth/shrink). Discussion does
-// not currently call notifyContentMaybeGrew because its textarea sits in
-// a separate `shrink-0` flex section that doesn't change the scroll
-// container's clientHeight; if Discussion ever grows a similar
-// composer-height story it would call notify the same way ChatView does.
+// outside the content element. Both ChatView (composer overlay RO) and
+// ChannelView (composer flex-section RO) call notifyContentMaybeGrew
+// when their out-of-content height changes; the seam is identical on
+// both surfaces.
 
 const DEFAULT_SPRING = { damping: 0.7, stiffness: 0.05, mass: 1.25 } as const;
 const SIXTY_FPS_INTERVAL_MS = 1000 / 60;
