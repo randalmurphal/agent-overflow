@@ -299,6 +299,135 @@ func TestBackgroundTaskNotification_EnrichesExistingCompletionWithLoadingAndLoad
 	}
 }
 
+// TestBackgroundTaskNotification_KilledThenNotificationPreservesStopped
+// pins the user-Stop UX. Upstream's stop_task path
+// (`claude-code-source-code/src/tasks/stopTask.ts:38-95`) suppresses
+// the queued XML notification (`task.notified=true` short-circuits
+// `enqueueShellNotification`) and instead calls
+// `emitTaskTerminatedSdk(taskId, 'stopped', ...)` directly. The CLI
+// also fires `task_updated{patch.status:"killed"}` for the lifecycle
+// transition. Both events arrive; order on the wire is not pinned.
+//
+// Either order must produce a `tool_completion` sibling whose
+// `Status` renders as "killed" (Stopped badge) — never "errored"
+// (Failed badge). This is the regression guard for the
+// killed-→-Failed mis-render the architectural review flagged.
+func TestBackgroundTaskNotification_KilledThenNotificationPreservesStopped(t *testing.T) {
+	t.Run("task_updated_first_then_notification", func(t *testing.T) {
+		router, st, _ := newTestRouter(t)
+		createTestThread(t, st, "t1")
+
+		startMeta, _ := json.Marshal(map[string]any{
+			"toolName":      "Bash",
+			"is_background": true,
+			"input":         map[string]any{"command": "sleep 3600"},
+		})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-stop",
+			ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("seed launch: %v", err)
+		}
+
+		// task_updated{killed} — the carve-out at tool_lifecycle.go:421
+		// routes this through observeBackgroundTaskTerminal directly
+		// (no stash) so chat shows the Stopped badge without waiting
+		// for the next turn's task_notification.
+		killMeta, _ := json.Marshal(map[string]any{
+			"task_id":     "tsk-stop",
+			"tool_use_id": "bg-stop",
+			"status":      "killed",
+			"is_error":    true,
+			"source":      "task_updated",
+		})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-stop",
+			Meta: killMeta, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("task_updated{killed}: %v", err)
+		}
+
+		// task_notification{stopped} — emitTaskTerminatedSdk emits the
+		// SDK-normalized form. Must not downgrade the existing row's
+		// Status from "killed" to "errored".
+		notifMeta, _ := json.Marshal(map[string]any{
+			"task_id":     "tsk-stop",
+			"tool_use_id": "bg-stop",
+			"status":      "stopped",
+		})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventBackgroundTaskNotification, ThreadID: "t1", ItemID: "bg-stop",
+			Meta: notifMeta, Content: `Background command "sleep 3600" was stopped`, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("task_notification{stopped}: %v", err)
+		}
+
+		dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+		if len(dones) != 1 {
+			t.Fatalf("expected 1 completion sibling, got %d", len(dones))
+		}
+		if dones[0].Status != statusKilled {
+			t.Errorf("Status = %q, want %q (Stopped badge, not Failed)", dones[0].Status, statusKilled)
+		}
+	})
+
+	t.Run("notification_first_then_task_updated", func(t *testing.T) {
+		router, st, _ := newTestRouter(t)
+		createTestThread(t, st, "t2")
+
+		startMeta, _ := json.Marshal(map[string]any{
+			"toolName":      "Bash",
+			"is_background": true,
+			"input":         map[string]any{"command": "sleep 3600"},
+		})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: "t2", ItemID: "bg-stop2",
+			ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("seed launch: %v", err)
+		}
+
+		// task_notification{stopped} arrives BEFORE task_updated.
+		// No stash, no existing sibling — notification persists as a
+		// notification row only, no sibling write yet.
+		notifMeta, _ := json.Marshal(map[string]any{
+			"task_id":     "tsk-stop2",
+			"tool_use_id": "bg-stop2",
+			"status":      "stopped",
+		})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventBackgroundTaskNotification, ThreadID: "t2", ItemID: "bg-stop2",
+			Meta: notifMeta, Content: `Background command "sleep 3600" was stopped`, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("task_notification{stopped}: %v", err)
+		}
+
+		// task_updated{killed} arrives second — observe path writes
+		// the sibling now. Status must render as killed.
+		killMeta, _ := json.Marshal(map[string]any{
+			"task_id":     "tsk-stop2",
+			"tool_use_id": "bg-stop2",
+			"status":      "killed",
+			"is_error":    true,
+			"source":      "task_updated",
+		})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t2", ItemID: "bg-stop2",
+			Meta: killMeta, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("task_updated{killed}: %v", err)
+		}
+
+		dones := findItemsByKind(t, st, "t2", itemKindBackgroundDone)
+		if len(dones) != 1 {
+			t.Fatalf("expected 1 completion sibling, got %d", len(dones))
+		}
+		if dones[0].Status != statusKilled {
+			t.Errorf("Status = %q, want %q (Stopped badge, not Failed)", dones[0].Status, statusKilled)
+		}
+	})
+}
+
 func TestBackgroundTaskNotification_ReplayPreservesOriginalTimelinePosition(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

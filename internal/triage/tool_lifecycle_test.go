@@ -2015,6 +2015,26 @@ func TestBackgroundTerminalStatus_KilledMapping(t *testing.T) {
 			want: statusCompleted,
 		},
 		{
+			// SDK-normalized form of `killed`: print.ts:2042-2047 maps
+			// the XML-form `killed` to `stopped` for SDK consumers.
+			// In normal flow, a stash from `task_updated` provides the
+			// raw `killed` and this case is unreachable — but if a
+			// `task_notification` arrives without a prior task_updated
+			// (notification-only path) the SDK form lands directly on
+			// the meta. Defensive mapping renders correctly as Stopped
+			// rather than collapsing to Failed.
+			name: "stopped (SDK-normalized killed) renders as killed",
+			in:   backgroundTaskTerminalMeta{Status: "stopped"},
+			want: statusKilled,
+		},
+		{
+			// Same as above but with is_error set (the parser stamps
+			// is_error=true for every non-completed terminal).
+			name: "stopped+is_error still renders as killed",
+			in:   backgroundTaskTerminalMeta{Status: "stopped", IsError: true},
+			want: statusKilled,
+		},
+		{
 			name: "unknown status falls back to errored",
 			in:   backgroundTaskTerminalMeta{Status: "mystery"},
 			want: statusErrored,

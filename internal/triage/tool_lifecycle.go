@@ -744,7 +744,17 @@ func backgroundTerminalStatus(meta backgroundTaskTerminalMeta) string {
 	// terminal (so triage has a uniform "this row did not succeed"
 	// marker), but a user-initiated stop is still distinct from a
 	// runtime failure and must render as Stopped, not Failed.
-	if meta.Status == "killed" {
+	//
+	// `stopped` is the SDK-normalized form of `killed` — `print.ts`
+	// upstream maps the XML-form `killed` to `stopped` for SDK
+	// consumers (claude-code-source-code/src/cli/print.ts:2042-2047).
+	// In normal flow `task_updated{killed}` is routed through observe
+	// with the raw `killed`, and task_notification's enrich path
+	// doesn't recompute Status — so this case is only reached on a
+	// notification-only sequence (no preceding task_updated). The
+	// defensive mapping renders Stopped instead of collapsing to the
+	// errored `default` branch.
+	if meta.Status == "killed" || meta.Status == "stopped" {
 		return statusKilled
 	}
 	if meta.IsError {
