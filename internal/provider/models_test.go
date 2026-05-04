@@ -53,8 +53,116 @@ func TestCodexModelsIncludeGPT55(t *testing.T) {
 	if len(models) == 0 {
 		t.Fatal("expected codex models")
 	}
-	if models[0].Slug != "gpt-5.5" {
-		t.Fatalf("first codex model = %q, want gpt-5.5", models[0].Slug)
+	if !slices.ContainsFunc(models, func(model ModelInfo) bool {
+		return model.Slug == "gpt-5.5"
+	}) {
+		t.Fatalf("codex models missing gpt-5.5: %#v", models)
+	}
+}
+
+func TestClaudeFastModeAndContextCapabilities(t *testing.T) {
+	cases := []struct {
+		model    string
+		fastMode bool
+		windows  int
+	}{
+		{"claude-opus-4-7", true, 2},
+		{"claude-opus-4-6", true, 2},
+		{"claude-opus-4-5", false, 2},
+		{"claude-sonnet-4-6", false, 2},
+		{"claude-haiku-4-5", false, 1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			model, found := FindModel("claude", tc.model)
+			if !found {
+				t.Fatalf("FindModel(%q) not found", tc.model)
+			}
+			if got := slices.Contains(model.Capabilities, ModelCapabilityFastMode); got != tc.fastMode {
+				t.Fatalf("fast capability = %v, want %v", got, tc.fastMode)
+			}
+			if len(model.ContextWindows) != tc.windows {
+				t.Fatalf("ContextWindows len = %d, want %d", len(model.ContextWindows), tc.windows)
+			}
+			if model.ContextWindows[0].Tokens != ClaudeStandardContextWindow {
+				t.Fatalf("default ContextWindow = %d, want %d", model.ContextWindows[0].Tokens, ClaudeStandardContextWindow)
+			}
+		})
+	}
+}
+
+func TestCodexModelCapabilitiesAndContextWindows(t *testing.T) {
+	cases := []struct {
+		model    string
+		fastMode bool
+		windows  []int
+		def      string
+	}{
+		{"gpt-5.4", true, []int{CodexStandardContextWindow, CodexExtendedContextWindow}, "xhigh"},
+		{"gpt-5.5", true, []int{CodexStandardContextWindow, CodexExtendedContextWindow}, "medium"},
+		{"gpt-5.2", false, []int{CodexStandardContextWindow}, "medium"},
+		{"gpt-5.3-codex", false, []int{CodexStandardContextWindow}, "medium"},
+		{"gpt-5.4-mini", false, []int{CodexStandardContextWindow}, "medium"},
+		{"gpt-5.3-codex-spark", false, []int{CodexSparkContextWindow}, "high"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			model, found := FindModel("codex", tc.model)
+			if !found {
+				t.Fatalf("FindModel(%q) not found", tc.model)
+			}
+			if got := slices.Contains(model.Capabilities, ModelCapabilityFastMode); got != tc.fastMode {
+				t.Fatalf("fast capability = %v, want %v", got, tc.fastMode)
+			}
+			if len(model.ContextWindows) != len(tc.windows) {
+				t.Fatalf("ContextWindows len = %d, want %d: %#v", len(model.ContextWindows), len(tc.windows), model.ContextWindows)
+			}
+			for i, tokens := range tc.windows {
+				if model.ContextWindows[i].Tokens != tokens {
+					t.Fatalf("ContextWindows[%d].Tokens = %d, want %d", i, model.ContextWindows[i].Tokens, tokens)
+				}
+			}
+			if got := string(DefaultReasoningEffortForModel("codex", tc.model, DefaultReasoningEffort)); got != tc.def {
+				t.Fatalf("default reasoning = %q, want %q", got, tc.def)
+			}
+		})
+	}
+}
+
+func TestCodexFallbackReasoningLabelsAreTierNames(t *testing.T) {
+	model, found := FindModel("codex", "gpt-5.5")
+	if !found {
+		t.Fatal("gpt-5.5 not found")
+	}
+	want := []ReasoningEffortOption{
+		{Slug: "low", Label: "Low"},
+		{Slug: "medium", Label: "Medium", Default: true},
+		{Slug: "high", Label: "High"},
+		{Slug: "xhigh", Label: "Extra High"},
+	}
+	if !slices.Equal(model.ReasoningEfforts, want) {
+		t.Fatalf("ReasoningEfforts = %#v, want %#v", model.ReasoningEfforts, want)
+	}
+}
+
+func TestNormalizeModelSlugClaudeAliases(t *testing.T) {
+	tests := map[string]string{
+		"opus":                       "claude-opus-4-7",
+		"claude-opus-4.6":            "claude-opus-4-6",
+		"sonnet":                     "claude-sonnet-4-6",
+		"claude-sonnet-4.6":          "claude-sonnet-4-6",
+		"haiku":                      "claude-haiku-4-5",
+		"claude-haiku-4-5-20251001":  "claude-haiku-4-5",
+		"claude-opus-4-6-20251117":   "claude-opus-4-6-20251117",
+		"claude-sonnet-4-6-20251117": "claude-sonnet-4-6-20251117",
+	}
+
+	for input, want := range tests {
+		if got := NormalizeModelSlug("claude", input); got != want {
+			t.Errorf("NormalizeModelSlug(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
 

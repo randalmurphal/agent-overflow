@@ -53,7 +53,11 @@ func TestUpdateSettingsPersistsPatch(t *testing.T) {
 }
 
 func TestGetModelsForProvider(t *testing.T) {
-	app := &App{}
+	svc := settings.NewService(t.TempDir())
+	if _, err := svc.Update(map[string]any{"codexBinaryPath": writeModelListCodexBinary(t)}); err != nil {
+		t.Fatalf("Update codexBinaryPath: %v", err)
+	}
+	app := &App{settings: svc}
 
 	claudeModels, err := app.GetModelsForProvider("claude")
 	if err != nil {
@@ -83,6 +87,111 @@ func TestGetModelsForProvider(t *testing.T) {
 	if unknown != nil {
 		t.Fatalf("unknown provider models = %v, want nil", unknown)
 	}
+}
+
+func TestGetModelsForProviderCachesCodexCatalogByBinary(t *testing.T) {
+	svc := settings.NewService(t.TempDir())
+	counter := filepath.Join(t.TempDir(), "calls")
+	if _, err := svc.Update(map[string]any{"codexBinaryPath": writeCountingModelListCodexBinary(t, counter, "gpt-5.5")}); err != nil {
+		t.Fatalf("Update codexBinaryPath: %v", err)
+	}
+	app := &App{settings: svc}
+
+	for i := 0; i < 2; i++ {
+		models, err := app.GetModelsForProvider("codex")
+		if err != nil {
+			t.Fatalf("GetModelsForProvider(codex) #%d: %v", i+1, err)
+		}
+		if len(models) != 1 || models[0].Slug != "gpt-5.5" {
+			t.Fatalf("models #%d = %#v, want gpt-5.5", i+1, models)
+		}
+	}
+
+	if got := strings.TrimSpace(readFileForTest(t, counter)); got != "1" {
+		t.Fatalf("codex model/list process count = %q, want 1", got)
+	}
+}
+
+func TestUpdateSettingsInvalidatesCodexCatalogOnBinaryChange(t *testing.T) {
+	svc := settings.NewService(t.TempDir())
+	counter := filepath.Join(t.TempDir(), "calls")
+	first := writeCountingModelListCodexBinary(t, counter, "gpt-5.4")
+	second := writeCountingModelListCodexBinary(t, counter, "gpt-5.5")
+	if _, err := svc.Update(map[string]any{"codexBinaryPath": first}); err != nil {
+		t.Fatalf("Update codexBinaryPath: %v", err)
+	}
+	app := &App{settings: svc}
+
+	if _, err := app.GetModelsForProvider("codex"); err != nil {
+		t.Fatalf("GetModelsForProvider first: %v", err)
+	}
+	if _, err := app.UpdateSettings(map[string]any{"codexBinaryPath": second}); err != nil {
+		t.Fatalf("UpdateSettings codexBinaryPath: %v", err)
+	}
+	models, err := app.GetModelsForProvider("codex")
+	if err != nil {
+		t.Fatalf("GetModelsForProvider second: %v", err)
+	}
+	if len(models) != 1 || models[0].Slug != "gpt-5.5" {
+		t.Fatalf("models after binary change = %#v, want gpt-5.5", models)
+	}
+	if got := strings.TrimSpace(readFileForTest(t, counter)); got != "2" {
+		t.Fatalf("codex model/list process count = %q, want 2", got)
+	}
+}
+
+func writeModelListCodexBinary(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "codex")
+	script := `#!/usr/bin/env bash
+set -euo pipefail
+while IFS= read -r line; do
+  id="$(printf '%s\n' "$line" | sed -n 's/.*"id":[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
+  if [[ "$line" == *'"method":"initialize"'* ]]; then
+    printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+  elif [[ "$line" == *'"method":"model/list"'* ]]; then
+    printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[{"model":"gpt-5.5","displayName":"GPT-5.5","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"high","description":"High"}],"defaultReasoningEffort":"high","additionalSpeedTiers":["fast"]}],"nextCursor":null}}\n' "$id"
+  fi
+done
+`
+	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake codex binary: %v", err)
+	}
+	return path
+}
+
+func writeCountingModelListCodexBinary(t *testing.T, counterPath, model string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "codex")
+	script := fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+count=0
+if [[ -f %[1]q ]]; then
+  count="$(cat %[1]q)"
+fi
+printf '%%s\n' "$((count + 1))" > %[1]q
+while IFS= read -r line; do
+  id="$(printf '%%s\n' "$line" | sed -n 's/.*"id":[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
+  if [[ "$line" == *'"method":"initialize"'* ]]; then
+    printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+  elif [[ "$line" == *'"method":"model/list"'* ]]; then
+    printf '{"jsonrpc":"2.0","id":%%s,"result":{"data":[{"model":%[2]q,"displayName":%[2]q,"hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"high","description":"High"}],"defaultReasoningEffort":"high","additionalSpeedTiers":["fast"]}],"nextCursor":null}}\n' "$id"
+  fi
+done
+`, counterPath, model)
+	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
+		t.Fatalf("write counting fake codex binary: %v", err)
+	}
+	return path
+}
+
+func readFileForTest(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
 }
 
 func TestCreateThreadDefaultsMode(t *testing.T) {
@@ -533,8 +642,8 @@ func TestUpdateThreadModelRemembersClaudeModelAndContextDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateThreadModel(opus): %v", err)
 	}
-	if opus.ContextWindow != 1000000 {
-		t.Fatalf("opus context = %d, want 1000000", opus.ContextWindow)
+	if opus.ContextWindow != 200000 {
+		t.Fatalf("opus context = %d, want 200000", opus.ContextWindow)
 	}
 
 	sonnet, err := app.UpdateThreadModel(thread.ID, "claude-sonnet-4-6")
@@ -549,8 +658,8 @@ func TestUpdateThreadModelRemembersClaudeModelAndContextDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetChatModelProfile(opus): %v", err)
 	}
-	if opusProfile.ContextWindow != 1000000 {
-		t.Fatalf("stored opus context = %d, want 1000000", opusProfile.ContextWindow)
+	if opusProfile.ContextWindow != 200000 {
+		t.Fatalf("stored opus context = %d, want 200000", opusProfile.ContextWindow)
 	}
 
 	sonnetProfile, err := app.store.GetChatModelProfile("claude", "claude-sonnet-4-6")
@@ -559,6 +668,51 @@ func TestUpdateThreadModelRemembersClaudeModelAndContextDefaults(t *testing.T) {
 	}
 	if sonnetProfile.ContextWindow != 200000 {
 		t.Fatalf("stored sonnet context = %d, want 200000", sonnetProfile.ContextWindow)
+	}
+}
+
+func TestUpdateThreadModelSanitizesStaleProfileContext(t *testing.T) {
+	app := newTestAppWithStore(t)
+	if err := app.store.UpsertChatModelProfile(store.ChatModelProfile{
+		Provider:        "codex",
+		Model:           "gpt-5.3-codex-spark",
+		ReasoningEffort: "high",
+		ContextWindow:   provider.CodexStandardContextWindow,
+		RuntimeMode:     "default",
+	}); err != nil {
+		t.Fatalf("UpsertChatModelProfile: %v", err)
+	}
+	thread, err := createTestThread(t, app, "codex", "/tmp/spark-stale-profile", "gpt-5.5", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+
+	updated, err := app.UpdateThreadModel(thread.ID, "gpt-5.3-codex-spark")
+	if err != nil {
+		t.Fatalf("UpdateThreadModel(spark): %v", err)
+	}
+	if updated.ContextWindow != provider.CodexSparkContextWindow {
+		t.Fatalf("ContextWindow = %d, want spark %d", updated.ContextWindow, provider.CodexSparkContextWindow)
+	}
+}
+
+func TestSwitchThreadSanitizesStaleSparkContext(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "codex", "/tmp/spark-stale-thread", "gpt-5.3-codex-spark", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	thread.ContextWindow = provider.CodexStandardContextWindow
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("UpdateThread stale context: %v", err)
+	}
+
+	switched, err := app.SwitchThread(thread.ID)
+	if err != nil {
+		t.Fatalf("SwitchThread: %v", err)
+	}
+	if switched.ContextWindow != provider.CodexSparkContextWindow {
+		t.Fatalf("ContextWindow = %d, want spark %d", switched.ContextWindow, provider.CodexSparkContextWindow)
 	}
 }
 
@@ -598,8 +752,8 @@ func TestCreateThreadUsesRememberedClaudeModelAndContext(t *testing.T) {
 	if next.Model != "claude-opus-4-7" {
 		t.Fatalf("next model = %q, want remembered opus", next.Model)
 	}
-	if next.ContextWindow != 1000000 {
-		t.Fatalf("next context = %d, want remembered 1000000", next.ContextWindow)
+	if next.ContextWindow != 200000 {
+		t.Fatalf("next context = %d, want remembered 200000", next.ContextWindow)
 	}
 	if next.Mode != "chat" {
 		t.Fatalf("next mode = %q, want chat", next.Mode)

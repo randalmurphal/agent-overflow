@@ -39,7 +39,7 @@ func (f fakeThreadView) GetPendingForkRef() string { return f.pendingForkRef }
 func TestSessionOptionsFromThreadCopiesEveryField(t *testing.T) {
 	view := fakeThreadView{
 		provider:                   "claude",
-		model:                      "claude-sonnet-4-6",
+		model:                      "claude-opus-4-7",
 		workspacePath:              "/tmp/workspace",
 		reasoningEffort:            "xhigh",
 		fastMode:                   true,
@@ -55,8 +55,8 @@ func TestSessionOptionsFromThreadCopiesEveryField(t *testing.T) {
 	if opts.Provider != "claude" {
 		t.Errorf("Provider = %q, want claude", opts.Provider)
 	}
-	if opts.Model != "claude-sonnet-4-6" {
-		t.Errorf("Model = %q, want claude-sonnet-4-6", opts.Model)
+	if opts.Model != "claude-opus-4-7" {
+		t.Errorf("Model = %q, want claude-opus-4-7", opts.Model)
 	}
 	if opts.WorkDir != "/tmp/workspace" {
 		t.Errorf("WorkDir = %q, want /tmp/workspace", opts.WorkDir)

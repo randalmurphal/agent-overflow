@@ -201,8 +201,10 @@ export class ModelInfo {
     "slug": string;
     "name": string;
     "provider": string;
+    "isCustom"?: boolean;
     "capabilities"?: string[];
     "contextWindows"?: ContextWindowOption[];
+    "reasoningEfforts"?: ReasoningEffortOption[];
 
     /** Creates a new ModelInfo instance. */
     constructor($$source: Partial<ModelInfo> = {}) {
@@ -223,14 +225,18 @@ export class ModelInfo {
      * Creates a new ModelInfo instance from a string or object.
      */
     static createFrom($$source: any = {}): ModelInfo {
-        const $$createField3_0 = $$createType4;
-        const $$createField4_0 = $$createType6;
+        const $$createField4_0 = $$createType4;
+        const $$createField5_0 = $$createType6;
+        const $$createField6_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("capabilities" in $$parsedSource) {
-            $$parsedSource["capabilities"] = $$createField3_0($$parsedSource["capabilities"]);
+            $$parsedSource["capabilities"] = $$createField4_0($$parsedSource["capabilities"]);
         }
         if ("contextWindows" in $$parsedSource) {
-            $$parsedSource["contextWindows"] = $$createField4_0($$parsedSource["contextWindows"]);
+            $$parsedSource["contextWindows"] = $$createField5_0($$parsedSource["contextWindows"]);
+        }
+        if ("reasoningEfforts" in $$parsedSource) {
+            $$parsedSource["reasoningEfforts"] = $$createField6_0($$parsedSource["reasoningEfforts"]);
         }
         return new ModelInfo($$parsedSource as Partial<ModelInfo>);
     }
@@ -274,8 +280,8 @@ export class PermissionProfile {
      * Creates a new PermissionProfile instance from a string or object.
      */
     static createFrom($$source: any = {}): PermissionProfile {
-        const $$createField0_0 = $$createType8;
-        const $$createField1_0 = $$createType10;
+        const $$createField0_0 = $$createType10;
+        const $$createField1_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("network" in $$parsedSource) {
             $$parsedSource["network"] = $$createField0_0($$parsedSource["network"]);
@@ -336,6 +342,35 @@ export class ProviderStatus {
 }
 
 /**
+ * ReasoningEffortOption describes one selectable reasoning tier for a model.
+ */
+export class ReasoningEffortOption {
+    "slug": string;
+    "label": string;
+    "default"?: boolean;
+
+    /** Creates a new ReasoningEffortOption instance. */
+    constructor($$source: Partial<ReasoningEffortOption> = {}) {
+        if (!("slug" in $$source)) {
+            this["slug"] = "";
+        }
+        if (!("label" in $$source)) {
+            this["label"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ReasoningEffortOption instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ReasoningEffortOption {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ReasoningEffortOption($$parsedSource as Partial<ReasoningEffortOption>);
+    }
+}
+
+/**
  * UserInputAnswer stores one or more selected answers for a question.
  * It marshals as a string for single-select answers and a string array for
  * multi-select answers to match the frontend/Forge contract.
@@ -371,7 +406,7 @@ export class UserInputResponse {
      * Creates a new UserInputResponse instance from a string or object.
      */
     static createFrom($$source: any = {}): UserInputResponse {
-        const $$createField2_0 = $$createType11;
+        const $$createField2_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("answers" in $$parsedSource) {
             $$parsedSource["answers"] = $$createField2_0($$parsedSource["answers"]);
@@ -388,8 +423,10 @@ const $$createType3 = $Create.Nullable($$createType2);
 const $$createType4 = $Create.Array($Create.Any);
 const $$createType5 = ContextWindowOption.createFrom;
 const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = NetworkPermissions.createFrom;
-const $$createType8 = $Create.Nullable($$createType7);
-const $$createType9 = FileSystemPermissions.createFrom;
+const $$createType7 = ReasoningEffortOption.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = NetworkPermissions.createFrom;
 const $$createType10 = $Create.Nullable($$createType9);
-const $$createType11 = $Create.Map($Create.Any, $Create.Any);
+const $$createType11 = FileSystemPermissions.createFrom;
+const $$createType12 = $Create.Nullable($$createType11);
+const $$createType13 = $Create.Map($Create.Any, $Create.Any);

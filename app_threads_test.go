@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 )
@@ -34,6 +35,41 @@ func TestUpdateThreadProviderPersistsAndValidates(t *testing.T) {
 
 	if _, err := app.UpdateThreadProvider(thread.ID, "bogus"); err == nil {
 		t.Fatal("UpdateThreadProvider(bogus) error = nil, want validation error")
+	}
+}
+
+func TestCreateThreadNormalizesModelAlias(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, string(provider.Codex), "/tmp/talias-create", "5.4", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	if thread.Model != "gpt-5.4" {
+		t.Fatalf("Model = %q, want gpt-5.4", thread.Model)
+	}
+
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if stored.Model != "gpt-5.4" {
+		t.Fatalf("stored Model = %q, want gpt-5.4", stored.Model)
+	}
+}
+
+func TestUpdateThreadModelNormalizesAlias(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/talias-update", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+
+	updated, err := app.UpdateThreadModel(thread.ID, "opus")
+	if err != nil {
+		t.Fatalf("UpdateThreadModel(opus): %v", err)
+	}
+	if updated.Model != "claude-opus-4-7" {
+		t.Fatalf("Model = %q, want claude-opus-4-7", updated.Model)
 	}
 }
 
@@ -103,12 +139,12 @@ func TestUpdateThreadReasoningEffortValidates(t *testing.T) {
 		t.Fatalf("createTestThread: %v", err)
 	}
 
-	updated, err := app.UpdateThreadReasoningEffort(thread.ID, "xhigh")
+	updated, err := app.UpdateThreadReasoningEffort(thread.ID, "high")
 	if err != nil {
 		t.Fatalf("UpdateThreadReasoningEffort: %v", err)
 	}
-	if updated.ReasoningEffort != "xhigh" {
-		t.Fatalf("ReasoningEffort = %q, want xhigh", updated.ReasoningEffort)
+	if updated.ReasoningEffort != "high" {
+		t.Fatalf("ReasoningEffort = %q, want high", updated.ReasoningEffort)
 	}
 
 	if _, err := app.UpdateThreadReasoningEffort(thread.ID, "ultranope"); err == nil {
@@ -116,9 +152,21 @@ func TestUpdateThreadReasoningEffortValidates(t *testing.T) {
 	}
 }
 
+func TestUpdateThreadReasoningEffortRejectsCodexMax(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "codex", "/tmp/tcmax", "gpt-5.5", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+
+	if _, err := app.UpdateThreadReasoningEffort(thread.ID, "max"); err == nil {
+		t.Fatal("UpdateThreadReasoningEffort(max) error = nil, want validation error")
+	}
+}
+
 func TestUpdateThreadFastModeToggles(t *testing.T) {
 	app := newTestAppWithStore(t)
-	thread, err := createTestThread(t, app, "claude", "/tmp/tfm", "claude-sonnet-4-6", "")
+	thread, err := createTestThread(t, app, "claude", "/tmp/tfm", "claude-opus-4-7", "")
 	if err != nil {
 		t.Fatalf("createTestThread: %v", err)
 	}
@@ -141,6 +189,38 @@ func TestUpdateThreadFastModeToggles(t *testing.T) {
 	}
 	if updated.FastMode {
 		t.Fatal("FastMode = true, want false")
+	}
+}
+
+func TestUpdateThreadFastModeRejectsUnsupportedModel(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "codex", "/tmp/tfm-unsupported", "gpt-5.4-mini", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+
+	if _, err := app.UpdateThreadFastMode(thread.ID, true); err == nil {
+		t.Fatal("UpdateThreadFastMode(true) error = nil, want unsupported model error")
+	}
+}
+
+func TestCreateThreadRejectsUnsupportedExplicitFastMode(t *testing.T) {
+	app := newTestAppWithStore(t)
+	project, err := app.ensureProjectForWorkspace("/tmp/create-fast-unsupported")
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace: %v", err)
+	}
+	fast := true
+
+	_, err = app.CreateThread(CreateThreadOptions{
+		ProjectID:         project.ID,
+		Provider:          "codex",
+		Model:             "gpt-5.4-mini",
+		WorkspaceOverride: project.Path,
+		FastMode:          &fast,
+	})
+	if err == nil {
+		t.Fatal("CreateThread fast mode error = nil, want unsupported model error")
 	}
 }
 
@@ -175,7 +255,7 @@ func TestCreateThreadRejectsUnsupportedContextWindow(t *testing.T) {
 		ProjectID:     project.ID,
 		Provider:      "codex",
 		Model:         "gpt-5.4-mini",
-		ContextWindow: 1050000,
+		ContextWindow: provider.CodexExtendedContextWindow,
 	})
 	if err == nil || !strings.Contains(err.Error(), "unsupported context window") {
 		t.Fatalf("CreateThread unsupported context error = %v, want unsupported context window", err)

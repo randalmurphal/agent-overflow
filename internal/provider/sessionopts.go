@@ -1,26 +1,25 @@
 package provider
 
-// ReasoningEffort identifies a tier in the five-step composer effort
-// enum. Claude supports the full set (low/medium/high/xhigh/max) via
-// system-prompt prefix injection; Codex natively understands only
-// low/medium/high and floors the top two tiers at its translation
-// boundary.
+// ReasoningEffort identifies a provider reasoning tier. Claude exposes
+// low/medium/high plus model-specific top tiers; Codex exposes its native
+// none/minimal/low/medium/high/xhigh set through app-server model metadata.
 type ReasoningEffort string
 
 const (
-	EffortLow    ReasoningEffort = "low"
-	EffortMedium ReasoningEffort = "medium"
-	EffortHigh   ReasoningEffort = "high"
-	EffortXHigh  ReasoningEffort = "xhigh"
-	// EffortMax is the top tier. Claude's native plan-mode + "think
-	// harder" prefix combination drives it; Codex floors to xhigh.
-	EffortMax ReasoningEffort = "max"
+	EffortNone    ReasoningEffort = "none"
+	EffortMinimal ReasoningEffort = "minimal"
+	EffortLow     ReasoningEffort = "low"
+	EffortMedium  ReasoningEffort = "medium"
+	EffortHigh    ReasoningEffort = "high"
+	EffortXHigh   ReasoningEffort = "xhigh"
+	EffortMax     ReasoningEffort = "max"
 )
 
-// AllReasoningEfforts is the canonical ordered list used by UI pickers,
-// validation, and per-provider mappers. Kept in lockstep with the CHECK
-// constraint on threads.reasoning_effort (see migrate.go::v13SQL).
+// AllReasoningEfforts is the canonical ordered list used by validation and
+// per-provider mappers. Model metadata controls which subset appears in the UI.
 var AllReasoningEfforts = []ReasoningEffort{
+	EffortNone,
+	EffortMinimal,
 	EffortLow,
 	EffortMedium,
 	EffortHigh,
@@ -36,7 +35,7 @@ const DefaultReasoningEffort = EffortHigh
 // so a stale client cannot plant a value outside the enum.
 func NormalizeReasoningEffort(effort string) ReasoningEffort {
 	switch ReasoningEffort(effort) {
-	case EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax:
+	case EffortNone, EffortMinimal, EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax:
 		return ReasoningEffort(effort)
 	default:
 		return DefaultReasoningEffort
@@ -177,12 +176,16 @@ func SessionOptionsFromThread(
 		extendedPercent = defaults.ExtendedPercent
 	}
 	return SessionOptions{
-		Provider:        t.GetProvider(),
-		Model:           t.GetModel(),
-		WorkDir:         t.GetWorkspacePath(),
-		ReasoningEffort: NormalizeReasoningEffort(t.GetReasoningEffort()),
-		FastMode:        t.GetFastMode(),
-		ContextWindow:   t.GetContextWindow(),
+		Provider: t.GetProvider(),
+		Model:    t.GetModel(),
+		WorkDir:  t.GetWorkspacePath(),
+		ReasoningEffort: CoerceReasoningEffortForModel(
+			t.GetProvider(),
+			t.GetModel(),
+			NormalizeReasoningEffort(t.GetReasoningEffort()),
+		),
+		FastMode:      t.GetFastMode(),
+		ContextWindow: t.GetContextWindow(),
 		AutoCompactPercent: AutoCompactPercentForContextTier(
 			ContextTierForModelWindow(t.GetProvider(), t.GetModel(), t.GetContextWindow()),
 			standardPercent,

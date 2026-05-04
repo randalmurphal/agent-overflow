@@ -105,6 +105,13 @@ type App struct {
 	gitWatchPumpsMu sync.Mutex
 	gitWatchPumps   map[string]*gitWatchPump
 	gitWatchPumpWG  sync.WaitGroup
+	// codexModelCatalog caches Codex's live app-server model/list response by
+	// binary path. The catalog is provider-owned state, but fetching it spawns
+	// a local CLI subprocess; cache and coalesce calls so settings/model menus
+	// do not create process fan-out during normal rendering.
+	codexModelCatalogMu       sync.Mutex
+	codexModelCatalog         map[string]codexModelCatalogEntry
+	codexModelCatalogInflight map[string]*codexModelCatalogLoad
 	// Test-only injection points for binding helpers that need to observe start/stop.
 	startSessionFn        func(string) error
 	stopSessionFn         func(string) error
@@ -175,12 +182,14 @@ func (s session) providerSession() provider.Session {
 
 func NewApp() *App {
 	return &App{
-		sessions:            make(map[string]session),
-		startingSessions:    make(map[string]*sessionStart),
-		threadSystemPrompts: make(map[string]string),
-		threadSlashCommands: make(map[string][]string),
-		deliberations:       make(map[string]*discussion.Deliberation),
-		gitWatchPumps:       make(map[string]*gitWatchPump),
+		sessions:                  make(map[string]session),
+		startingSessions:          make(map[string]*sessionStart),
+		threadSystemPrompts:       make(map[string]string),
+		threadSlashCommands:       make(map[string][]string),
+		deliberations:             make(map[string]*discussion.Deliberation),
+		gitWatchPumps:             make(map[string]*gitWatchPump),
+		codexModelCatalog:         make(map[string]codexModelCatalogEntry),
+		codexModelCatalogInflight: make(map[string]*codexModelCatalogLoad),
 	}
 }
 

@@ -10,13 +10,13 @@ import (
 )
 
 // TestSessionOptionsFromThreadToClaudeConfigXHigh covers the thread→opts→cfg
-// path for a Claude thread at xhigh effort. The effort prefix must land on
-// the system prompt; the caller-composed prompt survives.
+// path for a Claude thread at xhigh effort. Claude now receives native CLI
+// flags instead of a system-prompt prefix.
 func TestSessionOptionsFromThreadToClaudeConfigXHigh(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-claude-xhigh")
 	thread.Provider = string(provider.Claude)
-	thread.Model = "claude-opus-4-6"
+	thread.Model = "claude-opus-4-7"
 	thread.ReasoningEffort = string(provider.EffortXHigh)
 	thread.RuntimeMode = string(provider.RuntimeFullAccess)
 	thread.ContextWindow = 1000000
@@ -31,11 +31,14 @@ func TestSessionOptionsFromThreadToClaudeConfigXHigh(t *testing.T) {
 	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, "You are the agent.", false)
 	cfg := claude.ConfigFromOptions(opts)
 
-	if !strings.HasPrefix(cfg.SystemPrompt, "think harder\n\n") {
-		t.Errorf("SystemPrompt = %q, want 'think harder' prefix", cfg.SystemPrompt)
+	if cfg.SystemPrompt != "You are the agent." {
+		t.Errorf("SystemPrompt = %q, want unchanged", cfg.SystemPrompt)
 	}
-	if cfg.Env["ANTHROPIC_BETAS"] == "" {
-		t.Errorf("1M context should set ANTHROPIC_BETAS; got env %v", cfg.Env)
+	if cfg.ReasoningEffort != "max" {
+		t.Errorf("ReasoningEffort = %q, want max", cfg.ReasoningEffort)
+	}
+	if cfg.Model != "claude-opus-4-7[1m]" {
+		t.Errorf("Model = %q, want claude-opus-4-7[1m]", cfg.Model)
 	}
 	wantFlags := []string{"--permission-mode", "bypassPermissions", "--allow-dangerously-skip-permissions"}
 	if strings.Join(cfg.PermissionFlags, " ") != strings.Join(wantFlags, " ") {
@@ -43,15 +46,12 @@ func TestSessionOptionsFromThreadToClaudeConfigXHigh(t *testing.T) {
 	}
 }
 
-// TestSessionOptionsFromThreadToCodexConfigMaxFloors confirms the xhigh floor
-// for Max on a real Codex thread and that SystemPrompt lands on the Codex
-// Config without the Claude-style effort prefix (Codex has native effort).
-func TestSessionOptionsFromThreadToCodexConfigMaxFloors(t *testing.T) {
+func TestSessionOptionsFromThreadToCodexConfigXHigh(t *testing.T) {
 	app := newTestAppWithStore(t)
-	thread := testThread("thread-codex-max")
+	thread := testThread("thread-codex-xhigh")
 	thread.Provider = string(provider.Codex)
 	thread.Model = "gpt-5.4"
-	thread.ReasoningEffort = string(provider.EffortMax)
+	thread.ReasoningEffort = string(provider.EffortXHigh)
 	thread.RuntimeMode = string(provider.RuntimeFullAccess)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
@@ -65,7 +65,7 @@ func TestSessionOptionsFromThreadToCodexConfigMaxFloors(t *testing.T) {
 	cfg := codex.ConfigFromOptions(opts)
 
 	if cfg.ReasoningEffort != "xhigh" {
-		t.Errorf("Max effort should floor to xhigh, got %q", cfg.ReasoningEffort)
+		t.Errorf("ReasoningEffort = %q, want xhigh", cfg.ReasoningEffort)
 	}
 	if cfg.SystemPrompt != "codex system prompt" {
 		t.Errorf("Codex SystemPrompt must not carry a think-hard prefix; got %q", cfg.SystemPrompt)
@@ -76,15 +76,47 @@ func TestSessionOptionsFromThreadToCodexConfigMaxFloors(t *testing.T) {
 	}
 }
 
-// TestSessionOptionsFastModeSwapsClaudeOpus — the FastMode toggle on an Opus
-// thread routes through to a Haiku launch id by the time it reaches
-// claude.Config.
-func TestSessionOptionsFastModeSwapsClaudeOpus(t *testing.T) {
+func TestSessionOptionsCoercesStaleSonnetXHigh(t *testing.T) {
+	thread := testThread("thread-stale-sonnet-xhigh")
+	thread.Provider = string(provider.Claude)
+	thread.Model = "claude-sonnet-4-6"
+	thread.ReasoningEffort = string(provider.EffortXHigh)
+
+	opts := provider.SessionOptionsFromThread(thread, provider.AutoCompactDefaults{}, "", false)
+	cfg := claude.ConfigFromOptions(opts)
+
+	if opts.ReasoningEffort != provider.EffortHigh {
+		t.Fatalf("ReasoningEffort = %q, want high", opts.ReasoningEffort)
+	}
+	if cfg.ReasoningEffort != "high" {
+		t.Fatalf("Claude ReasoningEffort = %q, want high", cfg.ReasoningEffort)
+	}
+}
+
+func TestSessionOptionsCoercesStaleCodexMax(t *testing.T) {
+	thread := testThread("thread-stale-codex-max")
+	thread.Provider = string(provider.Codex)
+	thread.Model = "gpt-5.5"
+	thread.ReasoningEffort = string(provider.EffortMax)
+
+	opts := provider.SessionOptionsFromThread(thread, provider.AutoCompactDefaults{}, "", false)
+	cfg := codex.ConfigFromOptions(opts)
+
+	if opts.ReasoningEffort != provider.EffortMedium {
+		t.Fatalf("ReasoningEffort = %q, want medium", opts.ReasoningEffort)
+	}
+	if cfg.ReasoningEffort != "medium" {
+		t.Fatalf("Codex ReasoningEffort = %q, want medium", cfg.ReasoningEffort)
+	}
+}
+
+func TestSessionOptionsFastModePreservesClaudeModel(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-fast-opus")
 	thread.Provider = string(provider.Claude)
 	thread.Model = "claude-opus-4-6"
 	thread.FastMode = true
+	thread.ContextWindow = provider.ClaudeStandardContextWindow
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -94,14 +126,15 @@ func TestSessionOptionsFastModeSwapsClaudeOpus(t *testing.T) {
 	}
 	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, "sys", false)
 	cfg := claude.ConfigFromOptions(opts)
-	if cfg.Model != "claude-haiku-4-5" {
-		t.Errorf("Model = %q, want claude-haiku-4-5 (fast mode swap)", cfg.Model)
+	if cfg.Model != "claude-opus-4-6" {
+		t.Errorf("Model = %q, want claude-opus-4-6", cfg.Model)
+	}
+	if !cfg.FastMode {
+		t.Error("FastMode = false, want true")
 	}
 }
 
-// TestSessionOptionsFastModeSwapsCodexGpt5 — the Codex analogue: gpt-5.5
-// becomes gpt-5.4-mini after the translation.
-func TestSessionOptionsFastModeSwapsCodexGpt5(t *testing.T) {
+func TestSessionOptionsFastModePreservesCodexModel(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-fast-gpt5")
 	thread.Provider = string(provider.Codex)
@@ -116,8 +149,11 @@ func TestSessionOptionsFastModeSwapsCodexGpt5(t *testing.T) {
 	}
 	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, "sys", false)
 	cfg := codex.ConfigFromOptions(opts)
-	if cfg.Model != "gpt-5.4-mini" {
-		t.Errorf("Model = %q, want gpt-5.4-mini (fast mode swap)", cfg.Model)
+	if cfg.Model != "gpt-5.5" {
+		t.Errorf("Model = %q, want gpt-5.5", cfg.Model)
+	}
+	if cfg.ServiceTier != "fast" {
+		t.Errorf("ServiceTier = %q, want fast", cfg.ServiceTier)
 	}
 }
 

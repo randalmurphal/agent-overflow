@@ -16,7 +16,8 @@ const (
 	ClaudeStandardContextWindow = 200000
 	ClaudeExtendedContextWindow = 1000000
 	CodexStandardContextWindow  = 272000
-	CodexExtendedContextWindow  = 1050000
+	CodexExtendedContextWindow  = 1000000
+	CodexSparkContextWindow     = 128000
 )
 
 // ContextWindowOption describes one selectable context tier for a model.
@@ -26,100 +27,280 @@ type ContextWindowOption struct {
 	Tier   string `json:"tier"`
 }
 
+// ReasoningEffortOption describes one selectable reasoning tier for a model.
+type ReasoningEffortOption struct {
+	Slug    string `json:"slug"`
+	Label   string `json:"label"`
+	Default bool   `json:"default,omitempty"`
+}
+
 // ModelInfo describes a model available from a provider.
 type ModelInfo struct {
-	Slug           string                `json:"slug"`
-	Name           string                `json:"name"`
-	Provider       string                `json:"provider"`
-	Capabilities   []string              `json:"capabilities,omitempty"`
-	ContextWindows []ContextWindowOption `json:"contextWindows,omitempty"`
+	Slug             string                  `json:"slug"`
+	Name             string                  `json:"name"`
+	Provider         string                  `json:"provider"`
+	IsCustom         bool                    `json:"isCustom,omitempty"`
+	Capabilities     []string                `json:"capabilities,omitempty"`
+	ContextWindows   []ContextWindowOption   `json:"contextWindows,omitempty"`
+	ReasoningEfforts []ReasoningEffortOption `json:"reasoningEfforts,omitempty"`
 }
 
 // ClaudeModels lists models available through the Claude provider.
 var ClaudeModels = []ModelInfo{
 	{
-		Slug:           "claude-sonnet-4-6",
-		Name:           "Sonnet 4.6",
-		Provider:       "claude",
-		ContextWindows: claudeExtendedContextOptions(),
+		Slug:             "claude-opus-4-7",
+		Name:             "Claude Opus 4.7",
+		Provider:         "claude",
+		Capabilities:     []string{ModelCapabilityFastMode},
+		ContextWindows:   claudeExtendedContextOptions(),
+		ReasoningEfforts: claudeEffortOptions("xhigh", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
 	},
 	{
-		Slug:           "claude-opus-4-7",
-		Name:           "Opus 4.7",
-		Provider:       "claude",
-		Capabilities:   []string{ModelCapabilityFastMode},
-		ContextWindows: claudeExtendedContextOptions(),
+		Slug:             "claude-opus-4-6",
+		Name:             "Claude Opus 4.6",
+		Provider:         "claude",
+		Capabilities:     []string{ModelCapabilityFastMode},
+		ContextWindows:   claudeExtendedContextOptions(),
+		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh, EffortMax),
 	},
 	{
-		Slug:           "claude-haiku-4-5",
-		Name:           "Haiku 4.5",
-		Provider:       "claude",
-		Capabilities:   []string{ModelCapabilityThinking},
-		ContextWindows: claudeStandardContextOptions(),
+		Slug:             "claude-opus-4-5",
+		Name:             "Claude Opus 4.5",
+		Provider:         "claude",
+		ContextWindows:   claudeExtendedContextOptions(),
+		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh, EffortMax),
+	},
+	{
+		Slug:             "claude-sonnet-4-6",
+		Name:             "Claude Sonnet 4.6",
+		Provider:         "claude",
+		ContextWindows:   claudeExtendedContextOptions(),
+		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh),
+	},
+	{
+		Slug:             "claude-haiku-4-5",
+		Name:             "Claude Haiku 4.5",
+		Provider:         "claude",
+		Capabilities:     []string{ModelCapabilityThinking},
+		ContextWindows:   claudeStandardContextOptions(),
+		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh),
 	},
 }
 
 // CodexModels lists models available through the Codex provider.
+//
+// Codex's live picker list comes from app-server model/list. This slice is
+// only the built-in fallback for offline defaults, tests, and stale settings
+// normalization. Keep it to current Codex-family models; don't add unrelated
+// OpenAI API models here.
 var CodexModels = []ModelInfo{
 	{
-		Slug:           "gpt-5.5",
-		Name:           "GPT-5.5",
-		Provider:       "codex",
-		Capabilities:   []string{ModelCapabilityFastMode},
-		ContextWindows: codexExtendedContextOptions(),
+		Slug:             "gpt-5.5",
+		Name:             "GPT-5.5",
+		Provider:         "codex",
+		Capabilities:     []string{ModelCapabilityFastMode},
+		ContextWindows:   codexExtendedContextOptions(),
+		ReasoningEfforts: codexEffortOptions("medium"),
 	},
 	{
-		Slug:           "gpt-5.4",
-		Name:           "GPT-5.4",
-		Provider:       "codex",
-		Capabilities:   []string{ModelCapabilityFastMode},
-		ContextWindows: codexExtendedContextOptions(),
+		Slug:             "gpt-5.4",
+		Name:             "GPT-5.4",
+		Provider:         "codex",
+		Capabilities:     []string{ModelCapabilityFastMode},
+		ContextWindows:   codexExtendedContextOptions(),
+		ReasoningEfforts: codexEffortOptions("xhigh"),
 	},
 	{
-		Slug:           "gpt-5.4-mini",
-		Name:           "GPT-5.4 Mini",
-		Provider:       "codex",
-		Capabilities:   []string{ModelCapabilityFastMode},
-		ContextWindows: codexStandardContextOptions(),
+		Slug:             "gpt-5.2",
+		Name:             "GPT-5.2",
+		Provider:         "codex",
+		ContextWindows:   codexStandardContextOptions(),
+		ReasoningEfforts: codexEffortOptions("medium"),
 	},
 	{
-		Slug:           "o3",
-		Name:           "o3",
-		Provider:       "codex",
-		Capabilities:   []string{ModelCapabilityFastMode},
-		ContextWindows: codexStandardContextOptions(),
+		Slug:             "gpt-5.4-mini",
+		Name:             "GPT-5.4 Mini",
+		Provider:         "codex",
+		ContextWindows:   codexStandardContextOptions(),
+		ReasoningEfforts: codexEffortOptions("medium"),
 	},
 	{
-		Slug:           "o4-mini",
-		Name:           "o4-mini",
-		Provider:       "codex",
-		Capabilities:   []string{ModelCapabilityFastMode},
-		ContextWindows: codexStandardContextOptions(),
+		Slug:             "gpt-5.3-codex",
+		Name:             "GPT-5.3 Codex",
+		Provider:         "codex",
+		ContextWindows:   codexStandardContextOptions(),
+		ReasoningEfforts: codexEffortOptions("medium"),
+	},
+	{
+		Slug:             "gpt-5.3-codex-spark",
+		Name:             "GPT-5.3 Codex Spark",
+		Provider:         "codex",
+		ContextWindows:   codexSparkContextOptions(),
+		ReasoningEfforts: codexEffortOptions("high"),
 	},
 }
 
 // ModelsForProvider returns the model list for the given provider name.
 // Returns nil for unknown providers.
 func ModelsForProvider(providerName string) []ModelInfo {
+	models := staticModelsForProvider(providerName)
+	if models == nil {
+		return nil
+	}
+	return cloneModels(models)
+}
+
+func staticModelsForProvider(providerName string) []ModelInfo {
 	switch providerName {
 	case "claude":
-		return cloneModels(ClaudeModels)
+		return ClaudeModels
 	case "codex":
-		return cloneModels(CodexModels)
+		return CodexModels
 	default:
 		return nil
+	}
+}
+
+// NormalizeModelSlug resolves the same short aliases t3-code accepts on model
+// inputs. It does not validate availability; app-server model/list remains the
+// Codex source of truth for live picker contents.
+func NormalizeModelSlug(providerName, model string) string {
+	switch providerName {
+	case string(Codex):
+		switch model {
+		case "gpt-5-codex", "5.4":
+			return "gpt-5.4"
+		case "5.3", "gpt-5.3":
+			return "gpt-5.3-codex"
+		case "5.3-spark", "gpt-5.3-spark":
+			return "gpt-5.3-codex-spark"
+		default:
+			return model
+		}
+	case string(Claude):
+		switch model {
+		case "opus", "opus-4.7", "claude-opus-4.7":
+			return "claude-opus-4-7"
+		case "opus-4.6", "claude-opus-4.6":
+			return "claude-opus-4-6"
+		case "sonnet", "sonnet-4.6", "claude-sonnet-4.6":
+			return "claude-sonnet-4-6"
+		case "haiku", "haiku-4.5", "claude-haiku-4.5", "claude-haiku-4-5-20251001":
+			return "claude-haiku-4-5"
+		default:
+			return model
+		}
+	default:
+		return model
 	}
 }
 
 // ContextWindowOptionsForModel returns the selectable context windows for a
 // provider/model pair. The returned slice is owned by the caller.
 func ContextWindowOptionsForModel(providerName, model string) []ContextWindowOption {
-	for _, candidate := range ModelsForProvider(providerName) {
-		if candidate.Slug == model {
-			return append([]ContextWindowOption(nil), candidate.ContextWindows...)
-		}
+	if candidate, ok := FindModel(providerName, model); ok {
+		return append([]ContextWindowOption(nil), candidate.ContextWindows...)
 	}
 	return nil
+}
+
+func ModelSupportsCapability(providerName, model, capability string) bool {
+	if candidate, ok := FindModel(providerName, model); ok {
+		for _, existing := range candidate.Capabilities {
+			if existing == capability {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func ReasoningEffortOptionsForModel(providerName, model string) []ReasoningEffortOption {
+	if candidate, ok := FindModel(providerName, model); ok {
+		return append([]ReasoningEffortOption(nil), candidate.ReasoningEfforts...)
+	}
+	return nil
+}
+
+func ReasoningEffortSupportedForModel(providerName, model, effort string) bool {
+	if _, found := FindModel(providerName, model); !found {
+		return providerSupportsReasoningEffort(providerName, effort)
+	}
+	options := ReasoningEffortOptionsForModel(providerName, model)
+	for _, option := range options {
+		if option.Slug == effort {
+			return true
+		}
+	}
+	return false
+}
+
+func DefaultReasoningEffortForModel(providerName, model string, fallback ReasoningEffort) ReasoningEffort {
+	if _, found := FindModel(providerName, model); !found {
+		if providerSupportsReasoningEffort(providerName, string(fallback)) {
+			return fallback
+		}
+		return providerDefaultReasoningEffort(providerName)
+	}
+	options := ReasoningEffortOptionsForModel(providerName, model)
+	for _, option := range options {
+		if option.Default {
+			return ReasoningEffort(option.Slug)
+		}
+	}
+	if len(options) > 0 {
+		return ReasoningEffort(options[0].Slug)
+	}
+	return providerDefaultReasoningEffort(providerName)
+}
+
+func providerDefaultReasoningEffort(providerName string) ReasoningEffort {
+	switch providerName {
+	case string(Codex):
+		return EffortHigh
+	case string(Claude):
+		return EffortHigh
+	default:
+		return DefaultReasoningEffort
+	}
+}
+
+func FindModel(providerName, model string) (ModelInfo, bool) {
+	model = NormalizeModelSlug(providerName, model)
+	for _, candidate := range staticModelsForProvider(providerName) {
+		if candidate.Slug == model {
+			return candidate, true
+		}
+	}
+	return ModelInfo{}, false
+}
+
+func CoerceReasoningEffortForModel(providerName, model string, effort ReasoningEffort) ReasoningEffort {
+	if ReasoningEffortSupportedForModel(providerName, model, string(effort)) {
+		return effort
+	}
+	return DefaultReasoningEffortForModel(providerName, model, DefaultReasoningEffort)
+}
+
+func providerSupportsReasoningEffort(providerName, effort string) bool {
+	switch providerName {
+	case string(Codex):
+		switch effort {
+		case string(EffortNone), string(EffortMinimal), string(EffortLow), string(EffortMedium), string(EffortHigh), string(EffortXHigh):
+			return true
+		default:
+			return false
+		}
+	case string(Claude):
+		switch effort {
+		case string(EffortLow), string(EffortMedium), string(EffortHigh), string(EffortXHigh), string(EffortMax):
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
+	}
 }
 
 func ContextWindowSupportedForModel(providerName, model string, tokens int) bool {
@@ -151,13 +332,6 @@ func DefaultContextWindowForModel(providerName, model string, fallback int) int 
 		}
 		return ClaudeStandardContextWindow
 	}
-	if providerName == "claude" && model == "claude-opus-4-7" {
-		for _, option := range options {
-			if option.Tier == ContextTierExtended {
-				return option.Tokens
-			}
-		}
-	}
 	return options[0].Tokens
 }
 
@@ -178,8 +352,65 @@ func cloneModels(models []ModelInfo) []ModelInfo {
 		if len(model.ContextWindows) > 0 {
 			cloned[i].ContextWindows = append([]ContextWindowOption(nil), model.ContextWindows...)
 		}
+		if len(model.ReasoningEfforts) > 0 {
+			cloned[i].ReasoningEfforts = append([]ReasoningEffortOption(nil), model.ReasoningEfforts...)
+		}
 	}
 	return cloned
+}
+
+func NewReasoningEffortOption(slug string, isDefault bool) ReasoningEffortOption {
+	return NewReasoningEffortOptionWithLabel(slug, "", isDefault)
+}
+
+func NewReasoningEffortOptionWithLabel(slug, label string, isDefault bool) ReasoningEffortOption {
+	if label == "" {
+		label = effortLabel(slug)
+	}
+	return ReasoningEffortOption{
+		Slug:    slug,
+		Label:   label,
+		Default: isDefault,
+	}
+}
+
+func claudeEffortOptions(defaultSlug string, efforts ...ReasoningEffort) []ReasoningEffortOption {
+	options := make([]ReasoningEffortOption, 0, len(efforts))
+	for _, effort := range efforts {
+		slug := string(effort)
+		options = append(options, NewReasoningEffortOption(slug, slug == defaultSlug))
+	}
+	return options
+}
+
+func codexEffortOptions(defaultSlug string) []ReasoningEffortOption {
+	return []ReasoningEffortOption{
+		{Slug: "low", Label: "Low", Default: defaultSlug == "low"},
+		{Slug: "medium", Label: "Medium", Default: defaultSlug == "medium"},
+		{Slug: "high", Label: "High", Default: defaultSlug == "high"},
+		{Slug: "xhigh", Label: "Extra High", Default: defaultSlug == "xhigh"},
+	}
+}
+
+func effortLabel(slug string) string {
+	switch slug {
+	case "none":
+		return "None"
+	case "minimal":
+		return "Minimal"
+	case "low":
+		return "Low"
+	case "medium":
+		return "Medium"
+	case "high":
+		return "High"
+	case "xhigh":
+		return "Extra High"
+	case "max":
+		return "Max"
+	default:
+		return slug
+	}
 }
 
 func claudeStandardContextOptions() []ContextWindowOption {
@@ -210,4 +441,12 @@ func codexExtendedContextOptions() []ContextWindowOption {
 		{Tokens: CodexStandardContextWindow, Label: "272k", Tier: ContextTierStandard},
 		{Tokens: CodexExtendedContextWindow, Label: "1m", Tier: ContextTierExtended},
 	}
+}
+
+func codexSparkContextOptions() []ContextWindowOption {
+	return []ContextWindowOption{{
+		Tokens: CodexSparkContextWindow,
+		Label:  "128k",
+		Tier:   ContextTierStandard,
+	}}
 }

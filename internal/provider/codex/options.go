@@ -1,26 +1,17 @@
 package codex
 
-import (
-	"log"
-	"strings"
+import "agent-overflow/internal/provider"
 
-	"agent-overflow/internal/provider"
-)
-
-// codexEffortFromOption translates our five-tier ReasoningEffort onto the
-// ReasoningEffort enum Codex actually accepts at the wire (values verified
-// against codex-source
-// app-server-protocol/schema/json/v2/ThreadStartParams.json →
-// ReasoningEffort: none|minimal|low|medium|high|xhigh).
-//
-// Our EffortMax has no direct Codex equivalent — Codex tops out at xhigh —
-// so we floor Max to xhigh and log the compromise exactly once per session
-// (the caller is ConfigFromOptions, which runs once per session start).
-//
-// The logged tier is returned unchanged so tests can detect the floor without
-// re-parsing log output.
+// codexEffortFromOption translates AO's stored ReasoningEffort onto Codex's
+// native app-server enum: none|minimal|low|medium|high|xhigh. Max is
+// intentionally absent; Codex does not support it, and app/store validation
+// prevents setting it on Codex threads.
 func codexEffortFromOption(effort provider.ReasoningEffort) string {
 	switch effort {
+	case provider.EffortNone:
+		return "none"
+	case provider.EffortMinimal:
+		return "minimal"
 	case provider.EffortLow:
 		return "low"
 	case provider.EffortMedium:
@@ -28,13 +19,6 @@ func codexEffortFromOption(effort provider.ReasoningEffort) string {
 	case provider.EffortHigh:
 		return "high"
 	case provider.EffortXHigh:
-		return "xhigh"
-	case provider.EffortMax:
-		// Codex doesn't define a tier above xhigh today. Floor and surface
-		// the compromise in the logs; callers (UI) already label the
-		// thread "max" so users know they asked for more than Codex
-		// offers.
-		log.Printf("codex: effort %q mapped to xhigh (codex tops at xhigh)", effort)
 		return "xhigh"
 	default:
 		// Empty / unknown — let Codex pick its own default by omitting the
@@ -85,37 +69,9 @@ func codexSandbox(mode provider.RuntimeMode) string {
 	}
 }
 
-// fastModelForCodex swaps a heavier Codex model for its mini sibling when Fast
-// Mode is on. Codex's canonical "cheap and fast" tier is the `-mini` variant
-// of the current default (verified against internal/provider/models.go — the
-// current mini id is gpt-5.4-mini; OpenAI's current docs expose GPT-5.5 in
-// Codex, but do not expose a gpt-5.5-mini sibling yet).
-//
-// Rules:
-//   - If the current model id starts with "gpt-5" but does NOT contain
-//     "mini", swap to "gpt-5.4-mini" (the latest documented mini tier).
-//   - If it already contains "mini", leave it unchanged (user has already
-//     opted into the cheap tier).
-//   - For non-gpt-5 Codex models (o3, o4-mini, etc.) we leave the id alone;
-//     the user has explicitly picked a different model family and Fast Mode
-//     doesn't imply we should cross families.
-//
-// The swap mirrors the Claude-side helper: Fast Mode is a real effect, not a
-// cosmetic toggle.
-func fastModelForCodex(current string) string {
-	lowered := strings.ToLower(current)
-	if strings.Contains(lowered, "mini") {
-		return current
-	}
-	if strings.HasPrefix(lowered, "gpt-5") {
-		return "gpt-5.4-mini"
-	}
-	return current
-}
-
 // ConfigFromOptions translates a provider-agnostic SessionOptions bundle into
 // the Codex-specific launch Config. Codex has a native `reasoning_effort`
-// knob (unlike Claude which needs a system-prompt prefix) and carries the
+// knob and carries the
 // system prompt as `baseInstructions` on the thread/start request, so the
 // shape of this translation is materially different from its Claude twin.
 //
@@ -131,9 +87,6 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 	runtime := runtimeModeToCodex(opts.RuntimeMode)
 
 	model := opts.Model
-	if opts.FastMode {
-		model = fastModelForCodex(model)
-	}
 	contextWindow := provider.ResolveContextWindowForModel(string(provider.Codex), model, opts.ContextWindow)
 	autoCompactPercent := provider.AutoCompactPercentForContextTier(
 		provider.ContextTierForModelWindow(string(provider.Codex), model, contextWindow),
@@ -152,9 +105,17 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		ResumeThreadID:        opts.Resume,
 		SystemPrompt:          opts.SystemPrompt,
 		ReasoningEffort:       codexEffortFromOption(opts.ReasoningEffort),
+		ServiceTier:           codexServiceTier(model, opts.FastMode),
 		ContextWindow:         contextWindow,
 		AutoCompactTokenLimit: autoCompactTokenLimit(contextWindow, autoCompactPercent),
 	}
+}
+
+func codexServiceTier(model string, fastMode bool) string {
+	if !fastMode || !provider.ModelSupportsCapability(string(provider.Codex), model, provider.ModelCapabilityFastMode) {
+		return ""
+	}
+	return "fast"
 }
 
 func autoCompactTokenLimit(contextWindow, percent int) int {

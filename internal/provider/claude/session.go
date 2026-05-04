@@ -156,13 +156,15 @@ type pendingApproval struct {
 
 // Config for creating a Claude session.
 type Config struct {
-	Binary       string // default: "claude"
-	Model        string
-	WorkDir      string
-	Resume       string // session ID to resume, empty for new
-	ForkSession  bool
-	SystemPrompt string
-	AllowedTools []string
+	Binary          string // default: "claude"
+	Model           string
+	WorkDir         string
+	Resume          string // session ID to resume, empty for new
+	ForkSession     bool
+	SystemPrompt    string
+	ReasoningEffort string
+	FastMode        bool
+	AllowedTools    []string
 	// PermissionFlags carries the full permission flag sequence. Nil / empty
 	// means "don't pass any permission-related flag".
 	PermissionFlags    []string
@@ -290,6 +292,15 @@ func buildArgs(cfg Config) []string {
 	}
 	if cfg.SystemPrompt != "" {
 		args = append(args, "--system-prompt", cfg.SystemPrompt)
+	}
+	if cfg.ReasoningEffort != "" {
+		args = append(args, "--effort", cfg.ReasoningEffort)
+	}
+	if cfg.FastMode {
+		settingsJSON, err := json.Marshal(map[string]bool{"fastMode": true})
+		if err == nil {
+			args = append(args, "--settings", string(settingsJSON))
+		}
 	}
 	// PermissionFlags is either nil (default CLI prompting) or a complete
 	// permission-related CLI flag sequence for the selected runtime mode.

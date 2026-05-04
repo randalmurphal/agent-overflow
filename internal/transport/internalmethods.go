@@ -129,15 +129,19 @@ var LocalOnlyMethods = map[string]bool{
 	"GetSessionAgentDiff":     true,
 	"GetWorkingTreeDiff":      true,
 	"GetWorkspaceCurrentDiff": true,
+	// Codex model discovery spawns the configured `codex app-server`
+	// subprocess. It looks like a catalog read, but the local process
+	// execution makes it loopback-only.
+	"GetModelsForProvider": true,
 
 	// 2. Session control (provider subprocess spawn / steer).
-	"StartSession":                true,
-	"StopSession":                 true,
-	"ReconnectSession":            true,
-	"SendMessage":                 true,
-	"SendMessageWithOptions":      true,
-	"SteerMessageWithOptions":     true,
-	"SendPlanRevisionComments":    true,
+	"StartSession":             true,
+	"StopSession":              true,
+	"ReconnectSession":         true,
+	"SendMessage":              true,
+	"SendMessageWithOptions":   true,
+	"SteerMessageWithOptions":  true,
+	"SendPlanRevisionComments": true,
 	// Flush-queue surface: RegisterQueueItem stages a user message
 	// awaiting first-tool-use trigger fire (and the dispatcher then
 	// writes to the local provider's stdin / JSON-RPC). UndoQueuedItems
@@ -146,9 +150,9 @@ var LocalOnlyMethods = map[string]bool{
 	// refs is the same threat shape as the diff-returning bindings
 	// (category 6 below): in-progress drafted work shouldn't be
 	// readable by a LAN token-holder. All three are loopback-only.
-	"RegisterQueueItem": true,
-	"UndoQueuedItems":   true,
-	"GetQueueState":     true,
+	"RegisterQueueItem":           true,
+	"UndoQueuedItems":             true,
+	"GetQueueState":               true,
 	"StartDiscussion":             true,
 	"StartDiscussionByID":         true,
 	"UpdateThreadMode":            true,

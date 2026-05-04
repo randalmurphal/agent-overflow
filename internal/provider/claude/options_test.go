@@ -8,166 +8,107 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// TestEffortSystemPrefix pins down the five-tier mapping claude uses to
-// translate the composer's reasoning-effort enum into Claude's trigger-word
-// convention. Low omits the prefix entirely; Max emits "ultrathink".
-func TestEffortSystemPrefix(t *testing.T) {
+func TestClaudeEffortFromOption(t *testing.T) {
 	cases := []struct {
 		effort provider.ReasoningEffort
 		want   string
 	}{
-		{provider.EffortLow, ""},
-		{provider.EffortMedium, "think"},
-		{provider.EffortHigh, "think hard"},
-		{provider.EffortXHigh, "think harder"},
-		{provider.EffortMax, "ultrathink"},
+		{provider.EffortLow, "low"},
+		{provider.EffortMedium, "medium"},
+		{provider.EffortHigh, "high"},
+		{provider.EffortXHigh, "max"},
+		{provider.EffortMax, "max"},
+		{provider.EffortNone, ""},
+		{provider.EffortMinimal, ""},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.effort), func(t *testing.T) {
-			if got := effortSystemPrefix(tc.effort); got != tc.want {
-				t.Errorf("effortSystemPrefix(%q) = %q, want %q", tc.effort, got, tc.want)
+			if got := claudeEffortFromOption(tc.effort); got != tc.want {
+				t.Errorf("claudeEffortFromOption(%q) = %q, want %q", tc.effort, got, tc.want)
 			}
 		})
 	}
 }
 
-// TestComposeSystemPromptPrefixAndBody covers the three non-trivial join
-// paths: both present (separator inserted), only prefix (verbatim), only
-// body (verbatim). Keeps the final prompt free of stray blank lines when
-// one half is missing.
-func TestComposeSystemPromptPrefixAndBody(t *testing.T) {
-	if got := composeSystemPrompt("think hard", "Be helpful"); got != "think hard\n\nBe helpful" {
-		t.Errorf("both: got %q", got)
+func TestClaudeModelForContextWindow(t *testing.T) {
+	if got := claudeModelForContextWindow("claude-opus-4-7", provider.ClaudeExtendedContextWindow); got != "claude-opus-4-7[1m]" {
+		t.Fatalf("extended model = %q, want [1m] suffix", got)
 	}
-	if got := composeSystemPrompt("", "Be helpful"); got != "Be helpful" {
-		t.Errorf("prompt only: got %q", got)
-	}
-	if got := composeSystemPrompt("ultrathink", ""); got != "ultrathink" {
-		t.Errorf("prefix only: got %q", got)
-	}
-	if got := composeSystemPrompt("", ""); got != "" {
-		t.Errorf("empty: got %q", got)
+	if got := claudeModelForContextWindow("claude-opus-4-7", provider.ClaudeStandardContextWindow); got != "claude-opus-4-7" {
+		t.Fatalf("standard model = %q, want unchanged", got)
 	}
 }
 
-// TestEnvForContextWindow confirms the 1M-token toggle sets the opt-in beta
-// header and that 200k (or zero / unknown) leaves env untouched so the caller
-// doesn't accidentally ship the beta header.
-func TestEnvForContextWindow(t *testing.T) {
-	if env := envForContextWindow(1000000); env["ANTHROPIC_BETAS"] != claudeOneMillionContextBeta {
-		t.Errorf("1M should set ANTHROPIC_BETAS=%q, got %v", claudeOneMillionContextBeta, env)
-	}
-	if env := envForContextWindow(200000); env != nil {
-		t.Errorf("200k should not set env; got %v", env)
-	}
-	if env := envForContextWindow(0); env != nil {
-		t.Errorf("zero should not set env; got %v", env)
-	}
-	if env := envForContextWindow(500000); env != nil {
-		t.Errorf("unknown size %d should not set env; got %v", 500000, env)
-	}
-}
-
-// TestFastModelForClaude covers the intentional swap to Haiku when Opus is
-// selected (fast-mode on) and the pass-through when the user has already
-// picked a cheap model.
-func TestFastModelForClaude(t *testing.T) {
-	cases := []struct {
-		current string
-		want    string
-	}{
-		{"claude-opus-4-6", "claude-haiku-4-5"},
-		{"claude-opus-4-7", "claude-haiku-4-5"},
-		{"CLAUDE-OPUS-5", "claude-haiku-4-5"}, // case insensitive
-		{"", "claude-haiku-4-5"},              // unset → assume Anthropic default is opus-class
-		{"claude-sonnet-4-6", "claude-sonnet-4-6"},
-		{"claude-haiku-4-5", "claude-haiku-4-5"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.current, func(t *testing.T) {
-			if got := fastModelForClaude(tc.current); got != tc.want {
-				t.Errorf("fastModelForClaude(%q) = %q, want %q", tc.current, got, tc.want)
+func TestConfigFromOptionsFastModePreservesModelAndSetsFlag(t *testing.T) {
+	for _, model := range []string{"claude-opus-4-7", "claude-opus-4-6"} {
+		t.Run(model, func(t *testing.T) {
+			cfg := ConfigFromOptions(provider.SessionOptions{
+				Provider: "claude",
+				Model:    model,
+				FastMode: true,
+			})
+			if cfg.Model != model {
+				t.Fatalf("Model = %q, want %s", cfg.Model, model)
+			}
+			if !cfg.FastMode {
+				t.Fatal("FastMode = false, want true")
 			}
 		})
 	}
 }
 
-func TestConfigFromOptionsFastModeFallsBackToHaikuContext(t *testing.T) {
+func TestConfigFromOptionsFastModeUnsupportedModelClearsFlag(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:                   "claude",
-		Model:                      "claude-opus-4-7",
-		FastMode:                   true,
-		ContextWindow:              1000000,
-		AutoCompactStandardPercent: 70,
-		AutoCompactExtendedPercent: 80,
+		Provider: "claude",
+		Model:    "claude-opus-4-5",
+		FastMode: true,
 	})
-	if cfg.Model != "claude-haiku-4-5" {
-		t.Fatalf("Model = %q, want claude-haiku-4-5", cfg.Model)
-	}
-	if cfg.Env["ANTHROPIC_BETAS"] != "" {
-		t.Errorf("ANTHROPIC_BETAS = %q, want empty after Haiku context fallback", cfg.Env["ANTHROPIC_BETAS"])
-	}
-	if cfg.Env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] != "70" {
-		t.Errorf("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = %q, want 70", cfg.Env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"])
+	if cfg.FastMode {
+		t.Fatal("FastMode = true, want false for opus 4.5")
 	}
 }
 
-// TestConfigFromOptionsEffortPrefixPrepended validates that the effort
-// prefix lands BEFORE the caller-composed system prompt, with the expected
-// blank-line separator. This is the property the prompt-prefix contract
-// depends on.
-func TestConfigFromOptionsEffortPrefixPrepended(t *testing.T) {
+func TestConfigFromOptionsEffortUsesNativeFlag(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:        "claude",
-		ReasoningEffort: provider.EffortMax,
-		SystemPrompt:    "You are the agent.",
-	})
-	want := "ultrathink\n\nYou are the agent."
-	if cfg.SystemPrompt != want {
-		t.Errorf("SystemPrompt = %q, want %q", cfg.SystemPrompt, want)
-	}
-}
-
-// TestConfigFromOptionsEffortLowNoPrefix confirms that the low tier doesn't
-// sneak a "think" token in front of the system prompt — low is the quietest
-// tier and MUST NOT nudge the model.
-func TestConfigFromOptionsEffortLowNoPrefix(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:        "claude",
-		ReasoningEffort: provider.EffortLow,
+		Model:           "claude-opus-4-6",
+		ReasoningEffort: provider.EffortHigh,
 		SystemPrompt:    "You are the agent.",
 	})
 	if cfg.SystemPrompt != "You are the agent." {
-		t.Errorf("SystemPrompt = %q, want unchanged for low tier", cfg.SystemPrompt)
+		t.Fatalf("SystemPrompt = %q, want unchanged", cfg.SystemPrompt)
+	}
+	if cfg.ReasoningEffort != "high" {
+		t.Fatalf("ReasoningEffort = %q, want high", cfg.ReasoningEffort)
 	}
 }
 
-// TestConfigFromOptionsOneMillionContextSetsEnv is the regression guard
-// around the ANTHROPIC_BETAS header opt-in.
-func TestConfigFromOptionsOneMillionContextSetsEnv(t *testing.T) {
+func TestConfigFromOptionsOneMillionContextUsesModelSuffix(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:      "claude",
-		ContextWindow: 1000000,
+		Model:         "claude-opus-4-7",
+		ContextWindow: provider.ClaudeExtendedContextWindow,
 	})
-	if cfg.Env["ANTHROPIC_BETAS"] != claudeOneMillionContextBeta {
-		t.Errorf("Env[ANTHROPIC_BETAS] = %q, want %q", cfg.Env["ANTHROPIC_BETAS"], claudeOneMillionContextBeta)
+	if cfg.Model != "claude-opus-4-7[1m]" {
+		t.Fatalf("Model = %q, want claude-opus-4-7[1m]", cfg.Model)
 	}
-}
-
-// TestConfigFromOptionsTwoHundredKContextOmitsEnv — 200k is the default; we
-// MUST NOT ship the beta header in that case.
-func TestConfigFromOptionsTwoHundredKContextOmitsEnv(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:      "claude",
-		ContextWindow: 200000,
-	})
 	if cfg.Env != nil {
-		t.Errorf("Env = %v, want nil for 200k", cfg.Env)
+		t.Fatalf("Env = %v, want nil for 1m suffix path", cfg.Env)
 	}
 }
 
-// TestConfigFromOptionsRuntimeModeFullAccessFlag pins down the full-access
-// SDK-equivalent bypassPermissions mapping at the ConfigFromOptions boundary.
+func TestConfigFromOptionsAutoCompactEnv(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{
+		Provider:                   "claude",
+		Model:                      "claude-opus-4-7",
+		ContextWindow:              provider.ClaudeExtendedContextWindow,
+		AutoCompactExtendedPercent: 80,
+	})
+	if cfg.Env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] != "80" {
+		t.Fatalf("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = %q, want 80", cfg.Env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"])
+	}
+}
+
 func TestConfigFromOptionsRuntimeModeFullAccessFlag(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:    "claude",
@@ -182,8 +123,6 @@ func TestConfigFromOptionsRuntimeModeFullAccessFlag(t *testing.T) {
 	}
 }
 
-// TestConfigFromOptionsRuntimeModeApprovalRequiredNoFlag confirms the safest
-// tier emits no permission flag so the CLI's own default prompting kicks in.
 func TestConfigFromOptionsRuntimeModeApprovalRequiredNoFlag(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:    "claude",
@@ -194,65 +133,17 @@ func TestConfigFromOptionsRuntimeModeApprovalRequiredNoFlag(t *testing.T) {
 	}
 }
 
-// TestConfigFromOptionsRuntimeModeAutoAcceptEdits sanity-checks the middle
-// tier sends `--permission-mode acceptEdits`.
 func TestConfigFromOptionsRuntimeModeAutoAcceptEdits(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:    "claude",
 		RuntimeMode: provider.RuntimeAutoAcceptEdits,
 	})
 	want := []string{"--permission-mode", "acceptEdits"}
-	if len(cfg.PermissionFlags) != len(want) ||
-		cfg.PermissionFlags[0] != want[0] || cfg.PermissionFlags[1] != want[1] {
+	if !slices.Equal(cfg.PermissionFlags, want) {
 		t.Errorf("PermissionFlags = %v, want %v", cfg.PermissionFlags, want)
 	}
 }
 
-// TestConfigFromOptionsFastModeSwapsOpusToHaiku exercises the auto-swap path;
-// the caller may have shipped opus, fast-mode flips it to haiku so the thread
-// doesn't quietly ignore the toggle.
-func TestConfigFromOptionsFastModeSwapsOpusToHaiku(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider: "claude",
-		Model:    "claude-opus-4-6",
-		FastMode: true,
-	})
-	if cfg.Model != "claude-haiku-4-5" {
-		t.Errorf("Model = %q, want claude-haiku-4-5", cfg.Model)
-	}
-}
-
-// TestConfigFromOptionsFastModeLeavesHaikuAndSonnetUntouched is the inverse —
-// the user already picked a cheap model, fast-mode shouldn't rewrite it.
-func TestConfigFromOptionsFastModeLeavesHaikuAndSonnetUntouched(t *testing.T) {
-	for _, model := range []string{"claude-sonnet-4-6", "claude-haiku-4-5"} {
-		cfg := ConfigFromOptions(provider.SessionOptions{
-			Provider: "claude",
-			Model:    model,
-			FastMode: true,
-		})
-		if cfg.Model != model {
-			t.Errorf("fast mode rewrote %q to %q", model, cfg.Model)
-		}
-	}
-}
-
-// TestConfigFromOptionsFastModeOffPreservesModel — the negative control: if
-// fast mode is off, we pass the model through verbatim even if it's opus.
-func TestConfigFromOptionsFastModeOffPreservesModel(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider: "claude",
-		Model:    "claude-opus-4-6",
-		FastMode: false,
-	})
-	if cfg.Model != "claude-opus-4-6" {
-		t.Errorf("Model = %q, want claude-opus-4-6 (fast mode off)", cfg.Model)
-	}
-}
-
-// TestConfigFromOptionsResumeAndForkFlow — the resume target and fork flag
-// have to survive the translation so the session-start plumbing keeps
-// behaving after restart and pending-fork consumption.
 func TestConfigFromOptionsResumeAndForkFlow(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:    "claude",
@@ -267,10 +158,6 @@ func TestConfigFromOptionsResumeAndForkFlow(t *testing.T) {
 	}
 }
 
-// TestConfigFromOptionsThreadsIntoBuildArgs is a lightweight integration
-// check that the options → config → args chain actually produces the flags
-// we expect a real `claude` invocation to include. Prevents a regression
-// where PermissionFlags stops flowing into buildArgs.
 func TestConfigFromOptionsThreadsIntoBuildArgs(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:        "claude",
@@ -278,32 +165,21 @@ func TestConfigFromOptionsThreadsIntoBuildArgs(t *testing.T) {
 		ReasoningEffort: provider.EffortHigh,
 		SystemPrompt:    "Be an agent.",
 		RuntimeMode:     provider.RuntimeFullAccess,
-		ContextWindow:   1000000,
+		ContextWindow:   provider.ClaudeExtendedContextWindow,
+		FastMode:        true,
 	})
 	args := buildArgs(cfg)
-
 	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--model claude-opus-4-6[1m]") {
+		t.Fatalf("args missing suffixed model: %v", args)
+	}
+	if !strings.Contains(joined, "--effort high") {
+		t.Fatalf("args missing effort: %v", args)
+	}
+	if !strings.Contains(joined, `--settings {"fastMode":true}`) {
+		t.Fatalf("args missing fast mode settings: %v", args)
+	}
 	if !strings.Contains(joined, "--permission-mode bypassPermissions --allow-dangerously-skip-permissions") {
-		t.Errorf("args missing bypass permission flags: %v", args)
-	}
-	if !strings.Contains(joined, "--system-prompt think hard\n\nBe an agent.") {
-		// The prompt contains a literal newline, so exact substring matching
-		// is brittle — we just spot-check that the prefix landed in the
-		// system-prompt value by scanning the flag → value pair directly.
-		foundPrefix := false
-		for i, a := range args {
-			if a == "--system-prompt" && i+1 < len(args) &&
-				strings.HasPrefix(args[i+1], "think hard") {
-				foundPrefix = true
-				break
-			}
-		}
-		if !foundPrefix {
-			t.Errorf("system prompt did not carry 'think hard' prefix: %v", args)
-		}
-	}
-
-	if cfg.Env["ANTHROPIC_BETAS"] != claudeOneMillionContextBeta {
-		t.Errorf("Env[ANTHROPIC_BETAS] missing after ConfigFromOptions: %v", cfg.Env)
+		t.Fatalf("args missing bypass permission flags: %v", args)
 	}
 }

@@ -213,6 +213,9 @@ func (a *App) generateClaudeCommitMessage(
 	if cfg.Model != "" {
 		args = append(args, "--model", cfg.Model)
 	}
+	if cfg.Effort != "" {
+		args = append(args, "--effort", cfg.Effort)
+	}
 
 	result, err := cfg.Exec(ctx, textGenerationCLISpec{
 		Binary: cfg.Binary,

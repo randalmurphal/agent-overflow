@@ -1,28 +1,28 @@
-import type { Settings } from '../types/settings';
-import { GetSettings, UpdateSettings } from './bindings';
-import { addToast } from './toast.svelte';
+import type { Settings } from "../types/settings";
+import { GetSettings, UpdateSettings } from "./bindings";
+import { addToast } from "./toast.svelte";
 
 const DEFAULT_SETTINGS: Settings = {
-  theme: 'system',
-  timestampFormat: 'locale',
-  sansFont: 'geist',
-  monoFont: 'geist',
+  theme: "system",
+  timestampFormat: "locale",
+  sansFont: "geist",
+  monoFont: "geist",
   recentWorkspaces: [],
   diffWordWrap: false,
   backgroundTrayExpanded: false,
   streamingEnabled: true,
   confirmArchive: true,
   confirmDelete: true,
-  claudeBinaryPath: 'claude',
-  codexBinaryPath: 'codex',
+  claudeBinaryPath: "claude",
+  codexBinaryPath: "codex",
   claudeEnabled: true,
   codexEnabled: true,
-  defaultThreadEnvMode: 'local',
-  worktreeBranchPrefix: 'ao-',
+  defaultThreadEnvMode: "local",
+  worktreeBranchPrefix: "ao-",
   // Text generation defaults mirror internal/settings.DefaultSettings.
-  textGenerationProvider: 'codex',
-  textGenerationModel: '',
-  textGenerationReasoningEffort: 'low',
+  textGenerationProvider: "codex",
+  textGenerationModel: "",
+  textGenerationReasoningEffort: "low",
   // Auto-compact thresholds default to 90% per provider per tier — same
   // value as the Go DefaultSettings so an unloaded settings store doesn't
   // disagree with what the backend would send back on first GetSettings.
@@ -31,7 +31,7 @@ const DEFAULT_SETTINGS: Settings = {
   codexAutoCompactStandardPercent: 90,
   codexAutoCompactExtendedPercent: 90,
   observabilityTracingEnabled: false,
-  observabilityOtlpEndpoint: '',
+  observabilityOtlpEndpoint: "",
   observabilityEventLogEnabled: false,
   // Phase E LAN-bind preference defaults to false — loopback is the
   // safe out-of-the-box behaviour. Toggling on through Settings →
@@ -55,8 +55,8 @@ export async function loadSettings(): Promise<void> {
       } as Settings;
     }
   } catch (err) {
-    console.error('Failed to load settings:', err);
-    addToast('error', 'Failed to load settings');
+    console.error("Failed to load settings:", err);
+    addToast("error", "Failed to load settings");
   }
 }
 
@@ -64,10 +64,16 @@ export async function updateSetting<K extends keyof Settings>(
   key: K,
   value: Settings[K],
 ): Promise<void> {
+  await updateSettingsPatch({ [key]: value } as Partial<Settings>);
+}
+
+export async function updateSettingsPatch(
+  patch: Partial<Settings>,
+): Promise<void> {
   const previous = { ...settings };
-  settings = { ...settings, [key]: value };
+  settings = { ...settings, ...patch };
   try {
-    const result = await UpdateSettings({ [key]: value });
+    const result = await UpdateSettings(patch);
     if (result) {
       settings = {
         ...DEFAULT_SETTINGS,
@@ -75,8 +81,8 @@ export async function updateSetting<K extends keyof Settings>(
       } as Settings;
     }
   } catch (err) {
-    console.error('Failed to update setting:', err);
+    console.error("Failed to update setting:", err);
     settings = previous;
-    addToast('error', 'Failed to save setting');
+    addToast("error", "Failed to save setting");
   }
 }

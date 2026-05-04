@@ -1,10 +1,15 @@
 /**
- * ReasoningEffort mirrors provider.ReasoningEffort's five tiers.
- * Claude exposes all five; Codex omits "max". Settings store keeps
- * the full set so a user who switches provider doesn't lose their
- * preference.
+ * ReasoningEffort mirrors provider.ReasoningEffort. The active model's
+ * metadata controls which subset is selectable.
  */
-export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type ReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
 
 /**
  * ContextWindow mirrors the per-thread context-window token count.
@@ -17,18 +22,21 @@ export type ContextWindow = number;
  * ThreadMode mirrors the canonical mode column on thread rows. Discussion
  * is included for symmetry even though it's reached via a separate flow.
  */
-export type ThreadMode = 'chat' | 'plan' | 'design' | 'discussion';
+export type ThreadMode = "chat" | "plan" | "design" | "discussion";
 
-export type RuntimeMode = 'approval-required' | 'auto-accept-edits' | 'full-access';
+export type RuntimeMode =
+  | "approval-required"
+  | "auto-accept-edits"
+  | "full-access";
 
-export type ThreadEnvMode = 'local' | 'worktree';
+export type ThreadEnvMode = "local" | "worktree";
 
-export type SansFont = 'geist' | 'hack-nerd' | 'system';
-export type MonoFont = 'geist' | 'hack-nerd' | 'system';
+export type SansFont = "geist" | "hack-nerd" | "system";
+export type MonoFont = "geist" | "hack-nerd" | "system";
 
 export interface Settings {
-  theme: 'system' | 'light' | 'dark';
-  timestampFormat: 'locale' | '12-hour' | '24-hour';
+  theme: "system" | "light" | "dark";
+  timestampFormat: "locale" | "12-hour" | "24-hour";
   /**
    * Sans typeface for the `--font-sans` CSS variable. Default `geist`
    * is eagerly bundled; `hack-nerd` lazy-loads a separate woff2 chunk;
@@ -59,7 +67,7 @@ export interface Settings {
    * thread titles. Independent of the chat provider so a user on Claude
    * can still use Codex for commit messages.
    */
-  textGenerationProvider: 'claude' | 'codex';
+  textGenerationProvider: "claude" | "codex";
   /**
    * Text generation model id. Empty string = "use the per-provider
    * default" (codex → gpt-5.4-mini, claude → claude-haiku-4-5).
@@ -120,7 +128,7 @@ export interface ProviderStatus {
   installed: boolean;
   version: string;
   binaryPath: string;
-  status: 'ready' | 'not_found' | 'error';
+  status: "ready" | "not_found" | "error";
   message: string;
 }
 
@@ -128,12 +136,20 @@ export interface ModelInfo {
   slug: string;
   name: string;
   provider: string;
-  capabilities: string[];
+  isCustom?: boolean;
+  capabilities?: string[];
   contextWindows?: ContextWindowOption[];
+  reasoningEfforts?: ReasoningEffortOption[];
 }
 
 export interface ContextWindowOption {
   tokens: number;
   label: string;
-  tier: 'standard' | 'extended' | string;
+  tier: "standard" | "extended" | string;
+}
+
+export interface ReasoningEffortOption {
+  slug: ReasoningEffort;
+  label: string;
+  default?: boolean;
 }

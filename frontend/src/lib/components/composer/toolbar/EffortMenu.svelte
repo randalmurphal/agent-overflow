@@ -4,7 +4,7 @@
 
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { Thread } from '../../../types/models';
-  import type { ContextWindowOption, ModelInfo } from '../../../types/settings';
+  import type { ContextWindowOption, ModelInfo, ReasoningEffortOption } from '../../../types/settings';
   import {
     GetModelsForProvider,
     UpdateThreadFastMode,
@@ -33,20 +33,18 @@
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
   let contextOptions = $state<ContextWindowOption[]>([]);
+  let reasoningOptions = $state<ReasoningEffortOption[]>([]);
+  let fastModeSupported = $state(false);
   let loadedContextKey = '';
 
-  type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  type Effort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
-  const EFFORT_COMMON: Array<{ slug: Effort; label: string }> = [
+  const FALLBACK_EFFORTS: Array<ReasoningEffortOption> = [
     { slug: 'low', label: 'Low' },
     { slug: 'medium', label: 'Medium' },
     { slug: 'high', label: 'High' },
-    { slug: 'xhigh', label: 'XHigh' },
+    { slug: 'xhigh', label: 'Extra High' },
   ];
-  const EFFORT_CLAUDE_ONLY: { slug: Effort; label: string } = { slug: 'max', label: 'Max' };
-
-  let provider = $derived(pane.thread?.provider ?? 'claude');
-  let isCodex = $derived(provider === 'codex');
 
   let currentEffort = $derived<Effort>(
     (pane.thread?.reasoningEffort as Effort | undefined) ?? 'medium',
@@ -54,22 +52,25 @@
   let currentFast = $derived(pane.thread?.fastMode === true);
   let currentContextWindow = $derived(pane.thread?.contextWindow ?? 0);
 
-  // Available effort tiers per provider. Max only surfaces on Claude
-  // because the Codex provider doesn't understand it.
-  let availableEfforts = $derived(
-    isCodex ? EFFORT_COMMON : [...EFFORT_COMMON, EFFORT_CLAUDE_ONLY],
-  );
+  let availableEfforts = $derived(reasoningOptions.length > 0 ? reasoningOptions : FALLBACK_EFFORTS);
 
   function titleCase(slug: Effort): string {
-    if (slug === 'xhigh') return 'XHigh';
+    if (slug === 'xhigh') return 'Extra High';
+    if (slug === 'none') return 'None';
+    if (slug === 'minimal') return 'Minimal';
     return slug[0].toUpperCase() + slug.slice(1);
   }
 
   function contextLabel(tokens: number): string {
     if (tokens === 1_050_000 || tokens === 1_000_000) return '1M';
     if (tokens === 272_000) return '272k';
+    if (tokens === 128_000) return '128k';
     if (tokens === 200_000) return '200k';
     return formatTokens(tokens);
+  }
+
+  function contextOptionLabel(option: ContextWindowOption): string {
+    return option.label || contextLabel(option.tokens);
   }
 
   let triggerLabel = $derived(
@@ -83,6 +84,8 @@
     const model = pane.thread?.model;
     if ((p !== 'claude' && p !== 'codex') || !model) {
       contextOptions = [];
+      reasoningOptions = [];
+      fastModeSupported = false;
       loadedContextKey = '';
       return;
     }
@@ -92,11 +95,15 @@
       const models = (await GetModelsForProvider(p)) as ModelInfo[] | null;
       const current = (Array.isArray(models) ? models : []).find((candidate) => candidate.slug === model);
       contextOptions = current?.contextWindows ?? [];
+      reasoningOptions = current?.reasoningEfforts ?? [];
+      fastModeSupported = current?.capabilities?.includes('fast_mode') ?? false;
       loadedContextKey = key;
     } catch (err) {
       console.error('GetModelsForProvider failed:', err);
       addToast('error', `Failed to load context windows: ${errString(err)}`);
       contextOptions = [];
+      reasoningOptions = [];
+      fastModeSupported = false;
       loadedContextKey = key;
     }
   }
@@ -203,30 +210,32 @@
       />
     {/each}
 
-    {#if contextOptions.length > 0}
+    {#if contextOptions.length > 1}
       <MenuDivider />
       <MenuSectionHeader label="Context" />
       {#each contextOptions as option (option.tokens)}
         <MenuItem
-          label={contextLabel(option.tokens)}
+          label={contextOptionLabel(option)}
           checked={option.tokens === currentContextWindow}
           onSelect={() => handleContextWindow(option.tokens)}
         />
       {/each}
     {/if}
 
-    <MenuDivider />
-    <MenuSectionHeader label="Fast Mode" />
-    <MenuItem
-      label="Off"
-      checked={!currentFast}
-      onSelect={() => handleFastMode(false)}
-    />
-    <MenuItem
-      label="On"
-      checked={currentFast}
-      onSelect={() => handleFastMode(true)}
-    />
+    {#if fastModeSupported}
+      <MenuDivider />
+      <MenuSectionHeader label="Fast Mode" />
+      <MenuItem
+        label="Off"
+        checked={!currentFast}
+        onSelect={() => handleFastMode(false)}
+      />
+      <MenuItem
+        label="On"
+        checked={currentFast}
+        onSelect={() => handleFastMode(true)}
+      />
+    {/if}
 
   </Menu>
 </Popover>

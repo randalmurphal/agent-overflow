@@ -135,6 +135,9 @@ func normalizeChatModelProfile(profile ChatModelProfile) (ChatModelProfile, erro
 	if _, ok := legalEfforts[profile.ReasoningEffort]; !ok {
 		return ChatModelProfile{}, fmt.Errorf("%w: %q", ErrInvalidEffort, profile.ReasoningEffort)
 	}
+	if !legalEffortForProvider(profile.Provider, profile.ReasoningEffort) {
+		return ChatModelProfile{}, fmt.Errorf("%w: %s/%s", ErrInvalidEffort, profile.Provider, profile.ReasoningEffort)
+	}
 	if profile.ContextWindow == 0 {
 		profile.ContextWindow = 1000000
 	}

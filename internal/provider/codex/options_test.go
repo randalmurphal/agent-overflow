@@ -1,27 +1,24 @@
 package codex
 
 import (
-	"bytes"
-	"log"
 	"testing"
 
 	"agent-overflow/internal/provider"
 )
 
-// TestCodexEffortFromOption enumerates every tier of ReasoningEffort and
-// pins down Codex's response: Low→low, Medium→medium, High→high, XHigh→xhigh,
-// Max→xhigh (floored, with a log entry). Empty/unknown returns "".
 func TestCodexEffortFromOption(t *testing.T) {
 	cases := []struct {
 		effort provider.ReasoningEffort
 		want   string
 	}{
+		{provider.EffortNone, "none"},
+		{provider.EffortMinimal, "minimal"},
 		{provider.EffortLow, "low"},
 		{provider.EffortMedium, "medium"},
 		{provider.EffortHigh, "high"},
 		{provider.EffortXHigh, "xhigh"},
-		{provider.EffortMax, "xhigh"}, // floored
-		{"", ""},                      // unknown / unset
+		{provider.EffortMax, ""},
+		{"", ""}, // unknown / unset
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.effort), func(t *testing.T) {
@@ -29,22 +26,6 @@ func TestCodexEffortFromOption(t *testing.T) {
 				t.Errorf("codexEffortFromOption(%q) = %q, want %q", tc.effort, got, tc.want)
 			}
 		})
-	}
-}
-
-// TestCodexEffortMaxLogsFloor confirms the floor is observable — we log once
-// so the user's "why did my max thread only use xhigh" question has an
-// answer without needing a full-session trace.
-func TestCodexEffortMaxLogsFloor(t *testing.T) {
-	var buf bytes.Buffer
-	old := log.Writer()
-	log.SetOutput(&buf)
-	t.Cleanup(func() { log.SetOutput(old) })
-
-	_ = codexEffortFromOption(provider.EffortMax)
-
-	if !bytes.Contains(buf.Bytes(), []byte("mapped to xhigh")) {
-		t.Errorf("expected floor log, got %q", buf.String())
 	}
 }
 
@@ -62,33 +43,6 @@ func TestRuntimeModeToCodex(t *testing.T) {
 			got := runtimeModeToCodex(mode)
 			if got != want {
 				t.Errorf("runtimeModeToCodex(%q) = %+v, want %+v", mode, got, want)
-			}
-		})
-	}
-}
-
-// TestFastModelForCodex exercises the swap and the pass-through paths. The
-// swap is gpt-5*.whatever → gpt-5.4-mini when the id isn't already a mini;
-// o3 / o4-mini stay as-is (different family; Fast Mode doesn't imply a
-// family switch).
-func TestFastModelForCodex(t *testing.T) {
-	cases := []struct {
-		current string
-		want    string
-	}{
-		{"gpt-5.5", "gpt-5.4-mini"},
-		{"gpt-5.4", "gpt-5.4-mini"},
-		{"gpt-5", "gpt-5.4-mini"},
-		{"gpt-5-turbo", "gpt-5.4-mini"},
-		{"gpt-5.4-mini", "gpt-5.4-mini"}, // already cheap
-		{"o4-mini", "o4-mini"},           // mini but wrong family → leave alone
-		{"o3", "o3"},                     // different family
-		{"", ""},                         // unset → let Codex pick
-	}
-	for _, tc := range cases {
-		t.Run(tc.current, func(t *testing.T) {
-			if got := fastModelForCodex(tc.current); got != tc.want {
-				t.Errorf("fastModelForCodex(%q) = %q, want %q", tc.current, got, tc.want)
 			}
 		})
 	}
@@ -139,28 +93,46 @@ func TestConfigFromOptionsRuntimeModesPair(t *testing.T) {
 	}
 }
 
-// TestConfigFromOptionsFastModeSwaps exercises the gpt-5.5 → gpt-5.4-mini
-// swap at the translation boundary.
-func TestConfigFromOptionsFastModeSwaps(t *testing.T) {
+func TestConfigFromOptionsFastModePreservesModelAndSetsServiceTier(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider: "codex",
 		Model:    "gpt-5.5",
 		FastMode: true,
 	})
-	if cfg.Model != "gpt-5.4-mini" {
-		t.Errorf("Model = %q, want gpt-5.4-mini", cfg.Model)
+	if cfg.Model != "gpt-5.5" {
+		t.Errorf("Model = %q, want gpt-5.5", cfg.Model)
+	}
+	if cfg.ServiceTier != "fast" {
+		t.Errorf("ServiceTier = %q, want fast", cfg.ServiceTier)
 	}
 }
 
-// TestConfigFromOptionsFastModeMiniPassesThrough — already-mini stays put.
-func TestConfigFromOptionsFastModeMiniPassesThrough(t *testing.T) {
+func TestBuildThreadParamsThreadsServiceTier(t *testing.T) {
+	params := buildThreadParams(Config{ServiceTier: "fast"})
+	if params["serviceTier"] != "fast" {
+		t.Errorf("serviceTier = %v, want fast", params["serviceTier"])
+	}
+}
+
+func TestConfigFromOptionsFastModeOffOmitsServiceTier(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{
+		Provider: "codex",
+		Model:    "gpt-5.4-mini",
+		FastMode: false,
+	})
+	if cfg.ServiceTier != "" {
+		t.Errorf("ServiceTier = %q, want empty", cfg.ServiceTier)
+	}
+}
+
+func TestConfigFromOptionsFastModeUnsupportedModelOmitsServiceTier(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider: "codex",
 		Model:    "gpt-5.4-mini",
 		FastMode: true,
 	})
-	if cfg.Model != "gpt-5.4-mini" {
-		t.Errorf("Model = %q, want unchanged mini", cfg.Model)
+	if cfg.ServiceTier != "" {
+		t.Errorf("ServiceTier = %q, want empty for model without fast mode", cfg.ServiceTier)
 	}
 }
 
@@ -168,34 +140,34 @@ func TestConfigFromOptionsContextWindowAndAutoCompact(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:                   "codex",
 		Model:                      "gpt-5.5",
-		ContextWindow:              1050000,
+		ContextWindow:              provider.CodexExtendedContextWindow,
 		AutoCompactExtendedPercent: 80,
 	})
-	if cfg.ContextWindow != 1050000 {
-		t.Errorf("ContextWindow = %d, want 1050000", cfg.ContextWindow)
+	if cfg.ContextWindow != provider.CodexExtendedContextWindow {
+		t.Errorf("ContextWindow = %d, want %d", cfg.ContextWindow, provider.CodexExtendedContextWindow)
 	}
-	if cfg.AutoCompactTokenLimit != 840000 {
-		t.Errorf("AutoCompactTokenLimit = %d, want 840000", cfg.AutoCompactTokenLimit)
+	if cfg.AutoCompactTokenLimit != 800000 {
+		t.Errorf("AutoCompactTokenLimit = %d, want 800000", cfg.AutoCompactTokenLimit)
 	}
 }
 
-func TestConfigFromOptionsFastModeFallsBackToEffectiveModelContext(t *testing.T) {
+func TestConfigFromOptionsFastModeKeepsSelectedModelContext(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:                   "codex",
 		Model:                      "gpt-5.5",
 		FastMode:                   true,
-		ContextWindow:              1050000,
+		ContextWindow:              provider.CodexExtendedContextWindow,
 		AutoCompactStandardPercent: 70,
 		AutoCompactExtendedPercent: 80,
 	})
-	if cfg.Model != "gpt-5.4-mini" {
-		t.Fatalf("Model = %q, want gpt-5.4-mini", cfg.Model)
+	if cfg.Model != "gpt-5.5" {
+		t.Fatalf("Model = %q, want gpt-5.5", cfg.Model)
 	}
-	if cfg.ContextWindow != 272000 {
-		t.Errorf("ContextWindow = %d, want gpt-5.4-mini standard 272000", cfg.ContextWindow)
+	if cfg.ContextWindow != provider.CodexExtendedContextWindow {
+		t.Errorf("ContextWindow = %d, want selected model extended context", cfg.ContextWindow)
 	}
-	if cfg.AutoCompactTokenLimit != 190400 {
-		t.Errorf("AutoCompactTokenLimit = %d, want 190400", cfg.AutoCompactTokenLimit)
+	if cfg.AutoCompactTokenLimit != 800000 {
+		t.Errorf("AutoCompactTokenLimit = %d, want 800000", cfg.AutoCompactTokenLimit)
 	}
 }
 
@@ -258,18 +230,18 @@ func TestBuildThreadParamsThreadsReasoningEffort(t *testing.T) {
 
 func TestBuildThreadParamsThreadsContextOverrides(t *testing.T) {
 	params := buildThreadParams(Config{
-		ContextWindow:         1050000,
-		AutoCompactTokenLimit: 840000,
+		ContextWindow:         provider.CodexExtendedContextWindow,
+		AutoCompactTokenLimit: 800000,
 	})
 	cfg, ok := params["config"].(map[string]any)
 	if !ok {
 		t.Fatalf("config override bag missing: %+v", params)
 	}
-	if cfg["model_context_window"] != 1050000 {
-		t.Errorf("config.model_context_window = %v, want 1050000", cfg["model_context_window"])
+	if cfg["model_context_window"] != provider.CodexExtendedContextWindow {
+		t.Errorf("config.model_context_window = %v, want %d", cfg["model_context_window"], provider.CodexExtendedContextWindow)
 	}
-	if cfg["model_auto_compact_token_limit"] != 840000 {
-		t.Errorf("config.model_auto_compact_token_limit = %v, want 840000", cfg["model_auto_compact_token_limit"])
+	if cfg["model_auto_compact_token_limit"] != 800000 {
+		t.Errorf("config.model_auto_compact_token_limit = %v, want 800000", cfg["model_auto_compact_token_limit"])
 	}
 }
 

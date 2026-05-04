@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"log"
+	"time"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
@@ -17,6 +19,14 @@ func (a *App) SwitchThread(threadID string) (store.Thread, error) {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return store.Thread{}, err
+	}
+	sanitized := sanitizeThreadModelSettings(thread)
+	if !sameThreadModelSettings(thread, sanitized) {
+		sanitized.UpdatedAt = time.Now().UnixMilli()
+		if err := a.store.UpdateThread(sanitized); err != nil {
+			return store.Thread{}, err
+		}
+		thread = sanitized
 	}
 
 	a.mu.Lock()
@@ -40,6 +50,27 @@ func (a *App) SwitchThread(threadID string) (store.Thread, error) {
 	}
 
 	return thread, nil
+}
+
+func sanitizeThreadModelSettings(thread store.Thread) store.Thread {
+	thread.Model = provider.NormalizeModelSlug(thread.Provider, thread.Model)
+	thread.ReasoningEffort = string(provider.CoerceReasoningEffortForModel(
+		thread.Provider,
+		thread.Model,
+		provider.NormalizeReasoningEffort(thread.ReasoningEffort),
+	))
+	thread.ContextWindow = sanitizeContextWindowForProviderModel(thread.Provider, thread.Model, thread.ContextWindow)
+	if !supportsStoredFastMode(thread.Provider, thread.Model) {
+		thread.FastMode = false
+	}
+	return thread
+}
+
+func sameThreadModelSettings(a, b store.Thread) bool {
+	return a.Model == b.Model &&
+		a.ReasoningEffort == b.ReasoningEffort &&
+		a.FastMode == b.FastMode &&
+		a.ContextWindow == b.ContextWindow
 }
 
 // ReconnectSession tears down the current session and starts a fresh one using

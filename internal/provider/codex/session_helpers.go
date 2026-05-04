@@ -17,6 +17,9 @@ func buildThreadParams(cfg Config) map[string]any {
 	if cfg.Model != "" {
 		params["model"] = cfg.Model
 	}
+	if cfg.ServiceTier != "" {
+		params["serviceTier"] = cfg.ServiceTier
+	}
 
 	if cfg.Sandbox != "" {
 		sandbox := normalizeThreadSandbox(cfg.Sandbox)

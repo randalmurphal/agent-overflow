@@ -599,6 +599,7 @@ func (p *privilegedApp) GetCheckpointRangeDiff() string   { return "ok" }
 func (p *privilegedApp) GetSessionAgentDiff() string      { return "ok" }
 func (p *privilegedApp) GetWorkingTreeDiff() string       { return "ok" }
 func (p *privilegedApp) GetWorkspaceCurrentDiff() string  { return "ok" }
+func (p *privilegedApp) GetModelsForProvider() string     { return "ok" }
 
 // 2. Session control.
 func (p *privilegedApp) StartSession() string                  { return "ok" }
@@ -608,9 +609,9 @@ func (p *privilegedApp) SendMessage() string                   { return "ok" }
 func (p *privilegedApp) SendMessageWithOptions() string        { return "ok" }
 func (p *privilegedApp) SteerMessageWithOptions() string       { return "ok" }
 func (p *privilegedApp) SendPlanRevisionComments() string      { return "ok" }
-func (p *privilegedApp) RegisterQueueItem() string              { return "ok" }
-func (p *privilegedApp) UndoQueuedItems() string                { return "ok" }
-func (p *privilegedApp) GetQueueState() string                  { return "ok" }
+func (p *privilegedApp) RegisterQueueItem() string             { return "ok" }
+func (p *privilegedApp) UndoQueuedItems() string               { return "ok" }
+func (p *privilegedApp) GetQueueState() string                 { return "ok" }
 func (p *privilegedApp) StartDiscussion() string               { return "ok" }
 func (p *privilegedApp) StartDiscussionByID() string           { return "ok" }
 func (p *privilegedApp) UpdateThreadMode() string              { return "ok" }

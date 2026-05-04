@@ -62,6 +62,7 @@ type Session struct {
 	activeTurnID       string // current active turn ID from turn/started; cleared on turn/completed
 	model              string // model name for cost calculation
 	reasoningEffort    string // per-turn reasoning effort override; empty means inherit thread default
+	serviceTier        string // per-turn service tier override; "fast" enables Codex fast mode
 	approvalPolicy     string // per-turn approval override; empty means inherit thread default
 	sandbox            string // per-turn sandbox override; empty means inherit thread default
 	nextID             atomic.Int64
@@ -200,7 +201,11 @@ type Config struct {
 	// every turn/start call under the `effort` parameter so per-thread
 	// tuning takes effect without a session restart.
 	ReasoningEffort string
-	EventLogger     *logging.Logger
+	// ServiceTier is Codex's native speed tier. "fast" is sent as
+	// serviceTier on thread/start|resume and turn/start. It must not rewrite
+	// Model; GPT-5.5 fast mode is still GPT-5.5.
+	ServiceTier string
+	EventLogger *logging.Logger
 }
 
 // NewSession spawns codex app-server, performs the initialize handshake,
@@ -233,6 +238,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		threadID:               threadID,
 		model:                  cfg.Model,
 		reasoningEffort:        cfg.ReasoningEffort,
+		serviceTier:            cfg.ServiceTier,
 		approvalPolicy:         cfg.ApprovalPolicy,
 		sandbox:                cfg.Sandbox,
 		pending:                make(map[int64]chan json.RawMessage),
@@ -342,6 +348,9 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	// "inherit the thread default set during thread/start".
 	if s.reasoningEffort != "" {
 		params["effort"] = s.reasoningEffort
+	}
+	if s.serviceTier != "" {
+		params["serviceTier"] = s.serviceTier
 	}
 	if s.approvalPolicy != "" {
 		params["approvalPolicy"] = s.approvalPolicy

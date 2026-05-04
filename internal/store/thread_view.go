@@ -15,8 +15,8 @@ func (t Thread) GetModel() string { return t.Model }
 // into. This may differ from project.path when a worktree is active.
 func (t Thread) GetWorkspacePath() string { return t.WorkspacePath }
 
-// GetReasoningEffort returns the effort tier as stored (low / medium /
-// high / xhigh / max).
+// GetReasoningEffort returns the effort tier as stored. Valid values are
+// provider-specific.
 func (t Thread) GetReasoningEffort() string { return t.ReasoningEffort }
 
 // GetFastMode returns the fast-mode boolean.

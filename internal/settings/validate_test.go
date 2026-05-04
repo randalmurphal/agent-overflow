@@ -195,6 +195,38 @@ func TestTextGenerationDefaultsAndRoundTrip(t *testing.T) {
 	}
 }
 
+func TestTextGenerationReasoningEffortIsProviderSpecific(t *testing.T) {
+	svc := NewService(t.TempDir())
+
+	if _, err := svc.Update(map[string]any{
+		"textGenerationProvider":        "codex",
+		"textGenerationReasoningEffort": "minimal",
+	}); err != nil {
+		t.Fatalf("codex minimal effort should be valid: %v", err)
+	}
+
+	if _, err := svc.Update(map[string]any{
+		"textGenerationProvider":        "codex",
+		"textGenerationReasoningEffort": "max",
+	}); err == nil {
+		t.Fatal("codex max effort should be invalid")
+	}
+
+	if _, err := svc.Update(map[string]any{
+		"textGenerationProvider":        "claude",
+		"textGenerationReasoningEffort": "max",
+	}); err != nil {
+		t.Fatalf("claude max effort should be valid: %v", err)
+	}
+
+	if _, err := svc.Update(map[string]any{
+		"textGenerationProvider":        "claude",
+		"textGenerationReasoningEffort": "minimal",
+	}); err == nil {
+		t.Fatal("claude minimal effort should be invalid")
+	}
+}
+
 func TestTextGenerationSanitizesInvalidOnLoad(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")

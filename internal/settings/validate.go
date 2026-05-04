@@ -26,9 +26,18 @@ var (
 		"claude": {},
 		"codex":  {},
 	}
-	// allowedReasoningEfforts mirrors provider.AllReasoningEfforts — duplicated
-	// here to keep internal/settings dependency-free of the provider package.
-	allowedReasoningEfforts = map[string]struct{}{
+	// Text-generation efforts are provider-specific. Codex app-server has no
+	// "max"; Claude has no "none" or "minimal". Duplicated here to keep
+	// internal/settings dependency-free of the provider package.
+	allowedCodexTextGenerationEfforts = map[string]struct{}{
+		"none":    {},
+		"minimal": {},
+		"low":     {},
+		"medium":  {},
+		"high":    {},
+		"xhigh":   {},
+	}
+	allowedClaudeTextGenerationEfforts = map[string]struct{}{
 		"low":    {},
 		"medium": {},
 		"high":   {},
@@ -104,10 +113,9 @@ func validateSettings(current Settings) (Settings, error) {
 	current.TextGenerationModel = strings.TrimSpace(current.TextGenerationModel)
 
 	current.TextGenerationReasoningEffort = strings.TrimSpace(current.TextGenerationReasoningEffort)
-	if err := validateOption(
-		"textGenerationReasoningEffort",
+	if err := validateTextGenerationReasoningEffort(
+		current.TextGenerationProvider,
 		current.TextGenerationReasoningEffort,
-		allowedReasoningEfforts,
 	); err != nil {
 		return Settings{}, err
 	}
@@ -202,7 +210,7 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		"textGenerationReasoningEffort",
 		current.TextGenerationReasoningEffort,
 		DefaultSettings.TextGenerationReasoningEffort,
-		allowedReasoningEfforts,
+		allowedTextGenerationEfforts(current.TextGenerationProvider),
 	)
 	current.Editor.Preference = strings.TrimSpace(current.Editor.Preference)
 
@@ -253,6 +261,26 @@ func validateOption(field, value string, allowed map[string]struct{}) error {
 		return fmt.Errorf("%s must be one of %s", field, joinAllowedValues(allowed))
 	}
 	return nil
+}
+
+func validateTextGenerationReasoningEffort(provider, effort string) error {
+	if _, ok := allowedTextGenerationEfforts(provider)[effort]; ok {
+		return nil
+	}
+	return fmt.Errorf(
+		"textGenerationReasoningEffort must be one of %s for provider %q",
+		joinAllowedValues(allowedTextGenerationEfforts(provider)),
+		provider,
+	)
+}
+
+func allowedTextGenerationEfforts(provider string) map[string]struct{} {
+	switch provider {
+	case "claude":
+		return allowedClaudeTextGenerationEfforts
+	default:
+		return allowedCodexTextGenerationEfforts
+	}
 }
 
 func validateWorktreeBranchPrefix(value string) (string, error) {

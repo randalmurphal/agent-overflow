@@ -1,4 +1,7 @@
-export type RuntimeMode = "approval-required" | "auto-accept-edits" | "full-access";
+export type RuntimeMode =
+  | "approval-required"
+  | "auto-accept-edits"
+  | "full-access";
 
 export interface Thread {
   id: string;
@@ -23,13 +26,19 @@ export interface Thread {
    */
   mode?: "chat" | "plan" | "design" | "discussion";
   /**
-   * Reasoning effort tier. Claude exposes Low/Medium/High/XHigh/Max;
-   * Codex exposes Low/Medium/High/XHigh.
+   * Reasoning effort tier. The selected provider/model controls which
+   * subset is valid.
    */
-  reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  reasoningEffort?:
+    | "none"
+    | "minimal"
+    | "low"
+    | "medium"
+    | "high"
+    | "xhigh"
+    | "max";
   /**
-   * When true, the provider launches with its small-model tier (e.g.
-   * claude-haiku, gpt-5.4-mini). Rendered as the "Fast Mode" toggle.
+   * When true, the provider uses its native fast execution tier.
    */
   fastMode?: boolean;
   contextWindow?: number;
@@ -113,7 +122,13 @@ export interface Item {
   itemIndex: number;
   kind: ItemKind | string;
   role: string;
-  status: "streaming" | "running" | "completed" | "errored" | "declined" | "killed";
+  status:
+    | "streaming"
+    | "running"
+    | "completed"
+    | "errored"
+    | "declined"
+    | "killed";
   summary: string;
   payloadId?: string;
   payloadKind?: string;
@@ -212,7 +227,7 @@ export interface ProposedPlanComment {
   id: string;
   threadId: string;
   planItemId: string;
-  status: 'draft' | 'sent' | 'resolved';
+  status: "draft" | "sent" | "resolved";
   startLine: number;
   endLine: number;
   selectedText: string;

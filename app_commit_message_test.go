@@ -361,6 +361,9 @@ func TestGenerateCommitMessage_ClaudePathHappy(t *testing.T) {
 	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != defaultTextGenerationClaudeModel {
 		t.Errorf("claude model arg = %q, want %q", modelArg, defaultTextGenerationClaudeModel)
 	}
+	if effortArg := nextArgAfter(gotSpec.Args, "--effort"); effortArg != "low" {
+		t.Errorf("claude effort arg = %q, want low", effortArg)
+	}
 }
 
 func TestGenerateCommitMessage_RoutingRespectsSettings(t *testing.T) {

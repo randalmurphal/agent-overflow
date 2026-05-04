@@ -21,8 +21,24 @@ func TestGetContextSettingsReturnsProviderModelOptions(t *testing.T) {
 	if len(profile.ContextWindows) != 2 {
 		t.Fatalf("ContextWindows len = %d, want 2", len(profile.ContextWindows))
 	}
-	if profile.ContextWindows[0].Tokens != 272000 || profile.ContextWindows[1].Tokens != 1050000 {
-		t.Fatalf("ContextWindows = %+v, want 272000 + 1050000", profile.ContextWindows)
+	if profile.ContextWindows[0].Tokens != provider.CodexStandardContextWindow ||
+		profile.ContextWindows[1].Tokens != provider.CodexExtendedContextWindow {
+		t.Fatalf("ContextWindows = %+v, want codex standard + extended", profile.ContextWindows)
+	}
+}
+
+func TestGetContextSettingsReturnsSingleWindowCodexDefaults(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	profile, err := app.GetContextSettings("codex", "gpt-5.2")
+	if err != nil {
+		t.Fatalf("GetContextSettings(codex/gpt-5.2): %v", err)
+	}
+	if profile.ContextWindow != provider.CodexStandardContextWindow {
+		t.Fatalf("ContextWindow = %d, want %d", profile.ContextWindow, provider.CodexStandardContextWindow)
+	}
+	if len(profile.ContextWindows) != 1 || profile.ContextWindows[0].Tokens != provider.CodexStandardContextWindow {
+		t.Fatalf("ContextWindows = %+v, want standard-only", profile.ContextWindows)
 	}
 }
 
@@ -42,7 +58,7 @@ func TestUpdateContextSettingsProfileValidatesPercentAndWindow(t *testing.T) {
 	_, err = app.UpdateContextSettingsProfile(ContextSettingsUpdate{
 		Provider:                   "codex",
 		Model:                      "gpt-5.4-mini",
-		ContextWindow:              1050000,
+		ContextWindow:              provider.CodexExtendedContextWindow,
 		AutoCompactStandardPercent: 80,
 	})
 	if err == nil || !strings.Contains(err.Error(), "unsupported context window") {
@@ -60,15 +76,15 @@ func TestUpdateThreadContextSettingsPersistsAndRemembersProfile(t *testing.T) {
 	updated, err := app.UpdateThreadContextSettings(thread.ID, ContextSettingsUpdate{
 		Provider:                   "ignored",
 		Model:                      "ignored",
-		ContextWindow:              1050000,
+		ContextWindow:              provider.CodexExtendedContextWindow,
 		AutoCompactStandardPercent: 75,
 		AutoCompactExtendedPercent: 88,
 	})
 	if err != nil {
 		t.Fatalf("UpdateThreadContextSettings: %v", err)
 	}
-	if updated.ContextWindow != 1050000 {
-		t.Fatalf("ContextWindow = %d, want 1050000", updated.ContextWindow)
+	if updated.ContextWindow != provider.CodexExtendedContextWindow {
+		t.Fatalf("ContextWindow = %d, want %d", updated.ContextWindow, provider.CodexExtendedContextWindow)
 	}
 	if updated.AutoCompactStandardPercent != 75 || updated.AutoCompactExtendedPercent != 88 {
 		t.Fatalf("auto compact = %d/%d, want 75/88", updated.AutoCompactStandardPercent, updated.AutoCompactExtendedPercent)
@@ -78,10 +94,10 @@ func TestUpdateThreadContextSettingsPersistsAndRemembersProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetChatModelProfile: %v", err)
 	}
-	if profile.ContextWindow != 1050000 ||
+	if profile.ContextWindow != provider.CodexExtendedContextWindow ||
 		profile.AutoCompactStandardPercent != 75 ||
 		profile.AutoCompactExtendedPercent != 88 {
-		t.Fatalf("stored profile = %+v, want context 1050000 and compact 75/88", profile)
+		t.Fatalf("stored profile = %+v, want extended context and compact 75/88", profile)
 	}
 }
 
@@ -102,7 +118,7 @@ func TestUpdateThreadContextSettingsRestartsActiveSession(t *testing.T) {
 	if _, err := app.UpdateThreadContextSettings(thread.ID, ContextSettingsUpdate{
 		Provider:                   "codex",
 		Model:                      "gpt-5.5",
-		ContextWindow:              1050000,
+		ContextWindow:              provider.CodexExtendedContextWindow,
 		AutoCompactStandardPercent: 75,
 		AutoCompactExtendedPercent: 88,
 	}); err != nil {

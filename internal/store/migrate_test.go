@@ -1016,6 +1016,94 @@ func TestEffortCheckConstraintRejectsBogusValue(t *testing.T) {
 			t.Errorf("INSERT with reasoning_effort=%q: %v", eff, err)
 		}
 	}
+	for _, eff := range []string{"none", "minimal", "low", "medium", "high", "xhigh"} {
+		if _, err := s.db.Exec(`
+			INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+				created_at, updated_at, archived, mode, reasoning_effort)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, "t-codex-eff-"+eff, defaultTestProjectID, "Ok", "codex", "/tmp", "", 1, 1, 0, "chat", eff); err != nil {
+			t.Errorf("INSERT codex with reasoning_effort=%q: %v", eff, err)
+		}
+	}
+	if _, err := s.db.Exec(`
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode, reasoning_effort)
+		VALUES ('t-codex-max', ?, 'Bad', 'codex', '/tmp', '', 1, 1, 0, 'chat', 'max')
+	`, defaultTestProjectID); err == nil {
+		t.Fatal("INSERT codex with reasoning_effort='max' must violate CHECK constraint")
+	}
+	if _, err := s.db.Exec(`
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode, reasoning_effort)
+		VALUES ('t-claude-minimal', ?, 'Bad', 'claude', '/tmp', '', 1, 1, 0, 'chat', 'minimal')
+	`, defaultTestProjectID); err == nil {
+		t.Fatal("INSERT claude with reasoning_effort='minimal' must violate CHECK constraint")
+	}
+}
+
+func TestMigrationV38RewritesCodexMaxReasoningEffort(t *testing.T) {
+	db := openSQLiteDB(t)
+	if err := configureDatabase(db); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if err := ensureMigrationTable(db); err != nil {
+		t.Fatalf("ensure migration table: %v", err)
+	}
+	for _, m := range migrations {
+		if m.Version == 38 {
+			break
+		}
+		if _, err := db.Exec(m.SQL); err != nil {
+			t.Fatalf("apply v%d: %v", m.Version, err)
+		}
+		if _, err := db.Exec(
+			"INSERT INTO migration_versions (version, name) VALUES (?, ?)",
+			m.Version, m.Name,
+		); err != nil {
+			t.Fatalf("record v%d: %v", m.Version, err)
+		}
+	}
+
+	if _, err := db.Exec(`
+		INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-v38', '/tmp/v38', 'V38', 1, 1)
+	`); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO threads (id, project_id, title, provider, model, workspace_path,
+			mode, reasoning_effort, created_at, updated_at, archived)
+		VALUES ('t-v38-codex-max', 'p-v38', 'Codex Max', 'codex', 'gpt-5.5', '/tmp/v38',
+			'chat', 'max', 1, 1, 0)
+	`); err != nil {
+		t.Fatalf("insert pre-v38 thread: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO chat_model_profiles (provider, model, reasoning_effort, context_window, updated_at)
+		VALUES ('codex', 'gpt-5.5', 'max', 1000000, 1)
+	`); err != nil {
+		t.Fatalf("insert pre-v38 profile: %v", err)
+	}
+
+	if _, err := db.Exec(v38SQL); err != nil {
+		t.Fatalf("apply v38: %v", err)
+	}
+
+	var threadEffort string
+	if err := db.QueryRow(`SELECT reasoning_effort FROM threads WHERE id = 't-v38-codex-max'`).Scan(&threadEffort); err != nil {
+		t.Fatalf("select migrated thread effort: %v", err)
+	}
+	if threadEffort != "xhigh" {
+		t.Fatalf("thread reasoning_effort = %q, want xhigh", threadEffort)
+	}
+
+	var profileEffort string
+	if err := db.QueryRow(`SELECT reasoning_effort FROM chat_model_profiles WHERE provider = 'codex' AND model = 'gpt-5.5'`).Scan(&profileEffort); err != nil {
+		t.Fatalf("select migrated profile effort: %v", err)
+	}
+	if profileEffort != "xhigh" {
+		t.Fatalf("profile reasoning_effort = %q, want xhigh", profileEffort)
+	}
 }
 
 // TestContextWindowCheckConstraintAcceptsPositiveValues confirms dynamic

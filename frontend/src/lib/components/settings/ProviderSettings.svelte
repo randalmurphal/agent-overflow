@@ -7,7 +7,11 @@
   // separate section since they apply across providers.
 
   import { GetProviderStatuses, GetModelsForProvider } from '../../stores/bindings';
-  import { getSettings, updateSetting } from '../../stores/settings.svelte';
+  import {
+    getSettings,
+    updateSetting,
+    updateSettingsPatch,
+  } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import type { ModelInfo, ProviderStatus, ReasoningEffort } from '../../types/settings';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
@@ -32,15 +36,28 @@
     claude: 'claude-haiku-4-5',
     codex: 'gpt-5.4-mini',
   };
-  const TEXTGEN_EFFORT_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
+  const CODEX_TEXTGEN_EFFORT_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
+    { value: 'none', label: 'None' },
+    { value: 'minimal', label: 'Minimal' },
     { value: 'low', label: 'Low' },
     { value: 'medium', label: 'Medium' },
     { value: 'high', label: 'High' },
-    { value: 'xhigh', label: 'X-High' },
+    { value: 'xhigh', label: 'Extra High' },
+  ];
+  const CLAUDE_TEXTGEN_EFFORT_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
+    { value: 'xhigh', label: 'Extra High' },
     { value: 'max', label: 'Max' },
   ];
 
   let settings = $derived(getSettings());
+  let textGenerationEffortOptions = $derived(
+    settings.textGenerationProvider === 'claude'
+      ? CLAUDE_TEXTGEN_EFFORT_OPTIONS
+      : CODEX_TEXTGEN_EFFORT_OPTIONS,
+  );
   let statuses = $state<ProviderStatus[]>([]);
   let claudeModels = $state<ModelInfo[]>([]);
   let codexModels = $state<ModelInfo[]>([]);
@@ -82,6 +99,28 @@
 
   function getStatus(provider: string): ProviderStatus | undefined {
     return statuses.find((s) => s.provider === provider);
+  }
+
+  function isTextGenerationEffortAllowed(
+    provider: 'claude' | 'codex',
+    effort: ReasoningEffort,
+  ): boolean {
+    const options =
+      provider === 'claude'
+        ? CLAUDE_TEXTGEN_EFFORT_OPTIONS
+        : CODEX_TEXTGEN_EFFORT_OPTIONS;
+    return options.some((option) => option.value === effort);
+  }
+
+  function updateTextGenerationProvider(provider: 'claude' | 'codex') {
+    const patch: {
+      textGenerationProvider: 'claude' | 'codex';
+      textGenerationReasoningEffort?: ReasoningEffort;
+    } = { textGenerationProvider: provider };
+    if (!isTextGenerationEffortAllowed(provider, settings.textGenerationReasoningEffort)) {
+      patch.textGenerationReasoningEffort = 'low';
+    }
+    void updateSettingsPatch(patch);
   }
 
   function statusDotColor(status: string): string {
@@ -232,8 +271,7 @@
           data-testid="settings-textgen-provider"
           value={settings.textGenerationProvider}
           onchange={(e) =>
-            updateSetting(
-              'textGenerationProvider',
+            updateTextGenerationProvider(
               (e.target as HTMLSelectElement).value as 'claude' | 'codex',
             )}
           class={SELECT_CLASS}
@@ -279,7 +317,7 @@
             )}
           class={SELECT_CLASS}
         >
-          {#each TEXTGEN_EFFORT_OPTIONS as opt (opt.value)}
+          {#each textGenerationEffortOptions as opt (opt.value)}
             <option value={opt.value}>{opt.label}</option>
           {/each}
         </select>

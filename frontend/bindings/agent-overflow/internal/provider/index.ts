@@ -11,6 +11,7 @@ export {
     NetworkPermissions,
     PermissionProfile,
     ProviderStatus,
+    ReasoningEffortOption,
     UserInputResponse
 } from "./models.js";
 

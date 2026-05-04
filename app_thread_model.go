@@ -18,8 +18,8 @@ func (a *App) UpdateThreadModel(threadID string, model string) (threadResult sto
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update model: store unavailable")
 	}
-	normalizedModel := strings.TrimSpace(model)
-	if normalizedModel == "" {
+	trimmedModel := strings.TrimSpace(model)
+	if trimmedModel == "" {
 		return store.Thread{}, fmt.Errorf("thread model cannot be empty")
 	}
 
@@ -27,6 +27,7 @@ func (a *App) UpdateThreadModel(threadID string, model string) (threadResult sto
 	if err != nil {
 		return store.Thread{}, err
 	}
+	normalizedModel := provider.NormalizeModelSlug(thread.Provider, trimmedModel)
 	if thread.Model == normalizedModel {
 		a.rememberChatModelProfile(thread)
 		return thread, nil
@@ -35,6 +36,7 @@ func (a *App) UpdateThreadModel(threadID string, model string) (threadResult sto
 	previous := thread
 	thread.Model = normalizedModel
 	if profile, profileErr := a.store.GetChatModelProfile(thread.Provider, normalizedModel); profileErr == nil {
+		profile = sanitizeChatModelProfile(profile)
 		thread.ReasoningEffort = profile.ReasoningEffort
 		thread.FastMode = profile.FastMode
 		thread.ContextWindow = profile.ContextWindow
@@ -44,9 +46,17 @@ func (a *App) UpdateThreadModel(threadID string, model string) (threadResult sto
 			return store.Thread{}, fmt.Errorf("load chat model profile: %w", profileErr)
 		}
 		thread.ContextWindow = a.defaultContextWindowForModel(thread.Provider, normalizedModel)
+		thread.ReasoningEffort = string(provider.DefaultReasoningEffortForModel(
+			thread.Provider,
+			normalizedModel,
+			provider.NormalizeReasoningEffort(thread.ReasoningEffort),
+		))
 		if thread.Provider != "claude" && !isValidContextWindow(thread.ContextWindow) {
 			thread.ContextWindow = provider.CodexStandardContextWindow
 		}
+	}
+	if !supportsStoredFastMode(thread.Provider, normalizedModel) {
+		thread.FastMode = false
 	}
 	// Switching models clears any per-thread compact override so the new
 	// session picks up the live per-provider Settings value. The user can

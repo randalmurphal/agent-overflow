@@ -1,13 +1,29 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/editor"
 	"agent-overflow/internal/provider"
+	codexprovider "agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/settings"
 )
+
+const codexModelCatalogTTL = 5 * time.Minute
+
+type codexModelCatalogEntry struct {
+	models    []provider.ModelInfo
+	expiresAt time.Time
+}
+
+type codexModelCatalogLoad struct {
+	done   chan struct{}
+	models []provider.ModelInfo
+	err    error
+}
 
 // GetProviderStatuses reports provider binary availability using the configured paths.
 // Also pushes a `provider:status` event per non-ready provider so thread-level
@@ -88,12 +104,93 @@ func (a *App) UpdateSettings(patch map[string]any) (settings.Settings, error) {
 		// the dedicated SetEditorSettings path runs.
 		editor.RefreshEditors()
 	}
+	if _, ok := patch["codexBinaryPath"]; ok {
+		a.refreshCodexModelCatalog()
+	}
 	return next, nil
 }
 
 // GetModelsForProvider returns the known model registry for the given provider.
 func (a *App) GetModelsForProvider(providerName string) ([]provider.ModelInfo, error) {
+	if providerName == string(provider.Codex) {
+		return a.codexModelsForBinary(context.Background(), a.providerBinaryPath(providerName))
+	}
 	return provider.ModelsForProvider(providerName), nil
+}
+
+func (a *App) refreshCodexModelCatalog() {
+	a.codexModelCatalogMu.Lock()
+	defer a.codexModelCatalogMu.Unlock()
+	a.codexModelCatalog = make(map[string]codexModelCatalogEntry)
+}
+
+func (a *App) codexModelsForBinary(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
+	binary = strings.TrimSpace(binary)
+	if binary == "" {
+		binary = settings.DefaultSettings.CodexBinaryPath
+	}
+
+	now := time.Now()
+	for {
+		a.codexModelCatalogMu.Lock()
+		if a.codexModelCatalog == nil {
+			a.codexModelCatalog = make(map[string]codexModelCatalogEntry)
+		}
+		if a.codexModelCatalogInflight == nil {
+			a.codexModelCatalogInflight = make(map[string]*codexModelCatalogLoad)
+		}
+		if entry, ok := a.codexModelCatalog[binary]; ok && now.Before(entry.expiresAt) {
+			models := cloneProviderModels(entry.models)
+			a.codexModelCatalogMu.Unlock()
+			return models, nil
+		}
+		if load, ok := a.codexModelCatalogInflight[binary]; ok {
+			done := load.done
+			a.codexModelCatalogMu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-done:
+				return cloneProviderModels(load.models), load.err
+			}
+		}
+
+		load := &codexModelCatalogLoad{done: make(chan struct{})}
+		a.codexModelCatalogInflight[binary] = load
+		a.codexModelCatalogMu.Unlock()
+
+		models, err := codexprovider.ListModels(ctx, codexprovider.ModelListConfig{Binary: binary})
+		cloned := cloneProviderModels(models)
+
+		a.codexModelCatalogMu.Lock()
+		load.models = cloned
+		load.err = err
+		delete(a.codexModelCatalogInflight, binary)
+		if err == nil {
+			a.codexModelCatalog[binary] = codexModelCatalogEntry{
+				models:    cloneProviderModels(models),
+				expiresAt: time.Now().Add(codexModelCatalogTTL),
+			}
+		}
+		close(load.done)
+		a.codexModelCatalogMu.Unlock()
+
+		return cloneProviderModels(models), err
+	}
+}
+
+func cloneProviderModels(models []provider.ModelInfo) []provider.ModelInfo {
+	if models == nil {
+		return nil
+	}
+	cloned := make([]provider.ModelInfo, len(models))
+	for i, model := range models {
+		cloned[i] = model
+		cloned[i].Capabilities = append([]string(nil), model.Capabilities...)
+		cloned[i].ContextWindows = append([]provider.ContextWindowOption(nil), model.ContextWindows...)
+		cloned[i].ReasoningEfforts = append([]provider.ReasoningEffortOption(nil), model.ReasoningEfforts...)
+	}
+	return cloned
 }
 
 func (a *App) providerBinaryPath(providerName string) string {

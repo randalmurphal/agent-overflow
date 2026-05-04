@@ -59,7 +59,7 @@ const threadColumns = `id, project_id,
 // -- of a raw CHECK-constraint failure.
 var (
 	// ErrInvalidEffort is returned when a caller passes a reasoning-effort
-	// value outside the five-tier enum (low / medium / high / xhigh / max).
+	// value outside the provider effort enum.
 	ErrInvalidEffort = errors.New("store: invalid reasoning effort")
 	// ErrInvalidMode is returned for a bad mode value.
 	ErrInvalidMode = errors.New("store: invalid thread mode")
@@ -84,11 +84,34 @@ var legalModes = map[string]struct{}{
 }
 
 var legalEfforts = map[string]struct{}{
-	"low":    {},
-	"medium": {},
-	"high":   {},
-	"xhigh":  {},
-	"max":    {},
+	"none":    {},
+	"minimal": {},
+	"low":     {},
+	"medium":  {},
+	"high":    {},
+	"xhigh":   {},
+	"max":     {},
+}
+
+func legalEffortForProvider(providerName, effort string) bool {
+	switch providerName {
+	case "codex":
+		switch effort {
+		case "none", "minimal", "low", "medium", "high", "xhigh":
+			return true
+		default:
+			return false
+		}
+	case "claude":
+		switch effort {
+		case "low", "medium", "high", "xhigh", "max":
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
+	}
 }
 
 var legalProviders = map[string]struct{}{
@@ -143,6 +166,9 @@ func (s *Store) CreateThread(t Thread) error {
 	t.Mode = normalizeMode(t.Mode)
 	t.RuntimeMode = normalizeRuntimeMode(t.RuntimeMode)
 	t.ReasoningEffort = normalizeEffort(t.ReasoningEffort)
+	if !legalEffortForProvider(t.Provider, t.ReasoningEffort) {
+		return fmt.Errorf("%w: %s/%s", ErrInvalidEffort, t.Provider, t.ReasoningEffort)
+	}
 	if t.ContextWindow == 0 {
 		t.ContextWindow = 1000000
 	}
@@ -339,6 +365,9 @@ func (s *Store) UpdateThread(t Thread) error {
 	t.Mode = normalizeMode(t.Mode)
 	t.RuntimeMode = normalizeRuntimeMode(t.RuntimeMode)
 	t.ReasoningEffort = normalizeEffort(t.ReasoningEffort)
+	if !legalEffortForProvider(t.Provider, t.ReasoningEffort) {
+		return fmt.Errorf("%w: %s/%s", ErrInvalidEffort, t.Provider, t.ReasoningEffort)
+	}
 	if t.ContextWindow == 0 {
 		t.ContextWindow = 1000000
 	}
@@ -656,6 +685,13 @@ func (s *Store) UpdateReasoningEffort(threadID, effort string) error {
 	normalized := normalizeEffort(effort)
 	if _, ok := legalEfforts[normalized]; !ok {
 		return fmt.Errorf("%w: %q", ErrInvalidEffort, effort)
+	}
+	var providerName string
+	if err := s.db.QueryRow(`SELECT provider FROM threads WHERE id = ?`, threadID).Scan(&providerName); err != nil {
+		return fmt.Errorf("store: load provider for effort update %s: %w", threadID, err)
+	}
+	if !legalEffortForProvider(providerName, normalized) {
+		return fmt.Errorf("%w: %s/%s", ErrInvalidEffort, providerName, normalized)
 	}
 	result, err := s.db.Exec(`UPDATE threads SET reasoning_effort = ?, updated_at = ? WHERE id = ?`,
 		normalized, nowMillis(), threadID)
