@@ -76,27 +76,25 @@ describe('<TerminalInteractionRow>', () => {
     expect(getByTestId('completion-badge').getAttribute('data-status')).toBe('success');
   });
 
-  it('renders a stable command-output shell before the payload attaches when the wait summary names a command', () => {
+  it('does not render a duplicate command shell before a completion child attaches', () => {
     const item = makeItem({
       summary: 'Waited for background terminal: sleep 1; echo done',
     });
-    const { getByRole, getByTestId, queryByTestId } = render(TerminalInteractionRow, { props: { item } });
+    const { getByTestId, queryByRole, queryByTestId } = render(TerminalInteractionRow, { props: { item } });
 
     expect(getByTestId('terminal-interaction-row').textContent?.trim()).toBe('Waited for background terminal');
-    const toggle = getByRole('button', { name: /Toggle command output: sleep 1; echo done/i });
-    expect(toggle).toHaveAttribute('aria-disabled', 'true');
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(queryByRole('button', { name: /Toggle command output/i })).toBeNull();
     expect(queryByTestId('completion-badge')).toBeNull();
   });
 
-  it('uses structured terminal command metadata before falling back to summary parsing', () => {
+  it('keeps structured terminal command metadata out of the wait carrier body', () => {
     const item = makeItem({
       summary: 'Waited for background terminal',
       meta: JSON.stringify({ kind: 'terminal_interaction', command: 'sleep 1; echo done' }),
     });
-    const { getByRole, getByTestId } = render(TerminalInteractionRow, { props: { item } });
+    const { getByTestId, queryByRole } = render(TerminalInteractionRow, { props: { item } });
 
     expect(getByTestId('terminal-interaction-row').textContent?.trim()).toBe('Waited for background terminal');
-    expect(getByRole('button', { name: /sleep 1; echo done/i })).toHaveAttribute('aria-disabled', 'true');
+    expect(queryByRole('button', { name: /sleep 1; echo done/i })).toBeNull();
   });
 });

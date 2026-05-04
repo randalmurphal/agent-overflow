@@ -10,6 +10,7 @@ import {
   type InlineSubagentGroupNode,
   type SubagentGroupNode,
   type TimelineLeaf,
+  type WaitGroupNode,
   type TimelineNode,
 } from './subagentGrouping';
 import type { Item } from '../types/models';
@@ -68,6 +69,13 @@ function expectInlineGroup(node: TimelineNode): InlineSubagentGroupNode {
 function expectLeaf(node: TimelineNode): TimelineLeaf {
   if (node.kind !== 'leaf') {
     throw new Error(`expected leaf node, got ${node.kind}`);
+  }
+  return node;
+}
+
+function expectWaitGroup(node: TimelineNode): WaitGroupNode {
+  if (node.kind !== 'wait_group') {
+    throw new Error(`expected wait_group node, got ${node.kind}`);
   }
   return node;
 }
@@ -262,11 +270,17 @@ describe('groupItemsBySubagent', () => {
     ]);
   });
 
-  it('hides Codex wait carriers when a target subagent completion uses the same payload', () => {
+  it('nests Codex subagent completions under the wait carrier when they share the wait payload', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
-        id: 'complete-wait-1',
+        id: 'wait-1',
         itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'wait_agent',
+      }),
+      mkItem({
+        id: 'complete-wait-1',
+        itemIndex: 1,
         kind: 'tool_completion',
         toolName: 'wait_agent',
         completionOf: 'wait-1',
@@ -275,7 +289,7 @@ describe('groupItemsBySubagent', () => {
       }),
       mkItem({
         id: 'complete-spawn-1',
-        itemIndex: 1,
+        itemIndex: 2,
         kind: 'tool_completion',
         toolName: 'collab_agent',
         completionOf: 'spawn-1',
@@ -284,10 +298,14 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['complete-spawn-1']);
+    expect(nodes).toHaveLength(1);
+    const group = expectWaitGroup(nodes[0]);
+    expect(group.parent.id).toBe('wait-1');
+    expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-spawn-1']);
+    expect(nodeContainsItem(group, 'complete-spawn-1')).toBe(true);
   });
 
-  it('hides terminal wait carriers when a target command completion resolves the same process', () => {
+  it('nests terminal command completions under the terminal wait carrier for the same process', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'waited-pid-1',
@@ -305,7 +323,129 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['complete-cmd-1']);
+    expect(nodes).toHaveLength(1);
+    const group = expectWaitGroup(nodes[0]);
+    expect(group.parent.id).toBe('waited-pid-1');
+    expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-cmd-1']);
+  });
+
+  it('nests legacy camelCase terminal command completions by process', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'waited-pid-1',
+        itemIndex: 0,
+        kind: 'terminal_interaction',
+        meta: JSON.stringify({ processId: 'pid-1' }),
+      }),
+      mkItem({
+        id: 'complete-cmd-1',
+        itemIndex: 1,
+        kind: 'tool_completion',
+        toolName: 'command_execution',
+        completionOf: 'cmd-1',
+        meta: JSON.stringify({ processId: 'pid-1' }),
+      }),
+    ]);
+
+    expect(nodes).toHaveLength(1);
+    const group = expectWaitGroup(nodes[0]);
+    expect(group.parent.id).toBe('waited-pid-1');
+    expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-cmd-1']);
+  });
+
+  it('nests target completions under an explicit wait_carrier_id', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'wait-child',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'wait_agent',
+      }),
+      mkItem({
+        id: 'complete-spawn-1',
+        itemIndex: 1,
+        kind: 'tool_completion',
+        toolName: 'collab_agent',
+        completionOf: 'spawn-1',
+        meta: JSON.stringify({ wait_carrier_id: 'wait-child' }),
+      }),
+    ]);
+
+    expect(nodes).toHaveLength(1);
+    const group = expectWaitGroup(nodes[0]);
+    expect(group.parent.id).toBe('wait-child');
+    expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-spawn-1']);
+  });
+
+  it('nests target completions under a legacy camelCase wait carrier id', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'wait-child',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'wait_agent',
+      }),
+      mkItem({
+        id: 'complete-spawn-1',
+        itemIndex: 1,
+        kind: 'tool_completion',
+        toolName: 'collab_agent',
+        completionOf: 'spawn-1',
+        meta: JSON.stringify({ waitCarrierID: 'wait-child' }),
+      }),
+    ]);
+
+    expect(nodes).toHaveLength(1);
+    const group = expectWaitGroup(nodes[0]);
+    expect(group.parent.id).toBe('wait-child');
+    expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-spawn-1']);
+  });
+
+  it('keeps a timeout wait as a single neutral carrier row when no target completed', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'wait-child',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'wait_agent',
+        status: 'completed',
+      }),
+      mkItem({
+        id: 'complete-wait-child',
+        itemIndex: 1,
+        kind: 'tool_completion',
+        toolName: 'wait_agent',
+        completionOf: 'wait-child',
+      }),
+    ]);
+
+    expect(nodes).toHaveLength(1);
+    const group = expectWaitGroup(nodes[0]);
+    expect(group.parent.id).toBe('wait-child');
+    expect(group.children).toHaveLength(0);
+  });
+
+  it('does not treat non-empty terminal interactions as wait carriers', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'interacted-pid-1',
+        itemIndex: 0,
+        kind: 'terminal_interaction',
+        status: 'completed',
+        meta: JSON.stringify({ process_id: 'pid-1', has_stdin: true }),
+      }),
+      mkItem({
+        id: 'complete-cmd-1',
+        itemIndex: 1,
+        kind: 'tool_completion',
+        toolName: 'command_execution',
+        completionOf: 'cmd-1',
+        meta: JSON.stringify({ process_id: 'pid-1' }),
+      }),
+    ]);
+
+    expect(nodes).toHaveLength(2);
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['interacted-pid-1', 'complete-cmd-1']);
   });
 
   it('keeps foreground Agent-named rows flat without the inline marker', () => {

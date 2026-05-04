@@ -49,6 +49,15 @@ export function recordTimelineRenderTrace(
           turnIndex: node.parent.turnIndex,
         };
       }
+      if (node.kind === 'wait_group') {
+        return {
+          kind: 'wait_group',
+          parentId: node.parent.id,
+          parentThreadId: node.parent.threadId,
+          childCount: node.children.length,
+          turnIndex: node.parent.turnIndex,
+        };
+      }
       return {
         kind: 'inline_subagent_group',
         groupKey: node.groupKey,

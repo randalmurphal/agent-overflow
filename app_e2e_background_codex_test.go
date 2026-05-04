@@ -14,6 +14,15 @@ import (
 	"agent-overflow/internal/store"
 )
 
+func decodeE2EItemMeta(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+		t.Fatalf("decode item meta: %v", err)
+	}
+	return meta
+}
+
 // --- Codex scenario 3: yielding command projects as backgrounded ---
 
 // TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded covers the
@@ -178,12 +187,19 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 		t.Fatalf("terminal interaction: %v", err)
 	}
 	waits := findItemsByKindE2E(t, app.store, thread.ID, string(provider.ItemTerminalInteraction))
-	if len(waits) != 0 {
-		t.Fatalf("completed poll should render as command completion, got wait rows %+v", waits)
+	if len(waits) != 1 {
+		t.Fatalf("completed poll should keep one wait carrier, got wait rows %+v", waits)
+	}
+	if waits[0].Status != "completed" {
+		t.Fatalf("wait carrier status = %q, want completed", waits[0].Status)
 	}
 	completion, found, err := app.store.GetThreadItem(thread.ID, "complete:cmd-e2e")
 	if err != nil || !found {
 		t.Fatalf("command completion missing: found=%v err=%v", found, err)
+	}
+	completionMeta := decodeE2EItemMeta(t, completion.Meta)
+	if completionMeta["wait_carrier_id"] != waits[0].ID {
+		t.Fatalf("completion wait_carrier_id = %v, want %s", completionMeta["wait_carrier_id"], waits[0].ID)
 	}
 	if completion.PayloadKind != "command_output" {
 		t.Fatalf("completion payload kind = %q, want command_output", completion.PayloadKind)

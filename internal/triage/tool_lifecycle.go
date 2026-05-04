@@ -45,6 +45,7 @@ const (
 type toolStartMeta struct {
 	ToolName        string          `json:"toolName"`
 	Input           json.RawMessage `json:"input"`
+	MetaUpdateOnly  bool            `json:"meta_update_only"`
 	IsBackground    bool            `json:"is_background"`
 	TaskID          string          `json:"task_id"`
 	SubagentModel   string          `json:"subagent_model"`
@@ -83,7 +84,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 	//     `message.model` on the first subagent assistant envelope.
 	// Either (or both) field is treated as a targeted merge that
 	// preserves the existing summary, tool_name, and status.
-	metaUpdateOnly := strings.TrimSpace(meta.ToolName) == "" &&
+	metaUpdateOnly := meta.MetaUpdateOnly || strings.TrimSpace(meta.ToolName) == "" &&
 		len(meta.Input) == 0 &&
 		(meta.TaskID != "" || meta.SubagentModel != "" || meta.ParentToolUseID != "")
 
@@ -102,8 +103,15 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 			// than fabricate a ghost tool_call row.
 			return nil
 		}
+		if meta.ToolName != "" {
+			existing.ToolName = meta.ToolName
+		}
+		if summary := buildToolCallSummary(meta, evt.ItemType); meta.MetaUpdateOnly && strings.TrimSpace(summary) != "" {
+			existing.Summary = summary
+		}
 		parentToolUseID := stringsx.FirstNonEmptyTrimmed(eventParentID(evt), meta.ParentToolUseID)
-		mergedMeta, err := mergeItemMetaCorrelationFields(existing.Meta, itemMetaCorrelationFields{
+		baseMeta := mergeItemMetaJSON(existing.Meta, evt.Meta)
+		mergedMeta, err := mergeItemMetaCorrelationFields(baseMeta, itemMetaCorrelationFields{
 			TaskID:          meta.TaskID,
 			SubagentModel:   meta.SubagentModel,
 			ParentToolUseID: parentToolUseID,
@@ -962,6 +970,10 @@ func decodeToolStartMeta(raw json.RawMessage) toolStartMeta {
 	return m
 }
 
+func isToolStartMetaUpdateOnly(raw json.RawMessage) bool {
+	return decodeToolStartMeta(raw).MetaUpdateOnly
+}
+
 func decodeToolCompleteMeta(raw json.RawMessage) toolCompleteMeta {
 	if len(raw) == 0 {
 		return toolCompleteMeta{}
@@ -1012,6 +1024,12 @@ func mergeJSONObjectBytes(existing, incoming json.RawMessage) (json.RawMessage, 
 			return nil, false
 		}
 		for key, value := range next {
+			if existingValue, ok := merged[key]; ok {
+				if nested, nestedOK := mergeJSONObjectBytes(existingValue, value); nestedOK {
+					merged[key] = nested
+					continue
+				}
+			}
 			merged[key] = value
 		}
 	}

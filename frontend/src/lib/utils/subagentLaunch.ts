@@ -60,6 +60,11 @@ function parseCodexSubagentInput(item: Item): ParsedCodexSubagentInput {
   };
 }
 
+export function codexSubagentDisplayLabel(label: string, role: string, fallback: string): string {
+  const base = label.trim() || fallback.trim() || 'agent';
+  return role.trim() ? `${base} [${role.trim()}]` : base;
+}
+
 /**
  * Codex's spawned-child launch is normalized as `toolName=collab_agent`.
  * Other collab controls use dedicated tool names (`send_input`, `wait_agent`,
@@ -74,10 +79,12 @@ export function isCodexSubagentLaunchItem(item: Item): boolean {
 
 export function codexSubagentLaunchInfo(item: Item): CodexSubagentLaunchInfo {
   const parsed = parseCodexSubagentInput(item);
-  const agentLabel = parsed.agentNickname
-    || (parsed.receiverThreadIds.length === 1 ? parsed.receiverThreadIds[0] : '')
-    || (parsed.receiverThreadIds.length > 1 ? `${parsed.receiverThreadIds.length} agents` : 'agent');
-  const roleLabel = parsed.agentRole ? `${agentLabel} [${parsed.agentRole}]` : agentLabel;
+  const fallbackLabel = parsed.receiverThreadIds.length === 1
+    ? 'Agent'
+    : parsed.receiverThreadIds.length > 1
+      ? `${parsed.receiverThreadIds.length} agents`
+      : 'agent';
+  const roleLabel = codexSubagentDisplayLabel(parsed.agentNickname, parsed.agentRole, fallbackLabel);
   const modelAffix = [parsed.model, parsed.reasoningEffort].filter(Boolean).join(' ');
   return {
     ...parsed,

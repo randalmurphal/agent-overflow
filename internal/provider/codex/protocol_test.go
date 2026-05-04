@@ -823,6 +823,79 @@ func TestClassifyNotification_TerminalInteractionEmptyStdin(t *testing.T) {
 	}
 }
 
+func TestClassifyNotification_RawResponseWriteStdinStartsWait(t *testing.T) {
+	params := json.RawMessage(
+		`{"threadId":"th-1","turnId":"turn-2","item":{"id":"fc-1","type":"function_call","name":"write_stdin","call_id":"call-stdin","arguments":"{\"session_id\":17313,\"chars\":\"\",\"yield_time_ms\":1000}"}}`,
+	)
+	events := ClassifyNotification("th-1", "rawResponseItem/completed", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event for empty write_stdin raw response, got %d", len(events))
+	}
+	evt := events[0]
+	if evt.Kind != provider.EventTerminalInteraction {
+		t.Errorf("Kind = %q, want %q", evt.Kind, provider.EventTerminalInteraction)
+	}
+	if evt.TurnID != "turn-2" {
+		t.Errorf("TurnID = %q, want turn-2", evt.TurnID)
+	}
+	if evt.ItemID != "call-stdin" {
+		t.Errorf("ItemID = %q, want call-stdin", evt.ItemID)
+	}
+	if evt.Content != "" {
+		t.Errorf("Content = %q, want empty string", evt.Content)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["process_id"] != "17313" {
+		t.Errorf("meta.process_id = %v, want 17313", meta["process_id"])
+	}
+	if meta["stdin"] != "" {
+		t.Errorf("meta.stdin = %v, want empty string", meta["stdin"])
+	}
+}
+
+func TestClassifyNotification_RawResponseWriteStdinWithInputDropped(t *testing.T) {
+	params := json.RawMessage(
+		`{"threadId":"th-1","turnId":"turn-2","item":{"id":"fc-1","type":"function_call","name":"write_stdin","call_id":"call-stdin","arguments":"{\"session_id\":\"pid-42\",\"chars\":\"secret\\n\"}"}}`,
+	)
+	events := ClassifyNotification("th-1", "rawResponseItem/completed", params)
+	if len(events) != 0 {
+		t.Fatalf("expected non-empty write_stdin raw response to be dropped, got %d events", len(events))
+	}
+}
+
+func TestClassifyNotification_RawResponseWriteStdinOutputCompletesWait(t *testing.T) {
+	params := json.RawMessage(
+		`{"threadId":"th-1","turnId":"turn-2","item":{"type":"function_call_output","call_id":"call-stdin","rawToolName":"write_stdin","processId":"17313","waitResult":"running","output":"Chunk ID: x\nWall time: 1.0000 seconds\nProcess running with session ID 17313\nOutput:\n"}}`,
+	)
+	events := ClassifyNotification("th-1", "rawResponseItem/completed", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event for write_stdin raw output, got %d", len(events))
+	}
+	evt := events[0]
+	if evt.Kind != provider.EventTerminalInteraction {
+		t.Errorf("Kind = %q, want %q", evt.Kind, provider.EventTerminalInteraction)
+	}
+	if evt.ItemID != "call-stdin" {
+		t.Errorf("ItemID = %q, want call-stdin", evt.ItemID)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["process_id"] != "17313" {
+		t.Errorf("meta.process_id = %v, want 17313", meta["process_id"])
+	}
+	if meta["wait_result"] != "running" {
+		t.Errorf("meta.wait_result = %v, want running", meta["wait_result"])
+	}
+	if meta["source"] != "rawResponseItem/function_call_output" {
+		t.Errorf("meta.source = %v", meta["source"])
+	}
+}
+
 // TestClassifyNotification_TerminalInteractionNonEmptyStdin pins the
 // non-empty-stdin variant: the model forwarded actual keystrokes to the
 // backgrounded PTY. The parser must STILL emit the event (rather than

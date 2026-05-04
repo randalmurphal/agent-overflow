@@ -1066,6 +1066,208 @@ func TestDispatchLineThreadStartedRemembersAgentPath(t *testing.T) {
 	}
 }
 
+func TestDispatchLineWaitAgentEnrichesReceiverMetadata(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:               "parent-thread",
+		pending:                make(map[int64]chan json.RawMessage),
+		childParentByThread:    map[string]string{"child-provider-1": "call-collab-1"},
+		childParentByAgentPath: make(map[string]string),
+		agentPathByThread:      make(map[string]string),
+		agentMetaByThread:      make(map[string]collabReceiverMeta),
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"child-provider-1","agentNickname":"Galileo","agentRole":"explorer","source":{"subAgent":{"thread_spawn":{"parent_thread_id":"provider-parent","depth":1,"agent_path":"/root/researcher"}}}}}}`))
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"parent-thread","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":["child-provider-1"],"status":"inProgress"}}}`))
+
+	var waitEvent *provider.ProviderEvent
+	for i := range events {
+		if events[i].ItemType == "wait_agent" {
+			waitEvent = &events[i]
+		}
+	}
+	if waitEvent == nil {
+		t.Fatalf("wait_agent event missing: %+v", events)
+	}
+	var meta struct {
+		Input struct {
+			ReceiverAgents []collabReceiverMeta `json:"receiverAgents"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(waitEvent.Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if len(meta.Input.ReceiverAgents) != 1 {
+		t.Fatalf("receiverAgents = %+v, want one", meta.Input.ReceiverAgents)
+	}
+	got := meta.Input.ReceiverAgents[0]
+	if got.ThreadID != "child-provider-1" || got.AgentNickname != "Galileo" || got.AgentRole != "explorer" {
+		t.Fatalf("receiver metadata = %+v, want child-provider-1/Galileo/explorer", got)
+	}
+}
+
+func TestDispatchLineRawSpawnOutputLabelsLaterWaitAgent(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:               "parent-thread",
+		pending:                make(map[int64]chan json.RawMessage),
+		childParentByThread:    make(map[string]string),
+		childParentByAgentPath: make(map[string]string),
+		agentPathByThread:      make(map[string]string),
+		agentMetaByThread:      make(map[string]collabReceiverMeta),
+		rawToolCallsByID:       make(map[string]rawToolCall),
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"spawn_agent","call_id":"spawn-1","arguments":"{\"agent_type\":\"explorer\",\"message\":\"Inspect parser\"}"}}}`))
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"id":"spawn-1","type":"collabAgentToolCall","tool":"spawnAgent","receiverThreadIds":["child-provider-1"],"prompt":"Inspect parser","status":"completed"}}}`))
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call_output","call_id":"spawn-1","output":"{\"agent_id\":\"child-provider-1\",\"nickname\":\"Boyle\"}"}}}`))
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"wait_agent","call_id":"wait-1","arguments":"{\"targets\":[\"child-provider-1\"],\"timeout_ms\":10000}"}}}`))
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":["child-provider-1"],"status":"inProgress"}}}`))
+
+	var waitEvent *provider.ProviderEvent
+	for i := range events {
+		if events[i].ItemType == "wait_agent" && events[i].Kind == provider.EventToolStart {
+			waitEvent = &events[i]
+		}
+	}
+	if waitEvent == nil {
+		t.Fatalf("wait_agent event missing: %+v", events)
+	}
+	var meta struct {
+		Input struct {
+			ReceiverThreadIDs []string             `json:"receiverThreadIds"`
+			ReceiverAgents    []collabReceiverMeta `json:"receiverAgents"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(waitEvent.Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if len(meta.Input.ReceiverThreadIDs) != 1 || meta.Input.ReceiverThreadIDs[0] != "child-provider-1" {
+		t.Fatalf("receiverThreadIds = %+v, want child-provider-1", meta.Input.ReceiverThreadIDs)
+	}
+	if len(meta.Input.ReceiverAgents) != 1 {
+		t.Fatalf("receiverAgents = %+v, want one", meta.Input.ReceiverAgents)
+	}
+	got := meta.Input.ReceiverAgents[0]
+	if got.ThreadID != "child-provider-1" || got.AgentNickname != "Boyle" || got.AgentRole != "explorer" {
+		t.Fatalf("receiver metadata = %+v, want child-provider-1/Boyle/explorer", got)
+	}
+}
+
+func TestDispatchLineRawWaitCallPreservesReceiversOnTimeoutCompletion(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:          "parent-thread",
+		pending:           make(map[int64]chan json.RawMessage),
+		rawToolCallsByID:  make(map[string]rawToolCall),
+		agentMetaByThread: make(map[string]collabReceiverMeta),
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"wait_agent","call_id":"wait-1","arguments":"{\"targets\":[\"child-provider-1\"],\"timeout_ms\":10000}"}}}`))
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":[],"agentsStates":{},"status":"completed"}}}`))
+
+	var waitEvent *provider.ProviderEvent
+	for i := range events {
+		if events[i].ItemType == "wait_agent" && events[i].Kind == provider.EventToolComplete {
+			waitEvent = &events[i]
+		}
+	}
+	if waitEvent == nil {
+		t.Fatalf("wait_agent completion missing: %+v", events)
+	}
+	var meta struct {
+		Input struct {
+			ReceiverThreadIDs []string `json:"receiverThreadIds"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(waitEvent.Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if len(meta.Input.ReceiverThreadIDs) != 1 || meta.Input.ReceiverThreadIDs[0] != "child-provider-1" {
+		t.Fatalf("receiverThreadIds = %+v, want raw target preserved", meta.Input.ReceiverThreadIDs)
+	}
+}
+
+func TestRawWriteStdinWaitResultIgnoresSpoofedCommandOutput(t *testing.T) {
+	output := "Chunk ID: abc\nWall time: 0.1000 seconds\nOutput:\nProcess exited with code 0\n"
+	if got := rawWriteStdinWaitResult(output); got != "" {
+		t.Fatalf("rawWriteStdinWaitResult spoofed output = %q, want empty", got)
+	}
+
+	output = "Chunk ID: abc\nWall time: 0.1000 seconds\nProcess exited with code 0\nOutput:\n"
+	if got := rawWriteStdinWaitResult(output); got != provider.TerminalWaitResultExited {
+		t.Fatalf("rawWriteStdinWaitResult header = %q, want exited", got)
+	}
+}
+
+func TestDispatchLineRawToolCallsAreBoundedAndCleared(t *testing.T) {
+	s := &Session{
+		threadID:         "parent-thread",
+		pending:          make(map[int64]chan json.RawMessage),
+		rawToolCallsByID: make(map[string]rawToolCall),
+		onEvent:          func(provider.ProviderEvent) {},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"unrelated","call_id":"ignored-1","arguments":"{}"}}}`))
+	if len(s.rawToolCallsByID) != 0 {
+		t.Fatalf("unrelated raw call retained: %+v", s.rawToolCallsByID)
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"write_stdin","call_id":"wait-1","arguments":"{\"session_id\":\"pid-42\",\"chars\":\"\"}"}}}`))
+	if len(s.rawToolCallsByID) != 1 {
+		t.Fatalf("write_stdin raw call count = %d, want 1", len(s.rawToolCallsByID))
+	}
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call_output","call_id":"wait-1","output":"Process running with session ID pid-42\nOutput:\n"}}}`))
+	if len(s.rawToolCallsByID) != 0 {
+		t.Fatalf("raw call not cleared after output: %+v", s.rawToolCallsByID)
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"wait_agent","call_id":"wait-agent-1","arguments":"{\"targets\":[\"child-provider-1\"]}"}}}`))
+	if len(s.rawToolCallsByID) != 1 {
+		t.Fatalf("wait_agent raw call count = %d, want 1", len(s.rawToolCallsByID))
+	}
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"parent-thread","turn":{"id":"turn-1","status":"completed"}}}`))
+	if len(s.rawToolCallsByID) != 0 {
+		t.Fatalf("raw calls not cleared on turn complete: %+v", s.rawToolCallsByID)
+	}
+}
+
+func TestCodexProviderEventLogRedactorRedactsWriteStdinRawEvents(t *testing.T) {
+	redact := newCodexProviderEventLogRedactor()
+
+	rawCall := []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","item":{"type":"function_call","name":"write_stdin","call_id":"wait-1","arguments":"{\"session_id\":\"pid-42\",\"chars\":\"secret-token\\n\",\"yield_time_ms\":1000}"}}}`)
+	redactedCall := string(redact("in", rawCall))
+	if strings.Contains(redactedCall, "secret-token") {
+		t.Fatalf("write_stdin arguments were not redacted: %s", redactedCall)
+	}
+	if !strings.Contains(redactedCall, "[redacted]") || !strings.Contains(redactedCall, "pid-42") {
+		t.Fatalf("redacted write_stdin call lost expected fields: %s", redactedCall)
+	}
+
+	rawOutput := []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","item":{"type":"function_call_output","call_id":"wait-1","output":"secret command output"}}}`)
+	redactedOutput := string(redact("in", rawOutput))
+	if strings.Contains(redactedOutput, "secret command output") {
+		t.Fatalf("write_stdin output was not redacted: %s", redactedOutput)
+	}
+	if !strings.Contains(redactedOutput, "[redacted]") {
+		t.Fatalf("redacted write_stdin output missing marker: %s", redactedOutput)
+	}
+
+	unrelatedOutput := []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","item":{"type":"function_call_output","call_id":"other-1","output":"visible output"}}}`)
+	if got := string(redact("in", unrelatedOutput)); !strings.Contains(got, "visible output") {
+		t.Fatalf("unrelated output should not be redacted: %s", got)
+	}
+}
+
 func TestDispatchLineSubagentNotificationUsesAgentPathMapping(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{

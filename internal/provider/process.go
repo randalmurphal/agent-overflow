@@ -38,16 +38,17 @@ var ErrLineTooLong = errors.New("provider: stdout line exceeded maximum size")
 
 // Process manages a subprocess with stdin/stdout pipes.
 type Process struct {
-	cmd         *exec.Cmd
-	stdin       io.WriteCloser
-	stdout      *bufio.Reader
-	stdoutFile  *os.File
-	done        chan struct{}
-	err         error
-	mu          sync.Mutex
-	eventLogger *logging.Logger
-	threadID    string
-	provider    string
+	cmd              *exec.Cmd
+	stdin            io.WriteCloser
+	stdout           *bufio.Reader
+	stdoutFile       *os.File
+	done             chan struct{}
+	err              error
+	mu               sync.Mutex
+	eventLogger      *logging.Logger
+	eventLogRedactor EventLogRedactor
+	threadID         string
+	provider         string
 	// killOnce guards the one-shot kill triggered on oversized lines so
 	// concurrent ReadLine failures (should never happen but defense in
 	// depth) do not double-signal the process group.
@@ -60,14 +61,20 @@ type Process struct {
 
 // SpawnConfig configures subprocess creation.
 type SpawnConfig struct {
-	Binary      string
-	Args        []string
-	Dir         string
-	Env         map[string]string
-	EventLogger *logging.Logger
-	ThreadID    string
-	Provider    string
+	Binary           string
+	Args             []string
+	Dir              string
+	Env              map[string]string
+	EventLogger      *logging.Logger
+	EventLogRedactor EventLogRedactor
+	ThreadID         string
+	Provider         string
 }
+
+// EventLogRedactor rewrites provider stdin/stdout lines before they are
+// written to the optional raw provider-event log. Returning nil skips that
+// log entry.
+type EventLogRedactor func(direction string, data []byte) []byte
 
 // Spawn starts a subprocess with stdin/stdout pipes and process group isolation.
 // The context is associated with the command — canceling it will kill the process.
@@ -128,14 +135,15 @@ func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
 	reader := bufio.NewReaderSize(stdoutRead, 64*1024)
 
 	p := &Process{
-		cmd:         cmd,
-		stdin:       stdin,
-		stdout:      reader,
-		stdoutFile:  stdoutRead,
-		done:        make(chan struct{}),
-		eventLogger: cfg.EventLogger,
-		threadID:    cfg.ThreadID,
-		provider:    cfg.Provider,
+		cmd:              cmd,
+		stdin:            stdin,
+		stdout:           reader,
+		stdoutFile:       stdoutRead,
+		done:             make(chan struct{}),
+		eventLogger:      cfg.EventLogger,
+		eventLogRedactor: cfg.EventLogRedactor,
+		threadID:         cfg.ThreadID,
+		provider:         cfg.Provider,
 	}
 
 	// Wait goroutine: detect process exit.
@@ -303,6 +311,12 @@ func (p *Process) signalGroup(sig syscall.Signal) {
 func (p *Process) logEvent(direction string, data []byte) {
 	if p.eventLogger == nil || p.threadID == "" || p.provider == "" {
 		return
+	}
+	if p.eventLogRedactor != nil {
+		data = p.eventLogRedactor(direction, data)
+		if data == nil {
+			return
+		}
 	}
 
 	if err := p.eventLogger.LogProviderEvent(logging.ProviderEventEntry{

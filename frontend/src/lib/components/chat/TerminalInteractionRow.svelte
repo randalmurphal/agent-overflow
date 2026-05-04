@@ -4,7 +4,7 @@
   import type { CommandOutputMeta, Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { parseJsonObject } from '../../utils/parseJsonObject';
-  import { commandTextForItem, terminalInteractionLabelFromSummary } from './commandDisplay';
+  import { terminalInteractionLabelFromSummary } from './commandDisplay';
   import CommandOutput from './CommandOutput.svelte';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
@@ -14,13 +14,11 @@
       ? (parseJsonObject(item.payloadMeta) as CommandOutputMeta | null)
       : null,
   );
-  let commandText = $derived(commandTextForItem(item, commandOutputMeta));
-  let shouldRenderCommandShell = $derived(item.payloadKind === 'command_output' || commandText !== '');
+  let shouldRenderCommandShell = $derived(item.payloadKind === 'command_output');
   let rowLabel = $derived(
-    shouldRenderCommandShell
-      ? terminalInteractionLabelFromSummary(item.summary)
-      : item.summary || 'Waited for background terminal',
+    terminalInteractionLabelFromSummary(item.summary) || 'Waited for background terminal',
   );
+  let isRunning = $derived(item.status === 'running' || item.status === 'streaming');
 
   /**
    * The Codex app-server emits one `TerminalInteractionNotification`
@@ -46,7 +44,10 @@
       data-testid="terminal-interaction-row"
     >
       <Icon icon={Timer} size={11} strokeWidth={2} class="opacity-70 shrink-0" />
-      <span>{rowLabel}</span>
+      <span class="min-w-0 truncate">{rowLabel}</span>
+      {#if isRunning}
+        <span class="shrink-0 text-[10px] text-accent opacity-70">running</span>
+      {/if}
     </div>
     {#if shouldRenderCommandShell}
       <div class="ml-5">

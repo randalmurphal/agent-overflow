@@ -24,16 +24,21 @@ import (
 //     "Interacted with background terminal" marker, but never persist
 //     stdin bytes because interactive input can contain secrets.
 //
-// Completed command output observed by an empty poll is persisted as the
-// command completion row. Interactive markers can still carry completed
-// output payloads for legacy/non-poll signals.
+// Empty polls always leave a visible wait carrier. If that poll observes
+// completed command output, the command completion row is linked back with
+// `wait_carrier_id` so the frontend can indent the completion under the
+// wait. Interactive markers can still carry completed output payloads for
+// legacy/non-poll signals.
 
 // terminalInteractionMeta is the Meta shape populated by
 // buildTerminalInteractionMeta in the Codex parser. Only the fields we
 // actually read are listed; unknown keys are tolerated.
 type terminalInteractionMeta struct {
-	ProcessID string `json:"process_id"`
-	Stdin     string `json:"stdin"`
+	ProcessID  string `json:"process_id"`
+	Stdin      string `json:"stdin"`
+	Source     string `json:"source"`
+	WaitResult string `json:"wait_result"`
+	ToolCallID string `json:"tool_call_id"`
 }
 
 func decodeTerminalInteractionMeta(raw json.RawMessage) terminalInteractionMeta {
@@ -47,9 +52,9 @@ func decodeTerminalInteractionMeta(raw json.RawMessage) terminalInteractionMeta 
 
 // handleTerminalInteraction routes Codex's `TerminalInteractionNotification`
 // events. Polling variants persist timeline rows while the command is still
-// running; when a poll observes completed output, the command completion row
-// is persisted instead. The interactive variant records only `has_stdin` and
-// never stores stdin text.
+// running; when a poll observes completed output, the wait carrier is settled
+// and the command completion row is persisted under it. The interactive
+// variant records only `has_stdin` and never stores stdin text.
 //
 // Correlation rules:
 //
@@ -84,12 +89,23 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	now := eventTimestampMillis(evt)
 	isPoll := evt.Content == "" && meta.Stdin == ""
 	itemID := ""
-	if isPoll {
+	isRawWaitStart := isPoll && meta.Source == "rawResponseItem/function_call"
+	isRawWaitOutput := isPoll && meta.Source == "rawResponseItem/function_call_output"
+	if isRawWaitOutput {
+		var found bool
+		itemID, found = r.codexTerminalWaitItemIDForToolCall(evt.ThreadID, meta.ToolCallID)
+		if !found {
+			return nil
+		}
+	} else if isPoll {
 		itemID = r.pendingCodexTerminalWaitItemID(evt.ThreadID, meta.ProcessID)
 	}
 	if itemID == "" {
 		seq := r.nextTerminalInteractionSequence(evt.ThreadID, turnIndex, meta.ProcessID)
 		itemID = terminalInteractionID(meta.ProcessID, turnIndex, seq, isPoll)
+	}
+	if isRawWaitStart {
+		r.rememberCodexTerminalWaitToolCall(evt.ThreadID, meta.ToolCallID, itemID)
 	}
 
 	metaMap := map[string]any{
@@ -101,6 +117,15 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	}
 	if !isPoll {
 		metaMap["has_stdin"] = true
+	}
+	if meta.Source != "" {
+		metaMap["source"] = meta.Source
+	}
+	if meta.WaitResult != "" {
+		metaMap["wait_result"] = meta.WaitResult
+	}
+	if meta.ToolCallID != "" {
+		metaMap["tool_call_id"] = meta.ToolCallID
 	}
 	metaBlob, err := json.Marshal(metaMap)
 	if err != nil {
@@ -123,7 +148,7 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		TurnIndex: turnIndex,
 		Kind:      string(provider.ItemTerminalInteraction),
 		Role:      "assistant",
-		Status:    statusCompleted,
+		Status:    terminalInteractionStatus(isPoll),
 		Summary:   summary,
 		ParentID:  eventParentID(evt),
 		Meta:      string(metaBlob),
@@ -138,30 +163,66 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		return fmt.Errorf("terminal_interaction existing lookup %s: %w", item.ID, err)
 	}
 	if isPoll {
-		if tracker, ok := r.codexCompletedUnifiedExecTrackerForProcess(evt.ThreadID, meta.ProcessID); ok {
-			if err := r.persistCodexUnifiedExecCompletion(evt, tracker, turnIndex); err != nil {
+		if meta.WaitResult == provider.TerminalWaitResultRunning {
+			item.Status = statusCompleted
+			if err := r.persistItem(item, nil); err != nil {
 				return err
 			}
+			r.forgetCodexTerminalWaitToolCall(evt.ThreadID, meta.ToolCallID)
+			if err := r.clearCodexPendingTerminalWait(evt.ThreadID, meta.ProcessID); err != nil {
+				return err
+			}
+			return nil
+		}
+		if tracker, ok := r.codexCompletedUnifiedExecTrackerForProcess(evt.ThreadID, meta.ProcessID); ok {
+			item.Status = statusCompleted
+			if err := r.persistItem(item, nil); err != nil {
+				return err
+			}
+			if err := r.persistCodexUnifiedExecCompletion(evt, tracker, turnIndex, item.ID); err != nil {
+				return err
+			}
+			r.forgetCodexTerminalWaitToolCall(evt.ThreadID, meta.ToolCallID)
 			r.clearCodexCompletedOutputTracker(evt.ThreadID, meta.ProcessID)
 			return nil
 		}
+		if meta.WaitResult == provider.TerminalWaitResultExited {
+			item.Status = statusCompleted
+			r.forgetCodexTerminalWaitToolCall(evt.ThreadID, meta.ToolCallID)
+		}
 	}
-	payload, outputSummary := r.codexCompletedOutputPayloadForProcess(evt.ThreadID, meta.ProcessID, item.ID, evt.Meta, now)
+	var payload *store.Payload
+	var outputSummary string
+	if !isPoll {
+		payload, outputSummary = r.codexCompletedOutputPayloadForProcess(evt.ThreadID, meta.ProcessID, item.ID, evt.Meta, now)
+	}
 	if outputSummary != "" {
 		if !isPoll {
 			outputSummary = strings.Replace(outputSummary, "Waited for background terminal", "Interacted with background terminal", 1)
 		}
 		item.Summary = outputSummary
 	}
-	if err := r.persistItem(item, payload); err != nil {
-		return err
-	}
 	if payload != nil {
 		r.clearCodexCompletedOutputTracker(evt.ThreadID, meta.ProcessID)
 	} else if isPoll {
-		r.trackCodexPendingTerminalWait(evt.ThreadID, meta.ProcessID, item.ID, turnIndex, now)
+		if !r.trackCodexPendingTerminalWait(evt.ThreadID, meta.ProcessID, item.ID, turnIndex, now) {
+			item.Status = statusCompleted
+		}
+	}
+	if err := r.persistItem(item, payload); err != nil {
+		return err
+	}
+	if isRawWaitOutput {
+		r.forgetCodexTerminalWaitToolCall(evt.ThreadID, meta.ToolCallID)
 	}
 	return nil
+}
+
+func terminalInteractionStatus(isPoll bool) string {
+	if isPoll {
+		return statusRunning
+	}
+	return statusCompleted
 }
 
 // terminalInteractionID builds the stable id for a persisted terminal

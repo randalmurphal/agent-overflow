@@ -320,12 +320,12 @@ describe("<ToolCallCard> header dispatcher", () => {
       {
         status: "completed" as const,
         meta: JSON.stringify({ input: { receiverThreadIds: ["child-1"] } }),
-        expected: "Waiting for child-1",
+        expected: "Waited for child-1",
       },
       {
         status: "completed" as const,
         meta: "",
-        expected: "Waiting for agents",
+        expected: "Waited for agents",
       },
       {
         status: "running" as const,
@@ -384,6 +384,34 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(text).toContain("Finished waiting");
     expect(text).toContain("child-1: completed - done");
     expect(text).toContain("child-2: failed - boom");
+  });
+
+  it("renders wait_agent receiver nicknames and keeps completed carriers neutral", async () => {
+    const pane = await buildPane(makeThread({ provider: "codex" }));
+    const item = makeItem({
+      id: "wait-agent-nickname",
+      kind: "tool_call",
+      status: "completed",
+      toolName: "wait_agent",
+      meta: JSON.stringify({
+        input: {
+          tool: "wait_agent",
+          receiverThreadIds: ["child-1"],
+          receiverAgents: [
+            { threadId: "child-1", agentNickname: "Galileo", agentRole: "explorer" },
+          ],
+        },
+      }),
+    });
+
+    const { getByTestId, queryByTestId } = render(ToolCallCard, {
+      props: { pane, item },
+    });
+    const text = getByTestId("collab-tool-row").textContent ?? "";
+
+    expect(text).toContain("Waited for Galileo [explorer]");
+    expect(text).toContain("└ Galileo [explorer]");
+    expect(queryByTestId("completion-badge")).toBeNull();
   });
 
   it("renders a checklist icon for Plan / ExitPlanMode", async () => {

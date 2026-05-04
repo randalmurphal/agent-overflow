@@ -1,17 +1,18 @@
 // Pure projection utility for turning a flat timeline of Items into stable
-// transcript nodes. The only structural grouping allowed here is provider
-// subagent launches: Claude inline Agent/Task rows and Codex spawn_agent
-// rows. Generic parentId nesting is deliberately not used because it can make
-// an already-rendered row flip from leaf -> group.
+// transcript nodes. Structural grouping is deliberately limited to provider
+// subagent launches and wait carriers. Generic parentId nesting is
+// deliberately not used because it can make an already-rendered row flip
+// from leaf -> group.
 //
 // Contract:
 //   - Input: a chronologically-ordered list of Items (preserves turnIndex
 //     / itemIndex order — callers do not need to pre-sort).
 //   - Output: an array of TimelineNode roots. A `group` node wraps a parent
-//     item plus recursively-grouped children. A `leaf` node wraps a single
-//     item with nothing under it. A `inline_subagent_group` node is a
-//     structural Claude inline-agent wrapper whose children are real
-//     subagent groups.
+//     item plus recursively-grouped children. A `wait_group` node wraps a
+//     terminal/subagent wait carrier plus target completion leaves observed by
+//     that wait. A `leaf` node wraps a single item with nothing under it. A
+//     `inline_subagent_group` node is a structural Claude inline-agent wrapper
+//     whose children are real subagent groups.
 //
 // Rules:
 //   - Normal rows always stay leaves.
@@ -22,6 +23,9 @@
 //   - Adjacent inline agents from the same Claude assistant message share a
 //     structural wrapper row keyed by that assistant message. The real agent
 //     cards remain peers inside the wrapper.
+//   - Wait carriers use a stable structural wrapper from first render; target
+//     completions render beneath them when linked by `wait_carrier_id` or
+//     legacy process/payload correlation.
 //   - parentId children are nested only when their parent is one of those
 //     subagent launch rows. Children of non-agent parents stay flat.
 //   - Nesting is capped at MAX_DEPTH (3, matching forge). Descendants
@@ -47,7 +51,7 @@ const PREVIEW_SCAN_CHARS = 512;
  * A node in the timeline tree returned by `groupItemsBySubagent`.
  * Consumers should dispatch on `.kind`.
  */
-export type TimelineNode = TimelineLeaf | SubagentGroupNode | InlineSubagentGroupNode;
+export type TimelineNode = TimelineLeaf | SubagentGroupNode | InlineSubagentGroupNode | WaitGroupNode;
 
 export interface TimelineLeaf {
   kind: 'leaf';
@@ -95,6 +99,18 @@ export interface InlineSubagentGroupNode {
   /** Number of inline Agent/Task launches represented by this wrapper. */
   memberCount: number;
   /** Total entries inside every represented subagent. */
+  descendantCount: number;
+}
+
+export interface WaitGroupNode {
+  kind: 'wait_group';
+  /** The wait/poll row that anchors the group. */
+  parent: Item;
+  /** Stable structural key for virtualization. */
+  groupKey: string;
+  /** Target completion rows observed by this wait. */
+  children: TimelineLeaf[];
+  /** Total child count. */
   descendantCount: number;
 }
 
@@ -190,16 +206,34 @@ function codexPromptEchoParentID(item: Item, promptByParentID: Map<string, strin
   return normalizedText(item.summary) === normalizedText(prompt) ? parentID : '';
 }
 
-function shouldHideCodexWaitCarrier(item: Item, payloadIDsResolvedByTargetCompletion: Set<string>): boolean {
-  if (!item.payloadId || !payloadIDsResolvedByTargetCompletion.has(item.payloadId)) return false;
-  if (item.kind === 'terminal_interaction') return true;
-  return item.kind === 'tool_completion' && item.toolName === 'wait_agent';
-}
-
 function itemProcessID(item: Item): string {
   const meta = parseJsonObject(item.meta);
-  const processID = meta?.process_id;
+  const processID = meta?.process_id ?? meta?.processId;
   return typeof processID === 'string' ? processID.trim() : '';
+}
+
+function itemWaitCarrierID(item: Item): string {
+  const meta = parseJsonObject(item.meta);
+  const carrierID = meta?.wait_carrier_id ?? meta?.waitCarrierID;
+  return typeof carrierID === 'string' ? carrierID.trim() : '';
+}
+
+function isTerminalWaitCarrier(item: Item): boolean {
+  if (item.kind !== 'terminal_interaction') return false;
+  const meta = parseJsonObject(item.meta);
+  return meta?.has_stdin !== true;
+}
+
+function isWaitCarrier(item: Item): boolean {
+  return isTerminalWaitCarrier(item)
+    || (item.kind === 'tool_call' && item.toolName === 'wait_agent');
+}
+
+function isInternalWaitCompletion(item: Item, itemByID: ReadonlyMap<string, Item>): boolean {
+  return item.kind === 'tool_completion'
+    && item.toolName === 'wait_agent'
+    && Boolean(item.completionOf)
+    && itemByID.has(item.completionOf ?? '');
 }
 
 function subagentNodeGroupKey(item: Item, inlineGroupKey: string): string {
@@ -208,7 +242,7 @@ function subagentNodeGroupKey(item: Item, inlineGroupKey: string): string {
 
 function timelineNodeRootItem(node: TimelineNode): Item {
   if (node.kind === 'leaf') return node.item;
-  if (node.kind === 'group') return node.parent;
+  if (node.kind === 'group' || node.kind === 'wait_group') return node.parent;
   return node.members[0].parent;
 }
 
@@ -225,6 +259,11 @@ function* descendantItems(nodes: TimelineNode[]): Generator<Item> {
       continue;
     }
     if (node.kind === 'group') {
+      yield node.parent;
+      yield* descendantItems(node.children);
+      continue;
+    }
+    if (node.kind === 'wait_group') {
       yield node.parent;
       yield* descendantItems(node.children);
       continue;
@@ -272,7 +311,7 @@ function countDescendants(children: TimelineNode[]): number {
   let n = 0;
   for (const child of children) {
     n += 1;
-    if (child.kind === 'group') n += countDescendants(child.children);
+    if (child.kind === 'group' || child.kind === 'wait_group') n += countDescendants(child.children);
     if (child.kind === 'inline_subagent_group') n += countDescendants(child.members);
   }
   return n;
@@ -295,13 +334,14 @@ function countSubagentEntries(members: SubagentGroupNode[]): number {
 export function timelineNodeKey(node: TimelineNode): string {
   if (node.kind === 'leaf') return `l:${node.item.threadId}:${node.item.id}`;
   if (node.kind === 'group') return `g:${node.parent.threadId}:${node.groupKey}`;
+  if (node.kind === 'wait_group') return `wg:${node.parent.threadId}:${node.groupKey}`;
   return `ig:${node.threadId}:${node.groupKey}`;
 }
 
 /** Item id of the leaf or group root. */
 export function timelineNodeItemId(node: TimelineNode): string {
   if (node.kind === 'leaf') return node.item.id;
-  if (node.kind === 'group') return node.parent.id;
+  if (node.kind === 'group' || node.kind === 'wait_group') return node.parent.id;
   return node.members[0].parent.id;
 }
 
@@ -319,7 +359,7 @@ export function timelineNodeTurnIndex(node: TimelineNode): number {
 export type NodeRole = 'tool' | 'text' | 'other';
 
 export function nodeRole(node: TimelineNode): NodeRole {
-  if (node.kind === 'group' || node.kind === 'inline_subagent_group') return 'tool';
+  if (node.kind === 'group' || node.kind === 'inline_subagent_group' || node.kind === 'wait_group') return 'tool';
   const k = node.item.kind;
   if (k === 'tool_call' || k === 'tool_completion' || k === 'terminal_interaction') return 'tool';
   if (k === 'assistant_text' || k === 'user_text') return 'text';
@@ -377,7 +417,7 @@ export function finalAssistantTextIdsByTurn(
  */
 export function nodeContainsItem(node: TimelineNode, itemId: string): boolean {
   if (node.kind === 'leaf') return node.item.id === itemId;
-  if (node.kind === 'group') {
+  if (node.kind === 'group' || node.kind === 'wait_group') {
     return node.parent.id === itemId
       || node.children.some((child) => nodeContainsItem(child, itemId));
   }
@@ -441,21 +481,62 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
   // Work on a shallow copy sorted in canonical order so callers may pass
   // any collection (e.g., a subset) without needing to pre-sort.
   const sortedWithCarriers = alreadySorted ? items : [...items].sort(compareItems);
+  const itemByID = new Map<string, Item>();
   const promptByCodexSpawnID = new Map<string, string>();
-  const payloadIDsResolvedByTargetCompletion = new Set<string>();
-  const processIDsResolvedByCommandCompletion = new Set<string>();
+  const waitCompletionPayloadCarrierByPayloadID = new Map<string, string>();
+  const latestTerminalWaitByProcessID = new Map<string, string>();
+  const waitChildrenByCarrierID = new Map<string, Item[]>();
+  const waitChildIDs = new Set<string>();
+
+  function addWaitChild(carrierID: string, child: Item): void {
+    const carrier = itemByID.get(carrierID);
+    if (!carrier || !isWaitCarrier(carrier)) return;
+    if (waitChildIDs.has(child.id)) return;
+    const bucket = waitChildrenByCarrierID.get(carrierID);
+    if (bucket) {
+      bucket.push(child);
+    } else {
+      waitChildrenByCarrierID.set(carrierID, [child]);
+    }
+    waitChildIDs.add(child.id);
+  }
+
+  for (const item of sortedWithCarriers) {
+    itemByID.set(item.id, item);
+  }
+
   for (const item of sortedWithCarriers) {
     if (isCodexSubagentLaunchItem(item)) {
       const prompt = codexSubagentLaunchInfo(item).prompt;
       if (prompt) promptByCodexSpawnID.set(item.id, prompt);
       continue;
     }
-    if (item.kind === 'tool_completion' && item.completionOf && item.toolName !== 'wait_agent' && item.payloadId) {
-      payloadIDsResolvedByTargetCompletion.add(item.payloadId);
-    }
-    if (item.kind === 'tool_completion' && item.completionOf && item.toolName === 'command_execution') {
+    if (isTerminalWaitCarrier(item)) {
       const processID = itemProcessID(item);
-      if (processID) processIDsResolvedByCommandCompletion.add(processID);
+      if (processID) latestTerminalWaitByProcessID.set(processID, item.id);
+      continue;
+    }
+    if (item.kind === 'tool_completion' && item.toolName === 'wait_agent' && item.completionOf && item.payloadId) {
+      waitCompletionPayloadCarrierByPayloadID.set(item.payloadId, item.completionOf);
+      continue;
+    }
+    if (item.kind !== 'tool_completion' || !item.completionOf || item.toolName === 'wait_agent') {
+      continue;
+    }
+    const explicitCarrierID = itemWaitCarrierID(item);
+    if (explicitCarrierID) {
+      addWaitChild(explicitCarrierID, item);
+      continue;
+    }
+    if (item.toolName === 'command_execution') {
+      const processID = itemProcessID(item);
+      const carrierID = processID ? latestTerminalWaitByProcessID.get(processID) : '';
+      if (carrierID) addWaitChild(carrierID, item);
+      continue;
+    }
+    if (item.payloadId) {
+      const carrierID = waitCompletionPayloadCarrierByPayloadID.get(item.payloadId);
+      if (carrierID) addWaitChild(carrierID, item);
     }
   }
   const hiddenCodexPromptEchoParents = new Set<string>();
@@ -465,8 +546,8 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
       hiddenCodexPromptEchoParents.add(promptEchoParentID);
       return false;
     }
-    if (shouldHideCodexWaitCarrier(item, payloadIDsResolvedByTargetCompletion)) return false;
-    if (item.kind === 'terminal_interaction' && processIDsResolvedByCommandCompletion.has(itemProcessID(item))) return false;
+    if (isInternalWaitCompletion(item, itemByID)) return false;
+    if (waitChildIDs.has(item.id)) return false;
     return true;
   });
 
@@ -513,6 +594,18 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
   }
 
   function buildNode(item: Item, depth: number): TimelineNode {
+    if (isWaitCarrier(item)) {
+      const children = (waitChildrenByCarrierID.get(item.id) ?? [])
+        .map((child): TimelineLeaf => ({ kind: 'leaf', item: child }));
+      return {
+        kind: 'wait_group',
+        parent: item,
+        groupKey: `wait:${item.id}`,
+        children,
+        descendantCount: children.length,
+      };
+    }
+
     const childItems = childrenByParent.get(item.id);
     if ((!childItems || childItems.length === 0) && !subagentLaunchIDs.has(item.id)) {
       return { kind: 'leaf', item };

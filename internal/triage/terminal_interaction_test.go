@@ -16,10 +16,19 @@ import (
 // so the test drives the same shape production receives.
 func terminalInteractionMetaBlob(t *testing.T, processID, stdin string) json.RawMessage {
 	t.Helper()
-	encoded, err := json.Marshal(map[string]any{
+	return terminalInteractionMetaBlobWith(t, processID, stdin, nil)
+}
+
+func terminalInteractionMetaBlobWith(t *testing.T, processID, stdin string, extra map[string]any) json.RawMessage {
+	t.Helper()
+	payload := map[string]any{
 		"process_id": processID,
 		"stdin":      stdin,
-	})
+	}
+	for key, value := range extra {
+		payload[key] = value
+	}
+	encoded, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal terminal_interaction meta: %v", err)
 	}
@@ -80,6 +89,40 @@ func TestTerminalInteraction_EmptyStdinPersistsRow(t *testing.T) {
 	}
 }
 
+func TestTerminalInteraction_UntrackedPollDoesNotStayRunningAfterTurnComplete(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTerminalInteraction,
+		ThreadID:  "t1",
+		TurnID:    "turn-0",
+		ItemID:    "cmd-1",
+		Content:   "",
+		Meta:      terminalInteractionMetaBlob(t, "pid-missing", ""),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle terminal interaction: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  "t1",
+		TurnID:    "turn-0",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle turn complete: %v", err)
+	}
+
+	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
+	if len(waits) != 1 {
+		t.Fatalf("wait rows = %d, want 1", len(waits))
+	}
+	if waits[0].Status != statusCompleted {
+		t.Fatalf("untracked wait status = %q, want completed", waits[0].Status)
+	}
+}
+
 func TestTerminalInteraction_StoresCommandMetadataWhenTrackerKnown(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -89,10 +132,11 @@ func TestTerminalInteraction_StoresCommandMetadataWhenTrackerKnown(t *testing.T)
 	state := router.codexBackgroundForThread("t1")
 	state.unifiedExecByProcess["pid-42"] = "cmd-1"
 	state.unifiedExec["cmd-1"] = &unifiedExecTracker{
-		launchID:  "cmd-1",
-		processID: "pid-42",
-		command:   "sleep 1; echo done",
-		summary:   "sleep 1; echo done",
+		launchID:     "cmd-1",
+		processID:    "pid-42",
+		command:      "sleep 1; echo done",
+		summary:      "sleep 1; echo done",
+		backgrounded: true,
 	}
 	router.mu.Unlock()
 
@@ -126,12 +170,264 @@ func TestTerminalInteraction_StoresCommandMetadataWhenTrackerKnown(t *testing.T)
 	if matched.Summary != "Waited for background terminal: sleep 1; echo done" {
 		t.Fatalf("summary = %q", matched.Summary)
 	}
+	if matched.Status != statusRunning {
+		t.Fatalf("status = %q, want running", matched.Status)
+	}
 	var meta map[string]any
 	if err := json.Unmarshal([]byte(matched.Meta), &meta); err != nil {
 		t.Fatalf("unmarshal stored meta: %v", err)
 	}
 	if meta["command"] != "sleep 1; echo done" {
 		t.Errorf("meta.command = %v, want command", meta["command"])
+	}
+}
+
+func TestTerminalInteraction_RawRunningResultSettlesWaitWithoutCompletion(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 2)
+
+	router.mu.Lock()
+	state := router.codexBackgroundForThread("t1")
+	state.unifiedExecByProcess["pid-42"] = "cmd-1"
+	state.unifiedExec["cmd-1"] = &unifiedExecTracker{
+		launchID:  "cmd-1",
+		processID: "pid-42",
+		command:   "sleep 20",
+		summary:   "sleep 20",
+	}
+	router.mu.Unlock()
+
+	start := provider.ProviderEvent{
+		Kind:     provider.EventTerminalInteraction,
+		ThreadID: "t1",
+		TurnID:   "turn-2",
+		ItemID:   "call-wait",
+		Content:  "",
+		Meta: terminalInteractionMetaBlobWith(t, "pid-42", "", map[string]any{
+			"source":       "rawResponseItem/function_call",
+			"tool_call_id": "call-wait",
+		}),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(start); err != nil {
+		t.Fatalf("handle wait start: %v", err)
+	}
+	output := start
+	output.Meta = terminalInteractionMetaBlobWith(t, "pid-42", "", map[string]any{
+		"source":       "rawResponseItem/function_call_output",
+		"tool_call_id": "call-wait",
+		"wait_result":  "running",
+	})
+	if err := router.Handle(output); err != nil {
+		t.Fatalf("handle wait output: %v", err)
+	}
+
+	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
+	if len(waits) != 1 {
+		t.Fatalf("wait rows = %d, want 1", len(waits))
+	}
+	if waits[0].Status != statusCompleted {
+		t.Fatalf("wait status = %q, want completed", waits[0].Status)
+	}
+
+	router.mu.Lock()
+	_, stillPending := router.codexBackground["t1"].pendingWaitByProcess["pid-42"]
+	router.mu.Unlock()
+	if stillPending {
+		t.Fatalf("timed-out wait must not remain pending for a later command completion")
+	}
+}
+
+func TestTerminalInteraction_RawExitedOutputUpdatesOriginalWaitCarrier(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 2)
+
+	router.mu.Lock()
+	state := router.codexBackgroundForThread("t1")
+	state.unifiedExecByProcess["pid-42"] = "cmd-1"
+	state.unifiedExec["cmd-1"] = &unifiedExecTracker{
+		launchID:     "cmd-1",
+		processID:    "pid-42",
+		command:      "sleep 20",
+		summary:      "sleep 20",
+		backgrounded: true,
+		status:       statusRunning,
+		meta:         json.RawMessage(`{"source":"unifiedExecStartup"}`),
+	}
+	router.mu.Unlock()
+
+	rawStart := provider.ProviderEvent{
+		Kind:     provider.EventTerminalInteraction,
+		ThreadID: "t1",
+		TurnID:   "turn-2",
+		ItemID:   "call-wait",
+		Content:  "",
+		Meta: terminalInteractionMetaBlobWith(t, "pid-42", "", map[string]any{
+			"source":       "rawResponseItem/function_call",
+			"tool_call_id": "call-wait",
+		}),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(rawStart); err != nil {
+		t.Fatalf("handle raw wait start: %v", err)
+	}
+
+	typedPoll := provider.ProviderEvent{
+		Kind:      provider.EventTerminalInteraction,
+		ThreadID:  "t1",
+		TurnID:    "turn-2",
+		ItemID:    "cmd-1",
+		Content:   "",
+		Meta:      terminalInteractionMetaBlob(t, "pid-42", ""),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(typedPoll); err != nil {
+		t.Fatalf("handle typed poll: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:     provider.EventToolComplete,
+		ThreadID: "t1",
+		TurnID:   "turn-2",
+		ItemID:   "cmd-1",
+		ItemType: "command_execution",
+		Content:  "done\n",
+		Meta: json.RawMessage(`{
+			"source":"unifiedExecStartup",
+			"process_id":"pid-42",
+			"item_status":"completed",
+			"input":{"command":"sleep 20"}
+		}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle command completion: %v", err)
+	}
+
+	rawOutput := provider.ProviderEvent{
+		Kind:     provider.EventTerminalInteraction,
+		ThreadID: "t1",
+		TurnID:   "turn-2",
+		ItemID:   "call-wait",
+		Content:  "",
+		Meta: terminalInteractionMetaBlobWith(t, "pid-42", "", map[string]any{
+			"source":       "rawResponseItem/function_call_output",
+			"tool_call_id": "call-wait",
+			"wait_result":  provider.TerminalWaitResultExited,
+		}),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(rawOutput); err != nil {
+		t.Fatalf("handle raw wait output: %v", err)
+	}
+
+	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
+	if len(waits) != 1 {
+		t.Fatalf("wait rows = %d, want 1: %+v", len(waits), waits)
+	}
+	if waits[0].Status != statusCompleted {
+		t.Fatalf("wait status = %q, want completed", waits[0].Status)
+	}
+
+	completions := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(completions) != 1 {
+		t.Fatalf("background completions = %d, want 1: %+v", len(completions), completions)
+	}
+	meta := decodeItemMetaMap(t, completions[0].Meta)
+	if meta["wait_carrier_id"] != waits[0].ID {
+		t.Fatalf("wait_carrier_id = %v, want %s", meta["wait_carrier_id"], waits[0].ID)
+	}
+}
+
+func TestTerminalInteraction_RawOutputAfterModelMovesOnDoesNotReuseStaleCarrier(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 2)
+
+	router.mu.Lock()
+	state := router.codexBackgroundForThread("t1")
+	state.unifiedExecByProcess["pid-42"] = "cmd-1"
+	state.unifiedExec["cmd-1"] = &unifiedExecTracker{
+		launchID:     "cmd-1",
+		processID:    "pid-42",
+		command:      "sleep 20",
+		summary:      "sleep 20",
+		backgrounded: true,
+		status:       statusRunning,
+		meta:         json.RawMessage(`{"source":"unifiedExecStartup"}`),
+	}
+	router.mu.Unlock()
+
+	rawStart := provider.ProviderEvent{
+		Kind:     provider.EventTerminalInteraction,
+		ThreadID: "t1",
+		TurnID:   "turn-2",
+		ItemID:   "call-wait",
+		Meta: terminalInteractionMetaBlobWith(t, "pid-42", "", map[string]any{
+			"source":       "rawResponseItem/function_call",
+			"tool_call_id": "call-wait",
+		}),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(rawStart); err != nil {
+		t.Fatalf("handle raw wait start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", TurnID: "turn-2",
+		Content: "model moved on", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle model yield: %v", err)
+	}
+
+	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
+	if len(waits) != 1 {
+		t.Fatalf("wait rows = %d, want 1: %+v", len(waits), waits)
+	}
+	if waits[0].Status != statusCompleted {
+		t.Fatalf("stale wait status = %q, want completed", waits[0].Status)
+	}
+	router.mu.Lock()
+	_, stillMapped := router.codexBackground["t1"].pendingWaitByToolCall["call-wait"]
+	router.mu.Unlock()
+	if stillMapped {
+		t.Fatal("stale raw wait tool_call_id should be cleared when the model moves on")
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:     provider.EventToolComplete,
+		ThreadID: "t1",
+		TurnID:   "turn-2",
+		ItemID:   "cmd-1",
+		ItemType: "command_execution",
+		Content:  "done\n",
+		Meta: json.RawMessage(`{
+			"source":"unifiedExecStartup",
+			"process_id":"pid-42",
+			"item_status":"completed",
+			"input":{"command":"sleep 20"}
+		}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle command completion: %v", err)
+	}
+	rawOutput := rawStart
+	rawOutput.Meta = terminalInteractionMetaBlobWith(t, "pid-42", "", map[string]any{
+		"source":       "rawResponseItem/function_call_output",
+		"tool_call_id": "call-wait",
+		"wait_result":  provider.TerminalWaitResultExited,
+	})
+	if err := router.Handle(rawOutput); err != nil {
+		t.Fatalf("handle stale raw wait output: %v", err)
+	}
+
+	waits = findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
+	if len(waits) != 1 {
+		t.Fatalf("stale raw output created wait rows = %d, want 1: %+v", len(waits), waits)
+	}
+	completions := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(completions) != 0 {
+		t.Fatalf("stale raw output attached completion after model moved on: %+v", completions)
 	}
 }
 

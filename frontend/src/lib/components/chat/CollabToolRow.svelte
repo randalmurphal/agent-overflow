@@ -9,6 +9,7 @@
   import CompletionBadge from './CompletionBadge.svelte';
   import type { Item } from '../../types/models';
   import { parseJsonObject } from '../../utils/parseJsonObject';
+  import { codexSubagentDisplayLabel } from '../../utils/subagentLaunch';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
 
   let { item }: { item: Item } = $props();
@@ -32,14 +33,40 @@
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
   }
 
+  interface ReceiverAgentLabel {
+    threadId: string;
+    label: string;
+  }
+
+  function labelForAgentRecord(record: Record<string, unknown>): ReceiverAgentLabel | null {
+    const threadId = stringValue(record, 'threadId') || stringValue(record, 'thread_id');
+    if (!threadId) return null;
+    const nickname = stringValue(record, 'newAgentNickname') || stringValue(record, 'agentNickname') || stringValue(record, 'agent_nickname') || stringValue(record, 'nickname');
+    const role = stringValue(record, 'newAgentRole') || stringValue(record, 'agentRole') || stringValue(record, 'agent_role') || stringValue(record, 'agentType') || stringValue(record, 'agent_type');
+    const label = codexSubagentDisplayLabel(nickname, role, role ? 'Agent' : threadId);
+    return { threadId, label };
+  }
+
+  function receiverAgentLabels(obj: Record<string, unknown>): ReceiverAgentLabel[] {
+    const raw = obj.receiverAgents ?? obj.agentStatuses;
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
+      .map(labelForAgentRecord)
+      .filter((entry): entry is ReceiverAgentLabel => entry !== null);
+  }
+
   let tool = $derived(stringValue(input, 'tool') || item.toolName || '');
   let receivers = $derived(stringArray(input, 'receiverThreadIds'));
+  let receiverLabels = $derived(receiverAgentLabels(input));
+  let labelByReceiver = $derived(new Map(receiverLabels.map((agent) => [agent.threadId, agent.label])));
   let prompt = $derived(stringValue(input, 'prompt'));
   let model = $derived(stringValue(input, 'model'));
   let effort = $derived(stringValue(input, 'reasoningEffort'));
+  let receiverDisplayLabels = $derived.by(() => receivers.map((id) => labelByReceiver.get(id) ?? id));
   let agentLabel = $derived.by(() => {
-    if (receivers.length === 1) return receivers[0];
-    if (receivers.length > 1) return `${receivers.length} agents`;
+    if (receiverDisplayLabels.length === 1) return receiverDisplayLabels[0];
+    if (receiverDisplayLabels.length > 1) return `${receiverDisplayLabels.length} agents`;
     return '';
   });
   let modelAffix = $derived([model, effort].filter(Boolean).join(' '));
@@ -52,18 +79,23 @@
   });
 
   function statusLine(id: string): string {
+    const label = labelByReceiver.get(id) ?? id;
     const raw = agentsStates[id];
-    if (typeof raw === 'string') return `${id}: ${raw}`;
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return id;
+    if (typeof raw === 'string') return `${label}: ${raw}`;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return label;
     const record = raw as Record<string, unknown>;
     const status = typeof record.status === 'string' ? record.status : '';
     const message = typeof record.message === 'string' ? record.message.trim() : '';
-    return `${id}: ${[status, message].filter(Boolean).join(' - ') || 'unknown'}`;
+    return `${label}: ${[status, message].filter(Boolean).join(' - ') || 'unknown'}`;
   }
 
   let title = $derived.by(() => {
     if (tool === 'send_input') return `Sent input to ${agentLabel || 'agent'}`;
-    if (tool === 'wait_agent') return item.kind === 'tool_completion' ? 'Finished waiting' : `Waiting for ${agentLabel || 'agents'}`;
+    if (tool === 'wait_agent') {
+      if (item.kind === 'tool_completion') return 'Finished waiting';
+      if (item.status === 'running' || item.status === 'streaming') return `Waiting for ${agentLabel || 'agents'}`;
+      return `Waited for ${agentLabel || 'agents'}`;
+    }
     if (tool === 'close_agent') return `Closed ${agentLabel || 'agent'}`;
     if (tool === 'resume_agent') return item.kind === 'tool_completion' ? `Resumed ${agentLabel || 'agent'}` : `Resuming ${agentLabel || 'agent'}`;
     return `Subagent ${tool}`;
@@ -78,6 +110,10 @@
   });
 
   let completionStatus = $derived(deriveCompletionStatus(item, { meta: payloadMeta }));
+  let badgeStatus = $derived.by<'success' | 'failure' | null>(() => {
+    if (tool === 'wait_agent' && item.kind === 'tool_call') return null;
+    return completionStatus;
+  });
 </script>
 
 <div class="mb-1.5 px-1 py-1 text-[12px] text-fg-muted" data-testid="collab-tool-row">
@@ -88,8 +124,8 @@
     </span>
     {#if item.status === 'running' || item.status === 'streaming'}
       <span class="shrink-0 text-[10px] text-accent opacity-70">running</span>
-    {:else if completionStatus}
-      <CompletionBadge status={completionStatus} class="opacity-80" />
+    {:else if badgeStatus}
+      <CompletionBadge status={badgeStatus} class="opacity-80" />
     {/if}
   </div>
   {#if prompt}
@@ -97,8 +133,8 @@
   {/if}
   {#if tool === 'wait_agent' && receivers.length > 0}
     <div class="ml-5 mt-0.5 space-y-0.5 text-[11px] text-fg-subtle">
-      {#each receivers as id}
-        <div class="truncate">└ {item.kind === 'tool_completion' ? statusLine(id) : id}</div>
+      {#each receivers as id, index}
+        <div class="truncate">└ {item.kind === 'tool_completion' ? statusLine(id) : receiverDisplayLabels[index]}</div>
       {/each}
     </div>
   {/if}

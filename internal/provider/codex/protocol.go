@@ -38,6 +38,9 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 	if events, ok := classifyItemNotification(threadID, method, params, now); ok {
 		return events
 	}
+	if events, ok := classifyRawResponseNotification(threadID, method, params, now); ok {
+		return events
+	}
 	if events, ok := classifyThreadNotification(threadID, method, params, now); ok {
 		return events
 	}
@@ -358,6 +361,14 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 	return nil, false
 }
 
+func classifyRawResponseNotification(threadID, method string, params json.RawMessage, now time.Time) ([]provider.ProviderEvent, bool) {
+	switch method {
+	case "rawResponseItem/completed":
+		return classifyRawResponseItemCompleted(threadID, params, now), true
+	}
+	return nil, false
+}
+
 // buildTerminalInteractionMeta packages the notification fields triage
 // needs to persist the "waited" row. Meta preserves the raw `stdin`
 // (so the frontend / future phases can differentiate empty-poll from
@@ -371,6 +382,62 @@ func buildTerminalInteractionMeta(params json.RawMessage) json.RawMessage {
 		return params
 	}
 	return encoded
+}
+
+func classifyRawResponseItemCompleted(threadID string, params json.RawMessage, now time.Time) []provider.ProviderEvent {
+	item := readNestedObject(params, "item")
+	itemType := readRawString(item, "type")
+	toolName := firstNonEmptyString(readRawString(item, "name"), readRawString(item, "rawToolName"))
+	if toolName != "write_stdin" {
+		return nil
+	}
+
+	processID := readRawString(item, "processId")
+	waitResult := readRawString(item, "waitResult")
+	source := "rawResponseItem/completed"
+	switch itemType {
+	case "function_call":
+		args, ok := decodeFunctionArguments(readRawString(item, "arguments"))
+		if !ok || readFlexibleString(args, "chars") != "" {
+			return nil
+		}
+		processID = readFlexibleString(args, "session_id")
+		source = "rawResponseItem/function_call"
+	case "function_call_output":
+		source = "rawResponseItem/function_call_output"
+	default:
+		return nil
+	}
+
+	if processID == "" {
+		return nil
+	}
+
+	metaMap := map[string]any{
+		"process_id": processID,
+		"stdin":      "",
+		"source":     source,
+	}
+	if waitResult != "" {
+		metaMap["wait_result"] = waitResult
+	}
+	if callID := readRawString(item, "call_id"); callID != "" {
+		metaMap["tool_call_id"] = callID
+	}
+	meta, err := json.Marshal(metaMap)
+	if err != nil {
+		meta = json.RawMessage(`{"stdin":""}`)
+	}
+
+	return []provider.ProviderEvent{{
+		Kind:      provider.EventTerminalInteraction,
+		ThreadID:  threadID,
+		TurnID:    readTopLevelString(params, "turnId"),
+		ItemID:    firstNonEmptyString(readRawString(item, "call_id"), readRawString(item, "id")),
+		Content:   "",
+		Meta:      meta,
+		Timestamp: now,
+	}}
 }
 
 // classifyItemCompleted breaks out item/completed because the plan-item
@@ -898,6 +965,33 @@ func readRawObject(m map[string]json.RawMessage, key string) map[string]json.Raw
 		return nil
 	}
 	return obj
+}
+
+func decodeFunctionArguments(raw string) (map[string]json.RawMessage, bool) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, false
+	}
+	var args map[string]json.RawMessage
+	if json.Unmarshal([]byte(raw), &args) != nil {
+		return nil, false
+	}
+	return args, true
+}
+
+func readFlexibleString(m map[string]json.RawMessage, key string) string {
+	raw, ok := m[key]
+	if !ok {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var num json.Number
+	if json.Unmarshal(raw, &num) == nil {
+		return num.String()
+	}
+	return ""
 }
 
 func firstRaw(m map[string]json.RawMessage, keys ...string) json.RawMessage {

@@ -135,10 +135,9 @@ const (
 	// Codex forwarded. Triage persists a lightweight
 	// `terminal_interaction` row for the empty case so the timeline can
 	// render "Waited for background terminal" inline, mirroring Codex's
-	// own TUI (chatwidget.rs:618). The non-empty case is currently
-	// dropped by triage — the parser still emits the event so future
-	// phases can render "Interacted with background terminal" without
-	// changing the parser.
+	// own TUI (chatwidget.rs:618). The non-empty case persists an
+	// "Interacted with background terminal" marker while redacting the
+	// stdin bytes from durable item metadata.
 	EventTerminalInteraction EventKind = "terminal_interaction"
 
 	// EventUserText is the wire-confirmation envelope for an AO-initiated
@@ -153,6 +152,11 @@ const (
 	EventCommandOutput EventKind = "command_output"
 	EventThinking      EventKind = "thinking"
 	EventProposedPlan  EventKind = "proposed_plan"
+)
+
+const (
+	TerminalWaitResultRunning = "running"
+	TerminalWaitResultExited  = "exited"
 )
 
 // AllEventKinds is the canonical list of EventKind values. Triage and the

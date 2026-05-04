@@ -445,6 +445,9 @@ func (r *Router) settleStreamingBeforeTimelineBoundary(evt provider.ProviderEven
 }
 
 func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
+	if isToolStartMetaUpdateOnly(evt.Meta) {
+		return r.persistToolCallLaunch(evt)
+	}
 	// Flush-queue trigger: the first non-subagent tool_use of a wire
 	// round is the seam where AO drains queued user messages onto the
 	// provider. Subagent tool_use (ParentToolUseID != "") fires inside

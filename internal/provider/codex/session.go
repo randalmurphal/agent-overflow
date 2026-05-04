@@ -16,6 +16,7 @@ import (
 
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/stringsx"
 )
 
 // DefaultApprovalTimeout is the ceiling on how long Codex will wait for the
@@ -27,6 +28,7 @@ const DefaultApprovalTimeout = 10 * time.Minute
 const (
 	maxPlanDeltaBufferBytes = 256 * 1024
 	maxPlanDeltaBuffers     = 16
+	maxRawToolCallRecords   = 512
 )
 
 // ErrApprovalAlreadyResolved is returned by RespondToApproval when the
@@ -120,6 +122,8 @@ type Session struct {
 	childParentByThread    map[string]string
 	childParentByAgentPath map[string]string
 	agentPathByThread      map[string]string
+	agentMetaByThread      map[string]collabReceiverMeta
+	rawToolCallsByID       map[string]rawToolCall
 	planBuffersByItemID    map[string]*planBuffer
 	planBuffersByTurnID    map[string]*planBuffer
 	// probeFn is a test-only override for Probe(). When non-nil, Probe
@@ -136,6 +140,21 @@ type Session struct {
 	// verify the binding wires through to a Codex session without
 	// spinning up a real app-server. Production NewSession never sets it.
 	cleanBackgroundTerminalsFn func(ctx context.Context) error
+}
+
+type collabReceiverMeta struct {
+	ThreadID      string `json:"threadId"`
+	AgentNickname string `json:"agentNickname,omitempty"`
+	AgentRole     string `json:"agentRole,omitempty"`
+}
+
+type rawToolCall struct {
+	CallID    string
+	Name      string
+	ProcessID string
+	AgentType string
+	Prompt    string
+	Targets   []string
 }
 
 type planBuffer struct {
@@ -185,12 +204,13 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	childCtx, cancel := context.WithCancel(ctx)
 
 	proc, err := provider.Spawn(childCtx, provider.SpawnConfig{
-		Binary:      binary,
-		Args:        []string{"app-server"},
-		Dir:         cfg.WorkDir,
-		EventLogger: cfg.EventLogger,
-		ThreadID:    threadID,
-		Provider:    string(provider.Codex),
+		Binary:           binary,
+		Args:             []string{"app-server"},
+		Dir:              cfg.WorkDir,
+		EventLogger:      cfg.EventLogger,
+		EventLogRedactor: newCodexProviderEventLogRedactor(),
+		ThreadID:         threadID,
+		Provider:         string(provider.Codex),
 	})
 	if err != nil {
 		cancel()
@@ -211,6 +231,8 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		childParentByThread:    make(map[string]string),
 		childParentByAgentPath: make(map[string]string),
 		agentPathByThread:      make(map[string]string),
+		agentMetaByThread:      make(map[string]collabReceiverMeta),
+		rawToolCallsByID:       make(map[string]rawToolCall),
 		planBuffersByItemID:    make(map[string]*planBuffer),
 		planBuffersByTurnID:    make(map[string]*planBuffer),
 	}
@@ -248,6 +270,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		threadParams["threadId"] = cfg.ResumeThreadID
 	} else {
 		method = "thread/start"
+		threadParams["experimentalRawEvents"] = true
 	}
 
 	resp, err := s.sendRequest(ctx, method, threadParams)
@@ -497,6 +520,8 @@ func (s *Session) Close() error {
 	s.childParentByThread = nil
 	s.childParentByAgentPath = nil
 	s.agentPathByThread = nil
+	s.agentMetaByThread = nil
+	s.rawToolCallsByID = nil
 	s.mu.Unlock()
 	return err
 }
@@ -783,10 +808,14 @@ func (s *Session) dispatchLine(line []byte) {
 
 	// Notification: has method, no id.
 	if msg.Method != "" {
+		msg.Params = s.observeRawResponseItem(msg.Method, msg.Params)
 		providerThreadID := providerThreadIDFromParams(msg.Params)
 		parentToolUseID := s.parentToolUseForProviderThread(providerThreadID)
 		if parentToolUseID != "" {
 			s.rememberAgentPathForProviderThread(providerThreadID, parentToolUseID, msg.Params)
+		}
+		if msg.Method == "thread/started" {
+			s.rememberAgentMetaForProviderThread(providerThreadID, msg.Params)
 		}
 		if parentToolUseID != "" && isChildTurnLifecycleNotification(msg.Method) {
 			return
@@ -843,6 +872,8 @@ func (s *Session) dispatchLine(line []byte) {
 			}
 			s.maybeRewriteCollabControlItemID(evt, msg.Params)
 			s.maybeRememberCollabReceiverThreads(msg.Method, msg.Params)
+			s.enrichRawToolCallMetadata(evt)
+			s.enrichCollabReceiverMetadata(evt)
 			// Track active turn ID for Interrupt.
 			switch evt.Kind {
 			case provider.EventTurnStart:
@@ -862,6 +893,7 @@ func (s *Session) dispatchLine(line []byte) {
 			case provider.EventTurnComplete:
 				s.mu.Lock()
 				s.activeTurnID = ""
+				s.rawToolCallsByID = make(map[string]rawToolCall)
 				s.mu.Unlock()
 				s.clearPlanBufferForTurn(evt.TurnID)
 				s.clearTurnStart(evt.TurnID)
@@ -1103,7 +1135,407 @@ func (s *Session) deleteParentToolUseForProviderThread(providerThreadID string) 
 		delete(s.agentPathByThread, providerThreadID)
 	}
 	delete(s.childParentByThread, providerThreadID)
+	delete(s.agentMetaByThread, providerThreadID)
 	s.mu.Unlock()
+}
+
+func (s *Session) observeRawResponseItem(method string, params json.RawMessage) json.RawMessage {
+	if method != "rawResponseItem/completed" {
+		return params
+	}
+	item := readNestedObject(params, "item")
+	switch readRawString(item, "type") {
+	case "function_call":
+		s.rememberRawToolCall(item)
+	case "function_call_output":
+		return s.enrichRawToolCallOutput(params, item)
+	}
+	return params
+}
+
+func (s *Session) rememberRawToolCall(item map[string]json.RawMessage) {
+	callID := strings.TrimSpace(firstNonEmptyString(readRawString(item, "call_id"), readRawString(item, "id")))
+	name := strings.TrimSpace(readRawString(item, "name"))
+	if callID == "" || name == "" {
+		return
+	}
+	args, _ := decodeFunctionArguments(readRawString(item, "arguments"))
+	call := rawToolCall{
+		CallID: callID,
+		Name:   name,
+	}
+	switch name {
+	case "write_stdin":
+		call.ProcessID = readFlexibleString(args, "session_id")
+	case "spawn_agent":
+		call.AgentType = readFlexibleString(args, "agent_type")
+		call.Prompt = rawSpawnAgentPrompt(args)
+	case "wait_agent":
+		call.Targets = readFlexibleStringArray(args, "targets")
+	default:
+		return
+	}
+	s.mu.Lock()
+	if s.rawToolCallsByID == nil {
+		s.rawToolCallsByID = make(map[string]rawToolCall)
+	}
+	s.rawToolCallsByID[callID] = call
+	s.pruneRawToolCallsLocked(callID)
+	s.mu.Unlock()
+}
+
+func (s *Session) enrichRawToolCallOutput(params json.RawMessage, item map[string]json.RawMessage) json.RawMessage {
+	callID := strings.TrimSpace(readRawString(item, "call_id"))
+	if callID == "" {
+		return params
+	}
+	s.mu.Lock()
+	call := s.rawToolCallsByID[callID]
+	s.mu.Unlock()
+	if call.CallID == "" {
+		return params
+	}
+	defer s.deleteRawToolCall(callID)
+	if call.Name == "spawn_agent" {
+		s.handleRawSpawnAgentOutput(call, item)
+	}
+	extras := map[string]any{
+		"rawToolName": call.Name,
+	}
+	if call.ProcessID != "" {
+		extras["processId"] = call.ProcessID
+	}
+	if call.Name == "write_stdin" {
+		if result := rawWriteStdinWaitResult(readRawString(item, "output")); result != "" {
+			extras["waitResult"] = result
+		}
+	}
+	return mergeRawResponseItemExtras(params, extras)
+}
+
+func (s *Session) pruneRawToolCallsLocked(keepCallID string) {
+	if len(s.rawToolCallsByID) <= maxRawToolCallRecords {
+		return
+	}
+	for callID := range s.rawToolCallsByID {
+		if callID == keepCallID {
+			continue
+		}
+		delete(s.rawToolCallsByID, callID)
+		if len(s.rawToolCallsByID) <= maxRawToolCallRecords {
+			return
+		}
+	}
+}
+
+func (s *Session) deleteRawToolCall(callID string) {
+	callID = strings.TrimSpace(callID)
+	if callID == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.rawToolCallsByID, callID)
+	s.mu.Unlock()
+}
+
+func (s *Session) handleRawSpawnAgentOutput(call rawToolCall, item map[string]json.RawMessage) {
+	var output struct {
+		AgentID  string `json:"agent_id"`
+		Nickname string `json:"nickname"`
+	}
+	if json.Unmarshal([]byte(readRawString(item, "output")), &output) != nil {
+		return
+	}
+	output.AgentID = strings.TrimSpace(output.AgentID)
+	if output.AgentID == "" {
+		return
+	}
+	meta := collabReceiverMeta{
+		ThreadID:      output.AgentID,
+		AgentNickname: strings.TrimSpace(output.Nickname),
+		AgentRole:     strings.TrimSpace(call.AgentType),
+	}
+	if meta.AgentNickname == "" && meta.AgentRole == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.agentMetaByThread == nil {
+		s.agentMetaByThread = make(map[string]collabReceiverMeta)
+	}
+	s.agentMetaByThread[output.AgentID] = meta
+	s.mu.Unlock()
+	s.emitRawSpawnAgentMetaUpdate(call, output.AgentID, output.Nickname)
+}
+
+func (s *Session) emitRawSpawnAgentMetaUpdate(call rawToolCall, agentID, nickname string) {
+	if s.onEvent == nil || strings.TrimSpace(call.CallID) == "" {
+		return
+	}
+	input := map[string]any{"tool": "spawn_agent"}
+	if call.Prompt != "" {
+		input["prompt"] = call.Prompt
+	}
+	if call.AgentType != "" {
+		input["newAgentRole"] = call.AgentType
+	}
+	if strings.TrimSpace(nickname) != "" {
+		input["newAgentNickname"] = strings.TrimSpace(nickname)
+	}
+	if strings.TrimSpace(agentID) != "" {
+		input["receiverThreadIds"] = []string{strings.TrimSpace(agentID)}
+	}
+	meta, err := json.Marshal(map[string]any{
+		"meta_update_only": true,
+		"toolName":         "collab_agent",
+		"input":            input,
+	})
+	if err != nil {
+		return
+	}
+	s.onEvent(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  s.threadID,
+		ItemID:    call.CallID,
+		ItemType:  "collab_agent",
+		Meta:      meta,
+		Timestamp: time.Now(),
+	})
+}
+
+func rawSpawnAgentPrompt(args map[string]json.RawMessage) string {
+	if len(args) == 0 {
+		return ""
+	}
+	if message := readFlexibleString(args, "message"); strings.TrimSpace(message) != "" {
+		return strings.TrimSpace(message)
+	}
+	rawItems, ok := args["items"]
+	if !ok {
+		return ""
+	}
+	var items []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(rawItems, &items) != nil {
+		return ""
+	}
+	for _, item := range items {
+		if item.Type == "text" && strings.TrimSpace(item.Text) != "" {
+			return strings.TrimSpace(item.Text)
+		}
+	}
+	return ""
+}
+
+func rawWriteStdinWaitResult(output string) string {
+	header := output
+	if idx := strings.Index(output, "\nOutput:"); idx >= 0 {
+		header = output[:idx]
+	}
+	for _, line := range strings.Split(header, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Process running with session ID ") {
+			return provider.TerminalWaitResultRunning
+		}
+		if strings.HasPrefix(line, "Process exited with code ") {
+			return provider.TerminalWaitResultExited
+		}
+	}
+	return ""
+}
+
+type codexProviderEventLogRedactor struct {
+	mu                sync.Mutex
+	writeStdinCallIDs map[string]struct{}
+}
+
+func newCodexProviderEventLogRedactor() provider.EventLogRedactor {
+	redactor := &codexProviderEventLogRedactor{
+		writeStdinCallIDs: make(map[string]struct{}),
+	}
+	return redactor.redact
+}
+
+func (r *codexProviderEventLogRedactor) redact(direction string, data []byte) []byte {
+	if direction != "in" || len(data) == 0 {
+		return data
+	}
+	var root map[string]json.RawMessage
+	if json.Unmarshal(data, &root) != nil || readRawString(root, "method") != "rawResponseItem/completed" {
+		return data
+	}
+	var params map[string]json.RawMessage
+	if json.Unmarshal(root["params"], &params) != nil {
+		return data
+	}
+	var item map[string]json.RawMessage
+	if json.Unmarshal(params["item"], &item) != nil {
+		return data
+	}
+
+	changed := false
+	itemType := readRawString(item, "type")
+	callID := strings.TrimSpace(readRawString(item, "call_id"))
+	switch itemType {
+	case "function_call":
+		if readRawString(item, "name") == "write_stdin" {
+			r.rememberWriteStdinCallID(callID)
+			if redactWriteStdinArguments(item) {
+				changed = true
+			}
+		}
+	case "function_call_output":
+		if r.takeWriteStdinCallID(callID) {
+			item["output"] = json.RawMessage(`"[redacted]"`)
+			changed = true
+		}
+	}
+	if !changed {
+		return data
+	}
+	redacted, err := encodeRedactedRawResponseLine(root, params, item)
+	if err != nil {
+		return data
+	}
+	return redacted
+}
+
+func (r *codexProviderEventLogRedactor) rememberWriteStdinCallID(callID string) {
+	callID = strings.TrimSpace(callID)
+	if callID == "" {
+		return
+	}
+	r.mu.Lock()
+	r.writeStdinCallIDs[callID] = struct{}{}
+	for existing := range r.writeStdinCallIDs {
+		if len(r.writeStdinCallIDs) <= maxRawToolCallRecords {
+			break
+		}
+		if existing != callID {
+			delete(r.writeStdinCallIDs, existing)
+		}
+	}
+	r.mu.Unlock()
+}
+
+func (r *codexProviderEventLogRedactor) takeWriteStdinCallID(callID string) bool {
+	callID = strings.TrimSpace(callID)
+	if callID == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.writeStdinCallIDs[callID]; !ok {
+		return false
+	}
+	delete(r.writeStdinCallIDs, callID)
+	return true
+}
+
+func redactWriteStdinArguments(item map[string]json.RawMessage) bool {
+	args, ok := decodeFunctionArguments(readRawString(item, "arguments"))
+	if !ok {
+		return false
+	}
+	if _, ok := args["chars"]; !ok {
+		return false
+	}
+	encodedRedaction, err := json.Marshal("[redacted]")
+	if err != nil {
+		return false
+	}
+	args["chars"] = encodedRedaction
+	encodedArgs, err := json.Marshal(args)
+	if err != nil {
+		return false
+	}
+	encodedArgsString, err := json.Marshal(string(encodedArgs))
+	if err != nil {
+		return false
+	}
+	item["arguments"] = encodedArgsString
+	return true
+}
+
+func encodeRedactedRawResponseLine(root, params, item map[string]json.RawMessage) ([]byte, error) {
+	encodedItem, err := json.Marshal(item)
+	if err != nil {
+		return nil, err
+	}
+	params["item"] = encodedItem
+	encodedParams, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	root["params"] = encodedParams
+	return json.Marshal(root)
+}
+
+func mergeRawResponseItemExtras(params json.RawMessage, extras map[string]any) json.RawMessage {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(params, &root) != nil {
+		return params
+	}
+	itemRaw, ok := root["item"]
+	if !ok {
+		return params
+	}
+	var item map[string]any
+	if json.Unmarshal(itemRaw, &item) != nil || item == nil {
+		return params
+	}
+	for key, value := range extras {
+		item[key] = value
+	}
+	encodedItem, err := json.Marshal(item)
+	if err != nil {
+		return params
+	}
+	root["item"] = encodedItem
+	out, err := json.Marshal(root)
+	if err != nil {
+		return params
+	}
+	return out
+}
+
+func readFlexibleStringArray(m map[string]json.RawMessage, key string) []string {
+	raw, ok := m[key]
+	if !ok {
+		return nil
+	}
+	var stringsOnly []string
+	if json.Unmarshal(raw, &stringsOnly) == nil {
+		out := make([]string, 0, len(stringsOnly))
+		for _, value := range stringsOnly {
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+		return out
+	}
+	var mixed []json.RawMessage
+	if json.Unmarshal(raw, &mixed) != nil {
+		return nil
+	}
+	out := make([]string, 0, len(mixed))
+	for _, rawValue := range mixed {
+		value := ""
+		var s string
+		if json.Unmarshal(rawValue, &s) == nil {
+			value = s
+		} else {
+			var num json.Number
+			if json.Unmarshal(rawValue, &num) == nil {
+				value = num.String()
+			}
+		}
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 func (s *Session) rememberAgentPathForProviderThread(providerThreadID, parentToolUseID string, params json.RawMessage) {
@@ -1120,6 +1552,27 @@ func (s *Session) rememberAgentPathForProviderThread(providerThreadID, parentToo
 	}
 	s.childParentByAgentPath[agentPath] = parentToolUseID
 	s.agentPathByThread[providerThreadID] = agentPath
+	s.mu.Unlock()
+}
+
+func (s *Session) rememberAgentMetaForProviderThread(providerThreadID string, params json.RawMessage) {
+	providerThreadID = strings.TrimSpace(providerThreadID)
+	if providerThreadID == "" {
+		return
+	}
+	meta := collabReceiverMeta{
+		ThreadID:      providerThreadID,
+		AgentNickname: subagentThreadStartedNickname(params),
+		AgentRole:     subagentThreadStartedRole(params),
+	}
+	if meta.AgentNickname == "" && meta.AgentRole == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.agentMetaByThread == nil {
+		s.agentMetaByThread = make(map[string]collabReceiverMeta)
+	}
+	s.agentMetaByThread[providerThreadID] = meta
 	s.mu.Unlock()
 }
 
@@ -1143,6 +1596,24 @@ func subagentThreadStartedAgentPath(params json.RawMessage) string {
 		}
 	}
 	return ""
+}
+
+func subagentThreadStartedNickname(params json.RawMessage) string {
+	return stringsx.FirstNonEmptyTrimmed(
+		readNestedString(params, "thread", "agentNickname"),
+		readNestedString(params, "thread", "agent_nickname"),
+		readNestedString(params, "thread", "source", "subAgent", "thread_spawn", "agent_nickname"),
+		readNestedString(params, "thread", "source", "subAgent", "threadSpawn", "agentNickname"),
+	)
+}
+
+func subagentThreadStartedRole(params json.RawMessage) string {
+	return stringsx.FirstNonEmptyTrimmed(
+		readNestedString(params, "thread", "agentRole"),
+		readNestedString(params, "thread", "agent_role"),
+		readNestedString(params, "thread", "source", "subAgent", "thread_spawn", "agent_role"),
+		readNestedString(params, "thread", "source", "subAgent", "threadSpawn", "agentRole"),
+	)
 }
 
 func (s *Session) maybeRememberCollabReceiverThreads(method string, params json.RawMessage) {
@@ -1190,6 +1661,153 @@ func (s *Session) maybeRewriteCollabControlItemID(evt *provider.ProviderEvent, p
 			}
 		}
 	}
+}
+
+func (s *Session) enrichCollabReceiverMetadata(evt *provider.ProviderEvent) {
+	if evt == nil {
+		return
+	}
+	switch evt.ItemType {
+	case "collab_agent", "send_input", "wait_agent", "close_agent", "resume_agent":
+	default:
+		return
+	}
+	mutateEventMetaInput(evt, false, func(input map[string]json.RawMessage) {
+		receiverThreadIDs := readRawStringArray(input, "receiverThreadIds")
+		if len(receiverThreadIDs) == 0 {
+			return
+		}
+		receiverAgents := s.collabReceiverMetadataForThreads(receiverThreadIDs)
+		if len(receiverAgents) == 0 {
+			return
+		}
+		encodedReceiverAgents, err := json.Marshal(receiverAgents)
+		if err == nil {
+			input["receiverAgents"] = encodedReceiverAgents
+		}
+	})
+}
+
+func (s *Session) enrichRawToolCallMetadata(evt *provider.ProviderEvent) {
+	if evt == nil {
+		return
+	}
+	switch evt.ItemType {
+	case "collab_agent", "wait_agent":
+	default:
+		return
+	}
+	itemID := strings.TrimSpace(evt.ItemID)
+	if itemID == "" {
+		return
+	}
+	s.mu.Lock()
+	call := s.rawToolCallsByID[itemID]
+	s.mu.Unlock()
+	if call.CallID == "" {
+		return
+	}
+
+	mutateEventMetaInput(evt, true, func(input map[string]json.RawMessage) {
+		switch call.Name {
+		case "spawn_agent":
+			setRawStringIfMissing(input, "tool", "spawn_agent")
+			setRawStringIfMissing(input, "prompt", call.Prompt)
+			setRawStringIfMissing(input, "newAgentRole", call.AgentType)
+		case "wait_agent":
+			setRawStringIfMissing(input, "tool", "wait_agent")
+			setRawStringArrayIfMissing(input, "receiverThreadIds", call.Targets)
+		}
+	})
+}
+
+func mutateEventMetaInput(evt *provider.ProviderEvent, createInput bool, mutate func(map[string]json.RawMessage)) {
+	if evt == nil || mutate == nil {
+		return
+	}
+	var meta map[string]json.RawMessage
+	if len(evt.Meta) == 0 || json.Unmarshal(evt.Meta, &meta) != nil || meta == nil {
+		if !createInput {
+			return
+		}
+		meta = map[string]json.RawMessage{}
+	}
+	var input map[string]json.RawMessage
+	if raw, ok := meta["input"]; ok {
+		_ = json.Unmarshal(raw, &input)
+	}
+	if input == nil {
+		if !createInput {
+			return
+		}
+		input = map[string]json.RawMessage{}
+	}
+	mutate(input)
+	if len(input) == 0 {
+		return
+	}
+	encodedInput, err := json.Marshal(input)
+	if err != nil {
+		return
+	}
+	meta["input"] = encodedInput
+	encodedMeta, err := json.Marshal(meta)
+	if err != nil {
+		return
+	}
+	evt.Meta = encodedMeta
+}
+
+func setRawStringIfMissing(input map[string]json.RawMessage, key, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	if existing := strings.TrimSpace(readRawString(input, key)); existing != "" {
+		return
+	}
+	encoded, err := json.Marshal(value)
+	if err == nil {
+		input[key] = encoded
+	}
+}
+
+func setRawStringArrayIfMissing(input map[string]json.RawMessage, key string, values []string) {
+	if len(values) == 0 || len(readRawStringArray(input, key)) > 0 {
+		return
+	}
+	encoded, err := json.Marshal(values)
+	if err == nil {
+		input[key] = encoded
+	}
+}
+
+func (s *Session) collabReceiverMetadataForThreads(receiverThreadIDs []string) []collabReceiverMeta {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.agentMetaByThread) == 0 {
+		return nil
+	}
+	agents := make([]collabReceiverMeta, 0, len(receiverThreadIDs))
+	hasLabel := false
+	for _, threadID := range receiverThreadIDs {
+		threadID = strings.TrimSpace(threadID)
+		if threadID == "" {
+			continue
+		}
+		meta := s.agentMetaByThread[threadID]
+		if meta.ThreadID == "" {
+			meta.ThreadID = threadID
+		}
+		if meta.AgentNickname != "" || meta.AgentRole != "" {
+			hasLabel = true
+		}
+		agents = append(agents, meta)
+	}
+	if !hasLabel {
+		return nil
+	}
+	return agents
 }
 
 func (s *Session) resumeChildThread(providerThreadID string) {

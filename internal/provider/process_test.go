@@ -299,6 +299,48 @@ func TestProviderEventLoggingDisabledWithoutLogger(t *testing.T) {
 	}
 }
 
+func TestProviderEventLoggingUsesRedactor(t *testing.T) {
+	ctx := context.Background()
+	logPath := filepath.Join(t.TempDir(), "provider-events.ndjson")
+	logger, err := logging.NewLogger(logPath, 0)
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	defer logger.Close()
+
+	p, err := Spawn(ctx, SpawnConfig{
+		Binary:      "cat",
+		EventLogger: logger,
+		EventLogRedactor: func(_ string, data []byte) []byte {
+			return []byte(strings.ReplaceAll(string(data), "secret-token", "[redacted]"))
+		},
+		ThreadID: "thread-123",
+		Provider: "codex",
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	defer p.Kill()
+
+	if err := p.WriteLine([]byte(`{"token":"secret-token"}`)); err != nil {
+		t.Fatalf("WriteLine: %v", err)
+	}
+	if _, err := p.ReadLine(); err != nil {
+		t.Fatalf("ReadLine: %v", err)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(data), "secret-token") {
+		t.Fatalf("provider event log contains unredacted secret: %s", data)
+	}
+	if count := strings.Count(string(data), "[redacted]"); count != 2 {
+		t.Fatalf("redacted marker count = %d, want 2 in out/in log entries: %s", count, data)
+	}
+}
+
 func splitNonEmptyLines(data string) []string {
 	raw := strings.Split(data, "\n")
 	lines := make([]string, 0, len(raw))
@@ -573,4 +615,3 @@ func TestReadLineManyUnderCap(t *testing.T) {
 		}
 	}
 }
-

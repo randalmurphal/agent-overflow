@@ -317,12 +317,20 @@ func TestCodexTerminalInteractionAttachesCompletedOutputAndClearsTray(t *testing
 		t.Fatalf("terminal interaction: %v", err)
 	}
 
-	if waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction)); len(waits) != 0 {
-		t.Fatalf("completion wait should render as command completion, got wait rows %+v", waits)
+	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
+	if len(waits) != 1 {
+		t.Fatalf("completion wait should keep one carrier row, got %+v", waits)
+	}
+	if waits[0].Status != statusCompleted {
+		t.Fatalf("wait carrier status = %q, want completed", waits[0].Status)
 	}
 	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("cmd-bg"))
 	if err != nil || !found {
 		t.Fatalf("command completion missing: found=%v err=%v", found, err)
+	}
+	completionMeta := decodeItemMetaMap(t, completion.Meta)
+	if completionMeta["wait_carrier_id"] != waits[0].ID {
+		t.Fatalf("completion wait_carrier_id = %v, want %s", completionMeta["wait_carrier_id"], waits[0].ID)
 	}
 	if completion.PayloadKind != "command_output" {
 		t.Fatalf("completion payload kind = %q, want command_output", completion.PayloadKind)
@@ -389,9 +397,16 @@ func TestCodexTerminalInteractionWhileRunningAttachesCompletionBeforeNextText(t 
 	if waits[0].PayloadID != "" {
 		t.Fatalf("wait row should stay a marker; got payload %q", waits[0].PayloadID)
 	}
+	if waits[0].Status != statusCompleted {
+		t.Fatalf("wait carrier status = %q, want completed", waits[0].Status)
+	}
 	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("cmd-bg"))
 	if err != nil || !found {
 		t.Fatalf("command completion missing: found=%v err=%v", found, err)
+	}
+	completionMeta := decodeItemMetaMap(t, completion.Meta)
+	if completionMeta["wait_carrier_id"] != waits[0].ID {
+		t.Fatalf("completion wait_carrier_id = %v, want %s", completionMeta["wait_carrier_id"], waits[0].ID)
 	}
 	if completion.PayloadKind != "command_output" {
 		t.Fatalf("completion payload kind = %q, want command_output", completion.PayloadKind)
@@ -464,6 +479,61 @@ func TestCodexTerminalInteractionDoesNotAttachAfterModelMovesOn(t *testing.T) {
 	if waits[0].PayloadID != "" {
 		t.Fatalf("stale wait row was mutated with payload %q", waits[0].PayloadID)
 	}
+	if waits[0].Status != statusCompleted {
+		t.Fatalf("stale wait status = %q, want completed", waits[0].Status)
+	}
+}
+
+func TestCodexTerminalInteractionTurnCompleteSettlesPendingWait(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-bg",
+		ItemType: "commandExecution", TurnID: "turn-0",
+		Meta:      buildUnifiedExecStartMeta(t, "pid-bg", "sleep 10"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", Content: "continuing",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("text delta: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTerminalInteraction, ThreadID: "t1",
+		Meta:      json.RawMessage(`{"process_id":"pid-bg","stdin":""}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("terminal interaction: %v", err)
+	}
+	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
+	if len(waits) != 1 {
+		t.Fatalf("wait rows = %d, want 1", len(waits))
+	}
+	if waits[0].Status != statusRunning {
+		t.Fatalf("wait status before turn complete = %q, want running", waits[0].Status)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1", TurnID: "turn-0",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+	wait, found, err := st.GetThreadItem("t1", waits[0].ID)
+	if err != nil || !found {
+		t.Fatalf("wait row missing: found=%v err=%v", found, err)
+	}
+	if wait.Status != statusCompleted {
+		t.Fatalf("wait status after turn complete = %q, want completed", wait.Status)
+	}
+	if siblings := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(siblings) != 0 {
+		t.Fatalf("turn-complete wait settlement should not create completion rows: %+v", siblings)
+	}
 }
 
 func TestCodexTerminalInteractionDoesNotAttachAfterLaterToolStart(t *testing.T) {
@@ -530,6 +600,9 @@ func TestCodexTerminalInteractionDoesNotAttachAfterLaterToolStart(t *testing.T) 
 	if waits[0].PayloadID != "" {
 		t.Fatalf("stale wait row was mutated with payload %q", waits[0].PayloadID)
 	}
+	if waits[0].Status != statusCompleted {
+		t.Fatalf("stale wait status = %q, want completed", waits[0].Status)
+	}
 	live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
 	if len(live) != 2 || live[1].CompletionOf != "cmd-bg" || live[1].Status != statusErrored {
 		t.Fatalf("completed background output should stay in tray until next wait, got %+v", live)
@@ -543,11 +616,11 @@ func TestCodexTerminalInteractionDoesNotAttachAfterLaterToolStart(t *testing.T) 
 		t.Fatalf("second terminal interaction: %v", err)
 	}
 	waits = findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
-	if len(waits) != 1 {
-		t.Fatalf("wait rows after second poll = %d, want 1 stale marker", len(waits))
+	if len(waits) != 2 {
+		t.Fatalf("wait rows after second poll = %d, want stale marker + completion carrier", len(waits))
 	}
-	if waits[0].PayloadID != "" {
-		t.Fatalf("stale wait row was mutated with payload %q", waits[0].PayloadID)
+	if waits[0].PayloadID != "" || waits[1].PayloadID != "" {
+		t.Fatalf("wait rows should stay markers, got %+v", waits)
 	}
 	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("cmd-bg"))
 	if err != nil || !found {
@@ -555,6 +628,10 @@ func TestCodexTerminalInteractionDoesNotAttachAfterLaterToolStart(t *testing.T) 
 	}
 	if completion.PayloadKind != "command_output" {
 		t.Fatalf("completion payload kind = %q, want command_output", completion.PayloadKind)
+	}
+	completionMeta := decodeItemMetaMap(t, completion.Meta)
+	if completionMeta["wait_carrier_id"] != waits[1].ID {
+		t.Fatalf("completion wait_carrier_id = %v, want %s", completionMeta["wait_carrier_id"], waits[1].ID)
 	}
 	data, err := st.GetPayloadData(completion.PayloadID)
 	if err != nil {
@@ -741,6 +818,65 @@ func TestCodexSubagentCompletionSignalsCreateTranscriptSibling(t *testing.T) {
 	}
 }
 
+func TestCodexSubagentNotificationAfterWaitTimeoutDoesNotAttachToWaitCarrier(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMeta(t, "child-provider-1", "running")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-timeout",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-timeout",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+
+	waitMeta := buildWaitAgentMetaWithMessage(t, "child-provider-1", "running", "")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "wait-timeout",
+		ItemType: "wait_agent", TurnID: "turn-0", Meta: waitMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("wait start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "wait-timeout",
+		ItemType: "wait_agent", TurnID: "turn-0", Meta: waitMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("wait complete: %v", err)
+	}
+
+	notifyMeta, _ := json.Marshal(map[string]any{
+		"agent_path": "/root/researcher",
+		"status":     "completed",
+		"message":    "done later",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentNotification, ThreadID: "t1", ItemID: "spawn-timeout",
+		Meta: notifyMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("subagent notification: %v", err)
+	}
+
+	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-timeout"))
+	if err != nil || !found {
+		t.Fatalf("subagent sibling missing: found=%v err=%v", found, err)
+	}
+	meta := decodeItemMetaMap(t, completion.Meta)
+	if _, ok := meta["wait_carrier_id"]; ok {
+		t.Fatalf("wait_carrier_id = %v, want no stale timeout carrier", meta["wait_carrier_id"])
+	}
+}
+
 func TestCodexSubagentWaitCompletionCarriesFinalOutputPayload(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -794,6 +930,10 @@ func TestCodexSubagentWaitCompletionCarriesFinalOutputPayload(t *testing.T) {
 	if subagentSibling.PayloadKind != payloadKindToolCallResult {
 		t.Fatalf("payload kind = %q, want %s", subagentSibling.PayloadKind, payloadKindToolCallResult)
 	}
+	siblingMeta := decodeItemMetaMap(t, subagentSibling.Meta)
+	if siblingMeta["wait_carrier_id"] != "wait-child" {
+		t.Fatalf("wait_carrier_id = %v, want wait-child", siblingMeta["wait_carrier_id"])
+	}
 	waitRow, found, err := st.GetThreadItem("t1", nextToolCompletionID("wait-child"))
 	if err != nil || !found {
 		t.Fatalf("wait row missing: found=%v err=%v", found, err)
@@ -807,6 +947,68 @@ func TestCodexSubagentWaitCompletionCarriesFinalOutputPayload(t *testing.T) {
 	}
 	if string(data) != "Final child output" {
 		t.Fatalf("payload = %q, want final child output", string(data))
+	}
+}
+
+func TestCodexSubagentWaitCompletionPersistsImmediatelyWithActiveStream(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	if err := st.UpdateProvider("t1", "codex"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMeta(t, "child-immediate", "running")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-immediate",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-immediate",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+
+	waitMeta := buildWaitAgentMetaWithMessage(t, "child-immediate", "completed", "Child finished during wait")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "wait-immediate",
+		ItemType: "wait_agent", TurnID: "turn-0", Meta: waitMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("wait start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", TurnID: "turn-0",
+		Content: "stream still open", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("text delta: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "wait-immediate",
+		ItemType: "wait_agent", TurnID: "turn-0", Content: "Child finished during wait",
+		Meta: waitMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("wait complete: %v", err)
+	}
+
+	subagentSibling, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-immediate"))
+	if err != nil || !found {
+		t.Fatalf("subagent sibling should persist at wait completion even with active stream: found=%v err=%v", found, err)
+	}
+	siblingMeta := decodeItemMetaMap(t, subagentSibling.Meta)
+	if siblingMeta["wait_carrier_id"] != "wait-immediate" {
+		t.Fatalf("wait_carrier_id = %v, want wait-immediate", siblingMeta["wait_carrier_id"])
+	}
+	router.mu.Lock()
+	activeStreams := router.streamingItemCounts["t1"]
+	router.mu.Unlock()
+	if activeStreams == 0 {
+		t.Fatal("test setup did not leave an active stream")
 	}
 }
 
@@ -883,6 +1085,10 @@ func TestCodexSubagentWaitCompletionReusesPayloadForOutOfOrderChildren(t *testin
 	}
 	if subagentSibling.PayloadID != waitRow.PayloadID {
 		t.Fatalf("sibling payload id = %q, want shared wait payload %q", subagentSibling.PayloadID, waitRow.PayloadID)
+	}
+	siblingMeta := decodeItemMetaMap(t, subagentSibling.Meta)
+	if siblingMeta["wait_carrier_id"] != "wait-multi" {
+		t.Fatalf("wait_carrier_id = %v, want wait-multi", siblingMeta["wait_carrier_id"])
 	}
 }
 

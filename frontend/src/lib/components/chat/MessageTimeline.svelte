@@ -33,6 +33,7 @@
   import ScrollToBottomButton from './ScrollToBottomButton.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
   import TimelineLeaf from './TimelineLeaf.svelte';
+  import WaitGroup from './WaitGroup.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { recordTimelineRenderTrace } from './messageTimelineTrace';
 
@@ -430,6 +431,8 @@
           <TimelineLeaf {pane} item={node.item} orphan={node.orphan === true} {onImageExpand} />
         {:else if node.kind === 'group'}
           <SubagentGroup {pane} group={node} {depth} {renderNode} />
+        {:else if node.kind === 'wait_group'}
+          <WaitGroup {pane} group={node} {onImageExpand} />
         {:else}
           <InlineSubagentGroup group={node} {depth} {renderNode} />
         {/if}

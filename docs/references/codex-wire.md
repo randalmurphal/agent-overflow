@@ -297,6 +297,21 @@ The agent work on the child thread continues independently —
 emitting its own `turn/started`, `item/*`, `turn/completed`
 notifications on a separate `thread_id`.
 
+With `thread/start.experimentalRawEvents=true`, app-server also emits
+`rawResponseItem/completed` for the model-facing function call and its
+tool output. These raw items carry metadata that the public
+`collabAgentToolCall` item currently drops:
+
+```json
+{"type":"function_call","name":"spawn_agent","call_id":"call_spawn","arguments":"{\"agent_type\":\"explorer\",\"message\":\"Inspect parser\"}"}
+{"type":"function_call_output","call_id":"call_spawn","output":"{\"agent_id\":\"child-thread\",\"nickname\":\"Boyle\"}"}
+```
+
+Agent Overflow treats the typed `item/*` lifecycle as authoritative
+for the visible tool row, but uses these raw items to label the child
+thread as `Boyle [explorer]` and to keep subsequent `wait` rows from
+falling back to a UUID-only label.
+
 ### Parent learning the child finished
 
 Two paths:
@@ -307,6 +322,21 @@ a list of child `thread_id`s to block on. Emits
 `item/started` + `item/completed` for `tool: "wait"`,
 `receiverThreadIds` on the item, and in V1 `agentsStates` populated
 with per-agent terminal status on the end event).
+
+The raw `wait_agent` function call is the most stable source for the
+target list, especially when the wait times out and the typed
+`item/completed` envelope comes back with empty `receiverThreadIds`:
+
+```json
+{"type":"function_call","name":"wait_agent","call_id":"call_wait","arguments":"{\"targets\":[\"child-thread\"],\"timeout_ms\":10000}"}
+{"type":"function_call_output","call_id":"call_wait","output":"{\"status\":{},\"timed_out\":true}"}
+```
+
+When the wait observes completion, the raw output has
+`"timed_out":false` and `status` carries the terminal child result.
+The typed `item/completed` usually also carries `agentsStates`, and
+that typed state remains the source used to synthesize the indented
+spawn-agent completion row.
 
 **(b) Implicit via `<subagent_notification>`**: When a detached
 child finishes and the parent has NO `wait` outstanding, Codex core
@@ -477,9 +507,34 @@ sibling row used by explicit `wait_agent` completion.
 
 ## Captured samples
 
-No captured Codex samples on hand. To capture, run a session in
-agent-overflow with `AGENT_OVERFLOW_DEBUG=provider` — raw JSON-RPC
-frames land in `<dbDir>/logs/provider-events-YYYY-MM-DD.ndjson`.
+2026-05-03 spike against `codex-cli 0.128.0` confirmed
+`experimentalRawEvents` behavior for terminal waits and collab agents.
+Important ordering observed:
+
+- Empty-stdin terminal wait start arrives as raw
+  `function_call name=write_stdin` before the typed
+  `item/commandExecution/terminalInteraction`.
+- The `write_stdin` raw `function_call_output` distinguishes timeout
+  from completion via the tool-output text:
+  `Process running with session ID ...` vs
+  `Process exited with code ...`.
+- `wait_agent` typed `item/completed` reports a completed tool call for
+  both timeout and completion. The raw output's `timed_out` boolean is
+  the timeout/completion discriminator; `agentsStates` is the completed
+  child-status carrier when a child actually completed.
+- A long foreground `exec_command` is not a terminal wait. It emits
+  `rawResponseItem/completed` for the function call, then typed
+  `item/started` / `item/completed` commandExecution events. Do not
+  render that path as a wait carrier.
+- For explicit `wait_agent`, the typed `wait_agent` `item/completed`
+  already carries the terminal child state needed to attach the
+  subagent completion under the wait row. The later
+  `subagent_notification` is a secondary notification path, not the
+  source of truth for the wait-attached completion.
+
+To capture fresh samples, run a session in agent-overflow with
+`AGENT_OVERFLOW_DEBUG=provider` — raw JSON-RPC frames land in
+`<dbDir>/logs/provider-events-YYYY-MM-DD.ndjson`.
 
 ---
 
