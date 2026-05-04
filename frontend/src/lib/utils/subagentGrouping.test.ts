@@ -7,6 +7,7 @@ import {
   nodeContainsItem,
   timelineNodeItemId,
   timelineNodeKey,
+  visibleTimelineItemIdForItem,
   type InlineSubagentGroupNode,
   type SubagentGroupNode,
   type TimelineLeaf,
@@ -167,7 +168,7 @@ describe('groupItemsBySubagent', () => {
     expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['parent', 'child']);
   });
 
-  it('keeps backgrounded Claude agents flat but renders Codex spawn rows as subagent groups', () => {
+  it('keeps backgrounded Claude agents and Codex spawn rows flat', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'background-agent',
@@ -188,13 +189,10 @@ describe('groupItemsBySubagent', () => {
     ]);
 
     expect(expectLeaf(nodes[0]).item.id).toBe('background-agent');
-    const group = expectGroup(nodes[1]);
-    expect(group.parent.id).toBe('codex-agent');
-    expect(group.groupKey).toBe('item:codex-agent:codex-agent');
-    expect(group.children).toEqual([]);
+    expect(expectLeaf(nodes[1]).item.id).toBe('codex-agent');
   });
 
-  it('recognizes Codex spawn metadata from meta when payloadMeta has no input', () => {
+  it('keeps Codex spawn rows flat when spawn metadata lives in meta', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'codex-agent',
@@ -206,10 +204,10 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(expectGroup(nodes[0]).parent.id).toBe('codex-agent');
+    expect(expectLeaf(nodes[0]).item.id).toBe('codex-agent');
   });
 
-  it('uses the parent spawn prompt as Codex dropdown metadata instead of a child user row', () => {
+  it('suppresses Codex child prompt echo rows from the main timeline', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'codex-agent',
@@ -230,13 +228,10 @@ describe('groupItemsBySubagent', () => {
     ]);
 
     expect(nodes).toHaveLength(1);
-    const group = expectGroup(nodes[0]);
-    expect(group.parent.id).toBe('codex-agent');
-    expect(group.children).toEqual([]);
-    expect(group.latestChildSummary).toBe('');
+    expect(expectLeaf(nodes[0]).item.id).toBe('codex-agent');
   });
 
-  it('only hides the first Codex spawn prompt echo per parent', () => {
+  it('suppresses Codex child transcript rows from the main timeline', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'codex-agent',
@@ -262,12 +257,48 @@ describe('groupItemsBySubagent', () => {
         parentId: 'codex-agent',
         summary: 'Repeatable prompt',
       }),
+      mkItem({
+        id: 'child-tool',
+        itemIndex: 3,
+        kind: 'tool_call',
+        toolName: 'command_execution',
+        parentId: 'codex-agent',
+        summary: 'Bash: sleep 20',
+      }),
+      mkItem({
+        id: 'child-answer',
+        itemIndex: 4,
+        kind: 'assistant_text',
+        role: 'assistant',
+        parentId: 'codex-agent',
+        summary: '0',
+      }),
     ]);
 
-    const group = expectGroup(nodes[0]);
-    expect(group.children.map((node) => timelineNodeItemId(node))).toEqual([
-      'later-repeated-message',
-    ]);
+    expect(nodes).toHaveLength(1);
+    expect(expectLeaf(nodes[0]).item.id).toBe('codex-agent');
+  });
+
+  it('maps hidden Codex child transcript rows back to their visible spawn row', () => {
+    const items = [
+      mkItem({
+        id: 'codex-agent',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'collab_agent',
+        meta: toolMeta({ toolName: 'collab_agent', input: { tool: 'spawn_agent' } }),
+      }),
+      mkItem({
+        id: 'child-answer',
+        itemIndex: 1,
+        kind: 'assistant_text',
+        parentId: 'codex-agent',
+        summary: '0',
+      }),
+    ];
+
+    expect(visibleTimelineItemIdForItem(items, 'child-answer')).toBe('codex-agent');
+    expect(visibleTimelineItemIdForItem(items, 'codex-agent')).toBe('codex-agent');
   });
 
   it('nests Codex subagent completions under the wait carrier when they share the wait payload', () => {

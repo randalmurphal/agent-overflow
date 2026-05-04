@@ -2,6 +2,7 @@ package triage
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -675,7 +676,7 @@ func TestToolCompletionMergesCodexWaitAgentMeta(t *testing.T) {
 		"toolName": "wait_agent",
 		"input": map[string]any{
 			"tool":              "wait_agent",
-			"receiverThreadIds": []string{"child-1"},
+			"receiverThreadIds": []string{"child-1", "child-2"},
 		},
 	})
 	if err := router.Handle(provider.ProviderEvent{
@@ -716,6 +717,64 @@ func TestToolCompletionMergesCodexWaitAgentMeta(t *testing.T) {
 	receivers, ok := input["receiverThreadIds"].([]any)
 	if !ok || len(receivers) != 2 {
 		t.Fatalf("receiverThreadIds = %#v, want two ids", input["receiverThreadIds"])
+	}
+}
+
+func TestToolCompletionPreservesCodexWaitStartReceiversOnReplay(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	if err := st.UpdateProvider("t1", "codex"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "wait_agent",
+		"input": map[string]any{
+			"tool":              "wait_agent",
+			"receiverThreadIds": []string{"child-1", "child-2", "child-3"},
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "wait-1",
+		ItemType: "wait_agent", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	completeMeta, _ := json.Marshal(map[string]any{
+		"toolName":    "wait_agent",
+		"item_status": "completed",
+		"input": map[string]any{
+			"tool":              "wait_agent",
+			"receiverThreadIds": []string{"child-1"},
+			"agentsStates": map[string]any{
+				"child-1": map[string]any{"status": "completed"},
+			},
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "wait-1",
+		ItemType: "wait_agent", Meta: completeMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	item, _, _ := st.GetItem("wait-1")
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(item.Meta), &meta); err != nil {
+		t.Fatalf("parse item meta: %v", err)
+	}
+	input, ok := meta["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("input missing: %#v", meta)
+	}
+	receivers, ok := input["receiverThreadIds"].([]any)
+	if !ok || len(receivers) != 3 {
+		t.Fatalf("receiverThreadIds = %#v, want three start ids", input["receiverThreadIds"])
+	}
+	agentsStates, ok := input["agentsStates"].(map[string]any)
+	if !ok || len(agentsStates) != 1 {
+		t.Fatalf("agentsStates = %#v, want only completed child state", input["agentsStates"])
 	}
 }
 
@@ -928,6 +987,65 @@ func TestSubagentModelMergesIntoItemMetaWithoutClobber(t *testing.T) {
 	item2, _, _ := st.GetItem("agent-tool-1")
 	if item2.UpdatedAt != item.UpdatedAt {
 		t.Errorf("redundant meta update bumped UpdatedAt: was=%d now=%d", item.UpdatedAt, item2.UpdatedAt)
+	}
+}
+
+func TestCodexSpawnLabelMetaUpdatePreservesFullReceiverList(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "collab_agent",
+		"input": map[string]any{
+			"tool":              "spawn_agent",
+			"prompt":            "Run sleep jobs",
+			"receiverThreadIds": []string{"child-1", "child-2"},
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-1",
+		ItemType: "collab_agent", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool start: %v", err)
+	}
+
+	updateMeta, _ := json.Marshal(map[string]any{
+		"meta_update_only": true,
+		"toolName":         "collab_agent",
+		"input": map[string]any{
+			"tool":              "spawn_agent",
+			"receiverThreadIds": []string{"child-1", "child-2"},
+			"newAgentNickname":  "Hypatia",
+			"newAgentRole":      "default",
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-1",
+		ItemType: "collab_agent", Meta: updateMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("meta update: %v", err)
+	}
+
+	item, _, err := st.GetItem("spawn-1")
+	if err != nil {
+		t.Fatalf("get item: %v", err)
+	}
+	var persistedMeta struct {
+		Input struct {
+			ReceiverThreadIDs []string `json:"receiverThreadIds"`
+			NewAgentNickname  string   `json:"newAgentNickname"`
+			NewAgentRole      string   `json:"newAgentRole"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal([]byte(item.Meta), &persistedMeta); err != nil {
+		t.Fatalf("unmarshal persisted meta: %v", err)
+	}
+	want := []string{"child-1", "child-2"}
+	if !reflect.DeepEqual(persistedMeta.Input.ReceiverThreadIDs, want) {
+		t.Fatalf("receiverThreadIds = %+v, want %+v", persistedMeta.Input.ReceiverThreadIDs, want)
+	}
+	if persistedMeta.Input.NewAgentNickname != "Hypatia" || persistedMeta.Input.NewAgentRole != "default" {
+		t.Fatalf("agent label = %q/%q, want Hypatia/default", persistedMeta.Input.NewAgentNickname, persistedMeta.Input.NewAgentRole)
 	}
 }
 

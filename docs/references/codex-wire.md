@@ -297,20 +297,28 @@ The agent work on the child thread continues independently —
 emitting its own `turn/started`, `item/*`, `turn/completed`
 notifications on a separate `thread_id`.
 
-With `thread/start.experimentalRawEvents=true`, app-server also emits
-`rawResponseItem/completed` for the model-facing function call and its
-tool output. These raw items carry metadata that the public
-`collabAgentToolCall` item currently drops:
+The child thread metadata, not the parent `CollabAgentToolCall`, is the
+authoritative source for display labels. Codex core's spawn-end event
+knows `new_agent_nickname` and `new_agent_role`, but app-server's
+`ThreadItem::CollabAgentToolCall` does not currently expose those fields.
+After the typed spawn completion gives Agent Overflow the
+`receiverThreadIds`, the provider adapter reads the child with
+`thread/read` and merges `thread.agentNickname` / `thread.agentRole` back
+onto the parent spawn row as a metadata-only update. Wait rows then reuse
+that receiver-thread label map.
+
+With `thread/start.experimentalRawEvents=true`, some app-server builds also
+emit `rawResponseItem/completed` for the model-facing function call and its
+tool output. These raw items can carry the same label metadata:
 
 ```json
 {"type":"function_call","name":"spawn_agent","call_id":"call_spawn","arguments":"{\"agent_type\":\"explorer\",\"message\":\"Inspect parser\"}"}
 {"type":"function_call_output","call_id":"call_spawn","output":"{\"agent_id\":\"child-thread\",\"nickname\":\"Boyle\"}"}
 ```
 
-Agent Overflow treats the typed `item/*` lifecycle as authoritative
-for the visible tool row, but uses these raw items to label the child
-thread as `Boyle [explorer]` and to keep subsequent `wait` rows from
-falling back to a UUID-only label.
+Agent Overflow treats the typed `item/*` lifecycle as authoritative for the
+visible tool row. `thread/read` is the primary label source; raw response
+items are only an additional typed signal when present, not a prerequisite.
 
 ### Parent learning the child finished
 

@@ -24,8 +24,10 @@
     timelineNodeItemId,
     timelineNodeKey,
     timelineNodeTurnIndex,
+    visibleTimelineItemIdForItem,
     type TimelineNode,
   } from '../../utils/subagentGrouping';
+  import { codexSubagentReceiverLabels } from '../../utils/subagentLaunch';
   import { filterRedundantNotifications } from '../../utils/notificationFilter';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import Button from '../primitives/Button.svelte';
@@ -109,6 +111,9 @@
   let groupedNodes = $derived<TimelineNode[]>(
     groupItemsBySubagent(filterRedundantNotifications(pane.items)),
   );
+  let codexReceiverLabels = $derived(
+    pane.thread?.provider === 'codex' ? codexSubagentReceiverLabels(pane.items) : new Map<string, string>(),
+  );
 
   let finalAssistantTextIds = $derived(
     finalAssistantTextIdsByTurn(groupedNodes, getActiveTurn(pane.threadId)?.turnIndex ?? null),
@@ -156,7 +161,10 @@
   // `groupedNodes` into every call site.
 
   function findTimelineNodeIndex(itemId: string): number {
-    return findNodeIndexInList(groupedNodes, itemId);
+    const direct = findNodeIndexInList(groupedNodes, itemId);
+    if (direct >= 0) return direct;
+    const visibleItemId = visibleTimelineItemIdForItem(pane.items, itemId);
+    return visibleItemId === itemId ? -1 : findNodeIndexInList(groupedNodes, visibleItemId);
   }
 
   function isToolTextBoundary(index: number): boolean {
@@ -428,7 +436,13 @@
     {:else}
       {#snippet renderNode(node: TimelineNode, depth: number)}
         {#if node.kind === 'leaf'}
-          <TimelineLeaf {pane} item={node.item} orphan={node.orphan === true} {onImageExpand} />
+          <TimelineLeaf
+            {pane}
+            item={node.item}
+            orphan={node.orphan === true}
+            {onImageExpand}
+            codexSubagentReceiverLabels={codexReceiverLabels}
+          />
         {:else if node.kind === 'group'}
           <SubagentGroup {pane} group={node} {depth} {renderNode} />
         {:else if node.kind === 'wait_group'}

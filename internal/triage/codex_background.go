@@ -108,6 +108,7 @@ type spawnAgentTracker struct {
 
 type agentTerminalResult struct {
 	childID string
+	ordinal int
 	status  string
 	message string
 }
@@ -1182,6 +1183,13 @@ func (r *Router) resolveSubagentsForWait(evt provider.ProviderEvent) error {
 	// Build the set of children the wait reported terminal. A child is
 	// terminal when its status is NOT running or pendingInit.
 	terminalChildren := make(map[string]agentTerminalResult)
+	waitOrder := make(map[string]int, len(meta.ReceiverThreadIDs))
+	for index, id := range meta.ReceiverThreadIDs {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		waitOrder[id] = index + 1
+	}
 	for id, raw := range meta.AgentsStates {
 		status := extractAgentStatus(raw)
 		switch status {
@@ -1192,6 +1200,7 @@ func (r *Router) resolveSubagentsForWait(evt provider.ProviderEvent) error {
 				childID: id,
 				status:  status,
 				message: extractAgentMessage(raw),
+				ordinal: waitOrder[id],
 			}
 		}
 	}
@@ -1225,6 +1234,9 @@ func (r *Router) resolveSubagentsForWait(evt provider.ProviderEvent) error {
 				if terminalStatus == "" {
 					terminalStatus = terminal.status
 				}
+				if terminal.ordinal <= 0 {
+					terminal.ordinal = len(childResults) + 1
+				}
 				childResults = append(childResults, terminal)
 			} else {
 				allDone = false
@@ -1246,8 +1258,11 @@ func (r *Router) resolveSubagentsForWait(evt provider.ProviderEvent) error {
 
 	for _, p := range toEmit {
 		sort.Slice(p.childResults, func(i, j int) bool {
-			return p.childResults[i].childID < p.childResults[j].childID
+			return p.childResults[i].ordinal < p.childResults[j].ordinal
 		})
+		for i := range p.childResults {
+			p.childResults[i].ordinal = i + 1
+		}
 		content := formatAgentCompletionMessages(p.childResults, p.totalChildren)
 		synthMeta := subagentStatusToItemStatusMeta(p.status)
 		synthEvt := provider.ProviderEvent{
@@ -1744,7 +1759,11 @@ func formatAgentCompletionMessage(result agentTerminalResult, totalChildren int)
 	if totalChildren <= 1 {
 		return message
 	}
-	header := "Agent " + result.childID
+	ordinal := result.ordinal
+	if ordinal <= 0 {
+		ordinal = 1
+	}
+	header := fmt.Sprintf("Agent %d", ordinal)
 	if strings.TrimSpace(result.status) != "" {
 		header += " (" + result.status + ")"
 	}

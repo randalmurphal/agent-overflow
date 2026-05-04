@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1160,13 +1161,256 @@ func TestDispatchLineRawSpawnOutputLabelsLaterWaitAgent(t *testing.T) {
 	}
 }
 
+func TestReadChildThreadMetadataEmitsSpawnMetaUpdate(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "sh",
+		Args:   []string{"-c", "cat > /dev/null; sleep 60"},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	t.Cleanup(func() { proc.Close() })
+
+	events := make(chan provider.ProviderEvent, 10)
+	s := &Session{
+		proc:                   proc,
+		ctx:                    ctx,
+		threadID:               "parent-thread",
+		pending:                make(map[int64]chan json.RawMessage),
+		childParentByThread:    make(map[string]string),
+		childParentByAgentPath: make(map[string]string),
+		agentPathByThread:      make(map[string]string),
+		agentMetaByThread:      make(map[string]collabReceiverMeta),
+		onEvent: func(evt provider.ProviderEvent) {
+			events <- evt
+		},
+		cancel: cancel,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		s.readChildThreadMetadata("child-provider-1", "spawn-1", collabLaunchMeta{
+			Prompt:            "Run sleep 3",
+			Model:             "gpt-5.5",
+			ReasoningEffort:   "low",
+			ReceiverThreadIDs: []string{"child-provider-1", "child-provider-2"},
+		})
+		close(done)
+	}()
+
+	pending, rpcID := waitForPending(t, s, 3*time.Second)
+	pending <- json.RawMessage(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"thread":{"id":"child-provider-1","agentNickname":"Newton","agentRole":"default"}}}`, rpcID))
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("readChildThreadMetadata did not return")
+	}
+
+	gotMeta := s.agentMetaByThread["child-provider-1"]
+	if gotMeta.ThreadID != "child-provider-1" || gotMeta.AgentNickname != "Newton" || gotMeta.AgentRole != "default" {
+		t.Fatalf("agent metadata = %+v, want child-provider-1/Newton/default", gotMeta)
+	}
+
+	var evt provider.ProviderEvent
+	select {
+	case evt = <-events:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for metadata update event")
+	}
+	if evt.Kind != provider.EventToolStart || evt.ItemID != "spawn-1" || evt.ItemType != "collab_agent" {
+		t.Fatalf("event = %+v, want meta update for spawn-1", evt)
+	}
+	var meta struct {
+		MetaUpdateOnly bool `json:"meta_update_only"`
+		Input          struct {
+			ReceiverThreadIDs []string `json:"receiverThreadIds"`
+			NewAgentNickname  string   `json:"newAgentNickname"`
+			NewAgentRole      string   `json:"newAgentRole"`
+			Prompt            string   `json:"prompt"`
+			Model             string   `json:"model"`
+			ReasoningEffort   string   `json:"reasoningEffort"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if !meta.MetaUpdateOnly {
+		t.Fatal("meta_update_only = false, want true")
+	}
+	if !reflect.DeepEqual(meta.Input.ReceiverThreadIDs, []string{"child-provider-1", "child-provider-2"}) {
+		t.Fatalf("receiverThreadIds = %+v, want full launch receiver list", meta.Input.ReceiverThreadIDs)
+	}
+	if meta.Input.NewAgentNickname != "Newton" || meta.Input.NewAgentRole != "default" {
+		t.Fatalf("agent labels = %q/%q, want Newton/default", meta.Input.NewAgentNickname, meta.Input.NewAgentRole)
+	}
+	if meta.Input.Prompt != "Run sleep 3" || meta.Input.Model != "gpt-5.5" || meta.Input.ReasoningEffort != "low" {
+		t.Fatalf("launch metadata = %q/%q/%q, want Run sleep 3/gpt-5.5/low", meta.Input.Prompt, meta.Input.Model, meta.Input.ReasoningEffort)
+	}
+}
+
+func TestReadChildThreadMetadataRetriesUntilLabelsArrive(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "sh",
+		Args: []string{"-c", `
+			count=0
+			while IFS= read -r line; do
+				id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+				count=$((count + 1))
+				if [ "$count" -eq 1 ]; then
+					printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"child-provider-1"}}}\n' "$id"
+				else
+					printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"child-provider-1","agentNickname":"Curie","agentRole":"default"}}}\n' "$id"
+				fi
+			done
+		`},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	events := make(chan provider.ProviderEvent, 10)
+	s := &Session{
+		proc:                   proc,
+		ctx:                    ctx,
+		threadID:               "parent-thread",
+		pending:                make(map[int64]chan json.RawMessage),
+		childParentByThread:    make(map[string]string),
+		childParentByAgentPath: make(map[string]string),
+		agentPathByThread:      make(map[string]string),
+		agentMetaByThread:      make(map[string]collabReceiverMeta),
+		collabMetadataReads:    make(chan struct{}, 1),
+		onEvent: func(evt provider.ProviderEvent) {
+			events <- evt
+		},
+		cancel: cancel,
+	}
+	go s.readLoop()
+	t.Cleanup(func() {
+		cancel()
+		_ = proc.Close()
+	})
+
+	done := make(chan struct{})
+	go func() {
+		s.readChildThreadMetadata("child-provider-1", "spawn-1", collabLaunchMeta{
+			ReceiverThreadIDs: []string{"child-provider-1"},
+		})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("readChildThreadMetadata did not return")
+	}
+
+	gotMeta := s.agentMetaByThread["child-provider-1"]
+	if gotMeta.ThreadID != "child-provider-1" || gotMeta.AgentNickname != "Curie" || gotMeta.AgentRole != "default" {
+		t.Fatalf("agent metadata = %+v, want child-provider-1/Curie/default", gotMeta)
+	}
+	select {
+	case evt := <-events:
+		if evt.ItemID != "spawn-1" {
+			t.Fatalf("event item id = %q, want spawn-1", evt.ItemID)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for metadata update event")
+	}
+}
+
+func TestReadChildThreadMetadataRequestsNoTurns(t *testing.T) {
+	capturePath := t.TempDir() + "/request.json"
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "sh",
+		Args: []string{"-c", `
+			IFS= read -r line || exit 1
+			printf '%s\n' "$line" > "$CAPTURE_PATH"
+			id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+			printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"child-provider-1","agentNickname":"Noether","agentRole":"default"}}}\n' "$id"
+		`},
+		Env: map[string]string{"CAPTURE_PATH": capturePath},
+	})
+	if err != nil {
+		t.Fatalf("spawn capture sh: %v", err)
+	}
+	s := &Session{
+		proc:                   proc,
+		ctx:                    ctx,
+		threadID:               "parent-thread",
+		pending:                make(map[int64]chan json.RawMessage),
+		childParentByThread:    make(map[string]string),
+		childParentByAgentPath: make(map[string]string),
+		agentPathByThread:      make(map[string]string),
+		agentMetaByThread:      make(map[string]collabReceiverMeta),
+		collabMetadataReads:    make(chan struct{}, 1),
+		onEvent:                func(provider.ProviderEvent) {},
+		cancel:                 cancel,
+	}
+	go s.readLoop()
+	t.Cleanup(func() {
+		cancel()
+		_ = proc.Close()
+	})
+
+	s.readChildThreadMetadata("child-provider-1", "spawn-1", collabLaunchMeta{
+		ReceiverThreadIDs: []string{"child-provider-1"},
+	})
+
+	data, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read captured request: %v", err)
+	}
+	var frame struct {
+		Method string `json:"method"`
+		Params struct {
+			ThreadID     string `json:"threadId"`
+			IncludeTurns bool   `json:"includeTurns"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(data, &frame); err != nil {
+		t.Fatalf("unmarshal captured request: %v", err)
+	}
+	var rawFrame map[string]any
+	if err := json.Unmarshal(data, &rawFrame); err != nil {
+		t.Fatalf("unmarshal raw captured request: %v", err)
+	}
+	rawParams, ok := rawFrame["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("params missing from captured request: %s", string(data))
+	}
+	if _, ok := rawParams["includeTurns"]; !ok {
+		t.Fatalf("includeTurns missing from captured request: %s", string(data))
+	}
+	if frame.Method != "thread/read" {
+		t.Fatalf("method = %q, want thread/read", frame.Method)
+	}
+	if frame.Params.ThreadID != "child-provider-1" {
+		t.Fatalf("threadId = %q, want child-provider-1", frame.Params.ThreadID)
+	}
+	if frame.Params.IncludeTurns {
+		t.Fatal("includeTurns = true, want false")
+	}
+}
+
 func TestDispatchLineRawWaitCallPreservesReceiversOnTimeoutCompletion(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:          "parent-thread",
-		pending:           make(map[int64]chan json.RawMessage),
-		rawToolCallsByID:  make(map[string]rawToolCall),
-		agentMetaByThread: make(map[string]collabReceiverMeta),
+		threadID:         "parent-thread",
+		pending:          make(map[int64]chan json.RawMessage),
+		rawToolCallsByID: make(map[string]rawToolCall),
+		agentMetaByThread: map[string]collabReceiverMeta{
+			"child-provider-1": {ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
+			"child-provider-2": {ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
+			"child-provider-3": {ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
+		},
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
 		},
@@ -1186,7 +1430,8 @@ func TestDispatchLineRawWaitCallPreservesReceiversOnTimeoutCompletion(t *testing
 	}
 	var meta struct {
 		Input struct {
-			ReceiverThreadIDs []string `json:"receiverThreadIds"`
+			ReceiverThreadIDs []string             `json:"receiverThreadIds"`
+			ReceiverAgents    []collabReceiverMeta `json:"receiverAgents"`
 		} `json:"input"`
 	}
 	if err := json.Unmarshal(waitEvent.Meta, &meta); err != nil {
@@ -1194,6 +1439,114 @@ func TestDispatchLineRawWaitCallPreservesReceiversOnTimeoutCompletion(t *testing
 	}
 	if len(meta.Input.ReceiverThreadIDs) != 1 || meta.Input.ReceiverThreadIDs[0] != "child-provider-1" {
 		t.Fatalf("receiverThreadIds = %+v, want raw target preserved", meta.Input.ReceiverThreadIDs)
+	}
+}
+
+func TestDispatchLineTypedWaitCompletionKeepsStartedReceiverTargets(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
+		agentMetaByThread: map[string]collabReceiverMeta{
+			"child-provider-1": {ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
+			"child-provider-2": {ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
+			"child-provider-3": {ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
+		},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":["child-provider-1","child-provider-2","child-provider-3"],"agentsStates":{},"status":"inProgress"}}}`))
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":["child-provider-1"],"agentsStates":{"child-provider-1":{"status":"completed","message":"done"}},"status":"completed"}}}`))
+
+	var waitEvent *provider.ProviderEvent
+	for i := range events {
+		if events[i].ItemType == "wait_agent" && events[i].Kind == provider.EventToolComplete {
+			waitEvent = &events[i]
+		}
+	}
+	if waitEvent == nil {
+		t.Fatalf("wait_agent completion missing: %+v", events)
+	}
+	var meta struct {
+		Input struct {
+			ReceiverThreadIDs []string             `json:"receiverThreadIds"`
+			ReceiverAgents    []collabReceiverMeta `json:"receiverAgents"`
+			AgentsStates      map[string]struct {
+				Status  string `json:"status"`
+				Message string `json:"message"`
+			} `json:"agentsStates"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(waitEvent.Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	want := []string{"child-provider-1", "child-provider-2", "child-provider-3"}
+	if !reflect.DeepEqual(meta.Input.ReceiverThreadIDs, want) {
+		t.Fatalf("receiverThreadIds = %+v, want wait-start targets %+v", meta.Input.ReceiverThreadIDs, want)
+	}
+	wantAgents := []collabReceiverMeta{
+		{ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
+		{ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
+		{ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
+	}
+	if !reflect.DeepEqual(meta.Input.ReceiverAgents, wantAgents) {
+		t.Fatalf("receiverAgents = %+v, want %+v", meta.Input.ReceiverAgents, wantAgents)
+	}
+	if len(meta.Input.AgentsStates) != 1 || meta.Input.AgentsStates["child-provider-1"].Status != "completed" {
+		t.Fatalf("agentsStates = %+v, want only completed child state", meta.Input.AgentsStates)
+	}
+}
+
+func TestDispatchLineRawWaitCallPreservesAllReceiversOnPartialCompletion(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:         "parent-thread",
+		pending:          make(map[int64]chan json.RawMessage),
+		rawToolCallsByID: make(map[string]rawToolCall),
+		agentMetaByThread: map[string]collabReceiverMeta{
+			"child-provider-1": {ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
+			"child-provider-2": {ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
+			"child-provider-3": {ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
+		},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"wait_agent","call_id":"wait-1","arguments":"{\"targets\":[\"child-provider-1\",\"child-provider-2\",\"child-provider-3\"],\"timeout_ms\":10000}"}}}`))
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":["child-provider-1"],"agentsStates":{"child-provider-1":{"status":"completed","message":"done"}},"status":"completed"}}}`))
+
+	var waitEvent *provider.ProviderEvent
+	for i := range events {
+		if events[i].ItemType == "wait_agent" && events[i].Kind == provider.EventToolComplete {
+			waitEvent = &events[i]
+		}
+	}
+	if waitEvent == nil {
+		t.Fatalf("wait_agent completion missing: %+v", events)
+	}
+	var meta struct {
+		Input struct {
+			ReceiverThreadIDs []string             `json:"receiverThreadIds"`
+			ReceiverAgents    []collabReceiverMeta `json:"receiverAgents"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(waitEvent.Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	want := []string{"child-provider-1", "child-provider-2", "child-provider-3"}
+	if !reflect.DeepEqual(meta.Input.ReceiverThreadIDs, want) {
+		t.Fatalf("receiverThreadIds = %+v, want raw wait targets %+v", meta.Input.ReceiverThreadIDs, want)
+	}
+	wantAgents := []collabReceiverMeta{
+		{ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
+		{ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
+		{ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
+	}
+	if !reflect.DeepEqual(meta.Input.ReceiverAgents, wantAgents) {
+		t.Fatalf("receiverAgents = %+v, want %+v", meta.Input.ReceiverAgents, wantAgents)
 	}
 }
 

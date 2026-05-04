@@ -1058,7 +1058,7 @@ func TestCodexSubagentWaitCompletionReusesPayloadForOutOfOrderChildren(t *testin
 		"child-b": map[string]any{"status": "completed", "message": "B done"},
 	}
 	waitMeta, _ = json.Marshal(wait)
-	content := "Agent child-a (completed):\nA done\n\nAgent child-b (completed):\nB done"
+	content := "Agent 1 (completed):\nA done\n\nAgent 2 (completed):\nB done"
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "wait-multi",
@@ -1089,6 +1089,16 @@ func TestCodexSubagentWaitCompletionReusesPayloadForOutOfOrderChildren(t *testin
 	siblingMeta := decodeItemMetaMap(t, subagentSibling.Meta)
 	if siblingMeta["wait_carrier_id"] != "wait-multi" {
 		t.Fatalf("wait_carrier_id = %v, want wait-multi", siblingMeta["wait_carrier_id"])
+	}
+	data, err := st.GetPayloadData(subagentSibling.PayloadID)
+	if err != nil {
+		t.Fatalf("payload data: %v", err)
+	}
+	if strings.Contains(string(data), "child-a") || strings.Contains(string(data), "child-b") {
+		t.Fatalf("payload leaked child ids: %q", string(data))
+	}
+	if !strings.Contains(string(data), "Agent 1 (completed)") || !strings.Contains(string(data), "Agent 2 (completed)") {
+		t.Fatalf("payload missing ordinal agent headers: %q", string(data))
 	}
 }
 

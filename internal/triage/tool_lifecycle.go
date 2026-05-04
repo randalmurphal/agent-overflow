@@ -71,8 +71,9 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 	meta := decodeToolStartMeta(evt.Meta)
 	now := eventTimestampMillis(evt)
 
-	// A "meta update" EventToolStart carries only correlation fields
-	// (no toolName, no input). Two emit sites today:
+	// A "meta update" EventToolStart targets an already-persisted
+	// tool_call row and merges metadata that arrived on a later signal.
+	// Known emit sites today:
 	//   - Claude's `system/task_started` attaches the task_id ↔
 	//     tool_use_id mapping so reconnect recovery can correlate
 	//     later task_updated / task_notification events via
@@ -82,8 +83,12 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 	//     `<agent_type> (<Model>)` in the card header without
 	//     plumbing a separate event kind. The model is taken from
 	//     `message.model` on the first subagent assistant envelope.
-	// Either (or both) field is treated as a targeted merge that
-	// preserves the existing summary, tool_name, and status.
+	//   - Codex child-thread metadata reads enrich spawn_agent rows with
+	//     receiver labels once `thread/read` exposes agentNickname /
+	//     agentRole for the child thread.
+	// These updates preserve the existing status and payload. If the
+	// update carries toolName/input, the persisted summary/meta are also
+	// refreshed so the UI can render the new metadata immediately.
 	metaUpdateOnly := meta.MetaUpdateOnly || strings.TrimSpace(meta.ToolName) == "" &&
 		len(meta.Input) == 0 &&
 		(meta.TaskID != "" || meta.SubagentModel != "" || meta.ParentToolUseID != "")
@@ -334,6 +339,9 @@ func shouldPersistCodexCompletionWithoutLaunch(toolName string) bool {
 }
 
 func (r *Router) persistSplitToolCompletion(launch store.Item, evt provider.ProviderEvent, meta toolCompleteMeta, now int64) error {
+	if launch.ToolName == "wait_agent" {
+		evt.Meta = preserveCodexWaitLaunchReceiverTargets(launch.Meta, evt.Meta)
+	}
 	launch.Status = statusCompleted
 	launch.UpdatedAt = now
 	launch.Meta = mergeItemMetaJSON(launch.Meta, evt.Meta)
@@ -358,6 +366,51 @@ func (r *Router) persistSplitToolCompletion(launch store.Item, evt provider.Prov
 	}
 	payload := completionPayload(completion.ID, evt, meta, now)
 	return r.persistItem(completion, payload)
+}
+
+func preserveCodexWaitLaunchReceiverTargets(launchMeta string, completeMeta json.RawMessage) json.RawMessage {
+	launchReceiverIDs := receiverThreadIDsFromItemMeta(json.RawMessage(launchMeta))
+	if len(launchReceiverIDs) == 0 {
+		return completeMeta
+	}
+	var decoded map[string]json.RawMessage
+	if len(completeMeta) == 0 || json.Unmarshal(completeMeta, &decoded) != nil || decoded == nil {
+		decoded = map[string]json.RawMessage{}
+	}
+	var input map[string]json.RawMessage
+	if raw, ok := decoded["input"]; ok {
+		_ = json.Unmarshal(raw, &input)
+	}
+	if input == nil {
+		input = map[string]json.RawMessage{}
+	}
+	encodedReceivers, err := json.Marshal(launchReceiverIDs)
+	if err != nil {
+		return completeMeta
+	}
+	input["receiverThreadIds"] = encodedReceivers
+	encodedInput, err := json.Marshal(input)
+	if err != nil {
+		return completeMeta
+	}
+	decoded["input"] = encodedInput
+	encodedMeta, err := json.Marshal(decoded)
+	if err != nil {
+		return completeMeta
+	}
+	return encodedMeta
+}
+
+func receiverThreadIDsFromItemMeta(meta json.RawMessage) []string {
+	var decoded struct {
+		Input struct {
+			ReceiverThreadIDs []string `json:"receiverThreadIds"`
+		} `json:"input"`
+	}
+	if len(meta) == 0 || json.Unmarshal(meta, &decoded) != nil {
+		return nil
+	}
+	return decoded.Input.ReceiverThreadIDs
 }
 
 func (r *Router) isCodexThread(threadID string) (bool, error) {

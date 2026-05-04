@@ -56,6 +56,7 @@ var _ provider.Session = (*Session)(nil)
 // Session manages a Codex app-server subprocess.
 type Session struct {
 	proc               *provider.Process
+	ctx                context.Context
 	threadID           string // our internal thread ID
 	codexThreadID      string // the Codex app-server's thread ID from thread/start
 	activeTurnID       string // current active turn ID from turn/started; cleared on turn/completed
@@ -123,7 +124,9 @@ type Session struct {
 	childParentByAgentPath map[string]string
 	agentPathByThread      map[string]string
 	agentMetaByThread      map[string]collabReceiverMeta
+	collabMetadataReads    chan struct{}
 	rawToolCallsByID       map[string]rawToolCall
+	waitReceiverIDsByCall  map[string][]string
 	planBuffersByItemID    map[string]*planBuffer
 	planBuffersByTurnID    map[string]*planBuffer
 	// probeFn is a test-only override for Probe(). When non-nil, Probe
@@ -146,6 +149,13 @@ type collabReceiverMeta struct {
 	ThreadID      string `json:"threadId"`
 	AgentNickname string `json:"agentNickname,omitempty"`
 	AgentRole     string `json:"agentRole,omitempty"`
+}
+
+type collabLaunchMeta struct {
+	Prompt            string
+	Model             string
+	ReasoningEffort   string
+	ReceiverThreadIDs []string
 }
 
 type rawToolCall struct {
@@ -219,6 +229,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 
 	s := &Session{
 		proc:                   proc,
+		ctx:                    childCtx,
 		threadID:               threadID,
 		model:                  cfg.Model,
 		reasoningEffort:        cfg.ReasoningEffort,
@@ -232,7 +243,9 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		childParentByAgentPath: make(map[string]string),
 		agentPathByThread:      make(map[string]string),
 		agentMetaByThread:      make(map[string]collabReceiverMeta),
+		collabMetadataReads:    make(chan struct{}, 4),
 		rawToolCallsByID:       make(map[string]rawToolCall),
+		waitReceiverIDsByCall:  make(map[string][]string),
 		planBuffersByItemID:    make(map[string]*planBuffer),
 		planBuffersByTurnID:    make(map[string]*planBuffer),
 	}
@@ -522,6 +535,7 @@ func (s *Session) Close() error {
 	s.agentPathByThread = nil
 	s.agentMetaByThread = nil
 	s.rawToolCallsByID = nil
+	s.waitReceiverIDsByCall = nil
 	s.mu.Unlock()
 	return err
 }
@@ -873,6 +887,7 @@ func (s *Session) dispatchLine(line []byte) {
 			s.maybeRewriteCollabControlItemID(evt, msg.Params)
 			s.maybeRememberCollabReceiverThreads(msg.Method, msg.Params)
 			s.enrichRawToolCallMetadata(evt)
+			s.preserveWaitAgentReceiverTargets(evt)
 			s.enrichCollabReceiverMetadata(evt)
 			// Track active turn ID for Interrupt.
 			switch evt.Kind {
@@ -894,6 +909,7 @@ func (s *Session) dispatchLine(line []byte) {
 				s.mu.Lock()
 				s.activeTurnID = ""
 				s.rawToolCallsByID = make(map[string]rawToolCall)
+				s.waitReceiverIDsByCall = make(map[string][]string)
 				s.mu.Unlock()
 				s.clearPlanBufferForTurn(evt.TurnID)
 				s.clearTurnStart(evt.TurnID)
@@ -1258,33 +1274,33 @@ func (s *Session) handleRawSpawnAgentOutput(call rawToolCall, item map[string]js
 	if meta.AgentNickname == "" && meta.AgentRole == "" {
 		return
 	}
-	s.mu.Lock()
-	if s.agentMetaByThread == nil {
-		s.agentMetaByThread = make(map[string]collabReceiverMeta)
-	}
-	s.agentMetaByThread[output.AgentID] = meta
-	s.mu.Unlock()
-	s.emitRawSpawnAgentMetaUpdate(call, output.AgentID, output.Nickname)
+	s.rememberCollabReceiverMeta(meta)
+	s.emitRawSpawnAgentMetaUpdate(call, meta)
 }
 
-func (s *Session) emitRawSpawnAgentMetaUpdate(call rawToolCall, agentID, nickname string) {
+func (s *Session) emitRawSpawnAgentMetaUpdate(call rawToolCall, meta collabReceiverMeta) {
 	if s.onEvent == nil || strings.TrimSpace(call.CallID) == "" {
 		return
 	}
-	input := map[string]any{"tool": "spawn_agent"}
-	if call.Prompt != "" {
-		input["prompt"] = call.Prompt
+	launchMeta := collabLaunchMeta{
+		Prompt:            call.Prompt,
+		ReceiverThreadIDs: []string{meta.ThreadID},
 	}
-	if call.AgentType != "" {
-		input["newAgentRole"] = call.AgentType
+	if meta.AgentRole == "" {
+		meta.AgentRole = strings.TrimSpace(call.AgentType)
 	}
-	if strings.TrimSpace(nickname) != "" {
-		input["newAgentNickname"] = strings.TrimSpace(nickname)
+	s.emitCollabReceiverMetaUpdate(call.CallID, meta, launchMeta)
+}
+
+func (s *Session) emitCollabReceiverMetaUpdate(parentToolUseID string, meta collabReceiverMeta, launchMeta collabLaunchMeta) {
+	if s.onEvent == nil || strings.TrimSpace(parentToolUseID) == "" || strings.TrimSpace(meta.ThreadID) == "" {
+		return
 	}
-	if strings.TrimSpace(agentID) != "" {
-		input["receiverThreadIds"] = []string{strings.TrimSpace(agentID)}
+	input := collabReceiverMetaUpdateInput(meta, launchMeta)
+	if input == nil {
+		return
 	}
-	meta, err := json.Marshal(map[string]any{
+	encodedMeta, err := json.Marshal(map[string]any{
 		"meta_update_only": true,
 		"toolName":         "collab_agent",
 		"input":            input,
@@ -1295,11 +1311,41 @@ func (s *Session) emitRawSpawnAgentMetaUpdate(call rawToolCall, agentID, nicknam
 	s.onEvent(provider.ProviderEvent{
 		Kind:      provider.EventToolStart,
 		ThreadID:  s.threadID,
-		ItemID:    call.CallID,
+		ItemID:    parentToolUseID,
 		ItemType:  "collab_agent",
-		Meta:      meta,
+		Meta:      encodedMeta,
 		Timestamp: time.Now(),
 	})
+}
+
+func collabReceiverMetaUpdateInput(meta collabReceiverMeta, launchMeta collabLaunchMeta) map[string]any {
+	receiverThreadIDs := nonEmptyStrings(launchMeta.ReceiverThreadIDs)
+	if len(receiverThreadIDs) == 0 && strings.TrimSpace(meta.ThreadID) != "" {
+		receiverThreadIDs = []string{strings.TrimSpace(meta.ThreadID)}
+	}
+	if len(receiverThreadIDs) == 0 {
+		return nil
+	}
+	input := map[string]any{
+		"tool":              "spawn_agent",
+		"receiverThreadIds": receiverThreadIDs,
+	}
+	if meta.AgentNickname != "" {
+		input["newAgentNickname"] = meta.AgentNickname
+	}
+	if meta.AgentRole != "" {
+		input["newAgentRole"] = meta.AgentRole
+	}
+	if strings.TrimSpace(launchMeta.Prompt) != "" {
+		input["prompt"] = strings.TrimSpace(launchMeta.Prompt)
+	}
+	if strings.TrimSpace(launchMeta.Model) != "" {
+		input["model"] = strings.TrimSpace(launchMeta.Model)
+	}
+	if strings.TrimSpace(launchMeta.ReasoningEffort) != "" {
+		input["reasoningEffort"] = strings.TrimSpace(launchMeta.ReasoningEffort)
+	}
+	return input
 }
 
 func rawSpawnAgentPrompt(args map[string]json.RawMessage) string {
@@ -1326,6 +1372,16 @@ func rawSpawnAgentPrompt(args map[string]json.RawMessage) string {
 		}
 	}
 	return ""
+}
+
+func nonEmptyStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 func rawWriteStdinWaitResult(output string) string {
@@ -1633,8 +1689,15 @@ func (s *Session) maybeRememberCollabReceiverThreads(method string, params json.
 
 	switch tool {
 	case "spawn_agent":
+		launchMeta := collabLaunchMeta{
+			Prompt:            readRawString(item, "prompt"),
+			Model:             readRawString(item, "model"),
+			ReasoningEffort:   readRawString(item, "reasoningEffort"),
+			ReceiverThreadIDs: append([]string(nil), receiverThreadIDs...),
+		}
 		for _, receiverThreadID := range receiverThreadIDs {
 			s.setParentToolUseForProviderThread(receiverThreadID, itemID)
+			go s.readChildThreadMetadata(receiverThreadID, itemID, launchMeta)
 			go s.resumeChildThread(receiverThreadID)
 		}
 	case "close_agent":
@@ -1716,9 +1779,53 @@ func (s *Session) enrichRawToolCallMetadata(evt *provider.ProviderEvent) {
 			setRawStringIfMissing(input, "newAgentRole", call.AgentType)
 		case "wait_agent":
 			setRawStringIfMissing(input, "tool", "wait_agent")
-			setRawStringArrayIfMissing(input, "receiverThreadIds", call.Targets)
+			setRawStringArray(input, "receiverThreadIds", call.Targets)
 		}
 	})
+}
+
+func (s *Session) preserveWaitAgentReceiverTargets(evt *provider.ProviderEvent) {
+	if evt == nil || evt.ItemType != "wait_agent" {
+		return
+	}
+	itemID := strings.TrimSpace(evt.ItemID)
+	if itemID == "" {
+		return
+	}
+	switch evt.Kind {
+	case provider.EventToolStart:
+		receiverThreadIDs := receiverThreadIDsFromEventMeta(evt.Meta)
+		if len(receiverThreadIDs) == 0 {
+			return
+		}
+		s.mu.Lock()
+		if s.waitReceiverIDsByCall == nil {
+			s.waitReceiverIDsByCall = make(map[string][]string)
+		}
+		s.waitReceiverIDsByCall[itemID] = append([]string(nil), receiverThreadIDs...)
+		s.mu.Unlock()
+	case provider.EventToolComplete:
+		s.mu.Lock()
+		receiverThreadIDs := append([]string(nil), s.waitReceiverIDsByCall[itemID]...)
+		delete(s.waitReceiverIDsByCall, itemID)
+		s.mu.Unlock()
+		if len(receiverThreadIDs) == 0 {
+			return
+		}
+		mutateEventMetaInput(evt, true, func(input map[string]json.RawMessage) {
+			setRawStringArray(input, "receiverThreadIds", receiverThreadIDs)
+		})
+	}
+}
+
+func receiverThreadIDsFromEventMeta(meta json.RawMessage) []string {
+	var decoded struct {
+		Input map[string]json.RawMessage `json:"input"`
+	}
+	if len(meta) == 0 || json.Unmarshal(meta, &decoded) != nil || decoded.Input == nil {
+		return nil
+	}
+	return readRawStringArray(decoded.Input, "receiverThreadIds")
 }
 
 func mutateEventMetaInput(evt *provider.ProviderEvent, createInput bool, mutate func(map[string]json.RawMessage)) {
@@ -1772,8 +1879,8 @@ func setRawStringIfMissing(input map[string]json.RawMessage, key, value string) 
 	}
 }
 
-func setRawStringArrayIfMissing(input map[string]json.RawMessage, key string, values []string) {
-	if len(values) == 0 || len(readRawStringArray(input, key)) > 0 {
+func setRawStringArray(input map[string]json.RawMessage, key string, values []string) {
+	if len(values) == 0 {
 		return
 	}
 	encoded, err := json.Marshal(values)
@@ -1819,6 +1926,131 @@ func (s *Session) resumeChildThread(providerThreadID string) {
 	_, _ = s.sendRequest(ctx, "thread/resume", map[string]any{
 		"threadId": providerThreadID,
 	})
+}
+
+func (s *Session) readChildThreadMetadata(providerThreadID, parentToolUseID string, launchMeta collabLaunchMeta) {
+	if s.proc == nil || strings.TrimSpace(providerThreadID) == "" || strings.TrimSpace(parentToolUseID) == "" {
+		return
+	}
+	ctx := s.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !s.acquireCollabMetadataRead(ctx) {
+		return
+	}
+	defer s.releaseCollabMetadataRead()
+
+	meta, ok, err := s.readChildThreadMetadataWithRetry(ctx, providerThreadID)
+	if err != nil {
+		log.Printf("codex: read child thread metadata for spawn %s: %v", parentToolUseID, err)
+		return
+	}
+	if !ok || s.closing.Load() {
+		return
+	}
+	s.rememberCollabReceiverMeta(meta)
+	s.emitCollabReceiverMetaUpdate(parentToolUseID, meta, launchMeta)
+}
+
+func (s *Session) acquireCollabMetadataRead(ctx context.Context) bool {
+	if s.collabMetadataReads == nil {
+		return true
+	}
+	select {
+	case s.collabMetadataReads <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (s *Session) releaseCollabMetadataRead() {
+	if s.collabMetadataReads == nil {
+		return
+	}
+	select {
+	case <-s.collabMetadataReads:
+	default:
+	}
+}
+
+func (s *Session) readChildThreadMetadataWithRetry(ctx context.Context, providerThreadID string) (collabReceiverMeta, bool, error) {
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			if !sleepWithContext(ctx, time.Duration(attempt)*100*time.Millisecond) {
+				return collabReceiverMeta{}, false, nil
+			}
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		meta, ok, err := s.readChildThreadMetadataOnce(attemptCtx, providerThreadID)
+		cancel()
+		if err == nil && ok {
+			return meta, ok, nil
+		}
+		lastErr = err
+		if s.closing.Load() {
+			return collabReceiverMeta{}, false, nil
+		}
+	}
+	return collabReceiverMeta{}, false, lastErr
+}
+
+func (s *Session) readChildThreadMetadataOnce(ctx context.Context, providerThreadID string) (collabReceiverMeta, bool, error) {
+	resp, err := s.sendRequest(ctx, "thread/read", map[string]any{
+		"threadId":     providerThreadID,
+		"includeTurns": false,
+	})
+	if err != nil {
+		return collabReceiverMeta{}, false, err
+	}
+	var decoded struct {
+		Thread struct {
+			ID            string `json:"id"`
+			AgentNickname string `json:"agentNickname"`
+			AgentRole     string `json:"agentRole"`
+		} `json:"thread"`
+	}
+	if err := json.Unmarshal(resp, &decoded); err != nil {
+		return collabReceiverMeta{}, false, fmt.Errorf("decode thread/read response: %w", err)
+	}
+	meta := collabReceiverMeta{
+		ThreadID:      stringsx.FirstNonEmptyTrimmed(decoded.Thread.ID, providerThreadID),
+		AgentNickname: strings.TrimSpace(decoded.Thread.AgentNickname),
+		AgentRole:     strings.TrimSpace(decoded.Thread.AgentRole),
+	}
+	if meta.AgentNickname == "" && meta.AgentRole == "" {
+		return meta, false, nil
+	}
+	return meta, true, nil
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return true
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (s *Session) rememberCollabReceiverMeta(meta collabReceiverMeta) {
+	meta.ThreadID = strings.TrimSpace(meta.ThreadID)
+	if meta.ThreadID == "" || (meta.AgentNickname == "" && meta.AgentRole == "") {
+		return
+	}
+	s.mu.Lock()
+	if s.agentMetaByThread == nil {
+		s.agentMetaByThread = make(map[string]collabReceiverMeta)
+	}
+	s.agentMetaByThread[meta.ThreadID] = meta
+	s.mu.Unlock()
 }
 
 // claimTurnStart records the first observation of a turnID, returning

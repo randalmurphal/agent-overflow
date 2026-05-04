@@ -19,11 +19,13 @@
     item,
     orphan = false,
     onImageExpand,
+    codexSubagentReceiverLabels = new Map<string, string>(),
   }: {
     pane: ThreadPane;
     item: Item;
     orphan?: boolean;
     onImageExpand?: (preview: ExpandedImagePreview) => void;
+    codexSubagentReceiverLabels?: ReadonlyMap<string, string>;
   } = $props();
 
   const displayItem = $derived(resolveDisplayItem(item, pane.liveItemSummaries[item.id]));
@@ -60,7 +62,7 @@
   {#if displayItem.kind === 'user_text'}
     <UserMessage {pane} item={displayItem} {onImageExpand} />
   {:else if displayItem.kind === 'tool_call' || displayItem.kind === 'tool_completion'}
-    <ToolCallCard {pane} item={displayItem} />
+    <ToolCallCard {pane} item={displayItem} {codexSubagentReceiverLabels} />
   {:else if displayItem.kind === 'thinking'}
     <ThinkingBlock {pane} item={displayItem} />
   {:else if displayItem.kind === 'terminal_interaction'}

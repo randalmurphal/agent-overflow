@@ -41,18 +41,24 @@ describe('<TerminalInteractionRow>', () => {
     );
   });
 
-  it('uses the muted italic text-subtle treatment (not a primary-row style)', () => {
-    // This row is a low-signal marker — it must NOT look like an
-    // assistant message, tool card, or error. The italic + text-subtle
-    // classes encode that UX intent; pinning them keeps a future
-    // restyle from accidentally promoting the row to primary content.
-    const { getByTestId } = render(TerminalInteractionRow, { props: { item: makeItem() } });
+  it('renders running polls as waiting without a status badge', () => {
+    const item = makeItem({ status: 'running' });
+    const { getByTestId } = render(TerminalInteractionRow, { props: { item } });
     const row = getByTestId('terminal-interaction-row');
-    expect(row.className).toContain('italic');
-    expect(row.className).toContain('text-fg-subtle');
+
+    expect(row.textContent?.trim()).toBe('Waiting for background terminal');
+    expect(row.textContent).not.toContain('running');
   });
 
-  it('renders attached command output as the primary command row', () => {
+  it('uses the same compact wait-row treatment as wait_agent carriers', () => {
+    const { getByTestId } = render(TerminalInteractionRow, { props: { item: makeItem() } });
+    const row = getByTestId('terminal-interaction-row');
+    expect(row.className).not.toContain('italic');
+    expect(row.className).toContain('text-fg-muted');
+    expect(row.className).toContain('text-[12px]');
+  });
+
+  it('renders attached command output underneath the wait carrier', () => {
     const item = makeItem({
       payloadKind: 'command_output',
       payloadId: 'command-output:waited:pid-42:0:0',
@@ -63,9 +69,9 @@ describe('<TerminalInteractionRow>', () => {
         preview: 'done\n',
       }),
     });
-    const { getByRole, getByTestId, queryByTestId } = render(TerminalInteractionRow, { props: { item } });
+    const { getByRole, getByTestId } = render(TerminalInteractionRow, { props: { item } });
 
-    expect(queryByTestId('terminal-interaction-row')).toBeNull();
+    expect(getByTestId('terminal-interaction-row').textContent?.trim()).toBe('Waited for background terminal');
     expect(getByTestId('command-output-row')).toBeInTheDocument();
     const toggle = getByRole('button', { name: /Toggle command output: sleep 1; echo done/i });
     expect(toggle.textContent).toContain('sleep 1; echo done');

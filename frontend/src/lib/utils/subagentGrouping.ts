@@ -18,8 +18,9 @@
 //   - Normal rows always stay leaves.
 //   - Claude inline Agent/Task launch rows are groups from first render, even
 //     before any child activity arrives.
-//   - Codex spawn_agent launch rows are groups from first render so child
-//     prompt echoes and tool activity live inside the dropdown.
+//   - Codex spawn_agent launch rows stay leaves. Their child transcript is
+//     provider-internal detail represented by the background tray while live
+//     and explicit completion rows after wait/notification signals.
 //   - Adjacent inline agents from the same Claude assistant message share a
 //     structural wrapper row keyed by that assistant message. The real agent
 //     cards remain peers inside the wrapper.
@@ -41,7 +42,7 @@
 
 import type { Item } from '../types/models';
 import { parseJsonObject } from './parseJsonObject';
-import { codexSubagentLaunchInfo, isCodexSubagentLaunchItem } from './subagentLaunch';
+import { isCodexSubagentLaunchItem } from './subagentLaunch';
 
 export const MAX_DEPTH = 3;
 const PREVIEW_MAX_CHARS = 160;
@@ -189,21 +190,8 @@ function isClaudeInlineAgentLaunch(item: Item): boolean {
   return inlineAgentInfo(item) !== null;
 }
 
-function isSubagentLaunch(item: Item): boolean {
-  return isClaudeInlineAgentLaunch(item) || isCodexSubagentLaunchItem(item);
-}
-
-function normalizedText(value: string): string {
-  return value.replace(/\s+/g, ' ').trim();
-}
-
-function codexPromptEchoParentID(item: Item, promptByParentID: Map<string, string>): string {
-  if (item.kind !== 'user_text') return '';
-  const parentID = item.parentId ?? '';
-  if (!parentID) return '';
-  const prompt = promptByParentID.get(parentID);
-  if (!prompt) return '';
-  return normalizedText(item.summary) === normalizedText(prompt) ? parentID : '';
+function isGroupedSubagentLaunch(item: Item): boolean {
+  return isClaudeInlineAgentLaunch(item);
 }
 
 function itemProcessID(item: Item): string {
@@ -434,6 +422,20 @@ export function findTimelineNodeIndex(nodes: TimelineNode[], itemId: string): nu
   return nodes.findIndex((node) => nodeContainsItem(node, itemId));
 }
 
+export function visibleTimelineItemIdForItem(items: readonly Item[], itemId: string): string {
+  let parentID = '';
+  for (const item of items) {
+    if (item.id !== itemId) continue;
+    parentID = item.parentId ?? '';
+    break;
+  }
+  if (!parentID) return itemId;
+  for (const item of items) {
+    if (item.id === parentID && isCodexSubagentLaunchItem(item)) return item.id;
+  }
+  return itemId;
+}
+
 /**
  * Group items by subagent parentage. Pure function — does not mutate the
  * input and returns a fresh tree each call.
@@ -460,7 +462,7 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     const pid = item.parentId;
-    if ((pid && pid.length > 0) || item.completionOf || item.kind === 'terminal_interaction' || item.toolName === 'wait_agent' || isSubagentLaunch(item)) {
+    if ((pid && pid.length > 0) || item.completionOf || item.kind === 'terminal_interaction' || item.toolName === 'wait_agent' || isGroupedSubagentLaunch(item)) {
       hasGroupingSignals = true;
     }
     if (i > 0) {
@@ -482,7 +484,7 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
   // any collection (e.g., a subset) without needing to pre-sort.
   const sortedWithCarriers = alreadySorted ? items : [...items].sort(compareItems);
   const itemByID = new Map<string, Item>();
-  const promptByCodexSpawnID = new Map<string, string>();
+  const codexSpawnIDs = new Set<string>();
   const waitCompletionPayloadCarrierByPayloadID = new Map<string, string>();
   const latestTerminalWaitByProcessID = new Map<string, string>();
   const waitChildrenByCarrierID = new Map<string, Item[]>();
@@ -503,12 +505,13 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
 
   for (const item of sortedWithCarriers) {
     itemByID.set(item.id, item);
+    if (isCodexSubagentLaunchItem(item)) {
+      codexSpawnIDs.add(item.id);
+    }
   }
 
   for (const item of sortedWithCarriers) {
     if (isCodexSubagentLaunchItem(item)) {
-      const prompt = codexSubagentLaunchInfo(item).prompt;
-      if (prompt) promptByCodexSpawnID.set(item.id, prompt);
       continue;
     }
     if (isTerminalWaitCarrier(item)) {
@@ -539,11 +542,9 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
       if (carrierID) addWaitChild(carrierID, item);
     }
   }
-  const hiddenCodexPromptEchoParents = new Set<string>();
   const sorted = sortedWithCarriers.filter((item) => {
-    const promptEchoParentID = codexPromptEchoParentID(item, promptByCodexSpawnID);
-    if (promptEchoParentID && !hiddenCodexPromptEchoParents.has(promptEchoParentID)) {
-      hiddenCodexPromptEchoParents.add(promptEchoParentID);
+    const parentID = item.parentId ?? '';
+    if (parentID && codexSpawnIDs.has(parentID)) {
       return false;
     }
     if (isInternalWaitCompletion(item, itemByID)) return false;
@@ -556,10 +557,6 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
   const inlineGroupKeyByItemID = new Map<string, string>();
 
   for (const item of sorted) {
-    if (isCodexSubagentLaunchItem(item)) {
-      subagentLaunchIDs.add(item.id);
-      continue;
-    }
     const info = inlineAgentInfo(item);
     if (!info) continue;
     const key = info.groupKey;

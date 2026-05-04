@@ -93,3 +93,15 @@ export function codexSubagentLaunchInfo(item: Item): CodexSubagentLaunchInfo {
     title: `Spawned ${roleLabel}`,
   };
 }
+
+export function codexSubagentReceiverLabels(items: readonly Item[]): Map<string, string> {
+  const labels = new Map<string, string>();
+  for (const item of items) {
+    if (!isCodexSubagentLaunchItem(item)) continue;
+    const launchInfo = codexSubagentLaunchInfo(item);
+    for (const receiverThreadId of launchInfo.receiverThreadIds) {
+      labels.set(receiverThreadId, launchInfo.agentLabel);
+    }
+  }
+  return labels;
+}

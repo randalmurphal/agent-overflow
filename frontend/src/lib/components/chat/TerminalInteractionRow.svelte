@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Timer from 'lucide-svelte/icons/timer';
+  import Clock from 'lucide-svelte/icons/clock';
   import Icon from '../primitives/Icon.svelte';
   import type { CommandOutputMeta, Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -15,10 +15,11 @@
       : null,
   );
   let shouldRenderCommandShell = $derived(item.payloadKind === 'command_output');
-  let rowLabel = $derived(
-    terminalInteractionLabelFromSummary(item.summary) || 'Waited for background terminal',
-  );
   let isRunning = $derived(item.status === 'running' || item.status === 'streaming');
+  let rowLabel = $derived.by(() => {
+    if (isRunning) return 'Waiting for background terminal';
+    return terminalInteractionLabelFromSummary(item.summary) || 'Waited for background terminal';
+  });
 
   /**
    * The Codex app-server emits one `TerminalInteractionNotification`
@@ -29,36 +30,23 @@
    */
 </script>
 
-{#if item.payloadKind === 'command_output'}
-  <CommandOutput
-    {pane}
-    item={item}
-    meta={commandOutputMeta}
-    payloadId={item.payloadId}
-    showCompletionBadge={Boolean(item.payloadId)}
-  />
-{:else}
-  <div class="mb-1.5">
-    <div
-      class="flex items-center gap-1.5 px-2 py-1 text-[11px] italic text-fg-subtle"
-      data-testid="terminal-interaction-row"
-    >
-      <Icon icon={Timer} size={11} strokeWidth={2} class="opacity-70 shrink-0" />
-      <span class="min-w-0 truncate">{rowLabel}</span>
-      {#if isRunning}
-        <span class="shrink-0 text-[10px] text-accent opacity-70">running</span>
-      {/if}
-    </div>
-    {#if shouldRenderCommandShell}
-      <div class="ml-5">
-        <CommandOutput
-          {pane}
-          item={item}
-          meta={commandOutputMeta}
-          payloadId={item.payloadId}
-          showCompletionBadge={Boolean(item.payloadId)}
-        />
-      </div>
-    {/if}
+<div class="mb-1.5">
+  <div
+    class="flex items-center gap-2 px-1 py-1 text-[12px] text-fg-muted"
+    data-testid="terminal-interaction-row"
+  >
+    <Icon icon={Clock} size={13} strokeWidth={2} class="shrink-0 opacity-75" />
+    <span class="min-w-0 truncate">{rowLabel}</span>
   </div>
-{/if}
+  {#if shouldRenderCommandShell}
+    <div class="ml-5">
+      <CommandOutput
+        {pane}
+        item={item}
+        meta={commandOutputMeta}
+        payloadId={item.payloadId}
+        showCompletionBadge={Boolean(item.payloadId)}
+      />
+    </div>
+  {/if}
+</div>

@@ -1,20 +1,22 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { render } from "@testing-library/svelte";
+import { fireEvent, render, waitFor } from "@testing-library/svelte";
 import ToolCallCard from "./ToolCallCard.svelte";
 import { buildPane, makeItem, makeThread } from "../../../test/helpers/chat";
 import {
   resetBindingMocks,
   setBindingMock,
 } from "../../../test/mocks/bindings-app";
+import { codexSubagentReceiverLabels } from "../../utils/subagentLaunch";
 
 beforeEach(() => {
   resetBindingMocks();
-  // Payload fetches are triggered when the user expands the body; the tests
-  // below never click the toggle, so the mocks just need to exist for the
-  // chevron path to not blow up if something races.
+  // Default payload mocks keep unrelated rows from hanging if a test path
+  // expands a body. Tests that assert payload behavior install their own
+  // method-specific mock.
   setBindingMock("GetPayloadPreview", async () => ({
     data: "",
     totalSize: 0,
+    nextOffset: 0,
     isComplete: true,
   }));
   setBindingMock("GetPayloadData", async () => ({ data: "" }));
@@ -42,7 +44,9 @@ describe("<ToolCallCard> header dispatcher", () => {
 
     expect(getByTestId("command-output-row")).toBeInTheDocument();
     expect(getByTestId("command-output-icon")).toBeInTheDocument();
-    expect(getByTestId("command-output-label").textContent?.trim()).toBe("Bash");
+    expect(getByTestId("command-output-label").textContent?.trim()).toBe(
+      "Bash",
+    );
     expect(getByTestId("command-output-command").textContent).toContain(
       "ls -la",
     );
@@ -65,7 +69,9 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(queryByTestId("tool-call-card")).toBeNull();
     expect(getByTestId("command-output-row")).toBeInTheDocument();
     expect(getByTestId("command-output-icon")).toBeInTheDocument();
-    expect(getByTestId("command-output-label").textContent?.trim()).toBe("Bash");
+    expect(getByTestId("command-output-label").textContent?.trim()).toBe(
+      "Bash",
+    );
     expect(getByTestId("command-output-command").textContent).toBe(
       "git status --short",
     );
@@ -83,7 +89,9 @@ describe("<ToolCallCard> header dispatcher", () => {
 
     const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
 
-    expect(getByTestId("command-output-label").textContent?.trim()).toBe("Bash");
+    expect(getByTestId("command-output-label").textContent?.trim()).toBe(
+      "Bash",
+    );
     expect(getByTestId("command-output-command").textContent).toBe("sleep 10");
   });
 
@@ -285,6 +293,207 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(getByTestId("collab-tool-row").textContent).toContain("Sent input");
   });
 
+  it("renders Codex spawn_agent as a compact spawned row", async () => {
+    const pane = await buildPane(makeThread({ provider: "codex" }));
+    const item = makeItem({
+      id: "spawn",
+      kind: "tool_call",
+      status: "running",
+      toolName: "collab_agent",
+      meta: JSON.stringify({
+        input: {
+          tool: "spawn_agent",
+          prompt: "Run `sleep 20` and report the exit code",
+          model: "gpt-5.5",
+          reasoningEffort: "low",
+          receiverThreadIds: ["child-1"],
+          newAgentNickname: "Plato",
+          newAgentRole: "default",
+        },
+      }),
+    });
+
+    const { getByTestId, queryByTestId } = render(ToolCallCard, {
+      props: { pane, item },
+    });
+    const row = getByTestId("collab-tool-row");
+
+    expect(row.textContent).toContain("Spawned Plato [default]");
+    expect(row.textContent).toContain("(gpt-5.5 low)");
+    expect(row.textContent).toContain(
+      "Run `sleep 20` and report the exit code",
+    );
+    expect(row.textContent).not.toContain("running");
+    expect(queryByTestId("subagent-group")).toBeNull();
+  });
+
+  it("expands Codex subagent completion payload output", async () => {
+    const output = [
+      "Run `sleep 20` in /home/rmurphy/repos/agent-overflow",
+      "BASH sleep 20",
+      "0",
+    ].join("\n");
+    setBindingMock("GetPayloadPreview", async () => ({
+      data: output,
+      totalSize: output.length,
+      nextOffset: output.length,
+      isComplete: true,
+    }));
+    const thread = makeThread({ provider: "codex" });
+    const item = makeItem({
+      id: "complete-subagent",
+      kind: "tool_completion",
+      status: "completed",
+      toolName: "collab_agent",
+      summary: "collab_agent: Run `sleep 20` -> done",
+      payloadId: "payload-subagent",
+      payloadKind: "tool_call_result",
+    });
+    const pane = await buildPane(thread, [item]);
+
+    const { getByTestId, queryByTestId } = render(ToolCallCard, {
+      props: { pane, item },
+    });
+
+    expect(queryByTestId("collab-tool-row-output")).toBeNull();
+    await fireEvent.click(getByTestId("collab-tool-row-toggle"));
+
+    await waitFor(() => {
+      expect(getByTestId("collab-tool-row-output").textContent).toContain(
+        "BASH sleep 20",
+      );
+    });
+    expect(getByTestId("collab-tool-row-output").textContent).toContain("0");
+  });
+
+  it("labels Codex subagent completion rows from the spawned agent metadata", async () => {
+    const thread = makeThread({ provider: "codex" });
+    const launch = makeItem({
+      id: "spawn-archimedes",
+      kind: "tool_call",
+      status: "running",
+      toolName: "collab_agent",
+      meta: JSON.stringify({
+        input: {
+          tool: "spawn_agent",
+          prompt: "Run `sleep 3` in the shell and report when it completes",
+          receiverThreadIds: ["child-archimedes"],
+          newAgentNickname: "Archimedes",
+          newAgentRole: "default",
+        },
+      }),
+    });
+    const completion = makeItem({
+      id: "complete-archimedes",
+      kind: "tool_completion",
+      status: "completed",
+      toolName: "collab_agent",
+      summary: "collab_agent: Run `sleep 3` -> done",
+      completionOf: "spawn-archimedes",
+      payloadId: "payload-archimedes",
+      payloadKind: "tool_call_result",
+    });
+    const pane = await buildPane(thread, [launch, completion]);
+
+    const { getByTestId } = render(ToolCallCard, {
+      props: { pane, item: completion },
+    });
+    const text = getByTestId("collab-tool-row").textContent ?? "";
+
+    expect(text).toContain("Archimedes [default]");
+    expect(text).not.toContain("collab_agent");
+  });
+
+  it("loads the full Codex subagent completion payload on request", async () => {
+    setBindingMock("GetPayloadPreview", async () => ({
+      data: "first chunk\n",
+      totalSize: 24,
+      nextOffset: 12,
+      isComplete: false,
+    }));
+    setBindingMock("GetPayloadChunk", async () => ({
+      data: "second chunk\n",
+      offset: 12,
+      nextOffset: 25,
+      totalSize: 25,
+      isComplete: true,
+    }));
+    const thread = makeThread({ provider: "codex" });
+    const item = makeItem({
+      id: "complete-subagent-more",
+      kind: "tool_completion",
+      status: "completed",
+      toolName: "collab_agent",
+      summary: "collab_agent: Run `sleep 20` -> done",
+      payloadId: "payload-subagent-more",
+      payloadKind: "tool_call_result",
+    });
+    const pane = await buildPane(thread, [item]);
+
+    const { getByTestId } = render(ToolCallCard, {
+      props: { pane, item },
+    });
+
+    await fireEvent.click(getByTestId("collab-tool-row-toggle"));
+    await waitFor(() => {
+      expect(getByTestId("collab-tool-row-output").textContent).toContain(
+        "first chunk",
+      );
+    });
+
+    await fireEvent.click(getByTestId("collab-tool-row-show-full"));
+    await waitFor(() => {
+      expect(getByTestId("collab-tool-row-output").textContent).toContain(
+        "second chunk",
+      );
+    });
+  });
+
+  it("retries a failed Codex subagent completion payload preview", async () => {
+    let attempts = 0;
+    setBindingMock("GetPayloadPreview", async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("temporary read failure");
+      }
+      return {
+        data: "loaded after retry",
+        totalSize: 18,
+        nextOffset: 18,
+        isComplete: true,
+      };
+    });
+    const thread = makeThread({ provider: "codex" });
+    const item = makeItem({
+      id: "complete-subagent-retry",
+      kind: "tool_completion",
+      status: "completed",
+      toolName: "collab_agent",
+      summary: "collab_agent: Run `sleep 20` -> done",
+      payloadId: "payload-subagent-retry",
+      payloadKind: "tool_call_result",
+    });
+    const pane = await buildPane(thread, [item]);
+
+    const { getByTestId } = render(ToolCallCard, {
+      props: { pane, item },
+    });
+
+    await fireEvent.click(getByTestId("collab-tool-row-toggle"));
+    await waitFor(() => {
+      expect(getByTestId("collab-tool-row-output").textContent).toContain(
+        "temporary read failure",
+      );
+    });
+
+    await fireEvent.click(getByTestId("collab-tool-row-retry"));
+    await waitFor(() => {
+      expect(getByTestId("collab-tool-row-output").textContent).toContain(
+        "loaded after retry",
+      );
+    });
+  });
+
   it("keeps Codex control rendering scoped to Codex threads", async () => {
     const pane = await buildPane(makeThread({ provider: "claude" }));
     const item = makeItem({
@@ -315,12 +524,12 @@ describe("<ToolCallCard> header dispatcher", () => {
       {
         status: "running" as const,
         meta: JSON.stringify({ input: { receiverThreadIds: ["child-1"] } }),
-        expected: "Waiting for child-1",
+        expected: "Waiting for Agent",
       },
       {
         status: "completed" as const,
         meta: JSON.stringify({ input: { receiverThreadIds: ["child-1"] } }),
-        expected: "Waited for child-1",
+        expected: "Waited for Agent",
       },
       {
         status: "completed" as const,
@@ -356,6 +565,9 @@ describe("<ToolCallCard> header dispatcher", () => {
       expect(getByTestId("collab-tool-row").textContent).toContain(
         testCase.expected,
       );
+      expect(getByTestId("collab-tool-row").textContent).not.toContain(
+        "running",
+      );
       unmount();
     }
   });
@@ -382,8 +594,172 @@ describe("<ToolCallCard> header dispatcher", () => {
     const text = getByTestId("collab-tool-row").textContent ?? "";
 
     expect(text).toContain("Finished waiting");
-    expect(text).toContain("child-1: completed - done");
-    expect(text).toContain("child-2: failed - boom");
+    expect(text).toContain("Agent: completed - done");
+    expect(text).toContain("Agent: failed - boom");
+    expect(text).not.toContain("child-1");
+    expect(text).not.toContain("child-2");
+  });
+
+  it("uses linked spawn rows instead of receiver UUIDs for wait_agent labels", async () => {
+    const thread = makeThread({ provider: "codex" });
+    const spawnItems = [
+      makeItem({
+        id: "spawn-1",
+        kind: "tool_call",
+        status: "completed",
+        toolName: "collab_agent",
+        meta: JSON.stringify({
+          input: {
+            tool: "spawn_agent",
+            prompt: "Run `sleep 3` in the shell",
+            receiverThreadIds: ["019df120-4fbb-7390-a468-b47b88221e25"],
+            newAgentNickname: "Newton",
+            newAgentRole: "default",
+          },
+        }),
+      }),
+      makeItem({
+        id: "spawn-2",
+        kind: "tool_call",
+        status: "completed",
+        toolName: "collab_agent",
+        meta: JSON.stringify({
+          input: {
+            tool: "spawn_agent",
+            prompt: "Run `sleep 5` in the shell",
+            receiverThreadIds: ["019df120-5039-73d2-9496-9e862004aa6b"],
+            newAgentNickname: "Epicurus",
+            newAgentRole: "default",
+          },
+        }),
+      }),
+      makeItem({
+        id: "spawn-3",
+        kind: "tool_call",
+        status: "completed",
+        toolName: "collab_agent",
+        meta: JSON.stringify({
+          input: {
+            tool: "spawn_agent",
+            prompt: "Run `sleep 7` in the shell",
+            receiverThreadIds: ["019df120-5088-7860-9961-a5706ec9f5f4"],
+            newAgentNickname: "Heisenberg",
+            newAgentRole: "default",
+          },
+        }),
+      }),
+    ];
+    const pane = await buildPane(thread, spawnItems);
+    const item = makeItem({
+      id: "wait-uuids",
+      kind: "tool_call",
+      status: "running",
+      toolName: "wait_agent",
+      meta: JSON.stringify({
+        input: {
+          tool: "wait_agent",
+          receiverThreadIds: [
+            "019df120-4fbb-7390-a468-b47b88221e25",
+            "019df120-5039-73d2-9496-9e862004aa6b",
+            "019df120-5088-7860-9961-a5706ec9f5f4",
+          ],
+        },
+      }),
+    });
+
+    const { getByTestId } = render(ToolCallCard, {
+      props: {
+        pane,
+        item,
+        codexSubagentReceiverLabels: codexSubagentReceiverLabels([
+          ...spawnItems,
+          item,
+        ]),
+      },
+    });
+    const text = getByTestId("collab-tool-row").textContent ?? "";
+
+    expect(text).toContain("Waiting for 3 agents");
+    expect(text).toContain("Newton [default]");
+    expect(text).toContain("Epicurus [default]");
+    expect(text).toContain("Heisenberg [default]");
+    expect(text).not.toContain("019df120");
+  });
+
+  it("does not expose raw receiver ids from unlabeled receiverAgents records", async () => {
+    const pane = await buildPane(makeThread({ provider: "codex" }));
+    const item = makeItem({
+      id: "mixed-wait-receivers",
+      kind: "tool_call",
+      status: "completed",
+      toolName: "wait_agent",
+      meta: JSON.stringify({
+        input: {
+          tool: "wait_agent",
+          receiverThreadIds: ["019df120-known", "019df120-unknown-uuid"],
+          receiverAgents: [
+            {
+              threadId: "019df120-known",
+              agentNickname: "Hypatia",
+              agentRole: "default",
+            },
+            { threadId: "019df120-unknown-uuid" },
+          ],
+          agentsStates: {
+            "019df120-known": { status: "completed", message: "done" },
+            "019df120-unknown-uuid": { status: "completed", message: "done" },
+          },
+        },
+      }),
+    });
+
+    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+    const text = getByTestId("collab-tool-row").textContent ?? "";
+
+    expect(text).toContain("Hypatia [default]");
+    expect(text).toContain("Agent");
+    expect(text).not.toContain("019df120-unknown-uuid");
+  });
+
+  it("keeps the full waited-agent list when only one target completed", async () => {
+    const pane = await buildPane(makeThread({ provider: "codex" }));
+    const item = makeItem({
+      id: "partial-wait",
+      kind: "tool_call",
+      status: "completed",
+      toolName: "wait_agent",
+      meta: JSON.stringify({
+        input: {
+          tool: "wait_agent",
+          receiverThreadIds: ["child-1", "child-2", "child-3"],
+          receiverAgents: [
+            {
+              threadId: "child-1",
+              agentNickname: "Hypatia",
+              agentRole: "default",
+            },
+            {
+              threadId: "child-2",
+              agentNickname: "Parfit",
+              agentRole: "default",
+            },
+            { threadId: "child-3", agentNickname: "Ada", agentRole: "default" },
+          ],
+          agentsStates: {
+            "child-1": { status: "completed", message: "done" },
+          },
+        },
+      }),
+    });
+
+    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+    const text = getByTestId("collab-tool-row").textContent ?? "";
+
+    expect(text).toContain("Waited for 3 agents");
+    expect(text).toContain("Hypatia [default]");
+    expect(text).toContain("Parfit [default]");
+    expect(text).toContain("Ada [default]");
+    expect(text).not.toContain("Waited for Hypatia");
   });
 
   it("renders wait_agent receiver nicknames and keeps completed carriers neutral", async () => {
@@ -398,7 +774,11 @@ describe("<ToolCallCard> header dispatcher", () => {
           tool: "wait_agent",
           receiverThreadIds: ["child-1"],
           receiverAgents: [
-            { threadId: "child-1", agentNickname: "Galileo", agentRole: "explorer" },
+            {
+              threadId: "child-1",
+              agentNickname: "Galileo",
+              agentRole: "explorer",
+            },
           ],
         },
       }),
@@ -410,7 +790,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     const text = getByTestId("collab-tool-row").textContent ?? "";
 
     expect(text).toContain("Waited for Galileo [explorer]");
-    expect(text).toContain("└ Galileo [explorer]");
+    expect(text).not.toContain("└ Galileo [explorer]");
     expect(queryByTestId("completion-badge")).toBeNull();
   });
 
@@ -809,7 +1189,7 @@ describe("<ToolCallCard> backgrounded status label", () => {
   });
 
   it('does not show "…" for Codex subagent launch history rows', async () => {
-    const pane = await buildPane();
+    const pane = await buildPane(makeThread({ provider: "codex" }));
     const item = makeItem({
       id: "spawn-bg",
       kind: "tool_call",
@@ -819,10 +1199,15 @@ describe("<ToolCallCard> backgrounded status label", () => {
       isBackground: true,
     });
 
-    const { queryByTestId, getByTestId } = render(ToolCallCard, { props: { pane, item } });
+    const { queryByTestId, getByTestId } = render(ToolCallCard, {
+      props: { pane, item },
+    });
 
-    expect(queryByTestId("tool-call-card-status")).toBeNull();
-    expect(getByTestId("tool-call-card-duration").textContent?.trim()).toBe("");
+    expect(queryByTestId("tool-call-card")).toBeNull();
+    expect(getByTestId("collab-tool-row").textContent).toContain(
+      "Spawned agent",
+    );
+    expect(getByTestId("collab-tool-row").textContent).not.toContain("…");
   });
 
   it('renders the Bash command label when !isBackground && status === "running"', async () => {
@@ -842,8 +1227,12 @@ describe("<ToolCallCard> backgrounded status label", () => {
 
     expect(queryByTestId("tool-call-card-status")).toBeNull();
     expect(getByTestId("command-output-status").textContent?.trim()).toBe("…");
-    expect(getByTestId("command-output-status").className).toContain("animate-pulse");
-    expect(getByTestId("command-output-label").textContent?.trim()).toBe("Bash");
+    expect(getByTestId("command-output-status").className).toContain(
+      "animate-pulse",
+    );
+    expect(getByTestId("command-output-label").textContent?.trim()).toBe(
+      "Bash",
+    );
   });
 
   it('keeps "…" with no badge when a backgrounded launch row is somehow status=completed', async () => {
@@ -874,7 +1263,7 @@ describe("<ToolCallCard> backgrounded status label", () => {
     expect(queryByTestId("completion-badge")).toBeNull();
   });
 
-  it('renders the Bash label for tool_completion kind even when the flags match', async () => {
+  it("renders the Bash label for tool_completion kind even when the flags match", async () => {
     // tool_completion rows are terminal by definition — isBackground+running
     // should never fire on them in practice, but the template guards
     // against this corner. The sibling completion row must not claim
@@ -895,7 +1284,9 @@ describe("<ToolCallCard> backgrounded status label", () => {
 
     expect(queryByTestId("tool-call-card-status")).toBeNull();
     expect(getByTestId("command-output-status").textContent?.trim()).toBe("…");
-    expect(getByTestId("command-output-label").textContent?.trim()).toBe("Bash");
+    expect(getByTestId("command-output-label").textContent?.trim()).toBe(
+      "Bash",
+    );
   });
 
   it("shows a loading body when background output ingestion is still in flight", async () => {
@@ -923,7 +1314,7 @@ describe("<ToolCallCard> backgrounded status label", () => {
 });
 
 describe("<ToolCallCard> status dispatch", () => {
-  it('shows the Bash label for streaming/running command tool calls', async () => {
+  it("shows the Bash label for streaming/running command tool calls", async () => {
     const pane = await buildPane();
     const item = makeItem({
       id: "t",
@@ -938,7 +1329,9 @@ describe("<ToolCallCard> status dispatch", () => {
     });
 
     expect(queryByTestId("tool-call-card-status")).toBeNull();
-    expect(getByTestId("command-output-label").textContent?.trim()).toBe("Bash");
+    expect(getByTestId("command-output-label").textContent?.trim()).toBe(
+      "Bash",
+    );
   });
 
   it("renders the success badge for an inline tool_call that completed (non-background)", async () => {

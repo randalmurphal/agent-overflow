@@ -25,7 +25,15 @@
   import { isCodexCollabControlToolName } from './codexCollabControls';
   import { commandTextForItem, isCommandToolName } from './commandDisplay';
 
-  let { pane, item }: { pane: ThreadPane; item: Item } = $props();
+  let {
+    pane,
+    item,
+    codexSubagentReceiverLabels = new Map<string, string>(),
+  }: {
+    pane: ThreadPane;
+    item: Item;
+    codexSubagentReceiverLabels?: ReadonlyMap<string, string>;
+  } = $props();
 
   let payloadKind = $derived(item.payloadKind);
   let payloadId = $derived(item.payloadId);
@@ -112,7 +120,7 @@
        answers don't accidentally route to a wrong specialised renderer. -->
   <AskUserQuestionCard {pane} {item} />
 {:else if isCollabControlRow}
-  <CollabToolRow {item} />
+  <CollabToolRow {pane} {item} {codexSubagentReceiverLabels} />
 {:else if planMeta && payloadId}
   <ProposedPlanCard {pane} {item} {payloadId} meta={planMeta} />
 {:else if diffMetaPatchFile}
