@@ -313,18 +313,26 @@ func TestClassifyItemNotification_UserMessageStarted_StillDropped(t *testing.T) 
 	}
 }
 
-// TestClassifyItemCompleted_AgentMessageStillDropped pins that the
-// userMessage carve-out hasn't accidentally swallowed other non-tool
-// types. agentMessage (the assistant text channel) has its own
-// triage path via `item/agentMessage/delta` and must not produce
-// anything from `item/completed`. If a future refactor drops the
-// `isNonToolCodexItemType` guard, this test fails before behavior
-// changes silently.
-func TestClassifyItemCompleted_AgentMessageStillDropped(t *testing.T) {
+// TestClassifyItemCompleted_AgentMessageSettlesText pins the Codex
+// multi-message turn boundary. Deltas create the assistant_text row;
+// item/completed closes that streaming row so a later tool or final_answer
+// message in the same turn gets its own timeline slot.
+func TestClassifyItemCompleted_AgentMessageSettlesText(t *testing.T) {
 	params := `{"turnId":"turn-9","item":{"id":"agent-1","type":"agentMessage","text":"final answer"}}`
 	events := ClassifyNotification("thread-1", "item/completed", json.RawMessage(params))
-	if len(events) != 0 {
-		t.Fatalf("expected 0 events for item/completed agentMessage, got %d: %+v", len(events), events)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event for item/completed agentMessage, got %d: %+v", len(events), events)
+	}
+	evt := events[0]
+	if evt.Kind != provider.EventContentBlockStop {
+		t.Fatalf("kind = %q, want content block stop", evt.Kind)
+	}
+	var meta map[string]string
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if meta["blockType"] != "text" {
+		t.Fatalf("blockType = %q, want text", meta["blockType"])
 	}
 }
 

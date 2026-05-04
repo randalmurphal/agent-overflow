@@ -266,8 +266,9 @@ func TestItemStartedDropsNonToolTypes(t *testing.T) {
 }
 
 // TestItemCompletedDropsNonToolContentTypes mirrors the started filter:
-// completions for agentMessage / reasoning / todoList must not settle as
-// tool_call rows. Two carve-outs:
+// completions for todoList must not settle as tool_call rows. Carve-outs:
+//   - agentMessage / assistantMessage / reasoning settle their streaming
+//     content rows via EventContentBlockStop.
 //   - plan re-routes to EventProposedPlan (covered by
 //     TestClassifyNotification_ItemCompletedPlan).
 //   - userMessage promotes to EventUserText (covered by the
@@ -276,13 +277,45 @@ func TestItemStartedDropsNonToolTypes(t *testing.T) {
 //     branch and parse_user.go's `isReplay:true` mirror on the
 //     Claude side.
 func TestItemCompletedDropsNonToolContentTypes(t *testing.T) {
-	cases := []string{"agentMessage", "assistantMessage", "reasoning", "todoList"}
+	cases := []string{"todoList"}
 	for _, itemType := range cases {
 		t.Run(itemType, func(t *testing.T) {
 			params := json.RawMessage(`{"item":{"id":"item-X","type":"` + itemType + `"}}`)
 			events := ClassifyNotification(testThread, "item/completed", params)
 			if len(events) != 0 {
 				t.Fatalf("%s completed should be dropped, got %d events: %+v", itemType, len(events), events)
+			}
+		})
+	}
+}
+
+func TestItemCompletedSettlesStreamingContentTypes(t *testing.T) {
+	cases := []struct {
+		name          string
+		itemType      string
+		wantBlockType string
+	}{
+		{name: "agent message", itemType: "agentMessage", wantBlockType: "text"},
+		{name: "assistant message", itemType: "assistantMessage", wantBlockType: "text"},
+		{name: "reasoning", itemType: "reasoning", wantBlockType: "thinking"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := json.RawMessage(`{"turnId":"turn-1","item":{"id":"item-X","type":"` + tc.itemType + `"}}`)
+			events := ClassifyNotification(testThread, "item/completed", params)
+			if len(events) != 1 {
+				t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+			}
+			if events[0].Kind != provider.EventContentBlockStop {
+				t.Fatalf("kind = %q, want content block stop", events[0].Kind)
+			}
+			var meta map[string]string
+			if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+				t.Fatalf("meta unmarshal: %v", err)
+			}
+			if meta["blockType"] != tc.wantBlockType {
+				t.Fatalf("blockType = %q, want %q", meta["blockType"], tc.wantBlockType)
 			}
 		})
 	}

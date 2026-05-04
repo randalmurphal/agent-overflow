@@ -226,6 +226,65 @@ func TestToolStartSplitsAssistantTextAroundVisibleToolRow(t *testing.T) {
 	}
 }
 
+func TestCodexCompletionOnlyControlToolSplitsAssistantText(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	if err := st.UpdateProvider("t1", "codex"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "closing agents now",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("first text delta: %v", err)
+	}
+
+	meta, _ := json.Marshal(map[string]any{
+		"toolName": "close_agent",
+		"input": map[string]any{
+			"tool":              "close_agent",
+			"receiverThreadIds": []string{"child-1"},
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "close-agent-1",
+		ItemType: "close_agent", Content: "closed child-1", Meta: meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("close completion: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "final answer",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("second text delta: %v", err)
+	}
+
+	items, err := st.ListTurnItems("t1", 0)
+	if err != nil {
+		t.Fatalf("list turn items: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected text, close tool, text; got %d items: %+v", len(items), items)
+	}
+	if items[0].Kind != itemKindAssistantText || items[0].Summary != "closing agents now" {
+		t.Fatalf("first item = (%q, %q), want pre-close assistant text", items[0].Kind, items[0].Summary)
+	}
+	if items[1].Kind != itemKindToolCall || items[1].ID != "close-agent-1" || items[1].ToolName != "close_agent" {
+		t.Fatalf("second item = (%q, %q, %q), want close_agent tool row", items[1].Kind, items[1].ID, items[1].ToolName)
+	}
+	if items[2].Kind != itemKindAssistantText || items[2].Summary != "final answer" {
+		t.Fatalf("third item = (%q, %q), want post-close assistant text", items[2].Kind, items[2].Summary)
+	}
+}
+
 // TestToolStartCarriesBackgroundFlag verifies the is_background bit
 // rides through Meta into the persisted row. Claude sets this from
 // run_in_background; Codex's classifier sets it via the same key.

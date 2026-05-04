@@ -177,9 +177,10 @@ func classifyTurnCompleted(threadID string, params json.RawMessage, now time.Tim
 //     promotion in parse_user.go).
 //   - agentMessage / assistantMessage: written by handleTextDelta from the
 //     item/agentMessage/delta stream; settled on
-//     turn/completed
+//     item/completed
 //   - reasoning:               written by handleThinking from the
-//     item/reasoning/*Delta stream
+//     item/reasoning/*Delta stream; settled on
+//     item/completed
 //   - plan:                    item/completed is special-cased to emit
 //     EventProposedPlan; item/started is noise
 //   - todoList:                no triage path yet; suppress rather than
@@ -478,16 +479,16 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 	case "enteredReviewMode", "hookPrompt":
 		return nil
 	}
-	// Plan is the one non-tool type we DO route here — as a proposed-plan
-	// event, not as a tool_call completion. The remaining non-tool types
-	// (agentMessage / reasoning / todoList) are handled by their own
-	// triage paths and must not settle a tool_call row. userMessage is
-	// the second carve-out: every wire echo of an AO-initiated send (or
-	// a future cascade injection like the Codex-side equivalent of
+	// Plan is a non-tool type we DO route here — as a proposed-plan event,
+	// not as a tool_call completion. Assistant text and reasoning
+	// completions are also routed here, but only as content block stops so
+	// multi-message Codex turns split transcript rows at the wire boundary.
+	// userMessage is the other carve-out: every wire echo of an AO-initiated
+	// send (or a future cascade injection like the Codex-side equivalent of
 	// task_notification) is promoted to EventUserText so triage's
-	// pending-send correlator can stamp the AO-owned `user:<turnIndex>`
-	// row. This is the receive-side mirror of Claude's `isReplay:true`
-	// promotion in parse_user.go.
+	// pending-send correlator can stamp the AO-owned `user:<turnIndex>` row.
+	// This is the receive-side mirror of Claude's `isReplay:true` promotion
+	// in parse_user.go.
 	if itemType == "plan" {
 		planMarkdown := extractCodexPlanMarkdown(params)
 		if planMarkdown == "" {
@@ -501,6 +502,28 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 			ItemType:  itemType,
 			Content:   planMarkdown,
 			Meta:      params,
+			Timestamp: now,
+		}}
+	}
+	switch itemType {
+	case "agentMessage", "assistantMessage":
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventContentBlockStop,
+			ThreadID:  threadID,
+			TurnID:    turnID,
+			ItemID:    itemID,
+			ItemType:  itemType,
+			Meta:      json.RawMessage(`{"blockType":"text"}`),
+			Timestamp: now,
+		}}
+	case "reasoning":
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventContentBlockStop,
+			ThreadID:  threadID,
+			TurnID:    turnID,
+			ItemID:    itemID,
+			ItemType:  itemType,
+			Meta:      json.RawMessage(`{"blockType":"thinking"}`),
 			Timestamp: now,
 		}}
 	}
