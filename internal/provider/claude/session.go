@@ -326,55 +326,6 @@ func buildArgs(cfg Config) []string {
 	return args
 }
 
-// cliInlineSettings is the JSON shape projected into the `--settings`
-// CLI flag, which Claude Code applies as the `flagSettings` source. The
-// struct field order is the JSON key order; keep `FastMode` first so
-// the rendered output remains `{"fastMode":true}` for the fastMode-only
-// case (matches existing test fixture and avoids needless churn for
-// readers comparing CLI invocations).
-type cliInlineSettings struct {
-	FastMode bool              `json:"fastMode,omitempty"`
-	Env      map[string]string `json:"env,omitempty"`
-}
-
-// inlineSettingsForCLI builds the JSON payload for the `--settings` CLI
-// flag, combining every setting we want to project as `flagSettings`.
-// Returns ("", false) when there's nothing to set so the flag can be
-// omitted entirely.
-func inlineSettingsForCLI(cfg Config) (string, bool) {
-	settings := cliInlineSettings{
-		FastMode: cfg.FastMode,
-	}
-	if cfg.AutoCompactPercent > 0 {
-		// Defense in depth: upstream `provider.normalizeAutoCompactPercent`
-		// already clamps to ≤90, but `Config.AutoCompactPercent` is a
-		// public field a future caller could populate directly without
-		// going through `ConfigFromOptions`. The clamp here keeps the
-		// rendered CLI flag honest regardless of how `cfg` was built.
-		percent := cfg.AutoCompactPercent
-		if percent > 90 {
-			percent = 90
-		}
-		settings.Env = map[string]string{
-			"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": strconv.Itoa(percent),
-		}
-	}
-	if !settings.FastMode && len(settings.Env) == 0 {
-		return "", false
-	}
-	data, err := json.Marshal(settings)
-	if err != nil {
-		// `cliInlineSettings` is a bool + map[string]string with no
-		// custom marshalers, so json.Marshal cannot fail in practice.
-		// Panic loudly if it ever does — silently dropping the flag
-		// would mean the user's autocompact / fastMode setting is
-		// quietly ignored, which violates the "errors must never
-		// silently fail" rule in CLAUDE.md.
-		panic(fmt.Sprintf("claude: cliInlineSettings marshal failed (unreachable): %v", err))
-	}
-	return string(data), true
-}
-
 func normalizeClaudePermissionMode(mode string) string {
 	switch mode {
 	case "acceptEdits", "bypassPermissions", "plan":
