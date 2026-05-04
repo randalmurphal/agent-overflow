@@ -950,6 +950,89 @@ func TestCodexSubagentWaitCompletionCarriesFinalOutputPayload(t *testing.T) {
 	}
 }
 
+func TestCodexSubagentDuplicateBlankCompletionPreservesPayload(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	if err := st.UpdateProvider("t1", "codex"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMeta(t, "child-blank-dup", "running")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-blank-dup",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-blank-dup",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+
+	waitMeta := buildWaitAgentMetaWithMessage(t, "child-blank-dup", "completed", "Final child output")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "wait-blank-dup",
+		ItemType: "wait_agent", TurnID: "turn-0", Meta: waitMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("wait start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "wait-blank-dup",
+		ItemType: "wait_agent", TurnID: "turn-0", Content: "Final child output",
+		Meta: waitMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("wait complete: %v", err)
+	}
+
+	completionID := nextToolCompletionID("spawn-blank-dup")
+	before, found, err := st.GetThreadItem("t1", completionID)
+	if err != nil || !found {
+		t.Fatalf("subagent sibling missing before duplicate: found=%v err=%v", found, err)
+	}
+	if before.PayloadID == "" {
+		t.Fatalf("subagent sibling missing payload before duplicate")
+	}
+	beforeMeta := decodeItemMetaMap(t, before.Meta)
+	if beforeMeta["wait_carrier_id"] != "wait-blank-dup" {
+		t.Fatalf("wait_carrier_id before duplicate = %v, want wait-blank-dup", beforeMeta["wait_carrier_id"])
+	}
+
+	if err := router.synthesizeCodexBackgroundCompletion(provider.ProviderEvent{
+		ThreadID:  "t1",
+		ItemID:    "spawn-blank-dup",
+		Content:   "\n",
+		Meta:      subagentStatusToItemStatusMeta("completed"),
+		Timestamp: time.Now(),
+	}, "spawn-blank-dup", codexBackgroundCompletionOptions{}); err != nil {
+		t.Fatalf("duplicate blank completion: %v", err)
+	}
+
+	after, found, err := st.GetThreadItem("t1", completionID)
+	if err != nil || !found {
+		t.Fatalf("subagent sibling missing after duplicate: found=%v err=%v", found, err)
+	}
+	if after.PayloadID != before.PayloadID {
+		t.Fatalf("payload id changed after duplicate: %q, want %q", after.PayloadID, before.PayloadID)
+	}
+	afterMeta := decodeItemMetaMap(t, after.Meta)
+	if afterMeta["wait_carrier_id"] != "wait-blank-dup" {
+		t.Fatalf("wait_carrier_id after duplicate = %v, want wait-blank-dup", afterMeta["wait_carrier_id"])
+	}
+	data, err := st.GetPayloadData(after.PayloadID)
+	if err != nil {
+		t.Fatalf("payload data after duplicate: %v", err)
+	}
+	if string(data) != "Final child output" {
+		t.Fatalf("payload after duplicate = %q, want final child output", string(data))
+	}
+}
+
 func TestCodexSubagentWaitCompletionPersistsImmediatelyWithActiveStream(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

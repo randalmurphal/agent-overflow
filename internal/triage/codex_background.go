@@ -1517,6 +1517,7 @@ func (r *Router) synthesizeCodexBackgroundCompletion(evt provider.ProviderEvent,
 		completion.CreatedAt = existing.CreatedAt
 		completion.TurnIndex = existing.TurnIndex
 		completion.ItemIndex = existing.ItemIndex
+		completion.Meta = mergeItemMetaJSON(existing.Meta, json.RawMessage(completion.Meta))
 		if existing.PayloadID != "" {
 			completion.PayloadID = existing.PayloadID
 		}
@@ -1541,6 +1542,9 @@ func attachCodexBackgroundCompletionPayload(
 ) *store.Payload {
 	if completion.PayloadID == "" && sharedPayloadID != "" {
 		completion.PayloadID = sharedPayloadID
+		return nil
+	}
+	if completion.PayloadID != "" && completion.PayloadID != launch.PayloadID && strings.TrimSpace(evt.Content) == "" {
 		return nil
 	}
 
