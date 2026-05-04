@@ -42,6 +42,17 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
 - `options.go` / `probe.go` — non-parser subsystems (session options,
   binary probe).
 
+Parser state method names are part of the contract:
+
+- `take*` / `consume*` methods read and clear parser state. Use them
+  only when there is exactly one lifecycle owner for that value, and
+  document that owner on the method.
+- `peek*`, `has*`, and `lookup*` methods are read-only. If a second
+  same-boundary reader appears for a `take*` value, add a `peek*`
+  companion rather than smuggling reads through the consuming method.
+- State that may span multiple future wire envelopes needs an explicit
+  cleanup point (`parseResult`, `Close`, or bounded map eviction).
+
 ## NDJSON shapes we handle
 
 ⚠ **Authoritative wire reference**:
@@ -115,16 +126,19 @@ back to the parent tool call.
   `task_updated` with `patch.status:"killed"` — the same terminal
   channel normal completion uses, routed by task_id.
 - **Turn lifecycle** — `result` envelope remains authoritative for
-  cumulative turn payload (token usage, cost, terminal_reason, final
-  assistant_message_id). It is NOT the only source of
-  `EventTurnComplete`: when the parent message ends with a
+  cumulative turn payload (token usage, cost, and raw
+  `terminal_reason` for wire reference). The final
+  `assistant_message_id` is tracked from the last in-stream assistant
+  `message.id`; it is NOT carried on `result`. `result` is also NOT
+  the only source of `EventTurnComplete`: when the parent message ends with a
   "model has stopped" stop_reason (`end_turn` / `stop_sequence` /
   `refusal`) and `parent_tool_use_id` is null, `parse_stream.go`
-  emits a soft `EventTurnComplete` immediately so the working
-  indicator clears even when the CLI withholds `result` (it does
-  this whenever a `local_agent` subagent is still in flight). The
-  trailing `result` envelope, when it eventually arrives, folds in
-  the cumulative payload via `persistLateTurnUsage` — see
+  emits a typed `provider.SoftRoundCloseMeta` `EventTurnComplete`
+  immediately so the working indicator clears even when the CLI
+  withholds `result` (it does this whenever a `local_agent` subagent
+  is still in flight). The trailing `result` envelope, when it
+  eventually arrives, folds in the cumulative payload via
+  `persistLateTurnPayload` — see
   [`invariants.md §27`](../../../docs/architecture/invariants.md#27-soft-round-close-from-message_deltastop_reason-is-wire-typed)
   and the
   [`local_agent_outlives.ndjson`](../../../docs/references/fixtures/claude/local_agent_outlives.ndjson)

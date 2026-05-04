@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/checkpoint"
+	"agent-overflow/internal/diffsummary"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/provider/codex"
@@ -22,6 +23,20 @@ const (
 	RevertModeConversationAndFiles = "conversation-and-files"
 	RevertModeConversationOnly     = "conversation-only"
 )
+
+// CheckpointView is the frontend-facing checkpoint row. The store row also
+// carries backend-only Git ref/workspace fields; those stay server-side because
+// the UI only needs turn ordering, status, file summaries, and tool-written
+// paths.
+type CheckpointView struct {
+	ID                  string             `json:"id"`
+	ThreadID            string             `json:"threadId"`
+	CheckpointTurnCount int                `json:"checkpointTurnCount"`
+	Status              string             `json:"status"`
+	Files               []diffsummary.File `json:"files"`
+	ToolPaths           []string           `json:"toolPaths"`
+	CapturedAt          int64              `json:"capturedAt"`
+}
 
 // GetCheckpointRangeDiff returns the unified diff between two finalized
 // checkpoint turn counts. Turn count 0 is the baseline before the first turn;
@@ -417,15 +432,31 @@ func (a *App) rollbackCodexThread(thread store.Thread, numTurns int) error {
 	return tempSession.Rollback(context.Background(), numTurns)
 }
 
-// ListThreadCheckpoints returns every persisted checkpoint row for a thread.
+// ListThreadCheckpoints returns every frontend-visible checkpoint view for a thread.
 // Ordering is ascending by checkpoint turn count so the UI can render a
 // turn-navigation strip without additional sorting.
-func (a *App) ListThreadCheckpoints(threadID string) ([]store.Checkpoint, error) {
+func (a *App) ListThreadCheckpoints(threadID string) ([]CheckpointView, error) {
 	list, err := a.store.ListCheckpoints(threadID)
 	if err != nil {
 		return nil, fmt.Errorf("list thread checkpoints: %w", err)
 	}
-	return list, nil
+	out := make([]CheckpointView, 0, len(list))
+	for _, row := range list {
+		out = append(out, checkpointViewFromStore(row))
+	}
+	return out, nil
+}
+
+func checkpointViewFromStore(row store.Checkpoint) CheckpointView {
+	return CheckpointView{
+		ID:                  row.ID,
+		ThreadID:            row.ThreadID,
+		CheckpointTurnCount: row.CheckpointTurnCount,
+		Status:              row.Status,
+		Files:               row.Files,
+		ToolPaths:           row.ToolPaths,
+		CapturedAt:          row.CapturedAt,
+	}
 }
 
 // checkpointStore returns the App's checkpoint.Store, creating one on demand

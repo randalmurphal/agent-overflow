@@ -7,6 +7,25 @@ import (
 	"agent-overflow/internal/provider"
 )
 
+func requireWireTurnComplete(t *testing.T, events []provider.ProviderEvent) provider.WireTurnCompleteMeta {
+	t.Helper()
+	for _, evt := range events {
+		if evt.Kind != provider.EventTurnComplete {
+			continue
+		}
+		switch meta := evt.TurnComplete.(type) {
+		case *provider.WireTurnCompleteMeta:
+			if meta != nil {
+				return *meta
+			}
+		default:
+			t.Fatalf("EventTurnComplete meta type = %T, want WireTurnCompleteMeta", evt.TurnComplete)
+		}
+	}
+	t.Fatalf("no EventTurnComplete in %+v", events)
+	return provider.WireTurnCompleteMeta{}
+}
+
 // TestParseTaskLifecycleEvent_CompletedPatchEmitsBackgroundTerminal is
 // the basic happy-path assertion: a task_updated envelope with
 // `patch.status=completed` emits exactly one
@@ -177,7 +196,7 @@ func TestParseTaskNotificationEvent_EmitsNotificationOnly(t *testing.T) {
 
 // TestParseResult_PopulatesAssistantMessageID verifies that the
 // parser tracks the last `assistant.message.id` and stamps it on
-// `EventTurnComplete.Meta.assistant_message_id`. The id resets after
+// the typed turn-complete payload. The id resets after
 // emission so the next turn's result starts fresh.
 func TestParseResult_PopulatesAssistantMessageID(t *testing.T) {
 	parser := NewParser()
@@ -194,31 +213,21 @@ func TestParseResult_PopulatesAssistantMessageID(t *testing.T) {
 		t.Fatalf("result: %v", err)
 	}
 
-	var turn provider.ProviderEvent
-	for _, evt := range events {
-		if evt.Kind == provider.EventTurnComplete {
-			turn = evt
-			break
-		}
+	meta := requireWireTurnComplete(t, events)
+	if meta.AssistantMessageID != "msg_second" {
+		t.Fatalf("assistant_message_id: got %v, want msg_second", meta.AssistantMessageID)
 	}
-	if turn.Kind != provider.EventTurnComplete {
-		t.Fatalf("no EventTurnComplete in %+v", events)
+	if meta.StopReason != "end_turn" {
+		t.Fatalf("stop_reason: got %v", meta.StopReason)
 	}
-	var meta map[string]any
-	if err := json.Unmarshal(turn.Meta, &meta); err != nil {
-		t.Fatalf("unmarshal turn meta: %v", err)
+	if meta.Usage == nil {
+		t.Fatal("usage missing")
 	}
-	if meta["assistant_message_id"] != "msg_second" {
-		t.Fatalf("assistant_message_id: got %v, want msg_second", meta["assistant_message_id"])
+	if meta.Usage.InputTokens != 50 || meta.Usage.OutputTokens != 100 {
+		t.Fatalf("usage = %+v, want input=50 output=100", meta.Usage)
 	}
-	if meta["stop_reason"] != "end_turn" {
-		t.Fatalf("stop_reason: got %v", meta["stop_reason"])
-	}
-	if meta["duration_ms"] != float64(12345) {
-		t.Fatalf("duration_ms: got %v", meta["duration_ms"])
-	}
-	if meta["total_cost_usd"] != 0.12 {
-		t.Fatalf("total_cost_usd: got %v", meta["total_cost_usd"])
+	if meta.Usage.TotalCostUSD != 0.12 {
+		t.Fatalf("usage total cost = %v, want 0.12", meta.Usage.TotalCostUSD)
 	}
 
 	// Emit a second result. lastAssistantMessageID must have cleared
@@ -231,12 +240,12 @@ func TestParseResult_PopulatesAssistantMessageID(t *testing.T) {
 		if evt.Kind != provider.EventTurnComplete {
 			continue
 		}
-		var m2 map[string]any
-		if err := json.Unmarshal(evt.Meta, &m2); err != nil {
-			t.Fatalf("unmarshal second turn meta: %v", err)
+		meta, ok := evt.TurnComplete.(*provider.WireTurnCompleteMeta)
+		if !ok || meta == nil {
+			t.Fatalf("second turn meta type = %T, want WireTurnCompleteMeta", evt.TurnComplete)
 		}
-		if v, ok := m2["assistant_message_id"]; ok {
-			t.Fatalf("second turn still carries assistant_message_id=%v — take should have cleared it", v)
+		if meta.AssistantMessageID != "" {
+			t.Fatalf("second turn still carries assistant_message_id=%v — take should have cleared it", meta.AssistantMessageID)
 		}
 	}
 }
@@ -294,7 +303,7 @@ func TestParseResultUsageNeverEmitsContextWindow(t *testing.T) {
 // interrupted-turn heuristic (forge sdkMessageParsing.ts:112-125):
 // subtype=error_during_execution + is_error=false + errors[] containing
 // "aborted" promotes stop_reason to "interrupted" and sets
-// meta.aborted=true.
+// Aborted=true.
 func TestParseResult_InterruptedMarksAbortedAndStopReason(t *testing.T) {
 	parser := NewParser()
 
@@ -308,36 +317,23 @@ func TestParseResult_InterruptedMarksAbortedAndStopReason(t *testing.T) {
 	if err != nil {
 		t.Fatalf("result: %v", err)
 	}
-	var turn provider.ProviderEvent
-	for _, evt := range events {
-		if evt.Kind == provider.EventTurnComplete {
-			turn = evt
-			break
-		}
+	meta := requireWireTurnComplete(t, events)
+	if !meta.Aborted {
+		t.Fatalf("Aborted: got false, want true")
 	}
-	if turn.Kind != provider.EventTurnComplete {
-		t.Fatalf("expected EventTurnComplete, got %+v", events)
+	if meta.StopReason != "interrupted" {
+		t.Fatalf("StopReason: got %v, want interrupted", meta.StopReason)
 	}
-	var meta map[string]any
-	if err := json.Unmarshal(turn.Meta, &meta); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if meta["aborted"] != true {
-		t.Fatalf("meta.aborted: got %v, want true", meta["aborted"])
-	}
-	if meta["stop_reason"] != "interrupted" {
-		t.Fatalf("meta.stop_reason: got %v, want interrupted", meta["stop_reason"])
-	}
-	if meta["assistant_message_id"] != "msg_x" {
-		t.Fatalf("assistant_message_id: got %v, want msg_x", meta["assistant_message_id"])
+	if meta.AssistantMessageID != "msg_x" {
+		t.Fatalf("assistant_message_id: got %v, want msg_x", meta.AssistantMessageID)
 	}
 }
 
 // TestParseResult_NonInterruptedErrorPopulatesMetaError — an
 // `error_during_execution` subtype whose errors[] does NOT match the
-// interrupt heuristic still produces a turn-complete error: meta.error
-// is populated from errors[], stop_reason flips to "error", and
-// meta.aborted stays unset. Hard failures and user aborts split here.
+// interrupt heuristic still produces a turn-complete error: ErrorMessage is
+// populated from errors[], stop_reason flips to "error", and Aborted stays
+// unset. Hard failures and user aborts split here.
 func TestParseResult_NonInterruptedErrorPopulatesMetaError(t *testing.T) {
 	parser := NewParser()
 	line := []byte(`{"type":"result","subtype":"error_during_execution","is_error":false,"errors":["disk full"]}`)
@@ -345,29 +341,15 @@ func TestParseResult_NonInterruptedErrorPopulatesMetaError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("result: %v", err)
 	}
-	var turn provider.ProviderEvent
-	for _, evt := range events {
-		if evt.Kind == provider.EventTurnComplete {
-			turn = evt
-			break
-		}
+	meta := requireWireTurnComplete(t, events)
+	if meta.Aborted {
+		t.Fatal("non-interrupt errors[] should not trigger aborted flag")
 	}
-	if turn.Kind != provider.EventTurnComplete {
-		t.Fatalf("expected EventTurnComplete, got %+v", events)
+	if meta.StopReason != "error" {
+		t.Fatalf("StopReason: got %v, want error", meta.StopReason)
 	}
-	var meta map[string]any
-	_ = json.Unmarshal(turn.Meta, &meta)
-	if v, ok := meta["aborted"]; ok && v == true {
-		t.Fatalf("non-interrupt errors[] should not trigger aborted flag, got %v", v)
-	}
-	if meta["stop_reason"] != "error" {
-		t.Fatalf("meta.stop_reason: got %v, want error", meta["stop_reason"])
-	}
-	if meta["error"] != "disk full" {
-		t.Fatalf("meta.error: got %v, want \"disk full\"", meta["error"])
-	}
-	if meta["subtype"] != "error_during_execution" {
-		t.Fatalf("meta.subtype: got %v, want error_during_execution", meta["subtype"])
+	if meta.ErrorMessage != "disk full" {
+		t.Fatalf("ErrorMessage: got %v, want \"disk full\"", meta.ErrorMessage)
 	}
 }
 
@@ -394,7 +376,7 @@ func TestParseResult_IsErrorTrueWithoutSubtypeEmitsTurnComplete(t *testing.T) {
 
 // TestParseResult_AllErrorSubtypesPopulateMetaError covers the four
 // SDKResultError subtypes documented in the agent SDK. Each one must
-// produce stop_reason="error" + meta.error from errors[], so triage
+// produce stop_reason="error" + ErrorMessage from errors[], so triage
 // can route the turn-complete to the same error-handling path
 // regardless of which limit/cause tripped.
 func TestParseResult_AllErrorSubtypesPopulateMetaError(t *testing.T) {
@@ -412,32 +394,18 @@ func TestParseResult_AllErrorSubtypesPopulateMetaError(t *testing.T) {
 			if err != nil {
 				t.Fatalf("result: %v", err)
 			}
-			var turn provider.ProviderEvent
-			for _, evt := range events {
-				if evt.Kind == provider.EventTurnComplete {
-					turn = evt
-					break
-				}
+			meta := requireWireTurnComplete(t, events)
+			if meta.StopReason != "error" {
+				t.Fatalf("StopReason: got %v, want error", meta.StopReason)
 			}
-			if turn.Kind != provider.EventTurnComplete {
-				t.Fatalf("expected EventTurnComplete, got %+v", events)
-			}
-			var meta map[string]any
-			_ = json.Unmarshal(turn.Meta, &meta)
-			if meta["stop_reason"] != "error" {
-				t.Fatalf("meta.stop_reason: got %v, want error", meta["stop_reason"])
-			}
-			if meta["error"] != "limit reached" {
-				t.Fatalf("meta.error: got %v, want \"limit reached\"", meta["error"])
-			}
-			if meta["subtype"] != subtype {
-				t.Fatalf("meta.subtype: got %v, want %s", meta["subtype"], subtype)
+			if meta.ErrorMessage != "limit reached" {
+				t.Fatalf("ErrorMessage: got %v, want \"limit reached\"", meta.ErrorMessage)
 			}
 			// Aborted must NOT be set — these are hard failures, not user
 			// interrupts. Only error_during_execution + matching errors[]
 			// flips aborted, and "limit reached" doesn't match.
-			if v, ok := meta["aborted"]; ok && v == true {
-				t.Fatalf("hard error should not set aborted, got %v", v)
+			if meta.Aborted {
+				t.Fatal("hard error should not set aborted")
 			}
 		})
 	}
@@ -448,7 +416,7 @@ func TestParseResult_AllErrorSubtypesPopulateMetaError(t *testing.T) {
 // `result{subtype:"success", is_error:true}` envelope (the agent SDK's
 // documented shape — see parse_assistant.go for the producer). The
 // "success" label is the API call's transport status, but is_error
-// flags the turn outcome. We must populate meta.error from errors[]
+// flags the turn outcome. We must populate ErrorMessage from errors[]
 // so the working indicator clears as a failure, not a success.
 func TestParseResult_SuccessSubtypeIsErrorTruePopulatesMetaError(t *testing.T) {
 	parser := NewParser()
@@ -457,50 +425,11 @@ func TestParseResult_SuccessSubtypeIsErrorTruePopulatesMetaError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("result: %v", err)
 	}
-	var turn provider.ProviderEvent
-	for _, evt := range events {
-		if evt.Kind == provider.EventTurnComplete {
-			turn = evt
-			break
-		}
+	meta := requireWireTurnComplete(t, events)
+	if meta.StopReason != "error" {
+		t.Fatalf("StopReason: got %v, want error", meta.StopReason)
 	}
-	if turn.Kind != provider.EventTurnComplete {
-		t.Fatalf("expected EventTurnComplete, got %+v", events)
-	}
-	var meta map[string]any
-	_ = json.Unmarshal(turn.Meta, &meta)
-	if meta["stop_reason"] != "error" {
-		t.Fatalf("meta.stop_reason: got %v, want error", meta["stop_reason"])
-	}
-	if meta["error"] != "rate_limit" {
-		t.Fatalf("meta.error: got %v, want rate_limit", meta["error"])
-	}
-}
-
-// TestParseResult_TerminalReasonPassesThroughOnMeta — `terminal_reason`
-// is a 12-value enum we pass through on Meta for telemetry / forward
-// compat. Triage doesn't branch on it, but the field must not get
-// dropped on the round-trip.
-func TestParseResult_TerminalReasonPassesThroughOnMeta(t *testing.T) {
-	parser := NewParser()
-	line := []byte(`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"end_turn"}`)
-	events, err := parser.ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("result: %v", err)
-	}
-	var turn provider.ProviderEvent
-	for _, evt := range events {
-		if evt.Kind == provider.EventTurnComplete {
-			turn = evt
-			break
-		}
-	}
-	if turn.Kind != provider.EventTurnComplete {
-		t.Fatalf("expected EventTurnComplete, got %+v", events)
-	}
-	var meta map[string]any
-	_ = json.Unmarshal(turn.Meta, &meta)
-	if meta["terminal_reason"] != "end_turn" {
-		t.Fatalf("meta.terminal_reason: got %v, want end_turn", meta["terminal_reason"])
+	if meta.ErrorMessage != "rate_limit" {
+		t.Fatalf("ErrorMessage: got %v, want rate_limit", meta.ErrorMessage)
 	}
 }

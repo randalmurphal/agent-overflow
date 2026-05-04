@@ -151,8 +151,9 @@ Authoritative mental model:
 
 `provider:turn_started` and `provider:turn_completed` fire **per wire
 round**, not per logical turn. A round corresponds to one Claude
-`result` envelope (or one Codex `turn/completed`); a logical
-agent-overflow turn — one user-typed prompt — can span multiple
+`result` envelope, one Claude soft message_delta stop_reason, or one
+Codex `turn/completed`; a logical agent-overflow turn — one
+user-typed prompt — can span multiple
 rounds when Claude's CLI synthesizes a `type:"user"` envelope from a
 `task_notification` and the model issues another response. The
 frontend uses these per-round emissions to drive its working
@@ -165,7 +166,7 @@ Two cadences run in parallel:
 | Cadence | Driver | Granularity | Owner |
 |---|---|---|---|
 | Frontend visibility | `currentRoundID` / `setOpenRound` / `takeOpenRound` | Per wire round | `provider:turn_started`/`provider:turn_completed` emissions |
-| Persistence | `markTurnSettled` / `settleTurnRow` | Per logical turn (turnIndex) | `turns` row UPDATE, checkpoint capture, streaming-item settlement |
+| Persistence | `claimTurnSettlement` / `settleTurnRow` | Per logical turn (turnIndex) | `turns` row UPDATE, checkpoint capture, streaming-item settlement |
 
 Round entry points:
 
@@ -189,20 +190,24 @@ Round entry points:
   fatal-error-then-real-result pattern in `handleError`); the second
   wire complete then emits nothing, so the frontend sees exactly one
   `turn_completed` per round. Persistence work (settleTurnRow,
-  checkpoint, streaming settle) stays gated by `markTurnSettled` at
+  checkpoint, streaming settle) stays gated by `claimTurnSettlement` at
   logical-turn granularity.
 - **Soft round-close** (Claude only) — `EventTurnComplete` with
-  `meta.soft=true` arrives from `parse_stream.go` when the parent
-  message ends with stop_reason ∈ `{end_turn, stop_sequence,
-  refusal}` and `parent_tool_use_id` is null. Triage handles this
-  identically to the `result`-driven complete: per-round emission +
-  per-logical-turn settlement. The trailing wire `result` envelope
-  arrives later (especially when a `local_agent` subagent is in
-  flight — Claude CLI delays it until the subagent completes) and
-  folds in cumulative usage / cost / `assistant_message_id` via
-  `persistLateTurnUsage` — the markTurnSettled gate makes this a
-  no-op for everything else. See
+  `provider.SoftRoundCloseMeta` arrives from `parse_stream.go` when
+  the parent message ends with stop_reason ∈ `{end_turn,
+  stop_sequence, refusal}` and `parent_tool_use_id` is null. Triage
+  handles this identically to the `result`-driven complete:
+  per-round emission + per-logical-turn settlement. The trailing wire
+  `result` envelope arrives later (especially when a `local_agent`
+  subagent is in flight — Claude CLI delays it until the subagent
+  completes) and folds in cumulative usage / cost /
+  `assistant_message_id` via `persistLateTurnPayload` — the
+  `claimTurnSettlement` gate makes this a no-op for everything else.
+  See
   [`invariants.md §27`](../../docs/architecture/invariants.md#27-soft-round-close-from-message_deltastop_reason-is-wire-typed).
+
+The state diagram lives in
+[`turn-lifecycle.md §Wire-round vs logical-turn cadence`](../../docs/architecture/turn-lifecycle.md#wire-round-vs-logical-turn-cadence).
 
 Round id format: opaque per-round `uuid.NewString()` allocated in Go.
 Carried as `TurnStartedEvent.TurnID` / `TurnCompletedEvent.TurnID`.
@@ -296,7 +301,7 @@ When adding a new map, ask **two** questions:
    in `clearOpenTurn`.
 
 `handleTurnComplete` is **idempotent** at logical-turn granularity
-via `markTurnSettled`. The first complete drains streaming items,
+via `claimTurnSettlement`. The first complete drains streaming items,
 captures the per-turn checkpoint at the next user-send, and
 UPDATE-s the `turns` row. A second wire complete on the
 already-settled logical turn folds late token usage onto the existing

@@ -739,8 +739,6 @@ UPDATE thread_checkpoints
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_thread_checkpoints_thread_count_unique
 	ON thread_checkpoints(thread_id, checkpoint_turn_count);
-CREATE INDEX IF NOT EXISTS idx_thread_checkpoints_thread_count
-	ON thread_checkpoints(thread_id, checkpoint_turn_count);
 `,
 	},
 	{
@@ -1069,6 +1067,47 @@ CREATE INDEX idx_pending_terminals_tool_use
 		Version: 38,
 		Name:    "reasoning_effort_codex_native",
 		SQL:     v38SQL,
+	},
+	{
+		Version: 39,
+		Name:    "drop_dead_checkpoint_turn_columns",
+		// Checkpoint rows are Git snapshot bookkeeping. The canonical
+		// boundary is checkpoint_turn_count; copied turn ids, turn indexes,
+		// completion timestamps, and assistant message ids are owned by the
+		// turns table and have no checkpoint consumer, so keeping copied
+		// columns creates dead state that can drift silently.
+		SQL: `
+DROP INDEX IF EXISTS idx_thread_checkpoints_thread_turn;
+DROP INDEX IF EXISTS idx_thread_checkpoints_thread_count;
+DROP INDEX IF EXISTS idx_thread_checkpoints_thread_count_unique;
+
+CREATE TABLE thread_checkpoints_v39 (
+    id                    TEXT    PRIMARY KEY,
+    thread_id             TEXT    NOT NULL,
+    checkpoint_turn_count INTEGER NOT NULL,
+    ref_name              TEXT    NOT NULL,
+    baseline_sha          TEXT    NOT NULL DEFAULT '',
+    status                TEXT    NOT NULL DEFAULT 'ready',
+    files                 TEXT    NOT NULL DEFAULT '[]',
+    tool_paths            TEXT    NOT NULL DEFAULT '[]',
+    captured_at           INTEGER NOT NULL,
+    workspace_path        TEXT    NOT NULL,
+    FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
+);
+
+INSERT INTO thread_checkpoints_v39
+    (id, thread_id, checkpoint_turn_count, ref_name, baseline_sha, status,
+     files, tool_paths, captured_at, workspace_path)
+SELECT id, thread_id, checkpoint_turn_count, ref_name, baseline_sha, status,
+       files, tool_paths, captured_at, workspace_path
+FROM thread_checkpoints;
+
+DROP TABLE thread_checkpoints;
+ALTER TABLE thread_checkpoints_v39 RENAME TO thread_checkpoints;
+
+CREATE UNIQUE INDEX idx_thread_checkpoints_thread_count_unique
+    ON thread_checkpoints(thread_id, checkpoint_turn_count);
+`,
 	},
 }
 

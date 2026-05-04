@@ -225,18 +225,14 @@ func TestReplay_NDJsonBash(t *testing.T) {
 	}
 
 	// EventTurnComplete must carry the last assistant.message.id.
-	var turnMeta map[string]any
+	var amid string
 	for _, evt := range events {
 		if evt.Kind == provider.EventTurnComplete {
-			_ = json.Unmarshal(evt.Meta, &turnMeta)
+			amid = requireWireTurnComplete(t, []provider.ProviderEvent{evt}).AssistantMessageID
 		}
 	}
-	if turnMeta == nil {
-		t.Fatalf("no EventTurnComplete observed")
-	}
-	amid, _ := turnMeta["assistant_message_id"].(string)
 	if amid == "" {
-		t.Fatalf("EventTurnComplete missing assistant_message_id; meta=%v", turnMeta)
+		t.Fatalf("no EventTurnComplete observed")
 	}
 	if !strings.HasPrefix(amid, "msg_") {
 		t.Fatalf("assistant_message_id should look like an Anthropic msg id, got %q", amid)
@@ -751,11 +747,11 @@ func itoa(n int) string {
 //
 // The contract this test pins:
 //
-//   1. The parent's `message_delta.stop_reason="end_turn"` MUST emit a
-//      soft EventTurnComplete (with meta.soft=true).
-//   2. The soft EventTurnComplete MUST appear before the wire
-//      `result`-driven EventTurnComplete in the event stream.
-//   3. Both EventTurnCompletes carry stop_reason="end_turn".
+//  1. The parent's `message_delta.stop_reason="end_turn"` MUST emit a
+//     soft EventTurnComplete.
+//  2. The soft EventTurnComplete MUST appear before the wire
+//     `result`-driven EventTurnComplete in the event stream.
+//  3. Both EventTurnCompletes carry stop_reason="end_turn".
 //
 // Without this behavior the working indicator stays on for the entire
 // subagent runtime even though the parent is idle. See
@@ -763,15 +759,10 @@ func itoa(n int) string {
 func TestReplay_LocalAgentOutlives(t *testing.T) {
 	events := replayFixture(t, fixtureLocalAgentOutlives)
 
-	type completeShape struct {
-		StopReason         string `json:"stop_reason"`
-		Soft               bool   `json:"soft"`
-		AssistantMessageID string `json:"assistant_message_id"`
-	}
-
 	type observedComplete struct {
-		shape completeShape
-		idx   int
+		stopReason         string
+		assistantMessageID string
+		idx                int
 	}
 	var softs, results []observedComplete
 
@@ -785,14 +776,19 @@ func TestReplay_LocalAgentOutlives(t *testing.T) {
 			t.Errorf("EventTurnComplete from subagent (parent_tool_use_id=%q) at idx %d — should never fire from subagent end_turn",
 				evt.ParentToolUseID, i)
 		}
-		var c completeShape
-		if err := json.Unmarshal(evt.Meta, &c); err != nil {
-			t.Fatalf("event %d: unmarshal turn-complete meta: %v", i, err)
-		}
-		if c.Soft {
-			softs = append(softs, observedComplete{c, i})
-		} else {
-			results = append(results, observedComplete{c, i})
+		switch meta := evt.TurnComplete.(type) {
+		case *provider.SoftRoundCloseMeta:
+			if meta == nil {
+				t.Fatalf("event %d: nil soft turn-complete meta", i)
+			}
+			softs = append(softs, observedComplete{stopReason: meta.StopReason, assistantMessageID: meta.AssistantMessageID, idx: i})
+		case *provider.WireTurnCompleteMeta:
+			if meta == nil {
+				t.Fatalf("event %d: nil wire turn-complete meta", i)
+			}
+			results = append(results, observedComplete{stopReason: meta.StopReason, assistantMessageID: meta.AssistantMessageID, idx: i})
+		default:
+			t.Fatalf("event %d: turn-complete meta type = %T", i, evt.TurnComplete)
 		}
 	}
 
@@ -809,9 +805,9 @@ func TestReplay_LocalAgentOutlives(t *testing.T) {
 	// Every soft complete carries stop_reason=end_turn (we don't
 	// emit soft on tool_use / pause_turn / max_tokens).
 	for _, s := range softs {
-		if s.shape.StopReason != "end_turn" {
+		if s.stopReason != "end_turn" {
 			t.Errorf("soft @%d stop_reason: got %q, want %q (only end_turn/stop_sequence/refusal should fire soft)",
-				s.idx, s.shape.StopReason, "end_turn")
+				s.idx, s.stopReason, "end_turn")
 		}
 	}
 
@@ -825,7 +821,7 @@ func TestReplay_LocalAgentOutlives(t *testing.T) {
 
 	// Trailing real `result` carries the final assistant_message_id
 	// (parser consumed via takeLastAssistantMessageID).
-	if len(results) > 0 && results[0].shape.AssistantMessageID == "" {
+	if len(results) > 0 && results[0].assistantMessageID == "" {
 		t.Errorf("result-driven complete should carry the final assistant_message_id; got empty")
 	}
 }
@@ -842,30 +838,24 @@ func TestReplay_LocalAgentOutlives(t *testing.T) {
 func TestReplay_LocalAgentUserInputDuringWait(t *testing.T) {
 	events := replayFixture(t, fixtureLocalAgentUserInputMid)
 
-	type completeShape struct {
-		StopReason string `json:"stop_reason"`
-		Soft       bool   `json:"soft"`
-	}
-
 	var softCount, resultCount int
 	for _, evt := range filterKinds(events, provider.EventTurnComplete) {
 		if evt.ParentToolUseID != "" {
 			t.Errorf("EventTurnComplete from subagent — should never fire from subagent end_turn")
 		}
-		var c completeShape
-		if err := json.Unmarshal(evt.Meta, &c); err != nil {
-			t.Fatalf("unmarshal turn-complete meta: %v", err)
-		}
-		// Belt-and-suspenders: every fired soft must be in the
-		// authorized stop_reason set. tool_use leaking through would
-		// cause an over-fire regression.
-		if c.Soft && c.StopReason != "end_turn" && c.StopReason != "stop_sequence" && c.StopReason != "refusal" {
-			t.Errorf("soft fired with disallowed stop_reason %q", c.StopReason)
-		}
-		if c.Soft {
+		switch meta := evt.TurnComplete.(type) {
+		case *provider.SoftRoundCloseMeta:
+			if meta == nil {
+				t.Fatal("nil soft turn-complete meta")
+			}
+			if meta.StopReason != "end_turn" && meta.StopReason != "stop_sequence" && meta.StopReason != "refusal" {
+				t.Errorf("soft fired with disallowed stop_reason %q", meta.StopReason)
+			}
 			softCount++
-		} else {
+		case *provider.WireTurnCompleteMeta:
 			resultCount++
+		default:
+			t.Fatalf("turn-complete meta type = %T", evt.TurnComplete)
 		}
 	}
 	if softCount != 3 {
@@ -890,17 +880,13 @@ func TestReplay_LocalAgentPlusBgBash(t *testing.T) {
 		if evt.ParentToolUseID != "" {
 			t.Errorf("EventTurnComplete from subagent — should never fire from subagent end_turn")
 		}
-		var c struct {
-			StopReason string `json:"stop_reason"`
-			Soft       bool   `json:"soft"`
-		}
-		if err := json.Unmarshal(evt.Meta, &c); err != nil {
-			t.Fatalf("unmarshal turn-complete meta: %v", err)
-		}
-		if c.Soft {
+		switch evt.TurnComplete.(type) {
+		case *provider.SoftRoundCloseMeta:
 			softCount++
-		} else {
+		case *provider.WireTurnCompleteMeta:
 			resultCount++
+		default:
+			t.Fatalf("turn-complete meta type = %T", evt.TurnComplete)
 		}
 	}
 	// Three soft completes (one per round across the cascade:

@@ -1883,9 +1883,10 @@ func TestTurnCompleteExtractsProposedPlanFromAssistantText(t *testing.T) {
 	}
 
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		Timestamp: time.Now(),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("handle turn complete: %v", err)
 	}
@@ -1933,9 +1934,10 @@ func TestReasoningDeltasPersistOnTurnComplete(t *testing.T) {
 	}
 
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		Timestamp: time.Now(),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("handle turn complete: %v", err)
 	}
@@ -2148,9 +2150,10 @@ func TestTurnCompleteWithAccumulatedText(t *testing.T) {
 
 	// Turn complete.
 	router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		Timestamp: time.Now(),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	})
 
 	// Should have persisted a text item.
@@ -2185,9 +2188,10 @@ func TestTurnCompleteWithoutAccumulatedText(t *testing.T) {
 	createTestThread(t, st, "t1")
 
 	router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		Timestamp: time.Now(),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	})
 
 	// No text accumulated, so no item should be persisted.
@@ -2252,9 +2256,10 @@ func TestTurnCompleteDoesNotAutoRenameClaudeThread(t *testing.T) {
 	}
 
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		Timestamp: time.Now(),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("handle turn complete: %v", err)
 	}
@@ -2562,7 +2567,7 @@ func TestUnscopedErrorSplitsScopedAssistantTextAroundVisibleErrorRow(t *testing.
 //  1. flip every streaming/running item in the turn to errored
 //  2. persist the error row
 //  3. drain any queued completions as errored
-//  4. synthesize TurnComplete{truncated:true} when no wire
+//  4. synthesize TurnComplete with TruncatedTurnCompleteMeta when no wire
 //     TurnComplete is expected
 //
 // Earlier code drained before creating the error row; the emission
@@ -2674,7 +2679,7 @@ func TestFatalErrorOrderingMatchesSpec(t *testing.T) {
 // TestFatalErrorSynthesizesTurnCompleteWhenNoWireExpected verifies the
 // final step of the spec ordering: absent an `expect_turn_complete`
 // opt-in on the error meta, the router must synthesize an
-// EventTurnComplete{truncated:true} so the frontend working
+// EventTurnComplete with TruncatedTurnCompleteMeta so the frontend working
 // indicator flips off without needing the wire event. The synthesis
 // is observable via the test-only event hook, which fires for
 // EVERY Handle invocation — including the recursive one.
@@ -2708,7 +2713,7 @@ func TestFatalErrorSynthesizesTurnCompleteWhenNoWireExpected(t *testing.T) {
 	}
 
 	// Drain all observed events and look for the synthesized
-	// TurnComplete. The synthetic event has meta.synthetic=true so we
+	// TurnComplete. The typed payload has Synthetic=true so we
 	// can distinguish it from a real wire TurnComplete.
 	close(observed)
 	var gotSynthesized bool
@@ -2716,17 +2721,9 @@ func TestFatalErrorSynthesizesTurnCompleteWhenNoWireExpected(t *testing.T) {
 		if evt.Kind != provider.EventTurnComplete {
 			continue
 		}
-		var meta map[string]any
-		if len(evt.Meta) > 0 {
-			_ = json.Unmarshal(evt.Meta, &meta)
-		}
-		if synth, _ := meta["synthetic"].(bool); synth {
+		meta, ok := evt.TurnComplete.(*provider.TruncatedTurnCompleteMeta)
+		if ok && meta != nil && meta.Synthetic {
 			gotSynthesized = true
-			// And meta.truncated must be true so handleTurnComplete
-			// takes the truncated branch (flip items, drain as errored).
-			if truncated, _ := meta["truncated"].(bool); !truncated {
-				t.Fatalf("synthesized TurnComplete lacks truncated:true, meta=%+v", meta)
-			}
 		}
 	}
 
@@ -2904,9 +2901,10 @@ func TestTurnCompleteReturnsErrorOnClosedStore(t *testing.T) {
 	st.Close()
 
 	err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		Timestamp: time.Now(),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	})
 
 	if err == nil {

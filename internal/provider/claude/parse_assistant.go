@@ -87,7 +87,7 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 
 	// Track the final assistant message id at the session level so the
 	// eventual `result` envelope (which does NOT carry this id) can
-	// emit it on EventTurnComplete.Meta.assistant_message_id. Only
+	// emit it on provider.WireTurnCompleteMeta. Only
 	// top-level assistant messages qualify — subagent Task messages
 	// carry `parent_tool_use_id`, and the final-text label we want
 	// here is the parent thread's. See

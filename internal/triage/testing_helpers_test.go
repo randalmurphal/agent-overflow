@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
@@ -29,4 +30,8 @@ func ensureTriageProject(t *testing.T, st *store.Store) {
 	}); err != nil {
 		t.Fatalf("seed triage test project: %v", err)
 	}
+}
+
+func normalTurnCompleteMeta() *provider.WireTurnCompleteMeta {
+	return &provider.WireTurnCompleteMeta{StopReason: "end_turn"}
 }

@@ -215,7 +215,7 @@ func TestSessionStatusErrorIsIdempotent(t *testing.T) {
 //
 // The test pins both projections of the synthesis: the
 // frontend-visible TurnCompletedEvent (aborted=true) and the raw
-// synthesized ProviderEvent (meta.truncated:true, meta.synthetic:true)
+// synthesized ProviderEvent (provider.TruncatedTurnCompleteMeta{Synthetic:true})
 // via the event hook. CleanupThread is the safety-net path; emitting a
 // non-truncated turn-complete here would mislead the frontend into
 // rendering the turn as a clean stop.
@@ -258,15 +258,9 @@ func TestCleanupThreadSynthesizesTruncatedTurnComplete(t *testing.T) {
 		if evt.Kind != provider.EventTurnComplete {
 			continue
 		}
-		var meta map[string]any
-		if len(evt.Meta) > 0 {
-			_ = json.Unmarshal(evt.Meta, &meta)
-		}
-		if synth, _ := meta["synthetic"].(bool); synth {
+		meta, ok := evt.TurnComplete.(*provider.TruncatedTurnCompleteMeta)
+		if ok && meta != nil && meta.Synthetic {
 			sawSynth = true
-			if truncated, _ := meta["truncated"].(bool); !truncated {
-				t.Fatalf("synthesized TurnComplete lacks truncated:true, meta=%+v", meta)
-			}
 		}
 	}
 	if !sawSynth {

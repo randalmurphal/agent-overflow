@@ -111,17 +111,6 @@ func classifyTurnNotification(threadID, method string, params json.RawMessage, n
 			Replace:   true,
 		}}, true
 
-	case "turn/aborted":
-		turnID := readNestedString(params, "turn", "id")
-		meta, _ := json.Marshal(map[string]any{"aborted": true})
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventTurnComplete,
-			ThreadID:  threadID,
-			TurnID:    turnID,
-			Meta:      meta,
-			Timestamp: now,
-		}}, true
-
 	case "turn/plan/updated":
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventTodoUpdate,
@@ -138,9 +127,21 @@ func classifyTurnNotification(threadID, method string, params json.RawMessage, n
 // context-window signal is thread/tokenUsage/updated; turn/completed is only
 // the lifecycle boundary plus any terminal error state.
 func classifyTurnCompleted(threadID string, params json.RawMessage, now time.Time) []provider.ProviderEvent {
-	turnID := readNestedString(params, "turn", "id")
-	status := readNestedString(params, "turn", "status")
-	errorMsg := readNestedString(params, "turn", "error", "message")
+	wire := decodeTurnCompletedParams(params)
+	turnID := wire.Turn.ID
+	status := wire.Turn.Status
+	errorMsg := wire.Turn.Error.Message
+	stopReason := ""
+	aborted := false
+	switch status {
+	case "completed":
+		stopReason = "end_turn"
+	case "failed":
+		stopReason = "error"
+	case "interrupted":
+		stopReason = "interrupted"
+		aborted = true
+	}
 
 	var events []provider.ProviderEvent
 
@@ -150,17 +151,34 @@ func classifyTurnCompleted(threadID string, params json.RawMessage, now time.Tim
 		})
 	}
 
-	// Surface turn.status so downstream can distinguish completed /
-	// interrupted / failed turns (wire values: "completed" | "interrupted"
-	// | "failed" | "inProgress" — see codex-source TurnStatus.ts).
-	turnMeta := mergeMetaKeys(params, map[string]any{
-		"turn_status": status,
-	})
-
 	events = append(events, provider.ProviderEvent{
-		Kind: provider.EventTurnComplete, ThreadID: threadID, TurnID: turnID, Meta: turnMeta, Timestamp: now,
+		Kind:     provider.EventTurnComplete,
+		ThreadID: threadID,
+		TurnID:   turnID,
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason:   stopReason,
+			Aborted:      aborted,
+			ErrorMessage: errorMsg,
+		},
+		Timestamp: now,
 	})
 	return events
+}
+
+type turnCompletedParams struct {
+	Turn struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+		Error  struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	} `json:"turn"`
+}
+
+func decodeTurnCompletedParams(params json.RawMessage) turnCompletedParams {
+	var decoded turnCompletedParams
+	_ = json.Unmarshal(params, &decoded)
+	return decoded
 }
 
 // nonToolItemTypes is the deny-list for Codex item type strings that

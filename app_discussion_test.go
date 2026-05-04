@@ -382,9 +382,10 @@ func TestStartDiscussionMirrorsEarlyParticipantTurnDuringStartup(t *testing.T) {
 		}
 
 		app.sessionEventHandler(threadID, "session-"+threadID)(provider.ProviderEvent{
-			Kind:      provider.EventTurnComplete,
-			ThreadID:  threadID,
-			Timestamp: time.UnixMilli(now),
+			Kind:         provider.EventTurnComplete,
+			ThreadID:     threadID,
+			TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
+			Timestamp:    time.UnixMilli(now),
 		})
 		return nil
 	}
@@ -609,9 +610,10 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 		Timestamp: time.UnixMilli(now),
 	})
 	firstHandler(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  children[0].ID,
-		Timestamp: time.UnixMilli(now + 5),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     children[0].ID,
+		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
+		Timestamp:    time.UnixMilli(now + 5),
 	})
 
 	messages, err := app.GetChannelMessages(parent.DiscussionID, -1, 10)
@@ -644,9 +646,10 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 		Timestamp: time.UnixMilli(now + 10),
 	})
 	secondHandler(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  children[1].ID,
-		Timestamp: time.UnixMilli(now + 15),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     children[1].ID,
+		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
+		Timestamp:    time.UnixMilli(now + 15),
 	})
 
 	messages, err = app.GetChannelMessages(parent.DiscussionID, -1, 10)

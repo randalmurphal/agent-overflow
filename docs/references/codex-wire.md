@@ -8,7 +8,7 @@ parser code.
 
 **Shape-of-truth, in priority order:**
 
-1. **codex-source** at `/Users/randy/repos/codex-source` — the
+1. **codex-source** at `/home/rmurphy/repos/codex` — the
    upstream Codex CLI (`codex-rs/`). Typed wire definitions live in
    `codex-rs/app-server-protocol/` (Rust source +
    generated TypeScript under
@@ -105,13 +105,12 @@ handles the notification flavour.
 ### Notifications
 
 Authoritative method list from
-[`codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts`](file:///Users/randy/repos/codex-source/codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts).
+[`codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts`](/home/rmurphy/repos/codex/codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts).
 
 | `method` | Destination / purpose |
 |---|---|
 | `turn/started` | Turn lifecycle. `EventTurnStart`. |
 | `turn/completed` | Turn lifecycle. `EventTurnComplete`. |
-| `turn/aborted` | Turn lifecycle. `EventTurnComplete` with `Meta.aborted = true`. |
 | `turn/diff/updated` | Per-turn unified-diff snapshot. |
 | `turn/plan/updated` | Per-turn plan updates (markdown). |
 | `item/started` | Tool/item lifecycle. `classifyItemNotification` → `EventToolStart` (or drop). |
@@ -169,7 +168,7 @@ accounting path.
 Approvals arrive as **server requests** (with a JSON-RPC `id`), not as
 notifications. The client is expected to respond with a matching
 `id`. Authoritative list from
-[`codex-rs/app-server-protocol/schema/typescript/ServerRequest.ts`](file:///Users/randy/repos/codex-source/codex-rs/app-server-protocol/schema/typescript/ServerRequest.ts):
+[`codex-rs/app-server-protocol/schema/typescript/ServerRequest.ts`](/home/rmurphy/repos/codex/codex-rs/app-server-protocol/schema/typescript/ServerRequest.ts):
 
 | `method` | Purpose |
 |---|---|
@@ -398,10 +397,21 @@ reference rendering.
 
 ```json
 {"method": "turn/started",
- "params": {"threadId": "...", "turnId": "...", "startedAt": 1776577311}}
+ "params": {
+   "threadId": "...",
+   "turn": {
+     "id": "...",
+     "items": [],
+     "status": "inProgress",
+     "error": null,
+     "startedAt": 1777926299,
+     "completedAt": null,
+     "durationMs": null
+   }
+ }}
 ```
 
-Emits `EventTurnStart`. `session.go` dedupes on `turnId` via
+Emits `EventTurnStart`. `session.go` dedupes on `turn.id` via
 `seenTurnStarts` — safe for reconnect replay.
 
 ---
@@ -412,39 +422,42 @@ Emits `EventTurnStart`. `session.go` dedupes on `turnId` via
 {"method": "turn/completed",
  "params": {
    "threadId": "...",
-   "turnId": "...",
-   "status": {"type": "completed"},
-   "usage": {...},
-   "lastAssistantMessageId": "...",
-   "completedAt": 1776577321
+   "turn": {
+     "id": "...",
+     "items": [],
+     "status": "completed",
+     "error": null,
+     "startedAt": 1777926299,
+     "completedAt": 1777926306,
+     "durationMs": 6637
+   }
  }}
 ```
 
-### `status.type` values
+### `turn.status` values
 `completed | interrupted | failed | inProgress` (per
 `v2/TurnStatus.ts`).
 
-### ⚠ `lastAssistantMessageId` is on this envelope
+### No assistant message id
 
-Unlike Claude's `result`, Codex's `turn/completed` DOES carry the
-last assistant message id directly. Use it for
-`turns.assistant_message_id` on the `turns` row.
+`turn/completed` does **not** carry `lastAssistantMessageId`. The current
+`codex-cli 0.128.0` wire and upstream schema both define the payload as
+`{threadId, turn}` only:
+
+- `/home/rmurphy/repos/codex/codex-rs/app-server-protocol/src/protocol/v2.rs`
+  `TurnCompletedNotification`
+- `/home/rmurphy/repos/codex/codex-rs/app-server-protocol/schema/typescript/v2/TurnCompletedNotification.ts`
+
+The adapter therefore leaves `WireTurnCompleteMeta.AssistantMessageID`
+empty for Codex turn completion.
 
 ### Emission
 
-`classifyTurnCompleted` at `protocol.go:99-130` emits
-`EventTurnComplete` with `Meta.turn_status` mirroring the upstream
-status.
-
----
-
-## `turn/aborted`
-
-Fires on user interrupt. `classifyTurnAborted` at
-`protocol.go:68-77` synthesizes an `EventTurnComplete` with
-`Meta.aborted: true` and `Meta.turn_status: "interrupted"`.
-
----
+`classifyTurnCompleted` emits `EventTurnComplete` with a typed
+`provider.WireTurnCompleteMeta`. The adapter normalizes Codex's
+`turn.status` before it crosses the provider boundary:
+`completed -> stop_reason=end_turn`, `failed -> stop_reason=error`,
+and `interrupted -> stop_reason=interrupted, aborted=true`.
 
 ## Session / thread state
 
@@ -486,7 +499,7 @@ wrapped in `<subagent_notification>` tags.
 ### Authoritative wire shape
 
 Produced by `format_subagent_notification_message` at
-[`codex-rs/core/src/session_prefix.rs:8-18`](file:///Users/randy/repos/codex-source/codex-rs/core/src/session_prefix.rs):
+[`codex-rs/core/src/session_prefix.rs:8-18`](/home/rmurphy/repos/codex/codex-rs/core/src/session_prefix.rs):
 
 ```
 <subagent_notification>
@@ -539,6 +552,15 @@ Important ordering observed:
   subagent completion under the wait row. The later
   `subagent_notification` is a secondary notification path, not the
   source of truth for the wait-attached completion.
+- 2026-05-04 spike against `codex-cli 0.128.0` confirmed
+  `turn/completed` shape as `{threadId, turn}` with no
+  `lastAssistantMessageId`, and confirmed parent `turn/completed`
+  fires before spawned child-thread completion. In the captured
+  spawn-agent run, the parent completed about 8.9s before the child.
+
+Raw `experimentalRawEvents` can echo developer/user prompt material.
+Do not check in raw Codex spike captures unredacted; summarize the
+ordering and field shapes instead.
 
 To capture fresh samples, run a session in agent-overflow with
 `AGENT_OVERFLOW_DEBUG=provider` — raw JSON-RPC frames land in

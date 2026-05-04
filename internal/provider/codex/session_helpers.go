@@ -219,7 +219,7 @@ func safeRawMessage(raw json.RawMessage) json.RawMessage {
 // the dialog always has a renderable shape (empty schema in the worst case).
 //
 // Wire contract authority lives in codex-source:
-// /Users/randy/repos/codex-source/codex-rs/app-server-protocol/schema/typescript/v2/McpServerElicitationRequestParams.ts
+// /home/rmurphy/repos/codex/codex-rs/app-server-protocol/schema/typescript/v2/McpServerElicitationRequestParams.ts
 //
 // The sum-type splits on `mode`:
 //   - `"form"` carries `message`, `requestedSchema`, and an opaque `_meta`.

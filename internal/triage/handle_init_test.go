@@ -129,9 +129,10 @@ func TestHandleInit_NoPendingSend_PriorTurnSettled_FiresReRound(t *testing.T) {
 		t.Fatalf("turn start: %v", err)
 	}
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		Timestamp: time.Now(),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("turn complete: %v", err)
 	}
@@ -191,9 +192,10 @@ func TestHandleInit_PendingSendPlusSettledTurn_PrefersTurnStartPath(t *testing.T
 		t.Fatalf("turn start (turn 0): %v", err)
 	}
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		Timestamp: time.Now(),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("turn complete (turn 0): %v", err)
 	}

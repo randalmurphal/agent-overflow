@@ -106,10 +106,9 @@ func TestTerminalInteraction_UntrackedPollDoesNotStayRunningAfterTurnComplete(t 
 		t.Fatalf("handle terminal interaction: %v", err)
 	}
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		TurnID:    "turn-0",
-		Timestamp: time.Now(),
+		Kind: provider.EventTurnComplete, ThreadID: "t1", TurnID: "turn-0",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("handle turn complete: %v", err)
 	}
@@ -656,9 +655,10 @@ func TestTerminalInteraction_DoubledResultPreservesDistinctRows(t *testing.T) {
 	// the architectural fix the counter survives. Without it, the next
 	// poll would land at seq=0 and overwrite the first row.
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		Timestamp: time.Now(),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("first turn-complete: %v", err)
 	}

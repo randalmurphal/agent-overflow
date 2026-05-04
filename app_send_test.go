@@ -748,9 +748,10 @@ func TestSendMessageFirstTurnCapturesInitialAndCompletedCheckpoints(t *testing.T
 
 	writeE2EFile(t, workspace, "agent-output.txt", "created during first turn\n")
 	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  thread.ID,
-		Timestamp: time.Now(),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     thread.ID,
+		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("handle turn complete: %v", err)
 	}

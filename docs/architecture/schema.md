@@ -18,7 +18,7 @@ the migrations win.
 | `design_artifacts` | Design-mode HTML artifacts. `html_path` points at the on-disk file. |
 | `attachments` | Message attachments. `mime_type`, `size`, `relative_path` on disk. |
 | `turns` | Per-turn records (one row per user → assistant round-trip). `turn_id` PK, `thread_id` FK, `turn_index`, `started_at`, nullable `completed_at` (NULL = in-flight or crashed), `stop_reason`, `assistant_message_id`, `token_usage_json`, `error_message`. |
-| `thread_checkpoints` | Git checkpoint metadata per thread. `checkpoint_turn_count` is the canonical boundary: `0` is before the first turn, `N` is after completed turn `N`. Rows also carry `turn_id`, `status`, compact `files` JSON, `assistant_message_id`, `completed_at`, `captured_at`, `ref_name`, and `workspace_path`. |
+| `thread_checkpoints` | Git checkpoint metadata per thread. `checkpoint_turn_count` is the canonical boundary: `0` is before the first turn, `N` is after completed turn `N`. Rows also carry `status`, compact `files` JSON, `tool_paths`, `captured_at`, `ref_name`, and `workspace_path`. |
 | `proposed_plans` | Per-plan state layered over proposed-plan payload items. Tracks immutable plan item id, thread id, revision parent item id, version, implementation marker, implementation thread/item ids, and timestamps. |
 | `proposed_plan_comments` | Inline review comments anchored to one proposed-plan version. Tracks draft/sent/resolved status, line range, selected text, body, sent turn id, and timestamps. |
 | `chat_bar_favorites` | Starred composer menu entries for models and discussion templates. Model favorites include provider + model id; discussion favorites store the discussion definition id. |
@@ -50,8 +50,7 @@ implementation markers and revision parent links.
 - `idx_channels_thread`, `idx_design_artifacts_thread` — per-thread feature lookups.
 - `turns_thread_index` on `turns(thread_id, turn_index DESC)` — backs `ListRecentTurns` for the newest-first rehydration the frontend runs on thread-switch.
 - `idx_turns_thread_completed` on `turns(thread_id, completed_at DESC) WHERE completed_at IS NOT NULL` — backs sidebar read-state checks against the newest completed turn.
-- `idx_thread_checkpoints_thread_count_unique` on `thread_checkpoints(thread_id, checkpoint_turn_count)` — enforces one checkpoint per thread boundary.
-- `idx_thread_checkpoints_thread_count` on `thread_checkpoints(thread_id, checkpoint_turn_count)` — backs checkpoint drawer listing, range diff, and revert lookups.
+- `idx_thread_checkpoints_thread_count_unique` on `thread_checkpoints(thread_id, checkpoint_turn_count)` — enforces one checkpoint per thread boundary and backs checkpoint drawer listing, range diff, and revert lookups.
 - `idx_proposed_plans_thread_version` on `proposed_plans(thread_id, version DESC)` — backs newest-first plan sidebar/history queries.
 - `idx_proposed_plan_comments_plan` on `proposed_plan_comments(thread_id, plan_item_id, status, start_line, created_at)` — backs per-plan review comment listing and draft/sent counts.
 - `idx_chat_bar_favorites_created` on `chat_bar_favorites(created_at DESC)` — backs newest-first favorite listing in the composer menu.
@@ -94,7 +93,10 @@ Columns:
 - `started_at` INTEGER (ms) — turn-start wire event timestamp
 - `completed_at` INTEGER (ms, nullable) — NULL = in-flight or crashed mid-turn
 - `stop_reason` TEXT — end_turn / max_tokens / tool_use / stop_sequence / refusal / error / interrupted
-- `assistant_message_id` TEXT — `items.id` of the final assistant_text for the turn
+- `assistant_message_id` TEXT — provider-derived final assistant
+  message id when available. Claude derives it from the last in-stream
+  assistant `message.id`; current Codex `turn/completed` does not
+  carry one.
 - `token_usage_json` TEXT — snapshot of provider usage at turn-end
 - `error_message` TEXT — populated when stop_reason indicates error
 

@@ -19,14 +19,14 @@ func TestSaveAndGetCheckpointRoundTrip(t *testing.T) {
 	mustCreateThreadForCheckpoint(t, s, "t1")
 
 	c := Checkpoint{
-		ID:            "chk-1",
-		ThreadID:      "t1",
-		TurnIndex:     0,
-		RefName:       "refs/agent-overflow/checkpoints/dDE/turn/0",
-		BaselineSHA:   "deadbeef",
-		ToolPaths:     []string{"src/foo.go", "src/bar.go"},
-		CapturedAt:    time.Now().UnixMilli(),
-		WorkspacePath: "/tmp/workspace",
+		ID:                  "chk-1",
+		ThreadID:            "t1",
+		CheckpointTurnCount: 0,
+		RefName:             "refs/agent-overflow/checkpoints/dDE/turn/0",
+		BaselineSHA:         "deadbeef",
+		ToolPaths:           []string{"src/foo.go", "src/bar.go"},
+		CapturedAt:          time.Now().UnixMilli(),
+		WorkspacePath:       "/tmp/workspace",
 	}
 	if err := s.SaveCheckpoint(c); err != nil {
 		t.Fatalf("save: %v", err)
@@ -52,10 +52,10 @@ func TestGetCumulativeToolPathsUnionsAcrossPostTargetRows(t *testing.T) {
 	mustCreateThreadForCheckpoint(t, s, "t1")
 
 	rows := []Checkpoint{
-		{ID: "chk-0", ThreadID: "t1", TurnIndex: 0, RefName: "r0", ToolPaths: []string{"baseline-only.go"}, CapturedAt: 0, WorkspacePath: "/w"},
-		{ID: "chk-1", ThreadID: "t1", TurnIndex: 1, RefName: "r1", ToolPaths: []string{"a.go", "b.go"}, CapturedAt: 1, WorkspacePath: "/w"},
-		{ID: "chk-2", ThreadID: "t1", TurnIndex: 2, RefName: "r2", ToolPaths: []string{"b.go", "c.go"}, CapturedAt: 2, WorkspacePath: "/w"},
-		{ID: "chk-3", ThreadID: "t1", TurnIndex: 3, RefName: "r3", ToolPaths: []string{}, CapturedAt: 3, WorkspacePath: "/w"},
+		{ID: "chk-0", ThreadID: "t1", CheckpointTurnCount: 0, RefName: "r0", ToolPaths: []string{"baseline-only.go"}, CapturedAt: 0, WorkspacePath: "/w"},
+		{ID: "chk-1", ThreadID: "t1", CheckpointTurnCount: 1, RefName: "r1", ToolPaths: []string{"a.go", "b.go"}, CapturedAt: 1, WorkspacePath: "/w"},
+		{ID: "chk-2", ThreadID: "t1", CheckpointTurnCount: 2, RefName: "r2", ToolPaths: []string{"b.go", "c.go"}, CapturedAt: 2, WorkspacePath: "/w"},
+		{ID: "chk-3", ThreadID: "t1", CheckpointTurnCount: 3, RefName: "r3", ToolPaths: []string{}, CapturedAt: 3, WorkspacePath: "/w"},
 	}
 	for _, c := range rows {
 		if err := s.SaveCheckpoint(c); err != nil {
@@ -84,13 +84,13 @@ func TestGetCumulativeToolPathsRespectsThreadIsolation(t *testing.T) {
 	mustCreateThreadForCheckpoint(t, s, "t2")
 
 	if err := s.SaveCheckpoint(Checkpoint{
-		ID: "t1-1", ThreadID: "t1", TurnIndex: 1, RefName: "t1-r1",
+		ID: "t1-1", ThreadID: "t1", CheckpointTurnCount: 1, RefName: "t1-r1",
 		ToolPaths: []string{"t1.go"}, CapturedAt: 0, WorkspacePath: "/w",
 	}); err != nil {
 		t.Fatalf("t1: %v", err)
 	}
 	if err := s.SaveCheckpoint(Checkpoint{
-		ID: "t2-1", ThreadID: "t2", TurnIndex: 1, RefName: "t2-r1",
+		ID: "t2-1", ThreadID: "t2", CheckpointTurnCount: 1, RefName: "t2-r1",
 		ToolPaths: []string{"t2.go"}, CapturedAt: 0, WorkspacePath: "/w",
 	}); err != nil {
 		t.Fatalf("t2: %v", err)
@@ -115,7 +115,7 @@ func TestGetCumulativeToolPathsExclusiveLowerBound(t *testing.T) {
 
 	for i, paths := range [][]string{{"turn-0.go"}, {"turn-1.go"}, {"turn-2.go"}} {
 		if err := s.SaveCheckpoint(Checkpoint{
-			ID: fmt.Sprintf("chk-%d", i), ThreadID: "t1", TurnIndex: i,
+			ID: fmt.Sprintf("chk-%d", i), ThreadID: "t1", CheckpointTurnCount: i,
 			RefName: fmt.Sprintf("r%d", i), ToolPaths: paths,
 			CapturedAt: int64(i), WorkspacePath: "/w",
 		}); err != nil {
@@ -176,7 +176,7 @@ func TestSaveCheckpointRejectsMissingIDs(t *testing.T) {
 }
 
 // TestSaveCheckpointRejectsDuplicateThreadTurn verifies migration v8's
-// UNIQUE(thread_id, turn_index). Two capture attempts for the same
+// UNIQUE(thread_id, checkpoint_turn_count). Two capture attempts for the same
 // (thread, turn) — even with different ref names — must not be allowed to
 // coexist. Adversarial guard: a racing capture should get a clean error,
 // not a silent duplicate row.
@@ -185,24 +185,24 @@ func TestSaveCheckpointRejectsDuplicateThreadTurn(t *testing.T) {
 	mustCreateThreadForCheckpoint(t, s, "t1")
 
 	c1 := Checkpoint{
-		ID: "chk-1", ThreadID: "t1", TurnIndex: 0,
+		ID: "chk-1", ThreadID: "t1", CheckpointTurnCount: 0,
 		RefName: "refs/a", CapturedAt: 1, WorkspacePath: "/a",
 	}
 	if err := s.SaveCheckpoint(c1); err != nil {
 		t.Fatalf("first save: %v", err)
 	}
 	c2 := Checkpoint{
-		ID: "chk-2", ThreadID: "t1", TurnIndex: 0,
+		ID: "chk-2", ThreadID: "t1", CheckpointTurnCount: 0,
 		RefName: "refs/b", CapturedAt: 2, WorkspacePath: "/a",
 	}
 	if err := s.SaveCheckpoint(c2); err == nil {
-		t.Errorf("expected unique constraint violation for duplicate (thread_id, turn_index)")
+		t.Errorf("expected unique constraint violation for duplicate (thread_id, checkpoint_turn_count)")
 	}
 }
 
 // TestSaveCheckpointAllowsSameRefAcrossThreads documents that ref_name is
 // no longer globally unique after migration v8: the only uniqueness we
-// enforce is (thread_id, turn_index). In practice refs are path-unique via
+// enforce is (thread_id, checkpoint_turn_count). In practice refs are path-unique via
 // the thread id embedded in the ref path, but the DB should not be the
 // thing blocking that.
 func TestSaveCheckpointAllowsSameRefAcrossThreads(t *testing.T) {
@@ -211,14 +211,14 @@ func TestSaveCheckpointAllowsSameRefAcrossThreads(t *testing.T) {
 	mustCreateThreadForCheckpoint(t, s, "t2")
 
 	c1 := Checkpoint{
-		ID: "chk-1", ThreadID: "t1", TurnIndex: 0,
+		ID: "chk-1", ThreadID: "t1", CheckpointTurnCount: 0,
 		RefName: "refs/agent-overflow/shared", CapturedAt: 1, WorkspacePath: "/a",
 	}
 	if err := s.SaveCheckpoint(c1); err != nil {
 		t.Fatalf("save t1: %v", err)
 	}
 	c2 := Checkpoint{
-		ID: "chk-2", ThreadID: "t2", TurnIndex: 0,
+		ID: "chk-2", ThreadID: "t2", CheckpointTurnCount: 0,
 		RefName: "refs/agent-overflow/shared", CapturedAt: 1, WorkspacePath: "/a",
 	}
 	if err := s.SaveCheckpoint(c2); err != nil {
@@ -226,19 +226,19 @@ func TestSaveCheckpointAllowsSameRefAcrossThreads(t *testing.T) {
 	}
 }
 
-func TestListCheckpointsOrdersByTurnIndex(t *testing.T) {
+func TestListCheckpointsOrdersByTurnCount(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadForCheckpoint(t, s, "t1")
 
 	// Insert out of order; list should return them sorted ascending.
 	for _, turn := range []int{2, 0, 1} {
 		c := Checkpoint{
-			ID:            "chk-" + string(rune('0'+turn)),
-			ThreadID:      "t1",
-			TurnIndex:     turn,
-			RefName:       "refs/x/" + string(rune('0'+turn)),
-			CapturedAt:    int64(turn),
-			WorkspacePath: "/tmp",
+			ID:                  "chk-" + string(rune('0'+turn)),
+			ThreadID:            "t1",
+			CheckpointTurnCount: turn,
+			RefName:             "refs/x/" + string(rune('0'+turn)),
+			CapturedAt:          int64(turn),
+			WorkspacePath:       "/tmp",
 		}
 		if err := s.SaveCheckpoint(c); err != nil {
 			t.Fatalf("save turn %d: %v", turn, err)
@@ -253,8 +253,8 @@ func TestListCheckpointsOrdersByTurnIndex(t *testing.T) {
 		t.Fatalf("expected 3 checkpoints, got %d", len(list))
 	}
 	for i, c := range list {
-		if c.TurnIndex != i {
-			t.Errorf("index %d: got TurnIndex=%d, want %d", i, c.TurnIndex, i)
+		if c.CheckpointTurnCount != i {
+			t.Errorf("index %d: got CheckpointTurnCount=%d, want %d", i, c.CheckpointTurnCount, i)
 		}
 	}
 }
@@ -266,7 +266,7 @@ func TestListCheckpointsScopesToThread(t *testing.T) {
 
 	for _, th := range []string{"t1", "t2"} {
 		c := Checkpoint{
-			ID: "chk-" + th, ThreadID: th, TurnIndex: 0,
+			ID: "chk-" + th, ThreadID: th, CheckpointTurnCount: 0,
 			RefName: "refs/" + th, CapturedAt: 1, WorkspacePath: "/tmp",
 		}
 		if err := s.SaveCheckpoint(c); err != nil {
@@ -300,7 +300,7 @@ func TestDeleteCheckpointsForThreadRemovesAllRows(t *testing.T) {
 	}
 	for _, sd := range seeds {
 		c := Checkpoint{
-			ID: sd.id, ThreadID: sd.thread, TurnIndex: sd.turn,
+			ID: sd.id, ThreadID: sd.thread, CheckpointTurnCount: sd.turn,
 			RefName: "refs/" + sd.id, CapturedAt: 1, WorkspacePath: "/tmp",
 		}
 		if err := s.SaveCheckpoint(c); err != nil {
@@ -330,13 +330,13 @@ func TestDeleteCheckpointsAfterTurnScopesAndReturnsRefs(t *testing.T) {
 	now := time.Now().UnixMilli()
 	saveAt := func(thread string, turn int, ref string) {
 		if err := s.SaveCheckpoint(Checkpoint{
-			ID:            fmt.Sprintf("chk-%s-%d", thread, turn),
-			ThreadID:      thread,
-			TurnIndex:     turn,
-			RefName:       ref,
-			BaselineSHA:   "sha",
-			CapturedAt:    now,
-			WorkspacePath: "/tmp/w",
+			ID:                  fmt.Sprintf("chk-%s-%d", thread, turn),
+			ThreadID:            thread,
+			CheckpointTurnCount: turn,
+			RefName:             ref,
+			BaselineSHA:         "sha",
+			CapturedAt:          now,
+			WorkspacePath:       "/tmp/w",
 		}); err != nil {
 			t.Fatalf("save %s turn %d: %v", thread, turn, err)
 		}
@@ -375,8 +375,8 @@ func TestDeleteCheckpointsAfterTurnScopesAndReturnsRefs(t *testing.T) {
 		t.Errorf("t1 remaining count: got %d, want 2", len(t1Remaining))
 	}
 	for _, c := range t1Remaining {
-		if c.TurnIndex > 1 {
-			t.Errorf("t1 still has turn_index=%d after delete", c.TurnIndex)
+		if c.CheckpointTurnCount > 1 {
+			t.Errorf("t1 still has checkpoint_turn_count=%d after delete", c.CheckpointTurnCount)
 		}
 	}
 
@@ -395,12 +395,12 @@ func TestDeleteCheckpointsAfterTurnReturnsWorkspacePerRef(t *testing.T) {
 
 	saveAt := func(turn int, workspace string) {
 		if err := s.SaveCheckpoint(Checkpoint{
-			ID:            fmt.Sprintf("chk-%d", turn),
-			ThreadID:      "t1",
-			TurnIndex:     turn,
-			RefName:       fmt.Sprintf("refs/t1/turn/%d", turn),
-			CapturedAt:    int64(turn),
-			WorkspacePath: workspace,
+			ID:                  fmt.Sprintf("chk-%d", turn),
+			ThreadID:            "t1",
+			CheckpointTurnCount: turn,
+			RefName:             fmt.Sprintf("refs/t1/turn/%d", turn),
+			CapturedAt:          int64(turn),
+			WorkspacePath:       workspace,
 		}); err != nil {
 			t.Fatalf("save turn %d: %v", turn, err)
 		}
@@ -432,7 +432,7 @@ func TestDeleteCheckpointsAfterTurnReturnsEmptyWhenNoneMatch(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadForCheckpoint(t, s, "t1")
 	if err := s.SaveCheckpoint(Checkpoint{
-		ID: "chk-1", ThreadID: "t1", TurnIndex: 0,
+		ID: "chk-1", ThreadID: "t1", CheckpointTurnCount: 0,
 		RefName: "refs/t1/turn/0", BaselineSHA: "sha",
 		CapturedAt: time.Now().UnixMilli(), WorkspacePath: "/tmp",
 	}); err != nil {
@@ -466,7 +466,7 @@ func TestThreadDeleteCascadesCheckpoints(t *testing.T) {
 	mustCreateThreadForCheckpoint(t, s, "t1")
 
 	c := Checkpoint{
-		ID: "chk-1", ThreadID: "t1", TurnIndex: 0,
+		ID: "chk-1", ThreadID: "t1", CheckpointTurnCount: 0,
 		RefName: "refs/t1/0", CapturedAt: 1, WorkspacePath: "/tmp",
 	}
 	if err := s.SaveCheckpoint(c); err != nil {
@@ -606,12 +606,12 @@ func TestSaveCheckpointConcurrentSameThreadTurn(t *testing.T) {
 		go func(n int) {
 			defer wg.Done()
 			c := Checkpoint{
-				ID:            fmt.Sprintf("chk-%d", n),
-				ThreadID:      "t1",
-				TurnIndex:     0,
-				RefName:       fmt.Sprintf("refs/a/%d", n),
-				CapturedAt:    int64(n + 1),
-				WorkspacePath: "/tmp",
+				ID:                  fmt.Sprintf("chk-%d", n),
+				ThreadID:            "t1",
+				CheckpointTurnCount: 0,
+				RefName:             fmt.Sprintf("refs/a/%d", n),
+				CapturedAt:          int64(n + 1),
+				WorkspacePath:       "/tmp",
 			}
 			err := s.SaveCheckpoint(c)
 			successMu.Lock()

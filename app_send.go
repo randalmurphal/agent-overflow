@@ -276,10 +276,10 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 			log.Printf("send message: persist send-failure error: %v", persistErr)
 		}
 		if completeErr := a.triage.Handle(provider.ProviderEvent{
-			Kind:      provider.EventTurnComplete,
-			ThreadID:  threadID,
-			Meta:      []byte(`{"truncated":true}`),
-			Timestamp: time.Now(),
+			Kind:         provider.EventTurnComplete,
+			ThreadID:     threadID,
+			TurnComplete: &provider.TruncatedTurnCompleteMeta{},
+			Timestamp:    time.Now(),
 		}); completeErr != nil {
 			// Log rather than propagate — the send error we're about to
 			// return is the primary failure. A secondary triage hiccup

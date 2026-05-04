@@ -974,11 +974,11 @@ export function ListTerminals(threadID: string): $CancellablePromise<terminal$0.
 }
 
 /**
- * ListThreadCheckpoints returns every persisted checkpoint row for a thread.
+ * ListThreadCheckpoints returns every frontend-visible checkpoint view for a thread.
  * Ordering is ascending by checkpoint turn count so the UI can render a
  * turn-navigation strip without additional sorting.
  */
-export function ListThreadCheckpoints(threadID: string): $CancellablePromise<store$0.Checkpoint[]> {
+export function ListThreadCheckpoints(threadID: string): $CancellablePromise<$models.CheckpointView[]> {
     return $Call.ByID(1853132444, threadID).then(($result: any) => {
         return $$createType57($result);
     });
@@ -1658,9 +1658,9 @@ export function UpdateThreadContextWindow(id: string, tokens: number): $Cancella
 
 /**
  * UpdateThreadFastMode persists the fast-mode boolean and restarts the
- * session if one is live. Fast mode typically swaps the model to the
- * provider's small-model tier (per the per-provider translator) so a
- * running session won't pick up the change without a restart.
+ * session if one is live. Providers translate the same model into their
+ * native fast execution mode at launch, so a running session won't pick up
+ * the change without a restart.
  */
 export function UpdateThreadFastMode(id: string, on: boolean): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(4175109385, id, on).then(($result: any) => {
@@ -1832,7 +1832,7 @@ const $$createType52 = $Create.Array($$createType51);
 const $$createType53 = $Create.Array($$createType0);
 const $$createType54 = terminal$0.SessionSummary.createFrom;
 const $$createType55 = $Create.Array($$createType54);
-const $$createType56 = store$0.Checkpoint.createFrom;
+const $$createType56 = $models.CheckpointView.createFrom;
 const $$createType57 = $Create.Array($$createType56);
 const $$createType58 = $Create.Array($$createType4);
 const $$createType59 = wsllauncher$0.Distro.createFrom;

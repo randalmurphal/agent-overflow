@@ -242,7 +242,8 @@ func TestHandleTurnStartDoubleFiresAreDedupedPerTurn(t *testing.T) {
 // Turn 0 start → baseline (checkpoint #0).
 // Turn 0 events stream + complete → NO capture at turn end.
 // Turn 1 start → captures the PRIOR turn's completion checkpoint (#1)
-//                with the working tree state at the moment of user-send.
+//
+//	with the working tree state at the moment of user-send.
 //
 // Two captures total: baseline + prior-turn-completion.
 func TestHandleTurnStartCapturesPriorTurnCheckpoint(t *testing.T) {
@@ -260,7 +261,8 @@ func TestHandleTurnStartCapturesPriorTurnCheckpoint(t *testing.T) {
 	}
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1", TurnIndex: 0,
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("handle turn 0 complete: %v", err)
 	}
@@ -299,7 +301,7 @@ func TestHandleTurnStartCapturesPriorTurnCheckpoint(t *testing.T) {
 	}
 }
 
-// Errored turn metadata (from EventTurnComplete.Meta.error) is preserved
+// Errored turn metadata is preserved
 // in the turns row at turn-end; capture happens at the NEXT turn-start
 // and reads the prior turn's row to derive the checkpoint status. The
 // "error" status flows through end-to-end.
@@ -319,7 +321,9 @@ func TestErroredTurnCheckpointAtNextTurnStart(t *testing.T) {
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
 		TurnID: "turn-0", TurnIndex: 0,
-		Meta:      json.RawMessage(`{"error":"tool failed"}`),
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			ErrorMessage: "tool failed",
+		},
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("turn 0 complete: %v", err)
@@ -346,8 +350,7 @@ func TestErroredTurnCheckpointAtNextTurnStart(t *testing.T) {
 	}
 }
 
-// Interrupted turn metadata (from EventTurnComplete.Meta.turn_status:
-// "interrupted") is preserved on the turns row and surfaced in the
+// Interrupted turn metadata is preserved on the turns row and surfaced in the
 // next-turn-start capture. The Aborted flag derives from
 // turn.StopReason == "interrupted" in capturePriorTurnCheckpoint.
 func TestInterruptedTurnCheckpointAtNextTurnStart(t *testing.T) {
@@ -366,7 +369,10 @@ func TestInterruptedTurnCheckpointAtNextTurnStart(t *testing.T) {
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
 		TurnID: "turn-0", TurnIndex: 0,
-		Meta:      json.RawMessage(`{"turn_status":"interrupted"}`),
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason: "interrupted",
+			Aborted:    true,
+		},
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("turn 0 complete: %v", err)
@@ -411,7 +417,8 @@ func TestThirdTurnStartDoesNotReplacePriorCheckpoint(t *testing.T) {
 		if err := router.Handle(provider.ProviderEvent{
 			Kind: provider.EventTurnComplete, ThreadID: "t1",
 			TurnID: fmt.Sprintf("turn-%d", idx), TurnIndex: idx,
-			Timestamp: time.Now(),
+			TurnComplete: normalTurnCompleteMeta(),
+			Timestamp:    time.Now(),
 		}); err != nil {
 			t.Fatalf("turn %d complete: %v", idx, err)
 		}
@@ -610,12 +617,12 @@ func TestCaptureBaselineIdempotentOnStalePair(t *testing.T) {
 	}
 	fake.liveRefs[staleRef] = true
 	if err := st.SaveCheckpoint(store.Checkpoint{
-		ID:            "stale-row",
-		ThreadID:      "t1",
-		TurnIndex:     0,
-		RefName:       staleRef,
-		CapturedAt:    1000,
-		WorkspacePath: "/tmp",
+		ID:                  "stale-row",
+		ThreadID:            "t1",
+		CheckpointTurnCount: 0,
+		RefName:             staleRef,
+		CapturedAt:          1000,
+		WorkspacePath:       "/tmp",
 	}); err != nil {
 		t.Fatalf("seed stale row: %v", err)
 	}
@@ -854,7 +861,8 @@ func TestToolPathsRecordedPerTurnAcrossMultipleTurns(t *testing.T) {
 		if err := router.Handle(provider.ProviderEvent{
 			Kind: provider.EventTurnComplete, ThreadID: "t1",
 			TurnID: fmt.Sprintf("turn-%d", idx), TurnIndex: idx,
-			Timestamp: time.Now(),
+			TurnComplete: normalTurnCompleteMeta(),
+			Timestamp:    time.Now(),
 		}); err != nil {
 			t.Fatalf("turn %d complete: %v", idx, err)
 		}
@@ -927,7 +935,7 @@ func TestToolPathsDroppedOnFailedToolCompletion(t *testing.T) {
 	}
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		TurnID: "turn-0", TurnIndex: 0, Timestamp: time.Now(),
+		TurnID: "turn-0", TurnIndex: 0, TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("turn complete: %v", err)
 	}
@@ -956,19 +964,19 @@ func TestToolPathsDroppedOnFailedToolCompletion(t *testing.T) {
 //
 // The wire pattern (Claude task_notification → CLI synthesizes a
 // `type:"user"` envelope → second `result`) results in:
-//   1. First half: tool completes write a.txt → committedToolPaths[t1|0]=[a.txt].
-//   2. First EventTurnComplete fires → handleTurnComplete runs but does
-//      NOT capture (capture-at-next-user-send model). markTurnSettled
-//      marks (t1, 0) as settled. clearOpenTurn clears open-turn pointer.
-//   3. Second half: the wire keeps emitting tool events. settleToolPaths
-//      falls back to LastTurnIndex (B5 fix) so paths attribute to turn
-//      0, not a stale or wrong turn. committedToolPaths[t1|0]=[a.txt,b.txt].
-//   4. Second EventTurnComplete fires → handleTurnComplete sees
-//      settledTurns[t1|0] already set → returns early. Still no capture.
-//   5. User sends turn 1 → handleTurnStart for turn 1 →
-//      capturePriorTurnCheckpoint(t1, 0) → drains
-//      committedToolPaths[t1|0]=[a.txt,b.txt] → captures checkpoint #1
-//      with cumulative tool paths.
+//  1. First half: tool completes write a.txt → committedToolPaths[t1|0]=[a.txt].
+//  2. First EventTurnComplete fires → handleTurnComplete runs but does
+//     NOT capture (capture-at-next-user-send model). claimTurnSettlement
+//     marks (t1, 0) as settled. clearOpenTurn clears open-turn pointer.
+//  3. Second half: the wire keeps emitting tool events. settleToolPaths
+//     falls back to LastTurnIndex (B5 fix) so paths attribute to turn
+//     0, not a stale or wrong turn. committedToolPaths[t1|0]=[a.txt,b.txt].
+//  4. Second EventTurnComplete fires → handleTurnComplete sees
+//     settledTurns[t1|0] already set → returns early. Still no capture.
+//  5. User sends turn 1 → handleTurnStart for turn 1 →
+//     capturePriorTurnCheckpoint(t1, 0) → drains
+//     committedToolPaths[t1|0]=[a.txt,b.txt] → captures checkpoint #1
+//     with cumulative tool paths.
 //
 // Without the architectural fix, (a) the first capture would land at
 // turn-end with only first-half paths, (b) second-half tool completes
@@ -1023,7 +1031,7 @@ func TestMultiResultCheckpointCumulativeToolPaths(t *testing.T) {
 	// First `result`. clearOpenTurn fires; settledTurns marks (t1,0).
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		TurnID: "turn-0", TurnIndex: 0, Timestamp: time.Now(),
+		TurnID: "turn-0", TurnIndex: 0, TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("first turn complete: %v", err)
 	}
@@ -1049,7 +1057,7 @@ func TestMultiResultCheckpointCumulativeToolPaths(t *testing.T) {
 	// Second `result` for the same turn — idempotent guard returns early.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		TurnID: "turn-0", TurnIndex: 0, Timestamp: time.Now(),
+		TurnID: "turn-0", TurnIndex: 0, TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("second turn complete: %v", err)
 	}
@@ -1115,7 +1123,8 @@ func TestPriorTurnCheckpointFailureUnmarksDedup(t *testing.T) {
 	}
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1", TurnIndex: 0,
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("turn 0 complete: %v", err)
 	}

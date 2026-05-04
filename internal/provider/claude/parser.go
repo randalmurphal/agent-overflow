@@ -75,9 +75,9 @@ type Parser struct {
 	// lastAssistantMessageID is the id of the most-recent `assistant`
 	// envelope's `message.id`. The `result` envelope does not carry this
 	// id, so we track it in-stream and stamp it onto
-	// `EventTurnComplete.Meta.assistant_message_id` so triage can write
-	// the `turns.assistant_message_id` column. Reset to "" inside
-	// `parseResult` after emission so it doesn't leak into the next turn.
+	// provider.WireTurnCompleteMeta so triage can write the
+	// `turns.assistant_message_id` column. Reset to "" inside `parseResult`
+	// after emission so it doesn't leak into the next turn.
 	// See docs/references/claude-wire.md §result and
 	// docs/architecture/turn-lifecycle.md §Turn lifecycle.
 	lastAssistantMessageID string
@@ -366,9 +366,8 @@ func (p *Parser) taskToolUseRef(taskID string) taskToolUseRef {
 // setLastAssistantMessageID remembers the id of the most recent
 // `assistant` envelope's `message.id`. Called from parse_assistant.go
 // on every assistant envelope so `parseResult` can include it on
-// `EventTurnComplete.Meta.assistant_message_id`. Empty input is
-// ignored so mid-stream content-only messages (no id) don't clobber
-// the stored id.
+// provider.WireTurnCompleteMeta. Empty input is ignored so mid-stream
+// content-only messages (no id) don't clobber the stored id.
 func (p *Parser) setLastAssistantMessageID(id string) {
 	if p == nil || id == "" {
 		return

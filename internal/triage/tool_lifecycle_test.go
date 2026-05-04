@@ -2155,7 +2155,8 @@ func TestForceClosedRow_LateCompletionDoesNotResurrect(t *testing.T) {
 	// errored with the force-close marker.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Timestamp: startedAt.Add(500 * time.Millisecond),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    startedAt.Add(500 * time.Millisecond),
 	}); err != nil {
 		t.Fatalf("turn complete: %v", err)
 	}
@@ -2442,9 +2443,10 @@ func TestAskUserQuestionLifecycle_InterruptForceClosesToErrored(t *testing.T) {
 	// User stops the thread. Turn completes without a matching
 	// tool_result for AskUserQuestion.
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		Timestamp: time.Now(),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("turn complete: %v", err)
 	}

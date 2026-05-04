@@ -246,9 +246,50 @@ type ProviderEvent struct {
 	// ParentToolUseID links a subagent-emitted event to its parent Task-tool
 	// use. Claude surfaces this on assistant messages when the message is
 	// produced inside a Task (Agent) tool call. Empty for top-level events.
-	ParentToolUseID string          `json:"parentToolUseId,omitempty"`
-	Raw             json.RawMessage `json:"-"`
+	ParentToolUseID string           `json:"parentToolUseId,omitempty"`
+	Raw             json.RawMessage  `json:"-"`
+	TurnComplete    TurnCompleteMeta `json:"-"`
 }
+
+// TurnCompleteMeta is the typed payload for EventTurnComplete. Turn
+// completion has several semantic sources (provider wire result, soft
+// round-close, synthetic truncation); keeping those as distinct Go types
+// prevents new producers from smuggling another ad hoc JSON shape through
+// ProviderEvent.Meta.
+type TurnCompleteMeta interface {
+	isTurnCompleteMeta()
+}
+
+// WireTurnCompleteMeta represents a provider-reported turn boundary. It
+// carries the durable payload triage may persist or forward to the frontend.
+type WireTurnCompleteMeta struct {
+	StopReason         string
+	AssistantMessageID string
+	Usage              *TokenUsage
+	Aborted            bool
+	ErrorMessage       string
+}
+
+func (*WireTurnCompleteMeta) isTurnCompleteMeta() {}
+
+// SoftRoundCloseMeta represents Claude's message_delta stop_reason path:
+// the parent model has stopped emitting for this wire round, but the trailing
+// result envelope may still arrive later with cumulative usage.
+type SoftRoundCloseMeta struct {
+	StopReason         string
+	AssistantMessageID string
+}
+
+func (*SoftRoundCloseMeta) isTurnCompleteMeta() {}
+
+// TruncatedTurnCompleteMeta represents an app/triage-synthesized close when
+// the provider did not produce a clean wire turn boundary.
+type TruncatedTurnCompleteMeta struct {
+	ErrorMessage string
+	Synthetic    bool
+}
+
+func (*TruncatedTurnCompleteMeta) isTurnCompleteMeta() {}
 
 // ApprovalRequest is sent when a provider needs user permission.
 type ApprovalRequest struct {
@@ -356,7 +397,7 @@ type ProviderStatusEvent struct {
 // request, extracted from the raw provider payload. Only one of
 // (RequestedSchema) or (URL + ElicitationID) is populated depending on Mode.
 // Wire contract lives at:
-// /Users/randy/repos/codex-source/codex-rs/app-server-protocol/schema/typescript/v2/McpServerElicitationRequestParams.ts
+// /home/rmurphy/repos/codex/codex-rs/app-server-protocol/schema/typescript/v2/McpServerElicitationRequestParams.ts
 type ElicitationRequest struct {
 	Mode       string `json:"mode"`                 // "form" or "url"
 	Message    string `json:"message"`              // human-readable prompt shown to the user

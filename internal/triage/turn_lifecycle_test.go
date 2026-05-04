@@ -11,7 +11,7 @@ import (
 
 // TestTurnCompleteTruncatedFlipsRunningAndDrainsQueueAsErrored is the
 // spec-critical contract for turn interruption. A single
-// EventTurnComplete with meta.truncated=true must:
+// EventTurnComplete with provider.TruncatedTurnCompleteMeta must:
 //
 //  1. Flip every still-streaming NON-BACKGROUND item on that turn to
 //     status=errored with summary suffixed by " — interrupted"
@@ -99,14 +99,13 @@ func TestTurnCompleteTruncatedFlipsRunningAndDrainsQueueAsErrored(t *testing.T) 
 		t.Fatalf("expected 1 queued completion before turn-complete, got %d", queuedBefore)
 	}
 
-	// 4. EventTurnComplete with truncated=true must flip everything
+	// 4. A truncated EventTurnComplete must flip everything
 	// interrupted and drain the queue.
-	truncMeta, _ := json.Marshal(map[string]any{"truncated": true})
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		Meta:      truncMeta,
-		Timestamp: time.Now(),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: &provider.TruncatedTurnCompleteMeta{},
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("turn complete truncated: %v", err)
 	}
@@ -281,7 +280,7 @@ func TestHandleEventTurnStart_InsertsTurnRow(t *testing.T) {
 }
 
 // TestHandleEventTurnComplete_UpdatesTurnRow verifies the happy-path
-// settle: start a turn, complete it with a rich Meta payload, then
+// settle: start a turn, complete it with a rich typed payload, then
 // assert the turns row captured every field and provider:turn_completed
 // fired with the corresponding shape.
 func TestHandleEventTurnComplete_UpdatesTurnRow(t *testing.T) {
@@ -296,17 +295,15 @@ func TestHandleEventTurnComplete_UpdatesTurnRow(t *testing.T) {
 		t.Fatalf("turn start: %v", err)
 	}
 
-	completeMeta, _ := json.Marshal(map[string]any{
-		"stop_reason":          "end_turn",
-		"assistant_message_id": "msg_01abc",
-		"usage":                map[string]any{"input_tokens": 123, "output_tokens": 45},
-		"duration_ms":          2500,
-		"total_cost_usd":       0.0045,
-	})
 	completedAt := startedAt.Add(2500 * time.Millisecond)
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Meta: completeMeta, Timestamp: completedAt,
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason:         "end_turn",
+			AssistantMessageID: "msg_01abc",
+			Usage:              &provider.TokenUsage{InputTokens: 123, OutputTokens: 45},
+		},
+		Timestamp: completedAt,
 	}); err != nil {
 		t.Fatalf("turn complete: %v", err)
 	}
@@ -327,8 +324,8 @@ func TestHandleEventTurnComplete_UpdatesTurnRow(t *testing.T) {
 	if turn.AssistantMessageID != "msg_01abc" {
 		t.Errorf("assistant_message_id = %q, want msg_01abc", turn.AssistantMessageID)
 	}
-	if !strings.Contains(turn.TokenUsageJSON, "input_tokens") {
-		t.Errorf("token_usage_json missing input_tokens: %q", turn.TokenUsageJSON)
+	if !strings.Contains(turn.TokenUsageJSON, "inputTokens") {
+		t.Errorf("token_usage_json missing inputTokens: %q", turn.TokenUsageJSON)
 	}
 	if turn.ErrorMessage != "" {
 		t.Errorf("error_message = %q, want empty for happy path", turn.ErrorMessage)
@@ -381,20 +378,20 @@ func TestHandleEventTurnCompleteDuplicatePersistsLateUsage(t *testing.T) {
 	}
 
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		Timestamp: startedAt.Add(time.Second),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    startedAt.Add(time.Second),
 	}); err != nil {
 		t.Fatalf("first complete: %v", err)
 	}
 
-	lateMeta, _ := json.Marshal(map[string]any{
-		"usage": map[string]any{"input_tokens": 123, "output_tokens": 45},
-	})
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		Meta:      lateMeta,
+		Kind:     provider.EventTurnComplete,
+		ThreadID: "t1",
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			Usage: &provider.TokenUsage{InputTokens: 123, OutputTokens: 45},
+		},
 		Timestamp: startedAt.Add(2 * time.Second),
 	}); err != nil {
 		t.Fatalf("duplicate complete: %v", err)
@@ -404,7 +401,7 @@ func TestHandleEventTurnCompleteDuplicatePersistsLateUsage(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("get turn: found=%v err=%v", found, err)
 	}
-	if !strings.Contains(turn.TokenUsageJSON, "input_tokens") {
+	if !strings.Contains(turn.TokenUsageJSON, "inputTokens") {
 		t.Fatalf("late token_usage_json not persisted: %q", turn.TokenUsageJSON)
 	}
 }
@@ -443,7 +440,8 @@ func TestHandleEventTurnComplete_ForceClosesOrphans(t *testing.T) {
 	// End the turn without any tool_complete.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("turn complete: %v", err)
 	}
@@ -508,7 +506,8 @@ func TestHandleEventTurnComplete_ExemptsBackgroundedLaunches(t *testing.T) {
 	// End the turn.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("turn complete: %v", err)
 	}
@@ -540,7 +539,7 @@ func TestHandleEventTurnComplete_ExemptsBackgroundedLaunches(t *testing.T) {
 // the provider aborts must surface as interrupted in the turns row
 // and on the frontend payload — regardless of whatever the provider's
 // stop_reason happened to be (Claude's "error_during_execution"
-// subtype, Codex's "interrupted" turn_status).
+// subtype or Codex's normalized interrupted stop reason.
 func TestHandleEventTurnComplete_InterruptedMapsCanonicalStopReason(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -553,13 +552,13 @@ func TestHandleEventTurnComplete_InterruptedMapsCanonicalStopReason(t *testing.T
 	}
 
 	// aborted=true must override any other stop_reason.
-	abortedMeta, _ := json.Marshal(map[string]any{
-		"stop_reason": "end_turn",
-		"aborted":     true,
-	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Meta: abortedMeta, Timestamp: time.Now(),
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason: "end_turn",
+			Aborted:    true,
+		},
+		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("turn complete aborted: %v", err)
 	}
@@ -678,7 +677,7 @@ func TestMarkUserInterrupt_ExemptsBackgroundedLaunches(t *testing.T) {
 // TestHandleEventTurnStart_UsesWireTurnIDForCodex pins the
 // resolveTurnID branch that prefers the provider-supplied `evt.TurnID`
 // over the synthetic `<threadID>:<turnIndex>` fallback. Codex fills
-// evt.TurnID from `turn/started.turnId`; Claude has no wire-level
+// evt.TurnID from `turn/started.turn.id`; Claude has no wire-level
 // turn_id and leaves the field empty, so the synthetic path kicks in
 // (see TestHandleEventTurnStart_InsertsTurnRow which exercises that
 // branch). This test exercises the Codex branch end-to-end:
@@ -770,17 +769,16 @@ func TestHandleEventTurnStart_UsesWireTurnIDForCodex(t *testing.T) {
 	// rather than forking a new synthetic row. This is the round-trip
 	// invariant: both ends of a turn share a single row keyed by the
 	// provider's identifier.
-	completeMeta, _ := json.Marshal(map[string]any{
-		"stop_reason":          "end_turn",
-		"assistant_message_id": "codex-assist-1",
-	})
 	completedAt := startedAt.Add(3 * time.Second)
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventTurnComplete,
 		ThreadID:  "t1",
 		TurnID:    wireTurnID,
 		TurnIndex: 0,
-		Meta:      completeMeta,
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason:         "end_turn",
+			AssistantMessageID: "msg_complete_1",
+		},
 		Timestamp: completedAt,
 	}); err != nil {
 		t.Fatalf("turn complete: %v", err)
@@ -799,8 +797,8 @@ func TestHandleEventTurnStart_UsesWireTurnIDForCodex(t *testing.T) {
 	if settled.StopReason != "end_turn" {
 		t.Errorf("stop_reason = %q, want end_turn", settled.StopReason)
 	}
-	if settled.AssistantMessageID != "codex-assist-1" {
-		t.Errorf("assistant_message_id = %q, want codex-assist-1", settled.AssistantMessageID)
+	if settled.AssistantMessageID != "msg_complete_1" {
+		t.Errorf("assistant_message_id = %q, want msg_complete_1", settled.AssistantMessageID)
 	}
 	// Started_at must survive the update unchanged — the complete
 	// path must not rewrite the wall clock.
@@ -832,7 +830,7 @@ func TestHandleEventTurnStart_UsesWireTurnIDForCodex(t *testing.T) {
 	if completedPayload.TurnID != startedRoundID {
 		t.Errorf("provider:turn_completed TurnID = %q, want matching round id from turn_started %q", completedPayload.TurnID, startedRoundID)
 	}
-	if completedPayload.AssistantMessageID != "codex-assist-1" {
-		t.Errorf("provider:turn_completed AssistantMessageID = %q, want codex-assist-1", completedPayload.AssistantMessageID)
+	if completedPayload.AssistantMessageID != "msg_complete_1" {
+		t.Errorf("provider:turn_completed AssistantMessageID = %q, want msg_complete_1", completedPayload.AssistantMessageID)
 	}
 }

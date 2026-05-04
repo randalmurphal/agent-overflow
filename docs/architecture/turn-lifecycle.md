@@ -253,19 +253,24 @@ One-to-one with a user → assistant round-trip. The authoritative
 ### Participants
 
 **Claude**:
-- Turn start: implicit when the user sends (agent-overflow tracks
-  this at the session layer when `SendMessage` is called).
+- Turn start: `SendMessage` registers a pending-send marker, then
+  Claude's wire `system/init` drives `handleTurnStart` through
+  `handleInit`.
 - Turn end: `result` envelope. Carries `subtype`, `stop_reason`,
   `usage`, `duration_ms`, `total_cost_usd`, `modelUsage`,
   `permission_denials`, `terminal_reason`.
 - Final assistant message id: NOT on `result`. Track from the last
   `assistant` envelope's `message.id`.
+- Soft round-close: a top-level `stream_event.message_delta` with
+  `delta.stop_reason` in `{end_turn, stop_sequence, refusal}` closes
+  the current wire round before the trailing `result` arrives.
 
 **Codex**:
 - Turn start: `turn/started` notification.
-- Turn end: `turn/completed` notification (or `turn/aborted` for
-  interrupted).
-- Final assistant message id: on `turn/completed.lastAssistantMessageId`.
+- Turn end: `turn/completed` notification.
+- `turn/completed` shape: `{threadId, turn}`. The lifecycle status is
+  `turn.status` (`completed`, `failed`, `interrupted`, `inProgress`).
+- Final assistant message id: not carried on `turn/completed`.
 
 ### Emitted events
 
@@ -278,9 +283,10 @@ One-to-one with a user → assistant round-trip. The authoritative
 ### Wire-round vs logical-turn cadence
 
 `provider:turn_started` and `provider:turn_completed` fire **per wire
-round**, not per logical turn. A round corresponds to one Claude
-`result` envelope (or one Codex `turn/completed`); a logical
-agent-overflow turn — one user-typed prompt — can span multiple
+round**, not per logical turn. A round corresponds to one provider
+stop signal: Claude `result`, Claude soft message_delta stop_reason,
+or Codex `turn/completed`. A logical agent-overflow turn — one
+user-typed prompt — can span multiple
 rounds. The canonical multi-round case is Claude's CLI synthesizing a
 `type:"user"` envelope from a `task_notification`: the assistant's
 first `end_turn` lands as result envelope #1, the synthesized prompt
@@ -293,7 +299,7 @@ Two cadences run in parallel:
 | Cadence | Driver | Granularity | What it controls |
 |---|---|---|---|
 | Frontend visibility | `currentRoundID` / `setOpenRound` / `takeOpenRound` | Per wire round | `provider:turn_started`/`provider:turn_completed` emissions — working indicator, Stop button, composer block, read-state projection |
-| Persistence | `markTurnSettled` / `settleTurnRow` | Per logical turn (turnIndex) | `turns` row UPDATE, checkpoint capture, streaming-item settlement |
+| Persistence | `claimTurnSettlement` / `settleTurnRow` | Per logical turn (turnIndex) | `turns` row UPDATE, checkpoint capture, streaming-item settlement |
 
 Round entry points:
 
@@ -314,11 +320,65 @@ Round entry points:
   already raced ahead (the fatal-error-then-real-result pattern in
   `handleError`); the second wire complete then emits nothing, so
   the frontend sees exactly one `turn_completed` per round.
-  Persistence work stays gated by `markTurnSettled` at logical-turn
+  Persistence work stays gated by `claimTurnSettlement` at logical-turn
   granularity.
 
 The persisted `turns.turn_id` stays on `resolveTurnID` (logical-turn
 granularity) so multi-round logical turns share a single row.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+
+    Idle --> RoundOpen: handleTurnStart
+    note right of RoundOpen
+      openTurns[thread]=turnIndex
+      currentRoundID[thread]=roundID
+      emit provider:turn_started
+    end note
+
+    RoundOpen --> SettledBetweenRounds: soft or real EventTurnComplete, first claim
+    note right of SettledBetweenRounds
+      takeOpenRound()
+      emit provider:turn_completed
+      settledTurns[thread|turn]=true
+      clearOpenTurn()
+      update turns row
+    end note
+
+    SettledBetweenRounds --> ReRoundOpen: EventInit after settled turn
+    note right of ReRoundOpen
+      currentRoundID[thread]=newRoundID
+      openTurns remains empty
+      emit provider:turn_started
+    end note
+
+    ReRoundOpen --> SettledBetweenRounds: soft or real EventTurnComplete, already settled
+    note right of SettledBetweenRounds
+      takeOpenRound()
+      emit provider:turn_completed
+      UpdateTurnLatePayload()
+    end note
+
+    RoundOpen --> Idle: session_died / cleanup
+    note right of Idle
+      synthesize truncated complete if open turn exists
+      delete openTurns/currentRoundID/settledTurns
+    end note
+
+    SettledBetweenRounds --> Idle: cleanup
+```
+
+Cascade shapes pinned by fixtures/tests:
+
+- Single round soft → real: soft emits `provider:turn_completed` and
+  settles; trailing real result folds usage / final assistant id only.
+- Multi-result real → init → real: first real settles; init opens a
+  re-round; second real emits round completion and folds late payload.
+- Soft + subagent wait + init + real: soft clears working UI; later
+  init/re-round and real behave as above.
+- Soft + init + soft + init + soft + real: each init opens one new
+  round; each soft closes that round; trailing real folds final payload.
 
 ### Invariant (load-bearing)
 
@@ -339,8 +399,10 @@ The `turns` row carries:
 - `completed_at` (ms, nullable; null = in-flight or session died)
 - `stop_reason` (text: `end_turn` / `max_tokens` / `tool_use` /
   `stop_sequence` / `refusal` / `error` / `interrupted`)
-- `assistant_message_id` (text, nullable) — the final assistant_text
-  item id for the settled-turn projection.
+- `assistant_message_id` (text, nullable) — provider-derived final
+  assistant message id when available. Claude derives it from the last
+  in-stream assistant `message.id`; current Codex `turn/completed`
+  does not carry one.
 - `token_usage_json` — snapshot of `usage` for trace/debug surfaces.
 - `error_message` — populated when `stop_reason` indicates error.
 
@@ -382,7 +444,7 @@ cases only — it must not feed turn detection.
 | Codex `item/started` | `EventToolStart` | `provider:item_event` upsert | Upsert item row |
 | Codex `item/completed` | `EventToolComplete` | `provider:item_event` upsert | Update item row |
 | Codex `turn/started` | `EventTurnStart` | `provider:turn_started` | Insert `turns` row |
-| Codex `turn/completed` / `turn/aborted` | `EventTurnComplete` | `provider:turn_completed` | Update `turns` row, force-close orphans |
+| Codex `turn/completed` | `EventTurnComplete` | `provider:turn_completed` | Update `turns` row, force-close orphans |
 
 ## Frontend state shape
 
@@ -402,7 +464,13 @@ interface SettledTurn {
   completedAt: number;
   stopReason: string;
   assistantMessageId: string | null;
-  tokenUsage: { inputTokens, outputTokens, cacheReadTokens, costUsd } | null;
+  tokenUsage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadInputTokens?: number;
+    cacheCreationInputTokens?: number;
+    totalCostUsd?: number;
+  } | null;
   aborted: boolean;
   errorMessage: string;
 }
@@ -557,8 +625,9 @@ working indicator clears and the user gets actionable copy:
 2. **Process exit during turn** —
    `EventSessionStatus{Content:"error"}` → triage promotes to
    `provider:session_died` event, persists a `notification` row with
-   `meta.kind = "session_died"`, and synthesizes a truncated
-   `EventTurnComplete{aborted:true}` if a turn is open. Three
+   `meta.kind = "session_died"`, and synthesizes an
+   `EventTurnComplete` carrying `provider.TruncatedTurnCompleteMeta`
+   if a turn is open. Three
    loosely-coupled UI projections: the truncated turn-complete
    clears the working indicator; the notification row shows in the
    timeline as historical record; the typed event drives the
@@ -568,7 +637,7 @@ working indicator clears and the user gets actionable copy:
    `Router.CleanupThread` is the safety net: any open turn at
    teardown synthesizes a truncated turn-complete before state is
    torn down. Idempotent against the path above via
-   `markTurnSettled`.
+   `claimTurnSettlement`.
 4. **Codex `error+willRetry:false`** — sets `meta.fatal:true` so the
    triage `handleError` fatal branch closes the turn. No
    `expect_turn_complete` opt-in (Codex doesn't follow up with a

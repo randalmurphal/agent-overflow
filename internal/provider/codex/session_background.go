@@ -12,7 +12,7 @@ import (
 // docs/references/codex.md#known-upstream-constraints.
 //
 // Wire contract is owned by the Codex source of truth:
-// /Users/randy/repos/codex-source/codex-rs/app-server-protocol/src/protocol/v2.rs
+// /home/rmurphy/repos/codex/codex-rs/app-server-protocol/src/protocol/v2.rs
 // (ThreadBackgroundTerminalsCleanParams / ThreadBackgroundTerminalsCleanResponse).
 // The response body is empty on success — the observable effect is a stream
 // of `item/completed` events for each terminated PTY that flow through our

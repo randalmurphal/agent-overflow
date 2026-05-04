@@ -5,7 +5,6 @@ export {
     Attachment,
     ChannelMessage,
     ChatBarFavorite,
-    Checkpoint,
     DesignArtifact,
     DiscussionDefinition,
     DiscussionParticipant,

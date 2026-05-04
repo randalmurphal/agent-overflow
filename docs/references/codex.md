@@ -7,7 +7,7 @@ own code.
 ## Reference Repos
 
 - **Codex source** — https://github.com/openai/codex
-  - Local mirror: `/Users/randy/repos/codex-source`.
+  - Local mirror: `/home/rmurphy/repos/codex`.
   - Authoritative behavior of the `codex app-server` process, JSON-RPC
     method shapes, notification payloads, sandbox/approval policies.
   - Read this when the question is "what does Codex actually send?"

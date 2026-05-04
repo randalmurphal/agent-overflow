@@ -74,6 +74,7 @@ func TestParentToolUseIDPersistsOnTurnText(t *testing.T) {
 		Kind:            provider.EventTurnComplete,
 		ThreadID:        "t1",
 		ParentToolUseID: "task_tool_99",
+		TurnComplete:    normalTurnCompleteMeta(),
 		Timestamp:       time.Now(),
 	}); err != nil {
 		t.Fatalf("turn complete: %v", err)
@@ -99,8 +100,8 @@ func TestParentToolUseIDPersistsOnTurnText(t *testing.T) {
 }
 
 func TestParentToolUseIDEmptyWhenAbsent(t *testing.T) {
-	// Backward compat: events without a ParentToolUseID emit an empty field
-	// and persist items with an empty column value.
+	// Top-level events have no ParentToolUseID, so the emitted payload
+	// and persisted column stay empty.
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -113,9 +114,10 @@ func TestParentToolUseIDEmptyWhenAbsent(t *testing.T) {
 		t.Fatalf("handle text delta: %v", err)
 	}
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		Timestamp: time.Now(),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("handle turn complete: %v", err)
 	}

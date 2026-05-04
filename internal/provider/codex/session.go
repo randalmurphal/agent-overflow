@@ -1113,7 +1113,7 @@ func (s *Session) clearPlanBufferForTurn(turnID string) {
 
 func isChildTurnLifecycleNotification(method string) bool {
 	switch method {
-	case "turn/started", "turn/completed", "turn/aborted":
+	case "turn/started", "turn/completed":
 		return true
 	default:
 		return false

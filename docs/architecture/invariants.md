@@ -689,6 +689,9 @@ parent's `spawn_agent` tool_call completes on the wire immediately. The
 `is_background` flag on the parent's tool_call row reflects that the
 referenced child thread may still be running — authorized by the
 wire's `agentsStates` map, not by any event-ordering heuristic.
+This was re-checked against `codex-cli 0.128.0` on 2026-05-04: the
+parent `turn/completed` arrived before the child thread's
+`turn/completed`, so no Codex soft-round-close path is needed.
 
 **Enforcement.** Only `internal/triage/codex_background.go` and the
 `internal/provider/codex/` enrichment that feeds it may set
@@ -759,14 +762,14 @@ It does NOT emit on:
 - `"pause_turn"` — model explicitly asked for more time
 - `"max_tokens"` — harness may auto-continue
 
-The emitted event carries `meta.soft = true`, `meta.stop_reason`,
-and the parser's PEEKED `assistant_message_id` (peek, not take —
-the trailing wire `result` envelope still consumes via
+The emitted event carries a typed `provider.SoftRoundCloseMeta` with
+`stop_reason` and the parser's PEEKED `assistant_message_id` (peek,
+not take — the trailing wire `result` envelope still consumes via
 `takeLastAssistantMessageID`). Usage/cost are NOT on the soft event
 — those land on the trailing `result`. Triage's
 `handleTurnComplete` settles the round on this signal; the trailing
 wire `result` envelope folds late payload via
-`persistLateTurnUsage` → `store.UpdateTurnLatePayload`. Per-column
+`persistLateTurnPayload` → `store.UpdateTurnLatePayload`. Per-column
 fold semantics:
 
 - `token_usage_json`: first non-empty wins (preserves first
@@ -803,15 +806,17 @@ parent processes the new message coherently, original subagent
 keeps running uninterrupted).
 
 **Enforcement.** Only `parse_stream.go`'s `message_delta` case may
-emit this signal. The gating logic
+emit `provider.SoftRoundCloseMeta`. The gating logic
 (`parent_tool_use_id == null` + closed stop_reason set) is unit-
 tested. The `result` envelope path remains authoritative for
-cumulative token usage / cost; the `assistant_message_id` column on
-the persisted row converges on the FINAL round's id via
+cumulative token usage / cost. Claude's assistant id is derived from
+the parser's last in-stream assistant `message.id` (not from a raw
+`result.assistant_message_id` field); the `assistant_message_id`
+column on the persisted row converges on the FINAL round's id via
 `UpdateTurnLatePayload`'s last-write-wins rule for that column.
 
 **Test.**
-- `parse_stream_test.go` unit tests that gate on
+- `partial_messages_test.go` unit tests that gate on
   `parent_tool_use_id` and stop_reason set.
 - Fixture replay test using `local_agent_outlives.ndjson` asserts
   `EventTurnComplete` fires from the parent's message_delta

@@ -78,7 +78,7 @@ so normalize early and keep the frontend branches explicit:
 
 - Claude → upstream `@anthropic-ai/claude-agent-sdk` and
   `forge/apps/server/src/provider/Layers/ClaudeAdapter.ts`.
-- Codex → `/Users/randy/repos/codex-source` (wire format) and
+- Codex → `/home/rmurphy/repos/codex` (wire format) and
   `CodexMonitor` (client patterns). See `docs/references/codex.md`.
 - `docs/architecture/providers.md` — shared contract.
 - `docs/references/spike-policy.md` — when and how to spike-test.

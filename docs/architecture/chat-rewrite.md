@@ -1198,11 +1198,12 @@ func (r *Router) drainInterruptQueue(threadID string) {
 ### Turn lifecycle synthesis
 
 Turn boundaries enter the Go triage layer through provider-specific
-signals. Claude has no wire turn-start event, so `App.sendMessage`
-synthesizes one before sending. Codex emits `turn/started`, so
-`App.sendMessage` persists the user item first and lets the Codex wire
-event open the turn. Both paths use the same local `turn_index`
-semantics so item grouping stays provider-independent.
+signals. `App.sendMessage` persists the user item and registers a
+pending-send marker before writing to the provider. Claude opens the
+logical turn when its wire `system/init` arrives and `handleInit`
+matches that marker; Codex opens the turn from native `turn/started`.
+Both paths use the same local `turn_index` semantics so item grouping
+stays provider-independent.
 
 **`turn_index` semantics**: this is a LOCAL counter on agent-overflow's
 thread, not a provider turn id. Provider turn ids (Codex's
@@ -1213,16 +1214,18 @@ internally loop through multiple API cycles under one of our
 turns), and that's fine: our `turn_index` is the UI unit, the
 provider's turn id is the wire unit.
 
-**TurnStart** — for Claude, emitted from `App.sendMessage` before
-calling `provider.Send`; for Codex, emitted from the `turn/started`
-wire notification after the user item has been persisted:
+**TurnStart** — for Claude, emitted from `handleInit` when wire
+`system/init` matches a pending-send marker; for Codex, emitted from
+the `turn/started` wire notification after the user item has been
+persisted:
 
 1. Acquire the per-thread mutex (existing `sendThreadMuRegistry`).
 2. If the thread has no prior items, `turnIndex = 0`; otherwise
    `turnIndex = store.LastTurnIndex(threadID) + 1`.
-3. Claude routes `EventTurnStart{threadID, turnIndex}` synchronously;
-   Codex later routes the provider's `turn/started` event, which falls
-   back to the already-persisted user item's `turn_index`.
+3. Register the pending-send marker before writing to provider stdin.
+   Claude's next `system/init` routes through `handleTurnStart`; Codex's
+   native `turn/started` event falls back to the already-persisted user
+   item's `turn_index`.
 4. Router handler: reset `segmentIndexByScope[threadID][turnIndex][""] = 0`,
    open turn telemetry span, capture git baseline (existing
    `handleTurnStart` behavior).
@@ -1238,8 +1241,9 @@ their message immediately and knows it was captured. If
 `provider.Send` then fails:
 - Upsert a system `error` item in the same turn with summary
   "Failed to send: <error>".
-- Synthesize `EventTurnComplete{truncated: true}` so the turn
-  lifecycle closes cleanly and the frontend exits `isTurnActive`.
+- Synthesize `EventTurnComplete` with
+  `provider.TruncatedTurnCompleteMeta` so the turn lifecycle closes
+  cleanly and the frontend exits `isTurnActive`.
 - `turn_index` stays monotonic; the next send gets `turn_index+1`.
 
 Rationale for the inversion: silent-disappearing-user-message
@@ -1250,19 +1254,17 @@ orphan in the new model — it's a visible turn with a clear error
 item, which is exactly what the user needs.
 
 The existing router `handleTurnStart` is idempotent on
-`(threadID, turnIndex)`. If a provider also emits TurnStart (Codex
-`turn/started`, Claude interrupt / re-init path), the duplicate is
-silently absorbed. We synthesize regardless, so we don't depend on
-provider-emitted TurnStart being present.
+`(threadID, turnIndex)`. If a provider re-sends TurnStart for the same
+logical turn (for example a Claude interrupt / re-init path), the
+duplicate is silently absorbed.
 
 **TurnComplete** — wire signal primary, with fallbacks:
 
 | source | signal | role |
 |---|---|---|
 | Claude wire | `{type:"result"}` message | primary — the Claude adapter's `parseResult` handler already emits `EventTurnComplete` |
-| Claude wire | `system/session_state_changed{state:"idle"}` | fallback — if `result` hasn't arrived for the active turn (provider dropped it, stream truncation), synthesize `EventTurnComplete` on idle transition |
 | Codex wire | `turn/completed` notification (carries `turn.status: completed \| interrupted \| failed`) | primary — the Codex adapter's notification handler already emits `EventTurnComplete` |
-| Both | provider process exit while a turn is open (TurnStart seen, no TurnComplete yet) | session lifecycle handler synthesizes `EventTurnComplete{truncated: true}` before session teardown |
+| Both | provider process exit while a turn is open (TurnStart seen, no TurnComplete yet) | session lifecycle handler synthesizes `EventTurnComplete` with `provider.TruncatedTurnCompleteMeta` before session teardown |
 
 Tracking "is a turn currently open" in the router: a simple
 `openTurns map[threadID]turnIndex` cleared on TurnComplete. Set on
@@ -1277,7 +1279,8 @@ On any TurnComplete, the router:
 4. Emits `EventTurnComplete` to the frontend for working-indicator
    and context-meter updates.
 
-On `truncated: true`, the router additionally:
+When `TurnComplete` is `provider.TruncatedTurnCompleteMeta`, the router
+additionally:
 5. Marks any still-`streaming` or `running` items in this turn as
    `errored` with summary suffix " — interrupted" (same rule as the
    live-crash flip below).
@@ -1298,8 +1301,8 @@ On `truncated: true`, the router additionally:
 | `EventProposedPlan`         | upsert a `tool_call` with tool_name="plan"; payload carries the plan markdown                        |
 | `EventError`                | upsert `error` item; id = uuid; summary = error message. ALSO: flip any `streaming`/`running` items in this turn to `errored` (live-crash flip) |
 | `EventCompactBoundary`      | upsert `compaction` item; id = uuid; summary = compaction note. ALSO: emit included context snapshot if present, otherwise emit `provider:usage` reset |
-| `EventTurnStart`            | synthesized by triage on `sendMessage` (see Turn lifecycle synthesis); reset `segmentIndexByScope[threadID][turn_index][""]` and `blockIndexByScope[threadID][turn_index][""]`; open turn span; capture checkpoint; mark turn open; no item |
-| `EventTurnComplete`         | from wire signal or synthesis (see Turn lifecycle synthesis); flip `streaming` items in this turn to `completed`; drain `interruptQueue`; close turn span; clear open-turn marker; if `truncated`, flip streaming to `errored` and drain queue as `errored` |
+| `EventTurnStart`            | from provider wire turn-start signal (Claude `system/init` matched to a pending send, Codex `turn/started`); reset `segmentIndexByScope[threadID][turn_index][""]` and `blockIndexByScope[threadID][turn_index][""]`; open turn span; capture checkpoint; mark turn open; no item |
+| `EventTurnComplete`         | from wire signal or typed synthesis (see Turn lifecycle synthesis); flip `streaming` items in this turn to `completed`; drain `interruptQueue`; close turn span; clear open-turn marker; if `TurnComplete` is `provider.TruncatedTurnCompleteMeta`, flip streaming to `errored` and drain queue as `errored` |
 | `EventApprovalRequest`      | emit `provider:approval` `{action:request, request}`                                                  |
 | `EventApprovalResolved`     | emit `provider:approval` `{action:resolve, requestId, decision}`; upsert the underlying tool_call with `decision` set |
 | `EventInit`                 | persist session_ref to thread; no item                                                                |
@@ -1342,9 +1345,10 @@ retries.
 2. Then: upsert the `error` item (new row).
 3. Finally: drain any pending queued completions to `errored`
    items (not `completed`, since we don't know the real outcome).
-4. Synthesize `EventTurnComplete{truncated: true}` if no wire
-   TurnComplete is expected (subprocess exit case). Not needed for
-   fatal EventError on an otherwise-alive session.
+4. Synthesize `EventTurnComplete` with
+   `provider.TruncatedTurnCompleteMeta` if no wire TurnComplete is
+   expected (subprocess exit case). Not needed for fatal EventError on
+   an otherwise-alive session.
 
 The ordering matters for the frontend render: by the time the error
 item appears, every streaming/running item is already visibly flipped
@@ -1850,11 +1854,9 @@ One sequential pass. Each step ends with green tests.
   a completion before its launch even when the channel interleaves
   them. If both finish while assistant text is streaming, they drain
   FIFO from the interrupt queue after the text settles.
-- Claude turns close on `{type:"result"}` primary; if that never
-  arrives but `session_state_changed{state:"idle"}` does, the router
-  synthesizes TurnComplete from the idle signal. Provider process
-  exit with a turn open synthesizes TurnComplete{truncated: true}
-  and flips streaming items to errored.
+- Claude turns close on `{type:"result"}` primary. Provider process
+  exit with a turn open synthesizes a typed truncated TurnComplete and
+  flips streaming items to errored.
 - Subagents render as one `tool_call` card per subagent in the
   parent's timeline. Card header shows live count + elapsed +
   latest activity; expansion shows the child's full conversation

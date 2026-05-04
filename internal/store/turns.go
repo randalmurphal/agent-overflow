@@ -112,6 +112,15 @@ func (s *Store) UpdateTurnCompleted(
 	return nil
 }
 
+// LateTurnPayload names the per-column fold strategy for late turn-complete
+// data. The SQL below keeps the update atomic; this struct keeps callers from
+// passing two plain strings whose different semantics are only visible inside
+// CASE expressions.
+type LateTurnPayload struct {
+	TokenUsageJSONIfEmpty       string
+	AssistantMessageIDOverwrite string
+}
+
 // UpdateTurnLatePayload folds late-arriving payload onto an
 // already-settled turn row in a single statement so the normal-case
 // soft-then-real cascade pays one autocommit boundary instead of two.
@@ -128,7 +137,7 @@ func (s *Store) UpdateTurnCompleted(
 //     `TurnCompletedEvent.assistantMessageId`. An empty input is a
 //     no-op (preserves whatever the row already has).
 //
-// Passing both arguments empty is a silent no-op (no SQL roundtrip).
+// Passing both payload fields empty is a silent no-op (no SQL roundtrip).
 //
 // The first settlement may have come from the parser's soft
 // round-close (which fires from message_delta — usage may not be on
@@ -136,11 +145,11 @@ func (s *Store) UpdateTurnCompleted(
 // parser if observed) or from a multi-result cascade. The trailing
 // real `result` envelope folds in cumulative usage if still empty
 // and overwrites the amid with the final-round id.
-func (s *Store) UpdateTurnLatePayload(turnID, tokenUsageJSON, assistantMessageID string) error {
+func (s *Store) UpdateTurnLatePayload(turnID string, payload LateTurnPayload) error {
 	if turnID == "" {
 		return fmt.Errorf("store: update turn late payload: turn id is required")
 	}
-	if tokenUsageJSON == "" && assistantMessageID == "" {
+	if payload.TokenUsageJSONIfEmpty == "" && payload.AssistantMessageIDOverwrite == "" {
 		return nil
 	}
 	_, err := s.db.Exec(
@@ -154,8 +163,8 @@ func (s *Store) UpdateTurnLatePayload(turnID, tokenUsageJSON, assistantMessageID
 		          ELSE assistant_message_id
 		        END
 		  WHERE turn_id = ?`,
-		tokenUsageJSON, tokenUsageJSON,
-		assistantMessageID, assistantMessageID,
+		payload.TokenUsageJSONIfEmpty, payload.TokenUsageJSONIfEmpty,
+		payload.AssistantMessageIDOverwrite, payload.AssistantMessageIDOverwrite,
 		turnID,
 	)
 	if err != nil {

@@ -15,9 +15,7 @@ import (
 type Checkpoint struct {
 	ID                  string             `json:"id"`
 	ThreadID            string             `json:"threadId"`
-	TurnIndex           int                `json:"turnIndex"` // legacy alias for CheckpointTurnCount
 	CheckpointTurnCount int                `json:"checkpointTurnCount"`
-	TurnID              string             `json:"turnId,omitempty"`
 	RefName             string             `json:"refName"`
 	BaselineSHA         string             `json:"baselineSha,omitempty"`
 	Status              string             `json:"status"`
@@ -28,11 +26,9 @@ type Checkpoint struct {
 	// means the agent did no file-mutating tool calls during the turn
 	// (or the row predates v32) — a conversation-and-files revert
 	// targeting such a row is a no-op on the worktree.
-	ToolPaths          []string `json:"toolPaths"`
-	AssistantMessageID string   `json:"assistantMessageId,omitempty"`
-	CompletedAt        int64    `json:"completedAt,omitempty"`
-	CapturedAt         int64    `json:"capturedAt"`
-	WorkspacePath      string   `json:"workspacePath"`
+	ToolPaths     []string `json:"toolPaths"`
+	CapturedAt    int64    `json:"capturedAt"`
+	WorkspacePath string   `json:"workspacePath"`
 }
 
 // CheckpointRef identifies the Git ref backing a checkpoint row and the
@@ -42,23 +38,17 @@ type CheckpointRef struct {
 	WorkspacePath string
 }
 
-const checkpointColumns = `id, thread_id, turn_index, checkpoint_turn_count, turn_id, ref_name, baseline_sha, status, files, tool_paths, assistant_message_id, completed_at, captured_at, workspace_path`
+const checkpointColumns = `id, thread_id, checkpoint_turn_count, ref_name, baseline_sha, status, files, tool_paths, captured_at, workspace_path`
 
 func scanCheckpoint(scanner interface{ Scan(...any) error }) (Checkpoint, error) {
 	var c Checkpoint
 	var filesJSON, toolPathsJSON string
 	if err := scanner.Scan(
-		&c.ID, &c.ThreadID, &c.TurnIndex, &c.CheckpointTurnCount, &c.TurnID, &c.RefName, &c.BaselineSHA,
-		&c.Status, &filesJSON, &toolPathsJSON, &c.AssistantMessageID, &c.CompletedAt,
+		&c.ID, &c.ThreadID, &c.CheckpointTurnCount, &c.RefName, &c.BaselineSHA,
+		&c.Status, &filesJSON, &toolPathsJSON,
 		&c.CapturedAt, &c.WorkspacePath,
 	); err != nil {
 		return Checkpoint{}, err
-	}
-	if c.CheckpointTurnCount == 0 && c.TurnIndex != 0 {
-		c.CheckpointTurnCount = c.TurnIndex
-	}
-	if c.TurnIndex == 0 && c.CheckpointTurnCount != 0 {
-		c.TurnIndex = c.CheckpointTurnCount
 	}
 	if c.Status == "" {
 		c.Status = "ready"
@@ -100,13 +90,13 @@ func (s *Store) SaveCheckpoint(c Checkpoint) error {
 	}
 	_, err = s.db.Exec(
 		`INSERT INTO thread_checkpoints (
-			id, thread_id, turn_index, checkpoint_turn_count, turn_id, ref_name,
-			baseline_sha, status, files, tool_paths, assistant_message_id, completed_at,
+			id, thread_id, checkpoint_turn_count, ref_name,
+			baseline_sha, status, files, tool_paths,
 			captured_at, workspace_path
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.ID, c.ThreadID, c.TurnIndex, c.CheckpointTurnCount, c.TurnID, c.RefName,
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.ThreadID, c.CheckpointTurnCount, c.RefName,
 		c.BaselineSHA, c.Status, string(filesJSON), string(toolPathsJSON),
-		c.AssistantMessageID, c.CompletedAt, c.CapturedAt, c.WorkspacePath,
+		c.CapturedAt, c.WorkspacePath,
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert checkpoint %s: %w", c.ID, err)
@@ -165,13 +155,13 @@ func (s *Store) ReplaceCheckpointByTurnCount(c Checkpoint) (CheckpointRef, error
 
 	if _, err := tx.Exec(
 		`INSERT INTO thread_checkpoints (
-			id, thread_id, turn_index, checkpoint_turn_count, turn_id, ref_name,
-			baseline_sha, status, files, tool_paths, assistant_message_id, completed_at,
+			id, thread_id, checkpoint_turn_count, ref_name,
+			baseline_sha, status, files, tool_paths,
 			captured_at, workspace_path
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.ID, c.ThreadID, c.TurnIndex, c.CheckpointTurnCount, c.TurnID, c.RefName,
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.ThreadID, c.CheckpointTurnCount, c.RefName,
 		c.BaselineSHA, c.Status, string(filesJSON), string(toolPathsJSON),
-		c.AssistantMessageID, c.CompletedAt, c.CapturedAt, c.WorkspacePath,
+		c.CapturedAt, c.WorkspacePath,
 	); err != nil {
 		return CheckpointRef{}, fmt.Errorf("store: insert replacement checkpoint %s: %w", c.ID, err)
 	}
@@ -183,10 +173,6 @@ func (s *Store) ReplaceCheckpointByTurnCount(c Checkpoint) (CheckpointRef, error
 }
 
 func normalizeCheckpoint(c Checkpoint) Checkpoint {
-	if c.CheckpointTurnCount == 0 && c.TurnIndex != 0 {
-		c.CheckpointTurnCount = c.TurnIndex
-	}
-	c.TurnIndex = c.CheckpointTurnCount
 	if c.Status == "" {
 		c.Status = "ready"
 	}

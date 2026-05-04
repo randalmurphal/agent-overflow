@@ -139,7 +139,6 @@ func captureE2E(t *testing.T, app *App, threadID, workspace string, turn int, to
 	record := store.Checkpoint{
 		ID:                  uuid.NewString(),
 		ThreadID:            threadID,
-		TurnIndex:           turn,
 		CheckpointTurnCount: turn,
 		RefName:             ref,
 		ToolPaths:           toolPaths,
@@ -738,8 +737,8 @@ func TestAppE2E_RevertToCheckpointBeyondLastTurnIsNoop(t *testing.T) {
 	}
 }
 
-// #31 — ListThreadCheckpoints returns rows ordered by turn_index ASC even
-// when captures land out-of-order.
+// #31 — ListThreadCheckpoints returns rows ordered by checkpoint turn count
+// ASC even when captures land out-of-order.
 func TestAppE2E_ListThreadCheckpointsOrdersByTurn(t *testing.T) {
 	e := newE2EApp(t)
 	workspace := t.TempDir()
@@ -760,11 +759,11 @@ func TestAppE2E_ListThreadCheckpointsOrdersByTurn(t *testing.T) {
 	if len(list) != 3 {
 		t.Fatalf("expected 3 checkpoints, got %d", len(list))
 	}
-	got := []int{list[0].TurnIndex, list[1].TurnIndex, list[2].TurnIndex}
+	got := []int{list[0].CheckpointTurnCount, list[1].CheckpointTurnCount, list[2].CheckpointTurnCount}
 	want := []int{0, 1, 2}
 	for i, w := range want {
 		if got[i] != w {
-			t.Errorf("list[%d].TurnIndex = %d, want %d (full: %v)", i, got[i], w, got)
+			t.Errorf("list[%d].CheckpointTurnCount = %d, want %d (full: %v)", i, got[i], w, got)
 		}
 	}
 }
@@ -975,4 +974,3 @@ func TestAppE2E_RevertConversationAndFilesPreservesManualEditsToOtherFiles(t *te
 		t.Errorf("b.txt should retain the user manual edit; got %q", got("b.txt"))
 	}
 }
-

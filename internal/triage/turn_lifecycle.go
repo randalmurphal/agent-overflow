@@ -371,7 +371,6 @@ func (r *Router) captureBaselineForTurn(ctx context.Context, threadID string, cu
 	record := store.Checkpoint{
 		ID:                  uuid.NewString(),
 		ThreadID:            threadID,
-		TurnIndex:           turnCount,
 		CheckpointTurnCount: turnCount,
 		RefName:             ref,
 		Status:              "ready",
@@ -391,7 +390,6 @@ func (r *Router) captureBaselineForTurn(ctx context.Context, threadID string, cu
 		"threadId":            threadID,
 		"turnIndex":           turnCount,
 		"checkpointTurnCount": turnCount,
-		"refName":             ref,
 		"capturedAt":          now,
 	})
 }
@@ -537,15 +535,11 @@ func (r *Router) captureCompletedTurnCheckpoint(ctx context.Context, settled Tur
 	record := store.Checkpoint{
 		ID:                  uuid.NewString(),
 		ThreadID:            settled.ThreadID,
-		TurnIndex:           turnCount,
 		CheckpointTurnCount: turnCount,
-		TurnID:              settled.TurnID,
 		RefName:             ref,
 		Status:              checkpointStatusForTurn(settled),
 		Files:               files,
 		ToolPaths:           toolPaths,
-		AssistantMessageID:  settled.AssistantMessageID,
-		CompletedAt:         settled.CompletedAt,
 		CapturedAt:          now,
 		WorkspacePath:       workspace,
 	}
@@ -560,7 +554,6 @@ func (r *Router) captureCompletedTurnCheckpoint(ctx context.Context, settled Tur
 		"threadId":            settled.ThreadID,
 		"turnIndex":           turnCount,
 		"checkpointTurnCount": turnCount,
-		"refName":             ref,
 		"files":               files,
 		"capturedAt":          now,
 	})
@@ -622,7 +615,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	//      the second emit so the frontend sees exactly one
 	//      turn_completed per round.
 	//
-	//   2. Per-LOGICAL-TURN persistence (markTurnSettled-gated below).
+	//   2. Per-LOGICAL-TURN persistence (claimTurnSettlement-gated below).
 	//      The `turns` row UPDATE, checkpoint capture, streaming-item
 	//      settlement, and force-close-orphans pass run once per
 	//      (thread, turn_index). A second wire complete for the same
@@ -641,16 +634,22 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	//      turn; persistence settles on the first. The wire-round emit
 	//      at the top fires for the second too (each round gets its
 	//      own indicator on/off).
-	//   2. handleError synthesizes a EventTurnComplete{truncated:true},
+	//   2. handleError synthesizes an EventTurnComplete with TruncatedTurnCompleteMeta,
 	//      then a real wire EventTurnComplete arrives anyway because the
 	//      subprocess kept streaming. takeOpenRound returns "" on the
 	//      second, so the wire-round emit is suppressed.
 	//
 	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
-	meta := decodeTurnCompleteMeta(evt.Meta)
+	meta, metaErr := turnCompleteMetaFromEvent(evt)
+	if metaErr != nil {
+		log.Printf("triage: %v", metaErr)
+		if err == nil {
+			err = metaErr
+		}
+	}
 	now := eventTimestampMillis(evt)
 
-	// Per-round emission. Always runs before the markTurnSettled gate
+	// Per-round emission. Always runs before the claimTurnSettlement gate
 	// so a second `result` envelope for the same logical turn still
 	// emits the round-end signal. takeOpenRound is a read-and-clear:
 	// at most one emit per round, regardless of synthesis races.
@@ -660,13 +659,13 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	}
 
 	if err == nil {
-		// markTurnSettled is sticky on partial failure (same trade-off as
-		// markTurnCaptured): once the FIRST handleTurnComplete reaches
+		// claimTurnSettlement is sticky on partial failure (same trade-off
+		// as markTurnCaptured): once the FIRST handleTurnComplete reaches
 		// here, subsequent invocations for the same (thread, turn) skip
 		// lifecycle settlement. Late usage on a duplicate is still folded
 		// into the existing turn row below so accounting is not lost.
-		if r.markTurnSettled(evt.ThreadID, turnIndex) {
-			r.persistLateTurnUsage(evt, turnIndex, meta)
+		if !r.claimTurnSettlement(evt.ThreadID, turnIndex) {
+			r.persistLateTurnPayload(evt, turnIndex, meta)
 			return nil
 		}
 	}
@@ -775,11 +774,10 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	return persistErr
 }
 
-// turnCompleteIsTruncated reports whether the turn ended via
-// interruption / truncation. See decodeTurnCompleteMeta for the wire
-// shapes this accepts.
+// turnCompleteIsTruncated reports whether the turn ended via interruption /
+// truncation.
 func turnCompleteIsTruncated(meta turnCompleteMeta) bool {
-	return meta.Truncated || meta.Aborted || meta.TurnStatus == "interrupted"
+	return meta.Truncated || meta.Aborted
 }
 
 // forceCloseOrphanToolCalls flips every status=running +
@@ -853,7 +851,7 @@ func decodeTurnCompleteFields(evt provider.ProviderEvent, turnIndex int, meta tu
 	return turnCompleteFields{
 		logicalTurnID:      resolveTurnID(evt, turnIndex),
 		stopReason:         stopReason,
-		assistantMessageID: resolveAssistantMessageID(meta),
+		assistantMessageID: meta.AssistantMessageID,
 		errorMessage:       errorMessage,
 	}
 }
@@ -865,7 +863,7 @@ func decodeTurnCompleteFields(evt provider.ProviderEvent, turnIndex int, meta tu
 // sql.ErrNoRows is logged and the function returns. The frontend-
 // facing `provider:turn_completed` emission has already fired by the
 // time this runs (see handleTurnComplete: takeOpenRound + emit at the
-// top, then markTurnSettled gate, then this).
+// top, then claimTurnSettlement gate, then this).
 func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now int64, meta turnCompleteMeta, persistErr error) {
 	fields := decodeTurnCompleteFields(evt, turnIndex, meta, persistErr)
 
@@ -890,7 +888,7 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 //
 // Pure projection — does not write the `turns` row. settleTurnRow
 // owns the UPDATE and runs once per logical turn under the
-// markTurnSettled gate.
+// claimTurnSettlement gate.
 //
 // No persistErr parameter: this fires at the TOP of handleTurnComplete
 // before any persistence runs, so there is no upstream persistence
@@ -921,11 +919,11 @@ func (r *Router) buildRoundCompletedEvent(
 		AssistantMessageID: fields.assistantMessageID,
 		TokenUsage:         meta.Usage,
 		ErrorMessage:       fields.errorMessage,
-		Aborted:            meta.Aborted || meta.Truncated || meta.TurnStatus == "interrupted",
+		Aborted:            meta.Aborted || meta.Truncated,
 	}
 }
 
-// persistLateTurnUsage folds late-arriving payload onto the existing
+// persistLateTurnPayload folds late-arriving payload onto the existing
 // turn row when handleTurnComplete fires after the turn was already
 // settled. Two known sources:
 //
@@ -934,8 +932,8 @@ func (r *Router) buildRoundCompletedEvent(
 //     re-round. Cumulative `usage` lands on the second envelope; the
 //     amid points to the final round's assistant message.
 //  2. Soft round-close — `parse_stream.go` emits an
-//     EventTurnComplete{soft:true} from `message_delta.stop_reason`
-//     before the wire `result` envelope. The soft event carries the
+//     soft EventTurnComplete from `message_delta.stop_reason` before the
+//     wire `result` envelope. The soft event carries the
 //     parser's PEEKED last assistant_message_id (the consume happens
 //     when the trailing `result` calls takeLastAssistantMessageID).
 //     The trailing `result` carries cumulative usage that the soft
@@ -953,17 +951,20 @@ func (r *Router) buildRoundCompletedEvent(
 //
 // Folded as a single UPDATE so the common case (both fields arrive
 // on the trailing `result`) pays one autocommit boundary.
-func (r *Router) persistLateTurnUsage(evt provider.ProviderEvent, turnIndex int, meta turnCompleteMeta) {
+func (r *Router) persistLateTurnPayload(evt provider.ProviderEvent, turnIndex int, meta turnCompleteMeta) {
 	turnID := resolveTurnID(evt, turnIndex)
 	usageJSON := ""
 	if len(meta.Usage) > 0 {
 		usageJSON = string(meta.Usage)
 	}
-	amid := resolveAssistantMessageID(meta)
+	amid := meta.AssistantMessageID
 	if usageJSON == "" && amid == "" {
 		return
 	}
-	if err := r.store.UpdateTurnLatePayload(turnID, usageJSON, amid); err != nil {
+	if err := r.store.UpdateTurnLatePayload(turnID, store.LateTurnPayload{
+		TokenUsageJSONIfEmpty:       usageJSON,
+		AssistantMessageIDOverwrite: amid,
+	}); err != nil {
 		log.Printf("triage: update turn %s late payload: %v", turnID, err)
 	}
 }
@@ -1030,19 +1031,18 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int) {
 	r.mu.Unlock()
 }
 
-// markTurnSettled records that handleTurnComplete has already run to
-// completion for (threadID, turnIndex). Returns true if the turn was
-// ALREADY settled (caller should bail early), false if this is the
-// first settle (caller proceeds with the full handler).
-func (r *Router) markTurnSettled(threadID string, turnIndex int) bool {
+// claimTurnSettlement records that handleTurnComplete has begun logical-turn
+// settlement for (threadID, turnIndex). It returns true only for the first
+// claimant; later callers should take the duplicate/late-payload path.
+func (r *Router) claimTurnSettlement(threadID string, turnIndex int) bool {
 	key := settledTurnKey(threadID, turnIndex)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.settledTurns[key] {
-		return true
+		return false
 	}
 	r.settledTurns[key] = true
-	return false
+	return true
 }
 
 func settledTurnKey(threadID string, turnIndex int) string {
@@ -1344,7 +1344,7 @@ func (r *Router) Wait(ctx context.Context) error {
 // session_status.go's handleSessionDied — which path runs first
 // depends on whether `EventSessionStatus{"error"}` arrives before
 // or after StopSession unwinds — and is idempotent in either order
-// thanks to markTurnSettled.
+// thanks to claimTurnSettlement.
 func (r *Router) CleanupThread(threadID string) {
 	if _, ok := r.openTurnIndex(threadID); ok {
 		if err := r.synthesizeTruncatedTurnComplete(threadID, time.Now().UnixMilli()); err != nil {

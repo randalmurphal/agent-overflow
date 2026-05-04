@@ -8,6 +8,7 @@ export {
 
 export {
     AttachmentThumbnail,
+    CheckpointView,
     ContextSettingsProfile,
     ContextSettingsUpdate,
     CreateThreadOptions,

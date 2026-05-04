@@ -159,12 +159,12 @@ func TestCascade_DeleteThreadRemovesAllDependents(t *testing.T) {
 			t.Fatalf("CaptureBaseline turn %d: %v", turn, err)
 		}
 		cp := store.Checkpoint{
-			ID:            uuid.NewString(),
-			ThreadID:      thread.ID,
-			TurnIndex:     turn,
-			RefName:       ref,
-			CapturedAt:    time.Now().UnixMilli(),
-			WorkspacePath: workspace,
+			ID:                  uuid.NewString(),
+			ThreadID:            thread.ID,
+			CheckpointTurnCount: turn,
+			RefName:             ref,
+			CapturedAt:          time.Now().UnixMilli(),
+			WorkspacePath:       workspace,
 		}
 		if err := app.store.SaveCheckpoint(cp); err != nil {
 			t.Fatalf("SaveCheckpoint: %v", err)

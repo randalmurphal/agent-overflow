@@ -3,18 +3,15 @@ import type { Checkpoint } from '../types/checkpoint';
 import { createDiffPanelState } from './diffPanel.svelte';
 
 function checkpoint(overrides: Partial<Checkpoint> = {}): Checkpoint {
-  const checkpointTurnCount = overrides.checkpointTurnCount ?? overrides.turnIndex ?? 0;
+  const checkpointTurnCount = overrides.checkpointTurnCount ?? 0;
   return {
     id: `c-${checkpointTurnCount}`,
     threadId: 't-1',
-    turnIndex: overrides.turnIndex ?? checkpointTurnCount,
     checkpointTurnCount,
-    refName: `refs/agent-overflow/checkpoints/t-1/${checkpointTurnCount}`,
     status: 'ready',
     files: [],
     toolPaths: [],
     capturedAt: 0,
-    workspacePath: '/workspace',
     ...overrides,
   };
 }

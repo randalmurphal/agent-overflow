@@ -135,7 +135,7 @@ the project to confirm the behavior, then port the learning in. See
   behavior is unclear; cross-check against the installed binary because
   the local copy can lag. See
   [docs/references/claude.md](docs/references/claude.md).
-- **Codex source** (`/Users/randy/repos/codex-source`, upstream
+- **Codex source** (`/home/rmurphy/repos/codex`, upstream
   https://github.com/openai/codex) — authoritative Codex CLI and
   app-server behavior.
 - **CodexMonitor** (https://github.com/Dimillian/CodexMonitor) — Tauri,

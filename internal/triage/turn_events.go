@@ -1,6 +1,11 @@
 package triage
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+
+	"agent-overflow/internal/provider"
+)
 
 // TurnStartedEvent is the frontend-facing payload for provider:turn_started.
 // The frontend reacts to this by flipping `pane.activeTurn` on and starting
@@ -112,43 +117,61 @@ type BackgroundTaskStateEvent struct {
 	UpdatedAt int64  `json:"updatedAt"`
 }
 
-// turnCompleteMeta is the internal decode shape for
-// EventTurnComplete.Meta. Producers (Claude parse_result, Codex
-// protocol) build it as a map; we want a typed view here so the
-// handler doesn't have to re-decode the same fields three times.
+// turnCompleteMeta is the internal projection of provider.TurnCompleteMeta.
+// EventTurnComplete no longer decodes semantic state from ProviderEvent.Meta;
+// producers must populate ProviderEvent.TurnComplete with one of the typed
+// provider-neutral payloads.
 type turnCompleteMeta struct {
-	StopReason         string          `json:"stop_reason,omitempty"`
-	AssistantMessageID string          `json:"assistant_message_id,omitempty"`
-	Usage              json.RawMessage `json:"usage,omitempty"`
-	DurationMs         int64           `json:"duration_ms,omitempty"`
-	TotalCostUSD       float64         `json:"total_cost_usd,omitempty"`
-	Aborted            bool            `json:"aborted,omitempty"`
-	Truncated          bool            `json:"truncated,omitempty"`
-	TurnStatus         string          `json:"turn_status,omitempty"`
-	Error              string          `json:"error,omitempty"`
-	// Codex `turn/completed` envelope carries the nested
-	// `{turn: {...}}` shape untouched via the adapter's
-	// mergeMetaKeys, so a nested assistant message id appears here
-	// too. We accept either the flat Claude key or the nested Codex
-	// shape.
-	LastAssistantMessageID string `json:"lastAssistantMessageId,omitempty"`
-	Turn                   struct {
-		LastAssistantMessageID string `json:"lastAssistantMessageId,omitempty"`
-	} `json:"turn,omitempty"`
+	StopReason         string
+	AssistantMessageID string
+	Usage              json.RawMessage
+	Aborted            bool
+	Truncated          bool
+	Error              string
 }
 
-// decodeTurnCompleteMeta unmarshals the Meta JSON into the typed view
-// above. Malformed meta yields a zero-valued struct — the handler
-// treats missing fields as "provider didn't tell us" and defaults.
-func decodeTurnCompleteMeta(raw json.RawMessage) turnCompleteMeta {
-	if len(raw) == 0 {
-		return turnCompleteMeta{}
+func turnCompleteMetaFromEvent(evt provider.ProviderEvent) (turnCompleteMeta, error) {
+	switch meta := evt.TurnComplete.(type) {
+	case *provider.WireTurnCompleteMeta:
+		if meta == nil {
+			return turnCompleteMeta{}, fmt.Errorf("turn_complete missing typed payload")
+		}
+		return wireTurnCompleteMeta(*meta), nil
+	case *provider.SoftRoundCloseMeta:
+		if meta == nil {
+			return turnCompleteMeta{}, fmt.Errorf("turn_complete missing typed payload")
+		}
+		return turnCompleteMeta{
+			StopReason:         meta.StopReason,
+			AssistantMessageID: meta.AssistantMessageID,
+		}, nil
+	case *provider.TruncatedTurnCompleteMeta:
+		if meta == nil {
+			return turnCompleteMeta{}, fmt.Errorf("turn_complete missing typed payload")
+		}
+		return turnCompleteMeta{
+			Truncated: true,
+			Error:     meta.ErrorMessage,
+		}, nil
+	default:
+		return turnCompleteMeta{}, fmt.Errorf("turn_complete payload type %T is not supported", evt.TurnComplete)
 	}
-	var m turnCompleteMeta
-	if json.Unmarshal(raw, &m) != nil {
-		return turnCompleteMeta{}
+}
+
+func wireTurnCompleteMeta(meta provider.WireTurnCompleteMeta) turnCompleteMeta {
+	var usage json.RawMessage
+	if meta.Usage != nil {
+		if encoded, err := json.Marshal(meta.Usage); err == nil {
+			usage = encoded
+		}
 	}
-	return m
+	return turnCompleteMeta{
+		StopReason:         meta.StopReason,
+		AssistantMessageID: meta.AssistantMessageID,
+		Usage:              usage,
+		Aborted:            meta.Aborted,
+		Error:              meta.ErrorMessage,
+	}
 }
 
 // canonicalStopReason maps provider-specific stop reasons onto the
@@ -158,7 +181,7 @@ func decodeTurnCompleteMeta(raw json.RawMessage) turnCompleteMeta {
 // silently rewritten to "error".
 func canonicalStopReason(meta turnCompleteMeta) string {
 	// Interruption always wins.
-	if meta.Aborted || meta.Truncated || meta.TurnStatus == "interrupted" {
+	if meta.Aborted || meta.Truncated {
 		return "interrupted"
 	}
 	// Explicit provider-reported reason.
@@ -172,28 +195,5 @@ func canonicalStopReason(meta turnCompleteMeta) string {
 			return r
 		}
 	}
-	// Codex turn_status fallback — completed is the happy path.
-	switch meta.TurnStatus {
-	case "completed":
-		return "end_turn"
-	case "failed":
-		return "error"
-	case "interrupted":
-		return "interrupted"
-	}
 	return ""
-}
-
-// resolveAssistantMessageID picks whichever shape the provider used.
-// Claude puts it at meta.assistant_message_id; Codex puts the raw
-// envelope nested under meta.turn.lastAssistantMessageId, or some
-// adapters flatten it to meta.lastAssistantMessageId.
-func resolveAssistantMessageID(meta turnCompleteMeta) string {
-	if meta.AssistantMessageID != "" {
-		return meta.AssistantMessageID
-	}
-	if meta.LastAssistantMessageID != "" {
-		return meta.LastAssistantMessageID
-	}
-	return meta.Turn.LastAssistantMessageID
 }

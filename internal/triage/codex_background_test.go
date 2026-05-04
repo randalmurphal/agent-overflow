@@ -520,7 +520,8 @@ func TestCodexTerminalInteractionTurnCompleteSettlesPendingWait(t *testing.T) {
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1", TurnID: "turn-0",
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("turn complete: %v", err)
 	}
@@ -1270,17 +1271,14 @@ func TestCodexUnifiedExecBackgroundedOnUserInterrupt(t *testing.T) {
 		t.Fatalf("pre-yield tracker should be IsBackground=false before turn-close (no yield signal yet)")
 	}
 
-	// User-Esc → backend emits EventTurnComplete with status=interrupted
-	// (the wire shape Codex's app-server uses — see
-	// `bespoke_event_handling.rs:2307-2317` emit_turn_completed_with_status
-	// (status: TurnStatus::Interrupted)).
-	truncMeta, _ := json.Marshal(map[string]any{"turn_status": "interrupted"})
+	// User-Esc → backend emits EventTurnComplete normalized from Codex's
+	// status=interrupted wire shape.
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		TurnID:    "turn-0",
-		Meta:      truncMeta,
-		Timestamp: time.Now(),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnID:       "turn-0",
+		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "interrupted", Aborted: true},
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("turn complete truncated: %v", err)
 	}

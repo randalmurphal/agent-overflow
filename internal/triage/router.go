@@ -846,7 +846,7 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 	//   1. flip every streaming/running item in the active turn → errored
 	//   2. create the error row
 	//   3. drain any queued completions as errored
-	//   4. synthesize EventTurnComplete{truncated:true} if no wire
+	//   4. synthesize EventTurnComplete with TruncatedTurnCompleteMeta if no wire
 	//      TurnComplete is expected (subprocess exit case) — not needed
 	//      for a fatal EventError on an otherwise-alive session.
 	//
@@ -939,7 +939,7 @@ func apiErrorEnum(meta json.RawMessage) string {
 // the opt-in `expect_turn_complete: true` flag, signalling that the
 // provider process is still alive and a real TurnComplete will follow.
 // When absent (the common case — subprocess exit, stream EOF), the
-// router synthesizes a TurnComplete{truncated:true} so the frontend
+// router synthesizes a TurnComplete with TruncatedTurnCompleteMeta so the frontend
 // working indicator flips off without needing the wire event.
 func fatalExpectsWireTurnComplete(meta json.RawMessage) bool {
 	if len(meta) == 0 {
@@ -954,7 +954,7 @@ func fatalExpectsWireTurnComplete(meta json.RawMessage) bool {
 }
 
 // synthesizeTruncatedTurnComplete emits a synthetic
-// EventTurnComplete{truncated:true} onto the routing pipeline so the
+// EventTurnComplete with TruncatedTurnCompleteMeta onto the routing pipeline so the
 // frontend observes the turn's termination even when no wire
 // TurnComplete arrives (subprocess exit, stream EOF). The synthetic
 // event reuses the turn-complete handler's idempotent plumbing — it
@@ -970,10 +970,10 @@ func fatalExpectsWireTurnComplete(meta json.RawMessage) bool {
 // observers still see the event.
 func (r *Router) synthesizeTruncatedTurnComplete(threadID string, now int64) error {
 	synth := provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  threadID,
-		Meta:      json.RawMessage(`{"truncated":true,"synthetic":true}`),
-		Timestamp: time.UnixMilli(now),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     threadID,
+		TurnComplete: &provider.TruncatedTurnCompleteMeta{Synthetic: true},
+		Timestamp:    time.UnixMilli(now),
 	}
 	err := r.handleTurnComplete(synth)
 	r.fireEventHook(synth)

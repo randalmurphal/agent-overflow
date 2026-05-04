@@ -29,9 +29,7 @@ function checkpoint(turnCount: number): Checkpoint {
   return {
     id: `cp-${turnCount}`,
     threadId: 'thread-a',
-    turnIndex: turnCount,
     checkpointTurnCount: turnCount,
-    refName: `refs/ao/thread-a/${turnCount}`,
     status: 'ready',
     // Non-baseline checkpoints carry at least one file so the empty-turn
     // filter (DiffPanelDrawer hides chips for turns with zero changes)
@@ -42,7 +40,6 @@ function checkpoint(turnCount: number): Checkpoint {
       : [{ path: `turn-${turnCount}.ts`, kind: 'modified', additions: 1, deletions: 0 }],
     toolPaths: turnCount === 0 ? [] : [`turn-${turnCount}.ts`],
     capturedAt: Date.UTC(2026, 0, 1, 0, turnCount),
-    workspacePath: '/tmp/workspace',
   };
 }
 
@@ -141,7 +138,6 @@ describe('<DiffPanelDrawer>', () => {
       threadId: 'thread-a',
       turnIndex: 2,
       checkpointTurnCount: 2,
-      refName: 'refs/ao/thread-a/2',
       capturedAt: 0,
     });
 

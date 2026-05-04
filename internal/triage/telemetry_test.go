@@ -91,9 +91,10 @@ func TestTurnSpanClosesOnComplete(t *testing.T) {
 		t.Fatalf("Handle TurnStart: %v", err)
 	}
 	if err := r.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "thread-1",
-		Timestamp: time.Now(),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "thread-1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("Handle TurnComplete: %v", err)
 	}
@@ -144,9 +145,10 @@ func TestTurnSpanReSentTurnStartClosesPrevious(t *testing.T) {
 	}
 
 	if err := r.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "thread-1",
-		Timestamp: time.Now(),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "thread-1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("Handle TurnComplete: %v", err)
 	}
@@ -197,9 +199,10 @@ func TestTurnSpanRecordsErrorOnPersistFailure(t *testing.T) {
 	_ = st.Close()
 
 	if err := r.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "thread-1",
-		Timestamp: time.Now(),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "thread-1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err == nil {
 		t.Fatal("expected TurnComplete to return an error after store close")
 	}

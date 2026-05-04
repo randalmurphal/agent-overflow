@@ -1,33 +1,6 @@
-// Mirrors internal/store.Checkpoint. Persisted alongside each turn's hidden
-// Git ref; lets the diff panel resolve a (thread, turn) into a ref name.
-export interface Checkpoint {
-  id: string;
-  threadId: string;
-  turnIndex: number;
-  checkpointTurnCount: number;
-  turnId?: string;
-  refName: string;
-  baselineSha?: string;
-  status: string;
-  files: Array<{
-    path: string;
-    kind: string;
-    additions: number;
-    deletions: number;
-  }>;
-  /**
-   * Workspace-relative paths the agent's file-mutating tools wrote during
-   * the turn this checkpoint closes. Empty for the baseline (turn count 0)
-   * and for any turn where the agent didn't run an Edit / Write /
-   * MultiEdit / NotebookEdit (Claude) or a fileChange tool (Codex). Bash
-   * side effects are intentionally not tracked.
-   */
-  toolPaths: string[];
-  assistantMessageId?: string;
-  completedAt?: number;
-  capturedAt: number;
-  workspacePath: string;
-}
+// Backend-only Git refs, workspace paths, and checkpoint bookkeeping stay
+// server-side; the generated CheckpointView is the frontend-visible DTO.
+export type { CheckpointView as Checkpoint } from '../../../bindings/agent-overflow/models';
 
 /** Diff panel view mode. */
 export type DiffPanelTab = 'per-turn' | 'session' | 'workspace';
@@ -42,7 +15,6 @@ export interface CheckpointCapturedEvent {
   threadId: string;
   turnIndex: number;
   checkpointTurnCount: number;
-  refName: string;
   capturedAt: number;
 }
 

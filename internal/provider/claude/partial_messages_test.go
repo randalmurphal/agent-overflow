@@ -7,6 +7,18 @@ import (
 	"agent-overflow/internal/provider"
 )
 
+func requireSoftRoundClose(t *testing.T, evt provider.ProviderEvent) provider.SoftRoundCloseMeta {
+	t.Helper()
+	switch meta := evt.TurnComplete.(type) {
+	case *provider.SoftRoundCloseMeta:
+		if meta != nil {
+			return *meta
+		}
+	}
+	t.Fatalf("turn complete meta type = %T, want SoftRoundCloseMeta", evt.TurnComplete)
+	return provider.SoftRoundCloseMeta{}
+}
+
 // --- Gap 4: --include-partial-messages stream event handling ---
 //
 // With --include-partial-messages, Claude surfaces a richer set of
@@ -280,18 +292,9 @@ func TestParseStreamEventMessageDeltaEndTurnEmitsSoftTurnComplete(t *testing.T) 
 			continue
 		}
 		sawTurnComplete = true
-		var meta struct {
-			StopReason string `json:"stop_reason"`
-			Soft       bool   `json:"soft"`
-		}
-		if err := json.Unmarshal(e.Meta, &meta); err != nil {
-			t.Fatalf("unmarshal meta: %v", err)
-		}
+		meta := requireSoftRoundClose(t, e)
 		if meta.StopReason != "end_turn" {
-			t.Errorf("meta.stop_reason: got %q, want %q", meta.StopReason, "end_turn")
-		}
-		if !meta.Soft {
-			t.Errorf("meta.soft: got false, want true (so triage / docs can distinguish from result-driven complete)")
+			t.Errorf("StopReason: got %q, want %q", meta.StopReason, "end_turn")
 		}
 		if e.ParentToolUseID != "" {
 			t.Errorf("ParentToolUseID: got %q, want empty (parent only)", e.ParentToolUseID)
@@ -443,9 +446,9 @@ func TestParseStreamEventMessageDeltaWithoutUsageStillEmitsSoftTurnComplete(t *t
 // TestParseStreamSoftTurnCompleteWithoutPriorAssistantHasNoAssistantID
 // pins the defensive case where message_delta arrives before any
 // assistant envelope (degenerate ordering / fresh session attach).
-// The peeked id is empty; soft fires with omitempty-dropped
-// assistant_message_id; triage's late-payload fold writes the trailing
-// wire `result`'s id onto the empty column.
+// The peeked id is empty; soft fires with an empty assistant_message_id;
+// triage's late-payload fold writes the trailing wire `result`'s id onto
+// the empty column.
 func TestParseStreamSoftTurnCompleteWithoutPriorAssistantHasNoAssistantID(t *testing.T) {
 	parser := NewParser()
 	deltaLine := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"}}}`)
@@ -459,18 +462,9 @@ func TestParseStreamSoftTurnCompleteWithoutPriorAssistantHasNoAssistantID(t *tes
 			continue
 		}
 		softFound = true
-		var meta struct {
-			AssistantMessageID string `json:"assistant_message_id"`
-			Soft               bool   `json:"soft"`
-		}
-		if err := json.Unmarshal(e.Meta, &meta); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if !meta.Soft {
-			t.Errorf("expected meta.soft=true")
-		}
+		meta := requireSoftRoundClose(t, e)
 		if meta.AssistantMessageID != "" {
-			t.Errorf("expected assistant_message_id absent (omitempty) when parser has not seen any assistant envelope yet, got %q", meta.AssistantMessageID)
+			t.Errorf("expected empty assistant_message_id when parser has not seen any assistant envelope yet, got %q", meta.AssistantMessageID)
 		}
 	}
 	if !softFound {
@@ -505,7 +499,7 @@ func TestParseStreamUnknownStopReasonDoesNotEmitTurnComplete(t *testing.T) {
 // `lastAssistantMessageID` (peeked, not consumed) so the persisted
 // turn row's `assistant_message_id` is populated on the FIRST settle.
 // Without this, the trailing wire `result` envelope folds the id in
-// later via `persistLateTurnUsage`, but the frontend's in-memory
+// later via `persistLateTurnPayload`, but the frontend's in-memory
 // `latestSettledTurn.assistantMessageId` projection — which only
 // reacts to `provider:turn_completed` — would stay null until the
 // next thread switch / page refresh hydrated it from the store.
@@ -530,26 +524,17 @@ func TestParseStreamSoftTurnCompleteCarriesPeekedAssistantMessageID(t *testing.T
 		t.Fatalf("parse message_delta: %v", err)
 	}
 
-	var softMeta struct {
-		StopReason         string `json:"stop_reason"`
-		Soft               bool   `json:"soft"`
-		AssistantMessageID string `json:"assistant_message_id"`
-	}
+	var softMeta provider.SoftRoundCloseMeta
 	var found bool
 	for _, e := range events {
 		if e.Kind != provider.EventTurnComplete {
 			continue
 		}
-		if err := json.Unmarshal(e.Meta, &softMeta); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
+		softMeta = requireSoftRoundClose(t, e)
 		found = true
 	}
 	if !found {
 		t.Fatalf("expected soft turn-complete: %+v", events)
-	}
-	if !softMeta.Soft {
-		t.Errorf("expected meta.soft=true")
 	}
 	if softMeta.AssistantMessageID != "msg_peekABC" {
 		t.Errorf("expected peeked assistant_message_id=%q, got %q", "msg_peekABC", softMeta.AssistantMessageID)
@@ -567,13 +552,7 @@ func TestParseStreamSoftTurnCompleteCarriesPeekedAssistantMessageID(t *testing.T
 		if e.Kind != provider.EventTurnComplete {
 			continue
 		}
-		var rm struct {
-			AssistantMessageID string `json:"assistant_message_id"`
-		}
-		if err := json.Unmarshal(e.Meta, &rm); err != nil {
-			t.Fatalf("unmarshal result meta: %v", err)
-		}
-		resultAMID = rm.AssistantMessageID
+		resultAMID = requireWireTurnComplete(t, []provider.ProviderEvent{e}).AssistantMessageID
 	}
 	if resultAMID != "msg_peekABC" {
 		t.Errorf("result envelope must still consume the id: got %q, want %q", resultAMID, "msg_peekABC")

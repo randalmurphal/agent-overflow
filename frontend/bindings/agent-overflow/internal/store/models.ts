@@ -5,10 +5,6 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as diffsummary$0 from "../diffsummary/models.js";
-
 /**
  * Attachment is the persisted metadata for a file attached to a thread.
  */
@@ -146,93 +142,6 @@ export class ChatBarFavorite {
 }
 
 /**
- * Checkpoint is the persisted bookkeeping row for a single per-turn snapshot.
- * The heavy data lives in Git (keyed by RefName); this table lets us look up
- * the ref for a given (thread, turn) and clean everything up on thread delete.
- */
-export class Checkpoint {
-    "id": string;
-    "threadId": string;
-
-    /**
-     * legacy alias for CheckpointTurnCount
-     */
-    "turnIndex": number;
-    "checkpointTurnCount": number;
-    "turnId"?: string;
-    "refName": string;
-    "baselineSha"?: string;
-    "status": string;
-    "files": diffsummary$0.File[];
-
-    /**
-     * ToolPaths records the workspace-relative paths the agent's
-     * file-mutating tools wrote during the turn this checkpoint closes.
-     * Bash side effects are intentionally NOT tracked. An empty slice
-     * means the agent did no file-mutating tool calls during the turn
-     * (or the row predates v32) — a conversation-and-files revert
-     * targeting such a row is a no-op on the worktree.
-     */
-    "toolPaths": string[];
-    "assistantMessageId"?: string;
-    "completedAt"?: number;
-    "capturedAt": number;
-    "workspacePath": string;
-
-    /** Creates a new Checkpoint instance. */
-    constructor($$source: Partial<Checkpoint> = {}) {
-        if (!("id" in $$source)) {
-            this["id"] = "";
-        }
-        if (!("threadId" in $$source)) {
-            this["threadId"] = "";
-        }
-        if (!("turnIndex" in $$source)) {
-            this["turnIndex"] = 0;
-        }
-        if (!("checkpointTurnCount" in $$source)) {
-            this["checkpointTurnCount"] = 0;
-        }
-        if (!("refName" in $$source)) {
-            this["refName"] = "";
-        }
-        if (!("status" in $$source)) {
-            this["status"] = "";
-        }
-        if (!("files" in $$source)) {
-            this["files"] = [];
-        }
-        if (!("toolPaths" in $$source)) {
-            this["toolPaths"] = [];
-        }
-        if (!("capturedAt" in $$source)) {
-            this["capturedAt"] = 0;
-        }
-        if (!("workspacePath" in $$source)) {
-            this["workspacePath"] = "";
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new Checkpoint instance from a string or object.
-     */
-    static createFrom($$source: any = {}): Checkpoint {
-        const $$createField8_0 = $$createType1;
-        const $$createField9_0 = $$createType2;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("files" in $$parsedSource) {
-            $$parsedSource["files"] = $$createField8_0($$parsedSource["files"]);
-        }
-        if ("toolPaths" in $$parsedSource) {
-            $$parsedSource["toolPaths"] = $$createField9_0($$parsedSource["toolPaths"]);
-        }
-        return new Checkpoint($$parsedSource as Partial<Checkpoint>);
-    }
-}
-
-/**
  * DesignArtifact is persisted metadata for a design-mode HTML artifact.
  */
 export class DesignArtifact {
@@ -328,8 +237,8 @@ export class DiscussionDefinition {
      * Creates a new DiscussionDefinition instance from a string or object.
      */
     static createFrom($$source: any = {}): DiscussionDefinition {
-        const $$createField5_0 = $$createType4;
-        const $$createField6_0 = $$createType5;
+        const $$createField5_0 = $$createType1;
+        const $$createField6_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("participants" in $$parsedSource) {
             $$parsedSource["participants"] = $$createField5_0($$parsedSource["participants"]);
@@ -501,7 +410,7 @@ export class PagedItems {
      * Creates a new PagedItems instance from a string or object.
      */
     static createFrom($$source: any = {}): PagedItems {
-        const $$createField0_0 = $$createType7;
+        const $$createField0_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("items" in $$parsedSource) {
             $$parsedSource["items"] = $$createField0_0($$parsedSource["items"]);
@@ -624,7 +533,7 @@ export class ProjectWithCounts {
      * Creates a new ProjectWithCounts instance from a string or object.
      */
     static createFrom($$source: any = {}): ProjectWithCounts {
-        const $$createField0_0 = $$createType8;
+        const $$createField0_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("project" in $$parsedSource) {
             $$parsedSource["project"] = $$createField0_0($$parsedSource["project"]);
@@ -1061,12 +970,9 @@ export class Turn {
 }
 
 // Private type creation functions
-const $$createType0 = diffsummary$0.File.createFrom;
+const $$createType0 = DiscussionParticipant.createFrom;
 const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = $Create.Array($Create.Any);
-const $$createType3 = DiscussionParticipant.createFrom;
+const $$createType2 = DiscussionSettings.createFrom;
+const $$createType3 = Item.createFrom;
 const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = DiscussionSettings.createFrom;
-const $$createType6 = Item.createFrom;
-const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = Project.createFrom;
+const $$createType5 = Project.createFrom;

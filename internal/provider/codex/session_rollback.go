@@ -15,7 +15,7 @@ import (
 // separately (see app_checkpoint.go for the caller-side orchestration).
 //
 // Wire contract is owned by the Codex source of truth:
-// /Users/randy/repos/codex-source/codex-rs/app-server-protocol/schema/typescript/v2/ThreadRollbackParams.ts
+// /home/rmurphy/repos/codex/codex-rs/app-server-protocol/schema/typescript/v2/ThreadRollbackParams.ts
 func (s *Session) Rollback(ctx context.Context, numTurns int) error {
 	return s.RollbackThread(ctx, s.codexThreadID, numTurns)
 }

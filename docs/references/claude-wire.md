@@ -57,8 +57,10 @@ correlation); those are not reproduced in the shape examples below.
 
 **Fires**: exactly once per CLI turn, after all tool round-trips and
 the final assistant message have settled.
-**Authoritative for**: turn-level token/cost accounting, the final
-`assistant_message_id`, and the `terminal_reason`.
+**Authoritative for**: turn-level token/cost accounting and
+`terminal_reason`. The final `assistant_message_id` is derived from
+the last in-stream assistant `message.id`; it is not carried on
+`result`.
 
 ⚠ **Not the only turn-complete signal.** As of Claude Code 2.1.118, when
 the parent assistant ends its message with `stop_reason="end_turn"`
@@ -654,9 +656,9 @@ naming the precise wire-level reason the SDK terminated the turn:
 `refusal`, `cancelled`, `interrupted`, `aborted`, `timeout`,
 `network_error`, `unknown`.
 
-The parser passes this through verbatim on Meta for forward-compat
-and telemetry; triage does NOT branch on it. The actionable signals
-are `subtype` and `is_error`.
+The parser keeps this on the raw line for replay/debug. It is not
+carried into normalized turn-complete metadata, and triage does NOT
+branch on it. The actionable signals are `subtype` and `is_error`.
 
 ---
 
@@ -696,7 +698,7 @@ verbatim.
 the API stream). `result` is per-CLI-turn (fires after the final
 `message_stop` and any trailing tool round-trips settle). `result`
 remains authoritative for the cumulative turn payload (token usage,
-cost, terminal_reason, final assistant_message_id) — but it is
+cost, terminal_reason) — but it is
 **not** the only signal that the round has ended; see soft-round-close
 below.
 

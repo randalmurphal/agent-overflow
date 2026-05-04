@@ -86,7 +86,8 @@ func TestMultipleResultsPerTurn_TextSegmentsDoNotCollide(t *testing.T) {
 	// segment counter is what protects subsequent rows from collision.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("first turn-complete: %v", err)
 	}
@@ -112,7 +113,8 @@ func TestMultipleResultsPerTurn_TextSegmentsDoNotCollide(t *testing.T) {
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("second turn-complete: %v", err)
 	}
@@ -172,7 +174,8 @@ func TestMultipleResultsPerTurn_ThinkingBlocksDoNotCollide(t *testing.T) {
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("first turn-complete: %v", err)
 	}
@@ -235,7 +238,8 @@ func TestMultipleResultsPerTurn_ErrorRowsDoNotCollide(t *testing.T) {
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("first turn-complete: %v", err)
 	}
@@ -281,9 +285,9 @@ func TestMultipleResultsPerTurn_ErrorRowsDoNotCollide(t *testing.T) {
 // the CLI-synthesized `type:"user"` envelope.
 //
 // Persistence stays at LOGICAL-TURN granularity: the `turns` row is
-// UPDATE-d once (markTurnSettled gate), checkpoints capture once,
+// UPDATE-d once (claimTurnSettlement gate), checkpoints capture once,
 // streaming items settle once. Late token usage from the second
-// `result` folds onto the existing turns row via persistLateTurnUsage.
+// `result` folds onto the existing turns row via persistLateTurnPayload.
 //
 // Wire shape modeled here (matches the Claude
 // interactive_outlives_taskoutput_monitor.ndjson fixture):
@@ -307,7 +311,8 @@ func TestRoundEmissionPerWireResult(t *testing.T) {
 	}
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("first turn complete: %v", err)
 	}
@@ -325,7 +330,8 @@ func TestRoundEmissionPerWireResult(t *testing.T) {
 	}
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("second turn complete: %v", err)
 	}
@@ -362,7 +368,7 @@ func TestRoundEmissionPerWireResult(t *testing.T) {
 	// Persistence stays at logical-turn granularity: one turns row,
 	// stamped completed_at exactly once. A second UPDATE would have
 	// re-stamped completed_at on the second wire complete; the
-	// markTurnSettled gate guarantees it doesn't.
+	// claimTurnSettlement gate guarantees it doesn't.
 	turn, found, err := st.GetTurn("t1:0")
 	if err != nil || !found {
 		t.Fatalf("get turns row: found=%v err=%v", found, err)
@@ -391,7 +397,8 @@ func TestRoundStartedAfterSystemInit(t *testing.T) {
 	}
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("turn complete: %v", err)
 	}
@@ -431,7 +438,7 @@ func TestRoundStartedAfterSystemInit(t *testing.T) {
 //   - EventInit yields no provider:turn_started (no settled marker).
 //   - EventTurnComplete finds an empty currentRoundID slot
 //     (takeOpenRound returns "") and skips the wire-round emission.
-//   - markTurnSettled gates persistence; the orphan complete folds
+//   - claimTurnSettlement gates persistence; the orphan complete folds
 //     late token usage onto whatever turns row exists (or is a
 //     no-op if no row exists).
 //
@@ -454,7 +461,8 @@ func TestRoundEmission_RecoveryResume_OrphanCompleteIsSilent(t *testing.T) {
 	// Real wire turn-complete arrives without any preceding TurnStart.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("orphan complete: %v", err)
 	}
@@ -560,7 +568,8 @@ func TestRoundEmission_CrossThreadIsolation(t *testing.T) {
 	*emissions = nil
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("t1 turn complete: %v", err)
 	}
@@ -583,7 +592,8 @@ func TestRoundEmission_CrossThreadIsolation(t *testing.T) {
 	*emissions = nil
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t2",
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("t2 turn complete: %v", err)
 	}
@@ -658,7 +668,8 @@ func TestSyntheticTruncatedTurnComplete_ThenRealResult_NoDuplicateEmission(t *te
 	// Despite the synthetic complete, a real wire complete arrives.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("real turn-complete: %v", err)
 	}
@@ -714,7 +725,8 @@ func TestMarkUserInterrupt_ThenTurnCompleteThenLateText(t *testing.T) {
 	// collision for the next text delta.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("turn-complete: %v", err)
 	}
@@ -789,7 +801,8 @@ func TestCounterMapsBoundedByCleanupThread(t *testing.T) {
 			}
 			if err := router.Handle(provider.ProviderEvent{
 				Kind: provider.EventTurnComplete, ThreadID: threadIDs[i],
-				Timestamp: time.Now(),
+				TurnComplete: normalTurnCompleteMeta(),
+				Timestamp:    time.Now(),
 			}); err != nil {
 				t.Fatalf("turn complete on %s/%d: %v", threadIDs[i], turnIndex, err)
 			}
@@ -884,7 +897,8 @@ func TestClearOpenTurnSweepsPendingApprovalsAndUserInputs(t *testing.T) {
 	// Fire EventTurnComplete — clearOpenTurn must sweep all three maps.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("turn complete: %v", err)
 	}
@@ -950,7 +964,8 @@ func TestAssistantErrorThenResultSettlesExactlyOnce(t *testing.T) {
 	// the prior fatal there is no synthesis to race against.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Timestamp: time.Now(),
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("real turn complete: %v", err)
 	}
@@ -1002,14 +1017,12 @@ func TestSoftThenRealTurnComplete_RealisticCascade(t *testing.T) {
 	// Soft complete carries the peeked assistant_message_id — the
 	// parser would have stamped it from the prior `assistant`
 	// envelope. This is the production-path shape.
-	softMeta, _ := json.Marshal(map[string]any{
-		"stop_reason":          "end_turn",
-		"soft":                 true,
-		"assistant_message_id": "msg_softA",
-	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Meta:      softMeta,
+		TurnComplete: &provider.SoftRoundCloseMeta{
+			StopReason:         "end_turn",
+			AssistantMessageID: "msg_softA",
+		},
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("soft turn complete: %v", err)
@@ -1042,17 +1055,13 @@ func TestSoftThenRealTurnComplete_RealisticCascade(t *testing.T) {
 
 	// Trailing real `result` arrives ms later with the same amid
 	// (taken from the parser) and the cumulative usage.
-	realMeta, _ := json.Marshal(map[string]any{
-		"stop_reason":          "end_turn",
-		"assistant_message_id": "msg_softA",
-		"usage": map[string]any{
-			"inputTokens":  6,
-			"outputTokens": 34,
-		},
-	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Meta:      realMeta,
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason:         "end_turn",
+			AssistantMessageID: "msg_softA",
+			Usage:              &provider.TokenUsage{InputTokens: 6, OutputTokens: 34},
+		},
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("real turn complete: %v", err)
@@ -1085,8 +1094,8 @@ func TestSoftThenRealTurnComplete_RealisticCascade(t *testing.T) {
 // defensive case where the parser had not yet observed an assistant
 // envelope when message_delta arrived (degenerate ordering, fresh
 // session attach, malformed wire). The soft event has no
-// assistant_message_id; the trailing wire `result` carries it; the
-// fold-in writes it onto the empty column.
+// assistant_message_id; the trailing `result`-driven event carries the
+// parser-derived id; the fold-in writes it onto the empty column.
 func TestSoftThenRealTurnComplete_SoftMissingAmidFoldsIn(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -1098,14 +1107,10 @@ func TestSoftThenRealTurnComplete_SoftMissingAmidFoldsIn(t *testing.T) {
 		t.Fatalf("turn start: %v", err)
 	}
 
-	softMeta, _ := json.Marshal(map[string]any{
-		"stop_reason": "end_turn",
-		"soft":        true,
-	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Meta:      softMeta,
-		Timestamp: time.Now(),
+		TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn"},
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("soft turn complete: %v", err)
 	}
@@ -1115,14 +1120,13 @@ func TestSoftThenRealTurnComplete_SoftMissingAmidFoldsIn(t *testing.T) {
 		t.Fatalf("expected empty amid after amid-less soft, got %q", turn.AssistantMessageID)
 	}
 
-	realMeta, _ := json.Marshal(map[string]any{
-		"stop_reason":          "end_turn",
-		"assistant_message_id": "msg_realLate",
-		"usage":                map[string]any{"inputTokens": 1, "outputTokens": 2},
-	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Meta:      realMeta,
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason:         "end_turn",
+			AssistantMessageID: "msg_realLate",
+			Usage:              &provider.TokenUsage{InputTokens: 1, OutputTokens: 2},
+		},
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("real turn complete: %v", err)
@@ -1154,14 +1158,12 @@ func TestSoftThenInitThenSoftThenReal_ReRoundCascade(t *testing.T) {
 		t.Fatalf("turn start: %v", err)
 	}
 
-	soft1Meta, _ := json.Marshal(map[string]any{
-		"stop_reason":          "end_turn",
-		"soft":                 true,
-		"assistant_message_id": "msg_round1",
-	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Meta:      soft1Meta,
+		TurnComplete: &provider.SoftRoundCloseMeta{
+			StopReason:         "end_turn",
+			AssistantMessageID: "msg_round1",
+		},
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("soft #1: %v", err)
@@ -1176,14 +1178,12 @@ func TestSoftThenInitThenSoftThenReal_ReRoundCascade(t *testing.T) {
 		t.Fatalf("re-round init: %v", err)
 	}
 
-	soft2Meta, _ := json.Marshal(map[string]any{
-		"stop_reason":          "end_turn",
-		"soft":                 true,
-		"assistant_message_id": "msg_round2",
-	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Meta:      soft2Meta,
+		TurnComplete: &provider.SoftRoundCloseMeta{
+			StopReason:         "end_turn",
+			AssistantMessageID: "msg_round2",
+		},
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("soft #2: %v", err)
@@ -1191,14 +1191,13 @@ func TestSoftThenInitThenSoftThenReal_ReRoundCascade(t *testing.T) {
 
 	// Trailing wire `result` for round 2 — `takeOpenRound` was taken
 	// by soft #2, so this emits no third turn_completed.
-	realMeta, _ := json.Marshal(map[string]any{
-		"stop_reason":          "end_turn",
-		"assistant_message_id": "msg_round2",
-		"usage":                map[string]any{"inputTokens": 8, "outputTokens": 50},
-	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		Meta:      realMeta,
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason:         "end_turn",
+			AssistantMessageID: "msg_round2",
+			Usage:              &provider.TokenUsage{InputTokens: 8, OutputTokens: 50},
+		},
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("real result: %v", err)

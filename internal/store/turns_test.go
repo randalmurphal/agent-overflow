@@ -262,7 +262,10 @@ func TestUpdateTurnLatePayload(t *testing.T) {
 	}
 
 	// First late fold writes both columns.
-	if err := s.UpdateTurnLatePayload("turn-late", `{"inputTokens":1}`, "msg_first"); err != nil {
+	if err := s.UpdateTurnLatePayload("turn-late", LateTurnPayload{
+		TokenUsageJSONIfEmpty:       `{"inputTokens":1}`,
+		AssistantMessageIDOverwrite: "msg_first",
+	}); err != nil {
 		t.Fatalf("first late fold: %v", err)
 	}
 	got, ok, err := s.GetTurn("turn-late")
@@ -279,7 +282,10 @@ func TestUpdateTurnLatePayload(t *testing.T) {
 	// Second late fold (e.g. round-2 result after round-1 settle in
 	// a multi-result-per-turn cascade): usage stays first-write-wins,
 	// amid OVERWRITES with the later round's id.
-	if err := s.UpdateTurnLatePayload("turn-late", `{"inputTokens":99}`, "msg_round2"); err != nil {
+	if err := s.UpdateTurnLatePayload("turn-late", LateTurnPayload{
+		TokenUsageJSONIfEmpty:       `{"inputTokens":99}`,
+		AssistantMessageIDOverwrite: "msg_round2",
+	}); err != nil {
 		t.Fatalf("second late fold: %v", err)
 	}
 	got, _, _ = s.GetTurn("turn-late")
@@ -294,7 +300,7 @@ func TestUpdateTurnLatePayload(t *testing.T) {
 	// Empty amid input is a no-op for amid (preserves whatever the
 	// row already has) — usage path same; both empty is a no-op
 	// for the whole call.
-	if err := s.UpdateTurnLatePayload("turn-late", "", ""); err != nil {
+	if err := s.UpdateTurnLatePayload("turn-late", LateTurnPayload{}); err != nil {
 		t.Fatalf("empty fold: %v", err)
 	}
 	got, _, _ = s.GetTurn("turn-late")
@@ -307,7 +313,9 @@ func TestUpdateTurnLatePayload(t *testing.T) {
 
 	// Empty amid with non-empty usage: usage path runs (and no-ops
 	// because already populated), amid is preserved.
-	if err := s.UpdateTurnLatePayload("turn-late", `{"inputTokens":42}`, ""); err != nil {
+	if err := s.UpdateTurnLatePayload("turn-late", LateTurnPayload{
+		TokenUsageJSONIfEmpty: `{"inputTokens":42}`,
+	}); err != nil {
 		t.Fatalf("usage-only fold: %v", err)
 	}
 	got, _, _ = s.GetTurn("turn-late")
@@ -317,7 +325,9 @@ func TestUpdateTurnLatePayload(t *testing.T) {
 
 	// Non-empty amid with empty usage: amid overwrites, usage
 	// preserved.
-	if err := s.UpdateTurnLatePayload("turn-late", "", "msg_round3"); err != nil {
+	if err := s.UpdateTurnLatePayload("turn-late", LateTurnPayload{
+		AssistantMessageIDOverwrite: "msg_round3",
+	}); err != nil {
 		t.Fatalf("amid-only fold: %v", err)
 	}
 	got, _, _ = s.GetTurn("turn-late")

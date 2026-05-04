@@ -142,7 +142,7 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 }
 
 // buildSoftTurnComplete inspects a top-level `message_delta` envelope
-// and emits an EventTurnComplete with `meta.soft=true` when the inner
+// and emits a soft EventTurnComplete when the inner
 // stop_reason is one of the closed-set "model has stopped" values:
 // `end_turn`, `stop_sequence`, `refusal`. Returns nil otherwise —
 // stop_reasons like `tool_use` / `pause_turn` / `max_tokens` mean the
@@ -158,16 +158,12 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 // parent's round). A well-formed CLI never produces these shapes for
 // a parent message_delta, but the parser tolerates them.
 //
-// The emitted Meta carries `stop_reason`, `soft:true`, and the
-// parser's peeked `assistant_message_id` (peek, not take — the
-// trailing wire `result` envelope still calls
-// takeLastAssistantMessageID for its own emission). Including the id
-// on the soft event keeps the FIRST settle's persisted row populated
-// so the frontend's per-pane `latestSettledTurn.assistantMessageId`
-// projection is non-null even on normal turns where soft fires
-// milliseconds before `result`. The IfEmpty late-payload fold makes
-// the trailing `result`'s amid a no-op for that column when soft
-// already wrote it.
+// The typed payload carries `stop_reason` and the parser's peeked
+// `assistant_message_id` (peek, not take — the trailing wire `result`
+// envelope still calls takeLastAssistantMessageID for its own emission).
+// Including the id on the soft event keeps the FIRST settle's persisted
+// row populated; the trailing result may overwrite it via the late-payload
+// last-non-empty fold.
 func (p *Parser) buildSoftTurnComplete(threadID, parentToolUseID string, deltaRaw json.RawMessage, now time.Time) *provider.ProviderEvent {
 	if parentToolUseID != "" {
 		return nil
@@ -184,30 +180,15 @@ func (p *Parser) buildSoftTurnComplete(threadID, parentToolUseID string, deltaRa
 	if !isSoftRoundCloseStopReason(delta.StopReason) {
 		return nil
 	}
-	metaFields := softTurnCompleteMeta{
-		StopReason:         delta.StopReason,
-		Soft:               true,
-		AssistantMessageID: p.peekLastAssistantMessageID(),
-	}
-	// Marshalling typed primitives can't fail — same `_ = err`
-	// pattern as parse_system.go / parse_user.go meta builds.
-	meta, _ := json.Marshal(metaFields)
 	return &provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  threadID,
-		Meta:      meta,
+		Kind:     provider.EventTurnComplete,
+		ThreadID: threadID,
+		TurnComplete: &provider.SoftRoundCloseMeta{
+			StopReason:         delta.StopReason,
+			AssistantMessageID: p.peekLastAssistantMessageID(),
+		},
 		Timestamp: now,
 	}
-}
-
-// softTurnCompleteMeta is the typed Meta shape for a soft
-// EventTurnComplete. Triage's turnCompleteMeta decode handles the
-// `assistant_message_id` and `stop_reason` keys; the `soft` key is
-// informational (debug / fixture replay tests assert on it).
-type softTurnCompleteMeta struct {
-	StopReason         string `json:"stop_reason"`
-	Soft               bool   `json:"soft"`
-	AssistantMessageID string `json:"assistant_message_id,omitempty"`
 }
 
 // isSoftRoundCloseStopReason reports whether the parent's message-level

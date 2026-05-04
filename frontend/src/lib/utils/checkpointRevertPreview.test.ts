@@ -10,14 +10,11 @@ function checkpoint(
   return {
     id: `c-${turnCount}`,
     threadId: 't-1',
-    turnIndex: turnCount,
     checkpointTurnCount: turnCount,
-    refName: `refs/${turnCount}`,
     status: 'ready',
     files,
     toolPaths,
     capturedAt: 0,
-    workspacePath: '/w',
   };
 }
 

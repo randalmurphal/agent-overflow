@@ -90,7 +90,6 @@ func captureForTest(t *testing.T, app *App, threadID, workspace string, turnInde
 	record := store.Checkpoint{
 		ID:                  "chk-" + threadID + "-" + string(rune('0'+turnIndex)),
 		ThreadID:            threadID,
-		TurnIndex:           turnIndex,
 		CheckpointTurnCount: turnIndex,
 		RefName:             ref,
 		ToolPaths:           toolPaths,
@@ -365,7 +364,7 @@ func TestListThreadCheckpointsOrdersByTurn(t *testing.T) {
 	if len(list) != 2 {
 		t.Fatalf("expected 2 checkpoints, got %d", len(list))
 	}
-	if list[0].TurnIndex != 0 || list[1].TurnIndex != 1 {
+	if list[0].CheckpointTurnCount != 0 || list[1].CheckpointTurnCount != 1 {
 		t.Errorf("ordering wrong: %+v", list)
 	}
 }

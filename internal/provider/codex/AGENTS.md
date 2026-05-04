@@ -47,8 +47,8 @@ collab-agent lifecycle interact.
 
 Summary:
 
-- `turn/started`, `turn/completed`, `turn/aborted` — **turn
-  lifecycle**. Authoritative turn-complete signal; emit
+- `turn/started`, `turn/completed` — **turn lifecycle**. Authoritative
+  turn-complete signal; emit
   `EventTurnComplete` which triage forwards as
   `provider:turn_completed` to the frontend.
 - `item/started`, `item/completed` — **tool lifecycle**. Every tool
@@ -66,9 +66,9 @@ Summary:
   `EventToolComplete` for the item's own id. Status comes from the
   wire `item.status`. See
   [`turn-lifecycle.md §Tool lifecycle`](../../../docs/architecture/turn-lifecycle.md#1-tool-lifecycle).
-- **Turn lifecycle** — `turn/completed.lastAssistantMessageId` is
-  the authoritative final-message marker; use it for the `turns`
-  row.
+- **Turn lifecycle** — `turn/completed` carries `{threadId, turn}`.
+  `turn.status` is the lifecycle authority; current Codex does not
+  include a final assistant message id on this envelope.
 - **Background terminals.** Codex has no `run_in_background` flag, but
   `exec_command` can yield back to the model while its PTY keeps
   running. `CommandExecution.source == "unifiedExecStartup"` is the
@@ -153,7 +153,7 @@ emitting, track it with the user-input resolve kind, and answer through
 ## References
 
 - **Codex source** — https://github.com/openai/codex
-  Local: `/Users/randy/repos/codex-source`. Canonical wire format. If
+  Local: `/home/rmurphy/repos/codex`. Canonical wire format. If
   our parser disagrees with the source, the source wins.
 - **CodexMonitor** — https://github.com/Dimillian/CodexMonitor
   Tauri, feature-complete client. Reference for client-side patterns:

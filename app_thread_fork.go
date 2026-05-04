@@ -386,7 +386,6 @@ func (a *App) captureForkBaseline(fork, source store.Thread, atTurnIndex *int) {
 	record := store.Checkpoint{
 		ID:                  uuid.NewString(),
 		ThreadID:            fork.ID,
-		TurnIndex:           turnCount,
 		CheckpointTurnCount: turnCount,
 		RefName:             ref,
 		Status:              "ready",

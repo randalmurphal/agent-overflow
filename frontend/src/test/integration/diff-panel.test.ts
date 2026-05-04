@@ -22,9 +22,7 @@ function checkpoint(turnCount: number, overrides: Partial<Checkpoint> = {}): Che
   return {
     id: `c-${turnCount}`,
     threadId: 'thread-1',
-    turnIndex: turnCount,
     checkpointTurnCount: turnCount,
-    refName: `refs/ao/thread-1/${turnCount}`,
     status: 'ready',
     // Non-baseline turns carry at least one file so DiffPanelDrawer's
     // empty-turn filter keeps the chip. Baseline is always shown.
@@ -33,7 +31,6 @@ function checkpoint(turnCount: number, overrides: Partial<Checkpoint> = {}): Che
       : [{ path: `turn-${turnCount}.ts`, kind: 'modified', additions: 1, deletions: 0 }],
     toolPaths: turnCount === 0 ? [] : [`turn-${turnCount}.ts`],
     capturedAt: Date.UTC(2026, 0, 1, 0, turnCount),
-    workspacePath: '/tmp/ws',
     ...overrides,
   };
 }
@@ -160,7 +157,6 @@ describe('App integration - diff panel', () => {
       threadId: 'thread-1',
       turnIndex: 2,
       checkpointTurnCount: 2,
-      refName: 'refs/ao/thread-1/2',
       capturedAt: 0,
     });
 

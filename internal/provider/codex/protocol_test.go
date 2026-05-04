@@ -50,7 +50,7 @@ func TestClassifyNotification_TurnStarted(t *testing.T) {
 }
 
 func TestClassifyNotification_TurnCompleted_DoesNotEmitUsage(t *testing.T) {
-	params := `{"turn":{"id":"t1","status":"completed","usage":{"inputTokens":100,"outputTokens":50},"model":"claude-sonnet-4-6"},"model":"claude-sonnet-4-6"}`
+	params := `{"threadId":"thread-1","turn":{"id":"t1","items":[],"status":"completed","error":null,"startedAt":1777926299,"completedAt":1777926306,"durationMs":6637}}`
 	events := ClassifyNotification("thread-1", "turn/completed", json.RawMessage(params))
 
 	hasUsage := false
@@ -69,31 +69,6 @@ func TestClassifyNotification_TurnCompleted_DoesNotEmitUsage(t *testing.T) {
 	}
 	if !hasComplete {
 		t.Error("expected a turn complete event")
-	}
-}
-
-func TestClassifyNotification_TurnAborted(t *testing.T) {
-	params := `{"turn":{"id":"turn-5"}}`
-	events := ClassifyNotification("t1", "turn/aborted", json.RawMessage(params))
-
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	evt := events[0]
-	if evt.Kind != provider.EventTurnComplete {
-		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventTurnComplete)
-	}
-	if evt.TurnID != "turn-5" {
-		t.Errorf("turnID: got %q, want %q", evt.TurnID, "turn-5")
-	}
-
-	// Meta should contain aborted: true.
-	var meta map[string]bool
-	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
-	}
-	if !meta["aborted"] {
-		t.Error("expected meta.aborted to be true")
 	}
 }
 
@@ -142,7 +117,7 @@ func TestClassifyNotification_ThreadTokenUsageUpdatedDoesNotSumBreakdowns(t *tes
 // TestClassifyNotification_ItemUpdatedIsPhantom pins that the Codex
 // app-server wire protocol has NO `item/updated` method — it only
 // emits `item/started` and `item/completed`. Reference:
-// /Users/randy/repos/codex-source/codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts.
+// /home/rmurphy/repos/codex/codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts.
 // Any classifier branch that produces events for `item/updated` would
 // be dispatching on a phantom method; this test locks that in by
 // asserting zero events come out for such a method.
@@ -1327,35 +1302,79 @@ func TestClassifyNotification_ItemCompletedCarriesTurnID(t *testing.T) {
 	}
 }
 
-// TestClassifyNotification_TurnCompletedStatus asserts that turn.status
-// (TurnStatus: "completed" | "interrupted" | "failed" | "inProgress")
-// is lifted into the turn-complete event's Meta.
-func TestClassifyNotification_TurnCompletedStatus(t *testing.T) {
-	statuses := []string{"completed", "interrupted", "failed", "inProgress"}
-	for _, status := range statuses {
-		t.Run(status, func(t *testing.T) {
-			params := json.RawMessage(
-				`{"turn":{"id":"t1","status":"` + status + `"}}`,
-			)
-			events := ClassifyNotification("th-1", "turn/completed", params)
-			// Find the turn-complete event (failed status also emits a
-			// paired EventError, so we can't just take events[0]).
-			var found provider.ProviderEvent
+// TestClassifyNotification_TurnCompletedNormalizesStatus asserts that
+// Codex-specific turn.status values are translated before they leave the
+// provider adapter.
+func TestClassifyNotification_TurnCompletedNormalizesStatus(t *testing.T) {
+	tests := []struct {
+		name         string
+		params       string
+		wantStop     string
+		wantAborted  bool
+		wantError    string
+		wantEventErr bool
+	}{
+		{
+			name:     "completed",
+			params:   `{"threadId":"th-1","turn":{"id":"t1","items":[],"status":"completed","error":null,"startedAt":1777926299,"completedAt":1777926306,"durationMs":6637}}`,
+			wantStop: "end_turn",
+		},
+		{
+			name:        "interrupted",
+			params:      `{"threadId":"th-1","turn":{"id":"t1","items":[],"status":"interrupted","error":null,"startedAt":1777926299,"completedAt":1777926301,"durationMs":2000}}`,
+			wantStop:    "interrupted",
+			wantAborted: true,
+		},
+		{
+			name:         "failed with error message",
+			params:       `{"threadId":"th-1","turn":{"id":"t1","items":[],"status":"failed","error":{"message":"boom"},"startedAt":1777926299,"completedAt":1777926301,"durationMs":2000}}`,
+			wantStop:     "error",
+			wantError:    "boom",
+			wantEventErr: true,
+		},
+		{
+			name:     "unknown status stays empty",
+			params:   `{"threadId":"th-1","turn":{"id":"t1","items":[],"status":"inProgress","error":null,"startedAt":1777926299,"completedAt":null,"durationMs":null}}`,
+			wantStop: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			events := ClassifyNotification("th-1", "turn/completed", json.RawMessage(tt.params))
+			var complete provider.ProviderEvent
+			var sawError bool
 			for _, e := range events {
-				if e.Kind == provider.EventTurnComplete {
-					found = e
-					break
+				switch e.Kind {
+				case provider.EventTurnComplete:
+					complete = e
+				case provider.EventError:
+					sawError = true
+					if e.Content != tt.wantError {
+						t.Errorf("EventError content = %q, want %q", e.Content, tt.wantError)
+					}
 				}
 			}
-			if found.Kind == "" {
+			if complete.Kind == "" {
 				t.Fatalf("no EventTurnComplete in events=%+v", events)
 			}
-			var meta map[string]any
-			if err := json.Unmarshal(found.Meta, &meta); err != nil {
-				t.Fatalf("unmarshal meta: %v", err)
+			meta, ok := complete.TurnComplete.(*provider.WireTurnCompleteMeta)
+			if !ok || meta == nil {
+				t.Fatalf("turn complete meta = %T, want *WireTurnCompleteMeta", complete.TurnComplete)
 			}
-			if meta["turn_status"] != status {
-				t.Errorf("meta.turn_status: got %v, want %q (meta=%+v)", meta["turn_status"], status, meta)
+			if meta.StopReason != tt.wantStop {
+				t.Errorf("StopReason = %q, want %q", meta.StopReason, tt.wantStop)
+			}
+			if meta.Aborted != tt.wantAborted {
+				t.Errorf("Aborted = %v, want %v", meta.Aborted, tt.wantAborted)
+			}
+			if meta.AssistantMessageID != "" {
+				t.Errorf("AssistantMessageID = %q, want empty: Codex turn/completed has no assistant message id", meta.AssistantMessageID)
+			}
+			if meta.ErrorMessage != tt.wantError {
+				t.Errorf("ErrorMessage = %q, want %q", meta.ErrorMessage, tt.wantError)
+			}
+			if sawError != tt.wantEventErr {
+				t.Errorf("EventError presence = %v, want %v", sawError, tt.wantEventErr)
 			}
 		})
 	}

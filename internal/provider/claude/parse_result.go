@@ -15,19 +15,19 @@ import (
 )
 
 // parseResult converts a Claude `result` envelope into an
-// `EventTurnComplete`. The turn-complete event's Meta carries the final
+// `EventTurnComplete`. The typed turn-complete payload carries the final
 // assistant_message_id (tracked in-stream from the last `assistant`
-// envelope), the observed `stop_reason`, the duration, total cost, the
-// usage snapshot, an `aborted: true` flag when the envelope shape
-// indicates an interrupted turn, and an `error` string when the turn
-// ended in a non-interrupted error. The four `error_*` subtypes (per
+// envelope), the observed `stop_reason`, the usage snapshot, an
+// `aborted: true` flag when the envelope shape indicates an interrupted
+// turn, and an `error` string when the turn ended in a non-interrupted
+// error. The four `error_*` subtypes (per
 // SDKResultError: `error_during_execution`, `error_max_turns`,
 // `error_max_budget_usd`, `error_max_structured_output_retries`) are
 // the explicit error path; a `subtype=success` envelope with
 // `is_error:true` covers the case where an `assistant.error` flagged
 // the turn but the final summary type stayed `success`. `terminal_reason`
-// (12 enum values, see docs/references/claude-wire.md) is forwarded on
-// meta for telemetry and forward-compat — triage does not branch on it.
+// is intentionally not carried into the normalized completion payload; the
+// raw line remains available for replay/debug.
 //
 // Interrupted detection: Claude does not expose a `"interrupted"`
 // stop_reason. Interruption surfaces as `subtype=error_during_execution`
@@ -56,10 +56,6 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 		}
 	}
 
-	// Build the turn-complete meta. Every field is optional from the
-	// wire side; we only include fields that were present so the
-	// resulting JSON stays compact and triage doesn't have to test
-	// zero-vs-unset.
 	subtype := readRawString(raw["subtype"])
 	stopReason := readRawString(raw["stop_reason"])
 	isError := readBoolValue(raw, "is_error", "isError")
@@ -80,47 +76,21 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 	}
 
 	assistantMessageID := p.takeLastAssistantMessageID()
-
-	metaFields := map[string]any{}
-	if stopReason != "" {
-		metaFields["stop_reason"] = stopReason
-	}
-	if assistantMessageID != "" {
-		metaFields["assistant_message_id"] = assistantMessageID
-	}
+	var usagePayload *provider.TokenUsage
 	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
-		metaFields["usage"] = usage
-	}
-	if duration, ok := readIntValue(raw, "duration_ms", "durationMs"); ok {
-		metaFields["duration_ms"] = duration
-	}
-	if cost, ok := readFloatValue(raw, "total_cost_usd", "totalCostUsd"); ok {
-		metaFields["total_cost_usd"] = cost
-	}
-	if aborted {
-		metaFields["aborted"] = true
-	}
-	if errorMessage != "" {
-		metaFields["error"] = errorMessage
-	}
-	if subtype != "" {
-		metaFields["subtype"] = subtype
-	}
-	if terminalReason := readRawString(raw["terminal_reason"]); terminalReason != "" {
-		metaFields["terminal_reason"] = terminalReason
-	}
-
-	var turnMeta json.RawMessage
-	if len(metaFields) > 0 {
-		if m, err := json.Marshal(metaFields); err == nil {
-			turnMeta = m
-		}
+		usagePayload = &usage
 	}
 
 	events := []provider.ProviderEvent{{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  threadID,
-		Meta:      turnMeta,
+		Kind:     provider.EventTurnComplete,
+		ThreadID: threadID,
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason:         stopReason,
+			AssistantMessageID: assistantMessageID,
+			Usage:              usagePayload,
+			Aborted:            aborted,
+			ErrorMessage:       errorMessage,
+		},
 		Timestamp: now,
 		Raw:       line,
 	}}

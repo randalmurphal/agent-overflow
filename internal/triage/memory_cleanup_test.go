@@ -38,9 +38,10 @@ func TestCapturedTurnsLifecycle(t *testing.T) {
 	// Turn-complete must NOT clear the mark — the dedup needs to hold
 	// through any re-fired EventTurnStart that targets the same turn.
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		Timestamp: time.Now(),
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("turn complete: %v", err)
 	}
