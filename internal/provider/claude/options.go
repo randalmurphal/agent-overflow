@@ -1,8 +1,6 @@
 package claude
 
 import (
-	"fmt"
-
 	"agent-overflow/internal/provider"
 )
 
@@ -23,21 +21,6 @@ func claudeEffortFromOption(effort provider.ReasoningEffort) string {
 	default:
 		return ""
 	}
-}
-
-func envForContextWindowAndAutoCompact(contextWindow, autoCompactPercent int) map[string]string {
-	var env map[string]string
-	if autoCompactPercent <= 0 {
-		return env
-	}
-	if autoCompactPercent > 90 {
-		autoCompactPercent = 90
-	}
-	if env == nil {
-		env = map[string]string{}
-	}
-	env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = fmt.Sprintf("%d", autoCompactPercent)
-	return env
 }
 
 func claudeModelForContextWindow(model string, contextWindow int) string {
@@ -80,7 +63,7 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		PermissionFlags:    claudePermissionFlags(opts.RuntimeMode),
 		BasePermissionMode: claudeBasePermissionMode(opts.RuntimeMode),
 		InteractionMode:    opts.Mode,
-		Env:                envForContextWindowAndAutoCompact(contextWindow, autoCompactPercent),
+		AutoCompactPercent: autoCompactPercent,
 	}
 }
 
