@@ -261,7 +261,16 @@ export interface TurnCompletedEvent {
   startedAt: number;
   completedAt: number;
   stopReason: string;
-  /** item.id of the final assistant_text; empty string when unknown. */
+  /**
+   * Provider message id (Claude `msg_…`, Codex equivalent) of the
+   * FINAL assistant message of this turn. For multi-round logical
+   * turns (Claude task_notification cascades, stdin-during-wait
+   * re-rounds) each round's settle overwrites the persisted column
+   * so the value always points to the last message — matching the
+   * `SettledTurn.assistantMessageId` contract. Empty string when
+   * the provider didn't report one (e.g. session-died synthesis
+   * before any assistant envelope).
+   */
   assistantMessageId?: string;
   /**
    * JSON-encoded string carrying the provider's `usage` snapshot. Triage

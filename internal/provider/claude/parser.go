@@ -388,6 +388,21 @@ func (p *Parser) takeLastAssistantMessageID() string {
 	return id
 }
 
+// peekLastAssistantMessageID returns the last id tracked WITHOUT
+// clearing it. Used by the soft-round-close path
+// (`parse_stream.go` message_delta with stop_reason=end_turn) so the
+// soft EventTurnComplete carries the right assistant_message_id while
+// leaving it available for the trailing wire `result` envelope to
+// consume via takeLastAssistantMessageID. The result envelope wins the
+// final consume so the parser's per-session "last id from this turn"
+// invariant is preserved.
+func (p *Parser) peekLastAssistantMessageID() string {
+	if p == nil {
+		return ""
+	}
+	return p.lastAssistantMessageID
+}
+
 func (p *Parser) rememberStreamBlock(parentToolUseID string, index int, blockType string) {
 	if blockType == "" {
 		return

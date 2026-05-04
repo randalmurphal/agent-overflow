@@ -742,6 +742,87 @@ migration adds a new `TestMigrateVXX*` block.
 
 ---
 
+## 27. Soft round-close from `message_delta.stop_reason` is wire-typed
+
+**Rule.** The Claude adapter emits `EventTurnComplete` from
+`stream_event.message_delta.delta.stop_reason` (with
+`parent_tool_use_id == null`) when the stop_reason is one of the
+authorized "model has stopped" values:
+
+- `"end_turn"`
+- `"stop_sequence"`
+- `"refusal"`
+
+It does NOT emit on:
+
+- `"tool_use"` — model paused for a tool; more text follows
+- `"pause_turn"` — model explicitly asked for more time
+- `"max_tokens"` — harness may auto-continue
+
+The emitted event carries `meta.soft = true`, `meta.stop_reason`,
+and the parser's PEEKED `assistant_message_id` (peek, not take —
+the trailing wire `result` envelope still consumes via
+`takeLastAssistantMessageID`). Usage/cost are NOT on the soft event
+— those land on the trailing `result`. Triage's
+`handleTurnComplete` settles the round on this signal; the trailing
+wire `result` envelope folds late payload via
+`persistLateTurnUsage` → `store.UpdateTurnLatePayload`. Per-column
+fold semantics:
+
+- `token_usage_json`: first non-empty wins (preserves first
+  settle's value).
+- `assistant_message_id`: last non-empty wins (overwrite). Each
+  subsequent round's settle replaces the persisted column so it
+  always reflects the FINAL assistant message of the turn —
+  matches the documented contract on
+  `SettledTurn.assistantMessageId`.
+
+**Rationale.** Claude Code 2.1.118 withholds the `result` envelope
+when a `local_agent` (Task) subagent is still running at parent
+end_turn — the wire turn stays alive even though the parent is
+idle. Without this signal, the working indicator stays on for the
+full subagent runtime (~10s in the captured spike).
+Backgrounded `local_bash` does NOT trigger this delay — the
+distinction is keyed on `local_agent` specifically. Backed by
+fixtures
+[`local_agent_outlives.ndjson`](../references/fixtures/claude/local_agent_outlives.ndjson),
+[`local_agent_user_input_during_wait.ndjson`](../references/fixtures/claude/local_agent_user_input_during_wait.ndjson),
+[`local_agent_plus_bg_bash.ndjson`](../references/fixtures/claude/local_agent_plus_bg_bash.ndjson).
+
+The gating rules are not heuristics — `parent_tool_use_id == null`
+distinguishes parent messages from subagent messages, and the
+authorized stop_reason set is the closed list documented in
+[`claude-wire.md`](../references/claude-wire.md). Treating this as a
+wire-typed signal is consistent with invariant 25's "wire-typed
+signals, not heuristics" rule.
+
+The composer / Stop button safely unblock alongside the indicator.
+Spike fixture `local_agent_user_input_during_wait.ndjson` confirms
+Claude CLI accepts mid-wait stdin within 32ms (re-rounds cleanly,
+parent processes the new message coherently, original subagent
+keeps running uninterrupted).
+
+**Enforcement.** Only `parse_stream.go`'s `message_delta` case may
+emit this signal. The gating logic
+(`parent_tool_use_id == null` + closed stop_reason set) is unit-
+tested. The `result` envelope path remains authoritative for
+cumulative token usage / cost; the `assistant_message_id` column on
+the persisted row converges on the FINAL round's id via
+`UpdateTurnLatePayload`'s last-write-wins rule for that column.
+
+**Test.**
+- `parse_stream_test.go` unit tests that gate on
+  `parent_tool_use_id` and stop_reason set.
+- Fixture replay test using `local_agent_outlives.ndjson` asserts
+  `EventTurnComplete` fires from the parent's message_delta
+  stop_reason=end_turn before the wire `result` envelope.
+
+**See also.**
+[`claude-wire.md §Soft round close`](../references/claude-wire.md#soft-round-close--message_deltastop_reason),
+[`turn-lifecycle.md §Wire-round vs logical-turn cadence`](turn-lifecycle.md).
+
+---
+
 ## See Also
 
 - [`chat-rewrite.md`](chat-rewrite.md) — the spec these rules were

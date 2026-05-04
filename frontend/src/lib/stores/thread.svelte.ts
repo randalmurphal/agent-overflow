@@ -82,7 +82,14 @@ export interface SettledTurn {
   startedAt: number;
   completedAt: number;
   stopReason: string;
-  /** item.id of the final assistant_text; null when the provider didn't report one. */
+  /**
+   * Provider message id of the final assistant message of this turn
+   * (Claude `msg_…`, Codex equivalent). Multi-round logical turns
+   * overwrite this on each round so the value is always the LAST
+   * message — see backend `UpdateTurnLatePayload` per-column
+   * semantics. Null when the provider didn't report one (e.g.
+   * session-died synthesis before any assistant envelope).
+   */
   assistantMessageId: string | null;
   /** Parsed from triage's token_usage_json. null on malformed / missing input. */
   tokenUsage: TokenUsageSummary | null;

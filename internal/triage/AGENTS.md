@@ -191,6 +191,18 @@ Round entry points:
   `turn_completed` per round. Persistence work (settleTurnRow,
   checkpoint, streaming settle) stays gated by `markTurnSettled` at
   logical-turn granularity.
+- **Soft round-close** (Claude only) — `EventTurnComplete` with
+  `meta.soft=true` arrives from `parse_stream.go` when the parent
+  message ends with stop_reason ∈ `{end_turn, stop_sequence,
+  refusal}` and `parent_tool_use_id` is null. Triage handles this
+  identically to the `result`-driven complete: per-round emission +
+  per-logical-turn settlement. The trailing wire `result` envelope
+  arrives later (especially when a `local_agent` subagent is in
+  flight — Claude CLI delays it until the subagent completes) and
+  folds in cumulative usage / cost / `assistant_message_id` via
+  `persistLateTurnUsage` — the markTurnSettled gate makes this a
+  no-op for everything else. See
+  [`invariants.md §27`](../../docs/architecture/invariants.md#27-soft-round-close-from-message_deltastop_reason-is-wire-typed).
 
 Round id format: opaque per-round `uuid.NewString()` allocated in Go.
 Carried as `TurnStartedEvent.TurnID` / `TurnCompletedEvent.TurnID`.

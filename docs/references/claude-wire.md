@@ -57,7 +57,24 @@ correlation); those are not reproduced in the shape examples below.
 
 **Fires**: exactly once per CLI turn, after all tool round-trips and
 the final assistant message have settled.
-**Authoritative for**: the `EventTurnComplete` signal.
+**Authoritative for**: turn-level token/cost accounting, the final
+`assistant_message_id`, and the `terminal_reason`.
+
+⚠ **Not the only turn-complete signal.** As of Claude Code 2.1.118, when
+the parent assistant ends its message with `stop_reason="end_turn"`
+while a `local_agent` (Task) subagent is still running in the
+background, the CLI **withholds the `result` envelope** until the
+subagent completes. The wire-typed parent-ended signal is therefore
+`stream_event.message_delta.delta.stop_reason` (with
+`parent_tool_use_id == null`) — see
+[§stream_event soft-round-close](#stream_event--streaming-deltas)
+below. We treat that signal as authoritative for the round-end UI
+(working indicator, Stop button, composer block) and absorb the late
+`result` envelope as a token-usage / cost / `assistant_message_id`
+fold-in. Backed by fixtures
+[`local_agent_outlives.ndjson`](fixtures/claude/local_agent_outlives.ndjson)
+and
+[`local_agent_user_input_during_wait.ndjson`](fixtures/claude/local_agent_user_input_during_wait.ndjson).
 
 ```json
 {
@@ -676,9 +693,46 @@ verbatim.
 ### `message_stop` vs `result`
 
 `message_stop` is per-assistant-message (one per assistant turn in
-the API stream). `result` is per-CLI-turn (fires once, after the
-final `message_stop` and any trailing tool round-trips settle).
-**`result` is authoritative for turn end, not `message_stop`.**
+the API stream). `result` is per-CLI-turn (fires after the final
+`message_stop` and any trailing tool round-trips settle). `result`
+remains authoritative for the cumulative turn payload (token usage,
+cost, terminal_reason, final assistant_message_id) — but it is
+**not** the only signal that the round has ended; see soft-round-close
+below.
+
+### Soft round close — `message_delta.stop_reason`
+
+The wire-typed signal that the parent assistant has stopped emitting
+content for the current round is
+`stream_event.message_delta.delta.stop_reason`, **gated on
+`parent_tool_use_id == null`** to exclude subagent messages. Treat
+the following stop_reasons as round-end:
+
+- `"end_turn"` — model decided it was done
+- `"stop_sequence"` — model emitted a configured stop sequence
+- `"refusal"` — content policy refusal
+
+Do **not** treat these as round-end:
+
+- `"tool_use"` — model paused to call a tool; more text follows the
+  tool_results in the same round
+- `"pause_turn"` — model explicitly asked for more time
+- `"max_tokens"` — model truncated; the harness may auto-continue
+
+Why this matters: with a `local_agent` subagent in flight, the CLI
+withholds `result` until the subagent completes. Without consuming
+the message_delta signal, the working indicator stays on for the
+duration of the subagent runtime even though the parent is idle.
+
+The top-level `assistant` envelope's `message.stop_reason` is `null`
+in both partial and final snapshots — only the partial-messages
+`message_delta` event carries the actual model stop_reason. Without
+`--include-partial-messages`, this signal is unreachable; the
+adapter always sets that flag (see `parse_stream.go`).
+
+See [`docs/architecture/turn-lifecycle.md`](../architecture/turn-lifecycle.md)
+for how triage absorbs the soft signal and the trailing `result`
+envelope idempotently.
 
 ---
 

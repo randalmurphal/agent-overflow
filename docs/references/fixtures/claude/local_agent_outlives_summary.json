@@ -1,0 +1,35 @@
+{
+  "claude_code_version": "2.1.118",
+  "captured_at": "2026-05-04T16:46:14Z",
+  "scenario": "Parent assistant launches one local_agent (Task) subagent with run_in_background:true, narrates each step, then ends its message with stop_reason=end_turn while the subagent is still running. Captures the gap between the parent's end_turn and the first `result` envelope.",
+  "cmd": [
+    "claude",
+    "--output-format", "stream-json",
+    "--input-format", "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--permission-mode", "bypassPermissions"
+  ],
+  "events": 287,
+  "key_observations": {
+    "parent_end_turn_via_message_delta": {
+      "wire_signal": "stream_event.message_delta.delta.stop_reason=\"end_turn\" with parent_tool_use_id=null",
+      "fired_at": "16:46:22.890Z",
+      "follows": "STEP-3 narration: 'subagent launched, ending turn now to wait for notification'"
+    },
+    "first_result_envelope": {
+      "fired_at": "16:46:32.731Z",
+      "stop_reason": "end_turn",
+      "delay_after_parent_end_turn_seconds": 9.84
+    },
+    "subagent_completion_signals_during_wait": [
+      {"event": "system.task_started (subagent's internal Bash)", "at": "16:46:25.727Z"},
+      {"event": "system.task_notification (subagent's internal Bash done)", "at": "16:46:28.753Z"},
+      {"event": "system.task_updated patch.status=completed (subagent itself)", "at": "16:46:30.070Z"},
+      {"event": "system.task_notification (subagent done)", "at": "16:46:30.070Z"},
+      {"event": "system.init (re-round triggered by task_notification)", "at": "16:46:30.071Z"}
+    ],
+    "load_bearing_invariant": "Without --include-partial-messages, message_delta envelopes are not surfaced and the wire-typed parent end_turn signal is unreachable. The top-level `assistant` envelope's message.stop_reason is null in both incremental snapshots and the final coalesced envelope; only stream_event.message_delta.delta.stop_reason carries the actual model stop_reason."
+  },
+  "purpose": "Backs the soft-round-close turn-complete behaviour added 2026-05. Replay this fixture and assert that EventTurnComplete fires from the parent's message_delta stop_reason=end_turn (with parent_tool_use_id empty), 9.84s before the wire `result` envelope arrives."
+}

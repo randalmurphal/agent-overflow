@@ -114,8 +114,21 @@ back to the parent tool call.
   CLI replies with `control_response{subtype:success}` and fires
   `task_updated` with `patch.status:"killed"` — the same terminal
   channel normal completion uses, routed by task_id.
-- **Turn lifecycle** — `result` envelope is the authoritative
-  turn-complete signal. No heuristics, no wait-for-tools.
+- **Turn lifecycle** — `result` envelope remains authoritative for
+  cumulative turn payload (token usage, cost, terminal_reason, final
+  assistant_message_id). It is NOT the only source of
+  `EventTurnComplete`: when the parent message ends with a
+  "model has stopped" stop_reason (`end_turn` / `stop_sequence` /
+  `refusal`) and `parent_tool_use_id` is null, `parse_stream.go`
+  emits a soft `EventTurnComplete` immediately so the working
+  indicator clears even when the CLI withholds `result` (it does
+  this whenever a `local_agent` subagent is still in flight). The
+  trailing `result` envelope, when it eventually arrives, folds in
+  the cumulative payload via `persistLateTurnUsage` — see
+  [`invariants.md §27`](../../../docs/architecture/invariants.md#27-soft-round-close-from-message_deltastop_reason-is-wire-typed)
+  and the
+  [`local_agent_outlives.ndjson`](../../../docs/references/fixtures/claude/local_agent_outlives.ndjson)
+  fixture.
 
 Do NOT derive turn activity from item state. Do NOT emit lifecycle
 state from `task_notification`. Do NOT rewrite `tool_use_id` between
@@ -127,10 +140,20 @@ start and complete. These are load-bearing rules enforced by
 - `docs/references/fixtures/claude/ndjson_bash.log` — backgrounded + foreground
   Bash + Read
 - `docs/references/fixtures/claude/ndjson_task.log` — Task subagent + TaskOutput
-- `docs/references/fixtures/claude/ndjson_outlives.log` — bg task outliving its
-  turn
+- `docs/references/fixtures/claude/ndjson_outlives.log` — bg Bash outliving its
+  turn (the `result` envelope arrives BEFORE `task_updated`)
 - `docs/references/fixtures/claude/taskoutput_multi.ndjson` — two parallel bg Bashes
   + blocking TaskOutput
+- `docs/references/fixtures/claude/local_agent_outlives.ndjson` — counterpart
+  to `ndjson_outlives.log`: bg `local_agent` (Task subagent) at parent
+  end_turn — CLI withholds `result` until subagent completes (~10s gap).
+  Authoritative for the soft-round-close behaviour.
+- `docs/references/fixtures/claude/local_agent_user_input_during_wait.ndjson`
+  — same scenario plus a stdin user-message injected mid-wait. Backs the
+  composer-unblock safety argument.
+- `docs/references/fixtures/claude/local_agent_plus_bg_bash.ndjson` —
+  bg Bash + bg local_agent combined: the result-delay is keyed on
+  `local_agent` specifically.
 
 Use these in tests via file path. When fresh captures prove wire drift,
 refresh the checked-in fixtures from a new `AGENT_OVERFLOW_DEBUG=provider`

@@ -925,13 +925,46 @@ func (r *Router) buildRoundCompletedEvent(
 	}
 }
 
+// persistLateTurnUsage folds late-arriving payload onto the existing
+// turn row when handleTurnComplete fires after the turn was already
+// settled. Two known sources:
+//
+//  1. Multi-result cascade — Claude's CLI emits a second `result`
+//     envelope for the same logical turn after a task_notification
+//     re-round. Cumulative `usage` lands on the second envelope; the
+//     amid points to the final round's assistant message.
+//  2. Soft round-close — `parse_stream.go` emits an
+//     EventTurnComplete{soft:true} from `message_delta.stop_reason`
+//     before the wire `result` envelope. The soft event carries the
+//     parser's PEEKED last assistant_message_id (the consume happens
+//     when the trailing `result` calls takeLastAssistantMessageID).
+//     The trailing `result` carries cumulative usage that the soft
+//     event lacks.
+//
+// Per-column semantics (different intentionally, see store
+// UpdateTurnLatePayload):
+//
+//   - token_usage_json: first non-empty wins. The first settle's
+//     usage stays on the row; later folds skip if already populated.
+//   - assistant_message_id: last non-empty wins. Each subsequent
+//     round overwrites so the persisted column is the FINAL
+//     assistant message of the turn — what
+//     `SettledTurn.assistantMessageId` is documented to be.
+//
+// Folded as a single UPDATE so the common case (both fields arrive
+// on the trailing `result`) pays one autocommit boundary.
 func (r *Router) persistLateTurnUsage(evt provider.ProviderEvent, turnIndex int, meta turnCompleteMeta) {
-	if len(meta.Usage) == 0 {
+	turnID := resolveTurnID(evt, turnIndex)
+	usageJSON := ""
+	if len(meta.Usage) > 0 {
+		usageJSON = string(meta.Usage)
+	}
+	amid := resolveAssistantMessageID(meta)
+	if usageJSON == "" && amid == "" {
 		return
 	}
-	turnID := resolveTurnID(evt, turnIndex)
-	if err := r.store.UpdateTurnTokenUsageIfEmpty(turnID, string(meta.Usage)); err != nil {
-		log.Printf("triage: update turn %s late token usage: %v", turnID, err)
+	if err := r.store.UpdateTurnLatePayload(turnID, usageJSON, amid); err != nil {
+		log.Printf("triage: update turn %s late payload: %v", turnID, err)
 	}
 }
 

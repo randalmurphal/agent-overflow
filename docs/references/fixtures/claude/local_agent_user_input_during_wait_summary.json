@@ -1,0 +1,44 @@
+{
+  "claude_code_version": "2.1.118",
+  "captured_at": "2026-05-04T16:47:58Z",
+  "scenario": "Same as local_agent_outlives, but the host process injects a NEW user message via stdin ~2s after the parent's message_delta stop_reason=end_turn (while the subagent is still running). Confirms that Claude CLI accepts mid-wait stdin cleanly and re-rounds without errors.",
+  "cmd": [
+    "claude",
+    "--output-format", "stream-json",
+    "--input-format", "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--permission-mode", "bypassPermissions"
+  ],
+  "events": 322,
+  "key_observations": {
+    "parent_first_end_turn": {"at": "16:48:07.006Z"},
+    "stdin_injection": {
+      "at": "16:48:09.006Z",
+      "content": "What is happening right now in this session? Reply in one short sentence and stop."
+    },
+    "cli_re_round_init_after_injection": {
+      "at": "16:48:09.038Z",
+      "delay_after_injection_ms": 32,
+      "note": "CLI emits system.init within 32ms of the injected message, opening a new round in the same logical turn."
+    },
+    "parent_response_to_injection": {
+      "at": "16:48:10.705Z",
+      "text": "Waiting for the background \"sleep-haiku\" subagent to finish before continuing.",
+      "stop_reason": "end_turn",
+      "note": "Parent processed the injected message coherently; original subagent kept running uninterrupted."
+    },
+    "parent_second_end_turn": {"at": "16:48:10.762Z"},
+    "subagent_completion_init": {"at": "16:48:12.983Z"},
+    "parent_third_end_turn": {"at": "16:48:15.903Z"},
+    "first_and_only_result_envelope": {
+      "at": "16:48:15.904Z",
+      "stop_reason": "end_turn",
+      "note": "Only ONE result envelope across the entire 8.9s cascade containing three parent end_turn signals."
+    },
+    "errors_during_cascade": "none",
+    "subagent_completion_normal": true
+  },
+  "implication_for_fix": "Empirically safe to unblock the composer / clear the working indicator on parent message_delta stop_reason=end_turn. The CLI handles stdin during the wait window cleanly and re-rounds itself. There is no risk of dropped messages, double-processing, or wire-protocol error from sending input during the gap.",
+  "purpose": "Back the safety argument for the soft-round-close turn-complete behaviour. Confirms the most-cited UX risk (\"composer unblocking might race with task_notification cascade\") does not materialize in practice on Claude CLI 2.1.118."
+}

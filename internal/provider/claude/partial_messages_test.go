@@ -256,3 +256,326 @@ func TestParseStreamEventEmptyDeltaText(t *testing.T) {
 		t.Errorf("expected 0 events for empty text_delta, got %d", len(events))
 	}
 }
+
+// --- Soft round-close: message_delta.stop_reason ---
+//
+// Without these tests the working indicator stays stuck whenever a
+// local_agent (Task) subagent is in flight at parent end_turn — Claude
+// CLI withholds the `result` envelope until the subagent completes.
+// The wire-typed signal that the parent has stopped emitting for the
+// round is `stream_event.message_delta.delta.stop_reason` (gated on
+// parent_tool_use_id == ""). See invariants.md §27.
+
+func TestParseStreamEventMessageDeltaEndTurnEmitsSoftTurnComplete(t *testing.T) {
+	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":6,"output_tokens":34}}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	var sawTurnComplete bool
+	for _, e := range events {
+		if e.Kind != provider.EventTurnComplete {
+			continue
+		}
+		sawTurnComplete = true
+		var meta struct {
+			StopReason string `json:"stop_reason"`
+			Soft       bool   `json:"soft"`
+		}
+		if err := json.Unmarshal(e.Meta, &meta); err != nil {
+			t.Fatalf("unmarshal meta: %v", err)
+		}
+		if meta.StopReason != "end_turn" {
+			t.Errorf("meta.stop_reason: got %q, want %q", meta.StopReason, "end_turn")
+		}
+		if !meta.Soft {
+			t.Errorf("meta.soft: got false, want true (so triage / docs can distinguish from result-driven complete)")
+		}
+		if e.ParentToolUseID != "" {
+			t.Errorf("ParentToolUseID: got %q, want empty (parent only)", e.ParentToolUseID)
+		}
+	}
+	if !sawTurnComplete {
+		t.Fatalf("expected EventTurnComplete from message_delta stop_reason=end_turn, got %+v", events)
+	}
+}
+
+func TestParseStreamEventMessageDeltaStopSequenceEmitsSoftTurnComplete(t *testing.T) {
+	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"stop_sequence"},"usage":{"input_tokens":6,"output_tokens":1}}}`)
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var found bool
+	for _, e := range events {
+		if e.Kind == provider.EventTurnComplete {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("stop_sequence should fire soft turn-complete: %+v", events)
+	}
+}
+
+func TestParseStreamEventMessageDeltaRefusalEmitsSoftTurnComplete(t *testing.T) {
+	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"refusal"},"usage":{"input_tokens":6,"output_tokens":1}}}`)
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var found bool
+	for _, e := range events {
+		if e.Kind == provider.EventTurnComplete {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("refusal should fire soft turn-complete: %+v", events)
+	}
+}
+
+func TestParseStreamEventMessageDeltaToolUseDoesNotEmitSoftTurnComplete(t *testing.T) {
+	// stop_reason="tool_use" means the model paused to call a tool;
+	// more text follows. Firing turn-complete here would close the
+	// indicator mid-round, then re-open it on the next message_start
+	// for cosmetically jarring "Done → Working → Done" flicker —
+	// AND it would cascade into per-round emission semantics that
+	// don't match the model's actual state.
+	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":6,"output_tokens":493}}}`)
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, e := range events {
+		if e.Kind == provider.EventTurnComplete {
+			t.Fatalf("tool_use must NOT fire soft turn-complete: %+v", events)
+		}
+	}
+}
+
+func TestParseStreamEventMessageDeltaPauseTurnDoesNotEmitSoftTurnComplete(t *testing.T) {
+	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"pause_turn"},"usage":{"input_tokens":6,"output_tokens":1}}}`)
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, e := range events {
+		if e.Kind == provider.EventTurnComplete {
+			t.Fatalf("pause_turn must NOT fire soft turn-complete: %+v", events)
+		}
+	}
+}
+
+func TestParseStreamEventMessageDeltaMaxTokensDoesNotEmitSoftTurnComplete(t *testing.T) {
+	// max_tokens means the model truncated; the harness may auto-continue
+	// (Claude does this for some configurations). Firing turn-complete
+	// here would clear the indicator, then a fresh message_start would
+	// re-open it — same flicker problem as tool_use.
+	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"input_tokens":6,"output_tokens":64000}}}`)
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, e := range events {
+		if e.Kind == provider.EventTurnComplete {
+			t.Fatalf("max_tokens must NOT fire soft turn-complete: %+v", events)
+		}
+	}
+}
+
+func TestParseStreamEventSubagentMessageDeltaEndTurnDoesNotEmitParentSoftTurnComplete(t *testing.T) {
+	// A subagent's own message_delta carries parent_tool_use_id != null.
+	// Firing the parent's turn-complete from a subagent's end_turn would
+	// close the parent's indicator while the parent is still active —
+	// confusing UI and breaking the round-id allocation.
+	line := []byte(`{"type":"stream_event","event":"message_delta","parent_tool_use_id":"toolu_subagent","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":6,"output_tokens":1}}}`)
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, e := range events {
+		if e.Kind == provider.EventTurnComplete {
+			t.Fatalf("subagent message_delta must NOT fire parent soft turn-complete: %+v", events)
+		}
+	}
+}
+
+func TestParseStreamEventMessageDeltaWithoutStopReasonDoesNotEmitTurnComplete(t *testing.T) {
+	// Some message_delta envelopes carry only usage updates (no
+	// delta.stop_reason). These are mid-message accounting snapshots,
+	// not round-end signals. Existing context-meter behavior must not
+	// regress — usage still emits an EventTokenUsage; nothing else.
+	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":20}}}`)
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, e := range events {
+		if e.Kind == provider.EventTurnComplete {
+			t.Fatalf("message_delta without stop_reason must NOT fire turn-complete: %+v", events)
+		}
+	}
+}
+
+func TestParseStreamEventMessageDeltaWithoutUsageStillEmitsSoftTurnComplete(t *testing.T) {
+	// Defensive: message_delta with stop_reason but no usage should
+	// still fire the soft turn-complete. The two fields are
+	// independent — a malformed/partial envelope shouldn't strand the
+	// indicator.
+	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"}}}`)
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var found bool
+	for _, e := range events {
+		if e.Kind == provider.EventTurnComplete {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected soft turn-complete even without usage: %+v", events)
+	}
+}
+
+// TestParseStreamSoftTurnCompleteWithoutPriorAssistantHasNoAssistantID
+// pins the defensive case where message_delta arrives before any
+// assistant envelope (degenerate ordering / fresh session attach).
+// The peeked id is empty; soft fires with omitempty-dropped
+// assistant_message_id; triage's late-payload fold writes the trailing
+// wire `result`'s id onto the empty column.
+func TestParseStreamSoftTurnCompleteWithoutPriorAssistantHasNoAssistantID(t *testing.T) {
+	parser := NewParser()
+	deltaLine := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"}}}`)
+	events, err := parser.ParseLine(testThread, deltaLine)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var softFound bool
+	for _, e := range events {
+		if e.Kind != provider.EventTurnComplete {
+			continue
+		}
+		softFound = true
+		var meta struct {
+			AssistantMessageID string `json:"assistant_message_id"`
+			Soft               bool   `json:"soft"`
+		}
+		if err := json.Unmarshal(e.Meta, &meta); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if !meta.Soft {
+			t.Errorf("expected meta.soft=true")
+		}
+		if meta.AssistantMessageID != "" {
+			t.Errorf("expected assistant_message_id absent (omitempty) when parser has not seen any assistant envelope yet, got %q", meta.AssistantMessageID)
+		}
+	}
+	if !softFound {
+		t.Fatalf("expected soft EventTurnComplete: %+v", events)
+	}
+}
+
+// TestParseStreamUnknownStopReasonDoesNotEmitTurnComplete pins the
+// closed-set behavior of `isSoftRoundCloseStopReason`. A future SDK
+// addition (or a typo in the wire) must NOT fire the soft — the
+// trailing wire `result` envelope still settles the turn correctly.
+// Under-firing on an unknown is the safer failure mode.
+func TestParseStreamUnknownStopReasonDoesNotEmitTurnComplete(t *testing.T) {
+	for _, reason := range []string{"future_unknown", "model_overloaded", "", "END_TURN"} {
+		t.Run(reason, func(t *testing.T) {
+			line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"` + reason + `"}}}`)
+			events, err := ParseLine(testThread, line)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			for _, e := range events {
+				if e.Kind == provider.EventTurnComplete {
+					t.Fatalf("unknown stop_reason %q must NOT fire soft turn-complete: %+v", reason, events)
+				}
+			}
+		})
+	}
+}
+
+// TestParseStreamSoftTurnCompleteCarriesPeekedAssistantMessageID pins
+// the contract that the soft EventTurnComplete includes the parser's
+// `lastAssistantMessageID` (peeked, not consumed) so the persisted
+// turn row's `assistant_message_id` is populated on the FIRST settle.
+// Without this, the trailing wire `result` envelope folds the id in
+// later via `persistLateTurnUsage`, but the frontend's in-memory
+// `latestSettledTurn.assistantMessageId` projection — which only
+// reacts to `provider:turn_completed` — would stay null until the
+// next thread switch / page refresh hydrated it from the store.
+//
+// The peek (rather than take) is load-bearing: the trailing real
+// `result`'s `parseResult` consumes via takeLastAssistantMessageID and
+// the parser's per-session "last id from this turn" invariant
+// (cleared at turn boundary so it doesn't leak into the next turn)
+// stays intact.
+func TestParseStreamSoftTurnCompleteCarriesPeekedAssistantMessageID(t *testing.T) {
+	parser := NewParser()
+	// Emit an assistant envelope first so the parser tracks the id.
+	assistantLine := []byte(`{"type":"assistant","message":{"id":"msg_peekABC","role":"assistant","content":[{"type":"text","text":"hi"}]}}`)
+	if _, err := parser.ParseLine(testThread, assistantLine); err != nil {
+		t.Fatalf("parse assistant: %v", err)
+	}
+
+	// Soft round-close from message_delta.
+	deltaLine := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"}}}`)
+	events, err := parser.ParseLine(testThread, deltaLine)
+	if err != nil {
+		t.Fatalf("parse message_delta: %v", err)
+	}
+
+	var softMeta struct {
+		StopReason         string `json:"stop_reason"`
+		Soft               bool   `json:"soft"`
+		AssistantMessageID string `json:"assistant_message_id"`
+	}
+	var found bool
+	for _, e := range events {
+		if e.Kind != provider.EventTurnComplete {
+			continue
+		}
+		if err := json.Unmarshal(e.Meta, &softMeta); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatalf("expected soft turn-complete: %+v", events)
+	}
+	if !softMeta.Soft {
+		t.Errorf("expected meta.soft=true")
+	}
+	if softMeta.AssistantMessageID != "msg_peekABC" {
+		t.Errorf("expected peeked assistant_message_id=%q, got %q", "msg_peekABC", softMeta.AssistantMessageID)
+	}
+
+	// The trailing `result` envelope must still observe the id (peek
+	// did not consume).
+	resultLine := []byte(`{"type":"result","subtype":"success","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	rEvents, err := parser.ParseLine(testThread, resultLine)
+	if err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	var resultAMID string
+	for _, e := range rEvents {
+		if e.Kind != provider.EventTurnComplete {
+			continue
+		}
+		var rm struct {
+			AssistantMessageID string `json:"assistant_message_id"`
+		}
+		if err := json.Unmarshal(e.Meta, &rm); err != nil {
+			t.Fatalf("unmarshal result meta: %v", err)
+		}
+		resultAMID = rm.AssistantMessageID
+	}
+	if resultAMID != "msg_peekABC" {
+		t.Errorf("result envelope must still consume the id: got %q, want %q", resultAMID, "msg_peekABC")
+	}
+}

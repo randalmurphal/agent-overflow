@@ -974,3 +974,262 @@ func TestAssistantErrorThenResultSettlesExactlyOnce(t *testing.T) {
 		t.Fatalf("expected exactly 1 api_error row, got %d (%+v)", apiErrors, items)
 	}
 }
+
+// TestSoftThenRealTurnComplete_RealisticCascade pins the production
+// flow on a normal (single-round) Claude turn where the soft
+// EventTurnComplete fires from `message_delta.stop_reason="end_turn"`
+// and ALREADY carries the peeked assistant_message_id (parser observed
+// an assistant envelope earlier in the round). The trailing wire
+// `result` arrives with usage and the same amid (taken via
+// takeLastAssistantMessageID).
+//
+// Pin: token usage folds in (first non-empty wins, soft had none);
+// amid stays the same value (last non-empty wins is a no-op when the
+// trailing event carries the same id). completed_at is NOT re-stamped
+// (first-settle clock preserved). No second `provider:turn_completed`
+// emits for the same round.
+func TestSoftThenRealTurnComplete_RealisticCascade(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	// Soft complete carries the peeked assistant_message_id — the
+	// parser would have stamped it from the prior `assistant`
+	// envelope. This is the production-path shape.
+	softMeta, _ := json.Marshal(map[string]any{
+		"stop_reason":          "end_turn",
+		"soft":                 true,
+		"assistant_message_id": "msg_softA",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		Meta:      softMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("soft turn complete: %v", err)
+	}
+
+	// Soft fired exactly one provider:turn_completed for the round.
+	completedAfterSoft := filterEmissions(*emissions, "provider:turn_completed")
+	if len(completedAfterSoft) != 1 {
+		t.Fatalf("expected exactly 1 provider:turn_completed after soft, got %d", len(completedAfterSoft))
+	}
+
+	// Settled row carries the soft's stop_reason and amid.
+	turn, found, err := st.GetTurn("t1:0")
+	if err != nil || !found {
+		t.Fatalf("get turns row after soft: found=%v err=%v", found, err)
+	}
+	if turn.CompletedAt == nil {
+		t.Fatalf("expected completed_at set after soft complete")
+	}
+	firstCompletedAt := *turn.CompletedAt
+	if turn.StopReason != "end_turn" {
+		t.Errorf("stop_reason after soft = %q, want %q", turn.StopReason, "end_turn")
+	}
+	if turn.AssistantMessageID != "msg_softA" {
+		t.Errorf("assistant_message_id after soft = %q, want %q (peeked from parser)", turn.AssistantMessageID, "msg_softA")
+	}
+	if turn.TokenUsageJSON != "" {
+		t.Errorf("token_usage_json after soft = %q, want empty (no usage on soft event)", turn.TokenUsageJSON)
+	}
+
+	// Trailing real `result` arrives ms later with the same amid
+	// (taken from the parser) and the cumulative usage.
+	realMeta, _ := json.Marshal(map[string]any{
+		"stop_reason":          "end_turn",
+		"assistant_message_id": "msg_softA",
+		"usage": map[string]any{
+			"inputTokens":  6,
+			"outputTokens": 34,
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		Meta:      realMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("real turn complete: %v", err)
+	}
+
+	// No second provider:turn_completed for the round.
+	completedAfterReal := filterEmissions(*emissions, "provider:turn_completed")
+	if len(completedAfterReal) != 1 {
+		t.Fatalf("expected still exactly 1 provider:turn_completed after real, got %d", len(completedAfterReal))
+	}
+
+	turn, _, err = st.GetTurn("t1:0")
+	if err != nil {
+		t.Fatalf("get turns row after real: %v", err)
+	}
+	if turn.CompletedAt == nil || *turn.CompletedAt != firstCompletedAt {
+		t.Errorf("completed_at re-stamped on trailing result: got %v, want %d (first-settle clock preserved)",
+			turn.CompletedAt, firstCompletedAt)
+	}
+	if turn.AssistantMessageID != "msg_softA" {
+		t.Errorf("assistant_message_id after real = %q, want %q (first-settle wins)",
+			turn.AssistantMessageID, "msg_softA")
+	}
+	if !strings.Contains(turn.TokenUsageJSON, `"inputTokens":6`) {
+		t.Errorf("token_usage_json after real = %q, want fold-in of inputTokens=6", turn.TokenUsageJSON)
+	}
+}
+
+// TestSoftThenRealTurnComplete_SoftMissingAmidFoldsIn covers the
+// defensive case where the parser had not yet observed an assistant
+// envelope when message_delta arrived (degenerate ordering, fresh
+// session attach, malformed wire). The soft event has no
+// assistant_message_id; the trailing wire `result` carries it; the
+// fold-in writes it onto the empty column.
+func TestSoftThenRealTurnComplete_SoftMissingAmidFoldsIn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	softMeta, _ := json.Marshal(map[string]any{
+		"stop_reason": "end_turn",
+		"soft":        true,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		Meta:      softMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("soft turn complete: %v", err)
+	}
+
+	turn, _, _ := st.GetTurn("t1:0")
+	if turn.AssistantMessageID != "" {
+		t.Fatalf("expected empty amid after amid-less soft, got %q", turn.AssistantMessageID)
+	}
+
+	realMeta, _ := json.Marshal(map[string]any{
+		"stop_reason":          "end_turn",
+		"assistant_message_id": "msg_realLate",
+		"usage":                map[string]any{"inputTokens": 1, "outputTokens": 2},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		Meta:      realMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("real turn complete: %v", err)
+	}
+
+	turn, _, _ = st.GetTurn("t1:0")
+	if turn.AssistantMessageID != "msg_realLate" {
+		t.Errorf("amid fold-in failed on empty column: got %q, want %q",
+			turn.AssistantMessageID, "msg_realLate")
+	}
+}
+
+// TestSoftThenInitThenSoftThenReal_ReRoundCascade pins the
+// stdin-during-wait pattern from local_agent_user_input_during_wait
+// fixture: parent end_turn → re-round init → another parent end_turn
+// → trailing wire `result`. The frontend's working indicator must
+// cycle correctly per round (off/on/off), and the persisted turn row
+// must end up with the FINAL round's assistant_message_id (so
+// SettledTurn.assistantMessageId points to the last assistant
+// message of the turn — its documented contract).
+func TestSoftThenInitThenSoftThenReal_ReRoundCascade(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	soft1Meta, _ := json.Marshal(map[string]any{
+		"stop_reason":          "end_turn",
+		"soft":                 true,
+		"assistant_message_id": "msg_round1",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		Meta:      soft1Meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("soft #1: %v", err)
+	}
+
+	// Re-round triggered by Claude system.init (after task_notification
+	// or stdin injection during wait window).
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventInit, ThreadID: "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("re-round init: %v", err)
+	}
+
+	soft2Meta, _ := json.Marshal(map[string]any{
+		"stop_reason":          "end_turn",
+		"soft":                 true,
+		"assistant_message_id": "msg_round2",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		Meta:      soft2Meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("soft #2: %v", err)
+	}
+
+	// Trailing wire `result` for round 2 — `takeOpenRound` was taken
+	// by soft #2, so this emits no third turn_completed.
+	realMeta, _ := json.Marshal(map[string]any{
+		"stop_reason":          "end_turn",
+		"assistant_message_id": "msg_round2",
+		"usage":                map[string]any{"inputTokens": 8, "outputTokens": 50},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		Meta:      realMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("real result: %v", err)
+	}
+
+	// Per-round emissions: 2 starts (handleTurnStart + re-round init)
+	// and 2 completes (soft #1 + soft #2). The trailing real result
+	// emitted nothing because soft #2 already consumed round 2's slot.
+	starts := filterEmissions(*emissions, "provider:turn_started")
+	if len(starts) != 2 {
+		t.Errorf("expected 2 provider:turn_started, got %d", len(starts))
+	}
+	completes := filterEmissions(*emissions, "provider:turn_completed")
+	if len(completes) != 2 {
+		t.Errorf("expected 2 provider:turn_completed, got %d", len(completes))
+	}
+
+	// Persistence:
+	//   - amid = round 2 (the FINAL round's last assistant message);
+	//     each subsequent settle overwrites so the column reflects
+	//     the latest message of the turn, matching the
+	//     SettledTurn.assistantMessageId contract.
+	//   - token_usage_json = trailing result's usage (first non-empty
+	//     wins; soft events don't carry usage so the trailing real
+	//     `result` populates it).
+	turn, _, _ := st.GetTurn("t1:0")
+	if turn.AssistantMessageID != "msg_round2" {
+		t.Errorf("expected final-round amid 'msg_round2', got %q (last-write-wins for amid)",
+			turn.AssistantMessageID)
+	}
+	if !strings.Contains(turn.TokenUsageJSON, `"inputTokens":8`) {
+		t.Errorf("expected usage folded from trailing result, got %q", turn.TokenUsageJSON)
+	}
+}

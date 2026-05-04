@@ -10,11 +10,14 @@ import (
 )
 
 const (
-	fixtureNDJSONBash          = "../../../docs/references/fixtures/claude/ndjson_bash.log"
-	fixtureNDJSONTask          = "../../../docs/references/fixtures/claude/ndjson_task.log"
-	fixtureNDJSONOutlives      = "../../../docs/references/fixtures/claude/ndjson_outlives.log"
-	fixtureNDJSONOutlivesTurn2 = "../../../docs/references/fixtures/claude/ndjson_outlives_turn2.log"
-	fixtureTaskOutputMulti     = "../../../docs/references/fixtures/claude/taskoutput_multi.ndjson"
+	fixtureNDJSONBash             = "../../../docs/references/fixtures/claude/ndjson_bash.log"
+	fixtureNDJSONTask             = "../../../docs/references/fixtures/claude/ndjson_task.log"
+	fixtureNDJSONOutlives         = "../../../docs/references/fixtures/claude/ndjson_outlives.log"
+	fixtureNDJSONOutlivesTurn2    = "../../../docs/references/fixtures/claude/ndjson_outlives_turn2.log"
+	fixtureTaskOutputMulti        = "../../../docs/references/fixtures/claude/taskoutput_multi.ndjson"
+	fixtureLocalAgentOutlives     = "../../../docs/references/fixtures/claude/local_agent_outlives.ndjson"
+	fixtureLocalAgentUserInputMid = "../../../docs/references/fixtures/claude/local_agent_user_input_during_wait.ndjson"
+	fixtureLocalAgentPlusBgBash   = "../../../docs/references/fixtures/claude/local_agent_plus_bg_bash.ndjson"
 )
 
 // These replay tests load captured Claude CLI NDJSON from the repo's
@@ -738,4 +741,176 @@ func itoa(n int) string {
 		digits[i] = '-'
 	}
 	return string(digits[i:])
+}
+
+// TestReplay_LocalAgentOutlives validates the bug-fix scenario from
+// the 2026-05 spike: parent launches a local_agent (Task) subagent
+// in background, narrates, ends its message with stop_reason=end_turn,
+// and Claude CLI WITHHOLDS the `result` envelope until the subagent
+// completes (~10s gap in the captured fixture).
+//
+// The contract this test pins:
+//
+//   1. The parent's `message_delta.stop_reason="end_turn"` MUST emit a
+//      soft EventTurnComplete (with meta.soft=true).
+//   2. The soft EventTurnComplete MUST appear before the wire
+//      `result`-driven EventTurnComplete in the event stream.
+//   3. Both EventTurnCompletes carry stop_reason="end_turn".
+//
+// Without this behavior the working indicator stays on for the entire
+// subagent runtime even though the parent is idle. See
+// invariants.md §27 for the full rule.
+func TestReplay_LocalAgentOutlives(t *testing.T) {
+	events := replayFixture(t, fixtureLocalAgentOutlives)
+
+	type completeShape struct {
+		StopReason         string `json:"stop_reason"`
+		Soft               bool   `json:"soft"`
+		AssistantMessageID string `json:"assistant_message_id"`
+	}
+
+	type observedComplete struct {
+		shape completeShape
+		idx   int
+	}
+	var softs, results []observedComplete
+
+	for i, evt := range events {
+		if evt.Kind != provider.EventTurnComplete {
+			continue
+		}
+		// Soft completes only fire on parent messages (parent_tool_use_id == "")
+		// — sanity-check that no subagent message_delta produced one.
+		if evt.ParentToolUseID != "" {
+			t.Errorf("EventTurnComplete from subagent (parent_tool_use_id=%q) at idx %d — should never fire from subagent end_turn",
+				evt.ParentToolUseID, i)
+		}
+		var c completeShape
+		if err := json.Unmarshal(evt.Meta, &c); err != nil {
+			t.Fatalf("event %d: unmarshal turn-complete meta: %v", i, err)
+		}
+		if c.Soft {
+			softs = append(softs, observedComplete{c, i})
+		} else {
+			results = append(results, observedComplete{c, i})
+		}
+	}
+
+	// The fixture has a two-round cascade: parent end_turn → wait for
+	// subagent → re-round init → parent end_turn → result envelope.
+	// That's two soft completes + one result-driven complete.
+	if len(softs) != 2 {
+		t.Errorf("expected exactly 2 soft EventTurnComplete (one per parent end_turn round), got %d", len(softs))
+	}
+	if len(results) != 1 {
+		t.Errorf("expected exactly 1 result-driven EventTurnComplete (trailing wire `result`), got %d", len(results))
+	}
+
+	// Every soft complete carries stop_reason=end_turn (we don't
+	// emit soft on tool_use / pause_turn / max_tokens).
+	for _, s := range softs {
+		if s.shape.StopReason != "end_turn" {
+			t.Errorf("soft @%d stop_reason: got %q, want %q (only end_turn/stop_sequence/refusal should fire soft)",
+				s.idx, s.shape.StopReason, "end_turn")
+		}
+	}
+
+	// The first soft must appear before the result-driven complete
+	// — that's the load-bearing ordering that makes the indicator
+	// clear before the wire turn-end signal arrives.
+	if len(softs) > 0 && len(results) > 0 && softs[0].idx >= results[0].idx {
+		t.Errorf("first soft must precede the first result-driven complete; soft@%d, result@%d",
+			softs[0].idx, results[0].idx)
+	}
+
+	// Trailing real `result` carries the final assistant_message_id
+	// (parser consumed via takeLastAssistantMessageID).
+	if len(results) > 0 && results[0].shape.AssistantMessageID == "" {
+		t.Errorf("result-driven complete should carry the final assistant_message_id; got empty")
+	}
+}
+
+// TestReplay_LocalAgentUserInputDuringWait validates that the parser
+// handles the same scenario when the host injects a new user message
+// via stdin during the parent's end_turn → result wait window. The
+// captured fixture has THREE parent message_delta stop_reason=end_turn
+// signals across three rounds, but only ONE wire `result` envelope at
+// the very end. The parser must emit a soft EventTurnComplete for each
+// parent end_turn so the frontend's working indicator cycles correctly
+// per round, and must NOT fire soft on the intermediate tool_use
+// stop_reason that ends the parent's first message of round 1.
+func TestReplay_LocalAgentUserInputDuringWait(t *testing.T) {
+	events := replayFixture(t, fixtureLocalAgentUserInputMid)
+
+	type completeShape struct {
+		StopReason string `json:"stop_reason"`
+		Soft       bool   `json:"soft"`
+	}
+
+	var softCount, resultCount int
+	for _, evt := range filterKinds(events, provider.EventTurnComplete) {
+		if evt.ParentToolUseID != "" {
+			t.Errorf("EventTurnComplete from subagent — should never fire from subagent end_turn")
+		}
+		var c completeShape
+		if err := json.Unmarshal(evt.Meta, &c); err != nil {
+			t.Fatalf("unmarshal turn-complete meta: %v", err)
+		}
+		// Belt-and-suspenders: every fired soft must be in the
+		// authorized stop_reason set. tool_use leaking through would
+		// cause an over-fire regression.
+		if c.Soft && c.StopReason != "end_turn" && c.StopReason != "stop_sequence" && c.StopReason != "refusal" {
+			t.Errorf("soft fired with disallowed stop_reason %q", c.StopReason)
+		}
+		if c.Soft {
+			softCount++
+		} else {
+			resultCount++
+		}
+	}
+	if softCount != 3 {
+		t.Errorf("expected exactly 3 soft EventTurnComplete (one per parent end_turn round), got %d", softCount)
+	}
+	if resultCount != 1 {
+		t.Errorf("expected exactly 1 result-driven EventTurnComplete (the wire `result` at cascade end), got %d", resultCount)
+	}
+}
+
+// TestReplay_LocalAgentPlusBgBash confirms the result-delay is keyed
+// on `local_agent` specifically: a parent that launches both a bg
+// Bash AND a bg local_agent has only ONE wire `result` envelope at
+// the end of the entire cascade (subagent dominates), while emitting
+// a soft EventTurnComplete for each parent end_turn across the
+// re-round cascade triggered by the bash's earlier completion.
+func TestReplay_LocalAgentPlusBgBash(t *testing.T) {
+	events := replayFixture(t, fixtureLocalAgentPlusBgBash)
+
+	var softCount, resultCount int
+	for _, evt := range filterKinds(events, provider.EventTurnComplete) {
+		if evt.ParentToolUseID != "" {
+			t.Errorf("EventTurnComplete from subagent — should never fire from subagent end_turn")
+		}
+		var c struct {
+			StopReason string `json:"stop_reason"`
+			Soft       bool   `json:"soft"`
+		}
+		if err := json.Unmarshal(evt.Meta, &c); err != nil {
+			t.Fatalf("unmarshal turn-complete meta: %v", err)
+		}
+		if c.Soft {
+			softCount++
+		} else {
+			resultCount++
+		}
+	}
+	// Three soft completes (one per round across the cascade:
+	// initial parent end_turn, post-bash-completion re-round end_turn,
+	// post-subagent-completion re-round end_turn) and exactly one
+	// result-driven complete at cascade end.
+	if softCount != 3 {
+		t.Errorf("expected exactly 3 soft EventTurnComplete, got %d", softCount)
+	}
+	if resultCount != 1 {
+		t.Errorf("expected exactly 1 result-driven EventTurnComplete, got %d", resultCount)
+	}
 }

@@ -119,12 +119,106 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 			return nil, nil
 		}
 	case "message_delta":
-		var usage assistantUsage
-		if json.Unmarshal(eventObj["usage"], &usage) != nil {
-			return nil, nil
+		// `message_delta` is the only stream_event case that can emit
+		// two events from one envelope: an EventTokenUsage from the
+		// `usage` snapshot (drives the context meter) AND a soft
+		// EventTurnComplete from the inner `delta.stop_reason` (drives
+		// the working indicator off when the parent stops emitting,
+		// without waiting for the wire `result` — see invariants.md §27).
+		var events []provider.ProviderEvent
+		if usageRaw := eventObj["usage"]; len(usageRaw) > 0 {
+			var usage assistantUsage
+			if json.Unmarshal(usageRaw, &usage) == nil {
+				events = appendContextUsageEvent(events, threadID, parentToolUseID, now, usage)
+			}
 		}
-		return appendContextUsageEvent(nil, threadID, parentToolUseID, now, usage), nil
+		if soft := p.buildSoftTurnComplete(threadID, parentToolUseID, eventObj["delta"], now); soft != nil {
+			events = append(events, *soft)
+		}
+		return events, nil
 	default:
 		return nil, nil
 	}
+}
+
+// buildSoftTurnComplete inspects a top-level `message_delta` envelope
+// and emits an EventTurnComplete with `meta.soft=true` when the inner
+// stop_reason is one of the closed-set "model has stopped" values:
+// `end_turn`, `stop_sequence`, `refusal`. Returns nil otherwise —
+// stop_reasons like `tool_use` / `pause_turn` / `max_tokens` mean the
+// model is NOT done (more text follows the tool_result, the model
+// asked for more time, or the harness will auto-continue), and
+// unknown / future SDK values fall through nil too. Under-firing on
+// an unknown is the safer failure mode: the trailing wire `result`
+// envelope still settles the turn correctly.
+//
+// Returns nil for malformed envelopes too — empty/missing `delta`,
+// non-object `delta`, or `parent_tool_use_id != ""` (subagent
+// messages have their own end_turn signals that must not close the
+// parent's round). A well-formed CLI never produces these shapes for
+// a parent message_delta, but the parser tolerates them.
+//
+// The emitted Meta carries `stop_reason`, `soft:true`, and the
+// parser's peeked `assistant_message_id` (peek, not take — the
+// trailing wire `result` envelope still calls
+// takeLastAssistantMessageID for its own emission). Including the id
+// on the soft event keeps the FIRST settle's persisted row populated
+// so the frontend's per-pane `latestSettledTurn.assistantMessageId`
+// projection is non-null even on normal turns where soft fires
+// milliseconds before `result`. The IfEmpty late-payload fold makes
+// the trailing `result`'s amid a no-op for that column when soft
+// already wrote it.
+func (p *Parser) buildSoftTurnComplete(threadID, parentToolUseID string, deltaRaw json.RawMessage, now time.Time) *provider.ProviderEvent {
+	if parentToolUseID != "" {
+		return nil
+	}
+	if len(deltaRaw) == 0 {
+		return nil
+	}
+	var delta struct {
+		StopReason string `json:"stop_reason"`
+	}
+	if json.Unmarshal(deltaRaw, &delta) != nil {
+		return nil
+	}
+	if !isSoftRoundCloseStopReason(delta.StopReason) {
+		return nil
+	}
+	metaFields := softTurnCompleteMeta{
+		StopReason:         delta.StopReason,
+		Soft:               true,
+		AssistantMessageID: p.peekLastAssistantMessageID(),
+	}
+	// Marshalling typed primitives can't fail — same `_ = err`
+	// pattern as parse_system.go / parse_user.go meta builds.
+	meta, _ := json.Marshal(metaFields)
+	return &provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  threadID,
+		Meta:      meta,
+		Timestamp: now,
+	}
+}
+
+// softTurnCompleteMeta is the typed Meta shape for a soft
+// EventTurnComplete. Triage's turnCompleteMeta decode handles the
+// `assistant_message_id` and `stop_reason` keys; the `soft` key is
+// informational (debug / fixture replay tests assert on it).
+type softTurnCompleteMeta struct {
+	StopReason         string `json:"stop_reason"`
+	Soft               bool   `json:"soft"`
+	AssistantMessageID string `json:"assistant_message_id,omitempty"`
+}
+
+// isSoftRoundCloseStopReason reports whether the parent's message-level
+// stop_reason indicates the model has truly stopped emitting for this
+// round. The closed set is documented in claude-wire.md §Soft round
+// close. tool_use / pause_turn / max_tokens are deliberately excluded
+// — the model is not done in those cases.
+func isSoftRoundCloseStopReason(s string) bool {
+	switch s {
+	case "end_turn", "stop_sequence", "refusal":
+		return true
+	}
+	return false
 }

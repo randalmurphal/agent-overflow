@@ -112,25 +112,54 @@ func (s *Store) UpdateTurnCompleted(
 	return nil
 }
 
-// UpdateTurnTokenUsageIfEmpty records late-arriving token accounting on an
-// already-settled turn without disturbing the lifecycle fields written by the
-// first completion event. If the turn already has usage, this is a no-op.
-func (s *Store) UpdateTurnTokenUsageIfEmpty(turnID, tokenUsageJSON string) error {
+// UpdateTurnLatePayload folds late-arriving payload onto an
+// already-settled turn row in a single statement so the normal-case
+// soft-then-real cascade pays one autocommit boundary instead of two.
+// Per-column semantics (different intentionally — see below):
+//
+//   - `token_usage_json`: first non-empty wins. The first settle's
+//     usage is preserved across late arrivals; an empty input is a
+//     no-op.
+//   - `assistant_message_id`: last non-empty wins (overwrite). A
+//     multi-round logical turn settles on round 1's amid first and
+//     overwrites with each subsequent round so the persisted column
+//     always reflects the FINAL assistant message of the turn — the
+//     documented contract on `SettledTurn.assistantMessageId` and
+//     `TurnCompletedEvent.assistantMessageId`. An empty input is a
+//     no-op (preserves whatever the row already has).
+//
+// Passing both arguments empty is a silent no-op (no SQL roundtrip).
+//
+// The first settlement may have come from the parser's soft
+// round-close (which fires from message_delta — usage may not be on
+// the wire yet, but the assistant_message_id is peeked from the
+// parser if observed) or from a multi-result cascade. The trailing
+// real `result` envelope folds in cumulative usage if still empty
+// and overwrites the amid with the final-round id.
+func (s *Store) UpdateTurnLatePayload(turnID, tokenUsageJSON, assistantMessageID string) error {
 	if turnID == "" {
-		return fmt.Errorf("store: update turn token usage: turn id is required")
+		return fmt.Errorf("store: update turn late payload: turn id is required")
 	}
-	if tokenUsageJSON == "" {
+	if tokenUsageJSON == "" && assistantMessageID == "" {
 		return nil
 	}
 	_, err := s.db.Exec(
 		`UPDATE turns
-		    SET token_usage_json = ?
-		  WHERE turn_id = ?
-		    AND token_usage_json = ''`,
-		tokenUsageJSON, turnID,
+		    SET token_usage_json = CASE
+		          WHEN token_usage_json = '' AND ? != '' THEN ?
+		          ELSE token_usage_json
+		        END,
+		        assistant_message_id = CASE
+		          WHEN ? != '' THEN ?
+		          ELSE assistant_message_id
+		        END
+		  WHERE turn_id = ?`,
+		tokenUsageJSON, tokenUsageJSON,
+		assistantMessageID, assistantMessageID,
+		turnID,
 	)
 	if err != nil {
-		return fmt.Errorf("store: update turn %s token usage: %w", turnID, err)
+		return fmt.Errorf("store: update turn %s late payload: %w", turnID, err)
 	}
 	return nil
 }

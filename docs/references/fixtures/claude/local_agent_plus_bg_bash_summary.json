@@ -1,0 +1,46 @@
+{
+  "claude_code_version": "2.1.118",
+  "captured_at": "2026-05-04T16:49:56Z",
+  "scenario": "Parent assistant launches one bg Bash (8s) AND one local_agent subagent (10s), both with run_in_background:true, then ends with stop_reason=end_turn. Tests whether the bg Bash short-circuits the result-envelope delay or whether the local_agent dominates.",
+  "cmd": [
+    "claude",
+    "--output-format", "stream-json",
+    "--input-format", "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--permission-mode", "bypassPermissions"
+  ],
+  "events": 396,
+  "key_observations": {
+    "parent_first_end_turn": {"at": "16:50:06.691Z"},
+    "bg_bash_completes_first": {
+      "task_updated_at": "16:50:11.143Z",
+      "task_notification_at": "16:50:11.143Z",
+      "delay_after_first_end_turn_seconds": 4.45
+    },
+    "bash_completion_re_round": {
+      "init_at": "16:50:11.145Z",
+      "parent_acks_bash": {
+        "at": "16:50:15.872Z",
+        "stop_reason": "end_turn"
+      }
+    },
+    "subagent_completes_second": {
+      "task_updated_at": "16:50:16.655Z",
+      "delay_after_first_end_turn_seconds": 9.96
+    },
+    "subagent_completion_re_round": {
+      "init_at": "16:50:16.656Z",
+      "parent_summary": {
+        "at": "16:50:18.676Z",
+        "stop_reason": "end_turn"
+      }
+    },
+    "first_and_only_result_envelope": {
+      "at": "16:50:18.733Z",
+      "delay_after_first_parent_end_turn_seconds": 12.04
+    }
+  },
+  "conclusion": "When ANY local_agent is in flight at parent end_turn, Claude CLI delays the `result` envelope until that local_agent completes — even if other backgrounded tasks (bg Bash) finish earlier. The bg Bash's task_notification triggers an interim re-round but does not produce a `result`. Backgrounded local_bash alone does not delay `result` (see ndjson_outlives.log).",
+  "purpose": "Confirms the result-delay behavior is keyed on local_agent specifically, not on any backgrounded task."
+}

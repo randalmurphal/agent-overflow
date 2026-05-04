@@ -237,33 +237,96 @@ func TestUpdateTurnCompletedWithErrorMessage(t *testing.T) {
 	}
 }
 
-func TestUpdateTurnTokenUsageIfEmpty(t *testing.T) {
+// TestUpdateTurnLatePayload pins the per-column semantics of the
+// late-payload fold: token usage uses first-non-empty-wins (preserves
+// the first settle's value); assistant_message_id uses
+// last-non-empty-wins (each subsequent round overwrites so the column
+// reflects the FINAL assistant message of the turn). Both columns
+// share the no-op rule for empty inputs.
+func TestUpdateTurnLatePayload(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadForTurn(t, s, "thread-1")
+
+	// Fresh row — both columns empty after the soft settle that
+	// did not include either field.
 	if err := s.InsertTurn(Turn{
-		TurnID:    "turn-usage",
+		TurnID:    "turn-late",
 		ThreadID:  "thread-1",
 		TurnIndex: 0,
 		StartedAt: 100,
 	}); err != nil {
 		t.Fatalf("insert turn: %v", err)
 	}
-	if err := s.UpdateTurnCompleted("turn-usage", 200, "end_turn", "", "", ""); err != nil {
+	if err := s.UpdateTurnCompleted("turn-late", 200, "end_turn", "", "", ""); err != nil {
 		t.Fatalf("update completed: %v", err)
 	}
-	if err := s.UpdateTurnTokenUsageIfEmpty("turn-usage", `{"inputTokens":1}`); err != nil {
-		t.Fatalf("late usage: %v", err)
-	}
-	if err := s.UpdateTurnTokenUsageIfEmpty("turn-usage", `{"inputTokens":2}`); err != nil {
-		t.Fatalf("second late usage: %v", err)
-	}
 
-	got, ok, err := s.GetTurn("turn-usage")
+	// First late fold writes both columns.
+	if err := s.UpdateTurnLatePayload("turn-late", `{"inputTokens":1}`, "msg_first"); err != nil {
+		t.Fatalf("first late fold: %v", err)
+	}
+	got, ok, err := s.GetTurn("turn-late")
 	if err != nil || !ok {
 		t.Fatalf("get turn: ok=%v err=%v", ok, err)
 	}
 	if got.TokenUsageJSON != `{"inputTokens":1}` {
-		t.Fatalf("token_usage_json = %q, want first late usage", got.TokenUsageJSON)
+		t.Fatalf("token_usage_json after first fold = %q, want %q", got.TokenUsageJSON, `{"inputTokens":1}`)
+	}
+	if got.AssistantMessageID != "msg_first" {
+		t.Fatalf("assistant_message_id after first fold = %q, want %q", got.AssistantMessageID, "msg_first")
+	}
+
+	// Second late fold (e.g. round-2 result after round-1 settle in
+	// a multi-result-per-turn cascade): usage stays first-write-wins,
+	// amid OVERWRITES with the later round's id.
+	if err := s.UpdateTurnLatePayload("turn-late", `{"inputTokens":99}`, "msg_round2"); err != nil {
+		t.Fatalf("second late fold: %v", err)
+	}
+	got, _, _ = s.GetTurn("turn-late")
+	if got.TokenUsageJSON != `{"inputTokens":1}` {
+		t.Fatalf("usage clobbered (should be first-write-wins): got %q", got.TokenUsageJSON)
+	}
+	if got.AssistantMessageID != "msg_round2" {
+		t.Fatalf("amid not overwritten (should be last-write-wins): got %q, want %q",
+			got.AssistantMessageID, "msg_round2")
+	}
+
+	// Empty amid input is a no-op for amid (preserves whatever the
+	// row already has) — usage path same; both empty is a no-op
+	// for the whole call.
+	if err := s.UpdateTurnLatePayload("turn-late", "", ""); err != nil {
+		t.Fatalf("empty fold: %v", err)
+	}
+	got, _, _ = s.GetTurn("turn-late")
+	if got.AssistantMessageID != "msg_round2" {
+		t.Fatalf("empty fold disturbed amid: got %q", got.AssistantMessageID)
+	}
+	if got.TokenUsageJSON != `{"inputTokens":1}` {
+		t.Fatalf("empty fold disturbed usage: got %q", got.TokenUsageJSON)
+	}
+
+	// Empty amid with non-empty usage: usage path runs (and no-ops
+	// because already populated), amid is preserved.
+	if err := s.UpdateTurnLatePayload("turn-late", `{"inputTokens":42}`, ""); err != nil {
+		t.Fatalf("usage-only fold: %v", err)
+	}
+	got, _, _ = s.GetTurn("turn-late")
+	if got.AssistantMessageID != "msg_round2" {
+		t.Fatalf("usage-only fold disturbed amid: got %q", got.AssistantMessageID)
+	}
+
+	// Non-empty amid with empty usage: amid overwrites, usage
+	// preserved.
+	if err := s.UpdateTurnLatePayload("turn-late", "", "msg_round3"); err != nil {
+		t.Fatalf("amid-only fold: %v", err)
+	}
+	got, _, _ = s.GetTurn("turn-late")
+	if got.AssistantMessageID != "msg_round3" {
+		t.Fatalf("amid-only fold did not overwrite: got %q, want %q",
+			got.AssistantMessageID, "msg_round3")
+	}
+	if got.TokenUsageJSON != `{"inputTokens":1}` {
+		t.Fatalf("amid-only fold disturbed usage: got %q", got.TokenUsageJSON)
 	}
 }
 
