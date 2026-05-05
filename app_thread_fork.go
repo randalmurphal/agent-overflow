@@ -371,11 +371,6 @@ func (a *App) resolveMessageForkResumeState(source store.Thread, checkpointRow s
 		}
 		return ref, "", nil, nil
 	case string(provider.Claude):
-		var err error
-		checkpointRow, err = a.ensureClaudeCheckpointParentUUID(source, checkpointRow, "fork thread from message")
-		if err != nil {
-			return "", "", nil, err
-		}
 		return a.forkClaudeThreadBeforeMessage(source, checkpointRow)
 	default:
 		return "", "", nil, fmt.Errorf("fork thread from message: unsupported provider %q", source.Provider)
@@ -516,7 +511,7 @@ func (a *App) forkClaudeThreadBeforeMessage(source store.Thread, checkpointRow s
 	cleanup func() error,
 	err error,
 ) {
-	if checkpointRow.ProviderParentUUID == "" {
+	if checkpointRow.TurnIndex == 0 {
 		return "", "", nil, nil
 	}
 	sourceSessionRef := claudeSourceSessionRef(source)
@@ -527,7 +522,7 @@ func (a *App) forkClaudeThreadBeforeMessage(source store.Thread, checkpointRow s
 	if err != nil {
 		return "", "", nil, fmt.Errorf("fork thread from message: locate claude session: %w", err)
 	}
-	newID, newPath, err := sessionfork.WriteForkFile(srcPath, checkpointRow.ProviderParentUUID, "")
+	newID, newPath, err := sessionfork.WriteForkFileForLastKeptTurn(srcPath, checkpointRow.TurnIndex-1, "")
 	if err != nil {
 		return "", "", nil, fmt.Errorf("fork thread from message: write forked session: %w", err)
 	}

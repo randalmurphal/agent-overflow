@@ -286,6 +286,13 @@ func (a *App) RevertToMessageCheckpoint(threadID string, userItemID string, mode
 	if err := validateCheckpointRecordForThread("revert checkpoint", threadID, record); err != nil {
 		return err
 	}
+	if record.TurnIndex != userItem.TurnIndex {
+		return fmt.Errorf(
+			"revert checkpoint: checkpoint turn index %d does not match user message turn index %d",
+			record.TurnIndex,
+			userItem.TurnIndex,
+		)
+	}
 
 	if err := a.stopSession(threadID); err != nil {
 		return fmt.Errorf("revert checkpoint: stop session: %w", err)
@@ -367,12 +374,7 @@ func (a *App) revertProviderConversationToMessage(thread store.Thread, checkpoin
 }
 
 func (a *App) revertClaudeThreadToMessage(thread store.Thread, checkpoint store.Checkpoint) error {
-	var err error
-	checkpoint, err = a.ensureClaudeCheckpointParentUUID(thread, checkpoint, "claude rollback")
-	if err != nil {
-		return err
-	}
-	if checkpoint.ProviderParentUUID == "" {
+	if checkpoint.TurnIndex == 0 {
 		thread.SessionRef = ""
 		thread.PendingForkRef = ""
 		thread.UpdatedAt = time.Now().UnixMilli()
@@ -380,19 +382,13 @@ func (a *App) revertClaudeThreadToMessage(thread store.Thread, checkpoint store.
 	}
 	sourceSessionRef := claudeSourceSessionRef(thread)
 	if sourceSessionRef == "" {
-		return nil
+		return fmt.Errorf("claude rollback: checkpoint for turn %d requires Claude session reference", checkpoint.TurnIndex)
 	}
 	srcPath, err := sessionfork.LocateSessionFile(sourceSessionRef, thread.WorkspacePath)
 	if err != nil {
-		if errors.Is(err, sessionfork.ErrSessionFileNotFound) {
-			thread.SessionRef = ""
-			thread.PendingForkRef = ""
-			thread.UpdatedAt = time.Now().UnixMilli()
-			return a.store.UpdateThread(thread)
-		}
 		return fmt.Errorf("locate claude session: %w", err)
 	}
-	newID, newPath, err := sessionfork.WriteForkFile(srcPath, checkpoint.ProviderParentUUID, "")
+	newID, newPath, err := sessionfork.WriteForkFileForLastKeptTurn(srcPath, checkpoint.TurnIndex-1, "")
 	if err != nil {
 		return fmt.Errorf("write reverted session: %w", err)
 	}
@@ -404,40 +400,6 @@ func (a *App) revertClaudeThreadToMessage(thread store.Thread, checkpoint store.
 		return fmt.Errorf("persist reverted claude state: %w", err)
 	}
 	return nil
-}
-
-func (a *App) ensureClaudeCheckpointParentUUID(thread store.Thread, checkpoint store.Checkpoint, op string) (store.Checkpoint, error) {
-	if checkpoint.ProviderParentUUID != "" || checkpoint.TurnIndex == 0 {
-		return checkpoint, nil
-	}
-	sourceSessionRef := claudeSourceSessionRef(thread)
-	if sourceSessionRef == "" {
-		return checkpoint, fmt.Errorf("%s: checkpoint for turn %d is missing provider parent uuid and thread %q has no Claude session reference", op, checkpoint.TurnIndex, thread.ID)
-	}
-	srcPath, err := sessionfork.LocateSessionFile(sourceSessionRef, thread.WorkspacePath)
-	if err != nil {
-		return checkpoint, fmt.Errorf("%s: checkpoint for turn %d is missing provider parent uuid and recovery from Claude session failed: locate session: %w", op, checkpoint.TurnIndex, err)
-	}
-	var parentUUID string
-	if checkpoint.ProviderUserMessageID != "" {
-		parentUUID, err = sessionfork.ParentUUIDForUserMessageUUID(srcPath, checkpoint.ProviderUserMessageID)
-		if err != nil {
-			return checkpoint, fmt.Errorf("%s: checkpoint for turn %d is missing provider parent uuid and recovery from Claude session failed: %w", op, checkpoint.TurnIndex, err)
-		}
-	} else {
-		parentUUID, err = sessionfork.SliceUUIDForLastKeptTurn(srcPath, checkpoint.TurnIndex-1)
-		if err != nil {
-			return checkpoint, fmt.Errorf("%s: checkpoint for turn %d is missing provider parent uuid and recovery from Claude session failed: %w", op, checkpoint.TurnIndex, err)
-		}
-	}
-	if parentUUID == "" {
-		return checkpoint, fmt.Errorf("%s: checkpoint for turn %d is missing provider parent uuid", op, checkpoint.TurnIndex)
-	}
-	checkpoint.ProviderParentUUID = parentUUID
-	if err := a.store.UpdateCheckpointProviderIDs(thread.ID, checkpoint.UserItemID, checkpoint.ProviderUserMessageID, parentUUID); err != nil {
-		return checkpoint, fmt.Errorf("%s: persist recovered checkpoint parent uuid: %w", op, err)
-	}
-	return checkpoint, nil
 }
 
 func claudeSourceSessionRef(thread store.Thread) string {

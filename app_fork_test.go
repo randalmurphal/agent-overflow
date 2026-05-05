@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/settings"
@@ -394,12 +395,10 @@ func TestForkThreadFromMessageRejectsMissingCheckpoint(t *testing.T) {
 	}
 }
 
-func TestForkThreadFromMessageRejectsMissingClaudeParentForLaterTurn(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+func TestForkThreadFromMessageRejectsMissingClaudeSessionForLaterTurn(t *testing.T) {
 	app := newTestAppWithStore(t)
-	source := testThread("thread-message-fork-missing-parent")
+	source := testThread("thread-message-fork-missing-session")
 	source.Provider = string(provider.Claude)
-	source.SessionRef = "source-session"
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -429,12 +428,12 @@ func TestForkThreadFromMessageRejectsMissingClaudeParentForLaterTurn(t *testing.
 	}); err != nil {
 		t.Fatalf("SaveCheckpoint: %v", err)
 	}
-	if _, err := app.ForkThreadFromMessage(source.ID, "user-1"); err == nil || !strings.Contains(err.Error(), "missing provider parent uuid") {
-		t.Fatalf("ForkThreadFromMessage error = %v, want missing provider parent uuid", err)
+	if _, err := app.ForkThreadFromMessage(source.ID, "user-1"); err == nil || !strings.Contains(err.Error(), "missing a Claude session reference") {
+		t.Fatalf("ForkThreadFromMessage error = %v, want missing session reference", err)
 	}
 }
 
-func TestForkThreadFromMessageRecoversMissingClaudeParentFromSessionJSONL(t *testing.T) {
+func TestForkThreadFromMessageSlicesClaudeSessionByTurnBoundary(t *testing.T) {
 	app := newTestAppWithStore(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -448,7 +447,7 @@ func TestForkThreadFromMessageRecoversMissingClaudeParentFromSessionJSONL(t *tes
 {"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"source-session","message":{"role":"user","content":"second"}}
 {"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
 `)
-	source := testThread("thread-message-fork-recover-parent")
+	source := testThread("thread-message-fork-slice-session")
 	source.Provider = string(provider.Claude)
 	source.SessionRef = sessionID
 	source.WorkspacePath = workspace
@@ -488,8 +487,9 @@ func TestForkThreadFromMessageRecoversMissingClaudeParentFromSessionJSONL(t *tes
 		t.Fatalf("ForkThreadFromMessage: %v", err)
 	}
 	if forked.SessionRef == "" || forked.SessionRef == sessionID {
-		t.Fatalf("forked session ref = %q, want recovered fork session", forked.SessionRef)
+		t.Fatalf("forked session ref = %q, want sliced fork session", forked.SessionRef)
 	}
+	assertClaudeSessionText(t, workspace, forked.SessionRef, []string{"first"}, []string{"second"})
 	items, err := app.store.ListItems(forked.ID)
 	if err != nil {
 		t.Fatalf("ListItems: %v", err)
@@ -497,16 +497,9 @@ func TestForkThreadFromMessageRecoversMissingClaudeParentFromSessionJSONL(t *tes
 	if len(items) != 1 || items[0].Summary != "user-0" {
 		t.Fatalf("fork items = %+v, want only turn 0 user", items)
 	}
-	stored, ok, err := app.store.GetCheckpointByUserItemID(source.ID, "user-1")
-	if err != nil {
-		t.Fatalf("GetCheckpointByUserItemID: %v", err)
-	}
-	if !ok || stored.ProviderParentUUID != "a0" {
-		t.Fatalf("source checkpoint = %+v ok=%v, want parent a0", stored, ok)
-	}
 }
 
-func TestForkThreadFromMessageRecoversClaudeParentFromPendingForkRef(t *testing.T) {
+func TestForkThreadFromMessageSlicesClaudeSessionFromPendingForkRef(t *testing.T) {
 	app := newTestAppWithStore(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -561,8 +554,88 @@ func TestForkThreadFromMessageRecoversClaudeParentFromPendingForkRef(t *testing.
 	if forked.SessionRef == "" || forked.SessionRef == sessionID {
 		t.Fatalf("forked session ref = %q, want sliced session from pending fork source", forked.SessionRef)
 	}
+	assertClaudeSessionText(t, workspace, forked.SessionRef, []string{"first"}, []string{"second"})
 	if forked.PendingForkRef != "" {
 		t.Fatalf("forked pending ref = %q, want empty", forked.PendingForkRef)
+	}
+}
+
+func TestForkThreadFromMessageCanForkOlderCheckpointAfterClaudeSessionFork(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := initCheckpointRepo(t)
+	const sessionID = "source-session"
+	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"source-session","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+{"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"source-session","message":{"role":"user","content":"second"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"source-session","message":{"role":"user","content":"third"}}
+{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 2"}]}}
+`)
+	source := createCheckpointTestThread(t, app, "thread-message-fork-after-revert", "claude", workspace)
+	source.SessionRef = sessionID
+	if err := app.store.UpdateThread(source); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItem(t, app.store, source.ID, "user-0", 0, "first")
+	insertUserItem(t, app.store, source.ID, "user-1", 1, "second")
+	insertUserItem(t, app.store, source.ID, "user-2", 2, "third")
+	for _, row := range []store.Checkpoint{
+		{
+			ID:                    "checkpoint-second",
+			ThreadID:              source.ID,
+			UserItemID:            "user-1",
+			TurnIndex:             1,
+			ProviderUserMessageID: "u1",
+			ProviderParentUUID:    "a0",
+			RefName:               checkpoint.ThreadRefPrefix(source.ID) + "message/second",
+			CapturedAt:            time.Now().UnixMilli(),
+			WorkspacePath:         workspace,
+		},
+		{
+			ID:                    "checkpoint-third",
+			ThreadID:              source.ID,
+			UserItemID:            "user-2",
+			TurnIndex:             2,
+			ProviderUserMessageID: "u2",
+			ProviderParentUUID:    "a1",
+			RefName:               checkpoint.ThreadRefPrefix(source.ID) + "message/third",
+			CapturedAt:            time.Now().UnixMilli(),
+			WorkspacePath:         workspace,
+		},
+	} {
+		if err := app.checkpointStore().CaptureRef(t.Context(), workspace, row.RefName); err != nil {
+			t.Fatalf("capture checkpoint ref %s: %v", row.RefName, err)
+		}
+		if err := app.store.SaveCheckpoint(row); err != nil {
+			t.Fatalf("SaveCheckpoint(%s): %v", row.ID, err)
+		}
+	}
+
+	if err := app.RevertToMessageCheckpoint(source.ID, "user-2", RevertModeConversationOnly); err != nil {
+		t.Fatalf("RevertToMessageCheckpoint: %v", err)
+	}
+	revertedSource, err := app.store.GetThread(source.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if revertedSource.SessionRef == "" || revertedSource.SessionRef == sessionID {
+		t.Fatalf("source session after revert = %q, want remapped fork session", revertedSource.SessionRef)
+	}
+
+	forked, err := app.ForkThreadFromMessage(source.ID, "user-1")
+	if err != nil {
+		t.Fatalf("ForkThreadFromMessage after revert: %v", err)
+	}
+	assertClaudeSessionText(t, workspace, forked.SessionRef, []string{"first"}, []string{"second", "third"})
+	items, err := app.store.ListItems(forked.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	if len(items) != 1 || items[0].Summary != "first" {
+		t.Fatalf("fork items = %+v, want only first user item", items)
 	}
 }
 

@@ -26,10 +26,13 @@ Capture builds the temp index with `hash-object --no-filters` and
 by automatic checkpointing.
 
 SQLite stores one row per real user message in `thread_checkpoints`. The
-canonical lookup key is `(thread_id, user_item_id)`. `turn_index` is only an
-ordering aid. Provider replay later stamps `provider_user_message_id` and, for
-Claude, `provider_parent_uuid` onto the same row so conversation rollback can
-truncate provider history at the exact message boundary.
+canonical lookup key is `(thread_id, user_item_id)`. `turn_index` is retained
+for ordering and provider turn-boundary operations. Provider replay later stamps
+`provider_user_message_id` and, for Claude, `provider_parent_uuid` onto the
+same row for provider-message correlation. Claude in-thread revert and
+message-fork rollback slice the current session by the checkpoint's
+`turn_index` boundary because Claude session forks rewrite JSONL UUIDs; old
+provider UUIDs are not stable after the first rollback.
 
 ## When Baselines Are Captured
 
@@ -68,10 +71,10 @@ Provider-side rollback differs by provider:
   and uses the live session when one is active, else resumes a short-lived temp
   session just for the call.
 - **Claude** has no rollback RPC. `revertClaudeThreadToMessage` slices the
-  Claude JSONL through the stored `provider_parent_uuid` using
-  `internal/provider/claude/sessionfork`, then points `threads.session_ref` at
-  the new session file. A missing parent UUID is valid only for turn 0, where
-  the thread resumes as a fresh Claude session; later turns fail loudly because
+  current Claude JSONL through the end of the turn immediately before the
+  selected message using `internal/provider/claude/sessionfork`, then points
+  `threads.session_ref` at the new session file. Turn 0 clears the Claude
+  session entirely; later turns require a Claude session reference because
   silently clearing the whole provider context would be an off-by-one rollback.
 
 ## Cross-Thread Revert
