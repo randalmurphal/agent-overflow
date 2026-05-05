@@ -20,7 +20,6 @@ import type { ChannelMessage } from '../types/discussion';
 import type {
   ActiveOptionSet,
   ClarificationRequest,
-  DesignSnapshot,
   DesignViewport,
   FeedbackBatch,
   SliderControl,
@@ -416,9 +415,6 @@ export function createThreadPane() {
   // Design-mode state (only populated when thread.mode === 'design').
   //
   // Layout:
-  //   - designSnapshots: persisted snapshot tree for the thread (newest first
-  //     from backend). Hydrated on mount and refreshed on
-  //     `design:snapshots-update`.
   //   - pendingClarification: non-null when the agent has emitted a
   //     ClarificationRequest payload and is waiting for the user to pick
   //     answers before continuing.
@@ -428,7 +424,6 @@ export function createThreadPane() {
   //   - activeOptionSet: when non-null, render the small N-up options grid
   //     instead of (or beside) the main preview iframe.
   //   - designViewport: width toggle for the main preview iframe.
-  let designSnapshots: DesignSnapshot[] = $state([]);
   let pendingClarification: ClarificationRequest | null = $state(null);
   let exposedControls: SliderControl[] = $state([]);
   let activeOptionSet: ActiveOptionSet | null = $state(null);
@@ -1158,7 +1153,6 @@ export function createThreadPane() {
     get scrollToItemRequest() { return scrollToItemRequest; },
     get channelMessages() { return channelMessages; },
     get channelStatus() { return channelStatus; },
-    get designSnapshots() { return designSnapshots; },
     get pendingClarification() { return pendingClarification; },
     get exposedControls() { return exposedControls; },
     get activeOptionSet() { return activeOptionSet; },
@@ -1188,7 +1182,6 @@ export function createThreadPane() {
       sendInFlight = false;
       channelMessages = [];
       channelStatus = null;
-      designSnapshots = [];
       pendingClarification = null;
       exposedControls = [];
       activeOptionSet = null;
@@ -1413,7 +1406,6 @@ export function createThreadPane() {
       rhsPanelSlot.reset();
       channelMessages = [];
       channelStatus = null;
-      designSnapshots = [];
       pendingClarification = null;
       exposedControls = [];
       activeOptionSet = null;
@@ -2060,14 +2052,6 @@ export function createThreadPane() {
     // --- Design-mode mutations ---
 
     /**
-     * Replace the snapshot list in one shot. Used by the snapshot list
-     * component on mount + on `design:snapshots-update` events.
-     */
-    setDesignSnapshots(snapshots: DesignSnapshot[]): void {
-      designSnapshots = [...snapshots];
-    },
-
-    /**
      * Set the agent's clarification request. Pass null when the user
      * has answered (the panel sends the answers as a regular user
      * message; it then clears local state by calling this with null).
@@ -2108,7 +2092,6 @@ export function createThreadPane() {
     },
 
     clearDesign(): void {
-      designSnapshots = [];
       pendingClarification = null;
       exposedControls = [];
       activeOptionSet = null;

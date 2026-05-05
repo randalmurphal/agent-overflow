@@ -141,54 +141,6 @@ export class ChatBarFavorite {
     }
 }
 
-/**
- * DesignSnapshot is persisted metadata for a frozen state of a design
- * thread's working directory. Snapshots are created on explicit user
- * gesture and auto-on-turn-start; a snapshot's dir_path points at a
- * directory holding the working files at that moment.
- */
-export class DesignSnapshot {
-    "id": string;
-    "threadId": string;
-    "label": string;
-    "dirPath": string;
-    "parentSnapshotId"?: string;
-    "auto": boolean;
-    "createdAt": number;
-
-    /** Creates a new DesignSnapshot instance. */
-    constructor($$source: Partial<DesignSnapshot> = {}) {
-        if (!("id" in $$source)) {
-            this["id"] = "";
-        }
-        if (!("threadId" in $$source)) {
-            this["threadId"] = "";
-        }
-        if (!("label" in $$source)) {
-            this["label"] = "";
-        }
-        if (!("dirPath" in $$source)) {
-            this["dirPath"] = "";
-        }
-        if (!("auto" in $$source)) {
-            this["auto"] = false;
-        }
-        if (!("createdAt" in $$source)) {
-            this["createdAt"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new DesignSnapshot instance from a string or object.
-     */
-    static createFrom($$source: any = {}): DesignSnapshot {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new DesignSnapshot($$parsedSource as Partial<DesignSnapshot>);
-    }
-}
-
 export class DiffReviewComment {
     "id": string;
     "threadId": string;

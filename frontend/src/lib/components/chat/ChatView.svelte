@@ -14,18 +14,15 @@
   import DiscussionView from '../discussion/DiscussionView.svelte';
   import DesignPreviewPanel from '../design/DesignPreviewPanel.svelte';
   import DesignFeedbackPanel from '../design/DesignFeedbackPanel.svelte';
-  import DesignSnapshotList from '../design/DesignSnapshotList.svelte';
   import DesignOptionsPanel from '../design/DesignOptionsPanel.svelte';
   import DesignClarificationPicker from '../design/DesignClarificationPicker.svelte';
   import DesignSplitResizer from '../design/DesignSplitResizer.svelte';
   import ModeEmptyForProject from './ModeEmptyForProject.svelte';
   import { getProject } from '../../stores/projects.svelte';
-  import { ListDesignSnapshots } from '../../stores/bindings';
   import {
     computeChatWidth,
     DESIGN_CHAT_DEFAULT_FRACTION,
   } from '../../stores/designLayout.svelte';
-  import type { DesignSnapshot } from '../../types/design';
   import RhsSidebarShell from './RhsSidebarShell.svelte';
   import ChatHeader from './ChatHeader.svelte';
   import ExpandedImageDialog from './ExpandedImageDialog.svelte';
@@ -338,32 +335,6 @@
     return () => obs.disconnect();
   });
 
-  // Hydrate the design snapshot list whenever a design thread becomes
-  // active. The hydration generation guard ensures a thread switch
-  // mid-flight doesn't overwrite newer state with a stale fetch. The
-  // preview panel and the snapshot list both read from
-  // `pane.designSnapshots`, so we hydrate once here and then rely on
-  // the `design:snapshots-update` event (re-dispatched as a DOM event
-  // by `events.ts`) to keep the list fresh during the session.
-  let designHydrationGen = 0;
-  $effect(() => {
-    if (!inDesignMode) return;
-    const threadId = pane.threadId;
-    if (!threadId) return;
-    const gen = ++designHydrationGen;
-    ListDesignSnapshots(threadId)
-      .then((snapshots: unknown) => {
-        if (gen !== designHydrationGen) return;
-        const list = Array.isArray(snapshots) ? (snapshots as DesignSnapshot[]) : [];
-        pane.setDesignSnapshots(list);
-      })
-      .catch((err: unknown) => {
-        if (gen !== designHydrationGen) return;
-        const message = err instanceof Error ? err.message : String(err);
-        addToast('error', `Failed to load design snapshots: ${message}`);
-      });
-  });
-
   // Exposed so the terminal drawer can "send to composer".
   export function addTerminalChipToDraft(chip: {
     id: string;
@@ -646,22 +617,13 @@
           {/if}
         </div>
         <!--
-          Bottom-half stack: snapshot list + agent clarification picker
-          (when pending) + feedback accumulator. The clarification picker
-          is itself self-gating on pendingClarification so it's a no-op
-          render when no clarification is in flight. The snapshot list
-          is collapsed to a fixed-height tray so the feedback panel
-          always has room.
+          Bottom-half stack: agent clarification picker (when pending) +
+          feedback accumulator. The clarification picker is itself
+          self-gating on pendingClarification so it's a no-op render
+          when no clarification is in flight.
         -->
-        <div class="border-t border-border-subtle shrink-0 flex flex-col" style="max-height: 35%;">
-          <div class="flex min-h-0">
-            <div class="flex-1 min-w-0 flex flex-col min-h-0">
-              <DesignFeedbackPanel {pane} />
-            </div>
-            <div class="w-64 shrink-0 flex flex-col min-h-0">
-              <DesignSnapshotList {pane} />
-            </div>
-          </div>
+        <div class="border-t border-border-subtle shrink-0 flex flex-col min-h-0" style="max-height: 35%;">
+          <DesignFeedbackPanel {pane} />
         </div>
         {#if pane.pendingClarification}
           <DesignClarificationPicker {pane} />

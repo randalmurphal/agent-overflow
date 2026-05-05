@@ -61,10 +61,10 @@ type App struct {
 	checkpoints    *checkpoint.Store
 	registry       *discussion.Registry
 	channels       *discussion.ChannelService
-	// designWorkdir owns each thread's per-thread {main,options,snapshots}
-	// directory and the snapshot lifecycle. The base directory is the
-	// HTTP file server's StripPrefix target — designServer below mounts
-	// it at /design/ on the existing transport.
+	// designWorkdir owns each thread's per-thread {main,options}
+	// directory layout. The base directory is the HTTP file server's
+	// StripPrefix target — designServer below mounts it at /design/
+	// on the existing transport.
 	designWorkdir     *design.WorkDirManager
 	designDiagnostics *design.DiagnosticBuffer
 	designScreenshots *design.ScreenshotBroker
@@ -395,7 +395,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	a.registry = discussion.NewRegistry(st)
 	a.channels = discussion.NewChannelService(st)
 	designBase := filepath.Join(dbDir, "design-workdirs")
-	a.designWorkdir = design.NewWorkDirManager(designBase, st)
+	a.designWorkdir = design.NewWorkDirManager(designBase)
 	a.designDiagnostics = design.NewDiagnosticBuffer(nil)
 	a.designScreenshots = design.NewScreenshotBroker(a.emit)
 	a.designServer = design.FileHandler(designBase)

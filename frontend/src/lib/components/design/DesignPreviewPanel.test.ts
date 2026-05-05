@@ -7,7 +7,6 @@ import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app
 import {
   DESIGN_RELOAD_MAIN_EVENT,
   DESIGN_CAPTURE_REQUEST_EVENT,
-  DESIGN_SNAPSHOTS_UPDATE_EVENT,
 } from '../../stores/events';
 
 // Mock the iframe-capture round-trip so tests don't need a real layout
@@ -51,7 +50,6 @@ async function buildPane() {
   setBindingMock('SwitchThread', async () => {});
   setBindingMock('ListItems', async () => []);
   setBindingMock('ListPayloadMetas', async () => []);
-  setBindingMock('ListDesignSnapshots', async () => []);
   setBindingMock('EnsureDesignWorkdir', async () => {});
   const pane = createThreadPane();
   await pane.switchThread(makeThread());
@@ -471,20 +469,4 @@ describe('<DesignPreviewPanel>', () => {
     });
   });
 
-  it('refreshes snapshots when the snapshots-update event fires', async () => {
-    const pane = await buildPane();
-    const list = setBindingMock('ListDesignSnapshots', async () => [
-      { id: 's1', threadId: 'thread-1', label: 'one', dirPath: '', auto: false, createdAt: 1 },
-    ]);
-    render(DesignPreviewPanel, { props: { pane } });
-
-    // Mount fires one initial fetch via $effect.
-    await waitFor(() => expect(list).toHaveBeenCalled());
-    const initialCalls = list.mock.calls.length;
-
-    window.dispatchEvent(
-      new CustomEvent(DESIGN_SNAPSHOTS_UPDATE_EVENT, { detail: { threadId: 'thread-1' } }),
-    );
-    await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(initialCalls));
-  });
 });

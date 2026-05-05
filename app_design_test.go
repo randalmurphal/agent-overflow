@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -12,30 +11,6 @@ import (
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 )
-
-func TestDesignBindingsCaptureAndListSnapshots(t *testing.T) {
-	app := newTestAppWithDesign(t)
-
-	if err := app.designWorkdir.EnsureThread("thread-design"); err != nil {
-		t.Fatalf("EnsureThread: %v", err)
-	}
-
-	snap, err := app.CaptureSnapshot("thread-design", "first cut")
-	if err != nil {
-		t.Fatalf("CaptureSnapshot: %v", err)
-	}
-	if snap.Label != "first cut" {
-		t.Fatalf("Label = %q, want first cut", snap.Label)
-	}
-
-	listed, err := app.ListDesignSnapshots("thread-design")
-	if err != nil {
-		t.Fatalf("ListDesignSnapshots: %v", err)
-	}
-	if len(listed) != 1 || listed[0].ID != snap.ID {
-		t.Fatalf("listed = %+v, want %s", listed, snap.ID)
-	}
-}
 
 func TestGetDesignWorkdirInfoReturnsAbsolutePathAndManifest(t *testing.T) {
 	app := newTestAppWithDesign(t)
@@ -91,47 +66,6 @@ func TestGetDesignWorkdirInfoReturnsEmptySliceForFreshThread(t *testing.T) {
 	}
 	if len(info.Files) != 0 {
 		t.Fatalf("Files = %v, want empty", info.Files)
-	}
-}
-
-func TestDesignBranchFromSnapshotRestoresMain(t *testing.T) {
-	app := newTestAppWithDesign(t)
-
-	if err := app.designWorkdir.EnsureThread("thread-design"); err != nil {
-		t.Fatalf("EnsureThread: %v", err)
-	}
-	mainPath, err := app.designWorkdir.MainPath("thread-design")
-	if err != nil {
-		t.Fatalf("MainPath: %v", err)
-	}
-
-	// Seed main with v1 contents and snapshot.
-	if err := os.WriteFile(filepath.Join(mainPath, "index.html"), []byte("v1"), 0o644); err != nil {
-		t.Fatalf("WriteFile v1: %v", err)
-	}
-	snapV1, err := app.CaptureSnapshot("thread-design", "v1")
-	if err != nil {
-		t.Fatalf("CaptureSnapshot v1: %v", err)
-	}
-
-	// Replace main with v2.
-	if err := os.WriteFile(filepath.Join(mainPath, "index.html"), []byte("v2"), 0o644); err != nil {
-		t.Fatalf("WriteFile v2: %v", err)
-	}
-	if got, _ := os.ReadFile(filepath.Join(mainPath, "index.html")); string(got) != "v2" {
-		t.Fatalf("pre-branch main = %q, want v2", string(got))
-	}
-
-	// Branch back to v1; main should restore to v1 contents.
-	if err := app.BranchFromSnapshot("thread-design", snapV1.ID); err != nil {
-		t.Fatalf("BranchFromSnapshot: %v", err)
-	}
-	got, err := os.ReadFile(filepath.Join(mainPath, "index.html"))
-	if err != nil {
-		t.Fatalf("ReadFile post-branch: %v", err)
-	}
-	if string(got) != "v1" {
-		t.Fatalf("post-branch main = %q, want v1", string(got))
 	}
 }
 
@@ -271,10 +205,10 @@ func TestStartSessionCleansUpDesignMCPRegistrationOnFailure(t *testing.T) {
 // TestDesignWorkDirOverridePointsAtThreadDir is the load-bearing test
 // for the agent's CWD: a design thread spawns its provider subprocess
 // inside the per-thread workdir, NOT the thread's WorkspacePath. The
-// bundled system prompt instructs the agent to operate on `main/`,
-// `options/`, and `snapshots/` as direct children of its CWD —
-// pointing it at the project repo instead would land the agent's
-// Read/Edit/Write in the user's source tree.
+// bundled system prompt instructs the agent to operate on `main/` and
+// `options/` as direct children of its CWD — pointing it at the
+// project repo instead would land the agent's Read/Edit/Write in the
+// user's source tree.
 func TestDesignWorkDirOverridePointsAtThreadDir(t *testing.T) {
 	app := newTestAppWithDesign(t)
 
@@ -335,7 +269,7 @@ func newTestAppWithDesign(t *testing.T) *App {
 	app.configDir = t.TempDir()
 
 	designBase := filepath.Join(t.TempDir(), "design-workdirs")
-	app.designWorkdir = design.NewWorkDirManager(designBase, app.store)
+	app.designWorkdir = design.NewWorkDirManager(designBase)
 	app.designDiagnostics = design.NewDiagnosticBuffer(nil)
 	app.designScreenshots = design.NewScreenshotBroker(app.emit)
 	app.designServer = design.FileHandler(designBase)
@@ -389,7 +323,3 @@ func designMCPRegistrationCount(server *design.MCPServer) int {
 	}
 	return server.RegisteredThreadCount()
 }
-
-// Reference unused symbols so a future cleanup doesn't accidentally
-// break them under -trimpath imports.
-var _ = strings.TrimSpace

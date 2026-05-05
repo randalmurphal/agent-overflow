@@ -140,11 +140,9 @@ func (a *App) deleteThreadTree(threadID string) error {
 }
 
 // cleanupThreadDesignWorkdir tears down any active design watcher and
-// removes the on-disk per-thread design directory (main/, options/,
-// snapshots/). The design_snapshots SQLite rows cascade via FK on the
-// thread row delete; this sweeps the bytes. Returns nil when the
-// design subsystem isn't wired (tests, threads created before design
-// mode existed) or the directory was already gone.
+// removes the on-disk per-thread design directory (main/, options/).
+// Returns nil when the design subsystem isn't wired (tests, threads
+// created before design mode existed) or the directory was already gone.
 func (a *App) cleanupThreadDesignWorkdir(threadID string) error {
 	a.teardownDesignThread(threadID)
 	if a.designWorkdir == nil {

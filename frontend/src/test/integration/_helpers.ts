@@ -160,7 +160,6 @@ export function installThreadViewDefaults(): void {
   // design thread) doesn't have to install per-test mocks.
   setBindingMock('EnsureDesignWorkdir', async () => {});
   setBindingMock('LatestDesignOptionSet', async () => null);
-  setBindingMock('ListDesignSnapshots', async () => []);
 }
 
 // Composer-adjacent bindings that fire on mount. NOT included: SendMessage

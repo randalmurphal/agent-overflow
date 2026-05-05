@@ -207,27 +207,20 @@ var LocalOnlyMethods = map[string]bool{
 	// 4. Attachment / payload writes (local-FS mutation).
 	"UploadAttachment": true,
 	"DeleteAttachment": true,
-	// Design-mode local-FS / process-coordination surface. The frontend
-	// posts iframe-captured diagnostics into the per-thread ring,
-	// resolves screenshot tool calls, and writes/branches snapshot
-	// directories under the user config dir. All loopback-only.
-	"IngestDiagnosticBatch":   true,
-	"IngestScreenshot":        true,
-	"FailScreenshot":          true,
-	"CaptureSnapshot":         true,
-	"BranchFromSnapshot":      true,
-	"EnsureDesignWorkdir":     true,
-	"DismissDesignOptionSet":  true,
-	"LatestDesignOptionSet":   true,
-	// GetDesignWorkdirInfo returns the absolute design-workdir main path
-	// + the file manifest. Same disclosure shape as ListDesignSnapshots
-	// — leaking on-disk layout to a LAN token-holder. Lock down loopback-only.
-	"GetDesignWorkdirInfo": true,
-	// ListDesignSnapshots returns absolute filesystem paths under the
-	// user config dir (DirPath). Same disclosure shape as
-	// ListThreadCheckpoints — leaking on-disk layout to a LAN
-	// token-holder. Lock down loopback-only.
-	"ListDesignSnapshots": true,
+	// Design-mode local-FS + coordination surface. The frontend posts
+	// iframe-captured diagnostics into the per-thread ring, resolves
+	// screenshot tool calls, and reads/writes the per-thread design
+	// workdir (option-set bookkeeping, layout enumeration). All
+	// loopback-only — these expose either RCE-equivalent surface
+	// (workdir mutation) or filesystem-layout disclosure (the absolute
+	// main path + manifest in GetDesignWorkdirInfo).
+	"IngestDiagnosticBatch":  true,
+	"IngestScreenshot":       true,
+	"FailScreenshot":         true,
+	"EnsureDesignWorkdir":    true,
+	"DismissDesignOptionSet": true,
+	"LatestDesignOptionSet":  true,
+	"GetDesignWorkdirInfo":   true,
 
 	// 5. Local-FS bookkeeping.
 	"AppendUIRenderTraceBatch": true,

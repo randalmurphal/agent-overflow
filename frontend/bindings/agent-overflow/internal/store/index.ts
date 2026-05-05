@@ -5,7 +5,6 @@ export {
     Attachment,
     ChannelMessage,
     ChatBarFavorite,
-    DesignSnapshot,
     DiffReviewComment,
     DiffReviewCommentInput,
     DiffReviewCommentUpdate,

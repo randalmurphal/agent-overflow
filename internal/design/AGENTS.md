@@ -7,24 +7,20 @@ both providers consume, and the bundled design-mode system prompt.
 
 ## Layout
 
-- `types.go` — public wire shapes: `Snapshot`, `Diagnostic`,
-  `DiagnosticBatch`, `FeedbackBatch`, `ClarificationRequest`,
-  `ExposeControls`, `OptionChosen`, `ScreenshotRequest`/`Result`. Also
-  the MCP tool name constants (`ToolGetDiagnostics`, `ToolReadScreenshot`).
+- `types.go` — public wire shapes: `Diagnostic`, `DiagnosticBatch`,
+  `FeedbackBatch`, `ClarificationRequest`, `ExposeControls`,
+  `OptionChosen`, `ScreenshotRequest`/`Result`. Also the MCP tool name
+  constants (`ToolGetDiagnostics`, `ToolReadScreenshot`).
 - `workdir.go` — per-thread directory layout under
-  `{designDir}/{threadId}/{main,options/{setId}/{optId},snapshots/{id}}/`.
-  Atomic snapshot/restore via tmp-rename. `PruneSnapshots` keeps the
-  last `SnapshotRetentionLimit` plus all explicitly-labeled and
-  parent-of-existing snapshots.
+  `{designDir}/{threadId}/{main,options/{setId}/{optId}}/`. Atomic
+  per-file writes via `<path>.tmp` + rename (used for the seeded
+  `index.html` and the option-picked marker).
 - `watcher.go` — recursive `notify.Watch` (mirrors
   `internal/gitwatch/watcher.go`) with 250 ms debounce and 1500 ms
   ceiling, polling fallback, and an `installFn` test seam. Emits
-  events keyed by which subdir changed (`main`/`options`/`snapshots`).
-  Suppresses self-write noise during snapshot/restore by scanning all
-  path segments for the workdir's atomic-rename markers
-  (`.tmp`, `.tmp-<uuid>`, `.old-<uuid>`, `.restore-<uuid>`); marker
-  matches are anchored to a uuid-shaped suffix so user-named files
-  like `theme.tmp-dark.css` aren't dropped.
+  events keyed by which subdir changed (`main`/`options`).
+  Suppresses self-write noise from `<path>.tmp` staging files by
+  filtering any segment with a `.tmp` suffix.
 - `diagnostics.go` — bounded per-thread ring (cap
   `DiagnosticRingCap = 100`) with monotonic int64 tokens. `Drain`
   blocks up to `diagnosticDrainDeadline` (1 s) when `MarkActivity`
@@ -76,9 +72,11 @@ both providers consume, and the bundled design-mode system prompt.
     into `config.mcp_servers`, Claude's session writes it to a temp
     file and passes `--mcp-config <path>`. The provider-side glue
     lives in each provider package, not here.
-  - Database CRUD. `internal/store/designs.go` owns the
-    `design_snapshots` table; `workdir.go` only owns the bytes on
-    disk.
+  - Persistent state about a design thread's history. There is no
+    snapshot ladder; the working directory is the single source of
+    truth, and conversation-level rewind (edit a message and re-prompt)
+    is the right layer for design history. `workdir.go` only owns the
+    bytes on disk.
 
 ## Extension points
 
@@ -95,8 +93,6 @@ both providers consume, and the bundled design-mode system prompt.
 
 ## Anti-patterns
 
-- Do NOT cache snapshot metadata in memory. `internal/store` is the
-  source of truth; `workdir.go` only owns the bytes.
 - Do NOT add `allow-same-origin` to the iframe sandbox. The
   agent-rendered HTML is untrusted; the postMessage capture script
   exists specifically because the parent cannot reach into the
@@ -111,7 +107,6 @@ both providers consume, and the bundled design-mode system prompt.
 
 ## References
 
-- `internal/store/designs.go` — `design_snapshots` schema.
 - `internal/gitwatch/watcher.go` — pattern mirrored by `watcher.go`.
 - `docs/architecture/data-flow.md` — where design events sit in the
   overall pipeline.

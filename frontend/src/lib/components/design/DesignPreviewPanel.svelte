@@ -39,14 +39,11 @@
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import MessagesSquare from 'lucide-svelte/icons/messages-square';
   import MessageSquarePlus from 'lucide-svelte/icons/message-square-plus';
-  import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     IngestDiagnosticBatch,
     IngestScreenshot,
     FailScreenshot,
-    ListDesignSnapshots,
-    CaptureSnapshot,
     EnsureDesignWorkdir,
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
@@ -56,14 +53,12 @@
     DESIGN_VIEWPORT_WIDTHS,
     type Diagnostic,
     type DiagnosticSeverity,
-    type DesignSnapshot,
     type DesignViewport,
   } from '../../types/design';
   import { requestIframeCapture } from '../../utils/captureHtml';
   import {
     DESIGN_RELOAD_MAIN_EVENT,
     DESIGN_CAPTURE_REQUEST_EVENT,
-    DESIGN_SNAPSHOTS_UPDATE_EVENT,
   } from '../../stores/events';
   import Icon from '../primitives/Icon.svelte';
 
@@ -71,12 +66,11 @@
 
   let iframeEl: HTMLIFrameElement | undefined = $state(undefined);
   let cacheBust = $state(0);
-  let snapshotInFlight = $state(false);
   let sendingToThread = $state(false);
 
-  // workdirReadyForThread is the thread id whose {main,options,
-  // snapshots}/ layout has been confirmed via EnsureDesignWorkdir. We
-  // gate the iframe `src` on this so a fresh thread that's never had
+  // workdirReadyForThread is the thread id whose {main,options}/ layout
+  // has been confirmed via EnsureDesignWorkdir. We gate the iframe
+  // `src` on this so a fresh thread that's never had
   // an agent session doesn't load /design/{threadId}/main/ before the
   // file server has anything to return — http.FileServer would 404,
   // and a 404 from the same origin as the SPA hits the asset
@@ -143,46 +137,6 @@
 
   function refresh(): void {
     cacheBust += 1;
-  }
-
-  // -- Snapshot dropdown -----------------------------------------------
-
-  // We drive the same dropdown shell both on initial load and when the
-  // file watcher reports a snapshots/ change. Pane state owns the list
-  // so the snapshot panel and any future surface read the same data.
-  let dropdownOpen = $state(false);
-  let dropdownTriggerEl: HTMLElement | undefined = $state(undefined);
-
-  async function refreshSnapshots(threadId: string): Promise<void> {
-    try {
-      const list = (await ListDesignSnapshots(threadId)) as DesignSnapshot[] | null;
-      if (pane.threadId !== threadId) return;
-      pane.setDesignSnapshots(Array.isArray(list) ? list : []);
-    } catch (err) {
-      console.warn('ListDesignSnapshots failed:', err);
-    }
-  }
-
-  $effect(() => {
-    const threadId = pane.threadId;
-    if (!threadId) return;
-    void refreshSnapshots(threadId);
-  });
-
-  async function captureNamedSnapshot(): Promise<void> {
-    const threadId = pane.threadId;
-    if (!threadId || snapshotInFlight) return;
-    const label = window.prompt('Snapshot label (optional):', '') ?? '';
-    snapshotInFlight = true;
-    try {
-      await CaptureSnapshot(threadId, label);
-      addToast('success', label ? `Snapshot "${label}" captured` : 'Snapshot captured');
-      await refreshSnapshots(threadId);
-    } catch (err) {
-      addToast('error', `Snapshot failed: ${errString(err)}`);
-    } finally {
-      snapshotInFlight = false;
-    }
   }
 
   // -- Send to thread ---------------------------------------------------
@@ -294,12 +248,6 @@
     cacheBust += 1;
   }
 
-  function handleSnapshotsUpdate(ev: Event): void {
-    const detail = (ev as CustomEvent).detail as { threadId?: string } | null;
-    if (!detail?.threadId || detail.threadId !== pane.threadId) return;
-    void refreshSnapshots(detail.threadId);
-  }
-
   // -- Capture-request round-trip --------------------------------------
 
   async function handleCaptureRequest(ev: Event): Promise<void> {
@@ -336,12 +284,10 @@
   onMount(() => {
     window.addEventListener('message', handlePostMessage);
     window.addEventListener(DESIGN_RELOAD_MAIN_EVENT, handleReloadMain);
-    window.addEventListener(DESIGN_SNAPSHOTS_UPDATE_EVENT, handleSnapshotsUpdate);
     window.addEventListener(DESIGN_CAPTURE_REQUEST_EVENT, handleCaptureRequest);
     return () => {
       window.removeEventListener('message', handlePostMessage);
       window.removeEventListener(DESIGN_RELOAD_MAIN_EVENT, handleReloadMain);
-      window.removeEventListener(DESIGN_SNAPSHOTS_UPDATE_EVENT, handleSnapshotsUpdate);
       window.removeEventListener(DESIGN_CAPTURE_REQUEST_EVENT, handleCaptureRequest);
       if (diagFlushHandle !== null) {
         clearTimeout(diagFlushHandle);
@@ -352,17 +298,10 @@
       flushDiagnostics();
     };
   });
-
-  let snapshotsLabel = $derived(
-    pane.designSnapshots.length === 0
-      ? 'No snapshots'
-      : `${pane.designSnapshots.length} snapshot${pane.designSnapshots.length === 1 ? '' : 's'}`,
-  );
 </script>
 
 <div class="flex flex-col h-full min-h-0 bg-transparent">
-  <!-- Toolbar — left cluster: viewport · refresh · snapshot capture.
-       Right cluster: snapshot list dropdown trigger (counts + open). -->
+  <!-- Toolbar — viewport switch · refresh · send-to-thread. -->
   <div
     class="flex items-center gap-2 border-b border-border-subtle px-3 py-2 shrink-0 min-w-0"
   >
@@ -410,29 +349,12 @@
 
     <button
       type="button"
-      onclick={() => void captureNamedSnapshot()}
-      disabled={!pane.threadId || snapshotInFlight}
-      title="Capture snapshot"
-      class={[
-        'inline-flex items-center gap-1 rounded-[var(--radius-field)]',
-        'border border-border-subtle bg-surface-0 px-2 py-1',
-        'text-[12px] text-fg cursor-pointer transition-colors',
-        'hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-        'disabled:opacity-60 disabled:cursor-not-allowed',
-      ].join(' ')}
-      data-testid="design-capture-snapshot"
-    >
-      <span>{snapshotInFlight ? 'Capturing…' : 'Snapshot'}</span>
-    </button>
-
-    <button
-      type="button"
       onclick={() => void onSendToThread()}
       disabled={!iframeSrc || sendingToThread}
       title="Open a new chat thread seeded with the design path + screenshot"
       aria-label="Send design to a new chat thread"
       class={[
-        'inline-flex items-center gap-1 rounded-[var(--radius-field)]',
+        'inline-flex items-center gap-1 rounded-[var(--radius-field)] ml-auto',
         'border border-border-subtle bg-surface-0 px-2 py-1',
         'text-[12px] text-fg cursor-pointer transition-colors',
         'hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
@@ -443,26 +365,6 @@
       <Icon icon={MessageSquarePlus} size={12} strokeWidth={1.7} class="shrink-0" />
       <span>{sendingToThread ? 'Sending…' : 'Send to thread'}</span>
     </button>
-
-    <span bind:this={dropdownTriggerEl} class="ml-auto inline-block">
-      <button
-        type="button"
-        onclick={() => (dropdownOpen = !dropdownOpen)}
-        aria-haspopup="true"
-        aria-expanded={dropdownOpen}
-        title={snapshotsLabel}
-        class={[
-          'inline-flex items-center gap-1 rounded-[var(--radius-field)]',
-          'border border-border-subtle bg-surface-0 px-2 py-1',
-          'text-[12px] text-fg cursor-pointer transition-colors',
-          'hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-        ].join(' ')}
-        data-testid="design-snapshots-trigger"
-      >
-        <span class="truncate">{snapshotsLabel}</span>
-        <Icon icon={ChevronDown} size={12} strokeWidth={1.6} class="opacity-70 shrink-0" />
-      </button>
-    </span>
   </div>
 
   <div class="flex-1 min-h-0 overflow-auto bg-surface-0/60 flex items-start justify-center p-2">

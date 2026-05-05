@@ -50,7 +50,6 @@ async function buildPane() {
   setBindingMock('SwitchThread', async () => {});
   setBindingMock('ListItems', async () => []);
   setBindingMock('ListPayloadMetas', async () => []);
-  setBindingMock('ListDesignSnapshots', async () => []);
   setBindingMock('SendMessage', async () => 'msg-id');
   const pane = createThreadPane();
   await pane.switchThread(makeThread());

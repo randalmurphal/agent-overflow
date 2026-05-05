@@ -31,7 +31,7 @@ func TestMigrationFreshDB(t *testing.T) {
 	// All tables should exist after fresh migration.
 	tables := []string{
 		"migration_versions", "threads", "items", "payloads",
-		"channels", "channel_messages", "discussion_definitions", "design_snapshots",
+		"channels", "channel_messages", "discussion_definitions",
 		"attachments", "thread_drafts", "thread_checkpoints", "turns",
 		"proposed_plans", "proposed_plan_comments",
 		"chat_bar_favorites", "chat_model_profiles",
@@ -44,6 +44,15 @@ func TestMigrationFreshDB(t *testing.T) {
 		if err != nil {
 			t.Errorf("table %s not found: %v", table, err)
 		}
+	}
+
+	// design_snapshots was dropped in v43; a fresh DB must not have it.
+	var dropped string
+	err := s.db.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='table' AND name='design_snapshots'",
+	).Scan(&dropped)
+	if err == nil {
+		t.Errorf("design_snapshots should be absent on fresh DB after v43, got %q", dropped)
 	}
 }
 
@@ -745,18 +754,6 @@ func TestMigrationV2NewTables(t *testing.T) {
 	`)
 	if err != nil {
 		t.Fatalf("insert discussion definition: %v", err)
-	}
-
-	// design_artifacts was dropped in v42 (replaced by design_snapshots).
-	// Verify the new table accepts inserts in its place — snapshots
-	// reference the per-thread working directory layout owned by
-	// internal/design/workdir.go.
-	_, err = s.db.Exec(`
-		INSERT INTO design_snapshots (id, thread_id, label, dir_path, created_at)
-		VALUES ('snap-1', 't1', 'first cut', '/tmp/snapshots/snap-1', 1000)
-	`)
-	if err != nil {
-		t.Fatalf("insert design snapshot: %v", err)
 	}
 }
 
@@ -2302,6 +2299,88 @@ func TestMigrationV28BackfillsCheckpointTurnCountsByProvider(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("checkpoint turn counts = %#v, want %#v", got, want)
 	}
+}
+
+// TestMigrationV43DropsDesignSnapshots seeds a database up to v42 (the
+// design_snapshots table being live), inserts a row, runs v43, and
+// verifies the table is gone. v43 drops the speculative snapshot ladder
+// because conversation-level rewind ended up being the right layer.
+func TestMigrationV43DropsDesignSnapshots(t *testing.T) {
+	db := openSQLiteDB(t)
+	if err := configureDatabase(db); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if err := ensureMigrationTable(db); err != nil {
+		t.Fatalf("ensure migration table: %v", err)
+	}
+	for _, m := range migrations {
+		if m.Version >= 43 {
+			break
+		}
+		if err := applyMigration(db, m); err != nil {
+			t.Fatalf("apply v%d: %v", m.Version, err)
+		}
+	}
+
+	// Sanity: design_snapshots exists at v42.
+	var pre string
+	if err := db.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='table' AND name='design_snapshots'",
+	).Scan(&pre); err != nil {
+		t.Fatalf("design_snapshots should exist before v43: %v", err)
+	}
+
+	// Seed a project (v13 made project_id NOT NULL on threads), then a
+	// thread the snapshot can FK to, then a snapshot row.
+	if _, err := db.Exec(`INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-design', '/design', '/design', 1000, 1000)`); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at)
+		VALUES ('t-design', 'p-design', 'design', 'claude', '/tmp', '', 1000, 1000)`); err != nil {
+		t.Fatalf("seed thread: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO design_snapshots (id, thread_id, label, dir_path, parent_snapshot_id, auto, created_at)
+		VALUES ('snap-1', 't-design', 'manual', '/tmp/snap-1', NULL, 0, 1500)`); err != nil {
+		t.Fatalf("seed design_snapshots row: %v", err)
+	}
+
+	// Apply v43.
+	v43 := findMigration(t, 43)
+	if err := applyMigration(db, v43); err != nil {
+		t.Fatalf("apply v43: %v", err)
+	}
+
+	// design_snapshots must be gone.
+	var post string
+	err := db.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='table' AND name='design_snapshots'",
+	).Scan(&post)
+	if err == nil {
+		t.Errorf("design_snapshots should be dropped by v43, found %q", post)
+	}
+
+	// migration_versions records v43.
+	var recorded string
+	if err := db.QueryRow(
+		"SELECT name FROM migration_versions WHERE version=43",
+	).Scan(&recorded); err != nil {
+		t.Fatalf("migration_versions row for v43 missing: %v", err)
+	}
+	if recorded != "drop_design_snapshots" {
+		t.Errorf("v43 name = %q, want %q", recorded, "drop_design_snapshots")
+	}
+}
+
+func findMigration(t *testing.T, version int) Migration {
+	t.Helper()
+	for _, m := range migrations {
+		if m.Version == version {
+			return m
+		}
+	}
+	t.Fatalf("migration v%d not found", version)
+	return Migration{}
 }
 
 // assertRowCount is a focused helper for migration tests — the parent

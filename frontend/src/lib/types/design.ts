@@ -1,21 +1,5 @@
-// Design-mode types — mirror the Go structs in internal/design/types.go and
-// internal/store/design_types.go. Update these if those files drift.
-
-/**
- * Persisted metadata for a frozen state of a design thread's working
- * directory. Snapshots are created on explicit user gesture and
- * auto-on-turn-start; a snapshot's dirPath points at a directory holding
- * the working files at that moment.
- */
-export interface DesignSnapshot {
-  id: string;
-  threadId: string;
-  label: string;
-  dirPath: string;
-  parentSnapshotId?: string;
-  auto: boolean;
-  createdAt: number;
-}
+// Design-mode types — mirror the Go structs in internal/design/types.go.
+// Update these if that file drifts.
 
 /** Severity classifier for a captured runtime event. */
 export type DiagnosticSeverity = 'error' | 'warn' | 'info';

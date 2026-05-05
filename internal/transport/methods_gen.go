@@ -26,9 +26,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "AppendUIRenderTraceBatch", ID: 2157691816}, // main.App.AppendUIRenderTraceBatch
 	{Name: "ArchiveProject", ID: 1352159878}, // main.App.ArchiveProject
 	{Name: "ArchiveThread", ID: 3655608409}, // main.App.ArchiveThread
-	{Name: "BranchFromSnapshot", ID: 1930319093}, // main.App.BranchFromSnapshot
 	{Name: "BrowseDirectory", ID: 320967638}, // main.App.BrowseDirectory
-	{Name: "CaptureSnapshot", ID: 342423273}, // main.App.CaptureSnapshot
 	{Name: "CleanCodexBackgroundTerminals", ID: 16360282}, // main.App.CleanCodexBackgroundTerminals
 	{Name: "ClearDraft", ID: 296814681}, // main.App.ClearDraft
 	{Name: "CloseTerminal", ID: 2702963191}, // main.App.CloseTerminal
@@ -104,7 +102,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListAvailableEditors", ID: 2556802234}, // main.App.ListAvailableEditors
 	{Name: "ListChatBarFavorites", ID: 2114948965}, // main.App.ListChatBarFavorites
 	{Name: "ListDesignOptions", ID: 3070635863}, // main.App.ListDesignOptions
-	{Name: "ListDesignSnapshots", ID: 3740160112}, // main.App.ListDesignSnapshots
 	{Name: "ListDiffReviewComments", ID: 3057473088}, // main.App.ListDiffReviewComments
 	{Name: "ListDiscussions", ID: 942288562}, // main.App.ListDiscussions
 	{Name: "ListDiscussionsForThread", ID: 2502562885}, // main.App.ListDiscussionsForThread

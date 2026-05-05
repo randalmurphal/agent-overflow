@@ -35,7 +35,6 @@ Your working directory is laid out like this:
   mockups. Each option is a small focused HTML page that demonstrates
   one direction. The user picks one and you apply that direction to
   ` + "`main/`" + `.
-- ` + "`snapshots/`" + ` is read-only history. Don't write here.
 
 # Anti-slop is the core of the job
 
@@ -272,7 +271,7 @@ This design thread is associated with a project repository at:
     %s
 
 Your CWD is the per-thread design workdir (the one that contains
-`+"`main/`, `options/`, and `snapshots/`"+`). Never write into the
+`+"`main/` and `options/`"+`). Never write into the
 project repo. You may **read** files there as design references using
 absolute paths under the project root above — for example existing CSS,
 design tokens, Tailwind/theme configs, component patterns, color

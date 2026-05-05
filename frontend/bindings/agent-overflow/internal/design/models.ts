@@ -5,10 +5,6 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as store$0 from "../store/models.js";
-
 /**
  * Diagnostic is one captured runtime event from the sandboxed iframe.
  * Tokens are monotonic per thread; agents pass `since_token` to drain
@@ -127,16 +123,6 @@ export class ScreenshotResult {
         return new ScreenshotResult($$parsedSource as Partial<ScreenshotResult>);
     }
 }
-
-/**
- * Snapshot is the public design-mode snapshot metadata shape.
- */
-export const Snapshot = store$0.DesignSnapshot;
-
-/**
- * Snapshot is the public design-mode snapshot metadata shape.
- */
-export type Snapshot = store$0.DesignSnapshot;
 
 // Private type creation functions
 const $$createType0 = Diagnostic.createFrom;

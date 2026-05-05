@@ -685,10 +685,7 @@ func (p *privilegedApp) DeleteAttachment() string      { return "ok" }
 func (p *privilegedApp) IngestDiagnosticBatch() string  { return "ok" }
 func (p *privilegedApp) IngestScreenshot() string       { return "ok" }
 func (p *privilegedApp) FailScreenshot() string         { return "ok" }
-func (p *privilegedApp) CaptureSnapshot() string        { return "ok" }
-func (p *privilegedApp) BranchFromSnapshot() string     { return "ok" }
 func (p *privilegedApp) EnsureDesignWorkdir() string    { return "ok" }
-func (p *privilegedApp) ListDesignSnapshots() string    { return "ok" }
 func (p *privilegedApp) DismissDesignOptionSet() string { return "ok" }
 func (p *privilegedApp) LatestDesignOptionSet() string  { return "ok" }
 func (p *privilegedApp) GetDesignWorkdirInfo() string   { return "ok" }

@@ -1214,6 +1214,19 @@ CREATE INDEX idx_design_snapshots_parent
 	WHERE parent_snapshot_id IS NOT NULL;
 `,
 	},
+	{
+		Version: 43,
+		Name:    "drop_design_snapshots",
+		// Snapshots / branching turned out to be solving a speculative
+		// problem: in practice users iterate by talking to the agent
+		// ("revert that", "try a different direction") rather than
+		// rewinding files. Drop the table; the on-disk snapshots/
+		// directory is no longer created either. The conversation-level
+		// rewind story is the right layer for design history.
+		SQL: `
+DROP TABLE IF EXISTS design_snapshots;
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

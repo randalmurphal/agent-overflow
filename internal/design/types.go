@@ -1,7 +1,5 @@
 package design
 
-import "agent-overflow/internal/store"
-
 // Tool name constants for the design-mode wire surface. The same
 // names appear in the system prompt and in both providers' MCP tool
 // list — keep them centralized so a rename moves all three together.
@@ -17,9 +15,6 @@ const (
 	// a PNG. Round-trips through the frontend.
 	ToolReadScreenshot = "read_screenshot"
 )
-
-// Snapshot is the public design-mode snapshot metadata shape.
-type Snapshot = store.DesignSnapshot
 
 // DiagnosticSeverity classifies a captured runtime event.
 type DiagnosticSeverity string

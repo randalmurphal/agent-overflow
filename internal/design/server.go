@@ -76,9 +76,9 @@ const modernScreenshotPath = "/_aoassets/modern-screenshot.js"
 // per-thread working directories under baseDir. Mount it at the prefix
 // "/design/" — the dispatcher must use http.StripPrefix("/design", ...)
 // before invoking. The remaining path is interpreted as
-// {threadId}/{main|options/.../...|snapshots/...}/{file}, with the
-// special prefix /_aoassets/ reserved for embedded runtime helpers
-// (currently just modernScreenshotPath).
+// {threadId}/{main|options/.../...}/{file}, with the special prefix
+// /_aoassets/ reserved for embedded runtime helpers (currently just
+// modernScreenshotPath).
 //
 // Path-traversal protection comes from http.FileServer + http.Dir +
 // the workdir manager's own segment sanitization on writes; an attacker

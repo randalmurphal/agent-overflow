@@ -6,55 +6,21 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"agent-overflow/internal/store"
 )
 
-func newWorkDir(t *testing.T) (*WorkDirManager, *store.Store, string) {
+func newWorkDir(t *testing.T) (*WorkDirManager, string) {
 	t.Helper()
-	s, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-
-	// design_snapshots has FK to threads; threads has FK to projects.
-	now := time.Now().UnixMilli()
-	if err := s.CreateProject(store.Project{
-		ID:        "p1",
-		Path:      t.TempDir(),
-		Name:      "p1",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("CreateProject: %v", err)
-	}
-	if err := s.CreateThread(store.Thread{
-		ID:              "t1",
-		ProjectID:       "p1",
-		ProjectPath:     "/tmp",
-		Title:           "design",
-		Provider:        "claude",
-		Model:           "claude-sonnet-4-6",
-		Mode:            "design",
-		ReasoningEffort: "medium",
-		CreatedAt:       now,
-		UpdatedAt:       now,
-	}); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-
 	base := t.TempDir()
-	return NewWorkDirManager(base, s), s, base
+	return NewWorkDirManager(base), base
 }
 
 func TestWorkDir_EnsureThreadCreatesLayoutAndSeedsIndex(t *testing.T) {
-	m, _, base := newWorkDir(t)
+	m, base := newWorkDir(t)
 
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}
-	for _, sub := range []string{"main", "options", "snapshots"} {
+	for _, sub := range []string{"main", "options"} {
 		info, err := os.Stat(filepath.Join(base, "t1", sub))
 		if err != nil {
 			t.Fatalf("missing subdir %s: %v", sub, err)
@@ -74,7 +40,7 @@ func TestWorkDir_EnsureThreadCreatesLayoutAndSeedsIndex(t *testing.T) {
 }
 
 func TestWorkDir_EnsureThreadIsIdempotentAndDoesNotClobberIndex(t *testing.T) {
-	m, _, base := newWorkDir(t)
+	m, base := newWorkDir(t)
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("first EnsureThread: %v", err)
 	}
@@ -95,7 +61,7 @@ func TestWorkDir_EnsureThreadIsIdempotentAndDoesNotClobberIndex(t *testing.T) {
 }
 
 func TestWorkDir_EnsureThreadRejectsBlankOrTraversalSegments(t *testing.T) {
-	m, _, _ := newWorkDir(t)
+	m, _ := newWorkDir(t)
 	cases := []string{"", " ", ".", "..", "a/b", `c\d`}
 	for _, id := range cases {
 		err := m.EnsureThread(id)
@@ -106,7 +72,7 @@ func TestWorkDir_EnsureThreadRejectsBlankOrTraversalSegments(t *testing.T) {
 }
 
 func TestWorkDir_ListOptionsReturnsLexicallySortedDirNames(t *testing.T) {
-	m, _, _ := newWorkDir(t)
+	m, _ := newWorkDir(t)
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}
@@ -147,7 +113,7 @@ func TestWorkDir_ListOptionsReturnsLexicallySortedDirNames(t *testing.T) {
 // or a directory listing for index-less paths, and the user sees three
 // white boxes.
 func TestWorkDir_ListOptionsSkipsDirWithoutIndexHTML(t *testing.T) {
-	m, _, _ := newWorkDir(t)
+	m, _ := newWorkDir(t)
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}
@@ -174,7 +140,7 @@ func TestWorkDir_ListOptionsSkipsDirWithoutIndexHTML(t *testing.T) {
 }
 
 func TestWorkDir_ListOptionsReturnsEmptyForMissingSet(t *testing.T) {
-	m, _, _ := newWorkDir(t)
+	m, _ := newWorkDir(t)
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}
@@ -188,14 +154,14 @@ func TestWorkDir_ListOptionsReturnsEmptyForMissingSet(t *testing.T) {
 }
 
 func TestWorkDir_ListOptionsRejectsBlankSetID(t *testing.T) {
-	m, _, _ := newWorkDir(t)
+	m, _ := newWorkDir(t)
 	if _, err := m.ListOptions("t1", ""); err == nil {
 		t.Fatal("ListOptions(blank set) error = nil, want error")
 	}
 }
 
 func TestWorkDir_ListOptionsSkipsDotfiles(t *testing.T) {
-	m, _, base := newWorkDir(t)
+	m, base := newWorkDir(t)
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}
@@ -221,7 +187,7 @@ func TestWorkDir_ListOptionsSkipsDotfiles(t *testing.T) {
 }
 
 func TestWorkDir_ListOptionsSkipsRegularFiles(t *testing.T) {
-	m, _, base := newWorkDir(t)
+	m, base := newWorkDir(t)
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}
@@ -256,7 +222,7 @@ func TestWorkDir_ListOptionsSkipsRegularFiles(t *testing.T) {
 // empty main/ placeholder despite their pending picker still
 // existing on disk.
 func TestWorkDir_LatestUnpickedOptionSetReturnsMostRecent(t *testing.T) {
-	m, _, _ := newWorkDir(t)
+	m, _ := newWorkDir(t)
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}
@@ -301,7 +267,7 @@ func TestWorkDir_LatestUnpickedOptionSetReturnsMostRecent(t *testing.T) {
 // marker, that set must drop out of the "active" projection so a
 // refresh after the user picks doesn't re-render the same picker.
 func TestWorkDir_LatestUnpickedOptionSetSkipsPickedSets(t *testing.T) {
-	m, _, _ := newWorkDir(t)
+	m, _ := newWorkDir(t)
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}
@@ -346,7 +312,7 @@ func TestWorkDir_LatestUnpickedOptionSetSkipsPickedSets(t *testing.T) {
 // active set — the agent has just mkdir'd but not yet written, and
 // the frontend would render blank iframes if we promoted it.
 func TestWorkDir_LatestUnpickedOptionSetSkipsEmptySet(t *testing.T) {
-	m, _, _ := newWorkDir(t)
+	m, _ := newWorkDir(t)
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}
@@ -376,7 +342,7 @@ func TestWorkDir_LatestUnpickedOptionSetSkipsEmptySet(t *testing.T) {
 }
 
 func TestWorkDir_LatestUnpickedOptionSetReturnsEmptyForFreshThread(t *testing.T) {
-	m, _, _ := newWorkDir(t)
+	m, _ := newWorkDir(t)
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}
@@ -390,7 +356,7 @@ func TestWorkDir_LatestUnpickedOptionSetReturnsEmptyForFreshThread(t *testing.T)
 }
 
 func TestWorkDir_MarkOptionSetPickedRequiresExistingSet(t *testing.T) {
-	m, _, _ := newWorkDir(t)
+	m, _ := newWorkDir(t)
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}
@@ -403,7 +369,7 @@ func TestWorkDir_MarkOptionSetPickedRequiresExistingSet(t *testing.T) {
 }
 
 func TestWorkDir_MarkOptionSetPickedIsIdempotent(t *testing.T) {
-	m, _, _ := newWorkDir(t)
+	m, _ := newWorkDir(t)
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}
@@ -429,7 +395,7 @@ func TestWorkDir_MarkOptionSetPickedIsIdempotent(t *testing.T) {
 }
 
 func TestWorkDir_ListMainFilesReturnsTopLevelRegularFiles(t *testing.T) {
-	m, _, base := newWorkDir(t)
+	m, base := newWorkDir(t)
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}
@@ -455,7 +421,7 @@ func TestWorkDir_ListMainFilesReturnsTopLevelRegularFiles(t *testing.T) {
 }
 
 func TestWorkDir_ListMainFilesSkipsDotfilesAndSubdirs(t *testing.T) {
-	m, _, base := newWorkDir(t)
+	m, base := newWorkDir(t)
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}
@@ -489,7 +455,7 @@ func TestWorkDir_ListMainFilesSkipsDotfilesAndSubdirs(t *testing.T) {
 }
 
 func TestWorkDir_ListMainFilesReturnsEmptyForMissingMain(t *testing.T) {
-	m, _, _ := newWorkDir(t)
+	m, _ := newWorkDir(t)
 	got, err := m.ListMainFiles("t1")
 	if err != nil {
 		t.Fatalf("ListMainFiles on un-ensured thread: %v", err)
@@ -511,7 +477,7 @@ func TestWorkDir_ListMainFilesReturnsEmptyForMissingMain(t *testing.T) {
 // disclosure: the manifest is interpolated into a chat-thread message
 // body and would otherwise leak whatever the symlink points at.
 func TestWorkDir_ListMainFilesSkipsSymlinks(t *testing.T) {
-	m, _, base := newWorkDir(t)
+	m, base := newWorkDir(t)
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}
@@ -548,14 +514,14 @@ func TestWorkDir_ListMainFilesSkipsSymlinks(t *testing.T) {
 }
 
 func TestWorkDir_ListMainFilesRejectsBlankThreadID(t *testing.T) {
-	m, _, _ := newWorkDir(t)
+	m, _ := newWorkDir(t)
 	if _, err := m.ListMainFiles("  "); err == nil {
 		t.Fatal("ListMainFiles with blank thread id returned nil error")
 	}
 }
 
 func TestWorkDir_OptionsPathSanitizesAndRejectsEscape(t *testing.T) {
-	m, _, base := newWorkDir(t)
+	m, base := newWorkDir(t)
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}
@@ -582,149 +548,8 @@ func TestWorkDir_OptionsPathSanitizesAndRejectsEscape(t *testing.T) {
 	}
 }
 
-func TestWorkDir_SnapshotCopiesMainAndPersistsRow(t *testing.T) {
-	m, s, _ := newWorkDir(t)
-	if err := m.EnsureThread("t1"); err != nil {
-		t.Fatalf("EnsureThread: %v", err)
-	}
-	mainPath, _ := m.MainPath("t1")
-	if err := os.WriteFile(filepath.Join(mainPath, "style.css"), []byte("body{}"), 0o644); err != nil {
-		t.Fatalf("seed style: %v", err)
-	}
-
-	snap, err := m.Snapshot("t1", SnapshotSpec{Label: "v1", Auto: false})
-	if err != nil {
-		t.Fatalf("Snapshot: %v", err)
-	}
-	if snap.ID == "" {
-		t.Fatal("snapshot ID empty")
-	}
-	if snap.Label != "v1" {
-		t.Fatalf("Label = %q, want v1", snap.Label)
-	}
-	if snap.Auto {
-		t.Fatal("Auto = true, want false")
-	}
-	if snap.CreatedAt == 0 {
-		t.Fatal("CreatedAt = 0")
-	}
-
-	// Snapshot dir holds a copy of style.css.
-	snapStyle := filepath.Join(snap.DirPath, "style.css")
-	body, err := os.ReadFile(snapStyle)
-	if err != nil {
-		t.Fatalf("read snap style: %v", err)
-	}
-	if string(body) != "body{}" {
-		t.Fatalf("snap style = %q", string(body))
-	}
-
-	// Persisted row matches.
-	got, err := s.GetDesignSnapshot("t1", snap.ID)
-	if err != nil {
-		t.Fatalf("GetDesignSnapshot: %v", err)
-	}
-	if got.ID != snap.ID || got.Label != "v1" || got.DirPath != snap.DirPath {
-		t.Fatalf("row mismatch: %+v vs %+v", got, snap)
-	}
-}
-
-func TestWorkDir_RestoreFromSnapshotIsAtomicOnContents(t *testing.T) {
-	m, _, _ := newWorkDir(t)
-	if err := m.EnsureThread("t1"); err != nil {
-		t.Fatalf("EnsureThread: %v", err)
-	}
-	mainPath, _ := m.MainPath("t1")
-	if err := os.WriteFile(filepath.Join(mainPath, "v1.txt"), []byte("v1"), 0o644); err != nil {
-		t.Fatalf("seed v1: %v", err)
-	}
-	v1, err := m.Snapshot("t1", SnapshotSpec{Label: "v1"})
-	if err != nil {
-		t.Fatalf("Snapshot v1: %v", err)
-	}
-
-	// Replace main with v2 contents (different file, no v1.txt).
-	_ = os.Remove(filepath.Join(mainPath, "v1.txt"))
-	if err := os.WriteFile(filepath.Join(mainPath, "v2.txt"), []byte("v2"), 0o644); err != nil {
-		t.Fatalf("seed v2: %v", err)
-	}
-
-	if err := m.RestoreFromSnapshot("t1", v1.ID); err != nil {
-		t.Fatalf("RestoreFromSnapshot: %v", err)
-	}
-	// v1.txt is back.
-	body, err := os.ReadFile(filepath.Join(mainPath, "v1.txt"))
-	if err != nil {
-		t.Fatalf("v1.txt missing after restore: %v", err)
-	}
-	if string(body) != "v1" {
-		t.Fatalf("v1.txt = %q", string(body))
-	}
-	// v2.txt is gone — restore replaced main wholesale.
-	if _, err := os.Stat(filepath.Join(mainPath, "v2.txt")); !os.IsNotExist(err) {
-		t.Fatalf("v2.txt still present after restore: %v", err)
-	}
-	// Original snapshot dir untouched.
-	if _, err := os.Stat(filepath.Join(v1.DirPath, "v1.txt")); err != nil {
-		t.Fatalf("snapshot dir lost: %v", err)
-	}
-}
-
-func TestWorkDir_RestoreFromUnknownSnapshotErrors(t *testing.T) {
-	m, _, _ := newWorkDir(t)
-	if err := m.EnsureThread("t1"); err != nil {
-		t.Fatalf("EnsureThread: %v", err)
-	}
-	if err := m.RestoreFromSnapshot("t1", "no-such-id"); err == nil {
-		t.Fatal("RestoreFromSnapshot(unknown) = nil, want error")
-	}
-}
-
-func TestWorkDir_PruneSnapshotsKeepsManualAndCapsAutos(t *testing.T) {
-	m, s, _ := newWorkDir(t)
-	if err := m.EnsureThread("t1"); err != nil {
-		t.Fatalf("EnsureThread: %v", err)
-	}
-
-	// One manual snapshot — must survive the prune regardless.
-	manual, err := m.Snapshot("t1", SnapshotSpec{Label: "manual"})
-	if err != nil {
-		t.Fatalf("manual snapshot: %v", err)
-	}
-
-	// Create SnapshotRetentionLimit + 5 auto snapshots. Sleep 1ms between
-	// each so created_at values are distinct and the newest-first ordering
-	// in PruneSnapshots is deterministic.
-	for i := 0; i < SnapshotRetentionLimit+5; i++ {
-		if _, err := m.Snapshot("t1", SnapshotSpec{Auto: true}); err != nil {
-			t.Fatalf("auto snapshot %d: %v", i, err)
-		}
-		time.Sleep(time.Millisecond)
-	}
-
-	pruned, err := m.PruneSnapshots("t1")
-	if err != nil {
-		t.Fatalf("PruneSnapshots: %v", err)
-	}
-	if len(pruned) != 5 {
-		t.Fatalf("pruned %d, want 5", len(pruned))
-	}
-	// Manual must still be there.
-	if _, err := s.GetDesignSnapshot("t1", manual.ID); err != nil {
-		t.Fatalf("manual snapshot lost: %v", err)
-	}
-	// Verify count: manual + 20 auto kept = 21.
-	got, err := s.ListDesignSnapshots("t1")
-	if err != nil {
-		t.Fatalf("ListDesignSnapshots: %v", err)
-	}
-	if len(got) != SnapshotRetentionLimit+1 {
-		t.Fatalf("post-prune count = %d, want %d", len(got), SnapshotRetentionLimit+1)
-	}
-}
-
 func TestWorkDir_WipeRemovesEntireThreadTree(t *testing.T) {
-	m, _, base := newWorkDir(t)
+	m, base := newWorkDir(t)
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}

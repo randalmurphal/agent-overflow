@@ -36,7 +36,7 @@ const (
 // WatchSubject classifies which subtree of the per-thread working
 // directory changed. The frontend dispatches different events for
 // each — main reloads the iframe, options refreshes the options
-// panel, snapshots refreshes the snapshot list.
+// panel.
 type WatchSubject string
 
 const (
@@ -44,11 +44,6 @@ const (
 	WatchSubjectMain WatchSubject = "main"
 	// WatchSubjectOptions corresponds to a change inside options/.
 	WatchSubjectOptions WatchSubject = "options"
-	// WatchSubjectSnapshots corresponds to a change inside snapshots/.
-	// Currently emitted only by snapshot creation/restore inside this
-	// process, but watching the dir keeps us honest if anything else
-	// touches it.
-	WatchSubjectSnapshots WatchSubject = "snapshots"
 )
 
 // WatchEvent is one debounced summary of fs activity for a thread.
@@ -270,9 +265,9 @@ func drainPendingEvents(ch chan notify.EventInfo, threadDir string, pending *pen
 
 // classifyEvent maps an absolute path inside threadDir to its subject.
 // Returns (subject, setID, true) for accepted events. Paths outside the
-// thread tree, or ones that look like our own atomic-write tmp files,
-// are rejected to keep the agent's writes from triggering self-events
-// during snapshot/restore.
+// thread tree, or ones that look like workdir.go's atomic-write staging
+// files (`<path>.tmp` sidecars from writeBytes), are rejected to avoid
+// double-firing once for the tmp-write and again for the rename target.
 func classifyEvent(threadDir, abs string) (WatchSubject, string, bool) {
 	threadDir = filepath.Clean(threadDir)
 	abs = filepath.Clean(abs)
@@ -284,15 +279,12 @@ func classifyEvent(threadDir, abs string) (WatchSubject, string, bool) {
 	if len(parts) == 0 {
 		return "", "", false
 	}
-	// Suppress events from our own tmp-rename writes. The watcher loop
-	// would otherwise see the .tmp create/write before the rename and
-	// re-emit, doubling reload counts during heavy iteration. We have
-	// to scan ALL segments because copyTreeAtomic stages files under
-	// `snapshots/{snapID}.tmp-{uuid}/...` — only the parent directory
-	// segment carries the tmp marker; the file inside it (`index.html`)
-	// looks innocuous on its own. Same for `restore-` rollbacks.
+	// Suppress events from workdir.go's atomic-write staging files
+	// (writeBytes uses a `<path>.tmp` sidecar before rename). Without
+	// this we'd double-fire reload events: once for the tmp-write and
+	// again for the rename target.
 	for _, p := range parts {
-		if isTmpSegment(p) {
+		if strings.HasSuffix(p, ".tmp") {
 			return "", "", false
 		}
 	}
@@ -305,67 +297,7 @@ func classifyEvent(threadDir, abs string) (WatchSubject, string, bool) {
 			setID = parts[1]
 		}
 		return WatchSubjectOptions, setID, true
-	case subdirSnapshots:
-		return WatchSubjectSnapshots, "", true
 	default:
 		return "", "", false
 	}
-}
-
-// isTmpSegment matches one path component against the atomic-write
-// markers Workdir uses. Anchored prefix/suffix patterns instead of
-// substring matches: `theme.tmp-dark.css` is a real CSS file the agent
-// might write, not one of our staging dirs.
-func isTmpSegment(part string) bool {
-	if part == "" {
-		return false
-	}
-	if strings.HasSuffix(part, ".tmp") {
-		return true
-	}
-	// copyTreeAtomic stages directories as `<final>.tmp-<uuid>` and
-	// rename-aside as `<final>.old-<uuid>`. RestoreFromSnapshot uses
-	// `main.restore-<uuid>` similarly. Anchor the markers as the start
-	// of the trailing suffix (after the final `.`) so user-named files
-	// like `theme.tmp-dark.css` aren't suppressed.
-	for _, marker := range tmpSegmentMarkers {
-		idx := strings.LastIndex(part, marker)
-		if idx < 0 {
-			continue
-		}
-		// Marker must be followed by hex/uuid-ish chars only — reject
-		// cases like `theme.tmp-dark.css` (extension after the marker
-		// content).
-		rest := part[idx+len(marker):]
-		if rest == "" {
-			return true
-		}
-		if isUUIDLike(rest) {
-			return true
-		}
-	}
-	return false
-}
-
-var tmpSegmentMarkers = []string{".tmp-", ".old-", ".restore-"}
-
-// isUUIDLike reports whether s consists only of hex digits and dashes
-// (the shape uuid.NewString produces). Tolerant — any subset works
-// because workdir.go formats are stable; the goal is to reject
-// human-named extensions like "dark.css".
-func isUUIDLike(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		switch {
-		case r >= '0' && r <= '9':
-		case r >= 'a' && r <= 'f':
-		case r >= 'A' && r <= 'F':
-		case r == '-':
-		default:
-			return false
-		}
-	}
-	return true
 }

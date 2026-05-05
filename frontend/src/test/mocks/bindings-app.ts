@@ -245,12 +245,9 @@ export const StartDiscussionByID = dispatch('StartDiscussionByID');
 export const GetChannelMessages = dispatch('GetChannelMessages');
 export const PostChannelMessage = dispatch('PostChannelMessage');
 
-export const ListDesignSnapshots = dispatch('ListDesignSnapshots');
 export const ListDesignOptions = dispatch('ListDesignOptions');
 export const LatestDesignOptionSet = dispatch('LatestDesignOptionSet');
 export const DismissDesignOptionSet = dispatch('DismissDesignOptionSet');
-export const CaptureSnapshot = dispatch('CaptureSnapshot');
-export const BranchFromSnapshot = dispatch('BranchFromSnapshot');
 export const EnsureDesignWorkdir = dispatch('EnsureDesignWorkdir');
 export const GetDesignWorkdirInfo = dispatch('GetDesignWorkdirInfo');
 export const IngestDiagnosticBatch = dispatch('IngestDiagnosticBatch');

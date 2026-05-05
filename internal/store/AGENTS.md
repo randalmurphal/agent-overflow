@@ -18,7 +18,6 @@ root `CLAUDE.md` principle 3.
 - `projects.go` — projects table (v13 introduces `project_id` FK).
 - `channels.go` / `discussions.go` / `discussion_types.go` —
   multi-agent discussion persistence.
-- `designs.go` / `design_types.go` — design-mode artifact metadata.
 - `attachments.go` — attachment metadata (bytes on disk are the
   `internal/attachment` package's problem).
 - `checkpoints.go` — message-checkpoint row/ref bookkeeping plus
@@ -33,8 +32,8 @@ root `CLAUDE.md` principle 3.
 
 - What BELONGS here:
   - Timeline items, payloads, thread metadata, channels / messages,
-    discussion templates, design-artifact metadata, attachment
-    metadata, projects, composer favorites, last-used model profile seeds.
+    discussion templates, attachment metadata, projects, composer
+    favorites, last-used model profile seeds.
   - Migrations, indices, CHECK constraints.
   - Query helpers that return typed rows.
 - What does NOT belong here:

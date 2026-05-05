@@ -134,20 +134,7 @@ func (a *App) handleDesignWatcherEvent(ev design.WatchEvent) {
 			"threadId": ev.ThreadID,
 			"setId":    ev.SetID,
 		})
-	case design.WatchSubjectSnapshots:
-		a.emit("design:snapshots-update", map[string]any{
-			"threadId": ev.ThreadID,
-		})
 	}
-}
-
-// ListDesignSnapshots returns persisted snapshot metadata for a thread,
-// newest first.
-func (a *App) ListDesignSnapshots(threadID string) ([]design.Snapshot, error) {
-	if a.store == nil {
-		return nil, fmt.Errorf("store unavailable")
-	}
-	return a.store.ListDesignSnapshots(threadID)
 }
 
 // ListDesignOptions returns the option ids inside `options/{setId}/`
@@ -216,11 +203,11 @@ func (a *App) DismissDesignOptionSet(threadID, setID string) error {
 // designWorkDirOverride returns the per-thread workdir to use as the
 // provider subprocess's CWD for design threads, or "" when the
 // session should keep the thread's WorkspacePath. The bundled system
-// prompt teaches the agent that `main/`, `options/`, and `snapshots/`
-// are sibling directories in its CWD; without this override the
-// agent's Read/Edit/Write would resolve against the project repo
-// instead, the file watcher would never fire on its writes, and
-// `pwd` would name the wrong place.
+// prompt teaches the agent that `main/` and `options/` are sibling
+// directories in its CWD; without this override the agent's
+// Read/Edit/Write would resolve against the project repo instead,
+// the file watcher would never fire on its writes, and `pwd` would
+// name the wrong place.
 //
 // Extracted from startSessionNow so the override is unit-testable
 // without booting a full session.
@@ -231,11 +218,11 @@ func (a *App) designWorkDirOverride(t store.Thread) (string, error) {
 	return a.designWorkdir.ThreadDir(t.ID)
 }
 
-// EnsureDesignWorkdir materialises the per-thread {main,options,
-// snapshots}/ layout (and seeds a placeholder index.html) for a design
-// thread. The frontend's DesignPreviewPanel calls this when the iframe
-// is about to mount so the file server has something to serve before
-// the agent's first edit. Idempotent — safe to call on every mount.
+// EnsureDesignWorkdir materialises the per-thread {main,options}/
+// layout (and seeds a placeholder index.html) for a design thread. The
+// frontend's DesignPreviewPanel calls this when the iframe is about
+// to mount so the file server has something to serve before the
+// agent's first edit. Idempotent — safe to call on every mount.
 func (a *App) EnsureDesignWorkdir(threadID string) error {
 	if a.designWorkdir == nil {
 		return fmt.Errorf("design workdir manager unavailable")
@@ -284,27 +271,6 @@ func (a *App) GetDesignWorkdirInfo(threadID string) (DesignWorkdirInfo, error) {
 		MainPath: mainPath,
 		Files:    files,
 	}, nil
-}
-
-// CaptureSnapshot freezes the current main/ directory as a labeled
-// snapshot. Auto-on-turn-start callers pass an empty label and Auto=true.
-func (a *App) CaptureSnapshot(threadID, label string) (design.Snapshot, error) {
-	if a.designWorkdir == nil {
-		return design.Snapshot{}, fmt.Errorf("design workdir manager unavailable")
-	}
-	return a.designWorkdir.Snapshot(threadID, design.SnapshotSpec{
-		Label: label,
-		Auto:  false,
-	})
-}
-
-// BranchFromSnapshot restores main/ from a snapshot's stored copy.
-// The snapshot row stays in the tree as a sibling.
-func (a *App) BranchFromSnapshot(threadID, snapshotID string) error {
-	if a.designWorkdir == nil {
-		return fmt.Errorf("design workdir manager unavailable")
-	}
-	return a.designWorkdir.RestoreFromSnapshot(threadID, snapshotID)
 }
 
 // IngestDiagnosticBatch is the wire-bound entry point for the

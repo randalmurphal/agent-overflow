@@ -58,9 +58,6 @@ interface DesignOptionsUpdatePayload {
   threadId: string;
   setId: string;
 }
-interface DesignSnapshotsUpdatePayload {
-  threadId: string;
-}
 interface DesignCaptureRequestPayload {
   threadId: string;
   requestId: string;
@@ -74,7 +71,6 @@ interface DesignCaptureRequestPayload {
  */
 export const DESIGN_RELOAD_MAIN_EVENT = 'ao-design:reload-main';
 export const DESIGN_OPTIONS_UPDATE_EVENT = 'ao-design:options-update';
-export const DESIGN_SNAPSHOTS_UPDATE_EVENT = 'ao-design:snapshots-update';
 export const DESIGN_CAPTURE_REQUEST_EVENT = 'ao-design:capture-request';
 
 function dispatchDomEvent(name: string, detail: unknown): void {
@@ -111,22 +107,14 @@ function handleDesignReloadMain(payload: DesignReloadMainPayload | undefined): v
   designReloadPending.set(threadId, handle);
 }
 
-// Same throttle pattern, applied to options-update and snapshots-update.
-// Snapshot creation runs a recursive copy that produces a burst of fs
-// events even with the watcher's tmp-suppression — without throttling
-// the snapshot panel re-fetches once per file. Options sets get the
-// same treatment for symmetry; options panel refetches happen via
-// `ListDesignSnapshots`-style RPCs that don't need to fire per file.
+// Same throttle pattern, applied to options-update. Without throttling
+// the options panel re-fetches once per file written into options/.
 const DESIGN_OTHER_THROTTLE_MS = 250;
 type DesignThrottleMaps = {
   lastFire: Map<string, number>;
   pending: Map<string, ReturnType<typeof setTimeout>>;
 };
 const designOptionsThrottle: DesignThrottleMaps = {
-  lastFire: new Map(),
-  pending: new Map(),
-};
-const designSnapshotsThrottle: DesignThrottleMaps = {
   lastFire: new Map(),
   pending: new Map(),
 };
@@ -1062,19 +1050,6 @@ export function setupEventListeners(): () => void {
     },
   );
 
-  // design:snapshots-update — file watcher saw a snapshots/ change.
-  // The snapshot list refetches on this event.
-  const cancelDesignSnapshotsUpdate = wailsEventOn<DesignSnapshotsUpdatePayload>(
-    'design:snapshots-update',
-    (payload) => {
-      if (!payload?.threadId) return;
-      const detail = payload;
-      fireThrottled(designSnapshotsThrottle, payload.threadId, DESIGN_OTHER_THROTTLE_MS, () => {
-        dispatchDomEvent(DESIGN_SNAPSHOTS_UPDATE_EVENT, detail);
-      });
-    },
-  );
-
   // design:capture-request — agent invoked the read_screenshot tool and
   // is waiting for the frontend to capture the live iframe. Forwarded as
   // a DOM event so the preview panel can drive the capture against its
@@ -1158,7 +1133,6 @@ export function setupEventListeners(): () => void {
     cancelTransportGap();
     cancelDesignReloadMain();
     cancelDesignOptionsUpdate();
-    cancelDesignSnapshotsUpdate();
     cancelDesignCaptureRequest();
     cancelModeChanged();
     cancelRuntimeModeChanged();
@@ -1170,7 +1144,6 @@ export function setupEventListeners(): () => void {
     designReloadPending.clear();
     designReloadLastFireAt.clear();
     clearDesignThrottle(designOptionsThrottle);
-    clearDesignThrottle(designSnapshotsThrottle);
   };
 }
 
