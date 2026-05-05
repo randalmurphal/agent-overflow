@@ -327,6 +327,42 @@ export class DesignOptionSet {
 }
 
 /**
+ * DesignWorkdirInfo describes the on-disk state of a design thread's
+ * main/ directory: the absolute path and a flat manifest of the
+ * regular files directly inside. Used by the "Send to thread" flow
+ * in the design preview panel to seed a brand-new chat thread's
+ * draft with a reference back to the in-progress design.
+ */
+export class DesignWorkdirInfo {
+    "mainPath": string;
+    "files": string[];
+
+    /** Creates a new DesignWorkdirInfo instance. */
+    constructor($$source: Partial<DesignWorkdirInfo> = {}) {
+        if (!("mainPath" in $$source)) {
+            this["mainPath"] = "";
+        }
+        if (!("files" in $$source)) {
+            this["files"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DesignWorkdirInfo instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DesignWorkdirInfo {
+        const $$createField1_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("files" in $$parsedSource) {
+            $$parsedSource["files"] = $$createField1_0($$parsedSource["files"]);
+        }
+        return new DesignWorkdirInfo($$parsedSource as Partial<DesignWorkdirInfo>);
+    }
+}
+
+/**
  * DirectoryEntry is one row inside a DirectoryListing.
  * IsRepo is only populated for directory entries; files always report
  * IsRepo=false regardless of name.

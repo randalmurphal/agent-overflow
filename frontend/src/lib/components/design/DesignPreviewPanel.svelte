@@ -38,6 +38,7 @@
   import Monitor from 'lucide-svelte/icons/monitor';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import MessagesSquare from 'lucide-svelte/icons/messages-square';
+  import MessageSquarePlus from 'lucide-svelte/icons/message-square-plus';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
@@ -49,6 +50,8 @@
     EnsureDesignWorkdir,
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
+  import { errString } from '../../utils/errors';
+  import { sendDesignToThread } from '../../utils/sendDesignToThread';
   import {
     DESIGN_VIEWPORT_WIDTHS,
     type Diagnostic,
@@ -69,6 +72,7 @@
   let iframeEl: HTMLIFrameElement | undefined = $state(undefined);
   let cacheBust = $state(0);
   let snapshotInFlight = $state(false);
+  let sendingToThread = $state(false);
 
   // workdirReadyForThread is the thread id whose {main,options,
   // snapshots}/ layout has been confirmed via EnsureDesignWorkdir. We
@@ -112,8 +116,7 @@
       })
       .catch((err) => {
         if (cancelled) return;
-        const message = err instanceof Error ? err.message : String(err);
-        addToast('error', `Design preview unavailable: ${message}`);
+        addToast('error', `Design preview unavailable: ${errString(err)}`);
       });
     return () => {
       cancelled = true;
@@ -176,10 +179,35 @@
       addToast('success', label ? `Snapshot "${label}" captured` : 'Snapshot captured');
       await refreshSnapshots(threadId);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      addToast('error', `Snapshot failed: ${message}`);
+      addToast('error', `Snapshot failed: ${errString(err)}`);
     } finally {
       snapshotInFlight = false;
+    }
+  }
+
+  // -- Send to thread ---------------------------------------------------
+  //
+  // Click handler is a thin wrapper around `sendDesignToThread` in
+  // utils/sendDesignToThread.ts — that helper owns the
+  // capture → GetDesignWorkdirInfo → CreateThread → UploadAttachment →
+  // SaveDraft → switch pipeline plus the orphan-thread rollback on
+  // partial failure. Keeping the orchestration outside the component
+  // honors the frontend AGENTS guidance to keep .svelte files focused
+  // on rendering + input capture and keeps the file under the
+  // ~300-line ceiling.
+
+  async function onSendToThread(): Promise<void> {
+    if (sendingToThread) return;
+    const iframe = iframeEl;
+    if (!iframe) {
+      addToast('error', 'Send to thread: preview iframe not ready');
+      return;
+    }
+    sendingToThread = true;
+    try {
+      await sendDesignToThread({ pane, iframe });
+    } finally {
+      sendingToThread = false;
     }
   }
 
@@ -289,7 +317,7 @@
       const pngBase64 = await requestIframeCapture(iframe, requestId);
       await IngestScreenshot({ requestId, pngBase64 });
     } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
+      const reason = errString(err);
       // Toast surfaces the failure to the user even when the agent's
       // tool-result panel is offscreen. The most common reason is a
       // capture timeout, which historically masked an unrelated
@@ -395,6 +423,25 @@
       data-testid="design-capture-snapshot"
     >
       <span>{snapshotInFlight ? 'Capturing…' : 'Snapshot'}</span>
+    </button>
+
+    <button
+      type="button"
+      onclick={() => void onSendToThread()}
+      disabled={!iframeSrc || sendingToThread}
+      title="Open a new chat thread seeded with the design path + screenshot"
+      aria-label="Send design to a new chat thread"
+      class={[
+        'inline-flex items-center gap-1 rounded-[var(--radius-field)]',
+        'border border-border-subtle bg-surface-0 px-2 py-1',
+        'text-[12px] text-fg cursor-pointer transition-colors',
+        'hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+        'disabled:opacity-60 disabled:cursor-not-allowed',
+      ].join(' ')}
+      data-testid="design-send-to-thread"
+    >
+      <Icon icon={MessageSquarePlus} size={12} strokeWidth={1.7} class="shrink-0" />
+      <span>{sendingToThread ? 'Sending…' : 'Send to thread'}</span>
     </button>
 
     <span bind:this={dropdownTriggerEl} class="ml-auto inline-block">

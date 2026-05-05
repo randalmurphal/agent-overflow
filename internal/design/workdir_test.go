@@ -428,6 +428,132 @@ func TestWorkDir_MarkOptionSetPickedIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestWorkDir_ListMainFilesReturnsTopLevelRegularFiles(t *testing.T) {
+	m, _, base := newWorkDir(t)
+	if err := m.EnsureThread("t1"); err != nil {
+		t.Fatalf("EnsureThread: %v", err)
+	}
+	mainDir := filepath.Join(base, "t1", "main")
+	for _, name := range []string{"app.js", "style.css", "index.html"} {
+		if err := os.WriteFile(filepath.Join(mainDir, name), []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	got, err := m.ListMainFiles("t1")
+	if err != nil {
+		t.Fatalf("ListMainFiles: %v", err)
+	}
+	want := []string{"app.js", "index.html", "style.css"}
+	if len(got) != len(want) {
+		t.Fatalf("ListMainFiles returned %d entries (%v), want %d (%v)", len(got), got, len(want), want)
+	}
+	for i, name := range want {
+		if got[i] != name {
+			t.Fatalf("ListMainFiles[%d] = %q, want %q (full %v)", i, got[i], name, got)
+		}
+	}
+}
+
+func TestWorkDir_ListMainFilesSkipsDotfilesAndSubdirs(t *testing.T) {
+	m, _, base := newWorkDir(t)
+	if err := m.EnsureThread("t1"); err != nil {
+		t.Fatalf("EnsureThread: %v", err)
+	}
+	mainDir := filepath.Join(base, "t1", "main")
+	if err := os.WriteFile(filepath.Join(mainDir, "a.html"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write a.html: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(mainDir, ".hidden"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write dotfile: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(mainDir, "components"), 0o755); err != nil {
+		t.Fatalf("mkdir components: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(mainDir, "components", "nested.html"), []byte("y"), 0o644); err != nil {
+		t.Fatalf("write nested.html: %v", err)
+	}
+	got, err := m.ListMainFiles("t1")
+	if err != nil {
+		t.Fatalf("ListMainFiles: %v", err)
+	}
+	// EnsureThread already seeded index.html, so we expect that + a.html.
+	want := []string{"a.html", "index.html"}
+	if len(got) != len(want) {
+		t.Fatalf("ListMainFiles returned %v, want %v", got, want)
+	}
+	for i, name := range want {
+		if got[i] != name {
+			t.Fatalf("ListMainFiles[%d] = %q, want %q (full %v)", i, got[i], name, got)
+		}
+	}
+}
+
+func TestWorkDir_ListMainFilesReturnsEmptyForMissingMain(t *testing.T) {
+	m, _, _ := newWorkDir(t)
+	got, err := m.ListMainFiles("t1")
+	if err != nil {
+		t.Fatalf("ListMainFiles on un-ensured thread: %v", err)
+	}
+	if got == nil {
+		t.Fatal("ListMainFiles returned nil; expected empty slice for caller-side json marshal")
+	}
+	if len(got) != 0 {
+		t.Fatalf("ListMainFiles on missing main = %v, want empty", got)
+	}
+}
+
+// TestWorkDir_ListMainFilesSkipsSymlinks pins the security-relevant
+// invariant that ListMainFiles uses entry.Type() (which doesn't follow
+// symlinks) rather than Info().Mode() (which does on some
+// filesystems). A future "tighten this up" refactor that swaps the
+// two would silently start listing symlink targets in the manifest;
+// this test fails before that lands. The threat is information
+// disclosure: the manifest is interpolated into a chat-thread message
+// body and would otherwise leak whatever the symlink points at.
+func TestWorkDir_ListMainFilesSkipsSymlinks(t *testing.T) {
+	m, _, base := newWorkDir(t)
+	if err := m.EnsureThread("t1"); err != nil {
+		t.Fatalf("EnsureThread: %v", err)
+	}
+	mainDir := filepath.Join(base, "t1", "main")
+	if err := os.WriteFile(filepath.Join(mainDir, "real.html"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write real.html: %v", err)
+	}
+	// Write a symlink that targets a path outside the workdir; the
+	// filter should drop it regardless of whether the target exists.
+	target := filepath.Join(t.TempDir(), "outside.html")
+	if err := os.WriteFile(target, []byte("leak"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(mainDir, "leak.html")); err != nil {
+		t.Skipf("symlink unsupported on this filesystem: %v", err)
+	}
+	got, err := m.ListMainFiles("t1")
+	if err != nil {
+		t.Fatalf("ListMainFiles: %v", err)
+	}
+	for _, name := range got {
+		if name == "leak.html" {
+			t.Fatalf("ListMainFiles included symlink %q in %v", name, got)
+		}
+	}
+	// Real file + seeded index.html should both be present.
+	want := map[string]bool{"index.html": true, "real.html": true}
+	for _, name := range got {
+		delete(want, name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("ListMainFiles missing %v (full result %v)", want, got)
+	}
+}
+
+func TestWorkDir_ListMainFilesRejectsBlankThreadID(t *testing.T) {
+	m, _, _ := newWorkDir(t)
+	if _, err := m.ListMainFiles("  "); err == nil {
+		t.Fatal("ListMainFiles with blank thread id returned nil error")
+	}
+}
+
 func TestWorkDir_OptionsPathSanitizesAndRejectsEscape(t *testing.T) {
 	m, _, base := newWorkDir(t)
 	if err := m.EnsureThread("t1"); err != nil {

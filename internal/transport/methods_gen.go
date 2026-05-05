@@ -55,6 +55,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetAttachmentThumbnail", ID: 3414107538}, // main.App.GetAttachmentThumbnail
 	{Name: "GetChannelMessages", ID: 3595031866}, // main.App.GetChannelMessages
 	{Name: "GetContextSettings", ID: 3416004963}, // main.App.GetContextSettings
+	{Name: "GetDesignWorkdirInfo", ID: 2179885147}, // main.App.GetDesignWorkdirInfo
 	{Name: "GetDiscussion", ID: 1924583939}, // main.App.GetDiscussion
 	{Name: "GetDraft", ID: 875977146}, // main.App.GetDraft
 	{Name: "GetEditorSettings", ID: 1655853383}, // main.App.GetEditorSettings

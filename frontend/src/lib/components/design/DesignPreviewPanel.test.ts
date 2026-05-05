@@ -287,6 +287,190 @@ describe('<DesignPreviewPanel>', () => {
     expect(ingest!.mock.calls.length).toBe(0);
   });
 
+  // Send-to-thread bundle: capture iframe → GetDesignWorkdirInfo →
+  // CreateThread (chat) → UploadAttachment → SaveDraft → switch.
+  // The test pins the binding contract end-to-end so a future refactor
+  // that drops one of these calls (or reorders the dependency between
+  // upload-then-draft) gets caught at unit-test scope rather than at
+  // the integration test or, worse, in the user's hands when the new
+  // chat thread comes up missing the screenshot.
+  describe('send to thread', () => {
+    function mockSendToThreadDeps() {
+      setBindingMock('GetDesignWorkdirInfo', async () => ({
+        mainPath: '/var/lib/agent-overflow/design/thread-1/main',
+        files: ['index.html', 'style.css'],
+      }));
+      const createMock = setBindingMock('CreateThread', async () => ({
+        id: 'new-chat',
+        title: 'Design thread – follow-up',
+        provider: 'claude',
+        workspacePath: '/tmp',
+        projectPath: '/tmp',
+        projectId: 'proj-design',
+        mode: 'chat',
+        model: 'claude-sonnet-4-6',
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+      }));
+      const uploadMock = setBindingMock('UploadAttachment', async () => ({
+        id: 'att-1',
+        filename: 'design-preview.png',
+        mimeType: 'image/png',
+      }));
+      const saveDraftMock = setBindingMock('SaveDraft', async () => {});
+      const deleteMock = setBindingMock('DeleteThread', async () => {});
+      return { createMock, uploadMock, saveDraftMock, deleteMock };
+    }
+
+    it('captures the iframe, creates a chat thread, uploads the screenshot, and seeds the draft', async () => {
+      const pane = await buildPane();
+      const { createMock, uploadMock, saveDraftMock } = mockSendToThreadDeps();
+      const { container, getByTestId } = render(DesignPreviewPanel, {
+        props: { pane },
+      });
+      await waitForIframe(container);
+
+      await fireEvent.click(getByTestId('design-send-to-thread'));
+
+      // Wait on the last binding in the chain so the assertions don't
+      // race the awaited handler.
+      await waitFor(() => expect(saveDraftMock).toHaveBeenCalled());
+
+      // 1. iframe capture happened — same primitive read_screenshot
+      // uses, so we already know the postMessage round-trip works.
+      expect(vi.mocked(requestIframeCapture)).toHaveBeenCalled();
+
+      // 2. CreateThread was called with chat mode + the source thread's
+      // project / workspace inheritance. Inheriting workspaceOverride
+      // from the source matters: the new chat thread is rooted in the
+      // same project repo, not in the design workdir, so the agent's
+      // CWD lines up with the project codebase the user wants to
+      // discuss the design alongside.
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const createArgs = createMock.mock.calls[0][0] as {
+        projectId: string;
+        mode: string;
+        workspaceOverride: string;
+        title: string;
+      };
+      expect(createArgs.projectId).toBe('proj-design');
+      expect(createArgs.mode).toBe('chat');
+      expect(createArgs.workspaceOverride).toBe('/tmp');
+      expect(createArgs.title).toContain('Design thread');
+
+      // 3. UploadAttachment was scoped to the NEW thread (not the
+      // source design thread). The design thread already has a workdir
+      // for its own screenshots; the chat thread needs its own
+      // attachment row for the message draft.
+      expect(uploadMock).toHaveBeenCalledTimes(1);
+      expect(uploadMock.mock.calls[0][0]).toBe('new-chat');
+      expect(uploadMock.mock.calls[0][1]).toBe('design-preview.png');
+      expect(uploadMock.mock.calls[0][2]).toBe('image/png');
+      expect(uploadMock.mock.calls[0][3]).toBe('ZmFrZS1wbmc=');
+
+      // 4. SaveDraft seeded the new thread's composer with the path,
+      // the manifest, and the uploaded attachment id.
+      expect(saveDraftMock).toHaveBeenCalledTimes(1);
+      const draftArgs = saveDraftMock.mock.calls[0];
+      expect(draftArgs[0]).toBe('new-chat');
+      const body = draftArgs[1] as string;
+      expect(body).toContain('/var/lib/agent-overflow/design/thread-1/main');
+      expect(body).toContain('index.html');
+      expect(body).toContain('style.css');
+      expect(body).toMatch(/screenshot/i);
+      expect(draftArgs[2]).toEqual(['att-1']);
+    });
+
+    it('still creates the chat thread when capture rejects, just without an attachment', async () => {
+      // Capture is best-effort: modern-screenshot is fragile inside
+      // our sandbox=allow-scripts iframe (its internal __SANDBOX__
+      // helper iframe gets blocked by opaque-origin cross-frame
+      // restrictions). The text body — path + manifest — is the
+      // load-bearing context for the new chat thread; the screenshot
+      // is a nice-to-have. So a capture rejection must NOT cancel the
+      // whole pipeline. This test pins that contract: the new thread
+      // is created, draft is seeded, but no UploadAttachment fires
+      // and the draft has zero attachment ids.
+      const pane = await buildPane();
+      const { createMock, uploadMock, saveDraftMock, deleteMock } = mockSendToThreadDeps();
+      vi.mocked(requestIframeCapture).mockRejectedValueOnce(new Error('iframe gone'));
+      const { container, getByTestId } = render(DesignPreviewPanel, {
+        props: { pane },
+      });
+      await waitForIframe(container);
+
+      await fireEvent.click(getByTestId('design-send-to-thread'));
+
+      await waitFor(() => expect(saveDraftMock).toHaveBeenCalled());
+      expect(createMock).toHaveBeenCalledTimes(1);
+      // Skipped — no PNG bytes to upload.
+      expect(uploadMock).not.toHaveBeenCalled();
+      // Draft was still seeded with the path + manifest, just with an
+      // empty attachment list.
+      const draftArgs = saveDraftMock.mock.calls[0];
+      expect(draftArgs[0]).toBe('new-chat');
+      expect(draftArgs[1]).toMatch(/Design context/);
+      expect(draftArgs[2]).toEqual([]);
+      // Nothing to roll back — every committed write succeeded.
+      expect(deleteMock).not.toHaveBeenCalled();
+    });
+
+    it('rolls back the orphan thread when SaveDraft fails after CreateThread succeeds', async () => {
+      const pane = await buildPane();
+      const { createMock, uploadMock, deleteMock } = mockSendToThreadDeps();
+      // Override SaveDraft to reject AFTER CreateThread + UploadAttachment land.
+      setBindingMock('SaveDraft', async () => {
+        throw new Error('disk full');
+      });
+      const { container, getByTestId } = render(DesignPreviewPanel, {
+        props: { pane },
+      });
+      await waitForIframe(container);
+
+      await fireEvent.click(getByTestId('design-send-to-thread'));
+
+      // Wait for the rollback DeleteThread to fire — the load-bearing
+      // assertion. Without the rollback the orphan thread sits in the
+      // sidebar with no draft / no attachment.
+      await waitFor(() => expect(deleteMock).toHaveBeenCalled());
+      expect(createMock).toHaveBeenCalled();
+      expect(uploadMock).toHaveBeenCalled();
+      // DeleteThread targets the just-created thread id.
+      expect(deleteMock.mock.calls[0][0]).toBe('new-chat');
+    });
+
+    it('debounces rapid double-clicks via the sendingToThread flag', async () => {
+      const pane = await buildPane();
+      const { createMock } = mockSendToThreadDeps();
+      // Hold the capture promise so the second click lands while the
+      // first is still in-flight.
+      let resolveCapture: ((value: string) => void) | null = null;
+      vi.mocked(requestIframeCapture).mockImplementation(
+        () => new Promise<string>((res) => {
+          resolveCapture = res;
+        }),
+      );
+      const { container, getByTestId } = render(DesignPreviewPanel, {
+        props: { pane },
+      });
+      await waitForIframe(container);
+
+      const button = getByTestId('design-send-to-thread') as HTMLButtonElement;
+      await fireEvent.click(button);
+      // Wait for the first click to set sendingToThread=true (button
+      // disabled). Without this synchronization the second click could
+      // fire before the first's microtask flushed.
+      await waitFor(() => expect(button.disabled).toBe(true));
+      await fireEvent.click(button);
+
+      resolveCapture!('ZmFrZS1wbmc=');
+      await waitFor(() => expect(createMock).toHaveBeenCalled());
+      // The second click was a no-op because sendingToThread was true.
+      expect(createMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('refreshes snapshots when the snapshots-update event fires', async () => {
     const pane = await buildPane();
     const list = setBindingMock('ListDesignSnapshots', async () => [

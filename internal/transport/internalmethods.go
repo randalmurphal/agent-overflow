@@ -219,6 +219,10 @@ var LocalOnlyMethods = map[string]bool{
 	"EnsureDesignWorkdir":     true,
 	"DismissDesignOptionSet":  true,
 	"LatestDesignOptionSet":   true,
+	// GetDesignWorkdirInfo returns the absolute design-workdir main path
+	// + the file manifest. Same disclosure shape as ListDesignSnapshots
+	// — leaking on-disk layout to a LAN token-holder. Lock down loopback-only.
+	"GetDesignWorkdirInfo": true,
 	// ListDesignSnapshots returns absolute filesystem paths under the
 	// user config dir (DirPath). Same disclosure shape as
 	// ListThreadCheckpoints — leaking on-disk layout to a LAN

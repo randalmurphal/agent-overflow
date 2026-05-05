@@ -160,6 +160,44 @@ func (m *WorkDirManager) ListOptions(threadID, setID string) ([]string, error) {
 	return out, nil
 }
 
+// ListMainFiles returns the regular file names directly inside a
+// thread's main/ directory. The result is sorted lexically (os.ReadDir
+// already sorts by filename). Dotfiles and subdirectories are skipped:
+// the caller — the "Send to thread" frontend flow — uses this to seed
+// a manifest line in a brand-new chat thread's draft. A flat top-level
+// list is enough for that seed; the agent can ls subdirs itself once
+// it has the absolute path.
+//
+// Returns an empty slice (no error) when main/ does not exist yet —
+// EnsureDesignWorkdir creates it on iframe mount but a caller racing
+// that path shouldn't see a hard error.
+func (m *WorkDirManager) ListMainFiles(threadID string) ([]string, error) {
+	threadDir, err := m.threadDir(threadID)
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(threadDir, subdirMain)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return []string{}, nil
+		}
+		return nil, fmt.Errorf("design: list main files: %w", err)
+	}
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == "" || strings.HasPrefix(name, ".") {
+			continue
+		}
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out, nil
+}
+
 // IsOptionSetPicked reports whether the user has picked an option
 // from the given set. Reads the .picked marker file written by
 // MarkOptionSetPicked. Missing set dir or missing marker → false.

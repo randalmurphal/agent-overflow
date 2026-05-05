@@ -247,6 +247,45 @@ func (a *App) EnsureDesignWorkdir(threadID string) error {
 	return nil
 }
 
+// DesignWorkdirInfo describes the on-disk state of a design thread's
+// main/ directory: the absolute path and a flat manifest of the
+// regular files directly inside. Used by the "Send to thread" flow
+// in the design preview panel to seed a brand-new chat thread's
+// draft with a reference back to the in-progress design.
+type DesignWorkdirInfo struct {
+	MainPath string   `json:"mainPath"`
+	Files    []string `json:"files"`
+}
+
+// GetDesignWorkdirInfo returns the absolute path to the thread's main/
+// directory and the names of regular files directly inside it. The
+// workdir is normally already ensured by EnsureDesignWorkdir on iframe
+// mount; this binding tolerates a missing main/ directory by returning
+// an empty file manifest (ListMainFiles' contract) so a caller racing
+// the iframe-mount effect doesn't see a hard error.
+//
+// Listed in LocalOnlyMethods because the absolute path is filesystem
+// state we don't want a remote peer enumerating. Verb prefix mirrors
+// sibling getter bindings (GetSettings, GetThreadRuntimeMode) and
+// keeps the method name distinct from the DesignWorkdirInfo struct.
+func (a *App) GetDesignWorkdirInfo(threadID string) (DesignWorkdirInfo, error) {
+	if a.designWorkdir == nil {
+		return DesignWorkdirInfo{}, fmt.Errorf("design workdir manager unavailable")
+	}
+	mainPath, err := a.designWorkdir.MainPath(threadID)
+	if err != nil {
+		return DesignWorkdirInfo{}, err
+	}
+	files, err := a.designWorkdir.ListMainFiles(threadID)
+	if err != nil {
+		return DesignWorkdirInfo{}, err
+	}
+	return DesignWorkdirInfo{
+		MainPath: mainPath,
+		Files:    files,
+	}, nil
+}
+
 // CaptureSnapshot freezes the current main/ directory as a labeled
 // snapshot. Auto-on-turn-start callers pass an empty label and Auto=true.
 func (a *App) CaptureSnapshot(threadID, label string) (design.Snapshot, error) {

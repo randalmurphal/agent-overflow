@@ -37,6 +37,63 @@ func TestDesignBindingsCaptureAndListSnapshots(t *testing.T) {
 	}
 }
 
+func TestGetDesignWorkdirInfoReturnsAbsolutePathAndManifest(t *testing.T) {
+	app := newTestAppWithDesign(t)
+
+	if err := app.designWorkdir.EnsureThread("thread-design"); err != nil {
+		t.Fatalf("EnsureThread: %v", err)
+	}
+	mainPath, err := app.designWorkdir.MainPath("thread-design")
+	if err != nil {
+		t.Fatalf("MainPath: %v", err)
+	}
+	// Drop two more files alongside the seeded index.html so the
+	// manifest is non-trivial and we can pin the sort order.
+	if err := os.WriteFile(filepath.Join(mainPath, "app.js"), []byte("//"), 0o644); err != nil {
+		t.Fatalf("WriteFile app.js: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(mainPath, "style.css"), []byte("/*"), 0o644); err != nil {
+		t.Fatalf("WriteFile style.css: %v", err)
+	}
+
+	info, err := app.GetDesignWorkdirInfo("thread-design")
+	if err != nil {
+		t.Fatalf("GetDesignWorkdirInfo: %v", err)
+	}
+	if !filepath.IsAbs(info.MainPath) {
+		t.Fatalf("MainPath = %q, want absolute", info.MainPath)
+	}
+	if info.MainPath != mainPath {
+		t.Fatalf("MainPath = %q, want %q", info.MainPath, mainPath)
+	}
+	want := []string{"app.js", "index.html", "style.css"}
+	if len(info.Files) != len(want) {
+		t.Fatalf("Files = %v, want %v", info.Files, want)
+	}
+	for i, name := range want {
+		if info.Files[i] != name {
+			t.Fatalf("Files[%d] = %q, want %q (full %v)", i, info.Files[i], name, info.Files)
+		}
+	}
+}
+
+func TestGetDesignWorkdirInfoReturnsEmptySliceForFreshThread(t *testing.T) {
+	app := newTestAppWithDesign(t)
+	// Don't EnsureThread — main/ does not exist yet. The binding
+	// must tolerate that and return Files as a non-nil empty slice
+	// (so the JSON marshal emits [], not null).
+	info, err := app.GetDesignWorkdirInfo("thread-fresh")
+	if err != nil {
+		t.Fatalf("GetDesignWorkdirInfo on fresh thread: %v", err)
+	}
+	if info.Files == nil {
+		t.Fatal("Files = nil, want empty slice (json contract)")
+	}
+	if len(info.Files) != 0 {
+		t.Fatalf("Files = %v, want empty", info.Files)
+	}
+}
+
 func TestDesignBranchFromSnapshotRestoresMain(t *testing.T) {
 	app := newTestAppWithDesign(t)
 

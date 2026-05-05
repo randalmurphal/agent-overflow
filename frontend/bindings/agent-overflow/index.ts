@@ -13,6 +13,7 @@ export {
     ContextSettingsUpdate,
     CreateThreadOptions,
     DesignOptionSet,
+    DesignWorkdirInfo,
     DirectoryEntry,
     DirectoryListing,
     Draft,
