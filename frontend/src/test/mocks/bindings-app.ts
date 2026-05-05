@@ -246,8 +246,10 @@ export const GetChannelMessages = dispatch('GetChannelMessages');
 export const PostChannelMessage = dispatch('PostChannelMessage');
 
 export const ListDesignSnapshots = dispatch('ListDesignSnapshots');
+export const ListDesignOptions = dispatch('ListDesignOptions');
 export const CaptureSnapshot = dispatch('CaptureSnapshot');
 export const BranchFromSnapshot = dispatch('BranchFromSnapshot');
+export const EnsureDesignWorkdir = dispatch('EnsureDesignWorkdir');
 export const IngestDiagnosticBatch = dispatch('IngestDiagnosticBatch');
 export const IngestScreenshot = dispatch('IngestScreenshot');
 export const FailScreenshot = dispatch('FailScreenshot');

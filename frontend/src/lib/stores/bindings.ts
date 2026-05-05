@@ -132,6 +132,7 @@ export {
   ListDesignOptions,
   CaptureSnapshot,
   BranchFromSnapshot,
+  EnsureDesignWorkdir,
   IngestDiagnosticBatch,
   IngestScreenshot,
   FailScreenshot,

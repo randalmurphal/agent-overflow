@@ -662,6 +662,7 @@ func (p *privilegedApp) IngestScreenshot() string      { return "ok" }
 func (p *privilegedApp) FailScreenshot() string        { return "ok" }
 func (p *privilegedApp) CaptureSnapshot() string       { return "ok" }
 func (p *privilegedApp) BranchFromSnapshot() string    { return "ok" }
+func (p *privilegedApp) EnsureDesignWorkdir() string   { return "ok" }
 func (p *privilegedApp) ListDesignSnapshots() string   { return "ok" }
 
 // 5. Local-FS bookkeeping.

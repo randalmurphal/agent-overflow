@@ -295,6 +295,17 @@ export function DeleteThread(id: string): $CancellablePromise<void> {
 }
 
 /**
+ * EnsureDesignWorkdir materialises the per-thread {main,options,
+ * snapshots}/ layout (and seeds a placeholder index.html) for a design
+ * thread. The frontend's DesignPreviewPanel calls this when the iframe
+ * is about to mount so the file server has something to serve before
+ * the agent's first edit. Idempotent — safe to call on every mount.
+ */
+export function EnsureDesignWorkdir(threadID: string): $CancellablePromise<void> {
+    return $Call.ByID(1465371311, threadID);
+}
+
+/**
  * FailScreenshot marks a pending capture as failed. Used when the
  * frontend's html-to-image conversion errors out.
  */

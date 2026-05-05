@@ -216,6 +216,7 @@ var LocalOnlyMethods = map[string]bool{
 	"FailScreenshot":        true,
 	"CaptureSnapshot":       true,
 	"BranchFromSnapshot":    true,
+	"EnsureDesignWorkdir":   true,
 	// ListDesignSnapshots returns absolute filesystem paths under the
 	// user config dir (DirPath). Same disclosure shape as
 	// ListThreadCheckpoints — leaking on-disk layout to a LAN

@@ -163,6 +163,18 @@ func (a *App) ListDesignOptions(threadID, setID string) ([]string, error) {
 	return a.designWorkdir.ListOptions(threadID, setID)
 }
 
+// EnsureDesignWorkdir materialises the per-thread {main,options,
+// snapshots}/ layout (and seeds a placeholder index.html) for a design
+// thread. The frontend's DesignPreviewPanel calls this when the iframe
+// is about to mount so the file server has something to serve before
+// the agent's first edit. Idempotent — safe to call on every mount.
+func (a *App) EnsureDesignWorkdir(threadID string) error {
+	if a.designWorkdir == nil {
+		return fmt.Errorf("design workdir manager unavailable")
+	}
+	return a.designWorkdir.EnsureThread(threadID)
+}
+
 // CaptureSnapshot freezes the current main/ directory as a labeled
 // snapshot. Auto-on-turn-start callers pass an empty label and Auto=true.
 func (a *App) CaptureSnapshot(threadID, label string) (design.Snapshot, error) {

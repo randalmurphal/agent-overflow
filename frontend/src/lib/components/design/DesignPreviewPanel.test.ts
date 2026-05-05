@@ -52,9 +52,24 @@ async function buildPane() {
   setBindingMock('ListItems', async () => []);
   setBindingMock('ListPayloadMetas', async () => []);
   setBindingMock('ListDesignSnapshots', async () => []);
+  setBindingMock('EnsureDesignWorkdir', async () => {});
   const pane = createThreadPane();
   await pane.switchThread(makeThread());
   return pane;
+}
+
+// Wait for the EnsureDesignWorkdir effect to resolve and the iframe
+// to mount. The component intentionally does not render the iframe
+// until the workdir is confirmed (so a fresh thread doesn't 404),
+// so every test that asserts on the iframe must wait for it.
+async function waitForIframe(container: HTMLElement): Promise<HTMLIFrameElement> {
+  return await waitFor(() => {
+    const iframe = container.querySelector(
+      'iframe[data-testid="design-preview-iframe"]',
+    ) as HTMLIFrameElement | null;
+    if (!iframe) throw new Error('iframe not yet mounted');
+    return iframe;
+  });
 }
 
 describe('<DesignPreviewPanel>', () => {
@@ -63,23 +78,42 @@ describe('<DesignPreviewPanel>', () => {
     vi.mocked(requestIframeCapture).mockResolvedValue('ZmFrZS1wbmc=');
   });
 
-  it('renders an iframe pointing at /design/{threadId}/main/ on mount', async () => {
+  it('renders an iframe pointing at /design/{threadId}/main/ once the workdir is ensured', async () => {
     const pane = await buildPane();
     const { container } = render(DesignPreviewPanel, { props: { pane } });
-    const iframe = container.querySelector('iframe[data-testid="design-preview-iframe"]') as HTMLIFrameElement | null;
-    expect(iframe).not.toBeNull();
-    const src = iframe!.getAttribute('src') ?? '';
+    const iframe = await waitForIframe(container);
+    const src = iframe.getAttribute('src') ?? '';
     expect(src.startsWith('/design/thread-1/main/?cb=')).toBe(true);
     // Sandbox is locked to allow-scripts only — no allow-same-origin
     // because the agent-rendered HTML is untrusted.
-    expect(iframe!.getAttribute('sandbox')).toBe('allow-scripts');
-    expect(iframe!.getAttribute('sandbox')).not.toMatch(/allow-same-origin/);
+    expect(iframe.getAttribute('sandbox')).toBe('allow-scripts');
+    expect(iframe.getAttribute('sandbox')).not.toMatch(/allow-same-origin/);
+  });
+
+  it('does not mount the iframe until EnsureDesignWorkdir resolves', async () => {
+    const pane = await buildPane();
+    // Override the resolved-immediately default installed by buildPane
+    // with a pending promise so we can observe the placeholder state.
+    let resolveEnsure: (() => void) | null = null;
+    setBindingMock(
+      'EnsureDesignWorkdir',
+      () => new Promise<void>((res) => {
+        resolveEnsure = res;
+      }),
+    );
+    const { container } = render(DesignPreviewPanel, { props: { pane } });
+    // Pending — iframe should not be in the DOM yet.
+    expect(container.querySelector('iframe[data-testid="design-preview-iframe"]')).toBeNull();
+    expect(container.textContent).toMatch(/Preparing preview/);
+    resolveEnsure!();
+    await waitForIframe(container);
   });
 
   it('refresh button bumps the cache-bust counter', async () => {
     const pane = await buildPane();
     const { container, getByTestId } = render(DesignPreviewPanel, { props: { pane } });
-    const initialSrc = container.querySelector('iframe')!.getAttribute('src')!;
+    const initialIframe = await waitForIframe(container);
+    const initialSrc = initialIframe.getAttribute('src')!;
     await fireEvent.click(getByTestId('design-refresh'));
     await waitFor(() => {
       const next = container.querySelector('iframe')!.getAttribute('src')!;
@@ -91,7 +125,7 @@ describe('<DesignPreviewPanel>', () => {
   it('viewport toggle updates the iframe width', async () => {
     const pane = await buildPane();
     const { container, getByRole } = render(DesignPreviewPanel, { props: { pane } });
-    let iframe = container.querySelector('iframe')!;
+    let iframe = await waitForIframe(container);
     expect(iframe.style.width).toBe('100%');
 
     await fireEvent.click(getByRole('button', { name: /mobile/i }));
@@ -108,7 +142,8 @@ describe('<DesignPreviewPanel>', () => {
   it('responds to the reload-main event by bumping the cache-bust', async () => {
     const pane = await buildPane();
     const { container } = render(DesignPreviewPanel, { props: { pane } });
-    const initialSrc = container.querySelector('iframe')!.getAttribute('src')!;
+    const initialIframe = await waitForIframe(container);
+    const initialSrc = initialIframe.getAttribute('src')!;
 
     window.dispatchEvent(
       new CustomEvent(DESIGN_RELOAD_MAIN_EVENT, { detail: { threadId: 'thread-1' } }),
@@ -122,7 +157,8 @@ describe('<DesignPreviewPanel>', () => {
   it('ignores reload-main events for other threads', async () => {
     const pane = await buildPane();
     const { container } = render(DesignPreviewPanel, { props: { pane } });
-    const initialSrc = container.querySelector('iframe')!.getAttribute('src')!;
+    const initialIframe = await waitForIframe(container);
+    const initialSrc = initialIframe.getAttribute('src')!;
     window.dispatchEvent(
       new CustomEvent(DESIGN_RELOAD_MAIN_EVENT, { detail: { threadId: 'someone-else' } }),
     );
@@ -134,11 +170,11 @@ describe('<DesignPreviewPanel>', () => {
 
   it('forwards iframe diagnostic postMessages via IngestDiagnosticBatch (debounced)', async () => {
     const pane = await buildPane();
+    const ingest = setBindingMock('IngestDiagnosticBatch', async () => {});
+    const { container } = render(DesignPreviewPanel, { props: { pane } });
+    const iframe = await waitForIframe(container);
     vi.useFakeTimers();
     try {
-      const ingest = setBindingMock('IngestDiagnosticBatch', async () => {});
-      const { container } = render(DesignPreviewPanel, { props: { pane } });
-      const iframe = container.querySelector('iframe') as HTMLIFrameElement;
 
       window.dispatchEvent(
         new MessageEvent('message', {
@@ -168,11 +204,11 @@ describe('<DesignPreviewPanel>', () => {
 
   it('drops postMessages without an aoDesign tag', async () => {
     const pane = await buildPane();
+    const ingest = setBindingMock('IngestDiagnosticBatch', async () => {});
+    const { container } = render(DesignPreviewPanel, { props: { pane } });
+    const iframe = await waitForIframe(container);
     vi.useFakeTimers();
     try {
-      const ingest = setBindingMock('IngestDiagnosticBatch', async () => {});
-      const { container } = render(DesignPreviewPanel, { props: { pane } });
-      const iframe = container.querySelector('iframe') as HTMLIFrameElement;
       window.dispatchEvent(
         new MessageEvent('message', {
           data: { irrelevant: true, items: [{ severity: 'error', message: 'spam' }] },
@@ -188,10 +224,11 @@ describe('<DesignPreviewPanel>', () => {
 
   it('drops postMessages whose source is not the mounted iframe', async () => {
     const pane = await buildPane();
+    const ingest = setBindingMock('IngestDiagnosticBatch', async () => {});
+    const { container } = render(DesignPreviewPanel, { props: { pane } });
+    await waitForIframe(container);
     vi.useFakeTimers();
     try {
-      const ingest = setBindingMock('IngestDiagnosticBatch', async () => {});
-      render(DesignPreviewPanel, { props: { pane } });
       // Dispatch with no source — should be ignored even though shape matches.
       window.dispatchEvent(
         new MessageEvent('message', {
@@ -212,7 +249,8 @@ describe('<DesignPreviewPanel>', () => {
     const pane = await buildPane();
     const ingest = setBindingMock('IngestScreenshot', async () => {});
     setBindingMock('FailScreenshot', async () => {});
-    render(DesignPreviewPanel, { props: { pane } });
+    const { container } = render(DesignPreviewPanel, { props: { pane } });
+    await waitForIframe(container);
 
     window.dispatchEvent(
       new CustomEvent(DESIGN_CAPTURE_REQUEST_EVENT, {
@@ -233,7 +271,8 @@ describe('<DesignPreviewPanel>', () => {
     setBindingMock('IngestScreenshot', async () => {});
     const failMock = setBindingMock('FailScreenshot', async () => {});
     vi.mocked(requestIframeCapture).mockRejectedValueOnce(new Error('cross-origin'));
-    render(DesignPreviewPanel, { props: { pane } });
+    const { container } = render(DesignPreviewPanel, { props: { pane } });
+    await waitForIframe(container);
 
     window.dispatchEvent(
       new CustomEvent(DESIGN_CAPTURE_REQUEST_EVENT, {

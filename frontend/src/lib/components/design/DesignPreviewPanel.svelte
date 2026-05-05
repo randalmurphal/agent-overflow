@@ -46,6 +46,7 @@
     FailScreenshot,
     ListDesignSnapshots,
     CaptureSnapshot,
+    EnsureDesignWorkdir,
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import {
@@ -69,10 +70,45 @@
   let cacheBust = $state(0);
   let snapshotInFlight = $state(false);
 
+  // workdirReadyForThread is the thread id whose {main,options,
+  // snapshots}/ layout has been confirmed via EnsureDesignWorkdir. We
+  // gate the iframe `src` on this so a fresh thread that's never had
+  // an agent session doesn't load /design/{threadId}/main/ before the
+  // file server has anything to return — http.FileServer would 404,
+  // and a 404 from the same origin as the SPA hits the asset
+  // handler's X-Frame-Options: deny, leaving the iframe stuck on the
+  // browser's chrome-error page. Idempotent on the backend so the
+  // mount call is cheap when the workdir already exists.
+  let workdirReadyForThread = $state<string | null>(null);
+
   let iframeSrc = $derived.by<string | null>(() => {
     const threadId = pane.threadId;
     if (!threadId) return null;
+    if (workdirReadyForThread !== threadId) return null;
     return `/design/${encodeURIComponent(threadId)}/main/?cb=${cacheBust}`;
+  });
+
+  $effect(() => {
+    const threadId = pane.threadId;
+    if (!threadId) {
+      workdirReadyForThread = null;
+      return;
+    }
+    if (workdirReadyForThread === threadId) return;
+    let cancelled = false;
+    void EnsureDesignWorkdir(threadId)
+      .then(() => {
+        if (cancelled) return;
+        if (pane.threadId !== threadId) return;
+        workdirReadyForThread = threadId;
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.warn('EnsureDesignWorkdir failed:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
   });
 
   // -- Viewport selector -----------------------------------------------
@@ -367,10 +403,14 @@
   </div>
 
   <div class="flex-1 min-h-0 overflow-auto bg-surface-0/60 flex items-start justify-center p-2">
-    {#if !iframeSrc}
+    {#if !pane.threadId}
       <div class="flex flex-col items-center justify-center h-full text-center text-fg-muted">
         <Icon icon={MessagesSquare} size={36} strokeWidth={1.2} class="text-fg-hint mb-3" />
         <p class="text-[13px]">No Design Thread Loaded</p>
+      </div>
+    {:else if !iframeSrc}
+      <div class="flex flex-col items-center justify-center h-full text-center text-fg-muted">
+        <p class="text-[13px]">Preparing preview…</p>
       </div>
     {:else}
       <iframe

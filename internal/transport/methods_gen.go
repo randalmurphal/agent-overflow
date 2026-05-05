@@ -45,6 +45,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "DeleteProposedPlanComment", ID: 554913120}, // main.App.DeleteProposedPlanComment
 	{Name: "DeleteRemoteEndpoint", ID: 3667944297}, // main.App.DeleteRemoteEndpoint
 	{Name: "DeleteThread", ID: 1186337974}, // main.App.DeleteThread
+	{Name: "EnsureDesignWorkdir", ID: 1465371311}, // main.App.EnsureDesignWorkdir
 	{Name: "FailScreenshot", ID: 4051848193}, // main.App.FailScreenshot
 	{Name: "ForkThread", ID: 4063914461}, // main.App.ForkThread
 	{Name: "ForkThreadFromMessage", ID: 3977213964}, // main.App.ForkThreadFromMessage
