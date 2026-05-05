@@ -159,7 +159,88 @@ describe('<UserMessage>', () => {
 
     await fireEvent.click(getByLabelText('Revert to this message'));
     await waitFor(() => expect(onRevertMessage).toHaveBeenCalledWith(item));
-    expect(queryByTestId('revert-dialog')).toBeNull();
+    expect(queryByTestId('user-message-revert-popover')).toBeNull();
+  });
+
+  it('renders the revert choice popover with file totals and confirms the selected mode', async () => {
+    const pane = makeCheckpointedPane();
+    const item = makeItem({
+      id: 'user:1',
+      threadId: 'thread-1',
+      turnIndex: 1,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'revertable',
+    });
+    const onConfirmRevertMessage = vi.fn(async () => {});
+    const onCancelRevertMessage = vi.fn();
+    const actions: UserMessageActions = {
+      onRevertMessage: vi.fn(),
+      onConfirmRevertMessage,
+      onCancelRevertMessage,
+      revertTargetItemId: item.id,
+      revertAffectedFiles: [
+        { path: 'notes.txt', kind: 'modified', additions: 3, deletions: 1, lines: [] },
+        { path: 'scratch.txt', kind: 'modified', additions: 2, deletions: 4, lines: [] },
+      ],
+    };
+
+    const { getByTestId, getByText } = render(UserMessage, {
+      props: {
+        pane,
+        item,
+        actions,
+      },
+    });
+
+    const trigger = getByText('Revert conversation & files').closest('[role="menu"]')
+      ?? getByTestId('user-message-revert-popover').parentElement;
+    expect(getByTestId('user-message-revert-popover')).toBeInTheDocument();
+    expect(trigger).toHaveAttribute('role', 'menu');
+    expect(document.querySelector('[aria-label="Revert to this message"]')).toHaveAttribute('aria-expanded', 'true');
+    expect(getByText('+5')).toBeInTheDocument();
+    expect(getByText('-5')).toBeInTheDocument();
+
+    await fireEvent.click(getByTestId('revert-conversation-only'));
+    expect(onConfirmRevertMessage).toHaveBeenCalledWith('conversation-only');
+  });
+
+  it('closes the revert choice popover on Escape and outside mousedown', async () => {
+    const pane = makeCheckpointedPane();
+    const item = makeItem({
+      id: 'user:1',
+      threadId: 'thread-1',
+      turnIndex: 1,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'revertable',
+    });
+    const onCancelRevertMessage = vi.fn();
+    const actions: UserMessageActions = {
+      onRevertMessage: vi.fn(),
+      onConfirmRevertMessage: vi.fn(),
+      onCancelRevertMessage,
+      revertTargetItemId: item.id,
+      revertAffectedFiles: [],
+    };
+
+    const { getByTestId } = render(UserMessage, {
+      props: {
+        pane,
+        item,
+        actions,
+      },
+    });
+
+    expect(getByTestId('user-message-revert-popover')).toBeInTheDocument();
+    await fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onCancelRevertMessage).toHaveBeenCalledTimes(1);
+
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    await fireEvent.mouseDown(outside);
+    expect(onCancelRevertMessage).toHaveBeenCalledTimes(2);
+    outside.remove();
   });
 
   it('requests message fork through the parent-owned handler', async () => {

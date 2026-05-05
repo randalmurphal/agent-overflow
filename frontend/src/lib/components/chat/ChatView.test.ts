@@ -15,6 +15,7 @@ import { resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.s
 import { getThreads, refreshThreads } from '../../stores/threads.svelte';
 import {
   getThreadStatus,
+  projectTurnStarted,
   projectThreadItem,
   resetForTest as resetThreadStatuses,
 } from '../../stores/threadStatuses.svelte';
@@ -145,7 +146,7 @@ describe('<ChatView>', () => {
     expect(getByTestId('below-composer-bar')).toBeInTheDocument();
   });
 
-  it('opens the message revert dialog from a user-message action outside the virtualized row', async () => {
+  it('opens the message revert popover from a user-message action and applies a mode', async () => {
     const thread = seedThread();
     const userItem = makeItem({
       id: 'user:1',
@@ -166,16 +167,24 @@ describe('<ChatView>', () => {
       files: [],
       capturedAt: 1,
     }]);
-    const preview = setBindingMock('GetMessageCheckpointRevertDiff', async () => 'diff --git a/scratch.txt b/scratch.txt\n');
+    const preview = setBindingMock('GetMessageCheckpointRevertDiff', async () => `diff --git a/scratch.txt b/scratch.txt
+--- a/scratch.txt
++++ b/scratch.txt
+@@ -1 +1 @@
+-old
++new
+`);
     const revert = setBindingMock('RevertToMessageCheckpoint', async () => {});
 
     const { getByLabelText, findByTestId, getByTestId } = render(ChatView, { props: { pane } });
     await fireEvent.click(getByLabelText('Revert to this message'));
 
-    expect(await findByTestId('revert-dialog')).toBeInTheDocument();
+    expect(await findByTestId('user-message-revert-popover')).toBeInTheDocument();
     expect(preview).toHaveBeenCalledWith(thread.id, userItem.id);
+    expect(getByTestId('revert-conversation-and-files')).toHaveTextContent('+1');
+    expect(getByTestId('revert-conversation-and-files')).toHaveTextContent('-1');
 
-    await fireEvent.click(getByTestId('revert-apply'));
+    await fireEvent.click(getByTestId('revert-conversation-and-files'));
     await waitFor(() => {
       expect(revert).toHaveBeenCalledWith(thread.id, userItem.id, 'conversation-and-files');
     });
@@ -206,14 +215,119 @@ describe('<ChatView>', () => {
 
     const { getByLabelText, findByTestId, queryByTestId } = render(ChatView, { props: { pane } });
     await fireEvent.click(getByLabelText('Revert to this message'));
-    expect(await findByTestId('revert-dialog')).toBeInTheDocument();
+    expect(await findByTestId('user-message-revert-popover')).toBeInTheDocument();
 
     const otherThread = { ...thread, id: 'thread-2', title: 'Other thread' };
     setBindingMock('SwitchThread', async () => otherThread);
     await pane.switchThread(otherThread);
     await tick();
 
-    expect(queryByTestId('revert-dialog')).toBeNull();
+    expect(queryByTestId('user-message-revert-popover')).toBeNull();
+  });
+
+  it('clears the open message revert target before loading a different preview', async () => {
+    const thread = seedThread();
+    const firstItem = makeItem({
+      id: 'user:1',
+      threadId: thread.id,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'First update',
+    });
+    const secondItem = makeItem({
+      id: 'user:2',
+      threadId: thread.id,
+      turnIndex: 2,
+      itemIndex: 1,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'Second update',
+    });
+    const pane = await buildPane(thread, [firstItem, secondItem]);
+    pane.diffPanel.setCheckpoints([
+      {
+        id: 'checkpoint-1',
+        threadId: thread.id,
+        userItemId: firstItem.id,
+        turnIndex: firstItem.turnIndex,
+        status: 'ready',
+        files: [],
+        capturedAt: 1,
+      },
+      {
+        id: 'checkpoint-2',
+        threadId: thread.id,
+        userItemId: secondItem.id,
+        turnIndex: secondItem.turnIndex,
+        status: 'ready',
+        files: [],
+        capturedAt: 2,
+      },
+    ]);
+    let rejectSecondPreview: (err: Error) => void = () => {};
+    const secondPreview = new Promise<string>((_, reject) => {
+      rejectSecondPreview = reject;
+    });
+    const preview = setBindingMock('GetMessageCheckpointRevertDiff', async (_threadId: string, itemId: string) => {
+      if (itemId === firstItem.id) return 'diff --git a/first.txt b/first.txt\n';
+      return secondPreview;
+    });
+    const revert = setBindingMock('RevertToMessageCheckpoint', async () => {});
+
+    const { getAllByLabelText, findByTestId, queryByTestId } = render(ChatView, { props: { pane } });
+    const revertButtons = getAllByLabelText('Revert to this message');
+
+    await fireEvent.click(revertButtons[0]);
+    expect(await findByTestId('user-message-revert-popover')).toBeInTheDocument();
+
+    await fireEvent.click(revertButtons[1]);
+    await waitFor(() => {
+      expect(preview).toHaveBeenCalledWith(thread.id, secondItem.id);
+    });
+    expect(queryByTestId('user-message-revert-popover')).toBeNull();
+
+    rejectSecondPreview(new Error('preview failed'));
+    await waitFor(() => {
+      expect(queryByTestId('user-message-revert-popover')).toBeNull();
+    });
+    expect(revert).not.toHaveBeenCalled();
+  });
+
+  it('closes an open message revert popover when the thread starts working', async () => {
+    const thread = seedThread();
+    const userItem = makeItem({
+      id: 'user:1',
+      threadId: thread.id,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'Update one of the lines',
+    });
+    const pane = await buildPane(thread, [userItem]);
+    pane.diffPanel.setCheckpoints([{
+      id: 'checkpoint-1',
+      threadId: thread.id,
+      userItemId: userItem.id,
+      turnIndex: userItem.turnIndex,
+      status: 'ready',
+      files: [],
+      capturedAt: 1,
+    }]);
+    setBindingMock('GetMessageCheckpointRevertDiff', async () => 'diff --git a/scratch.txt b/scratch.txt\n');
+    const revert = setBindingMock('RevertToMessageCheckpoint', async () => {});
+
+    const { getByLabelText, findByTestId, queryByTestId } = render(ChatView, { props: { pane } });
+    await fireEvent.click(getByLabelText('Revert to this message'));
+    expect(await findByTestId('user-message-revert-popover')).toBeInTheDocument();
+
+    projectTurnStarted(thread.id, 'turn-active', 2, Date.now());
+    await tick();
+
+    expect(queryByTestId('user-message-revert-popover')).toBeNull();
+    expect(revert).not.toHaveBeenCalled();
   });
 
   it('forks from a user-message action through the chat-level handler', async () => {

@@ -32,7 +32,6 @@
   import type { RevertMode } from '../../types/checkpoint';
   import { parsePatchFiles, type PatchFile } from '../../utils/patchFiles';
   import { userFacingError } from '../../utils/userFacingError';
-  import RevertDialog from './diff-panel/RevertDialog.svelte';
   import type { UserMessageActions } from './userMessageActions';
   import {
     isUiRenderTraceEnabled,
@@ -72,12 +71,21 @@
   let revertMessageTarget: RevertMessageTarget | null = $state(null);
   let revertAffectedFiles = $state<PatchFile[]>([]);
   let revertPreviewItemId: string | null = $state(null);
+  let revertPreviewRequestId = 0;
   let revertingMessage = $state(false);
   let forkingMessageItemId: string | null = $state(null);
+  const activeRevertTargetItemId = $derived.by(() => {
+    const target = revertMessageTarget;
+    return target ? target.itemId : null;
+  });
   const userMessageActions = $derived<UserMessageActions>({
     onRevertMessage: openUserMessageRevert,
+    onConfirmRevertMessage: revertToUserMessage,
+    onCancelRevertMessage: cancelUserMessageRevert,
     onForkMessage: forkFromUserMessage,
-    revertingItemId: revertPreviewItemId,
+    revertTargetItemId: activeRevertTargetItemId,
+    revertAffectedFiles,
+    revertingItemId: revertPreviewItemId ?? (revertingMessage ? activeRevertTargetItemId : null),
     forkingItemId: forkingMessageItemId,
   });
 
@@ -302,11 +310,22 @@
 
   async function openUserMessageRevert(item: Item): Promise<void> {
     const thread = pane.thread;
-    if (!thread || revertingMessage || revertPreviewItemId) return;
+    if (!thread || revertingMessage) return;
+    if (getActiveTurn(thread.id) !== null) {
+      addToast('error', 'Interrupt or wait for the current turn before reverting.');
+      return;
+    }
+    const requestId = ++revertPreviewRequestId;
+    revertMessageTarget = null;
+    revertAffectedFiles = [];
     revertPreviewItemId = item.id;
     try {
       const patch = ((await GetMessageCheckpointRevertDiff(thread.id, item.id)) ?? '') as string;
-      if (pane.thread?.id !== thread.id) return;
+      if (
+        requestId !== revertPreviewRequestId
+        || pane.thread?.id !== thread.id
+        || getActiveTurn(thread.id) !== null
+      ) return;
       revertAffectedFiles = parsePatchFiles(patch);
       revertMessageTarget = {
         thread,
@@ -315,10 +334,11 @@
         provider: thread.provider,
       };
     } catch (err) {
+      if (requestId !== revertPreviewRequestId) return;
       addToast('error', `Failed to load revert preview: ${userFacingError(err)}`);
       revertAffectedFiles = [];
     } finally {
-      if (revertPreviewItemId === item.id) revertPreviewItemId = null;
+      if (requestId === revertPreviewRequestId) revertPreviewItemId = null;
     }
   }
 
@@ -327,6 +347,11 @@
     if (!target || revertingMessage) return;
     if (pane.thread?.id !== target.thread.id) {
       cancelUserMessageRevert();
+      return;
+    }
+    if (getActiveTurn(target.thread.id) !== null) {
+      cancelUserMessageRevert();
+      addToast('error', 'Interrupt or wait for the current turn before reverting.');
       return;
     }
     revertingMessage = true;
@@ -345,6 +370,8 @@
 
   function cancelUserMessageRevert(): void {
     if (revertingMessage) return;
+    revertPreviewRequestId++;
+    revertPreviewItemId = null;
     revertMessageTarget = null;
     revertAffectedFiles = [];
   }
@@ -370,8 +397,15 @@
   $effect(() => {
     const currentThreadId = pane.thread?.id ?? null;
     if (revertMessageTarget && currentThreadId !== revertMessageTarget.thread.id && !revertingMessage) {
-      revertMessageTarget = null;
-      revertAffectedFiles = [];
+      cancelUserMessageRevert();
+    }
+  });
+
+  $effect(() => {
+    const target = revertMessageTarget;
+    if (!target || revertingMessage) return;
+    if (getActiveTurn(target.thread.id) !== null) {
+      cancelUserMessageRevert();
     }
   });
 
@@ -464,17 +498,6 @@
     {/if}
     {#if expandedImagePreview}
       <ExpandedImageDialog preview={expandedImagePreview} onClose={closeImagePreview} />
-    {/if}
-    {#if revertMessageTarget}
-      <RevertDialog
-        open={revertMessageTarget !== null}
-        titleLabel={`message ${revertMessageTarget.turnIndex + 1}`}
-        provider={revertMessageTarget.provider.toLowerCase()}
-        affectedFiles={revertAffectedFiles}
-        reverting={revertingMessage}
-        onRevert={revertToUserMessage}
-        onCancel={cancelUserMessageRevert}
-      />
     {/if}
   </div>
 {:else}

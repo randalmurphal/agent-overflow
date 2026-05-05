@@ -16,6 +16,8 @@
     onClick?: (e: MouseEvent) => void;
     size?: 'sm' | 'md';
     variant?: 'ghost' | 'subtle';
+    ariaHaspopup?: 'dialog' | 'menu' | 'listbox' | 'tree' | 'grid' | boolean;
+    ariaExpanded?: boolean;
     children: Snippet;
   }
 
@@ -25,6 +27,8 @@
     onClick,
     size = 'md',
     variant = 'ghost',
+    ariaHaspopup,
+    ariaExpanded,
     children,
   }: Props = $props();
 
@@ -54,6 +58,8 @@
   type="button"
   {disabled}
   aria-label={label}
+  aria-haspopup={ariaHaspopup}
+  aria-expanded={ariaExpanded}
   title={label}
   onclick={handleClick}
   class={[

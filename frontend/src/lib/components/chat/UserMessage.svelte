@@ -12,9 +12,11 @@
   import CopyButton from '../primitives/CopyButton.svelte';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
+  import Popover from '../primitives/Popover.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import { parseJsonObject } from '../../utils/parseJsonObject';
+  import type { RevertMode } from '../../types/checkpoint';
   import type { UserMessageActions } from './userMessageActions';
 
   interface Props {
@@ -25,12 +27,23 @@
   }
 
   let { item, pane, onImageExpand, actions }: Props = $props();
+  let revertAnchor: HTMLSpanElement | undefined = $state(undefined);
 
   const userMeta = $derived(parseJsonObject(item.meta));
   const hasMessageCheckpoint = $derived(pane?.diffPanel.checkpointUserItemIds.has(item.id) ?? false);
   const isWireOnlyUserMessage = $derived(userMeta?.wire_only === true);
   const canRequestRevert = $derived(typeof actions?.onRevertMessage === 'function');
   const canRequestFork = $derived(typeof actions?.onForkMessage === 'function');
+  const canConfirmRevert = $derived(typeof actions?.onConfirmRevertMessage === 'function');
+  const revertPopoverOpen = $derived(actions?.revertTargetItemId === item.id);
+  const revertAffectedFiles = $derived(actions?.revertAffectedFiles ?? []);
+  const revertTotals = $derived.by(() => revertAffectedFiles.reduce(
+    (acc, file) => ({
+      additions: acc.additions + file.additions,
+      deletions: acc.deletions + file.deletions,
+    }),
+    { additions: 0, deletions: 0 },
+  ));
   const revertBusy = $derived(actions?.revertingItemId === item.id);
   const forkBusy = $derived(actions?.forkingItemId === item.id);
 
@@ -90,7 +103,16 @@
 
   async function requestRevert(): Promise<void> {
     if (!canRequestRevert || revertBusy) return;
+    if (revertPopoverOpen) {
+      actions?.onCancelRevertMessage?.();
+      return;
+    }
     await actions?.onRevertMessage?.(item);
+  }
+
+  async function confirmRevert(mode: RevertMode): Promise<void> {
+    if (!canConfirmRevert || revertBusy) return;
+    await actions?.onConfirmRevertMessage?.(mode);
   }
 
   async function requestFork(): Promise<void> {
@@ -144,12 +166,17 @@
     <div class="mt-1.5 flex items-center justify-end gap-1.5 text-[10px] text-fg-hint/70">
       {#if showMessageActions && pane}
         {#if canRequestRevert}
-          <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+          <span
+            bind:this={revertAnchor}
+            class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100"
+          >
             <IconButton
               label="Revert to this message"
               size="sm"
               variant="ghost"
               disabled={revertBusy}
+              ariaHaspopup="menu"
+              ariaExpanded={revertPopoverOpen}
               onClick={() => void requestRevert()}
             >
               {#snippet children()}
@@ -187,5 +214,44 @@
         {time}
       </time>
     </div>
+    <Popover
+      anchor={revertAnchor}
+      open={revertPopoverOpen}
+      onClose={() => actions?.onCancelRevertMessage?.()}
+      placement="bottom-end"
+      offset={8}
+      role="menu"
+      ariaLabel="Revert message options"
+    >
+      <div
+        class="w-[260px] overflow-hidden rounded-[10px] border border-border bg-surface-1/98 p-1.5 text-left shadow-[0_18px_45px_rgba(0,0,0,0.32)]"
+        data-testid="user-message-revert-popover"
+      >
+        <button
+          type="button"
+          class="flex w-full items-center justify-between gap-3 rounded-[var(--radius-control)] px-2.5 py-2 text-left text-[12px] text-fg transition-colors hover:bg-surface-2/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-default disabled:opacity-55"
+          disabled={revertBusy}
+          onclick={() => void confirmRevert('conversation-and-files')}
+          role="menuitem"
+          data-testid="revert-conversation-and-files"
+        >
+          <span class="font-medium">Revert conversation & files</span>
+          <span class="flex shrink-0 items-center gap-1 font-mono text-[11px] tabular-nums">
+            <span class="text-success">+{revertTotals.additions}</span>
+            <span class="text-error">-{revertTotals.deletions}</span>
+          </span>
+        </button>
+        <button
+          type="button"
+          class="mt-0.5 flex w-full items-center rounded-[var(--radius-control)] px-2.5 py-2 text-left text-[12px] font-medium text-fg-muted transition-colors hover:bg-surface-2/70 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-default disabled:opacity-55"
+          disabled={revertBusy}
+          onclick={() => void confirmRevert('conversation-only')}
+          role="menuitem"
+          data-testid="revert-conversation-only"
+        >
+          Revert conversation only
+        </button>
+      </div>
+    </Popover>
   </div>
 </div>
