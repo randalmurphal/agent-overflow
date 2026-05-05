@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -1295,6 +1296,113 @@ func TestRemoteAddrIsLoopback(t *testing.T) {
 			t.Errorf("remoteAddrIsLoopback(%q) = %v, want %v", c.addr, got, c.want)
 		}
 	}
+}
+
+// TestServer_DesignHandlerLateBinding pins the load-bearing design-route
+// wiring: when Config.DesignHandler is non-nil it's a getter consulted
+// per-request, NOT a value snapshotted at server-build time. The App's
+// ServiceStartup lifecycle runs after bootTransport's call to New(),
+// so any value-snapshot of App.designServer would be nil at config
+// time. With value semantics the /design/ route never registered, the
+// iframe URL fell through to the asset handler (the SPA shell), and
+// withAssetHeaders set X-Frame-Options: DENY — leaving the preview
+// stuck on chrome-error://chromewebdata/ with no recovery path.
+//
+// Phase 1: getter returns nil. /design/{path} must 404 from the design
+// route itself, NOT fall through to the asset handler. Falling through
+// would re-introduce the X-Frame-Options trap; the explicit 404 lets
+// the iframe parent surface a clean error and retry on the next
+// workdir-ready signal.
+//
+// Phase 2: getter returns a real handler (mirroring initSubsystems
+// landing after the server is already serving). The route must pick
+// up the new handler without a server restart.
+func TestServer_DesignHandlerLateBinding(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		current http.Handler
+	)
+	getDesignHandler := func() http.Handler {
+		mu.Lock()
+		defer mu.Unlock()
+		return current
+	}
+	setDesignHandler := func(h http.Handler) {
+		mu.Lock()
+		defer mu.Unlock()
+		current = h
+	}
+
+	// Distinct asset handler so a fall-through bug is observable: the
+	// SPA-shell signature in the body is the smoking gun for the old
+	// X-Frame-Options trap.
+	asset := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<!doctype html><html><body>spa-shell</body></html>"))
+	})
+
+	d := NewDispatcher()
+	bus := NewEventBus(20)
+	srv, err := New(Config{
+		Dispatcher:    d,
+		EventBus:      bus,
+		Token:         "test-token",
+		AssetHandler:  asset,
+		DesignHandler: getDesignHandler,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, c := context.WithTimeout(context.Background(), 2*time.Second)
+		defer c()
+		_ = srv.Shutdown(ctx)
+	})
+
+	// Phase 1: getter returns nil. Must 404 from the design route, NOT
+	// fall through to the asset handler.
+	resp, err := http.Get("http://" + srv.Addr() + "/design/some-thread/main/")
+	if err != nil {
+		t.Fatalf("phase 1 GET: %v", err)
+	}
+	body, _ := readAllAndClose(resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("phase 1 status: got %d, want 404 (design getter returned nil; must NOT fall through to asset handler)", resp.StatusCode)
+	}
+	if strings.Contains(body, "spa-shell") {
+		t.Fatalf("phase 1 body contains SPA shell — request fell through to asset handler instead of 404'ing from the design route")
+	}
+	if got := resp.Header.Get("X-Frame-Options"); got != "" {
+		t.Fatalf("phase 1 X-Frame-Options: got %q, want empty (the asset handler's frame-deny header must not reach the design path)", got)
+	}
+
+	// Phase 2: install the handler. The route must pick it up live.
+	setDesignHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("design-handler-live"))
+	}))
+
+	resp2, err := http.Get("http://" + srv.Addr() + "/design/some-thread/main/")
+	if err != nil {
+		t.Fatalf("phase 2 GET: %v", err)
+	}
+	body2, _ := readAllAndClose(resp2)
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("phase 2 status: got %d, want 200 (handler installed post-Start, route must pick it up live)", resp2.StatusCode)
+	}
+	if body2 != "design-handler-live" {
+		t.Fatalf("phase 2 body: got %q, want %q", body2, "design-handler-live")
+	}
+}
+
+func readAllAndClose(resp *http.Response) (string, error) {
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	return string(body), err
 }
 
 func waitFor(cond func() bool, timeout time.Duration) bool {

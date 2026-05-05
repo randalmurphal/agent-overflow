@@ -67,15 +67,34 @@ type Config struct {
 	// would expose path traversal of the local filesystem.
 	AssetHandler http.Handler
 
-	// DesignHandler serves the per-thread design working directories
-	// at the /design/ prefix. Optional — when nil, /design/* paths
-	// fall through to the asset handler. main.go wires this to
-	// design.FileHandler(designBaseDir) which already strips the
-	// /design prefix and injects the diagnostic-capture script into
-	// HTML responses. The handler is wrapped by loopbackHostGuard so
-	// design dirs are unreachable from a hostile rebound DNS origin
-	// — the bytes the agent writes can include user material.
-	DesignHandler http.Handler
+	// DesignHandler is a late-bound lookup for the per-thread design
+	// file server, registered at the /design/ prefix. It's a getter
+	// rather than a plain http.Handler because the underlying handler
+	// is constructed during the App's ServiceStartup lifecycle, which
+	// runs AFTER bootTransport calls New() — a value snapshot taken at
+	// config time would always be nil and the route would never
+	// register. The mux registration consults the getter per-request
+	// so a handler that becomes available mid-flight is picked up
+	// without restarting the server.
+	//
+	// Optional — when this field is nil, no /design/ route registers
+	// and design requests fall through to the asset handler (returning
+	// the SPA shell with X-Frame-Options: DENY, the iframe-display
+	// failure mode we explicitly want to avoid; see DesignPreviewPanel
+	// for the gating that protects against this on the client side).
+	//
+	// When the getter returns nil at request time the route returns
+	// 404, which the iframe handles cleanly (the parent receives an
+	// onerror event and re-tries on the next workdir-ready signal).
+	//
+	// main.go wires this to App.DesignServer (the bound method, no
+	// parens) which returns design.FileHandler(designBaseDir) once
+	// initSubsystems has run. That handler already strips the /design
+	// prefix and injects the diagnostic-capture script into HTML
+	// responses. The route is wrapped by loopbackHostGuard so design
+	// dirs are unreachable from a hostile rebound DNS origin — the
+	// bytes the agent writes can include user material.
+	DesignHandler func() http.Handler
 
 	// ReadLimit caps the byte size of a single inbound WS message.
 	// Zero defaults to DefaultReadLimit (16 MiB).
@@ -278,11 +297,27 @@ func (s *Server) buildHTTPServer() *http.Server {
 		// because mux longest-match-wins routing already handles it,
 		// but listing it here makes the priority obvious.
 		//
+		// The route is registered unconditionally on a getter; if the
+		// underlying handler isn't ready yet (App.ServiceStartup races
+		// the first iframe load) we serve 404 from the design route
+		// rather than falling through to the SPA shell. Falling
+		// through used to be the failure mode: the SPA's
+		// X-Frame-Options: DENY would block iframe display and leave
+		// the preview stuck on chrome-error://, masking what was
+		// really a startup-order bug.
+		//
 		// StripPrefix lets the FileHandler resolve "{threadId}/main/..."
 		// against its baseDir directly. Without it, http.FileServer
 		// would look for files at "{baseDir}/design/{threadId}/main/..."
 		// — a path the agent never writes to.
-		designH := http.StripPrefix("/design", s.cfg.DesignHandler)
+		designH := http.StripPrefix("/design", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := s.cfg.DesignHandler()
+			if h == nil {
+				http.NotFound(w, r)
+				return
+			}
+			h.ServeHTTP(w, r)
+		}))
 		// On LAN bind the loopbackHostGuard becomes a pass-through and
 		// /design/ has no token check, so we additionally refuse from
 		// non-loopback peers to avoid leaking agent-rendered content

@@ -243,10 +243,19 @@ func bootTransport(appService *App, listenAddr string, loadPersistedBindAll bool
 	}
 
 	cfg := transport.Config{
-		Dispatcher:    dispatcher,
-		EventBus:      bus,
-		AssetHandler:  assetHandler,
-		DesignHandler: appService.DesignServer(),
+		Dispatcher:   dispatcher,
+		EventBus:     bus,
+		AssetHandler: assetHandler,
+		// Late-bound: appService.DesignServer is a bound method value,
+		// not the result of calling it. The transport server consults
+		// this getter per-request so the /design/ route registers
+		// up-front (at server build) but the underlying handler can be
+		// supplied later by App.ServiceStartup → initSubsystems.
+		// Snapshotting the result here would always be nil because
+		// initSubsystems hasn't run yet, leaving /design/ unregistered
+		// and iframe loads falling through to the SPA shell with
+		// X-Frame-Options: DENY.
+		DesignHandler: appService.DesignServer,
 	}
 	if listenAddr != "" {
 		host, port := splitListenAddr(listenAddr)
