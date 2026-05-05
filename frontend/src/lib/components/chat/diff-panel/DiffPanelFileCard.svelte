@@ -20,7 +20,6 @@
     newLine: number;
     side: DiffReviewComment['side'];
     selectedText: string;
-    label: string;
   }
 
   interface Props {
@@ -89,48 +88,16 @@
   function rowAnchor(row: PatchDisplayRow): CommentAnchor {
     const selectedText = row.line.content;
     if (row.side === 'old') {
-      return {
-        filePath: file.path,
-        oldLine: row.oldLine,
-        newLine: 0,
-        side: 'old',
-        selectedText,
-        label: `${file.path}:${row.oldLine}`,
-      };
+      return { filePath: file.path, oldLine: row.oldLine, newLine: 0, side: 'old', selectedText };
     }
     if (row.side === 'new') {
-      return {
-        filePath: file.path,
-        oldLine: 0,
-        newLine: row.newLine,
-        side: 'new',
-        selectedText,
-        label: `${file.path}:${row.newLine}`,
-      };
+      return { filePath: file.path, oldLine: 0, newLine: row.newLine, side: 'new', selectedText };
     }
-    return {
-      filePath: file.path,
-      oldLine: row.oldLine,
-      newLine: row.newLine,
-      side: 'context',
-      selectedText,
-      label: `${file.path}:${row.newLine || row.oldLine}`,
-    };
+    return { filePath: file.path, oldLine: row.oldLine, newLine: row.newLine, side: 'context', selectedText };
   }
 
   function fileAnchor(): CommentAnchor {
-    return {
-      filePath: file.path,
-      oldLine: 0,
-      newLine: 0,
-      side: 'file',
-      selectedText: file.path,
-      label: file.path,
-    };
-  }
-
-  function commentsForRow(row: PatchDisplayRow): DiffReviewComment[] {
-    return commentsByAnchor.get(anchorKey(rowAnchor(row))) ?? [];
+    return { filePath: file.path, oldLine: 0, newLine: 0, side: 'file', selectedText: file.path };
   }
 
   function startComment(anchor: CommentAnchor): void {
@@ -186,9 +153,9 @@
     >
       <Icon icon={ChevronDown} size={14} class={open ? '' : '-rotate-90'} />
       <span class="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-accent">FileChange</span>
-      <span class="min-w-0 flex-1 truncate font-mono text-[12px] text-fg">{file.path}</span>
-      <span class="text-[11px] text-success">+{file.additions}</span>
-      <span class="text-[11px] text-error">-{file.deletions}</span>
+      <span class="min-w-0 truncate font-mono text-[12px] text-fg">{file.path}</span>
+      <span class="shrink-0 text-[11px] text-success">+{file.additions}</span>
+      <span class="shrink-0 text-[11px] text-error">-{file.deletions}</span>
     </button>
     {#if commentable}
       <button
@@ -215,7 +182,6 @@
         class="border-t border-border-subtle bg-surface-1/80 px-3 py-2"
         onsubmit={saveComment}
       >
-        <div class="mb-1 font-mono text-[11px] text-fg-muted">{draftAnchor.label}</div>
         <textarea
           bind:value={draftBody}
           rows="2"
@@ -240,7 +206,7 @@
             <div class="min-w-0 border-r border-border-subtle/50 {splitCellClass(row.left)}">
               {#if row.left}
                 {@const left = row.left}
-                {@render diffLineRow(left, wordWrap, commentable, commentsForRow(left), () => startComment(rowAnchor(left)))}
+                {@render diffLineRow(left, left.oldLine, wordWrap, commentable, () => startComment(rowAnchor(left)))}
               {:else}
                 <div class="px-3 py-0.5 text-fg-muted/40">&nbsp;</div>
               {/if}
@@ -248,23 +214,23 @@
             <div class="min-w-0 {splitCellClass(row.right)}">
               {#if row.right}
                 {@const right = row.right}
-                {@render diffLineRow(right, wordWrap, commentable, commentsForRow(right), () => startComment(rowAnchor(right)))}
+                {@render diffLineRow(right, right.newLine, wordWrap, commentable, () => startComment(rowAnchor(right)))}
               {:else}
                 <div class="px-3 py-0.5 text-fg-muted/40">&nbsp;</div>
               {/if}
             </div>
           </div>
           {#if draftAnchor && (row.left && anchorKey(draftAnchor) === anchorKey(rowAnchor(row.left)) || row.right && anchorKey(draftAnchor) === anchorKey(rowAnchor(row.right)))}
-            {@render commentForm(draftAnchor)}
+            {@render commentForm()}
           {/if}
         {/each}
       </div>
     {:else}
       <div class="max-h-[42rem] overflow-auto border-t border-border-subtle bg-surface-0 font-mono text-[12px] leading-relaxed">
         {#each displayRows as row (row.id)}
-          {@render diffLineRow(row, wordWrap, commentable, commentsForRow(row), () => startComment(rowAnchor(row)))}
+          {@render diffLineRow(row, row.newLine || row.oldLine, wordWrap, commentable, () => startComment(rowAnchor(row)))}
           {#if draftAnchor && anchorKey(draftAnchor) === anchorKey(rowAnchor(row))}
-            {@render commentForm(draftAnchor)}
+            {@render commentForm()}
           {/if}
         {/each}
       </div>
@@ -272,35 +238,35 @@
   {/if}
 </section>
 
-{#snippet diffLineRow(row: PatchDisplayRow, wordWrap: boolean, commentable: boolean, comments: DiffReviewComment[], onComment: () => void)}
-  <div class="group/diff-line grid grid-cols-[1.75rem_2.5rem_2.5rem_minmax(0,1fr)_auto] items-start {lineTintClass(row.line.type)}">
-    <div class="flex h-full items-center justify-center">
+{#snippet diffLineRow(row: PatchDisplayRow, displayLine: number, wordWrap: boolean, commentable: boolean, onComment: () => void)}
+  <!--
+    Single line-number column flush with the card's left edge. On hover (or
+    keyboard focus inside the row) the line number fades and the "+" button
+    paints in its place — same cell, no separate gutter.
+  -->
+  <div class="group/diff-line relative grid grid-cols-[2rem_minmax(0,1fr)] items-start {lineTintClass(row.line.type)}">
+    <div class="relative h-full">
+      <div class="select-none px-1 py-0.5 text-right text-[10px] tabular-nums text-fg-subtle/65 transition-opacity {commentable ? 'group-hover/diff-line:opacity-0 group-focus-within/diff-line:opacity-0' : ''}">{displayLine || ''}</div>
       {#if commentable}
         <button
           type="button"
-          class="m-0.5 flex size-5 items-center justify-center rounded border border-accent/45 bg-surface-1 text-accent opacity-0 shadow-sm transition group-hover/diff-line:opacity-100 focus-visible:opacity-100"
+          class="group/diff-add absolute inset-0 flex items-center justify-end pr-0.5 opacity-0 transition-opacity group-hover/diff-line:opacity-100 focus-visible:opacity-100"
           title="Add comment"
           aria-label="Add comment"
           onclick={onComment}
         >
-          <Icon icon={Plus} size={12} strokeWidth={2.5} />
+          <span class="flex size-4 items-center justify-center rounded border border-accent/45 bg-surface-1 text-accent shadow-sm transition-colors group-hover/diff-add:bg-surface-2 group-focus-visible/diff-add:bg-surface-2">
+            <Icon icon={Plus} size={10} strokeWidth={2.5} />
+          </span>
         </button>
       {/if}
     </div>
-    <div class="select-none px-1 py-0.5 text-right text-[10px] tabular-nums text-fg-subtle/65">{row.oldLine || ''}</div>
-    <div class="select-none px-1 py-0.5 text-right text-[10px] tabular-nums text-fg-subtle/65">{row.newLine || ''}</div>
     <pre class="min-w-0 px-2 py-0.5 {wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'}">{row.line.content}</pre>
-    <div class="min-w-8 px-2 py-0.5 text-right">
-      {#if comments.length > 0}
-        <span class="rounded-full border border-accent/35 bg-accent/12 px-1.5 text-[10px] text-accent">{comments.length}</span>
-      {/if}
-    </div>
   </div>
 {/snippet}
 
-{#snippet commentForm(anchor: CommentAnchor)}
-  <form class="border-y border-border-subtle bg-surface-1/90 px-9 py-2" onsubmit={saveComment}>
-    <div class="mb-1 font-mono text-[11px] text-fg-muted">{anchor.label}</div>
+{#snippet commentForm()}
+  <form class="border-y border-border-subtle bg-surface-1/90 px-3 py-2" onsubmit={saveComment}>
     <textarea
       bind:value={draftBody}
       rows="2"

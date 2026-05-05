@@ -1,8 +1,8 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -81,6 +81,17 @@ func (a *App) SendDiffReviewComments(threadID, scope, sourceKey string, commentI
 	return a.store.GetThread(threadID)
 }
 
+// buildDiffReviewPrompt renders draft diff-review comments into a
+// plain-text block the agent can read directly. Each comment becomes:
+//
+//	<file_path>[:<line>]:
+//	comment: <body>
+//
+// The line number is the new-side line when present, otherwise the
+// old-side line; file-level comments emit no line. Multiple comments
+// are separated by a blank line. The agent gets the diff itself in the
+// same turn, so we deliberately omit `side` and the `selectedText`
+// echo — the file:line anchor is enough to locate the comment.
 func buildDiffReviewPrompt(comments []store.DiffReviewComment) string {
 	var b strings.Builder
 	for _, comment := range comments {
@@ -91,30 +102,26 @@ func buildDiffReviewPrompt(comments []store.DiffReviewComment) string {
 		if b.Len() > 0 {
 			b.WriteString("\n\n")
 		}
-		entry := diffReviewPromptEntry{
-			FilePath:     comment.FilePath,
-			Side:         comment.Side,
-			OldLine:      comment.OldLine,
-			NewLine:      comment.NewLine,
-			SelectedText: strings.TrimSpace(comment.SelectedText),
-			Comment:      body,
+		b.WriteString(comment.FilePath)
+		b.WriteString(":")
+		if line := diffReviewCommentLine(comment); line > 0 {
+			b.WriteString(strconv.Itoa(line))
+			b.WriteString(":")
 		}
-		data, err := json.Marshal(entry)
-		if err != nil {
-			continue
-		}
-		b.Write(data)
+		b.WriteString("\ncomment: ")
+		b.WriteString(body)
 	}
 	return b.String()
 }
 
-type diffReviewPromptEntry struct {
-	FilePath     string `json:"filePath"`
-	Side         string `json:"side"`
-	OldLine      int    `json:"oldLine,omitempty"`
-	NewLine      int    `json:"newLine,omitempty"`
-	SelectedText string `json:"selectedText,omitempty"`
-	Comment      string `json:"comment"`
+func diffReviewCommentLine(comment store.DiffReviewComment) int {
+	if comment.NewLine > 0 {
+		return comment.NewLine
+	}
+	if comment.OldLine > 0 {
+		return comment.OldLine
+	}
+	return 0
 }
 
 func (a *App) appendDiffReviewCommentsToContent(threadID, content, scope, sourceKey string, commentIDs []string) (string, []string, error) {

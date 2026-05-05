@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Pencil from 'lucide-svelte/icons/pencil';
+  import X from 'lucide-svelte/icons/x';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import {
@@ -20,6 +22,8 @@
   import type { Checkpoint } from '../../types/checkpoint';
   import type { DiffReviewComment, DiffReviewCommentInput, DiffReviewScope } from '../../types/models';
   import { parsePatchFiles, patchFileRowId } from '../../utils/patchFiles';
+  import Icon from '../primitives/Icon.svelte';
+  import IconButton from '../primitives/IconButton.svelte';
   import DiffPanelHeaderBar from './diff-panel/DiffPanelHeaderBar.svelte';
   import DiffPanelChipStrip from './diff-panel/DiffPanelChipStrip.svelte';
   import DiffPanelFileCard from './diff-panel/DiffPanelFileCard.svelte';
@@ -219,6 +223,8 @@
     try {
       await SendDiffReviewComments(threadId, reviewScope, diffSourceKey, draftReviewComments.map((comment) => comment.id));
       await refreshDiffReviewComments(threadId, reviewScope, diffSourceKey);
+      editingCommentId = null;
+      editingBody = '';
     } catch (err) {
       pane.diffPanel.setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -328,30 +334,41 @@
       {/if}
     </div>
 
-    {#if commentable && reviewComments.length > 0}
+    {#if commentable && draftReviewComments.length > 0}
+      <!--
+        The drawer's comments strip is the live draft surface. After
+        `sendCommentsOnly` flips the drafts to `sent`, they fall out of
+        `draftReviewComments` and the strip collapses on its own — so
+        "send" visibly clears the panel without a manual refresh.
+      -->
       <section class="border-t border-border bg-surface-1/85 px-3 py-2" aria-label="Diff comments">
         <div class="mb-2 flex items-center justify-between gap-3">
           <div class="text-[11px] font-medium uppercase tracking-[0.08em] text-fg-muted">
             Comments
           </div>
-          {#if draftReviewComments.length > 0}
-            <button
-              type="button"
-              class="rounded border border-accent/45 px-2 py-1 text-[11px] font-medium text-accent hover:bg-accent/10 disabled:opacity-45"
-              disabled={sendingComments || isTurnActive}
-              title={isTurnActive ? 'Send from the chat box while the agent is working' : 'Send comments'}
-              onclick={sendCommentsOnly}
-            >
-              Send comments
-            </button>
-          {/if}
+          <button
+            type="button"
+            class="rounded border border-accent/45 px-2 py-1 text-[11px] font-medium text-accent hover:bg-accent/10 disabled:opacity-45"
+            disabled={sendingComments || isTurnActive}
+            title={isTurnActive ? 'Send from the chat box while the agent is working' : 'Send comments'}
+            onclick={sendCommentsOnly}
+          >
+            Send comments
+          </button>
         </div>
         <div class="max-h-44 space-y-2 overflow-auto pr-1">
-          {#each reviewComments as comment (comment.id)}
+          {#each draftReviewComments as comment (comment.id)}
             <article class="rounded border border-border-subtle bg-surface-0/70 px-2 py-2">
-              <div class="mb-1 flex items-center gap-2">
+              <div class="mb-1 flex items-center gap-1">
                 <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-fg-muted">{commentLocation(comment)}</span>
-                <span class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-fg-subtle">{comment.status}</span>
+                {#if editingCommentId !== comment.id}
+                  <IconButton label="Edit comment" size="sm" onClick={() => startEditComment(comment)}>
+                    {#snippet children()}<Icon icon={Pencil} size={12} />{/snippet}
+                  </IconButton>
+                  <IconButton label="Delete comment" size="sm" onClick={() => void deleteComment(comment)}>
+                    {#snippet children()}<Icon icon={X} size={12} />{/snippet}
+                  </IconButton>
+                {/if}
               </div>
               {#if editingCommentId === comment.id}
                 <textarea
@@ -365,10 +382,6 @@
                 </div>
               {:else}
                 <p class="whitespace-pre-wrap text-[12px] leading-relaxed text-fg">{comment.body}</p>
-                <div class="mt-2 flex justify-end gap-2">
-                  <button type="button" class="rounded px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2" onclick={() => startEditComment(comment)}>Edit</button>
-                  <button type="button" class="rounded px-2 py-1 text-[11px] text-error hover:bg-error/10" onclick={() => deleteComment(comment)}>{comment.status === 'draft' ? 'Delete' : 'Resolve'}</button>
-                </div>
               {/if}
             </article>
           {/each}
