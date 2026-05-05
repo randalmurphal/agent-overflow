@@ -104,7 +104,8 @@
       })
       .catch((err) => {
         if (cancelled) return;
-        console.warn('EnsureDesignWorkdir failed:', err);
+        const message = err instanceof Error ? err.message : String(err);
+        addToast('error', `Design preview unavailable: ${message}`);
       });
     return () => {
       cancelled = true;

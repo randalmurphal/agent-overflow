@@ -155,18 +155,25 @@ func inlineSettingsForCLI(cfg Config) (string, bool) {
 // Claude CLI's --mcp-config flag accepts. Returns ("", false) when no
 // servers are configured so the flag can be omitted entirely.
 //
-// The CLI's --mcp-config accepts JSON with shape
-// {"mcpServers": {<name>: <serverSpec>}}. Each <serverSpec> is either
-// {"url": "..."} for HTTP servers (what the design MCP exposes) or a
-// stdio shape with command/args. We pass the supplied map through as
-// the value of mcpServers — callers are responsible for the spec
-// shape, but typical usage is the Codex HTTP MCP server registration
-// which already returns the right per-server shape.
+// The CLI's --mcp-config requires each server spec to carry an
+// explicit "type" discriminator ("http" | "sse" | "stdio"). The
+// design MCP (and any future provider-agnostic MCP server we share
+// with Codex) returns the canonical untagged shape `{"url": "..."}`
+// because Codex's serde uses `untagged + deny_unknown_fields` and
+// rejects an unknown "type" field on the StreamableHttp variant —
+// the providers can't share a single tagged shape. Backfill "type":
+// "http" here for any server that has a `url` and no explicit type;
+// pass through any spec that already carries one. Stdio specs (those
+// with a "command") get backfilled to "stdio".
 func mcpConfigForCLI(cfg Config) (string, bool) {
 	if len(cfg.MCPServers) == 0 {
 		return "", false
 	}
-	payload := map[string]any{"mcpServers": cfg.MCPServers}
+	servers := make(map[string]any, len(cfg.MCPServers))
+	for name, spec := range cfg.MCPServers {
+		servers[name] = withClaudeTransportType(spec)
+	}
+	payload := map[string]any{"mcpServers": servers}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		// Same reasoning as inlineSettingsForCLI: nested maps with no
@@ -175,4 +182,34 @@ func mcpConfigForCLI(cfg Config) (string, bool) {
 		panic(fmt.Sprintf("claude: mcpConfigForCLI marshal failed (unreachable): %v", err))
 	}
 	return string(data), true
+}
+
+// withClaudeTransportType returns a server spec with a "type" field
+// inferred from the present fields. Specs that already carry a "type"
+// pass through untouched. Specs without a recognisable shape
+// (neither url nor command) pass through too — the CLI will surface
+// a clear error in that case.
+func withClaudeTransportType(spec any) any {
+	specMap, ok := spec.(map[string]any)
+	if !ok {
+		return spec
+	}
+	if _, hasType := specMap["type"]; hasType {
+		return specMap
+	}
+	var inferred string
+	switch {
+	case specMap["url"] != nil:
+		inferred = "http"
+	case specMap["command"] != nil:
+		inferred = "stdio"
+	default:
+		return specMap
+	}
+	out := make(map[string]any, len(specMap)+1)
+	for k, v := range specMap {
+		out[k] = v
+	}
+	out["type"] = inferred
+	return out
 }

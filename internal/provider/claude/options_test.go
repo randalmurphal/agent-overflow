@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -244,6 +245,83 @@ func TestConfigFromOptionsThreadsIntoBuildArgs(t *testing.T) {
 	}
 	if !strings.Contains(joined, "--permission-mode bypassPermissions --allow-dangerously-skip-permissions") {
 		t.Fatalf("args missing bypass permission flags: %v", args)
+	}
+}
+
+// TestMcpConfigForCLIBackfillsHTTPType pins the contract that lets the
+// design package share one MCPServer struct between Codex (untagged
+// {"url":...} via inline mcp_servers) and Claude (--mcp-config requires
+// `"type": "http"`). The shared shape is the canonical untagged one;
+// this helper is what makes Claude's CLI accept it.
+func TestMcpConfigForCLIBackfillsHTTPType(t *testing.T) {
+	cfg := Config{
+		MCPServers: map[string]any{
+			"design": map[string]any{
+				"url": "http://127.0.0.1:1234/mcp/thread-A",
+			},
+		},
+	}
+	out, ok := mcpConfigForCLI(cfg)
+	if !ok {
+		t.Fatal("mcpConfigForCLI returned ok=false for non-empty servers")
+	}
+	var payload struct {
+		MCPServers map[string]map[string]any `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("unmarshal: %v\nout: %s", err, out)
+	}
+	server := payload.MCPServers["design"]
+	if server == nil {
+		t.Fatalf("design server missing from %s", out)
+	}
+	if got := server["type"]; got != "http" {
+		t.Fatalf("server type = %v, want \"http\" — Claude CLI rejects http servers without it (%s)", got, out)
+	}
+	if got := server["url"]; got != "http://127.0.0.1:1234/mcp/thread-A" {
+		t.Fatalf("server url = %v, want unchanged passthrough", got)
+	}
+}
+
+func TestMcpConfigForCLIPreservesExplicitType(t *testing.T) {
+	cfg := Config{
+		MCPServers: map[string]any{
+			"sse-server": map[string]any{
+				"type": "sse",
+				"url":  "http://example.com/sse",
+			},
+		},
+	}
+	out, _ := mcpConfigForCLI(cfg)
+	var payload struct {
+		MCPServers map[string]map[string]any `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := payload.MCPServers["sse-server"]["type"]; got != "sse" {
+		t.Fatalf("explicit type clobbered: got %v, want \"sse\"", got)
+	}
+}
+
+func TestMcpConfigForCLIBackfillsStdioType(t *testing.T) {
+	cfg := Config{
+		MCPServers: map[string]any{
+			"local": map[string]any{
+				"command": "/usr/local/bin/my-mcp",
+				"args":    []any{"--flag"},
+			},
+		},
+	}
+	out, _ := mcpConfigForCLI(cfg)
+	var payload struct {
+		MCPServers map[string]map[string]any `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := payload.MCPServers["local"]["type"]; got != "stdio" {
+		t.Fatalf("stdio backfill missing: got %v, want \"stdio\"", got)
 	}
 }
 
