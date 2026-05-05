@@ -190,7 +190,7 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 		return
 	}
 
-	result, fe := h.dispatcher.Invoke(ctx, method, frame.Params)
+	result, fe := h.dispatcher.InvokeForOrigin(ctx, method, frame.Params, h.isLoopback)
 	if fe != nil {
 		h.writeError(ctx, frame.ID, fe)
 		return

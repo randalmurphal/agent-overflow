@@ -172,7 +172,11 @@ func (a *App) EnsureDesignWorkdir(threadID string) error {
 	if a.designWorkdir == nil {
 		return fmt.Errorf("design workdir manager unavailable")
 	}
-	return a.designWorkdir.EnsureThread(threadID)
+	if err := a.designWorkdir.EnsureThread(threadID); err != nil {
+		return fmt.Errorf("ensure workdir for thread %q (base=%q): %w",
+			threadID, a.designWorkdir.BaseDir(), err)
+	}
+	return nil
 }
 
 // CaptureSnapshot freezes the current main/ directory as a labeled

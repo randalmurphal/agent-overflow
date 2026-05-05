@@ -217,10 +217,12 @@ func TestIntegration_FiveRPCsRoundTripAcrossWire(t *testing.T) {
 		t.Fatalf("SimpleCall result = %s, want \"hello wire\"", string(resp.Result))
 	}
 
-	// 2. Error return surfacing: receiver's error reaches the wire
-	//    as ErrCodeMethodError, redacted to a generic "method failed
-	//    (id: <correlation>)" message so internal prose can't leak.
-	//    The unredacted text lives in server-side logs.
+	// 2. Error return surfacing: receiver's error reaches the wire as
+	//    ErrCodeMethodError. The integration fixture connects via
+	//    127.0.0.1, so the dispatcher treats the caller as loopback —
+	//    the methodErr.Error() text comes through directly. LAN peers
+	//    get the redacted "method failed (id: ...)" envelope (covered
+	//    by the conn-level tests against a non-loopback dialler).
 	resp = callRPC(t, conn, "MaybeFail", true)
 	if resp.Error == nil {
 		t.Fatalf("MaybeFail(true) expected error frame, got result %s", string(resp.Result))
@@ -228,11 +230,8 @@ func TestIntegration_FiveRPCsRoundTripAcrossWire(t *testing.T) {
 	if resp.Error.Code != ErrCodeMethodError {
 		t.Fatalf("MaybeFail error code = %s, want %s", resp.Error.Code, ErrCodeMethodError)
 	}
-	if strings.Contains(resp.Error.Message, "integrationStub unhappy") {
-		t.Fatalf("MaybeFail error message leaked receiver text to wire: %q", resp.Error.Message)
-	}
-	if !strings.HasPrefix(resp.Error.Message, "method failed (id: ") {
-		t.Fatalf("MaybeFail error message %q did not match redacted format", resp.Error.Message)
+	if resp.Error.Message != "integrationStub unhappy" {
+		t.Fatalf("MaybeFail loopback caller should see receiver text, got %q", resp.Error.Message)
 	}
 	// Happy path of the same method.
 	resp = callRPC(t, conn, "MaybeFail", false)

@@ -380,6 +380,31 @@ func TestDispatcher_Invoke_MethodErrorDoesNotLeakInternals(t *testing.T) {
 	}
 }
 
+// TestDispatcher_InvokeForOrigin_LoopbackExposesError pins the dual
+// of the redaction guarantee: a loopback peer (i.e. the same machine,
+// the embedded webview or the user's own dev tab) gets the full
+// methodErr.Error() text on the wire so the frontend can show a
+// useful toast / dev-console message without users having to grep
+// `make dev` output for the cid. The cost-benefit: loopback already
+// has access to everything in the process; exposing the wire error
+// adds no leak.
+func TestDispatcher_InvokeForOrigin_LoopbackExposesError(t *testing.T) {
+	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
+	m, _ := d.Resolve(0, "Save")
+	_, fe := d.InvokeForOrigin(context.Background(), m, []json.RawMessage{json.RawMessage(`"fail"`)}, true)
+	if fe == nil {
+		t.Fatalf("expected error frame")
+	}
+	if fe.Code != ErrCodeMethodError {
+		t.Fatalf("expected method_error, got %s", fe.Code)
+	}
+	// fakeApp.Save("fail") returns errors.New("save refused"). Loopback
+	// callers see that text directly — no redaction.
+	if fe.Message != "save refused" {
+		t.Fatalf("loopback caller should see method error text, got %q", fe.Message)
+	}
+}
+
 // TestDispatcher_Invoke_MethodErrorIncludesCorrelationID pins the
 // "users can grep logs" half of the redaction contract: every method-
 // error frame surfaces an opaque ID the operator can correlate against

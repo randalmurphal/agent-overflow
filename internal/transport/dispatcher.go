@@ -277,7 +277,22 @@ func (d *Dispatcher) ResolveForOrigin(id uint32, name string, isLoopback bool) (
 // deliberately generic — full prose (file paths, internal state, panic
 // details) is logged server-side. A LAN-attached attacker can probe the
 // wire shape but cannot harvest project-internal strings.
+// Invoke is the legacy entry point. It keeps the original redaction
+// semantics (method-returned error text NOT exposed) so the existing
+// info-disclosure regression tests stay representative of LAN-peer
+// behaviour. Production code on the connection path uses
+// InvokeForOrigin directly with the per-conn loopback flag.
 func (d *Dispatcher) Invoke(ctx context.Context, m *Method, params []json.RawMessage) (result json.RawMessage, frameErr *FrameError) {
+	return d.InvokeForOrigin(ctx, m, params, false)
+}
+
+// InvokeForOrigin runs the dispatch with caller-origin context.
+// `exposeErrors` should mirror the per-connection loopback flag: a
+// loopback peer is the same machine as the backend, so leaking a
+// method-returned error string adds no information beyond what the
+// server-side log already contains. A LAN peer must continue to see
+// the redacted "method failed (id: <cid>)" envelope.
+func (d *Dispatcher) InvokeForOrigin(ctx context.Context, m *Method, params []json.RawMessage, exposeErrors bool) (result json.RawMessage, frameErr *FrameError) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("transport: panic in %s: %v", m.FQN, r)
@@ -310,7 +325,7 @@ func (d *Dispatcher) Invoke(ctx context.Context, m *Method, params []json.RawMes
 	} else {
 		results = m.fn.Call(args)
 	}
-	return d.processResults(m, results)
+	return d.processResults(m, results, exposeErrors)
 }
 
 // buildArgs decodes the json-encoded params array into reflect.Values
@@ -408,7 +423,7 @@ func (d *Dispatcher) buildArgs(ctx context.Context, m *Method, params []json.Raw
 // random ID and return a generic "method failed (id: <id>)" message so
 // users can grep server logs for the full prose without surfacing it on
 // the wire.
-func (d *Dispatcher) processResults(m *Method, results []reflect.Value) (json.RawMessage, *FrameError) {
+func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeErrors bool) (json.RawMessage, *FrameError) {
 	hasError := len(m.outputTypes) > 0 && m.outputTypes[len(m.outputTypes)-1].Implements(errType)
 
 	if hasError {
@@ -417,9 +432,19 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value) (json.Ra
 			methodErr := errResult.Interface().(error)
 			cid := newCorrelationID()
 			log.Printf("transport: %s returned error (id: %s): %v", m.FQN, cid, methodErr)
+			message := fmt.Sprintf("method failed (id: %s)", cid)
+			if exposeErrors {
+				// Loopback caller — same machine as the backend, so the
+				// method error text leaks no information that isn't
+				// already in the server log. Send it through so the
+				// frontend can surface it inline (toast text, dev
+				// console) without users having to grep `make dev`
+				// output for the cid.
+				message = methodErr.Error()
+			}
 			return nil, &FrameError{
 				Code:    ErrCodeMethodError,
-				Message: fmt.Sprintf("method failed (id: %s)", cid),
+				Message: message,
 			}
 		}
 		results = results[:len(results)-1]
