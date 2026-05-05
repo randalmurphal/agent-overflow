@@ -163,6 +163,56 @@ func (a *App) ListDesignOptions(threadID, setID string) ([]string, error) {
 	return a.designWorkdir.ListOptions(threadID, setID)
 }
 
+// DesignOptionSet is the wire shape for the "currently active
+// options picker" projection. Returned by LatestDesignOptionSet for
+// frontend hydration on pane mount / refresh.
+type DesignOptionSet struct {
+	SetID     string   `json:"setId"`
+	OptionIDs []string `json:"optionIds"`
+}
+
+// LatestDesignOptionSet returns the most recent option set under the
+// thread's `options/` dir that has at least one option containing
+// `index.html` and no `.picked` marker — i.e. the picker state the
+// frontend should show on a freshly mounted design pane. Returns nil
+// when no such set exists (the user has either picked every set or
+// the agent has not generated any).
+//
+// This is the load-bearing piece of the persistence story: refresh
+// or app restart re-derives picker state from the per-thread workdir
+// rather than from in-memory svelte state. The on-disk layout is
+// already durable, so no SQLite row needs to mirror the picker — the
+// `.picked` marker file is the dismissal record.
+func (a *App) LatestDesignOptionSet(threadID string) (*DesignOptionSet, error) {
+	if a.designWorkdir == nil {
+		return nil, fmt.Errorf("design workdir manager unavailable")
+	}
+	setID, optionIDs, err := a.designWorkdir.LatestUnpickedOptionSet(threadID)
+	if err != nil {
+		return nil, err
+	}
+	if setID == "" {
+		return nil, nil
+	}
+	return &DesignOptionSet{SetID: setID, OptionIDs: optionIDs}, nil
+}
+
+// DismissDesignOptionSet writes the `.picked` marker file into
+// `options/{setId}/` so a refresh / restart does not re-hydrate the
+// picker for a set the user has already resolved. The option
+// directories themselves stay on disk so the agent can read the
+// picked option's files via absolute path when applying the chosen
+// direction to main/.
+//
+// Called from the frontend's DesignOptionsPanel after SendMessage
+// for the structured `option_chosen` payload returns successfully.
+func (a *App) DismissDesignOptionSet(threadID, setID string) error {
+	if a.designWorkdir == nil {
+		return fmt.Errorf("design workdir manager unavailable")
+	}
+	return a.designWorkdir.MarkOptionSetPicked(threadID, setID)
+}
+
 // designWorkDirOverride returns the per-thread workdir to use as the
 // provider subprocess's CWD for design threads, or "" when the
 // session should keep the thread's WorkspacePath. The bundled system

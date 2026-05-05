@@ -27,7 +27,7 @@ import type {
 } from '../types/design';
 import {
   GetThreadItem,
-  ListDesignOptions,
+  LatestDesignOptionSet,
   ListItemsBeforeTurn,
   ListRecentThreadItems,
   ListRecentTurns,
@@ -2118,30 +2118,47 @@ export function createThreadPane() {
     },
 
     /**
-     * Hydrate `activeOptionSet` from the file watcher's
-     * `design:options-update` event. The watcher reports {threadId, setId}
-     * when the agent writes into options/{setId}/; this method enumerates
-     * the option ids inside the set and promotes the result to the panel.
+     * Hydrate `activeOptionSet` from the per-thread workdir. Called on:
      *
-     * Best-effort: a binding error is logged but not surfaced — failing
-     * to hydrate the panel is preferable to dragging a toast onto the
-     * user every time a transient mid-write fires the watcher.
+     *  - file watcher events (`design:options-update`) so a fresh set
+     *    or new index.html landing in an existing set is reflected
+     *    immediately;
+     *  - design pane mount so a refresh / app restart re-derives the
+     *    picker from disk instead of dropping in-memory state.
+     *
+     * Backend-side LatestDesignOptionSet is the source of truth: it
+     * picks the most recently-touched set under `options/` that has
+     * at least one option containing index.html and no `.picked`
+     * marker. The watcher's setId hint is informational only — using
+     * "latest" instead of "set the watcher named" gives us a uniform
+     * model where pick-dismissal (which writes a `.picked` marker)
+     * naturally clears the panel on the next refresh.
+     *
+     * Best-effort: a binding error is logged but not surfaced —
+     * failing to hydrate the panel is preferable to dragging a toast
+     * onto the user every time a transient mid-write fires the
+     * watcher.
      */
-    async applyDesignOptionsUpdate(threadId: string, setId: string): Promise<void> {
-      if (!thread || thread.id !== threadId || !setId) return;
+    async applyDesignOptionsUpdate(threadId: string, _setId: string): Promise<void> {
+      if (!thread || thread.id !== threadId) return;
       try {
-        const ids = (await ListDesignOptions(threadId, setId)) ?? [];
+        const latest = (await LatestDesignOptionSet(threadId)) as
+          | { setId: string; optionIds: string[] }
+          | null;
         if (!thread || thread.id !== threadId) return;
-        if (ids.length === 0) {
-          // Empty set is most likely a transient mid-write — leave any
-          // existing panel state intact.
+        if (!latest || !latest.setId || !latest.optionIds || latest.optionIds.length === 0) {
+          // No active set on disk. Clear any stale panel state — this
+          // is what handles the post-pick dismissal sequence (the
+          // .picked marker write fires the watcher → we re-query →
+          // backend returns null → panel collapses).
+          activeOptionSet = null;
           return;
         }
-        const optionPaths = ids.map((id) => `options/${setId}/${id}`);
-        activeOptionSet = { setId, optionPaths };
+        const optionPaths = latest.optionIds.map((id) => `options/${latest.setId}/${id}`);
+        activeOptionSet = { setId: latest.setId, optionPaths };
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.warn('design: ListDesignOptions failed for', setId, err);
+        console.warn('design: LatestDesignOptionSet failed:', err);
       }
     },
   };

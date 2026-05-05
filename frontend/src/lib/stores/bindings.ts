@@ -130,6 +130,8 @@ export {
   // Design operations
   ListDesignSnapshots,
   ListDesignOptions,
+  LatestDesignOptionSet,
+  DismissDesignOptionSet,
   CaptureSnapshot,
   BranchFromSnapshot,
   EnsureDesignWorkdir,

@@ -14,12 +14,28 @@
   // the pane.
 
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { SendMessage } from '../../stores/bindings';
+  import RefreshCw from 'lucide-svelte/icons/refresh-cw';
+  import Icon from '../primitives/Icon.svelte';
+  import { DismissDesignOptionSet, SendMessage } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
   let busyOptionId = $state<string | null>(null);
+  let iframeReloadKey = $state(0);
+
+  function refresh(): void {
+    // Re-derive picker state from disk (in case the watcher missed
+    // an event under burst conditions) AND bump the iframe reload
+    // key so any options whose contents changed in-place but kept
+    // the same path get a fresh fetch. Without the reload key,
+    // Svelte's `(path)` keying on the each-block reuses the iframe
+    // element for an unchanged path — the user's "refresh this
+    // panel" intent wouldn't survive into the children.
+    const threadId = pane.threadId;
+    if (threadId) void pane.applyDesignOptionsUpdate(threadId, '');
+    iframeReloadKey += 1;
+  }
 
   function optionIdFromPath(path: string): string {
     // optionPaths take the shape `options/{setId}/{optionId}` (or with a
@@ -31,10 +47,18 @@
     return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
   }
 
-  function iframeSrcFor(threadId: string, setId: string, optionId: string): string {
+  function iframeSrcFor(
+    threadId: string,
+    setId: string,
+    optionId: string,
+    cb: number,
+  ): string {
+    // ?cb=N is the refresh-button's lever. Without it the URL is
+    // identical between renders and Svelte's keyed each reuses the
+    // existing iframe element with no network re-fetch.
     return `/design/${encodeURIComponent(threadId)}/options/${encodeURIComponent(
       setId,
-    )}/${encodeURIComponent(optionId)}/`;
+    )}/${encodeURIComponent(optionId)}/?cb=${cb}`;
   }
 
   async function pick(optionId: string): Promise<void> {
@@ -55,6 +79,16 @@
       );
       const message = `Picked option ${optionId} from set ${set.setId}.\n\n\`\`\`aoflow-design\n${json}\n\`\`\``;
       await SendMessage(threadId, message, []);
+      // Persist the dismissal to disk (`.picked` marker) so a
+      // refresh / app restart doesn't re-hydrate the same picker the
+      // user already resolved. Best-effort: a marker-write failure
+      // is logged but doesn't block the UX — the pane still clears
+      // locally; the worst case is a one-time re-hydration on next
+      // mount which the user can dismiss manually.
+      void DismissDesignOptionSet(threadId, set.setId).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn('design: DismissDesignOptionSet failed:', err);
+      });
       pane.setActiveOptionSet(null);
     } catch (err) {
       const m = err instanceof Error ? err.message : String(err);
@@ -82,19 +116,35 @@
           · {set.optionPaths.length} options
         </p>
       </div>
-      <button
-        type="button"
-        onclick={() => pane.setActiveOptionSet(null)}
-        title="Dismiss option set"
-        class={[
-          'inline-flex items-center gap-1 rounded-[var(--radius-field)]',
-          'border border-border-subtle bg-surface-0 px-2 py-1',
-          'text-[12px] text-fg cursor-pointer transition-colors',
-          'hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-        ].join(' ')}
-      >
-        Dismiss
-      </button>
+      <div class="flex items-center gap-1">
+        <button
+          type="button"
+          onclick={refresh}
+          title="Refresh options"
+          aria-label="Refresh options"
+          class={[
+            'inline-flex items-center justify-center rounded-[var(--radius-field)]',
+            'border border-border-subtle bg-surface-0 p-1',
+            'text-fg-subtle cursor-pointer transition-colors',
+            'hover:border-border hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+          ].join(' ')}
+        >
+          <Icon icon={RefreshCw} size={14} />
+        </button>
+        <button
+          type="button"
+          onclick={() => pane.setActiveOptionSet(null)}
+          title="Dismiss option set"
+          class={[
+            'inline-flex items-center gap-1 rounded-[var(--radius-field)]',
+            'border border-border-subtle bg-surface-0 px-2 py-1',
+            'text-[12px] text-fg cursor-pointer transition-colors',
+            'hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+          ].join(' ')}
+        >
+          Dismiss
+        </button>
+      </div>
     </div>
     <div class="flex-1 min-h-0 overflow-y-auto p-2">
       {#if set.optionPaths.length === 0}
@@ -114,7 +164,7 @@
             >
               <iframe
                 title={`Option ${optionId}`}
-                src={iframeSrcFor(threadId, set.setId, optionId)}
+                src={iframeSrcFor(threadId, set.setId, optionId, iframeReloadKey)}
                 sandbox="allow-scripts"
                 referrerpolicy="no-referrer"
                 class="w-full aspect-[4/3] bg-white border-b border-border-subtle"

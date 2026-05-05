@@ -99,11 +99,27 @@ func (m *WorkDirManager) ThreadDir(threadID string) (string, error) {
 	return m.threadDir(threadID)
 }
 
+// optionPickedMarker is the empty file written into options/{setId}/
+// when the user picks an option from that set. Its presence means
+// "user has resolved this set; don't re-render the picker on reload."
+// Stored on disk (rather than in SQLite) so the workdir tree is
+// self-contained — wiping or renaming a thread's workdir doesn't
+// leave dangling rows pointing at vanished directories.
+const optionPickedMarker = ".picked"
+
 // ListOptions returns the option ids inside `options/{setId}/` for a
-// thread, sorted lexically. Returns an empty slice (no error) when the
-// set directory does not exist — the watcher fires options-update on
-// the first write into a set, and the frontend racing the agent's
-// initial mkdir is expected.
+// thread, sorted lexically. Filters to options that contain
+// `index.html` so the frontend's iframe grid never renders empty
+// boxes for option dirs the agent has only just mkdir'd. Without the
+// filter, the file watcher's debounce window emits an options-update
+// the moment the directories appear (mkdir A, B, C → one event), the
+// frontend races to render iframes pointing at index-less paths, and
+// http.FileServer either 404s or serves a directory listing — both
+// look like blank tiles.
+//
+// Returns an empty slice (no error) when the set directory does not
+// exist — the watcher fires options-update on the first write into a
+// set, and the frontend racing the agent's initial mkdir is expected.
 func (m *WorkDirManager) ListOptions(threadID, setID string) ([]string, error) {
 	setID = sanitizeSegment(setID)
 	if setID == "" {
@@ -127,22 +143,152 @@ func (m *WorkDirManager) ListOptions(threadID, setID string) ([]string, error) {
 			continue
 		}
 		name := entry.Name()
-		if name == "" || name == "." || name == ".." {
+		if name == "" || name == "." || name == ".." || strings.HasPrefix(name, ".") {
 			continue
+		}
+		// index.html presence gate — see doc comment. Stat (not Lstat)
+		// because the agent might write index.html via a symlink in
+		// edge cases; following the link is fine.
+		if _, err := os.Stat(filepath.Join(dir, name, indexHTMLName)); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("design: stat option %s/%s: %w", setID, name, err)
 		}
 		out = append(out, name)
 	}
-	// os.ReadDir returns lexically sorted, but reaffirm by trimming
-	// hidden entries (anything starting with `.`) — agents shouldn't
-	// emit dotfiles into options/, but defense in depth.
-	cleaned := out[:0]
-	for _, name := range out {
-		if strings.HasPrefix(name, ".") {
+	return out, nil
+}
+
+// IsOptionSetPicked reports whether the user has picked an option
+// from the given set. Reads the .picked marker file written by
+// MarkOptionSetPicked. Missing set dir or missing marker → false.
+func (m *WorkDirManager) IsOptionSetPicked(threadID, setID string) (bool, error) {
+	setID = sanitizeSegment(setID)
+	if setID == "" {
+		return false, fmt.Errorf("design: options set id required")
+	}
+	threadDir, err := m.threadDir(threadID)
+	if err != nil {
+		return false, err
+	}
+	marker := filepath.Join(threadDir, subdirOptions, setID, optionPickedMarker)
+	if _, err := os.Stat(marker); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("design: stat picked marker for %s: %w", setID, err)
+	}
+	return true, nil
+}
+
+// MarkOptionSetPicked writes the .picked marker into
+// `options/{setId}/`. Idempotent. Called from the frontend when the
+// user picks an option from the set so a refresh / app restart
+// doesn't re-hydrate the same picker.
+//
+// We keep the option directories themselves on disk so the agent can
+// still read the picked option's files via absolute path when
+// applying the chosen direction to main/. The marker is the only
+// state that flips; the bytes the agent generated stay readable.
+func (m *WorkDirManager) MarkOptionSetPicked(threadID, setID string) error {
+	setID = sanitizeSegment(setID)
+	if setID == "" {
+		return fmt.Errorf("design: options set id required")
+	}
+	threadDir, err := m.threadDir(threadID)
+	if err != nil {
+		return err
+	}
+	setDir := filepath.Join(threadDir, subdirOptions, setID)
+	if _, err := os.Stat(setDir); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("design: option set %s does not exist", setID)
+		}
+		return fmt.Errorf("design: stat option set %s: %w", setID, err)
+	}
+	marker := filepath.Join(setDir, optionPickedMarker)
+	// Idempotent: a stale call (frontend retry, double-click) shouldn't
+	// fail just because the marker already lives.
+	return writeBytes(marker, nil)
+}
+
+// LatestUnpickedOptionSet returns the most recent option set under
+// `options/` that has at least one option containing `index.html` and
+// no `.picked` marker. Returns ("", nil, nil) when no such set
+// exists. Used to hydrate the frontend's options panel on thread
+// mount / pane swap so a refresh doesn't drop pending picker state.
+//
+// "Most recent" is by directory mtime: adding/removing entries inside
+// `options/{setId}/` updates that dir's mtime on POSIX, so the most
+// recently touched set sorts to the top. Lexical setId sort would be
+// brittle — agents are instructed to embed timestamps in the id but
+// nothing enforces it.
+func (m *WorkDirManager) LatestUnpickedOptionSet(threadID string) (string, []string, error) {
+	threadDir, err := m.threadDir(threadID)
+	if err != nil {
+		return "", nil, err
+	}
+	optionsDir := filepath.Join(threadDir, subdirOptions)
+	entries, err := os.ReadDir(optionsDir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil, nil
+		}
+		return "", nil, fmt.Errorf("design: list option sets: %w", err)
+	}
+
+	type candidate struct {
+		setID   string
+		mtime   time.Time
+		options []string
+	}
+	var candidates []candidate
+	for _, entry := range entries {
+		if !entry.IsDir() {
 			continue
 		}
-		cleaned = append(cleaned, name)
+		name := entry.Name()
+		if name == "" || name == "." || name == ".." || strings.HasPrefix(name, ".") {
+			continue
+		}
+		picked, err := m.IsOptionSetPicked(threadID, name)
+		if err != nil {
+			return "", nil, err
+		}
+		if picked {
+			continue
+		}
+		opts, err := m.ListOptions(threadID, name)
+		if err != nil {
+			return "", nil, err
+		}
+		if len(opts) == 0 {
+			// Set dir exists but no option has index.html yet — agent
+			// is mid-write. Skip; the watcher event for the eventual
+			// write will re-trigger hydration with a populated set.
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return "", nil, fmt.Errorf("design: stat option set %s: %w", name, err)
+		}
+		candidates = append(candidates, candidate{
+			setID:   name,
+			mtime:   info.ModTime(),
+			options: opts,
+		})
 	}
-	return cleaned, nil
+	if len(candidates) == 0 {
+		return "", nil, nil
+	}
+	latest := candidates[0]
+	for _, c := range candidates[1:] {
+		if c.mtime.After(latest.mtime) {
+			latest = c
+		}
+	}
+	return latest.setID, latest.options, nil
 }
 
 // OptionsPath returns the directory path for an option set, creating

@@ -45,6 +45,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "DeleteProposedPlanComment", ID: 554913120}, // main.App.DeleteProposedPlanComment
 	{Name: "DeleteRemoteEndpoint", ID: 3667944297}, // main.App.DeleteRemoteEndpoint
 	{Name: "DeleteThread", ID: 1186337974}, // main.App.DeleteThread
+	{Name: "DismissDesignOptionSet", ID: 1381421528}, // main.App.DismissDesignOptionSet
 	{Name: "EnsureDesignWorkdir", ID: 1465371311}, // main.App.EnsureDesignWorkdir
 	{Name: "FailScreenshot", ID: 4051848193}, // main.App.FailScreenshot
 	{Name: "ForkThread", ID: 4063914461}, // main.App.ForkThread
@@ -97,6 +98,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "IngestScreenshot", ID: 267844513}, // main.App.IngestScreenshot
 	{Name: "InterruptTurn", ID: 850013031}, // main.App.InterruptTurn
 	{Name: "IsWSL", ID: 2789068977}, // main.App.IsWSL
+	{Name: "LatestDesignOptionSet", ID: 4252906991}, // main.App.LatestDesignOptionSet
 	{Name: "ListAttachments", ID: 1730798413}, // main.App.ListAttachments
 	{Name: "ListAvailableEditors", ID: 2556802234}, // main.App.ListAvailableEditors
 	{Name: "ListChatBarFavorites", ID: 2114948965}, // main.App.ListChatBarFavorites

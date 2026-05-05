@@ -110,10 +110,15 @@ func TestWorkDir_ListOptionsReturnsLexicallySortedDirNames(t *testing.T) {
 	if err := m.EnsureThread("t1"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}
-	// Create three option dirs out of order.
+	// Create three option dirs out of order, each with index.html so
+	// the index-presence gate doesn't filter them out.
 	for _, opt := range []string{"C", "A", "B"} {
-		if _, err := m.OptionsPath("t1", "set1", opt); err != nil {
+		dir, err := m.OptionsPath("t1", "set1", opt)
+		if err != nil {
 			t.Fatalf("OptionsPath %s: %v", opt, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<x/>"), 0o644); err != nil {
+			t.Fatalf("write index.html for %s: %v", opt, err)
 		}
 	}
 	got, err := m.ListOptions("t1", "set1")
@@ -129,6 +134,42 @@ func TestWorkDir_ListOptionsReturnsLexicallySortedDirNames(t *testing.T) {
 		if got[i] != w {
 			t.Fatalf("got[%d] = %q, want %q", i, got[i], w)
 		}
+	}
+}
+
+// TestWorkDir_ListOptionsSkipsDirWithoutIndexHTML pins the load-bearing
+// behavior for the panel UX: a freshly-mkdir'd option dir whose
+// index.html has not landed yet must NOT appear in ListOptions, so the
+// frontend's iframe grid never renders blank tiles for empty dirs. The
+// regression we're guarding against: agent runs `mkdir A B C`, the
+// watcher's debounce window emits one options-update, the frontend
+// races to display three iframes — http.FileServer returns either 404
+// or a directory listing for index-less paths, and the user sees three
+// white boxes.
+func TestWorkDir_ListOptionsSkipsDirWithoutIndexHTML(t *testing.T) {
+	m, _, _ := newWorkDir(t)
+	if err := m.EnsureThread("t1"); err != nil {
+		t.Fatalf("EnsureThread: %v", err)
+	}
+	// A has index.html, B is just a dir, C has index.html.
+	for _, opt := range []string{"A", "B", "C"} {
+		dir, err := m.OptionsPath("t1", "set1", opt)
+		if err != nil {
+			t.Fatalf("OptionsPath %s: %v", opt, err)
+		}
+		if opt == "B" {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<x/>"), 0o644); err != nil {
+			t.Fatalf("write index.html for %s: %v", opt, err)
+		}
+	}
+	got, err := m.ListOptions("t1", "set1")
+	if err != nil {
+		t.Fatalf("ListOptions: %v", err)
+	}
+	if len(got) != 2 || got[0] != "A" || got[1] != "C" {
+		t.Fatalf("got %v, want [A C] (B has no index.html, must be filtered)", got)
 	}
 }
 
@@ -167,6 +208,9 @@ func TestWorkDir_ListOptionsSkipsDotfiles(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(setDir, "A"), 0o755); err != nil {
 		t.Fatalf("mkdir A: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(setDir, "A", "index.html"), []byte("<x/>"), 0o644); err != nil {
+		t.Fatalf("write A index: %v", err)
+	}
 	got, err := m.ListOptions("t1", "set1")
 	if err != nil {
 		t.Fatalf("ListOptions: %v", err)
@@ -191,12 +235,196 @@ func TestWorkDir_ListOptionsSkipsRegularFiles(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(setDir, "A"), 0o755); err != nil {
 		t.Fatalf("mkdir A: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(setDir, "A", "index.html"), []byte("<x/>"), 0o644); err != nil {
+		t.Fatalf("write A index: %v", err)
+	}
 	got, err := m.ListOptions("t1", "set1")
 	if err != nil {
 		t.Fatalf("ListOptions: %v", err)
 	}
 	if len(got) != 1 || got[0] != "A" {
 		t.Fatalf("got %v, want [A]", got)
+	}
+}
+
+// TestWorkDir_LatestUnpickedOptionSetReturnsMostRecent pins the
+// load-bearing hydration behavior: the frontend asks the backend on
+// pane mount which option set to render, and the answer is the most
+// recently touched set with index.html-bearing options and no
+// .picked marker. Without this, a refresh / app restart loses the
+// in-memory activeOptionSet and the user is left looking at the
+// empty main/ placeholder despite their pending picker still
+// existing on disk.
+func TestWorkDir_LatestUnpickedOptionSetReturnsMostRecent(t *testing.T) {
+	m, _, _ := newWorkDir(t)
+	if err := m.EnsureThread("t1"); err != nil {
+		t.Fatalf("EnsureThread: %v", err)
+	}
+	// Older set: setA with one option.
+	dirA, err := m.OptionsPath("t1", "setA", "X")
+	if err != nil {
+		t.Fatalf("OptionsPath setA: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dirA, "index.html"), []byte("<x/>"), 0o644); err != nil {
+		t.Fatalf("write A: %v", err)
+	}
+
+	// Bump mtime gap so the test isn't flaky on FS timestamp
+	// resolution. 50 ms is enough on every FS we run on.
+	time.Sleep(50 * time.Millisecond)
+
+	// Newer set: setB with two options.
+	for _, opt := range []string{"P", "Q"} {
+		d, err := m.OptionsPath("t1", "setB", opt)
+		if err != nil {
+			t.Fatalf("OptionsPath setB/%s: %v", opt, err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "index.html"), []byte("<x/>"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", opt, err)
+		}
+	}
+
+	setID, opts, err := m.LatestUnpickedOptionSet("t1")
+	if err != nil {
+		t.Fatalf("LatestUnpickedOptionSet: %v", err)
+	}
+	if setID != "setB" {
+		t.Fatalf("setID = %q, want setB (newer mtime)", setID)
+	}
+	if len(opts) != 2 || opts[0] != "P" || opts[1] != "Q" {
+		t.Fatalf("opts = %v, want [P Q]", opts)
+	}
+}
+
+// TestWorkDir_LatestUnpickedOptionSetSkipsPickedSets pins the
+// dismissal semantics: once MarkOptionSetPicked writes the .picked
+// marker, that set must drop out of the "active" projection so a
+// refresh after the user picks doesn't re-render the same picker.
+func TestWorkDir_LatestUnpickedOptionSetSkipsPickedSets(t *testing.T) {
+	m, _, _ := newWorkDir(t)
+	if err := m.EnsureThread("t1"); err != nil {
+		t.Fatalf("EnsureThread: %v", err)
+	}
+	for _, set := range []string{"setA", "setB"} {
+		d, err := m.OptionsPath("t1", set, "X")
+		if err != nil {
+			t.Fatalf("OptionsPath %s: %v", set, err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "index.html"), []byte("<x/>"), 0o644); err != nil {
+			t.Fatalf("write index %s: %v", set, err)
+		}
+	}
+	// Mtime ordering: setA created first, setB created later; without
+	// any .picked, setB wins.
+	if err := m.MarkOptionSetPicked("t1", "setB"); err != nil {
+		t.Fatalf("MarkOptionSetPicked setB: %v", err)
+	}
+
+	setID, _, err := m.LatestUnpickedOptionSet("t1")
+	if err != nil {
+		t.Fatalf("LatestUnpickedOptionSet: %v", err)
+	}
+	if setID != "setA" {
+		t.Fatalf("setID = %q, want setA (setB is picked)", setID)
+	}
+
+	// Pick setA too — both picked, no active set.
+	if err := m.MarkOptionSetPicked("t1", "setA"); err != nil {
+		t.Fatalf("MarkOptionSetPicked setA: %v", err)
+	}
+	setID, opts, err := m.LatestUnpickedOptionSet("t1")
+	if err != nil {
+		t.Fatalf("LatestUnpickedOptionSet (both picked): %v", err)
+	}
+	if setID != "" || opts != nil {
+		t.Fatalf("after both picked, got setID=%q opts=%v, want empty", setID, opts)
+	}
+}
+
+// TestWorkDir_LatestUnpickedOptionSetSkipsEmptySet pins that a set
+// dir with no index.html-bearing options does NOT count as the
+// active set — the agent has just mkdir'd but not yet written, and
+// the frontend would render blank iframes if we promoted it.
+func TestWorkDir_LatestUnpickedOptionSetSkipsEmptySet(t *testing.T) {
+	m, _, _ := newWorkDir(t)
+	if err := m.EnsureThread("t1"); err != nil {
+		t.Fatalf("EnsureThread: %v", err)
+	}
+	// setA: dir only, no index.html.
+	if _, err := m.OptionsPath("t1", "setA", "X"); err != nil {
+		t.Fatalf("OptionsPath setA: %v", err)
+	}
+	// setB: dir AND index.html.
+	dirB, err := m.OptionsPath("t1", "setB", "Y")
+	if err != nil {
+		t.Fatalf("OptionsPath setB: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dirB, "index.html"), []byte("<x/>"), 0o644); err != nil {
+		t.Fatalf("write B index: %v", err)
+	}
+
+	setID, opts, err := m.LatestUnpickedOptionSet("t1")
+	if err != nil {
+		t.Fatalf("LatestUnpickedOptionSet: %v", err)
+	}
+	if setID != "setB" {
+		t.Fatalf("setID = %q, want setB (setA has no index.html)", setID)
+	}
+	if len(opts) != 1 || opts[0] != "Y" {
+		t.Fatalf("opts = %v, want [Y]", opts)
+	}
+}
+
+func TestWorkDir_LatestUnpickedOptionSetReturnsEmptyForFreshThread(t *testing.T) {
+	m, _, _ := newWorkDir(t)
+	if err := m.EnsureThread("t1"); err != nil {
+		t.Fatalf("EnsureThread: %v", err)
+	}
+	setID, opts, err := m.LatestUnpickedOptionSet("t1")
+	if err != nil {
+		t.Fatalf("LatestUnpickedOptionSet: %v", err)
+	}
+	if setID != "" || opts != nil {
+		t.Fatalf("got setID=%q opts=%v, want empty", setID, opts)
+	}
+}
+
+func TestWorkDir_MarkOptionSetPickedRequiresExistingSet(t *testing.T) {
+	m, _, _ := newWorkDir(t)
+	if err := m.EnsureThread("t1"); err != nil {
+		t.Fatalf("EnsureThread: %v", err)
+	}
+	// Marking a set that doesn't exist must error so a frontend bug
+	// doesn't silently leave a marker file dangling under a fabricated
+	// path.
+	if err := m.MarkOptionSetPicked("t1", "ghost"); err == nil {
+		t.Fatal("MarkOptionSetPicked(ghost) error = nil, want error")
+	}
+}
+
+func TestWorkDir_MarkOptionSetPickedIsIdempotent(t *testing.T) {
+	m, _, _ := newWorkDir(t)
+	if err := m.EnsureThread("t1"); err != nil {
+		t.Fatalf("EnsureThread: %v", err)
+	}
+	d, err := m.OptionsPath("t1", "setA", "X")
+	if err != nil {
+		t.Fatalf("OptionsPath: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(d, "index.html"), []byte("<x/>"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := m.MarkOptionSetPicked("t1", "setA"); err != nil {
+			t.Fatalf("MarkOptionSetPicked iter %d: %v", i, err)
+		}
+	}
+	picked, err := m.IsOptionSetPicked("t1", "setA")
+	if err != nil {
+		t.Fatalf("IsOptionSetPicked: %v", err)
+	}
+	if !picked {
+		t.Fatal("IsOptionSetPicked = false after marking, want true")
 	}
 }
 

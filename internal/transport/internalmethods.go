@@ -211,12 +211,14 @@ var LocalOnlyMethods = map[string]bool{
 	// posts iframe-captured diagnostics into the per-thread ring,
 	// resolves screenshot tool calls, and writes/branches snapshot
 	// directories under the user config dir. All loopback-only.
-	"IngestDiagnosticBatch": true,
-	"IngestScreenshot":      true,
-	"FailScreenshot":        true,
-	"CaptureSnapshot":       true,
-	"BranchFromSnapshot":    true,
-	"EnsureDesignWorkdir":   true,
+	"IngestDiagnosticBatch":   true,
+	"IngestScreenshot":        true,
+	"FailScreenshot":          true,
+	"CaptureSnapshot":         true,
+	"BranchFromSnapshot":      true,
+	"EnsureDesignWorkdir":     true,
+	"DismissDesignOptionSet":  true,
+	"LatestDesignOptionSet":   true,
 	// ListDesignSnapshots returns absolute filesystem paths under the
 	// user config dir (DirPath). Same disclosure shape as
 	// ListThreadCheckpoints — leaking on-disk layout to a LAN

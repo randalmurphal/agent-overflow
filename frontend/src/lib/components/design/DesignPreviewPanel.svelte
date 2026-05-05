@@ -101,6 +101,14 @@
         if (cancelled) return;
         if (pane.threadId !== threadId) return;
         workdirReadyForThread = threadId;
+        // Re-derive picker state from disk after the workdir is
+        // confirmed. Without this, a refresh / app restart drops the
+        // in-memory activeOptionSet and leaves the user looking at
+        // the empty main/ placeholder even though their pending
+        // option set is still on disk under options/{setId}/.
+        // applyDesignOptionsUpdate consults LatestDesignOptionSet,
+        // which filters out picked sets via the .picked marker.
+        void pane.applyDesignOptionsUpdate(threadId, '');
       })
       .catch((err) => {
         if (cancelled) return;

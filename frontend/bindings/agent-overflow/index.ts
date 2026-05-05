@@ -12,6 +12,7 @@ export {
     ContextSettingsProfile,
     ContextSettingsUpdate,
     CreateThreadOptions,
+    DesignOptionSet,
     DirectoryEntry,
     DirectoryListing,
     Draft,

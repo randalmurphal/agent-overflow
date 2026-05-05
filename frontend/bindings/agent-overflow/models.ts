@@ -293,6 +293,40 @@ export class CreateThreadOptions {
 }
 
 /**
+ * DesignOptionSet is the wire shape for the "currently active
+ * options picker" projection. Returned by LatestDesignOptionSet for
+ * frontend hydration on pane mount / refresh.
+ */
+export class DesignOptionSet {
+    "setId": string;
+    "optionIds": string[];
+
+    /** Creates a new DesignOptionSet instance. */
+    constructor($$source: Partial<DesignOptionSet> = {}) {
+        if (!("setId" in $$source)) {
+            this["setId"] = "";
+        }
+        if (!("optionIds" in $$source)) {
+            this["optionIds"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DesignOptionSet instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DesignOptionSet {
+        const $$createField1_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("optionIds" in $$parsedSource) {
+            $$parsedSource["optionIds"] = $$createField1_0($$parsedSource["optionIds"]);
+        }
+        return new DesignOptionSet($$parsedSource as Partial<DesignOptionSet>);
+    }
+}
+
+/**
  * DirectoryEntry is one row inside a DirectoryListing.
  * IsRepo is only populated for directory entries; files always report
  * IsRepo=false regardless of name.
@@ -414,7 +448,7 @@ export class DirectoryListing {
      * Creates a new DirectoryListing instance from a string or object.
      */
     static createFrom($$source: any = {}): DirectoryListing {
-        const $$createField3_0 = $$createType5;
+        const $$createField3_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("entries" in $$parsedSource) {
             $$parsedSource["entries"] = $$createField3_0($$parsedSource["entries"]);
@@ -464,7 +498,7 @@ export class Draft {
      * Creates a new Draft instance from a string or object.
      */
     static createFrom($$source: any = {}): Draft {
-        const $$createField2_0 = $$createType6;
+        const $$createField2_0 = $$createType4;
         const $$createField3_0 = $$createType8;
         const $$createField4_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
@@ -833,12 +867,12 @@ export class QueuedItem {
      * Creates a new QueuedItem instance from a string or object.
      */
     static createFrom($$source: any = {}): QueuedItem {
-        const $$createField3_0 = $$createType6;
+        const $$createField3_0 = $$createType4;
         const $$createField4_0 = $$createType10;
         const $$createField5_0 = $$createType10;
-        const $$createField6_0 = $$createType6;
+        const $$createField6_0 = $$createType4;
         const $$createField7_0 = $$createType13;
-        const $$createField8_0 = $$createType6;
+        const $$createField8_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
             $$parsedSource["attachmentIds"] = $$createField3_0($$parsedSource["attachmentIds"]);
@@ -928,12 +962,12 @@ export class SendMessageOptions {
      * Creates a new SendMessageOptions instance from a string or object.
      */
     static createFrom($$source: any = {}): SendMessageOptions {
-        const $$createField0_0 = $$createType6;
+        const $$createField0_0 = $$createType4;
         const $$createField2_0 = $$createType10;
         const $$createField3_0 = $$createType10;
-        const $$createField4_0 = $$createType6;
+        const $$createField4_0 = $$createType4;
         const $$createField5_0 = $$createType13;
-        const $$createField6_0 = $$createType6;
+        const $$createField6_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
             $$parsedSource["attachmentIds"] = $$createField0_0($$parsedSource["attachmentIds"]);
@@ -1155,9 +1189,9 @@ const $$createType0 = diffsummary$0.File.createFrom;
 const $$createType1 = $Create.Array($$createType0);
 const $$createType2 = provider$0.ContextWindowOption.createFrom;
 const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = DirectoryEntry.createFrom;
-const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = $Create.Array($Create.Any);
+const $$createType4 = $Create.Array($Create.Any);
+const $$createType5 = DirectoryEntry.createFrom;
+const $$createType6 = $Create.Array($$createType5);
 const $$createType7 = TerminalChip.createFrom;
 const $$createType8 = $Create.Array($$createType7);
 const $$createType9 = store$0.ProposedPlanSourceRef.createFrom;
