@@ -24,9 +24,18 @@
     pane?: ThreadPane;
     onImageExpand?: (preview: ExpandedImagePreview) => void;
     actions?: UserMessageActions;
+    targetFlash?: boolean;
+    targetFlashNonce?: number;
   }
 
-  let { item, pane, onImageExpand, actions }: Props = $props();
+  let {
+    item,
+    pane,
+    onImageExpand,
+    actions,
+    targetFlash = false,
+    targetFlashNonce = 0,
+  }: Props = $props();
   let revertAnchor: HTMLSpanElement | undefined = $state(undefined);
 
   const userMeta = $derived(parseJsonObject(item.meta));
@@ -125,6 +134,9 @@
   <div
     class="max-w-[82%] rounded-[18px] rounded-br-[8px] border border-border-subtle bg-surface-2/60
            px-3.5 py-2 text-[13px] leading-[1.55] text-fg shadow-sheet"
+    class:user-message-target-flash-a={targetFlash && targetFlashNonce % 2 === 0}
+    class:user-message-target-flash-b={targetFlash && targetFlashNonce % 2 === 1}
+    data-target-flash={targetFlash ? 'true' : undefined}
   >
     {#if attachments.length > 0}
       <div
@@ -255,3 +267,62 @@
     </Popover>
   </div>
 </div>
+
+<style>
+  @keyframes user-message-target-glow-a {
+    0% {
+      border-color: color-mix(in oklab, var(--accent) 88%, white 12%);
+      box-shadow:
+        0 0 0 1px color-mix(in oklab, var(--accent) 72%, transparent),
+        0 0 26px color-mix(in oklab, var(--accent) 34%, transparent);
+    }
+    58% {
+      border-color: color-mix(in oklab, var(--accent) 66%, var(--border-subtle));
+      box-shadow:
+        0 0 0 1px color-mix(in oklab, var(--accent) 38%, transparent),
+        0 0 18px color-mix(in oklab, var(--accent) 20%, transparent);
+    }
+    100% {
+      border-color: var(--border-subtle);
+      box-shadow: var(--shadow-sheet);
+    }
+  }
+
+  @keyframes user-message-target-glow-b {
+    0% {
+      border-color: color-mix(in oklab, var(--accent) 88%, white 12%);
+      box-shadow:
+        0 0 0 1px color-mix(in oklab, var(--accent) 72%, transparent),
+        0 0 26px color-mix(in oklab, var(--accent) 34%, transparent);
+    }
+    58% {
+      border-color: color-mix(in oklab, var(--accent) 66%, var(--border-subtle));
+      box-shadow:
+        0 0 0 1px color-mix(in oklab, var(--accent) 38%, transparent),
+        0 0 18px color-mix(in oklab, var(--accent) 20%, transparent);
+    }
+    100% {
+      border-color: var(--border-subtle);
+      box-shadow: var(--shadow-sheet);
+    }
+  }
+
+  .user-message-target-flash-a {
+    animation: user-message-target-glow-a 900ms ease-out;
+  }
+
+  .user-message-target-flash-b {
+    animation: user-message-target-glow-b 900ms ease-out;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .user-message-target-flash-a,
+    .user-message-target-flash-b {
+      animation: none;
+      border-color: color-mix(in oklab, var(--accent) 70%, var(--border-subtle));
+      box-shadow:
+        0 0 0 1px color-mix(in oklab, var(--accent) 42%, transparent),
+        0 0 16px color-mix(in oklab, var(--accent) 18%, transparent);
+    }
+  }
+</style>

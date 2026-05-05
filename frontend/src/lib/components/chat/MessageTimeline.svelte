@@ -55,6 +55,7 @@
   // Visual breathing room between the last message and the composer
   // overlay; combined with the --composer-height variable from ChatView.
   const BOTTOM_PAD_PX = 24;
+  const TARGET_FLASH_MS = 900;
   // happy-dom returns 0 for clientHeight/clientWidth, which makes virtua
   // mount zero rows. In test runs we ask virtua to mount everything via
   // ssrCount so test assertions can find the rendered DOM. Production
@@ -110,6 +111,9 @@
   // scroll, programmatic scrollToItem — so async restore work can detect
   // staleness and bail.
   let restoreToken = 0;
+  let flashingItemId: string | null = $state(null);
+  let targetFlashNonce = $state(0);
+  let flashTimer: ReturnType<typeof setTimeout> | null = null;
 
   let groupedNodes = $derived<TimelineNode[]>(
     groupItemsBySubagent(filterRedundantNotifications(pane.items)),
@@ -172,6 +176,35 @@
 
   function isToolTextBoundary(index: number): boolean {
     return isToolTextBoundaryAt(groupedNodes, index);
+  }
+
+  function clearTargetFlash(): void {
+    if (flashTimer) {
+      clearTimeout(flashTimer);
+      flashTimer = null;
+    }
+    flashingItemId = null;
+  }
+
+  function flashTargetItem(itemId: string): void {
+    clearTargetFlash();
+    targetFlashNonce += 1;
+    flashingItemId = itemId;
+    flashTimer = setTimeout(() => {
+      if (flashingItemId === itemId) flashingItemId = null;
+      flashTimer = null;
+    }, TARGET_FLASH_MS);
+  }
+
+  function rowElementForIndex(index: number): HTMLElement | null {
+    return contentEl?.querySelector(`[data-row-index="${index}"]`) ?? null;
+  }
+
+  function centeredScrollTopForIndex(index: number): number {
+    if (!scrollEl || !listRef) return 0;
+    const rowTop = listRef.getItemOffset(index);
+    const rowHeight = rowElementForIndex(index)?.getBoundingClientRect().height ?? ESTIMATED_ROW_SIZE;
+    return rowTop - Math.max(0, (scrollEl.clientHeight - rowHeight) / 2);
   }
 
   // ============================================================
@@ -360,7 +393,10 @@
   // Scroll-to-item (search hits, plan rows, tray rows)
   // ============================================================
 
-  async function scrollToItem(id: string): Promise<void> {
+  async function scrollToItem(
+    id: string,
+    options: { behavior: 'instant' | 'animated'; flash: boolean },
+  ): Promise<void> {
     if (!listRef || !id) return;
     const myToken = ++restoreToken;
     const found = await pane.loadUntilItem(id);
@@ -373,13 +409,23 @@
     if (myToken !== restoreToken || !listRef) return;
     const idx = findTimelineNodeIndex(id);
     if (idx < 0) return;
+    const targetNode = groupedNodes[idx];
+    const targetItemId = targetNode?.kind === 'leaf' ? targetNode.item.id : id;
     // Programmatic jump elsewhere — cancel spring + escape so the new
     // position holds. `smooth: true` would route through the browser's
     // native smooth scroll (scrollEl.scrollTo({behavior:'smooth'})),
     // which would race the spring driver — drop it.
-    stick.stopScroll();
-    stick.setEscapedFromLock(true);
-    listRef.scrollToIndex(idx, { align: 'center' });
+    if (options.behavior === 'animated' && scrollEl) {
+      const targetTop = centeredScrollTopForIndex(idx);
+      const result = await stick.animateScrollTo(targetTop);
+      await tick();
+      if (myToken !== restoreToken || result !== 'completed') return;
+    } else {
+      stick.stopScroll();
+      stick.setEscapedFromLock(true);
+      listRef.scrollToIndex(idx, { align: 'center' });
+    }
+    if (options.flash) flashTargetItem(targetItemId);
   }
 
   let lastHandledScrollNonce = 0;
@@ -388,11 +434,15 @@
     if (req.nonce === 0) return;
     if (req.nonce === lastHandledScrollNonce) return;
     lastHandledScrollNonce = req.nonce;
-    void scrollToItem(req.itemId);
+    void scrollToItem(req.itemId, {
+      behavior: req.behavior,
+      flash: req.flash,
+    });
   });
 
   onDestroy(() => {
     if (restoredThreadId) saveScrollSnapshotForThread(restoredThreadId, true);
+    clearTargetFlash();
     stick.detach();
   });
 </script>
@@ -446,6 +496,8 @@
             {onImageExpand}
             {userMessageActions}
             codexSubagentReceiverLabels={codexReceiverLabels}
+            targetFlash={flashingItemId === node.item.id}
+            targetFlashNonce={flashingItemId === node.item.id ? targetFlashNonce : 0}
           />
         {:else if node.kind === 'group'}
           <SubagentGroup {pane} group={node} {depth} {renderNode} />

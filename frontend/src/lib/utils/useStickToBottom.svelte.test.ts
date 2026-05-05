@@ -543,6 +543,90 @@ describe('createUseStickToBottomController', () => {
     });
   });
 
+  describe('animateScrollTo', () => {
+    it('does not break sticky-bottom state when the target is already current', async () => {
+      expect(controller.isSticky).toBe(true);
+
+      await expect(controller.animateScrollTo(399)).resolves.toBe('completed');
+
+      expect(geom.scrollTop).toBe(399);
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('animates to an arbitrary target and leaves the user escaped from bottom lock', async () => {
+      geom.scrollHeight = 1600;
+      geom.clientHeight = 600;
+      geom.scrollTop = 100;
+
+      const result = controller.animateScrollTo(700, { durationMs: 80 });
+      await nextFrame();
+      await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(100);
+      expect(geom.scrollTop).toBeLessThan(700);
+
+      for (let i = 0; i < 12; i++) await nextFrame();
+      await expect(result).resolves.toBe('completed');
+      expect(geom.scrollTop).toBe(700);
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
+    });
+
+    it('jumps immediately when reduced motion is requested', async () => {
+      vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+        matches: query === '(prefers-reduced-motion: reduce)',
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      } as unknown as MediaQueryList));
+      geom.scrollHeight = 1600;
+      geom.clientHeight = 600;
+      geom.scrollTop = 100;
+
+      await expect(controller.animateScrollTo(700, { durationMs: 500 })).resolves.toBe('completed');
+
+      expect(geom.scrollTop).toBe(700);
+      expect(controller.escapedFromLock).toBe(true);
+    });
+
+    it('cancels an animated target scroll on user escape intent', async () => {
+      geom.scrollHeight = 1600;
+      geom.clientHeight = 600;
+      geom.scrollTop = 100;
+
+      const result = controller.animateScrollTo(700, { durationMs: 500 });
+      fireWheel(scrollEl, -40, scrollEl);
+
+      await expect(result).resolves.toBe('cancelled');
+    });
+
+    it('cancels an animated target scroll on an untagged scroll event', async () => {
+      geom.scrollHeight = 1600;
+      geom.clientHeight = 600;
+      geom.scrollTop = 100;
+
+      const result = controller.animateScrollTo(700, { durationMs: 500 });
+      fireScroll(scrollEl);
+
+      await expect(result).resolves.toBe('cancelled');
+    });
+
+    it('cancels an animated target scroll when detached', async () => {
+      geom.scrollHeight = 1600;
+      geom.clientHeight = 600;
+      geom.scrollTop = 100;
+
+      const result = controller.animateScrollTo(700, { durationMs: 500 });
+      controller.detach();
+
+      await expect(result).resolves.toBe('cancelled');
+    });
+  });
+
   describe('stopScroll', () => {
     it('sets escapedFromLock=true and isSticky=false', () => {
       controller.stopScroll();

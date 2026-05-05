@@ -1162,9 +1162,23 @@ describe('createThreadPane', () => {
       const second = pane.scrollToItemRequest.nonce;
       expect(second).toBeGreaterThan(first);
       expect(pane.scrollToItemRequest.itemId).toBe('a');
+      expect(pane.scrollToItemRequest.behavior).toBe('instant');
+      expect(pane.scrollToItemRequest.flash).toBe(false);
       pane.requestScrollToItem('b');
       expect(pane.scrollToItemRequest.nonce).toBeGreaterThan(second);
       expect(pane.scrollToItemRequest.itemId).toBe('b');
+    });
+
+    it('requestScrollToItem carries animation and flash options', () => {
+      const pane = createThreadPane();
+      pane.requestScrollToItem('checkpoint-user-message', {
+        behavior: 'animated',
+        flash: true,
+      });
+
+      expect(pane.scrollToItemRequest.itemId).toBe('checkpoint-user-message');
+      expect(pane.scrollToItemRequest.behavior).toBe('animated');
+      expect(pane.scrollToItemRequest.flash).toBe(true);
     });
 
     it('scrollToItemRequest nonce stays monotonic across switchThread', async () => {

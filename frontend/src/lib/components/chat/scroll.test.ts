@@ -21,7 +21,7 @@
 //   - Reserved-slot banner height stability across mount/unmount.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
@@ -171,6 +171,25 @@ describe('scroll integration — scroll to item', () => {
 
     const newToasts = getToasts().slice(toastsBefore);
     expect(newToasts.some((t) => t.type === 'warning')).toBe(true);
+  });
+
+  it('flashes a user message after an animated scroll request lands', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'user:target', kind: 'user_text', role: 'user', summary: 'jump target' }),
+    ]);
+    vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(true);
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    pane.requestScrollToItem('user:target', {
+      behavior: 'animated',
+      flash: true,
+    });
+
+    await waitFor(() => {
+      const target = container.querySelector('[data-target-flash="true"]');
+      expect(target).not.toBeNull();
+      expect(target?.textContent).toContain('jump target');
+    });
   });
 });
 
@@ -527,4 +546,3 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(ctrl.escapedFromLock).toBe(false);
   });
 });
-

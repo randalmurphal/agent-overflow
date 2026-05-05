@@ -1,21 +1,14 @@
 <script lang="ts">
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
-  import { addToast } from '../../stores/toast.svelte';
   import {
     GetMessageCheckpointDiff,
-    GetMessageCheckpointRevertDiff,
     GetSessionAgentDiff,
     GetWorkspaceCurrentDiff,
     ListThreadCheckpoints,
-    RevertToMessageCheckpoint,
   } from '../../stores/bindings';
-  import type {
-    Checkpoint,
-    RevertMode,
-  } from '../../types/checkpoint';
-  import { parsePatchFiles, patchFileRowId, type PatchFile } from '../../utils/patchFiles';
-  import RevertDialog from './diff-panel/RevertDialog.svelte';
+  import type { Checkpoint } from '../../types/checkpoint';
+  import { parsePatchFiles, patchFileRowId } from '../../utils/patchFiles';
   import DiffPanelHeaderBar from './diff-panel/DiffPanelHeaderBar.svelte';
   import DiffPanelChipStrip from './diff-panel/DiffPanelChipStrip.svelte';
   import DiffPanelFileCard from './diff-panel/DiffPanelFileCard.svelte';
@@ -29,9 +22,6 @@
   let diffText = $state('');
   let loading = $state(false);
   let expanded = $state<Set<string>>(new Set());
-  let revertOpen = $state(false);
-  let reverting = $state(false);
-  let revertAffectedFiles = $state<PatchFile[]>([]);
   let checkpointRequestID = 0;
   let diffRequestID = 0;
 
@@ -61,7 +51,6 @@
   ));
   const wordWrap = $derived(getSettings().diffWordWrap);
   const showChipStrip = $derived(tabMode === 'messages');
-  const showRevert = $derived(tabMode === 'messages' && selectedCheckpoint !== null);
 
   async function refreshCheckpoints(): Promise<void> {
     const requestID = ++checkpointRequestID;
@@ -101,8 +90,6 @@
         nextDiff = selectedCheckpoint
           ? (((await GetMessageCheckpointDiff(threadId, selectedCheckpoint.userItemId)) ?? '') as string)
           : (((await GetSessionAgentDiff(threadId)) ?? '') as string);
-      } else if (tabMode === 'session') {
-        nextDiff = ((await GetSessionAgentDiff(threadId)) ?? '') as string;
       } else {
         nextDiff = ((await GetWorkspaceCurrentDiff(threadId)) ?? '') as string;
       }
@@ -122,6 +109,14 @@
     pane.diffPanel.selectCheckpointUserItem(userItemId);
   }
 
+  function jumpToSelectedCheckpoint(): void {
+    if (!selectedCheckpoint) return;
+    pane.requestScrollToItem(selectedCheckpoint.userItemId, {
+      behavior: 'animated',
+      flash: true,
+    });
+  }
+
   function toggleFile(rowId: string): void {
     const next = new Set(expanded);
     if (next.has(rowId)) next.delete(rowId);
@@ -134,34 +129,6 @@
       return;
     }
     expanded = open ? new Set(fileRows.map((row) => row.rowId)) : new Set();
-  }
-
-  async function openRevertDialog(): Promise<void> {
-    if (!threadId || !selectedCheckpoint) return;
-    try {
-      const patch = ((await GetMessageCheckpointRevertDiff(threadId, selectedCheckpoint.userItemId)) ?? '') as string;
-      revertAffectedFiles = parsePatchFiles(patch);
-    } catch (err) {
-      addToast('error', `Failed to load revert preview: ${err instanceof Error ? err.message : String(err)}`);
-      revertAffectedFiles = [];
-      return;
-    }
-    revertOpen = true;
-  }
-
-  async function handleRevert(mode: RevertMode): Promise<void> {
-    if (!threadId || !selectedCheckpoint || !pane.thread || reverting) return;
-    reverting = true;
-    try {
-      await RevertToMessageCheckpoint(threadId, selectedCheckpoint.userItemId, mode);
-      revertOpen = false;
-      addToast('success', mode === 'conversation-only' ? 'Conversation reverted' : 'Conversation and files reverted');
-      await pane.switchThread(pane.thread);
-    } catch (err) {
-      addToast('error', `Revert failed: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      reverting = false;
-    }
   }
 
   $effect(() => {
@@ -198,9 +165,7 @@
         {visibleCheckpoints}
         selectedUserItemId={selectedUserItemId}
         onSelectCheckpoint={selectCheckpoint}
-        {showRevert}
-        {reverting}
-        onRevertClick={() => void openRevertDialog()}
+        onJumpToCheckpoint={jumpToSelectedCheckpoint}
       />
     {/if}
   </header>
@@ -215,8 +180,6 @@
       <span class="ml-auto text-[11px] text-fg-muted">
         {#if tabMode === 'messages'}
           {selectedCheckpoint ? `Message ${selectedCheckpoint.turnIndex + 1}` : 'All message checkpoints'}
-        {:else if tabMode === 'session'}
-          Agent edits since baseline
         {:else}
           Uncommitted vs HEAD
         {/if}
@@ -247,15 +210,3 @@
     </div>
   </div>
 </section>
-
-<RevertDialog
-  open={revertOpen}
-  titleLabel={selectedCheckpoint ? `message ${selectedCheckpoint.turnIndex + 1}` : 'checkpoint'}
-  provider={(pane.thread?.provider ?? '').toLowerCase()}
-  affectedFiles={revertAffectedFiles}
-  reverting={reverting}
-  onRevert={handleRevert}
-  onCancel={() => {
-    if (!reverting) revertOpen = false;
-  }}
-/>

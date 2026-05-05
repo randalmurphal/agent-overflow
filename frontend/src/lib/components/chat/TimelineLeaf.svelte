@@ -22,6 +22,8 @@
     onImageExpand,
     userMessageActions,
     codexSubagentReceiverLabels = new Map<string, string>(),
+    targetFlash = false,
+    targetFlashNonce = 0,
   }: {
     pane: ThreadPane;
     item: Item;
@@ -29,6 +31,8 @@
     onImageExpand?: (preview: ExpandedImagePreview) => void;
     userMessageActions?: UserMessageActions;
     codexSubagentReceiverLabels?: ReadonlyMap<string, string>;
+    targetFlash?: boolean;
+    targetFlashNonce?: number;
   } = $props();
 
   const displayItem = $derived(resolveDisplayItem(item, pane.liveItemSummaries[item.id]));
@@ -68,6 +72,8 @@
       item={displayItem}
       {onImageExpand}
       actions={userMessageActions}
+      {targetFlash}
+      {targetFlashNonce}
     />
   {:else if displayItem.kind === 'tool_call' || displayItem.kind === 'tool_completion'}
     <ToolCallCard {pane} item={displayItem} {codexSubagentReceiverLabels} />

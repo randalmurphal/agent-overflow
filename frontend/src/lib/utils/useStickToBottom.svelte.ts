@@ -45,10 +45,12 @@ const STICK_TO_BOTTOM_OFFSET_PX = 70;
 const RE_STICK_OFFSET_PX = 5;
 const RETAIN_ANIMATION_DURATION_MS = 350;
 const RESIZE_CLEAR_PADDING_MS = 1;
+const DEFAULT_PROGRAMMATIC_SCROLL_DURATION_MS = 420;
 // Spring arrival thresholds: distance ≤1px from target AND velocity below
 // 0.5 px-per-60fps-frame means we've effectively settled.
 const ARRIVAL_DISTANCE_PX = 1;
 const ARRIVAL_VELOCITY_THRESHOLD = 0.5;
+const PROGRAMMATIC_SCROLL_DISTANCE_THRESHOLD_PX = 1;
 
 const UP_KEYS: ReadonlySet<string> = new Set(['PageUp', 'ArrowUp', 'Home']);
 // Down-keys (PageDown / ArrowDown / End) are deliberately NOT enumerated
@@ -124,6 +126,12 @@ export interface UseStickToBottomController {
 
   /** "User wants the bottom now" — called by ScrollToBottomButton, send. */
   forceStick(opts?: { animation?: 'instant' | 'spring' }): void;
+  /**
+   * Controlled non-native scroll animation for arbitrary timeline jumps.
+   * This owns the scrollTop writes so programmatic scroll tagging stays
+   * in one place and the sticky-bottom spring cannot race the jump.
+   */
+  animateScrollTo(targetTop: number, opts?: { durationMs?: number }): Promise<'completed' | 'cancelled'>;
   /** Cancel any in-flight spring. Call before virtua scrollToIndex. */
   stopScroll(): void;
   /** Public so handleLoadOlder / scrollToItem can opt out of auto-restick. */
@@ -174,6 +182,9 @@ export function createUseStickToBottomController(
   let accumulated = 0;
   let lastTickAt: number | null = null;
   let animationToken: symbol | null = null;
+  let targetAnimationFrame: number | null = null;
+  let targetAnimationResolve: ((result: 'completed' | 'cancelled') => void) | null = null;
+  let restoreTargetScrollBehavior: (() => void) | null = null;
   let resizeDifference = 0;
   let resizeClearTimer: ReturnType<typeof setTimeout> | null = null;
   let ignoreScrollToTop = -1;
@@ -211,17 +222,72 @@ export function createUseStickToBottomController(
   }
 
   // ===== Programmatic scroll write =====
+  function writeProgrammaticScrollTop(value: number): void {
+    if (!scrollEl) return;
+    scrollEl.scrollTop = value;
+    // Tag using the BROWSER-rounded read so the scroll handler's
+    // `scrollTop === ignoreScrollToTop` check matches.
+    ignoreScrollToTop = scrollEl.scrollTop;
+    refreshIsNearBottom();
+  }
+
   function writeScrollTop(value: number): void {
     if (!scrollEl) return;
     const computed = window.getComputedStyle(scrollEl);
     const original = computed.scrollBehavior;
     if (original !== 'auto') scrollEl.style.scrollBehavior = 'auto';
-    scrollEl.scrollTop = value;
-    // Tag using the BROWSER-rounded read so the scroll handler's
-    // `scrollTop === ignoreScrollToTop` check matches.
-    ignoreScrollToTop = scrollEl.scrollTop;
+    writeProgrammaticScrollTop(value);
     if (original !== 'auto') scrollEl.style.scrollBehavior = original;
-    refreshIsNearBottom();
+  }
+
+  function requestFrame(callback: FrameRequestCallback): number {
+    return typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame(callback)
+      : window.setTimeout(() => callback(nowMs()), 0);
+  }
+
+  function cancelFrame(handle: number): void {
+    if (typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(handle);
+    } else {
+      window.clearTimeout(handle);
+    }
+  }
+
+  function prefersReducedMotion(): boolean {
+    return typeof window !== 'undefined'
+      && typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }
+
+  function maxScrollTop(): number {
+    if (!scrollEl) return 0;
+    return Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+  }
+
+  function clampScrollTop(value: number): number {
+    return Math.max(0, Math.min(value, maxScrollTop()));
+  }
+
+  function easeOutCubic(t: number): number {
+    const remaining = 1 - t;
+    return 1 - remaining * remaining * remaining;
+  }
+
+  function finishTargetAnimation(result: 'completed' | 'cancelled'): void {
+    if (targetAnimationFrame !== null) {
+      cancelFrame(targetAnimationFrame);
+      targetAnimationFrame = null;
+    }
+    restoreTargetScrollBehavior?.();
+    restoreTargetScrollBehavior = null;
+    const resolve = targetAnimationResolve;
+    targetAnimationResolve = null;
+    if (resolve) resolve(result);
+  }
+
+  function cancelTargetAnimation(): void {
+    finishTargetAnimation('cancelled');
   }
 
   // ===== Spring tick =====
@@ -398,6 +464,7 @@ export function createUseStickToBottomController(
     // the tag is set synchronously by writeScrollTop, so we already know
     // this event reflects our own write, not user intent.
     if (scrollTopAtEvent === tag) return;
+    cancelTargetAnimation();
     // Capture direction baseline BEFORE the deferral. We're inside the
     // synchronous handler for the current scroll event; this scrollTop
     // is what the user just produced. Used by the deferred re-stick
@@ -479,6 +546,7 @@ export function createUseStickToBottomController(
 
   // ===== Public actions =====
   function setEscapedFromLock(next: boolean): void {
+    if (next) cancelTargetAnimation();
     if (escapedFromLockState === next) return;
     escapedFromLockState = next;
     if (next) {
@@ -494,6 +562,64 @@ export function createUseStickToBottomController(
     setEscapedFromLock(true);
     stopRequested = true;
     // Next rAF tick observes stopRequested and clears animationToken.
+  }
+
+  function animateScrollTo(
+    rawTargetTop: number,
+    opts?: { durationMs?: number },
+  ): Promise<'completed' | 'cancelled'> {
+    if (!scrollEl) return Promise.resolve('cancelled');
+    const targetScrollEl = scrollEl;
+    cancelTargetAnimation();
+    animationToken = null;
+    velocity = 0;
+    accumulated = 0;
+    lastGrewAt = 0;
+
+    const targetTop = clampScrollTop(rawTargetTop);
+    const startTop = targetScrollEl.scrollTop;
+    const distance = targetTop - startTop;
+    if (Math.abs(distance) <= PROGRAMMATIC_SCROLL_DISTANCE_THRESHOLD_PX) {
+      return Promise.resolve('completed');
+    }
+    stopRequested = true;
+    setEscapedFromLock(true);
+    const durationMs = opts?.durationMs ?? DEFAULT_PROGRAMMATIC_SCROLL_DURATION_MS;
+    if (
+      prefersReducedMotion()
+      || durationMs <= 0
+    ) {
+      writeScrollTop(targetTop);
+      return Promise.resolve('completed');
+    }
+
+    return new Promise((resolve) => {
+      targetAnimationResolve = resolve;
+      const startedAt = nowMs();
+      const originalInlineScrollBehavior = targetScrollEl.style.scrollBehavior;
+      if (window.getComputedStyle(targetScrollEl).scrollBehavior !== 'auto') {
+        targetScrollEl.style.scrollBehavior = 'auto';
+        restoreTargetScrollBehavior = () => {
+          targetScrollEl.style.scrollBehavior = originalInlineScrollBehavior;
+        };
+      }
+
+      const tick = (now: number): void => {
+        if (!scrollEl || targetAnimationResolve !== resolve) return;
+        const elapsed = Math.max(0, now - startedAt);
+        const progress = Math.min(1, elapsed / durationMs);
+        const eased = easeOutCubic(progress);
+        writeProgrammaticScrollTop(startTop + distance * eased);
+        if (progress >= 1 || Math.abs(scrollEl.scrollTop - targetTop) <= PROGRAMMATIC_SCROLL_DISTANCE_THRESHOLD_PX) {
+          writeProgrammaticScrollTop(targetTop);
+          finishTargetAnimation('completed');
+          return;
+        }
+        targetAnimationFrame = requestFrame(tick);
+      };
+
+      targetAnimationFrame = requestFrame(tick);
+    });
   }
 
   function forceStick(opts?: { animation?: 'instant' | 'spring' }): void {
@@ -592,6 +718,7 @@ export function createUseStickToBottomController(
       clearTimeout(resizeClearTimer);
       resizeClearTimer = null;
     }
+    cancelTargetAnimation();
     animationToken = null;
     velocity = 0;
     accumulated = 0;
@@ -621,6 +748,7 @@ export function createUseStickToBottomController(
     attach,
     detach,
     forceStick,
+    animateScrollTo,
     stopScroll,
     setEscapedFromLock,
   };

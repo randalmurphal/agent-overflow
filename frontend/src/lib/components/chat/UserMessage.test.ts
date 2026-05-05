@@ -62,6 +62,31 @@ describe('<UserMessage>', () => {
     expect(time?.className).not.toContain('group-hover:opacity-100');
   });
 
+  it('alternates target flash classes so repeated jumps restart the glow animation', async () => {
+    const item = makeItem({
+      kind: 'user_text',
+      role: 'user',
+      summary: 'jump target',
+    });
+    const { container, rerender } = render(UserMessage, {
+      props: {
+        item,
+        targetFlash: true,
+        targetFlashNonce: 1,
+      },
+    });
+    const bubble = container.querySelector('[data-target-flash="true"]');
+    expect(bubble?.className).toContain('user-message-target-flash-b');
+
+    await rerender({
+      item,
+      targetFlash: true,
+      targetFlashNonce: 2,
+    });
+
+    expect(bubble?.className).toContain('user-message-target-flash-a');
+  });
+
   it('renders a copy button when there is visible text', () => {
     const { getByLabelText } = render(UserMessage, {
       props: {

@@ -217,6 +217,18 @@ export interface PaneScrollController {
   notifyContentMaybeGrew(): void;
 }
 
+export interface ScrollToItemOptions {
+  behavior?: 'instant' | 'animated';
+  flash?: boolean;
+}
+
+interface ScrollToItemRequest {
+  itemId: string;
+  nonce: number;
+  behavior: 'instant' | 'animated';
+  flash: boolean;
+}
+
 function loadOlderResult(
   status: LoadOlderResult['status'],
   insertedBeforeWindow = false,
@@ -523,11 +535,15 @@ export function createThreadPane() {
    * the timeline reads it reactively. Consumers compare the most
    * recently observed nonce against `scrollToItemRequest.nonce` and
    * react when it changes. `itemId` is the target id; an empty string
-   * means "no outstanding request".
+   * means "no outstanding request". `behavior` and `flash` let the
+   * owner of the actual scroll container decide how visible the jump
+   * should be without exposing DOM methods through the pane.
    */
-  let scrollToItemRequest: { itemId: string; nonce: number } = $state({
+  let scrollToItemRequest: ScrollToItemRequest = $state({
     itemId: '',
     nonce: 0,
+    behavior: 'instant',
+    flash: false,
   });
 
   /**
@@ -1507,11 +1523,13 @@ export function createThreadPane() {
      * if the target isn't visible yet. The timeline handler is
      * responsible for awaiting `loadUntilItem` before scrolling.
      */
-    requestScrollToItem(itemID: string): void {
+    requestScrollToItem(itemID: string, options: ScrollToItemOptions = {}): void {
       if (!itemID) return;
       scrollToItemRequest = {
         itemId: itemID,
         nonce: scrollToItemRequest.nonce + 1,
+        behavior: options.behavior ?? 'instant',
+        flash: options.flash ?? false,
       };
     },
 
