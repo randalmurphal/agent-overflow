@@ -25,6 +25,12 @@ type Store struct{}
 // this constructor exists so callers can mirror the rest of the package layout.
 func NewStore() *Store { return &Store{} }
 
+type syntheticWorktreeTree struct {
+	oid     string
+	env     []string
+	cleanup func()
+}
+
 // Author metadata stamped on every checkpoint commit.
 const (
 	authorName  = "Agent Overflow"
@@ -97,33 +103,9 @@ func (s *Store) captureToRef(ctx context.Context, workspace, ref string) error {
 		"GIT_COMMITTER_EMAIL=" + authorEmail,
 	}
 
-	// Seed the temp index from HEAD so the snapshot includes tracked files that
-	// exist only on HEAD. Skip on a fresh-init repo where HEAD doesn't resolve.
-	hasHead, err := s.HasHeadCommit(ctx, workspace)
+	treeOID, err := s.writeWorktreeTree(ctx, workspace, env, nil)
 	if err != nil {
-		return fmt.Errorf("checkpoint: probe HEAD: %w", err)
-	}
-	if hasHead {
-		if _, _, _, err := runGit(ctx, workspace, env, false, "read-tree", "HEAD"); err != nil {
-			return fmt.Errorf("checkpoint: read-tree HEAD: %w", err)
-		}
-	}
-
-	// Stage tracked changes and untracked-not-ignored files without invoking
-	// clean/smudge filters from repo config or .gitattributes. Checkpoint
-	// capture runs automatically on user send, so honoring arbitrary filter
-	// commands from an opened repo would be an unwanted execution surface.
-	if err := stageWorktreeNoFilters(ctx, workspace, env); err != nil {
 		return err
-	}
-
-	tree, _, _, err := runGit(ctx, workspace, env, false, "write-tree")
-	if err != nil {
-		return fmt.Errorf("checkpoint: write-tree: %w", err)
-	}
-	treeOID := strings.TrimSpace(tree)
-	if treeOID == "" {
-		return errors.New("checkpoint: write-tree returned empty oid")
 	}
 
 	msg := "agent-overflow checkpoint ref=" + ref
@@ -142,15 +124,116 @@ func (s *Store) captureToRef(ctx context.Context, workspace, ref string) error {
 	return nil
 }
 
-func stageWorktreeNoFilters(ctx context.Context, workspace string, env []string) error {
-	changed, _, _, err := runGit(ctx, workspace, env, false,
-		"ls-files", "-z", "--modified", "--deleted", "--others", "--exclude-standard")
+func (s *Store) captureSyntheticWorktreeTree(ctx context.Context, workspace string, paths []string) (syntheticWorktreeTree, error) {
+	tempDir, err := os.MkdirTemp("", "agent-overflow-checkpoint-")
+	if err != nil {
+		return syntheticWorktreeTree{}, fmt.Errorf("checkpoint: create temp index dir: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(tempDir) }
+
+	indexPath := filepath.Join(tempDir, "index")
+	objectPath := filepath.Join(tempDir, "objects")
+	if err := os.MkdirAll(objectPath, 0o755); err != nil {
+		cleanup()
+		return syntheticWorktreeTree{}, fmt.Errorf("checkpoint: create temp object dir: %w", err)
+	}
+	repoObjectPath, err := gitObjectPath(ctx, workspace)
+	if err != nil {
+		cleanup()
+		return syntheticWorktreeTree{}, err
+	}
+	env := []string{
+		"GIT_INDEX_FILE=" + indexPath,
+		"GIT_OBJECT_DIRECTORY=" + objectPath,
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES=" + repoObjectPath,
+	}
+	treeOID, err := s.writeWorktreeTree(ctx, workspace, env, paths)
+	if err != nil {
+		cleanup()
+		return syntheticWorktreeTree{}, err
+	}
+	return syntheticWorktreeTree{
+		oid:     treeOID,
+		env:     env,
+		cleanup: cleanup,
+	}, nil
+}
+
+func (s *Store) writeWorktreeTree(ctx context.Context, workspace string, env []string, paths []string) (string, error) {
+	if !hasGitIndexFileEnv(env) {
+		return "", errors.New("checkpoint: refusing to snapshot without temporary GIT_INDEX_FILE")
+	}
+	// Seed the temp index from HEAD so the snapshot includes tracked files that
+	// exist only on HEAD. Skip on a fresh-init repo where HEAD doesn't resolve.
+	hasHead, err := s.HasHeadCommit(ctx, workspace)
+	if err != nil {
+		return "", fmt.Errorf("checkpoint: probe HEAD: %w", err)
+	}
+	if hasHead {
+		if _, _, _, err := runGit(ctx, workspace, env, false, "read-tree", "HEAD"); err != nil {
+			return "", fmt.Errorf("checkpoint: read-tree HEAD: %w", err)
+		}
+	}
+
+	// Stage tracked changes and untracked-not-ignored files without invoking
+	// clean/smudge filters from repo config or .gitattributes. Checkpoint
+	// capture runs automatically on user send, so honoring arbitrary filter
+	// commands from an opened repo would be an unwanted execution surface.
+	if err := stageWorktreeNoFilters(ctx, workspace, env, paths); err != nil {
+		return "", err
+	}
+
+	tree, _, _, err := runGit(ctx, workspace, env, false, "write-tree")
+	if err != nil {
+		return "", fmt.Errorf("checkpoint: write-tree: %w", err)
+	}
+	treeOID := strings.TrimSpace(tree)
+	if treeOID == "" {
+		return "", errors.New("checkpoint: write-tree returned empty oid")
+	}
+	return treeOID, nil
+}
+
+func hasGitIndexFileEnv(env []string) bool {
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "GIT_INDEX_FILE=") && strings.TrimPrefix(entry, "GIT_INDEX_FILE=") != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func gitObjectPath(ctx context.Context, workspace string) (string, error) {
+	stdout, _, _, err := runGit(ctx, workspace, nil, false, "rev-parse", "--git-path", "objects")
+	if err != nil {
+		return "", fmt.Errorf("checkpoint: locate git object dir: %w", err)
+	}
+	path := strings.TrimSpace(stdout)
+	if path == "" {
+		return "", errors.New("checkpoint: git object dir was empty")
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(workspace, path)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("checkpoint: resolve git object dir %q: %w", path, err)
+	}
+	return abs, nil
+}
+
+func stageWorktreeNoFilters(ctx context.Context, workspace string, env []string, paths []string) error {
+	args := []string{"ls-files", "-z", "--modified", "--deleted", "--others", "--exclude-standard"}
+	if len(paths) > 0 {
+		args = append(args, "--")
+		args = append(args, paths...)
+	}
+	changed, _, _, err := runGit(ctx, workspace, env, false, args...)
 	if err != nil {
 		return fmt.Errorf("checkpoint: list worktree changes: %w", err)
 	}
 	seen := map[string]struct{}{}
 	for _, p := range strings.Split(changed, "\x00") {
-		p = strings.TrimSpace(p)
 		if p == "" {
 			continue
 		}
@@ -170,7 +253,7 @@ func stageWorktreeNoFilters(ctx context.Context, workspace string, env []string)
 			return fmt.Errorf("checkpoint: inspect %s: %w", p, statErr)
 		}
 		mode := gitIndexMode(info.Mode())
-		oid, err := hashWorktreePathNoFilters(ctx, workspace, p, info.Mode())
+		oid, err := hashWorktreePathNoFilters(ctx, workspace, p, info.Mode(), env)
 		if err != nil {
 			return fmt.Errorf("checkpoint: hash %s: %w", p, err)
 		}
@@ -185,20 +268,20 @@ func stageWorktreeNoFilters(ctx context.Context, workspace string, env []string)
 	return nil
 }
 
-func hashWorktreePathNoFilters(ctx context.Context, workspace, p string, mode os.FileMode) (string, error) {
+func hashWorktreePathNoFilters(ctx context.Context, workspace, p string, mode os.FileMode, env []string) (string, error) {
 	if mode&os.ModeSymlink != 0 {
 		target, err := os.Readlink(filepath.Join(workspace, p))
 		if err != nil {
 			return "", err
 		}
-		stdout, _, _, err := runGitWithStdin(ctx, workspace, nil, []byte(target), false,
+		stdout, _, _, err := runGitWithStdin(ctx, workspace, env, []byte(target), false,
 			"hash-object", "-w", "--stdin")
 		if err != nil {
 			return "", err
 		}
 		return strings.TrimSpace(stdout), nil
 	}
-	oid, _, _, err := runGit(ctx, workspace, nil, false,
+	oid, _, _, err := runGit(ctx, workspace, env, false,
 		"hash-object", "--no-filters", "-w", "--", p)
 	if err != nil {
 		return "", err
@@ -268,8 +351,11 @@ func (s *Store) DiffRefToRefSummary(ctx context.Context, workspace, fromRef, toR
 	return diffsummary.ParseGitNameStatusNumstat(nameStatus, numstat), nil
 }
 
-// DiffRefToWorktree returns the unified patch from the checkpoint ref to the
-// current worktree, including untracked-new files via `git diff --no-index`.
+// DiffRefToWorktree returns the unified patch from the checkpoint ref to a
+// synthetic tree of the current worktree. The synthetic tree includes
+// untracked-not-ignored files, so files that exist only in checkpoint refs are
+// compared blob-to-blob instead of appearing as "delete whole file, add whole
+// file" replacements.
 func (s *Store) DiffRefToWorktree(ctx context.Context, workspace, ref string) ([]byte, error) {
 	oid, err := s.resolveRefCommit(ctx, workspace, ref)
 	if err != nil {
@@ -279,65 +365,31 @@ func (s *Store) DiffRefToWorktree(ctx context.Context, workspace, ref string) ([
 		return nil, fmt.Errorf("checkpoint: ref %q is unavailable", ref)
 	}
 
-	remainingBytes := maxDiffOutputBytes
-	tracked, _, _, err := runGitWithStdoutLimit(ctx, workspace, nil, false, remainingBytes,
-		"diff", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv", oid, "--")
+	worktreeTree, err := s.captureSyntheticWorktreeTree(ctx, workspace, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer worktreeTree.cleanup()
+	stdout, _, _, err := runGitWithStdoutLimit(ctx, workspace, worktreeTree.env, false, maxDiffOutputBytes,
+		"diff", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv",
+		oid, worktreeTree.oid, "--")
 	if errors.Is(err, errGitOutputTooLarge) {
 		return nil, fmt.Errorf("checkpoint: diff worktree exceeds %d byte limit", maxDiffOutputBytes)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("checkpoint: diff tracked: %w", err)
+		return nil, fmt.Errorf("checkpoint: diff worktree: %w", err)
 	}
-	remainingBytes -= int64(len(tracked))
-
-	untracked, _, code, err := runGit(ctx, workspace, nil, true,
-		"ls-files", "--others", "--exclude-standard", "-z")
-	if err != nil {
-		return nil, fmt.Errorf("checkpoint: ls-files others: %w", err)
-	}
-
-	var parts []string
-	if t := strings.TrimSpace(tracked); t != "" {
-		parts = append(parts, t)
-	}
-	if code == 0 {
-		for _, p := range strings.Split(untracked, "\x00") {
-			p = strings.TrimSpace(p)
-			if p == "" {
-				continue
-			}
-			if remainingBytes <= 0 {
-				return nil, fmt.Errorf("checkpoint: diff worktree exceeds %d byte limit", maxDiffOutputBytes)
-			}
-			// `git diff --no-index` exits 1 when files differ (expected). Any
-			// other non-zero exit is a hard error.
-			patch, _, exit, err := runGitWithStdoutLimit(ctx, workspace, nil, true, remainingBytes,
-				"diff", "--no-index", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv", "--",
-				"/dev/null", p)
-			if errors.Is(err, errGitOutputTooLarge) {
-				return nil, fmt.Errorf("checkpoint: diff worktree exceeds %d byte limit", maxDiffOutputBytes)
-			}
-			if err != nil {
-				return nil, fmt.Errorf("checkpoint: diff new file %s: %w", p, err)
-			}
-			if exit != 0 && exit != 1 {
-				return nil, fmt.Errorf("checkpoint: diff new file %s exited %d", p, exit)
-			}
-			if t := strings.TrimSpace(patch); t != "" {
-				parts = append(parts, t)
-			}
-			remainingBytes -= int64(len(patch))
-		}
-	}
-	return []byte(strings.Join(parts, "\n\n")), nil
+	return []byte(stdout), nil
 }
 
 // RestoreWorktreePaths restores only the listed paths from the checkpoint
 // ref, leaving every other file in the worktree alone. Paths that exist at
-// the ref are restored from it; paths that don't exist (i.e. files the
-// agent created and we want gone after a revert) are unlinked from disk
-// and their index entry cleared. Workspace-relative paths only; absolute
-// paths must already be normalized via
+// both HEAD and the ref are restored in the worktree and index. Paths that
+// exist at the ref but not HEAD are restored as worktree-only files, preserving
+// the "untracked file captured in a checkpoint" shape. Paths that don't exist
+// at the ref (i.e. files the agent created and we want gone after a revert)
+// are unlinked from disk and their index entry cleared. Workspace-relative
+// paths only; absolute paths must already be normalized via
 // `triage.normalizeWorkspaceRelativePath` before reaching this function.
 //
 // Unlike the wholesale-restore approach this replaced, no `git clean` and
@@ -366,9 +418,24 @@ func (s *Store) RestoreWorktreePaths(ctx context.Context, workspace, ref string,
 		return err
 	}
 	if len(existing) > 0 {
-		args := append([]string{"restore", "--source", oid, "--worktree", "--staged", "--"}, existing...)
-		if _, _, _, err := runGit(ctx, workspace, nil, false, args...); err != nil {
-			return fmt.Errorf("checkpoint: restore paths from %s: %w", ref, err)
+		trackedAtHead, untrackedAtHead, err := s.partitionExistingPathsByHead(ctx, workspace, existing)
+		if err != nil {
+			return err
+		}
+		if len(trackedAtHead) > 0 {
+			args := append([]string{"restore", "--source", oid, "--worktree", "--staged", "--"}, trackedAtHead...)
+			if _, _, _, err := runGit(ctx, workspace, nil, false, args...); err != nil {
+				return fmt.Errorf("checkpoint: restore tracked paths from %s: %w", ref, err)
+			}
+		}
+		if len(untrackedAtHead) > 0 {
+			args := append([]string{"restore", "--source", oid, "--worktree", "--"}, untrackedAtHead...)
+			if _, _, _, err := runGit(ctx, workspace, nil, false, args...); err != nil {
+				return fmt.Errorf("checkpoint: restore untracked paths from %s: %w", ref, err)
+			}
+			if err := clearCachedPaths(ctx, workspace, untrackedAtHead); err != nil {
+				return err
+			}
 		}
 	}
 	for _, p := range missing {
@@ -380,15 +447,35 @@ func (s *Store) RestoreWorktreePaths(ctx context.Context, workspace, ref string,
 		if err := os.Remove(abs); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("checkpoint: remove %s: %w", p, err)
 		}
-		// `git rm --cached --ignore-unmatch` clears the index entry if
-		// staged, no-ops if absent. Important for the case where the
-		// agent created a file and `git add`-ed it via the checkpoint
-		// capture; without this the file would reappear at the next
-		// `git status` even though the worktree copy is gone.
-		if _, _, _, err := runGit(ctx, workspace, nil, true,
-			"rm", "--cached", "--quiet", "--ignore-unmatch", "--", p); err != nil {
-			return fmt.Errorf("checkpoint: rm cached %s: %w", p, err)
+		if err := clearCachedPaths(ctx, workspace, []string{p}); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+func (s *Store) partitionExistingPathsByHead(ctx context.Context, workspace string, paths []string) (trackedAtHead, untrackedAtHead []string, err error) {
+	head, err := s.resolveRefCommit(ctx, workspace, "HEAD")
+	if err != nil {
+		return nil, nil, err
+	}
+	if head == "" {
+		return nil, paths, nil
+	}
+	return s.partitionPathsAtRef(ctx, workspace, head, paths)
+}
+
+func clearCachedPaths(ctx context.Context, workspace string, paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	// `git rm --cached --ignore-unmatch` clears index entries if staged,
+	// no-ops if absent. This keeps files that were untracked at the checkpoint
+	// untracked after restore, and removes index entries for files the agent
+	// created after the checkpoint.
+	args := append([]string{"rm", "--cached", "-f", "--quiet", "--ignore-unmatch", "--"}, paths...)
+	if _, _, _, err := runGit(ctx, workspace, nil, false, args...); err != nil {
+		return fmt.Errorf("checkpoint: rm cached paths: %w", err)
 	}
 	return nil
 }
@@ -409,7 +496,6 @@ func (s *Store) partitionPathsAtRef(ctx context.Context, workspace, oid string, 
 	}
 	present := make(map[string]struct{})
 	for _, p := range strings.Split(stdout, "\x00") {
-		p = strings.TrimSpace(p)
 		if p != "" {
 			present[p] = struct{}{}
 		}
@@ -453,7 +539,7 @@ func validateScopedWorktreePaths(workspace string, paths []string) ([]string, er
 }
 
 func cleanWorkspaceRelativePath(p string) (string, error) {
-	p = strings.TrimSpace(filepath.ToSlash(p))
+	p = filepath.ToSlash(p)
 	if p == "" {
 		return "", nil
 	}
@@ -536,9 +622,9 @@ func (s *Store) DiffRefToRefScoped(ctx context.Context, workspace, fromRef, toRe
 	return []byte(stdout), nil
 }
 
-// DiffRefToWorktreeScoped returns the unified patch from a checkpoint ref to
-// the current worktree for a known path set. The path list is the authority:
-// empty paths return an empty patch.
+// DiffRefToWorktreeScoped returns the unified patch from a checkpoint ref to a
+// synthetic tree of the current worktree for a known path set. The path list is
+// the authority: empty paths return an empty patch.
 func (s *Store) DiffRefToWorktreeScoped(ctx context.Context, workspace, ref string, paths []string) ([]byte, error) {
 	if len(paths) == 0 {
 		return nil, nil
@@ -557,57 +643,23 @@ func (s *Store) DiffRefToWorktreeScoped(ctx context.Context, workspace, ref stri
 	if oid == "" {
 		return nil, fmt.Errorf("checkpoint: ref %q is unavailable", ref)
 	}
+	worktreeTree, err := s.captureSyntheticWorktreeTree(ctx, workspace, paths)
+	if err != nil {
+		return nil, err
+	}
+	defer worktreeTree.cleanup()
 	args := append([]string{
 		"diff", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv",
-		oid, "--",
+		oid, worktreeTree.oid, "--",
 	}, paths...)
-	stdout, _, _, err := runGitWithStdoutLimit(ctx, workspace, nil, false, maxDiffOutputBytes, args...)
+	stdout, _, _, err := runGitWithStdoutLimit(ctx, workspace, worktreeTree.env, false, maxDiffOutputBytes, args...)
 	if errors.Is(err, errGitOutputTooLarge) {
 		return nil, fmt.Errorf("checkpoint: diff %s..worktree exceeds %d byte limit", ref, maxDiffOutputBytes)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint: diff %s..worktree scoped: %w", ref, err)
 	}
-
-	remainingBytes := maxDiffOutputBytes - int64(len(stdout))
-	parts := make([]string, 0, 2)
-	if t := strings.TrimSpace(stdout); t != "" {
-		parts = append(parts, t)
-	}
-
-	untracked, _, code, err := runGit(ctx, workspace, nil, true,
-		append([]string{"ls-files", "--others", "--exclude-standard", "-z", "--"}, paths...)...)
-	if err != nil {
-		return nil, fmt.Errorf("checkpoint: ls-files scoped others: %w", err)
-	}
-	if code == 0 {
-		for _, p := range strings.Split(untracked, "\x00") {
-			p = strings.TrimSpace(p)
-			if p == "" {
-				continue
-			}
-			if remainingBytes <= 0 {
-				return nil, fmt.Errorf("checkpoint: diff %s..worktree exceeds %d byte limit", ref, maxDiffOutputBytes)
-			}
-			patch, _, exit, err := runGitWithStdoutLimit(ctx, workspace, nil, true, remainingBytes,
-				"diff", "--no-index", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv", "--",
-				"/dev/null", p)
-			if errors.Is(err, errGitOutputTooLarge) {
-				return nil, fmt.Errorf("checkpoint: diff %s..worktree exceeds %d byte limit", ref, maxDiffOutputBytes)
-			}
-			if err != nil {
-				return nil, fmt.Errorf("checkpoint: diff new file %s: %w", p, err)
-			}
-			if exit != 0 && exit != 1 {
-				return nil, fmt.Errorf("checkpoint: diff new file %s exited %d", p, exit)
-			}
-			if t := strings.TrimSpace(patch); t != "" {
-				parts = append(parts, t)
-			}
-			remainingBytes -= int64(len(patch))
-		}
-	}
-	return []byte(strings.Join(parts, "\n\n")), nil
+	return []byte(stdout), nil
 }
 
 // DiffWorkspaceVsHead returns the unified patch for everything currently

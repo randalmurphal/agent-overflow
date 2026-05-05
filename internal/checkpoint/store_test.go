@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -79,6 +80,51 @@ func readTestFile(t *testing.T, dir, name string) string {
 		return ""
 	}
 	return string(data)
+}
+
+func countPatchChanges(patch string) (additions int, deletions int) {
+	for _, line := range strings.Split(patch, "\n") {
+		if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
+			continue
+		}
+		if strings.HasPrefix(line, "+") {
+			additions++
+		}
+		if strings.HasPrefix(line, "-") {
+			deletions++
+		}
+	}
+	return additions, deletions
+}
+
+func countLooseGitObjects(t *testing.T, dir string) int {
+	t.Helper()
+	objectDir := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "--git-path", "objects"))
+	if objectDir == "" {
+		t.Fatal("empty git object dir")
+	}
+	if !filepath.IsAbs(objectDir) {
+		objectDir = filepath.Join(dir, objectDir)
+	}
+	count := 0
+	if err := filepath.WalkDir(objectDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			count++
+			return nil
+		}
+		switch filepath.Base(path) {
+		case "info", "pack":
+			return filepath.SkipDir
+		default:
+			return nil
+		}
+	}); err != nil {
+		t.Fatalf("walk git objects: %v", err)
+	}
+	return count
 }
 
 func writeFakeGit(t *testing.T, dir, script string) {
@@ -548,6 +594,60 @@ func TestRestoreWorktreePathsRemovesAgentCreatedFiles(t *testing.T) {
 	}
 }
 
+func TestRestoreWorktreePathsPreservesUntrackedFileStatusFromCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	s := NewStore()
+
+	writeTestFile(t, dir, "agent-note.txt", "before\n")
+	ref, err := s.CaptureBaseline(ctx, dir, "t1", 0)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	writeTestFile(t, dir, "agent-note.txt", "after\n")
+	if err := s.RestoreWorktreePaths(ctx, dir, ref, []string{"agent-note.txt"}); err != nil {
+		t.Fatalf("restore paths: %v", err)
+	}
+
+	if got := readTestFile(t, dir, "agent-note.txt"); got != "before\n" {
+		t.Fatalf("agent-note.txt = %q, want checkpoint content", got)
+	}
+	status := gitOutput(t, dir, "status", "--short", "--", "agent-note.txt")
+	if status != "?? agent-note.txt\n" {
+		t.Fatalf("git status = %q, want untracked restored file", status)
+	}
+}
+
+func TestRestoreWorktreePathsClearsStagedCheckpointOnlyFile(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	s := NewStore()
+
+	writeTestFile(t, dir, "agent-note.txt", "before\n")
+	ref, err := s.CaptureBaseline(ctx, dir, "t1", 0)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	writeTestFile(t, dir, "agent-note.txt", "staged after checkpoint\n")
+	runCommand(t, dir, "git", "add", "--", "agent-note.txt")
+	writeTestFile(t, dir, "agent-note.txt", "worktree after checkpoint\n")
+	if err := s.RestoreWorktreePaths(ctx, dir, ref, []string{"agent-note.txt"}); err != nil {
+		t.Fatalf("restore paths: %v", err)
+	}
+
+	if got := readTestFile(t, dir, "agent-note.txt"); got != "before\n" {
+		t.Fatalf("agent-note.txt = %q, want checkpoint content", got)
+	}
+	status := gitOutput(t, dir, "status", "--short", "--", "agent-note.txt")
+	if status != "?? agent-note.txt\n" {
+		t.Fatalf("git status = %q, want untracked restored file", status)
+	}
+}
+
 func TestRestoreWorktreePathsEmptyListIsNoop(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -624,6 +724,133 @@ func TestDiffRefToWorktreeScopedIncludesTrackedUntrackedFiles(t *testing.T) {
 	}
 	if strings.Contains(got, "user-new.txt") {
 		t.Fatalf("patch should not include unlisted untracked file, got:\n%s", got)
+	}
+}
+
+func TestDiffRefToWorktreeScopedComparesUntrackedFileCapturedAtRef(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	s := NewStore()
+
+	writeTestFile(t, dir, "agent-note.txt", "line one\nline two\nline three\nline four\n")
+	ref, err := s.CaptureBaseline(ctx, dir, "t1", 0)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	writeTestFile(t, dir, "agent-note.txt", "line one\nline two (updated)\nline three\nline four\n")
+	patch, err := s.DiffRefToWorktreeScoped(ctx, dir, ref, []string{"agent-note.txt"})
+	if err != nil {
+		t.Fatalf("diff scoped: %v", err)
+	}
+	additions, deletions := countPatchChanges(string(patch))
+	if additions != 1 || deletions != 1 {
+		t.Fatalf("patch changes = +%d -%d, want +1 -1:\n%s", additions, deletions, patch)
+	}
+	if strings.Contains(string(patch), "deleted file mode") || strings.Contains(string(patch), "new file mode") {
+		t.Fatalf("patch should be a line edit, not delete+add:\n%s", patch)
+	}
+}
+
+func TestDiffRefToWorktreeScopedIgnoresUnrelatedFIFO(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("FIFO test is POSIX-only")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	s := NewStore()
+
+	writeTestFile(t, dir, "agent-note.txt", "line one\nline two\n")
+	ref, err := s.CaptureBaseline(ctx, dir, "t1", 0)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(dir, "unrelated.pipe"), 0o644); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+
+	writeTestFile(t, dir, "agent-note.txt", "line one\nline two updated\n")
+	if _, err := s.DiffRefToWorktreeScoped(ctx, dir, ref, []string{"agent-note.txt"}); err != nil {
+		t.Fatalf("diff scoped: %v", err)
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("scoped diff touched unrelated FIFO: %v", err)
+	}
+}
+
+func TestDiffRefToWorktreeScopedPreservesTrailingWhitespacePath(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	s := NewStore()
+
+	const name = "agent-note.txt "
+	writeTestFile(t, dir, name, "line one\nline two\n")
+	ref, err := s.CaptureBaseline(ctx, dir, "t1", 0)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	writeTestFile(t, dir, name, "line one\nline two updated\n")
+	patch, err := s.DiffRefToWorktreeScoped(ctx, dir, ref, []string{name})
+	if err != nil {
+		t.Fatalf("diff scoped: %v", err)
+	}
+	additions, deletions := countPatchChanges(string(patch))
+	if additions != 1 || deletions != 1 {
+		t.Fatalf("patch changes = +%d -%d, want +1 -1:\n%s", additions, deletions, patch)
+	}
+	if !strings.Contains(string(patch), "agent-note.txt ") {
+		t.Fatalf("patch should preserve trailing-space filename:\n%s", patch)
+	}
+}
+
+func TestDiffRefToWorktreeScopedDoesNotWritePreviewBlobsToRepoObjects(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	s := NewStore()
+
+	writeTestFile(t, dir, "agent-note.txt", "line one\nline two\n")
+	ref, err := s.CaptureBaseline(ctx, dir, "t1", 0)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	beforeObjects := countLooseGitObjects(t, dir)
+
+	writeTestFile(t, dir, "agent-note.txt", "line one\nline two updated\n")
+	if _, err := s.DiffRefToWorktreeScoped(ctx, dir, ref, []string{"agent-note.txt"}); err != nil {
+		t.Fatalf("diff scoped: %v", err)
+	}
+	afterObjects := countLooseGitObjects(t, dir)
+	if afterObjects != beforeObjects {
+		t.Fatalf("loose object count changed after preview diff: before=%d after=%d", beforeObjects, afterObjects)
+	}
+}
+
+func TestDiffRefToWorktreeComparesUntrackedFileCapturedAtRef(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	s := NewStore()
+
+	writeTestFile(t, dir, "agent-note.txt", "line one\nline two\nline three\nline four\n")
+	ref, err := s.CaptureBaseline(ctx, dir, "t1", 0)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	writeTestFile(t, dir, "agent-note.txt", "line one\nline two (updated)\nline three\nline four\n")
+	patch, err := s.DiffRefToWorktree(ctx, dir, ref)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	additions, deletions := countPatchChanges(string(patch))
+	if additions != 1 || deletions != 1 {
+		t.Fatalf("patch changes = +%d -%d, want +1 -1:\n%s", additions, deletions, patch)
 	}
 }
 

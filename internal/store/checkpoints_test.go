@@ -136,6 +136,21 @@ func TestTrackedFilesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestTrackedFilesPreserveWhitespace(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForCheckpoint(t, s, "t1")
+	if err := s.UpsertTrackedFiles("t1", 1, []string{"dir/file with trailing space.txt "}); err != nil {
+		t.Fatalf("upsert tracked: %v", err)
+	}
+	got, err := s.ListTrackedFiles("t1")
+	if err != nil {
+		t.Fatalf("list tracked: %v", err)
+	}
+	if len(got) != 1 || got[0] != "dir/file with trailing space.txt " {
+		t.Fatalf("tracked files = %q, want trailing-space path preserved", got)
+	}
+}
+
 func TestTrackedFilesRejectUnsafePaths(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadForCheckpoint(t, s, "t1")

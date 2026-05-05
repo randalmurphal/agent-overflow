@@ -408,7 +408,7 @@ func (s *Store) ListTrackedFilesFromTurn(threadID string, fromTurnIndex int) ([]
 }
 
 func cleanTrackedFilePath(p string) (string, error) {
-	p = strings.TrimSpace(filepath.ToSlash(p))
+	p = filepath.ToSlash(p)
 	if p == "" {
 		return "", nil
 	}
