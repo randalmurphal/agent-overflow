@@ -43,11 +43,11 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "DeleteRemoteEndpoint", ID: 3667944297}, // main.App.DeleteRemoteEndpoint
 	{Name: "DeleteThread", ID: 1186337974}, // main.App.DeleteThread
 	{Name: "ForkThread", ID: 4063914461}, // main.App.ForkThread
+	{Name: "ForkThreadFromMessage", ID: 3977213964}, // main.App.ForkThreadFromMessage
 	{Name: "GenerateCommitMessage", ID: 1669373286}, // main.App.GenerateCommitMessage
 	{Name: "GetAttachmentData", ID: 71154490}, // main.App.GetAttachmentData
 	{Name: "GetAttachmentThumbnail", ID: 3414107538}, // main.App.GetAttachmentThumbnail
 	{Name: "GetChannelMessages", ID: 3595031866}, // main.App.GetChannelMessages
-	{Name: "GetCheckpointRangeDiff", ID: 3292511153}, // main.App.GetCheckpointRangeDiff
 	{Name: "GetContextSettings", ID: 3416004963}, // main.App.GetContextSettings
 	{Name: "GetDesignArtifactHTML", ID: 2043420102}, // main.App.GetDesignArtifactHTML
 	{Name: "GetDiscussion", ID: 1924583939}, // main.App.GetDiscussion
@@ -55,6 +55,8 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetEditorSettings", ID: 1655853383}, // main.App.GetEditorSettings
 	{Name: "GetGitStatus", ID: 4123560639}, // main.App.GetGitStatus
 	{Name: "GetKeybindings", ID: 3015840904}, // main.App.GetKeybindings
+	{Name: "GetMessageCheckpointDiff", ID: 1151360951}, // main.App.GetMessageCheckpointDiff
+	{Name: "GetMessageCheckpointRevertDiff", ID: 1106129437}, // main.App.GetMessageCheckpointRevertDiff
 	{Name: "GetModelsForProvider", ID: 1632984917}, // main.App.GetModelsForProvider
 	{Name: "GetNetworkSettings", ID: 1026796858}, // main.App.GetNetworkSettings
 	{Name: "GetPayloadChunk", ID: 73280836}, // main.App.GetPayloadChunk
@@ -128,7 +130,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RespondToApproval", ID: 1919237704}, // main.App.RespondToApproval
 	{Name: "RespondToUserInput", ID: 1071592868}, // main.App.RespondToUserInput
 	{Name: "RestartTerminal", ID: 4152403588}, // main.App.RestartTerminal
-	{Name: "RevertToCheckpoint", ID: 3403186872}, // main.App.RevertToCheckpoint
+	{Name: "RevertToMessageCheckpoint", ID: 263750815}, // main.App.RevertToMessageCheckpoint
 	{Name: "SaveDraft", ID: 3025273299}, // main.App.SaveDraft
 	{Name: "SavePayloadToFile", ID: 3576148797}, // main.App.SavePayloadToFile
 	{Name: "SearchThreadMessages", ID: 3644945077}, // main.App.SearchThreadMessages

@@ -182,10 +182,14 @@ func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage
 	}
 
 	providerItemID := firstNonEmpty(msg.ID, readRawString(raw["uuid"]))
+	parentUUID := readRawString(raw["parentUuid"])
 
 	var meta json.RawMessage
-	if providerItemID != "" {
-		marshaled, err := json.Marshal(map[string]string{"provider_item_id": providerItemID})
+	if providerItemID != "" || parentUUID != "" {
+		marshaled, err := json.Marshal(map[string]string{
+			"provider_item_id": providerItemID,
+			"parent_uuid":      parentUUID,
+		})
 		if err == nil {
 			meta = marshaled
 		}

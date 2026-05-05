@@ -13,7 +13,7 @@ Every normalized `ProviderEvent` flows through `Router.Handle` in
 | `text_delta` | `handleTextDelta` — create the streaming row on first content, emit ordered `provider:item_event` deltas for follow-up text, flush raw text to SQLite from the stream buffer. |
 | `tool_start` | `handleToolStart` — persist tool-use lifecycle row, capture pending inline diff, emit `provider:item_event` upsert. |
 | `tool_complete` | `handleToolComplete` — persist tool result (inc. inline diffs), flip status, emit `provider:item_event` upsert. |
-| `turn_start` | `handleTurnStart` — open turn span, capture git baseline. |
+| `turn_start` | `handleTurnStart` — open turn state/span and persist the `turns` row. Message checkpoints are captured before provider send. |
 | `turn_complete` | `handleTurnComplete` — drain accumulators, persist text/thinking/plan, close span. |
 | `approval_request` | `handleApprovalRequest` — record pending, emit `provider:approval` (request). |
 | `approval_resolved` | `handleApprovalResolved` — fold decision onto the row, emit `provider:approval` (resolve). |

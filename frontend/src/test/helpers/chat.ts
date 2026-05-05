@@ -75,6 +75,7 @@ export function installPaneMocks(items: Item[] = []): void {
   // override this via setBindingMock('ListRecentTurns', ...) after calling
   // buildPane / installPaneMocks.
   setBindingMock('ListRecentTurns', async () => []);
+  setBindingMock('ListThreadCheckpoints', async () => []);
 }
 
 export async function buildPane(

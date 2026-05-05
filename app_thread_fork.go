@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
@@ -25,15 +24,15 @@ import (
 //
 // When atTurnIndex is non-nil, the fork is sliced at that turn (0-indexed):
 // items with turn_index > *atTurnIndex are dropped, the provider session
-// is forked + truncated to match, and the fork's checkpoint baseline is
-// captured at checkpointTurnCount = *atTurnIndex + 1. atTurnIndex == nil
-// preserves the existing fork-at-tail behavior (clone everything, fork
-// provider state at the latest message).
+// is forked + truncated to match. Checkpoints whose user messages are cloned
+// are copied into the fork's ref namespace so historical messages remain
+// revertable. atTurnIndex == nil preserves the existing fork-at-tail behavior
+// (clone everything, fork provider state at the latest message).
 //
 // The "atomic unit" is emulated in the app layer rather than a single
 // SQLite transaction because the fork flow crosses a boundary — it has
-// to talk to the Codex provider to fork a live session, can write a
-// new Claude session JSONL on disk, and can capture a git ref. Wrapping
+// to talk to the Codex provider to fork a live session and can write a
+// new Claude session JSONL on disk. Wrapping
 // the whole sequence in sql.Tx would hold a DB transaction open across
 // a network-speed operation and break the rest of the store's
 // single-connection model. Instead, we compose with a best-effort
@@ -42,9 +41,9 @@ import (
 // and any cleanup errors are joined with the primary error.
 func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread, error) {
 	// Hold the source thread's send mutex for the duration of the fork so
-	// concurrent SendMessage / RevertToCheckpoint / etc. can't write to
+	// concurrent SendMessage / RevertToMessageCheckpoint / etc. can't write to
 	// items mid-clone (would produce a torn snapshot in the new fork).
-	// Mirrors RevertToCheckpoint's lockFor pattern.
+	// Mirrors RevertToMessageCheckpoint's lockFor pattern.
 	unlock := sendThreadMuRegistry.lockFor(sourceThreadID)
 	defer unlock()
 
@@ -61,7 +60,7 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 	// (Codex), and forking the in-flight bytes produces a fork that
 	// resumes mid-message. The popover already hides on
 	// pane.activeTurn != null; this is defense-in-depth for script
-	// callers and races. Mirrors RevertToCheckpoint's check.
+	// callers and races. Mirrors RevertToMessageCheckpoint's check.
 	if _, active, err := a.store.GetActiveTurn(sourceThreadID); err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread: active turn check: %w", err)
 	} else if active {
@@ -70,56 +69,152 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 
 	fork := buildForkedThread(source)
 
-	var cleanups []func() error
-	runCleanups := func() error {
-		var errs []error
-		for i := len(cleanups) - 1; i >= 0; i-- {
-			if err := cleanups[i](); err != nil {
-				errs = append(errs, err)
-			}
-		}
-		if len(errs) == 0 {
-			return nil
-		}
-		return errors.Join(errs...)
-	}
+	var cleanups forkCleanupStack
 
 	if err := a.store.CreateThread(fork); err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread: create fork thread: %w", err)
 	}
-	cleanups = append(cleanups, func() error { return a.cleanupForkThread(fork.ID) })
+	cleanups.add(func() error { return a.cleanupForkThread(fork.ID) })
 
-	if err := a.store.CloneThreadItems(source.ID, fork.ID, atTurnIndex); err != nil {
+	clonedItemIDs, err := a.store.CloneThreadItems(source.ID, fork.ID, atTurnIndex)
+	if err != nil {
 		return store.Thread{}, errors.Join(
 			fmt.Errorf("fork thread: clone timeline: %w", err),
-			runCleanups(),
+			cleanups.run(),
 		)
 	}
 
 	sessionRef, pendingForkRef, providerCleanup, err := a.resolveForkResumeState(source, atTurnIndex)
 	if err != nil {
-		return store.Thread{}, errors.Join(err, runCleanups())
+		return store.Thread{}, errors.Join(err, cleanups.run())
 	}
 	if providerCleanup != nil {
-		cleanups = append(cleanups, providerCleanup)
+		cleanups.add(providerCleanup)
 	}
 	fork.SessionRef = sessionRef
 	fork.PendingForkRef = pendingForkRef
 	fork.UpdatedAt = time.Now().UnixMilli()
-
-	// Best-effort baseline capture so the fork has a checkpoint to revert
-	// to from its very first new turn. Failure here is logged but does
-	// not abort the fork — the next turn-boundary capture will recover.
-	a.captureForkBaseline(fork, source, atTurnIndex)
+	copiedCheckpointRefs, err := a.copyForkCheckpoints(source, fork, clonedItemIDs, atTurnIndex)
+	if err != nil {
+		return store.Thread{}, errors.Join(err, cleanups.run())
+	}
+	if len(copiedCheckpointRefs) > 0 {
+		cleanups.add(func() error {
+			return a.deleteCheckpointRefs(context.Background(), fork.ID, "fork thread cleanup", copiedCheckpointRefs)
+		})
+	}
 
 	if err := a.store.UpdateThread(fork); err != nil {
 		return store.Thread{}, errors.Join(
 			fmt.Errorf("fork thread: persist fork state: %w", err),
-			runCleanups(),
+			cleanups.run(),
 		)
 	}
 
 	return fork, nil
+}
+
+// ForkThreadFromMessage creates a fork whose conversation stops before the
+// selected user message. This is the message-keyed counterpart to revert: the
+// selected prompt is not copied into the fork.
+func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (store.Thread, error) {
+	unlock := sendThreadMuRegistry.lockFor(sourceThreadID)
+	defer unlock()
+
+	source, err := a.store.GetThread(sourceThreadID)
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("fork thread from message: %w", err)
+	}
+	if _, active, err := a.store.GetActiveTurn(sourceThreadID); err != nil {
+		return store.Thread{}, fmt.Errorf("fork thread from message: active turn check: %w", err)
+	} else if active {
+		return store.Thread{}, fmt.Errorf("fork thread from message: cannot fork while a turn is in progress; interrupt or wait first")
+	}
+
+	item, found, err := a.store.GetThreadItem(sourceThreadID, userItemID)
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("fork thread from message: load user item: %w", err)
+	}
+	if !found || item.Kind != "user_text" || item.Role != "user" || isWireOnlyUserItem(item) {
+		return store.Thread{}, fmt.Errorf("fork thread from message: %q is not a user message", userItemID)
+	}
+
+	checkpointRow, ok, err := a.store.GetCheckpointByUserItemID(sourceThreadID, userItemID)
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("fork thread from message: load checkpoint: %w", err)
+	}
+	if !ok {
+		return store.Thread{}, fmt.Errorf("fork thread from message: no checkpoint for user message %q", userItemID)
+	}
+
+	fork := buildForkedThread(source)
+
+	var cleanups forkCleanupStack
+
+	if err := a.store.CreateThread(fork); err != nil {
+		return store.Thread{}, fmt.Errorf("fork thread from message: create fork thread: %w", err)
+	}
+	cleanups.add(func() error { return a.cleanupForkThread(fork.ID) })
+
+	clonedItemIDs := map[string]string{}
+	var lastKeptTurnPtr *int
+	if item.TurnIndex > 0 {
+		lastKeptTurn := item.TurnIndex - 1
+		lastKeptTurnPtr = &lastKeptTurn
+		clonedItemIDs, err = a.store.CloneThreadItems(source.ID, fork.ID, lastKeptTurnPtr)
+		if err != nil {
+			return store.Thread{}, errors.Join(
+				fmt.Errorf("fork thread from message: clone timeline: %w", err),
+				cleanups.run(),
+			)
+		}
+	}
+
+	sessionRef, pendingForkRef, providerCleanup, err := a.resolveMessageForkResumeState(source, checkpointRow)
+	if err != nil {
+		return store.Thread{}, errors.Join(err, cleanups.run())
+	}
+	if providerCleanup != nil {
+		cleanups.add(providerCleanup)
+	}
+	fork.SessionRef = sessionRef
+	fork.PendingForkRef = pendingForkRef
+	fork.UpdatedAt = time.Now().UnixMilli()
+	copiedCheckpointRefs, err := a.copyForkCheckpoints(source, fork, clonedItemIDs, lastKeptTurnPtr)
+	if err != nil {
+		return store.Thread{}, errors.Join(err, cleanups.run())
+	}
+	if len(copiedCheckpointRefs) > 0 {
+		cleanups.add(func() error {
+			return a.deleteCheckpointRefs(context.Background(), fork.ID, "fork thread from message cleanup", copiedCheckpointRefs)
+		})
+	}
+
+	if err := a.store.UpdateThread(fork); err != nil {
+		return store.Thread{}, errors.Join(
+			fmt.Errorf("fork thread from message: persist fork state: %w", err),
+			cleanups.run(),
+		)
+	}
+	return fork, nil
+}
+
+type forkCleanupStack []func() error
+
+func (s *forkCleanupStack) add(cleanup func() error) {
+	if cleanup != nil {
+		*s = append(*s, cleanup)
+	}
+}
+
+func (s forkCleanupStack) run() error {
+	var errs []error
+	for i := len(s) - 1; i >= 0; i-- {
+		if err := s[i](); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // cleanupForkThread removes the fork row created by a failed fork. The
@@ -140,6 +235,49 @@ func (a *App) cleanupForkThread(threadID string) error {
 		return fmt.Errorf("fork thread cleanup: delete fork %s: %w", threadID, err)
 	}
 	return nil
+}
+
+func (a *App) copyForkCheckpoints(source, fork store.Thread, clonedItemIDs map[string]string, atTurnIndex *int) ([]store.CheckpointRef, error) {
+	if len(clonedItemIDs) == 0 {
+		return nil, nil
+	}
+	sourceCheckpoints, err := a.store.ListCheckpoints(source.ID)
+	if err != nil {
+		return nil, fmt.Errorf("fork thread: list source checkpoints: %w", err)
+	}
+	var copied []store.CheckpointRef
+	cleanupCopied := func() {
+		_ = a.deleteCheckpointRefs(context.Background(), fork.ID, "fork thread copy cleanup", copied)
+	}
+	for _, sourceCheckpoint := range sourceCheckpoints {
+		if atTurnIndex != nil && sourceCheckpoint.TurnIndex > *atTurnIndex {
+			continue
+		}
+		clonedUserItemID, ok := clonedItemIDs[sourceCheckpoint.UserItemID]
+		if !ok {
+			continue
+		}
+		if err := validateCheckpointRecordForThread("fork thread", source.ID, sourceCheckpoint); err != nil {
+			cleanupCopied()
+			return nil, err
+		}
+		destRef := checkpoint.ThreadRefPrefix(fork.ID) + "message/" + uuid.NewString()
+		if err := a.checkpointStore().CopyRef(context.Background(), sourceCheckpoint.WorkspacePath, sourceCheckpoint.RefName, destRef); err != nil {
+			cleanupCopied()
+			return nil, fmt.Errorf("fork thread: copy checkpoint ref: %w", err)
+		}
+		copied = append(copied, store.CheckpointRef{RefName: destRef, WorkspacePath: sourceCheckpoint.WorkspacePath})
+		record := sourceCheckpoint
+		record.ID = uuid.NewString()
+		record.ThreadID = fork.ID
+		record.UserItemID = clonedUserItemID
+		record.RefName = destRef
+		if err := a.store.SaveCheckpoint(record); err != nil {
+			cleanupCopied()
+			return nil, fmt.Errorf("fork thread: save checkpoint: %w", err)
+		}
+	}
+	return copied, nil
 }
 
 // ensureThreadCanFork rejects forks against threads that have no
@@ -212,6 +350,35 @@ func (a *App) resolveForkResumeState(source store.Thread, atTurnIndex *int) (
 		return a.forkClaudeThread(source, atTurnIndex)
 	default:
 		return "", "", nil, fmt.Errorf("fork thread: unsupported provider %q", source.Provider)
+	}
+}
+
+func (a *App) resolveMessageForkResumeState(source store.Thread, checkpointRow store.Checkpoint) (
+	sessionRef string,
+	pendingForkRef string,
+	cleanup func() error,
+	err error,
+) {
+	switch source.Provider {
+	case string(provider.Codex):
+		if checkpointRow.TurnIndex == 0 {
+			return "", "", nil, nil
+		}
+		lastKeptTurn := checkpointRow.TurnIndex - 1
+		ref, err := a.forkCodexThread(source, &lastKeptTurn)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("fork thread from message: fork codex provider state: %w", err)
+		}
+		return ref, "", nil, nil
+	case string(provider.Claude):
+		var err error
+		checkpointRow, err = a.ensureClaudeCheckpointParentUUID(source, checkpointRow, "fork thread from message")
+		if err != nil {
+			return "", "", nil, err
+		}
+		return a.forkClaudeThreadBeforeMessage(source, checkpointRow)
+	default:
+		return "", "", nil, fmt.Errorf("fork thread from message: unsupported provider %q", source.Provider)
 	}
 }
 
@@ -343,59 +510,34 @@ func (a *App) forkClaudeThread(source store.Thread, atTurnIndex *int) (
 	return newID, "", cleanup, nil
 }
 
-// captureForkBaseline writes a checkpoint baseline for the fork so the
-// next-turn capture has a predecessor to diff against. checkpointTurnCount
-// is set to (lastClonedTurnIndex + 1) — semantically "state right before
-// the fork's first new turn", which matches how the rest of the
-// checkpoint pipeline interprets the count (see
-// internal/triage/turn_lifecycle.go captureBaselineForTurn).
-//
-// Best-effort. Logged on failure but never blocks the fork.
-func (a *App) captureForkBaseline(fork, source store.Thread, atTurnIndex *int) {
-	cap := a.checkpointStore()
-	if cap == nil {
-		return
+func (a *App) forkClaudeThreadBeforeMessage(source store.Thread, checkpointRow store.Checkpoint) (
+	sessionRef string,
+	pendingForkRef string,
+	cleanup func() error,
+	err error,
+) {
+	if checkpointRow.ProviderParentUUID == "" {
+		return "", "", nil, nil
 	}
-	workspace := checkpointWorkspaceForThread(fork)
-	if workspace == "" {
-		return
+	sourceSessionRef := claudeSourceSessionRef(source)
+	if sourceSessionRef == "" {
+		return "", "", nil, fmt.Errorf("fork thread from message: source thread %q is missing a Claude session reference", source.ID)
 	}
-	ctx := context.Background()
-	if !cap.IsGitRepository(ctx, workspace) {
-		return
+	srcPath, err := sessionfork.LocateSessionFile(sourceSessionRef, source.WorkspacePath)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("fork thread from message: locate claude session: %w", err)
 	}
-
-	turnCount := 0
-	if atTurnIndex != nil {
-		turnCount = *atTurnIndex + 1
-	} else {
-		// Fork at tail — turnCount = source's lastTurnIndex + 1, the
-		// state after the last cloned turn.
-		lastTurn, err := a.store.LastTurnIndex(source.ID)
-		if err == nil && lastTurn >= 0 {
-			turnCount = lastTurn + 1
+	newID, newPath, err := sessionfork.WriteForkFile(srcPath, checkpointRow.ProviderParentUUID, "")
+	if err != nil {
+		return "", "", nil, fmt.Errorf("fork thread from message: write forked session: %w", err)
+	}
+	cleanup = func() error {
+		if err := os.Remove(newPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("fork thread from message cleanup: remove %s: %w", newPath, err)
 		}
+		return nil
 	}
-
-	ref := checkpoint.RefForThreadTurn(fork.ID, turnCount)
-	if err := cap.CaptureRef(ctx, workspace, ref); err != nil {
-		log.Printf("fork: capture baseline ref for %s turn=%d: %v", fork.ID, turnCount, err)
-		return
-	}
-	now := time.Now().UnixMilli()
-	record := store.Checkpoint{
-		ID:                  uuid.NewString(),
-		ThreadID:            fork.ID,
-		CheckpointTurnCount: turnCount,
-		RefName:             ref,
-		Status:              "ready",
-		CapturedAt:          now,
-		WorkspacePath:       workspace,
-	}
-	if err := a.store.SaveCheckpoint(record); err != nil {
-		_ = cap.DeleteRef(ctx, workspace, ref)
-		log.Printf("fork: persist baseline checkpoint for %s turn=%d: %v", fork.ID, turnCount, err)
-	}
+	return newID, "", cleanup, nil
 }
 
 func (a *App) activeCodexSession(threadID string) (*codex.Session, bool) {

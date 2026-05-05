@@ -13,6 +13,51 @@ import (
 // last real user prompt in the source transcript.
 var ErrUserTurnOutOfRange = errors.New("sessionfork: user turn index out of range")
 
+// FindParentUUIDForUserMessageUUID streams the JSONL and returns the
+// parentUuid of the real user prompt with the given Claude message UUID.
+// This is the message-keyed equivalent of FindUUIDBeforeUserTurn and is
+// preferred by checkpoint rollback because queued/local message shapes can
+// make turn ordinals less precise than the provider's own UUID.
+func FindParentUUIDForUserMessageUUID(r io.Reader, messageUUID string) (string, error) {
+	if messageUUID == "" {
+		return "", fmt.Errorf("sessionfork: empty user message uuid")
+	}
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, scannerBufInitial), scannerBufMax)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+		if !isRealUserPrompt(entry) {
+			continue
+		}
+		uuid, _ := entry["uuid"].(string)
+		if uuid != messageUUID {
+			continue
+		}
+		parent, _ := entry["parentUuid"].(string)
+		return parent, nil
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("sessionfork: scan: %w", err)
+	}
+	return "", fmt.Errorf("%w: user message uuid %q", ErrMessageNotFound, messageUUID)
+}
+
+func ParentUUIDForUserMessageUUID(srcPath string, messageUUID string) (string, error) {
+	f, err := os.Open(srcPath)
+	if err != nil {
+		return "", fmt.Errorf("sessionfork: open claude session: %w", err)
+	}
+	defer f.Close()
+	return FindParentUUIDForUserMessageUUID(f, messageUUID)
+}
+
 // FindUUIDBeforeUserTurn streams the JSONL and returns the UUID of the
 // entry immediately before the Nth (0-indexed) real user prompt — i.e.
 // the parentUuid of that prompt. This is the right slice point for a

@@ -177,6 +177,9 @@ func TestMigrationVersionTracking(t *testing.T) {
 	if versions[38].version != 39 || versions[38].name != "drop_dead_checkpoint_turn_columns" {
 		t.Errorf("v39: got %d/%s", versions[38].version, versions[38].name)
 	}
+	if versions[39].version != 40 || versions[39].name != "message_keyed_checkpoints" {
+		t.Errorf("v40: got %d/%s", versions[39].version, versions[39].name)
+	}
 }
 
 func TestMigrationV39DropsDeadCheckpointTurnColumns(t *testing.T) {
@@ -240,17 +243,19 @@ func TestMigrationV39DropsDeadCheckpointTurnColumns(t *testing.T) {
 		}
 	}
 
-	got, ok, err := s.GetCheckpointByTurnCount("t-mig-v39", 1)
-	if err != nil {
-		t.Fatalf("get checkpoint after v39: %v", err)
+	var id, refName, baselineSHA, toolPaths, files, workspace string
+	var capturedAt int64
+	if err := db.QueryRow(`SELECT id, ref_name, baseline_sha, tool_paths, files, captured_at, workspace_path
+		FROM thread_checkpoints WHERE thread_id = ? AND checkpoint_turn_count = ?`,
+		"t-mig-v39", 1,
+	).Scan(&id, &refName, &baselineSHA, &toolPaths, &files, &capturedAt, &workspace); err != nil {
+		t.Fatalf("read checkpoint after v39: %v", err)
 	}
-	if !ok {
-		t.Fatalf("checkpoint should exist after v39")
-	}
-	if got.ID != "chk-v39" || got.RefName != "refs/agent-overflow/checkpoints/v39/turn/1" ||
-		got.BaselineSHA != "base-sha" || got.ToolPaths[0] != "src/main.go" ||
-		got.Files[0].Path != "src/main.go" || got.CapturedAt != 123 || got.WorkspacePath != "/tmp/v39" {
-		t.Fatalf("checkpoint round-trip after v39 = %+v", got)
+	if id != "chk-v39" || refName != "refs/agent-overflow/checkpoints/v39/turn/1" ||
+		baselineSHA != "base-sha" || toolPaths != `["src/main.go"]` ||
+		!strings.Contains(files, "src/main.go") || capturedAt != 123 || workspace != "/tmp/v39" {
+		t.Fatalf("checkpoint row after v39 = id=%q ref=%q base=%q paths=%q files=%q captured=%d workspace=%q",
+			id, refName, baselineSHA, toolPaths, files, capturedAt, workspace)
 	}
 }
 
@@ -336,10 +341,7 @@ func TestMigrationV29ThreadPinnedAt(t *testing.T) {
 	}
 }
 
-// V32 adds tool_paths to thread_checkpoints. Verifies the column has the
-// expected default and that round-tripping the new struct field through
-// SaveCheckpoint/GetCheckpointByTurnCount preserves the slice.
-func TestMigrationV32ThreadCheckpointsToolPaths(t *testing.T) {
+func TestMigrationV40ThreadTrackedFiles(t *testing.T) {
 	s := newTestStore(t)
 
 	rows, err := s.db.Query(`PRAGMA table_info(thread_checkpoints)`)
@@ -364,7 +366,7 @@ func TestMigrationV32ThreadCheckpointsToolPaths(t *testing.T) {
 		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
 			t.Fatalf("scan column: %v", err)
 		}
-		if name == "tool_paths" {
+		if name == "user_item_id" {
 			found = true
 			columnType = typ
 			columnDflt = dflt
@@ -372,32 +374,42 @@ func TestMigrationV32ThreadCheckpointsToolPaths(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("tool_paths column missing from thread_checkpoints")
+		t.Fatalf("user_item_id column missing from thread_checkpoints")
 	}
 	if columnType != "TEXT" {
-		t.Errorf("tool_paths type = %q, want TEXT", columnType)
+		t.Errorf("user_item_id type = %q, want TEXT", columnType)
 	}
 	if columnNotNN != 1 {
-		t.Errorf("tool_paths NOT NULL = %d, want 1", columnNotNN)
+		t.Errorf("user_item_id NOT NULL = %d, want 1", columnNotNN)
 	}
-	if !columnDflt.Valid || strings.TrimSpace(columnDflt.String) != "'[]'" {
-		t.Errorf("tool_paths default = %v, want '[]'", columnDflt.String)
+	if columnDflt.Valid && strings.TrimSpace(columnDflt.String) != "" {
+		t.Errorf("user_item_id default = %v, want none", columnDflt.String)
 	}
 
 	mustCreateThreadForCheckpoint(t, s, "t-mig-v32")
 	if err := s.SaveCheckpoint(Checkpoint{
-		ID: "chk-v32", ThreadID: "t-mig-v32", CheckpointTurnCount: 1,
-		RefName: "refs/v32-test", ToolPaths: []string{"x.go", "y.go"},
+		ID: "chk-v40", ThreadID: "t-mig-v32", UserItemID: "t-mig-v32-user:1", TurnIndex: 1,
+		RefName:    "refs/v40-test",
 		CapturedAt: time.Now().UnixMilli(), WorkspacePath: "/w",
 	}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	got, ok, err := s.GetCheckpointByTurnCount("t-mig-v32", 1)
+	got, ok, err := s.GetCheckpointByUserItemID("t-mig-v32", "t-mig-v32-user:1")
 	if err != nil || !ok {
 		t.Fatalf("get: %v ok=%v", err, ok)
 	}
-	if len(got.ToolPaths) != 2 || got.ToolPaths[0] != "x.go" || got.ToolPaths[1] != "y.go" {
-		t.Errorf("ToolPaths round-trip: got %v", got.ToolPaths)
+	if got.TurnIndex != 1 {
+		t.Errorf("TurnIndex = %d, want 1", got.TurnIndex)
+	}
+	if err := s.UpsertTrackedFiles("t-mig-v32", 1, []string{"x.go", "y.go"}); err != nil {
+		t.Fatalf("upsert tracked: %v", err)
+	}
+	tracked, err := s.ListTrackedFiles("t-mig-v32")
+	if err != nil {
+		t.Fatalf("list tracked: %v", err)
+	}
+	if len(tracked) != 2 || tracked[0] != "x.go" || tracked[1] != "y.go" {
+		t.Errorf("tracked files = %v", tracked)
 	}
 }
 

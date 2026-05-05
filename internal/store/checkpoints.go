@@ -4,31 +4,30 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"path"
+	"path/filepath"
+	"strings"
 
 	"agent-overflow/internal/diffsummary"
 )
 
-// Checkpoint is the persisted bookkeeping row for a single per-turn snapshot.
-// The heavy data lives in Git (keyed by RefName); this table lets us look up
-// the ref for a given (thread, turn) and clean everything up on thread delete.
+// Checkpoint is the persisted row for the workspace snapshot captured
+// immediately before a real user message is submitted. Reverting "to" a user
+// message means restoring this snapshot and deleting that message plus all
+// later conversation rows.
 type Checkpoint struct {
-	ID                  string             `json:"id"`
-	ThreadID            string             `json:"threadId"`
-	CheckpointTurnCount int                `json:"checkpointTurnCount"`
-	RefName             string             `json:"refName"`
-	BaselineSHA         string             `json:"baselineSha,omitempty"`
-	Status              string             `json:"status"`
-	Files               []diffsummary.File `json:"files"`
-	// ToolPaths records the workspace-relative paths the agent's
-	// file-mutating tools wrote during the turn this checkpoint closes.
-	// Bash side effects are intentionally NOT tracked. An empty slice
-	// means the agent did no file-mutating tool calls during the turn
-	// (or the row predates v32) — a conversation-and-files revert
-	// targeting such a row is a no-op on the worktree.
-	ToolPaths     []string `json:"toolPaths"`
-	CapturedAt    int64    `json:"capturedAt"`
-	WorkspacePath string   `json:"workspacePath"`
+	ID                    string             `json:"id"`
+	ThreadID              string             `json:"threadId"`
+	UserItemID            string             `json:"userItemId"`
+	TurnIndex             int                `json:"turnIndex"`
+	ProviderUserMessageID string             `json:"providerUserMessageId,omitempty"`
+	ProviderParentUUID    string             `json:"providerParentUuid,omitempty"`
+	RefName               string             `json:"refName"`
+	BaselineSHA           string             `json:"baselineSha,omitempty"`
+	Status                string             `json:"status"`
+	Files                 []diffsummary.File `json:"files"`
+	CapturedAt            int64              `json:"capturedAt"`
+	WorkspacePath         string             `json:"workspacePath"`
 }
 
 // CheckpointRef identifies the Git ref backing a checkpoint row and the
@@ -38,15 +37,17 @@ type CheckpointRef struct {
 	WorkspacePath string
 }
 
-const checkpointColumns = `id, thread_id, checkpoint_turn_count, ref_name, baseline_sha, status, files, tool_paths, captured_at, workspace_path`
+const checkpointColumns = `id, thread_id, user_item_id, turn_index,
+    provider_user_message_id, provider_parent_uuid, ref_name, baseline_sha,
+    status, files, captured_at, workspace_path`
 
 func scanCheckpoint(scanner interface{ Scan(...any) error }) (Checkpoint, error) {
 	var c Checkpoint
-	var filesJSON, toolPathsJSON string
+	var filesJSON string
 	if err := scanner.Scan(
-		&c.ID, &c.ThreadID, &c.CheckpointTurnCount, &c.RefName, &c.BaselineSHA,
-		&c.Status, &filesJSON, &toolPathsJSON,
-		&c.CapturedAt, &c.WorkspacePath,
+		&c.ID, &c.ThreadID, &c.UserItemID, &c.TurnIndex,
+		&c.ProviderUserMessageID, &c.ProviderParentUUID, &c.RefName, &c.BaselineSHA,
+		&c.Status, &filesJSON, &c.CapturedAt, &c.WorkspacePath,
 	); err != nil {
 		return Checkpoint{}, err
 	}
@@ -58,23 +59,21 @@ func scanCheckpoint(scanner interface{ Scan(...any) error }) (Checkpoint, error)
 			return Checkpoint{}, fmt.Errorf("store: unmarshal checkpoint files for %s: %w", c.ID, err)
 		}
 	}
-	if toolPathsJSON != "" {
-		if err := json.Unmarshal([]byte(toolPathsJSON), &c.ToolPaths); err != nil {
-			return Checkpoint{}, fmt.Errorf("store: unmarshal checkpoint tool_paths for %s: %w", c.ID, err)
-		}
+	if c.Files == nil {
+		c.Files = []diffsummary.File{}
 	}
 	return c, nil
 }
 
-// SaveCheckpoint inserts a new checkpoint row. The ref must already exist in
-// Git when this is called — we don't validate that here; the caller owns the
-// ordering.
 func (s *Store) SaveCheckpoint(c Checkpoint) error {
 	if c.ID == "" {
 		return fmt.Errorf("store: save checkpoint: id is required")
 	}
 	if c.ThreadID == "" {
 		return fmt.Errorf("store: save checkpoint: thread id is required")
+	}
+	if c.UserItemID == "" {
+		return fmt.Errorf("store: save checkpoint: user item id is required")
 	}
 	if c.RefName == "" {
 		return fmt.Errorf("store: save checkpoint: ref name is required")
@@ -84,19 +83,15 @@ func (s *Store) SaveCheckpoint(c Checkpoint) error {
 	if err != nil {
 		return fmt.Errorf("store: marshal checkpoint files: %w", err)
 	}
-	toolPathsJSON, err := json.Marshal(c.ToolPaths)
-	if err != nil {
-		return fmt.Errorf("store: marshal checkpoint tool_paths: %w", err)
-	}
 	_, err = s.db.Exec(
 		`INSERT INTO thread_checkpoints (
-			id, thread_id, checkpoint_turn_count, ref_name,
-			baseline_sha, status, files, tool_paths,
-			captured_at, workspace_path
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.ID, c.ThreadID, c.CheckpointTurnCount, c.RefName,
-		c.BaselineSHA, c.Status, string(filesJSON), string(toolPathsJSON),
-		c.CapturedAt, c.WorkspacePath,
+			id, thread_id, user_item_id, turn_index,
+			provider_user_message_id, provider_parent_uuid, ref_name, baseline_sha,
+			status, files, captured_at, workspace_path
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.ThreadID, c.UserItemID, c.TurnIndex,
+		c.ProviderUserMessageID, c.ProviderParentUUID, c.RefName, c.BaselineSHA,
+		c.Status, string(filesJSON), c.CapturedAt, c.WorkspacePath,
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert checkpoint %s: %w", c.ID, err)
@@ -104,15 +99,18 @@ func (s *Store) SaveCheckpoint(c Checkpoint) error {
 	return nil
 }
 
-// ReplaceCheckpointByTurnCount atomically swaps the checkpoint row for
-// (thread, checkpoint_turn_count). It returns the ref that was replaced so the
-// caller can clean up the old git ref after the DB commit succeeds.
-func (s *Store) ReplaceCheckpointByTurnCount(c Checkpoint) (CheckpointRef, error) {
+// ReplaceCheckpointByUserItemID atomically swaps the checkpoint row for a user
+// message. It returns the ref that was replaced so callers can remove the old
+// git ref after the DB commit succeeds.
+func (s *Store) ReplaceCheckpointByUserItemID(c Checkpoint) (CheckpointRef, error) {
 	if c.ID == "" {
 		return CheckpointRef{}, fmt.Errorf("store: replace checkpoint: id is required")
 	}
 	if c.ThreadID == "" {
 		return CheckpointRef{}, fmt.Errorf("store: replace checkpoint: thread id is required")
+	}
+	if c.UserItemID == "" {
+		return CheckpointRef{}, fmt.Errorf("store: replace checkpoint: user item id is required")
 	}
 	if c.RefName == "" {
 		return CheckpointRef{}, fmt.Errorf("store: replace checkpoint: ref name is required")
@@ -121,10 +119,6 @@ func (s *Store) ReplaceCheckpointByTurnCount(c Checkpoint) (CheckpointRef, error
 	filesJSON, err := json.Marshal(c.Files)
 	if err != nil {
 		return CheckpointRef{}, fmt.Errorf("store: marshal replacement checkpoint files: %w", err)
-	}
-	toolPathsJSON, err := json.Marshal(c.ToolPaths)
-	if err != nil {
-		return CheckpointRef{}, fmt.Errorf("store: marshal replacement checkpoint tool_paths: %w", err)
 	}
 
 	tx, err := s.db.Begin()
@@ -135,33 +129,33 @@ func (s *Store) ReplaceCheckpointByTurnCount(c Checkpoint) (CheckpointRef, error
 
 	var oldRef CheckpointRef
 	err = tx.QueryRow(
-		`SELECT ref_name, workspace_path FROM thread_checkpoints WHERE thread_id = ? AND checkpoint_turn_count = ?`,
-		c.ThreadID, c.CheckpointTurnCount,
+		`SELECT ref_name, workspace_path FROM thread_checkpoints WHERE thread_id = ? AND user_item_id = ?`,
+		c.ThreadID, c.UserItemID,
 	).Scan(&oldRef.RefName, &oldRef.WorkspacePath)
 	if err == sql.ErrNoRows {
 		oldRef = CheckpointRef{}
 	} else if err != nil {
-		return CheckpointRef{}, fmt.Errorf("store: lookup replacement checkpoint thread=%s turn=%d: %w",
-			c.ThreadID, c.CheckpointTurnCount, err)
+		return CheckpointRef{}, fmt.Errorf("store: lookup replacement checkpoint thread=%s user_item=%s: %w",
+			c.ThreadID, c.UserItemID, err)
 	}
 
 	if _, err := tx.Exec(
-		`DELETE FROM thread_checkpoints WHERE thread_id = ? AND checkpoint_turn_count = ?`,
-		c.ThreadID, c.CheckpointTurnCount,
+		`DELETE FROM thread_checkpoints WHERE thread_id = ? AND user_item_id = ?`,
+		c.ThreadID, c.UserItemID,
 	); err != nil {
-		return CheckpointRef{}, fmt.Errorf("store: delete replaced checkpoint thread=%s turn=%d: %w",
-			c.ThreadID, c.CheckpointTurnCount, err)
+		return CheckpointRef{}, fmt.Errorf("store: delete replaced checkpoint thread=%s user_item=%s: %w",
+			c.ThreadID, c.UserItemID, err)
 	}
 
 	if _, err := tx.Exec(
 		`INSERT INTO thread_checkpoints (
-			id, thread_id, checkpoint_turn_count, ref_name,
-			baseline_sha, status, files, tool_paths,
-			captured_at, workspace_path
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.ID, c.ThreadID, c.CheckpointTurnCount, c.RefName,
-		c.BaselineSHA, c.Status, string(filesJSON), string(toolPathsJSON),
-		c.CapturedAt, c.WorkspacePath,
+			id, thread_id, user_item_id, turn_index,
+			provider_user_message_id, provider_parent_uuid, ref_name, baseline_sha,
+			status, files, captured_at, workspace_path
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.ThreadID, c.UserItemID, c.TurnIndex,
+		c.ProviderUserMessageID, c.ProviderParentUUID, c.RefName, c.BaselineSHA,
+		c.Status, string(filesJSON), c.CapturedAt, c.WorkspacePath,
 	); err != nil {
 		return CheckpointRef{}, fmt.Errorf("store: insert replacement checkpoint %s: %w", c.ID, err)
 	}
@@ -179,40 +173,50 @@ func normalizeCheckpoint(c Checkpoint) Checkpoint {
 	if c.Files == nil {
 		c.Files = []diffsummary.File{}
 	}
-	if c.ToolPaths == nil {
-		c.ToolPaths = []string{}
-	}
 	return c
 }
 
-// GetCheckpointByTurnCount looks up the checkpoint for (thread, turn count).
-// The second return is false when no row exists, and err is nil in that case.
-// The schema enforces at most one row per (thread_id, checkpoint_turn_count),
-// so this is an exact lookup with no tie-breaker.
-func (s *Store) GetCheckpointByTurnCount(threadID string, turnCount int) (Checkpoint, bool, error) {
+func (s *Store) GetCheckpointByUserItemID(threadID, userItemID string) (Checkpoint, bool, error) {
 	row := s.db.QueryRow(
 		`SELECT `+checkpointColumns+` FROM thread_checkpoints
-		 WHERE thread_id = ? AND checkpoint_turn_count = ?`,
-		threadID, turnCount,
+		 WHERE thread_id = ? AND user_item_id = ?`,
+		threadID, userItemID,
 	)
 	c, err := scanCheckpoint(row)
 	if err == sql.ErrNoRows {
 		return Checkpoint{}, false, nil
 	}
 	if err != nil {
-		return Checkpoint{}, false, fmt.Errorf("store: get checkpoint thread=%s turn=%d: %w",
-			threadID, turnCount, err)
+		return Checkpoint{}, false, fmt.Errorf("store: get checkpoint thread=%s user_item=%s: %w",
+			threadID, userItemID, err)
 	}
 	return c, true, nil
 }
 
-// ListCheckpoints returns every checkpoint row for the thread, ordered by
-// checkpoint turn count ascending.
+func (s *Store) GetPreviousCheckpoint(threadID string, beforeTurnIndex int) (Checkpoint, bool, error) {
+	row := s.db.QueryRow(
+		`SELECT `+checkpointColumns+` FROM thread_checkpoints
+		 WHERE thread_id = ? AND turn_index < ?
+		 ORDER BY turn_index DESC, captured_at DESC
+		 LIMIT 1`,
+		threadID, beforeTurnIndex,
+	)
+	c, err := scanCheckpoint(row)
+	if err == sql.ErrNoRows {
+		return Checkpoint{}, false, nil
+	}
+	if err != nil {
+		return Checkpoint{}, false, fmt.Errorf("store: get previous checkpoint thread=%s before_turn=%d: %w",
+			threadID, beforeTurnIndex, err)
+	}
+	return c, true, nil
+}
+
 func (s *Store) ListCheckpoints(threadID string) ([]Checkpoint, error) {
 	rows, err := s.db.Query(
 		`SELECT `+checkpointColumns+` FROM thread_checkpoints
 		 WHERE thread_id = ?
-		 ORDER BY checkpoint_turn_count ASC, captured_at ASC`,
+		 ORDER BY turn_index ASC, captured_at ASC`,
 		threadID,
 	)
 	if err != nil {
@@ -234,10 +238,6 @@ func (s *Store) ListCheckpoints(threadID string) ([]Checkpoint, error) {
 	return out, nil
 }
 
-// DeleteCheckpointsForThread removes every checkpoint row for the thread.
-// The FK CASCADE would handle this when the thread itself is deleted, but
-// callers use this directly when cleaning up checkpoints for a thread that
-// still exists (e.g. manual "clear all checkpoints" actions).
 func (s *Store) DeleteCheckpointsForThread(threadID string) error {
 	if _, err := s.db.Exec(
 		`DELETE FROM thread_checkpoints WHERE thread_id = ?`, threadID,
@@ -247,123 +247,188 @@ func (s *Store) DeleteCheckpointsForThread(threadID string) error {
 	return nil
 }
 
-// DeleteCheckpointsAfterTurn removes every checkpoint row with checkpoint turn
-// count strictly greater than keepThroughTurn for the given thread. Returns
-// the refs that were deleted so the caller can clean up the backing git refs.
-// Order is ascending by checkpoint turn count.
-//
-// Used by the revert flow: after reverting to checkpoint count N, forward
-// checkpoints no longer correspond to reachable conversation state and are
-// torn down so future captures can re-use those counts cleanly.
-func (s *Store) DeleteCheckpointsAfterTurn(threadID string, keepThroughTurn int) ([]CheckpointRef, error) {
+// DeleteCheckpointsFromTurn removes every message checkpoint whose user
+// message is deleted by a rewind starting at fromTurnIndex.
+func (s *Store) DeleteCheckpointsFromTurn(threadID string, fromTurnIndex int) ([]CheckpointRef, error) {
 	rows, err := s.db.Query(
 		`SELECT ref_name, workspace_path FROM thread_checkpoints
-		 WHERE thread_id = ? AND checkpoint_turn_count > ?
-		 ORDER BY checkpoint_turn_count`,
-		threadID, keepThroughTurn,
+		 WHERE thread_id = ? AND turn_index >= ?
+		 ORDER BY turn_index`,
+		threadID, fromTurnIndex,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("store: list checkpoints after turn for thread %s: %w", threadID, err)
+		return nil, fmt.Errorf("store: list checkpoints from turn for thread %s: %w", threadID, err)
 	}
 	var refs []CheckpointRef
 	for rows.Next() {
 		var ref CheckpointRef
 		if err := rows.Scan(&ref.RefName, &ref.WorkspacePath); err != nil {
 			rows.Close()
-			return nil, fmt.Errorf("store: scan checkpoint ref after turn: %w", err)
+			return nil, fmt.Errorf("store: scan checkpoint ref from turn: %w", err)
 		}
 		refs = append(refs, ref)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return nil, fmt.Errorf("store: iterate checkpoints after turn: %w", err)
+		return nil, fmt.Errorf("store: iterate checkpoints from turn: %w", err)
 	}
 	rows.Close()
 
 	if _, err := s.db.Exec(
-		`DELETE FROM thread_checkpoints WHERE thread_id = ? AND checkpoint_turn_count > ?`,
-		threadID, keepThroughTurn,
+		`DELETE FROM thread_checkpoints WHERE thread_id = ? AND turn_index >= ?`,
+		threadID, fromTurnIndex,
 	); err != nil {
-		return nil, fmt.Errorf("store: delete checkpoints after turn for thread %s: %w", threadID, err)
+		return nil, fmt.Errorf("store: delete checkpoints from turn for thread %s: %w", threadID, err)
 	}
 	return refs, nil
 }
 
-// GetCumulativeToolPaths returns the deduped union of `tool_paths` across
-// every checkpoint row for the thread with checkpoint_turn_count strictly
-// greater than fromTurnCountExclusive. Used by RevertToCheckpoint to find
-// every workspace path the agent touched after the target checkpoint, so
-// the path-scoped restore can roll exactly those paths back. Order is
-// stable (sorted ascending) for deterministic git invocations.
-func (s *Store) GetCumulativeToolPaths(threadID string, fromTurnCountExclusive int) ([]string, error) {
-	rows, err := s.db.Query(
-		`SELECT tool_paths FROM thread_checkpoints
-		 WHERE thread_id = ? AND checkpoint_turn_count > ?
-		 ORDER BY checkpoint_turn_count`,
-		threadID, fromTurnCountExclusive,
+func (s *Store) UpdateCheckpointProviderIDs(threadID, userItemID, providerUserMessageID, providerParentUUID string) error {
+	if threadID == "" || userItemID == "" {
+		return fmt.Errorf("store: update checkpoint provider ids requires thread and user item id")
+	}
+	if providerUserMessageID == "" && providerParentUUID == "" {
+		return nil
+	}
+	_, err := s.db.Exec(
+		`UPDATE thread_checkpoints
+		    SET provider_user_message_id = CASE WHEN ? != '' THEN ? ELSE provider_user_message_id END,
+		        provider_parent_uuid = CASE WHEN ? != '' THEN ? ELSE provider_parent_uuid END
+		  WHERE thread_id = ? AND user_item_id = ?`,
+		providerUserMessageID, providerUserMessageID,
+		providerParentUUID, providerParentUUID,
+		threadID, userItemID,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("store: list cumulative tool paths thread=%s after=%d: %w",
-			threadID, fromTurnCountExclusive, err)
+		return fmt.Errorf("store: update checkpoint provider ids thread=%s user_item=%s: %w", threadID, userItemID, err)
 	}
-	defer rows.Close()
+	return nil
+}
 
-	seen := make(map[string]struct{})
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return nil, fmt.Errorf("store: scan cumulative tool paths: %w", err)
+func (s *Store) UpsertTrackedFiles(threadID string, turnIndex int, paths []string) error {
+	if threadID == "" || len(paths) == 0 {
+		return nil
+	}
+	if turnIndex < 0 {
+		return fmt.Errorf("store: upsert tracked files: turn index must be >= 0, got %d", turnIndex)
+	}
+	normalized := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		cleaned, err := cleanTrackedFilePath(p)
+		if err != nil {
+			return fmt.Errorf("store: upsert tracked file %s/%s: %w", threadID, p, err)
 		}
-		if raw == "" {
+		if cleaned == "" {
 			continue
 		}
-		var paths []string
-		if err := json.Unmarshal([]byte(raw), &paths); err != nil {
-			return nil, fmt.Errorf("store: unmarshal cumulative tool paths thread=%s: %w", threadID, err)
+		if _, ok := seen[cleaned]; ok {
+			continue
 		}
-		for _, p := range paths {
-			if p == "" {
-				continue
-			}
-			seen[p] = struct{}{}
+		seen[cleaned] = struct{}{}
+		normalized = append(normalized, cleaned)
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin tracked files tx: %w", err)
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(
+		`INSERT OR IGNORE INTO thread_tracked_files (thread_id, turn_index, path) VALUES (?, ?, ?)`,
+	)
+	if err != nil {
+		return fmt.Errorf("store: prepare tracked files insert: %w", err)
+	}
+	defer stmt.Close()
+	for _, p := range normalized {
+		if _, err := stmt.Exec(threadID, turnIndex, p); err != nil {
+			return fmt.Errorf("store: upsert tracked file %s/%s: %w", threadID, p, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit tracked files tx: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ListTrackedFiles(threadID string) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT DISTINCT path FROM thread_tracked_files WHERE thread_id = ? ORDER BY path ASC`,
+		threadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list tracked files for %s: %w", threadID, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("store: scan tracked file: %w", err)
+		}
+		if p != "" {
+			out = append(out, p)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate cumulative tool paths: %w", err)
+		return nil, fmt.Errorf("store: iterate tracked files for %s: %w", threadID, err)
 	}
-	if len(seen) == 0 {
-		return nil, nil
-	}
-	out := make([]string, 0, len(seen))
-	for p := range seen {
-		out = append(out, p)
-	}
-	sort.Strings(out)
 	return out, nil
 }
 
-// DeleteCheckpointByThreadTurnCount removes the checkpoint row for
-// (thread, checkpoint turn count) if it exists, returning the backing ref so
-// the caller can clean it up. The bool is false when no row existed.
-func (s *Store) DeleteCheckpointByThreadTurnCount(threadID string, turnCount int) (CheckpointRef, bool, error) {
-	var ref CheckpointRef
-	err := s.db.QueryRow(
-		`SELECT ref_name, workspace_path FROM thread_checkpoints WHERE thread_id = ? AND checkpoint_turn_count = ?`,
-		threadID, turnCount,
-	).Scan(&ref.RefName, &ref.WorkspacePath)
-	if err == sql.ErrNoRows {
-		return CheckpointRef{}, false, nil
-	}
+func (s *Store) ListTrackedFilesFromTurn(threadID string, fromTurnIndex int) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT DISTINCT path
+		   FROM thread_tracked_files
+		  WHERE thread_id = ? AND turn_index >= ?
+		  ORDER BY path ASC`,
+		threadID, fromTurnIndex,
+	)
 	if err != nil {
-		return CheckpointRef{}, false, fmt.Errorf("store: lookup checkpoint thread=%s turn=%d: %w",
-			threadID, turnCount, err)
+		return nil, fmt.Errorf("store: list tracked files from turn for %s: %w", threadID, err)
 	}
-	if _, err := s.db.Exec(
-		`DELETE FROM thread_checkpoints WHERE thread_id = ? AND checkpoint_turn_count = ?`,
-		threadID, turnCount,
-	); err != nil {
-		return CheckpointRef{}, false, fmt.Errorf("store: delete checkpoint thread=%s turn=%d: %w",
-			threadID, turnCount, err)
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("store: scan tracked file from turn: %w", err)
+		}
+		if p != "" {
+			out = append(out, p)
+		}
 	}
-	return ref, true, nil
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate tracked files from turn for %s: %w", threadID, err)
+	}
+	return out, nil
+}
+
+func cleanTrackedFilePath(p string) (string, error) {
+	p = strings.TrimSpace(filepath.ToSlash(p))
+	if p == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(p, ":") {
+		return "", fmt.Errorf("pathspec magic is not allowed")
+	}
+	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") {
+		return "", fmt.Errorf("absolute paths are not allowed")
+	}
+	cleaned := path.Clean(p)
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("path must stay inside the workspace")
+	}
+	for _, part := range strings.Split(cleaned, "/") {
+		if part == "" || part == "." || part == ".." {
+			return "", fmt.Errorf("path contains invalid component %q", part)
+		}
+		if part == ".git" {
+			return "", fmt.Errorf("paths under .git are not tracked")
+		}
+	}
+	return cleaned, nil
 }

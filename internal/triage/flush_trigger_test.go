@@ -199,7 +199,7 @@ func TestHandleToolStart_NewRoundFiresAgain(t *testing.T) {
 
 func TestHandleToolStart_EmptyQueue_NormalRoutingIntact(t *testing.T) {
 	// When there's nothing queued, the trigger is a no-op and the
-	// rest of handleToolStart (persistToolCallLaunch, stageToolPaths,
+	// rest of handleToolStart (persistToolCallLaunch, trackToolPaths,
 	// emitInline) must run unchanged. The persisted tool_call row is
 	// the proxy assertion for "normal routing intact."
 	router, st, _ := newTestRouter(t)

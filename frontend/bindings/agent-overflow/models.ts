@@ -56,19 +56,14 @@ export class AttachmentThumbnail {
     }
 }
 
-/**
- * CheckpointView is the frontend-facing checkpoint row. The store row also
- * carries backend-only Git ref/workspace fields; those stay server-side because
- * the UI only needs turn ordering, status, file summaries, and tool-written
- * paths.
- */
 export class CheckpointView {
     "id": string;
     "threadId": string;
-    "checkpointTurnCount": number;
+    "userItemId": string;
+    "turnIndex": number;
+    "providerUserMessageId"?: string;
     "status": string;
     "files": diffsummary$0.File[];
-    "toolPaths": string[];
     "capturedAt": number;
 
     /** Creates a new CheckpointView instance. */
@@ -79,17 +74,17 @@ export class CheckpointView {
         if (!("threadId" in $$source)) {
             this["threadId"] = "";
         }
-        if (!("checkpointTurnCount" in $$source)) {
-            this["checkpointTurnCount"] = 0;
+        if (!("userItemId" in $$source)) {
+            this["userItemId"] = "";
+        }
+        if (!("turnIndex" in $$source)) {
+            this["turnIndex"] = 0;
         }
         if (!("status" in $$source)) {
             this["status"] = "";
         }
         if (!("files" in $$source)) {
             this["files"] = [];
-        }
-        if (!("toolPaths" in $$source)) {
-            this["toolPaths"] = [];
         }
         if (!("capturedAt" in $$source)) {
             this["capturedAt"] = 0;
@@ -102,14 +97,10 @@ export class CheckpointView {
      * Creates a new CheckpointView instance from a string or object.
      */
     static createFrom($$source: any = {}): CheckpointView {
-        const $$createField4_0 = $$createType1;
-        const $$createField5_0 = $$createType2;
+        const $$createField6_0 = $$createType1;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
-            $$parsedSource["files"] = $$createField4_0($$parsedSource["files"]);
-        }
-        if ("toolPaths" in $$parsedSource) {
-            $$parsedSource["toolPaths"] = $$createField5_0($$parsedSource["toolPaths"]);
+            $$parsedSource["files"] = $$createField6_0($$parsedSource["files"]);
         }
         return new CheckpointView($$parsedSource as Partial<CheckpointView>);
     }
@@ -151,7 +142,7 @@ export class ContextSettingsProfile {
      * Creates a new ContextSettingsProfile instance from a string or object.
      */
     static createFrom($$source: any = {}): ContextSettingsProfile {
-        const $$createField2_0 = $$createType4;
+        const $$createField2_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("contextWindows" in $$parsedSource) {
             $$parsedSource["contextWindows"] = $$createField2_0($$parsedSource["contextWindows"]);
@@ -423,7 +414,7 @@ export class DirectoryListing {
      * Creates a new DirectoryListing instance from a string or object.
      */
     static createFrom($$source: any = {}): DirectoryListing {
-        const $$createField3_0 = $$createType6;
+        const $$createField3_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("entries" in $$parsedSource) {
             $$parsedSource["entries"] = $$createField3_0($$parsedSource["entries"]);
@@ -473,7 +464,7 @@ export class Draft {
      * Creates a new Draft instance from a string or object.
      */
     static createFrom($$source: any = {}): Draft {
-        const $$createField2_0 = $$createType2;
+        const $$createField2_0 = $$createType6;
         const $$createField3_0 = $$createType8;
         const $$createField4_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
@@ -840,10 +831,10 @@ export class QueuedItem {
      * Creates a new QueuedItem instance from a string or object.
      */
     static createFrom($$source: any = {}): QueuedItem {
-        const $$createField3_0 = $$createType2;
+        const $$createField3_0 = $$createType6;
         const $$createField4_0 = $$createType10;
         const $$createField5_0 = $$createType10;
-        const $$createField6_0 = $$createType2;
+        const $$createField6_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
             $$parsedSource["attachmentIds"] = $$createField3_0($$parsedSource["attachmentIds"]);
@@ -925,10 +916,10 @@ export class SendMessageOptions {
      * Creates a new SendMessageOptions instance from a string or object.
      */
     static createFrom($$source: any = {}): SendMessageOptions {
-        const $$createField0_0 = $$createType2;
+        const $$createField0_0 = $$createType6;
         const $$createField2_0 = $$createType10;
         const $$createField3_0 = $$createType10;
-        const $$createField4_0 = $$createType2;
+        const $$createField4_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
             $$parsedSource["attachmentIds"] = $$createField0_0($$parsedSource["attachmentIds"]);
@@ -1139,11 +1130,11 @@ export class WorkspaceFileSearchResult {
 // Private type creation functions
 const $$createType0 = diffsummary$0.File.createFrom;
 const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = $Create.Array($Create.Any);
-const $$createType3 = provider$0.ContextWindowOption.createFrom;
-const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = DirectoryEntry.createFrom;
-const $$createType6 = $Create.Array($$createType5);
+const $$createType2 = provider$0.ContextWindowOption.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = DirectoryEntry.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = $Create.Array($Create.Any);
 const $$createType7 = TerminalChip.createFrom;
 const $$createType8 = $Create.Array($$createType7);
 const $$createType9 = store$0.ProposedPlanSourceRef.createFrom;

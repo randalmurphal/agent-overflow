@@ -281,10 +281,10 @@ export function DeleteThread(id: string): $CancellablePromise<void> {
  * 
  * When atTurnIndex is non-nil, the fork is sliced at that turn (0-indexed):
  * items with turn_index > *atTurnIndex are dropped, the provider session
- * is forked + truncated to match, and the fork's checkpoint baseline is
- * captured at checkpointTurnCount = *atTurnIndex + 1. atTurnIndex == nil
- * preserves the existing fork-at-tail behavior (clone everything, fork
- * provider state at the latest message).
+ * is forked + truncated to match. Message-keyed checkpoints are not cloned or
+ * synthesized here; the fork gets its first checkpoint before its next user
+ * message. atTurnIndex == nil preserves the existing fork-at-tail behavior
+ * (clone everything, fork provider state at the latest message).
  * 
  * The "atomic unit" is emulated in the app layer rather than a single
  * SQLite transaction because the fork flow crosses a boundary — it has
@@ -299,6 +299,17 @@ export function DeleteThread(id: string): $CancellablePromise<void> {
  */
 export function ForkThread(sourceThreadID: string, atTurnIndex: number | null): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(4063914461, sourceThreadID, atTurnIndex).then(($result: any) => {
+        return $$createType4($result);
+    });
+}
+
+/**
+ * ForkThreadFromMessage creates a fork whose conversation stops before the
+ * selected user message. This is the message-keyed counterpart to revert: the
+ * selected prompt is not copied into the fork.
+ */
+export function ForkThreadFromMessage(sourceThreadID: string, userItemID: string): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(3977213964, sourceThreadID, userItemID).then(($result: any) => {
         return $$createType4($result);
     });
 }
@@ -360,15 +371,6 @@ export function GetChannelMessages(channelID: string, afterSeq: number, limit: n
     return $Call.ByID(3595031866, channelID, afterSeq, limit).then(($result: any) => {
         return $$createType9($result);
     });
-}
-
-/**
- * GetCheckpointRangeDiff returns the unified diff between two finalized
- * checkpoint turn counts. Turn count 0 is the baseline before the first turn;
- * turn count N is the workspace after completed turn N.
- */
-export function GetCheckpointRangeDiff(threadID: string, fromTurnCount: number, toTurnCount: number): $CancellablePromise<string> {
-    return $Call.ByID(3292511153, threadID, fromTurnCount, toTurnCount);
 }
 
 export function GetContextSettings(providerName: string, model: string): $CancellablePromise<$models.ContextSettingsProfile> {
@@ -434,6 +436,14 @@ export function GetKeybindings(): $CancellablePromise<$models.Keybinding[]> {
     return $Call.ByID(3015840904).then(($result: any) => {
         return $$createType16($result);
     });
+}
+
+export function GetMessageCheckpointDiff(threadID: string, userItemID: string): $CancellablePromise<string> {
+    return $Call.ByID(1151360951, threadID, userItemID);
+}
+
+export function GetMessageCheckpointRevertDiff(threadID: string, userItemID: string): $CancellablePromise<string> {
+    return $Call.ByID(1106129437, threadID, userItemID);
 }
 
 /**
@@ -521,13 +531,6 @@ export function GetRemoteEndpointToken(id: string): $CancellablePromise<string> 
     return $Call.ByID(3604571249, id);
 }
 
-/**
- * GetSessionAgentDiff returns the unified diff between the thread's
- * baseline checkpoint (turn count 0) and the latest checkpoint, restricted
- * to the cumulative set of paths the agent's file-mutating tools wrote
- * across the session. Empty result when no checkpoints exist or no agent
- * writes have been recorded.
- */
 export function GetSessionAgentDiff(threadID: string): $CancellablePromise<string> {
     return $Call.ByID(2631559849, threadID);
 }
@@ -632,12 +635,6 @@ export function GetWorkingTreeDiff(threadID: string): $CancellablePromise<string
     return $Call.ByID(1858968113, threadID);
 }
 
-/**
- * GetWorkspaceCurrentDiff returns the full uncommitted diff in the
- * thread's workspace — `git diff HEAD` plus untracked-not-ignored files —
- * without filtering by tool_paths. Surfaces manual user edits alongside
- * any post-checkpoint agent activity.
- */
 export function GetWorkspaceCurrentDiff(threadID: string): $CancellablePromise<string> {
     return $Call.ByID(736820142, threadID);
 }
@@ -973,11 +970,6 @@ export function ListTerminals(threadID: string): $CancellablePromise<terminal$0.
     });
 }
 
-/**
- * ListThreadCheckpoints returns every frontend-visible checkpoint view for a thread.
- * Ordering is ascending by checkpoint turn count so the UI can render a
- * turn-navigation strip without additional sorting.
- */
 export function ListThreadCheckpoints(threadID: string): $CancellablePromise<$models.CheckpointView[]> {
     return $Call.ByID(1853132444, threadID).then(($result: any) => {
         return $$createType57($result);
@@ -1241,13 +1233,8 @@ export function RestartTerminal(terminalID: string): $CancellablePromise<$models
     });
 }
 
-/**
- * RevertToCheckpoint rolls a thread back to a checkpoint turn count. The
- * conversation-only mode keeps the current worktree and recaptures that kept
- * state as the new checkpoint baseline.
- */
-export function RevertToCheckpoint(threadID: string, checkpointTurnCount: number, mode: string): $CancellablePromise<void> {
-    return $Call.ByID(3403186872, threadID, checkpointTurnCount, mode);
+export function RevertToMessageCheckpoint(threadID: string, userItemID: string, mode: string): $CancellablePromise<void> {
+    return $Call.ByID(263750815, threadID, userItemID, mode);
 }
 
 /**

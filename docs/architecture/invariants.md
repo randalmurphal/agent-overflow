@@ -70,10 +70,10 @@ mutex. The first item in an empty thread uses turn index `0`; later
 user sends use `LastTurnIndex(threadID) + 1`. It never decreases within
 a thread's history.
 
-**Rationale.** Turn ordering is how we group items, capture git
-baselines, and scope the interrupt queue. A non-monotonic turn_index
-would either group unrelated items into one turn (checkpoint drift)
-or split one turn into two (orphan items, orphan baseline).
+**Rationale.** Turn ordering is how we group items, order message
+checkpoints, and scope the interrupt queue. A non-monotonic turn_index
+would either group unrelated items into one turn (rollback drift) or
+split one turn into two (orphan items, orphan message checkpoint).
 
 **Enforcement.** `App.SendMessage` in `app_send.go` holds the
 per-thread mutex (`sendThreadMuRegistry.lockFor(threadID)`) while
@@ -446,7 +446,7 @@ sets both columns.
 back `PRAGMA journal_mode=WAL` and logs a visible warning when
 SQLite silently falls back to rollback journaling. The app proceeds
 on a rollback-journaled DB (still correct), but the log line is the
-only signal that checkpointing isn't happening.
+only signal that SQLite concurrency has degraded.
 
 **Rationale.** SQLite silently downgrades `journal_mode=WAL` to the
 prior mode under some filesystems (network mounts, read-only mounts,

@@ -3,14 +3,14 @@ import type { Checkpoint } from '../types/checkpoint';
 import { createDiffPanelState } from './diffPanel.svelte';
 
 function checkpoint(overrides: Partial<Checkpoint> = {}): Checkpoint {
-  const checkpointTurnCount = overrides.checkpointTurnCount ?? 0;
+  const turnIndex = overrides.turnIndex ?? 0;
   return {
-    id: `c-${checkpointTurnCount}`,
+    id: `c-${turnIndex}`,
     threadId: 't-1',
-    checkpointTurnCount,
+    userItemId: `user:${turnIndex}`,
+    turnIndex,
     status: 'ready',
     files: [],
-    toolPaths: [],
     capturedAt: 0,
     ...overrides,
   };
@@ -26,7 +26,7 @@ describe('createDiffPanelState', () => {
   it('starts closed with checkpoint drawer defaults', () => {
     expect(store.open).toBe(false);
     expect(store.viewMode).toBe('stacked');
-    expect(store.selectedCheckpointTurnCount).toBeNull();
+    expect(store.selectedCheckpointUserItemId).toBeNull();
     expect(store.checkpoints).toEqual([]);
     expect(store.checkpointsLoaded).toBe(false);
     expect(store.checkpointsUnavailable).toBe(false);
@@ -48,22 +48,22 @@ describe('createDiffPanelState', () => {
     expect(store.open).toBe(false);
   });
 
-  it('tracks view mode and selected checkpoint turn count', () => {
+  it('tracks view mode and selected checkpoint message', () => {
     store.setViewMode('split');
-    store.selectCheckpointTurnCount(3);
+    store.selectCheckpointUserItem('user:3');
 
     expect(store.viewMode).toBe('split');
-    expect(store.selectedCheckpointTurnCount).toBe(3);
+    expect(store.selectedCheckpointUserItemId).toBe('user:3');
 
-    store.selectCheckpointTurnCount(null);
-    expect(store.selectedCheckpointTurnCount).toBeNull();
+    store.selectCheckpointUserItem(null);
+    expect(store.selectedCheckpointUserItemId).toBeNull();
   });
 
-  it('sorts checkpoints by checkpoint turn count', () => {
+  it('sorts checkpoints by turn index', () => {
     store.setCheckpoints([
-      checkpoint({ id: 'c3', checkpointTurnCount: 3 }),
-      checkpoint({ id: 'c1', checkpointTurnCount: 1 }),
-      checkpoint({ id: 'c2', checkpointTurnCount: 2 }),
+      checkpoint({ id: 'c3', turnIndex: 3 }),
+      checkpoint({ id: 'c1', turnIndex: 1 }),
+      checkpoint({ id: 'c2', turnIndex: 2 }),
     ]);
 
     expect(store.checkpoints.map((c) => c.id)).toEqual(['c1', 'c2', 'c3']);
@@ -72,7 +72,7 @@ describe('createDiffPanelState', () => {
 
   it('clears unavailable state once checkpoints are available again', () => {
     store.markCheckpointsUnavailable('not-a-git-repo');
-    store.setCheckpoints([checkpoint({ checkpointTurnCount: 0 })]);
+    store.setCheckpoints([checkpoint({ turnIndex: 0 })]);
 
     expect(store.checkpointsUnavailable).toBe(false);
     expect(store.checkpointsUnavailableReason).toBeNull();
@@ -87,7 +87,7 @@ describe('createDiffPanelState', () => {
   });
 
   it('records checkpoint unavailability and clears stale checkpoints', () => {
-    store.setCheckpoints([checkpoint({ checkpointTurnCount: 0 })]);
+    store.setCheckpoints([checkpoint({ turnIndex: 0 })]);
     store.markCheckpointsUnavailable('not-a-git-repo');
 
     expect(store.checkpoints).toEqual([]);
@@ -98,8 +98,8 @@ describe('createDiffPanelState', () => {
   it('resets all drawer state on thread switch', () => {
     store.open_();
     store.setViewMode('split');
-    store.selectCheckpointTurnCount(4);
-    store.setCheckpoints([checkpoint({ checkpointTurnCount: 4 })]);
+    store.selectCheckpointUserItem('user:4');
+    store.setCheckpoints([checkpoint({ turnIndex: 4 })]);
     store.setError('boom');
     store.markCheckpointsUnavailable('temporary');
 
@@ -107,7 +107,7 @@ describe('createDiffPanelState', () => {
 
     expect(store.open).toBe(false);
     expect(store.viewMode).toBe('stacked');
-    expect(store.selectedCheckpointTurnCount).toBeNull();
+    expect(store.selectedCheckpointUserItemId).toBeNull();
     expect(store.checkpoints).toEqual([]);
     expect(store.checkpointsLoaded).toBe(false);
     expect(store.checkpointsUnavailable).toBe(false);

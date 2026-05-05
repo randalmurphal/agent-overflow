@@ -25,8 +25,8 @@ none fits.
 - `user_inputs.go` — structured user-input request lifecycle and
   provider:user_input frontend event fan-out.
 - `turn_lifecycle.go` — per-turn and per-thread correlation state
-  (open turns, interrupt queue, captured-turn guard, stopped-thread
-  markers, turn span bookkeeping, cleanup paths).
+  (open turns, interrupt queue, stopped-thread markers, turn span
+  bookkeeping, cleanup paths).
 - `tool_lifecycle.go` — tool-call launch/completion rows,
   background-task pairing (Claude), summary/status derivation.
 - `codex_background.go` — Codex-specific background projection.
@@ -50,11 +50,10 @@ none fits.
 - `tool_paths.go` — per-turn agent-touched-path tracking. Extracts paths
   from Claude `Edit`/`Write`/`MultiEdit`/`NotebookEdit` tool args and
   Codex `fileChange` items, normalises to workspace-relative form, and
-  feeds the pendingToolPaths/committedToolPaths Router maps that the
-  checkpoint capture serialises onto the turn's checkpoint row. Drives
-  the path-scoped revert in `RevertToCheckpoint` and the agent-only
-  filters in the diff panel. Bash side effects are intentionally
-  untracked.
+  persists them to `thread_tracked_files`. Message checkpoints are
+  captured before user sends in `app_checkpoint.go`; the tracked-path
+  table scopes conversation-and-files revert and agent-only diff
+  previews. Bash side effects are intentionally untracked.
 - `tool_result_diff_upgrade.go` — late-arriving diff upgrades that
   attach a richer payload onto a previously persisted tool result.
 - `command_inline_diff_capture.go` / `command_inline_diff_parser.go` /
@@ -166,7 +165,7 @@ Two cadences run in parallel:
 | Cadence | Driver | Granularity | Owner |
 |---|---|---|---|
 | Frontend visibility | `currentRoundID` / `setOpenRound` / `takeOpenRound` | Per wire round | `provider:turn_started`/`provider:turn_completed` emissions |
-| Persistence | `claimTurnSettlement` / `settleTurnRow` | Per logical turn (turnIndex) | `turns` row UPDATE, checkpoint capture, streaming-item settlement |
+| Persistence | `claimTurnSettlement` / `settleTurnRow` | Per logical turn (turnIndex) | `turns` row UPDATE, streaming-item settlement |
 
 Round entry points:
 
@@ -247,8 +246,8 @@ granularity) so multi-round logical turns share a single row.
 The Router carries a narrow set of per-thread maps (interrupt queue,
 open turn index, content-block counters, active streaming block flags,
 pending approvals / approval decisions, pending command inline diffs,
-captured-turn guard, turn spans, stopped-thread markers, streaming
-render throttle) that exist purely to correlate one event to the next
+turn spans, stopped-thread markers, streaming render throttle) that
+exist purely to correlate one event to the next
 within a turn — not to duplicate the store or the provider session.
 All of these are bounded and have an explicit cleanup path.
 
@@ -257,8 +256,8 @@ separate**:
 
 - **Per-turn flow-control state** — `openTurns`, `interruptQueue`,
   `streamingItemCounts`, `activeTextBlocks`, `activeThinkingBlocks`,
-  `pendingCommandDiffs`, `pendingToolPaths`, `pendingApprovals`,
-  `pendingApprovalItems`, `pendingUserInputs`. Cleared at turn end via
+  `pendingCommandDiffs`, `pendingApprovals`, `pendingApprovalItems`,
+  `pendingUserInputs`. Cleared at turn end via
   `clearOpenTurn` (which fires from `handleTurnComplete`). These maps
   answer "is this turn live right now / what's queued behind a
   streaming row / what's mid-resolution."
@@ -278,16 +277,12 @@ separate**:
   events to the same turn so the surviving counter advances correctly
   and the next id never collides with rows already persisted under
   this turn. See `multi_result_test.go` for the regression coverage.
-- **User-send-time carry-over state** — `committedToolPaths`,
-  `settledTurns`, `capturedTurns`. Survive turn boundaries by design.
-  `committedToolPaths` is drained at the NEXT user-send (when
-  `capturePriorTurnCheckpoint` builds the prior turn's checkpoint —
-  matching Claude Code's `fileHistoryMakeSnapshot` pattern; see
-  QueryEngine.ts:641-655). `settledTurns` is reset by `setOpenTurn`
-  (so a re-init can re-settle the same turn) and swept by
-  `CleanupThread`. `capturedTurns` is reset on its own boundary by
-  `unmarkTurnCaptured`. All three are also fully swept by
-  `CleanupThread` as the session-end safety net.
+- **Logical-turn settlement state** — `settledTurns`. Survives wire
+  round boundaries by design. It is reset by `setOpenTurn` (so a
+  re-init can re-settle the same logical turn) and swept by
+  `CleanupThread`. Tool paths are staged in `pendingToolPaths` between
+  mutating tool start and successful completion, then written durably to
+  `thread_tracked_files`.
 
 When adding a new map, ask **two** questions:
 
@@ -295,15 +290,13 @@ When adding a new map, ask **two** questions:
    yes, it's an id-allocating counter — clean it in `CleanupThread` (and
    selectively in `setOpenTurn` for re-init), never in `clearOpenTurn`.
 2. Does its data need to survive the wire-level turn boundary because
-   it represents work spanning into the next user-send? If yes, it's
-   user-send-time carry-over — drain at next-turn-start, sweep at
-   `CleanupThread`. Otherwise, it's per-turn flow-control — clean it
-   in `clearOpenTurn`.
+   it represents durable user-visible state? If yes, persist it in the
+   store at the point it becomes known. Otherwise, it's per-turn
+   flow-control — clean it in `clearOpenTurn`.
 
 `handleTurnComplete` is **idempotent** at logical-turn granularity
 via `claimTurnSettlement`. The first complete drains streaming items,
-captures the per-turn checkpoint at the next user-send, and
-UPDATE-s the `turns` row. A second wire complete on the
+and UPDATE-s the `turns` row. A second wire complete on the
 already-settled logical turn folds late token usage onto the existing
 row and otherwise no-ops. Turn token/cost accounting is captured on
 the first completion, while context-window meter updates arrive

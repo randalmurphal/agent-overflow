@@ -69,7 +69,7 @@
 </div>
 
 <div class="flex items-center gap-1 border-t border-border-subtle px-3 py-2" role="tablist" aria-label="Diff scope">
-  {@render TabButton('per-turn', 'Per-turn', 'diff-tab-per-turn')}
+  {@render TabButton('messages', 'Messages', 'diff-tab-messages')}
   {@render TabButton('session', 'Session', 'diff-tab-session')}
   {@render TabButton('workspace', 'Workspace', 'diff-tab-workspace')}
 </div>

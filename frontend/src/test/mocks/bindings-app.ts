@@ -268,8 +268,12 @@ export const UpdateKeybindings = dispatch('UpdateKeybindings');
 export const ResetKeybindings = dispatch('ResetKeybindings');
 
 // Checkpoints
-export const GetCheckpointRangeDiff = dispatch('GetCheckpointRangeDiff');
-export const RevertToCheckpoint = dispatch('RevertToCheckpoint');
+export const GetMessageCheckpointDiff = dispatch('GetMessageCheckpointDiff');
+export const GetMessageCheckpointRevertDiff = dispatch('GetMessageCheckpointRevertDiff');
+export const GetSessionAgentDiff = dispatch('GetSessionAgentDiff');
+export const GetWorkspaceCurrentDiff = dispatch('GetWorkspaceCurrentDiff');
+export const RevertToMessageCheckpoint = dispatch('RevertToMessageCheckpoint');
+export const ForkThreadFromMessage = dispatch('ForkThreadFromMessage');
 export const ListThreadCheckpoints = dispatch('ListThreadCheckpoints');
 
 // Thread runtime mode

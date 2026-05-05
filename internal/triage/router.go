@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"agent-overflow/internal/diffsummary"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
@@ -32,16 +31,6 @@ import (
 // decision.
 var ErrUnhandledEventKind = errors.New("triage: unhandled event kind")
 
-// CheckpointCapture is the subset of checkpoint.Store that the router calls
-// at turn-start. Kept as an interface so tests can inject a stub.
-type CheckpointCapture interface {
-	IsGitRepository(ctx context.Context, workspace string) bool
-	CaptureBaseline(ctx context.Context, workspace, threadID string, turnCount int) (string, error)
-	DiffRefToRef(ctx context.Context, workspace, fromRef, toRef string) ([]byte, error)
-	DiffRefToRefSummary(ctx context.Context, workspace, fromRef, toRef string) ([]diffsummary.File, error)
-	DeleteRef(ctx context.Context, workspace, ref string) error
-}
-
 // TurnMetrics is the subset of OTel counters the router records. Kept as a
 // struct of interfaces so the router never has to nil-check each instrument
 // (we fill in noop instances when telemetry is disabled).
@@ -57,7 +46,6 @@ type TurnMetrics struct {
 type Router struct {
 	store                  *store.Store
 	emit                   func(eventName string, data any) // wraps app.Event.Emit
-	checkpoints            CheckpointCapture                // nil-safe; no-op when nil
 	tracer                 trace.Tracer
 	metrics                TurnMetrics
 	mu                     sync.Mutex
@@ -79,13 +67,9 @@ type Router struct {
 	// provider:item_event deltas, then flush to SQLite by interval, byte
 	// threshold, or lifecycle boundary.
 	streamPersistBuffers map[string]*streamPersistBuffer
-	// capturedTurns guards against double-capture when a provider emits
-	// multiple EventTurnStart events for the same (thread, turn) — which
-	// happens when Claude re-sends a system.init after an interrupt.
-	capturedTurns map[string]bool // key = threadID|turnIndex
 	// settledTurns marks turns whose handleTurnComplete has already run
-	// to completion (turns row UPDATE-d, checkpoint captured, streaming
-	// items settled). A second EventTurnComplete for a settled turn is
+	// to completion (turns row UPDATE-d, streaming items settled). A
+	// second EventTurnComplete for a settled turn is
 	// the multi-result-per-turn wire pattern (Claude CLI synthesizes a
 	// `type:"user"` envelope from a task_notification → second `result`
 	// envelope) or the synthetic-truncate-then-real race; in either
@@ -161,18 +145,12 @@ type Router struct {
 	// when persisting a running row; cleared after the flip completes
 	// or when the turn closes via clearOpenTurn / CleanupThread.
 	openAPIRetryRows map[string]bool
-	// pendingToolPaths stages the workspace paths a tool will write
-	// between EventToolStart and EventToolComplete. Keyed by
-	// `<threadID>|<itemID>`. On a successful complete we move the
-	// staged paths into committedToolPaths; on failure we drop them so
-	// rejected tools don't poison the per-turn revert set.
+	// pendingToolPaths stages workspace paths from mutating tool starts until
+	// the matching successful completion arrives. Keyed by
+	// `<threadID>|<itemID>`. Failed/denied tools drop their staged paths so a
+	// later conversation+files revert does not restore files the agent never
+	// successfully changed.
 	pendingToolPaths map[string][]string
-	// committedToolPaths accumulates workspace paths the agent
-	// successfully wrote during a turn. Keyed by
-	// `<threadID>|<turnIndex>`. Drained by captureCompletedTurnCheckpoint
-	// when the per-turn checkpoint persists, then cleared in
-	// clearOpenTurn / CleanupThread.
-	committedToolPaths map[string][]string
 	// eventHook is a test-only seam: when set, the Router invokes it for
 	// every Handle call AFTER the routing switch runs. Production code
 	// never sets a hook (the call site in Handle is nil-checked so the
@@ -250,7 +228,6 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		errorSeqByScope:            make(map[string]int),
 		notificationSeqByScope:     make(map[string]int),
 		streamPersistBuffers:       make(map[string]*streamPersistBuffer),
-		capturedTurns:              make(map[string]bool),
 		settledTurns:               make(map[string]bool),
 		currentRoundID:             make(map[string]string),
 		turnSpans:                  make(map[string]trace.Span),
@@ -258,22 +235,12 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		unknownSessionStatusLogged: make(map[string]struct{}),
 		codexBackground:            make(map[string]*codexBackgroundState),
 		terminalInteractionSeq:     make(map[string]int),
-		pendingToolPaths:           make(map[string][]string),
-		committedToolPaths:         make(map[string][]string),
 		openAPIRetryRows:           make(map[string]bool),
+		pendingToolPaths:           make(map[string][]string),
 		pendingByThread:            make(map[string][]pendingSend),
 		wireOnlyUserTextSeen:       make(map[string]map[string]struct{}),
 		queuedFlushItems:           make(map[string][]QueuedFlushItem),
 	}
-}
-
-// SetCheckpointStore wires an external checkpoint store into the router.
-// Must be called before Handle is invoked for the first time. Nil is a
-// valid argument — it disables checkpointing without breaking triage.
-func (r *Router) SetCheckpointStore(c CheckpointCapture) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.checkpoints = c
 }
 
 // SetTelemetry wires tracer + metric instruments. Safe to call with nil
@@ -537,7 +504,6 @@ func (r *Router) maybeFireFlushTrigger(evt provider.ProviderEvent) {
 
 func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 	if handled, err := r.observeCodexUnifiedExecComplete(evt); handled || err != nil {
-		r.settleToolPaths(evt)
 		return err
 	}
 	// Same ordering rationale as handleToolStart: keep the lifecycle row
@@ -565,109 +531,64 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 	return r.emitInline(evt)
 }
 
-// stageToolPaths records the paths a tool is about to write in
-// pendingToolPaths. Out-of-scope tools (Bash, Read, anything else without
-// a recognized file_path / changes payload) are no-ops.
+// stageToolPaths records candidate paths from a mutating tool start. The paths
+// are only made durable after the matching successful completion, which avoids
+// restoring denied/failed edits on a later conversation+files revert.
 func (r *Router) stageToolPaths(evt provider.ProviderEvent) {
-	paths := extractToolPaths(evt)
-	if len(paths) == 0 {
+	raw := extractToolPaths(evt)
+	if len(raw) == 0 || evt.ItemID == "" {
 		return
 	}
-	if evt.ItemID == "" {
-		return
-	}
-	key := evt.ThreadID + "|" + evt.ItemID
 	r.mu.Lock()
-	r.pendingToolPaths[key] = paths
+	r.pendingToolPaths[evt.ThreadID+"|"+evt.ItemID] = raw
 	r.mu.Unlock()
 }
 
-// settleToolPaths transfers staged paths into the per-turn committed
-// set on a successful completion, or drops them on a failed/cancelled
-// completion. Failed tools didn't write the file (or the write was
-// aborted), so reverting their paths later would silently overwrite
-// unrelated user edits.
-//
-// Provider parsers don't populate `evt.TurnIndex` (only `TurnID`), so
-// the turn key normally comes from the router-tracked open-turn map.
-// When no open turn is tracked (clearOpenTurn already fired for the
-// prior turn but the wire kept emitting events — the multi-result-per-
-// turn case where Claude's CLI synthesizes a `type:"user"` envelope
-// from a task_notification), fall back to LastTurnIndex so second-half
-// tool completes still accumulate paths for the same turn. The next
-// user-send drains the cumulative paths into the prior turn's
-// checkpoint via capturePriorTurnCheckpoint.
-//
-// The lock is released for the LastTurnIndex SQL call (matching the
-// `currentTurnIndex` convention at turn_lifecycle.go:710 — never hold
-// r.mu through a store call, since r.mu serializes ALL Handle dispatch
-// across threads). After re-acquiring, we re-check stoppedThreads so a
-// concurrent CleanupThread between the unlock and relock cannot leave
-// stale path entries on a torn-down thread.
 func (r *Router) settleToolPaths(evt provider.ProviderEvent) {
 	if evt.ItemID == "" {
 		return
 	}
 	key := evt.ThreadID + "|" + evt.ItemID
 	r.mu.Lock()
-	staged, ok := r.pendingToolPaths[key]
+	raw := r.pendingToolPaths[key]
 	delete(r.pendingToolPaths, key)
-	if !ok || len(staged) == 0 {
-		r.mu.Unlock()
-		return
-	}
-	if !toolCallSucceeded(evt) {
-		r.mu.Unlock()
-		return
-	}
-	turnIndex, hasTurn := r.openTurns[evt.ThreadID]
 	r.mu.Unlock()
-	if !hasTurn {
-		// Post-clearOpenTurn fallback: attribute the paths to whichever
-		// turn the items table is already pinned to. Done outside the
-		// lock — r.mu serializes Handle dispatch and we don't want to
-		// block other threads' events on a SQL roundtrip.
-		idx, err := r.store.LastTurnIndex(evt.ThreadID)
-		if err != nil {
-			// Lookup error — drop the paths rather than attribute them
-			// to the wrong turn. Better to lose a single tool's revert
-			// granularity than to corrupt the per-turn revert set.
-			return
-		}
-		turnIndex = idx
-	}
-	turnKey := fmt.Sprintf("%s|%d", evt.ThreadID, turnIndex)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	// Re-check stoppedThreads after re-acquiring: a concurrent
-	// CleanupThread between the previous unlock and now will have
-	// stamped this thread, swept committedToolPaths, and the write
-	// below would re-introduce a stale entry that no future
-	// CleanupThread is going to clean (CleanupThread is idempotent but
-	// only fires once per session).
-	if _, stopped := r.stoppedThreads[evt.ThreadID]; stopped {
+	if len(raw) == 0 || !toolCallSucceeded(evt) {
 		return
 	}
-	r.committedToolPaths[turnKey] = append(r.committedToolPaths[turnKey], staged...)
-}
-
-// drainCommittedToolPaths returns and removes the committed-paths slice
-// for (threadID, turnIndex). Called by captureCompletedTurnCheckpoint at
-// the moment the checkpoint row is being built, so the per-turn
-// accumulator always drains in lockstep with the checkpoint write.
-//
-// pendingToolPaths cleanup is intentionally not done here — clearOpenTurn
-// owns it (called from handleTurnComplete after the capture). That keeps
-// the staging/committed cleanup symmetric across the early-return paths
-// in captureCompletedTurnCheckpoint (no checkpoint store, non-git
-// workspace, capture failure) where this drain never fires.
-func (r *Router) drainCommittedToolPaths(threadID string, turnIndex int) []string {
-	turnKey := fmt.Sprintf("%s|%d", threadID, turnIndex)
-	r.mu.Lock()
-	paths := r.committedToolPaths[turnKey]
-	delete(r.committedToolPaths, turnKey)
-	r.mu.Unlock()
-	return paths
+	thread, err := r.store.GetThread(evt.ThreadID)
+	if err != nil {
+		log.Printf("triage: track tool paths load thread %s: %v", evt.ThreadID, err)
+		turnIndex, _ := r.currentTurnIndex(evt.ThreadID)
+		r.emit("checkpoint:error", map[string]any{
+			"threadId":  evt.ThreadID,
+			"turnIndex": turnIndex,
+			"error":     err.Error(),
+		})
+		return
+	}
+	paths := normalizeWorkspaceRelativePaths(raw, thread.WorkspacePath)
+	if len(paths) == 0 {
+		return
+	}
+	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
+	if err != nil {
+		log.Printf("triage: track tool paths current turn thread=%s item=%s: %v", evt.ThreadID, evt.ItemID, err)
+		r.emit("checkpoint:error", map[string]any{
+			"threadId":  evt.ThreadID,
+			"turnIndex": 0,
+			"error":     err.Error(),
+		})
+		return
+	}
+	if err := r.store.UpsertTrackedFiles(evt.ThreadID, turnIndex, paths); err != nil {
+		log.Printf("triage: track tool paths thread=%s item=%s: %v", evt.ThreadID, evt.ItemID, err)
+		r.emit("checkpoint:error", map[string]any{
+			"threadId":  evt.ThreadID,
+			"turnIndex": turnIndex,
+			"error":     err.Error(),
+		})
+	}
 }
 
 // handleInit reacts to a wire `system/init` envelope (Claude only — Codex

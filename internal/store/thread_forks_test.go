@@ -37,7 +37,7 @@ func TestCloneThreadItemsRespectsThroughTurnIndex(t *testing.T) {
 
 	// Slice through turn 1 — should get items from turns 0 and 1 only (4 rows).
 	throughOne := 1
-	if err := s.CloneThreadItems("t-slice-src", "t-slice-dst", &throughOne); err != nil {
+	if _, err := s.CloneThreadItems("t-slice-src", "t-slice-dst", &throughOne); err != nil {
 		t.Fatalf("CloneThreadItems sliced: %v", err)
 	}
 	dst, err := s.ListItems("t-slice-dst")
@@ -54,7 +54,7 @@ func TestCloneThreadItemsRespectsThroughTurnIndex(t *testing.T) {
 	}
 
 	// nil throughTurnIndex clones every turn (full clone fallback).
-	if err := s.CloneThreadItems("t-slice-src", "t-slice-dst-full", nil); err != nil {
+	if _, err := s.CloneThreadItems("t-slice-src", "t-slice-dst-full", nil); err != nil {
 		t.Fatalf("CloneThreadItems full: %v", err)
 	}
 	dstFull, err := s.ListItems("t-slice-dst-full")
@@ -101,7 +101,7 @@ func TestCloneThreadItemsExcludesRunningBackgroundRows(t *testing.T) {
 		}
 	}
 
-	if err := s.CloneThreadItems("t-fork-src", "t-fork-dst", nil); err != nil {
+	if _, err := s.CloneThreadItems("t-fork-src", "t-fork-dst", nil); err != nil {
 		t.Fatalf("CloneThreadItems: %v", err)
 	}
 
@@ -178,7 +178,7 @@ func TestCloneThreadItemsNoBackgroundRowsCopiesEverything(t *testing.T) {
 		}
 	}
 
-	if err := s.CloneThreadItems("t-fork-nobg-src", "t-fork-nobg-dst", nil); err != nil {
+	if _, err := s.CloneThreadItems("t-fork-nobg-src", "t-fork-nobg-dst", nil); err != nil {
 		t.Fatalf("CloneThreadItems: %v", err)
 	}
 
@@ -203,6 +203,21 @@ func TestCloneThreadItemsNoBackgroundRowsCopiesEverything(t *testing.T) {
 			continue
 		}
 		delete(want, key)
+	}
+	var clonedToolID, clonedSiblingCompletionOf string
+	for _, it := range dst {
+		if it.ID == "tool-done" || it.ID == "sibling" {
+			t.Errorf("clone leaked source item id %q", it.ID)
+		}
+		if it.Kind == "tool_call" && it.Summary == "Read: bar.ts" {
+			clonedToolID = it.ID
+		}
+		if it.Kind == "tool_completion" {
+			clonedSiblingCompletionOf = it.CompletionOf
+		}
+	}
+	if clonedToolID == "" || clonedSiblingCompletionOf != clonedToolID {
+		t.Errorf("completion_of not rewritten: sibling=%q cloned tool=%q", clonedSiblingCompletionOf, clonedToolID)
 	}
 	for key := range want {
 		t.Errorf("seeded row %q missing from clone (fork filter may be over-eager)", key)

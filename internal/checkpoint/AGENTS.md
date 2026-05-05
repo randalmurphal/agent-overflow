@@ -1,18 +1,20 @@
 # internal/checkpoint/
 
-Captures hidden git-ref snapshots of a workspace at turn boundaries so
-the UI can diff against prior turns and roll back. Mirrors forge's
-mechanism; refs live under `refs/agent-overflow/checkpoints/`.
+Captures hidden git-ref snapshots of a workspace before user messages so
+the UI can diff and roll back to message boundaries. Refs live under
+`refs/agent-overflow/checkpoints/`.
 
 ## Layout
 
 - `ref.go` — pure helpers for the ref namespace: `EncodeThreadID`,
-  `RefForThreadTurn`, `ThreadRefPattern`, `ThreadRefPrefix`,
-  `IsThreadRef`. Thread IDs are base64url-encoded so every character
-  is path-safe.
-- `store.go` — `Store` with `CaptureBaseline` / `CaptureRef` /
-  restore / diff helpers. Shells out to `git` via a temp
-  `GIT_INDEX_FILE` so the user's index is never touched.
+  `ThreadRefPattern`, `ThreadRefPrefix`, `IsThreadRef`. Thread IDs are
+  base64url-encoded so every character is path-safe.
+- `store.go` — `Store` with `CaptureRef`, ref copy, restore, and diff
+  helpers. Shells out to `git` via a temp
+  `GIT_INDEX_FILE` so the user's index is never touched. Capture builds
+  the temp index with plumbing (`hash-object --no-filters` +
+  `update-index`) rather than `git add`, because automatic checkpoints
+  must not execute repo-defined clean filters.
 
 ## Responsibility boundary
 
@@ -22,17 +24,17 @@ mechanism; refs live under `refs/agent-overflow/checkpoints/`.
     user-visible index, branches, or worktree.
   - Diff/restore against a previously captured ref.
 - What does NOT belong here:
-  - Checkpoint row bookkeeping (thread id, turn index, ref name) —
+  - Checkpoint row bookkeeping (thread id, user item id, turn index, ref name) —
     `internal/store/checkpoints.go` owns the table.
-  - Decisions about *when* to capture — `app.go` calls in on
-    turn boundaries.
+  - Decisions about *when* to capture — `app_send.go` captures through
+    `app_checkpoint.go` immediately before provider send.
 
 ## Extension points
 
 - To add a new ref category (e.g. per-file snapshots): introduce a new
-  `RefsPrefix` and build helpers alongside the existing `turn/N`
-  naming. Keep categories under `refs/agent-overflow/` so they stay
-  hidden from `git log` / `git branch`.
+  ref suffix under the existing thread prefix. Keep categories under
+  `refs/agent-overflow/` so they stay hidden from `git log` /
+  `git branch`.
 - To change capture scope: modify `captureToRef` in `store.go`; every
   callsite passes through this so a single change sweeps the package.
 

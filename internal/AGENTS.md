@@ -11,7 +11,7 @@ one closest to what you're touching.
 | `provider/` | Provider process lifecycle and stdio protocols. Has its own subarea guide. |
 | `triage/` | Event classification. Decides what goes to the frontend vs SQLite. |
 | `store/` | SQLite access, migrations, schema. |
-| `checkpoint/` | Per-turn git-ref snapshots, turn diffs, fork/restore modes. |
+| `checkpoint/` | Message-keyed git-ref snapshots, diffs, and restore helpers. |
 | `git/` | Git and `gh` operations (branches, worktrees, commit, push, PR). |
 | `gitwatch/` | Live git status streams per workspace (recursive fs watch + polling fallback). |
 | `terminal/` | PTY session manager with ring-buffer replay. |

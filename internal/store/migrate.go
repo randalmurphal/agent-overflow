@@ -859,7 +859,7 @@ CREATE INDEX IF NOT EXISTS idx_thread_drafts_pending_plan_impl
 		Name:    "thread_checkpoints_tool_paths",
 		// tool_paths records the workspace-relative paths that the agent's
 		// file-mutating tools wrote during the turn this checkpoint closes.
-		// Used by RevertToCheckpoint's "conversation-and-files" mode to
+		// Used by checkpoint "conversation-and-files" revert to
 		// restore only paths the agent touched, leaving manual edits to
 		// unrelated files alone. Pre-migration rows default to '[]'
 		// (empty); reverting against such a row is a no-op on the
@@ -1107,6 +1107,54 @@ ALTER TABLE thread_checkpoints_v39 RENAME TO thread_checkpoints;
 
 CREATE UNIQUE INDEX idx_thread_checkpoints_thread_count_unique
     ON thread_checkpoints(thread_id, checkpoint_turn_count);
+`,
+	},
+	{
+		Version: 40,
+		Name:    "message_keyed_checkpoints",
+		// Rebuild checkpointing around real user messages instead of turn
+		// counts. Old rows are intentionally not migrated: their semantics
+		// were post-turn snapshots, while the new invariant is "snapshot
+		// immediately before this user message." Keeping old rows would make
+		// revert targets lie.
+		SQL: `
+DROP INDEX IF EXISTS idx_thread_checkpoints_thread_count_unique;
+DROP INDEX IF EXISTS idx_thread_checkpoints_thread_turn;
+DROP INDEX IF EXISTS idx_thread_checkpoints_user_item;
+DROP TABLE IF EXISTS thread_checkpoints;
+
+CREATE TABLE thread_checkpoints (
+    id                       TEXT    PRIMARY KEY,
+    thread_id                TEXT    NOT NULL,
+    user_item_id             TEXT    NOT NULL,
+    turn_index               INTEGER NOT NULL,
+    provider_user_message_id TEXT    NOT NULL DEFAULT '',
+    provider_parent_uuid     TEXT    NOT NULL DEFAULT '',
+    ref_name                 TEXT    NOT NULL,
+    baseline_sha             TEXT    NOT NULL DEFAULT '',
+    status                   TEXT    NOT NULL DEFAULT 'ready',
+    files                    TEXT    NOT NULL DEFAULT '[]',
+    captured_at              INTEGER NOT NULL,
+    workspace_path           TEXT    NOT NULL,
+    FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE,
+    FOREIGN KEY (thread_id, user_item_id) REFERENCES items(thread_id, id) ON DELETE CASCADE,
+    UNIQUE(thread_id, user_item_id)
+);
+CREATE INDEX idx_thread_checkpoints_thread_turn
+    ON thread_checkpoints(thread_id, turn_index);
+CREATE INDEX idx_thread_checkpoints_provider_user
+    ON thread_checkpoints(thread_id, provider_user_message_id)
+    WHERE provider_user_message_id <> '';
+
+CREATE TABLE IF NOT EXISTS thread_tracked_files (
+    thread_id  TEXT    NOT NULL,
+    turn_index INTEGER NOT NULL,
+    path       TEXT    NOT NULL,
+    PRIMARY KEY (thread_id, turn_index, path),
+    FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_thread_tracked_files_thread_turn
+    ON thread_tracked_files(thread_id, turn_index);
 `,
 	},
 }

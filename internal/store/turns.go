@@ -192,11 +192,9 @@ func (s *Store) GetTurn(turnID string) (Turn, bool, error) {
 }
 
 // GetTurnByThreadIndex returns a single turn by (thread, turn_index).
-// Used by triage at the next-turn-start checkpoint re-capture path,
-// where the prior turn's row needs to be reconstructed into a
-// TurnCompletedEvent so cumulative-state checkpoints can be issued for
-// the multi-result-per-turn case (two `result` envelopes for one
-// logical turn). Returns (Turn{}, false, nil) when no row exists.
+// Used by turn-lifecycle reconciliation paths that know the logical turn
+// index but not the provider-assigned turn id. Returns (Turn{}, false, nil)
+// when no row exists.
 func (s *Store) GetTurnByThreadIndex(threadID string, turnIndex int) (Turn, bool, error) {
 	row := s.db.QueryRow(
 		`SELECT `+turnColumns+` FROM turns WHERE thread_id = ? AND turn_index = ?`,

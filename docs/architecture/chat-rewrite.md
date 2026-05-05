@@ -1301,7 +1301,7 @@ additionally:
 | `EventProposedPlan`         | upsert a `tool_call` with tool_name="plan"; payload carries the plan markdown                        |
 | `EventError`                | upsert `error` item; id = uuid; summary = error message. ALSO: flip any `streaming`/`running` items in this turn to `errored` (live-crash flip) |
 | `EventCompactBoundary`      | upsert `compaction` item; id = uuid; summary = compaction note. ALSO: emit included context snapshot if present, otherwise emit `provider:usage` reset |
-| `EventTurnStart`            | from provider wire turn-start signal (Claude `system/init` matched to a pending send, Codex `turn/started`); reset `segmentIndexByScope[threadID][turn_index][""]` and `blockIndexByScope[threadID][turn_index][""]`; open turn span; capture checkpoint; mark turn open; no item |
+| `EventTurnStart`            | from provider wire turn-start signal (Claude `system/init` matched to a pending send, Codex `turn/started`); reset `segmentIndexByScope[threadID][turn_index][""]` and `blockIndexByScope[threadID][turn_index][""]`; open turn span; mark turn open; no item |
 | `EventTurnComplete`         | from wire signal or typed synthesis (see Turn lifecycle synthesis); flip `streaming` items in this turn to `completed`; drain `interruptQueue`; close turn span; clear open-turn marker; if `TurnComplete` is `provider.TruncatedTurnCompleteMeta`, flip streaming to `errored` and drain queue as `errored` |
 | `EventApprovalRequest`      | emit `provider:approval` `{action:request, request}`                                                  |
 | `EventApprovalResolved`     | emit `provider:approval` `{action:resolve, requestId, decision}`; upsert the underlying tool_call with `decision` set |

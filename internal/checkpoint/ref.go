@@ -1,7 +1,7 @@
-// Package checkpoint captures hidden Git-ref snapshots of a workspace at turn
-// boundaries so the UI can diff against prior turns and roll back.
+// Package checkpoint captures hidden Git-ref snapshots of a workspace before
+// user messages so the UI can diff and roll back to message boundaries.
 //
-// Refs live under refs/agent-overflow/checkpoints/<b64url(threadID)>/turn/<N>.
+// Refs live under refs/agent-overflow/checkpoints/<b64url(threadID)>/...
 // Thread IDs are base64url-encoded because UUIDs contain dashes that are legal
 // in ref path components, but general thread IDs could be surprising — the
 // encoding keeps every character path-safe (parity with forge's mechanism).
@@ -23,7 +23,10 @@ func EncodeThreadID(threadID string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(threadID))
 }
 
-// RefForThreadTurn builds the hidden ref name for (threadID, turnIndex).
+// RefForThreadTurn builds the historical hidden ref name for (threadID,
+// turnIndex). New message-keyed checkpoints use ThreadRefPrefix(threadID) plus
+// a message-scoped suffix; keep this helper for store-level tests and older
+// ref cleanup.
 func RefForThreadTurn(threadID string, turnIndex int) string {
 	return fmt.Sprintf("%s/%s/turn/%d", RefsPrefix, EncodeThreadID(threadID), turnIndex)
 }
@@ -32,6 +35,14 @@ func RefForThreadTurn(threadID string, turnIndex int) string {
 // checkpoint ref owned by the given thread.
 func ThreadRefPattern(threadID string) string {
 	return fmt.Sprintf("%s/%s/**", RefsPrefix, EncodeThreadID(threadID))
+}
+
+// LegacyTurnRefPattern matches the retired turn-index checkpoint refs. v40
+// rebuilt checkpoint metadata around message refs and drops the DB rows, so
+// startup cleanup uses this pattern to remove hidden snapshots that no longer
+// have an owning row.
+func LegacyTurnRefPattern(threadID string) string {
+	return fmt.Sprintf("%s/%s/turn/**", RefsPrefix, EncodeThreadID(threadID))
 }
 
 // ThreadRefPrefix returns the prefix that each of a thread's refs starts with;

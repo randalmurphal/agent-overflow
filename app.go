@@ -367,7 +367,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 		log.Printf("app: recovered %d orphaned background launches as session_died", recovered)
 	}
 	a.checkpoints = checkpoint.NewStore()
-	a.triage.SetCheckpointStore(a.checkpoints)
+	a.cleanupLegacyCheckpointRefs(st)
 	a.registry = discussion.NewRegistry(st)
 	a.channels = discussion.NewChannelService(st)
 	a.artifacts = design.NewArtifactStore(filepath.Join(dbDir, "design-artifacts"), st)

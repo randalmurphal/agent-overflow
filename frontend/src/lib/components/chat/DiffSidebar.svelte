@@ -17,7 +17,7 @@
   import { onDestroy, onMount, untrack } from 'svelte';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import type { DiffViewMode } from '../../stores/diffPanel.svelte';
-  import { parsePatchFiles, type PatchFile } from '../../utils/patchFiles';
+  import { parsePatchFiles, patchFileRowId, type PatchFile } from '../../utils/patchFiles';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
   import DiffSidebarBody from './DiffSidebarBody.svelte';
   import DiffSidebarHeader from './DiffSidebarHeader.svelte';
@@ -153,11 +153,14 @@
     untrack(() => {
       const next: string[] = [];
       const small = files.length <= 5;
-      for (const file of files) {
-        if (small) next.push(file.path);
-        else if (focus && file.path === focus) next.push(file.path);
+      for (let index = 0; index < files.length; index += 1) {
+        const file = files[index];
+        if (!file) continue;
+        const rowId = patchFileRowId(file, index);
+        if (small) next.push(rowId);
+        else if (focus && file.path === focus) next.push(rowId);
       }
-      if (next.length === 0 && files[0]) next.push(files[0].path);
+      if (next.length === 0 && files[0]) next.push(patchFileRowId(files[0], 0));
       expandedFiles = next;
       defaultsAppliedFor = id;
     });
@@ -194,16 +197,16 @@
     });
   });
 
-  function toggleFile(path: string): void {
+  function toggleFile(rowId: string): void {
     const next = expandedFiles.slice();
-    const idx = next.indexOf(path);
+    const idx = next.indexOf(rowId);
     if (idx >= 0) next.splice(idx, 1);
-    else next.push(path);
+    else next.push(rowId);
     expandedFiles = next;
   }
 
   function expandAllFiles(): void {
-    expandedFiles = parsedFiles.map((file) => file.path);
+    expandedFiles = parsedFiles.map((file, index) => patchFileRowId(file, index));
   }
 
   function collapseAllFiles(): void {

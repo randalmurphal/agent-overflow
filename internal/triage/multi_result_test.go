@@ -840,15 +840,11 @@ func TestCounterMapsBoundedByCleanupThread(t *testing.T) {
 	if got := len(router.terminalInteractionSeq); got != 0 {
 		t.Errorf("terminalInteractionSeq leaked %d entries past CleanupThread", got)
 	}
-	// User-send-time carry-over maps must also clean up at thread
-	// teardown — they survive turn boundaries by design but should not
-	// outlive the session.
-	if got := len(router.settledTurns); got != 0 {
-		t.Errorf("settledTurns leaked %d entries past CleanupThread", got)
-	}
-	if got := len(router.committedToolPaths); got != 0 {
-		t.Errorf("committedToolPaths leaked %d entries past CleanupThread", got)
-	}
+		// Logical-turn settlement state survives turn boundaries by design
+		// but should not outlive the session.
+		if got := len(router.settledTurns); got != 0 {
+			t.Errorf("settledTurns leaked %d entries past CleanupThread", got)
+		}
 	// Per-wire-round id slot — every wire complete clears its own
 	// thread's slot via takeOpenRound, but CleanupThread is the safety
 	// net for sessions that ended mid-round (no final wire complete).

@@ -5,8 +5,8 @@
 
   interface Props {
     visibleCheckpoints: Checkpoint[];
-    selectedTurnCount: number | null;
-    onSelectTurn: (turnCount: number | null) => void;
+    selectedUserItemId: string | null;
+    onSelectCheckpoint: (userItemId: string | null) => void;
     showRevert: boolean;
     reverting: boolean;
     onRevertClick: () => void;
@@ -14,8 +14,8 @@
 
   let {
     visibleCheckpoints,
-    selectedTurnCount,
-    onSelectTurn,
+    selectedUserItemId,
+    onSelectCheckpoint,
     showRevert,
     reverting,
     onRevertClick,
@@ -24,19 +24,19 @@
 
 <div class="flex gap-1 overflow-x-auto border-t border-border-subtle px-3 py-2">
   <button
-    class="shrink-0 rounded border px-2.5 py-1 text-[12px] {selectedTurnCount === null ? 'border-accent/60 bg-accent/15 text-accent' : 'border-border-subtle text-fg-muted hover:bg-surface-2'}"
-    onclick={() => onSelectTurn(null)}
-    data-testid="diff-all-turns"
+    class="shrink-0 rounded border px-2.5 py-1 text-[12px] {selectedUserItemId === null ? 'border-accent/60 bg-accent/15 text-accent' : 'border-border-subtle text-fg-muted hover:bg-surface-2'}"
+    onclick={() => onSelectCheckpoint(null)}
+    data-testid="diff-all-messages"
   >
-    All turns
+    All messages
   </button>
   {#each visibleCheckpoints as checkpoint (checkpoint.id)}
     <button
-      class="shrink-0 rounded border px-2.5 py-1 text-[12px] {selectedTurnCount === checkpoint.checkpointTurnCount ? 'border-accent/60 bg-accent/15 text-accent' : 'border-border-subtle text-fg-muted hover:bg-surface-2'}"
-      onclick={() => onSelectTurn(checkpoint.checkpointTurnCount)}
-      data-testid={`diff-turn-${checkpoint.checkpointTurnCount}`}
+      class="shrink-0 rounded border px-2.5 py-1 text-[12px] {selectedUserItemId === checkpoint.userItemId ? 'border-accent/60 bg-accent/15 text-accent' : 'border-border-subtle text-fg-muted hover:bg-surface-2'}"
+      onclick={() => onSelectCheckpoint(checkpoint.userItemId)}
+      data-testid={`diff-message-${checkpoint.turnIndex}`}
     >
-      {checkpoint.checkpointTurnCount === 0 ? 'Baseline' : `Turn ${checkpoint.checkpointTurnCount}`}
+      {`Message ${checkpoint.turnIndex + 1}`}
       {#if checkpoint.status && checkpoint.status !== 'ready'}
         <span class="ml-1 text-[10px] text-warning">{checkpoint.status}</span>
       {/if}
@@ -47,7 +47,7 @@
       class="ml-auto inline-flex shrink-0 items-center gap-1 rounded border border-error/40 px-2.5 py-1 text-[12px] text-error hover:bg-error/10"
       onclick={onRevertClick}
       disabled={reverting}
-      data-testid="diff-turn-revert"
+      data-testid="diff-message-revert"
     >
       <Icon icon={RotateCcw} size={13} />
       Revert

@@ -18,9 +18,22 @@
   import ExpandedImageDialog from './ExpandedImageDialog.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
-  import { MarkThreadRead } from '../../stores/bindings';
-  import { updateThreadReadState } from '../../stores/threads.svelte';
+  import {
+    ForkThreadFromMessage,
+    GetMessageCheckpointRevertDiff,
+    MarkThreadRead,
+    RevertToMessageCheckpoint,
+  } from '../../stores/bindings';
+  import { prependThread, updateThreadReadState } from '../../stores/threads.svelte';
+  import { expandProject } from '../../stores/sidebar.svelte';
+  import { addToast } from '../../stores/toast.svelte';
   import { getActiveTurn, getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
+  import type { Item, Thread } from '../../types/models';
+  import type { RevertMode } from '../../types/checkpoint';
+  import { parsePatchFiles, type PatchFile } from '../../utils/patchFiles';
+  import { userFacingError } from '../../utils/userFacingError';
+  import RevertDialog from './diff-panel/RevertDialog.svelte';
+  import type { UserMessageActions } from './userMessageActions';
   import {
     isUiRenderTraceEnabled,
     recordUiTrace,
@@ -49,6 +62,24 @@
   // refines this within one frame.
   let composerHeight = $state(120);
   let expandedImagePreview: ExpandedImagePreview | null = $state(null);
+  interface RevertMessageTarget {
+    thread: Thread;
+    itemId: string;
+    turnIndex: number;
+    provider: string;
+  }
+
+  let revertMessageTarget: RevertMessageTarget | null = $state(null);
+  let revertAffectedFiles = $state<PatchFile[]>([]);
+  let revertPreviewItemId: string | null = $state(null);
+  let revertingMessage = $state(false);
+  let forkingMessageItemId: string | null = $state(null);
+  const userMessageActions = $derived<UserMessageActions>({
+    onRevertMessage: openUserMessageRevert,
+    onForkMessage: forkFromUserMessage,
+    revertingItemId: revertPreviewItemId,
+    forkingItemId: forkingMessageItemId,
+  });
 
   // Compose-overlay ResizeObserver: publishes the composer's actual height
   // to the chat column as a CSS variable. MessageTimeline reads it as the
@@ -269,6 +300,81 @@
     expandedImagePreview = null;
   }
 
+  async function openUserMessageRevert(item: Item): Promise<void> {
+    const thread = pane.thread;
+    if (!thread || revertingMessage || revertPreviewItemId) return;
+    revertPreviewItemId = item.id;
+    try {
+      const patch = ((await GetMessageCheckpointRevertDiff(thread.id, item.id)) ?? '') as string;
+      if (pane.thread?.id !== thread.id) return;
+      revertAffectedFiles = parsePatchFiles(patch);
+      revertMessageTarget = {
+        thread,
+        itemId: item.id,
+        turnIndex: item.turnIndex,
+        provider: thread.provider,
+      };
+    } catch (err) {
+      addToast('error', `Failed to load revert preview: ${userFacingError(err)}`);
+      revertAffectedFiles = [];
+    } finally {
+      if (revertPreviewItemId === item.id) revertPreviewItemId = null;
+    }
+  }
+
+  async function revertToUserMessage(mode: RevertMode): Promise<void> {
+    const target = revertMessageTarget;
+    if (!target || revertingMessage) return;
+    if (pane.thread?.id !== target.thread.id) {
+      cancelUserMessageRevert();
+      return;
+    }
+    revertingMessage = true;
+    try {
+      await RevertToMessageCheckpoint(target.thread.id, target.itemId, mode);
+      revertMessageTarget = null;
+      revertAffectedFiles = [];
+      addToast('success', mode === 'conversation-only' ? 'Conversation reverted' : 'Conversation and files reverted');
+      await pane.switchThread(target.thread);
+    } catch (err) {
+      addToast('error', `Revert failed: ${userFacingError(err)}`);
+    } finally {
+      revertingMessage = false;
+    }
+  }
+
+  function cancelUserMessageRevert(): void {
+    if (revertingMessage) return;
+    revertMessageTarget = null;
+    revertAffectedFiles = [];
+  }
+
+  async function forkFromUserMessage(item: Item): Promise<void> {
+    const thread = pane.thread;
+    if (!thread || forkingMessageItemId) return;
+    forkingMessageItemId = item.id;
+    try {
+      const forked = (await ForkThreadFromMessage(thread.id, item.id)) as Thread;
+      if (pane.thread?.id !== thread.id) return;
+      prependThread(forked);
+      if (forked.projectId) expandProject(forked.projectId);
+      await pane.switchThread(forked);
+      addToast('info', 'Forked from this message into a new thread.');
+    } catch (err) {
+      addToast('error', `Fork failed: ${userFacingError(err)}`);
+    } finally {
+      if (forkingMessageItemId === item.id) forkingMessageItemId = null;
+    }
+  }
+
+  $effect(() => {
+    const currentThreadId = pane.thread?.id ?? null;
+    if (revertMessageTarget && currentThreadId !== revertMessageTarget.thread.id && !revertingMessage) {
+      revertMessageTarget = null;
+      revertAffectedFiles = [];
+    }
+  });
+
   onMount(() => {
     window.addEventListener('keydown', handleKeydown);
   });
@@ -310,7 +416,11 @@
         the last row clears the overlay.
       -->
       <div class="chat-surface-ground relative flex-1 min-h-0">
-        <MessageTimeline {pane} onImageExpand={openImagePreview} />
+        <MessageTimeline
+          {pane}
+          onImageExpand={openImagePreview}
+          {userMessageActions}
+        />
         {#if hasPendingPrompt}
           <div
             class="pointer-events-none absolute inset-0 z-10 bg-surface-0/40 backdrop-blur-[1px]"
@@ -354,6 +464,17 @@
     {/if}
     {#if expandedImagePreview}
       <ExpandedImageDialog preview={expandedImagePreview} onClose={closeImagePreview} />
+    {/if}
+    {#if revertMessageTarget}
+      <RevertDialog
+        open={revertMessageTarget !== null}
+        titleLabel={`message ${revertMessageTarget.turnIndex + 1}`}
+        provider={revertMessageTarget.provider.toLowerCase()}
+        affectedFiles={revertAffectedFiles}
+        reverting={revertingMessage}
+        onRevert={revertToUserMessage}
+        onCancel={cancelUserMessageRevert}
+      />
     {/if}
   </div>
 {:else}

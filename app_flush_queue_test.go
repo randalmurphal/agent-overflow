@@ -25,7 +25,7 @@ func TestDispatchFlush_Codex_PersistsUserItemAndDispatchesViaSteer(t *testing.T)
 
 	thread := testThread("flush-codex-ok")
 	thread.Provider = string(provider.Codex)
-	thread.WorkspacePath = t.TempDir()
+	thread.WorkspacePath = initCheckpointRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -73,6 +73,9 @@ func TestDispatchFlush_Codex_PersistsUserItemAndDispatchesViaSteer(t *testing.T)
 	}
 	if !app.triage.HasPendingSendForThread(thread.ID) {
 		t.Errorf("pending-send marker not registered after Codex Steer dispatch")
+	}
+	if _, ok, err := app.store.GetCheckpointByUserItemID(thread.ID, flushRow.ID); err != nil || !ok {
+		t.Fatalf("checkpoint for flushed user item missing: ok=%v err=%v", ok, err)
 	}
 }
 

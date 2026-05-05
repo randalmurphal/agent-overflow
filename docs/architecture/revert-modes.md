@@ -1,74 +1,85 @@
 # Revert Modes
 
-Every turn is bracketed by a git checkpoint. The frontend offers two
-ways to walk a thread back to one. Implementation lives in
-`internal/checkpoint/` and `app_checkpoint.go`.
+Every real user message gets a Git checkpoint captured immediately before the
+message is submitted to the provider. Reverting "to" a message means returning
+the conversation to the state before that message: the selected prompt and all
+later timeline rows are deleted, and the selected prompt is restored into the
+composer draft.
+
+Implementation lives in `internal/checkpoint/`, `app_checkpoint.go`, and the
+message hover actions in `frontend/src/lib/components/chat/UserMessage.svelte`.
 
 ## Checkpoint Storage
 
 Checkpoints are commits pointed at by hidden refs under
-`refs/agent-overflow/checkpoints/<b64url(threadID)>/turn/<N>` (see
-`ThreadRefPattern` in `internal/checkpoint/ref.go`). They don't appear
-in `git log` or `git branch` by default because they sit outside the
+`refs/agent-overflow/checkpoints/<b64url(threadID)>/message/<uuid>` (see
+`ThreadRefPrefix` in `internal/checkpoint/ref.go`). They don't appear in
+`git log` or `git branch` by default because they sit outside the
 `refs/heads` and `refs/tags` namespaces.
 
-`Store.CaptureBaseline` snapshots every tracked-with-changes and
-untracked-not-ignored file using a temp `GIT_INDEX_FILE` so the user's
-index is never touched. The result is a `commit-tree` OID written with
-`update-ref`; the author is always `Agent Overflow
-<agent-overflow@users.noreply.github.com>` (see
-`Store.CaptureBaseline` in `internal/checkpoint/store.go`).
+`Store.CaptureRef` snapshots every tracked-with-changes and
+untracked-not-ignored file using a temp `GIT_INDEX_FILE` so the user's index is
+never touched. The result is a `commit-tree` OID written with `update-ref`; the
+author is always `Agent Overflow <agent-overflow@users.noreply.github.com>`.
+Capture builds the temp index with `hash-object --no-filters` and
+`update-index`, not `git add`, so repo-defined clean filters are not executed
+by automatic checkpointing.
+
+SQLite stores one row per real user message in `thread_checkpoints`. The
+canonical lookup key is `(thread_id, user_item_id)`. `turn_index` is only an
+ordering aid. Provider replay later stamps `provider_user_message_id` and, for
+Claude, `provider_parent_uuid` onto the same row so conversation rollback can
+truncate provider history at the exact message boundary.
 
 ## When Baselines Are Captured
 
-`Router.handleTurnStart` captures checkpoint turn count 0 before the
-first turn only (see `internal/triage/turn_lifecycle.go`). Completed
-turn checkpoints are captured on `EventTurnComplete`; checkpoint turn
-count N represents the workspace after completed turn N. Capture
-failure is non-fatal: the turn proceeds, and a `checkpoint:error` event
-surfaces in the UI.
+`SendMessage` persists the optimistic user `items` row first, then calls
+`captureMessageCheckpoint` before sending the prompt to the provider. This
+ordering gives the checkpoint a stable `user_item_id` while preserving
+Claude-Code-style semantics: the Git snapshot is the workspace state before
+that prompt runs.
 
-The turn *diff* is not captured explicitly. `GetCheckpointRangeDiff`
-(in `app_checkpoint.go`) derives it on demand as
-`diff(checkpoint-N → checkpoint-M)` for finalized checkpoint ranges.
+Tool path tracking is separate from checkpoint capture. Triage stages
+structured edit/file-change paths on tool start, writes them into
+`thread_tracked_files` after successful completion, and tags them with the
+current `turn_index`. Conversation-and-files revert restores paths touched from
+the selected message turn onward; it does not attempt to infer Bash side
+effects or failed edits.
 
 ## Revert Modes
 
-`App.RevertToCheckpoint(threadID, checkpointTurnCount, mode)` picks
-one of two branches. Checkpoint turn count 0 is the initial baseline;
-checkpoint turn count N is the state after completed turn N, so
-conversation rollback keeps timeline turns through `N-1`.
+`App.RevertToMessageCheckpoint(threadID, userItemID, mode)` picks one of two
+branches:
 
 | Mode | Conversation | Working tree | Notes |
 |---|---|---|---|
-| `conversation-and-files` | truncated + provider-rolled-back | restored from ref | The full undo. |
-| `conversation-only` | truncated + provider-rolled-back | untouched | Walk history back, keep on-disk edits. |
+| `conversation-and-files` | selected user message and newer rows are deleted; provider history is rolled back | tracked agent-touched paths are restored from the selected message checkpoint | The full undo. |
+| `conversation-only` | selected user message and newer rows are deleted; provider history is rolled back | untouched | Walk conversation history back while keeping on-disk edits. |
 
-Revert always stops the active session first — running a turn through a
-revert produces undefined interleavings. The code calls
-`DeleteItemsAfterTurn` and `DeleteCheckpointsAfterTurn` so the timeline
-stops at `checkpointTurnCount - 1` and the ref set stops at
-`checkpointTurnCount`.
+Revert rejects active turns, stops the provider session, rolls provider history
+back, optionally restores files, deletes `items`/`turns` from the selected
+turn onward, deletes checkpoint rows/refs from the selected message onward,
+and writes the selected prompt back to `thread_drafts`.
 
 Provider-side rollback differs by provider:
 
-- **Codex** has a native `thread/rollback` wire method. The Go-side
-  driver `rollbackCodexThread` lives in
-  `internal/provider/codex/session_rollback.go` and uses the live
-  session when one is active, else resumes a short-lived temp session
-  just for the call.
-- **Claude** has no equivalent. `revertProviderConversation` (in
-  `app_checkpoint.go`) clears `SessionRef` and `PendingForkRef` so the
-  next message starts a fresh session. The old session file is left on
-  disk.
+- **Codex** has a native `thread/rollback` wire method. The Go-side driver
+  `rollbackCodexThread` lives in `internal/provider/codex/session_rollback.go`
+  and uses the live session when one is active, else resumes a short-lived temp
+  session just for the call.
+- **Claude** has no rollback RPC. `revertClaudeThreadToMessage` slices the
+  Claude JSONL through the stored `provider_parent_uuid` using
+  `internal/provider/claude/sessionfork`, then points `threads.session_ref` at
+  the new session file. A missing parent UUID is valid only for turn 0, where
+  the thread resumes as a fresh Claude session; later turns fail loudly because
+  silently clearing the whole provider context would be an off-by-one rollback.
 
 ## Cross-Thread Revert
 
-Not supported. `RevertToCheckpoint` takes a single `threadID` and all
-paths (`GetCheckpointByTurnCount`, `DeleteItemsAfterTurn`,
-`RestoreWorktree`) scope to that thread.
+Not supported. `RevertToMessageCheckpoint` takes a single `threadID`, validates
+that the checkpoint ref belongs to that thread's namespace, and only deletes
+rows/refs owned by that thread.
 
-A thread's checkpoints are cleaned up when the thread is deleted via
-`checkpoint.Store.CleanupThread` (in `internal/checkpoint/store.go`),
-which `update-ref -d`s every ref matching
-`ThreadRefPattern(threadID)`.
+A thread's checkpoint refs are cleaned up when the thread is deleted via
+`checkpoint.Store.CleanupThread` (in `internal/checkpoint/store.go`), which
+`update-ref -d`s every ref matching `ThreadRefPattern(threadID)`.

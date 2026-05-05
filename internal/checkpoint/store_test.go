@@ -50,6 +50,17 @@ func runCommand(t *testing.T, dir, name string, args ...string) {
 	}
 }
 
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return string(out)
+}
+
 func writeTestFile(t *testing.T, dir, name, body string) {
 	t.Helper()
 	full := filepath.Join(dir, name)
@@ -216,6 +227,29 @@ func TestCaptureBaselineAndDiffHappyPath(t *testing.T) {
 	}
 	if !strings.Contains(string(diff), "agent-new.txt") {
 		t.Errorf("expected agent-new.txt in diff; got:\n%s", diff)
+	}
+}
+
+func TestCaptureRefDoesNotRunCleanFilters(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	s := NewStore()
+
+	runCommand(t, dir, "git", "config", "filter.aofilter.clean", "sh -c 'echo filter-ran > .filter-ran; cat'")
+	writeTestFile(t, dir, ".gitattributes", "*.secret filter=aofilter\n")
+	writeTestFile(t, dir, "payload.secret", "keep raw\n")
+
+	ref := ThreadRefPrefix("t-filter") + "message/no-filter"
+	if err := s.CaptureRef(ctx, dir, ref); err != nil {
+		t.Fatalf("capture ref: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".filter-ran")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("clean filter ran during checkpoint capture: stat err=%v", err)
+	}
+	out := gitOutput(t, dir, "show", ref+":payload.secret")
+	if out != "keep raw\n" {
+		t.Fatalf("captured payload = %q, want raw file content", out)
 	}
 }
 
@@ -531,6 +565,65 @@ func TestRestoreWorktreePathsEmptyListIsNoop(t *testing.T) {
 	}
 	if got := readTestFile(t, dir, "drifted.txt"); got != "user edit\n" {
 		t.Errorf("empty restore should leave files alone: %q", got)
+	}
+}
+
+func TestRestoreWorktreePathsRejectsEscapingPath(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	s := NewStore()
+	ref, err := s.CaptureBaseline(ctx, dir, "t1", 0)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	if err := s.RestoreWorktreePaths(ctx, dir, ref, []string{"../outside.txt"}); err == nil {
+		t.Fatal("restore escaping path succeeded, want error")
+	}
+}
+
+func TestDiffRefToWorktreeScopedRejectsSymlinkPath(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(dir, "link")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	s := NewStore()
+	ref, err := s.CaptureBaseline(ctx, dir, "t1", 0)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	if _, err := s.DiffRefToWorktreeScoped(ctx, dir, ref, []string{"link/secret.txt"}); err == nil {
+		t.Fatal("diff through symlink path succeeded, want error")
+	}
+}
+
+func TestDiffRefToWorktreeScopedIncludesTrackedUntrackedFiles(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	s := NewStore()
+
+	ref, err := s.CaptureBaseline(ctx, dir, "t1", 0)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	writeTestFile(t, dir, "agent-new.txt", "created by agent\n")
+	writeTestFile(t, dir, "user-new.txt", "created by user\n")
+
+	patch, err := s.DiffRefToWorktreeScoped(ctx, dir, ref, []string{"agent-new.txt"})
+	if err != nil {
+		t.Fatalf("diff scoped: %v", err)
+	}
+	got := string(patch)
+	if !strings.Contains(got, "+++ b/agent-new.txt") {
+		t.Fatalf("patch should include tracked untracked file, got:\n%s", got)
+	}
+	if strings.Contains(got, "user-new.txt") {
+		t.Fatalf("patch should not include unlisted untracked file, got:\n%s", got)
 	}
 }
 

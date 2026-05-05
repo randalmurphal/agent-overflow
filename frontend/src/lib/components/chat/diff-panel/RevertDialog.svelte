@@ -18,14 +18,14 @@
 
   interface Props {
     open: boolean;
-    checkpointTurnCount: number;
+    titleLabel: string;
     provider: string;
     /**
-     * Files the agent wrote across every turn AFTER the target
-     * checkpoint. Driving the conversation-and-files preview so the user
-     * sees what the workspace will look like after the restore.
-     * Pass [] when no agent edits are recorded; the preview hides itself
-     * to avoid suggesting "nothing will happen".
+     * Files that differ between the selected message checkpoint and the
+     * current workspace. Drives the conversation-and-files preview so the user
+     * sees what the restore may change. Pass [] when no agent edits are
+     * recorded; the preview hides itself to avoid suggesting "nothing will
+     * happen".
      */
     affectedFiles?: AffectedFile[];
     reverting?: boolean;
@@ -33,7 +33,7 @@
     onCancel: () => void;
   }
 
-  let { open, checkpointTurnCount, provider, affectedFiles = [], reverting = false, onRevert, onCancel }: Props = $props();
+  let { open, titleLabel, provider, affectedFiles = [], reverting = false, onRevert, onCancel }: Props = $props();
 
   let selected: RevertMode = $state('conversation-and-files');
   const isClaude = $derived(provider === 'claude');
@@ -48,7 +48,7 @@
 
 <Modal
   {open}
-  title={`Revert to checkpoint ${checkpointTurnCount}`}
+  title={`Revert to ${titleLabel}`}
   onClose={onCancel}
   width="md"
   padding="comfortable"
@@ -56,7 +56,7 @@
   {#snippet children()}
     <div data-testid="revert-dialog">
       <p class="mb-3 text-[13px] leading-relaxed text-fg-muted">
-        This drops conversation turns after checkpoint {checkpointTurnCount}. Pick whether the workspace should also return to that checkpoint.
+        This removes the selected user message and everything after it. Pick whether the workspace should also return to that message checkpoint.
       </p>
 
       <fieldset class="space-y-2">
@@ -98,8 +98,8 @@
           <span class="min-w-0 flex-1">
             <span class="block text-[13px] font-medium text-fg">Conversation only</span>
             <span class="block text-[12px] leading-relaxed text-fg-muted">
-              Keep the current files and make them the new baseline for the reverted conversation.
-              {isClaude ? ' Claude starts fresh after the rollback.' : ''}
+              Keep current files while removing newer messages, checkpoints, and provider context.
+              {isClaude ? ' Claude resumes from that message boundary.' : ''}
             </span>
           </span>
         </label>
@@ -111,7 +111,7 @@
             Files the agent wrote ({affectedFiles.length})
           </div>
           <ul class="max-h-44 overflow-auto rounded-[var(--radius-control)] border border-border-subtle bg-surface-0">
-            {#each affectedFiles as file (file.path)}
+            {#each affectedFiles as file, index (`${file.path}:${index}`)}
               <li
                 class="flex items-center gap-2 border-b border-border-subtle/50 px-3 py-1.5 last:border-b-0"
                 data-testid="revert-affected-file"

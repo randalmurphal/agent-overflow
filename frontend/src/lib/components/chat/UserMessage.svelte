@@ -1,46 +1,59 @@
 <script lang="ts">
-  import Undo2 from 'lucide-svelte/icons/undo-2';
+  import RotateCcw from 'lucide-svelte/icons/rotate-ccw';
+  import GitFork from 'lucide-svelte/icons/git-fork';
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     createAttachmentPreviews,
-    parseUserMessageAttachments,
     type AttachmentPreviewSource,
     type ExpandedImagePreview,
   } from '../../utils/attachmentPreview.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';
   import Icon from '../primitives/Icon.svelte';
-  import UserMessageActionsPopover from './UserMessageActionsPopover.svelte';
+  import IconButton from '../primitives/IconButton.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
+  import { parseJsonObject } from '../../utils/parseJsonObject';
+  import type { UserMessageActions } from './userMessageActions';
 
   interface Props {
     item: Item;
     pane?: ThreadPane;
     onImageExpand?: (preview: ExpandedImagePreview) => void;
+    actions?: UserMessageActions;
   }
 
-  let { item, pane, onImageExpand }: Props = $props();
+  let { item, pane, onImageExpand, actions }: Props = $props();
 
-  // Trigger button for the actions popover. Visibility gating ensures
-  // the button is only present when at least one option is actionable:
+  const userMeta = $derived(parseJsonObject(item.meta));
+  const hasMessageCheckpoint = $derived(pane?.diffPanel.checkpointUserItemIds.has(item.id) ?? false);
+  const isWireOnlyUserMessage = $derived(userMeta?.wire_only === true);
+  const canRequestRevert = $derived(typeof actions?.onRevertMessage === 'function');
+  const canRequestFork = $derived(typeof actions?.onForkMessage === 'function');
+  const revertBusy = $derived(actions?.revertingItemId === item.id);
+  const forkBusy = $derived(actions?.forkingItemId === item.id);
+
+  // Visibility gating ensures the message action buttons are only present
+  // when at least one option is actionable:
   //   - we have a pane to act on
   //   - no turn currently in flight (revert/fork would race with active state)
-  //   - checkpoint history is loaded and available (not a non-git workspace)
+  //   - this exact user message has a checkpoint
   //   - this isn't an in-flight message that hasn't landed yet
-  const showActionsTrigger = $derived(
+  const showMessageActions = $derived(
     pane !== undefined
+      && (canRequestRevert || canRequestFork)
       && getActiveTurn(pane.threadId) === null
       && pane.diffPanel.checkpointsLoaded
       && !pane.diffPanel.checkpointsUnavailable
+      && hasMessageCheckpoint
+      && !isWireOnlyUserMessage
       && !item.id.startsWith('local-pending-'),
   );
 
-  let actionsAnchor: HTMLButtonElement | undefined = $state(undefined);
-  let actionsOpen = $state(false);
-
-  const attachments = $derived<AttachmentPreviewSource[]>(parseUserMessageAttachments(item.meta));
+  const attachments = $derived<AttachmentPreviewSource[]>(
+    Array.isArray(userMeta?.attachments) ? userMeta.attachments as AttachmentPreviewSource[] : [],
+  );
   // Pane-owned blob cache: blob URLs survive virtua's overscan eviction,
   // so back-scrolling to a previously-mounted UserMessage doesn't refetch
   // attachments from Go or re-allocate object URLs. The IntersectionObserver
@@ -74,6 +87,16 @@
     }),
   );
   const isoTime = $derived(new Date(item.createdAt).toISOString());
+
+  async function requestRevert(): Promise<void> {
+    if (!canRequestRevert || revertBusy) return;
+    await actions?.onRevertMessage?.(item);
+  }
+
+  async function requestFork(): Promise<void> {
+    if (!canRequestFork || forkBusy) return;
+    await actions?.onForkMessage?.(item);
+  }
 </script>
 
 <div class="group mb-5 flex justify-end">
@@ -119,21 +142,37 @@
       <p class="whitespace-pre-wrap">{visibleSummary}</p>
     {/if}
     <div class="mt-1.5 flex items-center justify-end gap-1.5 text-[10px] text-fg-hint/70">
-      {#if showActionsTrigger && pane}
-        <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
-          <button
-            bind:this={actionsAnchor}
-            type="button"
-            class="flex h-5 w-5 items-center justify-center rounded text-fg-hint transition-colors hover:bg-surface-2/60 hover:text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-            aria-label="Revert or fork from this message"
-            aria-haspopup="menu"
-            aria-expanded={actionsOpen}
-            title="Revert or fork from this message"
-            onclick={() => (actionsOpen = !actionsOpen)}
-          >
-            <Icon icon={Undo2} size={12} strokeWidth={2.2} />
-          </button>
-        </span>
+      {#if showMessageActions && pane}
+        {#if canRequestRevert}
+          <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+            <IconButton
+              label="Revert to this message"
+              size="sm"
+              variant="ghost"
+              disabled={revertBusy}
+              onClick={() => void requestRevert()}
+            >
+              {#snippet children()}
+                <Icon icon={RotateCcw} size={13} strokeWidth={2.2} />
+              {/snippet}
+            </IconButton>
+          </span>
+        {/if}
+        {#if canRequestFork}
+          <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+            <IconButton
+              label="Fork from this message"
+              size="sm"
+              variant="ghost"
+              disabled={forkBusy}
+              onClick={() => void requestFork()}
+            >
+              {#snippet children()}
+                <Icon icon={GitFork} size={13} strokeWidth={2.2} />
+              {/snippet}
+            </IconButton>
+          </span>
+        {/if}
       {/if}
       {#if visibleSummary}
         <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
@@ -150,13 +189,3 @@
     </div>
   </div>
 </div>
-
-{#if pane && showActionsTrigger}
-  <UserMessageActionsPopover
-    {pane}
-    userTurnIndex={item.turnIndex}
-    anchor={actionsAnchor}
-    open={actionsOpen}
-    onClose={() => (actionsOpen = false)}
-  />
-{/if}

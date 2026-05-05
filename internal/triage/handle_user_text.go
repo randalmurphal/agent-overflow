@@ -71,6 +71,18 @@ func readProviderItemIDFromMeta(meta json.RawMessage) string {
 	return id
 }
 
+func readParentUUIDFromMeta(meta json.RawMessage) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal(meta, &m) != nil {
+		return ""
+	}
+	id, _ := m["parent_uuid"].(string)
+	return id
+}
+
 // attachProviderItemIDToUserRow merges `provider_item_id` onto the
 // existing AO-persisted user row's meta and re-emits the upsert. The
 // row's Summary stays untouched: AO already trimmed/cleaned content on
@@ -97,7 +109,11 @@ func (r *Router) attachProviderItemIDToUserRow(threadID, aoItemID, providerItemI
 	if err != nil {
 		return fmt.Errorf("triage: merge provider_item_id into %s/%s meta: %w", threadID, aoItemID, err)
 	}
+	parentUUID := readParentUUIDFromMeta(evt.Meta)
 	if mergedMeta == existing.Meta {
+		if err := r.store.UpdateCheckpointProviderIDs(threadID, aoItemID, providerItemID, parentUUID); err != nil {
+			return fmt.Errorf("triage: update message checkpoint provider ids: %w", err)
+		}
 		if providerItemID == "" {
 			// We popped a pending-send marker but the wire echo carried
 			// no stable id, so meta isn't updated and no upsert emits.
@@ -119,6 +135,9 @@ func (r *Router) attachProviderItemIDToUserRow(threadID, aoItemID, providerItemI
 	persisted, err := r.store.UpsertItem(existing, nil)
 	if err != nil {
 		return fmt.Errorf("triage: upsert user row %s/%s with provider_item_id: %w", threadID, aoItemID, err)
+	}
+	if err := r.store.UpdateCheckpointProviderIDs(threadID, aoItemID, providerItemID, parentUUID); err != nil {
+		return fmt.Errorf("triage: update message checkpoint provider ids: %w", err)
 	}
 	r.emitItemUpsert(persisted)
 	return nil

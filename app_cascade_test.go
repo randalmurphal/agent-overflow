@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,7 +52,6 @@ func setupCascadeApp(t *testing.T) (*App, *capturedEventBus, string) {
 	app.triage = triage.NewRouter(st, bus.emit)
 	app.triage.SetEventHook(bus.observeRouterEvent)
 	app.checkpoints = checkpoint.NewStore()
-	app.triage.SetCheckpointStore(app.checkpoints)
 	app.registry = discussion.NewRegistry(st)
 	app.channels = discussion.NewChannelService(st)
 	app.terminals = terminal.NewManager(nil, nil)
@@ -154,17 +154,31 @@ func TestCascade_DeleteThreadRemovesAllDependents(t *testing.T) {
 
 	// 2 captured checkpoints with real git refs.
 	for turn := 0; turn < 2; turn++ {
+		userItemID := fmt.Sprintf("checkpoint-user:%d", turn)
+		if err := app.store.InsertItem(store.Item{
+			ID:        userItemID,
+			ThreadID:  thread.ID,
+			TurnIndex: turn,
+			ItemIndex: 100 + turn,
+			Kind:      "user_text",
+			Role:      "user",
+			Summary:   fmt.Sprintf("checkpoint user %d", turn),
+			CreatedAt: time.Now().UnixMilli(),
+		}); err != nil {
+			t.Fatalf("Insert checkpoint user item %d: %v", turn, err)
+		}
 		ref, err := app.checkpoints.CaptureBaseline(context.Background(), workspace, thread.ID, turn)
 		if err != nil {
 			t.Fatalf("CaptureBaseline turn %d: %v", turn, err)
 		}
 		cp := store.Checkpoint{
-			ID:                  uuid.NewString(),
-			ThreadID:            thread.ID,
-			CheckpointTurnCount: turn,
-			RefName:             ref,
-			CapturedAt:          time.Now().UnixMilli(),
-			WorkspacePath:       workspace,
+			ID:            uuid.NewString(),
+			ThreadID:      thread.ID,
+			UserItemID:    userItemID,
+			TurnIndex:     turn,
+			RefName:       ref,
+			CapturedAt:    time.Now().UnixMilli(),
+			WorkspacePath: workspace,
 		}
 		if err := app.store.SaveCheckpoint(cp); err != nil {
 			t.Fatalf("SaveCheckpoint: %v", err)
@@ -188,8 +202,8 @@ func TestCascade_DeleteThreadRemovesAllDependents(t *testing.T) {
 	}
 
 	// Pre-delete assertions.
-	if items, _ := app.store.ListItems(thread.ID); len(items) != 3 {
-		t.Fatalf("pre: items = %d, want 3", len(items))
+	if items, _ := app.store.ListItems(thread.ID); len(items) != 5 {
+		t.Fatalf("pre: items = %d, want 5", len(items))
 	}
 	if attachments, _ := app.store.ListAttachments(thread.ID); len(attachments) != 2 {
 		t.Fatalf("pre: attachments = %d, want 2", len(attachments))

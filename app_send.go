@@ -228,6 +228,7 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		return store.Item{}, fmt.Errorf("send message: persist user message: %w", err)
 	}
 	userMsgKept = true
+	a.captureMessageCheckpoint(thread, userItem)
 
 	// Register the pending-send marker BEFORE sendToProvider writes to
 	// stdin. The wire-init from Claude (or wire turn/started from Codex)

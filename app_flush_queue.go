@@ -114,12 +114,12 @@ type flushQueuePayload struct {
 //     row instead of writing a "wire-only" twin.
 //  6. Call the provider:
 //     - Claude: sess.Send writes a fresh user envelope to stdin;
-//       Claude's mid-loop drain (query.ts:1547) consumes it on the
-//       next API iteration.
+//     Claude's mid-loop drain (query.ts:1547) consumes it on the
+//     next API iteration.
 //     - Codex: sess.Steer pushes onto the active turn's
-//       pending_input. Falls back to sess.Send when Steer returns
-//       ErrNoActiveTurn — the active turn ended between trigger
-//       fire and Steer arrival.
+//     pending_input. Falls back to sess.Send when Steer returns
+//     ErrNoActiveTurn — the active turn ended between trigger
+//     fire and Steer arrival.
 //
 // On any item error, the dispatcher persists a sibling `error` row
 // and aborts the rest of the batch. Items not yet attempted are
@@ -263,6 +263,11 @@ func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushIt
 		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
 	}
 
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return fmt.Errorf("load thread: %w", err)
+	}
+
 	now := time.Now().UnixMilli()
 	userItem := store.Item{
 		ID:        flushItemID,
@@ -279,18 +284,13 @@ func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushIt
 	if err := a.triage.PersistItem(userItem, nil); err != nil {
 		return fmt.Errorf("persist user message: %w", err)
 	}
+	a.captureMessageCheckpoint(thread, userItem)
 
 	// Register the pending-send marker BEFORE the provider write so the
 	// wire echo can't race ahead of the marker and miss the
 	// pending-send-present branch in handleUserText. Cleared on
 	// dispatch failure below.
 	a.triage.RegisterPendingSend(threadID, userItem.ID, turnIndex)
-
-	thread, err := a.store.GetThread(threadID)
-	if err != nil {
-		a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
-		return fmt.Errorf("load thread: %w", err)
-	}
 
 	sendOpts := provider.SendOptions{
 		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),

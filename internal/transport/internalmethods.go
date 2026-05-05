@@ -106,9 +106,9 @@ var LocalOnlyMethods = map[string]bool{
 	// PrepareThreadWorktree creates a git worktree on disk; same
 	// class as the Git* mutators above.
 	"PrepareThreadWorktree": true,
-	// RevertToCheckpoint mutates the local working tree (git reset /
+	// RevertToMessageCheckpoint mutates the local working tree (git restore
 	// checkout into the workspace). Same class.
-	"RevertToCheckpoint": true,
+	"RevertToMessageCheckpoint": true,
 	// Diff-returning bindings expose bulk file content in a single wire
 	// call. The threat shape matches the credential / endpoint
 	// enumeration class below: a token-holder gets the user's
@@ -121,14 +121,16 @@ var LocalOnlyMethods = map[string]bool{
 	// so anything not gitignored ends up in the ref namespace. Working-tree
 	// and workspace-current diffs additionally include uncommitted edits.
 	//
-	// Lock all four down loopback-only. UX cost is "diff panels don't
-	// render from a remote browser"; that's a feature nobody currently
-	// depends on, and locking down later (after a remote workflow grows
-	// to need them) would be a breaking change.
-	"GetCheckpointRangeDiff":  true,
-	"GetSessionAgentDiff":     true,
-	"GetWorkingTreeDiff":      true,
-	"GetWorkspaceCurrentDiff": true,
+	// Lock the checkpoint/diff surface down loopback-only. UX cost is
+	// "diff panels don't render from a remote browser"; that's a feature
+	// nobody currently depends on, and locking down later (after a remote
+	// workflow grows to need them) would be a breaking change.
+	"GetMessageCheckpointDiff":       true,
+	"GetMessageCheckpointRevertDiff": true,
+	"GetSessionAgentDiff":            true,
+	"ListThreadCheckpoints":          true,
+	"GetWorkingTreeDiff":             true,
+	"GetWorkspaceCurrentDiff":        true,
 	// Codex model discovery spawns the configured `codex app-server`
 	// subprocess. It looks like a catalog read, but the local process
 	// execution makes it loopback-only.
@@ -168,9 +170,10 @@ var LocalOnlyMethods = map[string]bool{
 	"RespondToUserInput":          true,
 	// Thread creation can spawn a worktree / probe the provider; the
 	// branch fork variant runs git ops, and the PR variant shells `gh`.
-	"CreateThread":       true,
-	"CreateThreadFromPR": true,
-	"ForkThread":         true,
+	"CreateThread":          true,
+	"CreateThreadFromPR":    true,
+	"ForkThread":            true,
+	"ForkThreadFromMessage": true,
 	// Background-task control terminates host subprocesses.
 	"StopClaudeTask":                true,
 	"CleanCodexBackgroundTerminals": true,

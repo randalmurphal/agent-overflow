@@ -1,7 +1,6 @@
-// Tool-path extraction. Triage records the workspace-relative paths
-// each agent tool wrote during a turn so the per-turn checkpoint can
-// later be reverted in a path-scoped fashion (only paths the agent
-// touched, leaving manual edits to unrelated files alone).
+// Tool-path extraction. Triage stages workspace-relative paths from mutating
+// agent tools and records them after successful completion so
+// message-checkpoint restore can roll back only paths the agent touched.
 //
 // The two providers expose tool inputs differently, so each branch
 // parses the wire-shaped Meta against the contract documented in
@@ -9,9 +8,9 @@
 // (Read, Grep, etc.) are intentionally untracked — they don't write
 // files, and Bash side effects are out of scope for path-scoped revert.
 //
-// Extraction returns raw, as-given paths (often absolute). Workspace
-// normalization runs once at checkpoint-capture time so the router's
-// hot path doesn't look the thread up on every tool boundary.
+// Extraction returns raw, as-given paths (often absolute). The router
+// normalizes them against the thread workspace before inserting successful
+// tool paths into thread_tracked_files.
 //
 // On the "Do NOT reach back into provider-specific types" rule in
 // internal/triage/CLAUDE.md: the rule is upheld here in spirit — no
@@ -19,7 +18,7 @@
 // `json.RawMessage` Meta only, the same pattern used by
 // tool_result_file_change.go (which parses the same Codex
 // `params.item.changes[]` shape) and codex_background.go (which parses
-// Codex's `unifiedExec` envelopes). Promoting `ToolPaths` onto
+// Codex's `unifiedExec` envelopes). Promoting tracked paths onto
 // `ProviderEvent` would diverge from that pattern and carry an empty
 // slice on every event in steady state for one persistence consumer.
 
@@ -221,9 +220,9 @@ func normalizeWorkspaceRelativePaths(raw []string, workspace string) []string {
 //     silently dropped
 //   - "" only for empty input or paths with embedded control bytes
 //
-// Unlike normalizeWorkspaceRelativePath (used for `committedToolPaths`
-// + checkpoint revert, which IS workspace-scoped by design), this
-// preserves outside-workspace paths because diff display is not.
+// Unlike normalizeWorkspaceRelativePath (used for tracked-file revert, which
+// IS workspace-scoped by design), this preserves outside-workspace paths
+// because diff display is not.
 // The `.git` rejection and pathspec-magic guards from the strict
 // variant don't apply here: those exist to defend against a
 // malicious agent corrupting THIS repo's git state, which only
@@ -297,9 +296,9 @@ func normalizeWorkspaceRelativePath(path, workspace string) string {
 	}
 	// Reject `.git` and anything inside it. The provider trust boundary
 	// makes a malicious `.git/config` or `.git/hooks/pre-commit` write a
-	// real attack: capture stages it via `git add -A`, restore writes it
-	// back, RCE on next commit. Defense-in-depth alongside the tool
-	// allow-list.
+	// real attack: even though checkpoint capture uses no-filter plumbing,
+	// restore would write it back and create RCE on the next user git action.
+	// Defense-in-depth alongside the tool allow-list.
 	if clean == ".git" || strings.HasPrefix(clean, ".git/") {
 		return ""
 	}

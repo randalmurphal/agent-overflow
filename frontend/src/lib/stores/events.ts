@@ -14,6 +14,12 @@ import type {
 } from '../types/events';
 import type { Item, Thread } from '../types/models';
 import type { DesignArtifact, DesignChoiceResolved, DesignOptionsRequest } from '../types/design';
+import type {
+  CheckpointCapturedEvent,
+  CheckpointErrorEvent,
+  CheckpointRevertedEvent,
+  CheckpointUnavailableEvent,
+} from '../types/checkpoint';
 import { transportGapChannel } from '../transport/wsClient';
 import {
   confirmFlushedByUserItemId,
@@ -800,6 +806,39 @@ export function setupEventListeners(): () => void {
     applyQueueFlushed,
   );
 
+  const cancelCheckpointCaptured = wailsEventOn<CheckpointCapturedEvent | null>(
+    'checkpoint:captured',
+    (payload) => {
+      for (const pane of getAllPanes().values()) {
+        pane.applyCheckpointCaptured(payload);
+      }
+    },
+  );
+  const cancelCheckpointUnavailable = wailsEventOn<CheckpointUnavailableEvent | null>(
+    'checkpoint:unavailable',
+    (payload) => {
+      for (const pane of getAllPanes().values()) {
+        pane.applyCheckpointUnavailable(payload);
+      }
+    },
+  );
+  const cancelCheckpointError = wailsEventOn<CheckpointErrorEvent | null>(
+    'checkpoint:error',
+    (payload) => {
+      for (const pane of getAllPanes().values()) {
+        pane.applyCheckpointError(payload);
+      }
+    },
+  );
+  const cancelCheckpointReverted = wailsEventOn<CheckpointRevertedEvent | null>(
+    'checkpoint:reverted',
+    (payload) => {
+      for (const pane of getAllPanes().values()) {
+        pane.applyCheckpointReverted(payload);
+      }
+    },
+  );
+
   const cancelThreadUpdated = wailsEventOn<Thread>('thread:updated', applyThreadUpdated);
 
   // provider:default_swapped — backend auto-flipped the default
@@ -968,6 +1007,10 @@ export function setupEventListeners(): () => void {
     cancelTodoUpdate();
     cancelQueueStateChanged();
     cancelQueueFlushed();
+    cancelCheckpointCaptured();
+    cancelCheckpointUnavailable();
+    cancelCheckpointError();
+    cancelCheckpointReverted();
     cancelThreadUpdated();
     cancelDefaultSwapped();
     cancelTransportGap();

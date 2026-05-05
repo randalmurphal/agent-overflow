@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
-import { makeItem } from '../../../test/helpers/chat';
+import { makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { createDiffPanelState } from '../../stores/diffPanel.svelte';
+import type { ThreadPane } from '../../stores/thread.svelte';
 import UserMessage from './UserMessage.svelte';
+import type { UserMessageActions } from './userMessageActions';
 
 describe('<UserMessage>', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     resetBindingMocks();
     // GetAttachmentThumbnail is the inline-grid path (small bytes from the
     // SQLite thumbnail cache); GetAttachmentData is the modal lightbox path
@@ -18,6 +22,25 @@ describe('<UserMessage>', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
+
+  function makeCheckpointedPane(userItemId = 'user:1'): ThreadPane {
+    const diffPanel = createDiffPanelState();
+    diffPanel.setCheckpoints([{
+      id: 'checkpoint-1',
+      threadId: 'thread-1',
+      userItemId,
+      turnIndex: 1,
+      status: 'ready',
+      files: [],
+      capturedAt: 1,
+    }]);
+    return {
+      threadId: 'thread-1',
+      thread: makeThread({ id: 'thread-1' }),
+      diffPanel,
+      attachmentCacheFor: () => undefined,
+    } as unknown as ThreadPane;
+  }
 
   it('shows its timestamp without requiring row hover', () => {
     const createdAt = Date.UTC(2026, 0, 2, 15, 4);
@@ -85,6 +108,110 @@ describe('<UserMessage>', () => {
 
     await fireEvent.click(getByLabelText('Copy message'));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('visible body'));
+  });
+
+  it('shows revert and fork actions for a checkpointed inactive user message when handlers are available', () => {
+    const pane = makeCheckpointedPane();
+    const actions: UserMessageActions = {
+      onRevertMessage: vi.fn(),
+      onForkMessage: vi.fn(),
+    };
+
+    const { getByLabelText } = render(UserMessage, {
+      props: {
+        pane,
+        actions,
+        item: makeItem({
+          id: 'user:1',
+          threadId: 'thread-1',
+          turnIndex: 1,
+          kind: 'user_text',
+          role: 'user',
+          summary: 'revertable',
+        }),
+      },
+    });
+
+    expect(getByLabelText('Revert to this message')).toBeInTheDocument();
+    expect(getByLabelText('Fork from this message')).toBeInTheDocument();
+  });
+
+  it('requests message revert through the parent-owned handler', async () => {
+    const pane = makeCheckpointedPane();
+    const item = makeItem({
+      id: 'user:1',
+      threadId: 'thread-1',
+      turnIndex: 1,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'revertable',
+    });
+    const onRevertMessage = vi.fn(async () => {});
+    const actions: UserMessageActions = { onRevertMessage };
+
+    const { getByLabelText, queryByTestId } = render(UserMessage, {
+      props: {
+        pane,
+        item,
+        actions,
+      },
+    });
+
+    await fireEvent.click(getByLabelText('Revert to this message'));
+    await waitFor(() => expect(onRevertMessage).toHaveBeenCalledWith(item));
+    expect(queryByTestId('revert-dialog')).toBeNull();
+  });
+
+  it('requests message fork through the parent-owned handler', async () => {
+    const pane = makeCheckpointedPane();
+    const item = makeItem({
+      id: 'user:1',
+      threadId: 'thread-1',
+      turnIndex: 1,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'forkable',
+    });
+    const onForkMessage = vi.fn(async () => {});
+    const actions: UserMessageActions = { onForkMessage };
+
+    const { getByLabelText } = render(UserMessage, {
+      props: {
+        pane,
+        item,
+        actions,
+      },
+    });
+
+    await fireEvent.click(getByLabelText('Fork from this message'));
+    await waitFor(() => expect(onForkMessage).toHaveBeenCalledWith(item));
+  });
+
+  it('does not show revert and fork actions for wire-only user messages', () => {
+    const pane = makeCheckpointedPane();
+    const actions: UserMessageActions = {
+      onRevertMessage: vi.fn(),
+      onForkMessage: vi.fn(),
+    };
+
+    const { queryByLabelText } = render(UserMessage, {
+      props: {
+        pane,
+        actions,
+        item: makeItem({
+          id: 'user:1',
+          threadId: 'thread-1',
+          turnIndex: 1,
+          kind: 'user_text',
+          role: 'user',
+          summary: 'wire only',
+          meta: JSON.stringify({ wire_only: true }),
+        }),
+      },
+    });
+
+    expect(queryByLabelText('Revert to this message')).toBeNull();
+    expect(queryByLabelText('Fork from this message')).toBeNull();
   });
 
   it('renders image attachments from item metadata and expands them', async () => {

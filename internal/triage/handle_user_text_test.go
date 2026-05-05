@@ -66,6 +66,17 @@ func TestHandleUserText_PendingSendMatch_StampsProviderItemID(t *testing.T) {
 
 	router.RegisterPendingSend("t1", "user:0", 0)
 	seedUserTextRow(t, st, "t1", 0, "hello world", "")
+	if err := st.SaveCheckpoint(store.Checkpoint{
+		ID:            "checkpoint-user-0",
+		ThreadID:      "t1",
+		UserItemID:    "user:0",
+		TurnIndex:     0,
+		RefName:       "refs/agent-overflow/checkpoints/dDE/message/user-0",
+		CapturedAt:    time.Now().UnixMilli(),
+		WorkspacePath: t.TempDir(),
+	}); err != nil {
+		t.Fatalf("seed checkpoint: %v", err)
+	}
 
 	// Reset emissions captured during the seed so the assertion below
 	// only sees the upsert produced by handleUserText.
@@ -75,7 +86,7 @@ func TestHandleUserText_PendingSendMatch_StampsProviderItemID(t *testing.T) {
 		Kind:      provider.EventUserText,
 		ThreadID:  "t1",
 		Content:   "hello world",
-		Meta:      json.RawMessage(`{"provider_item_id":"msg_xyz"}`),
+		Meta:      json.RawMessage(`{"provider_item_id":"msg_xyz","parent_uuid":"parent-abc"}`),
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("Handle EventUserText: %v", err)
@@ -94,6 +105,14 @@ func TestHandleUserText_PendingSendMatch_StampsProviderItemID(t *testing.T) {
 	}
 	if id, _ := meta["provider_item_id"].(string); id != "msg_xyz" {
 		t.Fatalf("meta.provider_item_id = %v, want msg_xyz (full meta: %s)", meta["provider_item_id"], persisted.Meta)
+	}
+	checkpoint, ok, err := st.GetCheckpointByUserItemID("t1", "user:0")
+	if err != nil || !ok {
+		t.Fatalf("checkpoint missing after provider id stamp: ok=%v err=%v", ok, err)
+	}
+	if checkpoint.ProviderUserMessageID != "msg_xyz" || checkpoint.ProviderParentUUID != "parent-abc" {
+		t.Fatalf("checkpoint provider ids = %q/%q, want msg_xyz/parent-abc",
+			checkpoint.ProviderUserMessageID, checkpoint.ProviderParentUUID)
 	}
 
 	// No new row should be minted under user:wire:msg_xyz when the

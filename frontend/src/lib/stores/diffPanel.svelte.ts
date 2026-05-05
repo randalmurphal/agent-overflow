@@ -7,8 +7,9 @@ export interface DiffPanelState {
   readonly open: boolean;
   readonly viewMode: DiffViewMode;
   readonly tabMode: DiffPanelTab;
-  readonly selectedCheckpointTurnCount: number | null;
+  readonly selectedCheckpointUserItemId: string | null;
   readonly checkpoints: Checkpoint[];
+  readonly checkpointUserItemIds: ReadonlySet<string>;
   readonly checkpointsLoaded: boolean;
   readonly checkpointsUnavailable: boolean;
   readonly checkpointsUnavailableReason: string | null;
@@ -19,7 +20,7 @@ export interface DiffPanelState {
   toggle(): void;
   setViewMode(mode: DiffViewMode): void;
   setTabMode(mode: DiffPanelTab): void;
-  selectCheckpointTurnCount(turnCount: number | null): void;
+  selectCheckpointUserItem(userItemId: string | null): void;
   setCheckpoints(checkpoints: Checkpoint[]): void;
   markCheckpointsUnavailable(reason: string): void;
   setError(message: string | null): void;
@@ -29,17 +30,19 @@ export interface DiffPanelState {
 /**
  * Create the checkpoint diff drawer state. Each pane owns one instance.
  *
- * Diffs are fetched by checkpoint range, so the store tracks only drawer UI
- * state and checkpoint availability. It deliberately does not cache patch text:
- * checkpoint refs are cheap to diff, and keeping the cache out of pane state
- * avoids stale turn/worktree/cumulative modes leaking back into the UI.
+ * Diffs are fetched from the selected message checkpoint on demand, so the
+ * store tracks only drawer UI state and checkpoint availability. It
+ * deliberately does not cache patch text: checkpoint refs are cheap to diff,
+ * and keeping the cache out of pane state avoids stale message/worktree modes
+ * leaking back into the UI.
  */
 export function createDiffPanelState(): DiffPanelState {
   let open = $state(false);
   let viewMode: DiffViewMode = $state('stacked');
-  let tabMode: DiffPanelTab = $state('per-turn');
-  let selectedCheckpointTurnCount: number | null = $state(null);
+  let tabMode: DiffPanelTab = $state('messages');
+  let selectedCheckpointUserItemId: string | null = $state(null);
   let checkpoints: Checkpoint[] = $state([]);
+  let checkpointUserItemIds: ReadonlySet<string> = $state(new Set<string>());
   let checkpointsLoaded = $state(false);
   let checkpointsUnavailable = $state(false);
   let checkpointsUnavailableReason: string | null = $state(null);
@@ -49,8 +52,9 @@ export function createDiffPanelState(): DiffPanelState {
     get open() { return open; },
     get viewMode() { return viewMode; },
     get tabMode() { return tabMode; },
-    get selectedCheckpointTurnCount() { return selectedCheckpointTurnCount; },
+    get selectedCheckpointUserItemId() { return selectedCheckpointUserItemId; },
     get checkpoints() { return checkpoints; },
+    get checkpointUserItemIds() { return checkpointUserItemIds; },
     get checkpointsLoaded() { return checkpointsLoaded; },
     get checkpointsUnavailable() { return checkpointsUnavailable; },
     get checkpointsUnavailableReason() { return checkpointsUnavailableReason; },
@@ -61,10 +65,11 @@ export function createDiffPanelState(): DiffPanelState {
     toggle() { open = !open; },
     setViewMode(mode) { viewMode = mode; },
     setTabMode(mode) { tabMode = mode; },
-    selectCheckpointTurnCount(turnCount) { selectedCheckpointTurnCount = turnCount; },
+    selectCheckpointUserItem(userItemId) { selectedCheckpointUserItemId = userItemId; },
 
     setCheckpoints(next) {
-      checkpoints = [...next].sort((a, b) => a.checkpointTurnCount - b.checkpointTurnCount);
+      checkpoints = [...next].sort((a, b) => a.turnIndex - b.turnIndex);
+      checkpointUserItemIds = new Set(next.map((checkpoint) => checkpoint.userItemId));
       checkpointsLoaded = true;
       if (next.length > 0) {
         checkpointsUnavailable = false;
@@ -77,6 +82,7 @@ export function createDiffPanelState(): DiffPanelState {
       checkpointsUnavailableReason = reason;
       checkpointsLoaded = true;
       checkpoints = [];
+      checkpointUserItemIds = new Set();
     },
 
     setError(message) { error = message; },
@@ -84,9 +90,10 @@ export function createDiffPanelState(): DiffPanelState {
     clearForThread() {
       open = false;
       viewMode = 'stacked';
-      tabMode = 'per-turn';
-      selectedCheckpointTurnCount = null;
+      tabMode = 'messages';
+      selectedCheckpointUserItemId = null;
       checkpoints = [];
+      checkpointUserItemIds = new Set();
       checkpointsLoaded = false;
       checkpointsUnavailable = false;
       checkpointsUnavailableReason = null;

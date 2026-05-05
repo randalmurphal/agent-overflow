@@ -53,6 +53,33 @@ func TestFindUUIDBeforeUserTurn_FirstPromptReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestFindParentUUIDForUserMessageUUID(t *testing.T) {
+	got, err := FindParentUUIDForUserMessageUUID(strings.NewReader(withToolResultsJSONL), "u2")
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got != "a2" {
+		t.Fatalf("got %q, want a2", got)
+	}
+}
+
+func TestFindParentUUIDForUserMessageUUID_FirstPromptReturnsEmpty(t *testing.T) {
+	got, err := FindParentUUIDForUserMessageUUID(strings.NewReader(withToolResultsJSONL), "u1")
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got != "" {
+		t.Fatalf("got %q, want empty parent for first prompt", got)
+	}
+}
+
+func TestFindParentUUIDForUserMessageUUID_SkipsToolResultEcho(t *testing.T) {
+	_, err := FindParentUUIDForUserMessageUUID(strings.NewReader(withToolResultsJSONL), "echo1")
+	if !errors.Is(err, ErrMessageNotFound) {
+		t.Fatalf("err=%v, want ErrMessageNotFound", err)
+	}
+}
+
 func TestFindUUIDBeforeUserTurn_NegativeIndex(t *testing.T) {
 	_, err := FindUUIDBeforeUserTurn(strings.NewReader(withToolResultsJSONL), -1)
 	if err == nil {
@@ -117,9 +144,9 @@ func TestSliceUUIDForLastKeptTurn(t *testing.T) {
 		lastKept int
 		wantUUID string // empty means caller should clear session
 	}{
-		{-1, ""},   // caller should clear session
-		{0, "a1"},  // keep through turn 0 → slice at u2's parent = a1
-		{1, "a2"},  // keep through turn 1 → slice at u3's parent = a2
+		{-1, ""},  // caller should clear session
+		{0, "a1"}, // keep through turn 0 → slice at u2's parent = a1
+		{1, "a2"}, // keep through turn 1 → slice at u3's parent = a2
 	}
 	for _, c := range cases {
 		got, err := SliceUUIDForLastKeptTurn(path, c.lastKept)

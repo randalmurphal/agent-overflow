@@ -35,6 +35,7 @@
 
   interface Props {
     file: PatchFile;
+    rowId: string;
     expanded: boolean;
     threadId: string;
     /** Absolute workspace dir used to resolve `file.path` (which is
@@ -46,18 +47,17 @@
     /** Resolved Shiki theme name from the parent. */
     theme: DiffTheme;
     virtualizer: FileVirtualizerHandle;
-    onToggle: (path: string) => void;
+    onToggle: (rowId: string) => void;
   }
 
-  let { file, expanded, threadId, workspacePath, viewMode, wordWrap, theme, virtualizer, onToggle }: Props = $props();
+  let { file, rowId, expanded, threadId, workspacePath, viewMode, wordWrap, theme, virtualizer, onToggle }: Props = $props();
 
   let containerEl: HTMLElement | undefined = $state(undefined);
 
   $effect(() => {
     if (!containerEl) return;
-    const path = file.path;
-    virtualizer.register(path, containerEl);
-    return () => virtualizer.unregister(path);
+    virtualizer.register(rowId, containerEl);
+    return () => virtualizer.unregister(rowId);
   });
 
   // Render the body whenever the file is expanded. The
@@ -70,7 +70,7 @@
   // dispatcher can keep gating Shiki worker calls on actual
   // viewport intersection; rendering itself stays unconditional once
   // the user opens a file.
-  let cachedHeight = $derived(virtualizer.height(file.path));
+  let cachedHeight = $derived(virtualizer.height(rowId));
   let shouldRender = $derived(expanded);
 
   let wrapClass = $derived(wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre');
@@ -148,7 +148,7 @@
   // spaces or other awkward characters. Normalize to a stable
   // identifier the aria-controls attribute (and Svelte test queries)
   // can rely on.
-  let safeId = $derived(file.path.replace(/[^A-Za-z0-9_-]/g, '_'));
+  let safeId = $derived(rowId.replace(/[^A-Za-z0-9_-]/g, '_'));
 </script>
 
 <!--
@@ -169,7 +169,7 @@
   <header class="flex items-center gap-2 px-1 py-1 text-[13px] hover:bg-surface-2/20 rounded-[var(--radius-control)] transition-colors">
     <button
       type="button"
-      onclick={() => onToggle(file.path)}
+      onclick={() => onToggle(rowId)}
       aria-expanded={expanded}
       aria-controls="diff-sidebar-file-{safeId}"
       class="flex flex-1 min-w-0 items-center gap-2 text-left cursor-pointer bg-transparent border-0 p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded"

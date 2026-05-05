@@ -10,6 +10,7 @@ export {
   UnarchiveThread,
   DeleteThread,
   ForkThread,
+  ForkThreadFromMessage,
   GetThread,
   ListThreads,
   MarkThreadRead,
@@ -153,11 +154,12 @@ export {
   UpdateKeybindings,
   ResetKeybindings,
 
-  // Checkpoints (per-turn git-ref snapshots for diff panel + revert UX)
-  GetCheckpointRangeDiff,
+  // Checkpoints (message-keyed git-ref snapshots for diff panel + revert UX)
+  GetMessageCheckpointDiff,
+  GetMessageCheckpointRevertDiff,
   GetSessionAgentDiff,
   GetWorkspaceCurrentDiff,
-  RevertToCheckpoint,
+  RevertToMessageCheckpoint,
   ListThreadCheckpoints,
 
   // Thread runtime mode (three-tier approval axis)

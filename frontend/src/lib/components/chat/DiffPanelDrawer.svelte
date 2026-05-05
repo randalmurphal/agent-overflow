@@ -1,26 +1,20 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { wailsEventOn } from '../../stores/events';
   import {
-    GetCheckpointRangeDiff,
+    GetMessageCheckpointDiff,
+    GetMessageCheckpointRevertDiff,
     GetSessionAgentDiff,
     GetWorkspaceCurrentDiff,
     ListThreadCheckpoints,
-    RevertToCheckpoint,
+    RevertToMessageCheckpoint,
   } from '../../stores/bindings';
   import type {
     Checkpoint,
-    CheckpointCapturedEvent,
-    CheckpointErrorEvent,
-    CheckpointRevertedEvent,
-    CheckpointUnavailableEvent,
     RevertMode,
   } from '../../types/checkpoint';
-  import { parsePatchFiles } from '../../utils/patchFiles';
-  import { buildRevertAffectedFiles } from '../../utils/checkpointRevertPreview';
+  import { parsePatchFiles, patchFileRowId, type PatchFile } from '../../utils/patchFiles';
   import RevertDialog from './diff-panel/RevertDialog.svelte';
   import DiffPanelHeaderBar from './diff-panel/DiffPanelHeaderBar.svelte';
   import DiffPanelChipStrip from './diff-panel/DiffPanelChipStrip.svelte';
@@ -32,58 +26,31 @@
 
   let { pane }: Props = $props();
 
-  const checkpoints = $derived(pane.diffPanel.checkpoints);
-  // Chip strip shows the baseline (count=0) plus turns that produced
-  // file changes. Empty turns add visual noise without giving the user
-  // anything to inspect.
-  const visibleCheckpoints = $derived(
-    checkpoints.filter(
-      (c) => c.checkpointTurnCount === 0 || (c.files?.length ?? 0) > 0,
-    ),
-  );
-  const selectedTurnCount = $derived(pane.diffPanel.selectedCheckpointTurnCount);
-  const error = $derived(pane.diffPanel.error);
-  const viewMode = $derived(pane.diffPanel.viewMode);
-  const tabMode = $derived(pane.diffPanel.tabMode);
   let diffText = $state('');
   let loading = $state(false);
   let expanded = $state<Set<string>>(new Set());
   let revertOpen = $state(false);
   let reverting = $state(false);
+  let revertAffectedFiles = $state<PatchFile[]>([]);
   let checkpointRequestID = 0;
   let diffRequestID = 0;
 
-  const threadId = $derived(pane.thread?.id ?? null);
-  const latestTurnCount = $derived.by(() => {
-    const latest = checkpoints.at(-1);
-    return latest ? latest.checkpointTurnCount : 0;
-  });
-  const selectedRange = $derived.by(() => {
-    if (selectedTurnCount === null) return { from: 0, to: latestTurnCount };
-    return { from: Math.max(0, selectedTurnCount - 1), to: selectedTurnCount };
-  });
-  const selectedCheckpoint = $derived(
-    selectedTurnCount === null
-      ? null
-      : checkpoints.find((c) => c.checkpointTurnCount === selectedTurnCount) ?? null,
+  const checkpoints = $derived(pane.diffPanel.checkpoints);
+  const visibleCheckpoints = $derived(
+    checkpoints.filter((c) => c.turnIndex === 0 || (c.files?.length ?? 0) > 0),
   );
-  // Per-turn tab filters the parsed PatchFile[] to the selected turn's
-  // tool_paths so manual edits to unrelated files don't leak into the
-  // "what did the agent do this turn?" view. Session and Workspace tabs
-  // bypass the filter — the backend already constrains Session by
-  // cumulative tool_paths, and Workspace is intentionally unfiltered.
-  const filterPaths = $derived.by(() => {
-    if (tabMode !== 'per-turn') return null;
-    if (!selectedCheckpoint) return null;
-    const paths = selectedCheckpoint.toolPaths ?? [];
-    if (paths.length === 0) return null;
-    return new Set(paths);
-  });
-  const allFiles = $derived(parsePatchFiles(diffText));
-  const files = $derived.by(() => {
-    if (!filterPaths) return allFiles;
-    return allFiles.filter((file) => filterPaths.has(file.path));
-  });
+  const selectedUserItemId = $derived(pane.diffPanel.selectedCheckpointUserItemId);
+  const selectedCheckpoint = $derived(
+    selectedUserItemId === null
+      ? null
+      : checkpoints.find((c) => c.userItemId === selectedUserItemId) ?? null,
+  );
+  const error = $derived(pane.diffPanel.error);
+  const viewMode = $derived(pane.diffPanel.viewMode);
+  const tabMode = $derived(pane.diffPanel.tabMode);
+  const threadId = $derived(pane.thread?.id ?? null);
+  const files = $derived(parsePatchFiles(diffText));
+  const fileRows = $derived(files.map((file, index) => ({ file, rowId: patchFileRowId(file, index) })));
   const totals = $derived.by(() => files.reduce(
     (acc, file) => ({
       files: acc.files + 1,
@@ -93,9 +60,8 @@
     { files: 0, additions: 0, deletions: 0 },
   ));
   const wordWrap = $derived(getSettings().diffWordWrap);
-  const showChipStrip = $derived(tabMode === 'per-turn');
-  const showRevert = $derived(tabMode === 'per-turn' && selectedTurnCount !== null);
-  const revertAffectedFiles = $derived(buildRevertAffectedFiles(checkpoints, selectedTurnCount));
+  const showChipStrip = $derived(tabMode === 'messages');
+  const showRevert = $derived(tabMode === 'messages' && selectedCheckpoint !== null);
 
   async function refreshCheckpoints(): Promise<void> {
     const requestID = ++checkpointRequestID;
@@ -106,10 +72,10 @@
     try {
       const next = ((await ListThreadCheckpoints(threadId)) ?? []) as Checkpoint[];
       if (requestID !== checkpointRequestID) return;
-      const sorted = [...next].sort((a, b) => a.checkpointTurnCount - b.checkpointTurnCount);
+      const sorted = [...next].sort((a, b) => a.turnIndex - b.turnIndex);
       pane.diffPanel.setCheckpoints(sorted);
-      if (selectedTurnCount !== null && !sorted.some((c) => c.checkpointTurnCount === selectedTurnCount)) {
-        pane.diffPanel.selectCheckpointTurnCount(null);
+      if (selectedUserItemId !== null && !sorted.some((c) => c.userItemId === selectedUserItemId)) {
+        pane.diffPanel.selectCheckpointUserItem(null);
       }
     } catch (err) {
       if (requestID !== checkpointRequestID) return;
@@ -123,9 +89,6 @@
       if (requestID === diffRequestID) diffText = '';
       return;
     }
-    // Per-turn and session views need a checkpoint history to anchor the
-    // diff; workspace view is checkpoint-independent and just wants a
-    // current `git diff HEAD`.
     if (tabMode !== 'workspace' && checkpoints.length === 0) {
       if (requestID === diffRequestID) diffText = '';
       return;
@@ -134,9 +97,10 @@
     pane.diffPanel.setError(null);
     try {
       let nextDiff = '';
-      if (tabMode === 'per-turn') {
-        const range = selectedRange;
-        nextDiff = ((await GetCheckpointRangeDiff(threadId, range.from, range.to)) ?? '') as string;
+      if (tabMode === 'messages') {
+        nextDiff = selectedCheckpoint
+          ? (((await GetMessageCheckpointDiff(threadId, selectedCheckpoint.userItemId)) ?? '') as string)
+          : (((await GetSessionAgentDiff(threadId)) ?? '') as string);
       } else if (tabMode === 'session') {
         nextDiff = ((await GetSessionAgentDiff(threadId)) ?? '') as string;
       } else {
@@ -154,14 +118,14 @@
     }
   }
 
-  function selectCheckpoint(turnCount: number | null): void {
-    pane.diffPanel.selectCheckpointTurnCount(turnCount);
+  function selectCheckpoint(userItemId: string | null): void {
+    pane.diffPanel.selectCheckpointUserItem(userItemId);
   }
 
-  function toggleFile(path: string): void {
+  function toggleFile(rowId: string): void {
     const next = new Set(expanded);
-    if (next.has(path)) next.delete(path);
-    else next.add(path);
+    if (next.has(rowId)) next.delete(rowId);
+    else next.add(rowId);
     expanded = next;
   }
 
@@ -169,14 +133,27 @@
     if (open && totals.files > 40 && !window.confirm(`Expand all ${totals.files} changed files? Large diffs can take a moment to render.`)) {
       return;
     }
-    expanded = open ? new Set(files.map((file) => file.path)) : new Set();
+    expanded = open ? new Set(fileRows.map((row) => row.rowId)) : new Set();
+  }
+
+  async function openRevertDialog(): Promise<void> {
+    if (!threadId || !selectedCheckpoint) return;
+    try {
+      const patch = ((await GetMessageCheckpointRevertDiff(threadId, selectedCheckpoint.userItemId)) ?? '') as string;
+      revertAffectedFiles = parsePatchFiles(patch);
+    } catch (err) {
+      addToast('error', `Failed to load revert preview: ${err instanceof Error ? err.message : String(err)}`);
+      revertAffectedFiles = [];
+      return;
+    }
+    revertOpen = true;
   }
 
   async function handleRevert(mode: RevertMode): Promise<void> {
-    if (!threadId || selectedTurnCount === null || !pane.thread || reverting) return;
+    if (!threadId || !selectedCheckpoint || !pane.thread || reverting) return;
     reverting = true;
     try {
-      await RevertToCheckpoint(threadId, selectedTurnCount, mode);
+      await RevertToMessageCheckpoint(threadId, selectedCheckpoint.userItemId, mode);
       revertOpen = false;
       addToast('success', mode === 'conversation-only' ? 'Conversation reverted' : 'Conversation and files reverted');
       await pane.switchThread(pane.thread);
@@ -187,46 +164,6 @@
     }
   }
 
-  let cancelCaptured: (() => void) | null = null;
-  let cancelUpdated: (() => void) | null = null;
-  let cancelUnavailable: (() => void) | null = null;
-  let cancelError: (() => void) | null = null;
-  let cancelReverted: (() => void) | null = null;
-
-  onMount(() => {
-    cancelCaptured = wailsEventOn<CheckpointCapturedEvent | null>('checkpoint:captured', (payload) => {
-      if (!payload || payload.threadId !== threadId) return;
-      void refreshCheckpoints();
-    });
-    cancelUpdated = wailsEventOn<CheckpointCapturedEvent | null>('checkpoint:updated', (payload) => {
-      if (!payload || payload.threadId !== threadId) return;
-      void refreshCheckpoints();
-    });
-    cancelUnavailable = wailsEventOn<CheckpointUnavailableEvent | null>('checkpoint:unavailable', (payload) => {
-      if (!payload || payload.threadId !== threadId) return;
-      pane.diffPanel.markCheckpointsUnavailable(payload.reason);
-      pane.diffPanel.setError('Workspace is not a git repo. Checkpoint diffs are unavailable.');
-    });
-    cancelError = wailsEventOn<CheckpointErrorEvent | null>('checkpoint:error', (payload) => {
-      if (!payload || payload.threadId !== threadId) return;
-      pane.diffPanel.setError(`Checkpoint failed: ${payload.error}`);
-    });
-    // Refresh after a successful revert so chips reflect the truncated
-    // checkpoint history (post-revert refs are deleted by the backend).
-    cancelReverted = wailsEventOn<CheckpointRevertedEvent | null>('checkpoint:reverted', (payload) => {
-      if (!payload || payload.threadId !== threadId) return;
-      void refreshCheckpoints();
-    });
-  });
-
-  onDestroy(() => {
-    cancelCaptured?.();
-    cancelUpdated?.();
-    cancelUnavailable?.();
-    cancelError?.();
-    cancelReverted?.();
-  });
-
   $effect(() => {
     threadId;
     void refreshCheckpoints();
@@ -234,8 +171,7 @@
 
   $effect(() => {
     threadId;
-    selectedTurnCount;
-    latestTurnCount;
+    selectedUserItemId;
     tabMode;
     void loadDiff();
   });
@@ -260,11 +196,11 @@
     {#if showChipStrip}
       <DiffPanelChipStrip
         {visibleCheckpoints}
-        {selectedTurnCount}
-        onSelectTurn={selectCheckpoint}
+        selectedUserItemId={selectedUserItemId}
+        onSelectCheckpoint={selectCheckpoint}
         {showRevert}
         {reverting}
-        onRevertClick={() => (revertOpen = true)}
+        onRevertClick={() => void openRevertDialog()}
       />
     {/if}
   </header>
@@ -277,8 +213,8 @@
       <button class="rounded border border-border-subtle px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2" onclick={() => setAllFiles(true)}>Expand all</button>
       <button class="rounded border border-border-subtle px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2" onclick={() => setAllFiles(false)}>Collapse all</button>
       <span class="ml-auto text-[11px] text-fg-muted">
-        {#if tabMode === 'per-turn'}
-          {selectedRange.from} → {selectedRange.to}
+        {#if tabMode === 'messages'}
+          {selectedCheckpoint ? `Message ${selectedCheckpoint.turnIndex + 1}` : 'All message checkpoints'}
         {:else if tabMode === 'session'}
           Agent edits since baseline
         {:else}
@@ -290,32 +226,31 @@
     <div class="min-h-0 flex-1 overflow-auto px-3 py-3">
       {#if loading}
         <div class="py-8 text-center text-[13px] text-fg-muted" role="status">Loading diff...</div>
-      {:else if checkpoints.length === 0}
+      {:else if checkpoints.length === 0 && tabMode !== 'workspace'}
         <div class="py-8 text-center text-[13px] text-fg-muted">No checkpoints yet.</div>
       {:else if files.length === 0}
         <div class="py-8 text-center text-[13px] text-fg-muted">No changes in this range.</div>
       {:else}
         <div class="space-y-2" data-testid="diff-viewer">
-          {#each files as file (file.path)}
+          {#each fileRows as { file, rowId } (rowId)}
             <DiffPanelFileCard
               {file}
-              open={expanded.has(file.path)}
+              open={expanded.has(rowId)}
               workspacePath={paneWorkspacePath(pane)}
               {viewMode}
               {wordWrap}
-              onToggle={() => toggleFile(file.path)}
+              onToggle={() => toggleFile(rowId)}
             />
           {/each}
         </div>
       {/if}
     </div>
   </div>
-
 </section>
 
 <RevertDialog
   open={revertOpen}
-  checkpointTurnCount={selectedTurnCount ?? 0}
+  titleLabel={selectedCheckpoint ? `message ${selectedCheckpoint.turnIndex + 1}` : 'checkpoint'}
   provider={(pane.thread?.provider ?? '').toLowerCase()}
   affectedFiles={revertAffectedFiles}
   reverting={reverting}

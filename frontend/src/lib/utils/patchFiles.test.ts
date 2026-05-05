@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildSplitRows, extractPatchFile, parsePatchFiles, stripPatchLinePrefix } from './patchFiles';
+import { buildSplitRows, extractPatchFile, parsePatchFiles, patchFileRowId, stripPatchLinePrefix } from './patchFiles';
 
 describe('parsePatchFiles', () => {
   it('builds aligned split rows for replacement hunks', () => {
@@ -52,6 +52,27 @@ diff --git a/second.ts b/second.ts
     expect(extracted).toContain('diff --git a/second.ts b/second.ts');
     expect(extracted).toContain('+after');
     expect(extracted).not.toContain('first.ts');
+  });
+
+  it('builds distinct row ids for duplicate file paths', () => {
+    const files = parsePatchFiles(`diff --git a/notes.txt b/notes.txt
+--- a/notes.txt
++++ b/notes.txt
+@@ -1 +1 @@
+-one
++two
+diff --git a/notes.txt b/notes.txt
+--- a/notes.txt
++++ b/notes.txt
+@@ -3 +3 @@
+-three
++four
+`);
+
+    expect(files.map((file, index) => patchFileRowId(file, index))).toEqual([
+      '0:notes.txt',
+      '1:notes.txt',
+    ]);
   });
 });
 

@@ -21,8 +21,9 @@ root `CLAUDE.md` principle 3.
 - `designs.go` / `design_types.go` — design-mode artifact metadata.
 - `attachments.go` — attachment metadata (bytes on disk are the
   `internal/attachment` package's problem).
-- `checkpoints.go` — turn-checkpoint row/ref bookkeeping; the ref-level
-  mechanics live in `internal/checkpoint`.
+- `checkpoints.go` — message-checkpoint row/ref bookkeeping plus
+  `thread_tracked_files`; the ref-level mechanics live in
+  `internal/checkpoint`.
 - `drafts.go` — composer drafts per thread.
 - `chat_bar.go` — composer favorites and last-used model profile seeds.
 - `search.go` — FTS across items/threads.

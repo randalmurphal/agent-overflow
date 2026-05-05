@@ -9,7 +9,7 @@ describe('<RevertDialog>', () => {
   it('does not render anything when closed', () => {
     const { queryByTestId } = render(RevertDialog, {
       open: false,
-      checkpointTurnCount: 3,
+      titleLabel: "message 1",
       provider: 'codex',
       onRevert: vi.fn(),
       onCancel: vi.fn(),
@@ -17,21 +17,21 @@ describe('<RevertDialog>', () => {
     expect(queryByTestId('revert-dialog')).toBeNull();
   });
 
-  it('renders with the checkpoint turn count in the title when open', () => {
+  it('renders with the target label in the title when open', () => {
     const { getByText } = render(RevertDialog, {
       open: true,
-      checkpointTurnCount: 7,
+      titleLabel: "message 1",
       provider: 'codex',
       onRevert: vi.fn(),
       onCancel: vi.fn(),
     });
-    expect(getByText(/Revert to checkpoint 7/)).toBeInTheDocument();
+    expect(getByText(/Revert to message 1/)).toBeInTheDocument();
   });
 
   it('defaults to reverting conversation and files', () => {
     const { getByTestId } = render(RevertDialog, {
       open: true,
-      checkpointTurnCount: 1,
+      titleLabel: "message 1",
       provider: 'codex',
       onRevert: vi.fn(),
       onCancel: vi.fn(),
@@ -43,7 +43,7 @@ describe('<RevertDialog>', () => {
     const onRevert = vi.fn();
     const { getByTestId } = render(RevertDialog, {
       open: true,
-      checkpointTurnCount: 2,
+      titleLabel: "message 1",
       provider: 'codex',
       onRevert,
       onCancel: vi.fn(),
@@ -62,7 +62,7 @@ describe('<RevertDialog>', () => {
     const onCancel = vi.fn();
     const { getByTestId } = render(RevertDialog, {
       open: true,
-      checkpointTurnCount: 0,
+      titleLabel: "message 1",
       provider: 'codex',
       onRevert: vi.fn(),
       onCancel,
@@ -74,20 +74,20 @@ describe('<RevertDialog>', () => {
   it('surfaces the Claude-specific note under conversation-only for Claude threads', () => {
     const { getByTestId } = render(RevertDialog, {
       open: true,
-      checkpointTurnCount: 0,
+      titleLabel: "message 1",
       provider: 'claude',
       onRevert: vi.fn(),
       onCancel: vi.fn(),
     });
     const conversationLabel = getByTestId('revert-mode-conversation-only').closest('label')!;
     expect(conversationLabel.textContent).toMatch(/Claude/i);
-    expect(conversationLabel.textContent).toMatch(/fresh/i);
+    expect(conversationLabel.textContent).toMatch(/message boundary/i);
   });
 
   it('omits the Claude-specific note for Codex threads', () => {
     const { getByTestId } = render(RevertDialog, {
       open: true,
-      checkpointTurnCount: 0,
+      titleLabel: "message 1",
       provider: 'codex',
       onRevert: vi.fn(),
       onCancel: vi.fn(),
@@ -96,10 +96,26 @@ describe('<RevertDialog>', () => {
     expect(conversationLabel.textContent).not.toMatch(/Claude/i);
   });
 
+  it('renders duplicate affected file paths without duplicate keyed each failures', () => {
+    const { getAllByTestId } = render(RevertDialog, {
+      open: true,
+      titleLabel: "message 1",
+      provider: 'claude',
+      affectedFiles: [
+        { path: 'notes.txt', kind: 'modified', additions: 1, deletions: 0 },
+        { path: 'notes.txt', kind: 'modified', additions: 0, deletions: 1 },
+      ],
+      onRevert: vi.fn(),
+      onCancel: vi.fn(),
+    });
+
+    expect(getAllByTestId('revert-affected-file')).toHaveLength(2);
+  });
+
   it('resets the selection each time the dialog reopens', async () => {
     const { getByTestId, rerender } = render(RevertDialog, {
       open: true,
-      checkpointTurnCount: 0,
+      titleLabel: "message 1",
       provider: 'codex',
       onRevert: vi.fn(),
       onCancel: vi.fn(),
@@ -109,14 +125,14 @@ describe('<RevertDialog>', () => {
 
     await rerender({
       open: false,
-      checkpointTurnCount: 0,
+      titleLabel: "message 1",
       provider: 'codex',
       onRevert: vi.fn(),
       onCancel: vi.fn(),
     });
     await rerender({
       open: true,
-      checkpointTurnCount: 0,
+      titleLabel: "message 1",
       provider: 'codex',
       onRevert: vi.fn(),
       onCancel: vi.fn(),

@@ -1,4 +1,5 @@
 import type { Item, Thread } from '../types/models';
+import type { Checkpoint } from '../types/checkpoint';
 import type {
   ApprovalRequest,
   ContextWindow,
@@ -9,6 +10,12 @@ import type {
   TokenUsageSummary,
   UserInputRequest,
 } from '../types/events';
+import type {
+  CheckpointCapturedEvent,
+  CheckpointErrorEvent,
+  CheckpointRevertedEvent,
+  CheckpointUnavailableEvent,
+} from '../types/checkpoint';
 import type { ChannelMessage } from '../types/discussion';
 import type { DesignArtifact, DesignOptionsRequest, DesignViewport } from '../types/design';
 import {
@@ -16,6 +23,7 @@ import {
   ListItemsBeforeTurn,
   ListRecentThreadItems,
   ListRecentTurns,
+  ListThreadCheckpoints,
   SwitchThread,
 } from './bindings';
 import { replaceThread } from './threads.svelte';
@@ -968,6 +976,13 @@ export function createThreadPane() {
     timelineRevision++;
   }
 
+  async function refreshCheckpointsForThread(threadID: string): Promise<void> {
+    const checkpoints = ((await ListThreadCheckpoints(threadID)) ?? []) as Checkpoint[];
+    if (thread?.id !== threadID) return;
+    const sorted = [...checkpoints].sort((a, b) => a.turnIndex - b.turnIndex);
+    diffPanel.setCheckpoints(sorted);
+  }
+
   return {
     // --- Getters (reactive reads) ---
     get thread() { return thread; },
@@ -998,6 +1013,24 @@ export function createThreadPane() {
     get sendInFlight() { return sendInFlight; },
     get showTerminal() { return showTerminal; },
     get diffPanel() { return diffPanel; },
+    refreshCheckpoints: refreshCheckpointsForThread,
+    applyCheckpointCaptured(payload: CheckpointCapturedEvent | null): void {
+      if (!payload || payload.threadId !== thread?.id) return;
+      void refreshCheckpointsForThread(payload.threadId);
+    },
+    applyCheckpointUnavailable(payload: CheckpointUnavailableEvent | null): void {
+      if (!payload || payload.threadId !== thread?.id) return;
+      diffPanel.markCheckpointsUnavailable(payload.reason);
+      diffPanel.setError('Workspace is not a git repo. Checkpoint diffs are unavailable.');
+    },
+    applyCheckpointError(payload: CheckpointErrorEvent | null): void {
+      if (!payload || payload.threadId !== thread?.id) return;
+      diffPanel.setError(`Checkpoint failed: ${payload.error}`);
+    },
+    applyCheckpointReverted(payload: CheckpointRevertedEvent | null): void {
+      if (!payload || payload.threadId !== thread?.id) return;
+      void refreshCheckpointsForThread(payload.threadId);
+    },
     /**
      * Most recent completed turn, or null if the thread has no settled
      * turns yet. Populated from `provider:turn_completed` pushes and
@@ -1196,6 +1229,14 @@ export function createThreadPane() {
         // thread from rendering items. Log and proceed with
         // latestSettledTurn=null for the prior turn.
         console.error('Failed to rehydrate recent turns:', err);
+      }
+
+      try {
+        await refreshCheckpointsForThread(newThread.id);
+        if (gen !== switchGeneration) return;
+      } catch (err) {
+        if (gen !== switchGeneration) return;
+        diffPanel.setError(`Failed to load checkpoints: ${errString(err)}`);
       }
 
       if (gen !== switchGeneration) return;

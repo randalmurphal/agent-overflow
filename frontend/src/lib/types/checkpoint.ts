@@ -3,18 +3,18 @@
 export type { CheckpointView as Checkpoint } from '../../../bindings/agent-overflow/models';
 
 /** Diff panel view mode. */
-export type DiffPanelTab = 'per-turn' | 'session' | 'workspace';
+export type DiffPanelTab = 'messages' | 'session' | 'workspace';
 
 export type RevertMode = 'conversation-and-files' | 'conversation-only';
 
 /**
- * Activity event emitted via `checkpoint:captured` when the triage layer
- * successfully snapshots a turn-start baseline.
+ * Activity event emitted via `checkpoint:captured` when the app snapshots the
+ * workspace immediately before a real user message is sent.
  */
 export interface CheckpointCapturedEvent {
   threadId: string;
+  userItemId: string;
   turnIndex: number;
-  checkpointTurnCount: number;
   capturedAt: number;
 }
 
@@ -29,23 +29,23 @@ export interface CheckpointUnavailableEvent {
 
 /**
  * Activity event emitted via `checkpoint:error` when capture failed. The
- * turn still proceeds; the frontend surfaces this as a warning.
+ * message still proceeds; the frontend surfaces this as a warning.
  */
 export interface CheckpointErrorEvent {
   threadId: string;
+  userItemId?: string;
   turnIndex: number;
-  checkpointTurnCount: number;
   error: string;
 }
 
 /**
  * Activity event emitted via `checkpoint:reverted` after a successful
  * revert (either mode). The chip strip needs to refresh because the
- * post-revert turn count has stale entries removed.
+ * post-revert checkpoint list has stale entries removed.
  */
 export interface CheckpointRevertedEvent {
   threadId: string;
+  userItemId: string;
   turnIndex: number;
-  checkpointTurnCount: number;
   mode: RevertMode;
 }

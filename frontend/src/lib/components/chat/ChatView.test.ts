@@ -119,6 +119,7 @@ async function buildPane(
   // not on mount — but the binding mock throws on unexpected calls, so
   // stub it defensively.
   setBindingMock('GetThreadSlashCommands', async () => []);
+  setBindingMock('ListThreadCheckpoints', async () => []);
 
   const pane = createThreadPane();
   await pane.switchThread(thread);
@@ -144,8 +145,117 @@ describe('<ChatView>', () => {
     expect(getByTestId('below-composer-bar')).toBeInTheDocument();
   });
 
+  it('opens the message revert dialog from a user-message action outside the virtualized row', async () => {
+    const thread = seedThread();
+    const userItem = makeItem({
+      id: 'user:1',
+      threadId: thread.id,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'Update one of the lines',
+    });
+    const pane = await buildPane(thread, [userItem]);
+    pane.diffPanel.setCheckpoints([{
+      id: 'checkpoint-1',
+      threadId: thread.id,
+      userItemId: userItem.id,
+      turnIndex: userItem.turnIndex,
+      status: 'ready',
+      files: [],
+      capturedAt: 1,
+    }]);
+    const preview = setBindingMock('GetMessageCheckpointRevertDiff', async () => 'diff --git a/scratch.txt b/scratch.txt\n');
+    const revert = setBindingMock('RevertToMessageCheckpoint', async () => {});
+
+    const { getByLabelText, findByTestId, getByTestId } = render(ChatView, { props: { pane } });
+    await fireEvent.click(getByLabelText('Revert to this message'));
+
+    expect(await findByTestId('revert-dialog')).toBeInTheDocument();
+    expect(preview).toHaveBeenCalledWith(thread.id, userItem.id);
+
+    await fireEvent.click(getByTestId('revert-apply'));
+    await waitFor(() => {
+      expect(revert).toHaveBeenCalledWith(thread.id, userItem.id, 'conversation-and-files');
+    });
+  });
+
+  it('drops a pending message revert target when the pane switches threads', async () => {
+    const thread = seedThread();
+    const userItem = makeItem({
+      id: 'user:1',
+      threadId: thread.id,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'Update one of the lines',
+    });
+    const pane = await buildPane(thread, [userItem]);
+    pane.diffPanel.setCheckpoints([{
+      id: 'checkpoint-1',
+      threadId: thread.id,
+      userItemId: userItem.id,
+      turnIndex: userItem.turnIndex,
+      status: 'ready',
+      files: [],
+      capturedAt: 1,
+    }]);
+    setBindingMock('GetMessageCheckpointRevertDiff', async () => 'diff --git a/scratch.txt b/scratch.txt\n');
+
+    const { getByLabelText, findByTestId, queryByTestId } = render(ChatView, { props: { pane } });
+    await fireEvent.click(getByLabelText('Revert to this message'));
+    expect(await findByTestId('revert-dialog')).toBeInTheDocument();
+
+    const otherThread = { ...thread, id: 'thread-2', title: 'Other thread' };
+    setBindingMock('SwitchThread', async () => otherThread);
+    await pane.switchThread(otherThread);
+    await tick();
+
+    expect(queryByTestId('revert-dialog')).toBeNull();
+  });
+
+  it('forks from a user-message action through the chat-level handler', async () => {
+    const thread = seedThread();
+    const userItem = makeItem({
+      id: 'user:1',
+      threadId: thread.id,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'Update one of the lines',
+    });
+    const pane = await buildPane(thread, [userItem]);
+    pane.diffPanel.setCheckpoints([{
+      id: 'checkpoint-1',
+      threadId: thread.id,
+      userItemId: userItem.id,
+      turnIndex: userItem.turnIndex,
+      status: 'ready',
+      files: [],
+      capturedAt: 1,
+    }]);
+    const forked = {
+      ...thread,
+      id: 'fork-1',
+      projectId: 'project-1',
+      title: 'Forked thread',
+    };
+    const fork = setBindingMock('ForkThreadFromMessage', async () => forked);
+    setBindingMock('SwitchThread', async () => forked);
+
+    const { getByLabelText } = render(ChatView, { props: { pane } });
+    await fireEvent.click(getByLabelText('Fork from this message'));
+
+    await waitFor(() => {
+      expect(fork).toHaveBeenCalledWith(thread.id, userItem.id);
+      expect(pane.thread?.id).toBe('fork-1');
+    });
+  });
+
   it('keeps one stable right-sidebar shell while swapping panel content', async () => {
-    setBindingMock('ListThreadCheckpoints', async () => []);
     setBindingMock('GetPayloadPreview', async () => ({
       data: '',
       nextOffset: 0,

@@ -573,33 +573,35 @@ type privilegedApp struct{}
 func (p *privilegedApp) PublicEcho() string { return "ok" }
 
 // 1. RCE-equivalent.
-func (p *privilegedApp) OpenTerminal() string             { return "ok" }
-func (p *privilegedApp) WriteTerminal() string            { return "ok" }
-func (p *privilegedApp) RestartTerminal() string          { return "ok" }
-func (p *privilegedApp) CloseTerminal() string            { return "ok" }
-func (p *privilegedApp) ResizeTerminal() string           { return "ok" }
-func (p *privilegedApp) OpenInEditor() string             { return "ok" }
-func (p *privilegedApp) BrowseDirectory() string          { return "ok" }
-func (p *privilegedApp) SavePayloadToFile() string        { return "ok" }
-func (p *privilegedApp) WriteThreadWorkspaceFile() string { return "ok" }
-func (p *privilegedApp) GitPush() string                  { return "ok" }
-func (p *privilegedApp) GitStatusSubscribe() string       { return "ok" }
-func (p *privilegedApp) GitStatusUnsubscribe() string     { return "ok" }
-func (p *privilegedApp) GitCheckout() string              { return "ok" }
-func (p *privilegedApp) GitCreateBranch() string          { return "ok" }
-func (p *privilegedApp) GitCreateWorktree() string        { return "ok" }
-func (p *privilegedApp) GitRemoveWorktree() string        { return "ok" }
-func (p *privilegedApp) GitCommit() string                { return "ok" }
-func (p *privilegedApp) GitPull() string                  { return "ok" }
-func (p *privilegedApp) GitStageAll() string              { return "ok" }
-func (p *privilegedApp) GitCreatePR() string              { return "ok" }
-func (p *privilegedApp) PrepareThreadWorktree() string    { return "ok" }
-func (p *privilegedApp) RevertToCheckpoint() string       { return "ok" }
-func (p *privilegedApp) GetCheckpointRangeDiff() string   { return "ok" }
-func (p *privilegedApp) GetSessionAgentDiff() string      { return "ok" }
-func (p *privilegedApp) GetWorkingTreeDiff() string       { return "ok" }
-func (p *privilegedApp) GetWorkspaceCurrentDiff() string  { return "ok" }
-func (p *privilegedApp) GetModelsForProvider() string     { return "ok" }
+func (p *privilegedApp) OpenTerminal() string                   { return "ok" }
+func (p *privilegedApp) WriteTerminal() string                  { return "ok" }
+func (p *privilegedApp) RestartTerminal() string                { return "ok" }
+func (p *privilegedApp) CloseTerminal() string                  { return "ok" }
+func (p *privilegedApp) ResizeTerminal() string                 { return "ok" }
+func (p *privilegedApp) OpenInEditor() string                   { return "ok" }
+func (p *privilegedApp) BrowseDirectory() string                { return "ok" }
+func (p *privilegedApp) SavePayloadToFile() string              { return "ok" }
+func (p *privilegedApp) WriteThreadWorkspaceFile() string       { return "ok" }
+func (p *privilegedApp) GitPush() string                        { return "ok" }
+func (p *privilegedApp) GitStatusSubscribe() string             { return "ok" }
+func (p *privilegedApp) GitStatusUnsubscribe() string           { return "ok" }
+func (p *privilegedApp) GitCheckout() string                    { return "ok" }
+func (p *privilegedApp) GitCreateBranch() string                { return "ok" }
+func (p *privilegedApp) GitCreateWorktree() string              { return "ok" }
+func (p *privilegedApp) GitRemoveWorktree() string              { return "ok" }
+func (p *privilegedApp) GitCommit() string                      { return "ok" }
+func (p *privilegedApp) GitPull() string                        { return "ok" }
+func (p *privilegedApp) GitStageAll() string                    { return "ok" }
+func (p *privilegedApp) GitCreatePR() string                    { return "ok" }
+func (p *privilegedApp) PrepareThreadWorktree() string          { return "ok" }
+func (p *privilegedApp) RevertToMessageCheckpoint() string      { return "ok" }
+func (p *privilegedApp) GetMessageCheckpointDiff() string       { return "ok" }
+func (p *privilegedApp) GetMessageCheckpointRevertDiff() string { return "ok" }
+func (p *privilegedApp) GetSessionAgentDiff() string            { return "ok" }
+func (p *privilegedApp) ListThreadCheckpoints() string          { return "ok" }
+func (p *privilegedApp) GetWorkingTreeDiff() string             { return "ok" }
+func (p *privilegedApp) GetWorkspaceCurrentDiff() string        { return "ok" }
+func (p *privilegedApp) GetModelsForProvider() string           { return "ok" }
 
 // 2. Session control.
 func (p *privilegedApp) StartSession() string                  { return "ok" }
@@ -628,6 +630,7 @@ func (p *privilegedApp) RespondToUserInput() string            { return "ok" }
 func (p *privilegedApp) CreateThread() string                  { return "ok" }
 func (p *privilegedApp) CreateThreadFromPR() string            { return "ok" }
 func (p *privilegedApp) ForkThread() string                    { return "ok" }
+func (p *privilegedApp) ForkThreadFromMessage() string         { return "ok" }
 func (p *privilegedApp) StopClaudeTask() string                { return "ok" }
 func (p *privilegedApp) CleanCodexBackgroundTerminals() string { return "ok" }
 

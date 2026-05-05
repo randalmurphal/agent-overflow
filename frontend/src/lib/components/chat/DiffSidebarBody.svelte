@@ -18,7 +18,7 @@
    */
   import { onDestroy, onMount, untrack } from 'svelte';
   import { createFileVirtualizer } from '../../utils/diffSidebarVirtualizer.svelte';
-  import { stripPatchLinePrefix, type PatchFile, type PatchLine } from '../../utils/patchFiles';
+  import { patchFileRowId, stripPatchLinePrefix, type PatchFile, type PatchLine } from '../../utils/patchFiles';
   import { languageFromPath } from '../../utils/diffLanguage';
   import { getSharedDiffHighlighterPool, type DiffTheme } from '../../utils/diffHighlighterPool';
   import { tokenCacheKeyFromSig, TOKENIZE_MAX_LINE_LENGTH } from '../../utils/tokenCache';
@@ -99,7 +99,8 @@
   let initialScrollApplied = false;
 
   let expandedSet = $derived(new Set(expandedFiles));
-  let filesByPath = $derived(new Map(files.map((file) => [file.path, file])));
+  const fileRows = $derived(files.map((file, index) => ({ file, rowId: patchFileRowId(file, index) })));
+  let filesByRowId = $derived(new Map(fileRows.map(({ file, rowId }) => [rowId, file])));
 
   onMount(() => {
     if (scrollRoot) virtualizer.init(scrollRoot);
@@ -156,7 +157,7 @@
     const visiblePaths = virtualizer.visiblePaths;
     const t = theme;
     const expandedNow = expandedSet;
-    const fileMap = filesByPath;
+    const fileMap = filesByRowId;
     if (visiblePaths.size === 0 || fileMap.size === 0) return;
     untrack(() => {
       void dispatchVisibleFileTokens(visiblePaths, expandedNow, fileMap, t);
@@ -177,9 +178,9 @@
     const byLang = new Map<string, Map<string, string>>();
     const claimed: string[] = [];
 
-    for (const path of visiblePaths) {
-      if (!expanded.has(path)) continue;
-      const file = fileMap.get(path);
+    for (const rowId of visiblePaths) {
+      if (!expanded.has(rowId)) continue;
+      const file = fileMap.get(rowId);
       if (!file) continue;
       const lang = languageFromPath(file.path);
       if (lang === 'plaintext') continue;
@@ -262,10 +263,11 @@
   onscroll={handleScroll}
   class="flex-1 overflow-y-auto px-2 py-2"
 >
-  {#each files as file (file.path)}
+  {#each fileRows as { file, rowId } (rowId)}
     <DiffSidebarFile
       {file}
-      expanded={expandedSet.has(file.path)}
+      {rowId}
+      expanded={expandedSet.has(rowId)}
       {threadId}
       {workspacePath}
       {viewMode}

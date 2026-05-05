@@ -7,7 +7,8 @@ import (
 )
 
 // CloneThreadItems copies the visible timeline items from sourceThreadID into
-// targetThreadID, preserving turn ordering while assigning new item IDs.
+// targetThreadID, preserving turn ordering while assigning new item IDs. The
+// returned map is source item id -> cloned item id for every copied row.
 //
 // When throughTurnIndex is non-nil, only items whose turn_index is <= *throughTurnIndex
 // are copied — used for fork-at-point so the forked thread starts truncated
@@ -27,15 +28,39 @@ import (
 // All inserts run in a single transaction so a 200-row clone takes one
 // fsync instead of 200. Per-row InsertItem would commit individually
 // and dominate the fork wall-clock for large threads.
-func (s *Store) CloneThreadItems(sourceThreadID, targetThreadID string, throughTurnIndex *int) error {
+func (s *Store) CloneThreadItems(sourceThreadID, targetThreadID string, throughTurnIndex *int) (map[string]string, error) {
 	items, err := s.ListItems(sourceThreadID)
 	if err != nil {
-		return fmt.Errorf("store: list source items for fork %s: %w", sourceThreadID, err)
+		return nil, fmt.Errorf("store: list source items for fork %s: %w", sourceThreadID, err)
+	}
+
+	clonedItems := make([]Item, 0, len(items))
+	idMap := make(map[string]string, len(items))
+	for _, item := range items {
+		if item.IsBackground && item.Status == "running" {
+			continue
+		}
+		if throughTurnIndex != nil && item.TurnIndex > *throughTurnIndex {
+			continue
+		}
+		oldID := item.ID
+		item.ID = uuid.NewString()
+		item.ThreadID = targetThreadID
+		idMap[oldID] = item.ID
+		clonedItems = append(clonedItems, item)
+	}
+	for i := range clonedItems {
+		if next, ok := idMap[clonedItems[i].ParentID]; ok {
+			clonedItems[i].ParentID = next
+		}
+		if next, ok := idMap[clonedItems[i].CompletionOf]; ok {
+			clonedItems[i].CompletionOf = next
+		}
 	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("store: begin clone items tx: %w", err)
+		return nil, fmt.Errorf("store: begin clone items tx: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -46,24 +71,13 @@ func (s *Store) CloneThreadItems(sourceThreadID, targetThreadID string, throughT
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
-		return fmt.Errorf("store: prepare clone insert: %w", err)
+		return nil, fmt.Errorf("store: prepare clone insert: %w", err)
 	}
 	defer stmt.Close()
 
 	var maxUpdatedAt int64
 	cloned := 0
-	for _, item := range items {
-		if item.IsBackground && item.Status == "running" {
-			continue
-		}
-		if throughTurnIndex != nil && item.TurnIndex > *throughTurnIndex {
-			continue
-		}
-		// Items returned by ListItems are already defaulted by the
-		// store's CHECK constraints — no need to re-default per row.
-		item.ID = uuid.NewString()
-		item.ThreadID = targetThreadID
-
+	for _, item := range clonedItems {
 		if _, err := stmt.Exec(
 			item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex,
 			item.Kind, item.Role, item.Status, item.Summary,
@@ -71,7 +85,7 @@ func (s *Store) CloneThreadItems(sourceThreadID, targetThreadID string, throughT
 			boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
 			item.CreatedAt, item.UpdatedAt,
 		); err != nil {
-			return fmt.Errorf("store: clone item into thread %s: %w", targetThreadID, err)
+			return nil, fmt.Errorf("store: clone item into thread %s: %w", targetThreadID, err)
 		}
 		if item.UpdatedAt > maxUpdatedAt {
 			maxUpdatedAt = item.UpdatedAt
@@ -83,12 +97,12 @@ func (s *Store) CloneThreadItems(sourceThreadID, targetThreadID string, throughT
 	// per-row InsertItem's touch semantics, batched).
 	if cloned > 0 {
 		if _, err := tx.Exec(`UPDATE threads SET updated_at = ? WHERE id = ?`, maxUpdatedAt, targetThreadID); err != nil {
-			return fmt.Errorf("store: touch fork thread %s updated_at: %w", targetThreadID, err)
+			return nil, fmt.Errorf("store: touch fork thread %s updated_at: %w", targetThreadID, err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit clone items tx: %w", err)
+		return nil, fmt.Errorf("store: commit clone items tx: %w", err)
 	}
-	return nil
+	return idMap, nil
 }

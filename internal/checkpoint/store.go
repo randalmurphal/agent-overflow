@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -64,6 +65,22 @@ func (s *Store) CaptureRef(ctx context.Context, workspace, ref string) error {
 	return s.captureToRef(ctx, workspace, ref)
 }
 
+// CopyRef points destRef at the same commit as sourceRef. The copied ref is a
+// new ownership handle for the same immutable snapshot.
+func (s *Store) CopyRef(ctx context.Context, workspace, sourceRef, destRef string) error {
+	oid, err := s.resolveRefCommit(ctx, workspace, sourceRef)
+	if err != nil {
+		return err
+	}
+	if oid == "" {
+		return fmt.Errorf("checkpoint: source ref %q is unavailable", sourceRef)
+	}
+	if _, _, _, err := runGit(ctx, workspace, nil, false, "update-ref", destRef, oid); err != nil {
+		return fmt.Errorf("checkpoint: copy ref %s -> %s: %w", sourceRef, destRef, err)
+	}
+	return nil
+}
+
 func (s *Store) captureToRef(ctx context.Context, workspace, ref string) error {
 	tempDir, err := os.MkdirTemp("", "agent-overflow-checkpoint-")
 	if err != nil {
@@ -92,9 +109,12 @@ func (s *Store) captureToRef(ctx context.Context, workspace, ref string) error {
 		}
 	}
 
-	// Stage every tracked + untracked-not-ignored file in the workspace.
-	if _, _, _, err := runGit(ctx, workspace, env, false, "add", "-A", "--", "."); err != nil {
-		return fmt.Errorf("checkpoint: git add -A: %w", err)
+	// Stage tracked changes and untracked-not-ignored files without invoking
+	// clean/smudge filters from repo config or .gitattributes. Checkpoint
+	// capture runs automatically on user send, so honoring arbitrary filter
+	// commands from an opened repo would be an unwanted execution surface.
+	if err := stageWorktreeNoFilters(ctx, workspace, env); err != nil {
+		return err
 	}
 
 	tree, _, _, err := runGit(ctx, workspace, env, false, "write-tree")
@@ -120,6 +140,80 @@ func (s *Store) captureToRef(ctx context.Context, workspace, ref string) error {
 		return fmt.Errorf("checkpoint: update-ref %s: %w", ref, err)
 	}
 	return nil
+}
+
+func stageWorktreeNoFilters(ctx context.Context, workspace string, env []string) error {
+	changed, _, _, err := runGit(ctx, workspace, env, false,
+		"ls-files", "-z", "--modified", "--deleted", "--others", "--exclude-standard")
+	if err != nil {
+		return fmt.Errorf("checkpoint: list worktree changes: %w", err)
+	}
+	seen := map[string]struct{}{}
+	for _, p := range strings.Split(changed, "\x00") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		info, statErr := os.Lstat(filepath.Join(workspace, p))
+		if errors.Is(statErr, os.ErrNotExist) {
+			if _, _, _, err := runGit(ctx, workspace, env, true,
+				"update-index", "--force-remove", "--", p); err != nil {
+				return fmt.Errorf("checkpoint: stage deletion %s: %w", p, err)
+			}
+			continue
+		}
+		if statErr != nil {
+			return fmt.Errorf("checkpoint: inspect %s: %w", p, statErr)
+		}
+		mode := gitIndexMode(info.Mode())
+		oid, err := hashWorktreePathNoFilters(ctx, workspace, p, info.Mode())
+		if err != nil {
+			return fmt.Errorf("checkpoint: hash %s: %w", p, err)
+		}
+		if oid == "" {
+			return fmt.Errorf("checkpoint: hash %s returned empty oid", p)
+		}
+		if _, _, _, err := runGit(ctx, workspace, env, false,
+			"update-index", "--add", "--cacheinfo", mode, oid, p); err != nil {
+			return fmt.Errorf("checkpoint: stage %s: %w", p, err)
+		}
+	}
+	return nil
+}
+
+func hashWorktreePathNoFilters(ctx context.Context, workspace, p string, mode os.FileMode) (string, error) {
+	if mode&os.ModeSymlink != 0 {
+		target, err := os.Readlink(filepath.Join(workspace, p))
+		if err != nil {
+			return "", err
+		}
+		stdout, _, _, err := runGitWithStdin(ctx, workspace, nil, []byte(target), false,
+			"hash-object", "-w", "--stdin")
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(stdout), nil
+	}
+	oid, _, _, err := runGit(ctx, workspace, nil, false,
+		"hash-object", "--no-filters", "-w", "--", p)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(oid), nil
+}
+
+func gitIndexMode(mode os.FileMode) string {
+	if mode&os.ModeSymlink != 0 {
+		return "120000"
+	}
+	if mode&0o111 != 0 {
+		return "100755"
+	}
+	return "100644"
 }
 
 // DiffRefToRef returns the unified patch between two checkpoint refs.
@@ -253,6 +347,13 @@ func (s *Store) RestoreWorktreePaths(ctx context.Context, workspace, ref string,
 	if len(paths) == 0 {
 		return nil
 	}
+	paths, err := validateScopedWorktreePaths(workspace, paths)
+	if err != nil {
+		return err
+	}
+	if len(paths) == 0 {
+		return nil
+	}
 	oid, err := s.resolveRefCommit(ctx, workspace, ref)
 	if err != nil {
 		return err
@@ -323,10 +424,90 @@ func (s *Store) partitionPathsAtRef(ctx context.Context, workspace, oid string, 
 	return existing, missing, nil
 }
 
+func validateScopedWorktreePaths(workspace string, paths []string) ([]string, error) {
+	workspaceAbs, err := filepath.Abs(workspace)
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: resolve workspace %q: %w", workspace, err)
+	}
+	workspaceAbs = filepath.Clean(workspaceAbs)
+	out := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		cleaned, err := cleanWorkspaceRelativePath(p)
+		if err != nil {
+			return nil, fmt.Errorf("checkpoint: unsafe path %q: %w", p, err)
+		}
+		if cleaned == "" {
+			continue
+		}
+		if err := rejectSymlinkedParents(workspaceAbs, cleaned); err != nil {
+			return nil, err
+		}
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		out = append(out, cleaned)
+	}
+	return out, nil
+}
+
+func cleanWorkspaceRelativePath(p string) (string, error) {
+	p = strings.TrimSpace(filepath.ToSlash(p))
+	if p == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(p, ":") {
+		return "", fmt.Errorf("pathspec magic is not allowed")
+	}
+	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") {
+		return "", fmt.Errorf("absolute paths are not allowed")
+	}
+	cleaned := filepath.ToSlash(filepath.Clean(p))
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("path must stay inside the workspace")
+	}
+	for _, part := range strings.Split(cleaned, "/") {
+		if part == "" || part == "." || part == ".." {
+			return "", fmt.Errorf("path contains invalid component %q", part)
+		}
+		if part == ".git" {
+			return "", fmt.Errorf("paths under .git are not allowed")
+		}
+	}
+	return cleaned, nil
+}
+
+func rejectSymlinkedParents(workspaceAbs, relPath string) error {
+	parts := strings.Split(relPath, "/")
+	current := workspaceAbs
+	for _, part := range parts {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("checkpoint: inspect path %s: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("checkpoint: path %q crosses symlink %q", relPath, part)
+		}
+	}
+	return nil
+}
+
 // DiffRefToRefScoped is DiffRefToRef constrained to a pathspec. Empty
 // `paths` returns an empty patch — the caller's path filter is the
 // authority on what's worth diffing.
 func (s *Store) DiffRefToRefScoped(ctx context.Context, workspace, fromRef, toRef string, paths []string) ([]byte, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	paths, err := validateScopedWorktreePaths(workspace, paths)
+	if err != nil {
+		return nil, err
+	}
 	if len(paths) == 0 {
 		return nil, nil
 	}
@@ -353,6 +534,80 @@ func (s *Store) DiffRefToRefScoped(ctx context.Context, workspace, fromRef, toRe
 		return nil, fmt.Errorf("checkpoint: diff %s..%s scoped: %w", fromRef, toRef, err)
 	}
 	return []byte(stdout), nil
+}
+
+// DiffRefToWorktreeScoped returns the unified patch from a checkpoint ref to
+// the current worktree for a known path set. The path list is the authority:
+// empty paths return an empty patch.
+func (s *Store) DiffRefToWorktreeScoped(ctx context.Context, workspace, ref string, paths []string) ([]byte, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	paths, err := validateScopedWorktreePaths(workspace, paths)
+	if err != nil {
+		return nil, err
+	}
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	oid, err := s.resolveRefCommit(ctx, workspace, ref)
+	if err != nil {
+		return nil, err
+	}
+	if oid == "" {
+		return nil, fmt.Errorf("checkpoint: ref %q is unavailable", ref)
+	}
+	args := append([]string{
+		"diff", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv",
+		oid, "--",
+	}, paths...)
+	stdout, _, _, err := runGitWithStdoutLimit(ctx, workspace, nil, false, maxDiffOutputBytes, args...)
+	if errors.Is(err, errGitOutputTooLarge) {
+		return nil, fmt.Errorf("checkpoint: diff %s..worktree exceeds %d byte limit", ref, maxDiffOutputBytes)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: diff %s..worktree scoped: %w", ref, err)
+	}
+
+	remainingBytes := maxDiffOutputBytes - int64(len(stdout))
+	parts := make([]string, 0, 2)
+	if t := strings.TrimSpace(stdout); t != "" {
+		parts = append(parts, t)
+	}
+
+	untracked, _, code, err := runGit(ctx, workspace, nil, true,
+		append([]string{"ls-files", "--others", "--exclude-standard", "-z", "--"}, paths...)...)
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: ls-files scoped others: %w", err)
+	}
+	if code == 0 {
+		for _, p := range strings.Split(untracked, "\x00") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			if remainingBytes <= 0 {
+				return nil, fmt.Errorf("checkpoint: diff %s..worktree exceeds %d byte limit", ref, maxDiffOutputBytes)
+			}
+			patch, _, exit, err := runGitWithStdoutLimit(ctx, workspace, nil, true, remainingBytes,
+				"diff", "--no-index", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv", "--",
+				"/dev/null", p)
+			if errors.Is(err, errGitOutputTooLarge) {
+				return nil, fmt.Errorf("checkpoint: diff %s..worktree exceeds %d byte limit", ref, maxDiffOutputBytes)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("checkpoint: diff new file %s: %w", p, err)
+			}
+			if exit != 0 && exit != 1 {
+				return nil, fmt.Errorf("checkpoint: diff new file %s exited %d", p, exit)
+			}
+			if t := strings.TrimSpace(patch); t != "" {
+				parts = append(parts, t)
+			}
+			remainingBytes -= int64(len(patch))
+		}
+	}
+	return []byte(strings.Join(parts, "\n\n")), nil
 }
 
 // DiffWorkspaceVsHead returns the unified patch for everything currently
@@ -430,6 +685,29 @@ func (s *Store) CleanupThread(ctx context.Context, workspace, threadID string) e
 	for _, ref := range refs {
 		if _, _, _, err := runGit(ctx, workspace, nil, true, "update-ref", "-d", ref); err != nil {
 			errs = append(errs, fmt.Errorf("checkpoint: delete ref %s: %w", ref, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// CleanupLegacyTurnRefs deletes retired turn-index checkpoint refs for a
+// thread. Message checkpoints use refs under `message/`; keeping old `turn/`
+// refs after the v40 DB rebuild would leave hidden snapshots with no metadata
+// row left to manage or clean up.
+func (s *Store) CleanupLegacyTurnRefs(ctx context.Context, workspace, threadID string) error {
+	stdout, _, _, err := runGit(ctx, workspace, nil, false,
+		"for-each-ref", "--format=%(refname)", LegacyTurnRefPattern(threadID))
+	if err != nil {
+		return fmt.Errorf("checkpoint: list legacy turn refs: %w", err)
+	}
+	var errs []error
+	for _, ref := range strings.Split(stdout, "\n") {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			continue
+		}
+		if _, _, _, err := runGit(ctx, workspace, nil, true, "update-ref", "-d", ref); err != nil {
+			errs = append(errs, fmt.Errorf("checkpoint: delete legacy ref %s: %w", ref, err))
 		}
 	}
 	return errors.Join(errs...)
@@ -519,6 +797,42 @@ func runGit(
 	cmd.Dir = workspace
 	cmd.Env = gitEnv(extraEnv)
 	cmd.WaitDelay = gitPipeWaitDelay
+	var out, errBuf strings.Builder
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	runErr := cmd.Run()
+	stdout = out.String()
+	stderr = errBuf.String()
+	if runErr == nil {
+		return stdout, stderr, 0, nil
+	}
+	if errors.Is(runErr, exec.ErrWaitDelay) {
+		return stdout, stderr, 0, fmt.Errorf("git %s: output pipes did not close before wait delay: %w",
+			strings.Join(args, " "), runErr)
+	}
+	if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
+		code = exitErr.ExitCode()
+		if allowNonZero {
+			return stdout, stderr, code, nil
+		}
+	}
+	return stdout, stderr, code, fmt.Errorf("git %s: exit=%d: %s",
+		strings.Join(args, " "), code, strings.TrimSpace(stderr))
+}
+
+func runGitWithStdin(
+	ctx context.Context,
+	workspace string,
+	extraEnv []string,
+	stdin []byte,
+	allowNonZero bool,
+	args ...string,
+) (stdout, stderr string, code int, err error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = workspace
+	cmd.Env = gitEnv(extraEnv)
+	cmd.WaitDelay = gitPipeWaitDelay
+	cmd.Stdin = bytes.NewReader(stdin)
 	var out, errBuf strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf

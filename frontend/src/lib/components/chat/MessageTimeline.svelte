@@ -38,6 +38,7 @@
   import WaitGroup from './WaitGroup.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { recordTimelineRenderTrace } from './messageTimelineTrace';
+  import type { UserMessageActions } from './userMessageActions';
 
   // Initial item-size estimate for virtua. Real sizes come from the
   // per-item ResizeObserver virtua wraps each row in; this constant only
@@ -64,9 +65,11 @@
   let {
     pane,
     onImageExpand,
+    userMessageActions,
   }: {
     pane: ThreadPane;
     onImageExpand?: (preview: ExpandedImagePreview) => void;
+    userMessageActions?: UserMessageActions;
   } = $props();
 
   function shouldRenderTurnBoundaryBefore(index: number, node: TimelineNode): boolean {
@@ -441,12 +444,13 @@
             item={node.item}
             orphan={node.orphan === true}
             {onImageExpand}
+            {userMessageActions}
             codexSubagentReceiverLabels={codexReceiverLabels}
           />
         {:else if node.kind === 'group'}
           <SubagentGroup {pane} group={node} {depth} {renderNode} />
         {:else if node.kind === 'wait_group'}
-          <WaitGroup {pane} group={node} {onImageExpand} />
+          <WaitGroup {pane} group={node} {onImageExpand} {userMessageActions} />
         {:else}
           <InlineSubagentGroup group={node} {depth} {renderNode} />
         {/if}

@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -555,13 +556,13 @@ func TestPickInitialFloorTurn_SingleHugeTurnLoadsAnyway(t *testing.T) {
 
 // idForTurn and idForTurnItem synthesize stable ids for the seed helpers.
 // Sequential ids make the ordered-slice assertions human-readable when a
-// test fails. Reuses the package-level `itoa` from items_delete_test.go.
+// test fails.
 func idForTurn(turn int) string {
-	return "turn-" + itoa(turn)
+	return "turn-" + strconv.Itoa(turn)
 }
 
 func idForTurnItem(turn, item int) string {
-	return "t" + itoa(turn) + "-i" + itoa(item)
+	return "t" + strconv.Itoa(turn) + "-i" + strconv.Itoa(item)
 }
 
 func collectIDs(items []Item) []string {

@@ -299,7 +299,7 @@ Two cadences run in parallel:
 | Cadence | Driver | Granularity | What it controls |
 |---|---|---|---|
 | Frontend visibility | `currentRoundID` / `setOpenRound` / `takeOpenRound` | Per wire round | `provider:turn_started`/`provider:turn_completed` emissions — working indicator, Stop button, composer block, read-state projection |
-| Persistence | `claimTurnSettlement` / `settleTurnRow` | Per logical turn (turnIndex) | `turns` row UPDATE, checkpoint capture, streaming-item settlement |
+| Persistence | `claimTurnSettlement` / `settleTurnRow` | Per logical turn (turnIndex) | `turns` row UPDATE, streaming-item settlement |
 
 Round entry points:
 

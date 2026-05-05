@@ -18,7 +18,8 @@ the migrations win.
 | `design_artifacts` | Design-mode HTML artifacts. `html_path` points at the on-disk file. |
 | `attachments` | Message attachments. `mime_type`, `size`, `relative_path` on disk. |
 | `turns` | Per-turn records (one row per user → assistant round-trip). `turn_id` PK, `thread_id` FK, `turn_index`, `started_at`, nullable `completed_at` (NULL = in-flight or crashed), `stop_reason`, `assistant_message_id`, `token_usage_json`, `error_message`. |
-| `thread_checkpoints` | Git checkpoint metadata per thread. `checkpoint_turn_count` is the canonical boundary: `0` is before the first turn, `N` is after completed turn `N`. Rows also carry `status`, compact `files` JSON, `tool_paths`, `captured_at`, `ref_name`, and `workspace_path`. |
+| `thread_checkpoints` | Git checkpoint metadata captured immediately before a real user message is sent. `user_item_id` is the canonical target for revert/fork; `turn_index` is retained for ordering. Rows also carry provider rollback ids (`provider_user_message_id`, `provider_parent_uuid`), `status`, compact `files` JSON, `captured_at`, `ref_name`, and `workspace_path`. |
+| `thread_tracked_files` | Workspace-relative files the agent touched in a thread, keyed by the turn where the structured edit/file-change tool completed successfully. Used to scope conversation-and-files restore plus agent-only diff previews. Bash side effects and failed edits are intentionally not inferred. |
 | `proposed_plans` | Per-plan state layered over proposed-plan payload items. Tracks immutable plan item id, thread id, revision parent item id, version, implementation marker, implementation thread/item ids, and timestamps. |
 | `proposed_plan_comments` | Inline review comments anchored to one proposed-plan version. Tracks draft/sent/resolved status, line range, selected text, body, sent turn id, and timestamps. |
 | `chat_bar_favorites` | Starred composer menu entries for models and discussion templates. Model favorites include provider + model id; discussion favorites store the discussion definition id. |
@@ -50,7 +51,11 @@ implementation markers and revision parent links.
 - `idx_channels_thread`, `idx_design_artifacts_thread` — per-thread feature lookups.
 - `turns_thread_index` on `turns(thread_id, turn_index DESC)` — backs `ListRecentTurns` for the newest-first rehydration the frontend runs on thread-switch.
 - `idx_turns_thread_completed` on `turns(thread_id, completed_at DESC) WHERE completed_at IS NOT NULL` — backs sidebar read-state checks against the newest completed turn.
-- `idx_thread_checkpoints_thread_count_unique` on `thread_checkpoints(thread_id, checkpoint_turn_count)` — enforces one checkpoint per thread boundary and backs checkpoint drawer listing, range diff, and revert lookups.
+- `thread_checkpoints UNIQUE(thread_id, user_item_id)` — enforces one checkpoint per real user message and backs message-keyed revert/fork lookups.
+- `idx_thread_checkpoints_thread_turn` on `thread_checkpoints(thread_id, turn_index)` — backs checkpoint drawer listing and previous-checkpoint lookup.
+- `idx_thread_checkpoints_provider_user` on `thread_checkpoints(thread_id, provider_user_message_id) WHERE provider_user_message_id <> ''` — updates the row when provider replay echoes the optimistic user message id.
+- `thread_tracked_files PRIMARY KEY(thread_id, turn_index, path)` — de-dupes touched paths per thread turn.
+- `idx_thread_tracked_files_thread_turn` on `thread_tracked_files(thread_id, turn_index)` — backs revert scoped to the selected message and later turns.
 - `idx_proposed_plans_thread_version` on `proposed_plans(thread_id, version DESC)` — backs newest-first plan sidebar/history queries.
 - `idx_proposed_plan_comments_plan` on `proposed_plan_comments(thread_id, plan_item_id, status, start_line, created_at)` — backs per-plan review comment listing and draft/sent counts.
 - `idx_chat_bar_favorites_created` on `chat_bar_favorites(created_at DESC)` — backs newest-first favorite listing in the composer menu.
@@ -68,7 +73,7 @@ implementation markers and revision parent links.
 - WAL mode is verified on startup (not just requested). If `journal_mode=WAL`
   didn't take, the app logs a visible warning and continues — the store is
   still correct under rollback journaling, but the warning is the only
-  signal that checkpointing isn't happening. See invariant 19.
+  signal that SQLite concurrency has degraded. See invariant 19.
 
 ## What Goes in SQLite vs What Doesn't
 

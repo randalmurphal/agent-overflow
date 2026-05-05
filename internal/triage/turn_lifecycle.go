@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"agent-overflow/internal/diffsummary"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 
@@ -19,13 +18,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// handleTurnStart opens the per-turn span, seeds bookkeeping, and (if
-// a checkpoint store is wired up) captures a baseline snapshot of the
-// workspace. It also writes the `turns` row for this turn (completed_at
-// NULL) and emits `provider:turn_started` so the frontend flips
-// `pane.activeTurn` on. Checkpoint failure is NOT fatal to the turn —
-// it surfaces as a `checkpoint:error` event the UI renders as a
-// dismissible banner, and the turn proceeds.
+// handleTurnStart opens the per-turn span, seeds bookkeeping, writes the
+// `turns` row for this turn (completed_at NULL), and emits
+// `provider:turn_started` so the frontend flips `pane.activeTurn` on.
 //
 // Wire-round vs logical-turn cadence: this handler is the canonical
 // start of round 1 of every logical turn. It both seeds per-turn
@@ -50,41 +45,6 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 	}
 	r.setOpenTurn(evt.ThreadID, turnIndex)
 	r.openTurnSpan(evt)
-	r.captureBaselineForTurn(context.Background(), evt.ThreadID, turnIndex)
-
-	// Capture the PRIOR turn's completion checkpoint at the moment the
-	// user sends the next message. This matches Claude Code's behavior
-	// (fileHistoryMakeSnapshot fires at user-prompt-submit, not at turn
-	// end — see QueryEngine.ts:641-655 and handlePromptSubmit.ts:528).
-	//
-	// Why user-send-time is the right boundary:
-	//
-	//   1. The captured state = working tree at the moment the user
-	//      committed to the new prompt. "Revert to before this prompt"
-	//      maps directly to this checkpoint.
-	//   2. It naturally captures the multi-result-per-turn case (Claude's
-	//      task_notification → CLI-synthesized `type:"user"` envelope →
-	//      second `result`). Both halves' writes have settled by the
-	//      time the next user-send arrives, so the capture is
-	//      cumulative without any merge gymnastics.
-	//   3. It naturally captures any manual edits the user made between
-	//      turns — those are part of the user's state at send-time.
-	//
-	// Only fires for turnIndex > 0 because turn 0's pre-state is the
-	// baseline checkpoint already captured above.
-	//
-	// Runs synchronously rather than in a goroutine: the captured state
-	// MUST reflect the working tree as it existed BEFORE any new-turn
-	// tools start writing. An async capture races against tool_use
-	// blocks the model emits as soon as the provider write returns, and
-	// could include early new-turn writes in what's supposed to be the
-	// prior-turn checkpoint. The latency cost (hundreds of ms of git
-	// commands) is the price of correctness; if this becomes a UX
-	// problem we'll need a different mechanism (e.g. shadow-clone of
-	// the workspace) rather than racing the model.
-	if turnIndex > 0 {
-		r.capturePriorTurnCheckpoint(context.Background(), evt.ThreadID, turnIndex-1)
-	}
 
 	startedAt := eventTimestampMillis(evt)
 	turnID := resolveTurnID(evt, turnIndex)
@@ -300,307 +260,6 @@ func (r *Router) openTurnSpan(evt provider.ProviderEvent) {
 	)
 }
 
-// captureBaselineForTurn runs checkpoint capture + SQLite persistence for the
-// current turn boundary. Errors are logged and surfaced as activity events so the UI
-// can show "checkpoints unavailable" without blocking the turn.
-//
-// The operation is idempotent by design. A provider can fire EventTurnStart
-// more than once for the same (thread, turn) — e.g. Claude resending
-// system.init after an interrupt — and an earlier capture attempt can have
-// partially succeeded (git ref written but DB insert failed, or vice versa).
-// Before writing a fresh pair we tear down any stale row + ref so we never
-// have to reconcile drift between git and SQLite later. If SaveCheckpoint
-// fails after the new ref is written, we remove the new ref so the two
-// sides stay in lockstep — either both exist, or neither does.
-func (r *Router) captureBaselineForTurn(ctx context.Context, threadID string, currentTurnIndex int) {
-	cap := r.checkpointStore()
-	if cap == nil {
-		return
-	}
-	if currentTurnIndex != 0 {
-		return
-	}
-	thread, err := r.store.GetThread(threadID)
-	if err != nil {
-		log.Printf("triage: checkpoint load thread %s: %v", threadID, err)
-		return
-	}
-	workspace := checkpointWorkspacePath(thread)
-	if workspace == "" {
-		return
-	}
-	if !cap.IsGitRepository(ctx, workspace) {
-		r.emit("checkpoint:unavailable", map[string]any{
-			"threadId": threadID,
-			"reason":   "not-a-git-repo",
-		})
-		return
-	}
-	turnCount := 0
-	if r.markTurnCaptured(threadID, turnCount) {
-		return // already captured for this (thread, turn)
-	}
-
-	// Idempotency guard: any pre-existing row for (thread, turn) means a
-	// previous capture partially succeeded or we're re-capturing. Drop both
-	// sides — DB row first (SQLite write is the cheap one to roll back),
-	// then the backing git ref — so the upcoming capture starts clean.
-	if staleRef, hadRow, err := r.store.DeleteCheckpointByThreadTurnCount(threadID, turnCount); err != nil {
-		log.Printf("triage: checkpoint stale row thread=%s turn=%d: %v", threadID, turnCount, err)
-		r.unmarkTurnCaptured(threadID, turnCount)
-		return
-	} else if hadRow && staleRef.RefName != "" {
-		if err := cap.DeleteRef(ctx, staleRef.WorkspacePath, staleRef.RefName); err != nil {
-			log.Printf("triage: checkpoint delete stale ref %s: %v", staleRef.RefName, err)
-		}
-	}
-
-	ref, err := cap.CaptureBaseline(ctx, workspace, threadID, turnCount)
-	if err != nil {
-		r.unmarkTurnCaptured(threadID, turnCount)
-		r.emit("checkpoint:error", map[string]any{
-			"threadId":            threadID,
-			"turnIndex":           turnCount,
-			"checkpointTurnCount": turnCount,
-			"error":               err.Error(),
-		})
-		log.Printf("triage: checkpoint capture thread=%s turn=%d: %v", threadID, turnCount, err)
-		return
-	}
-	now := time.Now().UnixMilli()
-	record := store.Checkpoint{
-		ID:                  uuid.NewString(),
-		ThreadID:            threadID,
-		CheckpointTurnCount: turnCount,
-		RefName:             ref,
-		Status:              "ready",
-		CapturedAt:          now,
-		WorkspacePath:       workspace,
-	}
-	if err := r.store.SaveCheckpoint(record); err != nil {
-		log.Printf("triage: checkpoint persist thread=%s turn=%d: %v", threadID, turnCount, err)
-		// DB row never landed — don't let the git ref linger.
-		if derr := cap.DeleteRef(ctx, workspace, ref); derr != nil {
-			log.Printf("triage: checkpoint rollback ref %s: %v", ref, derr)
-		}
-		r.unmarkTurnCaptured(threadID, turnCount)
-		return
-	}
-	r.emit("checkpoint:captured", map[string]any{
-		"threadId":            threadID,
-		"turnIndex":           turnCount,
-		"checkpointTurnCount": turnCount,
-		"capturedAt":          now,
-	})
-}
-
-// capturePriorTurnCheckpoint reconstructs a TurnCompletedEvent from the
-// stored prior-turn row and runs the completion checkpoint capture
-// against it. Called from handleTurnStart at user-send time so the
-// captured state reflects the working tree at the moment the user
-// committed to a new prompt — including any post-turn-end writes from
-// the multi-result-per-turn case and any manual edits between turns.
-//
-// A missing prior turn row (e.g. crash recovery resuming on a thread
-// whose first turn never wrote a turns row) is non-fatal: skip the
-// capture, leave the prior-turn checkpoint as whatever already exists
-// (typically the baseline). The next user-send still captures whatever
-// state exists at that moment for the next prior turn.
-//
-// Idempotent against re-fired EventTurnStart for the same turnIndex
-// (Claude `system.init` resend after interrupt). The first call marks
-// the prior turn captured; subsequent calls for the same prior turn
-// no-op rather than re-running multiple sequential git commands and
-// wastefully replacing an already-correct checkpoint. The marker
-// clears at CleanupThread.
-func (r *Router) capturePriorTurnCheckpoint(ctx context.Context, threadID string, priorTurnIndex int) {
-	if priorTurnIndex < 0 {
-		return
-	}
-	// Guard on (priorTurnIndex+1) — capturedTurns is keyed by
-	// checkpointTurnCount (= priorTurnIndex+1), matching the keying
-	// already used for baseline (turnCount=0).
-	if r.markTurnCaptured(threadID, priorTurnIndex+1) {
-		return
-	}
-	turn, found, err := r.store.GetTurnByThreadIndex(threadID, priorTurnIndex)
-	if err != nil {
-		log.Printf("triage: prior-turn checkpoint lookup thread=%s turn=%d: %v", threadID, priorTurnIndex, err)
-		r.unmarkTurnCaptured(threadID, priorTurnIndex+1)
-		return
-	}
-	if !found {
-		r.unmarkTurnCaptured(threadID, priorTurnIndex+1)
-		return
-	}
-	completedAt := int64(0)
-	if turn.CompletedAt != nil {
-		completedAt = *turn.CompletedAt
-	}
-	settled := TurnCompletedEvent{
-		ThreadID:           threadID,
-		TurnID:             turn.TurnID,
-		TurnIndex:          priorTurnIndex,
-		StartedAt:          turn.StartedAt,
-		CompletedAt:        completedAt,
-		StopReason:         turn.StopReason,
-		AssistantMessageID: turn.AssistantMessageID,
-		ErrorMessage:       turn.ErrorMessage,
-		Aborted:            turn.StopReason == "interrupted",
-	}
-	if err := r.captureCompletedTurnCheckpoint(ctx, settled); err != nil {
-		// Roll back the dedup mark on failure so a subsequent re-fired
-		// EventTurnStart can retry the capture instead of being silently
-		// skipped. This matches captureBaselineForTurn's per-failure
-		// unmark pattern and preserves the prior behavior where every
-		// EventTurnComplete would retry the checkpoint.
-		r.unmarkTurnCaptured(threadID, priorTurnIndex+1)
-	}
-}
-
-// captureCompletedTurnCheckpoint persists the post-turn checkpoint
-// for `settled`. Returns nil on success (including the soft-skip cases
-// where there's no checkpoint store, no workspace, or the workspace
-// isn't a git repo — those are intentional no-ops, not failures).
-// Returns a non-nil error when capture was attempted and failed; the
-// caller (capturePriorTurnCheckpoint) uses that to roll back its
-// dedup mark so a subsequent re-fired EventTurnStart can retry the
-// capture instead of being silently skipped.
-func (r *Router) captureCompletedTurnCheckpoint(ctx context.Context, settled TurnCompletedEvent) error {
-	cap := r.checkpointStore()
-	if cap == nil {
-		return nil
-	}
-	thread, err := r.store.GetThread(settled.ThreadID)
-	if err != nil {
-		log.Printf("triage: checkpoint complete load thread %s: %v", settled.ThreadID, err)
-		return fmt.Errorf("checkpoint complete load thread: %w", err)
-	}
-	workspace := checkpointWorkspacePath(thread)
-	if workspace == "" || !cap.IsGitRepository(ctx, workspace) {
-		return nil
-	}
-
-	turnCount := settled.TurnIndex + 1
-	if turnCount < 1 {
-		return nil
-	}
-	previous, ok, err := r.store.GetCheckpointByTurnCount(settled.ThreadID, turnCount-1)
-	if err != nil {
-		log.Printf("triage: checkpoint complete previous thread=%s turn=%d: %v", settled.ThreadID, turnCount-1, err)
-		return fmt.Errorf("checkpoint complete previous: %w", err)
-	}
-	hasPrevious := ok
-
-	if staleRef, hadRow, err := r.store.DeleteCheckpointByThreadTurnCount(settled.ThreadID, turnCount); err != nil {
-		log.Printf("triage: checkpoint complete stale row thread=%s turn=%d: %v", settled.ThreadID, turnCount, err)
-		return fmt.Errorf("checkpoint complete stale row: %w", err)
-	} else if hadRow && staleRef.RefName != "" {
-		if err := cap.DeleteRef(ctx, staleRef.WorkspacePath, staleRef.RefName); err != nil {
-			log.Printf("triage: checkpoint complete delete stale ref %s: %v", staleRef.RefName, err)
-		}
-	}
-
-	ref, err := cap.CaptureBaseline(ctx, workspace, settled.ThreadID, turnCount)
-	if err != nil {
-		r.emit("checkpoint:error", map[string]any{
-			"threadId":            settled.ThreadID,
-			"turnIndex":           turnCount,
-			"checkpointTurnCount": turnCount,
-			"error":               err.Error(),
-		})
-		log.Printf("triage: checkpoint complete capture thread=%s turn=%d: %v", settled.ThreadID, turnCount, err)
-		return fmt.Errorf("checkpoint complete capture: %w", err)
-	}
-	var files []diffsummary.File
-	if hasPrevious {
-		files, err = cap.DiffRefToRefSummary(ctx, workspace, previous.RefName, ref)
-		if err != nil {
-			log.Printf("triage: checkpoint complete diff summary thread=%s turn=%d: %v", settled.ThreadID, turnCount, err)
-			files = nil
-		}
-	}
-	// Drain the per-turn committed-paths set and normalize against the
-	// workspace. Deduped + sorted so the persisted JSON is deterministic.
-	// Use settled.TurnIndex (the original index from the provider)
-	// because path tracking keys on that, not on turnCount which is
-	// settled+1. The accumulator carries the cumulative paths
-	// (including any from the multi-result-per-turn second half — the
-	// settleToolPaths fallback in router.go keeps them flowing into
-	// committedToolPaths after openTurns is cleared) because
-	// committedToolPaths is intentionally NOT swept by clearOpenTurn.
-	rawPaths := r.drainCommittedToolPaths(settled.ThreadID, settled.TurnIndex)
-	toolPaths := normalizeWorkspaceRelativePaths(rawPaths, workspace)
-	now := time.Now().UnixMilli()
-	record := store.Checkpoint{
-		ID:                  uuid.NewString(),
-		ThreadID:            settled.ThreadID,
-		CheckpointTurnCount: turnCount,
-		RefName:             ref,
-		Status:              checkpointStatusForTurn(settled),
-		Files:               files,
-		ToolPaths:           toolPaths,
-		CapturedAt:          now,
-		WorkspacePath:       workspace,
-	}
-	if err := r.store.SaveCheckpoint(record); err != nil {
-		log.Printf("triage: checkpoint complete persist thread=%s turn=%d: %v", settled.ThreadID, turnCount, err)
-		if derr := cap.DeleteRef(ctx, workspace, ref); derr != nil {
-			log.Printf("triage: checkpoint complete rollback ref %s: %v", ref, derr)
-		}
-		return fmt.Errorf("checkpoint complete persist: %w", err)
-	}
-	r.emit("checkpoint:updated", map[string]any{
-		"threadId":            settled.ThreadID,
-		"turnIndex":           turnCount,
-		"checkpointTurnCount": turnCount,
-		"files":               files,
-		"capturedAt":          now,
-	})
-	return nil
-}
-
-func checkpointStatusForTurn(settled TurnCompletedEvent) string {
-	if settled.Aborted {
-		return "interrupted"
-	}
-	if strings.TrimSpace(settled.ErrorMessage) != "" || settled.StopReason == "error" {
-		return "error"
-	}
-	return "ready"
-}
-
-func (r *Router) checkpointStore() CheckpointCapture {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.checkpoints
-}
-
-func (r *Router) markTurnCaptured(threadID string, turnIndex int) bool {
-	key := fmt.Sprintf("%s|%d", threadID, turnIndex)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.capturedTurns[key] {
-		return true
-	}
-	r.capturedTurns[key] = true
-	return false
-}
-
-func (r *Router) unmarkTurnCaptured(threadID string, turnIndex int) {
-	key := fmt.Sprintf("%s|%d", threadID, turnIndex)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.capturedTurns, key)
-}
-
-// checkpointWorkspacePath picks the on-disk directory we should snapshot.
-// WorkspacePath is the effective provider cwd and may be the project root or a
-// registered worktree.
-func checkpointWorkspacePath(t store.Thread) string {
-	return t.WorkspacePath
-}
-
 func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// Two-cadence shape (see internal/triage/AGENTS.md "Wire-round vs
 	// logical-turn"):
@@ -616,8 +275,8 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	//      turn_completed per round.
 	//
 	//   2. Per-LOGICAL-TURN persistence (claimTurnSettlement-gated below).
-	//      The `turns` row UPDATE, checkpoint capture, streaming-item
-	//      settlement, and force-close-orphans pass run once per
+	//      The `turns` row UPDATE, streaming-item settlement, and
+	//      force-close-orphans pass run once per
 	//      (thread, turn_index). A second wire complete for the same
 	//      logical turn — the multi-result-per-turn pattern, where
 	//      Claude's CLI synthesizes a `type:"user"` envelope from a
@@ -761,12 +420,9 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// per-round `provider:turn_completed` emission at the top of this
 	// handler.
 	//
-	// Checkpoint capture for THIS turn does NOT happen here. It runs at
-	// the next handleTurnStart (capturePriorTurnCheckpoint), matching
-	// Claude Code's user-prompt-submit snapshot pattern. The diff panel
-	// surfaces "what changed in this turn" by diffing the prior
-	// baseline against the current working tree until the next
-	// user-send commits a checkpoint.
+	// Checkpoint capture does NOT happen here. Message checkpoints are
+	// captured by app_send.go before provider stdin/RPC dispatch so the
+	// snapshot maps directly to "before this user message".
 	r.settleTurnRow(evt, turnIndex, now, meta, persistErr)
 
 	r.clearOpenTurn(evt.ThreadID)
@@ -1118,8 +774,8 @@ func (r *Router) openRoundID(threadID string) string {
 //
 //   - **Per-turn flow-control state** swept HERE: openTurns,
 //     interruptQueue, streamingItemCounts, activeTextBlocks/Thinking,
-//     pendingCommandDiffs, pendingToolPaths, pendingApprovals (and
-//     siblings). These maps answer "what's mid-turn right now."
+//     pendingCommandDiffs, pendingApprovals (and siblings). These maps
+//     answer "what's mid-turn right now."
 //   - **Id-allocating counters** (segmentIndexByScope, blockIndexByScope,
 //     errorSeqByScope, terminalInteractionSeq): cleared at CleanupThread,
 //     with a selective re-init reset in setOpenTurn. Wiping HERE would
@@ -1128,13 +784,9 @@ func (r *Router) openRoundID(threadID string) string {
 //     `user` envelope → second result, fatal-error synthetic-truncate
 //     then real wire complete) — see the regression coverage in
 //     multi_result_test.go.
-//   - **User-send-time carry-over state** (committedToolPaths,
-//     settledTurns, capturedTurns): survives turn-end by design.
-//     committedToolPaths drains at the next user-send when
-//     capturePriorTurnCheckpoint runs (matching Claude Code's
-//     fileHistoryMakeSnapshot at user-prompt-submit). settledTurns
-//     clears in setOpenTurn (so a re-init can re-settle) and
-//     CleanupThread.
+//   - **Logical-turn settlement state** (`settledTurns`) survives
+//     turn-end by design. It clears in setOpenTurn (so a re-init can
+//     re-settle) and CleanupThread.
 //
 // activeTextBlocks/Thinking ARE per-turn flow-control (they guard
 // against re-creating a row mid-stream), so they stay swept here as a
@@ -1147,23 +799,6 @@ func (r *Router) clearOpenTurn(threadID string) {
 		prefix := fmt.Sprintf("%s|%d|", threadID, turnIndex)
 		deleteByPrefix(r.activeTextBlocks, prefix)
 		deleteByPrefix(r.activeThinkingBlocks, prefix)
-		// committedToolPaths is NOT swept here. It survives turn-end
-		// because the prior-turn capture happens at the NEXT turn-start
-		// (capturePriorTurnCheckpoint, called from handleTurnStart) —
-		// matching Claude Code's user-prompt-submit snapshot pattern.
-		// The drain happens inside captureCompletedTurnCheckpoint when
-		// the next user-send commits the prior turn's checkpoint;
-		// CleanupThread sweeps the whole thread's entries when the
-		// session ends without another user-send.
-		//
-		// pendingToolPaths is keyed by `<threadID>|<itemID>` — no turn
-		// component — so a per-thread prefix-sweep is the correct
-		// primitive. Any tool that started in this turn but didn't fire
-		// EventToolComplete (interrupted turn, crashed provider) leaks
-		// here without this sweep. Provider events are serialized per
-		// thread, so a tool from a future turn cannot have entered the
-		// map yet.
-		deleteByPrefix(r.pendingToolPaths, threadID+"|")
 		// pendingCommandDiffs is keyed by `<threadID>:<itemID>` and
 		// stages an inline-diff preview between EventToolStart and
 		// EventToolComplete for command_execution rows. If the matching
@@ -1174,6 +809,7 @@ func (r *Router) clearOpenTurn(threadID string) {
 				delete(r.pendingCommandDiffs, key)
 			}
 		}
+		deleteByPrefix(r.pendingToolPaths, threadID+"|")
 		// pendingApprovals / pendingApprovalItems / pendingUserInputs
 		// are keyed by `<threadID>:<requestID-or-itemID>`. Approvals are
 		// inherently mid-turn — the model issues a control_request, the
@@ -1373,12 +1009,12 @@ func (r *Router) CleanupThread(threadID string) {
 			delete(r.pendingCommandDiffs, key)
 		}
 	}
+	deleteByPrefix(r.pendingToolPaths, threadID+"|")
 	approvalPrefix := threadID + ":"
 	deleteByPrefix(r.pendingApprovals, approvalPrefix)
 	deleteByPrefix(r.pendingApprovalItems, approvalPrefix)
 	deleteByPrefix(r.pendingUserInputs, approvalPrefix)
 	prefix := threadID + "|"
-	deleteByPrefix(r.capturedTurns, prefix)
 	deleteByPrefix(r.segmentIndexByScope, prefix)
 	deleteByPrefix(r.blockIndexByScope, prefix)
 	deleteByPrefix(r.activeTextBlocks, prefix)
@@ -1401,12 +1037,6 @@ func (r *Router) CleanupThread(threadID string) {
 	// a final wire turn-complete (clean stdout EOF, host-side
 	// StopSession during a round).
 	delete(r.currentRoundID, threadID)
-	// Drop tool-path tracking for the thread. pendingToolPaths is
-	// keyed by `<threadID>|<itemID>` and committedToolPaths by
-	// `<threadID>|<turnIndex>` — both share the same `<threadID>|`
-	// prefix.
-	deleteByPrefix(r.pendingToolPaths, prefix)
-	deleteByPrefix(r.committedToolPaths, prefix)
 	delete(r.openAPIRetryRows, threadID)
 	// Drop the Codex background projector's per-thread trackers. A
 	// restarted session never inherits trackers from a prior session —

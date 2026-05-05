@@ -18,6 +18,10 @@ export interface PatchFile {
   lines: PatchLine[];
 }
 
+export function patchFileRowId(file: Pick<PatchFile, 'path'>, index: number): string {
+  return `${index}:${file.path}`;
+}
+
 export function parsePatchFiles(patch: string): PatchFile[] {
   if (!patch.trim()) return [];
   const files: PatchFile[] = [];

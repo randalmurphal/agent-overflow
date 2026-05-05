@@ -13,18 +13,21 @@
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { resolveDisplayItem } from '../../utils/resolveDisplayItem';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
+  import type { UserMessageActions } from './userMessageActions';
 
   let {
     pane,
     item,
     orphan = false,
     onImageExpand,
+    userMessageActions,
     codexSubagentReceiverLabels = new Map<string, string>(),
   }: {
     pane: ThreadPane;
     item: Item;
     orphan?: boolean;
     onImageExpand?: (preview: ExpandedImagePreview) => void;
+    userMessageActions?: UserMessageActions;
     codexSubagentReceiverLabels?: ReadonlyMap<string, string>;
   } = $props();
 
@@ -60,7 +63,12 @@
        survives reloads, forks, and restores. See
        internal/provider/claude/parse_assistant.go and parse_user.go. -->
   {#if displayItem.kind === 'user_text'}
-    <UserMessage {pane} item={displayItem} {onImageExpand} />
+    <UserMessage
+      {pane}
+      item={displayItem}
+      {onImageExpand}
+      actions={userMessageActions}
+    />
   {:else if displayItem.kind === 'tool_call' || displayItem.kind === 'tool_completion'}
     <ToolCallCard {pane} item={displayItem} {codexSubagentReceiverLabels} />
   {:else if displayItem.kind === 'thinking'}

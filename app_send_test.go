@@ -672,14 +672,12 @@ func TestSendMessageIncrementsTurnIndex(t *testing.T) {
 	}
 }
 
-func TestSendMessageFirstTurnCapturesInitialAndCompletedCheckpoints(t *testing.T) {
+func TestSendMessageCapturesCheckpointBeforeEachUserMessage(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.checkpoints = checkpoint.NewStore()
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
-	app.triage.SetCheckpointStore(app.checkpoints)
 
-	workspace := t.TempDir()
-	initE2ERepo(t, workspace)
+	workspace := initCheckpointRepo(t)
 	thread := testThread("thread-send-first-checkpoint")
 	thread.Provider = string(provider.Claude)
 	thread.WorkspacePath = workspace
@@ -711,19 +709,6 @@ func TestSendMessageFirstTurnCapturesInitialAndCompletedCheckpoints(t *testing.T
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 
-	// Phase F: turn-start (and thus baseline checkpoint capture) is now
-	// wire-driven from system/init plus the pending-send marker. The
-	// passthrough Claude binary doesn't emit system/init, so simulate
-	// the wire envelope to drive handleTurnStart through its production
-	// path.
-	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventInit,
-		ThreadID:  thread.ID,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("simulate wire init (first send): %v", err)
-	}
-
 	items, err := app.store.ListItems(thread.ID)
 	if err != nil {
 		t.Fatalf("ListItems() error = %v", err)
@@ -742,36 +727,16 @@ func TestSendMessageFirstTurnCapturesInitialAndCompletedCheckpoints(t *testing.T
 		t.Fatalf("first user item TurnIndex = %d, want 0", userItem.TurnIndex)
 	}
 
-	if _, ok, err := app.store.GetCheckpointByTurnCount(thread.ID, 0); err != nil || !ok {
-		t.Fatalf("checkpoint turn 0 missing after first send: ok=%v err=%v", ok, err)
+	if _, ok, err := app.store.GetCheckpointByUserItemID(thread.ID, userItem.ID); err != nil || !ok {
+		t.Fatalf("checkpoint for first user item missing after first send: ok=%v err=%v", ok, err)
 	}
 
-	writeE2EFile(t, workspace, "agent-output.txt", "created during first turn\n")
-	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:         provider.EventTurnComplete,
-		ThreadID:     thread.ID,
-		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
-		Timestamp:    time.Now(),
-	}); err != nil {
-		t.Fatalf("handle turn complete: %v", err)
-	}
-	// Capture for turn 0 happens at the NEXT user-send (matching Claude
-	// Code's fileHistoryMakeSnapshot at user-prompt-submit). Send a
-	// second message to trigger it. Checkpoint #1 then reflects the
-	// working tree at the moment the user committed to turn 1 —
-	// including the agent-output.txt written during turn 0.
+	writeFile(t, workspace, "agent-output.txt", "created during first turn\n")
 	if err := app.SendMessage(thread.ID, "second turn", nil); err != nil {
 		t.Fatalf("SendMessage(second) error = %v", err)
 	}
-	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventInit,
-		ThreadID:  thread.ID,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("simulate wire init (second send): %v", err)
-	}
-	if _, ok, err := app.store.GetCheckpointByTurnCount(thread.ID, 1); err != nil || !ok {
-		t.Fatalf("checkpoint turn 1 missing after second user-send: ok=%v err=%v", ok, err)
+	if _, ok, err := app.store.GetCheckpointByUserItemID(thread.ID, "user:1"); err != nil || !ok {
+		t.Fatalf("checkpoint for second user item missing after second send: ok=%v err=%v", ok, err)
 	}
 }
 
