@@ -173,7 +173,7 @@
       </div>
     {/if}
     {#if visibleSummary}
-      <p class="whitespace-pre-wrap">{visibleSummary}</p>
+      <p class="whitespace-pre-wrap break-words">{visibleSummary}</p>
     {/if}
     <div class="mt-1.5 flex items-center justify-end gap-1.5 text-[10px] text-fg-hint/70">
       {#if showMessageActions && pane}
