@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	attachmentstore "agent-overflow/internal/attachment"
 	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
@@ -325,11 +327,28 @@ func TestForkThreadRejectsWhenSourceHasActiveTurn(t *testing.T) {
 
 func TestForkThreadFromMessageFirstMessageCreatesEmptyFork(t *testing.T) {
 	app := newTestAppWithStore(t)
+	attachments, err := attachmentstore.NewStore(attachmentstore.Config{RootDir: t.TempDir()}, app.store)
+	if err != nil {
+		t.Fatalf("attachment store: %v", err)
+	}
+	app.attachments = attachments
 	source := testThread("thread-message-fork-first")
 	source.Provider = string(provider.Claude)
 	source.SessionRef = "source-session"
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread: %v", err)
+	}
+	sourceAttachment, err := app.UploadAttachment(source.ID, "one.png", "image/png", tinyPNGBase64())
+	if err != nil {
+		t.Fatalf("UploadAttachment: %v", err)
+	}
+	meta, err := json.Marshal(userMessageMeta{
+		Attachments: []userMessageAttachmentMeta{
+			{ID: sourceAttachment.ID, ThreadID: source.ID, Filename: "one.png", MimeType: "image/png"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal meta: %v", err)
 	}
 	if err := app.store.InsertItem(store.Item{
 		ID:        "user-first",
@@ -339,6 +358,7 @@ func TestForkThreadFromMessageFirstMessageCreatesEmptyFork(t *testing.T) {
 		Kind:      "user_text",
 		Role:      "user",
 		Summary:   "first",
+		Meta:      string(meta),
 		CreatedAt: time.Now().UnixMilli(),
 	}); err != nil {
 		t.Fatalf("InsertItem: %v", err)
@@ -368,6 +388,27 @@ func TestForkThreadFromMessageFirstMessageCreatesEmptyFork(t *testing.T) {
 	}
 	if forked.SessionRef != "" || forked.PendingForkRef != "" {
 		t.Fatalf("fork provider refs = %q/%q, want empty", forked.SessionRef, forked.PendingForkRef)
+	}
+	draft, ok, err := app.store.GetThreadDraft(forked.ID)
+	if err != nil {
+		t.Fatalf("GetThreadDraft: %v", err)
+	}
+	if !ok || draft.Content != "first" {
+		t.Fatalf("fork draft = %+v ok=%v, want selected prompt", draft, ok)
+	}
+	var attachmentIDs []string
+	if err := json.Unmarshal([]byte(draft.Attachments), &attachmentIDs); err != nil {
+		t.Fatalf("decode draft attachments: %v", err)
+	}
+	if len(attachmentIDs) != 1 || attachmentIDs[0] == sourceAttachment.ID {
+		t.Fatalf("fork draft attachments = %v, want one cloned attachment id different from %q", attachmentIDs, sourceAttachment.ID)
+	}
+	forkAttachments, err := app.ListAttachments(forked.ID)
+	if err != nil {
+		t.Fatalf("ListAttachments(fork): %v", err)
+	}
+	if len(forkAttachments) != 1 || forkAttachments[0].ID != attachmentIDs[0] {
+		t.Fatalf("fork attachments = %+v, want cloned draft attachment %q", forkAttachments, strings.Join(attachmentIDs, ","))
 	}
 }
 

@@ -187,6 +187,68 @@ describe('composerDraft store', () => {
     expect(store.content).toBe('backend changed');
   });
 
+  it('reloadFromBackend discards an active local snapshot and hydrates the persisted draft', async () => {
+    const store = createComposerDraftStore({ debounceMs: 50 });
+    await store.setThread('thread-A');
+    store.setContent('local stale draft');
+
+    setBindingMock('GetDraft', async (id: string) => ({
+      threadId: id,
+      content: 'selected checkpoint prompt',
+      attachmentIds: [],
+      terminalChips: [],
+      updatedAt: 2,
+    }));
+
+    await store.reloadFromBackend('thread-A');
+
+    expect(store.content).toBe('selected checkpoint prompt');
+    expect(store.hasPendingSave).toBe(false);
+  });
+
+  it('prepareForExternalDraftReplace waits for active saves and cancels queued stale saves', async () => {
+    let resolveSave: (() => void) | undefined;
+    let resolveSaveStarted: (() => void) | undefined;
+    const saveStarted = new Promise<void>((resolve) => {
+      resolveSaveStarted = resolve;
+    });
+    const blockingSave = new Promise<void>((resolve) => {
+      resolveSave = resolve;
+    });
+    const saveCalls: string[] = [];
+    setBindingMock('SaveDraft', (threadId: string, nextContent: string) => {
+      if (threadId !== 'thread-A') {
+        return Promise.resolve();
+      }
+      saveCalls.push(nextContent);
+      resolveSaveStarted?.();
+      return blockingSave;
+    });
+
+    const store = createComposerDraftStore({ debounceMs: 0 });
+    await store.setThread('thread-A');
+    store.setContent('in flight');
+    const activeFlush = store.flush();
+    await saveStarted;
+
+    store.setContent('queued stale');
+    const prepared = store.prepareForExternalDraftReplace('thread-A').then(() => 'done');
+    await Promise.resolve();
+
+    await expect(Promise.race([
+      prepared,
+      new Promise<'waiting'>((resolve) => setTimeout(() => resolve('waiting'), 0)),
+    ])).resolves.toBe('waiting');
+
+    resolveSave?.();
+    await activeFlush;
+    await expect(prepared).resolves.toBe('done');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    expect(saveCalls).toEqual(['in flight']);
+    expect(store.hasPendingSave).toBe(false);
+  });
+
   it('ignores stale hydrate responses from superseded thread switches', async () => {
     const pendingA: Array<(draft: {
       threadId: string;

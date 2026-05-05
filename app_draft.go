@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -113,6 +115,114 @@ func (a *App) ClearDraft(threadID string) error {
 		return fmt.Errorf("draft store not initialized")
 	}
 	return a.store.DeleteThreadDraft(threadID)
+}
+
+func composerDraftFromUserItem(threadID string, userItem store.Item, updatedAt int64) (store.ThreadDraft, error) {
+	meta, err := userMessageMetaFromItem(userItem)
+	if err != nil {
+		return store.ThreadDraft{}, err
+	}
+	attachmentIDs := make([]string, 0, len(meta.Attachments))
+	for _, attachment := range meta.Attachments {
+		id := strings.TrimSpace(attachment.ID)
+		if id != "" {
+			attachmentIDs = append(attachmentIDs, id)
+		}
+	}
+	return composerDraftFromUserItemParts(threadID, userItem.Summary, attachmentIDs, meta.SourceProposedPlan, updatedAt)
+}
+
+func (a *App) composerDraftFromUserItemWithClonedAttachments(threadID string, userItem store.Item, updatedAt int64) (store.ThreadDraft, error) {
+	meta, err := userMessageMetaFromItem(userItem)
+	if err != nil {
+		return store.ThreadDraft{}, err
+	}
+	attachmentIDs, err := a.cloneUserMessageAttachmentsForDraft(threadID, userItem.ThreadID, meta.Attachments, updatedAt)
+	if err != nil {
+		return store.ThreadDraft{}, err
+	}
+	return composerDraftFromUserItemParts(threadID, userItem.Summary, attachmentIDs, meta.SourceProposedPlan, updatedAt)
+}
+
+func userMessageMetaFromItem(userItem store.Item) (userMessageMeta, error) {
+	var meta userMessageMeta
+	if strings.TrimSpace(userItem.Meta) == "" {
+		return meta, nil
+	}
+	if err := json.Unmarshal([]byte(userItem.Meta), &meta); err != nil {
+		return userMessageMeta{}, fmt.Errorf("decode user message meta: %w", err)
+	}
+	return meta, nil
+}
+
+func composerDraftFromUserItemParts(
+	threadID string,
+	content string,
+	attachmentIDs []string,
+	sourceProposedPlan *SourceProposedPlan,
+	updatedAt int64,
+) (store.ThreadDraft, error) {
+	attachmentsJSON, err := json.Marshal(attachmentIDs)
+	if err != nil {
+		return store.ThreadDraft{}, fmt.Errorf("encode attachment ids: %w", err)
+	}
+	sourcePlanJSON, err := encodeDraftSourceProposedPlan(sourceProposedPlan)
+	if err != nil {
+		return store.ThreadDraft{}, fmt.Errorf("encode source proposed plan: %w", err)
+	}
+
+	return store.ThreadDraft{
+		ThreadID:                  threadID,
+		Content:                   content,
+		Attachments:               string(attachmentsJSON),
+		TerminalChips:             "[]",
+		PendingPlanImplementation: sourcePlanJSON,
+		UpdatedAt:                 updatedAt,
+	}, nil
+}
+
+func (a *App) cloneUserMessageAttachmentsForDraft(
+	targetThreadID string,
+	sourceThreadID string,
+	attachments []userMessageAttachmentMeta,
+	createdAt int64,
+) ([]string, error) {
+	if len(attachments) == 0 {
+		return []string{}, nil
+	}
+	if a.attachments == nil {
+		return nil, fmt.Errorf("attachment store not initialized")
+	}
+	if strings.TrimSpace(sourceThreadID) == "" {
+		sourceThreadID = targetThreadID
+	}
+	clonedIDs := make([]string, 0, len(attachments))
+	for _, attachment := range attachments {
+		sourceAttachmentID := strings.TrimSpace(attachment.ID)
+		if sourceAttachmentID == "" {
+			continue
+		}
+		if sourceThreadID == targetThreadID {
+			clonedIDs = append(clonedIDs, sourceAttachmentID)
+			continue
+		}
+		record, data, err := a.attachments.ReadThreadBytes(sourceThreadID, sourceAttachmentID)
+		if err != nil {
+			return nil, fmt.Errorf("clone draft attachment %s: %w", sourceAttachmentID, err)
+		}
+		cloned, err := a.attachments.Upload(
+			targetThreadID,
+			record.Filename,
+			record.MimeType,
+			base64.StdEncoding.EncodeToString(data),
+			createdAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("clone draft attachment %s: %w", sourceAttachmentID, err)
+		}
+		clonedIDs = append(clonedIDs, cloned.ID)
+	}
+	return clonedIDs, nil
 }
 
 func normalizeAttachmentIDs(ids []string) []string {

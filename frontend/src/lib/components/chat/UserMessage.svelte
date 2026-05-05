@@ -224,19 +224,19 @@
       ariaLabel="Revert message options"
     >
       <div
-        class="w-[260px] overflow-hidden rounded-[10px] border border-border bg-surface-1/98 p-1.5 text-left shadow-[0_18px_45px_rgba(0,0,0,0.32)]"
+        class="w-[244px] overflow-hidden rounded-[10px] border border-border bg-surface-1/98 p-1.5 text-left shadow-[0_18px_45px_rgba(0,0,0,0.32)]"
         data-testid="user-message-revert-popover"
       >
         <button
           type="button"
-          class="flex w-full items-center justify-between gap-3 rounded-[var(--radius-control)] px-2.5 py-2 text-left text-[12px] text-fg transition-colors hover:bg-surface-2/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-default disabled:opacity-55"
+          class="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-[var(--radius-control)] px-2.5 py-2 text-left text-[12px] text-fg transition-colors hover:bg-surface-2/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-default disabled:opacity-55"
           disabled={revertBusy}
           onclick={() => void confirmRevert('conversation-and-files')}
           role="menuitem"
           data-testid="revert-conversation-and-files"
         >
-          <span class="font-medium">Revert conversation & files</span>
-          <span class="flex shrink-0 items-center gap-1 font-mono text-[11px] tabular-nums">
+          <span class="whitespace-nowrap font-medium">Conversation & files</span>
+          <span class="flex shrink-0 items-center gap-1 whitespace-nowrap font-mono text-[11px] tabular-nums">
             <span class="text-success">+{revertTotals.additions}</span>
             <span class="text-error">-{revertTotals.deletions}</span>
           </span>
@@ -249,7 +249,7 @@
           role="menuitem"
           data-testid="revert-conversation-only"
         >
-          Revert conversation only
+          Conversation only
         </button>
       </div>
     </Popover>

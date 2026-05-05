@@ -293,6 +293,10 @@ func (a *App) RevertToMessageCheckpoint(threadID string, userItemID string, mode
 			userItem.TurnIndex,
 		)
 	}
+	promptDraft, err := composerDraftFromUserItem(threadID, userItem, time.Now().UnixMilli())
+	if err != nil {
+		return fmt.Errorf("revert checkpoint: build prompt draft: %w", err)
+	}
 
 	if err := a.stopSession(threadID); err != nil {
 		return fmt.Errorf("revert checkpoint: stop session: %w", err)
@@ -331,17 +335,7 @@ func (a *App) RevertToMessageCheckpoint(threadID string, userItemID string, mode
 	if err := a.deleteCheckpointRefs(context.Background(), threadID, "revert checkpoint", refs); err != nil {
 		return err
 	}
-	attachmentIDsJSON, err := attachmentIDsFromUserMessageMeta(userItem.Meta)
-	if err != nil {
-		return fmt.Errorf("revert checkpoint: restore prompt attachments: %w", err)
-	}
-	if err := a.store.UpsertThreadDraft(store.ThreadDraft{
-		ThreadID:      threadID,
-		Content:       userItem.Summary,
-		Attachments:   attachmentIDsJSON,
-		TerminalChips: "[]",
-		UpdatedAt:     time.Now().UnixMilli(),
-	}); err != nil {
+	if err := a.store.UpsertThreadDraft(promptDraft); err != nil {
 		return fmt.Errorf("revert checkpoint: restore prompt draft: %w", err)
 	}
 
@@ -416,27 +410,6 @@ func isWireOnlyUserItem(item store.Item) bool {
 	}
 	wireOnly, _ := meta["wire_only"].(bool)
 	return wireOnly
-}
-
-func attachmentIDsFromUserMessageMeta(metaJSON string) (string, error) {
-	var meta userMessageMeta
-	if strings.TrimSpace(metaJSON) != "" {
-		if err := json.Unmarshal([]byte(metaJSON), &meta); err != nil {
-			return "", fmt.Errorf("decode user meta: %w", err)
-		}
-	}
-	ids := make([]string, 0, len(meta.Attachments))
-	for _, attachment := range meta.Attachments {
-		id := strings.TrimSpace(attachment.ID)
-		if id != "" {
-			ids = append(ids, id)
-		}
-	}
-	encoded, err := json.Marshal(ids)
-	if err != nil {
-		return "", fmt.Errorf("encode attachment ids: %w", err)
-	}
-	return string(encoded), nil
 }
 
 func (a *App) deleteCheckpointRefs(ctx context.Context, threadID, action string, refs []store.CheckpointRef) error {

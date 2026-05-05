@@ -148,6 +148,10 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 	}
 
 	fork := buildForkedThread(source)
+	if _, err := userMessageMetaFromItem(item); err != nil {
+		return store.Thread{}, fmt.Errorf("fork thread from message: build prompt draft: %w", err)
+	}
+	promptDraftUpdatedAt := time.Now().UnixMilli()
 
 	var cleanups forkCleanupStack
 
@@ -155,6 +159,13 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 		return store.Thread{}, fmt.Errorf("fork thread from message: create fork thread: %w", err)
 	}
 	cleanups.add(func() error { return a.cleanupForkThread(fork.ID) })
+	promptDraft, err := a.composerDraftFromUserItemWithClonedAttachments(fork.ID, item, promptDraftUpdatedAt)
+	if err != nil {
+		return store.Thread{}, errors.Join(
+			fmt.Errorf("fork thread from message: build prompt draft: %w", err),
+			cleanups.run(),
+		)
+	}
 
 	clonedItemIDs := map[string]string{}
 	var lastKeptTurnPtr *int
@@ -196,6 +207,12 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 			cleanups.run(),
 		)
 	}
+	if err := a.store.UpsertThreadDraft(promptDraft); err != nil {
+		return store.Thread{}, errors.Join(
+			fmt.Errorf("fork thread from message: restore prompt draft: %w", err),
+			cleanups.run(),
+		)
+	}
 	return fork, nil
 }
 
@@ -218,23 +235,30 @@ func (s forkCleanupStack) run() error {
 }
 
 // cleanupForkThread removes the fork row created by a failed fork. The
-// FK CASCADE on items.thread_id, thread_drafts.thread_id, and
-// thread_checkpoints.thread_id handles the cloned timeline and any
-// derived state. Returns nil on success OR when the row was already gone
-// (ErrNoRows is treated as idempotent). Any other error is returned so
-// the caller can errors.Join it with the primary fork error — swallowing
-// cleanup failures lets orphan fork rows accumulate silently.
+// FK CASCADE on items.thread_id, thread_drafts.thread_id,
+// thread_checkpoints.thread_id, and attachments.thread_id handles cloned
+// rows; DeleteThreadDir clears any attachment bytes already written for the
+// fork. Returns nil on success OR when the row was already gone (ErrNoRows is
+// treated as idempotent). Any other error is returned so the caller can
+// errors.Join it with the primary fork error — swallowing cleanup failures
+// lets orphan fork rows accumulate silently.
 func (a *App) cleanupForkThread(threadID string) error {
 	if threadID == "" {
 		return nil
 	}
+	var errs []error
+	if a.attachments != nil {
+		if err := a.attachments.DeleteThreadDir(threadID); err != nil {
+			errs = append(errs, fmt.Errorf("fork thread cleanup: delete attachment files for %s: %w", threadID, err))
+		}
+	}
 	if err := a.store.DeleteThread(threadID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil
+			return errors.Join(errs...)
 		}
-		return fmt.Errorf("fork thread cleanup: delete fork %s: %w", threadID, err)
+		errs = append(errs, fmt.Errorf("fork thread cleanup: delete fork %s: %w", threadID, err))
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (a *App) copyForkCheckpoints(source, fork store.Thread, clonedItemIDs map[string]string, atTurnIndex *int) ([]store.CheckpointRef, error) {

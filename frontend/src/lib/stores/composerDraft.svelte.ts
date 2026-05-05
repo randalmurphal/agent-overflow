@@ -28,6 +28,7 @@ interface ComposerDraftSnapshot {
 // immediately even before the debounce write reaches SQLite. Entries are
 // removed once their snapshot is durably saved or cleared.
 const localDraftSnapshots = new Map<string, ComposerDraftSnapshot>();
+const activeSavePromises = new Map<string, Set<Promise<unknown>>>();
 
 function cloneSourceProposedPlan(source: SourceProposedPlan | null): SourceProposedPlan | null {
   return source ? { ...source } : null;
@@ -56,6 +57,7 @@ function rememberDraftSnapshot(threadId: string, snapshot: ComposerDraftSnapshot
 
 export function resetComposerDraftSnapshotsForTest(): void {
   localDraftSnapshots.clear();
+  activeSavePromises.clear();
 }
 
 /**
@@ -119,15 +121,43 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     }
   }
 
+  function trackActiveSave(id: string, promise: Promise<unknown>): void {
+    let saves = activeSavePromises.get(id);
+    if (!saves) {
+      saves = new Set();
+      activeSavePromises.set(id, saves);
+    }
+    saves.add(promise);
+    const cleanup = () => {
+      const current = activeSavePromises.get(id);
+      if (!current) return;
+      current.delete(promise);
+      if (current.size === 0) {
+        activeSavePromises.delete(id);
+      }
+    };
+    promise.then(cleanup, cleanup);
+  }
+
+  async function waitForActiveSaves(id: string): Promise<void> {
+    while (true) {
+      const saves = activeSavePromises.get(id);
+      if (!saves || saves.size === 0) return;
+      await Promise.allSettled([...saves]);
+    }
+  }
+
   async function saveSnapshot(id: string, snapshot: ComposerDraftSnapshot, failureLabel: string): Promise<void> {
     try {
-      await SaveDraft(
+      const savePromise = SaveDraft(
         id,
         snapshot.content,
         snapshot.attachments.map((a) => a.id),
         snapshot.terminalChips,
         snapshot.sourceProposedPlan,
       );
+      trackActiveSave(id, savePromise);
+      await savePromise;
       clearLocalSnapshotIfCurrent(id, snapshot);
     } catch (err) {
       rememberDraftSnapshot(id, snapshot);
@@ -275,6 +305,27 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     }
   }
 
+  async function reloadFromBackend(id: string | null = threadId): Promise<void> {
+    if (!id || threadId !== id) return;
+    clearDebounce();
+    pendingSaveGeneration++;
+    localDraftSnapshots.delete(id);
+    hasPendingSave = false;
+    const generation = ++switchGeneration;
+    await hydrate(id, generation);
+  }
+
+  async function prepareForExternalDraftReplace(id: string | null = threadId): Promise<void> {
+    if (!id) return;
+    if (threadId === id) {
+      clearDebounce();
+      pendingSaveGeneration++;
+      hasPendingSave = false;
+    }
+    localDraftSnapshots.delete(id);
+    await waitForActiveSaves(id);
+  }
+
   return {
     // ---- reads ----
     get threadId() { return threadId; },
@@ -291,6 +342,8 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
 
     // ---- thread lifecycle ----
     setThread,
+    reloadFromBackend,
+    prepareForExternalDraftReplace,
     flush,
     flushPending,
 

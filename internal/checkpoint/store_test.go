@@ -567,6 +567,42 @@ func TestRestoreWorktreePathsRestoresOnlyListedPaths(t *testing.T) {
 	}
 }
 
+func TestRestoreWorktreePathsRestoresOnlyListedDeletedPaths(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	writeTestFile(t, dir, "agent-deleted.txt", "restore me\n")
+	writeTestFile(t, dir, "user-deleted.txt", "leave deleted\n")
+	commitAll(t, dir, "seed deleted-file restore")
+
+	s := NewStore()
+	ref, err := s.CaptureBaseline(ctx, dir, "t1", 0)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	if err := os.Remove(filepath.Join(dir, "agent-deleted.txt")); err != nil {
+		t.Fatalf("remove agent-deleted.txt: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, "user-deleted.txt")); err != nil {
+		t.Fatalf("remove user-deleted.txt: %v", err)
+	}
+
+	if err := s.RestoreWorktreePaths(ctx, dir, ref, []string{"agent-deleted.txt"}); err != nil {
+		t.Fatalf("restore paths: %v", err)
+	}
+
+	if got := readTestFile(t, dir, "agent-deleted.txt"); got != "restore me\n" {
+		t.Fatalf("agent-deleted.txt = %q, want checkpoint content", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "user-deleted.txt")); !os.IsNotExist(err) {
+		t.Fatalf("user-deleted.txt should remain deleted, err=%v", err)
+	}
+	if status := gitOutput(t, dir, "status", "--short", "--", "agent-deleted.txt"); status != "" {
+		t.Fatalf("agent-deleted.txt status = %q, want clean", status)
+	}
+}
+
 func TestRestoreWorktreePathsRemovesAgentCreatedFiles(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -724,6 +760,43 @@ func TestDiffRefToWorktreeScopedIncludesTrackedUntrackedFiles(t *testing.T) {
 	}
 	if strings.Contains(got, "user-new.txt") {
 		t.Fatalf("patch should not include unlisted untracked file, got:\n%s", got)
+	}
+}
+
+func TestDiffRefToWorktreeScopedIncludesOnlyListedDeletedFiles(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	writeTestFile(t, dir, "agent-deleted.txt", "agent line\n")
+	writeTestFile(t, dir, "user-deleted.txt", "user line\n")
+	commitAll(t, dir, "seed deleted-file diff")
+
+	s := NewStore()
+	ref, err := s.CaptureBaseline(ctx, dir, "t1", 0)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	if err := os.Remove(filepath.Join(dir, "agent-deleted.txt")); err != nil {
+		t.Fatalf("remove agent-deleted.txt: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, "user-deleted.txt")); err != nil {
+		t.Fatalf("remove user-deleted.txt: %v", err)
+	}
+
+	patch, err := s.DiffRefToWorktreeScoped(ctx, dir, ref, []string{"agent-deleted.txt"})
+	if err != nil {
+		t.Fatalf("diff scoped: %v", err)
+	}
+	got := string(patch)
+	if !strings.Contains(got, "diff --git a/agent-deleted.txt b/agent-deleted.txt") {
+		t.Fatalf("patch should include listed deleted file, got:\n%s", got)
+	}
+	if !strings.Contains(got, "+++ /dev/null") || !strings.Contains(got, "-agent line") {
+		t.Fatalf("patch should show deletion to /dev/null, got:\n%s", got)
+	}
+	if strings.Contains(got, "user-deleted.txt") {
+		t.Fatalf("patch should not include unlisted deleted file, got:\n%s", got)
 	}
 }
 

@@ -79,6 +79,18 @@ function seedThread(): Thread {
   };
 }
 
+function mockDrafts(contents: Map<string, string> = new Map()): Map<string, string> {
+  setBindingMock('GetDraft', async (threadId: string) => ({
+    threadId,
+    content: contents.get(threadId) ?? '',
+    attachmentIds: [],
+    terminalChips: [],
+    sourceProposedPlan: null,
+    updatedAt: 0,
+  }));
+  return contents;
+}
+
 async function buildPane(
   thread: Thread = seedThread(),
   items: Item[] = [],
@@ -120,6 +132,9 @@ async function buildPane(
   // not on mount — but the binding mock throws on unexpected calls, so
   // stub it defensively.
   setBindingMock('GetThreadSlashCommands', async () => []);
+  mockDrafts(new Map([[thread.id, '']]));
+  setBindingMock('SaveDraft', async () => {});
+  setBindingMock('ListAttachments', async () => []);
   setBindingMock('ListThreadCheckpoints', async () => []);
 
   const pane = createThreadPane();
@@ -146,7 +161,10 @@ describe('<ChatView>', () => {
     expect(getByTestId('below-composer-bar')).toBeInTheDocument();
   });
 
-  it('opens the message revert popover from a user-message action and applies a mode', async () => {
+  it.each([
+    ['conversation-and-files', 'revert-conversation-and-files'] as const,
+    ['conversation-only', 'revert-conversation-only'] as const,
+  ])('opens the message revert popover from a user-message action and applies %s', async (mode, actionTestId) => {
     const thread = seedThread();
     const userItem = makeItem({
       id: 'user:1',
@@ -174,7 +192,10 @@ describe('<ChatView>', () => {
 -old
 +new
 `);
-    const revert = setBindingMock('RevertToMessageCheckpoint', async () => {});
+    const draftContent = mockDrafts(new Map([[thread.id, '']]));
+    const revert = setBindingMock('RevertToMessageCheckpoint', async () => {
+      draftContent.set(thread.id, userItem.summary);
+    });
 
     const { getByLabelText, findByTestId, getByTestId } = render(ChatView, { props: { pane } });
     await fireEvent.click(getByLabelText('Revert to this message'));
@@ -184,9 +205,10 @@ describe('<ChatView>', () => {
     expect(getByTestId('revert-conversation-and-files')).toHaveTextContent('+1');
     expect(getByTestId('revert-conversation-and-files')).toHaveTextContent('-1');
 
-    await fireEvent.click(getByTestId('revert-conversation-and-files'));
+    await fireEvent.click(getByTestId(actionTestId));
     await waitFor(() => {
-      expect(revert).toHaveBeenCalledWith(thread.id, userItem.id, 'conversation-and-files');
+      expect(revert).toHaveBeenCalledWith(thread.id, userItem.id, mode);
+      expect(getByLabelText('Message Input')).toHaveValue(userItem.summary);
     });
   });
 
@@ -357,6 +379,10 @@ describe('<ChatView>', () => {
       projectId: 'project-1',
       title: 'Forked thread',
     };
+    mockDrafts(new Map([
+      [thread.id, ''],
+      [forked.id, userItem.summary],
+    ]));
     const fork = setBindingMock('ForkThreadFromMessage', async () => forked);
     setBindingMock('SwitchThread', async () => forked);
 
@@ -366,6 +392,7 @@ describe('<ChatView>', () => {
     await waitFor(() => {
       expect(fork).toHaveBeenCalledWith(thread.id, userItem.id);
       expect(pane.thread?.id).toBe('fork-1');
+      expect(getByLabelText('Message Input')).toHaveValue(userItem.summary);
     });
   });
 

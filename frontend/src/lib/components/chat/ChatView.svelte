@@ -356,11 +356,13 @@
     }
     revertingMessage = true;
     try {
+      await draft.prepareForExternalDraftReplace(target.thread.id);
       await RevertToMessageCheckpoint(target.thread.id, target.itemId, mode);
       revertMessageTarget = null;
       revertAffectedFiles = [];
       addToast('success', mode === 'conversation-only' ? 'Conversation reverted' : 'Conversation and files reverted');
       await pane.switchThread(target.thread);
+      await draft.reloadFromBackend(target.thread.id);
     } catch (err) {
       addToast('error', `Revert failed: ${userFacingError(err)}`);
     } finally {
@@ -386,6 +388,7 @@
       prependThread(forked);
       if (forked.projectId) expandProject(forked.projectId);
       await pane.switchThread(forked);
+      await draft.setThread(forked.id);
       addToast('info', 'Forked from this message into a new thread.');
     } catch (err) {
       addToast('error', `Fork failed: ${userFacingError(err)}`);

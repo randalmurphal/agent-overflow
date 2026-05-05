@@ -193,7 +193,7 @@ describe('<UserMessage>', () => {
       },
     });
 
-    const trigger = getByText('Revert conversation & files').closest('[role="menu"]')
+    const trigger = getByText('Conversation & files').closest('[role="menu"]')
       ?? getByTestId('user-message-revert-popover').parentElement;
     expect(getByTestId('user-message-revert-popover')).toBeInTheDocument();
     expect(trigger).toHaveAttribute('role', 'menu');
