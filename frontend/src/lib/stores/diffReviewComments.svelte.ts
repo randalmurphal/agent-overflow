@@ -13,12 +13,15 @@ import type {
   SourceDiffReview,
 } from '../types/models';
 
-interface CacheEntry {
-  comments: readonly DiffReviewComment[];
-  fetchSeq: number;
-}
-
-const commentsBySource = new SvelteMap<string, CacheEntry>();
+// `commentsBySource` holds the reactive cache surfaced via
+// `getDiffReviewComments`. `fetchSeqBySource` is intentionally a plain
+// `Map` so the synchronous fetch-bookkeeping (incrementing the seq before
+// awaiting the fetch) does not read or write the reactive map. Mixing the
+// two on a single SvelteMap entry caused `refreshDiffReviewComments`
+// callers inside a `$effect` to read+write the same key synchronously
+// and trip Svelte's update-depth guard.
+const commentsBySource = new SvelteMap<string, readonly DiffReviewComment[]>();
+const fetchSeqBySource = new Map<string, number>();
 const activeSourceByThread = new SvelteMap<string, SourceDiffReview | null>();
 const MAX_CACHED_DIFF_REVIEW_SOURCES = 16;
 
@@ -57,7 +60,7 @@ export function getDiffReviewComments(
   sourceKey: string | null | undefined,
 ): readonly DiffReviewComment[] {
   if (!threadId || !scope || !sourceKey) return [];
-  return commentsBySource.get(cacheKey(threadId, scope, sourceKey))?.comments ?? [];
+  return commentsBySource.get(cacheKey(threadId, scope, sourceKey)) ?? [];
 }
 
 export function getActiveDraftDiffReviewComments(threadId: string | null | undefined): readonly DiffReviewComment[] {
@@ -72,14 +75,13 @@ export async function refreshDiffReviewComments(
   sourceKey: string,
 ): Promise<readonly DiffReviewComment[]> {
   const key = cacheKey(threadId, scope, sourceKey);
-  const entry = commentsBySource.get(key) ?? { comments: [], fetchSeq: 0 };
-  const fetchSeq = entry.fetchSeq + 1;
-  commentsBySource.set(key, { ...entry, fetchSeq });
+  const fetchSeq = (fetchSeqBySource.get(key) ?? 0) + 1;
+  fetchSeqBySource.set(key, fetchSeq);
   const comments = normalizeComments(await ListDiffReviewComments(threadId, scope, sourceKey));
-  if ((commentsBySource.get(key)?.fetchSeq ?? 0) !== fetchSeq) {
-    return commentsBySource.get(key)?.comments ?? [];
+  if ((fetchSeqBySource.get(key) ?? 0) !== fetchSeq) {
+    return commentsBySource.get(key) ?? [];
   }
-  commentsBySource.set(key, { comments, fetchSeq });
+  commentsBySource.set(key, comments);
   evictOldSources();
   return comments;
 }
@@ -121,14 +123,12 @@ export function replaceDiffReviewCommentsForTest(
   sourceKey: string,
   comments: readonly DiffReviewComment[],
 ): void {
-  commentsBySource.set(cacheKey(threadId, scope, sourceKey), {
-    comments: normalizeComments(comments),
-    fetchSeq: 0,
-  });
+  commentsBySource.set(cacheKey(threadId, scope, sourceKey), normalizeComments(comments));
 }
 
 export function resetForTest(): void {
   commentsBySource.clear();
+  fetchSeqBySource.clear();
   activeSourceByThread.clear();
 }
 
@@ -139,5 +139,6 @@ function evictOldSources(): void {
     const first = commentsBySource.keys().next().value;
     if (!first) return;
     commentsBySource.delete(first);
+    fetchSeqBySource.delete(first);
   }
 }
