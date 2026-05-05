@@ -152,6 +152,15 @@ export function installThreadViewDefaults(): void {
   setBindingMock('ListProposedPlanComments', async () => []);
   setBindingMock('GetPayloadData', async () => ({ data: '# Plan\n\nBody' }));
   setBindingMock('ListLiveBackgroundTasks', async () => []);
+  // Design-thread mounts spin DesignPreviewPanel's $effect which
+  // immediately calls EnsureDesignWorkdir + LatestDesignOptionSet on
+  // any thread the test happens to put into design mode. Default
+  // both to no-ops so a test that doesn't care about the design
+  // surface (e.g. mode-switching, sidebar tests that lift up a
+  // design thread) doesn't have to install per-test mocks.
+  setBindingMock('EnsureDesignWorkdir', async () => {});
+  setBindingMock('LatestDesignOptionSet', async () => null);
+  setBindingMock('ListDesignSnapshots', async () => []);
 }
 
 // Composer-adjacent bindings that fire on mount. NOT included: SendMessage

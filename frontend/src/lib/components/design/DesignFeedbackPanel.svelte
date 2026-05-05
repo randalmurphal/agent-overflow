@@ -18,6 +18,7 @@
   // call — no parallel wire format. Sliders that haven't moved are
   // omitted; an empty batch is rejected by `canSend`.
 
+  import { untrack } from 'svelte';
   import Send from 'lucide-svelte/icons/send';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { FeedbackBatch, SliderChange } from '../../types/design';
@@ -41,14 +42,27 @@
   // hasn't already touched. Touched knobs persist across re-emissions
   // with the same id, mirroring "the user is mid-tweak — don't yank
   // their slider."
+  //
+  // The reads of `sliderValues` happen inside `untrack` so the effect
+  // does NOT subscribe to the very state it writes — without that, the
+  // assignment `sliderValues = next` re-triggers the effect (Svelte 5
+  // invalidates on object identity even when the contents match), the
+  // effect builds another fresh map and writes again, and the whole
+  // tab wedges in a synchronous reactive loop. The first time the
+  // agent published an `expose_controls` set the loop tripped and
+  // jammed the main thread, which also starved the screenshot
+  // postMessage round-trip and surfaced as a `read_screenshot` timeout
+  // error on the agent's tool call.
   $effect(() => {
     const controls = pane.exposedControls;
-    const next: Record<string, number> = {};
-    for (const c of controls) {
-      next[c.id] = sliderValues[c.id] ?? c.value;
-    }
-    // Drop any orphaned values whose slider was retracted.
-    sliderValues = next;
+    untrack(() => {
+      const next: Record<string, number> = {};
+      for (const c of controls) {
+        next[c.id] = sliderValues[c.id] ?? c.value;
+      }
+      // Drop any orphaned values whose slider was retracted.
+      sliderValues = next;
+    });
   });
 
   // sliderChanges only emits knobs whose user-set value differs from

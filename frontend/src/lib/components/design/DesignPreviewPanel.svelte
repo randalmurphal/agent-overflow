@@ -281,6 +281,7 @@
     const requestId = detail.requestId;
     const iframe = iframeEl;
     if (!iframe) {
+      addToast('error', 'read_screenshot failed: iframe not mounted');
       void FailScreenshot(requestId, 'iframe not mounted').catch(() => undefined);
       return;
     }
@@ -289,6 +290,12 @@
       await IngestScreenshot({ requestId, pngBase64 });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
+      // Toast surfaces the failure to the user even when the agent's
+      // tool-result panel is offscreen. The most common reason is a
+      // capture timeout, which historically masked an unrelated
+      // main-thread freeze — we want both the cause and the user-visible
+      // notification on the same screen so the user can correlate.
+      addToast('error', `read_screenshot failed: ${reason}`);
       console.warn('requestIframeCapture failed:', err);
       try {
         await FailScreenshot(requestId, reason);
