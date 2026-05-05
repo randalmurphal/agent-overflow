@@ -52,6 +52,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetChannelMessages", ID: 3595031866}, // main.App.GetChannelMessages
 	{Name: "GetContextSettings", ID: 3416004963}, // main.App.GetContextSettings
 	{Name: "GetDesignArtifactHTML", ID: 2043420102}, // main.App.GetDesignArtifactHTML
+	{Name: "GetDesignArtifactPng", ID: 1968631214}, // main.App.GetDesignArtifactPng
 	{Name: "GetDiscussion", ID: 1924583939}, // main.App.GetDiscussion
 	{Name: "GetDraft", ID: 875977146}, // main.App.GetDraft
 	{Name: "GetEditorSettings", ID: 1655853383}, // main.App.GetEditorSettings
@@ -134,6 +135,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RespondToUserInput", ID: 1071592868}, // main.App.RespondToUserInput
 	{Name: "RestartTerminal", ID: 4152403588}, // main.App.RestartTerminal
 	{Name: "RevertToMessageCheckpoint", ID: 263750815}, // main.App.RevertToMessageCheckpoint
+	{Name: "SaveDesignArtifactPng", ID: 3385084851}, // main.App.SaveDesignArtifactPng
 	{Name: "SaveDraft", ID: 3025273299}, // main.App.SaveDraft
 	{Name: "SavePayloadToFile", ID: 3576148797}, // main.App.SavePayloadToFile
 	{Name: "SearchThreadMessages", ID: 3644945077}, // main.App.SearchThreadMessages

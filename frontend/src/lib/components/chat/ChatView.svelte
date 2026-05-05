@@ -12,7 +12,17 @@
   import LiveTodoPanel from './LiveTodoPanel.svelte';
   import LazyThreadTerminalDrawer from '../terminal/LazyThreadTerminalDrawer.svelte';
   import DiscussionView from '../discussion/DiscussionView.svelte';
-  import DesignView from '../design/DesignView.svelte';
+  import DesignPreviewPanel from '../design/DesignPreviewPanel.svelte';
+  import DesignOptionsPicker from '../design/DesignOptionsPicker.svelte';
+  import DesignSplitResizer from '../design/DesignSplitResizer.svelte';
+  import ModeEmptyForProject from './ModeEmptyForProject.svelte';
+  import { getProject } from '../../stores/projects.svelte';
+  import { ListDesignArtifacts } from '../../stores/bindings';
+  import {
+    computeChatWidth,
+    DESIGN_CHAT_DEFAULT_FRACTION,
+  } from '../../stores/designLayout.svelte';
+  import type { DesignArtifact } from '../../types/design';
   import RhsSidebarShell from './RhsSidebarShell.svelte';
   import ChatHeader from './ChatHeader.svelte';
   import ExpandedImageDialog from './ExpandedImageDialog.svelte';
@@ -273,6 +283,80 @@
     !!pane.thread && pane.thread.mode === 'design',
   );
 
+  // The active mode tab ('chat' | 'design') is the user's intent. The
+  // loaded thread's mode is what's actually open. When they disagree —
+  // e.g. user is on a chat thread but clicked the Design tab and there
+  // are no design threads in the project — we render an "empty for
+  // project" overlay instead of the chat surface, so the UI matches
+  // the user's intent. Discussion threads bypass the tab UI entirely.
+  function tabForThreadMode(mode: string | undefined): 'chat' | 'design' | null {
+    if (mode === 'design') return 'design';
+    if (mode === 'chat' || mode === 'plan') return 'chat';
+    return null;
+  }
+  let inModeMismatch = $derived(
+    !!pane.thread
+      && !inDiscussionMode
+      && tabForThreadMode(pane.thread.mode) !== null
+      && tabForThreadMode(pane.thread.mode) !== pane.activeTab,
+  );
+
+  // Project name lookup for the mode-mismatch empty state. Falls back to
+  // an empty string if the project list hasn't loaded yet — the empty
+  // state copy still reads as "in this project".
+  let mismatchProjectName = $derived.by(() => {
+    if (!inModeMismatch || !pane.thread?.projectId) return '';
+    const project = getProject(pane.thread.projectId);
+    return project?.project.name ?? '';
+  });
+
+  // Design-mode split layout: chat column on the left, resizer, preview
+  // pane on the right. We measure the surrounding container with a
+  // ResizeObserver and clamp the persisted chat width so neither pane
+  // drops below its minimum (320 chat / 400 preview).
+  let designSplitContainer: HTMLDivElement | undefined = $state(undefined);
+  let designContainerWidth = $state(0);
+  let chatPaneWidth = $derived(
+    designContainerWidth > 0
+      ? computeChatWidth(designContainerWidth)
+      : Math.round((typeof window !== 'undefined' ? window.innerWidth : 1200) * DESIGN_CHAT_DEFAULT_FRACTION),
+  );
+
+  $effect(() => {
+    if (!inDesignMode) return;
+    const el = designSplitContainer;
+    if (!el) return;
+    const obs = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      designContainerWidth = Math.round(entry.contentRect.width);
+    });
+    obs.observe(el);
+    return () => obs.disconnect();
+  });
+
+  // Hydrate the design artifact list whenever a design thread becomes
+  // active. The hydration generation guard ensures a thread switch
+  // mid-flight doesn't overwrite newer state with a stale fetch.
+  let designHydrationGen = 0;
+  $effect(() => {
+    if (!inDesignMode) return;
+    const threadId = pane.threadId;
+    if (!threadId) return;
+    const gen = ++designHydrationGen;
+    ListDesignArtifacts(threadId)
+      .then((artifacts: unknown) => {
+        if (gen !== designHydrationGen) return;
+        const list = Array.isArray(artifacts) ? (artifacts as DesignArtifact[]) : [];
+        pane.setDesignArtifacts(list);
+      })
+      .catch((err: unknown) => {
+        if (gen !== designHydrationGen) return;
+        const message = err instanceof Error ? err.message : String(err);
+        addToast('error', `Failed to load design artifacts: ${message}`);
+      });
+  });
+
   // Exposed so the terminal drawer can "send to composer".
   export function addTerminalChipToDraft(chip: {
     id: string;
@@ -431,79 +515,140 @@
   });
 </script>
 
-{#if pane.thread && inDiscussionMode}
-  <DiscussionView {pane} />
-{:else if pane.thread}
-  <div bind:this={chatRoot} data-ui-surface="chat" data-thread-id={pane.thread.id} class="flex h-full min-h-0">
-    <div
-      bind:this={chatColumn}
-      class="relative flex flex-col min-h-0 {inDesignMode ? 'flex-1 min-w-0 border-r border-border' : 'flex-1 min-w-0'}"
-      style="--composer-height: {composerHeight}px;"
-    >
-      <ChatHeader {pane} />
+{#snippet chatColumnBody()}
+  <div
+    bind:this={chatColumn}
+    class="relative flex flex-col min-h-0 flex-1 min-w-0"
+    style="--composer-height: {composerHeight}px;"
+  >
+    <ChatHeader {pane} />
 
-      <ProviderStatusBanner {pane} />
+    <ProviderStatusBanner {pane} />
 
-      <!--
-        Single growing region: the timeline takes the entire remaining
-        vertical space, and the composer + below-bar float over its bottom.
-        Composer growth (textarea autosize, attachment tray, approval
-        panels) no longer steals timeline clientHeight — it only updates
-        --composer-height, which the timeline reads as bottom padding so
-        the last row clears the overlay.
-      -->
-      <div class="chat-surface-ground relative flex-1 min-h-0">
-        <MessageTimeline
-          {pane}
-          onImageExpand={openImagePreview}
-          {userMessageActions}
-        />
-        {#if hasPendingPrompt}
-          <div
-            class="pointer-events-none absolute inset-0 z-10 bg-surface-0/40 backdrop-blur-[1px]"
-            transition:fade={{ duration: 150 }}
-            aria-hidden="true"
-            data-testid="pending-prompt-scrim"
-          ></div>
-        {/if}
+    <!--
+      Single growing region: the timeline takes the entire remaining
+      vertical space, and the composer + below-bar float over its bottom.
+      Composer growth (textarea autosize, attachment tray, approval
+      panels) no longer steals timeline clientHeight — it only updates
+      --composer-height, which the timeline reads as bottom padding so
+      the last row clears the overlay.
+    -->
+    <div class="chat-surface-ground relative flex-1 min-h-0">
+      <MessageTimeline
+        {pane}
+        onImageExpand={openImagePreview}
+        {userMessageActions}
+      />
+      {#if hasPendingPrompt}
         <div
-          bind:this={composerOverlay}
-          class="absolute inset-x-0 bottom-0 z-20 pointer-events-none"
-          data-testid="composer-overlay"
-        >
-          <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6">
-            <ChatWorkingIndicator {pane} />
-            <SendQueuePreview {pane} />
-            <LiveTodoPanel {pane} />
-          </div>
-          <div class="pointer-events-auto">
-            <Composer {pane} {draft} onImageExpand={openImagePreview} />
-          </div>
-          <div class="pointer-events-auto">
-            <BelowComposerBar {pane} />
-          </div>
-          <div class="pointer-events-auto">
-            <ComposerHint {pane} {draft} />
-          </div>
+          class="pointer-events-none absolute inset-0 z-10 bg-surface-0/40 backdrop-blur-[1px]"
+          transition:fade={{ duration: 150 }}
+          aria-hidden="true"
+          data-testid="pending-prompt-scrim"
+        ></div>
+      {/if}
+      <div
+        bind:this={composerOverlay}
+        class="absolute inset-x-0 bottom-0 z-20 pointer-events-none"
+        data-testid="composer-overlay"
+      >
+        <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6">
+          <ChatWorkingIndicator {pane} />
+          <SendQueuePreview {pane} />
+          <LiveTodoPanel {pane} />
+        </div>
+        <div class="pointer-events-auto">
+          <Composer {pane} {draft} onImageExpand={openImagePreview} />
+        </div>
+        <div class="pointer-events-auto">
+          <BelowComposerBar {pane} />
+        </div>
+        <div class="pointer-events-auto">
+          <ComposerHint {pane} {draft} />
         </div>
       </div>
-      {#if pane.showTerminal && pane.thread}
-        {#key pane.thread.id}
-          <LazyThreadTerminalDrawer {pane} onSendToComposer={addTerminalChipToDraft} />
-        {/key}
-      {/if}
     </div>
-    <RhsSidebarShell {pane} />
-    {#if inDesignMode}
-      <div class="flex-1 min-w-0">
-        <DesignView {pane} />
-      </div>
+    {#if pane.showTerminal && pane.thread}
+      {#key pane.thread.id}
+        <LazyThreadTerminalDrawer {pane} onSendToComposer={addTerminalChipToDraft} />
+      {/key}
     {/if}
+  </div>
+{/snippet}
+
+{#if pane.thread && inDiscussionMode}
+  <DiscussionView {pane} />
+{:else if pane.thread && inModeMismatch}
+  <!--
+    Mode-mismatch overlay: tab and thread.mode disagree, with no thread
+    of the target mode in the project. We keep pane.thread loaded for
+    fast tab-back navigation, but the surface shows the target mode's
+    empty state with project context. ChatHeader / composer for the
+    mismatched thread are intentionally hidden.
+  -->
+  <div bind:this={chatRoot} data-ui-surface="chat-mode-mismatch" data-thread-id={pane.thread.id} class="flex h-full min-h-0">
+    <ModeEmptyForProject mode={pane.activeTab} projectName={mismatchProjectName} />
+  </div>
+{:else if pane.thread && inDesignMode}
+  <!--
+    Design-mode split: chat (left, fixed-pixel after first user resize)
+    | resizer | preview (right, fills remainder). The chat column
+    inherits the same composer overlay shape as a normal chat thread —
+    only the surrounding shell differs. RhsSidebarShell isn't mounted in
+    design mode by spec: design threads don't use diff/plan panels.
+  -->
+  <div
+    bind:this={chatRoot}
+    data-ui-surface="chat"
+    data-thread-id={pane.thread.id}
+    class="flex h-full min-h-0"
+  >
+    <div
+      bind:this={designSplitContainer}
+      class="flex h-full min-h-0 flex-1 min-w-0"
+      data-testid="design-split"
+    >
+      <div
+        class="flex flex-col min-h-0 shrink-0"
+        style="width: {chatPaneWidth}px;"
+        data-testid="design-chat-pane"
+      >
+        {@render chatColumnBody()}
+      </div>
+      <DesignSplitResizer
+        width={chatPaneWidth}
+        containerWidth={designContainerWidth}
+        {pane}
+      />
+      <div
+        class="flex flex-col min-h-0 flex-1 min-w-0 relative"
+        data-testid="design-preview-pane"
+      >
+        <DesignPreviewPanel {pane} />
+        {#if pane.pendingDesignOptions}
+          <DesignOptionsPicker {pane} />
+        {/if}
+      </div>
+    </div>
+    {#if expandedImagePreview}
+      <ExpandedImageDialog preview={expandedImagePreview} onClose={closeImagePreview} />
+    {/if}
+  </div>
+{:else if pane.thread}
+  <!-- Standard chat surface: no preview pane. RhsSidebarShell carries
+       the diff / plan / payload panels here. -->
+  <div bind:this={chatRoot} data-ui-surface="chat" data-thread-id={pane.thread.id} class="flex h-full min-h-0">
+    {@render chatColumnBody()}
+    <RhsSidebarShell {pane} />
     {#if expandedImagePreview}
       <ExpandedImageDialog preview={expandedImagePreview} onClose={closeImagePreview} />
     {/if}
   </div>
 {:else}
+  <!-- No thread loaded → no project context. Per the design-mode spec
+       tab click is a pure no-op in this state (tab pill still updates
+       for visual feedback, but no auto-navigation or thread creation).
+       The user picks a project + thread from the sidebar to proceed. -->
   <div
     bind:this={chatRoot}
     data-ui-surface="chat-empty"

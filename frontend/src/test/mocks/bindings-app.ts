@@ -248,6 +248,8 @@ export const PostChannelMessage = dispatch('PostChannelMessage');
 export const ChooseDesignOption = dispatch('ChooseDesignOption');
 export const ListDesignArtifacts = dispatch('ListDesignArtifacts');
 export const GetDesignArtifactHTML = dispatch('GetDesignArtifactHTML');
+export const GetDesignArtifactPng = dispatch('GetDesignArtifactPng');
+export const SaveDesignArtifactPng = dispatch('SaveDesignArtifactPng');
 
 // Composer enhancements
 export const UploadAttachment = dispatch('UploadAttachment');

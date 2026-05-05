@@ -397,6 +397,16 @@ export function GetDesignArtifactHTML(threadID: string, artifactID: string): $Ca
 }
 
 /**
+ * GetDesignArtifactPng returns a base64-encoded PNG capture of an artifact, or
+ * the empty string if no PNG has been saved yet (capture failed, was skipped,
+ * or hasn't run for this artifact). The frontend uses this to attach the
+ * rendered image when handing off a design to a chat thread.
+ */
+export function GetDesignArtifactPng(threadID: string, artifactID: string): $CancellablePromise<string> {
+    return $Call.ByID(1968631214, threadID, artifactID);
+}
+
+/**
  * GetDiscussion returns a persisted discussion definition by name and scope.
  */
 export function GetDiscussion(name: string, scope: string): $CancellablePromise<store$0.DiscussionDefinition> {
@@ -1251,6 +1261,17 @@ export function RestartTerminal(terminalID: string): $CancellablePromise<$models
 
 export function RevertToMessageCheckpoint(threadID: string, userItemID: string, mode: string): $CancellablePromise<void> {
     return $Call.ByID(263750815, threadID, userItemID, mode);
+}
+
+/**
+ * SaveDesignArtifactPng persists a base64-encoded PNG capture next to an
+ * artifact's HTML on disk. The frontend listens for design:artifact events,
+ * runs captureHtmlToPng at desktop viewport, and uploads the result here so
+ * the bundled "Send to chat" handoffs can attach the rendered image without
+ * re-running the capture each time.
+ */
+export function SaveDesignArtifactPng(threadID: string, artifactID: string, b64: string): $CancellablePromise<void> {
+    return $Call.ByID(3385084851, threadID, artifactID, b64);
 }
 
 /**

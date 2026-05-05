@@ -131,6 +131,8 @@ export {
   ChooseDesignOption,
   ListDesignArtifacts,
   GetDesignArtifactHTML,
+  GetDesignArtifactPng,
+  SaveDesignArtifactPng,
 
   // Composer enhancements
   UploadAttachment,

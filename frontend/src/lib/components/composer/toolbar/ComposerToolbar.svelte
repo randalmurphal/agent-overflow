@@ -12,7 +12,8 @@
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import ModelProviderMenu from './ModelProviderMenu.svelte';
   import EffortMenu from './EffortMenu.svelte';
-  import ModeCycleButton from './ModeCycleButton.svelte';
+  import AgentModeToggle from './AgentModeToggle.svelte';
+  import DesignLockPill from './DesignLockPill.svelte';
   import AccessToggle from './AccessToggle.svelte';
   import PlanSidebarToggleButton from './PlanSidebarToggleButton.svelte';
   import SendButton from './SendButton.svelte';
@@ -63,6 +64,13 @@
     onSendInNewThread,
     onInterrupt,
   }: Props = $props();
+
+  // Mode-toggle slot rules (immutable thread type policy):
+  //   - chat threads: AgentModeToggle (chat ↔ plan)
+  //   - design threads: DesignLockPill (display-only)
+  //   - discussion threads: nothing — discussion has its own composer flow
+  let isDesignThread = $derived(pane.thread?.mode === 'design');
+  let isDiscussionThread = $derived(pane.thread?.mode === 'discussion');
 </script>
 
 <div
@@ -71,7 +79,11 @@
 >
   <ModelProviderMenu {pane} />
   <EffortMenu {pane} />
-  <ModeCycleButton {pane} />
+  {#if isDesignThread}
+    <DesignLockPill />
+  {:else if !isDiscussionThread}
+    <AgentModeToggle {pane} />
+  {/if}
   <AccessToggle {pane} />
   <PlanSidebarToggleButton {pane} {hasCurrentPlan} />
   <div class="ml-auto flex items-center gap-1.5">

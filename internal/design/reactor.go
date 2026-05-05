@@ -2,6 +2,7 @@ package design
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,6 +14,23 @@ import (
 // ErrDesignSessionEnded is returned when a pending design-choice request is
 // cancelled because the design-mode session was torn down.
 var ErrDesignSessionEnded = errors.New("design mode session ended")
+
+// ErrUnknownDispatchTool wraps Dispatch errors when the requested tool name is
+// not one of the known design tools. Provider adapters use errors.Is to map
+// this to a transport-appropriate error code.
+var ErrUnknownDispatchTool = errors.New("unknown design tool")
+
+// ErrInvalidDispatchArgs wraps Dispatch errors when the rawInput cannot be
+// decoded into the expected tool input shape.
+var ErrInvalidDispatchArgs = errors.New("invalid design tool arguments")
+
+// Tool name constants for the design-mode wire surface. The same names appear
+// in the system prompt, the Codex MCP tool list, and the Claude event-watcher
+// filter — keep them centralized so a rename moves all three together.
+const (
+	ToolRenderDesign   = "render_design"
+	ToolPresentOptions = "present_options"
+)
 
 const (
 	artifactRenderedEvent = "design:artifact"
@@ -55,6 +73,58 @@ func NewReactor(artifacts *ArtifactStore, emit func(eventName string, data any))
 		artifacts: artifacts,
 		emit:      emit,
 		pending:   make(map[string]*pendingChoice),
+	}
+}
+
+// DispatchResult is the JSON-serializable payload returned to the calling
+// provider after a design-mode tool call completes.
+type DispatchResult struct {
+	// Payload is the structured tool result. Provider adapters JSON-marshal it
+	// into the protocol's tool-result envelope.
+	Payload any
+}
+
+// Dispatch routes a design-mode tool call through the reactor. Both Claude and
+// Codex provider adapters call into this single entry point; the Codex MCP
+// server is now a thin translator and the Claude event-watcher dispatches
+// without forking on tool name. ctx may be cancelled by the caller (provider
+// session ending) to abandon a blocking PresentOptions call; TeardownThread
+// is the in-band cancel path keyed by thread id.
+func (r *Reactor) Dispatch(ctx context.Context, threadID, toolName string, rawInput json.RawMessage) (DispatchResult, error) {
+	if r == nil {
+		return DispatchResult{}, fmt.Errorf("design reactor unavailable")
+	}
+	threadID = strings.TrimSpace(threadID)
+	toolName = strings.TrimSpace(toolName)
+
+	switch toolName {
+	case ToolRenderDesign:
+		var input RenderInput
+		if err := json.Unmarshal(rawInput, &input); err != nil {
+			return DispatchResult{}, fmt.Errorf("%w: %s: %v", ErrInvalidDispatchArgs, toolName, err)
+		}
+		artifact, err := r.Render(threadID, input)
+		if err != nil {
+			return DispatchResult{}, err
+		}
+		return DispatchResult{Payload: map[string]string{
+			"status":     "rendered",
+			"artifactId": artifact.ID,
+		}}, nil
+
+	case ToolPresentOptions:
+		var input PresentOptionsInput
+		if err := json.Unmarshal(rawInput, &input); err != nil {
+			return DispatchResult{}, fmt.Errorf("%w: %s: %v", ErrInvalidDispatchArgs, toolName, err)
+		}
+		result, err := r.PresentOptions(ctx, threadID, input)
+		if err != nil {
+			return DispatchResult{}, err
+		}
+		return DispatchResult{Payload: result}, nil
+
+	default:
+		return DispatchResult{}, fmt.Errorf("%w: %s", ErrUnknownDispatchTool, toolName)
 	}
 }
 

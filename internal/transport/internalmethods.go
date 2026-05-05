@@ -205,8 +205,9 @@ var LocalOnlyMethods = map[string]bool{
 	"SetWSLDistroPreference": true,
 
 	// 4. Attachment / payload writes (local-FS mutation).
-	"UploadAttachment": true,
-	"DeleteAttachment": true,
+	"UploadAttachment":        true,
+	"DeleteAttachment":        true,
+	"SaveDesignArtifactPng":   true,
 
 	// 5. Local-FS bookkeeping.
 	"AppendUIRenderTraceBatch": true,

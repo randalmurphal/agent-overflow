@@ -159,25 +159,31 @@
 
   async function handleNewThread(projectId: string): Promise<void> {
     expandProject(projectId);
-    // If a draft is already in-flight for this project (user clicked
-    // "New Thread" earlier, typed something, then wandered off), reuse
-    // it so the persisted composer draft repopulates under the pane.
-    // This matches t3-code's "one draft per project" UX.
-    const existing = getProjectDraft(projectId);
+    // + New is mode-contextual: the active mode tab decides whether to
+    // create a chat or design thread. Each (project, mode) gets its own
+    // draft slot so a fresh chat draft and a fresh design draft can
+    // coexist for the same project.
+    const draftMode = pane.activeTab;
+    const existing = getProjectDraft(projectId, draftMode);
     if (existing) {
       await pane.switchThread(existing);
       return;
     }
     try {
-      // CreateThread as of v13 takes a struct. Defaults come from settings.
-      // We persist the row so the thread has a stable id for draft
-      // saves, but we deliberately do NOT prepend it to the sidebar or
-      // spawn a provider session — the thread stays a draft until the
-      // first SendMessage promotes it (lazy session start in
-      // app_send.go; sidebar prepend in Composer.send()).
-      const thread = (await CreateThread({ projectId })) as Thread;
+      // CreateThread takes a struct; we forward the active tab as the
+      // mode so design-tab + creates a design thread directly. Other
+      // defaults (provider, model) come from settings. We persist the
+      // row so the thread has a stable id for draft saves, but we
+      // deliberately do NOT prepend it to the sidebar or spawn a
+      // provider session — the thread stays a draft until the first
+      // SendMessage promotes it (lazy session start in app_send.go;
+      // sidebar prepend in Composer.send()).
+      const thread = (await CreateThread({
+        projectId,
+        mode: draftMode === 'design' ? 'design' : 'chat',
+      })) as Thread;
       seedDefaultWorktreeIntentForDraft(thread);
-      setProjectDraft(projectId, thread);
+      setProjectDraft(projectId, draftMode, thread);
       await pane.switchThread(thread);
     } catch (err) {
       console.error('Failed to create thread:', err);

@@ -655,8 +655,9 @@ func (p *privilegedApp) SetThreadRuntimeMode() string         { return "ok" }
 func (p *privilegedApp) SetWSLDistroPreference() string       { return "ok" }
 
 // 4. Attachment / payload writes.
-func (p *privilegedApp) UploadAttachment() string { return "ok" }
-func (p *privilegedApp) DeleteAttachment() string { return "ok" }
+func (p *privilegedApp) UploadAttachment() string      { return "ok" }
+func (p *privilegedApp) DeleteAttachment() string      { return "ok" }
+func (p *privilegedApp) SaveDesignArtifactPng() string { return "ok" }
 
 // 5. Local-FS bookkeeping.
 func (p *privilegedApp) AppendUIRenderTraceBatch() string { return "ok" }

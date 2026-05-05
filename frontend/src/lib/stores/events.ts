@@ -41,6 +41,39 @@ import {
   projectUserInputResolution,
 } from './threadStatuses.svelte';
 import { parseTokenUsage } from './thread.svelte';
+import { GetDesignArtifactHTML, SaveDesignArtifactPng } from './bindings';
+import { captureHtmlToPng, blobToBase64 } from '../utils/captureHtml';
+import { DESIGN_VIEWPORT_WIDTHS } from '../types/design';
+
+// Track in-flight PNG captures so a second design:artifact event for the
+// same artifact (replay, idempotent re-emission) doesn't kick off a
+// duplicate capture. Once the upload settles the entry is removed.
+const designPngCaptureInFlight: Set<string> = new Set();
+
+async function persistDesignArtifactPng(artifact: DesignArtifact): Promise<void> {
+  if (!artifact || !artifact.threadId || !artifact.id) return;
+  const key = `${artifact.threadId}:${artifact.id}`;
+  if (designPngCaptureInFlight.has(key)) return;
+  designPngCaptureInFlight.add(key);
+  try {
+    const html = (await GetDesignArtifactHTML(
+      artifact.threadId,
+      artifact.id,
+    )) as string;
+    if (!html) return;
+    const png = await captureHtmlToPng(html, {
+      width: DESIGN_VIEWPORT_WIDTHS.desktop ?? 1280,
+    });
+    const base64 = await blobToBase64(png);
+    await SaveDesignArtifactPng(artifact.threadId, artifact.id, base64);
+  } catch (err) {
+    // Best-effort. Export still falls back to a fresh capture if the
+    // persisted file isn't there at handoff time.
+    console.warn('persist design artifact PNG failed:', err);
+  } finally {
+    designPngCaptureInFlight.delete(key);
+  }
+}
 
 const itemUpsertSubscribers: Set<(item: Item) => void> = new Set();
 const ITEM_EVENT_FLUSH_MAX_DELAY_MS = 50;
@@ -909,6 +942,16 @@ export function setupEventListeners(): () => void {
   // design:artifact — a new rendered artifact. Append to the owning pane's
   // history. The preview panel auto-tracks the latest unless the user has
   // pinned a specific artifact via the dropdown.
+  //
+  // We also fire an async PNG capture against the artifact's HTML and save
+  // it next to the HTML on disk via SaveDesignArtifactPng. The capture has
+  // to run in the browser (modern-screenshot needs a DOM); the backend
+  // can't render HTML to PNG on its own. Persisting once at render time
+  // means future "Send to chat" handoffs (Bundle / PNG-only) don't have to
+  // re-run capture, and a future thumbnail strip can lazy-load the file
+  // instead of re-rendering each preview. Failures are best-effort:
+  // export still works (with a fresh capture as fallback) if persistence
+  // ever throws.
   const cancelDesignArtifact = wailsEventOn<DesignArtifact>('design:artifact', (artifact) => {
     if (!artifact || !artifact.threadId) return;
     for (const pane of getAllPanes().values()) {
@@ -916,6 +959,7 @@ export function setupEventListeners(): () => void {
         pane.appendDesignArtifact(artifact);
       }
     }
+    void persistDesignArtifactPng(artifact);
   });
 
   // design:options — agent blocked on present_options. Also append the option

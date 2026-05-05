@@ -438,10 +438,12 @@ describe('thread.search command', () => {
 
 // --- mode.cycle wiring ---
 //
-// Shift+Tab cycles the active thread through chat → plan → design. The command
-// reads the current mode from the pane's thread and calls UpdateThreadMode.
-// Disabled while any modal or the palette is open because Shift+Tab is the
-// native "focus previous" chord inside those surfaces.
+// Shift+Tab toggles the active chat thread between chat and plan modes
+// (design and discussion are immutable thread types — no-op on those).
+// The command reads the current mode from the pane's thread and calls
+// UpdateThreadMode. Disabled while any modal or the palette is open
+// because Shift+Tab is the native "focus previous" chord inside those
+// surfaces.
 
 describe('mode.cycle command', () => {
   beforeEach(() => {
@@ -463,12 +465,11 @@ describe('mode.cycle command', () => {
     expect(isCommandEnabled('mode.cycle', ctx)).toBe(false);
   });
 
-  it('calls UpdateThreadMode with the next step in the cycle', async () => {
+  it('toggles plan → chat via UpdateThreadMode', async () => {
     const pane = readyPane({ mode: 'plan' });
     const calls: Array<[string, string]> = [];
     setBindingMock('UpdateThreadMode', async (id: unknown, mode: unknown) => {
       calls.push([id as string, mode as string]);
-      // Return the updated thread shape the command expects.
       return {
         id: id as string,
         title: 'Test thread',
@@ -488,7 +489,34 @@ describe('mode.cycle command', () => {
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
-    expect(calls[0]).toEqual(['thread-1', 'design']);
+    expect(calls[0]).toEqual(['thread-1', 'chat']);
+  });
+
+  it('is a no-op on design threads (immutable thread type)', async () => {
+    const pane = readyPane({ mode: 'design' });
+    const calls: Array<[string, string]> = [];
+    setBindingMock('UpdateThreadMode', async (id: unknown, mode: unknown) => {
+      calls.push([id as string, mode as string]);
+      return {
+        id: id as string,
+        title: 'Design thread',
+        provider: 'claude',
+        workspacePath: '/tmp',
+        projectPath: '/tmp',
+        mode: mode as string,
+        model: 'claude-sonnet-4-6',
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+      };
+    });
+    registerFixtureCommands(pane);
+    const ctx = makeCommandContext(pane, {}) as CommandContext;
+    runCommand('mode.cycle', ctx);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls.length).toBe(0);
   });
 });
 

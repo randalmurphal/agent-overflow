@@ -106,7 +106,83 @@ func (as *ArtifactStore) List(threadID, kind string) ([]DesignArtifact, error) {
 	return as.store.ListDesignArtifacts(strings.TrimSpace(threadID), strings.TrimSpace(kind))
 }
 
+// SavePNG writes a PNG sibling to the artifact's HTML on disk. The frontend
+// captures HTML→PNG via captureHtmlToPng once a design:artifact event lands,
+// then uploads the bytes here so future "Send to chat" handoffs (Bundle /
+// PNG-only) can attach the rendered image without re-running the capture.
+//
+// SavePNG verifies the artifact metadata exists before writing — that pins
+// the file path inside the artifact's namespace and rejects writes for
+// missing or other-thread artifacts.
+func (as *ArtifactStore) SavePNG(threadID, artifactID string, png []byte) error {
+	if as.store == nil {
+		return fmt.Errorf("artifact store unavailable")
+	}
+	if len(png) == 0 {
+		return fmt.Errorf("png payload is empty")
+	}
+	threadID = strings.TrimSpace(threadID)
+	artifactID = strings.TrimSpace(artifactID)
+	if _, err := as.store.GetDesignArtifact(threadID, artifactID); err != nil {
+		return err
+	}
+
+	pngPath, err := as.pngPath(threadID, artifactID)
+	if err != nil {
+		return err
+	}
+	return as.writeBytes(pngPath, png)
+}
+
+// GetPNGPath returns the on-disk path of an artifact's PNG capture, or empty
+// string if no PNG has been saved yet. Returns error only if the artifact
+// metadata cannot be loaded.
+func (as *ArtifactStore) GetPNGPath(threadID, artifactID string) (string, error) {
+	if as.store == nil {
+		return "", fmt.Errorf("artifact store unavailable")
+	}
+	threadID = strings.TrimSpace(threadID)
+	artifactID = strings.TrimSpace(artifactID)
+	if _, err := as.store.GetDesignArtifact(threadID, artifactID); err != nil {
+		return "", err
+	}
+
+	pngPath, err := as.pngPath(threadID, artifactID)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(pngPath); err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("stat artifact png: %w", err)
+	}
+	return pngPath, nil
+}
+
+// GetPNG reads an artifact's stored PNG bytes. Returns (nil, nil) when no
+// PNG has been written for the artifact (e.g. capture failed or hasn't run
+// yet); the caller distinguishes "absent" from a hard read error.
+func (as *ArtifactStore) GetPNG(threadID, artifactID string) ([]byte, error) {
+	pngPath, err := as.GetPNGPath(threadID, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	if pngPath == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(pngPath)
+	if err != nil {
+		return nil, fmt.Errorf("read artifact png: %w", err)
+	}
+	return data, nil
+}
+
 func (as *ArtifactStore) writeHTML(path, html string) error {
+	return as.writeBytes(path, []byte(html))
+}
+
+func (as *ArtifactStore) writeBytes(path string, payload []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create artifact directory: %w", err)
@@ -119,15 +195,15 @@ func (as *ArtifactStore) writeHTML(path, html string) error {
 	if err != nil {
 		return fmt.Errorf("create artifact temp file: %w", err)
 	}
-	if _, err := f.WriteString(html); err != nil {
+	if _, err := f.Write(payload); err != nil {
 		f.Close()
 		os.Remove(tmp)
-		return fmt.Errorf("write artifact html: %w", err)
+		return fmt.Errorf("write artifact bytes: %w", err)
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()
 		os.Remove(tmp)
-		return fmt.Errorf("sync artifact html: %w", err)
+		return fmt.Errorf("sync artifact bytes: %w", err)
 	}
 	if err := f.Close(); err != nil {
 		os.Remove(tmp)
@@ -135,7 +211,7 @@ func (as *ArtifactStore) writeHTML(path, html string) error {
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
-		return fmt.Errorf("rename artifact html: %w", err)
+		return fmt.Errorf("rename artifact bytes: %w", err)
 	}
 	return nil
 }
@@ -150,6 +226,18 @@ func (as *ArtifactStore) artifactPath(threadID, artifactID string) (string, erro
 		return "", fmt.Errorf("artifact ID is required")
 	}
 	return as.resolveWithinBase(threadID, fmt.Sprintf("%s.html", artifactID))
+}
+
+func (as *ArtifactStore) pngPath(threadID, artifactID string) (string, error) {
+	threadID = strings.TrimSpace(threadID)
+	artifactID = strings.TrimSpace(artifactID)
+	if threadID == "" {
+		return "", fmt.Errorf("thread ID is required")
+	}
+	if artifactID == "" {
+		return "", fmt.Errorf("artifact ID is required")
+	}
+	return as.resolveWithinBase(threadID, fmt.Sprintf("%s.png", artifactID))
 }
 
 func (as *ArtifactStore) resolveWithinBase(parts ...string) (string, error) {

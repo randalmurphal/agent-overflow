@@ -1,22 +1,21 @@
-// Pure helper that walks the thread-mode cycle used by Shift+Tab and the
-// `ModeCycleButton`. Discussion mode is intentionally excluded — it can't
-// be toggled into from this cycle because entering discussion is a
-// separate flow (`StartDiscussion` on an existing thread).
-//
-// A single source of truth keeps the button and the `mode.cycle` command
-// in lockstep: both import `cycleMode` and `MODE_CYCLE`, so a later
-// addition (e.g. "review") needs only one edit here plus the icon map.
+// Pure helper that toggles between the two agent modes available inside a
+// chat thread: chat ↔ plan. Design and discussion are immutable thread types
+// (decided at thread creation, not switched into) — they are deliberately
+// excluded from this cycle. The Shift+Tab keyboard shortcut and the
+// AgentModeToggle button both call cycleMode so the two stay in lockstep.
 
-export type CycleMode = 'chat' | 'plan' | 'design';
+export type CycleMode = 'chat' | 'plan';
 
-export const MODE_CYCLE: readonly CycleMode[] = ['chat', 'plan', 'design'] as const;
+export const MODE_CYCLE: readonly CycleMode[] = ['chat', 'plan'] as const;
 
 /**
  * Return the next mode in the cycle. Falls back to "chat" when the input
- * isn't one of the cycled modes (e.g. a thread in "discussion" mode, or
- * a legacy row with mode="default"). Falling back rather than throwing
- * is intentional — the cycle button must stay usable on a thread that
- * started in a mode we don't cycle through.
+ * isn't one of the cycled modes (e.g. a thread in "discussion" or "design"
+ * mode, or a legacy row with mode="default"). Falling back rather than
+ * throwing is intentional — the toggle must stay usable on a thread that
+ * started in a mode we don't cycle through; the backend's UpdateThreadMode
+ * additionally enforces the immutability of design / discussion threads, so
+ * a stray cycle call can't actually corrupt the type.
  */
 export function cycleMode(current: string | undefined | null): CycleMode {
   if (!current) return 'chat';

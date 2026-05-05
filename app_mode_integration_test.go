@@ -134,20 +134,20 @@ func TestMode_SetInteractionModeChangesPersistentRow(t *testing.T) {
 		t.Fatalf("initial mode = %q, want chat", thread.Mode)
 	}
 
-	updated, err := app.UpdateThreadMode(thread.ID, "design")
+	updated, err := app.UpdateThreadMode(thread.ID, "plan")
 	if err != nil {
-		t.Fatalf("UpdateThreadMode(design) error = %v", err)
+		t.Fatalf("UpdateThreadMode(plan) error = %v", err)
 	}
-	if updated.Mode != "design" {
-		t.Fatalf("returned mode = %q, want design", updated.Mode)
+	if updated.Mode != "plan" {
+		t.Fatalf("returned mode = %q, want plan", updated.Mode)
 	}
 
 	stored, err := app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.Mode != "design" {
-		t.Fatalf("stored mode = %q, want design", stored.Mode)
+	if stored.Mode != "plan" {
+		t.Fatalf("stored mode = %q, want plan", stored.Mode)
 	}
 }
 
@@ -188,7 +188,7 @@ func TestMode_SetInteractionModeRejectsInvalidMode(t *testing.T) {
 func TestMode_SetInteractionModeUnknownThreadErrors(t *testing.T) {
 	app := newTestAppWithStore(t)
 
-	_, err := app.UpdateThreadMode("nonexistent-thread", "design")
+	_, err := app.UpdateThreadMode("nonexistent-thread", "plan")
 	if err == nil {
 		t.Fatal("UpdateThreadMode(nonexistent) error = nil, want not-found")
 	}
@@ -288,9 +288,9 @@ func TestMode_DesignModeThreadHasDesignArtifactCapability(t *testing.T) {
 // TestMode_DiscussionModeCreatesOrPairsWithDiscussion: CreateThread refuses to
 // produce a free-standing "discussion" thread. A discussion-mode thread appears
 // only via StartDiscussion which wires a channel, the deliberation runtime, and
-// child participant threads. We assert the CreateThread rejection path and that
-// UpdateThreadMode is the only permitted way to label an existing
-// thread "discussion" — documenting the intended layering.
+// child participant threads. We also assert UpdateThreadMode rejects
+// "discussion" — thread type is immutable post-creation, mirroring the
+// design-thread immutability.
 func TestMode_DiscussionModeCreatesOrPairsWithDiscussion(t *testing.T) {
 	app := newTestAppWithStore(t)
 
@@ -299,23 +299,14 @@ func TestMode_DiscussionModeCreatesOrPairsWithDiscussion(t *testing.T) {
 		t.Fatal("CreateThread(discussion) should fail (StartDiscussion owns that mode)")
 	}
 
-	// But an existing thread may be "promoted" to discussion via the setter.
+	// And UpdateThreadMode rejects promotion to discussion: thread type is
+	// determined at creation and is no longer mutable post-hoc.
 	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-disc", "claude-sonnet-4-6", "")
 	if err != nil {
 		t.Fatalf("CreateThread(default) error = %v", err)
 	}
-	updated, err := app.UpdateThreadMode(thread.ID, "discussion")
-	if err != nil {
-		t.Fatalf("UpdateThreadMode(discussion) error = %v", err)
-	}
-	if updated.Mode != "discussion" {
-		t.Fatalf("mode = %q, want discussion", updated.Mode)
-	}
-	// No deliberation has been wired; the thread is a bare discussion-labelled
-	// row. This is expected for the setter path — the deliberation runtime
-	// is keyed off DiscussionID, not the mode column.
-	if updated.DiscussionID != "" {
-		t.Fatalf("DiscussionID = %q, want empty (setter path does not wire channel)", updated.DiscussionID)
+	if _, err := app.UpdateThreadMode(thread.ID, "discussion"); err == nil {
+		t.Fatal("UpdateThreadMode(discussion) error = nil, want rejection (immutable type)")
 	}
 }
 
@@ -364,7 +355,7 @@ func TestMode_ConcurrentSetModeRace(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	modes := []string{"chat", "plan", "design", "discussion"}
+	modes := []string{"chat", "plan"}
 	setModes := map[string]struct{}{}
 	var setModesMu sync.Mutex
 	var wg sync.WaitGroup

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 
 	"agent-overflow/internal/design"
@@ -66,4 +67,38 @@ func (a *App) ChooseDesignOption(threadID, requestID, optionID string) error {
 		return fmt.Errorf("design reactor unavailable")
 	}
 	return a.reactor.ChooseOption(threadID, requestID, optionID)
+}
+
+// SaveDesignArtifactPng persists a base64-encoded PNG capture next to an
+// artifact's HTML on disk. The frontend listens for design:artifact events,
+// runs captureHtmlToPng at desktop viewport, and uploads the result here so
+// the bundled "Send to chat" handoffs can attach the rendered image without
+// re-running the capture each time.
+func (a *App) SaveDesignArtifactPng(threadID, artifactID string, b64 string) error {
+	if a.artifacts == nil {
+		return fmt.Errorf("design artifact store unavailable")
+	}
+	data, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return fmt.Errorf("decode png base64: %w", err)
+	}
+	return a.artifacts.SavePNG(threadID, artifactID, data)
+}
+
+// GetDesignArtifactPng returns a base64-encoded PNG capture of an artifact, or
+// the empty string if no PNG has been saved yet (capture failed, was skipped,
+// or hasn't run for this artifact). The frontend uses this to attach the
+// rendered image when handing off a design to a chat thread.
+func (a *App) GetDesignArtifactPng(threadID, artifactID string) (string, error) {
+	if a.artifacts == nil {
+		return "", fmt.Errorf("design artifact store unavailable")
+	}
+	data, err := a.artifacts.GetPNG(threadID, artifactID)
+	if err != nil {
+		return "", err
+	}
+	if len(data) == 0 {
+		return "", nil
+	}
+	return base64.StdEncoding.EncodeToString(data), nil
 }

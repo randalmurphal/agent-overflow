@@ -243,6 +243,71 @@ func TestArtifactStoreRejectsPathTraversalOnWrite(t *testing.T) {
 	}
 }
 
+func TestArtifactStoreSavePNGRoundTrip(t *testing.T) {
+	as, st, baseDir := newArtifactStore(t)
+	createThread(t, st, "thread-png")
+
+	artifact, err := as.Store("thread-png", "<html>preview</html>", "Render", "", "render")
+	if err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+
+	// No PNG yet — Get should return (nil, nil) without error.
+	got, err := as.GetPNG("thread-png", artifact.ID)
+	if err != nil {
+		t.Fatalf("GetPNG before save: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected no PNG before SavePNG, got %d bytes", len(got))
+	}
+
+	pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xde, 0xad, 0xbe, 0xef}
+	if err := as.SavePNG("thread-png", artifact.ID, pngBytes); err != nil {
+		t.Fatalf("SavePNG: %v", err)
+	}
+
+	pngPath, err := as.GetPNGPath("thread-png", artifact.ID)
+	if err != nil {
+		t.Fatalf("GetPNGPath: %v", err)
+	}
+	if !strings.HasPrefix(pngPath, filepath.Join(baseDir, "thread-png")) {
+		t.Fatalf("png path %q does not live under thread directory", pngPath)
+	}
+	if filepath.Ext(pngPath) != ".png" {
+		t.Fatalf("png path = %q, want .png suffix", pngPath)
+	}
+
+	got, err = as.GetPNG("thread-png", artifact.ID)
+	if err != nil {
+		t.Fatalf("GetPNG: %v", err)
+	}
+	if string(got) != string(pngBytes) {
+		t.Fatalf("png bytes mismatch")
+	}
+}
+
+func TestArtifactStoreSavePNGRejectsUnknownArtifact(t *testing.T) {
+	as, st, _ := newArtifactStore(t)
+	createThread(t, st, "thread-png-missing")
+
+	if err := as.SavePNG("thread-png-missing", "no-such-artifact", []byte{0x89, 0x50, 0x4e, 0x47}); err == nil {
+		t.Fatal("expected SavePNG to reject unknown artifact")
+	}
+}
+
+func TestArtifactStoreSavePNGRejectsEmpty(t *testing.T) {
+	as, st, _ := newArtifactStore(t)
+	createThread(t, st, "thread-png-empty")
+
+	artifact, err := as.Store("thread-png-empty", "<html>x</html>", "X", "", "render")
+	if err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if err := as.SavePNG("thread-png-empty", artifact.ID, nil); err == nil {
+		t.Fatal("expected SavePNG to reject empty payload")
+	}
+}
+
 func TestArtifactStoreIgnoresTamperedHTMLPathOnRead(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "artifacts.db")
 	st, err := store.New(dbPath)

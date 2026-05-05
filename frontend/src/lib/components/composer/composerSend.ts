@@ -17,7 +17,7 @@ import type { TerminalChip } from '../../types/draft';
 import { addToast } from '../../stores/toast.svelte';
 import { errString } from '../../utils/errors';
 import {
-  findDraftProjectId,
+  findDraftEntry,
   clearProjectDraft,
 } from '../../stores/draftThreads.svelte';
 import {
@@ -111,14 +111,14 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
 
     // Promote a draft thread to the sidebar the moment the user hits send —
     // not after the backend confirms delivery. A failed send leaves the
-    // thread visible. Clear the draft-thread pointer so a follow-up "New
-    // Thread" for the same project spins up a fresh draft.
-    const draftProjectId = findDraftProjectId(opts.threadId);
-    if (draftProjectId) {
+    // thread visible. Clear the draft-thread pointer so a follow-up "+
+    // New" for the same (project, mode) spins up a fresh draft.
+    const draftEntry = findDraftEntry(opts.threadId);
+    if (draftEntry) {
       if (threadForSend && !getThreadById(opts.threadId)) {
         prependThread(threadForSend);
       }
-      clearProjectDraft(draftProjectId);
+      clearProjectDraft(draftEntry.projectId, draftEntry.mode);
     }
 
     // Optimistically flip the sidebar pill to Working the moment the

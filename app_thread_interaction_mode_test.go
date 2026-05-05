@@ -14,7 +14,9 @@ func TestUpdateThreadModePersistsValidMode(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	for _, mode := range []string{"chat", "plan", "design", "discussion"} {
+	// Only chat ↔ plan transitions are valid post-creation. Thread type
+	// (design / discussion) is immutable.
+	for _, mode := range []string{"chat", "plan"} {
 		got, err := app.UpdateThreadMode(thread.ID, mode)
 		if err != nil {
 			t.Fatalf("UpdateThreadMode(%q) error = %v", mode, err)
@@ -32,6 +34,33 @@ func TestUpdateThreadModePersistsValidMode(t *testing.T) {
 	}
 }
 
+// TestUpdateThreadModeRejectsTypeMutations enforces immutable thread type:
+// design and discussion modes cannot be set on an existing thread, and a
+// design/discussion thread cannot be flipped to chat or plan either.
+func TestUpdateThreadModeRejectsTypeMutations(t *testing.T) {
+	app := newTestAppWithStore(t)
+	chatThread := testThread("chat-thread")
+	if err := app.store.CreateThread(chatThread); err != nil {
+		t.Fatalf("CreateThread(chat) error = %v", err)
+	}
+	for _, target := range []string{"design", "discussion"} {
+		if _, err := app.UpdateThreadMode(chatThread.ID, target); err == nil {
+			t.Fatalf("UpdateThreadMode(chat→%s) error = nil, want rejection", target)
+		}
+	}
+
+	designThread := testThread("design-thread")
+	designThread.Mode = "design"
+	if err := app.store.CreateThread(designThread); err != nil {
+		t.Fatalf("CreateThread(design) error = %v", err)
+	}
+	for _, target := range []string{"chat", "plan"} {
+		if _, err := app.UpdateThreadMode(designThread.ID, target); err == nil {
+			t.Fatalf("UpdateThreadMode(design→%s) error = nil, want rejection", target)
+		}
+	}
+}
+
 func TestUpdateThreadModeRejectsInvalidMode(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-mode-invalid")
@@ -39,7 +68,7 @@ func TestUpdateThreadModeRejectsInvalidMode(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	for _, mode := range []string{"nonsense", "DEFAULT", " ", "debate", "PLAN"} {
+	for _, mode := range []string{"nonsense", "DEFAULT", " ", "debate", "PLAN", "design", "discussion"} {
 		if _, err := app.UpdateThreadMode(thread.ID, mode); err == nil {
 			t.Fatalf("UpdateThreadMode(%q) error = nil, want validation error", mode)
 		} else if !strings.Contains(err.Error(), "invalid mode") {
@@ -74,9 +103,6 @@ func TestUpdateThreadModeRoundTripPersists(t *testing.T) {
 	}
 
 	if _, err := app.UpdateThreadMode(thread.ID, "plan"); err != nil {
-		t.Fatalf("UpdateThreadMode() error = %v", err)
-	}
-	if _, err := app.UpdateThreadMode(thread.ID, "design"); err != nil {
 		t.Fatalf("UpdateThreadMode() error = %v", err)
 	}
 	if _, err := app.UpdateThreadMode(thread.ID, "chat"); err != nil {

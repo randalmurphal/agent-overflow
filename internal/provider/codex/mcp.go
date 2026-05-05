@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -197,37 +198,19 @@ func (s *DesignMCPServer) handleToolCall(
 		return
 	}
 
-	switch params.Name {
-	case "render_design":
-		var input design.RenderInput
-		if err := json.Unmarshal(params.Arguments, &input); err != nil {
-			writeRPCError(w, req.ID, http.StatusOK, -32602, "invalid render_design arguments")
-			return
-		}
-		artifact, err := s.reactor.Render(threadID, input)
-		if err != nil {
+	result, err := s.reactor.Dispatch(ctx, threadID, params.Name, params.Arguments)
+	if err != nil {
+		switch {
+		case errors.Is(err, design.ErrUnknownDispatchTool):
+			writeRPCError(w, req.ID, http.StatusOK, -32602, "unknown tool")
+		case errors.Is(err, design.ErrInvalidDispatchArgs):
+			writeRPCError(w, req.ID, http.StatusOK, -32602, fmt.Sprintf("invalid %s arguments", params.Name))
+		default:
 			writeToolError(w, req.ID, err)
-			return
 		}
-		writeToolResult(w, req.ID, map[string]string{
-			"status":     "rendered",
-			"artifactId": artifact.ID,
-		})
-	case "present_options":
-		var input design.PresentOptionsInput
-		if err := json.Unmarshal(params.Arguments, &input); err != nil {
-			writeRPCError(w, req.ID, http.StatusOK, -32602, "invalid present_options arguments")
-			return
-		}
-		result, err := s.reactor.PresentOptions(ctx, threadID, input)
-		if err != nil {
-			writeToolError(w, req.ID, err)
-			return
-		}
-		writeToolResult(w, req.ID, result)
-	default:
-		writeRPCError(w, req.ID, http.StatusOK, -32602, "unknown tool")
+		return
 	}
+	writeToolResult(w, req.ID, result.Payload)
 }
 
 func (s *DesignMCPServer) threadIDForPath(path string) (string, bool) {

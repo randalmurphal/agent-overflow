@@ -331,12 +331,15 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
 
   registerCommand({
     id: 'mode.cycle',
-    label: 'Mode: Cycle (Chat → Plan → Design)',
-    description: 'Cycle the active thread through the chat / plan / design modes.',
+    label: 'Agent Mode: Toggle Chat ↔ Plan',
+    description: 'Toggle the active chat thread between chat and plan agent modes. No-op on design / discussion threads — those types are immutable.',
     icon: '⇆',
     when: 'hasActiveThread && !paletteOpen && !anyModalOpen',
     run: (ctx) =>
       withActiveThread(ctx, pane, async (t) => {
+        // Design and discussion threads have immutable types — silently
+        // skip the toggle there rather than firing a backend rejection.
+        if (t.mode === 'design' || t.mode === 'discussion') return;
         const next = cycleMode(t.mode);
         try {
           const updated = (await UpdateThreadMode(t.id, next)) as Thread;

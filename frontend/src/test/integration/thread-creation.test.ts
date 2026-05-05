@@ -46,7 +46,8 @@ describe('App integration — thread creation', () => {
     await fireEvent.click(pencil);
     await waitFor(() => expect(createMock).toHaveBeenCalled());
     // CreateThread takes a CreateThreadOptions struct as its sole arg.
-    expect(createMock.mock.calls[0][0]).toEqual({ projectId: 'proj-int' });
+    // + New is mode-contextual; the default Chat tab forwards mode='chat'.
+    expect(createMock.mock.calls[0][0]).toEqual({ projectId: 'proj-int', mode: 'chat' });
     const matches = await findAllByText('Fresh Thread');
     expect(matches.length).toBeGreaterThan(0);
   });

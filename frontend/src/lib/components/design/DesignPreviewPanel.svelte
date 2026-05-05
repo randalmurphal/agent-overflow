@@ -1,103 +1,49 @@
 <script lang="ts">
-  // DesignPreviewPanel — renders the current design artifact's HTML in a
-  // sandboxed iframe with a viewport toggle and an artifact history dropdown.
+  // DesignPreviewPanel — the right-hand pane in design threads. Owns the
+  // toolbar (viewport selector, refresh, annotate stub, artifact dropdown,
+  // send-to-chat menu) and the sandbox iframe that previews the active
+  // artifact's HTML. Hydration of the artifact list lives in ChatView so
+  // the preview shows the latest render the moment a thread loads.
   //
-  // Fetches HTML on demand via GetDesignArtifactHTML so the pane state stays
-  // light. Cancels stale fetches if the user switches artifacts mid-flight.
+  // Per the design-mode spec the iframe is `sandbox="allow-scripts"`
+  // only — never allow-same-origin — so the artifact HTML cannot escape
+  // its document. The PNG capture for "Send to chat" runs through a
+  // separate hidden iframe in captureHtml.ts; this iframe stays locked.
 
+  import Smartphone from 'lucide-svelte/icons/smartphone';
+  import TabletIcon from 'lucide-svelte/icons/tablet';
+  import Monitor from 'lucide-svelte/icons/monitor';
+  import RefreshCw from 'lucide-svelte/icons/refresh-cw';
+  import MessageSquareText from 'lucide-svelte/icons/message-square-text';
+  import MessagesSquare from 'lucide-svelte/icons/messages-square';
+  import ImageIcon from 'lucide-svelte/icons/image';
+  import FileText from 'lucide-svelte/icons/file-text';
+  import Layers from 'lucide-svelte/icons/layers';
+  import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Thread } from '../../types/models';
   import { errString } from '../../utils/errors';
+  import { relativeTime } from '../../utils/format';
   import {
     CreateThread,
     GetDesignArtifactHTML,
+    GetDesignArtifactPng,
     SaveDraft,
     StartSession,
     UploadAttachment,
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
-  import Button from '../primitives/Button.svelte';
   import { prependThread } from '../../stores/threads.svelte';
   import { captureHtmlToPng, blobToBase64 } from '../../utils/captureHtml';
   import { DESIGN_VIEWPORT_WIDTHS, type DesignViewport } from '../../types/design';
+  import Icon from '../primitives/Icon.svelte';
+  import Menu from '../primitives/Menu.svelte';
+  import MenuItem from '../primitives/MenuItem.svelte';
+  import Popover from '../primitives/Popover.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
-  let exporting = $state(false);
-
-  async function exportToNewThread(): Promise<void> {
-    if (exporting) return;
-    const sourceThread = pane.thread;
-    const artifact = activeArtifact;
-    if (!sourceThread || !artifact || !fetchedHtml) {
-      addToast('warning', 'Nothing to export yet');
-      return;
-    }
-
-    exporting = true;
-    try {
-      // 1. Capture the rendered HTML to a PNG Blob (hidden iframe + modern-screenshot).
-      const png = await captureHtmlToPng(fetchedHtml, {
-        width: DESIGN_VIEWPORT_WIDTHS[pane.designViewport] ?? 1280,
-      });
-
-      // 2. Create a sibling thread under the same project/provider.
-      // CreateThread moved to a struct-arg signature in Wave 1/2; the
-      // export-to-thread flow only needs to forward the source's project
-      // context — provider/model/mode default from settings.
-      if (!sourceThread.projectId) {
-        addToast('error', 'Cannot export: source thread has no project');
-        return;
-      }
-      const newThread = (await CreateThread({
-        projectId: sourceThread.projectId,
-        provider: sourceThread.provider,
-        model: sourceThread.model,
-        mode: 'default',
-      })) as Thread;
-
-      // 3. Upload the PNG as a draft attachment on the new thread.
-      let attachmentId: string | null = null;
-      try {
-        const base64 = await blobToBase64(png);
-        const filename = `design-${artifact.id}.png`;
-        const attachment = (await UploadAttachment(
-          newThread.id,
-          filename,
-          'image/png',
-          base64,
-        )) as { id?: string } | null;
-        attachmentId = attachment?.id ?? null;
-      } catch (err) {
-        console.error('Screenshot upload failed:', err);
-        addToast('warning', 'Exported without screenshot — upload failed');
-      }
-
-      // 4. Seed the draft with a concise reference + the attachment.
-      const prompt = `Design reference: ${artifact.title}\n\nImplement this design.`;
-      try {
-        await SaveDraft(newThread.id, prompt, attachmentId ? [attachmentId] : [], [], null);
-      } catch (err) {
-        console.error('Draft seed failed:', err);
-      }
-
-      prependThread(newThread);
-      await pane.switchThread(newThread);
-
-      try {
-        await StartSession(newThread.id);
-      } catch (err) {
-        console.error('Failed to start session on exported thread:', err);
-      }
-
-      addToast('success', `Exported design to a new thread`);
-    } catch (err) {
-      console.error('Failed to export design:', err);
-      pane.setGeneralError(`Failed to export design: ${errString(err)}`);
-    } finally {
-      exporting = false;
-    }
-  }
+  // -- Artifact resolution & HTML fetch ---------------------------------
 
   // Fetch generation guard — incremented on every fetch kickoff. An in-flight
   // response is applied only if its generation matches the latest value.
@@ -107,9 +53,9 @@
   let fetching: boolean = $state(false);
 
   // Resolve which artifact should be displayed.
-  //   - If there are pending options, prefer the first option's artifact so
-  //     the iframe previews what's being chosen.
-  //   - Otherwise respect an explicit activeArtifactId.
+  //   - If there are pending options, prefer the first option's artifact
+  //     so the iframe previews what's being chosen.
+  //   - Otherwise respect an explicit activeArtifactId (the dropdown).
   //   - Otherwise fall back to the latest artifact in history.
   let resolvedArtifactId = $derived.by<string | null>(() => {
     const pending = pane.pendingDesignOptions;
@@ -138,23 +84,45 @@
       fetching = false;
       return;
     }
+    void fetchHtml(threadId, artifactId);
+  });
+
+  async function fetchHtml(threadId: string, artifactId: string): Promise<void> {
     const gen = ++fetchGeneration;
     fetching = true;
     fetchError = null;
-    GetDesignArtifactHTML(threadId, artifactId)
-      .then((html: unknown) => {
-        if (gen !== fetchGeneration) return;
-        fetchedHtml = typeof html === 'string' ? html : '';
-        fetching = false;
-      })
-      .catch((err: unknown) => {
-        if (gen !== fetchGeneration) return;
-        fetching = false;
-        const message = err instanceof Error ? err.message : String(err);
-        fetchError = message;
-        addToast('error', `Failed to load design artifact: ${message}`);
-      });
-  });
+    try {
+      const html = (await GetDesignArtifactHTML(threadId, artifactId)) as unknown;
+      if (gen !== fetchGeneration) return;
+      fetchedHtml = typeof html === 'string' ? html : '';
+      fetching = false;
+    } catch (err) {
+      if (gen !== fetchGeneration) return;
+      fetching = false;
+      const message = err instanceof Error ? err.message : String(err);
+      fetchError = message;
+      addToast('error', `Failed to load design artifact: ${message}`);
+    }
+  }
+
+  function refresh(): void {
+    const threadId = pane.threadId;
+    const artifactId = resolvedArtifactId;
+    if (!threadId || !artifactId) return;
+    void fetchHtml(threadId, artifactId);
+  }
+
+  // -- Viewport selector -----------------------------------------------
+
+  const VIEWPORTS: ReadonlyArray<{
+    value: DesignViewport;
+    label: string;
+    icon: typeof Smartphone;
+  }> = [
+    { value: 'mobile', label: 'Mobile', icon: Smartphone },
+    { value: 'tablet', label: 'Tablet', icon: TabletIcon },
+    { value: 'desktop', label: 'Desktop', icon: Monitor },
+  ];
 
   let viewportWidthPx = $derived(DESIGN_VIEWPORT_WIDTHS[pane.designViewport]);
 
@@ -162,74 +130,372 @@
     pane.setDesignViewport(next);
   }
 
-  function onSelectArtifact(e: Event) {
-    const target = e.currentTarget as HTMLSelectElement;
-    const value = target.value;
-    pane.setActiveArtifact(value === '' ? null : value);
+  // -- Artifact dropdown -----------------------------------------------
+
+  // History is stored newest-last, but the dropdown lists newest-first
+  // and labels each entry with its v{n} version (newest = highest n).
+  // Re-deriving from pane.designArtifacts keeps the labels in sync as
+  // new artifacts stream in from design:artifact events.
+  type ArtifactRow = {
+    id: string;
+    title: string;
+    createdAt: number;
+    version: number;
+  };
+  let artifactRows = $derived<ArtifactRow[]>(
+    pane.designArtifacts
+      .map((a, i) => ({
+        id: a.id,
+        title: a.title,
+        createdAt: a.createdAt,
+        version: i + 1,
+      }))
+      .reverse(),
+  );
+
+  let activeRow = $derived<ArtifactRow | null>(
+    resolvedArtifactId
+      ? artifactRows.find((r) => r.id === resolvedArtifactId) ?? null
+      : null,
+  );
+
+  let dropdownTriggerEl: HTMLElement | undefined = $state(undefined);
+  let dropdownOpen = $state(false);
+
+  function dropdownLabel(row: ArtifactRow | null): string {
+    if (!row) return 'No render yet';
+    return `v${row.version} · ${relativeTime(row.createdAt)} · ${row.title}`;
+  }
+
+  function selectArtifact(id: string) {
+    pane.setActiveArtifact(id);
+    dropdownOpen = false;
+  }
+
+  // -- Send to chat menu ------------------------------------------------
+
+  type HandoffShape = 'bundle' | 'html-summary' | 'png-only';
+
+  let sendMenuTriggerEl: HTMLElement | undefined = $state(undefined);
+  let sendMenuOpen = $state(false);
+  let exporting = $state(false);
+
+  async function handoff(shape: HandoffShape): Promise<void> {
+    sendMenuOpen = false;
+    if (exporting) return;
+    const sourceThread = pane.thread;
+    const artifact = activeArtifact;
+    if (!sourceThread || !artifact || !fetchedHtml) {
+      addToast('warning', 'Nothing to export yet');
+      return;
+    }
+    if (!sourceThread.projectId) {
+      addToast('error', 'Cannot export: source thread has no project');
+      return;
+    }
+
+    exporting = true;
+    try {
+      // 1. Resolve the PNG: prefer a pre-captured one (saved at render
+      //    time by the design:artifact handler) and fall back to a
+      //    fresh capture if the persisted file is missing or the shape
+      //    being exported needs a desktop-sized snapshot we don't have.
+      let pngBase64: string | null = null;
+      if (shape !== 'html-summary') {
+        try {
+          const persisted = (await GetDesignArtifactPng(
+            sourceThread.id,
+            artifact.id,
+          )) as string;
+          if (persisted) pngBase64 = persisted;
+        } catch (err) {
+          console.warn('GetDesignArtifactPng failed; will re-capture:', err);
+        }
+        if (pngBase64 === null) {
+          try {
+            const png = await captureHtmlToPng(fetchedHtml, {
+              width: DESIGN_VIEWPORT_WIDTHS[pane.designViewport] ?? 1280,
+            });
+            pngBase64 = await blobToBase64(png);
+          } catch (err) {
+            console.error('PNG capture during export failed:', err);
+            if (shape === 'png-only') {
+              addToast('error', 'Could not capture PNG');
+              return;
+            }
+            // Bundle shape can degrade to "HTML + summary" if capture fails.
+            addToast('warning', 'PNG capture failed; exporting HTML only');
+            shape = 'html-summary';
+          }
+        }
+      }
+
+      // 2. Create a sibling chat thread under the same project/provider.
+      const newThread = (await CreateThread({
+        projectId: sourceThread.projectId,
+        provider: sourceThread.provider,
+        model: sourceThread.model,
+        mode: 'default',
+      })) as Thread;
+
+      // 3. Upload the PNG (when we have one) as a draft attachment.
+      let attachmentId: string | null = null;
+      if (pngBase64 && shape !== 'html-summary') {
+        try {
+          const filename = `design-${artifact.id}.png`;
+          const attachment = (await UploadAttachment(
+            newThread.id,
+            filename,
+            'image/png',
+            pngBase64,
+          )) as { id?: string } | null;
+          attachmentId = attachment?.id ?? null;
+        } catch (err) {
+          console.error('Screenshot upload failed:', err);
+          if (shape === 'png-only') {
+            addToast('warning', 'Exported without screenshot — upload failed');
+          }
+        }
+      }
+
+      // 4. Compose the seed message body. Each shape has a different
+      //    text spine; the attachment carries the visual.
+      const prompt = composeHandoffPrompt(shape, artifact.title, fetchedHtml);
+      try {
+        await SaveDraft(
+          newThread.id,
+          prompt,
+          attachmentId ? [attachmentId] : [],
+          [],
+          null,
+        );
+      } catch (err) {
+        console.error('Draft seed failed:', err);
+      }
+
+      prependThread(newThread);
+      await pane.switchThread(newThread);
+
+      try {
+        await StartSession(newThread.id);
+      } catch (err) {
+        console.error('Failed to start session on exported thread:', err);
+      }
+
+      addToast('success', `Sent ${labelForShape(shape)} to a new thread`);
+    } catch (err) {
+      console.error('Failed to export design:', err);
+      pane.setGeneralError(`Failed to export design: ${errString(err)}`);
+    } finally {
+      exporting = false;
+    }
+  }
+
+  function labelForShape(shape: HandoffShape): string {
+    switch (shape) {
+      case 'bundle':
+        return 'design bundle';
+      case 'html-summary':
+        return 'HTML + summary';
+      case 'png-only':
+        return 'PNG render';
+    }
+  }
+
+  function composeHandoffPrompt(
+    shape: HandoffShape,
+    title: string,
+    html: string,
+  ): string {
+    const header = `Design reference: ${title}\n\nImplement this design.`;
+    if (shape === 'png-only') return header;
+    if (shape === 'html-summary' || shape === 'bundle') {
+      return `${header}\n\n<details>\n<summary>Source HTML</summary>\n\n\`\`\`html\n${html}\n\`\`\`\n\n</details>`;
+    }
+    return header;
   }
 </script>
 
 <div class="flex flex-col h-full min-h-0 bg-transparent">
-  <div class="border-b border-border-subtle px-3 py-2 flex items-center gap-2 shrink-0">
-    <div class="flex items-center gap-2 min-w-0 flex-1">
-      <span class="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-[var(--radius-field)] bg-accent/15 text-accent shrink-0">
-        Design
-      </span>
-      {#if pane.designArtifacts.length > 1}
-        <select
-          aria-label="Select Design Artifact"
-          class="text-[12px] bg-surface-0 border border-border-subtle rounded-[var(--radius-field)] px-2 py-1 text-fg max-w-48 truncate focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
-          value={resolvedArtifactId ?? ''}
-          onchange={onSelectArtifact}
-        >
-          {#each pane.designArtifacts as artifact (artifact.id)}
-            <option value={artifact.id}>{artifact.title}</option>
-          {/each}
-        </select>
-      {:else if activeArtifact}
-        <span class="text-[13px] font-medium text-fg truncate">
-          {activeArtifact.title}
-        </span>
-      {:else}
-        <span class="text-[13px] text-fg-muted">Design Preview</span>
-      {/if}
-      {#if activeArtifact?.description}
-        <span class="text-[12px] text-fg-muted truncate" title={activeArtifact.description}>
-          — {activeArtifact.description}
-        </span>
-      {/if}
-    </div>
+  <!-- Toolbar — left cluster: viewport · refresh · annotate · dropdown.
+       Right cluster: send-to-chat menu. -->
+  <div class="flex items-center gap-2 border-b border-border-subtle px-3 py-2 shrink-0 min-w-0">
     <div class="flex items-center gap-0.5 shrink-0">
-      {#each [['mobile', 'Mobile (375px)', 'M'], ['tablet', 'Tablet (768px)', 'T'], ['desktop', 'Desktop (100%)', 'D']] as [size, label, short] (size)}
+      {#each VIEWPORTS as vp (vp.value)}
         <button
           type="button"
-          onclick={() => selectViewport(size as DesignViewport)}
-          aria-pressed={pane.designViewport === size}
-          aria-label={label}
-          title={label}
-          class="text-[11px] px-2 py-1 rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
-            {pane.designViewport === size
-              ? 'bg-accent text-surface-0'
-              : 'text-fg-muted hover:bg-surface-2/30 hover:text-fg'}"
+          onclick={() => selectViewport(vp.value)}
+          aria-pressed={pane.designViewport === vp.value}
+          aria-label={vp.label}
+          title={vp.label}
+          class={[
+            'inline-flex items-center justify-center rounded-[var(--radius-field)]',
+            'p-1 cursor-pointer transition-colors',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+            pane.designViewport === vp.value
+              ? 'bg-accent/15 text-fg'
+              : 'text-fg-muted hover:bg-surface-2/30 hover:text-fg',
+          ].join(' ')}
         >
-          {short}
+          <Icon icon={vp.icon} size={14} strokeWidth={1.6} />
         </button>
       {/each}
-      {#if activeArtifact}
-        <Button
-          variant="secondary"
-          size="xs"
-          onclick={exportToNewThread}
-          disabled={!fetchedHtml}
-          loading={exporting}
-          ariaLabel="Export to New Thread"
-          title="Capture a screenshot and open a new thread with this design attached"
-          testId="design-export-to-thread"
-          class="ml-2"
+    </div>
+
+    <div class="h-4 w-px bg-border-subtle/60 shrink-0" aria-hidden="true"></div>
+
+    <button
+      type="button"
+      onclick={refresh}
+      disabled={!resolvedArtifactId || fetching}
+      aria-label="Refresh Preview"
+      title="Refresh Preview"
+      class={[
+        'inline-flex items-center justify-center rounded-[var(--radius-field)]',
+        'p-1 text-fg-muted cursor-pointer transition-colors',
+        'hover:text-fg hover:bg-surface-2/30',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+        'disabled:opacity-50 disabled:cursor-not-allowed',
+      ].join(' ')}
+      data-testid="design-refresh"
+    >
+      <Icon
+        icon={RefreshCw}
+        size={13}
+        strokeWidth={1.7}
+        class={fetching ? 'animate-spin' : ''}
+      />
+    </button>
+
+    <!-- Annotate / comment-mode toggle. The interaction model is
+         specified in docs/architecture/design-mode.md but the feature
+         is deferred — render the affordance disabled with a "coming
+         soon" tooltip so the layout matches the final shape. -->
+    <button
+      type="button"
+      disabled
+      aria-label="Annotate (coming soon)"
+      title="Annotate — coming soon"
+      class={[
+        'inline-flex items-center justify-center rounded-[var(--radius-field)]',
+        'p-1 text-fg-hint',
+        'cursor-not-allowed',
+      ].join(' ')}
+      data-testid="design-annotate"
+    >
+      <Icon icon={MessageSquareText} size={13} strokeWidth={1.6} />
+    </button>
+
+    <!-- Artifact dropdown. Native <select> can't show the version + time
+         + title triplet cleanly, so this is a Popover-anchored Menu. -->
+    <span bind:this={dropdownTriggerEl} class="inline-block min-w-0 max-w-[280px]">
+      <button
+        type="button"
+        onclick={() => (dropdownOpen = !dropdownOpen)}
+        disabled={artifactRows.length === 0}
+        aria-haspopup="menu"
+        aria-expanded={dropdownOpen}
+        title={dropdownLabel(activeRow)}
+        class={[
+          'inline-flex items-center gap-1 rounded-[var(--radius-field)]',
+          'border border-border-subtle bg-surface-0 px-2 py-1',
+          'text-[12px] text-fg max-w-full',
+          'cursor-pointer transition-colors',
+          'hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+          'disabled:opacity-60 disabled:cursor-not-allowed',
+        ].join(' ')}
+        data-testid="design-artifact-dropdown"
+      >
+        <span class="truncate">{dropdownLabel(activeRow)}</span>
+        <Icon icon={ChevronDown} size={12} strokeWidth={1.6} class="opacity-70 shrink-0" />
+      </button>
+    </span>
+    <Popover
+      anchor={dropdownTriggerEl}
+      open={dropdownOpen}
+      onClose={() => (dropdownOpen = false)}
+      placement="bottom-start"
+      role="menu"
+      ariaLabel="Design Artifact History"
+    >
+      {#snippet children()}
+        <Menu ariaLabel="Design Artifact History" onClose={() => (dropdownOpen = false)}>
+          {#snippet children()}
+            {#each artifactRows as row (row.id)}
+              <MenuItem
+                label={dropdownLabel(row)}
+                checked={resolvedArtifactId === row.id}
+                onSelect={() => selectArtifact(row.id)}
+              />
+            {/each}
+          {/snippet}
+        </Menu>
+      {/snippet}
+    </Popover>
+
+    <!-- Right cluster: send-to-chat menu. -->
+    <div class="ml-auto flex items-center gap-1 shrink-0">
+      <span bind:this={sendMenuTriggerEl}>
+        <button
+          type="button"
+          onclick={() => (sendMenuOpen = !sendMenuOpen)}
+          disabled={exporting || !activeArtifact || !fetchedHtml}
+          aria-haspopup="menu"
+          aria-expanded={sendMenuOpen}
+          title="Send to chat…"
+          class={[
+            'inline-flex items-center gap-1 rounded-[var(--radius-field)]',
+            'border border-border-subtle bg-surface-0 px-2 py-1',
+            'text-[12px] text-fg cursor-pointer transition-colors',
+            'hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+            'disabled:opacity-60 disabled:cursor-not-allowed',
+          ].join(' ')}
+          data-testid="design-send-to-chat"
         >
-          {#snippet children()}{exporting ? 'Exporting…' : 'Export →'}{/snippet}
-        </Button>
-      {/if}
+          <span>{exporting ? 'Exporting…' : 'Send to chat…'}</span>
+          <Icon icon={ChevronDown} size={12} strokeWidth={1.6} class="opacity-70" />
+        </button>
+      </span>
+      <Popover
+        anchor={sendMenuTriggerEl}
+        open={sendMenuOpen}
+        onClose={() => (sendMenuOpen = false)}
+        placement="bottom-end"
+        role="menu"
+        ariaLabel="Send to Chat"
+      >
+        {#snippet children()}
+          <Menu ariaLabel="Send to Chat" onClose={() => (sendMenuOpen = false)}>
+            {#snippet children()}
+              <MenuItem
+                label="Bundle (HTML + summary + PNG)"
+                description="Recommended — multimodal models read both"
+                onSelect={() => void handoff('bundle')}
+              >
+                {#snippet icon()}
+                  <Icon icon={Layers} size={13} strokeWidth={1.6} />
+                {/snippet}
+              </MenuItem>
+              <MenuItem
+                label="HTML + summary"
+                onSelect={() => void handoff('html-summary')}
+              >
+                {#snippet icon()}
+                  <Icon icon={FileText} size={13} strokeWidth={1.6} />
+                {/snippet}
+              </MenuItem>
+              <MenuItem
+                label="PNG render only"
+                onSelect={() => void handoff('png-only')}
+              >
+                {#snippet icon()}
+                  <Icon icon={ImageIcon} size={13} strokeWidth={1.6} />
+                {/snippet}
+              </MenuItem>
+            {/snippet}
+          </Menu>
+        {/snippet}
+      </Popover>
     </div>
   </div>
 
@@ -241,13 +507,7 @@
       </div>
     {:else if !activeArtifact}
       <div class="flex flex-col items-center justify-center h-full text-center text-fg-muted">
-        <svg class="w-10 h-10 text-fg-hint mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="13.5" cy="6.5" r=".5" fill="currentColor" />
-          <circle cx="17.5" cy="10.5" r=".5" fill="currentColor" />
-          <circle cx="8.5" cy="7.5" r=".5" fill="currentColor" />
-          <circle cx="6.5" cy="12.5" r=".5" fill="currentColor" />
-          <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z" />
-        </svg>
+        <Icon icon={MessagesSquare} size={36} strokeWidth={1.2} class="text-fg-hint mb-3" />
         <p class="text-[13px]">No Design Preview Yet</p>
         <p class="text-[11px] text-fg-hint mt-1">
           Rendered artifacts will appear here when the agent produces a mockup.

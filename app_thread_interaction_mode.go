@@ -34,14 +34,16 @@ var modesForManualSelection = map[string]struct{}{
 	"design": {},
 }
 
-// modesForPostCreation is a superset: once a thread exists the user may
-// also switch back into discussion mode if desired (the backend treats
-// "discussion" as an informational marker when no channel is attached).
+// modesForPostCreation is the set the UI is allowed to mutate into via the
+// chat/plan agent-mode toggle. Thread *type* (design / discussion) is
+// determined at creation and is immutable thereafter — switching the type of
+// a live thread would orphan its associated runtime state (design artifacts,
+// deliberation channel) and confuse the UI shell. Internal callers that need
+// to flip a chat thread's interaction mode (sendMessage's plan→chat saga,
+// proposed-plan revisions) only ever move between chat and plan.
 var modesForPostCreation = map[string]struct{}{
-	"chat":       {},
-	"plan":       {},
-	"design":     {},
-	"discussion": {},
+	"chat": {},
+	"plan": {},
 }
 
 // validateCreateThreadMode normalizes the mode for CreateThread. An empty
@@ -59,15 +61,15 @@ func validateCreateThreadMode(mode string) (string, error) {
 	return trimmed, nil
 }
 
-// validateSetMode validates a mode for UpdateThreadMode. Unlike
-// create-time, "discussion" is accepted here because the caller may be
-// restoring a previously-demoted discussion thread. The store layer
-// keeps the field in sync; the deliberation runtime keys off
-// DiscussionID, not this column.
+// validateSetMode validates a mode for UpdateThreadMode. Only chat and plan
+// are accepted: design and discussion are immutable thread types set at
+// creation time. The frontend's agent-mode toggle (chat ↔ plan) is the only
+// caller that should hit UpdateThreadMode at user-facing scope; internal
+// callsites (proposed-plan saga) only ever pass chat or plan.
 func validateSetMode(mode string) (string, error) {
 	trimmed := strings.TrimSpace(mode)
 	if _, ok := modesForPostCreation[trimmed]; !ok {
-		return "", fmt.Errorf("invalid mode %q (allowed: chat, plan, design, discussion)", trimmed)
+		return "", fmt.Errorf("invalid mode %q (allowed: chat, plan)", trimmed)
 	}
 	return trimmed, nil
 }
@@ -85,8 +87,15 @@ func (a *App) UpdateThreadMode(threadID string, mode string) (store.Thread, erro
 	if err != nil {
 		return store.Thread{}, err
 	}
-	if _, err := a.store.GetThread(threadID); err != nil {
+	current, err := a.store.GetThread(threadID)
+	if err != nil {
 		return store.Thread{}, err
+	}
+	// Thread *type* is immutable: design and discussion threads stay in
+	// their respective UX shells for life. The agent-mode toggle only swaps
+	// chat ↔ plan within a chat thread.
+	if _, ok := modesForPostCreation[strings.TrimSpace(current.Mode)]; !ok {
+		return store.Thread{}, fmt.Errorf("cannot change mode of %q thread (immutable thread type)", current.Mode)
 	}
 	if err := a.store.UpdateMode(threadID, normalized); err != nil {
 		return store.Thread{}, err

@@ -1,13 +1,13 @@
 <script lang="ts">
-  // Mode cycle button in the composer toolbar. Clicking cycles
-  // chat → plan → design → chat. The global `mode.cycle` command
-  // (Shift+Tab) calls the same backend binding so the button and the
-  // keyboard shortcut stay in lockstep.
+  // Composer toolbar control for chat-thread agent mode. Toggles between
+  // chat and plan via the same UpdateThreadMode binding the global
+  // `mode.cycle` command (Shift+Tab) calls — both go through cycleMode
+  // so the keyboard shortcut and the button stay in lockstep.
   //
-  // The underlying thread may start in a mode outside the cycle (e.g.
-  // "discussion" on a discussion-root thread); `cycleMode` falls back
-  // to "chat" in that case, which is the right recovery for a stuck
-  // mode.
+  // This component renders ONLY on threads where the type is mutable
+  // (chat). Design and discussion threads have immutable types: their
+  // composer carries DesignLockPill / no toggle instead. The owner
+  // (ComposerToolbar) decides which to render based on pane.thread.mode.
 
   import Bot from 'lucide-svelte/icons/bot';
   import type { ThreadPane } from '../../../stores/thread.svelte';
@@ -27,19 +27,15 @@
 
   let applying = $state(false);
 
-  // Normalize the thread's current mode for display. A thread with no
-  // mode value (back-compat with older rows) is presented as chat so the
-  // button isn't blank; the backend writes the canonical value on the
-  // next cycle.
-  let currentMode = $derived<CycleMode | 'discussion'>(
-    (pane.thread?.mode as CycleMode | 'discussion' | undefined) ?? 'chat',
+  // Normalize the thread's current mode for display. A thread with no mode
+  // value (back-compat with older rows) is presented as chat.
+  let currentMode = $derived<CycleMode>(
+    (pane.thread?.mode as CycleMode | undefined) ?? 'chat',
   );
 
-  const MODE_LABELS: Record<CycleMode | 'discussion', string> = {
+  const MODE_LABELS: Record<CycleMode, string> = {
     chat: 'Chat',
     plan: 'Plan',
-    design: 'Design',
-    discussion: 'Discussion',
   };
 
   let modeLabel = $derived(MODE_LABELS[currentMode] ?? MODE_LABELS.chat);
@@ -53,7 +49,7 @@
       pane.replaceThread(updated);
       replaceThread(updated);
     } catch (err) {
-      console.error('mode.cycle: UpdateThreadMode failed', err);
+      console.error('agent mode toggle: UpdateThreadMode failed', err);
       addToast('error', `Failed to switch mode: ${errString(err)}`);
     } finally {
       applying = false;
@@ -65,9 +61,9 @@
   type="button"
   onclick={handleClick}
   disabled={applying || !pane.thread}
-  data-testid="composer-mode-cycle"
-  aria-label="Cycle Interaction Mode (Shift+Tab)"
-  title={`Mode: ${modeLabel} — Shift+Tab to cycle`}
+  data-testid="composer-agent-mode-toggle"
+  aria-label="Toggle Agent Mode (Shift+Tab)"
+  title={`Agent mode: ${modeLabel} — Shift+Tab to toggle`}
   class={[
     'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
     'px-1.5 py-1 text-[11px] text-fg-muted',

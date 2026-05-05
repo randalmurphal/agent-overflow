@@ -1,17 +1,10 @@
 <script lang="ts">
-  // Chat header: thread title + project chip on the left; action
-  // cluster on the right (Open-in-editor, git actions,
-  // terminal toggle, diff toggle). Layout mirrors t3-code so the chip
-  // travels with the title rather than the actions.
-  //
-  // The interaction-mode badge is gone (ModeCycleButton on the composer
-  // toolbar owns it now), and so is the ModelPicker / RuntimeModePicker
-  // / BranchToolbar cluster (composer toolbar + below-composer bar).
-  // What remains is the chrome that's either thread-scoped metadata
-  // (title, project, workspace stats) or actions users want near the
-  // thread title (open-in-editor, commit/push/PR, terminal, diffs).
-  // Plan review lives in the composer toolbar next to the mode/access
-  // controls.
+  // Chat header: thread title + project chip on the left, action cluster
+  // on the right (Open-in-editor, git actions, terminal toggle, diff
+  // toggle). The Chat | Design mode-tab control lives in the sidebar
+  // (ModeTabs.svelte) so it can stay visible across empty state and
+  // loaded threads, and so it doesn't compete with per-thread chrome
+  // here.
   //
   // The inline-rename flow below mirrors the behavior the old
   // ChatView.svelte header used: click the title to switch to an input,

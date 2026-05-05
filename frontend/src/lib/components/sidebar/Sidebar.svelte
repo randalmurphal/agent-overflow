@@ -14,6 +14,7 @@
     setSidebarWidthLive,
   } from '../../stores/sidebarLayout.svelte';
   import SidebarSearch from './SidebarSearch.svelte';
+  import ModeTabs from './ModeTabs.svelte';
   import ProjectsSection from './ProjectsSection.svelte';
   import SettingsFooter from './SettingsFooter.svelte';
   import SidebarResizer from './SidebarResizer.svelte';
@@ -66,6 +67,7 @@
   style="width: {getSidebarWidth()}px"
   data-testid="sidebar"
 >
+  <ModeTabs {pane} />
   <SidebarSearch {registerFocusSearch} />
   <ProjectsSection {pane} />
   <SettingsFooter {onOpenSettings} />

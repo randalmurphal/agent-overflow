@@ -411,6 +411,16 @@ export function createThreadPane() {
   let pendingDesignOptions: DesignOptionsRequest | null = $state(null);
   let designViewport: DesignViewport = $state('desktop');
 
+  // Top-level mode tab (Chat | Design). Drives the segmented control in
+  // ChatHeader and the layout decision in ChatView when no thread is loaded
+  // (the empty-state pane needs to know whether the user is sitting on the
+  // Chat tab or the Design tab). Once a thread loads, switchThread() syncs
+  // this from thread.mode so the tab tracks the active thread's type.
+  // Discussion threads bypass the top-tab UI entirely (DiscussionView owns
+  // its own surface) so we leave activeTab unchanged in that case — when the
+  // user navigates away the tab still carries the user's last intent.
+  let activeTab: 'chat' | 'design' = $state('chat');
+
   // Shared right-side panel slot. The shell width and the active panel are
   // saved per thread so plan/diff/payload views swap inside one stable pane
   // instead of mounting separate sidebars with separate width stores.
@@ -1081,6 +1091,7 @@ export function createThreadPane() {
     get activeArtifactId() { return activeArtifactId; },
     get pendingDesignOptions() { return pendingDesignOptions; },
     get designViewport() { return designViewport; },
+    get activeTab() { return activeTab; },
     get activeRhsPanel() { return rhsPanelSlot.activePanel; },
     get rhsSidebarWidth() { return rhsPanelSlot.width; },
     get showPlanSidebar() { return rhsPanelSlot.activePanel?.kind === 'plan'; },
@@ -1174,6 +1185,15 @@ export function createThreadPane() {
       // reordered.
 
       thread = newThread;
+      // Sync the top tab to the incoming thread's type. Discussion threads
+      // bypass the tab UI (DiscussionView owns the surface), so we leave
+      // activeTab unchanged in that case — preserving the user's last
+      // chat-vs-design intent for when they navigate away.
+      if (newThread.mode === 'design') {
+        activeTab = 'design';
+      } else if (newThread.mode === 'chat' || newThread.mode === 'plan') {
+        activeTab = 'chat';
+      }
       rhsPanelSlot.restoreForThread(newThread.id);
       if (rhsPanelSlot.activePanel?.kind === 'diff-checkpoint') {
         diffPanel.open_();
@@ -1998,6 +2018,17 @@ export function createThreadPane() {
 
     setDesignViewport(viewport: DesignViewport): void {
       designViewport = viewport;
+    },
+
+    /**
+     * Set the top-level mode tab. Called from the ChatHeader segmented
+     * control on user click and from switchThread() on thread load. The
+     * caller owns the side effects (finding the most-recent thread of the
+     * target type, switching to it, or clearing thread state for the
+     * design empty-state); this only flips the slot.
+     */
+    setActiveTab(tab: 'chat' | 'design'): void {
+      activeTab = tab;
     },
 
     clearDesign(): void {

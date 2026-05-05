@@ -1,15 +1,21 @@
-// Tracks the in-flight "draft" thread per project. When the user clicks
-// "New Thread" we create the thread row on the backend (for provider
-// defaults + stable id) but keep it out of the sidebar and keep its
-// provider process unspawned until the first SendMessage. Clicking
-// "New Thread" again for the same project while the draft hasn't been
-// sent returns the same draft so the composerDraft cache (persisted
-// backend-side by threadId) repopulates the composer.
+// Tracks the in-flight "draft" thread per (project, mode) pair. When the
+// user clicks "+ New" on a project we create the thread row on the
+// backend (for provider defaults + stable id) but keep it out of the
+// sidebar and keep its provider process unspawned until the first
+// SendMessage. Clicking "+ New" again for the same project + mode
+// returns the same draft so the composerDraft cache (persisted backend-
+// side by threadId) repopulates the composer.
 //
-// Map shape: projectId → draft Thread. We cache the full Thread so the
-// pane can switchThread without a GetThread round-trip. When a draft is
-// sent, Composer.send() promotes it to the sidebar via prependThread
-// and clears the entry here.
+// Mode keying: + New is mode-contextual — clicking + with the Design tab
+// active creates a design thread; with the Chat tab active it creates a
+// chat thread. Each (project, mode) gets its own draft slot so both
+// drafts can coexist (user can have a fresh chat thread AND a fresh
+// design thread queued up in the same project).
+//
+// Map shape: `${projectId}|${mode}` → draft Thread, where mode is the
+// thread's persisted mode column ('chat' | 'design'). Plan threads are a
+// sub-mode of chat that emerges only after creation; drafts created via
+// + always start as 'chat' or 'design'.
 //
 // Persistence: none. A crash / reload loses the draft pointer; the
 // underlying thread row still lives in the DB but is hidden by
@@ -18,38 +24,63 @@
 
 import type { Thread } from '../types/models';
 
-let drafts: Map<string, Thread> = $state(new Map());
+/** The set of modes that get their own draft slot. */
+export type DraftMode = 'chat' | 'design';
 
-/** Returns the current draft thread for a project, or undefined. */
-export function getProjectDraft(projectId: string): Thread | undefined {
-  return drafts.get(projectId);
+type DraftKey = `${string}|${DraftMode}`;
+
+function key(projectId: string, mode: DraftMode): DraftKey {
+  return `${projectId}|${mode}` as DraftKey;
 }
 
-/** Replace the draft thread for a project. */
-export function setProjectDraft(projectId: string, thread: Thread): void {
-  drafts = new Map(drafts).set(projectId, thread);
+let drafts: Map<DraftKey, Thread> = $state(new Map());
+
+/** Returns the current draft thread for a (project, mode), or undefined. */
+export function getProjectDraft(
+  projectId: string,
+  mode: DraftMode = 'chat',
+): Thread | undefined {
+  return drafts.get(key(projectId, mode));
+}
+
+/** Replace the draft thread for a (project, mode). */
+export function setProjectDraft(
+  projectId: string,
+  mode: DraftMode,
+  thread: Thread,
+): void {
+  drafts = new Map(drafts).set(key(projectId, mode), thread);
 }
 
 /**
- * Drop the draft pointer for a project. Called on successful first
- * SendMessage (the thread is no longer a draft — it's in the sidebar now)
- * or when the thread is deleted externally.
+ * Drop the draft pointer for a (project, mode). Called on successful
+ * first SendMessage (the thread is no longer a draft — it's in the
+ * sidebar now) or when the thread is deleted externally.
  */
-export function clearProjectDraft(projectId: string): void {
-  if (!drafts.has(projectId)) return;
+export function clearProjectDraft(projectId: string, mode: DraftMode): void {
+  const k = key(projectId, mode);
+  if (!drafts.has(k)) return;
   const next = new Map(drafts);
-  next.delete(projectId);
+  next.delete(k);
   drafts = next;
 }
 
 /**
- * Reverse lookup: find the project a given threadId is drafting for. Used
- * by Composer.send() to promote-and-clear on first successful send when
- * the pane only knows the threadId, not the projectId.
+ * Reverse lookup: find the (projectId, mode) pair a given threadId is
+ * drafting for. Used by Composer.send() to promote-and-clear on first
+ * successful send when the pane only knows the threadId.
  */
-export function findDraftProjectId(threadId: string): string | undefined {
-  for (const [projectId, thread] of drafts) {
-    if (thread.id === threadId) return projectId;
+export function findDraftEntry(
+  threadId: string,
+): { projectId: string; mode: DraftMode } | undefined {
+  for (const [k, thread] of drafts) {
+    if (thread.id !== threadId) continue;
+    const sep = k.lastIndexOf('|');
+    if (sep < 0) continue;
+    return {
+      projectId: k.slice(0, sep),
+      mode: k.slice(sep + 1) as DraftMode,
+    };
   }
   return undefined;
 }
@@ -57,7 +88,7 @@ export function findDraftProjectId(threadId: string): string | undefined {
 /**
  * Read-only view of the full draft map. Test helper.
  */
-export function getAllDrafts(): Map<string, Thread> {
+export function getAllDrafts(): Map<DraftKey, Thread> {
   return drafts;
 }
 

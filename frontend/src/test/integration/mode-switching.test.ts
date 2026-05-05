@@ -1,8 +1,8 @@
-// Integration tests for the interaction-mode control on threads. After
-// Wave 3c, the mode badge in the chat header is gone — the composer
-// toolbar's ModeCycleButton owns the switch. These tests mount App,
-// select a thread, and drive the composer button through the same
-// UpdateThreadMode binding the keyboard shortcut uses.
+// Integration tests for the in-thread agent-mode toggle. After the
+// design-mode rebuild, thread *type* (design / discussion) is immutable
+// and the composer toolbar carries either AgentModeToggle (chat ↔ plan
+// on chat threads) or DesignLockPill (display-only on design threads).
+// These tests mount App, select a thread, and exercise the toggle path.
 
 import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
@@ -37,27 +37,28 @@ async function mountWithThread(thread: Thread) {
   return { ...rendered, thread };
 }
 
-describe('App integration — interaction mode', () => {
+describe('App integration — agent-mode toggle', () => {
   beforeEach(() => {
     resetAppState();
   });
 
-  it('shows the current mode label on the composer cycle button', async () => {
+  it('shows the design lock pill on a design thread', async () => {
     setBindingMock('ListDesignArtifacts', async () => []);
     const thread = makeThread({ title: 'Design Thread', mode: 'design' });
-    const { getByTestId } = await mountWithThread(thread);
-    const btn = getByTestId('composer-mode-cycle');
-    expect(btn.textContent ?? '').toMatch(/design/i);
+    const { getByTestId, queryByTestId } = await mountWithThread(thread);
+    expect(getByTestId('composer-design-lock-pill')).toBeTruthy();
+    // The chat/plan toggle must NOT be present on design threads.
+    expect(queryByTestId('composer-agent-mode-toggle')).toBeNull();
   });
 
-  it('cycles chat → plan via the composer button and calls UpdateThreadMode', async () => {
+  it('toggles chat → plan via the composer button and calls UpdateThreadMode', async () => {
     const thread = makeThread({ title: 'Default Thread', mode: 'chat' });
     const update = setBindingMock('UpdateThreadMode', async (_id, mode) => ({
       ...thread,
       mode: mode as Thread['mode'],
     }));
     const { getByTestId } = await mountWithThread(thread);
-    const btn = getByTestId('composer-mode-cycle');
+    const btn = getByTestId('composer-agent-mode-toggle');
     expect(btn.textContent ?? '').toMatch(/chat/i);
 
     await fireEvent.click(btn);
@@ -74,14 +75,14 @@ describe('App integration — interaction mode', () => {
     });
     const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { getByTestId } = await mountWithThread(thread);
-    const btn = getByTestId('composer-mode-cycle');
+    const btn = getByTestId('composer-agent-mode-toggle');
     await fireEvent.click(btn);
     await flush(10);
 
     await waitFor(() =>
       expect(
         consoleErr.mock.calls.some((c) =>
-          String(c[0] ?? '').includes('mode.cycle: UpdateThreadMode failed'),
+          String(c[0] ?? '').includes('agent mode toggle: UpdateThreadMode failed'),
         ),
       ).toBe(true),
     );
