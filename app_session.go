@@ -79,6 +79,12 @@ func (a *App) startSessionNow(threadID string) error {
 		forkSession,
 	)
 
+	if dir, err := a.designWorkDirOverride(t); err != nil {
+		return fmt.Errorf("start session: resolve design workdir: %w", err)
+	} else if dir != "" {
+		opts.WorkDir = dir
+	}
+
 	if err := a.stopExistingSessionLocked(threadID); err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}

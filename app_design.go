@@ -34,7 +34,7 @@ func (a *App) designSessionConfig(thread store.Thread) (designSessionConfig, err
 		return designSessionConfig{}, err
 	}
 	return designSessionConfig{
-		Prompt: design.LoadDesignSystemPrompt(a.configDir),
+		Prompt: design.LoadDesignSystemPrompt(a.configDir, thread.WorkspacePath),
 	}, nil
 }
 
@@ -161,6 +161,24 @@ func (a *App) ListDesignOptions(threadID, setID string) ([]string, error) {
 		return nil, fmt.Errorf("design workdir manager unavailable")
 	}
 	return a.designWorkdir.ListOptions(threadID, setID)
+}
+
+// designWorkDirOverride returns the per-thread workdir to use as the
+// provider subprocess's CWD for design threads, or "" when the
+// session should keep the thread's WorkspacePath. The bundled system
+// prompt teaches the agent that `main/`, `options/`, and `snapshots/`
+// are sibling directories in its CWD; without this override the
+// agent's Read/Edit/Write would resolve against the project repo
+// instead, the file watcher would never fire on its writes, and
+// `pwd` would name the wrong place.
+//
+// Extracted from startSessionNow so the override is unit-testable
+// without booting a full session.
+func (a *App) designWorkDirOverride(t store.Thread) (string, error) {
+	if t.Mode != "design" || a.designWorkdir == nil {
+		return "", nil
+	}
+	return a.designWorkdir.ThreadDir(t.ID)
 }
 
 // EnsureDesignWorkdir materialises the per-thread {main,options,

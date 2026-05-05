@@ -1,8 +1,10 @@
 package design
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const designPromptOverrideName = "design-mode.md"
@@ -238,12 +240,54 @@ Make something specific.
 `
 
 // LoadDesignSystemPrompt loads the bundled design-mode prompt,
-// overridden by <configDir>/prompts/design-mode.md when present.
-func LoadDesignSystemPrompt(configDir string) string {
+// overridden by <configDir>/prompts/design-mode.md when present, with a
+// project-context suffix appended when projectPath is non-empty so the
+// agent knows it can read existing components/colors/typography from
+// the associated repo as design references.
+func LoadDesignSystemPrompt(configDir, projectPath string) string {
+	base := defaultDesignSystemPrompt
 	overridePath := filepath.Join(configDir, "prompts", designPromptOverrideName)
-	data, err := os.ReadFile(overridePath)
-	if err == nil {
-		return string(data)
+	if data, err := os.ReadFile(overridePath); err == nil {
+		base = string(data)
 	}
-	return defaultDesignSystemPrompt
+	return appendProjectContext(base, projectPath)
+}
+
+// appendProjectContext appends a "Project context" section pointing the
+// agent at the project repo it's designing for. The agent's CWD is the
+// per-thread design workdir, so any reference to project sources must
+// be via absolute paths under projectPath. Empty projectPath returns
+// base unchanged.
+func appendProjectContext(base, projectPath string) string {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return base
+	}
+	suffix := fmt.Sprintf(`
+
+# Project context
+
+This design thread is associated with a project repository at:
+
+    %s
+
+Your CWD is the per-thread design workdir (the one that contains
+`+"`main/`, `options/`, and `snapshots/`"+`). Never write into the
+project repo. You may **read** files there as design references using
+absolute paths under the project root above — for example existing CSS,
+design tokens, Tailwind/theme configs, component patterns, color
+palettes, or typography choices the project already uses.
+
+Treat the project repo the same way you'd treat any reference per the
+"Reference handling" section: extract along axes (3-5 dominant hues with
+hex values, font class + specific Google Font, base spacing unit, 3-5
+component patterns, 2 things the project deliberately avoids). Don't
+copy verbatim, and commit to the aesthetic family.
+
+Only consult the repo when it's relevant to the brief. If the project
+is unrelated to what you've been asked to design (e.g. a backend
+service repo with no UI), say so in one line and design from scratch
+rather than forcing a connection.
+`, projectPath)
+	return base + suffix
 }

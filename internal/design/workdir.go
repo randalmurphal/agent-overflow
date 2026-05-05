@@ -90,6 +90,15 @@ func (m *WorkDirManager) MainPath(threadID string) (string, error) {
 	return filepath.Join(threadDir, subdirMain), nil
 }
 
+// ThreadDir returns the per-thread root directory — the parent of the
+// `main/`, `options/`, and `snapshots/` subdirs the design system
+// prompt teaches the agent to operate inside. Used by app_session.go
+// to set the provider subprocess's CWD so Read/Edit/Write resolve
+// paths relative to the workdir, not the project root.
+func (m *WorkDirManager) ThreadDir(threadID string) (string, error) {
+	return m.threadDir(threadID)
+}
+
 // ListOptions returns the option ids inside `options/{setId}/` for a
 // thread, sorted lexically. Returns an empty slice (no error) when the
 // set directory does not exist — the watcher fires options-update on

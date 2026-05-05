@@ -211,6 +211,66 @@ func TestStartSessionCleansUpDesignMCPRegistrationOnFailure(t *testing.T) {
 	}
 }
 
+// TestDesignWorkDirOverridePointsAtThreadDir is the load-bearing test
+// for the agent's CWD: a design thread spawns its provider subprocess
+// inside the per-thread workdir, NOT the thread's WorkspacePath. The
+// bundled system prompt instructs the agent to operate on `main/`,
+// `options/`, and `snapshots/` as direct children of its CWD —
+// pointing it at the project repo instead would land the agent's
+// Read/Edit/Write in the user's source tree.
+func TestDesignWorkDirOverridePointsAtThreadDir(t *testing.T) {
+	app := newTestAppWithDesign(t)
+
+	thread, err := app.store.GetThread("thread-design")
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	thread.WorkspacePath = "/some/project/path"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("UpdateThread: %v", err)
+	}
+
+	override, err := app.designWorkDirOverride(thread)
+	if err != nil {
+		t.Fatalf("designWorkDirOverride: %v", err)
+	}
+	expected, err := app.designWorkdir.ThreadDir(thread.ID)
+	if err != nil {
+		t.Fatalf("ThreadDir: %v", err)
+	}
+	if override != expected {
+		t.Fatalf("override = %q, want %q (per-thread design workdir, not WorkspacePath)", override, expected)
+	}
+	if override == thread.WorkspacePath {
+		t.Fatalf("override leaked WorkspacePath %q — agent would write into the project repo", thread.WorkspacePath)
+	}
+}
+
+// TestDesignWorkDirOverrideSkippedForChatThreads pins the inverse:
+// non-design threads must be left alone so the agent runs against the
+// thread's actual workspace. A regression that broadened the override
+// would silently re-CWD every Claude/Codex chat to a global directory.
+func TestDesignWorkDirOverrideSkippedForChatThreads(t *testing.T) {
+	app := newTestAppWithDesign(t)
+
+	thread, err := app.store.GetThread("thread-design")
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	thread.Mode = "chat"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("UpdateThread: %v", err)
+	}
+
+	override, err := app.designWorkDirOverride(thread)
+	if err != nil {
+		t.Fatalf("designWorkDirOverride: %v", err)
+	}
+	if override != "" {
+		t.Fatalf("override = %q, want empty for chat-mode thread", override)
+	}
+}
+
 func newTestAppWithDesign(t *testing.T) *App {
 	t.Helper()
 
