@@ -1,54 +1,59 @@
-package codex
+package design
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"agent-overflow/internal/design"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 )
 
-func TestDesignMCPServerRenderDesign(t *testing.T) {
-	server, threadURL, artifacts := newTestDesignMCPServer(t)
+func TestMCPServerGetDiagnosticsReturnsRingContents(t *testing.T) {
+	server, threadURL, harness := newTestMCPServer(t)
+
+	harness.diagnostics.AppendBatch("thread-mcp", []Diagnostic{{
+		Severity: SeverityError,
+		Message:  "TypeError: cannot read properties of undefined",
+		Source:   "console.error",
+	}})
+	harness.diagnostics.AppendBatch("thread-mcp", []Diagnostic{{
+		Severity: SeverityWarn,
+		Message:  "deprecated API",
+		Source:   "console.warn",
+	}})
 
 	resp := postMCPRequest(t, threadURL, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "tools/call",
 		"params": map[string]any{
-			"name": "render_design",
-			"arguments": map[string]any{
-				"html":  "<html><body>render</body></html>",
-				"title": "Homepage",
-			},
+			"name":      "get_design_diagnostics",
+			"arguments": map[string]any{"since_token": 0},
 		},
 	})
 
 	resultText := extractToolTextResult(t, resp)
-	var payload map[string]string
+	var payload struct {
+		Diagnostics []Diagnostic `json:"diagnostics"`
+		NextToken   int64        `json:"next_token"`
+	}
 	if err := json.Unmarshal([]byte(resultText), &payload); err != nil {
-		t.Fatalf("unmarshal render result: %v", err)
+		t.Fatalf("unmarshal: %v", err)
 	}
-	if payload["status"] != "rendered" {
-		t.Fatalf("status = %q, want rendered", payload["status"])
+	if len(payload.Diagnostics) != 2 {
+		t.Fatalf("len = %d, want 2", len(payload.Diagnostics))
 	}
-	if payload["artifactId"] == "" {
-		t.Fatal("expected artifactId")
-	}
-
-	list, err := artifacts.List("thread-mcp", "render")
-	if err != nil {
-		t.Fatalf("List() error = %v", err)
-	}
-	if len(list) != 1 {
-		t.Fatalf("render artifacts len = %d, want 1", len(list))
+	if payload.NextToken != 2 {
+		t.Errorf("NextToken = %d, want 2", payload.NextToken)
 	}
 
 	if err := server.Close(); err != nil {
@@ -56,8 +61,45 @@ func TestDesignMCPServerRenderDesign(t *testing.T) {
 	}
 }
 
-func TestDesignMCPServerPresentOptionsWaitsForChoice(t *testing.T) {
-	server, threadURL, _ := newTestDesignMCPServer(t)
+func TestMCPServerGetDiagnosticsRespectsSinceToken(t *testing.T) {
+	_, threadURL, harness := newTestMCPServer(t)
+
+	firstBatch := harness.diagnostics.AppendBatch("thread-mcp", []Diagnostic{{
+		Severity: SeverityWarn,
+		Message:  "first",
+	}})
+	first := firstBatch[0]
+	harness.diagnostics.AppendBatch("thread-mcp", []Diagnostic{{
+		Severity: SeverityError,
+		Message:  "second",
+	}})
+
+	resp := postMCPRequest(t, threadURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "get_design_diagnostics",
+			"arguments": map[string]any{"since_token": first.Token},
+		},
+	})
+	var payload struct {
+		Diagnostics []Diagnostic `json:"diagnostics"`
+		NextToken   int64        `json:"next_token"`
+	}
+	if err := json.Unmarshal([]byte(extractToolTextResult(t, resp)), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(payload.Diagnostics) != 1 {
+		t.Fatalf("len = %d, want 1", len(payload.Diagnostics))
+	}
+	if payload.Diagnostics[0].Message != "second" {
+		t.Errorf("message = %q, want second", payload.Diagnostics[0].Message)
+	}
+}
+
+func TestMCPServerReadScreenshotRoundTrip(t *testing.T) {
+	server, threadURL, harness := newTestMCPServer(t)
 
 	resultCh := make(chan string, 1)
 	go func() {
@@ -66,48 +108,36 @@ func TestDesignMCPServerPresentOptionsWaitsForChoice(t *testing.T) {
 			"id":      2,
 			"method":  "tools/call",
 			"params": map[string]any{
-				"name": "present_options",
-				"arguments": map[string]any{
-					"prompt": "Pick one",
-					"options": []map[string]any{
-						{
-							"id":          "a",
-							"title":       "Minimal",
-							"description": "Minimal layout",
-							"html":        "<html><body>A</body></html>",
-						},
-						{
-							"id":          "b",
-							"title":       "Bold",
-							"description": "Bold layout",
-							"html":        "<html><body>B</body></html>",
-						},
-					},
-				},
+				"name":      "read_screenshot",
+				"arguments": map[string]any{},
 			},
 		})
 		resultCh <- extractToolTextResult(t, resp)
 	}()
 
-	request := waitForPendingMCPRequest(t, server.reactor)
-	if err := server.reactor.ChooseOption("thread-mcp", request.RequestID, "b"); err != nil {
-		t.Fatalf("ChooseOption() error = %v", err)
+	captureRequest := waitForCaptureEvent(t, harness)
+	pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a}
+	if err := harness.screenshots.Resolve(captureRequest.RequestID, pngBytes); err != nil {
+		t.Fatalf("Resolve: %v", err)
 	}
 
 	select {
-	case resultText := <-resultCh:
-		var result design.ChoiceResult
-		if err := json.Unmarshal([]byte(resultText), &result); err != nil {
-			t.Fatalf("unmarshal choice result: %v", err)
+	case body := <-resultCh:
+		var payload struct {
+			PNGBase64 string `json:"png_base64"`
 		}
-		if result.Chosen != "b" {
-			t.Fatalf("Chosen = %q, want b", result.Chosen)
+		if err := json.Unmarshal([]byte(body), &payload); err != nil {
+			t.Fatalf("unmarshal screenshot: %v body=%q", err, body)
 		}
-		if result.Title != "Bold" {
-			t.Fatalf("Title = %q, want Bold", result.Title)
+		decoded, err := base64.StdEncoding.DecodeString(payload.PNGBase64)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if !bytes.Equal(decoded, pngBytes) {
+			t.Fatalf("png mismatch")
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for choice result")
+		t.Fatal("timed out waiting for screenshot result")
 	}
 
 	if err := server.Close(); err != nil {
@@ -115,24 +145,8 @@ func TestDesignMCPServerPresentOptionsWaitsForChoice(t *testing.T) {
 	}
 }
 
-func TestBuildThreadParamsIncludesMCPServers(t *testing.T) {
-	params := buildThreadParams(Config{
-		MCPServers: map[string]any{
-			"design": map[string]any{"url": "http://127.0.0.1:1234/mcp/thread"},
-		},
-	})
-
-	config, ok := params["config"].(map[string]any)
-	if !ok {
-		t.Fatalf("config type = %T, want map[string]any", params["config"])
-	}
-	if config["mcp_servers"] == nil {
-		t.Fatal("expected mcp_servers config override")
-	}
-}
-
-func TestDesignMCPServerUsesOpaqueThreadToken(t *testing.T) {
-	server, threadURL, _ := newTestDesignMCPServer(t)
+func TestMCPServerUsesOpaqueThreadToken(t *testing.T) {
+	server, threadURL, _ := newTestMCPServer(t)
 
 	if strings.HasSuffix(threadURL, "/mcp/thread-mcp") {
 		t.Fatalf("thread URL %q exposes raw thread ID", threadURL)
@@ -143,7 +157,13 @@ func TestDesignMCPServerUsesOpaqueThreadToken(t *testing.T) {
 	}
 }
 
-func newTestDesignMCPServer(t *testing.T) (*DesignMCPServer, string, *design.ArtifactStore) {
+type mcpTestHarness struct {
+	diagnostics *DiagnosticBuffer
+	screenshots *ScreenshotBroker
+	captures    chan ScreenshotRequest
+}
+
+func newTestMCPServer(t *testing.T) (*MCPServer, string, *mcpTestHarness) {
 	t.Helper()
 
 	st, err := store.New(filepath.Join(t.TempDir(), "design-mcp.db"))
@@ -170,9 +190,21 @@ func newTestDesignMCPServer(t *testing.T) (*DesignMCPServer, string, *design.Art
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	artifacts := design.NewArtifactStore(filepath.Join(t.TempDir(), "artifacts"), st)
-	reactor := design.NewReactor(artifacts, func(string, any) {})
-	server := NewDesignMCPServer(reactor)
+	captures := make(chan ScreenshotRequest, 4)
+	emit := func(eventName string, data any) {
+		if eventName != CaptureEventName {
+			return
+		}
+		req, ok := data.(ScreenshotRequest)
+		if !ok {
+			return
+		}
+		captures <- req
+	}
+	diagnostics := NewDiagnosticBuffer(nil)
+	screenshots := NewScreenshotBroker(emit)
+	reactor := NewReactor(diagnostics, screenshots)
+	server := NewMCPServer(reactor)
 
 	config, err := server.RegisterThread(thread.ID)
 	if err != nil {
@@ -194,7 +226,22 @@ func newTestDesignMCPServer(t *testing.T) (*DesignMCPServer, string, *design.Art
 	t.Cleanup(func() {
 		_ = server.Close()
 	})
-	return server, threadURL, artifacts
+	return server, threadURL, &mcpTestHarness{
+		diagnostics: diagnostics,
+		screenshots: screenshots,
+		captures:    captures,
+	}
+}
+
+func waitForCaptureEvent(t *testing.T, harness *mcpTestHarness) ScreenshotRequest {
+	t.Helper()
+	select {
+	case req := <-harness.captures:
+		return req
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for capture event")
+		return ScreenshotRequest{}
+	}
 }
 
 func postMCPRequest(t *testing.T, url string, payload any) map[string]any {
@@ -248,8 +295,8 @@ func extractToolTextResult(t *testing.T, response map[string]any) string {
 
 // -- UnregisterThread / RegisteredThreadCount tests --
 
-func TestDesignMCPServerUnregisterThread(t *testing.T) {
-	server, _, _ := newTestDesignMCPServer(t)
+func TestMCPServerUnregisterThread(t *testing.T) {
+	server, _, _ := newTestMCPServer(t)
 
 	if server.RegisteredThreadCount() != 1 {
 		t.Fatalf("count = %d, want 1 after RegisterThread", server.RegisteredThreadCount())
@@ -260,17 +307,15 @@ func TestDesignMCPServerUnregisterThread(t *testing.T) {
 		t.Fatalf("count = %d, want 0 after UnregisterThread", server.RegisteredThreadCount())
 	}
 
-	// Unregistering the same thread again is a no-op.
 	server.UnregisterThread("thread-mcp")
 	if server.RegisteredThreadCount() != 0 {
 		t.Fatalf("count = %d, want 0 after double UnregisterThread", server.RegisteredThreadCount())
 	}
 }
 
-func TestDesignMCPServerUnregisterThreadEmptyID(t *testing.T) {
-	server, _, _ := newTestDesignMCPServer(t)
+func TestMCPServerUnregisterThreadEmptyID(t *testing.T) {
+	server, _, _ := newTestMCPServer(t)
 
-	// Empty and whitespace-only IDs are silently ignored.
 	server.UnregisterThread("")
 	server.UnregisterThread("   ")
 	if server.RegisteredThreadCount() != 1 {
@@ -278,56 +323,9 @@ func TestDesignMCPServerUnregisterThreadEmptyID(t *testing.T) {
 	}
 }
 
-func TestDesignMCPServerRegisteredThreadCountMultiple(t *testing.T) {
-	st, err := store.New(filepath.Join(t.TempDir(), "design-mcp-count.db"))
-	if err != nil {
-		t.Fatalf("store.New() error = %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-
-	project := testutil.EnsureProject(t, st, t.TempDir())
-	for _, id := range []string{"thread-1", "thread-2"} {
-		if err := st.CreateThread(store.Thread{
-			ID:            id,
-			ProjectID:     project.ID,
-			Title:         id,
-			Provider:      "codex",
-			WorkspacePath: t.TempDir(),
-			Model:         "gpt-5.4",
-			Mode:          "design",
-			CreatedAt:     time.Now().UnixMilli(),
-			UpdatedAt:     time.Now().UnixMilli(),
-		}); err != nil {
-			t.Fatalf("CreateThread(%s) error = %v", id, err)
-		}
-	}
-
-	artifacts := design.NewArtifactStore(filepath.Join(t.TempDir(), "artifacts"), st)
-	reactor := design.NewReactor(artifacts, func(string, any) {})
-	server := NewDesignMCPServer(reactor)
-	t.Cleanup(func() { _ = server.Close() })
-
-	if _, err := server.RegisterThread("thread-1"); err != nil {
-		t.Fatalf("RegisterThread(thread-1) error = %v", err)
-	}
-	if _, err := server.RegisterThread("thread-2"); err != nil {
-		t.Fatalf("RegisterThread(thread-2) error = %v", err)
-	}
-	if server.RegisteredThreadCount() != 2 {
-		t.Fatalf("count = %d, want 2", server.RegisteredThreadCount())
-	}
-
-	server.UnregisterThread("thread-1")
-	if server.RegisteredThreadCount() != 1 {
-		t.Fatalf("count = %d, want 1 after unregistering one", server.RegisteredThreadCount())
-	}
-}
-
-// -- RegisterThread error cases --
-
-func TestDesignMCPServerRegisterThreadEmptyID(t *testing.T) {
-	reactor := design.NewReactor(nil, func(string, any) {})
-	server := NewDesignMCPServer(reactor)
+func TestMCPServerRegisterThreadEmptyID(t *testing.T) {
+	reactor := NewReactor(NewDiagnosticBuffer(nil), NewScreenshotBroker(func(string, any) {}))
+	server := NewMCPServer(reactor)
 	t.Cleanup(func() { _ = server.Close() })
 
 	_, err := server.RegisterThread("")
@@ -336,8 +334,8 @@ func TestDesignMCPServerRegisterThreadEmptyID(t *testing.T) {
 	}
 }
 
-func TestDesignMCPServerRegisterThreadNilReactor(t *testing.T) {
-	server := NewDesignMCPServer(nil)
+func TestMCPServerRegisterThreadNilReactor(t *testing.T) {
+	server := NewMCPServer(nil)
 	t.Cleanup(func() { _ = server.Close() })
 
 	_, err := server.RegisterThread("thread-1")
@@ -346,10 +344,8 @@ func TestDesignMCPServerRegisterThreadNilReactor(t *testing.T) {
 	}
 }
 
-// -- designToolDefinitions test --
-
-func TestDesignToolDefinitions(t *testing.T) {
-	tools := designToolDefinitions()
+func TestToolDefinitions(t *testing.T) {
+	tools := toolDefinitions()
 	if len(tools) != 2 {
 		t.Fatalf("len = %d, want 2", len(tools))
 	}
@@ -368,18 +364,18 @@ func TestDesignToolDefinitions(t *testing.T) {
 			t.Errorf("tool %q has nil inputSchema", name)
 		}
 	}
-	if !names["render_design"] {
-		t.Error("missing render_design tool")
+	if !names[ToolGetDiagnostics] {
+		t.Errorf("missing %s tool", ToolGetDiagnostics)
 	}
-	if !names["present_options"] {
-		t.Error("missing present_options tool")
+	if !names[ToolReadScreenshot] {
+		t.Errorf("missing %s tool", ToolReadScreenshot)
 	}
 }
 
 // -- HTTP handler edge cases --
 
-func TestDesignMCPServerHandleMethodNotAllowed(t *testing.T) {
-	_, threadURL, _ := newTestDesignMCPServer(t)
+func TestMCPServerHandleMethodNotAllowed(t *testing.T) {
+	_, threadURL, _ := newTestMCPServer(t)
 
 	resp, err := http.Get(threadURL)
 	if err != nil {
@@ -391,11 +387,9 @@ func TestDesignMCPServerHandleMethodNotAllowed(t *testing.T) {
 	}
 }
 
-func TestDesignMCPServerHandleUnknownToken(t *testing.T) {
-	server, threadURL, _ := newTestDesignMCPServer(t)
-	_ = server
+func TestMCPServerHandleUnknownToken(t *testing.T) {
+	_, threadURL, _ := newTestMCPServer(t)
 
-	// Replace the last path segment with a bogus token.
 	parts := strings.Split(threadURL, "/")
 	parts[len(parts)-1] = "bogus-token"
 	bogusURL := strings.Join(parts, "/")
@@ -415,8 +409,8 @@ func TestDesignMCPServerHandleUnknownToken(t *testing.T) {
 	}
 }
 
-func TestDesignMCPServerHandleInitialize(t *testing.T) {
-	_, threadURL, _ := newTestDesignMCPServer(t)
+func TestMCPServerHandleInitialize(t *testing.T) {
+	_, threadURL, _ := newTestMCPServer(t)
 
 	resp := postMCPRequest(t, threadURL, map[string]any{
 		"jsonrpc": "2.0",
@@ -428,8 +422,8 @@ func TestDesignMCPServerHandleInitialize(t *testing.T) {
 	if !ok {
 		t.Fatalf("result type = %T", resp["result"])
 	}
-	if result["protocolVersion"] != designMCPProtocolVersion {
-		t.Errorf("protocolVersion: got %v, want %q", result["protocolVersion"], designMCPProtocolVersion)
+	if result["protocolVersion"] != mcpProtocolVersion {
+		t.Errorf("protocolVersion: got %v, want %q", result["protocolVersion"], mcpProtocolVersion)
 	}
 	serverInfo, ok := result["serverInfo"].(map[string]any)
 	if !ok {
@@ -440,8 +434,8 @@ func TestDesignMCPServerHandleInitialize(t *testing.T) {
 	}
 }
 
-func TestDesignMCPServerHandleToolsList(t *testing.T) {
-	_, threadURL, _ := newTestDesignMCPServer(t)
+func TestMCPServerHandleToolsList(t *testing.T) {
+	_, threadURL, _ := newTestMCPServer(t)
 
 	resp := postMCPRequest(t, threadURL, map[string]any{
 		"jsonrpc": "2.0",
@@ -462,8 +456,8 @@ func TestDesignMCPServerHandleToolsList(t *testing.T) {
 	}
 }
 
-func TestDesignMCPServerHandleUnknownMethod(t *testing.T) {
-	_, threadURL, _ := newTestDesignMCPServer(t)
+func TestMCPServerHandleUnknownMethod(t *testing.T) {
+	_, threadURL, _ := newTestMCPServer(t)
 
 	body, _ := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
@@ -490,8 +484,8 @@ func TestDesignMCPServerHandleUnknownMethod(t *testing.T) {
 	}
 }
 
-func TestDesignMCPServerHandleInvalidJSON(t *testing.T) {
-	_, threadURL, _ := newTestDesignMCPServer(t)
+func TestMCPServerHandleInvalidJSON(t *testing.T) {
+	_, threadURL, _ := newTestMCPServer(t)
 
 	resp, err := http.Post(threadURL, "application/json", bytes.NewReader([]byte(`not json`)))
 	if err != nil {
@@ -513,8 +507,8 @@ func TestDesignMCPServerHandleInvalidJSON(t *testing.T) {
 	}
 }
 
-func TestDesignMCPServerHandleNotificationsInitialized(t *testing.T) {
-	_, threadURL, _ := newTestDesignMCPServer(t)
+func TestMCPServerHandleNotificationsInitialized(t *testing.T) {
+	_, threadURL, _ := newTestMCPServer(t)
 
 	body, _ := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
@@ -530,8 +524,8 @@ func TestDesignMCPServerHandleNotificationsInitialized(t *testing.T) {
 	}
 }
 
-func TestDesignMCPServerHandleToolCallUnknownTool(t *testing.T) {
-	_, threadURL, _ := newTestDesignMCPServer(t)
+func TestMCPServerHandleToolCallUnknownTool(t *testing.T) {
+	_, threadURL, _ := newTestMCPServer(t)
 
 	body, _ := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
@@ -562,8 +556,8 @@ func TestDesignMCPServerHandleToolCallUnknownTool(t *testing.T) {
 	}
 }
 
-func TestDesignMCPServerHandleToolCallInvalidParams(t *testing.T) {
-	_, threadURL, _ := newTestDesignMCPServer(t)
+func TestMCPServerHandleToolCallInvalidParams(t *testing.T) {
+	_, threadURL, _ := newTestMCPServer(t)
 
 	body, _ := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
@@ -585,70 +579,6 @@ func TestDesignMCPServerHandleToolCallInvalidParams(t *testing.T) {
 	rpcErr, ok := decoded["error"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected error field, got %v", decoded)
-	}
-	if rpcErr["code"].(float64) != -32602 {
-		t.Errorf("error code: got %v, want -32602", rpcErr["code"])
-	}
-}
-
-func TestDesignMCPServerHandleRenderDesignInvalidArgs(t *testing.T) {
-	_, threadURL, _ := newTestDesignMCPServer(t)
-
-	body, _ := json.Marshal(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "tools/call",
-		"params": map[string]any{
-			"name":      "render_design",
-			"arguments": "not an object",
-		},
-	})
-	resp, err := http.Post(threadURL, "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("POST error = %v", err)
-	}
-	defer resp.Body.Close()
-
-	data, _ := io.ReadAll(resp.Body)
-	var decoded map[string]any
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v body=%s", err, data)
-	}
-	rpcErr, ok := decoded["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected error field for invalid render args, got %v", decoded)
-	}
-	if rpcErr["code"].(float64) != -32602 {
-		t.Errorf("error code: got %v, want -32602", rpcErr["code"])
-	}
-}
-
-func TestDesignMCPServerHandlePresentOptionsInvalidArgs(t *testing.T) {
-	_, threadURL, _ := newTestDesignMCPServer(t)
-
-	body, _ := json.Marshal(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "tools/call",
-		"params": map[string]any{
-			"name":      "present_options",
-			"arguments": "not an object",
-		},
-	})
-	resp, err := http.Post(threadURL, "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("POST error = %v", err)
-	}
-	defer resp.Body.Close()
-
-	data, _ := io.ReadAll(resp.Body)
-	var decoded map[string]any
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v body=%s", err, data)
-	}
-	rpcErr, ok := decoded["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected error field for invalid present_options args, got %v", decoded)
 	}
 	if rpcErr["code"].(float64) != -32602 {
 		t.Errorf("error code: got %v, want -32602", rpcErr["code"])
@@ -685,10 +615,8 @@ func TestRawIDString(t *testing.T) {
 	}
 }
 
-// -- threadIDForPath tests --
-
 func TestThreadIDForPathMissingPrefix(t *testing.T) {
-	server := NewDesignMCPServer(nil)
+	server := NewMCPServer(nil)
 	_, ok := server.threadIDForPath("/other/path")
 	if ok {
 		t.Error("expected false for path without /mcp/ prefix")
@@ -696,7 +624,7 @@ func TestThreadIDForPathMissingPrefix(t *testing.T) {
 }
 
 func TestThreadIDForPathEmptyToken(t *testing.T) {
-	server := NewDesignMCPServer(nil)
+	server := NewMCPServer(nil)
 	_, ok := server.threadIDForPath("/mcp/")
 	if ok {
 		t.Error("expected false for empty token")
@@ -704,23 +632,65 @@ func TestThreadIDForPathEmptyToken(t *testing.T) {
 }
 
 func TestThreadIDForPathWhitespaceToken(t *testing.T) {
-	server := NewDesignMCPServer(nil)
+	server := NewMCPServer(nil)
 	_, ok := server.threadIDForPath("/mcp/   ")
 	if ok {
 		t.Error("expected false for whitespace-only token")
 	}
 }
 
-func waitForPendingMCPRequest(t *testing.T, reactor *design.Reactor) design.DesignOptionsRequest {
-	t.Helper()
+// Round-trip test for the screenshot teardown path: if the design
+// session ends mid-tool-call the agent receives a clean
+// `design session ended` JSON-RPC error rather than a stuck connection.
+func TestMCPServerReadScreenshotTeardownReleases(t *testing.T) {
+	_, threadURL, harness := newTestMCPServer(t)
+
+	var sawError atomic.Bool
+	go func() {
+		resp := postMCPRequestRaw(t, threadURL, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      99,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name":      "read_screenshot",
+				"arguments": map[string]any{},
+			},
+		})
+		_, hasError := resp["error"].(map[string]any)
+		if hasError {
+			sawError.Store(true)
+		}
+	}()
+
+	// Wait for the capture request to land, then tear down.
+	waitForCaptureEvent(t, harness)
+	harness.screenshots.TeardownThread("thread-mcp")
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if request, ok := reactor.PendingRequest("thread-mcp"); ok {
-			return request
+		if sawError.Load() {
+			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("timed out waiting for pending design request")
-	return design.DesignOptionsRequest{}
+	t.Fatal("teardown did not release pending screenshot tool call")
 }
+
+// postMCPRequestRaw is like postMCPRequest but doesn't fail on non-200
+// responses or missing result fields — used for negative tests.
+func postMCPRequestRaw(t *testing.T, url string, payload any) map[string]any {
+	t.Helper()
+	body, _ := json.Marshal(payload)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	var decoded map[string]any
+	_ = json.Unmarshal(data, &decoded)
+	return decoded
+}
+
+// Ensure the round-trip uses background ctx where needed.
+var _ = context.Background

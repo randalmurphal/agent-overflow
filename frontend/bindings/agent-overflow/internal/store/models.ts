@@ -142,36 +142,36 @@ export class ChatBarFavorite {
 }
 
 /**
- * DesignArtifact is persisted metadata for a design-mode HTML artifact.
+ * DesignSnapshot is persisted metadata for a frozen state of a design
+ * thread's working directory. Snapshots are created on explicit user
+ * gesture and auto-on-turn-start; a snapshot's dir_path points at a
+ * directory holding the working files at that moment.
  */
-export class DesignArtifact {
+export class DesignSnapshot {
     "id": string;
     "threadId": string;
-    "title": string;
-    "description": string;
-    "kind": string;
-    "htmlPath": string;
+    "label": string;
+    "dirPath": string;
+    "parentSnapshotId"?: string;
+    "auto": boolean;
     "createdAt": number;
 
-    /** Creates a new DesignArtifact instance. */
-    constructor($$source: Partial<DesignArtifact> = {}) {
+    /** Creates a new DesignSnapshot instance. */
+    constructor($$source: Partial<DesignSnapshot> = {}) {
         if (!("id" in $$source)) {
             this["id"] = "";
         }
         if (!("threadId" in $$source)) {
             this["threadId"] = "";
         }
-        if (!("title" in $$source)) {
-            this["title"] = "";
+        if (!("label" in $$source)) {
+            this["label"] = "";
         }
-        if (!("description" in $$source)) {
-            this["description"] = "";
+        if (!("dirPath" in $$source)) {
+            this["dirPath"] = "";
         }
-        if (!("kind" in $$source)) {
-            this["kind"] = "";
-        }
-        if (!("htmlPath" in $$source)) {
-            this["htmlPath"] = "";
+        if (!("auto" in $$source)) {
+            this["auto"] = false;
         }
         if (!("createdAt" in $$source)) {
             this["createdAt"] = 0;
@@ -181,11 +181,11 @@ export class DesignArtifact {
     }
 
     /**
-     * Creates a new DesignArtifact instance from a string or object.
+     * Creates a new DesignSnapshot instance from a string or object.
      */
-    static createFrom($$source: any = {}): DesignArtifact {
+    static createFrom($$source: any = {}): DesignSnapshot {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new DesignArtifact($$parsedSource as Partial<DesignArtifact>);
+        return new DesignSnapshot($$parsedSource as Partial<DesignSnapshot>);
     }
 }
 

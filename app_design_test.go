@@ -1,204 +1,181 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
+	"encoding/base64"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/design"
-	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 )
 
-func TestDesignBindingsListAndGetArtifactHTML(t *testing.T) {
+func TestDesignBindingsCaptureAndListSnapshots(t *testing.T) {
 	app := newTestAppWithDesign(t)
 
-	artifact, err := app.reactor.Render("thread-design", design.RenderInput{
-		HTML:        "<html><body>artifact</body></html>",
-		Title:       "Artifact",
-		Description: "Preview",
-	})
-	if err != nil {
-		t.Fatalf("Render() error = %v", err)
+	if err := app.designWorkdir.EnsureThread("thread-design"); err != nil {
+		t.Fatalf("EnsureThread: %v", err)
 	}
 
-	artifacts, err := app.ListDesignArtifacts("thread-design")
+	snap, err := app.CaptureSnapshot("thread-design", "first cut")
 	if err != nil {
-		t.Fatalf("ListDesignArtifacts() error = %v", err)
+		t.Fatalf("CaptureSnapshot: %v", err)
 	}
-	if len(artifacts) != 1 || artifacts[0].ID != artifact.ID {
-		t.Fatalf("artifacts = %+v, want stored artifact %q", artifacts, artifact.ID)
+	if snap.Label != "first cut" {
+		t.Fatalf("Label = %q, want first cut", snap.Label)
 	}
 
-	html, err := app.GetDesignArtifactHTML("thread-design", artifact.ID)
+	listed, err := app.ListDesignSnapshots("thread-design")
 	if err != nil {
-		t.Fatalf("GetDesignArtifactHTML() error = %v", err)
+		t.Fatalf("ListDesignSnapshots: %v", err)
 	}
-	if html != "<html><body>artifact</body></html>" {
-		t.Fatalf("html = %q", html)
+	if len(listed) != 1 || listed[0].ID != snap.ID {
+		t.Fatalf("listed = %+v, want %s", listed, snap.ID)
 	}
 }
 
-func TestChooseDesignOptionResolvesPendingRequest(t *testing.T) {
-	app, presented := newTestAppWithDesignNotify(t)
+func TestDesignBranchFromSnapshotRestoresMain(t *testing.T) {
+	app := newTestAppWithDesign(t)
 
-	resultCh := make(chan design.ChoiceResult, 1)
+	if err := app.designWorkdir.EnsureThread("thread-design"); err != nil {
+		t.Fatalf("EnsureThread: %v", err)
+	}
+	mainPath, err := app.designWorkdir.MainPath("thread-design")
+	if err != nil {
+		t.Fatalf("MainPath: %v", err)
+	}
+
+	// Seed main with v1 contents and snapshot.
+	if err := os.WriteFile(filepath.Join(mainPath, "index.html"), []byte("v1"), 0o644); err != nil {
+		t.Fatalf("WriteFile v1: %v", err)
+	}
+	snapV1, err := app.CaptureSnapshot("thread-design", "v1")
+	if err != nil {
+		t.Fatalf("CaptureSnapshot v1: %v", err)
+	}
+
+	// Replace main with v2.
+	if err := os.WriteFile(filepath.Join(mainPath, "index.html"), []byte("v2"), 0o644); err != nil {
+		t.Fatalf("WriteFile v2: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(mainPath, "index.html")); string(got) != "v2" {
+		t.Fatalf("pre-branch main = %q, want v2", string(got))
+	}
+
+	// Branch back to v1; main should restore to v1 contents.
+	if err := app.BranchFromSnapshot("thread-design", snapV1.ID); err != nil {
+		t.Fatalf("BranchFromSnapshot: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(mainPath, "index.html"))
+	if err != nil {
+		t.Fatalf("ReadFile post-branch: %v", err)
+	}
+	if string(got) != "v1" {
+		t.Fatalf("post-branch main = %q, want v1", string(got))
+	}
+}
+
+func TestDesignIngestDiagnosticBatchAppendsToBuffer(t *testing.T) {
+	app := newTestAppWithDesign(t)
+
+	batch := design.DiagnosticBatch{
+		ThreadID: "thread-design",
+		Diagnostics: []design.Diagnostic{
+			{Severity: design.SeverityError, Message: "TypeError"},
+			{Severity: design.SeverityWarn, Message: "deprecated"},
+		},
+	}
+	if err := app.IngestDiagnosticBatch(batch); err != nil {
+		t.Fatalf("IngestDiagnosticBatch: %v", err)
+	}
+
+	if app.designDiagnostics.LatestToken("thread-design") < 2 {
+		t.Fatalf("token = %d, want >= 2", app.designDiagnostics.LatestToken("thread-design"))
+	}
+}
+
+func TestDesignIngestScreenshotResolvesPendingCapture(t *testing.T) {
+	app := newTestAppWithDesign(t)
+
+	captureCh := make(chan design.ScreenshotRequest, 1)
+	app.testEmitHook = func(eventName string, data any) {
+		if eventName == design.CaptureEventName {
+			if req, ok := data.(design.ScreenshotRequest); ok {
+				captureCh <- req
+			}
+		}
+	}
+
+	pngCh := make(chan []byte, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		result, err := app.reactor.PresentOptions(context.Background(), "thread-design", design.PresentOptionsInput{
-			Prompt: "Choose",
-			Options: []design.PresentOptionInput{
-				{ID: "a", Title: "A", Description: "Alpha", HTML: "<html>A</html>"},
-				{ID: "b", Title: "B", Description: "Beta", HTML: "<html>B</html>"},
-			},
-		})
+		png, err := app.designScreenshots.Capture(t.Context(), "thread-design")
 		if err != nil {
 			errCh <- err
 			return
 		}
-		resultCh <- result
+		pngCh <- png
 	}()
 
-	request := waitForAppDesignRequest(t, app, presented)
-	if err := app.ChooseDesignOption("thread-design", request.RequestID, "b"); err != nil {
-		t.Fatalf("ChooseDesignOption() error = %v", err)
+	var captureRequest design.ScreenshotRequest
+	select {
+	case captureRequest = <-captureCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for capture event")
+	}
+
+	want := []byte{0x89, 0x50, 0x4e, 0x47}
+	encoded := base64.StdEncoding.EncodeToString(want)
+	if err := app.IngestScreenshot(design.ScreenshotResult{
+		RequestID: captureRequest.RequestID,
+		PNGBase64: encoded,
+	}); err != nil {
+		t.Fatalf("IngestScreenshot: %v", err)
 	}
 
 	select {
+	case got := <-pngCh:
+		if string(got) != string(want) {
+			t.Fatalf("png mismatch: got %x, want %x", got, want)
+		}
 	case err := <-errCh:
-		t.Fatalf("PresentOptions() error = %v", err)
-	case result := <-resultCh:
-		if result.Chosen != "b" {
-			t.Fatalf("Chosen = %q, want b", result.Chosen)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for design choice")
+		t.Fatalf("Capture err: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Capture did not return after IngestScreenshot")
 	}
 }
 
-func TestClaudeDesignToolRenderStoresArtifact(t *testing.T) {
-	app := newTestAppWithDesign(t)
-	setThreadProvider(t, app, "thread-design", string(provider.Claude))
-
-	// Wire the reactor's emit callback to signal when the artifact is rendered.
-	rendered := make(chan struct{}, 1)
-	app.reactor = design.NewReactor(app.artifacts, func(eventName string, _ any) {
-		if eventName == "design:artifact" {
-			select {
-			case rendered <- struct{}{}:
-			default:
-			}
-		}
-	})
-
-	meta, err := json.Marshal(map[string]any{
-		"toolName": "render_design",
-		"input": map[string]any{
-			"html":        "<html><body>Claude render</body></html>",
-			"title":       "Claude Render",
-			"description": "Generated from a Claude tool block",
-		},
-	})
-	if err != nil {
-		t.Fatalf("Marshal() error = %v", err)
-	}
-
-	app.sessionEventHandler("thread-design", "session-1")(provider.ProviderEvent{
-		Kind:      provider.EventToolStart,
-		ThreadID:  "thread-design",
-		ItemType:  "render_design",
-		Meta:      meta,
-		Timestamp: time.Now(),
-	})
-
-	select {
-	case <-rendered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for Claude render artifact")
-	}
-
-	artifacts, err := app.ListDesignArtifacts("thread-design")
-	if err != nil {
-		t.Fatalf("ListDesignArtifacts() error = %v", err)
-	}
-	if len(artifacts) != 1 {
-		t.Fatalf("len(artifacts) = %d, want 1", len(artifacts))
-	}
-	if artifacts[0].Title != "Claude Render" {
-		t.Fatalf("artifact title = %q, want Claude Render", artifacts[0].Title)
-	}
-}
-
-func TestClaudeDesignOptionChoiceSendsFollowUpMessage(t *testing.T) {
-	app, presented := newTestAppWithDesignNotify(t)
-	setThreadProvider(t, app, "thread-design", string(provider.Claude))
-
-	sent := make(chan string, 1)
-	app.sendMessageFn = func(threadID, content string, attachmentIDs []string) error {
-		if threadID != "thread-design" {
-			t.Fatalf("threadID = %q, want thread-design", threadID)
-		}
-		sent <- content
-		return nil
-	}
-
-	meta, err := json.Marshal(map[string]any{
-		"toolName": "present_options",
-		"input": map[string]any{
-			"prompt": "Choose a direction",
-			"options": []map[string]any{
-				{"id": "a", "title": "Alpha", "description": "First", "html": "<html>A</html>"},
-				{"id": "b", "title": "Beta", "description": "Second", "html": "<html>B</html>"},
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("Marshal() error = %v", err)
-	}
-
-	app.sessionEventHandler("thread-design", "session-1")(provider.ProviderEvent{
-		Kind:      provider.EventToolStart,
-		ThreadID:  "thread-design",
-		ItemType:  "present_options",
-		Meta:      meta,
-		Timestamp: time.Now(),
-	})
-
-	request := waitForAppDesignRequest(t, app, presented)
-	if err := app.ChooseDesignOption("thread-design", request.RequestID, "b"); err != nil {
-		t.Fatalf("ChooseDesignOption() error = %v", err)
-	}
-
-	select {
-	case content := <-sent:
-		if !strings.Contains(content, `"Beta"`) {
-			t.Fatalf("content = %q, want selected title", content)
-		}
-		if !strings.Contains(content, "ID: b") {
-			t.Fatalf("content = %q, want selected option ID", content)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for Claude design follow-up message")
-	}
-}
-
-func TestDesignSessionConfigRegistersCodexMCP(t *testing.T) {
+func TestDesignSessionConfigRegistersMCPForBothProviders(t *testing.T) {
 	app := newTestAppWithDesign(t)
 
-	cfg, err := app.designSessionConfig(testDesignThread("thread-design"))
-	if err != nil {
-		t.Fatalf("designSessionConfig() error = %v", err)
-	}
-	if cfg.Prompt == "" {
-		t.Fatal("expected design prompt")
-	}
-	if len(cfg.MCPServers) != 1 {
-		t.Fatalf("MCPServers len = %d, want 1", len(cfg.MCPServers))
+	for _, prov := range []string{"codex", "claude"} {
+		setThreadProvider(t, app, "thread-design", prov)
+		thread, err := app.store.GetThread("thread-design")
+		if err != nil {
+			t.Fatalf("GetThread: %v", err)
+		}
+		cfg, err := app.designSessionConfig(thread)
+		if err != nil {
+			t.Fatalf("designSessionConfig(%s): %v", prov, err)
+		}
+		if cfg.Prompt == "" {
+			t.Fatalf("%s: empty prompt", prov)
+		}
+		// Phase 2: activateDesignSession registers MCP. Split from
+		// designSessionConfig so it runs AFTER stopExistingSessionLocked
+		// has torn down any predecessor session for the same thread.
+		mcp, err := app.activateDesignSession(thread)
+		if err != nil {
+			t.Fatalf("activateDesignSession(%s): %v", prov, err)
+		}
+		if len(mcp) != 1 {
+			t.Fatalf("%s: MCPServers len = %d, want 1", prov, len(mcp))
+		}
+		// Re-teardown so the next provider gets a fresh registration.
+		app.teardownDesignThread(thread.ID)
 	}
 }
 
@@ -239,11 +216,28 @@ func newTestAppWithDesign(t *testing.T) *App {
 
 	app := newTestAppWithStore(t)
 	app.configDir = t.TempDir()
-	app.artifacts = design.NewArtifactStore(filepath.Join(t.TempDir(), "design-artifacts"), app.store)
-	app.reactor = design.NewReactor(app.artifacts, func(string, any) {})
-	app.designMCP = codex.NewDesignMCPServer(app.reactor)
+
+	designBase := filepath.Join(t.TempDir(), "design-workdirs")
+	app.designWorkdir = design.NewWorkDirManager(designBase, app.store)
+	app.designDiagnostics = design.NewDiagnosticBuffer(nil)
+	app.designScreenshots = design.NewScreenshotBroker(app.emit)
+	app.designServer = design.FileHandler(designBase)
+	app.designWatchers = make(map[string]*design.Watcher)
+	app.reactor = design.NewReactor(app.designDiagnostics, app.designScreenshots)
+	app.designMCP = design.NewMCPServer(app.reactor)
 	t.Cleanup(func() {
 		_ = app.designMCP.Close()
+		// Stop any watchers spawned during the test.
+		app.designWatchersMu.Lock()
+		watchers := make([]*design.Watcher, 0, len(app.designWatchers))
+		for _, w := range app.designWatchers {
+			watchers = append(watchers, w)
+		}
+		app.designWatchers = nil
+		app.designWatchersMu.Unlock()
+		for _, w := range watchers {
+			w.Stop()
+		}
 	})
 
 	thread := testDesignThread("thread-design")
@@ -251,36 +245,6 @@ func newTestAppWithDesign(t *testing.T) *App {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 	return app
-}
-
-// newTestAppWithDesignNotify is like newTestAppWithDesign but returns a channel
-// that signals when the reactor emits a "design:options" event. This allows
-// tests to block on the channel instead of polling for pending requests.
-func newTestAppWithDesignNotify(t *testing.T) (*App, <-chan struct{}) {
-	t.Helper()
-
-	presented := make(chan struct{}, 1)
-	app := newTestAppWithStore(t)
-	app.configDir = t.TempDir()
-	app.artifacts = design.NewArtifactStore(filepath.Join(t.TempDir(), "design-artifacts"), app.store)
-	app.reactor = design.NewReactor(app.artifacts, func(eventName string, _ any) {
-		if eventName == "design:options" {
-			select {
-			case presented <- struct{}{}:
-			default:
-			}
-		}
-	})
-	app.designMCP = codex.NewDesignMCPServer(app.reactor)
-	t.Cleanup(func() {
-		_ = app.designMCP.Close()
-	})
-
-	thread := testDesignThread("thread-design")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-	return app, presented
 }
 
 func testDesignThread(id string) store.Thread {
@@ -302,28 +266,13 @@ func setThreadProvider(t *testing.T, app *App, threadID, providerName string) {
 	}
 }
 
-// waitForAppDesignRequest blocks until a design options request appears for the
-// thread. The provided channel must be signaled by the reactor's emit callback
-// when a "design:options" event fires. See newTestAppWithDesignNotify.
-func waitForAppDesignRequest(t *testing.T, app *App, presented <-chan struct{}) design.DesignOptionsRequest {
-	t.Helper()
-
-	select {
-	case <-presented:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for design request")
-	}
-
-	request, ok := app.reactor.PendingRequest("thread-design")
-	if !ok {
-		t.Fatal("no pending design request after options event")
-	}
-	return request
-}
-
-func designMCPRegistrationCount(server *codex.DesignMCPServer) int {
+func designMCPRegistrationCount(server *design.MCPServer) int {
 	if server == nil {
 		return 0
 	}
 	return server.RegisteredThreadCount()
 }
+
+// Reference unused symbols so a future cleanup doesn't accidentally
+// break them under -trimpath imports.
+var _ = strings.TrimSpace

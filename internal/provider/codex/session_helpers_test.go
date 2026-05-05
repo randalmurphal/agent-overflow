@@ -623,6 +623,22 @@ func TestBuildThreadParamsWorkDir(t *testing.T) {
 	}
 }
 
+func TestBuildThreadParamsIncludesMCPServers(t *testing.T) {
+	params := buildThreadParams(Config{
+		MCPServers: map[string]any{
+			"design": map[string]any{"url": "http://127.0.0.1:1234/mcp/thread"},
+		},
+	})
+
+	config, ok := params["config"].(map[string]any)
+	if !ok {
+		t.Fatalf("config type = %T, want map[string]any", params["config"])
+	}
+	if config["mcp_servers"] == nil {
+		t.Fatal("expected mcp_servers config override")
+	}
+}
+
 // -- readRouteFields edge cases --
 
 func TestReadRouteFieldsEmpty(t *testing.T) {

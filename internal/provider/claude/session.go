@@ -191,6 +191,19 @@ type Config struct {
 	// settings path instead.
 	Env         map[string]string
 	EventLogger *logging.Logger
+	// MCPServers carries optional MCP server configs to register for
+	// this session. Threaded through `--mcp-config <json>` plus
+	// `--strict-mcp-config` so only the supplied servers are loaded
+	// (no .mcp.json discovery from the workdir, no user-settings
+	// MCP servers leaking into the agent context). Currently used
+	// for the design-mode Codex HTTP MCP server, which Claude
+	// consumes the same way Codex does after the v42 design rewrite.
+	// Shape matches Claude Code's --mcp-config schema:
+	//   {"mcpServers": {"<name>": {"url": "..."}}} for HTTP servers
+	//   or {"mcpServers": {"<name>": {"command": "...", "args": [...]}}}
+	//   for stdio servers. The map provided here is wrapped under
+	//   "mcpServers" before serialization.
+	MCPServers map[string]any
 }
 
 // NewSession spawns a Claude CLI process and starts the stdout reader goroutine.
@@ -312,6 +325,12 @@ func buildArgs(cfg Config) []string {
 	}
 	if settingsJSON, ok := inlineSettingsForCLI(cfg); ok {
 		args = append(args, "--settings", settingsJSON)
+	}
+	if mcpJSON, ok := mcpConfigForCLI(cfg); ok {
+		// --strict-mcp-config means: only load the servers we pass on
+		// the command line. No user-settings discovery, no .mcp.json
+		// in the workdir. The agent only sees what we register.
+		args = append(args, "--mcp-config", mcpJSON, "--strict-mcp-config")
 	}
 	// PermissionFlags is either nil (default CLI prompting) or a complete
 	// permission-related CLI flag sequence for the selected runtime mode.

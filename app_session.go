@@ -83,6 +83,16 @@ func (a *App) startSessionNow(threadID string) error {
 		return fmt.Errorf("start session: %w", err)
 	}
 
+	// Activate watcher + MCP AFTER stopExistingSessionLocked so the
+	// teardown of any prior session for the same thread doesn't stop
+	// resources we just allocated. teardownDesignThread on the failure
+	// paths below cleans up anything activate created.
+	mcpServers, err := a.activateDesignSession(t)
+	if err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
+	designCfg.MCPServers = mcpServers
+
 	// Flip any persisted `is_background=running` rows for a Codex thread
 	// to errored/lost BEFORE spawning the new subprocess. Those rows
 	// point at PTYs / spawned child threads owned by a prior subprocess
@@ -205,6 +215,7 @@ func (a *App) spawnProviderSession(
 		cfg := claude.ConfigFromOptions(opts)
 		cfg.Binary = a.providerBinaryPath(t.Provider)
 		cfg.EventLogger = a.logger
+		cfg.MCPServers = designCfg.MCPServers
 		sess, err := claude.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
 			return session{}, err

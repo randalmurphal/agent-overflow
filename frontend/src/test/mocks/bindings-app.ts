@@ -245,11 +245,12 @@ export const StartDiscussionByID = dispatch('StartDiscussionByID');
 export const GetChannelMessages = dispatch('GetChannelMessages');
 export const PostChannelMessage = dispatch('PostChannelMessage');
 
-export const ChooseDesignOption = dispatch('ChooseDesignOption');
-export const ListDesignArtifacts = dispatch('ListDesignArtifacts');
-export const GetDesignArtifactHTML = dispatch('GetDesignArtifactHTML');
-export const GetDesignArtifactPng = dispatch('GetDesignArtifactPng');
-export const SaveDesignArtifactPng = dispatch('SaveDesignArtifactPng');
+export const ListDesignSnapshots = dispatch('ListDesignSnapshots');
+export const CaptureSnapshot = dispatch('CaptureSnapshot');
+export const BranchFromSnapshot = dispatch('BranchFromSnapshot');
+export const IngestDiagnosticBatch = dispatch('IngestDiagnosticBatch');
+export const IngestScreenshot = dispatch('IngestScreenshot');
+export const FailScreenshot = dispatch('FailScreenshot');
 
 // Composer enhancements
 export const UploadAttachment = dispatch('UploadAttachment');

@@ -13,16 +13,19 @@
   import LazyThreadTerminalDrawer from '../terminal/LazyThreadTerminalDrawer.svelte';
   import DiscussionView from '../discussion/DiscussionView.svelte';
   import DesignPreviewPanel from '../design/DesignPreviewPanel.svelte';
-  import DesignOptionsPicker from '../design/DesignOptionsPicker.svelte';
+  import DesignFeedbackPanel from '../design/DesignFeedbackPanel.svelte';
+  import DesignSnapshotList from '../design/DesignSnapshotList.svelte';
+  import DesignOptionsPanel from '../design/DesignOptionsPanel.svelte';
+  import DesignClarificationPicker from '../design/DesignClarificationPicker.svelte';
   import DesignSplitResizer from '../design/DesignSplitResizer.svelte';
   import ModeEmptyForProject from './ModeEmptyForProject.svelte';
   import { getProject } from '../../stores/projects.svelte';
-  import { ListDesignArtifacts } from '../../stores/bindings';
+  import { ListDesignSnapshots } from '../../stores/bindings';
   import {
     computeChatWidth,
     DESIGN_CHAT_DEFAULT_FRACTION,
   } from '../../stores/designLayout.svelte';
-  import type { DesignArtifact } from '../../types/design';
+  import type { DesignSnapshot } from '../../types/design';
   import RhsSidebarShell from './RhsSidebarShell.svelte';
   import ChatHeader from './ChatHeader.svelte';
   import ExpandedImageDialog from './ExpandedImageDialog.svelte';
@@ -335,25 +338,29 @@
     return () => obs.disconnect();
   });
 
-  // Hydrate the design artifact list whenever a design thread becomes
+  // Hydrate the design snapshot list whenever a design thread becomes
   // active. The hydration generation guard ensures a thread switch
-  // mid-flight doesn't overwrite newer state with a stale fetch.
+  // mid-flight doesn't overwrite newer state with a stale fetch. The
+  // preview panel and the snapshot list both read from
+  // `pane.designSnapshots`, so we hydrate once here and then rely on
+  // the `design:snapshots-update` event (re-dispatched as a DOM event
+  // by `events.ts`) to keep the list fresh during the session.
   let designHydrationGen = 0;
   $effect(() => {
     if (!inDesignMode) return;
     const threadId = pane.threadId;
     if (!threadId) return;
     const gen = ++designHydrationGen;
-    ListDesignArtifacts(threadId)
-      .then((artifacts: unknown) => {
+    ListDesignSnapshots(threadId)
+      .then((snapshots: unknown) => {
         if (gen !== designHydrationGen) return;
-        const list = Array.isArray(artifacts) ? (artifacts as DesignArtifact[]) : [];
-        pane.setDesignArtifacts(list);
+        const list = Array.isArray(snapshots) ? (snapshots as DesignSnapshot[]) : [];
+        pane.setDesignSnapshots(list);
       })
       .catch((err: unknown) => {
         if (gen !== designHydrationGen) return;
         const message = err instanceof Error ? err.message : String(err);
-        addToast('error', `Failed to load design artifacts: ${message}`);
+        addToast('error', `Failed to load design snapshots: ${message}`);
       });
   });
 
@@ -624,9 +631,40 @@
         class="flex flex-col min-h-0 flex-1 min-w-0 relative"
         data-testid="design-preview-pane"
       >
-        <DesignPreviewPanel {pane} />
-        {#if pane.pendingDesignOptions}
-          <DesignOptionsPicker {pane} />
+        <!--
+          Top half: either the main preview iframe or the side-by-side
+          options grid when the agent has placed a pickable set. The
+          options panel renders nothing when activeOptionSet is null,
+          so we keep both mounted to avoid teardown/remount churn when
+          the agent toggles between iteration and option exploration.
+        -->
+        <div class="flex-1 min-h-0 flex flex-col">
+          {#if pane.activeOptionSet}
+            <DesignOptionsPanel {pane} />
+          {:else}
+            <DesignPreviewPanel {pane} />
+          {/if}
+        </div>
+        <!--
+          Bottom-half stack: snapshot list + agent clarification picker
+          (when pending) + feedback accumulator. The clarification picker
+          is itself self-gating on pendingClarification so it's a no-op
+          render when no clarification is in flight. The snapshot list
+          is collapsed to a fixed-height tray so the feedback panel
+          always has room.
+        -->
+        <div class="border-t border-border-subtle shrink-0 flex flex-col" style="max-height: 35%;">
+          <div class="flex min-h-0">
+            <div class="flex-1 min-w-0 flex flex-col min-h-0">
+              <DesignFeedbackPanel {pane} />
+            </div>
+            <div class="w-64 shrink-0 flex flex-col min-h-0">
+              <DesignSnapshotList {pane} />
+            </div>
+          </div>
+        </div>
+        {#if pane.pendingClarification}
+          <DesignClarificationPicker {pane} />
         {/if}
       </div>
     </div>

@@ -10,11 +10,134 @@ import { Create as $Create } from "@wailsio/runtime";
 import * as store$0 from "../store/models.js";
 
 /**
- * DesignArtifact is the public design-mode artifact metadata shape.
+ * Diagnostic is one captured runtime event from the sandboxed iframe.
+ * Tokens are monotonic per thread; agents pass `since_token` to drain
+ * only what they haven't seen.
  */
-export const DesignArtifact = store$0.DesignArtifact;
+export class Diagnostic {
+    "token": number;
+    "severity": DiagnosticSeverity;
+    "message": string;
+    "source"?: string;
+    "line"?: number;
+    "column"?: number;
+    "stack"?: string;
+    "url"?: string;
+    "createdAt": number;
+
+    /** Creates a new Diagnostic instance. */
+    constructor($$source: Partial<Diagnostic> = {}) {
+        if (!("token" in $$source)) {
+            this["token"] = 0;
+        }
+        if (!("severity" in $$source)) {
+            this["severity"] = DiagnosticSeverity.$zero;
+        }
+        if (!("message" in $$source)) {
+            this["message"] = "";
+        }
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Diagnostic instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Diagnostic {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Diagnostic($$parsedSource as Partial<Diagnostic>);
+    }
+}
 
 /**
- * DesignArtifact is the public design-mode artifact metadata shape.
+ * DiagnosticBatch is the wire payload from the iframe-injected capture
+ * script forwarded by the frontend over WebSocket.
  */
-export type DesignArtifact = store$0.DesignArtifact;
+export class DiagnosticBatch {
+    "threadId": string;
+    "diagnostics": Diagnostic[];
+
+    /** Creates a new DiagnosticBatch instance. */
+    constructor($$source: Partial<DiagnosticBatch> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("diagnostics" in $$source)) {
+            this["diagnostics"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DiagnosticBatch instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DiagnosticBatch {
+        const $$createField1_0 = $$createType1;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("diagnostics" in $$parsedSource) {
+            $$parsedSource["diagnostics"] = $$createField1_0($$parsedSource["diagnostics"]);
+        }
+        return new DiagnosticBatch($$parsedSource as Partial<DiagnosticBatch>);
+    }
+}
+
+/**
+ * DiagnosticSeverity classifies a captured runtime event.
+ */
+export enum DiagnosticSeverity {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    SeverityError = "error",
+    SeverityWarn = "warn",
+    SeverityInfo = "info",
+};
+
+/**
+ * ScreenshotResult is the frontend → backend reply carrying the
+ * captured PNG bytes (base64-encoded on the wire).
+ */
+export class ScreenshotResult {
+    "requestId": string;
+    "pngBase64": string;
+
+    /** Creates a new ScreenshotResult instance. */
+    constructor($$source: Partial<ScreenshotResult> = {}) {
+        if (!("requestId" in $$source)) {
+            this["requestId"] = "";
+        }
+        if (!("pngBase64" in $$source)) {
+            this["pngBase64"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ScreenshotResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ScreenshotResult {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ScreenshotResult($$parsedSource as Partial<ScreenshotResult>);
+    }
+}
+
+/**
+ * Snapshot is the public design-mode snapshot metadata shape.
+ */
+export const Snapshot = store$0.DesignSnapshot;
+
+/**
+ * Snapshot is the public design-mode snapshot metadata shape.
+ */
+export type Snapshot = store$0.DesignSnapshot;
+
+// Private type creation functions
+const $$createType0 = Diagnostic.createFrom;
+const $$createType1 = $Create.Array($$createType0);

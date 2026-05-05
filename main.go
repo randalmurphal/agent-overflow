@@ -243,9 +243,10 @@ func bootTransport(appService *App, listenAddr string, loadPersistedBindAll bool
 	}
 
 	cfg := transport.Config{
-		Dispatcher:   dispatcher,
-		EventBus:     bus,
-		AssetHandler: assetHandler,
+		Dispatcher:    dispatcher,
+		EventBus:      bus,
+		AssetHandler:  assetHandler,
+		DesignHandler: appService.DesignServer(),
 	}
 	if listenAddr != "" {
 		host, port := splitListenAddr(listenAddr)

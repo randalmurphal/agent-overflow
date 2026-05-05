@@ -10,7 +10,11 @@ import (
 
 func (a *App) sessionEventHandler(threadID, sessionToken string) func(provider.ProviderEvent) {
 	return func(evt provider.ProviderEvent) {
-		a.handleClaudeDesignTool(evt)
+		// Design-mode tools used to be wired through Claude event
+		// interception (handleClaudeDesignTool); after the v42 rewrite
+		// Claude consumes the design MCP tools the same way Codex does
+		// — via the HTTP MCP server registered through --mcp-config.
+		// No event-side dispatch is required.
 
 		if evt.Kind == provider.EventInit {
 			a.cacheSlashCommandsFromInit(threadID, evt.Meta)

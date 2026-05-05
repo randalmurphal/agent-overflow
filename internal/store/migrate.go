@@ -1187,6 +1187,33 @@ CREATE INDEX IF NOT EXISTS idx_diff_review_comments_scope
 	ON diff_review_comments(thread_id, scope, source_key, status, file_path, old_line, new_line, created_at);
 `,
 	},
+	{
+		Version: 42,
+		Name:    "design_snapshots",
+		// Replace the artifact ladder with a snapshot model. Each design
+		// thread has a working directory the agent edits in place; snapshots
+		// freeze that state at user gestures + auto-on-turn-start so the
+		// user can branch from any prior state. Old design_artifacts data
+		// was from a feature that didn't ship working — drop the table.
+		SQL: `
+DROP TABLE IF EXISTS design_artifacts;
+
+CREATE TABLE design_snapshots (
+	id                  TEXT    PRIMARY KEY,
+	thread_id           TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+	label               TEXT    NOT NULL DEFAULT '',
+	dir_path            TEXT    NOT NULL,
+	parent_snapshot_id  TEXT    REFERENCES design_snapshots(id) ON DELETE SET NULL,
+	auto                INTEGER NOT NULL DEFAULT 0 CHECK(auto IN (0,1)),
+	created_at          INTEGER NOT NULL
+);
+CREATE INDEX idx_design_snapshots_thread_created
+	ON design_snapshots(thread_id, created_at DESC);
+CREATE INDEX idx_design_snapshots_parent
+	ON design_snapshots(parent_snapshot_id)
+	WHERE parent_snapshot_id IS NOT NULL;
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

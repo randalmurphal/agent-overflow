@@ -150,3 +150,29 @@ func inlineSettingsForCLI(cfg Config) (string, bool) {
 	}
 	return string(data), true
 }
+
+// mcpConfigForCLI renders cfg.MCPServers into the JSON string the
+// Claude CLI's --mcp-config flag accepts. Returns ("", false) when no
+// servers are configured so the flag can be omitted entirely.
+//
+// The CLI's --mcp-config accepts JSON with shape
+// {"mcpServers": {<name>: <serverSpec>}}. Each <serverSpec> is either
+// {"url": "..."} for HTTP servers (what the design MCP exposes) or a
+// stdio shape with command/args. We pass the supplied map through as
+// the value of mcpServers — callers are responsible for the spec
+// shape, but typical usage is the Codex HTTP MCP server registration
+// which already returns the right per-server shape.
+func mcpConfigForCLI(cfg Config) (string, bool) {
+	if len(cfg.MCPServers) == 0 {
+		return "", false
+	}
+	payload := map[string]any{"mcpServers": cfg.MCPServers}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		// Same reasoning as inlineSettingsForCLI: nested maps with no
+		// custom marshalers can't fail in practice. Panic loudly to
+		// satisfy the "errors must never silently fail" rule.
+		panic(fmt.Sprintf("claude: mcpConfigForCLI marshal failed (unreachable): %v", err))
+	}
+	return string(data), true
+}

@@ -17,15 +17,27 @@ import type {
   CheckpointUnavailableEvent,
 } from '../types/checkpoint';
 import type { ChannelMessage } from '../types/discussion';
-import type { DesignArtifact, DesignOptionsRequest, DesignViewport } from '../types/design';
+import type {
+  ActiveOptionSet,
+  ClarificationRequest,
+  DesignSnapshot,
+  DesignViewport,
+  FeedbackBatch,
+  SliderControl,
+} from '../types/design';
 import {
   GetThreadItem,
+  ListDesignOptions,
   ListItemsBeforeTurn,
   ListRecentThreadItems,
   ListRecentTurns,
   ListThreadCheckpoints,
   SwitchThread,
 } from './bindings';
+import {
+  controlsKey,
+  parseDesignAssistantPayloads,
+} from '../utils/designAssistantPayload';
 import { replaceThread } from './threads.svelte';
 import {
   createPayloadExpansion,
@@ -402,14 +414,34 @@ export function createThreadPane() {
   let channelStatus: 'open' | 'concluded' | 'closed' | null = $state(null);
 
   // Design-mode state (only populated when thread.mode === 'design').
-  // designArtifacts is the render+option history for the thread.
-  // activeArtifactId is what the preview panel is displaying — null = show latest.
-  // pendingDesignOptions is populated when an agent has blocked on present_options.
-  // designViewport drives the iframe width toggle.
-  let designArtifacts: DesignArtifact[] = $state([]);
-  let activeArtifactId: string | null = $state(null);
-  let pendingDesignOptions: DesignOptionsRequest | null = $state(null);
+  //
+  // Layout:
+  //   - designSnapshots: persisted snapshot tree for the thread (newest first
+  //     from backend). Hydrated on mount and refreshed on
+  //     `design:snapshots-update`.
+  //   - pendingClarification: non-null when the agent has emitted a
+  //     ClarificationRequest payload and is waiting for the user to pick
+  //     answers before continuing.
+  //   - exposedControls: agent-published slider knobs the user can tweak
+  //     after a design iteration lands. Replaces the previous control set
+  //     wholesale on each ExposeControls signal.
+  //   - activeOptionSet: when non-null, render the small N-up options grid
+  //     instead of (or beside) the main preview iframe.
+  //   - designViewport: width toggle for the main preview iframe.
+  let designSnapshots: DesignSnapshot[] = $state([]);
+  let pendingClarification: ClarificationRequest | null = $state(null);
+  let exposedControls: SliderControl[] = $state([]);
+  let activeOptionSet: ActiveOptionSet | null = $state(null);
   let designViewport: DesignViewport = $state('desktop');
+
+  // Dedup keys for the assistant-payload parser. The design agent emits
+  // structured `aoflow-design` blocks inside its assistant text;
+  // upsertItemsBatch re-applies the same item summary on every streaming
+  // delta and on retroactive replays, so we track which payload we've
+  // already mapped onto pane state and skip re-fires. Keys reset in
+  // clearDesign() / switchThread() so a new thread starts fresh.
+  let lastClarificationRequestId: string | null = null;
+  let lastExposedControlsKey: string | null = null;
 
   // Top-level mode tab (Chat | Design). Drives the segmented control in
   // ChatHeader and the layout decision in ChatView when no thread is loaded
@@ -1000,6 +1032,45 @@ export function createThreadPane() {
     }
     items = next;
     timelineRevision++;
+
+    // Design-mode side-channel: scan assistant text for structured
+    // `aoflow-design` payloads and project them onto pane state. Cheap
+    // when no payload is present (the parser short-circuits on the
+    // missing fence prefix); dedup keys above prevent re-fires across
+    // streaming deltas.
+    if (thread?.mode === 'design') {
+      for (const item of incoming) {
+        applyDesignAssistantPayloadsForItem(item);
+      }
+    }
+  }
+
+  // applyDesignAssistantPayloadsForItem is the parser-to-state shim. It
+  // runs once per upserted item in a design thread; the parser short-
+  // circuits on text without an `aoflow-design` fence so non-design
+  // assistant messages (or design messages without structured blocks)
+  // pay essentially zero cost.
+  function applyDesignAssistantPayloadsForItem(item: Item): void {
+    if (item.kind !== 'assistant_text') return;
+    if (!item.summary) return;
+    if (!thread || item.threadId !== thread.id) return;
+
+    const payloads = parseDesignAssistantPayloads(item.summary);
+    if (payloads.length === 0) return;
+    for (const p of payloads) {
+      if (p.kind === 'clarification_request') {
+        const next = p.payload;
+        if (lastClarificationRequestId === next.requestId) continue;
+        if (!next.threadId) next.threadId = thread.id;
+        pendingClarification = next;
+        lastClarificationRequestId = next.requestId;
+      } else if (p.kind === 'expose_controls') {
+        const key = controlsKey(p.payload.controls);
+        if (lastExposedControlsKey === key) continue;
+        exposedControls = [...p.payload.controls];
+        lastExposedControlsKey = key;
+      }
+    }
   }
 
   async function refreshCheckpointsForThread(threadID: string): Promise<void> {
@@ -1087,9 +1158,10 @@ export function createThreadPane() {
     get scrollToItemRequest() { return scrollToItemRequest; },
     get channelMessages() { return channelMessages; },
     get channelStatus() { return channelStatus; },
-    get designArtifacts() { return designArtifacts; },
-    get activeArtifactId() { return activeArtifactId; },
-    get pendingDesignOptions() { return pendingDesignOptions; },
+    get designSnapshots() { return designSnapshots; },
+    get pendingClarification() { return pendingClarification; },
+    get exposedControls() { return exposedControls; },
+    get activeOptionSet() { return activeOptionSet; },
     get designViewport() { return designViewport; },
     get activeTab() { return activeTab; },
     get activeRhsPanel() { return rhsPanelSlot.activePanel; },
@@ -1116,9 +1188,10 @@ export function createThreadPane() {
       sendInFlight = false;
       channelMessages = [];
       channelStatus = null;
-      designArtifacts = [];
-      activeArtifactId = null;
-      pendingDesignOptions = null;
+      designSnapshots = [];
+      pendingClarification = null;
+      exposedControls = [];
+      activeOptionSet = null;
       designViewport = 'desktop';
       // Bottom-drawer state is pane-scoped: opening the terminal on thread A
       // should not spill into thread B. The RHS sidebar is different: its
@@ -1340,9 +1413,10 @@ export function createThreadPane() {
       rhsPanelSlot.reset();
       channelMessages = [];
       channelStatus = null;
-      designArtifacts = [];
-      activeArtifactId = null;
-      pendingDesignOptions = null;
+      designSnapshots = [];
+      pendingClarification = null;
+      exposedControls = [];
+      activeOptionSet = null;
       designViewport = 'desktop';
       // activeTurn lives in the global registry (threadStatuses) and is
       // cleared by projectTurnCompleted; clearing it from a pane.clear()
@@ -1986,34 +2060,36 @@ export function createThreadPane() {
     // --- Design-mode mutations ---
 
     /**
-     * Replace the artifact history in one shot. Used when the panel first
-     * mounts and hydrates from ListDesignArtifacts.
+     * Replace the snapshot list in one shot. Used by the snapshot list
+     * component on mount + on `design:snapshots-update` events.
      */
-    setDesignArtifacts(artifacts: DesignArtifact[]): void {
-      designArtifacts = [...artifacts];
+    setDesignSnapshots(snapshots: DesignSnapshot[]): void {
+      designSnapshots = [...snapshots];
     },
 
     /**
-     * Append an artifact. De-dupes by id so idempotent event replays don't
-     * double-insert. New artifacts become the implicit active one (unless the
-     * user has pinned a different artifact via setActiveArtifact).
+     * Set the agent's clarification request. Pass null when the user
+     * has answered (the panel sends the answers as a regular user
+     * message; it then clears local state by calling this with null).
      */
-    appendDesignArtifact(artifact: DesignArtifact): void {
-      const exists = designArtifacts.some((a) => a.id === artifact.id);
-      if (exists) return;
-      designArtifacts = [...designArtifacts, artifact];
+    setPendingClarification(request: ClarificationRequest | null): void {
+      pendingClarification = request;
     },
 
-    setActiveArtifact(artifactId: string | null): void {
-      activeArtifactId = artifactId;
+    /**
+     * Replace the exposed slider controls. Per the wire contract each
+     * `ExposeControls` event replaces the previous set wholesale.
+     */
+    setExposedControls(controls: SliderControl[]): void {
+      exposedControls = [...controls];
     },
 
-    setDesignOptions(request: DesignOptionsRequest | null): void {
-      pendingDesignOptions = request;
-    },
-
-    clearDesignOptions(): void {
-      pendingDesignOptions = null;
+    /**
+     * Activate (or clear) the side-by-side options grid. `null` returns
+     * the pane to the main preview.
+     */
+    setActiveOptionSet(set: ActiveOptionSet | null): void {
+      activeOptionSet = set;
     },
 
     setDesignViewport(viewport: DesignViewport): void {
@@ -2032,10 +2108,41 @@ export function createThreadPane() {
     },
 
     clearDesign(): void {
-      designArtifacts = [];
-      activeArtifactId = null;
-      pendingDesignOptions = null;
+      designSnapshots = [];
+      pendingClarification = null;
+      exposedControls = [];
+      activeOptionSet = null;
       designViewport = 'desktop';
+      lastClarificationRequestId = null;
+      lastExposedControlsKey = null;
+    },
+
+    /**
+     * Hydrate `activeOptionSet` from the file watcher's
+     * `design:options-update` event. The watcher reports {threadId, setId}
+     * when the agent writes into options/{setId}/; this method enumerates
+     * the option ids inside the set and promotes the result to the panel.
+     *
+     * Best-effort: a binding error is logged but not surfaced — failing
+     * to hydrate the panel is preferable to dragging a toast onto the
+     * user every time a transient mid-write fires the watcher.
+     */
+    async applyDesignOptionsUpdate(threadId: string, setId: string): Promise<void> {
+      if (!thread || thread.id !== threadId || !setId) return;
+      try {
+        const ids = (await ListDesignOptions(threadId, setId)) ?? [];
+        if (!thread || thread.id !== threadId) return;
+        if (ids.length === 0) {
+          // Empty set is most likely a transient mid-write — leave any
+          // existing panel state intact.
+          return;
+        }
+        const optionPaths = ids.map((id) => `options/${setId}/${id}`);
+        activeOptionSet = { setId, optionPaths };
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('design: ListDesignOptions failed for', setId, err);
+      }
     },
   };
 }

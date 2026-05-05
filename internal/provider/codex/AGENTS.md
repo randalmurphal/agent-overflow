@@ -18,8 +18,9 @@ over stdio.
   v2 status enum, marshal/unmarshal.
 - `protocol_rate_limits.go` — rate-limit event normalizer.
 - `approval.go` — sandbox approval-method translation into the shared
-  `ApprovalRequest` Kind.
-- `mcp.go` — MCP elicitation flow.
+  `ApprovalRequest` Kind. MCP elicitation lands here too as
+  `Kind: "mcp-elicitation"`; the dispatch lives in `session.go`'s
+  server-request handler.
 - `subagent_notifications.go` — `<subagent_notification>` XML-tag parser
   for detached-child-agent terminal signals injected into the next
   user-message. Pure parsing (regex + JSON decode), no Session state.

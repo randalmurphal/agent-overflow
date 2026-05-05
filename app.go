@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -33,6 +34,17 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
+// DesignServer returns the http.Handler that serves the per-thread
+// design working directories. main.go wires this into the transport
+// Config so /design/ requests reach it. Returns nil when the design
+// workdir base couldn't be initialised (rare; shows up in tests that
+// skip the design subsystem).
+//
+//wails:ignore
+func (a *App) DesignServer() http.Handler {
+	return a.designServer
+}
+
 // ErrShuttingDown is returned from binding entry points once Shutdown has
 // started. Callers should surface this as a terminal state — no retry will
 // succeed because the app is tearing down.
@@ -49,9 +61,21 @@ type App struct {
 	checkpoints    *checkpoint.Store
 	registry       *discussion.Registry
 	channels       *discussion.ChannelService
-	artifacts      *design.ArtifactStore
-	reactor        *design.Reactor
-	designMCP      *codex.DesignMCPServer
+	// designWorkdir owns each thread's per-thread {main,options,snapshots}
+	// directory and the snapshot lifecycle. The base directory is the
+	// HTTP file server's StripPrefix target — designServer below mounts
+	// it at /design/ on the existing transport.
+	designWorkdir     *design.WorkDirManager
+	designDiagnostics *design.DiagnosticBuffer
+	designScreenshots *design.ScreenshotBroker
+	designServer      http.Handler
+	// designWatchers is the per-thread fs watcher map. Keyed by thread
+	// ID; entries land on session start and Stop() on session teardown.
+	// designWatchersMu guards both insertion and removal.
+	designWatchersMu sync.Mutex
+	designWatchers   map[string]*design.Watcher
+	reactor          *design.Reactor
+	designMCP        *design.MCPServer
 	terminals      *terminal.Manager
 	attachments    *attachment.Store
 	workspaceFiles *workspacefiles.Searcher
@@ -370,9 +394,14 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	a.cleanupLegacyCheckpointRefs(st)
 	a.registry = discussion.NewRegistry(st)
 	a.channels = discussion.NewChannelService(st)
-	a.artifacts = design.NewArtifactStore(filepath.Join(dbDir, "design-artifacts"), st)
-	a.reactor = design.NewReactor(a.artifacts, a.emit)
-	a.designMCP = codex.NewDesignMCPServer(a.reactor)
+	designBase := filepath.Join(dbDir, "design-workdirs")
+	a.designWorkdir = design.NewWorkDirManager(designBase, st)
+	a.designDiagnostics = design.NewDiagnosticBuffer(nil)
+	a.designScreenshots = design.NewScreenshotBroker(a.emit)
+	a.designServer = design.FileHandler(designBase)
+	a.designWatchers = make(map[string]*design.Watcher)
+	a.reactor = design.NewReactor(a.designDiagnostics, a.designScreenshots)
+	a.designMCP = design.NewMCPServer(a.reactor)
 	a.terminals = terminal.NewManager(a.terminalOutputCallback, a.terminalExitCallback)
 	attachmentStore, err := attachment.NewStore(attachment.Config{
 		RootDir: filepath.Join(dbDir, "attachments"),
@@ -549,6 +578,29 @@ func (a *App) Shutdown(ctx context.Context) error {
 		a.gitWatch.Close()
 		a.gitWatchPumpWG.Wait()
 		record("close gitwatch manager", nil)
+	}
+
+	// Step 5c: stop any design watchers that survived session teardown.
+	// Per-session teardownDesignThread already fires from the parallel
+	// closer in step 4 for sessions that reached close cleanly, but a
+	// session that errored out before installing a teardown hook (or a
+	// future code path that creates a watcher without a session) would
+	// leave the goroutine alive past App lifetime. Walk the map under
+	// the dedicated mu and stop each watcher; safe to call after step 4
+	// because session closers don't write to designWatchers concurrently
+	// (each calls stopDesignWatcher which acquires the same mutex).
+	a.designWatchersMu.Lock()
+	leftoverWatchers := make([]*design.Watcher, 0, len(a.designWatchers))
+	for _, w := range a.designWatchers {
+		leftoverWatchers = append(leftoverWatchers, w)
+	}
+	a.designWatchers = nil
+	a.designWatchersMu.Unlock()
+	for _, w := range leftoverWatchers {
+		w.Stop()
+	}
+	if len(leftoverWatchers) > 0 {
+		record("close leftover design watchers", nil)
 	}
 
 	// Step 6: close PTYs. Must happen after provider sessions because

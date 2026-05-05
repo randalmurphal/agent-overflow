@@ -26,8 +26,9 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "AppendUIRenderTraceBatch", ID: 2157691816}, // main.App.AppendUIRenderTraceBatch
 	{Name: "ArchiveProject", ID: 1352159878}, // main.App.ArchiveProject
 	{Name: "ArchiveThread", ID: 3655608409}, // main.App.ArchiveThread
+	{Name: "BranchFromSnapshot", ID: 1930319093}, // main.App.BranchFromSnapshot
 	{Name: "BrowseDirectory", ID: 320967638}, // main.App.BrowseDirectory
-	{Name: "ChooseDesignOption", ID: 1369097107}, // main.App.ChooseDesignOption
+	{Name: "CaptureSnapshot", ID: 342423273}, // main.App.CaptureSnapshot
 	{Name: "CleanCodexBackgroundTerminals", ID: 16360282}, // main.App.CleanCodexBackgroundTerminals
 	{Name: "ClearDraft", ID: 296814681}, // main.App.ClearDraft
 	{Name: "CloseTerminal", ID: 2702963191}, // main.App.CloseTerminal
@@ -44,6 +45,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "DeleteProposedPlanComment", ID: 554913120}, // main.App.DeleteProposedPlanComment
 	{Name: "DeleteRemoteEndpoint", ID: 3667944297}, // main.App.DeleteRemoteEndpoint
 	{Name: "DeleteThread", ID: 1186337974}, // main.App.DeleteThread
+	{Name: "FailScreenshot", ID: 4051848193}, // main.App.FailScreenshot
 	{Name: "ForkThread", ID: 4063914461}, // main.App.ForkThread
 	{Name: "ForkThreadFromMessage", ID: 3977213964}, // main.App.ForkThreadFromMessage
 	{Name: "GenerateCommitMessage", ID: 1669373286}, // main.App.GenerateCommitMessage
@@ -51,8 +53,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetAttachmentThumbnail", ID: 3414107538}, // main.App.GetAttachmentThumbnail
 	{Name: "GetChannelMessages", ID: 3595031866}, // main.App.GetChannelMessages
 	{Name: "GetContextSettings", ID: 3416004963}, // main.App.GetContextSettings
-	{Name: "GetDesignArtifactHTML", ID: 2043420102}, // main.App.GetDesignArtifactHTML
-	{Name: "GetDesignArtifactPng", ID: 1968631214}, // main.App.GetDesignArtifactPng
 	{Name: "GetDiscussion", ID: 1924583939}, // main.App.GetDiscussion
 	{Name: "GetDraft", ID: 875977146}, // main.App.GetDraft
 	{Name: "GetEditorSettings", ID: 1655853383}, // main.App.GetEditorSettings
@@ -92,12 +92,15 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GitStageAll", ID: 548906954}, // main.App.GitStageAll
 	{Name: "GitStatusSubscribe", ID: 3282404643}, // main.App.GitStatusSubscribe
 	{Name: "GitStatusUnsubscribe", ID: 3263989430}, // main.App.GitStatusUnsubscribe
+	{Name: "IngestDiagnosticBatch", ID: 2606775930}, // main.App.IngestDiagnosticBatch
+	{Name: "IngestScreenshot", ID: 267844513}, // main.App.IngestScreenshot
 	{Name: "InterruptTurn", ID: 850013031}, // main.App.InterruptTurn
 	{Name: "IsWSL", ID: 2789068977}, // main.App.IsWSL
 	{Name: "ListAttachments", ID: 1730798413}, // main.App.ListAttachments
 	{Name: "ListAvailableEditors", ID: 2556802234}, // main.App.ListAvailableEditors
 	{Name: "ListChatBarFavorites", ID: 2114948965}, // main.App.ListChatBarFavorites
-	{Name: "ListDesignArtifacts", ID: 4255572490}, // main.App.ListDesignArtifacts
+	{Name: "ListDesignOptions", ID: 3070635863}, // main.App.ListDesignOptions
+	{Name: "ListDesignSnapshots", ID: 3740160112}, // main.App.ListDesignSnapshots
 	{Name: "ListDiffReviewComments", ID: 3057473088}, // main.App.ListDiffReviewComments
 	{Name: "ListDiscussions", ID: 942288562}, // main.App.ListDiscussions
 	{Name: "ListDiscussionsForThread", ID: 2502562885}, // main.App.ListDiscussionsForThread
@@ -135,7 +138,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RespondToUserInput", ID: 1071592868}, // main.App.RespondToUserInput
 	{Name: "RestartTerminal", ID: 4152403588}, // main.App.RestartTerminal
 	{Name: "RevertToMessageCheckpoint", ID: 263750815}, // main.App.RevertToMessageCheckpoint
-	{Name: "SaveDesignArtifactPng", ID: 3385084851}, // main.App.SaveDesignArtifactPng
 	{Name: "SaveDraft", ID: 3025273299}, // main.App.SaveDraft
 	{Name: "SavePayloadToFile", ID: 3576148797}, // main.App.SavePayloadToFile
 	{Name: "SearchThreadMessages", ID: 3644945077}, // main.App.SearchThreadMessages

@@ -205,9 +205,22 @@ var LocalOnlyMethods = map[string]bool{
 	"SetWSLDistroPreference": true,
 
 	// 4. Attachment / payload writes (local-FS mutation).
-	"UploadAttachment":        true,
-	"DeleteAttachment":        true,
-	"SaveDesignArtifactPng":   true,
+	"UploadAttachment": true,
+	"DeleteAttachment": true,
+	// Design-mode local-FS / process-coordination surface. The frontend
+	// posts iframe-captured diagnostics into the per-thread ring,
+	// resolves screenshot tool calls, and writes/branches snapshot
+	// directories under the user config dir. All loopback-only.
+	"IngestDiagnosticBatch": true,
+	"IngestScreenshot":      true,
+	"FailScreenshot":        true,
+	"CaptureSnapshot":       true,
+	"BranchFromSnapshot":    true,
+	// ListDesignSnapshots returns absolute filesystem paths under the
+	// user config dir (DirPath). Same disclosure shape as
+	// ListThreadCheckpoints — leaking on-disk layout to a LAN
+	// token-holder. Lock down loopback-only.
+	"ListDesignSnapshots": true,
 
 	// 5. Local-FS bookkeeping.
 	"AppendUIRenderTraceBatch": true,

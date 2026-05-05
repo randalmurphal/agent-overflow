@@ -67,6 +67,16 @@ type Config struct {
 	// would expose path traversal of the local filesystem.
 	AssetHandler http.Handler
 
+	// DesignHandler serves the per-thread design working directories
+	// at the /design/ prefix. Optional — when nil, /design/* paths
+	// fall through to the asset handler. main.go wires this to
+	// design.FileHandler(designBaseDir) which already strips the
+	// /design prefix and injects the diagnostic-capture script into
+	// HTML responses. The handler is wrapped by loopbackHostGuard so
+	// design dirs are unreachable from a hostile rebound DNS origin
+	// — the bytes the agent writes can include user material.
+	DesignHandler http.Handler
+
 	// ReadLimit caps the byte size of a single inbound WS message.
 	// Zero defaults to DefaultReadLimit (16 MiB).
 	ReadLimit int64
@@ -260,6 +270,27 @@ func (s *Server) buildHTTPServer() *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/bootstrap.json", s.loopbackHostGuard(s.handleBootstrap))
 	mux.HandleFunc("/ws", s.loopbackHostGuard(s.handleWS))
+	if s.cfg.DesignHandler != nil {
+		// Wrap in the same loopback host guard as /bootstrap.json:
+		// design files can include user material the agent put in the
+		// working dir, and a hostile DNS-rebound origin shouldn't be
+		// able to read them. /design/ must be registered before /
+		// because mux longest-match-wins routing already handles it,
+		// but listing it here makes the priority obvious.
+		//
+		// StripPrefix lets the FileHandler resolve "{threadId}/main/..."
+		// against its baseDir directly. Without it, http.FileServer
+		// would look for files at "{baseDir}/design/{threadId}/main/..."
+		// — a path the agent never writes to.
+		designH := http.StripPrefix("/design", s.cfg.DesignHandler)
+		// On LAN bind the loopbackHostGuard becomes a pass-through and
+		// /design/ has no token check, so we additionally refuse from
+		// non-loopback peers to avoid leaking agent-rendered content
+		// (which can include user material) over LAN. LAN-served design
+		// previews are a separate feature — pick it up via a deliberate
+		// token-validation pass when we want them.
+		mux.Handle("/design/", s.loopbackHostGuard(s.designLoopbackOnly(designH).ServeHTTP))
+	}
 	if s.cfg.AssetHandler != nil {
 		mux.Handle("/", withAssetHeaders(s.cfg.AssetHandler))
 	} else {
@@ -276,6 +307,22 @@ func (s *Server) buildHTTPServer() *http.Server {
 		// rootCtx so existing handlers don't see a spurious cancel.
 		BaseContext: func(_ net.Listener) context.Context { return s.rootCtx },
 	}
+}
+
+// designLoopbackOnly refuses /design/* requests from non-loopback peers
+// even when the server is bound to a LAN interface. The agent-rendered
+// HTML in the design workdir can include user-prompted material; until
+// we add explicit token validation, LAN peers don't get the design
+// surface. Returns 404 so a LAN scanner can't fingerprint that the
+// route exists.
+func (s *Server) designLoopbackOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(s.currentOriginPatterns()) > 0 && !remoteAddrIsLoopback(r.RemoteAddr) {
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // loopbackHostGuard returns a wrapper that rejects non-loopback Host

@@ -2,53 +2,112 @@
 // internal/store/design_types.go. Update these if those files drift.
 
 /**
- * Persisted metadata for an HTML artifact rendered in design mode.
- * HTML content is NOT included — fetch on demand via GetDesignArtifactHTML.
+ * Persisted metadata for a frozen state of a design thread's working
+ * directory. Snapshots are created on explicit user gesture and
+ * auto-on-turn-start; a snapshot's dirPath points at a directory holding
+ * the working files at that moment.
  */
-export interface DesignArtifact {
+export interface DesignSnapshot {
   id: string;
   threadId: string;
-  title: string;
-  description: string;
-  // `render` for plain render_design calls, `option` for present_options entries.
-  kind: string;
-  htmlPath: string;
+  label: string;
+  dirPath: string;
+  parentSnapshotId?: string;
+  auto: boolean;
+  createdAt: number;
+}
+
+/** Severity classifier for a captured runtime event. */
+export type DiagnosticSeverity = 'error' | 'warn' | 'info';
+
+/**
+ * One captured runtime event from the sandboxed iframe. Tokens are
+ * monotonic per thread; agents pass `since_token` to drain only what
+ * they haven't seen.
+ */
+export interface Diagnostic {
+  token: number;
+  severity: DiagnosticSeverity;
+  message: string;
+  source?: string;
+  line?: number;
+  column?: number;
+  stack?: string;
+  url?: string;
   createdAt: number;
 }
 
 /**
- * One selectable option surfaced by a present_options tool call.
- * `artifactId` points at the stored DesignArtifact for this option's HTML.
+ * Wire payload from the iframe-injected capture script forwarded by the
+ * frontend over WebSocket.
  */
-export interface DesignOption {
+export interface DiagnosticBatch {
+  threadId: string;
+  diagnostics: Diagnostic[];
+}
+
+/** One slider knob update inside a feedback batch. */
+export interface SliderChange {
   id: string;
-  title: string;
-  description: string;
-  artifactId: string;
+  value: number;
 }
 
 /**
- * A blocked present_options request. The agent is waiting on the user to pick
- * one of `options`; the frontend resolves the request by calling
- * ChooseDesignOption(threadId, requestId, optionId).
+ * Accumulated user feedback for one round trip. The frontend serialises
+ * this and sends it as a regular user message; the agent reads it as
+ * input on the next turn.
  */
-export interface DesignOptionsRequest {
-  requestId: string;
-  threadId: string;
+export interface FeedbackBatch {
+  sliderChanges?: SliderChange[];
+  notes?: string;
+}
+
+/** One selectable answer within a clarification question. */
+export interface ClarificationChoice {
+  id: string;
+  label: string;
+}
+
+/** A single multiple-choice clarification question. */
+export interface ClarificationQuestion {
+  id: string;
   prompt: string;
-  options: DesignOption[];
+  choices: ClarificationChoice[];
+  multiple?: boolean;
 }
 
 /**
- * Resolution notice emitted when a design option is chosen (or the session
- * is torn down). Matches the payload emitted by the Go reactor on
- * `design:chosen`.
+ * Emitted by the agent as a structured assistant-text payload when it
+ * needs the user to commit to a design direction before continuing.
  */
-export interface DesignChoiceResolved {
-  threadId: string;
+export interface ClarificationRequest {
   requestId: string;
-  optionId: string;
-  title: string;
+  threadId: string;
+  intro?: string;
+  questions: ClarificationQuestion[];
+}
+
+/**
+ * One agent-emitted slider exposed in the feedback panel after a design
+ * iteration lands.
+ */
+export interface SliderControl {
+  id: string;
+  label: string;
+  min: number;
+  max: number;
+  step?: number;
+  value: number;
+}
+
+/**
+ * Active option-set state — when non-null, the design pane shows the
+ * options grid. `optionPaths` is the list of /design/{threadId}/options/{setId}/{optionId}
+ * directories the agent placed in the working tree.
+ */
+export interface ActiveOptionSet {
+  setId: string;
+  optionPaths: string[];
 }
 
 export type DesignViewport = 'mobile' | 'tablet' | 'desktop';

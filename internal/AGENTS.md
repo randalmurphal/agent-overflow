@@ -16,7 +16,7 @@ one closest to what you're touching.
 | `gitwatch/` | Live git status streams per workspace (recursive fs watch + polling fallback). |
 | `terminal/` | PTY session manager with ring-buffer replay. |
 | `discussion/` | Multi-agent deliberation coordination. |
-| `design/` | Design-mode artifact storage and reactor. |
+| `design/` | Design-mode workdir, file watcher, diagnostics, screenshots, and HTTP file handler. |
 | `attachment/` | Message attachment storage (metadata in store, bytes on disk). |
 | `settings/` | Persistent settings JSON with validation. |
 | `logging/` | Structured NDJSON provider-event logging. |

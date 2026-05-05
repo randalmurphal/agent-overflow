@@ -31,7 +31,7 @@ func TestMigrationFreshDB(t *testing.T) {
 	// All tables should exist after fresh migration.
 	tables := []string{
 		"migration_versions", "threads", "items", "payloads",
-		"channels", "channel_messages", "discussion_definitions", "design_artifacts",
+		"channels", "channel_messages", "discussion_definitions", "design_snapshots",
 		"attachments", "thread_drafts", "thread_checkpoints", "turns",
 		"proposed_plans", "proposed_plan_comments",
 		"chat_bar_favorites", "chat_model_profiles",
@@ -747,13 +747,16 @@ func TestMigrationV2NewTables(t *testing.T) {
 		t.Fatalf("insert discussion definition: %v", err)
 	}
 
-	// Insert into design_artifacts.
+	// design_artifacts was dropped in v42 (replaced by design_snapshots).
+	// Verify the new table accepts inserts in its place — snapshots
+	// reference the per-thread working directory layout owned by
+	// internal/design/workdir.go.
 	_, err = s.db.Exec(`
-		INSERT INTO design_artifacts (id, thread_id, title, kind, html_path, created_at)
-		VALUES ('da-1', 't1', 'Landing Page', 'render', '/tmp/da-1.html', 1000)
+		INSERT INTO design_snapshots (id, thread_id, label, dir_path, created_at)
+		VALUES ('snap-1', 't1', 'first cut', '/tmp/snapshots/snap-1', 1000)
 	`)
 	if err != nil {
-		t.Fatalf("insert design artifact: %v", err)
+		t.Fatalf("insert design snapshot: %v", err)
 	}
 }
 

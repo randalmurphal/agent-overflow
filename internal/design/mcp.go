@@ -1,7 +1,8 @@
-package codex
+package design
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,16 +11,33 @@ import (
 	"strings"
 	"sync"
 
-	"agent-overflow/internal/design"
-
 	"github.com/google/uuid"
 )
 
-const designMCPProtocolVersion = "2025-03-26"
+const mcpProtocolVersion = "2025-03-26"
 
-// DesignMCPServer provides render_design and present_options to Codex over HTTP MCP.
-type DesignMCPServer struct {
-	reactor *design.Reactor
+// MCPServer exposes the design-mode MCP tools over HTTP. Both Codex
+// (inline `mcp_servers` config) and Claude (via `--mcp-config`) consume
+// it through the same wire — the server is provider-agnostic, which
+// is why it lives alongside the rest of the design machinery rather
+// than inside a provider package.
+//
+// Tools surfaced after the v42 rewrite:
+//
+//   - get_design_diagnostics(since_token) -> {diagnostics, next_token}
+//     Returns runtime errors / console output captured from the iframe
+//     since the agent's last call. Blocks up to ~1s when the file
+//     watcher fired recently but no diagnostics have landed yet.
+//
+//   - read_screenshot() -> {png_base64}
+//     Round-trips through the frontend to capture the live iframe;
+//     returns PNG bytes encoded in base64.
+//
+// Per-thread URL tokens isolate sessions; the tools don't take a
+// thread id parameter — the URL tells the server which thread the
+// caller belongs to.
+type MCPServer struct {
+	reactor *Reactor
 
 	mu            sync.Mutex
 	server        *http.Server
@@ -29,18 +47,22 @@ type DesignMCPServer struct {
 	tokenToThread map[string]string
 }
 
-// NewDesignMCPServer constructs a local HTTP MCP server for design-mode tools.
-func NewDesignMCPServer(reactor *design.Reactor) *DesignMCPServer {
-	return &DesignMCPServer{
+// NewMCPServer constructs the server but does not start it. The
+// listener spins up on first RegisterThread so a process that never
+// spawns a design thread doesn't open an extra port.
+func NewMCPServer(reactor *Reactor) *MCPServer {
+	return &MCPServer{
 		reactor:       reactor,
 		threadToToken: make(map[string]string),
 		tokenToThread: make(map[string]string),
 	}
 }
 
-// RegisterThread ensures the HTTP server is running and returns a Codex MCP
-// config object keyed by a thread-specific server name.
-func (s *DesignMCPServer) RegisterThread(threadID string) (map[string]any, error) {
+// RegisterThread ensures the HTTP server is running and returns a
+// provider-agnostic MCP config object keyed by a thread-specific
+// server name. Codex uses it inline in `thread/new` params; Claude
+// writes it to a temp file and points `--mcp-config` at the path.
+func (s *MCPServer) RegisterThread(threadID string) (map[string]any, error) {
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
 		return nil, fmt.Errorf("thread ID is required")
@@ -72,7 +94,7 @@ func (s *DesignMCPServer) RegisterThread(threadID string) (map[string]any, error
 }
 
 // UnregisterThread removes a thread's HTTP token registration.
-func (s *DesignMCPServer) UnregisterThread(threadID string) {
+func (s *MCPServer) UnregisterThread(threadID string) {
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
 		return
@@ -88,15 +110,16 @@ func (s *DesignMCPServer) UnregisterThread(threadID string) {
 	}
 }
 
-// RegisteredThreadCount returns the number of threads with active MCP registrations.
-func (s *DesignMCPServer) RegisteredThreadCount() int {
+// RegisteredThreadCount returns the number of threads with active MCP
+// registrations.
+func (s *MCPServer) RegisteredThreadCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.threadToToken)
 }
 
 // Close shuts down the HTTP server.
-func (s *DesignMCPServer) Close() error {
+func (s *MCPServer) Close() error {
 	s.mu.Lock()
 	server := s.server
 	listener := s.listener
@@ -116,7 +139,7 @@ func (s *DesignMCPServer) Close() error {
 	return nil
 }
 
-func (s *DesignMCPServer) ensureStarted() error {
+func (s *MCPServer) ensureStarted() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -140,7 +163,7 @@ func (s *DesignMCPServer) ensureStarted() error {
 	return nil
 }
 
-func (s *DesignMCPServer) handle(w http.ResponseWriter, r *http.Request) {
+func (s *MCPServer) handle(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -161,20 +184,20 @@ func (s *DesignMCPServer) handle(w http.ResponseWriter, r *http.Request) {
 	switch req.Method {
 	case "initialize":
 		writeRPCResult(w, req.ID, map[string]any{
-			"protocolVersion": designMCPProtocolVersion,
+			"protocolVersion": mcpProtocolVersion,
 			"capabilities": map[string]any{
 				"tools": map[string]any{},
 			},
 			"serverInfo": map[string]any{
 				"name":    "agent-overflow-design",
-				"version": "1.0.0",
+				"version": "2.0.0",
 			},
 		})
 	case "notifications/initialized":
 		w.WriteHeader(http.StatusNoContent)
 	case "tools/list":
 		writeRPCResult(w, req.ID, map[string]any{
-			"tools": designToolDefinitions(),
+			"tools": toolDefinitions(),
 		})
 	case "tools/call":
 		s.handleToolCall(w, req, threadID, r.Context())
@@ -183,7 +206,7 @@ func (s *DesignMCPServer) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *DesignMCPServer) handleToolCall(
+func (s *MCPServer) handleToolCall(
 	w http.ResponseWriter,
 	req mcpRequest,
 	threadID string,
@@ -198,22 +221,66 @@ func (s *DesignMCPServer) handleToolCall(
 		return
 	}
 
-	result, err := s.reactor.Dispatch(ctx, threadID, params.Name, params.Arguments)
-	if err != nil {
-		switch {
-		case errors.Is(err, design.ErrUnknownDispatchTool):
-			writeRPCError(w, req.ID, http.StatusOK, -32602, "unknown tool")
-		case errors.Is(err, design.ErrInvalidDispatchArgs):
-			writeRPCError(w, req.ID, http.StatusOK, -32602, fmt.Sprintf("invalid %s arguments", params.Name))
-		default:
-			writeToolError(w, req.ID, err)
-		}
-		return
+	switch params.Name {
+	case ToolGetDiagnostics:
+		s.handleGetDiagnostics(ctx, w, req, threadID, params.Arguments)
+	case ToolReadScreenshot:
+		s.handleReadScreenshot(ctx, w, req, threadID)
+	default:
+		writeRPCError(w, req.ID, http.StatusOK, -32602, "unknown tool")
 	}
-	writeToolResult(w, req.ID, result.Payload)
 }
 
-func (s *DesignMCPServer) threadIDForPath(path string) (string, bool) {
+func (s *MCPServer) handleGetDiagnostics(
+	ctx context.Context,
+	w http.ResponseWriter,
+	req mcpRequest,
+	threadID string,
+	rawArgs json.RawMessage,
+) {
+	var args struct {
+		SinceToken int64 `json:"since_token"`
+	}
+	if len(rawArgs) > 0 {
+		if err := json.Unmarshal(rawArgs, &args); err != nil {
+			writeRPCError(w, req.ID, http.StatusOK, -32602, "invalid get_design_diagnostics arguments")
+			return
+		}
+	}
+	diags, latest, err := s.reactor.GetDiagnostics(ctx, threadID, args.SinceToken)
+	if err != nil {
+		writeToolError(w, req.ID, err)
+		return
+	}
+	writeToolResult(w, req.ID, map[string]any{
+		"diagnostics": diags,
+		"next_token":  latest,
+	})
+}
+
+func (s *MCPServer) handleReadScreenshot(
+	ctx context.Context,
+	w http.ResponseWriter,
+	req mcpRequest,
+	threadID string,
+) {
+	png, err := s.reactor.CaptureScreenshot(ctx, threadID)
+	if err != nil {
+		if errors.Is(err, ErrScreenshotSessionEnded) {
+			// Session ended mid-tool-call: clean cancellation, not
+			// a tool error.
+			writeRPCError(w, req.ID, http.StatusOK, -32000, "design session ended")
+			return
+		}
+		writeToolError(w, req.ID, err)
+		return
+	}
+	writeToolResult(w, req.ID, map[string]any{
+		"png_base64": base64.StdEncoding.EncodeToString(png),
+	})
+}
+
+func (s *MCPServer) threadIDForPath(path string) (string, bool) {
 	const prefix = "/mcp/"
 	if !strings.HasPrefix(path, prefix) {
 		return "", false
@@ -237,33 +304,27 @@ type mcpRequest struct {
 	Params  json.RawMessage `json:"params,omitempty"`
 }
 
-func designToolDefinitions() []map[string]any {
+func toolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
-			"name":        "render_design",
-			"description": "Render a complete, self-contained HTML design mockup in the preview panel.",
+			"name":        ToolGetDiagnostics,
+			"description": "Return runtime diagnostics (console errors/warnings, window errors, unhandled rejections) captured from the design iframe since the caller's last call. Pass since_token=0 on first use; pass the previously-returned next_token thereafter. Blocks briefly when the iframe is mid-load to avoid stale-empty results.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"html":        map[string]any{"type": "string"},
-					"title":       map[string]any{"type": "string"},
-					"description": map[string]any{"type": "string"},
+					"since_token": map[string]any{
+						"type":        "integer",
+						"description": "Monotonic token from the previous call (0 on first call).",
+					},
 				},
-				"required": []string{"html", "title"},
 			},
 		},
 		{
-			"name":        "present_options",
-			"description": "Present 2 or more HTML design options and wait for the user to choose one.",
+			"name":        ToolReadScreenshot,
+			"description": "Capture the live design iframe and return a PNG of what the user sees right now. Use only when text diagnostics are clean but you suspect visual issues a JS error wouldn't catch.",
 			"inputSchema": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"prompt": map[string]any{"type": "string"},
-					"options": map[string]any{
-						"type": "array",
-					},
-				},
-				"required": []string{"prompt", "options"},
+				"type":       "object",
+				"properties": map[string]any{},
 			},
 		},
 	}

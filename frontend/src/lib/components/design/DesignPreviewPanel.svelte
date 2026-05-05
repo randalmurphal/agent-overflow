@@ -1,116 +1,79 @@
 <script lang="ts">
-  // DesignPreviewPanel — the right-hand pane in design threads. Owns the
-  // toolbar (viewport selector, refresh, annotate stub, artifact dropdown,
-  // send-to-chat menu) and the sandbox iframe that previews the active
-  // artifact's HTML. Hydration of the artifact list lives in ChatView so
-  // the preview shows the latest render the moment a thread loads.
+  // DesignPreviewPanel — the main preview iframe in design threads.
   //
-  // Per the design-mode spec the iframe is `sandbox="allow-scripts"`
-  // only — never allow-same-origin — so the artifact HTML cannot escape
-  // its document. The PNG capture for "Send to chat" runs through a
-  // separate hidden iframe in captureHtml.ts; this iframe stays locked.
+  // Owns the toolbar (viewport selector, refresh) and the sandbox iframe
+  // that loads `/design/{threadId}/main/?cb={n}` from the Go file server
+  // mounted on the same transport as the binding RPCs. The iframe is
+  // `sandbox="allow-scripts"` only — never allow-same-origin — so the
+  // agent-rendered HTML cannot reach into the host document. The Go
+  // server injects a tiny capture script into the served HTML that
+  // posts diagnostics back to the parent via window.postMessage; we
+  // forward those to the backend via IngestDiagnosticBatch.
+  //
+  // Cache busting: when the file watcher fires `design:reload-main`
+  // (re-dispatched as a throttled DOM event by `events.ts`), we bump
+  // the cacheBust counter on the iframe src to force a reload.
+  //
+  // Screenshot round-trip: when the agent calls the read_screenshot
+  // tool, the backend emits `design:capture-request`. We forward the
+  // request to the iframe via postMessage; the file-server-injected
+  // capture script renders the document and posts back over
+  // postMessage; we ship the PNG to IngestScreenshot. Failures route
+  // through FailScreenshot so the agent's blocking call doesn't hang.
+  //
+  // Sandbox + capture: with `sandbox="allow-scripts"` set without
+  // `allow-same-origin`, the iframe document loads with an opaque
+  // origin and the parent cannot reach `iframe.contentDocument`.
+  // The capture round-trip works around that by sending a
+  // postMessage `{aoDesign: 'capture', requestId}` to the iframe;
+  // the file-server-injected capture script renders the document via
+  // a lazy-loaded modern-screenshot module and posts back a
+  // `capture-result`. requestIframeCapture in utils/captureHtml.ts
+  // owns the messenger logic. Diagnostics flow over the same
+  // postMessage rail (works across opaque origins).
 
+  import { onMount } from 'svelte';
   import Smartphone from 'lucide-svelte/icons/smartphone';
   import TabletIcon from 'lucide-svelte/icons/tablet';
   import Monitor from 'lucide-svelte/icons/monitor';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
-  import MessageSquareText from 'lucide-svelte/icons/message-square-text';
   import MessagesSquare from 'lucide-svelte/icons/messages-square';
-  import ImageIcon from 'lucide-svelte/icons/image';
-  import FileText from 'lucide-svelte/icons/file-text';
-  import Layers from 'lucide-svelte/icons/layers';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { Thread } from '../../types/models';
-  import { errString } from '../../utils/errors';
-  import { relativeTime } from '../../utils/format';
   import {
-    CreateThread,
-    GetDesignArtifactHTML,
-    GetDesignArtifactPng,
-    SaveDraft,
-    StartSession,
-    UploadAttachment,
+    IngestDiagnosticBatch,
+    IngestScreenshot,
+    FailScreenshot,
+    ListDesignSnapshots,
+    CaptureSnapshot,
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
-  import { prependThread } from '../../stores/threads.svelte';
-  import { captureHtmlToPng, blobToBase64 } from '../../utils/captureHtml';
-  import { DESIGN_VIEWPORT_WIDTHS, type DesignViewport } from '../../types/design';
+  import {
+    DESIGN_VIEWPORT_WIDTHS,
+    type Diagnostic,
+    type DiagnosticSeverity,
+    type DesignSnapshot,
+    type DesignViewport,
+  } from '../../types/design';
+  import { requestIframeCapture } from '../../utils/captureHtml';
+  import {
+    DESIGN_RELOAD_MAIN_EVENT,
+    DESIGN_CAPTURE_REQUEST_EVENT,
+    DESIGN_SNAPSHOTS_UPDATE_EVENT,
+  } from '../../stores/events';
   import Icon from '../primitives/Icon.svelte';
-  import Menu from '../primitives/Menu.svelte';
-  import MenuItem from '../primitives/MenuItem.svelte';
-  import Popover from '../primitives/Popover.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
-  // -- Artifact resolution & HTML fetch ---------------------------------
+  let iframeEl: HTMLIFrameElement | undefined = $state(undefined);
+  let cacheBust = $state(0);
+  let snapshotInFlight = $state(false);
 
-  // Fetch generation guard — incremented on every fetch kickoff. An in-flight
-  // response is applied only if its generation matches the latest value.
-  let fetchGeneration = 0;
-  let fetchedHtml: string = $state('');
-  let fetchError: string | null = $state(null);
-  let fetching: boolean = $state(false);
-
-  // Resolve which artifact should be displayed.
-  //   - If there are pending options, prefer the first option's artifact
-  //     so the iframe previews what's being chosen.
-  //   - Otherwise respect an explicit activeArtifactId (the dropdown).
-  //   - Otherwise fall back to the latest artifact in history.
-  let resolvedArtifactId = $derived.by<string | null>(() => {
-    const pending = pane.pendingDesignOptions;
-    if (pending && pending.options.length > 0) {
-      return pending.options[0].artifactId;
-    }
-    if (pane.activeArtifactId) return pane.activeArtifactId;
-    const history = pane.designArtifacts;
-    if (history.length === 0) return null;
-    return history[history.length - 1].id;
-  });
-
-  let activeArtifact = $derived(
-    resolvedArtifactId
-      ? pane.designArtifacts.find((a) => a.id === resolvedArtifactId) ?? null
-      : null,
-  );
-
-  // Fire a fetch whenever the resolved artifact changes.
-  $effect(() => {
+  let iframeSrc = $derived.by<string | null>(() => {
     const threadId = pane.threadId;
-    const artifactId = resolvedArtifactId;
-    if (!threadId || !artifactId) {
-      fetchedHtml = '';
-      fetchError = null;
-      fetching = false;
-      return;
-    }
-    void fetchHtml(threadId, artifactId);
+    if (!threadId) return null;
+    return `/design/${encodeURIComponent(threadId)}/main/?cb=${cacheBust}`;
   });
-
-  async function fetchHtml(threadId: string, artifactId: string): Promise<void> {
-    const gen = ++fetchGeneration;
-    fetching = true;
-    fetchError = null;
-    try {
-      const html = (await GetDesignArtifactHTML(threadId, artifactId)) as unknown;
-      if (gen !== fetchGeneration) return;
-      fetchedHtml = typeof html === 'string' ? html : '';
-      fetching = false;
-    } catch (err) {
-      if (gen !== fetchGeneration) return;
-      fetching = false;
-      const message = err instanceof Error ? err.message : String(err);
-      fetchError = message;
-      addToast('error', `Failed to load design artifact: ${message}`);
-    }
-  }
-
-  function refresh(): void {
-    const threadId = pane.threadId;
-    const artifactId = resolvedArtifactId;
-    if (!threadId || !artifactId) return;
-    void fetchHtml(threadId, artifactId);
-  }
 
   // -- Viewport selector -----------------------------------------------
 
@@ -130,196 +93,199 @@
     pane.setDesignViewport(next);
   }
 
-  // -- Artifact dropdown -----------------------------------------------
+  function refresh(): void {
+    cacheBust += 1;
+  }
 
-  // History is stored newest-last, but the dropdown lists newest-first
-  // and labels each entry with its v{n} version (newest = highest n).
-  // Re-deriving from pane.designArtifacts keeps the labels in sync as
-  // new artifacts stream in from design:artifact events.
-  type ArtifactRow = {
-    id: string;
-    title: string;
-    createdAt: number;
-    version: number;
-  };
-  let artifactRows = $derived<ArtifactRow[]>(
-    pane.designArtifacts
-      .map((a, i) => ({
-        id: a.id,
-        title: a.title,
-        createdAt: a.createdAt,
-        version: i + 1,
-      }))
-      .reverse(),
-  );
+  // -- Snapshot dropdown -----------------------------------------------
 
-  let activeRow = $derived<ArtifactRow | null>(
-    resolvedArtifactId
-      ? artifactRows.find((r) => r.id === resolvedArtifactId) ?? null
-      : null,
-  );
-
-  let dropdownTriggerEl: HTMLElement | undefined = $state(undefined);
+  // We drive the same dropdown shell both on initial load and when the
+  // file watcher reports a snapshots/ change. Pane state owns the list
+  // so the snapshot panel and any future surface read the same data.
   let dropdownOpen = $state(false);
+  let dropdownTriggerEl: HTMLElement | undefined = $state(undefined);
 
-  function dropdownLabel(row: ArtifactRow | null): string {
-    if (!row) return 'No render yet';
-    return `v${row.version} · ${relativeTime(row.createdAt)} · ${row.title}`;
-  }
-
-  function selectArtifact(id: string) {
-    pane.setActiveArtifact(id);
-    dropdownOpen = false;
-  }
-
-  // -- Send to chat menu ------------------------------------------------
-
-  type HandoffShape = 'bundle' | 'html-summary' | 'png-only';
-
-  let sendMenuTriggerEl: HTMLElement | undefined = $state(undefined);
-  let sendMenuOpen = $state(false);
-  let exporting = $state(false);
-
-  async function handoff(shape: HandoffShape): Promise<void> {
-    sendMenuOpen = false;
-    if (exporting) return;
-    const sourceThread = pane.thread;
-    const artifact = activeArtifact;
-    if (!sourceThread || !artifact || !fetchedHtml) {
-      addToast('warning', 'Nothing to export yet');
-      return;
-    }
-    if (!sourceThread.projectId) {
-      addToast('error', 'Cannot export: source thread has no project');
-      return;
-    }
-
-    exporting = true;
+  async function refreshSnapshots(threadId: string): Promise<void> {
     try {
-      // 1. Resolve the PNG: prefer a pre-captured one (saved at render
-      //    time by the design:artifact handler) and fall back to a
-      //    fresh capture if the persisted file is missing or the shape
-      //    being exported needs a desktop-sized snapshot we don't have.
-      let pngBase64: string | null = null;
-      if (shape !== 'html-summary') {
-        try {
-          const persisted = (await GetDesignArtifactPng(
-            sourceThread.id,
-            artifact.id,
-          )) as string;
-          if (persisted) pngBase64 = persisted;
-        } catch (err) {
-          console.warn('GetDesignArtifactPng failed; will re-capture:', err);
-        }
-        if (pngBase64 === null) {
-          try {
-            const png = await captureHtmlToPng(fetchedHtml, {
-              width: DESIGN_VIEWPORT_WIDTHS[pane.designViewport] ?? 1280,
-            });
-            pngBase64 = await blobToBase64(png);
-          } catch (err) {
-            console.error('PNG capture during export failed:', err);
-            if (shape === 'png-only') {
-              addToast('error', 'Could not capture PNG');
-              return;
-            }
-            // Bundle shape can degrade to "HTML + summary" if capture fails.
-            addToast('warning', 'PNG capture failed; exporting HTML only');
-            shape = 'html-summary';
-          }
-        }
-      }
-
-      // 2. Create a sibling chat thread under the same project/provider.
-      const newThread = (await CreateThread({
-        projectId: sourceThread.projectId,
-        provider: sourceThread.provider,
-        model: sourceThread.model,
-        mode: 'default',
-      })) as Thread;
-
-      // 3. Upload the PNG (when we have one) as a draft attachment.
-      let attachmentId: string | null = null;
-      if (pngBase64 && shape !== 'html-summary') {
-        try {
-          const filename = `design-${artifact.id}.png`;
-          const attachment = (await UploadAttachment(
-            newThread.id,
-            filename,
-            'image/png',
-            pngBase64,
-          )) as { id?: string } | null;
-          attachmentId = attachment?.id ?? null;
-        } catch (err) {
-          console.error('Screenshot upload failed:', err);
-          if (shape === 'png-only') {
-            addToast('warning', 'Exported without screenshot — upload failed');
-          }
-        }
-      }
-
-      // 4. Compose the seed message body. Each shape has a different
-      //    text spine; the attachment carries the visual.
-      const prompt = composeHandoffPrompt(shape, artifact.title, fetchedHtml);
-      try {
-        await SaveDraft(
-          newThread.id,
-          prompt,
-          attachmentId ? [attachmentId] : [],
-          [],
-          null,
-        );
-      } catch (err) {
-        console.error('Draft seed failed:', err);
-      }
-
-      prependThread(newThread);
-      await pane.switchThread(newThread);
-
-      try {
-        await StartSession(newThread.id);
-      } catch (err) {
-        console.error('Failed to start session on exported thread:', err);
-      }
-
-      addToast('success', `Sent ${labelForShape(shape)} to a new thread`);
+      const list = (await ListDesignSnapshots(threadId)) as DesignSnapshot[] | null;
+      if (pane.threadId !== threadId) return;
+      pane.setDesignSnapshots(Array.isArray(list) ? list : []);
     } catch (err) {
-      console.error('Failed to export design:', err);
-      pane.setGeneralError(`Failed to export design: ${errString(err)}`);
+      console.warn('ListDesignSnapshots failed:', err);
+    }
+  }
+
+  $effect(() => {
+    const threadId = pane.threadId;
+    if (!threadId) return;
+    void refreshSnapshots(threadId);
+  });
+
+  async function captureNamedSnapshot(): Promise<void> {
+    const threadId = pane.threadId;
+    if (!threadId || snapshotInFlight) return;
+    const label = window.prompt('Snapshot label (optional):', '') ?? '';
+    snapshotInFlight = true;
+    try {
+      await CaptureSnapshot(threadId, label);
+      addToast('success', label ? `Snapshot "${label}" captured` : 'Snapshot captured');
+      await refreshSnapshots(threadId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      addToast('error', `Snapshot failed: ${message}`);
     } finally {
-      exporting = false;
+      snapshotInFlight = false;
     }
   }
 
-  function labelForShape(shape: HandoffShape): string {
-    switch (shape) {
-      case 'bundle':
-        return 'design bundle';
-      case 'html-summary':
-        return 'HTML + summary';
-      case 'png-only':
-        return 'PNG render';
+  // -- Diagnostic forwarding -------------------------------------------
+
+  // Buffer postMessage diagnostics for 200ms and flush as one batch.
+  // Burst-prone iframes (failed CDN loads, mermaid mid-render) emit
+  // many entries per frame; the backend's per-thread ring tolerates
+  // bursts but the wire round-trip cost is one method invocation per
+  // batch — pay it once.
+  const DIAG_DEBOUNCE_MS = 200;
+  let diagBuffer: Diagnostic[] = [];
+  let diagFlushHandle: ReturnType<typeof setTimeout> | null = null;
+
+  function flushDiagnostics(): void {
+    diagFlushHandle = null;
+    const threadId = pane.threadId;
+    const batch = diagBuffer;
+    diagBuffer = [];
+    if (!threadId || batch.length === 0) return;
+    // The wire shape is identical; the generated enum-typed class is a
+    // type-only convenience. Cast the plain literal so we don't have to
+    // construct the class for an outbound call.
+    void IngestDiagnosticBatch(
+      { threadId, diagnostics: batch } as Parameters<typeof IngestDiagnosticBatch>[0],
+    ).catch((err) => {
+      console.warn('IngestDiagnosticBatch failed:', err);
+    });
+  }
+
+  function isDiagnosticSeverity(value: unknown): value is DiagnosticSeverity {
+    return value === 'error' || value === 'warn' || value === 'info';
+  }
+
+  function normalizeDiagnostic(raw: unknown): Diagnostic | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const r = raw as Record<string, unknown>;
+    if (typeof r.message !== 'string') return null;
+    const severity = isDiagnosticSeverity(r.severity) ? r.severity : 'info';
+    const now = Date.now();
+    return {
+      // Backend assigns the canonical token; the iframe value (if any)
+      // is informational only. Send 0 and let the buffer stamp it.
+      token: typeof r.token === 'number' ? r.token : 0,
+      severity,
+      message: r.message,
+      source: typeof r.source === 'string' ? r.source : undefined,
+      line: typeof r.line === 'number' ? r.line : undefined,
+      column: typeof r.column === 'number' ? r.column : undefined,
+      stack: typeof r.stack === 'string' ? r.stack : undefined,
+      url: typeof r.url === 'string' ? r.url : undefined,
+      createdAt: typeof r.createdAt === 'number' ? r.createdAt : now,
+    };
+  }
+
+  function handlePostMessage(ev: MessageEvent): void {
+    // Only trust messages whose source is the iframe we mounted. The
+    // sandbox=allow-scripts iframe has an opaque origin so we can't
+    // match by origin, but the contentWindow identity is still a
+    // reliable comparator. Without this guard, any frame on the page
+    // (or any other postMessage source) could spoof a diagnostic
+    // batch and have it forwarded into the per-thread ring.
+    if (!iframeEl || ev.source !== iframeEl.contentWindow) return;
+    const data = ev.data;
+    if (!data || typeof data !== 'object') return;
+    if ((data as { aoDesign?: unknown }).aoDesign !== 'diagnostics') return;
+    const items = (data as { items?: unknown }).items;
+    if (!Array.isArray(items)) return;
+    for (const raw of items) {
+      const diag = normalizeDiagnostic(raw);
+      if (diag) diagBuffer.push(diag);
+    }
+    if (diagBuffer.length === 0) return;
+    if (diagFlushHandle === null) {
+      diagFlushHandle = setTimeout(flushDiagnostics, DIAG_DEBOUNCE_MS);
     }
   }
 
-  function composeHandoffPrompt(
-    shape: HandoffShape,
-    title: string,
-    html: string,
-  ): string {
-    const header = `Design reference: ${title}\n\nImplement this design.`;
-    if (shape === 'png-only') return header;
-    if (shape === 'html-summary' || shape === 'bundle') {
-      return `${header}\n\n<details>\n<summary>Source HTML</summary>\n\n\`\`\`html\n${html}\n\`\`\`\n\n</details>`;
-    }
-    return header;
+  // -- Reload-main throttled subscription ------------------------------
+
+  function handleReloadMain(ev: Event): void {
+    const detail = (ev as CustomEvent).detail as { threadId?: string } | null;
+    if (!detail?.threadId || detail.threadId !== pane.threadId) return;
+    cacheBust += 1;
   }
+
+  function handleSnapshotsUpdate(ev: Event): void {
+    const detail = (ev as CustomEvent).detail as { threadId?: string } | null;
+    if (!detail?.threadId || detail.threadId !== pane.threadId) return;
+    void refreshSnapshots(detail.threadId);
+  }
+
+  // -- Capture-request round-trip --------------------------------------
+
+  async function handleCaptureRequest(ev: Event): Promise<void> {
+    const detail = (ev as CustomEvent).detail as { threadId?: string; requestId?: string } | null;
+    if (!detail?.threadId || !detail.requestId) return;
+    if (detail.threadId !== pane.threadId) return;
+    const requestId = detail.requestId;
+    const iframe = iframeEl;
+    if (!iframe) {
+      void FailScreenshot(requestId, 'iframe not mounted').catch(() => undefined);
+      return;
+    }
+    try {
+      const pngBase64 = await requestIframeCapture(iframe, requestId);
+      await IngestScreenshot({ requestId, pngBase64 });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn('requestIframeCapture failed:', err);
+      try {
+        await FailScreenshot(requestId, reason);
+      } catch (failErr) {
+        console.warn('FailScreenshot failed:', failErr);
+      }
+    }
+  }
+
+  onMount(() => {
+    window.addEventListener('message', handlePostMessage);
+    window.addEventListener(DESIGN_RELOAD_MAIN_EVENT, handleReloadMain);
+    window.addEventListener(DESIGN_SNAPSHOTS_UPDATE_EVENT, handleSnapshotsUpdate);
+    window.addEventListener(DESIGN_CAPTURE_REQUEST_EVENT, handleCaptureRequest);
+    return () => {
+      window.removeEventListener('message', handlePostMessage);
+      window.removeEventListener(DESIGN_RELOAD_MAIN_EVENT, handleReloadMain);
+      window.removeEventListener(DESIGN_SNAPSHOTS_UPDATE_EVENT, handleSnapshotsUpdate);
+      window.removeEventListener(DESIGN_CAPTURE_REQUEST_EVENT, handleCaptureRequest);
+      if (diagFlushHandle !== null) {
+        clearTimeout(diagFlushHandle);
+        diagFlushHandle = null;
+      }
+      // Send any buffered diagnostics on teardown so events captured
+      // right before a thread switch don't get dropped.
+      flushDiagnostics();
+    };
+  });
+
+  let snapshotsLabel = $derived(
+    pane.designSnapshots.length === 0
+      ? 'No snapshots'
+      : `${pane.designSnapshots.length} snapshot${pane.designSnapshots.length === 1 ? '' : 's'}`,
+  );
 </script>
 
 <div class="flex flex-col h-full min-h-0 bg-transparent">
-  <!-- Toolbar — left cluster: viewport · refresh · annotate · dropdown.
-       Right cluster: send-to-chat menu. -->
-  <div class="flex items-center gap-2 border-b border-border-subtle px-3 py-2 shrink-0 min-w-0">
+  <!-- Toolbar — left cluster: viewport · refresh · snapshot capture.
+       Right cluster: snapshot list dropdown trigger (counts + open). -->
+  <div
+    class="flex items-center gap-2 border-b border-border-subtle px-3 py-2 shrink-0 min-w-0"
+  >
     <div class="flex items-center gap-0.5 shrink-0">
       {#each VIEWPORTS as vp (vp.value)}
         <button
@@ -347,7 +313,7 @@
     <button
       type="button"
       onclick={refresh}
-      disabled={!resolvedArtifactId || fetching}
+      disabled={!iframeSrc}
       aria-label="Refresh Preview"
       title="Refresh Preview"
       class={[
@@ -359,170 +325,63 @@
       ].join(' ')}
       data-testid="design-refresh"
     >
-      <Icon
-        icon={RefreshCw}
-        size={13}
-        strokeWidth={1.7}
-        class={fetching ? 'animate-spin' : ''}
-      />
+      <Icon icon={RefreshCw} size={13} strokeWidth={1.7} />
     </button>
 
-    <!-- Annotate / comment-mode toggle. The interaction model is
-         specified in docs/architecture/design-mode.md but the feature
-         is deferred — render the affordance disabled with a "coming
-         soon" tooltip so the layout matches the final shape. -->
     <button
       type="button"
-      disabled
-      aria-label="Annotate (coming soon)"
-      title="Annotate — coming soon"
+      onclick={() => void captureNamedSnapshot()}
+      disabled={!pane.threadId || snapshotInFlight}
+      title="Capture snapshot"
       class={[
-        'inline-flex items-center justify-center rounded-[var(--radius-field)]',
-        'p-1 text-fg-hint',
-        'cursor-not-allowed',
+        'inline-flex items-center gap-1 rounded-[var(--radius-field)]',
+        'border border-border-subtle bg-surface-0 px-2 py-1',
+        'text-[12px] text-fg cursor-pointer transition-colors',
+        'hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+        'disabled:opacity-60 disabled:cursor-not-allowed',
       ].join(' ')}
-      data-testid="design-annotate"
+      data-testid="design-capture-snapshot"
     >
-      <Icon icon={MessageSquareText} size={13} strokeWidth={1.6} />
+      <span>{snapshotInFlight ? 'Capturing…' : 'Snapshot'}</span>
     </button>
 
-    <!-- Artifact dropdown. Native <select> can't show the version + time
-         + title triplet cleanly, so this is a Popover-anchored Menu. -->
-    <span bind:this={dropdownTriggerEl} class="inline-block min-w-0 max-w-[280px]">
+    <span bind:this={dropdownTriggerEl} class="ml-auto inline-block">
       <button
         type="button"
         onclick={() => (dropdownOpen = !dropdownOpen)}
-        disabled={artifactRows.length === 0}
-        aria-haspopup="menu"
+        aria-haspopup="true"
         aria-expanded={dropdownOpen}
-        title={dropdownLabel(activeRow)}
+        title={snapshotsLabel}
         class={[
           'inline-flex items-center gap-1 rounded-[var(--radius-field)]',
           'border border-border-subtle bg-surface-0 px-2 py-1',
-          'text-[12px] text-fg max-w-full',
-          'cursor-pointer transition-colors',
+          'text-[12px] text-fg cursor-pointer transition-colors',
           'hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-          'disabled:opacity-60 disabled:cursor-not-allowed',
         ].join(' ')}
-        data-testid="design-artifact-dropdown"
+        data-testid="design-snapshots-trigger"
       >
-        <span class="truncate">{dropdownLabel(activeRow)}</span>
+        <span class="truncate">{snapshotsLabel}</span>
         <Icon icon={ChevronDown} size={12} strokeWidth={1.6} class="opacity-70 shrink-0" />
       </button>
     </span>
-    <Popover
-      anchor={dropdownTriggerEl}
-      open={dropdownOpen}
-      onClose={() => (dropdownOpen = false)}
-      placement="bottom-start"
-      role="menu"
-      ariaLabel="Design Artifact History"
-    >
-      {#snippet children()}
-        <Menu ariaLabel="Design Artifact History" onClose={() => (dropdownOpen = false)}>
-          {#snippet children()}
-            {#each artifactRows as row (row.id)}
-              <MenuItem
-                label={dropdownLabel(row)}
-                checked={resolvedArtifactId === row.id}
-                onSelect={() => selectArtifact(row.id)}
-              />
-            {/each}
-          {/snippet}
-        </Menu>
-      {/snippet}
-    </Popover>
-
-    <!-- Right cluster: send-to-chat menu. -->
-    <div class="ml-auto flex items-center gap-1 shrink-0">
-      <span bind:this={sendMenuTriggerEl}>
-        <button
-          type="button"
-          onclick={() => (sendMenuOpen = !sendMenuOpen)}
-          disabled={exporting || !activeArtifact || !fetchedHtml}
-          aria-haspopup="menu"
-          aria-expanded={sendMenuOpen}
-          title="Send to chat…"
-          class={[
-            'inline-flex items-center gap-1 rounded-[var(--radius-field)]',
-            'border border-border-subtle bg-surface-0 px-2 py-1',
-            'text-[12px] text-fg cursor-pointer transition-colors',
-            'hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-            'disabled:opacity-60 disabled:cursor-not-allowed',
-          ].join(' ')}
-          data-testid="design-send-to-chat"
-        >
-          <span>{exporting ? 'Exporting…' : 'Send to chat…'}</span>
-          <Icon icon={ChevronDown} size={12} strokeWidth={1.6} class="opacity-70" />
-        </button>
-      </span>
-      <Popover
-        anchor={sendMenuTriggerEl}
-        open={sendMenuOpen}
-        onClose={() => (sendMenuOpen = false)}
-        placement="bottom-end"
-        role="menu"
-        ariaLabel="Send to Chat"
-      >
-        {#snippet children()}
-          <Menu ariaLabel="Send to Chat" onClose={() => (sendMenuOpen = false)}>
-            {#snippet children()}
-              <MenuItem
-                label="Bundle (HTML + summary + PNG)"
-                description="Recommended — multimodal models read both"
-                onSelect={() => void handoff('bundle')}
-              >
-                {#snippet icon()}
-                  <Icon icon={Layers} size={13} strokeWidth={1.6} />
-                {/snippet}
-              </MenuItem>
-              <MenuItem
-                label="HTML + summary"
-                onSelect={() => void handoff('html-summary')}
-              >
-                {#snippet icon()}
-                  <Icon icon={FileText} size={13} strokeWidth={1.6} />
-                {/snippet}
-              </MenuItem>
-              <MenuItem
-                label="PNG render only"
-                onSelect={() => void handoff('png-only')}
-              >
-                {#snippet icon()}
-                  <Icon icon={ImageIcon} size={13} strokeWidth={1.6} />
-                {/snippet}
-              </MenuItem>
-            {/snippet}
-          </Menu>
-        {/snippet}
-      </Popover>
-    </div>
   </div>
 
   <div class="flex-1 min-h-0 overflow-auto bg-surface-0/60 flex items-start justify-center p-2">
-    {#if fetchError}
-      <div class="text-center text-error text-[13px] p-4">
-        <p class="font-medium">Failed to Load Design</p>
-        <p class="text-[11px] text-error/80 mt-1">{fetchError}</p>
-      </div>
-    {:else if !activeArtifact}
+    {#if !iframeSrc}
       <div class="flex flex-col items-center justify-center h-full text-center text-fg-muted">
         <Icon icon={MessagesSquare} size={36} strokeWidth={1.2} class="text-fg-hint mb-3" />
-        <p class="text-[13px]">No Design Preview Yet</p>
-        <p class="text-[11px] text-fg-hint mt-1">
-          Rendered artifacts will appear here when the agent produces a mockup.
-        </p>
+        <p class="text-[13px]">No Design Thread Loaded</p>
       </div>
-    {:else if fetching && !fetchedHtml}
-      <div class="text-[12px] text-fg-muted p-4">Loading preview…</div>
     {:else}
       <iframe
-        title={activeArtifact.title}
-        srcdoc={fetchedHtml}
+        bind:this={iframeEl}
+        title="Design Preview"
+        src={iframeSrc}
         sandbox="allow-scripts"
         referrerpolicy="no-referrer"
         class="h-full rounded-[var(--radius-field)] border border-border-subtle bg-white"
         style="width: {viewportWidthPx ? `${viewportWidthPx}px` : '100%'}; max-width: 100%;"
+        data-testid="design-preview-iframe"
       ></iframe>
     {/if}
   </div>

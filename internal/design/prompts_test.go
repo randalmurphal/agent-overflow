@@ -13,11 +13,14 @@ func TestLoadDesignSystemPromptReturnsDefault(t *testing.T) {
 	if got != defaultDesignSystemPrompt {
 		t.Fatalf("LoadDesignSystemPrompt() = %q, want default prompt", got)
 	}
-	if !strings.Contains(got, "render_design") {
-		t.Fatal("default prompt should mention render_design")
+	if !strings.Contains(got, "get_design_diagnostics") {
+		t.Fatal("default prompt should mention get_design_diagnostics")
 	}
-	if !strings.Contains(got, "present_options") {
-		t.Fatal("default prompt should mention present_options")
+	if !strings.Contains(got, "read_screenshot") {
+		t.Fatal("default prompt should mention read_screenshot")
+	}
+	if !strings.Contains(got, "Anti-slop") {
+		t.Fatal("default prompt should include the anti-slop section")
 	}
 }
 

@@ -128,11 +128,13 @@ export {
   PostChannelMessage,
 
   // Design operations
-  ChooseDesignOption,
-  ListDesignArtifacts,
-  GetDesignArtifactHTML,
-  GetDesignArtifactPng,
-  SaveDesignArtifactPng,
+  ListDesignSnapshots,
+  ListDesignOptions,
+  CaptureSnapshot,
+  BranchFromSnapshot,
+  IngestDiagnosticBatch,
+  IngestScreenshot,
+  FailScreenshot,
 
   // Composer enhancements
   UploadAttachment,

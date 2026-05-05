@@ -166,9 +166,10 @@ func newFullyWiredTestApp(t *testing.T) (*App, *shutdownRecorder) {
 	// The triage router does not expose in-flight work today; Shutdown
 	// still dispatches drainTriage under a timeout and records the step.
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
-	// A design reactor without artifact storage is fine for teardown —
-	// TeardownThread is a no-op when no pending choices exist.
-	app.reactor = design.NewReactor(nil, func(string, any) {})
+	// A design reactor with nil helpers is fine for teardown —
+	// TeardownThread is a no-op when no pending captures or
+	// diagnostic state exist.
+	app.reactor = design.NewReactor(nil, nil)
 	// gitwatch.Manager has no real watchers in this test (no Subscribe
 	// calls), but Close() still records the "close gitwatch" step, so
 	// we wire it for parity with production.

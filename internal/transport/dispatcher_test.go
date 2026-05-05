@@ -657,7 +657,12 @@ func (p *privilegedApp) SetWSLDistroPreference() string       { return "ok" }
 // 4. Attachment / payload writes.
 func (p *privilegedApp) UploadAttachment() string      { return "ok" }
 func (p *privilegedApp) DeleteAttachment() string      { return "ok" }
-func (p *privilegedApp) SaveDesignArtifactPng() string { return "ok" }
+func (p *privilegedApp) IngestDiagnosticBatch() string { return "ok" }
+func (p *privilegedApp) IngestScreenshot() string      { return "ok" }
+func (p *privilegedApp) FailScreenshot() string        { return "ok" }
+func (p *privilegedApp) CaptureSnapshot() string       { return "ok" }
+func (p *privilegedApp) BranchFromSnapshot() string    { return "ok" }
+func (p *privilegedApp) ListDesignSnapshots() string   { return "ok" }
 
 // 5. Local-FS bookkeeping.
 func (p *privilegedApp) AppendUIRenderTraceBatch() string { return "ok" }

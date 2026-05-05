@@ -13,7 +13,6 @@ import type {
   UserInputEvent,
 } from '../types/events';
 import type { Item, Thread } from '../types/models';
-import type { DesignArtifact, DesignChoiceResolved, DesignOptionsRequest } from '../types/design';
 import type {
   CheckpointCapturedEvent,
   CheckpointErrorEvent,
@@ -41,38 +40,131 @@ import {
   projectUserInputResolution,
 } from './threadStatuses.svelte';
 import { parseTokenUsage } from './thread.svelte';
-import { GetDesignArtifactHTML, SaveDesignArtifactPng } from './bindings';
-import { captureHtmlToPng, blobToBase64 } from '../utils/captureHtml';
-import { DESIGN_VIEWPORT_WIDTHS } from '../types/design';
 
-// Track in-flight PNG captures so a second design:artifact event for the
-// same artifact (replay, idempotent re-emission) doesn't kick off a
-// duplicate capture. Once the upload settles the entry is removed.
-const designPngCaptureInFlight: Set<string> = new Set();
+/**
+ * Min interval between consecutive `design:reload-main` cache-bust
+ * fires per thread. Watcher events on a hot save loop can land in
+ * tight bursts; throttling keeps the iframe from re-creating its
+ * document tree more than twice a second.
+ */
+const DESIGN_RELOAD_THROTTLE_MS = 500;
+const designReloadLastFireAt: Map<string, number> = new Map();
+const designReloadPending: Map<string, ReturnType<typeof setTimeout>> = new Map();
 
-async function persistDesignArtifactPng(artifact: DesignArtifact): Promise<void> {
-  if (!artifact || !artifact.threadId || !artifact.id) return;
-  const key = `${artifact.threadId}:${artifact.id}`;
-  if (designPngCaptureInFlight.has(key)) return;
-  designPngCaptureInFlight.add(key);
-  try {
-    const html = (await GetDesignArtifactHTML(
-      artifact.threadId,
-      artifact.id,
-    )) as string;
-    if (!html) return;
-    const png = await captureHtmlToPng(html, {
-      width: DESIGN_VIEWPORT_WIDTHS.desktop ?? 1280,
-    });
-    const base64 = await blobToBase64(png);
-    await SaveDesignArtifactPng(artifact.threadId, artifact.id, base64);
-  } catch (err) {
-    // Best-effort. Export still falls back to a fresh capture if the
-    // persisted file isn't there at handoff time.
-    console.warn('persist design artifact PNG failed:', err);
-  } finally {
-    designPngCaptureInFlight.delete(key);
+interface DesignReloadMainPayload {
+  threadId: string;
+}
+interface DesignOptionsUpdatePayload {
+  threadId: string;
+  setId: string;
+}
+interface DesignSnapshotsUpdatePayload {
+  threadId: string;
+}
+interface DesignCaptureRequestPayload {
+  threadId: string;
+  requestId: string;
+}
+
+/**
+ * Frontend event names for design-mode UI handlers. The preview panel
+ * subscribes to these (not Wails events) so the throttled handler
+ * below stays the single fan-out point: each Wails event makes at
+ * most one DOM event per thread per throttle window.
+ */
+export const DESIGN_RELOAD_MAIN_EVENT = 'ao-design:reload-main';
+export const DESIGN_OPTIONS_UPDATE_EVENT = 'ao-design:options-update';
+export const DESIGN_SNAPSHOTS_UPDATE_EVENT = 'ao-design:snapshots-update';
+export const DESIGN_CAPTURE_REQUEST_EVENT = 'ao-design:capture-request';
+
+function dispatchDomEvent(name: string, detail: unknown): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(name, { detail }));
+}
+
+function fireReloadMain(threadId: string): void {
+  designReloadLastFireAt.set(threadId, Date.now());
+  dispatchDomEvent(DESIGN_RELOAD_MAIN_EVENT, { threadId });
+}
+
+function handleDesignReloadMain(payload: DesignReloadMainPayload | undefined): void {
+  if (!payload?.threadId) return;
+  const threadId = payload.threadId;
+  const lastFire = designReloadLastFireAt.get(threadId) ?? 0;
+  const elapsed = Date.now() - lastFire;
+  if (elapsed >= DESIGN_RELOAD_THROTTLE_MS) {
+    const pending = designReloadPending.get(threadId);
+    if (pending !== undefined) {
+      clearTimeout(pending);
+      designReloadPending.delete(threadId);
+    }
+    fireReloadMain(threadId);
+    return;
   }
+  // A fire is already pending — coalesce with it.
+  if (designReloadPending.has(threadId)) return;
+  const delay = DESIGN_RELOAD_THROTTLE_MS - elapsed;
+  const handle = setTimeout(() => {
+    designReloadPending.delete(threadId);
+    fireReloadMain(threadId);
+  }, delay);
+  designReloadPending.set(threadId, handle);
+}
+
+// Same throttle pattern, applied to options-update and snapshots-update.
+// Snapshot creation runs a recursive copy that produces a burst of fs
+// events even with the watcher's tmp-suppression — without throttling
+// the snapshot panel re-fetches once per file. Options sets get the
+// same treatment for symmetry; options panel refetches happen via
+// `ListDesignSnapshots`-style RPCs that don't need to fire per file.
+const DESIGN_OTHER_THROTTLE_MS = 250;
+type DesignThrottleMaps = {
+  lastFire: Map<string, number>;
+  pending: Map<string, ReturnType<typeof setTimeout>>;
+};
+const designOptionsThrottle: DesignThrottleMaps = {
+  lastFire: new Map(),
+  pending: new Map(),
+};
+const designSnapshotsThrottle: DesignThrottleMaps = {
+  lastFire: new Map(),
+  pending: new Map(),
+};
+
+function fireThrottled(
+  state: DesignThrottleMaps,
+  threadId: string,
+  intervalMs: number,
+  fire: () => void,
+): void {
+  const lastFire = state.lastFire.get(threadId) ?? 0;
+  const elapsed = Date.now() - lastFire;
+  if (elapsed >= intervalMs) {
+    const pending = state.pending.get(threadId);
+    if (pending !== undefined) {
+      clearTimeout(pending);
+      state.pending.delete(threadId);
+    }
+    state.lastFire.set(threadId, Date.now());
+    fire();
+    return;
+  }
+  if (state.pending.has(threadId)) return;
+  const delay = intervalMs - elapsed;
+  const handle = setTimeout(() => {
+    state.pending.delete(threadId);
+    state.lastFire.set(threadId, Date.now());
+    fire();
+  }, delay);
+  state.pending.set(threadId, handle);
+}
+
+function clearDesignThrottle(state: DesignThrottleMaps): void {
+  for (const handle of state.pending.values()) {
+    clearTimeout(handle);
+  }
+  state.pending.clear();
+  state.lastFire.clear();
 }
 
 const itemUpsertSubscribers: Set<(item: Item) => void> = new Set();
@@ -939,55 +1031,61 @@ export function setupEventListeners(): () => void {
     },
   );
 
-  // design:artifact — a new rendered artifact. Append to the owning pane's
-  // history. The preview panel auto-tracks the latest unless the user has
-  // pinned a specific artifact via the dropdown.
-  //
-  // We also fire an async PNG capture against the artifact's HTML and save
-  // it next to the HTML on disk via SaveDesignArtifactPng. The capture has
-  // to run in the browser (modern-screenshot needs a DOM); the backend
-  // can't render HTML to PNG on its own. Persisting once at render time
-  // means future "Send to chat" handoffs (Bundle / PNG-only) don't have to
-  // re-run capture, and a future thumbnail strip can lazy-load the file
-  // instead of re-rendering each preview. Failures are best-effort:
-  // export still works (with a fresh capture as fallback) if persistence
-  // ever throws.
-  const cancelDesignArtifact = wailsEventOn<DesignArtifact>('design:artifact', (artifact) => {
-    if (!artifact || !artifact.threadId) return;
-    for (const pane of getAllPanes().values()) {
-      if (pane.threadId === artifact.threadId) {
-        pane.appendDesignArtifact(artifact);
-      }
-    }
-    void persistDesignArtifactPng(artifact);
-  });
+  // design:reload-main — file watcher fired in the thread's main/
+  // directory. The preview panel listens for the throttled DOM event we
+  // re-dispatch and bumps its cache-bust counter. Throttling lives here
+  // (not in the panel) so a rapid burst of saves only causes one
+  // iframe reload per 500ms across all consumers.
+  const cancelDesignReloadMain = wailsEventOn<DesignReloadMainPayload>(
+    'design:reload-main',
+    handleDesignReloadMain,
+  );
 
-  // design:options — agent blocked on present_options. Also append the option
-  // artifacts to history so the picker thumbnails resolve without a round-trip.
-  const cancelDesignOptions = wailsEventOn<DesignOptionsRequest>('design:options', (request) => {
-    if (!request || !request.threadId) return;
-    for (const pane of getAllPanes().values()) {
-      if (pane.threadId === request.threadId) {
-        pane.setDesignOptions(request);
-      }
-    }
-  });
+  // design:options-update — agent rewrote files in options/{setId}/ for
+  // the thread. Hydrates `pane.activeOptionSet` for the matching pane
+  // (so the N-up grid renders) and forwards a DOM event for any future
+  // component that needs the raw signal. Throttled per-thread so a
+  // burst of file writes doesn't fan out a list-options RPC for each.
+  const cancelDesignOptionsUpdate = wailsEventOn<DesignOptionsUpdatePayload>(
+    'design:options-update',
+    (payload) => {
+      if (!payload?.threadId) return;
+      const detail = payload;
+      fireThrottled(designOptionsThrottle, payload.threadId, DESIGN_OTHER_THROTTLE_MS, () => {
+        for (const pane of getAllPanes().values()) {
+          if (pane.threadId === detail.threadId) {
+            void pane.applyDesignOptionsUpdate(detail.threadId, detail.setId ?? '');
+          }
+        }
+        dispatchDomEvent(DESIGN_OPTIONS_UPDATE_EVENT, detail);
+      });
+    },
+  );
 
-  // design:chosen — user picked an option, backend resolved. Clear the
-  // pending-options state. The corresponding artifact stays in history.
-  const cancelDesignChosen = wailsEventOn<DesignChoiceResolved>('design:chosen', (resolved) => {
-    if (!resolved || !resolved.threadId) return;
-    for (const pane of getAllPanes().values()) {
-      if (pane.threadId !== resolved.threadId) continue;
-      const current = pane.pendingDesignOptions;
-      // Only clear if this resolution matches the currently-pending request.
-      // A stale `chosen` event for an older request shouldn't wipe a newer
-      // pending picker.
-      if (current && current.requestId === resolved.requestId) {
-        pane.clearDesignOptions();
-      }
-    }
-  });
+  // design:snapshots-update — file watcher saw a snapshots/ change.
+  // The snapshot list refetches on this event.
+  const cancelDesignSnapshotsUpdate = wailsEventOn<DesignSnapshotsUpdatePayload>(
+    'design:snapshots-update',
+    (payload) => {
+      if (!payload?.threadId) return;
+      const detail = payload;
+      fireThrottled(designSnapshotsThrottle, payload.threadId, DESIGN_OTHER_THROTTLE_MS, () => {
+        dispatchDomEvent(DESIGN_SNAPSHOTS_UPDATE_EVENT, detail);
+      });
+    },
+  );
+
+  // design:capture-request — agent invoked the read_screenshot tool and
+  // is waiting for the frontend to capture the live iframe. Forwarded as
+  // a DOM event so the preview panel can drive the capture against its
+  // own iframe ref.
+  const cancelDesignCaptureRequest = wailsEventOn<DesignCaptureRequestPayload>(
+    'design:capture-request',
+    (payload) => {
+      if (!payload?.threadId || !payload?.requestId) return;
+      dispatchDomEvent(DESIGN_CAPTURE_REQUEST_EVENT, payload);
+    },
+  );
 
   // thread:runtime_mode_changed — backend persisted a new three-tier
   // approval mode. Refresh the sidebar cache and active pane; AccessToggle
@@ -1058,11 +1156,21 @@ export function setupEventListeners(): () => void {
     cancelThreadUpdated();
     cancelDefaultSwapped();
     cancelTransportGap();
-    cancelDesignArtifact();
-    cancelDesignOptions();
-    cancelDesignChosen();
+    cancelDesignReloadMain();
+    cancelDesignOptionsUpdate();
+    cancelDesignSnapshotsUpdate();
+    cancelDesignCaptureRequest();
     cancelModeChanged();
     cancelRuntimeModeChanged();
+    // Drop any pending throttled reloads + per-thread last-fire
+    // bookkeeping so a re-attached listener starts from a clean state.
+    for (const handle of designReloadPending.values()) {
+      clearTimeout(handle);
+    }
+    designReloadPending.clear();
+    designReloadLastFireAt.clear();
+    clearDesignThrottle(designOptionsThrottle);
+    clearDesignThrottle(designSnapshotsThrottle);
   };
 }
 

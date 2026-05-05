@@ -43,7 +43,7 @@ describe('App integration — agent-mode toggle', () => {
   });
 
   it('shows the design lock pill on a design thread', async () => {
-    setBindingMock('ListDesignArtifacts', async () => []);
+    setBindingMock('ListDesignSnapshots', async () => []);
     const thread = makeThread({ title: 'Design Thread', mode: 'design' });
     const { getByTestId, queryByTestId } = await mountWithThread(thread);
     expect(getByTestId('composer-design-lock-pill')).toBeTruthy();
