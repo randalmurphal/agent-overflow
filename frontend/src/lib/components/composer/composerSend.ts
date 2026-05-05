@@ -29,7 +29,7 @@ import {
   projectSendResolved,
   projectSendStarted,
 } from '../../stores/threadStatuses.svelte';
-import type { SourceProposedPlan, Thread } from '../../types/models';
+import type { SourceDiffReview, SourceProposedPlan, Thread } from '../../types/models';
 import {
   clearRuntimeModeDraft,
   hasRuntimeModeDraft,
@@ -61,6 +61,8 @@ export interface SendOptions {
   sourceProposedPlan?: SourceProposedPlan;
   revisionSourceProposedPlan?: SourceProposedPlan;
   revisionSourceCommentIds?: string[];
+  revisionSourceDiffReview?: SourceDiffReview;
+  revisionSourceDiffCommentIds?: string[];
   /** Draft snapshot used to restore the composer on send failure. */
   snapshot: {
     content: string;
@@ -142,6 +144,8 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
       sourceProposedPlan: opts.sourceProposedPlan,
       revisionSourceProposedPlan: opts.revisionSourceProposedPlan,
       revisionSourceCommentIds: opts.revisionSourceCommentIds,
+      revisionSourceDiffReview: opts.revisionSourceDiffReview,
+      revisionSourceDiffCommentIds: opts.revisionSourceDiffCommentIds,
     });
     const updated = (await SendMessageWithOptions(opts.threadId, opts.message, sendOptions)) as Thread;
     opts.replaceCurrentThread(updated);
@@ -194,6 +198,8 @@ export interface SteerOptions {
   sourceProposedPlan?: SourceProposedPlan;
   revisionSourceProposedPlan?: SourceProposedPlan;
   revisionSourceCommentIds?: string[];
+  revisionSourceDiffReview?: SourceDiffReview;
+  revisionSourceDiffCommentIds?: string[];
   /**
    * Fallback when the backend reports the active turn ended before the
    * steer arrived (race window between the frontend reading
@@ -252,6 +258,8 @@ export async function dispatchSteer(opts: SteerOptions): Promise<void> {
     sourceProposedPlan: opts.sourceProposedPlan,
     revisionSourceProposedPlan: opts.revisionSourceProposedPlan,
     revisionSourceCommentIds: opts.revisionSourceCommentIds,
+    revisionSourceDiffReview: opts.revisionSourceDiffReview,
+    revisionSourceDiffCommentIds: opts.revisionSourceDiffCommentIds,
   });
   try {
     await SteerMessageWithOptions(opts.threadId, opts.message, sendOptions);

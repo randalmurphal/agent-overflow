@@ -31,12 +31,14 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "CleanCodexBackgroundTerminals", ID: 16360282}, // main.App.CleanCodexBackgroundTerminals
 	{Name: "ClearDraft", ID: 296814681}, // main.App.ClearDraft
 	{Name: "CloseTerminal", ID: 2702963191}, // main.App.CloseTerminal
+	{Name: "CreateDiffReviewComment", ID: 565306783}, // main.App.CreateDiffReviewComment
 	{Name: "CreateDiscussion", ID: 757689265}, // main.App.CreateDiscussion
 	{Name: "CreateProject", ID: 969543070}, // main.App.CreateProject
 	{Name: "CreateProposedPlanComment", ID: 4246792665}, // main.App.CreateProposedPlanComment
 	{Name: "CreateThread", ID: 2579322833}, // main.App.CreateThread
 	{Name: "CreateThreadFromPR", ID: 1716017387}, // main.App.CreateThreadFromPR
 	{Name: "DeleteAttachment", ID: 2428457759}, // main.App.DeleteAttachment
+	{Name: "DeleteDiffReviewComment", ID: 1303317790}, // main.App.DeleteDiffReviewComment
 	{Name: "DeleteDiscussion", ID: 302062730}, // main.App.DeleteDiscussion
 	{Name: "DeleteProject", ID: 3379369923}, // main.App.DeleteProject
 	{Name: "DeleteProposedPlanComment", ID: 554913120}, // main.App.DeleteProposedPlanComment
@@ -95,6 +97,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListAvailableEditors", ID: 2556802234}, // main.App.ListAvailableEditors
 	{Name: "ListChatBarFavorites", ID: 2114948965}, // main.App.ListChatBarFavorites
 	{Name: "ListDesignArtifacts", ID: 4255572490}, // main.App.ListDesignArtifacts
+	{Name: "ListDiffReviewComments", ID: 3057473088}, // main.App.ListDiffReviewComments
 	{Name: "ListDiscussions", ID: 942288562}, // main.App.ListDiscussions
 	{Name: "ListDiscussionsForThread", ID: 2502562885}, // main.App.ListDiscussionsForThread
 	{Name: "ListItems", ID: 2158085763}, // main.App.ListItems
@@ -135,6 +138,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SavePayloadToFile", ID: 3576148797}, // main.App.SavePayloadToFile
 	{Name: "SearchThreadMessages", ID: 3644945077}, // main.App.SearchThreadMessages
 	{Name: "SearchWorkspaceFiles", ID: 3852272821}, // main.App.SearchWorkspaceFiles
+	{Name: "SendDiffReviewComments", ID: 2317109106}, // main.App.SendDiffReviewComments
 	{Name: "SendMessage", ID: 1496882310}, // main.App.SendMessage
 	{Name: "SendMessageWithOptions", ID: 3632185196}, // main.App.SendMessageWithOptions
 	{Name: "SendPlanRevisionComments", ID: 1407159655}, // main.App.SendPlanRevisionComments
@@ -157,6 +161,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "UndoQueuedItems", ID: 3976043546}, // main.App.UndoQueuedItems
 	{Name: "UnpinThread", ID: 3175043037}, // main.App.UnpinThread
 	{Name: "UpdateContextSettingsProfile", ID: 1472386383}, // main.App.UpdateContextSettingsProfile
+	{Name: "UpdateDiffReviewComment", ID: 2452201652}, // main.App.UpdateDiffReviewComment
 	{Name: "UpdateDiscussion", ID: 1706395020}, // main.App.UpdateDiscussion
 	{Name: "UpdateKeybindings", ID: 3490094229}, // main.App.UpdateKeybindings
 	{Name: "UpdateProjectSortPositions", ID: 3717363955}, // main.App.UpdateProjectSortPositions

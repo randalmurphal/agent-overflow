@@ -43,11 +43,13 @@ func (a *App) SteerMessageWithOptions(threadID string, content string, opts Send
 		return store.Thread{}, ErrShuttingDown
 	}
 	if _, err := a.steerMessageWithOptions(threadID, content, sendMessageOptions{
-		AttachmentIDs:              opts.AttachmentIDs,
-		RuntimeMode:                opts.RuntimeMode,
-		SourceProposedPlan:         opts.SourceProposedPlan,
-		RevisionSourceProposedPlan: opts.RevisionSourceProposedPlan,
-		RevisionSourceCommentIDs:   opts.RevisionSourceCommentIDs,
+		AttachmentIDs:                opts.AttachmentIDs,
+		RuntimeMode:                  opts.RuntimeMode,
+		SourceProposedPlan:           opts.SourceProposedPlan,
+		RevisionSourceProposedPlan:   opts.RevisionSourceProposedPlan,
+		RevisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
+		RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
+		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 	}); err != nil {
 		return store.Thread{}, err
 	}
@@ -110,8 +112,30 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 		content = nextContent
 		opts.RevisionSourceCommentIDs = commentIDs
 	}
+	revisionSourceDiff, err := a.resolveSourceDiffReview(threadID, opts.RevisionSourceDiffReview)
+	if err != nil {
+		return store.Item{}, fmt.Errorf("steer message: revision source diff review: %w", err)
+	}
+	if revisionSourceDiff == nil && len(opts.RevisionSourceDiffCommentIDs) > 0 {
+		return store.Item{}, fmt.Errorf("steer message: diff review comments require a source diff review")
+	}
+	if revisionSourceDiff != nil && len(opts.RevisionSourceDiffCommentIDs) > 0 {
+		nextContent, commentIDs, err := a.appendDiffReviewCommentsToContent(threadID, content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, opts.RevisionSourceDiffCommentIDs)
+		if err != nil {
+			return store.Item{}, fmt.Errorf("steer message: diff review comments: %w", err)
+		}
+		content = nextContent
+		opts.RevisionSourceDiffCommentIDs = commentIDs
+	}
 
-	userMeta, err := marshalUserMessageMeta(persistedAttachments, sourcePlan, revisionSourcePlan, opts.RevisionSourceCommentIDs)
+	userMeta, err := marshalUserMessageMeta(
+		persistedAttachments,
+		sourcePlan,
+		revisionSourcePlan,
+		opts.RevisionSourceCommentIDs,
+		revisionSourceDiff,
+		opts.RevisionSourceDiffCommentIDs,
+	)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("steer message: user meta: %w", err)
 	}
@@ -214,6 +238,11 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 		return store.Item{}, steerErr
 	}
 
+	if revisionSourceDiff != nil && len(opts.RevisionSourceDiffCommentIDs) > 0 {
+		if err := a.store.MarkDiffReviewCommentsSent(threadID, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, opts.RevisionSourceDiffCommentIDs, time.Now().UnixMilli(), userItem.ID); err != nil {
+			log.Printf("steer message: mark diff review comments sent: %v", err)
+		}
+	}
 	return userItem, nil
 }
 
@@ -233,10 +262,11 @@ func (a *App) nextSteerUserItemID(threadID string, turnIndex int) (string, error
 // substring matching against the JSON-RPC error string, which is the
 // only signal that survives the wire encoding.
 //
-//nolint:unused // currently exercised only via the codex.ErrNoActiveTurn
 // path inside Steer; kept exported-internally for future Go-side
 // fallback callers and as documentation that the typed sentinel is the
 // idiomatic check rather than substring matching.
+//
+//nolint:unused // currently exercised only via the codex.ErrNoActiveTurn
 func errIsNoActiveTurn(err error) bool {
 	return errors.Is(err, codex.ErrNoActiveTurn)
 }

@@ -190,6 +190,11 @@ export {
   CreateProposedPlanComment,
   UpdateProposedPlanComment,
   DeleteProposedPlanComment,
+  ListDiffReviewComments,
+  CreateDiffReviewComment,
+  UpdateDiffReviewComment,
+  DeleteDiffReviewComment,
+  SendDiffReviewComments,
   ListLiveBackgroundTasks,
   GetThreadItem,
 
@@ -253,7 +258,7 @@ import {
   ContextSettingsUpdate as ContextSettingsUpdateClass,
   SendMessageOptions as SendMessageOptionsClass,
 } from '../../../bindings/agent-overflow/models.js';
-import type { SourceProposedPlan, Thread } from '../types/models';
+import type { SourceDiffReview, SourceProposedPlan, Thread } from '../types/models';
 
 export interface CreateThreadOptions {
   projectId: string;
@@ -298,6 +303,8 @@ export interface SendMessageOptions {
   sourceProposedPlan?: SourceProposedPlan;
   revisionSourceProposedPlan?: SourceProposedPlan;
   revisionSourceCommentIds?: string[];
+  revisionSourceDiffReview?: SourceDiffReview;
+  revisionSourceDiffCommentIds?: string[];
 }
 
 export function SendMessageWithOptions(

@@ -223,6 +223,47 @@ export interface SourceProposedPlan {
   title?: string;
 }
 
+export type DiffReviewScope = "session" | "workspace";
+
+export interface SourceDiffReview {
+  threadId?: string;
+  scope: DiffReviewScope;
+  sourceKey: string;
+}
+
+export interface DiffReviewComment {
+  id: string;
+  threadId: string;
+  scope: DiffReviewScope;
+  sourceKey: string;
+  filePath: string;
+  status: "draft" | "sent" | "resolved";
+  oldLine?: number;
+  newLine?: number;
+  side: "file" | "old" | "new" | "context";
+  selectedText: string;
+  body: string;
+  sentAt?: number;
+  sentTurnId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface DiffReviewCommentInput {
+  scope: DiffReviewScope;
+  sourceKey: string;
+  filePath: string;
+  oldLine?: number;
+  newLine?: number;
+  side: DiffReviewComment["side"];
+  selectedText: string;
+  body: string;
+}
+
+export interface DiffReviewCommentUpdate {
+  body: string;
+}
+
 export interface ProposedPlanComment {
   id: string;
   threadId: string;

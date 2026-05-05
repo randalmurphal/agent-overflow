@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildSplitRows, extractPatchFile, parsePatchFiles, patchFileRowId, stripPatchLinePrefix } from './patchFiles';
+import { buildPatchDisplayRows, buildSplitRows, extractPatchFile, parsePatchFiles, patchFileRowId, stripPatchLinePrefix } from './patchFiles';
 
 describe('parsePatchFiles', () => {
   it('builds aligned split rows for replacement hunks', () => {
@@ -30,6 +30,25 @@ describe('parsePatchFiles', () => {
 
     const addedOnly = buildSplitRows(file.lines).find((row) => row.right?.content === '+const added = true;');
     expect(addedOnly?.left).toBeNull();
+  });
+
+  it('classifies git extended headers as metadata', () => {
+    const [file] = parsePatchFiles(`diff --git a/old.txt b/new.txt
+similarity index 88%
+rename from old.txt
+rename to new.txt
+index 1111111..2222222 100644
+--- a/old.txt
++++ b/new.txt
+@@ -1 +1 @@
+-old
++new
+`);
+
+    expect(file.lines.filter((line) => line.type !== 'meta' && line.content !== '').map((line) => line.content)).toEqual([
+      '-old',
+      '+new',
+    ]);
   });
 
   it('extracts a single file patch without changing its content', () => {
@@ -72,6 +91,32 @@ diff --git a/notes.txt b/notes.txt
     expect(files.map((file, index) => patchFileRowId(file, index))).toEqual([
       '0:notes.txt',
       '1:notes.txt',
+    ]);
+  });
+
+  it('derives old and new line anchors from hunk headers', () => {
+    const [file] = parsePatchFiles(`diff --git a/app.ts b/app.ts
+--- a/app.ts
++++ b/app.ts
+@@ -8,3 +8,4 @@
+ keep
+-old
++new
++added
+`);
+
+    const rows = buildPatchDisplayRows(file.lines);
+
+    expect(rows.map((row) => ({
+      content: row.line.content,
+      oldLine: row.oldLine,
+      newLine: row.newLine,
+      side: row.side,
+    }))).toEqual([
+      { content: ' keep', oldLine: 8, newLine: 8, side: 'context' },
+      { content: '-old', oldLine: 9, newLine: 0, side: 'old' },
+      { content: '+new', oldLine: 0, newLine: 9, side: 'new' },
+      { content: '+added', oldLine: 0, newLine: 10, side: 'new' },
     ]);
   });
 });

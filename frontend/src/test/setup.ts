@@ -4,6 +4,7 @@ import { cleanup } from '@testing-library/svelte';
 import { resetWailsMocks } from './mocks/wailsio-runtime';
 import { resetBindingMocks } from './mocks/bindings-app';
 import { resetForTest as resetThreadStatusesForTest } from '../lib/stores/threadStatuses.svelte';
+import { resetDiffReviewCommentsForTest } from '../lib/stores/diffReviewComments.svelte';
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class StubResizeObserver {
@@ -162,6 +163,7 @@ if (typeof globalThis.window !== 'undefined') {
 }
 
 afterEach(() => {
+  resetDiffReviewCommentsForTest();
   cleanup();
   resetWailsMocks();
   resetBindingMocks();

@@ -1,4 +1,4 @@
-import type { SourceProposedPlan } from '../types/models';
+import type { SourceDiffReview, SourceProposedPlan } from '../types/models';
 
 /**
  * Wire shape of the third argument to `SendMessageWithOptions`. Every
@@ -13,6 +13,8 @@ export interface OutgoingSendOptions {
   sourceProposedPlan?: SourceProposedPlan;
   revisionSourceProposedPlan?: SourceProposedPlan;
   revisionSourceCommentIds?: string[];
+  revisionSourceDiffReview?: SourceDiffReview;
+  revisionSourceDiffCommentIds?: string[];
 }
 
 /**
@@ -27,6 +29,8 @@ export interface SendOptionsInput {
   sourceProposedPlan?: SourceProposedPlan | null;
   revisionSourceProposedPlan?: SourceProposedPlan;
   revisionSourceCommentIds?: readonly string[];
+  revisionSourceDiffReview?: SourceDiffReview;
+  revisionSourceDiffCommentIds?: readonly string[];
 }
 
 /**
@@ -49,6 +53,12 @@ export function buildSendOptions(input: SendOptionsInput): OutgoingSendOptions {
   }
   if (input.revisionSourceCommentIds && input.revisionSourceCommentIds.length > 0) {
     out.revisionSourceCommentIds = [...input.revisionSourceCommentIds];
+  }
+  if (input.revisionSourceDiffReview) {
+    out.revisionSourceDiffReview = input.revisionSourceDiffReview;
+  }
+  if (input.revisionSourceDiffCommentIds && input.revisionSourceDiffCommentIds.length > 0) {
+    out.revisionSourceDiffCommentIds = [...input.revisionSourceDiffCommentIds];
   }
   return out;
 }

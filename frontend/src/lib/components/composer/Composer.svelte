@@ -33,6 +33,11 @@
     refreshThreadProposedPlans,
     retainProposedPlanEventListener,
   } from '../../stores/proposedPlans.svelte';
+  import {
+    activeDiffReviewSourceForThread,
+    getActiveDraftDiffReviewComments,
+    refreshDiffReviewComments,
+  } from '../../stores/diffReviewComments.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { hasRetractableQueueItems, registerQueueItem } from '../../stores/sendQueue.svelte';
   import {
@@ -43,7 +48,7 @@
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
   import { sourceFromProposedPlanItem } from '../../utils/proposedPlan';
-  import type { ProposedPlanComment, SourceProposedPlan } from '../../types/models';
+  import type { DiffReviewComment, ProposedPlanComment, SourceDiffReview, SourceProposedPlan } from '../../types/models';
 
   interface Props {
     pane: ThreadPane;
@@ -142,8 +147,16 @@
       : [],
   );
   let hasDraftPlanComments = $derived(latestPlanSource !== null && latestPlanDraftComments.length > 0);
+  let activeDiffReviewSource: SourceDiffReview | null = $derived(activeDiffReviewSourceForThread(pane.threadId));
+  let activeDiffReviewDraftComments: DiffReviewComment[] = $derived(
+    activeDiffReviewSource
+      ? [...getActiveDraftDiffReviewComments(pane.threadId)]
+      : [],
+  );
+  let hasDraftDiffReviewComments = $derived(Boolean(activeDiffReviewSource) && activeDiffReviewDraftComments.length > 0);
   let hasPlanImplementAction = $derived(Boolean(latestPlanSource) && !hasDraftContent && !hasDraftPlanComments);
   let hasPlanCommentAction = $derived(Boolean(latestPlanSource) && hasDraftPlanComments);
+  let hasDiffReviewCommentAction = $derived(Boolean(activeDiffReviewSource) && hasDraftDiffReviewComments);
   // Drop `!isTurnActive` for hasDraftContent and plan-comment paths —
   // those are queueable mid-round. Implement-only (no draft, no
   // comments) still requires an idle turn because it kicks off the
@@ -157,16 +170,19 @@
       (
         hasDraftContent
         || hasPlanCommentAction
+        || hasDiffReviewCommentAction
         || (!isTurnActive && hasPlanImplementAction)
       ),
   );
   let sendLabel = $derived.by(() => {
+    if (hasDraftDiffReviewComments) return 'Send comments';
     if (!latestPlanSource || isTurnActive) return undefined;
     if (hasDraftPlanComments) return 'Send comments';
     if (!hasDraftContent) return 'Implement';
     return 'Refine';
   });
   let sendAction = $derived.by<'send' | 'implement' | 'refine' | 'send-comments'>(() => {
+    if (hasDraftDiffReviewComments) return 'send-comments';
     if (!latestPlanSource || isTurnActive) return 'send';
     if (hasDraftPlanComments) return 'send-comments';
     if (!hasDraftContent) return 'implement';
@@ -178,6 +194,7 @@
     if (isDisabled) return 'Select or create a thread to start';
     if (hasBlockingPrompt) return 'Respond to the approval request to continue';
     if (hasUserInputPrompt) return 'Type a custom answer, or choose an option above';
+    if (activeDiffReviewSource && hasDraftDiffReviewComments) return 'Add optional notes, or send the diff comments';
     if (latestPlanSource && hasDraftPlanComments) return 'Add optional notes, or send the plan comments';
     if (latestPlanSource) return 'Add feedback to refine the plan, or leave blank to implement it';
     return 'Send a message… (Shift+Enter for newline, @ to mention a file)';
@@ -216,15 +233,25 @@
     untrack(() => { void refreshPlanComments(source.threadId, source.itemId); });
   });
 
+  $effect(() => {
+    const source = activeDiffReviewSource;
+    if (!source?.threadId || !source.scope) return;
+    untrack(() => {
+      void refreshDiffReviewComments(source.threadId!, source.scope, source.sourceKey).catch((err) => {
+        console.warn('Failed to refresh diff review comments:', err);
+      });
+    });
+  });
+
   // Reset slash cache when the pane's thread changes. Pane-scoped state lives
   // inside the mentions module; this $effect is the single hook.
   $effect(() => {
     mentions.onThreadChanged(pane.thread?.id ?? null);
   });
 
-  async function send(includePlanComments = true) {
+  async function send(includeReviewComments = true) {
     if (!pane.threadId || !canSend) return;
-    if (latestPlanSource && !hasDraftContent && !hasDraftPlanComments) {
+    if (latestPlanSource && !hasDraftContent && !hasDraftPlanComments && !hasDraftDiffReviewComments) {
       sending = true;
       try {
         const implemented = await implementProposedPlan(pane, latestPlanSource);
@@ -240,8 +267,14 @@
     const sourceForSend = latestPlanSource;
     const hasDraftContentForSend = hasDraftContent;
     const composedMessage = draft.composeOutgoingMessage();
-    const commentsForSend = sourceForSend && includePlanComments
+    const commentsForSend = sourceForSend && includeReviewComments && !hasDraftDiffReviewComments
       ? latestPlanDraftComments
+      : [];
+    const diffReviewSourceForSend = includeReviewComments && activeDiffReviewDraftComments.length > 0
+      ? activeDiffReviewSource
+      : null;
+    const diffReviewCommentsForSend = diffReviewSourceForSend
+      ? activeDiffReviewDraftComments
       : [];
     const message = hasDraftContentForSend ? composedMessage : '';
     // Drafts seeded by "Implement plan in new thread" carry a persisted
@@ -266,6 +299,9 @@
       const revisionCommentIdsForMidTurn = commentsForSend.length > 0
         ? commentsForSend.map((comment) => comment.id)
         : undefined;
+      const revisionDiffCommentIdsForMidTurn = diffReviewCommentsForSend.length > 0
+        ? diffReviewCommentsForSend.map((comment) => comment.id)
+        : undefined;
       const midTurnThreadId = pane.threadId;
 
       try {
@@ -274,6 +310,8 @@
           sourceProposedPlan: draftSourcePlan ?? null,
           revisionSourceProposedPlan: revisionPlanForMidTurn ?? null,
           revisionSourceCommentIds: revisionCommentIdsForMidTurn,
+          revisionSourceDiffReview: diffReviewSourceForSend ?? null,
+          revisionSourceDiffCommentIds: revisionDiffCommentIdsForMidTurn,
         });
       } catch (err) {
         pane.setGeneralError(`Failed to queue message: ${String(err)}`);
@@ -314,6 +352,10 @@
           ? sourceForSend
           : undefined,
         revisionSourceCommentIds: commentsForSend.length > 0 ? commentsForSend.map((comment) => comment.id) : undefined,
+        revisionSourceDiffReview: diffReviewSourceForSend ?? undefined,
+        revisionSourceDiffCommentIds: diffReviewCommentsForSend.length > 0
+          ? diffReviewCommentsForSend.map((comment) => comment.id)
+          : undefined,
         snapshot,
         currentThread: thread,
         replaceCurrentThread: (updated) => {
@@ -331,6 +373,9 @@
           preparingWorktree = false;
         },
       });
+      if (diffReviewSourceForSend) {
+        await refreshDiffReviewComments(threadId, diffReviewSourceForSend.scope, diffReviewSourceForSend.sourceKey);
+      }
     } finally {
       preparingWorktree = false;
       sending = false;
@@ -649,10 +694,10 @@
         {sendAction}
         {sendLabel}
         hasCurrentPlan={Boolean(latestPlanItem)}
-        planCommentCount={latestPlanDraftComments.length}
+        planCommentCount={hasDraftDiffReviewComments ? activeDiffReviewDraftComments.length : latestPlanDraftComments.length}
         {hasQueuedItems}
         onSend={() => send()}
-        onSendWithoutPlanComments={hasDraftPlanComments && hasDraftContent ? () => send(false) : undefined}
+        onSendWithoutPlanComments={(hasDraftPlanComments || hasDraftDiffReviewComments) && hasDraftContent ? () => send(false) : undefined}
         onSendInNewThread={hasPlanImplementAction ? sendPlanToNewThread : undefined}
         onInterrupt={interrupt}
       />

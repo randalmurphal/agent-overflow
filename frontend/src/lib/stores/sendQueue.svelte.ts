@@ -1,7 +1,7 @@
 import { SvelteMap } from 'svelte/reactivity';
 import type { Attachment } from '../types/attachment';
 import type { TerminalChip } from '../types/draft';
-import type { SourceProposedPlan } from '../types/models';
+import type { SourceDiffReview, SourceProposedPlan } from '../types/models';
 import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
 import * as bindings from './bindings';
 
@@ -48,6 +48,8 @@ export interface QueueItem {
   sourceProposedPlan?: SourceProposedPlan | null;
   revisionSourceProposedPlan?: SourceProposedPlan | null;
   revisionSourceCommentIds?: readonly string[];
+  revisionSourceDiffReview?: SourceDiffReview | null;
+  revisionSourceDiffCommentIds?: readonly string[];
   enqueuedAt: number;
 }
 
@@ -131,6 +133,8 @@ export async function registerQueueItem(
     sourceProposedPlan?: SourceProposedPlan | null;
     revisionSourceProposedPlan?: SourceProposedPlan | null;
     revisionSourceCommentIds?: readonly string[];
+    revisionSourceDiffReview?: SourceDiffReview | null;
+    revisionSourceDiffCommentIds?: readonly string[];
   } = {},
 ): Promise<QueueItem> {
   if (!threadId) {
@@ -142,6 +146,10 @@ export async function registerQueueItem(
     revisionSourceProposedPlan: options.revisionSourceProposedPlan ?? undefined,
     revisionSourceCommentIds: options.revisionSourceCommentIds
       ? [...options.revisionSourceCommentIds]
+      : undefined,
+    revisionSourceDiffReview: options.revisionSourceDiffReview ?? undefined,
+    revisionSourceDiffCommentIds: options.revisionSourceDiffCommentIds
+      ? [...options.revisionSourceDiffCommentIds]
       : undefined,
   });
   return queueItemFromWire(wire);
@@ -291,6 +299,10 @@ function queueItemFromWire(item: WireQueuedItem): QueueItem {
     revisionSourceProposedPlan: item.revisionSourceProposedPlan ?? null,
     revisionSourceCommentIds: item.revisionSourceCommentIds
       ? [...item.revisionSourceCommentIds]
+      : undefined,
+    revisionSourceDiffReview: (item.revisionSourceDiffReview as SourceDiffReview | undefined) ?? null,
+    revisionSourceDiffCommentIds: item.revisionSourceDiffCommentIds
+      ? [...item.revisionSourceDiffCommentIds]
       : undefined,
     enqueuedAt: item.enqueuedAt,
   };

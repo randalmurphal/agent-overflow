@@ -519,10 +519,12 @@ func TestDispatchFlush_ResolveTurnIndex_PrefersActiveTurn(t *testing.T) {
 //nolint:unused // compile-only guard
 func guardCompileEnsureSendMessageOptionsCompatible(p flushQueuePayload) SendMessageOptions {
 	return SendMessageOptions{
-		AttachmentIDs:              p.AttachmentIDs,
-		SourceProposedPlan:         p.SourceProposedPlan,
-		RevisionSourceProposedPlan: p.RevisionSourceProposedPlan,
-		RevisionSourceCommentIDs:   p.RevisionSourceCommentIDs,
+		AttachmentIDs:                p.AttachmentIDs,
+		SourceProposedPlan:           p.SourceProposedPlan,
+		RevisionSourceProposedPlan:   p.RevisionSourceProposedPlan,
+		RevisionSourceCommentIDs:     p.RevisionSourceCommentIDs,
+		RevisionSourceDiffReview:     p.RevisionSourceDiffReview,
+		RevisionSourceDiffCommentIDs: p.RevisionSourceDiffCommentIDs,
 	}
 }
 

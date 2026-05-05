@@ -131,6 +131,11 @@ var LocalOnlyMethods = map[string]bool{
 	"ListThreadCheckpoints":          true,
 	"GetWorkingTreeDiff":             true,
 	"GetWorkspaceCurrentDiff":        true,
+	"ListDiffReviewComments":         true,
+	"CreateDiffReviewComment":        true,
+	"UpdateDiffReviewComment":        true,
+	"DeleteDiffReviewComment":        true,
+	"SendDiffReviewComments":         true,
 	// Codex model discovery spawns the configured `codex app-server`
 	// subprocess. It looks like a catalog read, but the local process
 	// execution makes it loopback-only.

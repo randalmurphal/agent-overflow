@@ -10,6 +10,19 @@ export interface SplitDiffRow {
   right: PatchLine | null;
 }
 
+export interface PatchDisplayRow {
+  id: string;
+  line: PatchLine;
+  oldLine: number;
+  newLine: number;
+  side: 'old' | 'new' | 'context';
+}
+
+export interface SplitDisplayRow {
+  left: PatchDisplayRow | null;
+  right: PatchDisplayRow | null;
+}
+
 export interface PatchFile {
   path: string;
   kind: string;
@@ -34,7 +47,10 @@ export function parsePatchFiles(patch: string): PatchFile[] {
     current = null;
   }
 
-  for (const line of patch.split('\n')) {
+  const lines = patch.split('\n');
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex] ?? '';
+    if (lineIndex === lines.length - 1 && line === '') continue;
     if (line.startsWith('diff --git ')) {
       finish();
       const parts = line.split(/\s+/);
@@ -64,7 +80,7 @@ export function parsePatchFiles(patch: string): PatchFile[] {
         ? 'add'
         : line.startsWith('-') && !line.startsWith('---')
           ? 'del'
-          : line.startsWith('@@') || line.startsWith('diff ') || line.startsWith('---') || line.startsWith('+++')
+          : isPatchMetaLine(line)
             ? 'meta'
             : 'context',
     });
@@ -143,8 +159,127 @@ export function buildSplitRows(lines: PatchLine[]): SplitDiffRow[] {
   return rows;
 }
 
+export function buildPatchDisplayRows(lines: PatchLine[]): PatchDisplayRow[] {
+  const rows: PatchDisplayRow[] = [];
+  let oldLine = 0;
+  let newLine = 0;
+  let fallbackIndex = 0;
+
+  for (const line of lines) {
+    if (line.type === 'meta') {
+      const hunk = parseHunkHeader(line.content);
+      if (hunk) {
+        oldLine = hunk.oldStart;
+        newLine = hunk.newStart;
+      }
+      continue;
+    }
+
+    let rowOldLine = 0;
+    let rowNewLine = 0;
+    let side: PatchDisplayRow['side'] = 'context';
+
+    if (line.type === 'del') {
+      rowOldLine = oldLine;
+      oldLine += 1;
+      side = 'old';
+    } else if (line.type === 'add') {
+      rowNewLine = newLine;
+      newLine += 1;
+      side = 'new';
+    } else {
+      rowOldLine = oldLine;
+      rowNewLine = newLine;
+      oldLine += 1;
+      newLine += 1;
+    }
+
+    rows.push({
+      id: `${rows.length}:${rowOldLine}:${rowNewLine}:${fallbackIndex}`,
+      line,
+      oldLine: rowOldLine,
+      newLine: rowNewLine,
+      side,
+    });
+    fallbackIndex += 1;
+  }
+
+  return rows;
+}
+
+export function buildSplitDisplayRows(rows: PatchDisplayRow[]): SplitDisplayRow[] {
+  const splitRows: SplitDisplayRow[] = [];
+  let index = 0;
+
+  while (index < rows.length) {
+    const row = rows[index];
+    if (!row) break;
+
+    if (row.line.type === 'del') {
+      const deletions: PatchDisplayRow[] = [];
+      while (rows[index]?.line.type === 'del') {
+        deletions.push(rows[index]);
+        index += 1;
+      }
+
+      const additions: PatchDisplayRow[] = [];
+      while (rows[index]?.line.type === 'add') {
+        additions.push(rows[index]);
+        index += 1;
+      }
+
+      const rowCount = Math.max(deletions.length, additions.length);
+      for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+        splitRows.push({
+          left: deletions[rowIndex] ?? null,
+          right: additions[rowIndex] ?? null,
+        });
+      }
+      continue;
+    }
+
+    if (row.line.type === 'add') {
+      splitRows.push({ left: null, right: row });
+      index += 1;
+      continue;
+    }
+
+    splitRows.push({ left: row, right: row });
+    index += 1;
+  }
+
+  return splitRows;
+}
+
 function cleanPath(raw: string): string {
   return raw.replace(/^"|"$/g, '').replace(/^[ab]\//, '');
+}
+
+function parseHunkHeader(line: string): { oldStart: number; newStart: number } | null {
+  const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+  if (!match) return null;
+  return {
+    oldStart: Number(match[1]),
+    newStart: Number(match[2]),
+  };
+}
+
+function isPatchMetaLine(line: string): boolean {
+  return line.startsWith('@@')
+    || line.startsWith('diff ')
+    || line.startsWith('---')
+    || line.startsWith('+++')
+    || line.startsWith('index ')
+    || line.startsWith('new file mode ')
+    || line.startsWith('deleted file mode ')
+    || line.startsWith('old mode ')
+    || line.startsWith('new mode ')
+    || line.startsWith('similarity index ')
+    || line.startsWith('dissimilarity index ')
+    || line.startsWith('rename from ')
+    || line.startsWith('rename to ')
+    || line.startsWith('copy from ')
+    || line.startsWith('copy to ');
 }
 
 /**

@@ -31,14 +31,16 @@ import (
 // gain. Plan refs are passed by value because they're tiny and
 // already used as plain JSON across the existing send path.
 type QueuedItem struct {
-	ID                         string              `json:"id"`
-	ThreadID                   string              `json:"threadId"`
-	Message                    string              `json:"message"`
-	AttachmentIDs              []string            `json:"attachmentIds,omitempty"`
-	SourceProposedPlan         *SourceProposedPlan `json:"sourceProposedPlan,omitempty"`
-	RevisionSourceProposedPlan *SourceProposedPlan `json:"revisionSourceProposedPlan,omitempty"`
-	RevisionSourceCommentIDs   []string            `json:"revisionSourceCommentIds,omitempty"`
-	EnqueuedAt                 int64               `json:"enqueuedAt"`
+	ID                           string              `json:"id"`
+	ThreadID                     string              `json:"threadId"`
+	Message                      string              `json:"message"`
+	AttachmentIDs                []string            `json:"attachmentIds,omitempty"`
+	SourceProposedPlan           *SourceProposedPlan `json:"sourceProposedPlan,omitempty"`
+	RevisionSourceProposedPlan   *SourceProposedPlan `json:"revisionSourceProposedPlan,omitempty"`
+	RevisionSourceCommentIDs     []string            `json:"revisionSourceCommentIds,omitempty"`
+	RevisionSourceDiffReview     *SourceDiffReview   `json:"revisionSourceDiffReview,omitempty"`
+	RevisionSourceDiffCommentIDs []string            `json:"revisionSourceDiffCommentIds,omitempty"`
+	EnqueuedAt                   int64               `json:"enqueuedAt"`
 }
 
 // QueueStateChangedEvent is the payload of `provider:queue_state_changed`,
@@ -87,10 +89,12 @@ type QueueFlushedItem struct {
 // round's runtime mode is already established and a mid-round flip
 // would defeat the whole point of in-flight queueing.
 type flushQueuePayload struct {
-	AttachmentIDs              []string            `json:"attachmentIds,omitempty"`
-	SourceProposedPlan         *SourceProposedPlan `json:"sourceProposedPlan,omitempty"`
-	RevisionSourceProposedPlan *SourceProposedPlan `json:"revisionSourceProposedPlan,omitempty"`
-	RevisionSourceCommentIDs   []string            `json:"revisionSourceCommentIds,omitempty"`
+	AttachmentIDs                []string            `json:"attachmentIds,omitempty"`
+	SourceProposedPlan           *SourceProposedPlan `json:"sourceProposedPlan,omitempty"`
+	RevisionSourceProposedPlan   *SourceProposedPlan `json:"revisionSourceProposedPlan,omitempty"`
+	RevisionSourceCommentIDs     []string            `json:"revisionSourceCommentIds,omitempty"`
+	RevisionSourceDiffReview     *SourceDiffReview   `json:"revisionSourceDiffReview,omitempty"`
+	RevisionSourceDiffCommentIDs []string            `json:"revisionSourceDiffCommentIds,omitempty"`
 }
 
 // dispatchFlush is the triage.FlushDispatcher implementation: when
@@ -231,6 +235,13 @@ func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushIt
 	if revisionSourcePlan == nil && len(payload.RevisionSourceCommentIDs) > 0 {
 		return fmt.Errorf("revision comments require a source proposed plan")
 	}
+	revisionSourceDiff, err := a.resolveSourceDiffReview(threadID, payload.RevisionSourceDiffReview)
+	if err != nil {
+		return fmt.Errorf("revision source diff review: %w", err)
+	}
+	if revisionSourceDiff == nil && len(payload.RevisionSourceDiffCommentIDs) > 0 {
+		return fmt.Errorf("diff review comments require a source diff review")
+	}
 
 	content := item.Message
 	revisionCommentIDs := payload.RevisionSourceCommentIDs
@@ -242,8 +253,24 @@ func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushIt
 		content = nextContent
 		revisionCommentIDs = commentIDs
 	}
+	revisionDiffCommentIDs := payload.RevisionSourceDiffCommentIDs
+	if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
+		nextContent, commentIDs, err := a.appendDiffReviewCommentsToContent(threadID, content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs)
+		if err != nil {
+			return fmt.Errorf("diff review comments: %w", err)
+		}
+		content = nextContent
+		revisionDiffCommentIDs = commentIDs
+	}
 
-	userMeta, err := marshalUserMessageMeta(persistedAttachments, sourcePlan, revisionSourcePlan, revisionCommentIDs)
+	userMeta, err := marshalUserMessageMeta(
+		persistedAttachments,
+		sourcePlan,
+		revisionSourcePlan,
+		revisionCommentIDs,
+		revisionSourceDiff,
+		revisionDiffCommentIDs,
+	)
 	if err != nil {
 		return fmt.Errorf("user meta: %w", err)
 	}
@@ -302,6 +329,11 @@ func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushIt
 		a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 		a.persistFlushDispatchError(threadID, turnIndex, dispatchErr)
 		return dispatchErr
+	}
+	if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
+		if err := a.store.MarkDiffReviewCommentsSent(threadID, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, time.Now().UnixMilli(), userItem.ID); err != nil {
+			log.Printf("flush queue: mark diff review comments sent: %v", err)
+		}
 	}
 
 	return nil
@@ -467,6 +499,9 @@ func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessag
 	if opts.RevisionSourceProposedPlan == nil && len(opts.RevisionSourceCommentIDs) > 0 {
 		return QueuedItem{}, fmt.Errorf("register queue item: revision comments require a source proposed plan")
 	}
+	if opts.RevisionSourceDiffReview == nil && len(opts.RevisionSourceDiffCommentIDs) > 0 {
+		return QueuedItem{}, fmt.Errorf("register queue item: diff review comments require a source diff review")
+	}
 	// Thread-existence check: a stale or attacker-supplied threadID
 	// would otherwise grow a permanent in-memory queue entry that
 	// CleanupThread never sweeps (no session ever attached). Same
@@ -488,10 +523,12 @@ func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessag
 
 	id := newQueueItemID()
 	payload := flushQueuePayload{
-		AttachmentIDs:              opts.AttachmentIDs,
-		SourceProposedPlan:         opts.SourceProposedPlan,
-		RevisionSourceProposedPlan: opts.RevisionSourceProposedPlan,
-		RevisionSourceCommentIDs:   opts.RevisionSourceCommentIDs,
+		AttachmentIDs:                opts.AttachmentIDs,
+		SourceProposedPlan:           opts.SourceProposedPlan,
+		RevisionSourceProposedPlan:   opts.RevisionSourceProposedPlan,
+		RevisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
+		RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
+		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -505,14 +542,16 @@ func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessag
 	})
 
 	wireItem := QueuedItem{
-		ID:                         id,
-		ThreadID:                   threadID,
-		Message:                    message,
-		AttachmentIDs:              opts.AttachmentIDs,
-		SourceProposedPlan:         opts.SourceProposedPlan,
-		RevisionSourceProposedPlan: opts.RevisionSourceProposedPlan,
-		RevisionSourceCommentIDs:   opts.RevisionSourceCommentIDs,
-		EnqueuedAt:                 enqueuedAt,
+		ID:                           id,
+		ThreadID:                     threadID,
+		Message:                      message,
+		AttachmentIDs:                opts.AttachmentIDs,
+		SourceProposedPlan:           opts.SourceProposedPlan,
+		RevisionSourceProposedPlan:   opts.RevisionSourceProposedPlan,
+		RevisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
+		RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
+		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
+		EnqueuedAt:                   enqueuedAt,
 	}
 	a.emitQueueStateChanged(threadID)
 	return wireItem, nil
@@ -626,6 +665,8 @@ func queuedItemFromTriage(threadID string, item triage.QueuedFlushItem) QueuedIt
 	out.SourceProposedPlan = payload.SourceProposedPlan
 	out.RevisionSourceProposedPlan = payload.RevisionSourceProposedPlan
 	out.RevisionSourceCommentIDs = payload.RevisionSourceCommentIDs
+	out.RevisionSourceDiffReview = payload.RevisionSourceDiffReview
+	out.RevisionSourceDiffCommentIDs = payload.RevisionSourceDiffCommentIDs
 	return out
 }
 

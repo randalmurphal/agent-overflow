@@ -114,7 +114,7 @@ func TestEnsureProposedPlanStateWithParentUsesExplicitRevisionSource(t *testing.
 	}
 }
 
-func TestReconcileProposedPlanImplementationsFromAcceptedTurns(t *testing.T) {
+func TestReconcileProposedPlanStateFromAcceptedTurns(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -141,7 +141,7 @@ func TestReconcileProposedPlanImplementationsFromAcceptedTurns(t *testing.T) {
 		t.Fatalf("insert user item: %v", err)
 	}
 
-	if err := s.ReconcileProposedPlanImplementationsFromAcceptedTurns(300); err != nil {
+	if err := s.ReconcileProposedPlanStateFromAcceptedTurns(300); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	state, found, err := s.GetProposedPlanState("t", "plan-1")

@@ -6,8 +6,19 @@
     GetSessionAgentDiff,
     GetWorkspaceCurrentDiff,
     ListThreadCheckpoints,
+    SendDiffReviewComments,
   } from '../../stores/bindings';
+  import {
+    createDiffReviewComment,
+    deleteDiffReviewComment,
+    getDiffReviewComments,
+    refreshDiffReviewComments,
+    setActiveDiffReviewSource,
+    updateDiffReviewComment,
+  } from '../../stores/diffReviewComments.svelte';
+  import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import type { Checkpoint } from '../../types/checkpoint';
+  import type { DiffReviewComment, DiffReviewCommentInput, DiffReviewScope } from '../../types/models';
   import { parsePatchFiles, patchFileRowId } from '../../utils/patchFiles';
   import DiffPanelHeaderBar from './diff-panel/DiffPanelHeaderBar.svelte';
   import DiffPanelChipStrip from './diff-panel/DiffPanelChipStrip.svelte';
@@ -22,8 +33,12 @@
   let diffText = $state('');
   let loading = $state(false);
   let expanded = $state<Set<string>>(new Set());
+  let editingCommentId = $state<string | null>(null);
+  let editingBody = $state('');
+  let sendingComments = $state(false);
   let checkpointRequestID = 0;
   let diffRequestID = 0;
+  let commentsRequestID = 0;
 
   const checkpoints = $derived(pane.diffPanel.checkpoints);
   const visibleCheckpoints = $derived(
@@ -51,6 +66,20 @@
   ));
   const wordWrap = $derived(getSettings().diffWordWrap);
   const showChipStrip = $derived(tabMode === 'messages');
+  const diffSourceKey = $derived(diffText ? diffSourceKeyFor(diffText) : '');
+  const reviewScope = $derived<DiffReviewScope | null>(
+    tabMode === 'workspace'
+      ? 'workspace'
+      : tabMode === 'messages' && selectedUserItemId === null
+        ? 'session'
+        : null,
+  );
+  const commentable = $derived(Boolean(threadId && reviewScope && diffSourceKey));
+  const isTurnActive = $derived(getActiveTurn(threadId) !== null);
+  const reviewComments = $derived(
+    threadId && reviewScope && diffSourceKey ? getDiffReviewComments(threadId, reviewScope, diffSourceKey) : [],
+  );
+  const draftReviewComments = $derived(reviewComments.filter((comment) => comment.status === 'draft'));
 
   async function refreshCheckpoints(): Promise<void> {
     const requestID = ++checkpointRequestID;
@@ -105,6 +134,17 @@
     }
   }
 
+  async function loadComments(): Promise<void> {
+    const requestID = ++commentsRequestID;
+    if (!threadId || !reviewScope || !diffSourceKey) return;
+    try {
+      await refreshDiffReviewComments(threadId, reviewScope, diffSourceKey);
+    } catch (err) {
+      if (requestID !== commentsRequestID) return;
+      pane.diffPanel.setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   function selectCheckpoint(userItemId: string | null): void {
     pane.diffPanel.selectCheckpointUserItem(userItemId);
   }
@@ -131,6 +171,67 @@
     expanded = open ? new Set(fileRows.map((row) => row.rowId)) : new Set();
   }
 
+  async function createComment(input: DiffReviewCommentInput): Promise<void> {
+    if (!threadId || !reviewScope || !diffSourceKey) return;
+    try {
+      await createDiffReviewComment(threadId, { ...input, scope: reviewScope, sourceKey: diffSourceKey });
+      setActiveDiffReviewSource(threadId, reviewScope, diffSourceKey);
+    } catch (err) {
+      pane.diffPanel.setError(err instanceof Error ? err.message : String(err));
+      throw err;
+    }
+  }
+
+  function startEditComment(comment: DiffReviewComment): void {
+    editingCommentId = comment.id;
+    editingBody = comment.body;
+  }
+
+  async function saveCommentEdit(comment: DiffReviewComment): Promise<void> {
+    if (!threadId || !reviewScope || !diffSourceKey) return;
+    const body = editingBody.trim();
+    if (!body) return;
+    try {
+      await updateDiffReviewComment(threadId, reviewScope, diffSourceKey, comment.id, { body });
+      editingCommentId = null;
+      editingBody = '';
+    } catch (err) {
+      pane.diffPanel.setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function deleteComment(comment: DiffReviewComment): Promise<void> {
+    if (!threadId || !reviewScope || !diffSourceKey) return;
+    try {
+      await deleteDiffReviewComment(threadId, reviewScope, diffSourceKey, comment.id);
+      if (editingCommentId === comment.id) {
+        editingCommentId = null;
+        editingBody = '';
+      }
+    } catch (err) {
+      pane.diffPanel.setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function sendCommentsOnly(): Promise<void> {
+    if (!threadId || !reviewScope || !diffSourceKey || draftReviewComments.length === 0 || sendingComments || isTurnActive) return;
+    sendingComments = true;
+    try {
+      await SendDiffReviewComments(threadId, reviewScope, diffSourceKey, draftReviewComments.map((comment) => comment.id));
+      await refreshDiffReviewComments(threadId, reviewScope, diffSourceKey);
+    } catch (err) {
+      pane.diffPanel.setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      sendingComments = false;
+    }
+  }
+
+  function commentLocation(comment: DiffReviewComment): string {
+    if (comment.side === 'file') return comment.filePath;
+    const line = comment.side === 'old' ? comment.oldLine : (comment.newLine || comment.oldLine);
+    return line ? `${comment.filePath}:${line}` : comment.filePath;
+  }
+
   $effect(() => {
     threadId;
     void refreshCheckpoints();
@@ -142,6 +243,26 @@
     tabMode;
     void loadDiff();
   });
+
+  $effect(() => {
+    const tid = threadId;
+    const scope = reviewScope;
+    const sourceKey = diffSourceKey;
+    if (tid && scope && sourceKey) {
+      void loadComments();
+    } else if (tid) {
+      setActiveDiffReviewSource(tid, null);
+    }
+  });
+
+  function diffSourceKeyFor(text: string): string {
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return `fnv1a:${hash.toString(16).padStart(8, '0')}:${text.length}`;
+  }
 </script>
 
 <section
@@ -177,13 +298,6 @@
     <div class="flex items-center gap-2 border-b border-border-subtle px-3 py-2">
       <button class="rounded border border-border-subtle px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2" onclick={() => setAllFiles(true)}>Expand all</button>
       <button class="rounded border border-border-subtle px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2" onclick={() => setAllFiles(false)}>Collapse all</button>
-      <span class="ml-auto text-[11px] text-fg-muted">
-        {#if tabMode === 'messages'}
-          {selectedCheckpoint ? `Message ${selectedCheckpoint.turnIndex + 1}` : 'All message checkpoints'}
-        {:else}
-          Uncommitted vs HEAD
-        {/if}
-      </span>
     </div>
 
     <div class="min-h-0 flex-1 overflow-auto px-3 py-3">
@@ -202,11 +316,64 @@
               workspacePath={paneWorkspacePath(pane)}
               {viewMode}
               {wordWrap}
+              {commentable}
+              {reviewScope}
+              sourceKey={diffSourceKey}
+              comments={reviewComments}
               onToggle={() => toggleFile(rowId)}
+              onCreateComment={createComment}
             />
           {/each}
         </div>
       {/if}
     </div>
+
+    {#if commentable && reviewComments.length > 0}
+      <section class="border-t border-border bg-surface-1/85 px-3 py-2" aria-label="Diff comments">
+        <div class="mb-2 flex items-center justify-between gap-3">
+          <div class="text-[11px] font-medium uppercase tracking-[0.08em] text-fg-muted">
+            Comments
+          </div>
+          {#if draftReviewComments.length > 0}
+            <button
+              type="button"
+              class="rounded border border-accent/45 px-2 py-1 text-[11px] font-medium text-accent hover:bg-accent/10 disabled:opacity-45"
+              disabled={sendingComments || isTurnActive}
+              title={isTurnActive ? 'Send from the chat box while the agent is working' : 'Send comments'}
+              onclick={sendCommentsOnly}
+            >
+              Send comments
+            </button>
+          {/if}
+        </div>
+        <div class="max-h-44 space-y-2 overflow-auto pr-1">
+          {#each reviewComments as comment (comment.id)}
+            <article class="rounded border border-border-subtle bg-surface-0/70 px-2 py-2">
+              <div class="mb-1 flex items-center gap-2">
+                <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-fg-muted">{commentLocation(comment)}</span>
+                <span class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-fg-subtle">{comment.status}</span>
+              </div>
+              {#if editingCommentId === comment.id}
+                <textarea
+                  bind:value={editingBody}
+                  rows="2"
+                  class="w-full resize-none rounded border border-border-subtle bg-surface-1 px-2 py-1.5 text-[12px] text-fg focus:border-accent/60 focus:outline-none"
+                ></textarea>
+                <div class="mt-2 flex justify-end gap-2">
+                  <button type="button" class="rounded px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2" onclick={() => { editingCommentId = null; editingBody = ''; }}>Cancel</button>
+                  <button type="button" class="rounded bg-accent px-2 py-1 text-[11px] font-medium text-accent-contrast disabled:opacity-45" disabled={!editingBody.trim()} onclick={() => saveCommentEdit(comment)}>Save</button>
+                </div>
+              {:else}
+                <p class="whitespace-pre-wrap text-[12px] leading-relaxed text-fg">{comment.body}</p>
+                <div class="mt-2 flex justify-end gap-2">
+                  <button type="button" class="rounded px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2" onclick={() => startEditComment(comment)}>Edit</button>
+                  <button type="button" class="rounded px-2 py-1 text-[11px] text-error hover:bg-error/10" onclick={() => deleteComment(comment)}>{comment.status === 'draft' ? 'Delete' : 'Resolve'}</button>
+                </div>
+              {/if}
+            </article>
+          {/each}
+        </div>
+      </section>
+    {/if}
   </div>
 </section>

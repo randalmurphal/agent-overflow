@@ -189,6 +189,161 @@ export class DesignArtifact {
     }
 }
 
+export class DiffReviewComment {
+    "id": string;
+    "threadId": string;
+    "scope": string;
+    "sourceKey": string;
+    "filePath": string;
+    "status": string;
+    "oldLine"?: number;
+    "newLine"?: number;
+    "side": string;
+    "selectedText": string;
+    "body": string;
+    "sentAt"?: number;
+    "sentTurnId"?: string;
+    "createdAt": number;
+    "updatedAt": number;
+
+    /** Creates a new DiffReviewComment instance. */
+    constructor($$source: Partial<DiffReviewComment> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("scope" in $$source)) {
+            this["scope"] = "";
+        }
+        if (!("sourceKey" in $$source)) {
+            this["sourceKey"] = "";
+        }
+        if (!("filePath" in $$source)) {
+            this["filePath"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("side" in $$source)) {
+            this["side"] = "";
+        }
+        if (!("selectedText" in $$source)) {
+            this["selectedText"] = "";
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = 0;
+        }
+        if (!("updatedAt" in $$source)) {
+            this["updatedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DiffReviewComment instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DiffReviewComment {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DiffReviewComment($$parsedSource as Partial<DiffReviewComment>);
+    }
+}
+
+export class DiffReviewCommentInput {
+    "scope": string;
+    "sourceKey": string;
+    "filePath": string;
+    "oldLine"?: number;
+    "newLine"?: number;
+    "side": string;
+    "selectedText": string;
+    "body": string;
+
+    /** Creates a new DiffReviewCommentInput instance. */
+    constructor($$source: Partial<DiffReviewCommentInput> = {}) {
+        if (!("scope" in $$source)) {
+            this["scope"] = "";
+        }
+        if (!("sourceKey" in $$source)) {
+            this["sourceKey"] = "";
+        }
+        if (!("filePath" in $$source)) {
+            this["filePath"] = "";
+        }
+        if (!("side" in $$source)) {
+            this["side"] = "";
+        }
+        if (!("selectedText" in $$source)) {
+            this["selectedText"] = "";
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DiffReviewCommentInput instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DiffReviewCommentInput {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DiffReviewCommentInput($$parsedSource as Partial<DiffReviewCommentInput>);
+    }
+}
+
+export class DiffReviewCommentUpdate {
+    "body": string;
+
+    /** Creates a new DiffReviewCommentUpdate instance. */
+    constructor($$source: Partial<DiffReviewCommentUpdate> = {}) {
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DiffReviewCommentUpdate instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DiffReviewCommentUpdate {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DiffReviewCommentUpdate($$parsedSource as Partial<DiffReviewCommentUpdate>);
+    }
+}
+
+export class DiffReviewSourceRef {
+    "threadId"?: string;
+    "scope": string;
+    "sourceKey": string;
+
+    /** Creates a new DiffReviewSourceRef instance. */
+    constructor($$source: Partial<DiffReviewSourceRef> = {}) {
+        if (!("scope" in $$source)) {
+            this["scope"] = "";
+        }
+        if (!("sourceKey" in $$source)) {
+            this["sourceKey"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DiffReviewSourceRef instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DiffReviewSourceRef {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DiffReviewSourceRef($$parsedSource as Partial<DiffReviewSourceRef>);
+    }
+}
+
 /**
  * DiscussionDefinition is the persisted discussion registry record.
  */

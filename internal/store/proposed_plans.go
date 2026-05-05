@@ -39,9 +39,11 @@ type ProposedPlanSourceRef struct {
 }
 
 type proposedPlanUserMessageMeta struct {
-	SourceProposedPlan         *ProposedPlanSourceRef `json:"sourceProposedPlan,omitempty"`
-	RevisionSourceProposedPlan *ProposedPlanSourceRef `json:"revisionSourceProposedPlan,omitempty"`
-	RevisionSourceCommentIDs   []string               `json:"revisionSourceCommentIds,omitempty"`
+	SourceProposedPlan           *ProposedPlanSourceRef `json:"sourceProposedPlan,omitempty"`
+	RevisionSourceProposedPlan   *ProposedPlanSourceRef `json:"revisionSourceProposedPlan,omitempty"`
+	RevisionSourceCommentIDs     []string               `json:"revisionSourceCommentIds,omitempty"`
+	RevisionSourceDiffReview     *DiffReviewSourceRef   `json:"revisionSourceDiffReview,omitempty"`
+	RevisionSourceDiffCommentIDs []string               `json:"revisionSourceDiffCommentIds,omitempty"`
 }
 
 type proposedPlanCommentCounts struct {
@@ -291,6 +293,7 @@ func (s *Store) ReconcileProposedPlanStateFromAcceptedTurns(now int64) error {
 		    AND (
 		      items.meta LIKE '%"sourceProposedPlan"%'
 		      OR items.meta LIKE '%"revisionSourceCommentIds"%'
+		      OR items.meta LIKE '%"revisionSourceDiffCommentIds"%'
 		    )
 		    AND NOT EXISTS (
 		      SELECT 1
@@ -372,15 +375,15 @@ func (s *Store) ReconcileProposedPlanStateFromAcceptedTurns(now int64) error {
 				return err
 			}
 		}
+		if sourceRef := accepted.meta.RevisionSourceDiffReview; sourceRef != nil && len(accepted.meta.RevisionSourceDiffCommentIDs) > 0 {
+			source := normalizeDiffReviewSourceRef(*sourceRef, accepted.threadID)
+			ids := limitStringIDs(uniqueNonEmptyStrings(accepted.meta.RevisionSourceDiffCommentIDs), MaxDiffReviewCommentIDs)
+			if err := s.markAcceptedDiffReviewCommentsSent(accepted.threadID, source, ids, acceptedAt, turnID); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
-}
-
-// ReconcileProposedPlanImplementationsFromAcceptedTurns is kept as a narrow
-// compatibility wrapper for older call sites. New code should call
-// ReconcileProposedPlanStateFromAcceptedTurns so revision comments recover too.
-func (s *Store) ReconcileProposedPlanImplementationsFromAcceptedTurns(now int64) error {
-	return s.ReconcileProposedPlanStateFromAcceptedTurns(now)
 }
 
 func normalizeProposedPlanSourceRef(source ProposedPlanSourceRef, fallbackThreadID string) ProposedPlanSourceRef {
@@ -389,6 +392,16 @@ func normalizeProposedPlanSourceRef(source ProposedPlanSourceRef, fallbackThread
 		source.ThreadID = fallbackThreadID
 	}
 	source.ItemID = strings.TrimSpace(source.ItemID)
+	return source
+}
+
+func normalizeDiffReviewSourceRef(source DiffReviewSourceRef, fallbackThreadID string) DiffReviewSourceRef {
+	source.ThreadID = strings.TrimSpace(source.ThreadID)
+	if source.ThreadID == "" {
+		source.ThreadID = fallbackThreadID
+	}
+	source.Scope = strings.TrimSpace(source.Scope)
+	source.SourceKey = strings.TrimSpace(source.SourceKey)
 	return source
 }
 
@@ -422,6 +435,19 @@ func (s *Store) markAcceptedProposedPlanCommentsSent(threadID string, source Pro
 		return nil
 	}
 	return s.MarkProposedPlanCommentsSent(threadID, source.ItemID, commentIDs, sentAt, sentTurnID)
+}
+
+func (s *Store) markAcceptedDiffReviewCommentsSent(threadID string, source DiffReviewSourceRef, commentIDs []string, sentAt int64, sentTurnID string) error {
+	if source.ThreadID != threadID || source.Scope == "" || source.SourceKey == "" || len(commentIDs) == 0 {
+		return nil
+	}
+	if _, err := NormalizeDiffReviewScope(source.Scope); err != nil {
+		return nil
+	}
+	if _, err := NormalizeDiffReviewSourceKey(source.SourceKey); err != nil {
+		return nil
+	}
+	return s.MarkDiffReviewCommentsSent(threadID, source.Scope, source.SourceKey, commentIDs, sentAt, sentTurnID)
 }
 
 func (s *Store) RevisionSourceProposedPlanForTurn(threadID string, turnIndex int) (ProposedPlanSourceRef, bool, error) {

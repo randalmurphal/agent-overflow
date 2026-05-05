@@ -1157,6 +1157,36 @@ CREATE INDEX idx_thread_tracked_files_thread_turn
     ON thread_tracked_files(thread_id, turn_index);
 `,
 	},
+	{
+		Version: 41,
+		Name:    "diff_review_comments",
+		SQL: `
+CREATE TABLE IF NOT EXISTS diff_review_comments (
+	id            TEXT    PRIMARY KEY,
+	thread_id     TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+	scope         TEXT    NOT NULL CHECK(scope IN ('session', 'workspace')),
+	source_key    TEXT    NOT NULL,
+	file_path     TEXT    NOT NULL,
+	status        TEXT    NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'sent', 'resolved')),
+	old_line      INTEGER NOT NULL DEFAULT 0 CHECK(old_line >= 0),
+	new_line      INTEGER NOT NULL DEFAULT 0 CHECK(new_line >= 0),
+	side          TEXT    NOT NULL CHECK(side IN ('file', 'old', 'new', 'context')),
+	selected_text TEXT    NOT NULL DEFAULT '',
+	body          TEXT    NOT NULL,
+	sent_at       INTEGER NOT NULL DEFAULT 0,
+	sent_turn_id  TEXT    NOT NULL DEFAULT '',
+	created_at    INTEGER NOT NULL,
+	updated_at    INTEGER NOT NULL,
+	CHECK((side = 'file' AND old_line = 0 AND new_line = 0)
+	   OR (side = 'old' AND old_line > 0)
+	   OR (side = 'new' AND new_line > 0)
+	   OR (side = 'context' AND old_line > 0 AND new_line > 0))
+);
+
+CREATE INDEX IF NOT EXISTS idx_diff_review_comments_scope
+	ON diff_review_comments(thread_id, scope, source_key, status, file_path, old_line, new_line, created_at);
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

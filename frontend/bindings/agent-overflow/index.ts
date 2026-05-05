@@ -26,6 +26,7 @@ export {
     QueuedItem,
     RemoteEndpointSummary,
     SendMessageOptions,
+    SourceDiffReview,
     SourceProposedPlan,
     TerminalChip,
     TerminalHandle,

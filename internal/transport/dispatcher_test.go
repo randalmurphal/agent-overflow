@@ -601,6 +601,11 @@ func (p *privilegedApp) GetSessionAgentDiff() string            { return "ok" }
 func (p *privilegedApp) ListThreadCheckpoints() string          { return "ok" }
 func (p *privilegedApp) GetWorkingTreeDiff() string             { return "ok" }
 func (p *privilegedApp) GetWorkspaceCurrentDiff() string        { return "ok" }
+func (p *privilegedApp) ListDiffReviewComments() string         { return "ok" }
+func (p *privilegedApp) CreateDiffReviewComment() string        { return "ok" }
+func (p *privilegedApp) UpdateDiffReviewComment() string        { return "ok" }
+func (p *privilegedApp) DeleteDiffReviewComment() string        { return "ok" }
+func (p *privilegedApp) SendDiffReviewComments() string         { return "ok" }
 func (p *privilegedApp) GetModelsForProvider() string           { return "ok" }
 
 // 2. Session control.

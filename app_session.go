@@ -239,11 +239,13 @@ func (a *App) spawnProviderSession(
 // current attachment payload; RuntimeMode is an optional draft override applied
 // immediately before the provider turn starts.
 type SendMessageOptions struct {
-	AttachmentIDs              []string            `json:"attachmentIds"`
-	RuntimeMode                string              `json:"runtimeMode,omitempty"`
-	SourceProposedPlan         *SourceProposedPlan `json:"sourceProposedPlan,omitempty"`
-	RevisionSourceProposedPlan *SourceProposedPlan `json:"revisionSourceProposedPlan,omitempty"`
-	RevisionSourceCommentIDs   []string            `json:"revisionSourceCommentIds,omitempty"`
+	AttachmentIDs                []string            `json:"attachmentIds"`
+	RuntimeMode                  string              `json:"runtimeMode,omitempty"`
+	SourceProposedPlan           *SourceProposedPlan `json:"sourceProposedPlan,omitempty"`
+	RevisionSourceProposedPlan   *SourceProposedPlan `json:"revisionSourceProposedPlan,omitempty"`
+	RevisionSourceCommentIDs     []string            `json:"revisionSourceCommentIds,omitempty"`
+	RevisionSourceDiffReview     *SourceDiffReview   `json:"revisionSourceDiffReview,omitempty"`
+	RevisionSourceDiffCommentIDs []string            `json:"revisionSourceDiffCommentIds,omitempty"`
 }
 
 // SendMessage is the Wails-bound compatibility entry point for user-typed
@@ -263,11 +265,13 @@ func (a *App) SendMessageWithOptions(threadID string, content string, opts SendM
 		return store.Thread{}, ErrShuttingDown
 	}
 	if _, err := a.sendMessageWithOptions(threadID, content, sendMessageOptions{
-		AttachmentIDs:              opts.AttachmentIDs,
-		RuntimeMode:                opts.RuntimeMode,
-		SourceProposedPlan:         opts.SourceProposedPlan,
-		RevisionSourceProposedPlan: opts.RevisionSourceProposedPlan,
-		RevisionSourceCommentIDs:   opts.RevisionSourceCommentIDs,
+		AttachmentIDs:                opts.AttachmentIDs,
+		RuntimeMode:                  opts.RuntimeMode,
+		SourceProposedPlan:           opts.SourceProposedPlan,
+		RevisionSourceProposedPlan:   opts.RevisionSourceProposedPlan,
+		RevisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
+		RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
+		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 	}); err != nil {
 		return store.Thread{}, err
 	}

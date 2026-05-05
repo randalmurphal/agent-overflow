@@ -26,6 +26,7 @@ describe('<DiffPanelDrawer>', () => {
     setBindingMock('GetSessionAgentDiff', async () => '');
     setBindingMock('GetMessageCheckpointDiff', async () => '');
     setBindingMock('GetWorkspaceCurrentDiff', async () => '');
+    setBindingMock('ListDiffReviewComments', async () => []);
     const requestScrollToItem = vi.spyOn(pane, 'requestScrollToItem');
 
     const { findByTestId, getByTestId } = render(DiffPanelDrawer, { props: { pane } });

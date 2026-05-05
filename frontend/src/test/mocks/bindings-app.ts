@@ -316,6 +316,11 @@ export const ListProposedPlanComments = dispatch('ListProposedPlanComments');
 export const CreateProposedPlanComment = dispatch('CreateProposedPlanComment');
 export const UpdateProposedPlanComment = dispatch('UpdateProposedPlanComment');
 export const DeleteProposedPlanComment = dispatch('DeleteProposedPlanComment');
+export const ListDiffReviewComments = dispatch('ListDiffReviewComments');
+export const CreateDiffReviewComment = dispatch('CreateDiffReviewComment');
+export const UpdateDiffReviewComment = dispatch('UpdateDiffReviewComment');
+export const DeleteDiffReviewComment = dispatch('DeleteDiffReviewComment');
+export const SendDiffReviewComments = dispatch('SendDiffReviewComments');
 export const ListLiveBackgroundTasks = dispatch('ListLiveBackgroundTasks');
 export const GetThreadItem = dispatch('GetThreadItem');
 

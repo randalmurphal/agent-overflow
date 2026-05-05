@@ -27,10 +27,12 @@ var sendThreadMuRegistry = &threadMutexRegistry{
 }
 
 type userMessageMeta struct {
-	Attachments                []userMessageAttachmentMeta `json:"attachments,omitempty"`
-	SourceProposedPlan         *SourceProposedPlan         `json:"sourceProposedPlan,omitempty"`
-	RevisionSourceProposedPlan *SourceProposedPlan         `json:"revisionSourceProposedPlan,omitempty"`
-	RevisionSourceCommentIDs   []string                    `json:"revisionSourceCommentIds,omitempty"`
+	Attachments                  []userMessageAttachmentMeta `json:"attachments,omitempty"`
+	SourceProposedPlan           *SourceProposedPlan         `json:"sourceProposedPlan,omitempty"`
+	RevisionSourceProposedPlan   *SourceProposedPlan         `json:"revisionSourceProposedPlan,omitempty"`
+	RevisionSourceCommentIDs     []string                    `json:"revisionSourceCommentIds,omitempty"`
+	RevisionSourceDiffReview     *SourceDiffReview           `json:"revisionSourceDiffReview,omitempty"`
+	RevisionSourceDiffCommentIDs []string                    `json:"revisionSourceDiffCommentIds,omitempty"`
 }
 
 type userMessageAttachmentMeta struct {
@@ -44,6 +46,7 @@ type userMessageAttachmentMeta struct {
 // SourceProposedPlan records that a user follow-up is acting on a specific
 // immutable proposed-plan item. It is traceability metadata, not prompt text.
 type SourceProposedPlan = store.ProposedPlanSourceRef
+type SourceDiffReview = store.DiffReviewSourceRef
 
 type threadMutexRegistry struct {
 	mu  sync.Mutex
@@ -83,11 +86,13 @@ func (r *threadMutexRegistry) ForgetThread(threadID string) {
 }
 
 type sendMessageOptions struct {
-	AttachmentIDs              []string
-	RuntimeMode                string
-	SourceProposedPlan         *SourceProposedPlan
-	RevisionSourceProposedPlan *SourceProposedPlan
-	RevisionSourceCommentIDs   []string
+	AttachmentIDs                []string
+	RuntimeMode                  string
+	SourceProposedPlan           *SourceProposedPlan
+	RevisionSourceProposedPlan   *SourceProposedPlan
+	RevisionSourceCommentIDs     []string
+	RevisionSourceDiffReview     *SourceDiffReview
+	RevisionSourceDiffCommentIDs []string
 }
 
 func (a *App) sendMessage(threadID string, content string, attachmentIDs []string) error {
@@ -156,8 +161,30 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		content = nextContent
 		opts.RevisionSourceCommentIDs = commentIDs
 	}
+	revisionSourceDiff, err := a.resolveSourceDiffReview(threadID, opts.RevisionSourceDiffReview)
+	if err != nil {
+		return store.Item{}, fmt.Errorf("send message: revision source diff review: %w", err)
+	}
+	if revisionSourceDiff == nil && len(opts.RevisionSourceDiffCommentIDs) > 0 {
+		return store.Item{}, fmt.Errorf("send message: diff review comments require a source diff review")
+	}
+	if revisionSourceDiff != nil && len(opts.RevisionSourceDiffCommentIDs) > 0 {
+		nextContent, commentIDs, err := a.appendDiffReviewCommentsToContent(threadID, content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, opts.RevisionSourceDiffCommentIDs)
+		if err != nil {
+			return store.Item{}, fmt.Errorf("send message: diff review comments: %w", err)
+		}
+		content = nextContent
+		opts.RevisionSourceDiffCommentIDs = commentIDs
+	}
 
-	userMeta, err := marshalUserMessageMeta(persistedAttachments, sourcePlan, revisionSourcePlan, opts.RevisionSourceCommentIDs)
+	userMeta, err := marshalUserMessageMeta(
+		persistedAttachments,
+		sourcePlan,
+		revisionSourcePlan,
+		opts.RevisionSourceCommentIDs,
+		revisionSourceDiff,
+		opts.RevisionSourceDiffCommentIDs,
+	)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: user meta: %w", err)
 	}
@@ -298,6 +325,11 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	// emission here.
 
 	a.maybeGenerateThreadTitleWithAttachments(thread, content, hasPriorItems, persistedAttachments)
+	if revisionSourceDiff != nil && len(opts.RevisionSourceDiffCommentIDs) > 0 {
+		if err := a.store.MarkDiffReviewCommentsSent(threadID, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, opts.RevisionSourceDiffCommentIDs, time.Now().UnixMilli(), userItem.ID); err != nil {
+			log.Printf("send message: mark diff review comments sent: %v", err)
+		}
+	}
 	return userItem, nil
 }
 
@@ -376,8 +408,19 @@ func (a *App) nextSequencedUserItemID(threadID string, turnIndex int, scope stri
 	return fmt.Sprintf("user:%d:%s:%d", turnIndex, scope, seq), nil
 }
 
-func marshalUserMessageMeta(attachments []store.Attachment, sourcePlan, revisionSourcePlan *SourceProposedPlan, revisionCommentIDs []string) (string, error) {
-	if len(attachments) == 0 && sourcePlan == nil && revisionSourcePlan == nil && len(revisionCommentIDs) == 0 {
+func marshalUserMessageMeta(
+	attachments []store.Attachment,
+	sourcePlan, revisionSourcePlan *SourceProposedPlan,
+	revisionCommentIDs []string,
+	revisionSourceDiff *SourceDiffReview,
+	revisionDiffCommentIDs []string,
+) (string, error) {
+	if len(attachments) == 0 &&
+		sourcePlan == nil &&
+		revisionSourcePlan == nil &&
+		len(revisionCommentIDs) == 0 &&
+		revisionSourceDiff == nil &&
+		len(revisionDiffCommentIDs) == 0 {
 		return "", nil
 	}
 	metaAttachments := make([]userMessageAttachmentMeta, 0, len(attachments))
@@ -391,16 +434,40 @@ func marshalUserMessageMeta(attachments []store.Attachment, sourcePlan, revision
 		})
 	}
 	meta := userMessageMeta{
-		Attachments:                metaAttachments,
-		SourceProposedPlan:         sourcePlan,
-		RevisionSourceProposedPlan: revisionSourcePlan,
-		RevisionSourceCommentIDs:   revisionCommentIDs,
+		Attachments:                  metaAttachments,
+		SourceProposedPlan:           sourcePlan,
+		RevisionSourceProposedPlan:   revisionSourcePlan,
+		RevisionSourceCommentIDs:     revisionCommentIDs,
+		RevisionSourceDiffReview:     revisionSourceDiff,
+		RevisionSourceDiffCommentIDs: revisionDiffCommentIDs,
 	}
 	data, err := json.Marshal(meta)
 	if err != nil {
 		return "", err
 	}
 	return string(data), nil
+}
+
+func (a *App) resolveSourceDiffReview(threadID string, source *SourceDiffReview) (*SourceDiffReview, error) {
+	if source == nil || strings.TrimSpace(source.Scope) == "" {
+		return nil, nil
+	}
+	scope, err := store.NormalizeDiffReviewScope(source.Scope)
+	if err != nil {
+		return nil, err
+	}
+	sourceThreadID := strings.TrimSpace(source.ThreadID)
+	if sourceThreadID == "" {
+		sourceThreadID = threadID
+	}
+	if sourceThreadID != threadID {
+		return nil, fmt.Errorf("diff review source must be on the current thread")
+	}
+	sourceKey, err := store.NormalizeDiffReviewSourceKey(source.SourceKey)
+	if err != nil {
+		return nil, err
+	}
+	return &SourceDiffReview{ThreadID: sourceThreadID, Scope: scope, SourceKey: sourceKey}, nil
 }
 
 func (a *App) resolveSourceProposedPlan(threadID string, source *SourceProposedPlan, allowCrossThread bool) (*SourceProposedPlan, error) {

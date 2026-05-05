@@ -807,6 +807,8 @@ export class QueuedItem {
     "sourceProposedPlan"?: SourceProposedPlan | null;
     "revisionSourceProposedPlan"?: SourceProposedPlan | null;
     "revisionSourceCommentIds"?: string[];
+    "revisionSourceDiffReview"?: SourceDiffReview | null;
+    "revisionSourceDiffCommentIds"?: string[];
     "enqueuedAt": number;
 
     /** Creates a new QueuedItem instance. */
@@ -835,6 +837,8 @@ export class QueuedItem {
         const $$createField4_0 = $$createType10;
         const $$createField5_0 = $$createType10;
         const $$createField6_0 = $$createType6;
+        const $$createField7_0 = $$createType13;
+        const $$createField8_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
             $$parsedSource["attachmentIds"] = $$createField3_0($$parsedSource["attachmentIds"]);
@@ -847,6 +851,12 @@ export class QueuedItem {
         }
         if ("revisionSourceCommentIds" in $$parsedSource) {
             $$parsedSource["revisionSourceCommentIds"] = $$createField6_0($$parsedSource["revisionSourceCommentIds"]);
+        }
+        if ("revisionSourceDiffReview" in $$parsedSource) {
+            $$parsedSource["revisionSourceDiffReview"] = $$createField7_0($$parsedSource["revisionSourceDiffReview"]);
+        }
+        if ("revisionSourceDiffCommentIds" in $$parsedSource) {
+            $$parsedSource["revisionSourceDiffCommentIds"] = $$createField8_0($$parsedSource["revisionSourceDiffCommentIds"]);
         }
         return new QueuedItem($$parsedSource as Partial<QueuedItem>);
     }
@@ -902,6 +912,8 @@ export class SendMessageOptions {
     "sourceProposedPlan"?: SourceProposedPlan | null;
     "revisionSourceProposedPlan"?: SourceProposedPlan | null;
     "revisionSourceCommentIds"?: string[];
+    "revisionSourceDiffReview"?: SourceDiffReview | null;
+    "revisionSourceDiffCommentIds"?: string[];
 
     /** Creates a new SendMessageOptions instance. */
     constructor($$source: Partial<SendMessageOptions> = {}) {
@@ -920,6 +932,8 @@ export class SendMessageOptions {
         const $$createField2_0 = $$createType10;
         const $$createField3_0 = $$createType10;
         const $$createField4_0 = $$createType6;
+        const $$createField5_0 = $$createType13;
+        const $$createField6_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
             $$parsedSource["attachmentIds"] = $$createField0_0($$parsedSource["attachmentIds"]);
@@ -933,9 +947,18 @@ export class SendMessageOptions {
         if ("revisionSourceCommentIds" in $$parsedSource) {
             $$parsedSource["revisionSourceCommentIds"] = $$createField4_0($$parsedSource["revisionSourceCommentIds"]);
         }
+        if ("revisionSourceDiffReview" in $$parsedSource) {
+            $$parsedSource["revisionSourceDiffReview"] = $$createField5_0($$parsedSource["revisionSourceDiffReview"]);
+        }
+        if ("revisionSourceDiffCommentIds" in $$parsedSource) {
+            $$parsedSource["revisionSourceDiffCommentIds"] = $$createField6_0($$parsedSource["revisionSourceDiffCommentIds"]);
+        }
         return new SendMessageOptions($$parsedSource as Partial<SendMessageOptions>);
     }
 }
+
+export const SourceDiffReview = store$0.DiffReviewSourceRef;
+export type SourceDiffReview = store$0.DiffReviewSourceRef;
 
 /**
  * SourceProposedPlan records that a user follow-up is acting on a specific
@@ -1018,7 +1041,7 @@ export class TerminalHandle {
      * Creates a new TerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): TerminalHandle {
-        const $$createField2_0 = $$createType12;
+        const $$createField2_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -1118,7 +1141,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType14;
+        const $$createField0_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -1140,6 +1163,8 @@ const $$createType8 = $Create.Array($$createType7);
 const $$createType9 = store$0.ProposedPlanSourceRef.createFrom;
 const $$createType10 = $Create.Nullable($$createType9);
 const $$createType11 = git$0.GitStatus.createFrom;
-const $$createType12 = terminal$0.SessionSummary.createFrom;
-const $$createType13 = workspacefiles$0.WorkspaceFile.createFrom;
-const $$createType14 = $Create.Array($$createType13);
+const $$createType12 = store$0.DiffReviewSourceRef.createFrom;
+const $$createType13 = $Create.Nullable($$createType12);
+const $$createType14 = terminal$0.SessionSummary.createFrom;
+const $$createType15 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType16 = $Create.Array($$createType15);
