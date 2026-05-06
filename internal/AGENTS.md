@@ -16,7 +16,8 @@ one closest to what you're touching.
 | `gitwatch/` | Live git status streams per workspace (recursive fs watch + polling fallback). |
 | `terminal/` | PTY session manager with ring-buffer replay. |
 | `discussion/` | Multi-agent deliberation coordination. |
-| `design/` | Design-mode workdir, file watcher, diagnostics, screenshots, and HTTP file handler. |
+| `design/` | Design-mode workdir, file watcher, diagnostics, MCP tool surface, and HTTP file handler. |
+| `screenshot/` | Headless-Chromium-driven full-page capture (chrome-headless-shell + chromedp) backing the design `read_screenshot` MCP tool. |
 | `attachment/` | Message attachment storage (metadata in store, bytes on disk). |
 | `settings/` | Persistent settings JSON with validation. |
 | `logging/` | Structured NDJSON provider-event logging. |

@@ -303,14 +303,6 @@ export function EnsureDesignWorkdir(threadID: string): $CancellablePromise<void>
 }
 
 /**
- * FailScreenshot marks a pending capture as failed. Used when the
- * frontend's html-to-image conversion errors out.
- */
-export function FailScreenshot(requestID: string, reason: string): $CancellablePromise<void> {
-    return $Call.ByID(4051848193, requestID, reason);
-}
-
-/**
  * ForkThread copies a source thread's timeline into a new fork and wires
  * the provider-specific resume state. The whole sequence is atomic from
  * the caller's point of view: if any step fails, the partially-created
@@ -821,17 +813,6 @@ export function GitStatusUnsubscribe(subscriptionID: string): $CancellablePromis
  */
 export function IngestDiagnosticBatch(batch: design$0.DiagnosticBatch): $CancellablePromise<void> {
     return $Call.ByID(2606775930, batch);
-}
-
-/**
- * IngestScreenshot completes a pending read_screenshot tool call. The
- * frontend captures the live iframe in response to a
- * design:capture-request event and posts the ordered list of JPEG
- * tiles back here. Tile bytes are base64-encoded on the wire; the
- * MCP layer re-encodes them as image content blocks for the agent.
- */
-export function IngestScreenshot(result: design$0.ScreenshotResult): $CancellablePromise<void> {
-    return $Call.ByID(267844513, result);
 }
 
 /**

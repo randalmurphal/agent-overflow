@@ -3,29 +3,18 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import DesignPreviewPanel from './DesignPreviewPanel.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import type { Thread } from '../../types/models';
-import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
-import {
-  DESIGN_RELOAD_MAIN_EVENT,
-  DESIGN_CAPTURE_REQUEST_EVENT,
-} from '../../stores/events';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { DESIGN_RELOAD_MAIN_EVENT } from '../../stores/events';
 
 // Mock the iframe-capture round-trip so tests don't need a real layout
-// engine. Two helpers: requestIframeCapture returns a single PNG base64
-// (used by the user-facing send-to-thread upload); requestIframeCaptureTiles
-// returns ordered JPEG tiles + a clipped flag (used by the agent's
-// read_screenshot path). Both default to one mock entry each so tests
-// only override what they need.
+// engine. Only one helper is involved now: requestIframeCapture returns
+// a single PNG base64, used by the user-facing send-to-thread upload.
+// The agent's read_screenshot path is backend-driven and bypasses the
+// iframe entirely.
 vi.mock('../../utils/captureHtml', () => ({
   requestIframeCapture: vi.fn(async () => 'ZmFrZS1wbmc='),
-  requestIframeCaptureTiles: vi.fn(async () => ({
-    tiles: ['ZmFrZS10aWxlLTE=', 'ZmFrZS10aWxlLTI='],
-    clipped: false,
-  })),
 }));
-import {
-  requestIframeCapture,
-  requestIframeCaptureTiles,
-} from '../../utils/captureHtml';
+import { requestIframeCapture } from '../../utils/captureHtml';
 
 // Stub Element.animate (Toast subtree depends on it for transitions).
 if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
@@ -84,11 +73,6 @@ describe('<DesignPreviewPanel>', () => {
   beforeEach(() => {
     vi.mocked(requestIframeCapture).mockClear();
     vi.mocked(requestIframeCapture).mockResolvedValue('ZmFrZS1wbmc=');
-    vi.mocked(requestIframeCaptureTiles).mockClear();
-    vi.mocked(requestIframeCaptureTiles).mockResolvedValue({
-      tiles: ['ZmFrZS10aWxlLTE=', 'ZmFrZS10aWxlLTI='],
-      clipped: false,
-    });
   });
 
   it('renders an iframe pointing at /design/{threadId}/main/ once the workdir is ensured', async () => {
@@ -256,55 +240,6 @@ describe('<DesignPreviewPanel>', () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it('captures the live iframe as JPEG tiles in response to design:capture-request', async () => {
-    const pane = await buildPane();
-    const ingest = setBindingMock('IngestScreenshot', async () => {});
-    setBindingMock('FailScreenshot', async () => {});
-    vi.mocked(requestIframeCaptureTiles).mockResolvedValueOnce({
-      tiles: ['dGlsZS0x', 'dGlsZS0y', 'dGlsZS0z'],
-      clipped: true,
-    });
-    const { container } = render(DesignPreviewPanel, { props: { pane } });
-    await waitForIframe(container);
-
-    window.dispatchEvent(
-      new CustomEvent(DESIGN_CAPTURE_REQUEST_EVENT, {
-        detail: { threadId: 'thread-1', requestId: 'req-A' },
-      }),
-    );
-
-    // Agent path uses the tiles helper, NOT the single-PNG helper.
-    await waitFor(() => expect(vi.mocked(requestIframeCaptureTiles)).toHaveBeenCalled());
-    expect(vi.mocked(requestIframeCapture)).not.toHaveBeenCalled();
-    await waitFor(() => expect(ingest).toHaveBeenCalled());
-    expect(ingest.mock.calls[0][0]).toMatchObject({
-      requestId: 'req-A',
-      tilesJpegBase64: ['dGlsZS0x', 'dGlsZS0y', 'dGlsZS0z'],
-      clipped: true,
-    });
-  });
-
-  it('falls back to FailScreenshot when capture rejects', async () => {
-    const pane = await buildPane();
-    setBindingMock('IngestScreenshot', async () => {});
-    const failMock = setBindingMock('FailScreenshot', async () => {});
-    vi.mocked(requestIframeCaptureTiles).mockRejectedValueOnce(new Error('cross-origin'));
-    const { container } = render(DesignPreviewPanel, { props: { pane } });
-    await waitForIframe(container);
-
-    window.dispatchEvent(
-      new CustomEvent(DESIGN_CAPTURE_REQUEST_EVENT, {
-        detail: { threadId: 'thread-1', requestId: 'req-B' },
-      }),
-    );
-
-    await waitFor(() => expect(failMock).toHaveBeenCalled());
-    expect(failMock.mock.calls[0][0]).toBe('req-B');
-    expect(String(failMock.mock.calls[0][1])).toMatch(/cross-origin/);
-    const ingest = getBindingMock('IngestScreenshot');
-    expect(ingest!.mock.calls.length).toBe(0);
   });
 
   // Send-to-thread bundle: capture iframe → GetDesignWorkdirInfo →

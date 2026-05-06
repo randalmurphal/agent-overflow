@@ -14,23 +14,20 @@
   // (re-dispatched as a throttled DOM event by `events.ts`), we bump
   // the cacheBust counter on the iframe src to force a reload.
   //
-  // Screenshot round-trip: when the agent calls the read_screenshot
-  // tool the backend emits `design:capture-request`. We ask the iframe
-  // for tiles (requestIframeCaptureTiles), then ship the ordered base64
-  // tiles plus the `clipped` flag to IngestScreenshot. Failures route
-  // through FailScreenshot so the agent's blocking call doesn't hang.
-  // The user-facing send-to-thread button uses the single-PNG variant
-  // (requestIframeCapture) instead — see utils/sendDesignToThread.ts.
+  // The user-facing "send to thread" button captures a single PNG of
+  // the iframe via `requestIframeCapture` (utils/sendDesignToThread.ts
+  // owns that pipeline). The agent's read_screenshot MCP tool is
+  // backend-driven (chromedp / chrome-headless-shell renders the same
+  // /design/ URL) and does not round-trip through this iframe.
   //
   // Sandbox + capture: with `sandbox="allow-scripts"` set without
   // `allow-same-origin`, the iframe document loads with an opaque
   // origin and the parent cannot reach `iframe.contentDocument`.
-  // The capture round-trip works around that by sending a
-  // postMessage `{aoDesign: 'capture', requestId, mode}` to the
-  // iframe; the file-server-injected capture script renders the
+  // The send-to-thread capture works around that by sending a
+  // postMessage `{aoDesign: 'capture', requestId, mode: 'single'}` to
+  // the iframe; the file-server-injected capture script renders the
   // document via a lazy-loaded modern-screenshot module and posts back
-  // either a `capture-result` (mode=single) or `capture-tiles-result`
-  // (mode=tiles). utils/captureHtml.ts owns the messenger logic.
+  // a `capture-result`. utils/captureHtml.ts owns the messenger logic.
   // Diagnostics flow over the same postMessage rail (works across
   // opaque origins).
 
@@ -44,8 +41,6 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     IngestDiagnosticBatch,
-    IngestScreenshot,
-    FailScreenshot,
     EnsureDesignWorkdir,
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
@@ -57,11 +52,7 @@
     type DiagnosticSeverity,
     type DesignViewport,
   } from '../../types/design';
-  import { requestIframeCapture, requestIframeCaptureTiles } from '../../utils/captureHtml';
-  import {
-    DESIGN_RELOAD_MAIN_EVENT,
-    DESIGN_CAPTURE_REQUEST_EVENT,
-  } from '../../stores/events';
+  import { DESIGN_RELOAD_MAIN_EVENT } from '../../stores/events';
   import Icon from '../primitives/Icon.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
@@ -250,47 +241,12 @@
     cacheBust += 1;
   }
 
-  // -- Capture-request round-trip --------------------------------------
-
-  async function handleCaptureRequest(ev: Event): Promise<void> {
-    const detail = (ev as CustomEvent).detail as { threadId?: string; requestId?: string } | null;
-    if (!detail?.threadId || !detail.requestId) return;
-    if (detail.threadId !== pane.threadId) return;
-    const requestId = detail.requestId;
-    const iframe = iframeEl;
-    if (!iframe) {
-      addToast('error', 'read_screenshot failed: iframe not mounted');
-      void FailScreenshot(requestId, 'iframe not mounted').catch(() => undefined);
-      return;
-    }
-    try {
-      const { tiles, clipped } = await requestIframeCaptureTiles(iframe, requestId);
-      await IngestScreenshot({ requestId, tilesJpegBase64: tiles, clipped });
-    } catch (err) {
-      const reason = errString(err);
-      // Toast surfaces the failure to the user even when the agent's
-      // tool-result panel is offscreen. The most common reason is a
-      // capture timeout, which historically masked an unrelated
-      // main-thread freeze — we want both the cause and the user-visible
-      // notification on the same screen so the user can correlate.
-      addToast('error', `read_screenshot failed: ${reason}`);
-      console.warn('requestIframeCaptureTiles failed:', err);
-      try {
-        await FailScreenshot(requestId, reason);
-      } catch (failErr) {
-        console.warn('FailScreenshot failed:', failErr);
-      }
-    }
-  }
-
   onMount(() => {
     window.addEventListener('message', handlePostMessage);
     window.addEventListener(DESIGN_RELOAD_MAIN_EVENT, handleReloadMain);
-    window.addEventListener(DESIGN_CAPTURE_REQUEST_EVENT, handleCaptureRequest);
     return () => {
       window.removeEventListener('message', handlePostMessage);
       window.removeEventListener(DESIGN_RELOAD_MAIN_EVENT, handleReloadMain);
-      window.removeEventListener(DESIGN_CAPTURE_REQUEST_EVENT, handleCaptureRequest);
       if (diagFlushHandle !== null) {
         clearTimeout(diagFlushHandle);
         diagFlushHandle = null;

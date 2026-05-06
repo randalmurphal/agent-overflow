@@ -1,11 +1,11 @@
 package main
 
 import (
-	"encoding/base64"
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
-	"time"
 
 	"agent-overflow/internal/design"
 	"agent-overflow/internal/settings"
@@ -85,74 +85,6 @@ func TestDesignIngestDiagnosticBatchAppendsToBuffer(t *testing.T) {
 
 	if app.designDiagnostics.LatestToken("thread-design") < 2 {
 		t.Fatalf("token = %d, want >= 2", app.designDiagnostics.LatestToken("thread-design"))
-	}
-}
-
-func TestDesignIngestScreenshotResolvesPendingCapture(t *testing.T) {
-	app := newTestAppWithDesign(t)
-
-	captureCh := make(chan design.ScreenshotRequest, 1)
-	app.testEmitHook = func(eventName string, data any) {
-		if eventName == design.CaptureEventName {
-			if req, ok := data.(design.ScreenshotRequest); ok {
-				captureCh <- req
-			}
-		}
-	}
-
-	captureCh2 := make(chan design.CaptureResult, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		result, err := app.designScreenshots.Capture(t.Context(), "thread-design")
-		if err != nil {
-			errCh <- err
-			return
-		}
-		captureCh2 <- result
-	}()
-
-	var captureRequest design.ScreenshotRequest
-	select {
-	case captureRequest = <-captureCh:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for capture event")
-	}
-
-	rawTiles := [][]byte{
-		{0xff, 0xd8, 0xff, 0xe0, 0x01},
-		{0xff, 0xd8, 0xff, 0xe0, 0x02},
-	}
-	encoded := make([]string, len(rawTiles))
-	for i, tile := range rawTiles {
-		encoded[i] = base64.StdEncoding.EncodeToString(tile)
-	}
-	if err := app.IngestScreenshot(design.ScreenshotResult{
-		RequestID:       captureRequest.RequestID,
-		TilesJpegBase64: encoded,
-		Clipped:         true,
-	}); err != nil {
-		t.Fatalf("IngestScreenshot: %v", err)
-	}
-
-	select {
-	case got := <-captureCh2:
-		if len(got.Tiles) != len(encoded) {
-			t.Fatalf("tiles len = %d, want %d", len(got.Tiles), len(encoded))
-		}
-		// Broker must hand the base64 strings through unchanged — no
-		// decode + re-encode round-trip.
-		for i, want := range encoded {
-			if got.Tiles[i] != want {
-				t.Fatalf("tile %d = %q, want %q", i, got.Tiles[i], want)
-			}
-		}
-		if !got.Clipped {
-			t.Error("Clipped = false, want true (must round-trip from frontend)")
-		}
-	case err := <-errCh:
-		t.Fatalf("Capture err: %v", err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("Capture did not return after IngestScreenshot")
 	}
 }
 
@@ -279,6 +211,27 @@ func TestDesignWorkDirOverrideSkippedForChatThreads(t *testing.T) {
 	}
 }
 
+// TestNewDesignCapturerErrorsBeforeBoot pins the boot-order contract:
+// the design.Capturer wired into reactor at App construction is asked
+// to Capture before either subsystem (screenshotManager,
+// transportServer) is ready. Each prerequisite gets its own clear
+// error so the agent's read_screenshot tool surfaces useful text via
+// the MCP isError envelope rather than nil-deref'ing.
+func TestNewDesignCapturerErrorsBeforeBoot(t *testing.T) {
+	app := newTestAppWithDesign(t)
+	// newTestAppWithDesign does not wire screenshotManager — that's the
+	// state we're asserting against.
+	cap := app.newDesignCapturer()
+
+	_, err := cap.Capture(context.Background(), "thread-design")
+	if err == nil {
+		t.Fatal("Capture before screenshotManager ready = nil err, want error")
+	}
+	if !strings.Contains(err.Error(), "screenshot manager not initialised") {
+		t.Errorf("err = %v, want it to mention screenshot manager", err)
+	}
+}
+
 func newTestAppWithDesign(t *testing.T) *App {
 	t.Helper()
 
@@ -288,10 +241,13 @@ func newTestAppWithDesign(t *testing.T) *App {
 	designBase := filepath.Join(t.TempDir(), "design-workdirs")
 	app.designWorkdir = design.NewWorkDirManager(designBase)
 	app.designDiagnostics = design.NewDiagnosticBuffer(nil)
-	app.designScreenshots = design.NewScreenshotBroker(app.emit)
 	app.designServer = design.FileHandler(designBase)
 	app.designWatchers = make(map[string]*design.Watcher)
-	app.reactor = design.NewReactor(app.designDiagnostics, app.designScreenshots)
+	// Capturer left nil — the read_screenshot path is exercised in
+	// internal/design/mcp_test.go with its own fake. App-level tests
+	// here cover workdir, diagnostics, MCP registration, and CWD
+	// override; none of them invoke the screenshot path.
+	app.reactor = design.NewReactor(app.designDiagnostics, nil)
 	app.designMCP = design.NewMCPServer(app.reactor)
 	t.Cleanup(func() {
 		_ = app.designMCP.Close()

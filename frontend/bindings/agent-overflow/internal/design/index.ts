@@ -4,6 +4,5 @@
 export {
     Diagnostic,
     DiagnosticBatch,
-    DiagnosticSeverity,
-    ScreenshotResult
+    DiagnosticSeverity
 } from "./models.js";

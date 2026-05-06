@@ -134,8 +134,6 @@ export {
   EnsureDesignWorkdir,
   GetDesignWorkdirInfo,
   IngestDiagnosticBatch,
-  IngestScreenshot,
-  FailScreenshot,
 
   // Composer enhancements
   UploadAttachment,

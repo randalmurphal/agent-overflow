@@ -24,6 +24,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/screenshot"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
@@ -67,8 +68,13 @@ type App struct {
 	// on the existing transport.
 	designWorkdir     *design.WorkDirManager
 	designDiagnostics *design.DiagnosticBuffer
-	designScreenshots *design.ScreenshotBroker
 	designServer      http.Handler
+	// screenshotManager drives a long-lived headless Chromium that
+	// renders the design preview URL for the agent's read_screenshot
+	// tool. Lazily started on first capture; closed on app shutdown.
+	// nil during early boot or in tests that don't exercise the
+	// design screenshot path — callers tolerate that explicitly.
+	screenshotManager *screenshot.Manager
 	// designWatchers is the per-thread fs watcher map. Keyed by thread
 	// ID; entries land on session start and Stop() on session teardown.
 	// designWatchersMu guards both insertion and removal.
@@ -397,10 +403,17 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	designBase := filepath.Join(dbDir, "design-workdirs")
 	a.designWorkdir = design.NewWorkDirManager(designBase)
 	a.designDiagnostics = design.NewDiagnosticBuffer(nil)
-	a.designScreenshots = design.NewScreenshotBroker(a.emit)
 	a.designServer = design.FileHandler(designBase)
 	a.designWatchers = make(map[string]*design.Watcher)
-	a.reactor = design.NewReactor(a.designDiagnostics, a.designScreenshots)
+	// Headless Chromium-driven capture for the agent's read_screenshot
+	// tool. Lazy: the binary downloads on first capture (~150 MB
+	// once), and the browser process boots only when something asks
+	// for a screenshot. Threads that never call read_screenshot pay
+	// nothing.
+	a.screenshotManager = screenshot.NewManager(
+		screenshot.NewInstaller(dbDir, a.emit),
+	)
+	a.reactor = design.NewReactor(a.designDiagnostics, a.newDesignCapturer())
 	a.designMCP = design.NewMCPServer(a.reactor)
 	a.terminals = terminal.NewManager(a.terminalOutputCallback, a.terminalExitCallback)
 	attachmentStore, err := attachment.NewStore(attachment.Config{
@@ -614,6 +627,17 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// provider session holds a reference (step 4 guarantees that).
 	if a.designMCP != nil {
 		record("close design MCP server", a.designMCP.Close())
+	}
+
+	// Step 7b: close the headless Chromium driving read_screenshot.
+	// Order matters: close after step 4 (no more provider sessions to
+	// invoke read_screenshot) and after step 7 (any in-flight MCP tool
+	// call has been cancelled by designMCP.Close), so this Close
+	// terminates the long-lived browser without racing a Capture.
+	// Safe on a never-started Manager — the package treats Close as a
+	// no-op when allocCancel/browserCancel are nil.
+	if a.screenshotManager != nil {
+		record("close headless screenshot manager", a.screenshotManager.Close())
 	}
 
 	// Step 8: close the provider event logger. After providers are

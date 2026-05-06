@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/gitwatch"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
+	"agent-overflow/internal/screenshot"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
 	"agent-overflow/internal/triage"
@@ -176,6 +177,11 @@ func newFullyWiredTestApp(t *testing.T) (*App, *shutdownRecorder) {
 	app.gitWatch = gitwatch.NewManager(func(string) (gitops.GitStatus, error) {
 		return gitops.GitStatus{}, nil
 	})
+	// A never-started screenshot.Manager Closes cleanly (the package
+	// treats Close as a no-op when allocCancel/browserCancel are nil)
+	// so we wire it for parity with production without paying the
+	// chrome-headless-shell install cost.
+	app.screenshotManager = screenshot.NewManager(nil)
 
 	// Force logger on so every step in Shutdown fires — the debug env
 	// gate makes it nil by default which would hide the "close logger"
@@ -242,6 +248,7 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		"close design reactor",
 		"close gitwatch manager",
 		"close terminal sessions",
+		"close headless screenshot manager",
 		"close logger",
 		"close store",
 	}

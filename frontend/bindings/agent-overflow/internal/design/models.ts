@@ -95,46 +95,6 @@ export enum DiagnosticSeverity {
     SeverityInfo = "info",
 };
 
-/**
- * ScreenshotResult is the frontend → backend reply for the agent's
- * read_screenshot tool. Tiles are JPEG bytes (base64-encoded on the
- * wire), ordered top-to-bottom, capped at the iframe's tile budget.
- * Clipped is true when the rendered document was taller than the
- * budget and trailing tiles were dropped — the agent surfaces this
- * via a trailing text block in the MCP tool result so it knows the
- * page continued past what was captured.
- */
-export class ScreenshotResult {
-    "requestId": string;
-    "tilesJpegBase64": string[];
-    "clipped"?: boolean;
-
-    /** Creates a new ScreenshotResult instance. */
-    constructor($$source: Partial<ScreenshotResult> = {}) {
-        if (!("requestId" in $$source)) {
-            this["requestId"] = "";
-        }
-        if (!("tilesJpegBase64" in $$source)) {
-            this["tilesJpegBase64"] = [];
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new ScreenshotResult instance from a string or object.
-     */
-    static createFrom($$source: any = {}): ScreenshotResult {
-        const $$createField1_0 = $$createType2;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("tilesJpegBase64" in $$parsedSource) {
-            $$parsedSource["tilesJpegBase64"] = $$createField1_0($$parsedSource["tilesJpegBase64"]);
-        }
-        return new ScreenshotResult($$parsedSource as Partial<ScreenshotResult>);
-    }
-}
-
 // Private type creation functions
 const $$createType0 = Diagnostic.createFrom;
 const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = $Create.Array($Create.Any);

@@ -1,12 +1,54 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 
 	"agent-overflow/internal/design"
+	"agent-overflow/internal/screenshot"
 	"agent-overflow/internal/store"
 )
+
+// designCapturerFunc adapts a closure to the design.Capturer
+// interface. The Reactor calls Capture(ctx, threadID); the closure
+// builds the loopback URL for that thread and delegates to the
+// shared screenshot.Manager.
+type designCapturerFunc func(ctx context.Context, threadID string) ([]byte, error)
+
+func (f designCapturerFunc) Capture(ctx context.Context, threadID string) ([]byte, error) {
+	return f(ctx, threadID)
+}
+
+// newDesignCapturer wires the design.Reactor's screenshot path to
+// the headless Chromium manager. The capturer reads the transport
+// server's listen address at call time (rather than at boot) so a
+// LAN rebind is picked up automatically — chromedp opens a fresh
+// connection per capture either way.
+func (a *App) newDesignCapturer() design.Capturer {
+	return designCapturerFunc(func(ctx context.Context, threadID string) ([]byte, error) {
+		if a.screenshotManager == nil {
+			return nil, fmt.Errorf("design: screenshot manager not initialised")
+		}
+		srv := a.transportServer.Load()
+		if srv == nil {
+			return nil, fmt.Errorf("design: transport server not ready for capture")
+		}
+		addr := srv.Addr()
+		if addr == "" {
+			return nil, fmt.Errorf("design: transport server has no listen address")
+		}
+		// /design/ requests are gated by loopbackHostGuard +
+		// designLoopbackOnly; the headless browser is also on
+		// loopback so the request is allowed without a token.
+		url := fmt.Sprintf("http://%s/design/%s/main/", addr, threadID)
+		return a.screenshotManager.Capture(ctx, screenshot.CaptureOptions{
+			URL:            url,
+			ViewportWidth:  screenshot.DefaultTileWidth,
+			ViewportHeight: screenshot.DefaultTileHeight,
+		})
+	})
+}
 
 type designSessionConfig struct {
 	Prompt     string
@@ -311,32 +353,3 @@ func clipString(s string, max int) string {
 	return s[:max]
 }
 
-// IngestScreenshot completes a pending read_screenshot tool call. The
-// frontend captures the live iframe in response to a
-// design:capture-request event and posts the ordered list of base64-
-// encoded JPEG tiles back here. The bytes stay base64 all the way
-// through the broker — the MCP layer hands them straight to the
-// agent's image content blocks, no decode/re-encode round-trip.
-//
-// Cap enforcement (count, per-tile size, aggregate size) lives in
-// the broker's Resolve so any code path that reaches the broker
-// gets the same contract. A failed validation routes through Fail
-// and releases the parked Capture goroutine, so the agent's
-// blocking tool call returns a clean error instead of waiting on
-// CaptureMaxWait.
-func (a *App) IngestScreenshot(result design.ScreenshotResult) error {
-	if a.designScreenshots == nil {
-		return fmt.Errorf("design screenshot broker unavailable")
-	}
-	return a.designScreenshots.Resolve(result.RequestID, result.TilesJpegBase64, result.Clipped)
-}
-
-// FailScreenshot marks a pending capture as failed. Used when the
-// frontend's modern-screenshot capture errors out (iframe not mounted,
-// render rejected, postMessage timeout, etc.).
-func (a *App) FailScreenshot(requestID, reason string) error {
-	if a.designScreenshots == nil {
-		return fmt.Errorf("design screenshot broker unavailable")
-	}
-	return a.designScreenshots.Fail(requestID, reason)
-}

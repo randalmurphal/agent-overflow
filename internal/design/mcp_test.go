@@ -5,11 +5,16 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
@@ -98,68 +103,83 @@ func TestMCPServerGetDiagnosticsRespectsSinceToken(t *testing.T) {
 	}
 }
 
+// makeTestPNG returns a PNG of width × height filled with a solid
+// color. Used to feed the fake Capturer with predictable bytes the
+// slicer can decode + tile.
+func makeTestPNG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.SetRGBA(x, y, color.RGBA{R: 200, G: 200, B: 200, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode test png: %v", err)
+	}
+	return buf.Bytes()
+}
+
 func TestMCPServerReadScreenshotRoundTrip(t *testing.T) {
 	server, threadURL, harness := newTestMCPServer(t)
 
-	resultCh := make(chan map[string]any, 1)
-	go func() {
-		resp := postMCPRequest(t, threadURL, map[string]any{
-			"jsonrpc": "2.0",
-			"id":      2,
-			"method":  "tools/call",
-			"params": map[string]any{
-				"name":      "read_screenshot",
-				"arguments": map[string]any{},
-			},
-		})
-		result, _ := resp["result"].(map[string]any)
-		resultCh <- result
-	}()
+	// 1280×1600 → exactly 2 tiles of 800px height, no clip.
+	pngBytes := makeTestPNG(t, 1280, 1600)
+	harness.capturer.setFn(func(ctx context.Context, threadID string) ([]byte, error) {
+		return pngBytes, nil
+	})
 
-	captureRequest := waitForCaptureEvent(t, harness)
-	rawTiles := [][]byte{
-		{0xff, 0xd8, 0xff, 0xe0, 0x10, 0x11},
-		{0xff, 0xd8, 0xff, 0xe0, 0x20, 0x21},
-		{0xff, 0xd8, 0xff, 0xe0, 0x30, 0x31},
+	resp := postMCPRequest(t, threadURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "read_screenshot",
+			"arguments": map[string]any{},
+		},
+	})
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("result missing: %#v", resp)
 	}
-	tiles := make([]string, len(rawTiles))
-	for i, raw := range rawTiles {
-		tiles[i] = base64.StdEncoding.EncodeToString(raw)
+	content, ok := result["content"].([]any)
+	if !ok {
+		t.Fatalf("content type = %T, want []any", result["content"])
 	}
-	if err := harness.screenshots.Resolve(captureRequest.RequestID, tiles, false); err != nil {
-		t.Fatalf("Resolve: %v", err)
+	if len(content) != 2 {
+		t.Fatalf("content blocks = %d, want 2 (one per tile, no clip note)", len(content))
 	}
-
-	select {
-	case result := <-resultCh:
-		if result == nil {
-			t.Fatal("missing result block")
-		}
-		content, ok := result["content"].([]any)
+	for i, block := range content {
+		b, ok := block.(map[string]any)
 		if !ok {
-			t.Fatalf("content type = %T, want []any", result["content"])
+			t.Fatalf("block %d type = %T", i, block)
 		}
-		if len(content) != len(tiles) {
-			t.Fatalf("content blocks = %d, want %d (one per tile, no clip note)", len(content), len(tiles))
+		if b["type"] != "image" {
+			t.Errorf("block %d type = %v, want image", i, b["type"])
 		}
-		for i, block := range content {
-			b, ok := block.(map[string]any)
-			if !ok {
-				t.Fatalf("block %d type = %T", i, block)
-			}
-			if b["type"] != "image" {
-				t.Errorf("block %d type = %v, want image", i, b["type"])
-			}
-			if b["mimeType"] != "image/jpeg" {
-				t.Errorf("block %d mimeType = %v, want image/jpeg", i, b["mimeType"])
-			}
-			data, _ := b["data"].(string)
-			if data != tiles[i] {
-				t.Errorf("block %d data = %q, want %q (broker must not re-encode)", i, data, tiles[i])
-			}
+		if b["mimeType"] != "image/jpeg" {
+			t.Errorf("block %d mimeType = %v, want image/jpeg", i, b["mimeType"])
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for screenshot result")
+		// The data must be a parseable JPEG of the expected slice
+		// height.
+		raw, err := base64.StdEncoding.DecodeString(b["data"].(string))
+		if err != nil {
+			t.Fatalf("block %d base64: %v", i, err)
+		}
+		jpg, err := jpeg.Decode(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatalf("block %d not a valid jpeg: %v", i, err)
+		}
+		if jpg.Bounds().Dx() != 1280 || jpg.Bounds().Dy() != 800 {
+			t.Errorf("block %d dims = %dx%d, want 1280x800",
+				i, jpg.Bounds().Dx(), jpg.Bounds().Dy())
+		}
+	}
+
+	// Capturer was invoked exactly once with the right thread.
+	if got := harness.capturer.threadIDs(); len(got) != 1 || got[0] != "thread-mcp" {
+		t.Fatalf("Capturer threadIDs = %v, want [thread-mcp]", got)
 	}
 
 	if err := server.Close(); err != nil {
@@ -167,78 +187,98 @@ func TestMCPServerReadScreenshotRoundTrip(t *testing.T) {
 	}
 }
 
-// TestMCPServerReadScreenshotClippedAppendsTextNote pins that when the
-// frontend reports the page exceeded the tile budget, the MCP tool
-// result includes a trailing `text` block flagging the clip — that's
-// how the agent learns there's more page to consider.
+// TestMCPServerReadScreenshotClippedAppendsTextNote pins that when
+// the captured PNG is taller than MaxScreenshotTiles × tile height,
+// the slicer marks Clipped and the MCP layer appends a trailing
+// `text` block flagging the clip — that's how the agent learns
+// there's more page below.
 func TestMCPServerReadScreenshotClippedAppendsTextNote(t *testing.T) {
 	_, threadURL, harness := newTestMCPServer(t)
 
-	resultCh := make(chan map[string]any, 1)
-	go func() {
-		resp := postMCPRequest(t, threadURL, map[string]any{
-			"jsonrpc": "2.0",
-			"id":      3,
-			"method":  "tools/call",
-			"params": map[string]any{
-				"name":      "read_screenshot",
-				"arguments": map[string]any{},
-			},
-		})
-		result, _ := resp["result"].(map[string]any)
-		resultCh <- result
-	}()
+	// 9 tiles' worth → MaxScreenshotTiles=8 emitted, 1 clipped.
+	pngBytes := makeTestPNG(t, 1280, 9*800)
+	harness.capturer.setFn(func(ctx context.Context, threadID string) ([]byte, error) {
+		return pngBytes, nil
+	})
 
-	captureRequest := waitForCaptureEvent(t, harness)
-	rawTiles := [][]byte{
-		{0xff, 0xd8, 0x01},
-		{0xff, 0xd8, 0x02},
+	resp := postMCPRequest(t, threadURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      3,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "read_screenshot",
+			"arguments": map[string]any{},
+		},
+	})
+	result, _ := resp["result"].(map[string]any)
+	content, ok := result["content"].([]any)
+	if !ok {
+		t.Fatalf("content type = %T", result["content"])
 	}
-	tiles := make([]string, len(rawTiles))
-	for i, raw := range rawTiles {
-		tiles[i] = base64.StdEncoding.EncodeToString(raw)
+	if len(content) != 8+1 {
+		t.Fatalf("content blocks = %d, want 9 (8 tiles + clip note)", len(content))
 	}
-	if err := harness.screenshots.Resolve(captureRequest.RequestID, tiles, true); err != nil {
-		t.Fatalf("Resolve: %v", err)
+	// Earlier blocks are still image blocks.
+	for i := 0; i < 8; i++ {
+		b, _ := content[i].(map[string]any)
+		if b["type"] != "image" {
+			t.Errorf("block %d type = %v, want image", i, b["type"])
+		}
 	}
+	last, _ := content[len(content)-1].(map[string]any)
+	if last["type"] != "text" {
+		t.Errorf("trailing block type = %v, want text", last["type"])
+	}
+	text, _ := last["text"].(string)
+	if !strings.Contains(strings.ToLower(text), "tile") {
+		t.Errorf("trailing text should mention tiling, got %q", text)
+	}
+}
 
-	select {
-	case result := <-resultCh:
-		content, ok := result["content"].([]any)
-		if !ok {
-			t.Fatalf("content type = %T", result["content"])
-		}
-		if len(content) != len(tiles)+1 {
-			t.Fatalf("content blocks = %d, want %d (tiles + clip note)", len(content), len(tiles)+1)
-		}
-		// Earlier blocks must still be image blocks — the trailing
-		// text note must not displace tiles or change their type.
-		for i := 0; i < len(tiles); i++ {
-			b, ok := content[i].(map[string]any)
-			if !ok {
-				t.Fatalf("block %d type = %T", i, content[i])
-			}
-			if b["type"] != "image" {
-				t.Errorf("block %d type = %v, want image", i, b["type"])
-			}
-			if b["mimeType"] != "image/jpeg" {
-				t.Errorf("block %d mimeType = %v, want image/jpeg", i, b["mimeType"])
-			}
-			data, _ := b["data"].(string)
-			if data != tiles[i] {
-				t.Errorf("block %d data mismatch: got %q want %q", i, data, tiles[i])
-			}
-		}
-		last, _ := content[len(content)-1].(map[string]any)
-		if last["type"] != "text" {
-			t.Errorf("trailing block type = %v, want text", last["type"])
-		}
-		text, _ := last["text"].(string)
-		if !strings.Contains(strings.ToLower(text), "tile") {
-			t.Errorf("trailing text should mention tiling, got %q", text)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for screenshot result")
+// TestMCPServerReadScreenshotCapturerErrorSurfaces pins the error
+// path: a Capturer that fails (no internet, headless install busted,
+// browser crashed) must surface a clean MCP tool error rather than
+// hang the tool call.
+//
+// MCP convention is to return a `result` with `isError: true` and a
+// text content block carrying the message — that's what writeToolError
+// produces and what both providers parse as a tool failure on the
+// agent side. A JSON-RPC `error` field would terminate the whole
+// session.
+func TestMCPServerReadScreenshotCapturerErrorSurfaces(t *testing.T) {
+	_, threadURL, harness := newTestMCPServer(t)
+
+	harness.capturer.setFn(func(ctx context.Context, threadID string) ([]byte, error) {
+		return nil, fmt.Errorf("simulated headless launch failure")
+	})
+
+	resp := postMCPRequestRaw(t, threadURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      99,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "read_screenshot",
+			"arguments": map[string]any{},
+		},
+	})
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected result field, got %#v", resp)
+	}
+	if isErr, _ := result["isError"].(bool); !isErr {
+		t.Fatalf("expected isError=true, got result=%#v", result)
+	}
+	content, _ := result["content"].([]any)
+	if len(content) == 0 {
+		t.Fatal("expected at least one content block carrying the error message")
+	}
+	first, _ := content[0].(map[string]any)
+	if first["type"] != "text" {
+		t.Fatalf("first block type = %v, want text", first["type"])
+	}
+	text, _ := first["text"].(string)
+	if !strings.Contains(text, "simulated headless launch failure") {
+		t.Errorf("error text = %q, want to mention the underlying failure", text)
 	}
 }
 
@@ -254,10 +294,44 @@ func TestMCPServerUsesOpaqueThreadToken(t *testing.T) {
 	}
 }
 
+// fakeCapturer implements Capturer with a swappable function. Tests
+// pre-load the function before issuing the MCP tool call. The
+// function runs synchronously with the inbound MCP request, so the
+// happy-path tests don't have to wire any goroutines.
+type fakeCapturer struct {
+	mu        sync.Mutex
+	fn        func(ctx context.Context, threadID string) ([]byte, error)
+	seenIDs   []string
+}
+
+func (f *fakeCapturer) Capture(ctx context.Context, threadID string) ([]byte, error) {
+	f.mu.Lock()
+	f.seenIDs = append(f.seenIDs, threadID)
+	fn := f.fn
+	f.mu.Unlock()
+	if fn == nil {
+		return nil, fmt.Errorf("fake capturer: no fn set")
+	}
+	return fn(ctx, threadID)
+}
+
+func (f *fakeCapturer) setFn(fn func(ctx context.Context, threadID string) ([]byte, error)) {
+	f.mu.Lock()
+	f.fn = fn
+	f.mu.Unlock()
+}
+
+func (f *fakeCapturer) threadIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.seenIDs))
+	copy(out, f.seenIDs)
+	return out
+}
+
 type mcpTestHarness struct {
 	diagnostics *DiagnosticBuffer
-	screenshots *ScreenshotBroker
-	captures    chan ScreenshotRequest
+	capturer    *fakeCapturer
 }
 
 func newTestMCPServer(t *testing.T) (*MCPServer, string, *mcpTestHarness) {
@@ -287,20 +361,9 @@ func newTestMCPServer(t *testing.T) (*MCPServer, string, *mcpTestHarness) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	captures := make(chan ScreenshotRequest, 4)
-	emit := func(eventName string, data any) {
-		if eventName != CaptureEventName {
-			return
-		}
-		req, ok := data.(ScreenshotRequest)
-		if !ok {
-			return
-		}
-		captures <- req
-	}
 	diagnostics := NewDiagnosticBuffer(nil)
-	screenshots := NewScreenshotBroker(emit)
-	reactor := NewReactor(diagnostics, screenshots)
+	capturer := &fakeCapturer{}
+	reactor := NewReactor(diagnostics, capturer)
 	server := NewMCPServer(reactor)
 
 	config, err := server.RegisterThread(thread.ID)
@@ -325,19 +388,7 @@ func newTestMCPServer(t *testing.T) (*MCPServer, string, *mcpTestHarness) {
 	})
 	return server, threadURL, &mcpTestHarness{
 		diagnostics: diagnostics,
-		screenshots: screenshots,
-		captures:    captures,
-	}
-}
-
-func waitForCaptureEvent(t *testing.T, harness *mcpTestHarness) ScreenshotRequest {
-	t.Helper()
-	select {
-	case req := <-harness.captures:
-		return req
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for capture event")
-		return ScreenshotRequest{}
+		capturer:    capturer,
 	}
 }
 
@@ -421,7 +472,7 @@ func TestMCPServerUnregisterThreadEmptyID(t *testing.T) {
 }
 
 func TestMCPServerRegisterThreadEmptyID(t *testing.T) {
-	reactor := NewReactor(NewDiagnosticBuffer(nil), NewScreenshotBroker(func(string, any) {}))
+	reactor := NewReactor(NewDiagnosticBuffer(nil), &fakeCapturer{})
 	server := NewMCPServer(reactor)
 	t.Cleanup(func() { _ = server.Close() })
 
@@ -736,45 +787,9 @@ func TestThreadIDForPathWhitespaceToken(t *testing.T) {
 	}
 }
 
-// Round-trip test for the screenshot teardown path: if the design
-// session ends mid-tool-call the agent receives a clean
-// `design session ended` JSON-RPC error rather than a stuck connection.
-func TestMCPServerReadScreenshotTeardownReleases(t *testing.T) {
-	_, threadURL, harness := newTestMCPServer(t)
-
-	var sawError atomic.Bool
-	go func() {
-		resp := postMCPRequestRaw(t, threadURL, map[string]any{
-			"jsonrpc": "2.0",
-			"id":      99,
-			"method":  "tools/call",
-			"params": map[string]any{
-				"name":      "read_screenshot",
-				"arguments": map[string]any{},
-			},
-		})
-		_, hasError := resp["error"].(map[string]any)
-		if hasError {
-			sawError.Store(true)
-		}
-	}()
-
-	// Wait for the capture request to land, then tear down.
-	waitForCaptureEvent(t, harness)
-	harness.screenshots.TeardownThread("thread-mcp")
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if sawError.Load() {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("teardown did not release pending screenshot tool call")
-}
-
-// postMCPRequestRaw is like postMCPRequest but doesn't fail on non-200
-// responses or missing result fields — used for negative tests.
+// postMCPRequestRaw is like postMCPRequest but doesn't fail on
+// non-200 responses or missing result fields — used for negative
+// tests.
 func postMCPRequestRaw(t *testing.T, url string, payload any) map[string]any {
 	t.Helper()
 	body, _ := json.Marshal(payload)

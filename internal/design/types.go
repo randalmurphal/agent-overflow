@@ -11,11 +11,13 @@ const (
 	// through --mcp-config.
 	ToolGetDiagnostics = "get_design_diagnostics"
 
-	// ToolReadScreenshot captures the live design iframe and returns
+	// ToolReadScreenshot captures the live design preview and returns
 	// the rendered output as one or more JPEG tiles top-to-bottom.
 	// Tiling keeps each image inside both providers' per-image vision
 	// budgets even for tall pages — a single full-document PNG would
-	// blow the context window. Round-trips through the frontend.
+	// blow the context window. The capture is driven by a headless
+	// Chromium subprocess (see internal/screenshot/) loading the same
+	// per-thread URL the iframe shows the user.
 	ToolReadScreenshot = "read_screenshot"
 )
 
@@ -115,23 +117,30 @@ type OptionChosen struct {
 	Path     string `json:"path"`
 }
 
-// ScreenshotRequest is the backend → frontend signal that the agent
-// has called `read_screenshot` and the frontend should capture the
-// live iframe.
-type ScreenshotRequest struct {
-	ThreadID  string `json:"threadId"`
-	RequestID string `json:"requestId"`
+// CaptureResult is the bundle the read_screenshot MCP tool's backend
+// half hands back to the MCP layer. Tiles are JPEG bytes (base64-
+// encoded), ordered top-to-bottom, capped at MaxScreenshotTiles.
+// Clipped is true when the rendered document was taller than the
+// budget and trailing tiles were dropped — the MCP layer surfaces
+// this via a trailing text block in the tool result so the agent
+// knows the page continued past what was captured.
+//
+// The tile-slicing happens in internal/screenshot.SliceTiles after
+// the headless browser captures a full-page PNG; this struct is the
+// boundary back into the design package's MCP wire shape.
+type CaptureResult struct {
+	Tiles   []string
+	Clipped bool
 }
 
-// ScreenshotResult is the frontend → backend reply for the agent's
-// read_screenshot tool. Tiles are JPEG bytes (base64-encoded on the
-// wire), ordered top-to-bottom, capped at the iframe's tile budget.
-// Clipped is true when the rendered document was taller than the
-// budget and trailing tiles were dropped — the agent surfaces this
-// via a trailing text block in the MCP tool result so it knows the
-// page continued past what was captured.
-type ScreenshotResult struct {
-	RequestID       string   `json:"requestId"`
-	TilesJpegBase64 []string `json:"tilesJpegBase64"`
-	Clipped         bool     `json:"clipped,omitempty"`
-}
+// MaxScreenshotTiles is the hard ceiling on tiles per capture. Sized
+// to the agent's per-tool vision-token budget — eight tiles at
+// 1280×800 JPEG-q-85 each is comfortably within both Codex and
+// Claude per-tool image limits.
+//
+// The constant lives here because the MCP layer enforces it via the
+// trailing "clipped" note in the tool result. The reactor passes it
+// to internal/screenshot.SliceOptions explicitly so the two values
+// can't drift; a contract test (TestMaxScreenshotTilesMatchesSlicer)
+// pins the default-value alignment.
+const MaxScreenshotTiles = 8

@@ -45,7 +45,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "DeleteThread", ID: 1186337974}, // main.App.DeleteThread
 	{Name: "DismissDesignOptionSet", ID: 1381421528}, // main.App.DismissDesignOptionSet
 	{Name: "EnsureDesignWorkdir", ID: 1465371311}, // main.App.EnsureDesignWorkdir
-	{Name: "FailScreenshot", ID: 4051848193}, // main.App.FailScreenshot
 	{Name: "ForkThread", ID: 4063914461}, // main.App.ForkThread
 	{Name: "ForkThreadFromMessage", ID: 3977213964}, // main.App.ForkThreadFromMessage
 	{Name: "GenerateCommitMessage", ID: 1669373286}, // main.App.GenerateCommitMessage
@@ -94,7 +93,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GitStatusSubscribe", ID: 3282404643}, // main.App.GitStatusSubscribe
 	{Name: "GitStatusUnsubscribe", ID: 3263989430}, // main.App.GitStatusUnsubscribe
 	{Name: "IngestDiagnosticBatch", ID: 2606775930}, // main.App.IngestDiagnosticBatch
-	{Name: "IngestScreenshot", ID: 267844513}, // main.App.IngestScreenshot
 	{Name: "InterruptTurn", ID: 850013031}, // main.App.InterruptTurn
 	{Name: "IsWSL", ID: 2789068977}, // main.App.IsWSL
 	{Name: "LatestDesignOptionSet", ID: 4252906991}, // main.App.LatestDesignOptionSet

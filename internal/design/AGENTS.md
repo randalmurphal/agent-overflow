@@ -1,16 +1,19 @@
 # internal/design/
 
 Design-mode lifecycle: per-thread working directory, file watcher,
-diagnostic ring buffer, screenshot broker, the file server that serves
-agent-rendered HTML to the iframe, the MCP tool surface (HTTP) that
-both providers consume, and the bundled design-mode system prompt.
+diagnostic ring buffer, the file server that serves agent-rendered
+HTML to the iframe, the MCP tool surface (HTTP) that both providers
+consume, and the bundled design-mode system prompt. The
+`read_screenshot` MCP tool's actual capture work lives in a sibling
+package — see `internal/screenshot/`.
 
 ## Layout
 
 - `types.go` — public wire shapes: `Diagnostic`, `DiagnosticBatch`,
   `FeedbackBatch`, `ClarificationRequest`, `ExposeControls`,
-  `OptionChosen`, `ScreenshotRequest`/`Result`. Also the MCP tool name
-  constants (`ToolGetDiagnostics`, `ToolReadScreenshot`).
+  `OptionChosen`, plus `CaptureResult` (the bundle the
+  `read_screenshot` tool returns to the MCP layer). Also the MCP tool
+  name constants (`ToolGetDiagnostics`, `ToolReadScreenshot`).
 - `workdir.go` — per-thread directory layout under
   `{designDir}/{threadId}/{main,options/{setId}/{optId}}/`. Atomic
   per-file writes via `<path>.tmp` + rename (used for the seeded
@@ -26,27 +29,26 @@ both providers consume, and the bundled design-mode system prompt.
   blocks up to `diagnosticDrainDeadline` (1 s) when `MarkActivity`
   fired in the last 500 ms — solves the agent-edits-then-reads-stale
   race.
-- `screenshot.go` — `ScreenshotBroker` pending-request map, reactor
-  blocking pattern (buffered channel + ctx-aware select). `Capture`
-  blocks the MCP tool call and returns a `CaptureResult` of
-  base64-encoded JPEG tiles + a `Clipped` flag.
-  `Resolve(requestID, tiles []string, clipped bool)` and
-  `Fail(requestID, reason)` come from the frontend bindings. Tiles
-  stay base64 end-to-end so the MCP layer can hand them straight to
-  the wire — no decode/re-encode round-trip. Caps on tile count, per-
-  tile size, and aggregate size are enforced inside `Resolve`
-  (`MaxScreenshotTiles`, `MaxScreenshotTileBase64Bytes`,
-  `MaxScreenshotTotalBase64Bytes`).
-- `reactor.go` — thin shell around the diagnostic buffer + screenshot
-  broker. The MCP layer calls `GetDiagnostics` / `CaptureScreenshot`;
-  session teardown calls `TeardownThread`.
+- `reactor.go` — thin shell holding the diagnostic buffer plus a
+  `Capturer` indirection (interface). The MCP layer calls
+  `GetDiagnostics` / `CaptureScreenshot`; session teardown calls
+  `TeardownThread`. The Capturer interface lives here (rather than in
+  `internal/screenshot/`) so tests can drive the reactor with a
+  trivial fake — no chromedp required. The production Capturer is
+  wired in `app_design.go`'s `newDesignCapturer`, which builds the
+  loopback `/design/{threadId}/main/` URL and delegates to the
+  shared `screenshot.Manager`.
 - `mcp.go` — the design MCP HTTP server. Loopback listener with a
   per-thread URL token; both Codex (inline `mcp_servers` config) and
   Claude (`--mcp-config <json>`) consume the same wire. Two tools:
   `get_design_diagnostics(since_token)` and `read_screenshot()`. The
   server is provider-agnostic — it knows how to dispatch a JSON-RPC
   `tools/call` into the reactor, nothing about Codex or Claude
-  specifically.
+  specifically. Tool-side errors (capturer failures, etc.) come back
+  via the MCP `{result: {isError: true, content: [...]}}` convention,
+  not JSON-RPC error frames; `context.Canceled` is the lone exception
+  (mapped to a JSON-RPC error so a session-teardown abort surfaces
+  cleanly).
 - `server.go` — `FileHandler(baseDir)` returns
   `http.FileServer(http.Dir(baseDir))` wrapped in
   `InjectionMiddleware`. The middleware buffers HTML responses, parses
@@ -54,22 +56,15 @@ both providers consume, and the bundled design-mode system prompt.
   capture script into `<head>`. The script captures
   `console.error/warn`, `window.onerror`, and unhandled rejections,
   posting batches to the parent over `postMessage`. It also handles
-  `{aoDesign: 'capture', mode}` requests by lazy-loading a self-hosted
-  `modern-screenshot` UMD bundle from `/design/_aoassets/modern-screenshot.js`
-  (esm.sh's dynamic-import path is unavailable from the iframe's
-  opaque sandbox origin — see `serveModernScreenshot`). Two capture
-  modes:
-    - `mode: 'single'` — full-document PNG; used by the user-facing
-      send-to-thread upload.
-    - `mode: 'tiles'` — `domToCanvas` rendered at 1280-css-px width,
-      sliced into 1280×800 JPEG-q-0.85 tiles top-to-bottom (max 8),
-      with a `clipped` flag when the page exceeds the budget. Used
-      by the agent's `read_screenshot` MCP tool — tiling keeps each
-      image inside per-image vision-token budgets.
-  All capture work runs inside the iframe because the
-  `sandbox="allow-scripts"` (no `allow-same-origin`) sandbox gives
-  the iframe an opaque origin and prevents the parent from reaching
-  `iframe.contentDocument`.
+  one capture mode — `{aoDesign: 'capture', requestId, mode: 'single'}`
+  — by lazy-loading a self-hosted `modern-screenshot` UMD bundle from
+  `/design/_aoassets/modern-screenshot.js` and posting back a
+  `capture-result` with the rendered PNG. This single-PNG mode is
+  used by the user-facing "send to thread" upload (one PNG becomes
+  one chat attachment); the agent's `read_screenshot` MCP tool does
+  NOT round-trip through the iframe — it goes through
+  `internal/screenshot/` which renders the same `/design/` URL with
+  a real Chromium subprocess.
 - `prompts.go` — `LoadDesignSystemPrompt`: bundled default plus
   override at `<configDir>/prompts/design-mode.md`.
 
@@ -80,11 +75,16 @@ both providers consume, and the bundled design-mode system prompt.
     (`workdir.go`).
   - Serving those files to the iframe with a postMessage capture +
     diagnostic script injected into HTML responses.
-  - Buffering diagnostics and brokering screenshot round-trips.
+  - Buffering diagnostics behind a per-thread ring buffer.
   - System-prompt loading + override precedence.
+  - The MCP tool surface and the `Capturer` indirection it dispatches
+    into.
 - What does NOT belong here:
   - Rendering HTML. That's the frontend (and the agent that wrote
     it).
+  - The headless browser that drives `read_screenshot`. That lives
+    in `internal/screenshot/`. The Capturer interface in `reactor.go`
+    is the seam.
   - Provider-specific session params. `mcp.go` returns a generic
     `{serverName: {url}}` map; Codex's `buildThreadParams` plumbs it
     into `config.mcp_servers`, Claude's session writes it to a temp
@@ -115,16 +115,20 @@ both providers consume, and the bundled design-mode system prompt.
   agent-rendered HTML is untrusted; the postMessage capture script
   exists specifically because the parent cannot reach into the
   iframe's document.
-- Do NOT let a pending screenshot capture leak when the session ends.
-  `ScreenshotBroker.TeardownThread` must be called from
-  `app_session.go`'s teardown path.
 - Do NOT serve files outside the per-thread subtree. `http.FileServer`
   + `http.Dir(designBase)` resolves the cleaned URL path against the
   base; combined with the workdir manager's segment sanitization on
   writes, this enforces the per-thread sandbox.
+- Do NOT add capture state on the design package. `Capturer.Capture`
+  is request-scoped — the inbound MCP tool-call context cancels the
+  capture. There's no thread-keyed pending-request map to leak; if
+  one ever returns, route it through `internal/screenshot/` rather
+  than re-introducing a broker here.
 
 ## References
 
+- `internal/screenshot/AGENTS.md` — the headless Chromium driver that
+  backs the production `Capturer` implementation.
 - `internal/gitwatch/watcher.go` — pattern mirrored by `watcher.go`.
 - `docs/architecture/data-flow.md` — where design events sit in the
   overall pipeline.

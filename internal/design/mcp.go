@@ -21,7 +21,7 @@ const mcpProtocolVersion = "2025-03-26"
 // is why it lives alongside the rest of the design machinery rather
 // than inside a provider package.
 //
-// Tools surfaced after the v42 rewrite:
+// Tools surfaced:
 //
 //   - get_design_diagnostics(since_token) -> {diagnostics, next_token}
 //     Returns runtime errors / console output captured from the iframe
@@ -29,12 +29,13 @@ const mcpProtocolVersion = "2025-03-26"
 //     watcher fired recently but no diagnostics have landed yet.
 //
 //   - read_screenshot() -> N image content blocks
-//     Round-trips through the frontend to capture the live iframe.
-//     The frontend returns the rendered output as one or more JPEG
-//     tiles top-to-bottom; the MCP result content array carries each
-//     tile as an `image` block with `mimeType: image/jpeg`. If the
-//     page exceeded the tile budget the result trails with a `text`
-//     block flagging the clip so the agent knows there's more page.
+//     Captured by a backend headless Chromium subprocess (see
+//     internal/screenshot.Manager) that loads the same per-thread URL
+//     the iframe shows the user. The result content array carries
+//     each tile as an `image` block with `mimeType: image/jpeg`. If
+//     the page exceeded the tile budget the result trails with a
+//     `text` block flagging the clip so the agent knows there's more
+//     page.
 //
 // Per-thread URL tokens isolate sessions; the tools don't take a
 // thread id parameter — the URL tells the server which thread the
@@ -269,9 +270,10 @@ func (s *MCPServer) handleReadScreenshot(
 ) {
 	result, err := s.reactor.CaptureScreenshot(ctx, threadID)
 	if err != nil {
-		if errors.Is(err, ErrScreenshotSessionEnded) {
-			// Session ended mid-tool-call: clean cancellation, not
-			// a tool error.
+		if errors.Is(err, context.Canceled) {
+			// Session torn down or request aborted while the headless
+			// browser was mid-capture: clean cancellation, not a tool
+			// error.
 			writeRPCError(w, req.ID, http.StatusOK, -32000, "design session ended")
 			return
 		}
@@ -280,7 +282,7 @@ func (s *MCPServer) handleReadScreenshot(
 	}
 	content := make([]map[string]any, 0, len(result.Tiles)+1)
 	for _, tileBase64 := range result.Tiles {
-		// Tiles flow through the broker base64-encoded so we can hand
+		// Tiles flow through the slicer base64-encoded so we can hand
 		// them straight to the wire; no decode/re-encode round-trip.
 		content = append(content, map[string]any{
 			"type":     "image",

@@ -208,15 +208,14 @@ var LocalOnlyMethods = map[string]bool{
 	"UploadAttachment": true,
 	"DeleteAttachment": true,
 	// Design-mode local-FS + coordination surface. The frontend posts
-	// iframe-captured diagnostics into the per-thread ring, resolves
-	// screenshot tool calls, and reads/writes the per-thread design
-	// workdir (option-set bookkeeping, layout enumeration). All
-	// loopback-only — these expose either RCE-equivalent surface
-	// (workdir mutation) or filesystem-layout disclosure (the absolute
-	// main path + manifest in GetDesignWorkdirInfo).
+	// iframe-captured diagnostics into the per-thread ring and
+	// reads/writes the per-thread design workdir (option-set
+	// bookkeeping, layout enumeration). All loopback-only — these
+	// expose either RCE-equivalent surface (workdir mutation) or
+	// filesystem-layout disclosure (the absolute main path + manifest
+	// in GetDesignWorkdirInfo). The agent's read_screenshot path is
+	// backend-driven and never touches the wire.
 	"IngestDiagnosticBatch":  true,
-	"IngestScreenshot":       true,
-	"FailScreenshot":         true,
 	"EnsureDesignWorkdir":    true,
 	"DismissDesignOptionSet": true,
 	"LatestDesignOptionSet":  true,

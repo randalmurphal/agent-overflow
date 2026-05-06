@@ -251,8 +251,6 @@ export const DismissDesignOptionSet = dispatch('DismissDesignOptionSet');
 export const EnsureDesignWorkdir = dispatch('EnsureDesignWorkdir');
 export const GetDesignWorkdirInfo = dispatch('GetDesignWorkdirInfo');
 export const IngestDiagnosticBatch = dispatch('IngestDiagnosticBatch');
-export const IngestScreenshot = dispatch('IngestScreenshot');
-export const FailScreenshot = dispatch('FailScreenshot');
 
 // Composer enhancements
 export const UploadAttachment = dispatch('UploadAttachment');

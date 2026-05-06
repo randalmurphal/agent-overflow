@@ -58,11 +58,6 @@ interface DesignOptionsUpdatePayload {
   threadId: string;
   setId: string;
 }
-interface DesignCaptureRequestPayload {
-  threadId: string;
-  requestId: string;
-}
-
 /**
  * Frontend event names for design-mode UI handlers. The preview panel
  * subscribes to these (not Wails events) so the throttled handler
@@ -71,7 +66,6 @@ interface DesignCaptureRequestPayload {
  */
 export const DESIGN_RELOAD_MAIN_EVENT = 'ao-design:reload-main';
 export const DESIGN_OPTIONS_UPDATE_EVENT = 'ao-design:options-update';
-export const DESIGN_CAPTURE_REQUEST_EVENT = 'ao-design:capture-request';
 
 function dispatchDomEvent(name: string, detail: unknown): void {
   if (typeof window === 'undefined') return;
@@ -1050,18 +1044,6 @@ export function setupEventListeners(): () => void {
     },
   );
 
-  // design:capture-request — agent invoked the read_screenshot tool and
-  // is waiting for the frontend to capture the live iframe. Forwarded as
-  // a DOM event so the preview panel can drive the capture against its
-  // own iframe ref.
-  const cancelDesignCaptureRequest = wailsEventOn<DesignCaptureRequestPayload>(
-    'design:capture-request',
-    (payload) => {
-      if (!payload?.threadId || !payload?.requestId) return;
-      dispatchDomEvent(DESIGN_CAPTURE_REQUEST_EVENT, payload);
-    },
-  );
-
   // thread:runtime_mode_changed — backend persisted a new three-tier
   // approval mode. Refresh the sidebar cache and active pane; AccessToggle
   // only stages draft intent, so this event or SendMessageWithOptions'
@@ -1133,7 +1115,6 @@ export function setupEventListeners(): () => void {
     cancelTransportGap();
     cancelDesignReloadMain();
     cancelDesignOptionsUpdate();
-    cancelDesignCaptureRequest();
     cancelModeChanged();
     cancelRuntimeModeChanged();
     // Drop any pending throttled reloads + per-thread last-fire
