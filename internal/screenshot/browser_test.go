@@ -89,6 +89,57 @@ func TestClassifyCaptureFailure(t *testing.T) {
 	}
 }
 
+// TestManagerEnsureStartedDetectsDeadBrowser pins the auto-reboot
+// contract: a Manager whose previously-booted browser died on us
+// (browserCtx canceled while m.started is still true) is detected by
+// ensureStarted, torn down, and queued for re-init. Without this
+// branch we'd hand out the dead context to Capture and fall out of
+// chromedp.Run with context.Canceled in milliseconds — exactly the
+// "browser_dead_at_entry" trigger we observed in production.
+//
+// The test simulates a started-then-dead Manager by hand-flipping
+// state, then verifies ensureStarted with a nil installer fails on
+// startLocked (proving it ATTEMPTED a reboot rather than returning
+// nil from the m.started fast path).
+func TestManagerEnsureStartedDetectsDeadBrowser(t *testing.T) {
+	m := NewManager(nil)
+
+	// Simulate a previously-booted browser that died.
+	deadCtx, deadCancel := context.WithCancel(context.Background())
+	deadCancel() // immediately canceled — represents a dead browser
+
+	m.startMu.Lock()
+	m.started = true
+	m.startMu.Unlock()
+	m.stateMu.Lock()
+	m.browserCtx = deadCtx
+	m.browserCancel = func() {}
+	m.allocCancel = func() {}
+	m.stateMu.Unlock()
+
+	// ensureStarted must NOT return nil from the started=true fast
+	// path; it must detect the dead browser, tear down, and try to
+	// reboot via startLocked. A nil installer panics on Install ->
+	// catch the panic to confirm we reached startLocked.
+	defer func() {
+		// recover the nil-deref from m.installer.Install — that's our
+		// proof the rebuild path ran. Any other outcome (no panic, or
+		// nil error) means ensureStarted incorrectly returned from the
+		// started=true fast path.
+		r := recover()
+		if r == nil {
+			t.Fatal("ensureStarted with dead browser returned without trying to reboot — should have called startLocked and panicked on nil installer")
+		}
+		// Confirm the teardown ran by checking state is cleared.
+		m.stateMu.Lock()
+		defer m.stateMu.Unlock()
+		if m.browserCtx != nil {
+			t.Errorf("browserCtx not cleared during reboot teardown: %v", m.browserCtx)
+		}
+	}()
+	_ = m.ensureStarted(context.Background())
+}
+
 // TestManagerCloseIsIdempotent pins the documented Close contract: a
 // never-started Manager closes cleanly, and repeated Close calls are a
 // no-op. App.Shutdown's recorder calls Close unconditionally, so a

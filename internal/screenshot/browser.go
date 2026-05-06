@@ -237,17 +237,43 @@ func (m *Manager) Prime(ctx context.Context) error {
 	return m.ensureStarted(ctx)
 }
 
-// ensureStarted installs and launches the browser exactly once per
-// successful boot. A failed install or boot does NOT permanently
-// poison the Manager — the next call retries from scratch. Multiple
-// concurrent first-callers serialise on startMu; only the winner
-// runs the install.
+// ensureStarted installs and launches the browser, or reuses an
+// existing one if it's still alive. If the previously-booted browser
+// died on us (chromedp's allocator marks browserCtx canceled when the
+// Chrome process exits), we tear down the stale state and reboot
+// transparently — Capture sees a working browserCtx either way.
+//
+// Multiple concurrent callers serialise on startMu; only the winner
+// runs install/boot. A failed boot does NOT permanently poison the
+// Manager — m.started stays false and the next call retries.
 func (m *Manager) ensureStarted(ctx context.Context) error {
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
+
 	if m.started {
-		return nil
+		// Health check: if the long-lived browserCtx is canceled the
+		// Chrome process is dead. Without this branch we'd happily
+		// hand out the dead context to Capture and chromedp.Run
+		// would fall through with context.Canceled in milliseconds —
+		// the "errors basically immediately" symptom we chased
+		// before this fix landed.
+		m.stateMu.Lock()
+		var bcErr error
+		var bcCause error
+		if m.browserCtx != nil {
+			bcErr = m.browserCtx.Err()
+			bcCause = context.Cause(m.browserCtx)
+		}
+		m.stateMu.Unlock()
+		if bcErr == nil {
+			return nil
+		}
+		log.Printf("screenshot: ensureStarted: previous browser died (err=%v cause=%v); rebooting",
+			bcErr, bcCause)
+		m.teardownLocked()
+		m.started = false
 	}
+
 	if err := m.startLocked(ctx); err != nil {
 		m.startErr = err
 		return err
@@ -255,6 +281,24 @@ func (m *Manager) ensureStarted(ctx context.Context) error {
 	m.started = true
 	m.startErr = nil
 	return nil
+}
+
+// teardownLocked clears the live browser/alloc fields and cancels
+// their contexts. Caller must hold startMu so the in-flight check in
+// ensureStarted doesn't race; stateMu is taken briefly inside.
+func (m *Manager) teardownLocked() {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	if m.browserCancel != nil {
+		m.browserCancel()
+	}
+	if m.allocCancel != nil {
+		m.allocCancel()
+	}
+	m.browserCtx = nil
+	m.browserCancel = nil
+	m.allocCtx = nil
+	m.allocCancel = nil
 }
 
 func (m *Manager) startLocked(ctx context.Context) error {
@@ -292,6 +336,19 @@ func (m *Manager) startLocked(ctx context.Context) error {
 		allocCancel()
 		return fmt.Errorf("screenshot: launch: %w", err)
 	}
+
+	// Death watcher: log the moment the chromedp browser process
+	// exits, with chromedp's cancellation cause attached. Used to
+	// correlate "browser died" with whatever the user/agent was
+	// doing at the time so we can chase a real root cause for the
+	// auto-reboot path. The goroutine exits when browserCtx is
+	// canceled — either because we tore it down (Close, ensureStarted
+	// rebuild) or because the browser exited on its own.
+	go func() {
+		<-browserCtx.Done()
+		log.Printf("screenshot: long-lived browserCtx canceled: err=%v cause=%v",
+			browserCtx.Err(), context.Cause(browserCtx))
+	}()
 
 	m.stateMu.Lock()
 	m.allocCtx = allocCtx
