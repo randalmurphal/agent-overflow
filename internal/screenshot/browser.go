@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -149,22 +150,81 @@ func (m *Manager) Capture(ctx context.Context, opts CaptureOptions) ([]byte, err
 	}()
 
 	captureStart := time.Now()
-	pngBytes, err := runCapture(mergedCtx, opts)
+	browserDeadAtEntry := browserCtx.Err() != nil
+	prog := &runProgress{}
+	pngBytes, err := runCapture(mergedCtx, opts, prog)
 	if err != nil {
-		// Single structured log line on failure pulls every relevant
-		// context error/cause into one place so a reader doesn't have
-		// to correlate scattered ctx.Err() outputs by timestamp.
-		log.Printf("screenshot: capture %s failed after %s: err=%v merged.cause=%v inbound.err=%v inbound.cause=%v deadline.err=%v capture.err=%v browser.err=%v",
-			opts.URL, time.Since(captureStart),
-			err,
-			context.Cause(mergedCtx),
-			ctx.Err(), context.Cause(ctx),
-			deadlineCtx.Err(),
-			captureCtx.Err(),
-			browserCtx.Err(),
-		)
+		// Build a categorical diagnostic and embed it in the wrapped
+		// error string. The agent's read_screenshot tool surfaces this
+		// verbatim, so the user sees the trigger directly in chat
+		// without needing to find the right log destination.
+		detail := classifyCaptureFailure(captureFailureContext{
+			elapsed:            time.Since(captureStart),
+			lastStep:           prog.last(),
+			mergedCause:        context.Cause(mergedCtx),
+			inboundErr:         ctx.Err(),
+			deadlineErr:        deadlineCtx.Err(),
+			captureCtxErr:      captureCtx.Err(),
+			browserErr:         browserCtx.Err(),
+			browserDeadAtEntry: browserDeadAtEntry,
+		})
+		log.Printf("screenshot: capture %s failed: %v [%s]", opts.URL, err, detail)
+		return nil, fmt.Errorf("screenshot: capture %s: %w [%s]", opts.URL, err, detail)
 	}
-	return pngBytes, err
+	return pngBytes, nil
+}
+
+// captureFailureContext bundles the snapshot of all relevant ctx
+// errors and the last-attempted action so classifyCaptureFailure can
+// produce one categorical detail string.
+type captureFailureContext struct {
+	elapsed            time.Duration
+	lastStep           string
+	mergedCause        error
+	inboundErr         error
+	deadlineErr        error
+	captureCtxErr      error
+	browserErr         error
+	browserDeadAtEntry bool
+}
+
+// classifyCaptureFailure picks the most informative single trigger
+// label and packs it with the supporting detail. The four well-known
+// root causes (inbound MCP cancel, our 30 s deadline, chromedp tab
+// died, browser process died) are each given a distinct label so a
+// reader can act without staring at five context.Err() values.
+func classifyCaptureFailure(c captureFailureContext) string {
+	parts := []string{fmt.Sprintf("elapsed=%s", c.elapsed.Round(time.Millisecond))}
+	if c.lastStep != "" {
+		parts = append(parts, "last_step="+c.lastStep)
+	}
+	switch {
+	case c.browserDeadAtEntry:
+		parts = append(parts, "trigger=browser_dead_at_entry",
+			"browser_err="+errString(c.browserErr))
+	case errors.Is(c.mergedCause, errInboundCanceled):
+		parts = append(parts, "trigger=agent_canceled_request",
+			"inbound_err="+errString(c.inboundErr))
+	case errors.Is(c.deadlineErr, context.DeadlineExceeded):
+		parts = append(parts, "trigger=screenshot_30s_deadline_exceeded")
+	case c.browserErr != nil:
+		parts = append(parts, "trigger=browser_died_during_capture",
+			"browser_err="+errString(c.browserErr))
+	case c.captureCtxErr != nil:
+		parts = append(parts, "trigger=chromedp_tab_died",
+			"capture_err="+errString(c.captureCtxErr))
+	default:
+		parts = append(parts, "trigger=unknown",
+			"merged_cause="+errString(c.mergedCause))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func errString(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return err.Error()
 }
 
 // Prime kicks off install + browser boot ahead of the first Capture.

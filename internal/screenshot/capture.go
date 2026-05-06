@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/emulation"
@@ -11,6 +12,34 @@ import (
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
+
+// runProgress tracks the most recent chromedp action a capture
+// started executing. The Manager.Capture caller writes the value
+// into the failure error so the user sees which step was running
+// when cancellation hit — without having to find the right console
+// for log.Printf output.
+type runProgress struct {
+	mu       sync.Mutex
+	lastStep string
+}
+
+func (p *runProgress) note(step string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.lastStep = step
+	p.mu.Unlock()
+}
+
+func (p *runProgress) last() string {
+	if p == nil {
+		return ""
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastStep
+}
 
 // MaxCaptureHeightPx caps the y-extent of the captured rectangle.
 // Without this, an accidental infinite-scroll or adversarial page
@@ -54,31 +83,33 @@ const MaxCaptureHeightPx = DefaultMaxTiles * DefaultTileHeight
 // PNG-then-JPEG (the slicer converts to JPEG) keeps fidelity higher
 // than asking Chrome for JPEG directly at the cost of a few hundred
 // KB between Chrome and us.
-func runCapture(ctx context.Context, opts CaptureOptions) ([]byte, error) {
+func runCapture(ctx context.Context, opts CaptureOptions, prog *runProgress) ([]byte, error) {
 	var pngBytes []byte
 	err := chromedp.Run(ctx,
-		traced("setMetricsOverride", emulation.SetDeviceMetricsOverride(int64(opts.ViewportWidth), int64(opts.ViewportHeight), opts.DeviceScaleFactor, false)),
-		traced("navigate", chromedp.Navigate(opts.URL)),
-		traced("waitReady body", chromedp.WaitReady("body", chromedp.ByQuery)),
-		traced("settleDocument", settleDocument()),
-		traced("captureScreenshot", captureWithHeightCap(&pngBytes, opts.ViewportWidth)),
+		traced(prog, "setMetricsOverride", emulation.SetDeviceMetricsOverride(int64(opts.ViewportWidth), int64(opts.ViewportHeight), opts.DeviceScaleFactor, false)),
+		traced(prog, "navigate", chromedp.Navigate(opts.URL)),
+		traced(prog, "waitReady body", chromedp.WaitReady("body", chromedp.ByQuery)),
+		traced(prog, "settleDocument", settleDocument()),
+		traced(prog, "captureScreenshot", captureWithHeightCap(&pngBytes, opts.ViewportWidth)),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("screenshot: capture %s: %w", opts.URL, err)
+		return nil, err
 	}
 	if len(pngBytes) == 0 {
-		return nil, fmt.Errorf("screenshot: capture %s returned 0 bytes", opts.URL)
+		return nil, fmt.Errorf("captured 0 bytes")
 	}
 	return pngBytes, nil
 }
 
-// traced wraps a chromedp.Action with start/end timing logs so that
-// when a capture fails the most recent log line tells us which step
-// was running. The instrumentation is always-on; one capture's worth
-// of lines per read_screenshot is rare-enough volume that the noise
-// is preferable to needing a special debug build to diagnose.
-func traced(name string, action chromedp.Action) chromedp.Action {
+// traced wraps a chromedp.Action with start/end timing logs and
+// records the most recent step name into prog for the caller's
+// failure-path diagnostic. The instrumentation is always-on; one
+// capture's worth of lines per read_screenshot is rare-enough volume
+// that the noise is preferable to needing a special debug build to
+// diagnose.
+func traced(prog *runProgress, name string, action chromedp.Action) chromedp.Action {
 	return chromedp.ActionFunc(func(ctx context.Context) error {
+		prog.note(name)
 		start := time.Now()
 		log.Printf("screenshot: %s: start", name)
 		err := action.Do(ctx)
