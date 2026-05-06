@@ -1577,4 +1577,103 @@ describe('<Composer>', () => {
 
     expect(undo).not.toHaveBeenCalled();
   });
+
+  it('focuses the textarea after draft hydrates with cursor at end of resumed content', async () => {
+    setBindingMock('GetDraft', async (threadId: string) => ({
+      threadId,
+      content: 'resumed text',
+      attachmentIds: [],
+      terminalChips: [],
+      updatedAt: 0,
+    }));
+    const pane = await buildPane();
+    const draft = await buildDraft();
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(textarea);
+      expect(textarea.selectionStart).toBe('resumed text'.length);
+      expect(textarea.selectionEnd).toBe('resumed text'.length);
+    });
+  });
+
+  it('focuses with cursor at offset 0 when the draft is empty', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(textarea);
+      expect(textarea.selectionStart).toBe(0);
+      expect(textarea.selectionEnd).toBe(0);
+    });
+  });
+
+  it('does not focus the textarea while the draft is still hydrating', async () => {
+    let resolveGetDraft!: (value: unknown) => void;
+    const pendingGetDraft = new Promise<unknown>((resolve) => {
+      resolveGetDraft = resolve;
+    });
+    setBindingMock('GetDraft', () => pendingGetDraft);
+    const pane = await buildPane();
+    const draft = createComposerDraftStore({ debounceMs: 0 });
+    // Kick off hydration without awaiting it — the GetDraft mock above
+    // is parked until we resolve it below.
+    void draft.setThread('thread-1');
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await tick();
+    expect(draft.hydrating).toBe(true);
+    expect(document.activeElement).not.toBe(textarea);
+
+    resolveGetDraft({
+      threadId: 'thread-1',
+      content: 'late text',
+      attachmentIds: [],
+      terminalChips: [],
+      updatedAt: 0,
+    });
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(textarea);
+      expect(textarea.selectionStart).toBe('late text'.length);
+    });
+  });
+
+  it('does not steal focus when textarea is disabled (no active thread)', async () => {
+    const pane = createThreadPane();
+    const draft = await buildDraft(null);
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await tick();
+    expect(textarea.disabled).toBe(true);
+    expect(document.activeElement).not.toBe(textarea);
+  });
+
+  it('yields Shift+Tab to the global keydown handler without preventDefault', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    textarea.dispatchEvent(event);
+    await tick();
+
+    expect(event.defaultPrevented).toBe(false);
+  });
 });

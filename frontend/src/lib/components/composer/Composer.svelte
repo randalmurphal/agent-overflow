@@ -17,6 +17,7 @@
   import ComposerPendingApprovalPanel from './ComposerPendingApprovalPanel.svelte';
   import ComposerPendingUserInputPanel from './ComposerPendingUserInputPanel.svelte';
   import {
+    focusTextareaAtEnd,
     handleMentionPopoverKeydown,
     performQueueRetract,
     shouldRetractQueueOnUpArrow,
@@ -63,6 +64,7 @@
   let expandedVersion = $state(0);
   let lastAutosizedTextarea: HTMLTextAreaElement | undefined;
   let lastAutosizedValue = '';
+  let focusInitialized = false;
 
   const mentions = createComposerMentions({
     getTextarea: () => textarea,
@@ -219,6 +221,28 @@
   $effect(() => {
     pane.threadId;
     locallyImplementedPlanIds = new Set();
+  });
+
+  // Initial focus per thread entry. App.svelte wraps ChatView in
+  // `{#key pane.threadId}`, so this effect runs fresh per thread switch
+  // with `focusInitialized = false`. The reactive guards wait until
+  // the draft store has aligned with the active thread AND hydration
+  // has finished — otherwise focusing during hydration parks the
+  // caret at 0 and the loaded snapshot pops in under it.
+  // `focusTextareaAtEnd` reads off the live DOM so the same code
+  // covers the regular composer (bound to draft.content) and the
+  // user-input-prompt case (bound to userInputCustomAnswer).
+  $effect(() => {
+    const node = textarea;
+    const hydrating = draft.hydrating;
+    const draftThreadId = draft.threadId;
+    const expectedThreadId = pane.threadId;
+    if (focusInitialized) return;
+    if (!node) return;
+    if (draftThreadId !== expectedThreadId) return;
+    if (hydrating) return;
+    focusInitialized = true;
+    focusTextareaAtEnd(node);
   });
 
   $effect(() => {
@@ -415,11 +439,15 @@
   }
 
   async function handleKeydown(e: KeyboardEvent) {
-    // Shift+Tab globally cycles thread mode. Prevent the browser's outdent
-    // and let the App-level keydown fire. User has confirmed textarea
-    // outdent is not wanted.
+    // Shift+Tab is owned by the global keydown handler (`mode.cycle`).
+    // Yield without preventDefault — the global handler bails on
+    // `defaultPrevented`, so consuming the chord here would cancel
+    // the dispatch; the global handler preventDefaults on successful
+    // dispatch to suppress the browser's focus-shift. The
+    // mention/slash guards skip this branch when a popover is open,
+    // but `handleMentionPopoverKeydown` below has its own Shift+Tab
+    // bail-out so the chord still reaches the global dispatcher.
     if (e.key === 'Tab' && e.shiftKey && !mentions.mentionTrigger && !mentions.slashTrigger) {
-      e.preventDefault();
       return;
     }
 

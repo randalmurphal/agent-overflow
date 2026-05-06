@@ -71,6 +71,12 @@ export function handleMentionPopoverKeydown(
   e: KeyboardEvent,
   mentions: ComposerMentionsHandle,
 ): boolean {
+  // Shift+Tab is reserved for the global `mode.cycle` chord even when
+  // a popover is open. `popoverNav` collapses Tab and Enter into a
+  // single `insert` action without inspecting the shift modifier, so
+  // without this guard Shift+Tab while typing `@foo` would insert the
+  // active item instead of cycling chat ↔ plan.
+  if (e.key === 'Tab' && e.shiftKey) return false;
   if (mentions.mentionTrigger) {
     const action = popoverNav({
       key: e.key,
@@ -127,6 +133,20 @@ export function handleMentionPopoverKeydown(
   }
 
   return false;
+}
+
+/**
+ * Focus the textarea and place the cursor at the end of its current
+ * value. Shared idiom: any time the composer programmatically grabs
+ * focus (initial mount after draft hydration, queue retract restoring
+ * a draft snapshot, etc.) we want the caret to land where the user
+ * would resume typing — at the end. Centralising it here keeps the
+ * "focus + cursor end" contract in one place.
+ */
+export function focusTextareaAtEnd(node: HTMLTextAreaElement): void {
+  const end = node.value.length;
+  node.focus();
+  node.setSelectionRange(end, end);
 }
 
 // ---- UP-arrow queue retract ----
@@ -238,8 +258,6 @@ export async function performQueueRetract(deps: QueueRetractDeps): Promise<void>
   }
 
   if (textarea) {
-    textarea.focus();
-    const end = textarea.value.length;
-    textarea.setSelectionRange(end, end);
+    focusTextareaAtEnd(textarea);
   }
 }

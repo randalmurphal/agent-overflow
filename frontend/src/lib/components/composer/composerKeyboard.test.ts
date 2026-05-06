@@ -199,6 +199,36 @@ describe('handleMentionPopoverKeydown', () => {
     expect(mentions.insertMention).toHaveBeenCalled();
     expect(mentions.insertSlashCommand).not.toHaveBeenCalled();
   });
+
+  it('mention popover: Shift+Tab is reserved for mode.cycle and falls through', () => {
+    const mentions = stubMentions();
+    (mentions as { mentionTrigger: unknown }).mentionTrigger = { query: '' };
+    (mentions as { mentionResults: unknown[] }).mentionResults = [{ path: 'a' }, { path: 'b' }];
+    const ev = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    expect(handleMentionPopoverKeydown(ev, mentions)).toBe(false);
+    expect(ev.defaultPrevented).toBe(false);
+    expect(mentions.insertMention).not.toHaveBeenCalled();
+  });
+
+  it('slash popover: Shift+Tab is reserved for mode.cycle and falls through', () => {
+    const mentions = stubMentions();
+    (mentions as { slashTrigger: unknown }).slashTrigger = { text: 'h' };
+    (mentions as { slashFilteredCommands: string[] }).slashFilteredCommands = ['/help'];
+    const ev = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    expect(handleMentionPopoverKeydown(ev, mentions)).toBe(false);
+    expect(ev.defaultPrevented).toBe(false);
+    expect(mentions.insertSlashCommand).not.toHaveBeenCalled();
+  });
 });
 
 describe('shouldRetractQueueOnUpArrow', () => {
