@@ -2,12 +2,22 @@ package screenshot
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
 	"github.com/chromedp/chromedp"
 )
+
+// errInboundCanceled is the cancellation cause stamped onto a
+// capture's mergedCtx when the inbound MCP request goes away.
+// `context.Cause(mergedCtx)` returning this lets us tell apart
+// "agent timed out / aborted the call" from "chromedp tab or browser
+// died" — both surface as context.Canceled on err.Err() but only
+// the inbound case carries this cause.
+var errInboundCanceled = errors.New("inbound MCP request canceled")
 
 // Manager owns a single long-lived chromedp browser. The browser
 // process is launched lazily on the first Capture call (so a thread
@@ -101,6 +111,20 @@ func (m *Manager) Capture(ctx context.Context, opts CaptureOptions) ([]byte, err
 		return nil, fmt.Errorf("screenshot: manager closed")
 	}
 
+	// Diagnostic check: a long-lived browserCtx that is already
+	// canceled at Capture entry means the chromedp browser process
+	// died sometime between Prime/last-Capture and now. Calling into
+	// chromedp.NewContext on a dead parent yields a context that's
+	// immediately Done, and the next chromedp.Run drops out with
+	// context.Canceled in single-digit milliseconds — exactly the
+	// "errors basically immediately" symptom we're chasing. Surface
+	// it loudly here so the next failure tells us if this is the
+	// hidden state.
+	if cerr := browserCtx.Err(); cerr != nil {
+		log.Printf("screenshot: capture %s: long-lived browserCtx is already canceled at entry: err=%v cause=%v",
+			opts.URL, cerr, context.Cause(browserCtx))
+	}
+
 	// Per-capture context — chromedp creates a fresh Target so
 	// listeners / inflight requests don't bleed into the next call.
 	captureCtx, captureCancel := chromedp.NewContext(browserCtx)
@@ -111,16 +135,36 @@ func (m *Manager) Capture(ctx context.Context, opts CaptureOptions) ([]byte, err
 
 	// Caller cancellation must propagate. ctx is the inbound MCP
 	// request context; chaining lets a tool-call timeout abort the
-	// whole capture chain. context.AfterFunc wires the propagation
-	// without spawning a long-lived goroutine.
-	mergedCtx, mergedCancel := context.WithCancel(deadlineCtx)
-	stop := context.AfterFunc(ctx, mergedCancel)
+	// whole capture chain. We use WithCancelCause so the inbound vs.
+	// chromedp-internal cancellation paths can be told apart at the
+	// top of the error chain via context.Cause(mergedCtx) — both
+	// surface as context.Canceled on err.Err() otherwise.
+	mergedCtx, mergedCancelCause := context.WithCancelCause(deadlineCtx)
+	stop := context.AfterFunc(ctx, func() {
+		mergedCancelCause(fmt.Errorf("%w: %w", errInboundCanceled, ctx.Err()))
+	})
 	defer func() {
 		stop()
-		mergedCancel()
+		mergedCancelCause(nil)
 	}()
 
-	return runCapture(mergedCtx, opts)
+	captureStart := time.Now()
+	pngBytes, err := runCapture(mergedCtx, opts)
+	if err != nil {
+		// Single structured log line on failure pulls every relevant
+		// context error/cause into one place so a reader doesn't have
+		// to correlate scattered ctx.Err() outputs by timestamp.
+		log.Printf("screenshot: capture %s failed after %s: err=%v merged.cause=%v inbound.err=%v inbound.cause=%v deadline.err=%v capture.err=%v browser.err=%v",
+			opts.URL, time.Since(captureStart),
+			err,
+			context.Cause(mergedCtx),
+			ctx.Err(), context.Cause(ctx),
+			deadlineCtx.Err(),
+			captureCtx.Err(),
+			browserCtx.Err(),
+		)
+	}
+	return pngBytes, err
 }
 
 // Prime kicks off install + browser boot ahead of the first Capture.

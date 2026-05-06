@@ -3,6 +3,8 @@ package screenshot
 import (
 	"context"
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/page"
@@ -55,11 +57,11 @@ const MaxCaptureHeightPx = DefaultMaxTiles * DefaultTileHeight
 func runCapture(ctx context.Context, opts CaptureOptions) ([]byte, error) {
 	var pngBytes []byte
 	err := chromedp.Run(ctx,
-		emulation.SetDeviceMetricsOverride(int64(opts.ViewportWidth), int64(opts.ViewportHeight), opts.DeviceScaleFactor, false),
-		chromedp.Navigate(opts.URL),
-		chromedp.WaitReady("body", chromedp.ByQuery),
-		settleDocument(),
-		captureWithHeightCap(&pngBytes, opts.ViewportWidth),
+		traced("setMetricsOverride", emulation.SetDeviceMetricsOverride(int64(opts.ViewportWidth), int64(opts.ViewportHeight), opts.DeviceScaleFactor, false)),
+		traced("navigate", chromedp.Navigate(opts.URL)),
+		traced("waitReady body", chromedp.WaitReady("body", chromedp.ByQuery)),
+		traced("settleDocument", settleDocument()),
+		traced("captureScreenshot", captureWithHeightCap(&pngBytes, opts.ViewportWidth)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("screenshot: capture %s: %w", opts.URL, err)
@@ -68,6 +70,26 @@ func runCapture(ctx context.Context, opts CaptureOptions) ([]byte, error) {
 		return nil, fmt.Errorf("screenshot: capture %s returned 0 bytes", opts.URL)
 	}
 	return pngBytes, nil
+}
+
+// traced wraps a chromedp.Action with start/end timing logs so that
+// when a capture fails the most recent log line tells us which step
+// was running. The instrumentation is always-on; one capture's worth
+// of lines per read_screenshot is rare-enough volume that the noise
+// is preferable to needing a special debug build to diagnose.
+func traced(name string, action chromedp.Action) chromedp.Action {
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		start := time.Now()
+		log.Printf("screenshot: %s: start", name)
+		err := action.Do(ctx)
+		elapsed := time.Since(start)
+		if err != nil {
+			log.Printf("screenshot: %s: failed after %s: %v", name, elapsed, err)
+		} else {
+			log.Printf("screenshot: %s: done in %s", name, elapsed)
+		}
+		return err
+	})
 }
 
 // captureWithHeightCap measures the rendered document height in
