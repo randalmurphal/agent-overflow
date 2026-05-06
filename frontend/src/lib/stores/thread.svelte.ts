@@ -1977,7 +1977,7 @@ export function createThreadPane() {
       activatePanel({ kind: 'diff-payload', payloadId: payload.payloadId, filePath: payload.filePath });
     },
 
-    closeDiffSidebar(): void {
+    closeRhsPanel(): void {
       activatePanel(null);
     },
 

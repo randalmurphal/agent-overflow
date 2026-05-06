@@ -13,7 +13,7 @@ import {
   GitPush,
   GitRemoveWorktree,
 } from '../../stores/bindings';
-import { replaceThread } from '../../stores/threads.svelte';
+import { syncThread } from '../../stores/panes.svelte';
 import { addToast } from '../../stores/toast.svelte';
 import { errString } from '../../utils/errors';
 import { forgeLabels } from '../../utils/forgeLabels';
@@ -64,7 +64,6 @@ export interface GitActionCtx {
   threadId: string;
   reportError: (message: string) => void;
   refreshStatus: () => Promise<void>;
-  replacePaneThread: (thread: Thread) => void;
   /**
    * Forge id (`status.forge`) for label adaptation in toasts and errors.
    * Optional — when omitted, falls back to GitHub strings via forgeLabels.
@@ -128,8 +127,7 @@ export async function runRemoveWorktreeAction(ctx: GitActionCtx): Promise<void> 
   try {
     await GitRemoveWorktree(ctx.threadId);
     const refreshedThread = (await GetThread(ctx.threadId)) as Thread;
-    ctx.replacePaneThread(refreshedThread);
-    replaceThread(refreshedThread);
+    syncThread(refreshedThread);
     addToast('success', 'Worktree removed');
     await ctx.refreshStatus();
   } catch (err) {

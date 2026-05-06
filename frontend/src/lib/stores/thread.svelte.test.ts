@@ -238,6 +238,27 @@ describe('createThreadPane', () => {
       expect(pane.diffPanel.open).toBe(false);
     });
 
+    it('closeRhsPanel closes whichever RHS panel kind is active', async () => {
+      const pane = createThreadPane();
+      await pane.switchThread(makeThread({ id: 't' }));
+
+      pane.setShowPlanSidebar(true);
+      expect(pane.activeRhsPanel?.kind).toBe('plan');
+      pane.closeRhsPanel();
+      expect(pane.activeRhsPanel).toBeNull();
+
+      pane.setDiffPanelOpen(true);
+      expect(pane.activeRhsPanel?.kind).toBe('diff-checkpoint');
+      pane.closeRhsPanel();
+      expect(pane.activeRhsPanel).toBeNull();
+      expect(pane.diffPanel.open).toBe(false);
+
+      pane.openDiffSidebar({ payloadId: 'p1' });
+      expect(pane.activeRhsPanel?.kind).toBe('diff-payload');
+      pane.closeRhsPanel();
+      expect(pane.activeRhsPanel).toBeNull();
+    });
+
     it('togglePlanSidebar respects mutex when opening', async () => {
       const pane = createThreadPane();
       await pane.switchThread(makeThread({ id: 't' }));
@@ -432,7 +453,7 @@ describe('createThreadPane', () => {
         expandedFiles: [],
         scrollTop: 0,
       });
-      pane.closeDiffSidebar();
+      pane.closeRhsPanel();
 
       await pane.switchThread(makeThread({ id: 'thread-b' }));
       await pane.switchThread(makeThread({ id: 'thread-a' }));

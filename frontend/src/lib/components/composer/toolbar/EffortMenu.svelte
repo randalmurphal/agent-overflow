@@ -11,7 +11,7 @@
     UpdateThreadContextWindow,
     UpdateThreadReasoningEffort,
   } from '../../../stores/bindings';
-  import { replaceThread } from '../../../stores/threads.svelte';
+  import { syncThread } from '../../../stores/panes.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
   import { formatTokens } from '../../../utils/format';
@@ -126,8 +126,7 @@
     }
     try {
       const updated = (await UpdateThreadReasoningEffort(pane.thread.id, next)) as Thread;
-      pane.replaceThread(updated);
-      replaceThread(updated);
+      syncThread(updated);
     } catch (err) {
       console.error('UpdateThreadReasoningEffort failed:', err);
       addToast('error', `Failed to set effort: ${errString(err)}`);
@@ -143,8 +142,7 @@
     }
     try {
       const updated = (await UpdateThreadFastMode(pane.thread.id, on)) as Thread;
-      pane.replaceThread(updated);
-      replaceThread(updated);
+      syncThread(updated);
     } catch (err) {
       console.error('UpdateThreadFastMode failed:', err);
       addToast('error', `Failed to set fast mode: ${errString(err)}`);
@@ -160,8 +158,7 @@
     }
     try {
       const updated = (await UpdateThreadContextWindow(pane.thread.id, tokens)) as Thread;
-      pane.replaceThread(updated);
-      replaceThread(updated);
+      syncThread(updated);
     } catch (err) {
       console.error('UpdateThreadContextWindow failed:', err);
       addToast('error', `Failed to set context window: ${errString(err)}`);

@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import DiscussionStartFlow from './DiscussionStartFlow.svelte';
+import { getAllPanes } from '../../stores/panes.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import type { Thread } from '../../types/models';
@@ -59,6 +60,7 @@ async function buildPane(thread = makeThread()) {
   setBindingMock('ListPayloadMetas', async () => []);
   const pane = createThreadPane();
   await pane.switchThread(thread);
+  getAllPanes().set('main', pane);
   return pane;
 }
 

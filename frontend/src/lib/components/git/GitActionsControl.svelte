@@ -201,7 +201,6 @@
       threadId: pane.threadId!,
       reportError: (msg) => pane.setGeneralError(msg),
       refreshStatus: () => refreshStatusNow(),
-      replacePaneThread: (t) => pane.replaceThread(t),
       forge: status?.forge,
     };
   }

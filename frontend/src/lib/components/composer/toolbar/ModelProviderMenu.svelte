@@ -13,7 +13,7 @@
     UpdateThreadProvider,
   } from '../../../stores/bindings';
   import { wailsEventOn } from '../../../stores/events';
-  import { replaceThread } from '../../../stores/threads.svelte';
+  import { syncThread } from '../../../stores/panes.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
   import { displayModelLabel } from '../../../utils/modelLabels';
@@ -120,12 +120,10 @@
     try {
       if (provider !== currentProvider) {
         const afterProvider = (await UpdateThreadProvider(threadId, provider)) as Thread;
-        pane.replaceThread(afterProvider);
-        replaceThread(afterProvider);
+        syncThread(afterProvider);
       }
       const updated = (await UpdateThreadModel(threadId, slug)) as Thread;
-      pane.replaceThread(updated);
-      replaceThread(updated);
+      syncThread(updated);
     } catch (err) {
       console.error('model/provider update failed:', err);
       addToast('error', `Failed to switch model: ${errString(err)}`);
@@ -184,8 +182,7 @@
       await StartDiscussionByID(threadId, fav.value);
       try {
         const refreshed = (await GetThread(threadId)) as Thread;
-        pane.replaceThread(refreshed);
-        replaceThread(refreshed);
+        syncThread(refreshed);
       } catch (refreshErr) {
         console.error('Failed to refresh thread after StartDiscussionByID:', refreshErr);
       }

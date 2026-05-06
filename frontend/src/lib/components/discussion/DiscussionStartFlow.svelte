@@ -6,7 +6,7 @@
   import { ListDiscussions, StartDiscussion, GetThread } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
-  import { replaceThread as replaceThreadList } from '../../stores/threads.svelte';
+  import { syncThread } from '../../stores/panes.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import DiscussionPicker from './DiscussionPicker.svelte';
 
@@ -91,8 +91,7 @@
       await StartDiscussion(thread.id, selected.name);
       try {
         const refreshed = (await GetThread(thread.id)) as Thread;
-        pane.replaceThread(refreshed);
-        replaceThreadList(refreshed);
+        syncThread(refreshed);
       } catch (refreshErr) {
         console.error('Failed to refresh thread after StartDiscussion:', refreshErr);
       }

@@ -26,7 +26,7 @@ import {
   replaceQueueForThread,
   type QueueItem as SendQueueItem,
 } from './sendQueue.svelte';
-import { getAllPanes } from './panes.svelte';
+import { getAllPanes, syncThread } from './panes.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
 import { addToast } from './toast.svelte';
 import { getThreadById, getThreads, replaceThread } from './threads.svelte';
@@ -310,12 +310,7 @@ function syncThreadRow(updated: Thread): void {
 
   const lastReadAt = mergeReadMarkersPreservingUnread(readMarkers);
   const latestTurnCompletedAt = mergeLatestTurnCompletedAt(latestCompletions);
-  const merged = { ...updated, lastReadAt, latestTurnCompletedAt };
-  replaceThread(merged);
-  for (const pane of getAllPanes().values()) {
-    if (pane.threadId !== updated.id || !pane.thread) continue;
-    pane.replaceThread(merged);
-  }
+  syncThread({ ...updated, lastReadAt, latestTurnCompletedAt });
 }
 
 function syncLatestTurnCompleted(evt: TurnCompletedEvent): void {

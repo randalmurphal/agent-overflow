@@ -15,7 +15,7 @@
     GitListBranches,
     UpdateThreadWorkspace,
   } from '../../../stores/bindings';
-  import { replaceThread } from '../../../stores/threads.svelte';
+  import { syncThread } from '../../../stores/panes.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
   import { sameNormalizedPath } from '../../../utils/path';
@@ -131,8 +131,7 @@
         refreshed = (await GetThread(pane.thread.id)) as Thread | null;
       }
       if (refreshed) {
-        pane.replaceThread(refreshed);
-        replaceThread(refreshed);
+        syncThread(refreshed);
       }
       addToast('info', `Checked out ${branch.name}`);
     } catch (err) {

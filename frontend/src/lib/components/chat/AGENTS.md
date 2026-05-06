@@ -97,6 +97,58 @@ Every row rendered inside `<Virtualizer>`'s children snippet:
   `markdownEnhance.ts` cache the underlying highlighter / mermaid
   instance so per-row remount is just DOM work.
 
+## Right-side panels
+
+`RhsSidebarShell.svelte` hosts the right-side panels (plan, diff
+checkpoint, diff payload). Visibility, width, and per-thread snapshot/
+restore live in `stores/rhsPanelSlot.svelte.ts`; the discriminated
+`RhsPanel` union is the wire-shape for the snapshot, so widening it
+without updating `clonePanel` will silently drop fields on thread
+switch.
+
+Panel **bodies** receive `ctx: PanelContext` (defined in
+`rhsPanelSlot.svelte.ts`), not `pane: ThreadPane`. The narrow contract
+exposes `threadId`, `paneId`, `workspacePath`, `close()`, and
+`replaceThread(thread)` — bodies cannot reach into chat-only state
+(`pane.items`, `pane.timelineRevision`, streaming flags) and therefore
+cannot accidentally re-render on every chat tick. The legacy
+`pane: ThreadPane` shape on `DiffPanelDrawer` / `LazyDiffSidebar` is
+kept until those bodies need to grow; new panels MUST take
+`PanelContext`.
+
+The shell itself keeps `pane: ThreadPane` because it owns the resizer
+chrome (`pane.getRhsSidebarMaxWidth`, `pane.setRhsSidebarWidthLive`,
+`pane.persistRhsSidebarWidth`) and the scroll-controller lease
+(`pane.scrollController`). Don't migrate the shell.
+
+**Future transcript-style panels** (e.g. a subagent's full transcript
+with tool calls): the row primitives in this directory —
+`TimelineLeaf`, `SubagentGroup`, `GenericToolCallRow`, `CommandOutput`,
+etc. — are reusable inside a sidebar transcript when the items rendered
+belong to the same pane. Per-pane registries (`expansionStateFor`,
+`attachmentCacheFor`, `isSubagentGroupExpanded`) key by `item.id` /
+`groupKey`, not array position, so a filtered subset of `pane.items`
+remounts cleanly across the chat and the sidebar simultaneously. To
+expose the registries to a transcript panel, extend `PanelContext`
+with the specific accessors that panel needs — do **not** widen back
+to `pane: ThreadPane`. The "no parallel virtualizer over `pane.items`
+or `groupedNodes`" rule prohibits a competing virtualizer over the
+**full** chat list; a sidebar virtualizer over a filtered subset is
+fine (precedent: `DiffSidebarBody` runs its own file-level
+virtualizer).
+
+Adding a new panel kind:
+
+1. Extend the `RhsPanel` union in `stores/rhsPanelSlot.svelte.ts`. If
+   the variant carries data, add a `clonePanel` branch in the same
+   file so snapshot/restore keeps the field across thread switches.
+2. Add an entry to `PANEL_COMPONENTS` in `RhsSidebarShell.svelte` —
+   the `satisfies` clause makes the type-check fail until you do.
+3. Add a render branch in the `{#key}`-wrapped `{#if}` chain inside
+   the shell. The `{#key pane.thread.id + ':' + activePanel.kind}`
+   wrapper resets the body cleanly on thread switch and on panel-kind
+   swap; rely on it instead of inner `{#key}` wrappers.
+
 ## Markdown rendering pipeline
 
 `ChatMarkdown.svelte` mounts `<Streamdown>` (svelte-streamdown), which

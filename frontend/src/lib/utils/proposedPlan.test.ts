@@ -161,25 +161,16 @@ describe('latestProposedPlanItem', () => {
     expect(latestProposedPlanItem('thread-1', [oldPlan, implementedPlan])?.id).toBe('plan-2');
   });
 
-  it('uses the first visible copy of a plan id so stale cache entries do not override it', () => {
-    const visibleImplementedPlan = planItem({
-      id: 'plan-2',
-      turnIndex: 2,
+  it('ignores items belonging to other threads', () => {
+    const ownPlan = planItem({ id: 'plan-1', turnIndex: 1, itemIndex: 0 });
+    const otherThreadPlan = planItem({
+      id: 'plan-other',
+      threadId: 'thread-2',
+      turnIndex: 5,
       itemIndex: 0,
-      meta: JSON.stringify({ planImplementedAt: 123 }),
-    });
-    const staleCachedPlan = planItem({
-      id: 'plan-2',
-      turnIndex: 2,
-      itemIndex: 0,
-      meta: '',
     });
 
-    expect(latestProposedPlanItem(
-      'thread-1',
-      [visibleImplementedPlan],
-      [staleCachedPlan],
-    )?.meta).toBe(JSON.stringify({ planImplementedAt: 123 }));
+    expect(latestProposedPlanItem('thread-1', [ownPlan, otherThreadPlan])?.id).toBe('plan-1');
   });
 });
 

@@ -14,9 +14,8 @@
     GetPayloadData,
     SendPlanRevisionComments,
   } from '../../stores/bindings';
-  import { replaceThread } from '../../stores/threads.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
+  import type { PanelContext } from '../../stores/rhsPanelSlot.svelte';
   import type { Thread } from '../../types/models';
   import {
     normalizePlanMarkdownForExport,
@@ -32,21 +31,25 @@
   import ProposedPlanSaveModal from './ProposedPlanSaveModal.svelte';
 
   interface Props {
-    pane: ThreadPane;
+    ctx: PanelContext;
   }
 
-  let { pane }: Props = $props();
+  let { ctx }: Props = $props();
 
   let sidebarRoot: HTMLElement | undefined = $state(undefined);
-  let threadId = $derived(pane.thread?.id ?? null);
-  let currentPlan = $derived(getThreadCurrentProposedPlan(threadId, pane.items));
+  let threadId = $derived(ctx.threadId);
+  // Plan derivation reads ONLY from the per-thread plan cache, not pane.items.
+  // The cache is kept current synchronously by retainProposedPlanEventListener
+  // (see proposedPlans.svelte.ts), so chat streaming chunks no longer reach
+  // this surface — the body cannot blank mid-fetch from an unrelated upsert.
+  let currentPlan = $derived(getThreadCurrentProposedPlan(threadId));
   let currentPlanMeta = $derived(parseProposedPlanPayloadMeta(currentPlan));
   let currentPlanItemMeta = $derived(parseProposedPlanItemMeta(currentPlan));
   let isAccepted = $derived(Boolean(currentPlanItemMeta.planImplementedAt));
   let title = $derived(currentPlanMeta.title || 'Proposed plan');
-  // Depend the reset $effect on these primitives, not on `currentPlan` itself.
-  // Otherwise an unrelated `pane.items` upsert (every streaming tick) re-fires
-  // the effect and blanks the body mid-fetch.
+  // Depend the reset $effect on these primitives, not on `currentPlan` itself,
+  // so a same-id replacement (e.g. updated meta after sendDrafts) does not
+  // blank the body.
   let planKey = $derived(currentPlan?.id ?? null);
   let planPayloadIdKey = $derived(currentPlan?.payloadId ?? null);
 
@@ -65,7 +68,7 @@
   // doesn't re-split on every comment add/edit.
   const normalizedMarkdown = $derived(planMarkdown !== null ? normalizePlanMarkdownForExport(planMarkdown) : '');
 
-  const planExport = createPlanSaveDialog(ensurePlanMarkdown, () => pane.threadId);
+  const planExport = createPlanSaveDialog(ensurePlanMarkdown, () => ctx.threadId);
 
   $effect(() => {
     const id = threadId;
@@ -76,7 +79,7 @@
   $effect(() => {
     const planId = planKey;
     const payloadId = planPayloadIdKey;
-    const tid = pane.threadId;
+    const tid = ctx.threadId;
     untrack(() => {
       planMarkdown = null;
       planLoadError = null;
@@ -92,18 +95,15 @@
   $effect(() => {
     threadId;
     currentPlan?.id;
-    pane.showPlanSidebar;
 
     if (!isUiRenderTraceEnabled()) return;
     recordUiTrace('plan-sidebar.state', {
       threadId,
-      visible: pane.showPlanSidebar,
       currentPlanId: currentPlan?.id ?? null,
       currentPlanTitle: currentPlanMeta.title,
     });
     scheduleDomUiTrace('plan-sidebar', 'plan-sidebar.dom', () => ({
       threadId,
-      visible: pane.showPlanSidebar,
       currentPlanId: currentPlan?.id ?? null,
       textPreview: (sidebarRoot?.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 200),
     }));
@@ -150,7 +150,7 @@
     if (planMarkdown !== null) return planMarkdown;
     const planId = currentPlan?.id;
     const payloadId = currentPlan?.payloadId;
-    const tid = pane.threadId;
+    const tid = ctx.threadId;
     if (!planId || !payloadId || !tid) {
       addToast('error', 'Failed to load proposed plan');
       return '';
@@ -161,7 +161,7 @@
   function retryLoadPlanMarkdown(): void {
     const planId = currentPlan?.id;
     const payloadId = currentPlan?.payloadId;
-    const tid = pane.threadId;
+    const tid = ctx.threadId;
     if (!planId || !payloadId || !tid) return;
     planLoadError = null;
     void loadPlanMarkdown(tid, payloadId, planId);
@@ -169,7 +169,7 @@
 
   async function sendDrafts(): Promise<void> {
     if (sendingDrafts) return;
-    const tid = pane.threadId;
+    const tid = ctx.threadId;
     const planId = currentPlan?.id;
     if (!tid || !planId) return;
     const draftIds = comments.filter((c) => c.status === 'draft').map((c) => c.id);
@@ -178,8 +178,7 @@
     sendingDrafts = true;
     try {
       const updated = (await SendPlanRevisionComments(tid, planId, draftIds)) as Thread;
-      pane.replaceThread(updated);
-      replaceThread(updated);
+      ctx.replaceThread(updated);
       await refreshPlanComments(tid, planId);
     } catch (err) {
       console.error('Failed to send plan comments:', err);
@@ -212,7 +211,7 @@
         {/if}
         <button
           type="button"
-          onclick={() => pane.setShowPlanSidebar(false)}
+          onclick={() => ctx.close()}
           data-testid="plan-sidebar-close"
           aria-label="Close Plan Sidebar"
           class="rounded p-1 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
@@ -240,11 +239,11 @@
         {:else if planMarkdown !== null}
           {#key currentPlan.id}
             <ProposedPlanReviewSurface
-              threadId={pane.threadId ?? ''}
+              threadId={ctx.threadId ?? ''}
               planItemId={currentPlan.id}
               markdown={normalizedMarkdown}
               {comments}
-              workspacePath={paneWorkspacePath(pane)}
+              workspacePath={ctx.workspacePath}
               onRefresh={() => refreshPlanComments(threadId, planKey)}
             />
           {/key}
@@ -279,7 +278,7 @@
 
 <ProposedPlanSaveModal
   open={planExport.saveDialogOpen}
-  workspacePath={pane.thread?.workspacePath}
+  workspacePath={ctx.workspacePath}
   savePath={planExport.savePath}
   saving={planExport.saving}
   onPathChange={planExport.setSavePath}

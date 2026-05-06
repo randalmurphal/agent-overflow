@@ -111,7 +111,7 @@
     if (event.key !== 'Escape') return;
     if (!asideEl?.contains(document.activeElement)) return;
     event.preventDefault();
-    pane.closeDiffSidebar();
+    pane.closeRhsPanel();
   }
 
   onMount(() => {
@@ -233,7 +233,7 @@
     {wordWrap}
     onChangeViewMode={(mode) => (viewMode = mode)}
     onToggleWordWrap={() => (wordWrap = !wordWrap)}
-    onClose={() => pane.closeDiffSidebar()}
+    onClose={() => pane.closeRhsPanel()}
   />
 
   {#if expansion.error}

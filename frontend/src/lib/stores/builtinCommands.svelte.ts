@@ -15,7 +15,8 @@ import { closePalette, openPalette } from './palette.svelte';
 import { closeThreadPicker, openThreadPicker } from './threadPicker.svelte';
 import { addToast } from './toast.svelte';
 import { getActiveTurn } from './threadStatuses.svelte';
-import { removeThread, replaceThread } from './threads.svelte';
+import { syncThread } from './panes.svelte';
+import { removeThread } from './threads.svelte';
 import { forkThreadAction } from '../components/sidebar/threadRowActions';
 import { userFacingError } from '../utils/userFacingError';
 import { getTerminalFocused } from '../components/terminal/terminalStore.svelte';
@@ -218,8 +219,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         }
         try {
           const restored = (await UnarchiveThread(t.id)) as Thread;
-          replaceThread(restored);
-          pane.replaceThread(restored);
+          syncThread(restored);
           addToast('info', 'Thread unarchived.');
         } catch (err) {
           addToast('error', userFacingError(err));
@@ -343,8 +343,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         const next = cycleMode(t.mode);
         try {
           const updated = (await UpdateThreadMode(t.id, next)) as Thread;
-          pane.replaceThread(updated);
-          replaceThread(updated);
+          syncThread(updated);
         } catch (err) {
           addToast('error', userFacingError(err));
         }

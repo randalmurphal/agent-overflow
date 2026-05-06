@@ -1,4 +1,7 @@
+import type { Thread } from '../types/models';
 import type { DiffViewMode } from './diffPanel.svelte';
+import { syncThread } from './panes.svelte';
+import type { ThreadPane } from './thread.svelte';
 
 export const RHS_PANEL_LRU_CAP = 20;
 export const RHS_PANEL_DEFAULT_WIDTH = 560;
@@ -10,6 +13,50 @@ export type RhsPanel =
   | { kind: 'plan' }
   | { kind: 'diff-checkpoint' }
   | { kind: 'diff-payload'; payloadId: string; filePath?: string };
+
+/**
+ * Narrow projection of a ThreadPane handed to RHS panel bodies. Bodies
+ * receive this instead of `pane: ThreadPane` so they cannot accidentally
+ * couple to chat-only state (`pane.items`, `pane.timelineRevision`,
+ * streaming flags) — coupling that, in PlanSidebar, was the structural
+ * cause of body-blank flicker during chat streaming.
+ *
+ * The shell (RhsSidebarShell) keeps the full pane because it owns the
+ * resizer and snapshot/restore chrome. Only panel bodies are narrowed.
+ *
+ * Adding a new panel kind that needs row registries (expansion state,
+ * attachment cache, subagent group flags) should EXTEND this interface
+ * with the specific accessors it needs, not widen back to `pane`.
+ */
+export interface PanelContext {
+  /** Thread this panel belongs to. May be null when the pane has no thread
+   *  loaded — bodies should treat null as "nothing to render" rather than
+   *  rendering a degraded surface. The shell remounts the body on thread
+   *  switch via its `{#key}` boundary. */
+  threadId: string | null;
+  /** Stable identifier for the owning pane (today: 'main'). Plumbed for
+   *  the multi-pane / tiling future where each pane has its own sidebar. */
+  paneId: string;
+  /** Workspace root for resolving relative paths in panel content. */
+  workspacePath: string | undefined;
+  /** Close this panel (X button, ESC, programmatic). Generic across panel
+   *  kinds — wires through pane.closeRhsPanel(). */
+  close(): void;
+  /** Sync an updated thread to every UI surface holding it (the owning
+   *  pane plus the global threads registry). Use after a panel action
+   *  mutates the thread server-side. */
+  replaceThread(thread: Thread): void;
+}
+
+export function makePanelContext(pane: ThreadPane, paneId = 'main'): PanelContext {
+  return {
+    threadId: pane.threadId,
+    paneId,
+    workspacePath: pane.thread?.workspacePath,
+    close: () => pane.closeRhsPanel(),
+    replaceThread: syncThread,
+  };
+}
 
 export interface DiffSidebarUIState {
   viewMode: DiffViewMode;

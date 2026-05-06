@@ -11,7 +11,7 @@
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import { GitListWorktrees, UpdateThreadWorkspace } from '../../../stores/bindings';
   import type { Worktree } from '../../../types/git';
-  import { replaceThread } from '../../../stores/threads.svelte';
+  import { syncThread } from '../../../stores/panes.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
   import { sameNormalizedPath } from '../../../utils/path';
@@ -99,8 +99,7 @@
     applying = true;
     try {
       const updated = (await UpdateThreadWorkspace(threadId, path)) as Thread;
-      pane.replaceThread(updated);
-      replaceThread(updated);
+      syncThread(updated);
       addToast('info', `Workspace switched to ${basename(path) || path}`);
     } catch (err) {
       console.error('UpdateThreadWorkspace failed:', err);

@@ -21,7 +21,7 @@
     GetThread,
     OpenInEditor,
   } from '../../stores/bindings';
-  import { replaceThread } from '../../stores/threads.svelte';
+  import { syncThread } from '../../stores/panes.svelte';
   import { errString } from '../../utils/errors';
   import { getProject } from '../../stores/projects.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
@@ -100,8 +100,7 @@
       // RenameThread returns void; re-read the row so the pane + sidebar
       // pick up the new title without hand-assembling a Thread.
       const updated = (await GetThread(threadId)) as Thread;
-      pane.replaceThread(updated);
-      replaceThread(updated);
+      syncThread(updated);
     } catch (err) {
       console.error('Rename thread failed:', err);
       pane.setGeneralError(`Failed to rename thread: ${errString(err)}`);

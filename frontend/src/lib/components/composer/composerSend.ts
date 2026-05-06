@@ -23,8 +23,8 @@ import {
 import {
   getThreadById,
   prependThread,
-  replaceThread,
 } from '../../stores/threads.svelte';
+import { syncThread } from '../../stores/panes.svelte';
 import {
   projectSendResolved,
   projectSendStarted,
@@ -72,7 +72,6 @@ export interface SendOptions {
   };
   /** Currently-focused Thread object — needed to promote a draft thread. */
   currentThread: Thread | null;
-  replaceCurrentThread: (thread: Thread) => void;
   restoreDraft: (threadId: string, snapshot: SendOptions['snapshot']) => Promise<void>;
   draftThreadId: () => string | null;
   reportError: (message: string) => void;
@@ -104,8 +103,7 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
         opts.onWorktreePrepareFinished?.();
       }
       threadForSend = updated;
-      opts.replaceCurrentThread(updated);
-      replaceThread(updated);
+      syncThread(updated);
       clearWorktreeIntent(opts.threadId);
     }
 
@@ -148,8 +146,7 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
       revisionSourceDiffCommentIds: opts.revisionSourceDiffCommentIds,
     });
     const updated = (await SendMessageWithOptions(opts.threadId, opts.message, sendOptions)) as Thread;
-    opts.replaceCurrentThread(updated);
-    replaceThread(updated);
+    syncThread(updated);
     clearRuntimeModeDraft(opts.threadId);
   } catch (err) {
     console.error('Failed to send message:', err);

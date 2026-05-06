@@ -31,7 +31,7 @@
   const title = $derived(meta.title || 'Proposed plan');
   const itemMeta = $derived(parseProposedPlanItemMeta(item));
   const isAccepted = $derived(Boolean(itemMeta.planImplementedAt));
-  const currentPlan = $derived(getThreadCurrentProposedPlan(pane.threadId, pane.items));
+  const currentPlan = $derived(getThreadCurrentProposedPlan(pane.threadId));
   const canOpenCurrentPlanSidebar = $derived(Boolean(item?.id) && currentPlan?.id === item?.id);
   const previewOnly = $derived(meta.charCount > 900 || meta.lineCount > 20);
   const displayedMarkdown = $derived.by(() => {

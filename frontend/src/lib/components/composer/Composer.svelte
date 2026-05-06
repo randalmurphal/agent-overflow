@@ -133,7 +133,7 @@
       draft.attachments.length > 0 ||
       draft.terminalChips.length > 0,
   );
-  let latestPlanItem = $derived.by(() => getThreadCurrentProposedPlan(pane.threadId, pane.items));
+  let latestPlanItem = $derived.by(() => getThreadCurrentProposedPlan(pane.threadId));
   let latestPlanSource = $derived.by<SourceProposedPlan | null>(() => {
     if (latestPlanItem?.id && locallyImplementedPlanIds.has(latestPlanItem.id)) return null;
     return sourceFromProposedPlanItem(pane.threadId, latestPlanItem);
@@ -382,11 +382,6 @@
           : undefined,
         snapshot,
         currentThread: thread,
-        replaceCurrentThread: (updated) => {
-          if (pane.threadId === updated.id) {
-            pane.replaceThread(updated);
-          }
-        },
         restoreDraft: (tid, snap) => draft.restoreDraftFor(tid, snap),
         draftThreadId: () => draft.threadId,
         reportError: (msg) => pane.setGeneralError(msg),

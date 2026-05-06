@@ -8,6 +8,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ChatHeader from './ChatHeader.svelte';
+import { getAllPanes } from '../../stores/panes.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
 import {
@@ -70,6 +71,7 @@ async function buildPane(thread: Thread = makeThread()) {
   }));
   const pane = createThreadPane();
   await pane.switchThread(thread);
+  getAllPanes().set('main', pane);
   return pane;
 }
 

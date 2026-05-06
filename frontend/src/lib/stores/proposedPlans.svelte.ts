@@ -1,5 +1,5 @@
 import type { Item, ProposedPlanComment } from '../types/models';
-import { latestProposedPlanItem } from '../utils/proposedPlan';
+import { comparePlanItemPosition, latestProposedPlanItem } from '../utils/proposedPlan';
 import { ListProposedPlanComments, ListThreadProposedPlans } from './bindings';
 import { onItemUpsert } from './events';
 
@@ -10,6 +10,11 @@ const MAX_CACHED_PLAN_COMMENTS = 32;
 interface ProposedPlanCacheEntry {
   items: Item[];
   fetchSeq: number;
+  // Increments on every sync upsert. Compared in refreshThreadProposedPlans
+  // to detect upserts that arrived while the RPC was in flight; if any did,
+  // the server response is considered stale-relative-to-local and is not
+  // allowed to wipe the locally-observed items.
+  upsertSeq: number;
   loaded: boolean;
 }
 
@@ -33,6 +38,7 @@ function entryForThread(threadId: string): ProposedPlanCacheEntry {
   cache[threadId] ??= {
     items: [],
     fetchSeq: 0,
+    upsertSeq: 0,
     loaded: false,
   };
   cacheAccess.set(threadId, Date.now());
@@ -64,9 +70,8 @@ export function getThreadProposedPlans(threadId: string | null | undefined): Ite
 
 export function getThreadCurrentProposedPlan(
   threadId: string | null | undefined,
-  visibleItems: readonly Item[] | null | undefined = [],
 ): Item | null {
-  return latestProposedPlanItem(threadId, visibleItems, getThreadProposedPlans(threadId));
+  return latestProposedPlanItem(threadId, getThreadProposedPlans(threadId));
 }
 
 export function hasLoadedThreadProposedPlans(threadId: string | null | undefined): boolean {
@@ -95,9 +100,19 @@ export async function refreshThreadProposedPlans(threadId: string | null | undef
   const entry = entryForThread(threadId);
   const seq = entry.fetchSeq + 1;
   entry.fetchSeq = seq;
+  const upsertSeqAtFetchStart = entry.upsertSeq;
   try {
     const items = ((await ListThreadProposedPlans(threadId)) as Item[] | null) ?? [];
     if (entry.fetchSeq !== seq) return;
+    // If a sync upsert landed during the fetch, the local cache holds items
+    // the server response may not yet reflect (e.g. server-side eventual
+    // consistency between the upsert event and the list query). Skip the
+    // wholesale replace — the upserted items stay, and a subsequent
+    // refresh (debounced after the latest upsert) will reconcile.
+    if (entry.upsertSeq !== upsertSeqAtFetchStart) {
+      cacheAccess.set(threadId, Date.now());
+      return;
+    }
     entry.items = items.filter((item) => item.threadId === threadId);
     entry.loaded = true;
     cacheAccess.set(threadId, Date.now());
@@ -105,6 +120,12 @@ export async function refreshThreadProposedPlans(threadId: string | null | undef
   } catch (err) {
     if (entry.fetchSeq !== seq) return;
     console.error('proposedPlans: ListThreadProposedPlans failed:', err);
+    // Same upsert-during-fetch guard: don't blank locally-observed items
+    // because the RPC happened to fail.
+    if (entry.upsertSeq !== upsertSeqAtFetchStart) {
+      cacheAccess.set(threadId, Date.now());
+      return;
+    }
     entry.items = [];
     entry.loaded = true;
     cacheAccess.set(threadId, Date.now());
@@ -164,6 +185,27 @@ function evictOldPlanCommentCacheEntries(): void {
   }
 }
 
+function upsertItemIntoCache(item: Item): void {
+  const wasNewEntry = cache[item.threadId] === undefined;
+  const entry = entryForThread(item.threadId);
+  const existingIdx = entry.items.findIndex((e) => e.id === item.id);
+  if (existingIdx >= 0) {
+    const replaced = entry.items.slice();
+    replaced[existingIdx] = item;
+    replaced.sort(comparePlanItemPosition);
+    entry.items = replaced;
+  } else {
+    entry.items = [...entry.items, item].sort(comparePlanItemPosition);
+  }
+  entry.loaded = true;
+  entry.upsertSeq += 1;
+  // Sync upserts can land for any thread the backend pushes events for,
+  // including threads with no observer. Without this, the cache could grow
+  // past MAX_CACHED_THREADS in a long-running session because eviction
+  // otherwise only runs in refreshThreadProposedPlans's success branch.
+  if (wasNewEntry) evictOldPlanCacheEntries();
+}
+
 export function scheduleThreadProposedPlansRefresh(threadId: string | null | undefined): void {
   if (!threadId) return;
   const existing = refreshTimers.get(threadId);
@@ -183,6 +225,12 @@ export function retainProposedPlanEventListener(threadIdScope?: () => string | n
   if (!cancelItemUpsert) {
     cancelItemUpsert = onItemUpsert((item) => {
       if (item.payloadKind !== 'proposed_plan') return;
+      // Synchronous insert ensures observers (PlanSidebar, Composer) see the
+      // new plan immediately — without this, getThreadCurrentProposedPlan
+      // returns stale data for ~100ms until the debounced refresh resolves.
+      // That window forced PlanSidebar to read pane.items as a fallback,
+      // which coupled it to chat streaming. See Composer.svelte / PlanSidebar.svelte.
+      upsertItemIntoCache(item);
       if (listenerThreadScopes.size > 0) {
         let matched = false;
         for (const scope of listenerThreadScopes) {
@@ -209,6 +257,17 @@ export function retainProposedPlanEventListener(threadIdScope?: () => string | n
     cancelItemUpsert?.();
     cancelItemUpsert = null;
   };
+}
+
+/**
+ * Test-only entry point that exercises the same sync-insert path used by the
+ * onItemUpsert listener, without requiring the test to drive the event bus.
+ * Production code MUST go through retainProposedPlanEventListener so the
+ * cache stays the single source of truth.
+ */
+export function upsertProposedPlanForTests(item: Item): void {
+  if (item.payloadKind !== 'proposed_plan') return;
+  upsertItemIntoCache(item);
 }
 
 export function resetProposedPlanCacheForTests(): void {

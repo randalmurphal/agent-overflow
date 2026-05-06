@@ -21,7 +21,6 @@ describe('dispatchSend', () => {
       revisionSourceProposedPlan: source,
       snapshot: { content: 'Tighten the migration step.', attachments: [], terminalChips: [] },
       currentThread: thread,
-      replaceCurrentThread: vi.fn(),
       restoreDraft: vi.fn(),
       draftThreadId: () => 'thread-1',
       reportError: vi.fn(),

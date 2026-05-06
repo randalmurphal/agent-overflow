@@ -57,7 +57,7 @@ describe('<DiffSidebar>', () => {
     expect(getByText('Retry')).toBeTruthy();
   });
 
-  it('clicking close dismisses the sidebar via pane.closeDiffSidebar', async () => {
+  it('clicking close dismisses the sidebar via pane.closeRhsPanel', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: '',
       nextOffset: 0,

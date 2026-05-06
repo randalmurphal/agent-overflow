@@ -6,7 +6,8 @@ import {
   SaveDraft,
   SendMessageWithOptions,
 } from '../stores/bindings';
-import { prependThread, replaceThread } from '../stores/threads.svelte';
+import { syncThread } from '../stores/panes.svelte';
+import { prependThread } from '../stores/threads.svelte';
 import { expandProject } from '../stores/sidebar.svelte';
 import { projectSendResolved, projectSendStarted } from '../stores/threadStatuses.svelte';
 import { addToast } from '../stores/toast.svelte';
@@ -37,8 +38,7 @@ export async function implementProposedPlan(
       attachmentIds: [],
       sourceProposedPlan: source,
     })) as Thread;
-    pane.replaceThread(updated);
-    replaceThread(updated);
+    syncThread(updated);
     return true;
   } catch (err) {
     console.error(`${failureLabel}:`, err);

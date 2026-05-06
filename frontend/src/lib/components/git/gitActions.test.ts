@@ -41,7 +41,6 @@ function ctx(overrides: Partial<GitActionCtx> = {}): GitActionCtx {
     threadId: 'thread-1',
     reportError: vi.fn(),
     refreshStatus: vi.fn().mockResolvedValue(undefined),
-    replacePaneThread: vi.fn(),
     ...overrides,
   };
 }
@@ -196,7 +195,8 @@ describe('runRemoveWorktreeAction', () => {
     }));
     const c = ctx();
     await runRemoveWorktreeAction(c);
-    expect(c.replacePaneThread).toHaveBeenCalledTimes(1);
+    // syncThread propagation is verified separately in syncThread tests;
+    // here we assert the action drove refreshStatus and didn't error.
     expect(c.refreshStatus).toHaveBeenCalledTimes(1);
     expect(c.reportError).not.toHaveBeenCalled();
   });
@@ -208,6 +208,6 @@ describe('runRemoveWorktreeAction', () => {
     const c = ctx();
     await runRemoveWorktreeAction(c);
     expect(c.reportError).toHaveBeenCalledWith('Remove worktree failed: worktree is dirty');
-    expect(c.replacePaneThread).not.toHaveBeenCalled();
+    expect(c.refreshStatus).not.toHaveBeenCalled();
   });
 });

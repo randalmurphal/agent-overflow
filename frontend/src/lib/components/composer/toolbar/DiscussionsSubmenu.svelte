@@ -14,7 +14,7 @@
   import type { DiscussionDefinition } from '../../../types/discussion';
   import type { Thread } from '../../../types/models';
   import { GetThread, ListDiscussionsForThread, StartDiscussionByID } from '../../../stores/bindings';
-  import { replaceThread as replaceThreadList } from '../../../stores/threads.svelte';
+  import { syncThread } from '../../../stores/panes.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
   import MenuItem from '../../primitives/MenuItem.svelte';
@@ -104,8 +104,7 @@
       // the prior mode until the user reloads.
       try {
         const refreshed = (await GetThread(threadId)) as Thread;
-        pane.replaceThread(refreshed);
-        replaceThreadList(refreshed);
+        syncThread(refreshed);
       } catch (refreshErr) {
         console.error('Failed to refresh thread after StartDiscussion:', refreshErr);
       }
