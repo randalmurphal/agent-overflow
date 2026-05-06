@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/chromedp/chromedp"
@@ -75,6 +76,11 @@ type Manager struct {
 	allocCancel   context.CancelFunc
 	browserCtx    context.Context
 	browserCancel context.CancelFunc
+	// chromeCmd is the chrome-headless-shell *exec.Cmd captured via
+	// chromedp.ModifyCmdFunc. Used by the death-watcher to tell apart
+	// "chrome process actually died" from "chromedp dropped the
+	// websocket but chrome is alive". Cleared on teardown.
+	chromeCmd *exec.Cmd
 }
 
 // NewManager constructs a Manager with the supplied installer. The
@@ -322,6 +328,7 @@ func (m *Manager) teardownLocked() {
 	m.browserCancel = nil
 	m.allocCtx = nil
 	m.allocCancel = nil
+	m.chromeCmd = nil
 }
 
 func (m *Manager) startLocked(ctx context.Context) error {
@@ -360,20 +367,37 @@ func (m *Manager) startLocked(ctx context.Context) error {
 	// chrome logs as it crashes is silently discarded; with this
 	// the chromedp logger surfaces the death's underlying cause
 	// (segfault, OOM message, missing-library line, etc.).
+	// chromeCmd captures the *exec.Cmd via the modify hook so the
+	// death-watcher can inspect cmd.ProcessState after browserCtx
+	// cancellation. If chrome is still alive at death-time we know
+	// the cancellation came from a chromedp-internal path (websocket
+	// drop, CDP error) rather than the browser actually exiting.
+	var chromeCmd *exec.Cmd
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(res.BinaryPath),
 		chromedp.NoSandbox,
 		chromedp.Flag("headless", "new"),
 		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.ModifyCmdFunc(func(cmd *exec.Cmd) {}),
+		chromedp.ModifyCmdFunc(func(cmd *exec.Cmd) {
+			// Capture the cmd reference for post-mortem inspection.
+			// Empty otherwise — see the long comment above for why we
+			// bypass chromedp's default Pdeathsig behavior.
+			chromeCmd = cmd
+		}),
 		chromedp.CombinedOutput(prefixedLogWriter{prefix: "chrome-headless-shell"}),
 	)
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
 
 	// Run the first NewContext to actually boot the browser process.
-	// We hold this top-level context for the lifetime of the Manager
-	// — every per-capture context is a child.
-	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+	// WithErrorf forwards chromedp's own error logging (websocket
+	// disconnects, CDP-level errors) into our log stream so a death
+	// caused by the chromedp <-> chrome connection dropping carries
+	// a precise reason instead of an opaque context.Canceled.
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx,
+		chromedp.WithErrorf(func(format string, args ...any) {
+			log.Printf("chromedp: "+format, args...)
+		}),
+	)
 
 	// Bring the browser online with a single navigate-to-blank so a
 	// cold first capture doesn't pay the cdp-handshake cost inside
@@ -386,17 +410,33 @@ func (m *Manager) startLocked(ctx context.Context) error {
 		return fmt.Errorf("screenshot: launch: %w", err)
 	}
 
-	// Death watcher: log the moment the chromedp browser process
-	// exits, with chromedp's cancellation cause attached. Used to
-	// correlate "browser died" with whatever the user/agent was
-	// doing at the time so we can chase a real root cause for the
-	// auto-reboot path. The goroutine exits when browserCtx is
-	// canceled — either because we tore it down (Close, ensureStarted
-	// rebuild) or because the browser exited on its own.
+	// Death watcher: log the moment browserCtx is canceled and
+	// inspect the chrome subprocess at that instant. If chrome's
+	// ProcessState is still nil at this point, the chrome process
+	// is still alive — meaning the cancellation came from a
+	// chromedp-internal path (websocket disconnect, CDP error) and
+	// we're chasing a connection bug, not a process-death bug. If
+	// ProcessState is non-nil, chrome exited and the state object
+	// carries the exit code / signal.
 	go func() {
 		<-browserCtx.Done()
-		log.Printf("screenshot: long-lived browserCtx canceled: err=%v cause=%v",
-			browserCtx.Err(), context.Cause(browserCtx))
+		liveness := "chrome state unknown (cmd not captured)"
+		if chromeCmd != nil && chromeCmd.Process != nil {
+			// Send signal 0 to test process aliveness without
+			// affecting it. ESRCH means the process is gone.
+			if err := chromeCmd.Process.Signal(syscall.Signal(0)); err != nil {
+				liveness = fmt.Sprintf("chrome pid=%d gone (signal 0 err=%v)",
+					chromeCmd.Process.Pid, err)
+			} else {
+				liveness = fmt.Sprintf("chrome pid=%d STILL ALIVE — chromedp dropped websocket on a healthy browser",
+					chromeCmd.Process.Pid)
+			}
+			if chromeCmd.ProcessState != nil {
+				liveness += fmt.Sprintf(" (ProcessState=%s)", chromeCmd.ProcessState.String())
+			}
+		}
+		log.Printf("screenshot: long-lived browserCtx canceled: err=%v cause=%v; %s",
+			browserCtx.Err(), context.Cause(browserCtx), liveness)
 	}()
 
 	m.stateMu.Lock()
@@ -404,6 +444,7 @@ func (m *Manager) startLocked(ctx context.Context) error {
 	m.allocCancel = allocCancel
 	m.browserCtx = browserCtx
 	m.browserCancel = browserCancel
+	m.chromeCmd = chromeCmd
 	m.stateMu.Unlock()
 	return nil
 }
@@ -423,5 +464,6 @@ func (m *Manager) Close() error {
 	}
 	m.browserCtx = nil
 	m.allocCtx = nil
+	m.chromeCmd = nil
 	return nil
 }
