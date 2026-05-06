@@ -156,6 +156,61 @@ func TestInjectDiagnosticScript_DisablesFontEmbedding(t *testing.T) {
 	}
 }
 
+// TestInjectDiagnosticScript_TilesModeIsWired pins the iframe-side
+// tiling pipeline at the source-string level. The capture script lives
+// in a Go raw-string constant, so a refactor that reverts it to
+// single-PNG-only would compile and pass every other unit test (the
+// frontend captureHtml.test.ts mocks the iframe response shape, the
+// MCP test mocks the broker payload). This test is the only thing
+// guarding the actual rendering path's contract — without it, "tiles
+// mode regressed silently" is a real-browser-only failure mode.
+//
+// Each substring corresponds to a load-bearing piece of the tiles
+// flow:
+//   - captureTiles function presence → tiles dispatch path exists.
+//   - TILE_WIDTH / TILE_HEIGHT / MAX_TILES / TILE_JPEG_QUALITY →
+//     the per-image-vision-budget contract.
+//   - capture-tiles-result + tilesJpegBase64 + clipped → the wire
+//     shape captureHtml.ts and the MCP layer expect.
+//   - 'unknown capture mode' → fail-closed default in the message
+//     dispatcher (no silent fall-through to single-mode).
+//   - data.mode === 'tiles' → the explicit branch the parent's
+//     mode='tiles' envelope lands in.
+//   - domToCanvas + drawImage → the actual slicing pipeline (not
+//     domToPng, which is the single-mode call).
+//   - toDataURL('image/jpeg' → the per-tile encoding (NOT png; PNG
+//     would multiply per-tile byte size and breach the broker caps
+//     for tall pages).
+func TestInjectDiagnosticScript_TilesModeIsWired(t *testing.T) {
+	body := []byte(`<!doctype html><html><body></body></html>`)
+	out, ok := injectDiagnosticScript(body)
+	if !ok {
+		t.Fatal("inject returned ok=false on valid HTML")
+	}
+	got := string(out)
+
+	mustContain := []string{
+		"captureTiles",
+		"TILE_WIDTH = 1280",
+		"TILE_HEIGHT = 800",
+		"MAX_TILES = 8",
+		"TILE_JPEG_QUALITY = 0.85",
+		"capture-tiles-result",
+		"tilesJpegBase64",
+		"data.mode === 'tiles'",
+		"unknown capture mode",
+		"domToCanvas",
+		"drawImage",
+		"toDataURL('image/jpeg'",
+		"clipped",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(got, want) {
+			t.Errorf("injected capture script missing %q — tiles-mode pipeline regressed.\nFull script:\n%s", want, got)
+		}
+	}
+}
+
 // TestInjectDiagnosticScript_LoadsModernScreenshotFromSelfHostedURL
 // pins the second half of the capture fix. WebKitGTK refuses dynamic
 // ESM imports of cross-origin modules from a sandbox=allow-scripts

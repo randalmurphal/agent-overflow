@@ -3,6 +3,7 @@ package design
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -144,6 +145,130 @@ func TestScreenshotBroker_ResolveEmptyTilesErrors(t *testing.T) {
 	}
 	if err := b.Resolve("any-id", []string{}, false); err == nil {
 		t.Fatal("Resolve([]) = nil, want error")
+	}
+}
+
+// TestValidateScreenshotTiles covers each cap-rejection path directly so
+// a future refactor of the helper can't silently drop a check. The
+// constants are part of the broker's contract — these tests pin both
+// the boundaries and the human-readable error text the agent sees.
+func TestValidateScreenshotTiles(t *testing.T) {
+	tooManyTiles := make([]string, MaxScreenshotTiles+1)
+	for i := range tooManyTiles {
+		tooManyTiles[i] = "AAEC"
+	}
+
+	// One tile right at the per-tile cap boundary should pass; +1 byte
+	// must fail.
+	maxTile := strings.Repeat("A", MaxScreenshotTileBase64Bytes)
+	overTile := strings.Repeat("A", MaxScreenshotTileBase64Bytes+1)
+
+	// Build a slice that fits the per-tile and tile-count caps but
+	// breaches the aggregate cap. Each tile is half the per-tile cap;
+	// enough copies to push total over the aggregate cap.
+	halfCap := MaxScreenshotTileBase64Bytes / 2
+	aggregateBreach := MaxScreenshotTotalBase64Bytes/halfCap + 1
+	if aggregateBreach > MaxScreenshotTiles {
+		// If the test constants ever change so the aggregate breach
+		// can't be reached without exceeding the count cap, fail loudly
+		// rather than silently skipping the case.
+		t.Fatalf("test math invariant: aggregateBreach=%d > MaxScreenshotTiles=%d — adjust constants",
+			aggregateBreach, MaxScreenshotTiles)
+	}
+	aggregateOver := make([]string, aggregateBreach)
+	halfTile := strings.Repeat("B", halfCap)
+	for i := range aggregateOver {
+		aggregateOver[i] = halfTile
+	}
+
+	cases := []struct {
+		name    string
+		tiles   []string
+		wantSub string // substring expected in the error message
+	}{
+		{"nil tiles", nil, "no tiles"},
+		{"empty slice", []string{}, "no tiles"},
+		{"empty string at index", []string{"AAEC", "", "AwQF"}, "tile 1 is empty"},
+		{"count exceeds cap", tooManyTiles, "tile count"},
+		{"per-tile size exceeds cap", []string{overTile}, "size"},
+		{"aggregate size exceeds cap", aggregateOver, "total size"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateScreenshotTiles(tc.tiles)
+			if err == nil {
+				t.Fatal("validateScreenshotTiles err = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("err = %q, want substring %q", err.Error(), tc.wantSub)
+			}
+		})
+	}
+
+	// Boundary that should PASS — one tile at exactly the per-tile cap.
+	if err := validateScreenshotTiles([]string{maxTile}); err != nil {
+		t.Fatalf("validateScreenshotTiles at per-tile cap boundary err = %v, want nil", err)
+	}
+
+	// Boundary that should PASS — exactly MaxScreenshotTiles tiny tiles.
+	atTileCap := make([]string, MaxScreenshotTiles)
+	for i := range atTileCap {
+		atTileCap[i] = "AAEC"
+	}
+	if err := validateScreenshotTiles(atTileCap); err != nil {
+		t.Fatalf("validateScreenshotTiles at tile-count boundary err = %v, want nil", err)
+	}
+}
+
+// TestScreenshotBroker_ResolveOversizeReleasesCapture proves the
+// validation-failure branch of Resolve still releases the parked
+// Capture goroutine — otherwise the agent's tool call stalls until
+// CaptureMaxWait fires (30 s of dead time per malformed payload). The
+// fix: Resolve calls Fail when validation fails. This test would
+// regress if a future refactor returned the error without calling Fail.
+func TestScreenshotBroker_ResolveOversizeReleasesCapture(t *testing.T) {
+	b, sink := newScreenshotBroker(t)
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := b.Capture(t.Context(), "thread-1")
+		errCh <- err
+	}()
+
+	req := <-sink.requests
+
+	tooMany := make([]string, MaxScreenshotTiles+1)
+	for i := range tooMany {
+		tooMany[i] = "AAEC"
+	}
+	if err := b.Resolve(req.RequestID, tooMany, false); err == nil {
+		t.Fatal("Resolve(too many tiles) = nil, want error")
+	}
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("Capture err = nil, want validation error surfaced via Fail")
+		}
+		if !strings.Contains(err.Error(), "tile count") {
+			t.Fatalf("Capture err = %v, want tile-count validation error", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Capture did not return after Resolve(over-cap); validation path leaked the pending entry")
+	}
+}
+
+// TestScreenshotBroker_ResolveBlankRequestIDErrors covers the requestID
+// trimming branch — a wire payload with a whitespace-only id must not
+// match any pending request, must not panic, and must surface a clear
+// error to the caller.
+func TestScreenshotBroker_ResolveBlankRequestIDErrors(t *testing.T) {
+	b, _ := newScreenshotBroker(t)
+	if err := b.Resolve("   ", []string{"AAEC"}, false); err == nil {
+		t.Fatal("Resolve(blank id) = nil, want error")
+	}
+	if err := b.Fail("   ", "reason"); err == nil {
+		t.Fatal("Fail(blank id) = nil, want error")
 	}
 }
 
