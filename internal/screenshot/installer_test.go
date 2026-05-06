@@ -297,6 +297,120 @@ func TestInstaller_Install_RecoversIfBinaryAtUnexpectedPath(t *testing.T) {
 	}
 }
 
+// TestInstaller_PrunesOldVersionsOnFreshInstall pins the disk-space
+// contract: a fresh install of vN removes any sibling vM directories
+// left behind by previous Chrome rolls, so the on-disk cache size is
+// O(1) in the number of upstream releases rather than unbounded.
+func TestInstaller_PrunesOldVersionsOnFreshInstall(t *testing.T) {
+	if _, err := currentPlatform(); err != nil {
+		t.Skipf("unsupported platform: %v", err)
+	}
+	configDir := t.TempDir()
+	cacheDir := filepath.Join(configDir, "headless-shell")
+	if err := os.MkdirAll(filepath.Join(cacheDir, "888.0.1.0"), 0o755); err != nil {
+		t.Fatalf("seed stale 888: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(cacheDir, "777.0.1.0"), 0o755); err != nil {
+		t.Fatalf("seed stale 777: %v", err)
+	}
+	srv, _ := fakeManifestServer(t, "999.0.1.0")
+
+	inst := NewInstaller(configDir, nil)
+	inst.ManifestURL = srv.URL + "/manifest"
+	inst.AllowInsecureScheme = true
+
+	if _, err := inst.Install(context.Background()); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(cacheDir, "999.0.1.0")); err != nil {
+		t.Errorf("current version dir missing after install: %v", err)
+	}
+	for _, stale := range []string{"888.0.1.0", "777.0.1.0"} {
+		if _, err := os.Stat(filepath.Join(cacheDir, stale)); !os.IsNotExist(err) {
+			t.Errorf("stale dir %q still exists after install (err=%v)", stale, err)
+		}
+	}
+}
+
+// TestInstaller_PrunesOldVersionsOnWarmCache covers the warm-cache
+// path: a stale dir that arrived between two installs of the same
+// version (e.g. user upgraded the app, downgraded, then upgraded
+// again) is removed on the second invocation even though no fresh
+// download happened.
+func TestInstaller_PrunesOldVersionsOnWarmCache(t *testing.T) {
+	if _, err := currentPlatform(); err != nil {
+		t.Skipf("unsupported platform: %v", err)
+	}
+	configDir := t.TempDir()
+	cacheDir := filepath.Join(configDir, "headless-shell")
+	srv, _ := fakeManifestServer(t, "999.0.1.0")
+
+	inst := NewInstaller(configDir, nil)
+	inst.ManifestURL = srv.URL + "/manifest"
+	inst.AllowInsecureScheme = true
+
+	if _, err := inst.Install(context.Background()); err != nil {
+		t.Fatalf("first Install: %v", err)
+	}
+
+	// Drop a stale version dir AFTER the first install creates the
+	// cache layout, so the second Install hits the warm-cache path
+	// (binary already executable) but still has to clean up.
+	if err := os.MkdirAll(filepath.Join(cacheDir, "888.0.1.0"), 0o755); err != nil {
+		t.Fatalf("seed stale 888 between installs: %v", err)
+	}
+
+	if _, err := inst.Install(context.Background()); err != nil {
+		t.Fatalf("second Install: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(cacheDir, "888.0.1.0")); !os.IsNotExist(err) {
+		t.Errorf("warm-cache install did not prune stale dir (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "999.0.1.0")); err != nil {
+		t.Errorf("current version dir disappeared: %v", err)
+	}
+}
+
+// TestInstaller_PruneIgnoresInvalidSegments pins the safety guarantee:
+// a directory under headless-shell/ whose name doesn't pass
+// validateVersionSegment is left alone. Without this check, a hand-
+// edited cacheDir could turn the prune step into a recursive-remove
+// primitive on arbitrary sibling paths.
+func TestInstaller_PruneIgnoresInvalidSegments(t *testing.T) {
+	if _, err := currentPlatform(); err != nil {
+		t.Skipf("unsupported platform: %v", err)
+	}
+	configDir := t.TempDir()
+	cacheDir := filepath.Join(configDir, "headless-shell")
+	// Both names trip the contains("..") guard in validateVersionSegment
+	// — they're shapes a hand-edited cacheDir might plausibly contain
+	// (a half-typed traversal attempt, a manual-rename gone wrong) but
+	// nothing the installer itself would ever produce.
+	invalidNames := []string{"..bad", "ver..0.1.0"}
+	for _, name := range invalidNames {
+		if err := os.MkdirAll(filepath.Join(cacheDir, name), 0o755); err != nil {
+			t.Fatalf("seed %q: %v", name, err)
+		}
+	}
+	srv, _ := fakeManifestServer(t, "999.0.1.0")
+
+	inst := NewInstaller(configDir, nil)
+	inst.ManifestURL = srv.URL + "/manifest"
+	inst.AllowInsecureScheme = true
+
+	if _, err := inst.Install(context.Background()); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	for _, name := range invalidNames {
+		if _, err := os.Stat(filepath.Join(cacheDir, name)); err != nil {
+			t.Errorf("invalid-segment dir %q was removed (err=%v); pruner must leave non-version dirs alone", name, err)
+		}
+	}
+}
+
 // TestUnzip_RejectsZipSlip pins the path-traversal guard. A zip
 // entry like "../evil" must not write outside the destination dir.
 func TestUnzip_RejectsZipSlip(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -195,6 +196,7 @@ func (i *Installer) Install(ctx context.Context) (InstallResult, error) {
 	// Already installed?
 	if isExecutable(binaryPath) {
 		i.emit(InstallProgress{Phase: "ready", Version: stable.Version})
+		i.pruneOldVersions(cacheDir, stable.Version)
 		return InstallResult{Version: stable.Version, BinaryPath: binaryPath}, nil
 	}
 
@@ -233,7 +235,54 @@ func (i *Installer) Install(ctx context.Context) (InstallResult, error) {
 	}
 
 	i.emit(InstallProgress{Phase: "ready", Version: stable.Version})
+	i.pruneOldVersions(cacheDir, stable.Version)
 	return InstallResult{Version: stable.Version, BinaryPath: binaryPath}, nil
+}
+
+// pruneOldVersions removes sibling version directories under cacheDir
+// that do not match keepVersion. Each candidate segment is re-validated
+// via validateVersionSegment before any RemoveAll, so a hand-edited
+// cacheDir with an arbitrary subdir name (or a partially-extracted
+// .zip.partial leftover) is left alone rather than recursively removed.
+//
+// Soft-fail per entry: a stale dir we can't unlink (Windows file lock
+// on a peer process's chrome-headless-shell.exe surfaces as
+// ERROR_SHARING_VIOLATION; a permission error on a manually-chmod'd
+// path) is logged but does not abort the caller's Install. Next launch
+// retries.
+func (i *Installer) pruneOldVersions(cacheDir, keepVersion string) {
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		// cacheDir may not exist yet on a true first install; nothing
+		// to prune in that case.
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.IsDir() {
+			// .zip.partial leftovers are files; the success path
+			// removes them, but a crashed download can leave one
+			// behind. Skip — RemoveAll on a file would still work,
+			// but keeping pruneOldVersions strictly directory-scoped
+			// makes the contract easier to reason about.
+			continue
+		}
+		if name == keepVersion {
+			continue
+		}
+		if err := validateVersionSegment(name); err != nil {
+			// Not a version dir we created — leave it alone. This is
+			// the load-bearing safety check; trusting filesystem
+			// names blindly would let an attacker who could write
+			// into cacheDir gain a recursive-remove primitive on any
+			// path that filepath.Clean accepts.
+			continue
+		}
+		target := filepath.Join(cacheDir, name)
+		if err := os.RemoveAll(target); err != nil {
+			log.Printf("screenshot: prune %q: %v", target, err)
+		}
+	}
 }
 
 func (i *Installer) emit(p InstallProgress) {
