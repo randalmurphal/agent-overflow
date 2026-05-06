@@ -22,8 +22,11 @@ Headless-Chromium-driven page capture for design-mode read_screenshot.
   which is fine for the current trust model (every capture loads a
   loopback `/design/{threadID}/main/` URL the user trusts).
 - The capture sequence: emulate user-visible viewport,
-  `Page.navigate`, await `document.fonts.ready`, scroll-to-bottom +
-  2× `requestAnimationFrame` to settle lazy content, then
+  `Page.navigate`, race `document.fonts.ready` against a 4 s soft
+  cap (a cold-cache fetch of variable fonts can otherwise hang
+  longer than the agent's per-tool timeout — FOUT in the screenshot
+  beats a canceled tool call), scroll-to-bottom + 2×
+  `requestAnimationFrame` to settle lazy content, then
   `Page.captureScreenshot{captureBeyondViewport, fromSurface}` for a
   full-page PNG. Capture height is capped — `MaxCaptureHeightPx`
   prevents an unbounded-height page (or accidental infinite scroll)
@@ -67,7 +70,9 @@ Headless-Chromium-driven page capture for design-mode read_screenshot.
   `chromedp.NewContext`, NOT a new BrowserContext (we don't need
   cookie isolation across captures of the same loopback URL).
 - Do NOT skip `document.fonts.ready`. Fonts loaded after the initial
-  paint are the most common fidelity miss.
+  paint are the most common fidelity miss. The 4 s soft cap is there
+  to keep the wait bounded, not to bypass it — never await it without
+  a race.
 - Do NOT use `captureBeyondViewport` without first scrolling the
   document. Lazy-loaded / IntersectionObserver content doesn't
   paint until it enters the viewport.

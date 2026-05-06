@@ -14,9 +14,9 @@
 // download chrome-headless-shell from Chrome-for-Testing on first
 // capture, cache it under the user config dir, run it as a long-lived
 // subprocess, navigate it at the same loopback URL the user's webview
-// loads, await document.fonts.ready, scroll the document to settle
-// lazy content, and call Page.captureScreenshot{captureBeyondViewport}
-// for a full-page PNG. Tile slicing happens in pure Go after the
+// loads, race document.fonts.ready against a 4 s soft cap, scroll
+// the document to settle lazy content, and call
+// Page.captureScreenshot{captureBeyondViewport} for a full-page PNG. Tile slicing happens in pure Go after the
 // capture so the existing per-image vision-token budget contract
 // stays the same.
 //

@@ -67,9 +67,9 @@ type CaptureOptions struct {
 	NavigationDeadline time.Duration // 0 → 30s default
 }
 
-// Capture loads opts.URL in the headless browser, awaits
-// document.fonts.ready, scrolls the document to settle lazy content,
-// and returns a full-page PNG.
+// Capture loads opts.URL in the headless browser, races
+// document.fonts.ready against a 4 s soft cap, scrolls the document
+// to settle lazy content, and returns a full-page PNG.
 func (m *Manager) Capture(ctx context.Context, opts CaptureOptions) ([]byte, error) {
 	if opts.URL == "" {
 		return nil, fmt.Errorf("screenshot: capture URL required")

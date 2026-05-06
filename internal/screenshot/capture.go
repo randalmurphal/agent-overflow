@@ -34,11 +34,13 @@ const MaxCaptureHeightPx = DefaultMaxTiles * DefaultTileHeight
 //     so we don't proceed before the DOM is at least minimally
 //     present.
 //
-//  3. settleDocument: await document.fonts.ready, scroll once to the
-//     bottom + back to settle IntersectionObserver-driven content
-//     (lazy images, late-loaded chart libraries, etc), then a 2× rAF
-//     for paint to land. This is the single biggest fidelity win
-//     versus the previous SVG-foreignObject path.
+//  3. settleDocument: race document.fonts.ready against a 4 s soft
+//     cap, scroll once to the bottom + back to settle
+//     IntersectionObserver-driven content (lazy images, late-loaded
+//     chart libraries, etc), then a 2× rAF for paint to land. The
+//     cap exists because a cold-cache fetch of variable fonts can
+//     hang fonts.ready longer than the agent's per-tool timeout;
+//     FOUT in the screenshot is preferable to a canceled tool call.
 //
 //  4. captureWithHeightCap reads the document height, clamps it to
 //     MaxCaptureHeightPx, and issues Page.captureScreenshot with an
@@ -110,15 +112,36 @@ func captureWithHeightCap(out *[]byte, viewportWidth int) chromedp.Action {
 	})
 }
 
-// settleDocument awaits document.fonts.ready, scrolls the document
-// once end-to-end to fire IntersectionObserver-driven loaders, then
-// rAF×2 to land paints. Wrapped in a try/catch so capture proceeds
-// even if a page lacks document.fonts (some sandboxed iframes do).
+// settleDocument races document.fonts.ready against a soft cap,
+// scrolls the document once end-to-end to fire IntersectionObserver-
+// driven loaders, then rAF×2 to land paints. Wrapped in a try/catch
+// so capture proceeds even if a page lacks document.fonts (some
+// sandboxed iframes do).
+//
+// Why the soft cap on fonts.ready: a cold-cache fetch of variable
+// fonts (e.g. Fraunces with all four axes — ~50 KB of font binary,
+// or any Google Fonts CSS that needs a separate woff2 round-trip)
+// can take many seconds. document.fonts.ready hangs until every
+// declared font finishes loading, with no surfaced timeout. The
+// agent's MCP client has its own per-call timeout — typically much
+// shorter than that — so an unbounded fonts wait gets the entire
+// capture canceled. We'd rather render the page with whatever fonts
+// have loaded by the cap (FOUT visible if a font is still in
+// flight) than ship the agent a tool error.
 func settleDocument() chromedp.Action {
+	// fontsReadyMaxWaitMs caps the document.fonts.ready race. Mirrored
+	// in the JS expression below; bump both if you change one. 4 s is
+	// long enough for Google Fonts on a normal connection, short
+	// enough to fit comfortably under typical per-tool agent
+	// timeouts.
 	const expr = `(async () => {
+  const FONTS_READY_TIMEOUT_MS = 4000;
   try {
     if (document.fonts && typeof document.fonts.ready?.then === 'function') {
-      await document.fonts.ready;
+      await Promise.race([
+        document.fonts.ready,
+        new Promise((r) => setTimeout(r, FONTS_READY_TIMEOUT_MS)),
+      ]);
     }
   } catch (_) {}
   // Scroll-to-bottom + back. Triggers IntersectionObserver-driven
