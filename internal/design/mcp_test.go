@@ -101,7 +101,7 @@ func TestMCPServerGetDiagnosticsRespectsSinceToken(t *testing.T) {
 func TestMCPServerReadScreenshotRoundTrip(t *testing.T) {
 	server, threadURL, harness := newTestMCPServer(t)
 
-	resultCh := make(chan string, 1)
+	resultCh := make(chan map[string]any, 1)
 	go func() {
 		resp := postMCPRequest(t, threadURL, map[string]any{
 			"jsonrpc": "2.0",
@@ -112,29 +112,51 @@ func TestMCPServerReadScreenshotRoundTrip(t *testing.T) {
 				"arguments": map[string]any{},
 			},
 		})
-		resultCh <- extractToolTextResult(t, resp)
+		result, _ := resp["result"].(map[string]any)
+		resultCh <- result
 	}()
 
 	captureRequest := waitForCaptureEvent(t, harness)
-	pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a}
-	if err := harness.screenshots.Resolve(captureRequest.RequestID, pngBytes); err != nil {
+	rawTiles := [][]byte{
+		{0xff, 0xd8, 0xff, 0xe0, 0x10, 0x11},
+		{0xff, 0xd8, 0xff, 0xe0, 0x20, 0x21},
+		{0xff, 0xd8, 0xff, 0xe0, 0x30, 0x31},
+	}
+	tiles := make([]string, len(rawTiles))
+	for i, raw := range rawTiles {
+		tiles[i] = base64.StdEncoding.EncodeToString(raw)
+	}
+	if err := harness.screenshots.Resolve(captureRequest.RequestID, tiles, false); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 
 	select {
-	case body := <-resultCh:
-		var payload struct {
-			PNGBase64 string `json:"png_base64"`
+	case result := <-resultCh:
+		if result == nil {
+			t.Fatal("missing result block")
 		}
-		if err := json.Unmarshal([]byte(body), &payload); err != nil {
-			t.Fatalf("unmarshal screenshot: %v body=%q", err, body)
+		content, ok := result["content"].([]any)
+		if !ok {
+			t.Fatalf("content type = %T, want []any", result["content"])
 		}
-		decoded, err := base64.StdEncoding.DecodeString(payload.PNGBase64)
-		if err != nil {
-			t.Fatalf("decode: %v", err)
+		if len(content) != len(tiles) {
+			t.Fatalf("content blocks = %d, want %d (one per tile, no clip note)", len(content), len(tiles))
 		}
-		if !bytes.Equal(decoded, pngBytes) {
-			t.Fatalf("png mismatch")
+		for i, block := range content {
+			b, ok := block.(map[string]any)
+			if !ok {
+				t.Fatalf("block %d type = %T", i, block)
+			}
+			if b["type"] != "image" {
+				t.Errorf("block %d type = %v, want image", i, b["type"])
+			}
+			if b["mimeType"] != "image/jpeg" {
+				t.Errorf("block %d mimeType = %v, want image/jpeg", i, b["mimeType"])
+			}
+			data, _ := b["data"].(string)
+			if data != tiles[i] {
+				t.Errorf("block %d data = %q, want %q (broker must not re-encode)", i, data, tiles[i])
+			}
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for screenshot result")
@@ -142,6 +164,81 @@ func TestMCPServerReadScreenshotRoundTrip(t *testing.T) {
 
 	if err := server.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+// TestMCPServerReadScreenshotClippedAppendsTextNote pins that when the
+// frontend reports the page exceeded the tile budget, the MCP tool
+// result includes a trailing `text` block flagging the clip — that's
+// how the agent learns there's more page to consider.
+func TestMCPServerReadScreenshotClippedAppendsTextNote(t *testing.T) {
+	_, threadURL, harness := newTestMCPServer(t)
+
+	resultCh := make(chan map[string]any, 1)
+	go func() {
+		resp := postMCPRequest(t, threadURL, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      3,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name":      "read_screenshot",
+				"arguments": map[string]any{},
+			},
+		})
+		result, _ := resp["result"].(map[string]any)
+		resultCh <- result
+	}()
+
+	captureRequest := waitForCaptureEvent(t, harness)
+	rawTiles := [][]byte{
+		{0xff, 0xd8, 0x01},
+		{0xff, 0xd8, 0x02},
+	}
+	tiles := make([]string, len(rawTiles))
+	for i, raw := range rawTiles {
+		tiles[i] = base64.StdEncoding.EncodeToString(raw)
+	}
+	if err := harness.screenshots.Resolve(captureRequest.RequestID, tiles, true); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	select {
+	case result := <-resultCh:
+		content, ok := result["content"].([]any)
+		if !ok {
+			t.Fatalf("content type = %T", result["content"])
+		}
+		if len(content) != len(tiles)+1 {
+			t.Fatalf("content blocks = %d, want %d (tiles + clip note)", len(content), len(tiles)+1)
+		}
+		// Earlier blocks must still be image blocks — the trailing
+		// text note must not displace tiles or change their type.
+		for i := 0; i < len(tiles); i++ {
+			b, ok := content[i].(map[string]any)
+			if !ok {
+				t.Fatalf("block %d type = %T", i, content[i])
+			}
+			if b["type"] != "image" {
+				t.Errorf("block %d type = %v, want image", i, b["type"])
+			}
+			if b["mimeType"] != "image/jpeg" {
+				t.Errorf("block %d mimeType = %v, want image/jpeg", i, b["mimeType"])
+			}
+			data, _ := b["data"].(string)
+			if data != tiles[i] {
+				t.Errorf("block %d data mismatch: got %q want %q", i, data, tiles[i])
+			}
+		}
+		last, _ := content[len(content)-1].(map[string]any)
+		if last["type"] != "text" {
+			t.Errorf("trailing block type = %v, want text", last["type"])
+		}
+		text, _ := last["text"].(string)
+		if !strings.Contains(strings.ToLower(text), "tile") {
+			t.Errorf("trailing text should mention tiling, got %q", text)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for screenshot result")
 	}
 }
 

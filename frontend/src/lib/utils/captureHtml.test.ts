@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { requestIframeCapture } from './captureHtml';
+import { requestIframeCapture, requestIframeCaptureTiles } from './captureHtml';
 
 // requestIframeCapture is the parent-side messenger for the
 // iframe-internal capture script. We can exercise the postMessage
@@ -87,6 +87,139 @@ describe('requestIframeCapture', () => {
       get: () => null,
     });
     await expect(requestIframeCapture(iframe, 'req-x', 100)).rejects.toThrow(
+      /contentWindow/,
+    );
+  });
+
+  it('sends mode=single in the outbound envelope', () => {
+    const { iframe, postedMessages } = makeIframeWithContentWindow();
+    void requestIframeCapture(iframe, 'req-mode', 1000);
+    expect(postedMessages).toHaveLength(1);
+    expect(postedMessages[0]).toMatchObject({
+      aoDesign: 'capture',
+      requestId: 'req-mode',
+      mode: 'single',
+    });
+  });
+});
+
+describe('requestIframeCaptureTiles', () => {
+  it('sends mode=tiles in the outbound envelope', () => {
+    const { iframe, postedMessages } = makeIframeWithContentWindow();
+    void requestIframeCaptureTiles(iframe, 'req-tiles', 1000);
+    expect(postedMessages).toHaveLength(1);
+    expect(postedMessages[0]).toMatchObject({
+      aoDesign: 'capture',
+      requestId: 'req-tiles',
+      mode: 'tiles',
+    });
+  });
+
+  it('resolves with tiles + clipped when iframe responds with capture-tiles-result', async () => {
+    const { iframe, fakeWindow } = makeIframeWithContentWindow();
+    const promise = requestIframeCaptureTiles(iframe, 'req-1', 1000);
+
+    const event = new MessageEvent('message', {
+      data: {
+        aoDesign: 'capture-tiles-result',
+        requestId: 'req-1',
+        tilesJpegBase64: ['AAEC', 'AwQF', 'BgcI'],
+        clipped: true,
+      },
+      source: fakeWindow,
+    });
+    window.dispatchEvent(event);
+
+    await expect(promise).resolves.toEqual({
+      tiles: ['AAEC', 'AwQF', 'BgcI'],
+      clipped: true,
+    });
+  });
+
+  it('defaults clipped to false when the iframe omits the flag', async () => {
+    const { iframe, fakeWindow } = makeIframeWithContentWindow();
+    const promise = requestIframeCaptureTiles(iframe, 'req-noflag', 1000);
+
+    const event = new MessageEvent('message', {
+      data: {
+        aoDesign: 'capture-tiles-result',
+        requestId: 'req-noflag',
+        tilesJpegBase64: ['AAEC'],
+      },
+      source: fakeWindow,
+    });
+    window.dispatchEvent(event);
+
+    await expect(promise).resolves.toEqual({ tiles: ['AAEC'], clipped: false });
+  });
+
+  it('rejects when the iframe responds with capture-error', async () => {
+    const { iframe, fakeWindow } = makeIframeWithContentWindow();
+    const promise = requestIframeCaptureTiles(iframe, 'req-2', 1000);
+    const event = new MessageEvent('message', {
+      data: { aoDesign: 'capture-error', requestId: 'req-2', error: 'unknown capture mode' },
+      source: fakeWindow,
+    });
+    window.dispatchEvent(event);
+
+    await expect(promise).rejects.toThrow('unknown capture mode');
+  });
+
+  it('rejects when the iframe responds with zero tiles', async () => {
+    const { iframe, fakeWindow } = makeIframeWithContentWindow();
+    const promise = requestIframeCaptureTiles(iframe, 'req-empty', 1000);
+    const event = new MessageEvent('message', {
+      data: {
+        aoDesign: 'capture-tiles-result',
+        requestId: 'req-empty',
+        tilesJpegBase64: [],
+      },
+      source: fakeWindow,
+    });
+    window.dispatchEvent(event);
+
+    await expect(promise).rejects.toThrow(/zero tiles/);
+  });
+
+  it('rejects when the iframe replies to the wrong mode (kind mismatch)', async () => {
+    const { iframe, fakeWindow } = makeIframeWithContentWindow();
+    const promise = requestIframeCaptureTiles(iframe, 'req-kind', 1000);
+    // The single-mode reply must not satisfy a tiles request.
+    const event = new MessageEvent('message', {
+      data: { aoDesign: 'capture-result', requestId: 'req-kind', pngBase64: 'AAEC' },
+      source: fakeWindow,
+    });
+    window.dispatchEvent(event);
+
+    await expect(promise).rejects.toThrow(/unexpected capture result kind/);
+  });
+
+  it('ignores responses with mismatched requestId', async () => {
+    vi.useFakeTimers();
+    const { iframe, fakeWindow } = makeIframeWithContentWindow();
+    const promise = requestIframeCaptureTiles(iframe, 'req-correct', 500);
+
+    const wrong = new MessageEvent('message', {
+      data: {
+        aoDesign: 'capture-tiles-result',
+        requestId: 'req-other',
+        tilesJpegBase64: ['WRONG'],
+      },
+      source: fakeWindow,
+    });
+    window.dispatchEvent(wrong);
+
+    vi.advanceTimersByTime(600);
+    await expect(promise).rejects.toThrow(/timed out/);
+  });
+
+  it('rejects when the iframe has no contentWindow', async () => {
+    const iframe = document.createElement('iframe');
+    Object.defineProperty(iframe, 'contentWindow', {
+      configurable: true,
+      get: () => null,
+    });
+    await expect(requestIframeCaptureTiles(iframe, 'req-x', 100)).rejects.toThrow(
       /contentWindow/,
     );
   });

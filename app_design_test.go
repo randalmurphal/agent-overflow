@@ -100,15 +100,15 @@ func TestDesignIngestScreenshotResolvesPendingCapture(t *testing.T) {
 		}
 	}
 
-	pngCh := make(chan []byte, 1)
+	captureCh2 := make(chan design.CaptureResult, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		png, err := app.designScreenshots.Capture(t.Context(), "thread-design")
+		result, err := app.designScreenshots.Capture(t.Context(), "thread-design")
 		if err != nil {
 			errCh <- err
 			return
 		}
-		pngCh <- png
+		captureCh2 <- result
 	}()
 
 	var captureRequest design.ScreenshotRequest
@@ -118,19 +118,36 @@ func TestDesignIngestScreenshotResolvesPendingCapture(t *testing.T) {
 		t.Fatal("timed out waiting for capture event")
 	}
 
-	want := []byte{0x89, 0x50, 0x4e, 0x47}
-	encoded := base64.StdEncoding.EncodeToString(want)
+	rawTiles := [][]byte{
+		{0xff, 0xd8, 0xff, 0xe0, 0x01},
+		{0xff, 0xd8, 0xff, 0xe0, 0x02},
+	}
+	encoded := make([]string, len(rawTiles))
+	for i, tile := range rawTiles {
+		encoded[i] = base64.StdEncoding.EncodeToString(tile)
+	}
 	if err := app.IngestScreenshot(design.ScreenshotResult{
-		RequestID: captureRequest.RequestID,
-		PNGBase64: encoded,
+		RequestID:       captureRequest.RequestID,
+		TilesJpegBase64: encoded,
+		Clipped:         true,
 	}); err != nil {
 		t.Fatalf("IngestScreenshot: %v", err)
 	}
 
 	select {
-	case got := <-pngCh:
-		if string(got) != string(want) {
-			t.Fatalf("png mismatch: got %x, want %x", got, want)
+	case got := <-captureCh2:
+		if len(got.Tiles) != len(encoded) {
+			t.Fatalf("tiles len = %d, want %d", len(got.Tiles), len(encoded))
+		}
+		// Broker must hand the base64 strings through unchanged — no
+		// decode + re-encode round-trip.
+		for i, want := range encoded {
+			if got.Tiles[i] != want {
+				t.Fatalf("tile %d = %q, want %q", i, got.Tiles[i], want)
+			}
+		}
+		if !got.Clipped {
+			t.Error("Clipped = false, want true (must round-trip from frontend)")
 		}
 	case err := <-errCh:
 		t.Fatalf("Capture err: %v", err)

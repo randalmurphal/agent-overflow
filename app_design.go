@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"path/filepath"
 
@@ -314,23 +313,27 @@ func clipString(s string, max int) string {
 
 // IngestScreenshot completes a pending read_screenshot tool call. The
 // frontend captures the live iframe in response to a
-// design:capture-request event and posts the PNG bytes back here.
+// design:capture-request event and posts the ordered list of base64-
+// encoded JPEG tiles back here. The bytes stay base64 all the way
+// through the broker — the MCP layer hands them straight to the
+// agent's image content blocks, no decode/re-encode round-trip.
+//
+// Cap enforcement (count, per-tile size, aggregate size) lives in
+// the broker's Resolve so any code path that reaches the broker
+// gets the same contract. A failed validation routes through Fail
+// and releases the parked Capture goroutine, so the agent's
+// blocking tool call returns a clean error instead of waiting on
+// CaptureMaxWait.
 func (a *App) IngestScreenshot(result design.ScreenshotResult) error {
 	if a.designScreenshots == nil {
 		return fmt.Errorf("design screenshot broker unavailable")
 	}
-	if result.PNGBase64 == "" {
-		return a.designScreenshots.Fail(result.RequestID, "empty png payload")
-	}
-	png, err := base64.StdEncoding.DecodeString(result.PNGBase64)
-	if err != nil {
-		return fmt.Errorf("decode screenshot png: %w", err)
-	}
-	return a.designScreenshots.Resolve(result.RequestID, png)
+	return a.designScreenshots.Resolve(result.RequestID, result.TilesJpegBase64, result.Clipped)
 }
 
 // FailScreenshot marks a pending capture as failed. Used when the
-// frontend's html-to-image conversion errors out.
+// frontend's modern-screenshot capture errors out (iframe not mounted,
+// render rejected, postMessage timeout, etc.).
 func (a *App) FailScreenshot(requestID, reason string) error {
 	if a.designScreenshots == nil {
 		return fmt.Errorf("design screenshot broker unavailable")

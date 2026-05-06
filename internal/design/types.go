@@ -12,7 +12,10 @@ const (
 	ToolGetDiagnostics = "get_design_diagnostics"
 
 	// ToolReadScreenshot captures the live design iframe and returns
-	// a PNG. Round-trips through the frontend.
+	// the rendered output as one or more JPEG tiles top-to-bottom.
+	// Tiling keeps each image inside both providers' per-image vision
+	// budgets even for tall pages — a single full-document PNG would
+	// blow the context window. Round-trips through the frontend.
 	ToolReadScreenshot = "read_screenshot"
 )
 
@@ -120,9 +123,15 @@ type ScreenshotRequest struct {
 	RequestID string `json:"requestId"`
 }
 
-// ScreenshotResult is the frontend → backend reply carrying the
-// captured PNG bytes (base64-encoded on the wire).
+// ScreenshotResult is the frontend → backend reply for the agent's
+// read_screenshot tool. Tiles are JPEG bytes (base64-encoded on the
+// wire), ordered top-to-bottom, capped at the iframe's tile budget.
+// Clipped is true when the rendered document was taller than the
+// budget and trailing tiles were dropped — the agent surfaces this
+// via a trailing text block in the MCP tool result so it knows the
+// page continued past what was captured.
 type ScreenshotResult struct {
-	RequestID string `json:"requestId"`
-	PNGBase64 string `json:"pngBase64"`
+	RequestID       string   `json:"requestId"`
+	TilesJpegBase64 []string `json:"tilesJpegBase64"`
+	Clipped         bool     `json:"clipped,omitempty"`
 }

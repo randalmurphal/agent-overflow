@@ -40,13 +40,13 @@ func TestScreenshotBroker_CaptureEmitsEventAndResolves(t *testing.T) {
 	b, sink := newScreenshotBroker(t)
 
 	type result struct {
-		png []byte
-		err error
+		capture CaptureResult
+		err     error
 	}
 	resultCh := make(chan result, 1)
 	go func() {
-		png, err := b.Capture(t.Context(), "thread-1")
-		resultCh <- result{png, err}
+		capture, err := b.Capture(t.Context(), "thread-1")
+		resultCh <- result{capture, err}
 	}()
 
 	var req ScreenshotRequest
@@ -62,8 +62,11 @@ func TestScreenshotBroker_CaptureEmitsEventAndResolves(t *testing.T) {
 		t.Fatal("RequestID empty")
 	}
 
-	want := []byte{0x89, 0x50, 0x4e, 0x47}
-	if err := b.Resolve(req.RequestID, want); err != nil {
+	tiles := []string{
+		"AAEC",
+		"AwQF",
+	}
+	if err := b.Resolve(req.RequestID, tiles, true); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	select {
@@ -71,8 +74,16 @@ func TestScreenshotBroker_CaptureEmitsEventAndResolves(t *testing.T) {
 		if r.err != nil {
 			t.Fatalf("Capture err: %v", r.err)
 		}
-		if string(r.png) != string(want) {
-			t.Fatalf("png mismatch")
+		if len(r.capture.Tiles) != len(tiles) {
+			t.Fatalf("tiles len = %d, want %d", len(r.capture.Tiles), len(tiles))
+		}
+		for i, want := range tiles {
+			if r.capture.Tiles[i] != want {
+				t.Fatalf("tile %d mismatch: got %q, want %q", i, r.capture.Tiles[i], want)
+			}
+		}
+		if !r.capture.Clipped {
+			t.Fatal("Clipped = false, want true (broker must round-trip the flag)")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Capture did not return after Resolve")
@@ -118,11 +129,21 @@ func TestScreenshotBroker_FailReturnsErrorToCapture(t *testing.T) {
 
 func TestScreenshotBroker_ResolveUnknownRequestErrors(t *testing.T) {
 	b, _ := newScreenshotBroker(t)
-	if err := b.Resolve("no-such-id", []byte("x")); err == nil {
+	if err := b.Resolve("no-such-id", []string{"AAEC"}, false); err == nil {
 		t.Fatal("Resolve(unknown) = nil, want error")
 	}
 	if err := b.Fail("no-such-id", "reason"); err == nil {
 		t.Fatal("Fail(unknown) = nil, want error")
+	}
+}
+
+func TestScreenshotBroker_ResolveEmptyTilesErrors(t *testing.T) {
+	b, _ := newScreenshotBroker(t)
+	if err := b.Resolve("any-id", nil, false); err == nil {
+		t.Fatal("Resolve(nil tiles) = nil, want error")
+	}
+	if err := b.Resolve("any-id", []string{}, false); err == nil {
+		t.Fatal("Resolve([]) = nil, want error")
 	}
 }
 
@@ -203,7 +224,7 @@ func TestScreenshotBroker_TeardownThreadCancelsPending(t *testing.T) {
 	// thread-B should still be parked. Resolve it to release the goroutine.
 	for _, req := range requests {
 		if req.ThreadID == "thread-B" {
-			if err := b.Resolve(req.RequestID, []byte("ok")); err != nil {
+			if err := b.Resolve(req.RequestID, []string{"AAEC"}, false); err != nil {
 				t.Fatalf("Resolve thread-B: %v", err)
 			}
 		}

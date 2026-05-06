@@ -28,8 +28,15 @@ both providers consume, and the bundled design-mode system prompt.
   race.
 - `screenshot.go` — `ScreenshotBroker` pending-request map, reactor
   blocking pattern (buffered channel + ctx-aware select). `Capture`
-  blocks the MCP tool call; `Resolve(requestID, png)` and
-  `Fail(requestID, reason)` come from the frontend bindings.
+  blocks the MCP tool call and returns a `CaptureResult` of
+  base64-encoded JPEG tiles + a `Clipped` flag.
+  `Resolve(requestID, tiles []string, clipped bool)` and
+  `Fail(requestID, reason)` come from the frontend bindings. Tiles
+  stay base64 end-to-end so the MCP layer can hand them straight to
+  the wire — no decode/re-encode round-trip. Caps on tile count, per-
+  tile size, and aggregate size are enforced inside `Resolve`
+  (`MaxScreenshotTiles`, `MaxScreenshotTileBase64Bytes`,
+  `MaxScreenshotTotalBase64Bytes`).
 - `reactor.go` — thin shell around the diagnostic buffer + screenshot
   broker. The MCP layer calls `GetDiagnostics` / `CaptureScreenshot`;
   session teardown calls `TeardownThread`.
@@ -47,11 +54,22 @@ both providers consume, and the bundled design-mode system prompt.
   capture script into `<head>`. The script captures
   `console.error/warn`, `window.onerror`, and unhandled rejections,
   posting batches to the parent over `postMessage`. It also handles
-  `{aoDesign: 'capture'}` requests by lazy-loading
-  `modern-screenshot@4` from esm.sh and rendering
-  `document.documentElement` from inside the iframe — required because
-  the iframe sandbox is `allow-scripts` only (no `allow-same-origin`),
-  so the parent cannot reach into `iframe.contentDocument`.
+  `{aoDesign: 'capture', mode}` requests by lazy-loading a self-hosted
+  `modern-screenshot` UMD bundle from `/design/_aoassets/modern-screenshot.js`
+  (esm.sh's dynamic-import path is unavailable from the iframe's
+  opaque sandbox origin — see `serveModernScreenshot`). Two capture
+  modes:
+    - `mode: 'single'` — full-document PNG; used by the user-facing
+      send-to-thread upload.
+    - `mode: 'tiles'` — `domToCanvas` rendered at 1280-css-px width,
+      sliced into 1280×800 JPEG-q-0.85 tiles top-to-bottom (max 8),
+      with a `clipped` flag when the page exceeds the budget. Used
+      by the agent's `read_screenshot` MCP tool — tiling keeps each
+      image inside per-image vision-token budgets.
+  All capture work runs inside the iframe because the
+  `sandbox="allow-scripts"` (no `allow-same-origin`) sandbox gives
+  the iframe an opaque origin and prevents the parent from reaching
+  `iframe.contentDocument`.
 - `prompts.go` — `LoadDesignSystemPrompt`: bundled default plus
   override at `<configDir>/prompts/design-mode.md`.
 

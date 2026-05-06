@@ -15,22 +15,24 @@
   // the cacheBust counter on the iframe src to force a reload.
   //
   // Screenshot round-trip: when the agent calls the read_screenshot
-  // tool, the backend emits `design:capture-request`. We forward the
-  // request to the iframe via postMessage; the file-server-injected
-  // capture script renders the document and posts back over
-  // postMessage; we ship the PNG to IngestScreenshot. Failures route
+  // tool the backend emits `design:capture-request`. We ask the iframe
+  // for tiles (requestIframeCaptureTiles), then ship the ordered base64
+  // tiles plus the `clipped` flag to IngestScreenshot. Failures route
   // through FailScreenshot so the agent's blocking call doesn't hang.
+  // The user-facing send-to-thread button uses the single-PNG variant
+  // (requestIframeCapture) instead — see utils/sendDesignToThread.ts.
   //
   // Sandbox + capture: with `sandbox="allow-scripts"` set without
   // `allow-same-origin`, the iframe document loads with an opaque
   // origin and the parent cannot reach `iframe.contentDocument`.
   // The capture round-trip works around that by sending a
-  // postMessage `{aoDesign: 'capture', requestId}` to the iframe;
-  // the file-server-injected capture script renders the document via
-  // a lazy-loaded modern-screenshot module and posts back a
-  // `capture-result`. requestIframeCapture in utils/captureHtml.ts
-  // owns the messenger logic. Diagnostics flow over the same
-  // postMessage rail (works across opaque origins).
+  // postMessage `{aoDesign: 'capture', requestId, mode}` to the
+  // iframe; the file-server-injected capture script renders the
+  // document via a lazy-loaded modern-screenshot module and posts back
+  // either a `capture-result` (mode=single) or `capture-tiles-result`
+  // (mode=tiles). utils/captureHtml.ts owns the messenger logic.
+  // Diagnostics flow over the same postMessage rail (works across
+  // opaque origins).
 
   import { onMount } from 'svelte';
   import Smartphone from 'lucide-svelte/icons/smartphone';
@@ -55,7 +57,7 @@
     type DiagnosticSeverity,
     type DesignViewport,
   } from '../../types/design';
-  import { requestIframeCapture } from '../../utils/captureHtml';
+  import { requestIframeCapture, requestIframeCaptureTiles } from '../../utils/captureHtml';
   import {
     DESIGN_RELOAD_MAIN_EVENT,
     DESIGN_CAPTURE_REQUEST_EVENT,
@@ -262,8 +264,8 @@
       return;
     }
     try {
-      const pngBase64 = await requestIframeCapture(iframe, requestId);
-      await IngestScreenshot({ requestId, pngBase64 });
+      const { tiles, clipped } = await requestIframeCaptureTiles(iframe, requestId);
+      await IngestScreenshot({ requestId, tilesJpegBase64: tiles, clipped });
     } catch (err) {
       const reason = errString(err);
       // Toast surfaces the failure to the user even when the agent's
@@ -272,7 +274,7 @@
       // main-thread freeze — we want both the cause and the user-visible
       // notification on the same screen so the user can correlate.
       addToast('error', `read_screenshot failed: ${reason}`);
-      console.warn('requestIframeCapture failed:', err);
+      console.warn('requestIframeCaptureTiles failed:', err);
       try {
         await FailScreenshot(requestId, reason);
       } catch (failErr) {

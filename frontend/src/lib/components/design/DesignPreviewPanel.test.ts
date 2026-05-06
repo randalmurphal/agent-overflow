@@ -10,12 +10,22 @@ import {
 } from '../../stores/events';
 
 // Mock the iframe-capture round-trip so tests don't need a real layout
-// engine. requestIframeCapture returns the base64 payload directly
-// after the parent-iframe postMessage exchange.
+// engine. Two helpers: requestIframeCapture returns a single PNG base64
+// (used by the user-facing send-to-thread upload); requestIframeCaptureTiles
+// returns ordered JPEG tiles + a clipped flag (used by the agent's
+// read_screenshot path). Both default to one mock entry each so tests
+// only override what they need.
 vi.mock('../../utils/captureHtml', () => ({
   requestIframeCapture: vi.fn(async () => 'ZmFrZS1wbmc='),
+  requestIframeCaptureTiles: vi.fn(async () => ({
+    tiles: ['ZmFrZS10aWxlLTE=', 'ZmFrZS10aWxlLTI='],
+    clipped: false,
+  })),
 }));
-import { requestIframeCapture } from '../../utils/captureHtml';
+import {
+  requestIframeCapture,
+  requestIframeCaptureTiles,
+} from '../../utils/captureHtml';
 
 // Stub Element.animate (Toast subtree depends on it for transitions).
 if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
@@ -74,6 +84,11 @@ describe('<DesignPreviewPanel>', () => {
   beforeEach(() => {
     vi.mocked(requestIframeCapture).mockClear();
     vi.mocked(requestIframeCapture).mockResolvedValue('ZmFrZS1wbmc=');
+    vi.mocked(requestIframeCaptureTiles).mockClear();
+    vi.mocked(requestIframeCaptureTiles).mockResolvedValue({
+      tiles: ['ZmFrZS10aWxlLTE=', 'ZmFrZS10aWxlLTI='],
+      clipped: false,
+    });
   });
 
   it('renders an iframe pointing at /design/{threadId}/main/ once the workdir is ensured', async () => {
@@ -243,10 +258,14 @@ describe('<DesignPreviewPanel>', () => {
     }
   });
 
-  it('captures the live iframe in response to design:capture-request', async () => {
+  it('captures the live iframe as JPEG tiles in response to design:capture-request', async () => {
     const pane = await buildPane();
     const ingest = setBindingMock('IngestScreenshot', async () => {});
     setBindingMock('FailScreenshot', async () => {});
+    vi.mocked(requestIframeCaptureTiles).mockResolvedValueOnce({
+      tiles: ['dGlsZS0x', 'dGlsZS0y', 'dGlsZS0z'],
+      clipped: true,
+    });
     const { container } = render(DesignPreviewPanel, { props: { pane } });
     await waitForIframe(container);
 
@@ -256,11 +275,14 @@ describe('<DesignPreviewPanel>', () => {
       }),
     );
 
-    await waitFor(() => expect(vi.mocked(requestIframeCapture)).toHaveBeenCalled());
+    // Agent path uses the tiles helper, NOT the single-PNG helper.
+    await waitFor(() => expect(vi.mocked(requestIframeCaptureTiles)).toHaveBeenCalled());
+    expect(vi.mocked(requestIframeCapture)).not.toHaveBeenCalled();
     await waitFor(() => expect(ingest).toHaveBeenCalled());
     expect(ingest.mock.calls[0][0]).toMatchObject({
       requestId: 'req-A',
-      pngBase64: 'ZmFrZS1wbmc=',
+      tilesJpegBase64: ['dGlsZS0x', 'dGlsZS0y', 'dGlsZS0z'],
+      clipped: true,
     });
   });
 
@@ -268,7 +290,7 @@ describe('<DesignPreviewPanel>', () => {
     const pane = await buildPane();
     setBindingMock('IngestScreenshot', async () => {});
     const failMock = setBindingMock('FailScreenshot', async () => {});
-    vi.mocked(requestIframeCapture).mockRejectedValueOnce(new Error('cross-origin'));
+    vi.mocked(requestIframeCaptureTiles).mockRejectedValueOnce(new Error('cross-origin'));
     const { container } = render(DesignPreviewPanel, { props: { pane } });
     await waitForIframe(container);
 

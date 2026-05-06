@@ -2,7 +2,6 @@ package design
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,9 +28,13 @@ const mcpProtocolVersion = "2025-03-26"
 //     since the agent's last call. Blocks up to ~1s when the file
 //     watcher fired recently but no diagnostics have landed yet.
 //
-//   - read_screenshot() -> {png_base64}
-//     Round-trips through the frontend to capture the live iframe;
-//     returns PNG bytes encoded in base64.
+//   - read_screenshot() -> N image content blocks
+//     Round-trips through the frontend to capture the live iframe.
+//     The frontend returns the rendered output as one or more JPEG
+//     tiles top-to-bottom; the MCP result content array carries each
+//     tile as an `image` block with `mimeType: image/jpeg`. If the
+//     page exceeded the tile budget the result trails with a `text`
+//     block flagging the clip so the agent knows there's more page.
 //
 // Per-thread URL tokens isolate sessions; the tools don't take a
 // thread id parameter — the URL tells the server which thread the
@@ -264,7 +267,7 @@ func (s *MCPServer) handleReadScreenshot(
 	req mcpRequest,
 	threadID string,
 ) {
-	png, err := s.reactor.CaptureScreenshot(ctx, threadID)
+	result, err := s.reactor.CaptureScreenshot(ctx, threadID)
 	if err != nil {
 		if errors.Is(err, ErrScreenshotSessionEnded) {
 			// Session ended mid-tool-call: clean cancellation, not
@@ -275,9 +278,30 @@ func (s *MCPServer) handleReadScreenshot(
 		writeToolError(w, req.ID, err)
 		return
 	}
-	writeToolResult(w, req.ID, map[string]any{
-		"png_base64": base64.StdEncoding.EncodeToString(png),
-	})
+	content := make([]map[string]any, 0, len(result.Tiles)+1)
+	for _, tileBase64 := range result.Tiles {
+		// Tiles flow through the broker base64-encoded so we can hand
+		// them straight to the wire; no decode/re-encode round-trip.
+		content = append(content, map[string]any{
+			"type":     "image",
+			"data":     tileBase64,
+			"mimeType": "image/jpeg",
+		})
+	}
+	if result.Clipped {
+		// Server-controlled text. Do NOT interpolate user-, agent-, or
+		// iframe-supplied strings into this block — it's appended
+		// alongside server-trusted image content blocks the agent
+		// reads at face value.
+		content = append(content, map[string]any{
+			"type": "text",
+			"text": fmt.Sprintf(
+				"Note: the rendered page was taller than the screenshot tile budget (%d tiles). The captured tiles cover the top of the page; trailing content was not included.",
+				len(result.Tiles),
+			),
+		})
+	}
+	writeToolContent(w, req.ID, content)
 }
 
 func (s *MCPServer) threadIDForPath(path string) (string, bool) {
@@ -321,7 +345,7 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        ToolReadScreenshot,
-			"description": "Capture the live design iframe and return a PNG of what the user sees right now. Use only when text diagnostics are clean but you suspect visual issues a JS error wouldn't catch.",
+			"description": "Capture the live design iframe and return the rendered page as one or more JPEG image tiles ordered top-to-bottom. Tall pages produce multiple tiles; if the page exceeds the tile budget the result includes a trailing text note. Use when text diagnostics are clean but you suspect visual issues a JS error wouldn't catch.",
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -338,20 +362,29 @@ func writeRPCResult(w http.ResponseWriter, id json.RawMessage, result any) {
 	})
 }
 
-func writeToolResult(w http.ResponseWriter, id json.RawMessage, payload any) {
-	data, _ := json.Marshal(payload)
+// writeToolContent emits a successful MCP `tools/call` result with the
+// caller-supplied content array. Both the JSON-marshalled-text shape
+// (writeToolResult) and the multi-block image+text shape
+// (handleReadScreenshot) route through here so the `{content,
+// isError}` envelope stays defined in one place.
+func writeToolContent(w http.ResponseWriter, id json.RawMessage, content []map[string]any) {
 	writeRPCResult(w, id, map[string]any{
-		"content": []map[string]string{{
-			"type": "text",
-			"text": string(data),
-		}},
+		"content": content,
 		"isError": false,
 	})
 }
 
+func writeToolResult(w http.ResponseWriter, id json.RawMessage, payload any) {
+	data, _ := json.Marshal(payload)
+	writeToolContent(w, id, []map[string]any{{
+		"type": "text",
+		"text": string(data),
+	}})
+}
+
 func writeToolError(w http.ResponseWriter, id json.RawMessage, err error) {
 	writeRPCResult(w, id, map[string]any{
-		"content": []map[string]string{{
+		"content": []map[string]any{{
 			"type": "text",
 			"text": err.Error(),
 		}},

@@ -826,7 +826,9 @@ export function IngestDiagnosticBatch(batch: design$0.DiagnosticBatch): $Cancell
 /**
  * IngestScreenshot completes a pending read_screenshot tool call. The
  * frontend captures the live iframe in response to a
- * design:capture-request event and posts the PNG bytes back here.
+ * design:capture-request event and posts the ordered list of JPEG
+ * tiles back here. Tile bytes are base64-encoded on the wire; the
+ * MCP layer re-encodes them as image content blocks for the agent.
  */
 export function IngestScreenshot(result: design$0.ScreenshotResult): $CancellablePromise<void> {
     return $Call.ByID(267844513, result);

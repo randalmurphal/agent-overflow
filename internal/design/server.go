@@ -377,16 +377,25 @@ func findElement(node *html.Node, tag string) *html.Node {
 //     frontend forwards the batches to the backend via
 //     IngestDiagnosticBatch.
 //
-//  2. Self-render the document to a PNG when the parent posts a
-//     `capture` request, then post the result back. This runs INSIDE
-//     the iframe so the strict `sandbox="allow-scripts"` (without
-//     allow-same-origin) is preserved — the parent cannot reach into
-//     the iframe's contentDocument, but the iframe can render itself
-//     and ship the bytes back over postMessage.
+//  2. Self-render the document on a parent `capture` request and post
+//     the bytes back. This runs INSIDE the iframe so the strict
+//     `sandbox="allow-scripts"` (without allow-same-origin) is
+//     preserved — the parent cannot reach into the iframe's
+//     contentDocument, but the iframe can render itself and ship the
+//     bytes back over postMessage. Two capture modes:
+//       - 'single' (default): a single PNG of the full document. Used
+//         by the user-facing "send to thread" flow where the screenshot
+//         becomes one chat attachment.
+//       - 'tiles': a JPEG-q-0.85 canvas sliced top-to-bottom into
+//         1280×800 tiles, max 8 tiles, with a clipped flag set when
+//         the page exceeded the budget. Used by the agent's
+//         read_screenshot MCP tool — tiling keeps each image inside
+//         per-image vision-token budgets even for tall pages, which
+//         a single full-document PNG would blow.
 //
-//     modern-screenshot is fetched lazily from esm.sh on the first
-//     capture so the script stays small and a thread that never asks
-//     for a screenshot pays no network cost.
+//     modern-screenshot is loaded lazily on the first capture so the
+//     script stays small and a thread that never asks for a screenshot
+//     pays no network cost.
 //
 // Kept compact and dependency-free so the diagnostics path stays
 // robust even under unusual document modes.
@@ -442,17 +451,24 @@ const diagnosticCaptureScript = `(function(){
     else { try { message = JSON.stringify(reason); } catch (_) { message = String(reason); } }
     post({ severity: 'error', message: 'Unhandled promise rejection: ' + message, source: 'unhandledrejection', stack: stack });
   });
-  // Screenshot round-trip. The parent issues:
-  //   postMessage({ aoDesign: 'capture', requestId: '...' }, '*')
-  // We render document.documentElement via modern-screenshot (lazy
-  // imported on first call so the script stays tiny) and post back:
-  //   postMessage({ aoDesign: 'capture-result', requestId, pngBase64 })
-  // or:
-  //   postMessage({ aoDesign: 'capture-error', requestId, error })
-  // The parent forwards either to IngestScreenshot / FailScreenshot.
-  var domToPngLoader = null;
-  function loadDomToPng() {
-    if (!domToPngLoader) {
+  // Screenshot round-trip. Parent issues one of:
+  //   postMessage({ aoDesign: 'capture', requestId, mode: 'single' })  → single PNG
+  //   postMessage({ aoDesign: 'capture', requestId, mode: 'tiles'  })  → JPEG tiles
+  // (mode defaults to 'single' for back-compat with the send-to-thread
+  // path that pre-dated tiling.) Iframe replies with one of:
+  //   { aoDesign: 'capture-result',       requestId, pngBase64 }
+  //   { aoDesign: 'capture-tiles-result', requestId, tilesJpegBase64, clipped }
+  //   { aoDesign: 'capture-error',        requestId, error }
+  // The parent forwards the success shape to IngestScreenshot /
+  // FailScreenshot. Tiles mode caps width at TILE_WIDTH css px and
+  // budgets MAX_TILES tiles top-to-bottom — see the constants below.
+  var TILE_WIDTH = 1280;
+  var TILE_HEIGHT = 800;
+  var MAX_TILES = 8;
+  var TILE_JPEG_QUALITY = 0.85;
+  var screenshotLoader = null;
+  function loadScreenshot() {
+    if (!screenshotLoader) {
       // We self-host modern-screenshot at /design/_aoassets/... because
       // this iframe is sandbox="allow-scripts" without allow-same-origin
       // — its origin is opaque, and WebKitGTK refuses dynamic ESM
@@ -464,9 +480,9 @@ const diagnosticCaptureScript = `(function(){
       // /design/_aoassets/modern-screenshot.js on our loopback file
       // server. The server returns the embedded UMD bundle with CORS
       // headers so the response is consumable from the opaque origin.
-      domToPngLoader = new Promise(function(resolve, reject){
+      screenshotLoader = new Promise(function(resolve, reject){
         if (window.modernScreenshot && window.modernScreenshot.domToPng) {
-          resolve(window.modernScreenshot.domToPng);
+          resolve(window.modernScreenshot);
           return;
         }
         var script = document.createElement('script');
@@ -474,9 +490,9 @@ const diagnosticCaptureScript = `(function(){
         script.async = true;
         script.onload = function(){
           if (window.modernScreenshot && window.modernScreenshot.domToPng) {
-            resolve(window.modernScreenshot.domToPng);
+            resolve(window.modernScreenshot);
           } else {
-            reject(new Error('modern-screenshot loaded but no domToPng global'));
+            reject(new Error('modern-screenshot loaded but no global'));
           }
         };
         script.onerror = function(){
@@ -485,27 +501,29 @@ const diagnosticCaptureScript = `(function(){
         document.head.appendChild(script);
       });
     }
-    return domToPngLoader;
+    return screenshotLoader;
   }
-  async function capture(requestId) {
+  // captureSingle is the legacy single-PNG path the user-facing
+  // send-to-thread feature relies on. Kept verbatim — the user's
+  // upload is one image, full-document, not bound by per-image vision
+  // token budgets the way the agent's tool result is.
+  //
+  // font: false skips modern-screenshot's embedWebFont pass. That pass
+  // walks document.styleSheets and fetches every @import/@font-face
+  // URL via fetch() to inline the font bytes as data URLs. Our iframe
+  // is sandbox="allow-scripts" with no allow-same-origin, so the
+  // document has an OPAQUE origin — every fetch() from inside it
+  // (including to its own document URL) is cross-origin and gets
+  // blocked with "Unsafe attempt to load URL ...". Without font:false
+  // the very first capture call rejects and read_screenshot / the
+  // send-to-thread button both hard-fail. Trade: web fonts referenced
+  // via <link> won't be embedded; the canvas falls back to the next
+  // family in the stack. Acceptable for design previews — layout is
+  // what we care about, not exact glyph rendering.
+  async function captureSingle(requestId) {
     try {
-      var domToPng = await loadDomToPng();
-      // font: false skips modern-screenshot's embedWebFont pass.
-      // That pass walks document.styleSheets and fetches every
-      // @import / @font-face URL via fetch() to inline the font
-      // bytes as data URLs. Our iframe is sandbox="allow-scripts"
-      // with no allow-same-origin, so its document has an OPAQUE
-      // origin — every fetch() from inside it (including to its own
-      // document URL) is cross-origin and gets blocked with
-      // "Unsafe attempt to load URL ... Domains, protocols and ports
-      // must match". Without font: false, the very first capture
-      // call rejects with that error and the agent's read_screenshot
-      // tool / the user's "Send to thread" button both hard-fail.
-      // Trade: web fonts referenced via <link> won't be embedded in
-      // the PNG; the canvas falls back to the next family in the
-      // stack. Acceptable for design previews — layout is what we
-      // care about, not exact glyph rendering.
-      var dataUrl = await domToPng(document.documentElement, {
+      var ms = await loadScreenshot();
+      var dataUrl = await ms.domToPng(document.documentElement, {
         backgroundColor: '#ffffff',
         font: false
       });
@@ -518,11 +536,85 @@ const diagnosticCaptureScript = `(function(){
       try { parent.postMessage({ aoDesign: 'capture-error', requestId: requestId, error: message }, '*'); } catch (_) {}
     }
   }
+  // captureTiles renders the document to a canvas at TILE_WIDTH css
+  // pixels (downscaled if the natural width is wider, never upscaled),
+  // then slices that canvas into TILE_WIDTH × TILE_HEIGHT JPEG tiles
+  // top-to-bottom. Capping at MAX_TILES bounds the agent's per-tool
+  // context cost; pages taller than MAX_TILES × TILE_HEIGHT report
+  // clipped:true so the agent knows there's more page below.
+  async function captureTiles(requestId) {
+    try {
+      var ms = await loadScreenshot();
+      var docEl = document.documentElement;
+      var natW = Math.max(docEl.scrollWidth || 0, docEl.clientWidth || 0, 1);
+      var natH = Math.max(docEl.scrollHeight || 0, docEl.clientHeight || 0, 1);
+      // scale ≤ 1: only downscale, never upscale. Upscaling a small
+      // page burns tokens without adding detail.
+      var scale = Math.min(1, TILE_WIDTH / natW);
+      var fullCanvas = await ms.domToCanvas(docEl, {
+        width: natW,
+        height: natH,
+        scale: scale,
+        backgroundColor: '#ffffff',
+        font: false
+      });
+      var totalW = fullCanvas.width;
+      var totalH = fullCanvas.height;
+      var tiles = [];
+      var clipped = false;
+      var sy = 0;
+      while (sy < totalH && tiles.length < MAX_TILES) {
+        var sh = Math.min(TILE_HEIGHT, totalH - sy);
+        var tileCanvas = document.createElement('canvas');
+        tileCanvas.width = totalW;
+        tileCanvas.height = sh;
+        var ctx = tileCanvas.getContext('2d');
+        if (!ctx) throw new Error('failed to acquire tile 2d context');
+        // White-fill so transparent regions render against the same
+        // backdrop the rendered page expects (modern-screenshot's
+        // backgroundColor only fills the source canvas, not slices).
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, totalW, sh);
+        ctx.drawImage(fullCanvas, 0, sy, totalW, sh, 0, 0, totalW, sh);
+        var dataUrl = tileCanvas.toDataURL('image/jpeg', TILE_JPEG_QUALITY);
+        var commaIdx = dataUrl.indexOf(',');
+        tiles.push(commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : '');
+        sy += sh;
+      }
+      if (sy < totalH) clipped = true;
+      try {
+        parent.postMessage({
+          aoDesign: 'capture-tiles-result',
+          requestId: requestId,
+          tilesJpegBase64: tiles,
+          clipped: clipped
+        }, '*');
+      } catch (_) {}
+    } catch (err) {
+      var message = (err && err.message) ? err.message : String(err);
+      try { parent.postMessage({ aoDesign: 'capture-error', requestId: requestId, error: message }, '*'); } catch (_) {}
+    }
+  }
   window.addEventListener('message', function(ev){
     var data = ev && ev.data;
     if (!data || typeof data !== 'object') return;
-    if (data.aoDesign === 'capture' && typeof data.requestId === 'string') {
-      capture(data.requestId);
+    if (data.aoDesign !== 'capture' || typeof data.requestId !== 'string') return;
+    // Explicit dispatch with a fail-closed default. A typo or future
+    // mode silently falling through to single-PNG would surface to the
+    // parent only as "unexpected capture result kind: capture-result"
+    // — emit a dedicated error so the breadcrumb names the problem.
+    if (data.mode === 'tiles') {
+      captureTiles(data.requestId);
+    } else if (data.mode === 'single' || data.mode === undefined) {
+      captureSingle(data.requestId);
+    } else {
+      try {
+        parent.postMessage({
+          aoDesign: 'capture-error',
+          requestId: data.requestId,
+          error: 'unknown capture mode'
+        }, '*');
+      } catch (_) {}
     }
   });
 })();

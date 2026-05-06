@@ -36,10 +36,11 @@ func (r *Reactor) GetDiagnostics(ctx context.Context, threadID string, since int
 
 // CaptureScreenshot is the backend half of the read_screenshot MCP
 // tool. Blocks until the frontend responds, the session ends, or ctx
-// is cancelled.
-func (r *Reactor) CaptureScreenshot(ctx context.Context, threadID string) ([]byte, error) {
+// is cancelled. Returns one or more JPEG tiles plus a clipped flag
+// indicating whether the page overran the iframe's tile budget.
+func (r *Reactor) CaptureScreenshot(ctx context.Context, threadID string) (CaptureResult, error) {
 	if r == nil || r.Screenshots == nil {
-		return nil, fmt.Errorf("design: screenshot broker unavailable")
+		return CaptureResult{}, fmt.Errorf("design: screenshot broker unavailable")
 	}
 	return r.Screenshots.Capture(ctx, threadID)
 }
