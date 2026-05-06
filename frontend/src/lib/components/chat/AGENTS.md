@@ -124,6 +124,20 @@ cache, language extension map) live inside `svelte-streamdown` itself.
 Per-row remount is still cheap because Streamdown's caches survive
 component remounts at the library level.
 
+We ship a pnpm patch against `svelte-streamdown@3.0.1`
+(`frontend/patches/svelte-streamdown@3.0.1.patch`) that fixes two
+upstream defects in `parseIncompleteMarkdown`: (1) `Block.svelte` did
+not honor the `parseIncompleteMarkdown={false}` prop, so the
+auto-balancer ran on settled blocks; (2) the single-asterisk and
+single-underscore plugins counted delimiters inside backtick inline-
+code spans, balancing them with a stray trailing copy at end-of-
+paragraph. Parser bugs in this pipeline go upstream-then-patch — do
+not duplicate the fix in `markdownEnhance.ts` or in `ChatMarkdown`'s
+host wrappers. Regression coverage lives in
+`AssistantMessage.test.ts` (`'does not append a stray ...'` cases).
+Pin `svelte-streamdown` to an exact version in `package.json` so a
+`pnpm update` cannot silently move past the patch target.
+
 ## Test environment notes
 
 happy-dom returns 0 for `clientHeight` / `clientWidth`, which would make

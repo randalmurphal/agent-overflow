@@ -62,6 +62,74 @@ describe('<AssistantMessage>', () => {
     });
   });
 
+  // Regression: svelte-streamdown's `parseIncompleteMarkdown` was counting
+  // single italic delimiters inside inline code spans and balancing them
+  // with a trailing copy at end of paragraph (e.g. `` `_CLAIM_SQL` `` made
+  // the next sentence end with `there._`). We ship a pnpm patch
+  // (`patches/svelte-streamdown@*.patch`) that (a) makes Block.svelte honor
+  // `streamdown.parseIncompleteMarkdown === false`, and (b) adds an
+  // `isWithinInlineCode` helper that the singleAsteriskItalic /
+  // singleUnderscoreItalic plugins consult. The two `status` values exercise
+  // distinct patched paths: `'completed'` flips `parseIncompleteMarkdown`
+  // to false in ChatMarkdown, hitting the Block.svelte short-circuit;
+  // `'streaming'` keeps the balancer running and exercises the
+  // isWithinInlineCode skip inside the plugins. Both failure modes need
+  // independent coverage so a partial revert is caught.
+  const inlineCodeBalanceCases = [
+    {
+      name: 'underscore inside inline code',
+      delimiter: '_',
+      summary: 'a `_CLAIM_SQL` partitions by it. The plumbing is 70% there.',
+    },
+    {
+      name: 'asterisk inside inline code',
+      delimiter: '*',
+      summary: 'use `*ptr = NULL;` to clear it. The plumbing is 70% there.',
+    },
+  ] as const;
+
+  for (const { name, delimiter, summary } of inlineCodeBalanceCases) {
+    it(`does not append a stray '${delimiter}' after ${name} on a settled message`, async () => {
+      const { getByTestId } = render(AssistantMessage, {
+        props: { item: makeItem({ status: 'completed', summary }) },
+      });
+      const body = getByTestId('assistant-message-body');
+      await waitFor(() => {
+        const text = body.textContent?.trimEnd() ?? '';
+        expect(text).toContain('70% there.');
+        expect(text.endsWith(delimiter)).toBe(false);
+      });
+    });
+
+    it(`does not append a stray '${delimiter}' after ${name} mid-stream`, async () => {
+      const { getByTestId } = render(AssistantMessage, {
+        props: { item: makeItem({ status: 'streaming', summary }) },
+      });
+      const body = getByTestId('assistant-message-body');
+      await waitFor(() => {
+        const text = body.textContent?.trimEnd() ?? '';
+        expect(text).toContain('70% there.');
+        expect(text.endsWith(delimiter)).toBe(false);
+      });
+    });
+  }
+
+  it('still renders real italic markdown adjacent to inline code', async () => {
+    // Positive control: a future patch that over-skipped (e.g. treated all
+    // `_` as inside-code) would silently break italics. Anchor real italic
+    // outside the span to keep the inline-code-skip honest.
+    const summary = 'see `foo_bar` and the _real_ italic.';
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'completed', summary }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const em = body.querySelector('em');
+      expect(em).not.toBeNull();
+      expect(em?.textContent).toBe('real');
+    });
+  });
+
   it('renders blank-line markdown as adjacent paragraph elements', async () => {
     const { getByTestId } = render(AssistantMessage, {
       props: {

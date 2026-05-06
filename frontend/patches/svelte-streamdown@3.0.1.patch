@@ -1,0 +1,92 @@
+diff --git a/dist/Block.svelte b/dist/Block.svelte
+index b0a4b6f489414f4ceb7f11d53ab7e420d713958b..707803ff50eed00ed5d22c1f7648dc969f80e6a8 100644
+--- a/dist/Block.svelte
++++ b/dist/Block.svelte
+@@ -16,7 +16,12 @@
+ 
+ 	const streamdown = useStreamdown();
+ 	const tokens = $derived(
+-		lex(isStatic ? block : parseIncompleteMarkdown(block.trim()), streamdown.extensions)
++		lex(
++			isStatic || streamdown.parseIncompleteMarkdown === false
++				? block
++				: parseIncompleteMarkdown(block.trim()),
++			streamdown.extensions
++		)
+ 	);
+ 	const insidePopover = getContext('POPOVER');
+ </script>
+diff --git a/dist/utils/parse-incomplete-markdown.js b/dist/utils/parse-incomplete-markdown.js
+index 63a979fbe298a9a4a88bfb3d3cd6bba6a3ba1e95..1ccc8e637e02eb40b32ed1096cadb29754d26aee 100644
+--- a/dist/utils/parse-incomplete-markdown.js
++++ b/dist/utils/parse-incomplete-markdown.js
+@@ -271,6 +271,8 @@ export class IncompleteMarkdownParser {
+                     let singleAsterisks = 0;
+                     for (let i = 0; i < line.length; i++) {
+                         if (line[i] === '*') {
++                            if (isWithinInlineCode(line, i))
++                                continue;
+                             const prevChar = i > 0 ? line[i - 1] : '';
+                             const nextChar = i < line.length - 1 ? line[i + 1] : '';
+                             let lineStartIndex = i;
+@@ -298,6 +300,8 @@ export class IncompleteMarkdownParser {
+                         let firstSingleAsteriskIndex = -1;
+                         for (let i = 0; i < line.length; i++) {
+                             if (line[i] === '*' && line[i - 1] !== '*' && line[i + 1] !== '*') {
++                                if (isWithinInlineCode(line, i))
++                                    continue;
+                                 const prevChar = i > 0 ? line[i - 1] : '';
+                                 const nextChar = i < line.length - 1 ? line[i + 1] : '';
+                                 if (/\w/.test(prevChar) && /\w/.test(nextChar))
+@@ -364,6 +368,8 @@ export class IncompleteMarkdownParser {
+                                 continue;
+                             if (isWithinMathBlock(line, i))
+                                 continue;
++                            if (isWithinInlineCode(line, i))
++                                continue;
+                             if (prevChar &&
+                                 nextChar &&
+                                 /[\p{L}\p{N}_]/u.test(prevChar) &&
+@@ -383,7 +389,8 @@ export class IncompleteMarkdownParser {
+                                 line[i - 1] !== '_' &&
+                                 line[i + 1] !== '_' &&
+                                 line[i - 1] !== '\\' &&
+-                                !isWithinMathBlock(line, i)) {
++                                !isWithinMathBlock(line, i) &&
++                                !isWithinInlineCode(line, i)) {
+                                 const prevChar = i > 0 ? line[i - 1] : '';
+                                 const nextChar = i < line.length - 1 ? line[i + 1] : '';
+                                 if (prevChar &&
+@@ -833,6 +840,32 @@ const isWithinMathBlock = (text, position) => {
+     }
+     return inInlineMath || inBlockMath;
+ };
++const isWithinInlineCode = (text, position) => {
++    let inSpan = false;
++    let openRunLen = 0;
++    let i = 0;
++    while (i < text.length && i < position) {
++        if (text[i] !== '`') {
++            i++;
++            continue;
++        }
++        let j = i;
++        while (j < text.length && text[j] === '`') {
++            j++;
++        }
++        const runLen = j - i;
++        if (!inSpan) {
++            inSpan = true;
++            openRunLen = runLen;
++        }
++        else if (runLen === openRunLen) {
++            inSpan = false;
++            openRunLen = 0;
++        }
++        i = j;
++    }
++    return inSpan;
++};
+ const isWithinFootnoteRef = (text, position) => {
+     let openBracketPos = -1;
+     let caretPos = -1;
