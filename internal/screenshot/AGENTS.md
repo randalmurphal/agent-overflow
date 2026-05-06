@@ -21,6 +21,8 @@ Headless-Chromium-driven page capture for design-mode read_screenshot.
   cookies / localStorage / serviceWorkers ARE shared across captures,
   which is fine for the current trust model (every capture loads a
   loopback `/design/{threadID}/main/` URL the user trusts).
+  `ensureStarted` health-checks `browserCtx` before reuse and
+  transparently rebuilds the browser if the previous instance died.
 - The capture sequence: emulate user-visible viewport,
   `Page.navigate`, race `document.fonts.ready` against a 4 s soft
   cap (a cold-cache fetch of variable fonts can otherwise hang
@@ -69,6 +71,26 @@ Headless-Chromium-driven page capture for design-mode read_screenshot.
   browser; per-capture state isolation is a fresh tab via
   `chromedp.NewContext`, NOT a new BrowserContext (we don't need
   cookie isolation across captures of the same loopback URL).
+- Do NOT pass a `context.WithTimeout` (or any other context that will
+  be canceled) to the FIRST `chromedp.Run` on a `browserCtx`.
+  chromedp's `Allocate` launches chrome via `exec.CommandContext`,
+  tying the chrome subprocess's lifetime to whatever ctx is handed
+  to that first Run. A defer-canceled or expired timeout there
+  causes Go's `os/exec` reaper to SIGKILL chrome silently, leaving
+  every subsequent Capture seeing a dead browser. The first Run gets
+  `browserCtx` directly; per-capture timeouts go on per-capture
+  child contexts only. (chromedp explicitly warns about this in
+  `chromedp.go:313-315`.)
+- Do NOT remove the `chromedp.ModifyCmdFunc` Pdeathsig bypass on
+  Linux. chromedp's default `allocateCmdOptions` sets
+  `cmd.SysProcAttr.Pdeathsig = SIGKILL` so the browser dies if its
+  parent does — but in a Go program Pdeathsig fires on parent OS
+  THREAD death (which Go's scheduler causes routinely as it parks
+  idle workers), not parent process death, killing the browser
+  seconds after its spawning goroutine returns. See
+  https://github.com/golang/go/issues/27505. Browser cleanup is
+  still correct via `exec.CommandContext(allocCtx, ...)`; killing
+  the alloc context still propagates a proper `Process.Kill`.
 - Do NOT skip `document.fonts.ready`. Fonts loaded after the initial
   paint are the most common fidelity miss. The 4 s soft cap is there
   to keep the wait bounded, not to bypass it — never await it without

@@ -64,9 +64,8 @@ func (w prefixedLogWriter) Write(p []byte) (int, error) {
 type Manager struct {
 	installer *Installer
 
-	startMu   sync.Mutex
-	started   bool
-	startErr  error
+	startMu sync.Mutex
+	started bool
 
 	// stateMu guards the lifetime fields below. Capture takes a brief
 	// read of browserCtx under stateMu so a Close racing a Capture
@@ -76,11 +75,6 @@ type Manager struct {
 	allocCancel   context.CancelFunc
 	browserCtx    context.Context
 	browserCancel context.CancelFunc
-	// chromeCmd is the chrome-headless-shell *exec.Cmd captured via
-	// chromedp.ModifyCmdFunc. Used by the death-watcher to tell apart
-	// "chrome process actually died" from "chromedp dropped the
-	// websocket but chrome is alive". Cleared on teardown.
-	chromeCmd *exec.Cmd
 }
 
 // NewManager constructs a Manager with the supplied installer. The
@@ -139,20 +133,6 @@ func (m *Manager) Capture(ctx context.Context, opts CaptureOptions) ([]byte, err
 	m.stateMu.Unlock()
 	if browserCtx == nil {
 		return nil, fmt.Errorf("screenshot: manager closed")
-	}
-
-	// Diagnostic check: a long-lived browserCtx that is already
-	// canceled at Capture entry means the chromedp browser process
-	// died sometime between Prime/last-Capture and now. Calling into
-	// chromedp.NewContext on a dead parent yields a context that's
-	// immediately Done, and the next chromedp.Run drops out with
-	// context.Canceled in single-digit milliseconds — exactly the
-	// "errors basically immediately" symptom we're chasing. Surface
-	// it loudly here so the next failure tells us if this is the
-	// hidden state.
-	if cerr := browserCtx.Err(); cerr != nil {
-		log.Printf("screenshot: capture %s: long-lived browserCtx is already canceled at entry: err=%v cause=%v",
-			opts.URL, cerr, context.Cause(browserCtx))
 	}
 
 	// Per-capture context — chromedp creates a fresh Target so
@@ -304,11 +284,9 @@ func (m *Manager) ensureStarted(ctx context.Context) error {
 	}
 
 	if err := m.startLocked(ctx); err != nil {
-		m.startErr = err
 		return err
 	}
 	m.started = true
-	m.startErr = nil
 	return nil
 }
 
@@ -328,7 +306,6 @@ func (m *Manager) teardownLocked() {
 	m.browserCancel = nil
 	m.allocCtx = nil
 	m.allocCancel = nil
-	m.chromeCmd = nil
 }
 
 func (m *Manager) startLocked(ctx context.Context) error {
@@ -338,97 +315,75 @@ func (m *Manager) startLocked(ctx context.Context) error {
 	}
 
 	// Launch chromedp's exec allocator pointed at our cached binary.
-	// The flag set extends DefaultExecAllocatorOptions with our own
-	// minimum-viable additions; sandbox is disabled because the
-	// captured pages always come from a loopback URL the user
-	// already trusts, and the SUID-helper sandbox is unavailable on
-	// many WSL / container environments.
 	//
-	// ModifyCmdFunc(no-op) bypasses chromedp's default
-	// allocateCmdOptions, which on Linux sets cmd.SysProcAttr.Pdeathsig
-	// = SIGKILL. The intent is "kill the browser if our parent
-	// process dies" — but in a Go program Pdeathsig fires when the
-	// spawning OS THREAD is reaped, not the process. Go's scheduler
-	// parks/reaps idle threads routinely (~seconds after the
-	// goroutine that called startLocked returns), and the kernel
-	// sends SIGKILL to chrome-headless-shell as soon as that
-	// happens. The non-Linux build of allocateCmdOptions is already
-	// a no-op (allocate_other.go), so this matches macOS/Windows.
-	// See https://github.com/golang/go/issues/27505 for the
-	// Pdeathsig + Go runtime footgun in detail.
+	// Three non-default options carry load-bearing rationale:
 	//
-	// Browser cleanup is still correct without Pdeathsig — chromedp
-	// launches via exec.CommandContext(allocCtx), so allocCancel()
-	// from Manager.Close / teardownLocked still propagates to a
-	// proper os/exec Process.Kill.
+	//   - NoSandbox: the SUID-helper sandbox is unavailable on many
+	//     WSL / container environments and our captured pages always
+	//     come from a trusted loopback URL.
 	//
-	// CombinedOutput captures chrome-headless-shell's own stdout +
-	// stderr after the wsURL handshake. Without this, anything
-	// chrome logs as it crashes is silently discarded; with this
-	// the chromedp logger surfaces the death's underlying cause
-	// (segfault, OOM message, missing-library line, etc.).
-	// chromeCmd captures the *exec.Cmd via the modify hook so the
-	// death-watcher can inspect cmd.ProcessState after browserCtx
-	// cancellation. If chrome is still alive at death-time we know
-	// the cancellation came from a chromedp-internal path (websocket
-	// drop, CDP error) rather than the browser actually exiting.
+	//   - ModifyCmdFunc(captureCmd): bypasses chromedp's Linux-only
+	//     default of cmd.SysProcAttr.Pdeathsig = SIGKILL. The intent
+	//     ("kill the browser if our parent dies") backfires in Go
+	//     programs because Pdeathsig fires when the spawning OS
+	//     THREAD is reaped, which Go's scheduler does routinely. The
+	//     non-Linux build of chromedp's allocateCmdOptions is already
+	//     a no-op, so this matches macOS/Windows. Browser cleanup is
+	//     still correct: chromedp launches via
+	//     exec.CommandContext(allocCtx), and our allocCancel() (from
+	//     Manager.Close / teardownLocked) still triggers a proper
+	//     Process.Kill via os/exec. The same hook captures the
+	//     *exec.Cmd into a closure-local variable for the
+	//     death-watcher's post-mortem aliveness check below.
+	//     Reference: https://github.com/golang/go/issues/27505.
+	//
+	//   - CombinedOutput: pipes chrome-headless-shell's own
+	//     stdout/stderr (post-wsURL handshake) into log.Printf so a
+	//     real chrome crash leaves a trace (segfault, OOM message,
+	//     missing-library line, etc.). Without this, chrome dies
+	//     silently from our perspective.
 	var chromeCmd *exec.Cmd
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(res.BinaryPath),
 		chromedp.NoSandbox,
 		chromedp.Flag("headless", "new"),
 		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.ModifyCmdFunc(func(cmd *exec.Cmd) {
-			// Capture the cmd reference for post-mortem inspection.
-			// Empty otherwise — see the long comment above for why we
-			// bypass chromedp's default Pdeathsig behavior.
-			chromeCmd = cmd
-		}),
+		chromedp.ModifyCmdFunc(func(cmd *exec.Cmd) { chromeCmd = cmd }),
 		chromedp.CombinedOutput(prefixedLogWriter{prefix: "chrome-headless-shell"}),
 	)
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
 
-	// Run the first NewContext to actually boot the browser process.
-	// WithErrorf forwards chromedp's own error logging (websocket
-	// disconnects, CDP-level errors) into our log stream so a death
-	// caused by the chromedp <-> chrome connection dropping carries
-	// a precise reason instead of an opaque context.Canceled.
+	// chromedp.WithErrorf forwards chromedp's own error logging
+	// (websocket disconnects, CDP-level decode errors) into our log
+	// stream so a future browser-side fault carries a precise reason
+	// instead of an opaque context.Canceled.
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx,
 		chromedp.WithErrorf(func(format string, args ...any) {
 			log.Printf("chromedp: "+format, args...)
 		}),
 	)
 
-	// Bring the browser online with the first chromedp.Run. THIS
-	// MUST USE browserCtx DIRECTLY — chromedp's docs explicitly
-	// warn:
+	// CRITICAL: pass browserCtx (not a timeout-wrapped child) to the
+	// first chromedp.Run. From chromedp.go:313-315 (v0.15.1):
 	//
 	//   "Note that the first time Run is called on a context, a
 	//   browser will be allocated via Allocator. Thus, it's generally
 	//   a bad idea to use a context timeout on the first Run call,
 	//   as it will stop the entire browser."
 	//
-	// (chromedp.go:313-315 in v0.15.1.) The mechanism: Allocate
-	// launches chrome via exec.CommandContext(ctx, ...), tying
-	// chrome's process lifetime to whatever ctx is passed to the
-	// first Run. If we hand it a context.WithTimeout here, the
-	// defer-cancel fires when this function returns and Go's
-	// os/exec reaper kills chrome ~milliseconds later. Chrome dies
-	// silently (no crash, no signal we can intercept), the
-	// websocket-reader exits, browserCtx is canceled, every
-	// subsequent Capture sees a dead browser. This is exactly the
-	// "browser_dead_at_entry" / "browser_died_during_capture"
-	// failure mode we observed — chrome was killed by US, by way
-	// of warmCtx timing out / being deferred-canceled.
+	// chromedp's Allocate launches chrome via exec.CommandContext,
+	// tying the subprocess's lifetime to whatever ctx is passed to
+	// this first Run. A context.WithTimeout here would defer-cancel
+	// when startLocked returns, Go's os/exec reaper would SIGKILL
+	// chrome milliseconds later, and every subsequent Capture would
+	// see a dead browser. This was the actual cause of the
+	// "browser_dead_at_entry" failure mode the diagnostic
+	// instrumentation chased through several rounds.
 	//
-	// Pass browserCtx directly. The browser's lifetime is then
-	// tied to browserCtx (which is exactly the long-lived context
-	// we manage). Without a wrapping timeout the warm-up is
-	// unbounded — but this is "open a connection, run no actions,
-	// return when CDP handshake completes", which takes well under
-	// a second on local loopback. If chromedp/chrome ever hangs
-	// here, the user-visible symptom is a slow first capture, not
-	// silently broken later captures.
+	// The warm-up itself is just "open the CDP connection, run no
+	// actions, return on handshake complete" — sub-second on local
+	// loopback. If chrome ever hangs here the user sees a slow first
+	// capture, not silently broken later ones.
 	if err := chromedp.Run(browserCtx); err != nil {
 		browserCancel()
 		allocCancel()
@@ -436,13 +391,12 @@ func (m *Manager) startLocked(ctx context.Context) error {
 	}
 
 	// Death watcher: log the moment browserCtx is canceled and
-	// inspect the chrome subprocess at that instant. If chrome's
-	// ProcessState is still nil at this point, the chrome process
-	// is still alive — meaning the cancellation came from a
-	// chromedp-internal path (websocket disconnect, CDP error) and
-	// we're chasing a connection bug, not a process-death bug. If
-	// ProcessState is non-nil, chrome exited and the state object
-	// carries the exit code / signal.
+	// inspect the chrome subprocess at that instant. With the
+	// warmCtx-fix landed, this should fire only on Manager.Close /
+	// teardownLocked (clean) or on a real chrome crash (rare). The
+	// liveness probe distinguishes "chrome process exited" from
+	// "chromedp dropped the websocket on a healthy chrome" — the
+	// latter would be a new, separate bug.
 	go func() {
 		<-browserCtx.Done()
 		liveness := "chrome state unknown (cmd not captured)"
@@ -469,7 +423,6 @@ func (m *Manager) startLocked(ctx context.Context) error {
 	m.allocCancel = allocCancel
 	m.browserCtx = browserCtx
 	m.browserCancel = browserCancel
-	m.chromeCmd = chromeCmd
 	m.stateMu.Unlock()
 	return nil
 }
@@ -489,6 +442,5 @@ func (m *Manager) Close() error {
 	}
 	m.browserCtx = nil
 	m.allocCtx = nil
-	m.chromeCmd = nil
 	return nil
 }
