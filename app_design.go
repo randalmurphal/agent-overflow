@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"path/filepath"
 
 	"agent-overflow/internal/design"
@@ -97,7 +98,35 @@ func (a *App) activateDesignSession(thread store.Thread) (map[string]any, error)
 		a.stopDesignWatcher(thread.ID)
 		return nil, err
 	}
+	// Fire the chrome-headless-shell install + chromedp boot in the
+	// background so the agent's first read_screenshot doesn't pay the
+	// download cost on the hot path. ensureStarted is idempotent —
+	// repeat activations are no-ops once the manager is up.
+	a.primeDesignScreenshotManager()
 	return servers, nil
+}
+
+// primeDesignScreenshotManager fires the screenshot manager's lazy
+// install + boot in a goroutine so the user-visible "first capture"
+// doesn't block on the ~150 MB chrome-headless-shell download. Failure
+// here is non-fatal: the agent's first read_screenshot would just
+// retry the install on the hot path, same as without the prime.
+//
+// The goroutine survives App.Shutdown intentionally — interrupting a
+// mid-stream zip extract leaves a half-extracted version dir that the
+// next install detects and rebuilds from scratch. Letting the prime
+// finish doesn't slow shutdown (Shutdown closes the manager via Step
+// 7 which cancels browserCtx, the goroutine sees a started+then-closed
+// manager and exits without further work).
+func (a *App) primeDesignScreenshotManager() {
+	if a.screenshotManager == nil {
+		return
+	}
+	go func() {
+		if err := a.screenshotManager.Prime(context.Background()); err != nil {
+			log.Printf("screenshot: prime: %v", err)
+		}
+	}()
 }
 
 // designMCPConfigForThread returns the MCP server config block for the

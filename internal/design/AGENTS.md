@@ -44,11 +44,10 @@ package — see `internal/screenshot/`.
   `get_design_diagnostics(since_token)` and `read_screenshot()`. The
   server is provider-agnostic — it knows how to dispatch a JSON-RPC
   `tools/call` into the reactor, nothing about Codex or Claude
-  specifically. Tool-side errors (capturer failures, etc.) come back
-  via the MCP `{result: {isError: true, content: [...]}}` convention,
-  not JSON-RPC error frames; `context.Canceled` is the lone exception
-  (mapped to a JSON-RPC error so a session-teardown abort surfaces
-  cleanly).
+  specifically. Tool-side errors (capturer failures, request
+  cancellation from the agent's per-call timeout, etc.) all come back
+  via the MCP `{result: {isError: true, content: [...]}}` convention
+  so a single bad call doesn't tear down the agent's MCP session.
 - `server.go` — `FileHandler(baseDir)` returns
   `http.FileServer(http.Dir(baseDir))` wrapped in
   `InjectionMiddleware`. The middleware buffers HTML responses, parses

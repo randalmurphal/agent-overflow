@@ -623,21 +623,27 @@ func (a *App) Shutdown(ctx context.Context) error {
 		record("close terminal sessions", a.terminals.Shutdown())
 	}
 
-	// Step 7: close the design MCP server. Safe to close once no
-	// provider session holds a reference (step 4 guarantees that).
-	if a.designMCP != nil {
-		record("close design MCP server", a.designMCP.Close())
-	}
-
-	// Step 7b: close the headless Chromium driving read_screenshot.
-	// Order matters: close after step 4 (no more provider sessions to
-	// invoke read_screenshot) and after step 7 (any in-flight MCP tool
-	// call has been cancelled by designMCP.Close), so this Close
-	// terminates the long-lived browser without racing a Capture.
+	// Step 7: close the headless Chromium driving read_screenshot.
+	// MUST run before the design MCP server: designMCP.Close() calls
+	// http.Server.Shutdown(context.Background()) which blocks until
+	// in-flight handlers return, and any in-flight read_screenshot
+	// handler is parked inside Manager.Capture waiting on chromedp.
+	// Closing the manager first cancels browserCtx, the chromedp
+	// run returns, the handler returns, and step 7b's Shutdown
+	// finishes promptly. The opposite order deadlocked shutdown
+	// against a long-running capture.
 	// Safe on a never-started Manager — the package treats Close as a
 	// no-op when allocCancel/browserCancel are nil.
 	if a.screenshotManager != nil {
 		record("close headless screenshot manager", a.screenshotManager.Close())
+	}
+
+	// Step 7b: close the design MCP server. Safe to close once no
+	// provider session holds a reference (step 4 guarantees that)
+	// and the screenshot manager has been torn down (step 7
+	// guarantees in-flight read_screenshot handlers can unblock).
+	if a.designMCP != nil {
+		record("close design MCP server", a.designMCP.Close())
 	}
 
 	// Step 8: close the provider event logger. After providers are

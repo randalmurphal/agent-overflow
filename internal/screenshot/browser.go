@@ -123,6 +123,16 @@ func (m *Manager) Capture(ctx context.Context, opts CaptureOptions) ([]byte, err
 	return runCapture(mergedCtx, opts)
 }
 
+// Prime kicks off install + browser boot ahead of the first Capture.
+// Callers use this to move the chrome-headless-shell download (~150
+// MB on first run) and chromedp handshake off the hot path of the
+// agent's first read_screenshot call. Idempotent — once a Manager is
+// started, Prime is a no-op. A failure here does NOT poison the
+// Manager; the next Capture retries.
+func (m *Manager) Prime(ctx context.Context) error {
+	return m.ensureStarted(ctx)
+}
+
 // ensureStarted installs and launches the browser exactly once per
 // successful boot. A failed install or boot does NOT permanently
 // poison the Manager — the next call retries from scratch. Multiple

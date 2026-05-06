@@ -182,6 +182,12 @@ func newFullyWiredTestApp(t *testing.T) (*App, *shutdownRecorder) {
 	// so we wire it for parity with production without paying the
 	// chrome-headless-shell install cost.
 	app.screenshotManager = screenshot.NewManager(nil)
+	// designMCP must Close after screenshotManager (the in-flight
+	// read_screenshot handler scenario — see app.go Step 7/7b
+	// comments). A never-RegisterThread'd MCPServer has no listener
+	// so Close is a no-op; wire it anyway so the ordering assertion
+	// catches a future regression.
+	app.designMCP = design.NewMCPServer(app.reactor)
 
 	// Force logger on so every step in Shutdown fires — the debug env
 	// gate makes it nil by default which would hide the "close logger"
@@ -240,6 +246,12 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		t.Fatalf("Shutdown() error = %v", err)
 	}
 
+	// "close headless screenshot manager" MUST appear before
+	// "close design MCP server" — designMCP.Close()'s blocking
+	// http.Server.Shutdown waits for in-flight read_screenshot
+	// handlers, which are parked inside Manager.Capture, which only
+	// returns after the screenshot manager's browserCtx is cancelled.
+	// See app.go Step 7/7b for the deadlock rationale.
 	want := []string{
 		"drain triage",
 		"close replay manager",
@@ -249,18 +261,11 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		"close gitwatch manager",
 		"close terminal sessions",
 		"close headless screenshot manager",
+		"close design MCP server",
 		"close logger",
 		"close store",
 	}
 	got := rec.snapshot()
-
-	// designMCP is optional (nil in this test); strip it out of want
-	// and assert it did not appear.
-	for _, step := range got {
-		if step == "close design MCP server" {
-			t.Fatalf("unexpected design MCP step when no designMCP is wired; got %v", got)
-		}
-	}
 
 	if len(got) != len(want) {
 		t.Fatalf("step count = %d, want %d\n got: %v\nwant: %v", len(got), len(want), got, want)

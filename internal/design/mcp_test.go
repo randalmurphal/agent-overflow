@@ -282,6 +282,42 @@ func TestMCPServerReadScreenshotCapturerErrorSurfaces(t *testing.T) {
 	}
 }
 
+// TestMCPServerReadScreenshotCancellationSurfacesAsToolError pins the
+// post-rewrite contract: a context.Canceled error from the capturer
+// (per-call timeout from the agent's MCP client, browser torn down at
+// shutdown, etc.) is delivered as a tool-error envelope (`isError:
+// true`) rather than a JSON-RPC error frame. A JSON-RPC error would
+// kill the agent's whole MCP session — the wrong reaction for a
+// single canceled call.
+func TestMCPServerReadScreenshotCancellationSurfacesAsToolError(t *testing.T) {
+	_, threadURL, harness := newTestMCPServer(t)
+
+	harness.capturer.setFn(func(ctx context.Context, threadID string) ([]byte, error) {
+		return nil, context.Canceled
+	})
+
+	resp := postMCPRequestRaw(t, threadURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      101,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "read_screenshot",
+			"arguments": map[string]any{},
+		},
+	})
+
+	if _, hasErrFrame := resp["error"]; hasErrFrame {
+		t.Fatalf("expected tool-error envelope, got JSON-RPC error frame: %#v", resp["error"])
+	}
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected result field, got %#v", resp)
+	}
+	if isErr, _ := result["isError"].(bool); !isErr {
+		t.Fatalf("expected isError=true on cancellation, got result=%#v", result)
+	}
+}
+
 func TestMCPServerUsesOpaqueThreadToken(t *testing.T) {
 	server, threadURL, _ := newTestMCPServer(t)
 

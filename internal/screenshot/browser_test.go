@@ -38,6 +38,28 @@ func TestManagerCaptureRequiresURL(t *testing.T) {
 	}
 }
 
+// TestManagerPrimeOnStartedManagerIsNoop pins the idempotency
+// contract: a Prime call on an already-started Manager returns nil
+// without re-running install or boot. App fires Prime on every design
+// session activation; if the second activation re-installed Chrome
+// it'd defeat the entire point of priming.
+func TestManagerPrimeOnStartedManagerIsNoop(t *testing.T) {
+	m := NewManager(nil)
+	// Pretend boot already succeeded.
+	m.startMu.Lock()
+	m.started = true
+	m.startMu.Unlock()
+
+	// installer is nil; if Prime mistakenly called startLocked we'd
+	// nil-deref on m.installer.Install. Returning nil is the contract.
+	if err := m.Prime(context.Background()); err != nil {
+		t.Fatalf("Prime on started manager = %v, want nil", err)
+	}
+	if err := m.Prime(context.Background()); err != nil {
+		t.Fatalf("second Prime = %v, want nil", err)
+	}
+}
+
 // TestManagerCaptureAfterCloseStartedManager pins the post-Close
 // "manager closed" branch: when a Manager has already booted (started
 // flag is true and we hold a browserCtx) and is then Closed, a

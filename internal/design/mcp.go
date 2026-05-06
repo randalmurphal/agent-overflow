@@ -3,7 +3,6 @@ package design
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -270,13 +269,12 @@ func (s *MCPServer) handleReadScreenshot(
 ) {
 	result, err := s.reactor.CaptureScreenshot(ctx, threadID)
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			// Session torn down or request aborted while the headless
-			// browser was mid-capture: clean cancellation, not a tool
-			// error.
-			writeRPCError(w, req.ID, http.StatusOK, -32000, "design session ended")
-			return
-		}
+		// Cancellation (per-call timeout from the agent, browser
+		// torn down at app shutdown, etc.) surfaces as a normal tool
+		// error so the agent can decide whether to retry on a future
+		// turn. Returning a JSON-RPC error frame here would kill the
+		// whole MCP session, which is the wrong reaction for a single
+		// canceled call.
 		writeToolError(w, req.ID, err)
 		return
 	}
