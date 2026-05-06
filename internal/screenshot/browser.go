@@ -399,12 +399,37 @@ func (m *Manager) startLocked(ctx context.Context) error {
 		}),
 	)
 
-	// Bring the browser online with a single navigate-to-blank so a
-	// cold first capture doesn't pay the cdp-handshake cost inside
-	// its own measured window.
-	warmCtx, warmCancel := context.WithTimeout(browserCtx, 30*time.Second)
-	defer warmCancel()
-	if err := chromedp.Run(warmCtx); err != nil {
+	// Bring the browser online with the first chromedp.Run. THIS
+	// MUST USE browserCtx DIRECTLY — chromedp's docs explicitly
+	// warn:
+	//
+	//   "Note that the first time Run is called on a context, a
+	//   browser will be allocated via Allocator. Thus, it's generally
+	//   a bad idea to use a context timeout on the first Run call,
+	//   as it will stop the entire browser."
+	//
+	// (chromedp.go:313-315 in v0.15.1.) The mechanism: Allocate
+	// launches chrome via exec.CommandContext(ctx, ...), tying
+	// chrome's process lifetime to whatever ctx is passed to the
+	// first Run. If we hand it a context.WithTimeout here, the
+	// defer-cancel fires when this function returns and Go's
+	// os/exec reaper kills chrome ~milliseconds later. Chrome dies
+	// silently (no crash, no signal we can intercept), the
+	// websocket-reader exits, browserCtx is canceled, every
+	// subsequent Capture sees a dead browser. This is exactly the
+	// "browser_dead_at_entry" / "browser_died_during_capture"
+	// failure mode we observed — chrome was killed by US, by way
+	// of warmCtx timing out / being deferred-canceled.
+	//
+	// Pass browserCtx directly. The browser's lifetime is then
+	// tied to browserCtx (which is exactly the long-lived context
+	// we manage). Without a wrapping timeout the warm-up is
+	// unbounded — but this is "open a connection, run no actions,
+	// return when CDP handshake completes", which takes well under
+	// a second on local loopback. If chromedp/chrome ever hangs
+	// here, the user-visible symptom is a slow first capture, not
+	// silently broken later captures.
+	if err := chromedp.Run(browserCtx); err != nil {
 		browserCancel()
 		allocCancel()
 		return fmt.Errorf("screenshot: launch: %w", err)
