@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,28 @@ import (
 // died" — both surface as context.Canceled on err.Err() but only
 // the inbound case carries this cause.
 var errInboundCanceled = errors.New("inbound MCP request canceled")
+
+// prefixedLogWriter writes each newline-terminated chunk to log.Printf
+// with a distinguishing prefix. Used to capture chrome-headless-shell's
+// own stdout/stderr (post-wsURL handshake) so a chrome-side crash
+// message lands in launcher.log alongside our screenshot: lines.
+type prefixedLogWriter struct {
+	prefix string
+}
+
+func (w prefixedLogWriter) Write(p []byte) (int, error) {
+	// chrome can write multi-line chunks. Split on newlines so each
+	// log.Printf call gets one logical line, but tolerate trailing
+	// fragments by joining what's left to whatever comes next.
+	text := strings.TrimRight(string(p), "\n")
+	if text == "" {
+		return len(p), nil
+	}
+	for _, line := range strings.Split(text, "\n") {
+		log.Printf("%s: %s", w.prefix, line)
+	}
+	return len(p), nil
+}
 
 // Manager owns a single long-lived chromedp browser. The browser
 // process is launched lazily on the first Capture call (so a thread
@@ -313,11 +336,37 @@ func (m *Manager) startLocked(ctx context.Context) error {
 	// captured pages always come from a loopback URL the user
 	// already trusts, and the SUID-helper sandbox is unavailable on
 	// many WSL / container environments.
+	//
+	// ModifyCmdFunc(no-op) bypasses chromedp's default
+	// allocateCmdOptions, which on Linux sets cmd.SysProcAttr.Pdeathsig
+	// = SIGKILL. The intent is "kill the browser if our parent
+	// process dies" — but in a Go program Pdeathsig fires when the
+	// spawning OS THREAD is reaped, not the process. Go's scheduler
+	// parks/reaps idle threads routinely (~seconds after the
+	// goroutine that called startLocked returns), and the kernel
+	// sends SIGKILL to chrome-headless-shell as soon as that
+	// happens. The non-Linux build of allocateCmdOptions is already
+	// a no-op (allocate_other.go), so this matches macOS/Windows.
+	// See https://github.com/golang/go/issues/27505 for the
+	// Pdeathsig + Go runtime footgun in detail.
+	//
+	// Browser cleanup is still correct without Pdeathsig — chromedp
+	// launches via exec.CommandContext(allocCtx), so allocCancel()
+	// from Manager.Close / teardownLocked still propagates to a
+	// proper os/exec Process.Kill.
+	//
+	// CombinedOutput captures chrome-headless-shell's own stdout +
+	// stderr after the wsURL handshake. Without this, anything
+	// chrome logs as it crashes is silently discarded; with this
+	// the chromedp logger surfaces the death's underlying cause
+	// (segfault, OOM message, missing-library line, etc.).
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(res.BinaryPath),
 		chromedp.NoSandbox,
 		chromedp.Flag("headless", "new"),
 		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.ModifyCmdFunc(func(cmd *exec.Cmd) {}),
+		chromedp.CombinedOutput(prefixedLogWriter{prefix: "chrome-headless-shell"}),
 	)
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
 
