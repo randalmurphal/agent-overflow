@@ -316,11 +316,30 @@ func (m *Manager) startLocked(ctx context.Context) error {
 
 	// Launch chromedp's exec allocator pointed at our cached binary.
 	//
-	// Three non-default options carry load-bearing rationale:
+	// Five non-default options carry load-bearing rationale:
 	//
 	//   - NoSandbox: the SUID-helper sandbox is unavailable on many
 	//     WSL / container environments and our captured pages always
 	//     come from a trusted loopback URL.
+	//
+	//   - no-zygote: drops the Linux zygote pre-fork pair (~80 MB,
+	//     2 procs). Zygote's job is fast renderer/utility spawn via
+	//     fork-from-template + sandbox setup. We have a singleton
+	//     long-lived browser whose tabs share one renderer (the
+	//     defaults already disable site-per-process), so the spawn
+	//     pattern zygote optimises for is essentially absent here.
+	//     With NoSandbox above, zygote is also not doing sandbox
+	//     setup. Trade: a NEW renderer process (rare for us) goes
+	//     from ~5 ms to ~50–100 ms to spawn.
+	//
+	//   - in-process-gpu: merges the GPU process into the browser
+	//     process (~110 MB, 1 proc). Tradeoff: a GPU driver crash
+	//     now kills the entire browser instead of just the GPU
+	//     subprocess. ensureStarted's retry-on-dead-browser handles
+	//     that — the next Capture sees browserCtx.Err and re-primes
+	//     (~1.5 s warm). Safe for HTML/CSS/SVG captures, which is
+	//     all design-mode read_screenshot does today; if a future
+	//     capture target uses WebGL, revisit.
 	//
 	//   - ModifyCmdFunc(captureCmd): bypasses chromedp's Linux-only
 	//     default of cmd.SysProcAttr.Pdeathsig = SIGKILL. The intent
@@ -348,6 +367,8 @@ func (m *Manager) startLocked(ctx context.Context) error {
 		chromedp.NoSandbox,
 		chromedp.Flag("headless", "new"),
 		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("no-zygote", true),
+		chromedp.Flag("in-process-gpu", true),
 		chromedp.ModifyCmdFunc(func(cmd *exec.Cmd) { chromeCmd = cmd }),
 		chromedp.CombinedOutput(prefixedLogWriter{prefix: "chrome-headless-shell"}),
 	)
