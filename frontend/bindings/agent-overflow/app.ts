@@ -1124,6 +1124,16 @@ export function MarkThreadUnread(id: string): $CancellablePromise<void> {
 }
 
 /**
+ * OpenExternalURL opens an absolute HTTP(S) URL in the user's system
+ * browser. The backend owns this instead of letting the webview handle
+ * target=_blank / window.open so WSL can deliberately cross into the
+ * Windows default browser instead of launching a Linux/WSLg browser.
+ */
+export function OpenExternalURL(rawURL: string): $CancellablePromise<void> {
+    return $Call.ByID(3362740399, rawURL);
+}
+
+/**
  * OpenInEditor launches the user's preferred editor against `path`,
  * optionally placing the cursor at (line, col). Both are 1-indexed;
  * pass 0 for either to open without cursor placement.
@@ -1239,7 +1249,7 @@ export function ReconnectSession(threadID: string): $CancellablePromise<void> {
  * RegisterQueueItem appends a queued user message to the thread's
  * in-flight queue. Called by the composer when the user submits while
  * a wire round is still active — the message waits in the queue until
- * the next first-tool-use trigger fires (see triage flush_queue.go).
+ * the next safe provider boundary (see triage flush_queue.go).
  * 
  * The wire-shape options carry attachment IDs and plan refs but NOT
  * resolved attachments / plans — the dispatcher re-resolves at

@@ -3,6 +3,7 @@
   import { ApprovalResponse, ElicitationResolution } from '../../../stores/bindings';
   import { parseElicitationSchema, type ElicitationField } from '../../../utils/elicitationSchema';
   import { errString } from '../../../utils/errors';
+  import { handleExternalURL, safeExternalURL } from '../../../utils/externalLinks';
   import McpElicitationField from './McpElicitationField.svelte';
   import Button from '../../primitives/Button.svelte';
 
@@ -30,16 +31,6 @@
 
   let values: Record<string, unknown> = $state(createFieldMap<unknown>());
   let errors: Record<string, string> = $state(createFieldMap<string>());
-
-  function safeExternalURL(raw: string | undefined): string | null {
-    if (!raw) return null;
-    try {
-      const url = new URL(raw);
-      return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null;
-    } catch {
-      return null;
-    }
-  }
 
   function getValue(field: ElicitationField): unknown {
     if (Object.prototype.hasOwnProperty.call(values, field.name)) {
@@ -212,9 +203,7 @@
       onError('MCP server provided an unsupported approval URL.');
       return;
     }
-    // The system webview will hand this off to the OS browser. Using
-    // noopener/noreferrer so the tab can't reach back into the app context.
-    window.open(safeURL, '_blank', 'noopener,noreferrer');
+    void handleExternalURL(safeURL);
   }
 </script>
 
@@ -240,8 +229,6 @@
         {#if safeURL}
           <a
             href={safeURL}
-            target="_blank"
-            rel="noopener noreferrer"
             class="text-xs text-accent break-all hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
             data-testid="elicitation-url-link"
             onclick={(e) => { e.preventDefault(); handleOpenURL(safeURL); }}
@@ -253,7 +240,7 @@
           </p>
         {:else}
           <p class="break-all text-xs text-error/90" data-testid="elicitation-url-blocked">
-            Unsupported approval URL: {el.url}
+            Unsupported approval URL.
           </p>
         {/if}
       </div>

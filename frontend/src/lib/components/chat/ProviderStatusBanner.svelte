@@ -11,6 +11,7 @@
     getProviderStatus,
     type ProviderStatusEvent,
   } from '../../stores/providerStatus.svelte';
+  import { handleExternalURL } from '../../utils/externalLinks';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -147,7 +148,7 @@
       return;
     }
     if (providerStatus.actionUrl) {
-      window.open(providerStatus.actionUrl, '_blank', 'noopener,noreferrer');
+      void handleExternalURL(providerStatus.actionUrl);
     }
   }
 </script>

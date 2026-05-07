@@ -5,14 +5,15 @@ import (
 	"path"
 	"regexp"
 	"strings"
-	"sync"
+
+	"agent-overflow/internal/platform"
 )
 
 // wslOSReleasePath is the kernel-reported runtime identifier on Linux.
 // On WSL this string contains "microsoft" (case-insensitive); on
-// native Linux it does not. The path is exposed as a package var so
-// tests can swap it without touching the production lookup.
-const wslOSReleasePath = "/proc/sys/kernel/osrelease"
+// native Linux it does not. The path is exposed as a package const so
+// tests can build fixtures against the production lookup path.
+const wslOSReleasePath = platform.WSLOSReleasePath
 
 // wslMntCRoot is the canonical path the Windows C:\ drive is mounted
 // at inside WSL. Default mount point per Microsoft docs; users who
@@ -72,40 +73,20 @@ var wslInstallTable = map[string]wslInstallPath{
 	},
 }
 
-// wslDetectionOnce caches the live /proc lookup. WSL membership doesn't
-// change at runtime, so a single read is fine — the cache prevents the
-// repeated detection calls (one per editor in the catalog) from each
-// stat'ing /proc.
-var (
-	wslDetectionOnce  sync.Once
-	wslDetectionValue bool
-)
-
 // IsWSL reports whether the running process is inside a WSL
 // distribution. The result is cached after the first call.
 func IsWSL() bool {
-	wslDetectionOnce.Do(func() {
-		wslDetectionValue = readWSLOSRelease(liveDetectEnv())
-	})
-	return wslDetectionValue
+	return platform.IsWSL()
 }
 
 // isWSLEnv is the test-friendly variant: it reads through the supplied
-// env so each test can inject its own /proc fixture without poisoning
-// the sync.Once cache.
+// env so each test can inject its own /proc fixture without using the
+// process-wide platform cache.
 func isWSLEnv(env detectEnv) bool {
 	if env.readFile == nil {
 		return IsWSL()
 	}
-	return readWSLOSRelease(env)
-}
-
-func readWSLOSRelease(env detectEnv) bool {
-	data, err := env.readFile(wslOSReleasePath)
-	if err != nil {
-		return false
-	}
-	return bytes.Contains(bytes.ToLower(data), []byte("microsoft"))
+	return platform.IsWSLFromOSRelease(env.readFile)
 }
 
 // findWindowsInstall walks /mnt/c looking for a Windows-side install

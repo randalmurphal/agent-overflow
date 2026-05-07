@@ -156,12 +156,13 @@ export class WSLDistro {
   }
 }
 
-// Editor (Phase G/H). OpenInEditor is the user-facing launcher; the
-// catalog + persistence pair powers the settings picker. The
+// Host app launchers. OpenInEditor and OpenExternalURL are user-facing
+// launchers; the catalog + persistence pair powers the settings picker. The
 // EditorInfo / EditorSettings classes are re-exported from
 // internal/settings/models.js + models.js (not aliased), so tests use
 // the real generated classes — only the RPC functions need stubs.
 export const OpenInEditor = dispatch('OpenInEditor');
+export const OpenExternalURL = dispatch('OpenExternalURL');
 export const ListAvailableEditors = dispatch('ListAvailableEditors');
 export const GetEditorSettings = dispatch('GetEditorSettings');
 export const SetEditorSettings = dispatch('SetEditorSettings');

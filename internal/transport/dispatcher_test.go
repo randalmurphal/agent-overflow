@@ -604,6 +604,7 @@ func (p *privilegedApp) RestartTerminal() string                { return "ok" }
 func (p *privilegedApp) CloseTerminal() string                  { return "ok" }
 func (p *privilegedApp) ResizeTerminal() string                 { return "ok" }
 func (p *privilegedApp) OpenInEditor() string                   { return "ok" }
+func (p *privilegedApp) OpenExternalURL() string                { return "ok" }
 func (p *privilegedApp) BrowseDirectory() string                { return "ok" }
 func (p *privilegedApp) SavePayloadToFile() string              { return "ok" }
 func (p *privilegedApp) WriteThreadWorkspaceFile() string       { return "ok" }

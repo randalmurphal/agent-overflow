@@ -556,35 +556,30 @@ func TestReadLineOversizedKillsProcess(t *testing.T) {
 }
 
 // TestReadLineJustUnderCapSucceeds exercises a line sized just below the cap
-// to prove the boundary check does not fire one byte early. We use a
-// long-running emitter (cat fed via stdin) so the subprocess does not exit
-// and close the pipe mid-read — that kernel-side race already exists in
-// cmd.Wait() + StdoutPipe and is orthogonal to the cap check.
+// to prove the boundary check does not fire one byte early. The child emits
+// one long stdout line and then stays alive, which avoids the bidirectional
+// pipe deadlock a cat/stdin fixture can hit before the test starts reading.
 func TestReadLineJustUnderCapSucceeds(t *testing.T) {
 	ctx := context.Background()
-	p, err := Spawn(ctx, SpawnConfig{Binary: "cat"})
+	// 128 KiB is safely under the cap (32 MiB) yet large enough to span many
+	// bufio refills so a bogus size counter would trip.
+	payloadLen := 128 * 1024
+	script := fmt.Sprintf(`perl -e 'print "x" x %d; print "\n"'; sleep 60`, payloadLen)
+	p, err := Spawn(ctx, SpawnConfig{
+		Binary: "sh",
+		Args:   []string{"-c", script},
+	})
 	if err != nil {
-		t.Fatalf("spawn cat: %v", err)
+		t.Fatalf("spawn under-cap emitter: %v", err)
 	}
 	defer p.Kill()
-
-	// Send 128 KiB on stdin; cat echoes it back. 128 KiB is safely under
-	// the cap (32 MiB) yet large enough to span many bufio refills so a
-	// bogus size counter would trip.
-	payload := make([]byte, 128*1024)
-	for i := range payload {
-		payload[i] = 'x'
-	}
-	if err := p.WriteLine(payload); err != nil {
-		t.Fatalf("WriteLine: %v", err)
-	}
 
 	line, err := p.ReadLine()
 	if err != nil {
 		t.Fatalf("read line: %v", err)
 	}
-	if len(line) != len(payload) {
-		t.Fatalf("line len = %d, want %d", len(line), len(payload))
+	if len(line) != payloadLen {
+		t.Fatalf("line len = %d, want %d", len(line), payloadLen)
 	}
 }
 

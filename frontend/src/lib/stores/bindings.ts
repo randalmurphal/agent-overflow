@@ -69,8 +69,9 @@ export {
   GetWSLDistroPreference,
   SetWSLDistroPreference,
 
-  // Open-in-editor: catalog + persistence + user-facing entry point.
+  // Host app launchers: editor, browser URL opener, catalog, persistence.
   OpenInEditor,
+  OpenExternalURL,
   ListAvailableEditors,
   GetEditorSettings,
   SetEditorSettings,

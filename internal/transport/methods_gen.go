@@ -120,6 +120,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListWSLDistros", ID: 2332614075}, // main.App.ListWSLDistros
 	{Name: "MarkThreadRead", ID: 1480646012}, // main.App.MarkThreadRead
 	{Name: "MarkThreadUnread", ID: 236597375}, // main.App.MarkThreadUnread
+	{Name: "OpenExternalURL", ID: 3362740399}, // main.App.OpenExternalURL
 	{Name: "OpenInEditor", ID: 3994295523}, // main.App.OpenInEditor
 	{Name: "OpenTerminal", ID: 2247958725}, // main.App.OpenTerminal
 	{Name: "PinThread", ID: 1748405812}, // main.App.PinThread

@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import McpElicitationPanel from './McpElicitationPanel.svelte';
 import { ApprovalResponse } from '../../../stores/bindings';
 import type { ApprovalRequest } from '../../../types/events';
+import { resetBindingMocks, setBindingMock } from '../../../../test/mocks/bindings-app';
 
 // Typed resolver so .mock.calls[0][0] is ApprovalResponse, not undefined.
 function makeResolver(
@@ -15,6 +16,10 @@ function makeResolver(
 // Composer approval elicitation suite; these tests exercise the panel in
 // isolation so regressions here don't silently coast on the dispatcher
 // wrapping it.
+
+beforeEach(() => {
+  resetBindingMocks();
+});
 
 function formApproval(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
   return {
@@ -141,8 +146,8 @@ describe('<McpElicitationPanel>', () => {
     expect(el.content).toBeUndefined();
   });
 
-  it('URL mode renders the link and routes window.open through it', async () => {
-    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+  it('URL mode renders the link and routes OpenExternalURL through it', async () => {
+    const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
     const { getByTestId, queryByTestId } = render(McpElicitationPanel, {
       props: {
         approval: urlApproval(),
@@ -154,16 +159,11 @@ describe('<McpElicitationPanel>', () => {
     const link = getByTestId('elicitation-url-link') as HTMLAnchorElement;
     expect(link.href).toBe('https://auth.example.com/approve');
     await fireEvent.click(link);
-    expect(openSpy).toHaveBeenCalledWith(
-      'https://auth.example.com/approve',
-      '_blank',
-      'noopener,noreferrer',
-    );
-    openSpy.mockRestore();
+    expect(open).toHaveBeenCalledWith('https://auth.example.com/approve');
   });
 
-  it('blocks unsupported URL schemes in URL mode', () => {
-    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+  it('blocks unsupported URL schemes in URL mode without rendering the raw URL', () => {
+    const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
     const onError = vi.fn();
     const { getByTestId, queryByTestId } = render(McpElicitationPanel, {
       props: {
@@ -171,7 +171,7 @@ describe('<McpElicitationPanel>', () => {
           elicitation: {
             mode: 'url',
             message: 'Approve in the browser',
-            url: 'javascript:alert(1)',
+            url: 'javascript:alert(1)?token=secret-token',
           },
         }),
         onResolve: makeResolver(),
@@ -180,10 +180,12 @@ describe('<McpElicitationPanel>', () => {
     });
 
     expect(queryByTestId('elicitation-url-link')).toBeNull();
-    expect(getByTestId('elicitation-url-blocked').textContent).toContain('javascript:alert(1)');
-    expect(openSpy).not.toHaveBeenCalled();
+    const blockedText = getByTestId('elicitation-url-blocked').textContent ?? '';
+    expect(blockedText).toContain('Unsupported approval URL.');
+    expect(blockedText).not.toContain('secret-token');
+    expect(blockedText).not.toContain('javascript:alert');
+    expect(open).not.toHaveBeenCalled();
     expect(onError).not.toHaveBeenCalled();
-    openSpy.mockRestore();
   });
 
   it('URL-mode Accept sends accept with no content (flow completes externally)', async () => {

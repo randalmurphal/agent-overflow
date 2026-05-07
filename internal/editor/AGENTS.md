@@ -133,12 +133,10 @@ the carve-out is traceable.
   ~10-30ms per probe; clicking through 20 path links would otherwise
   re-walk synchronously per click. Mutated via `storeDetectionCache`
   / `RefreshEditors` under `sync.Mutex`. Test seam: `PeekDetectionCache`.
-- `wslDetectionOnce` / `wslDetectionValue` (`wsl.go`) — `sync.Once`
-  cache of the live `/proc/sys/kernel/osrelease` read. WSL membership
-  doesn't change at runtime, so a single read is correct. The
-  test-friendly `isWSLEnv(env)` bypasses the `Once` when fed an
-  injected env so each test injects its own /proc fixture without
-  poisoning the cache.
+- WSL detection lives in `internal/platform` and is exposed here via
+  `IsWSL`. The test-friendly `isWSLEnv(env)` still bypasses the live
+  cache when fed an injected env so each test can use its own `/proc`
+  fixture without poisoning process state.
 - `lookPath` / `startCmd` (`spawn.go`) — exec.LookPath / Cmd.Start
   indirection seams. Tests substitute fakes to record invocations
   without spawning real processes. Production never overrides
