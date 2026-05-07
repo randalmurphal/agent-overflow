@@ -301,7 +301,7 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 		}
 	}
 
-	payload := completionPayload(launch.ID, evt, meta, now)
+	payload := completionPayloadForLaunch(launch, evt, meta, now)
 	switch {
 	case payload == nil:
 		return r.persistItemWithInputPayload(launch, nil, inputPayload)
@@ -336,7 +336,7 @@ func (r *Router) persistToolCallCompletedWithoutLaunch(evt provider.ProviderEven
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	payload := completionPayload(item.ID, evt, meta, now)
+	payload := completionPayloadForTool(item.ID, toolName, commandFromInput(meta.Input), evt, meta, now)
 	inputPayload := r.shapeToolItemMeta(&item, now)
 	return r.persistItemWithInputPayload(item, payload, inputPayload)
 }
@@ -390,7 +390,7 @@ func (r *Router) persistSplitToolCompletion(launch store.Item, evt provider.Prov
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	payload := completionPayload(completion.ID, evt, meta, now)
+	payload := completionPayloadForLaunch(completion, evt, meta, now)
 	inputPayload := r.shapeToolItemMeta(&completion, now)
 	return r.persistItemWithInputPayload(completion, payload, inputPayload)
 }
@@ -772,7 +772,7 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 		payload = r.backgroundOutputFilePayload(launch, meta.OutputFile, meta.ExitCode, now)
 	}
 	if payload == nil && completion.PayloadID == "" {
-		payload = backgroundTerminalPayload(launch.ID, evt, meta, now)
+		payload = backgroundTerminalPayload(launch, evt, meta, now)
 	}
 	if payload == nil && existing != nil && existing.PayloadID != "" {
 		completion.PayloadID = existing.PayloadID
@@ -911,16 +911,39 @@ func backgroundTerminalOutcome(meta backgroundTaskTerminalMeta) string {
 	}
 }
 
-// backgroundTerminalPayload builds the sibling row's tool_call_result
-// payload. Returns nil when the event has neither body content nor
-// structured meta fields worth persisting — the store row alone
-// carries the status + summary so an empty terminal is still
-// renderable.
-func backgroundTerminalPayload(itemID string, evt provider.ProviderEvent, meta backgroundTaskTerminalMeta, now int64) *store.Payload {
+// backgroundTerminalPayload builds the sibling row's payload. Command
+// launches get command_output so Bash/exec rows share the same UI;
+// non-command background tasks keep the generic tool_call_result body.
+// Returns nil when the event has neither body content nor structured
+// meta fields worth persisting — the store row alone carries the
+// status + summary so an empty terminal is still renderable.
+func backgroundTerminalPayload(launch store.Item, evt provider.ProviderEvent, meta backgroundTaskTerminalMeta, now int64) *store.Payload {
 	hasBody := strings.TrimSpace(evt.Content) != ""
 	hasMeta := meta.ExitCode != nil || meta.IsError || meta.OutputFile != "" || meta.EndTime != 0
 	if !hasBody && !hasMeta {
 		return nil
+	}
+	itemID := launch.ID
+	if isCommandOutputLaunch(launch) {
+		code := 0
+		if meta.ExitCode != nil {
+			code = *meta.ExitCode
+		}
+		commandMeta := ExtractCommandOutputMetaWithError(evt.Content, commandFromLaunch(launch), code, "")
+		if commandMeta.ErrorMessage == "" && meta.IsError {
+			commandMeta.ErrorMessage = compactCommandErrorMessage(evt.Content)
+		}
+		commandMetaJSON, err := json.Marshal(commandMeta)
+		if err != nil {
+			commandMetaJSON = []byte("{}")
+		}
+		return &store.Payload{
+			ID:        "command-output:" + itemID,
+			Kind:      "command_output",
+			Meta:      string(commandMetaJSON),
+			Data:      []byte(evt.Content),
+			CreatedAt: now,
+		}
 	}
 
 	header := map[string]any{}
@@ -1011,7 +1034,8 @@ func (r *Router) rebuildCommandOutputMeta(payloadID string) error {
 	// value is already the correct terminal value.
 	var prior CommandOutputMeta
 	_ = json.Unmarshal([]byte(pm.Meta), &prior)
-	cumulative := ExtractCommandOutputMeta(string(data), prior.Command, prior.ExitCode)
+	cumulative := ExtractCommandOutputMetaWithError(string(data), prior.Command, prior.ExitCode, prior.ErrorMessage)
+	cumulative.OutputState = prior.OutputState
 	cumulativeJSON, err := json.Marshal(cumulative)
 	if err != nil {
 		return fmt.Errorf("marshal cumulative command_output meta: %w", err)
@@ -1202,6 +1226,23 @@ func toolInputPreview(input json.RawMessage) string {
 	return ""
 }
 
+func commandFromInput(input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(input, &obj) != nil {
+		return ""
+	}
+	if raw, ok := obj["command"]; ok {
+		var command string
+		if json.Unmarshal(raw, &command) == nil {
+			return strings.TrimSpace(command)
+		}
+	}
+	return ""
+}
+
 func truncatePreview(s string, max int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.TrimSpace(s)
@@ -1209,6 +1250,83 @@ func truncatePreview(s string, max int) string {
 		return s
 	}
 	return s[:max-1] + "…"
+}
+
+func completionPayloadForLaunch(launch store.Item, evt provider.ProviderEvent, meta toolCompleteMeta, now int64) *store.Payload {
+	return completionPayloadForTool(launch.ID, launch.ToolName, commandFromLaunch(launch), evt, meta, now)
+}
+
+func completionPayloadForTool(itemID string, toolName string, command string, evt provider.ProviderEvent, meta toolCompleteMeta, now int64) *store.Payload {
+	if isCommandOutputToolName(toolName) {
+		return commandCompletionPayload(itemID, command, evt, meta, now)
+	}
+	return completionPayload(itemID, evt, meta, now)
+}
+
+func commandCompletionPayload(itemID string, command string, evt provider.ProviderEvent, meta toolCompleteMeta, now int64) *store.Payload {
+	if evt.Content == "" {
+		return nil
+	}
+	header := map[string]any{}
+	if strings.TrimSpace(command) != "" {
+		header["command"] = strings.TrimSpace(command)
+	}
+	if meta.ExitCode != nil {
+		header["exitCode"] = *meta.ExitCode
+		header["exit_code"] = *meta.ExitCode
+	}
+	if meta.IsError {
+		header["is_error"] = true
+	}
+	if meta.ItemStatus != "" {
+		header["itemStatus"] = meta.ItemStatus
+	}
+	if len(evt.Meta) > 0 {
+		if merged, ok := mergeJSONObjectBytes(marshalJSONObjectOrEmpty(header), evt.Meta); ok {
+			headerJSON := buildPayloadMeta("command_output", provider.ProviderEvent{
+				Content: evt.Content,
+				Meta:    merged,
+			})
+			return &store.Payload{
+				ID:        "command-output:" + itemID,
+				Kind:      "command_output",
+				Meta:      headerJSON,
+				Data:      []byte(evt.Content),
+				CreatedAt: now,
+			}
+		}
+	}
+	headerJSONBytes, err := json.Marshal(header)
+	if err != nil {
+		headerJSONBytes = []byte("{}")
+	}
+	return &store.Payload{
+		ID:   "command-output:" + itemID,
+		Kind: "command_output",
+		Meta: buildPayloadMeta("command_output", provider.ProviderEvent{
+			Content: evt.Content,
+			Meta:    headerJSONBytes,
+		}),
+		Data:      []byte(evt.Content),
+		CreatedAt: now,
+	}
+}
+
+func marshalJSONObjectOrEmpty(fields map[string]any) json.RawMessage {
+	data, err := json.Marshal(fields)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return data
+}
+
+func isCommandOutputToolName(toolName string) bool {
+	switch strings.TrimSpace(toolName) {
+	case "Bash", "command_execution", "commandExecution", "exec_command":
+		return true
+	default:
+		return false
+	}
 }
 
 func completionPayload(itemID string, evt provider.ProviderEvent, meta toolCompleteMeta, now int64) *store.Payload {

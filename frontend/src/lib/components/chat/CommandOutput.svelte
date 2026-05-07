@@ -10,11 +10,11 @@
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import {
     createPayloadExpansion,
-    formatPayloadSize,
     keepExpandedPayloadFresh,
   } from './payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
   import {
+    commandErrorLineForItem,
     commandTextForItem,
     displayCommandForItem,
   } from './commandDisplay';
@@ -26,14 +26,12 @@
     item,
     meta,
     payloadId,
-    allowShowFull = true,
     showCompletionBadge = true,
   }: {
     pane?: ThreadPane;
     item: Item;
     meta?: CommandOutputMeta | null;
     payloadId?: string;
-    allowShowFull?: boolean;
     /** Suppress the completion badge in surfaces where the parent
      * already renders a status icon (e.g. BackgroundTaskTrayRow's
      * Loader/Check/AlertCircle/Square). Defaults to true so the
@@ -48,10 +46,10 @@
       : createPayloadExpansion(
           () => payloadId,
           () => item.threadId,
-          { payloadVersion: () => item.updatedAt },
+          { payloadVersion: () => item.updatedAt, loadMode: 'full' },
         ),
   );
-  let expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
+  let expansion = $derived(pane ? pane.expansionStateFor(item, { loadMode: 'full' }) : localFallback!);
   let hasPayload = $derived(Boolean(payloadId));
   let itemMeta = $derived(parseJsonObject(item.meta));
   let payloadMeta = $derived(parseJsonObject(item.payloadMeta));
@@ -87,6 +85,11 @@
     deriveCompletionStatus(item, {
       meta: payloadMeta ?? (meta as unknown as Record<string, unknown> | undefined),
     }),
+  );
+  let errorLine = $derived(
+    completionStatus === 'failure'
+      ? commandErrorLineForItem(item, meta, itemMeta, payloadMeta)
+      : '',
   );
   let isForegroundRunning = $derived(
     !isBackgroundedLaunch && (item.status === 'running' || item.status === 'streaming'),
@@ -166,17 +169,20 @@
     {/snippet}
   </TranscriptDisclosureHeader>
 
-  <!-- Output content -->
-  {#if hasBody && !expansion.expanded && meta?.preview}
-    <div class="ml-5 border-l border-border-subtle px-3 py-1">
-      <AnsiText source={meta.preview} class="line-clamp-5 whitespace-pre-wrap break-words text-[11px] leading-relaxed text-fg-subtle" />
+  {#if errorLine}
+    <div class="ml-5 border-l border-border-subtle px-3 pb-1">
+      <p class="text-[11px] leading-relaxed text-error" data-testid="command-output-error">
+        {errorLine}
+      </p>
     </div>
   {/if}
+
+  <!-- Output content -->
   {#if hasBody && expansion.expanded}
     <div id="cmd-output-{payloadId || item.id}" class="ml-5 border-l border-border-subtle bg-surface-0/35">
       <div class="px-3 py-2 overflow-x-auto">
         {#if hasPayload && expansion.loading}
-          <p class="text-[11px] text-fg-subtle" role="status" aria-live="polite">Loading full output…</p>
+          <p class="text-[11px] text-fg-subtle" role="status" aria-live="polite">Loading output…</p>
         {:else if hasPayload && expansion.error}
           <div class="space-y-2">
             <p class="text-[11px] text-error" role="alert">Failed to load output: {expansion.error}</p>
@@ -191,20 +197,6 @@
           </div>
         {:else if hasPayload}
           <AnsiText source={expansion.displayData ?? ''} class="text-[11px] whitespace-pre text-fg-muted leading-relaxed" />
-          {#if expansion.hasMore && allowShowFull}
-            <button
-              type="button"
-              class="mt-2 text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded"
-              onclick={() => expansion.showFull()}
-              data-testid="command-output-show-full"
-            >
-              Load more output ({formatPayloadSize(expansion.totalSize)}) ↓
-            </button>
-          {:else if expansion.hasMore}
-            <p class="mt-2 text-[11px] text-fg-subtle">
-              Preview truncated ({formatPayloadSize(expansion.totalSize)})
-            </p>
-          {/if}
         {:else if deferredOutputState === 'loading'}
           <p class="text-[11px] text-fg-subtle animate-pulse" role="status" aria-live="polite">
             Loading…

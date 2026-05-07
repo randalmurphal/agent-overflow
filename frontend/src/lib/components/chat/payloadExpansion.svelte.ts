@@ -1,4 +1,4 @@
-import { GetPayloadChunk, GetPayloadPreview } from '../../stores/bindings';
+import { GetPayloadChunk, GetPayloadData, GetPayloadPreview } from '../../stores/bindings';
 
 export const DEFAULT_PAYLOAD_PREVIEW_BYTES = 32 * 1024;
 export const DEFAULT_PAYLOAD_CHUNK_BYTES = 256 * 1024;
@@ -40,6 +40,7 @@ export interface PayloadExpansionOptions {
   chunkBytes?: number;
   requestTimeoutMs?: number;
   payloadVersion?: PayloadVersionSource;
+  loadMode?: 'preview' | 'full';
 }
 
 export function createPayloadExpansion(
@@ -51,6 +52,7 @@ export function createPayloadExpansion(
   const chunkBytes = options.chunkBytes ?? DEFAULT_PAYLOAD_CHUNK_BYTES;
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_PAYLOAD_REQUEST_TIMEOUT_MS;
   const payloadVersion = options.payloadVersion;
+  const loadMode = options.loadMode ?? 'preview';
 
   let expanded = $state(false);
   let loadingPreview = $state(false);
@@ -135,14 +137,10 @@ export function createPayloadExpansion(
     error = null;
 
     try {
-      const result = await withTimeout(
-        GetPayloadPreview(ownerThreadID, id, previewBytes),
-        requestTimeoutMs,
-        'Loading payload preview timed out',
-      );
+      const result = await loadInitialPayload(ownerThreadID, id);
       if (generation !== requestGeneration || !expanded) return false;
       chunks = [result.data];
-      hasFullChunks = false;
+      hasFullChunks = loadMode === 'full';
       totalSize = result.totalSize;
       isComplete = result.isComplete;
       loadedBytes = result.nextOffset;
@@ -158,6 +156,33 @@ export function createPayloadExpansion(
       }
     }
     return false;
+  }
+
+  async function loadInitialPayload(ownerThreadID: string, id: string): Promise<{
+    data: string;
+    nextOffset: number;
+    totalSize: number;
+    isComplete: boolean;
+  }> {
+    if (loadMode === 'full') {
+      const result = await withTimeout(
+        GetPayloadData(ownerThreadID, id),
+        requestTimeoutMs,
+        'Loading payload timed out',
+      );
+      const data = result.data ?? '';
+      return {
+        data,
+        nextOffset: data.length,
+        totalSize: data.length,
+        isComplete: true,
+      };
+    }
+    return withTimeout(
+      GetPayloadPreview(ownerThreadID, id, previewBytes),
+      requestTimeoutMs,
+      'Loading payload preview timed out',
+    );
   }
 
   async function expand(): Promise<void> {

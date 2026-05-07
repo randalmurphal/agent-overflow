@@ -59,7 +59,9 @@
           command: typeof parsedCmdMeta.command === 'string' ? parsedCmdMeta.command : '',
           exitCode: typeof parsedCmdMeta.exitCode === 'number' ? parsedCmdMeta.exitCode : 0,
           lineCount: typeof parsedCmdMeta.lineCount === 'number' ? parsedCmdMeta.lineCount : 0,
-          preview: typeof parsedCmdMeta.preview === 'string' ? parsedCmdMeta.preview : '',
+          preview: typeof parsedCmdMeta.preview === 'string' ? parsedCmdMeta.preview : undefined,
+          errorMessage:
+            typeof parsedCmdMeta.errorMessage === 'string' ? parsedCmdMeta.errorMessage : undefined,
         }
       : null,
   );
@@ -79,7 +81,8 @@
           command: commandTextForItem(item, cmdMeta),
           exitCode: cmdMeta?.exitCode ?? 0,
           lineCount: cmdMeta?.lineCount ?? 0,
-          preview: cmdMeta?.preview ?? '',
+          preview: cmdMeta?.preview,
+          errorMessage: cmdMeta?.errorMessage,
         }
       : null,
   );

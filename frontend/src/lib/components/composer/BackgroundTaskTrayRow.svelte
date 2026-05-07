@@ -136,7 +136,6 @@
         item={outputItem}
         meta={outputMeta}
         payloadId={outputItem.payloadId}
-        allowShowFull={false}
         showCompletionBadge={false}
       />
     </div>

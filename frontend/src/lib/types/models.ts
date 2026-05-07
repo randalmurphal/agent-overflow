@@ -173,7 +173,9 @@ export interface CommandOutputMeta {
   command: string;
   exitCode: number;
   lineCount: number;
-  preview: string;
+  preview?: string;
+  errorMessage?: string;
+  outputFileState?: string;
 }
 
 export interface ToolInlineDiffFile {

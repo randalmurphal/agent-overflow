@@ -964,15 +964,15 @@ describe('<BackgroundTaskTray>', () => {
     expect(scrollSpy).not.toHaveBeenCalled();
   });
 
-  it('command output rows expand a preview without requesting timeline scroll or full payload chunks', async () => {
-    const preview = setBindingMock('GetPayloadPreview', async () => ({
-      data: 'preview output',
-      totalSize: 200_000,
-      isComplete: false,
-      nextOffset: 14,
+  it('command output rows expand the full output without requesting timeline scroll or chunks', async () => {
+    const data = setBindingMock('GetPayloadData', async () => ({
+      data: 'full output',
     }));
+    const preview = setBindingMock('GetPayloadPreview', async () => {
+      throw new Error('tray command output should not fetch previews');
+    });
     const chunk = setBindingMock('GetPayloadChunk', async () => {
-      throw new Error('tray should not fetch full output');
+      throw new Error('tray should not fetch chunks');
     });
     const pane = await makePaneWithBackground([
       item({
@@ -1007,7 +1007,8 @@ describe('<BackgroundTaskTray>', () => {
     await tick();
     await tick();
 
-    expect(preview).toHaveBeenCalledWith('thread-1', 'payload-a', expect.any(Number));
+    expect(data).toHaveBeenCalledWith('thread-1', 'payload-a');
+    expect(preview).not.toHaveBeenCalled();
     expect(chunk).not.toHaveBeenCalled();
     expect(rendered.queryByTestId('command-output-show-full')).toBeNull();
     expect(scrollSpy).not.toHaveBeenCalled();

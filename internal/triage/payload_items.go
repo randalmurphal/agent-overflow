@@ -346,11 +346,10 @@ func (r *Router) attachPayloadToItemWithEmit(
 	// ever reading the prior data into Go memory. The former path —
 	// GetPayloadData → append(existing, data...) → write full blob —
 	// was O(N^2) in cumulative payload size. Meta is derived from the
-	// DELTA alone: command_output's preview has always reflected the
-	// latest chunk (forge parity), and diff meta carries file-level
-	// counters that are already cumulative via the prior read — for
-	// diff the caller passes replace=true anyway, so we stay on the
-	// full-write branch below.
+	// DELTA alone while streaming. command_output meta gets rebuilt
+	// from the cumulative payload at completion; for diff the caller
+	// passes replace=true anyway, so we stay on the full-write branch
+	// below.
 	if linked && !replace {
 		metaEvt := evt
 		metaEvt.Content = string(data)
@@ -411,20 +410,10 @@ func buildPayloadMeta(payloadKind string, evt provider.ProviderEvent) string {
 		}
 		return string(data)
 	case "command_output":
-		cm := ExtractCommandOutputMeta(evt.Content, "", 0)
-		if evt.Meta != nil {
-			var parsed struct {
-				Command       string `json:"command"`
-				ExitCode      int    `json:"exitCode"`
-				ExitCodeSnake int    `json:"exit_code"`
-			}
-			if json.Unmarshal(evt.Meta, &parsed) == nil {
-				exitCode := parsed.ExitCode
-				if exitCode == 0 && parsed.ExitCodeSnake != 0 {
-					exitCode = parsed.ExitCodeSnake
-				}
-				cm = ExtractCommandOutputMeta(evt.Content, parsed.Command, exitCode)
-			}
+		parsed := commandOutputPayloadMetaFields(evt.Meta)
+		cm := ExtractCommandOutputMetaWithError(evt.Content, parsed.Command, parsed.ExitCode, parsed.ErrorMessage)
+		if cm.ErrorMessage == "" && parsed.IsError {
+			cm.ErrorMessage = compactCommandErrorMessage(evt.Content)
 		}
 		data, err := json.Marshal(cm)
 		if err != nil {
@@ -452,6 +441,141 @@ func buildPayloadMeta(payloadKind string, evt provider.ProviderEvent) string {
 	default:
 		return "{}"
 	}
+}
+
+type commandOutputPayloadMeta struct {
+	Command      string
+	ExitCode     int
+	IsError      bool
+	ErrorMessage string
+}
+
+func commandOutputPayloadMetaFields(raw json.RawMessage) commandOutputPayloadMeta {
+	if len(raw) == 0 {
+		return commandOutputPayloadMeta{}
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil || obj == nil {
+		return commandOutputPayloadMeta{}
+	}
+	return commandOutputPayloadMeta{
+		Command:      commandOutputCommandFromMetaObject(obj),
+		ExitCode:     commandOutputExitCodeFromMetaObject(obj),
+		IsError:      commandOutputBoolField(obj, "is_error") || commandOutputBoolField(obj, "isError"),
+		ErrorMessage: commandOutputErrorMessageFromMetaObject(obj),
+	}
+}
+
+func commandOutputCommandFromMetaObject(obj map[string]json.RawMessage) string {
+	if command := strings.TrimSpace(commandOutputStringField(obj, "command")); command != "" {
+		return command
+	}
+	if input, ok := obj["input"]; ok {
+		var inputObj map[string]json.RawMessage
+		if json.Unmarshal(input, &inputObj) == nil {
+			return strings.TrimSpace(commandOutputStringField(inputObj, "command"))
+		}
+	}
+	return ""
+}
+
+func commandOutputExitCodeFromMetaObject(obj map[string]json.RawMessage) int {
+	if code, ok := commandOutputIntField(obj, "exitCode"); ok {
+		return code
+	}
+	if code, ok := commandOutputIntField(obj, "exit_code"); ok {
+		return code
+	}
+	return 0
+}
+
+func commandOutputErrorMessageFromMetaObject(obj map[string]json.RawMessage) string {
+	for _, key := range []string{"errorMessage", "err_msg", "message"} {
+		if value := strings.TrimSpace(commandOutputStringField(obj, key)); value != "" {
+			return value
+		}
+	}
+	if value := commandOutputStringAtPath(obj, "tool_use_result", "stderr"); value != "" {
+		return value
+	}
+	if value := commandOutputStringAtPath(obj, "tool_use_result", "stdout"); value != "" {
+		return value
+	}
+	if value := commandOutputStringAtPath(obj, "tool_result", "content"); value != "" {
+		return value
+	}
+	return ""
+}
+
+func commandOutputStringAtPath(obj map[string]json.RawMessage, path ...string) string {
+	if len(path) == 0 {
+		return ""
+	}
+	raw, ok := obj[path[0]]
+	if !ok {
+		return ""
+	}
+	if len(path) == 1 {
+		return commandOutputStringFromRaw(raw)
+	}
+	var child map[string]json.RawMessage
+	if json.Unmarshal(raw, &child) != nil || child == nil {
+		return ""
+	}
+	return commandOutputStringAtPath(child, path[1:]...)
+}
+
+func commandOutputStringField(obj map[string]json.RawMessage, key string) string {
+	raw, ok := obj[key]
+	if !ok {
+		return ""
+	}
+	return commandOutputStringFromRaw(raw)
+}
+
+func commandOutputStringFromRaw(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) == nil {
+		parts := make([]string, 0, 2)
+		for i := len(blocks) - 1; i >= 0 && len(parts) < 2; i-- {
+			if strings.TrimSpace(blocks[i].Text) != "" {
+				parts = append(parts, blocks[i].Text)
+			}
+		}
+		for left, right := 0, len(parts)-1; left < right; left, right = left+1, right-1 {
+			parts[left], parts[right] = parts[right], parts[left]
+		}
+		return strings.Join(parts, "\n")
+	}
+	return ""
+}
+
+func commandOutputIntField(obj map[string]json.RawMessage, key string) (int, bool) {
+	raw, ok := obj[key]
+	if !ok {
+		return 0, false
+	}
+	var n int
+	if json.Unmarshal(raw, &n) == nil {
+		return n, true
+	}
+	return 0, false
+}
+
+func commandOutputBoolField(obj map[string]json.RawMessage, key string) bool {
+	raw, ok := obj[key]
+	if !ok {
+		return false
+	}
+	var b bool
+	return json.Unmarshal(raw, &b) == nil && b
 }
 
 func buildThinkingPayloadMeta(preview string, totalBytes int, signature string) string {

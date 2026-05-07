@@ -974,6 +974,24 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(container.textContent).toContain("ls");
   });
 
+  it("uses CommandOutput for exec_command rows without payloads", async () => {
+    const pane = await buildPane();
+    const item = makeItem({
+      id: "exec-cmd",
+      kind: "tool_call",
+      status: "running",
+      toolName: "exec_command",
+      summary: "exec_command: pnpm test",
+    });
+
+    const { queryByTestId, getByTestId } = render(ToolCallCard, {
+      props: { pane, item },
+    });
+
+    expect(queryByTestId("tool-call-card")).toBeNull();
+    expect(getByTestId("command-output-command").textContent).toBe("pnpm test");
+  });
+
   it("keeps failure badges for command payloads with snake-case exit status", async () => {
     const pane = await buildPane();
     const item = makeItem({
@@ -987,7 +1005,6 @@ describe("<ToolCallCard> header dispatcher", () => {
         command: "sleep 10",
         exit_code: 137,
         lineCount: 0,
-        preview: "",
       }),
     });
 
@@ -1011,7 +1028,7 @@ describe("<ToolCallCard> header dispatcher", () => {
         command: "cat missing.txt",
         is_error: true,
         lineCount: 1,
-        preview: "No such file",
+        errorMessage: "No such file",
       }),
     });
 

@@ -43,6 +43,7 @@ import { replaceThread } from './threads.svelte';
 import {
   createPayloadExpansion,
   type PayloadExpansionHandle,
+  type PayloadExpansionOptions,
 } from '../components/chat/payloadExpansion.svelte';
 import type {
   AttachmentPreviewCache,
@@ -713,8 +714,11 @@ export function createThreadPane() {
    * (a tool_completion gaining its `output_file` after the fact) is
    * picked up automatically without a reset.
    */
-  function expansionStateFor(item: Item): PayloadExpansionHandle {
-    const key = 'i:' + item.id;
+  function expansionStateFor(
+    item: Item,
+    options: Pick<PayloadExpansionOptions, 'loadMode'> = {},
+  ): PayloadExpansionHandle {
+    const key = 'i:' + item.id + ':' + (options.loadMode ?? 'preview');
     let cached = expansionStates.get(key);
     if (cached) return cached;
     const id = item.id;
@@ -727,6 +731,7 @@ export function createThreadPane() {
       () => getCurrentItem()?.threadId,
       {
         payloadVersion: () => getCurrentItem()?.updatedAt,
+        loadMode: options.loadMode,
       },
     );
     cached = withExpansionRegistry(inner);

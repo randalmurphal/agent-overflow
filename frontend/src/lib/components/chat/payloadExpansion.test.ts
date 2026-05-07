@@ -81,6 +81,31 @@ describe('payloadExpansion', () => {
     expect(formatPayloadSize(2_097_152)).toBe('2.0 MB');
   });
 
+  it('can load the full payload on expand', async () => {
+    const data = setBindingMock('GetPayloadData', async () => ({ data: 'FULL PAYLOAD' }));
+    const preview = setBindingMock('GetPayloadPreview', async () => {
+      throw new Error('full mode should not fetch a preview');
+    });
+    const chunk = setBindingMock('GetPayloadChunk', async () => {
+      throw new Error('full mode should not fetch chunks');
+    });
+
+    const expansion = createPayloadExpansion(
+      'payload-full',
+      'thread-full',
+      { loadMode: 'full' },
+    );
+
+    await expansion.expand();
+
+    expect(expansion.displayData).toBe('FULL PAYLOAD');
+    expect(expansion.fullData).toBe('FULL PAYLOAD');
+    expect(expansion.hasMore).toBe(false);
+    expect(data).toHaveBeenCalledWith('thread-full', 'payload-full');
+    expect(preview).not.toHaveBeenCalled();
+    expect(chunk).not.toHaveBeenCalled();
+  });
+
   it('times out a stuck preview request and can retry', async () => {
     vi.useFakeTimers();
     let call = 0;

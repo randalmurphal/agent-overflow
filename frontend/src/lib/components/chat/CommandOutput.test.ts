@@ -1,10 +1,9 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import CommandOutput from './CommandOutput.svelte';
 import { makeItem } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { CommandOutputMeta } from '../../types/models';
-import { DEFAULT_PAYLOAD_PREVIEW_BYTES } from './payloadExpansion.svelte';
 
 // Some Svelte transitions call Element.prototype.animate; jsdom doesn't
 // implement it. Stub it so expand/collapse doesn't throw.
@@ -48,10 +47,8 @@ describe('<CommandOutput>', () => {
   });
 
   it('renders raw ANSI payloads in the expanded output', async () => {
-    setBindingMock('GetPayloadPreview', async () => ({
+    setBindingMock('GetPayloadData', async () => ({
       data: '\x1b[31mred\x1b[0m then plain',
-      totalSize: 32,
-      isComplete: true,
     }));
 
     const { getByRole, container } = render(CommandOutput, {
@@ -63,8 +60,9 @@ describe('<CommandOutput>', () => {
     });
 
     await fireEvent.click(getByRole('button', { name: /Toggle command output/i }));
-    await Promise.resolve();
-    await Promise.resolve();
+    await waitFor(() => {
+      expect(container.querySelector('pre')).not.toBeNull();
+    });
 
     const pre = container.querySelector('pre');
     if (!pre) throw new Error('expected <pre> for the command output body');
@@ -76,10 +74,8 @@ describe('<CommandOutput>', () => {
   });
 
   it('escapes raw HTML payloads so script tags never become live nodes', async () => {
-    setBindingMock('GetPayloadPreview', async () => ({
+    setBindingMock('GetPayloadData', async () => ({
       data: '<script>alert(1)</script>',
-      totalSize: 30,
-      isComplete: true,
     }));
 
     const { getByRole, container } = render(CommandOutput, {
@@ -90,8 +86,9 @@ describe('<CommandOutput>', () => {
       },
     });
     await fireEvent.click(getByRole('button', { name: /Toggle command output/i }));
-    await Promise.resolve();
-    await Promise.resolve();
+    await waitFor(() => {
+      expect(container.querySelector('pre')).not.toBeNull();
+    });
 
     const pre = container.querySelector('pre');
     if (!pre) throw new Error('expected <pre>');
@@ -100,25 +97,18 @@ describe('<CommandOutput>', () => {
     expect(pre.querySelector('script')).toBeNull();
   });
 
-  it('does not load full payload until the user asks for it', async () => {
-    // The preview is rendered inline from meta; GetPayloadChunk should
-    // only fire on explicit "Show full output" click. This pins the
-    // lazy-content guarantee that keeps memory bounded.
-    const previewMock = setBindingMock('GetPayloadPreview', async () => ({
-      data: '\u001b[32mok\u001b[0m',
-      nextOffset: DEFAULT_PAYLOAD_PREVIEW_BYTES,
-      totalSize: 2048,
-      isComplete: false,
+  it('loads the complete command payload only when expanded', async () => {
+    const dataMock = setBindingMock('GetPayloadData', async () => ({
+      data: '\u001b[32mok\u001b[0m\nfull body',
     }));
-    const chunkMock = setBindingMock('GetPayloadChunk', async () => ({
-      data: 'full body',
-      offset: DEFAULT_PAYLOAD_PREVIEW_BYTES,
-      nextOffset: DEFAULT_PAYLOAD_PREVIEW_BYTES + 9,
-      totalSize: 2048,
-      isComplete: true,
-    }));
+    const previewMock = setBindingMock('GetPayloadPreview', async () => {
+      throw new Error('command rows should not fetch previews');
+    });
+    const chunkMock = setBindingMock('GetPayloadChunk', async () => {
+      throw new Error('command rows should not fetch chunks');
+    });
 
-    const { getByRole } = render(CommandOutput, {
+    const { getByRole, queryByText, findByText } = render(CommandOutput, {
       props: {
         item: makeItem({ id: 'tool-cmd', kind: 'tool_call' }),
         meta: commandMeta({
@@ -129,24 +119,21 @@ describe('<CommandOutput>', () => {
         payloadId: 'pay-3',
       },
     });
-    // Before expand: neither binding fires.
+    expect(queryByText('inline preview')).toBeNull();
+    expect(dataMock).not.toHaveBeenCalled();
     expect(previewMock).not.toHaveBeenCalled();
     expect(chunkMock).not.toHaveBeenCalled();
 
     await fireEvent.click(getByRole('button', { name: /Toggle command output/i }));
-    await Promise.resolve();
-    await Promise.resolve();
-    // Expand loads the preview but NOT the full body.
-    expect(previewMock).toHaveBeenCalledWith('thread-1', 'pay-3', DEFAULT_PAYLOAD_PREVIEW_BYTES);
+    expect(await findByText(/full body/)).toBeInTheDocument();
+    expect(dataMock).toHaveBeenCalledWith('thread-1', 'pay-3');
+    expect(previewMock).not.toHaveBeenCalled();
     expect(chunkMock).not.toHaveBeenCalled();
   });
 
   it('loads output when an already-expanded deferred row gains a payload id', async () => {
-    const previewMock = setBindingMock('GetPayloadPreview', async () => ({
+    const dataMock = setBindingMock('GetPayloadData', async () => ({
       data: 'arrived later',
-      nextOffset: 13,
-      totalSize: 13,
-      isComplete: true,
     }));
     const itemWithoutPayload = makeItem({
       id: 'tool-deferred-output',
@@ -165,7 +152,7 @@ describe('<CommandOutput>', () => {
 
     await fireEvent.click(getByRole('button', { name: /Toggle command output/i }));
     expect(await findByText('Loading…')).toBeInTheDocument();
-    expect(previewMock).not.toHaveBeenCalled();
+    expect(dataMock).not.toHaveBeenCalled();
 
     const itemWithPayload = {
       ...itemWithoutPayload,
@@ -180,10 +167,73 @@ describe('<CommandOutput>', () => {
     });
 
     expect(await findByText('arrived later')).toBeInTheDocument();
-    expect(previewMock).toHaveBeenCalledWith(
-      'thread-1',
-      'payload-deferred-output',
-      DEFAULT_PAYLOAD_PREVIEW_BYTES,
+    expect(dataMock).toHaveBeenCalledWith('thread-1', 'payload-deferred-output');
+  });
+
+  it('shows no collapsed output preview for successful commands', () => {
+    setBindingMock('GetPayloadData', async () => ({ data: 'full output' }));
+    const { queryByText } = render(CommandOutput, {
+      props: {
+        item: makeItem({ id: 'tool-cmd', kind: 'tool_completion', status: 'completed' }),
+        meta: commandMeta({ command: 'ls', preview: 'inline preview', lineCount: 1 }),
+        payloadId: 'cmd-payload',
+      },
+    });
+
+    expect(queryByText('inline preview')).toBeNull();
+    expect(getBindingMock('GetPayloadData')).not.toHaveBeenCalled();
+  });
+
+  it('shows a compact red error line for failed commands without expanding output', () => {
+    const dataMock = setBindingMock('GetPayloadData', async () => ({ data: 'full output' }));
+    const { getByTestId } = render(CommandOutput, {
+      props: {
+        item: makeItem({
+          id: 'tool-cmd',
+          kind: 'tool_completion',
+          status: 'completed',
+          payloadMeta: JSON.stringify({
+            command: 'false',
+            exitCode: 7,
+            errorMessage: 'first line\nlast failure line',
+          }),
+        }),
+        meta: commandMeta({
+          command: 'false',
+          exitCode: 7,
+          errorMessage: 'first line\nlast failure line',
+        }),
+        payloadId: 'cmd-payload',
+      },
+    });
+
+    const error = getByTestId('command-output-error');
+    expect(error.textContent).toBe('error code 7: first line last failure line');
+    expect(error.className).toContain('text-error');
+    expect(dataMock).not.toHaveBeenCalled();
+  });
+
+  it('uses Claude stderr metadata for legacy Bash failure rows', () => {
+    const { getByTestId } = render(CommandOutput, {
+      props: {
+        item: makeItem({
+          id: 'tool-cmd',
+          kind: 'tool_completion',
+          status: 'errored',
+          toolName: 'Bash',
+          meta: JSON.stringify({
+            exit_code: 2,
+            tool_use_result: {
+              stderr: '\u001b[31mNo such file or directory\u001b[0m',
+            },
+          }),
+        }),
+        meta: commandMeta({ command: 'cat missing.txt', exitCode: 2 }),
+      },
+    });
+
+    expect(getByTestId('command-output-error').textContent).toBe(
+      'error code 2: No such file or directory',
     );
   });
 

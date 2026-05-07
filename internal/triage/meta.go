@@ -16,10 +16,12 @@ type DiffMeta struct {
 
 // CommandOutputMeta is the JSON structure for command output payloads.
 type CommandOutputMeta struct {
-	Command   string `json:"command"`
-	ExitCode  int    `json:"exitCode"`
-	LineCount int    `json:"lineCount"`
-	Preview   string `json:"preview"`
+	Command      string `json:"command"`
+	ExitCode     int    `json:"exitCode"`
+	LineCount    int    `json:"lineCount"`
+	Preview      string `json:"preview,omitempty"`
+	ErrorMessage string `json:"errorMessage,omitempty"`
+	OutputState  string `json:"outputFileState,omitempty"`
 }
 
 // ThinkingMeta is the JSON structure for thinking block payloads.
@@ -101,23 +103,89 @@ func ExtractDiffMeta(patch string) DiffMeta {
 	return dm
 }
 
-// ExtractCommandOutputMeta extracts preview from command output.
+// ExtractCommandOutputMeta extracts lightweight command output metadata.
+// The output body itself stays behind the payload API and loads only on
+// explicit expand, so command output metadata intentionally carries no
+// preview text.
 func ExtractCommandOutputMeta(output string, command string, exitCode int) CommandOutputMeta {
-	lines := strings.Split(output, "\n")
 	cm := CommandOutputMeta{
 		Command:   command,
 		ExitCode:  exitCode,
-		LineCount: len(lines),
+		LineCount: strings.Count(output, "\n") + 1,
 	}
-
-	// Preview: last ~10 lines.
-	start := len(lines) - 10
-	if start < 0 {
-		start = 0
-	}
-	cm.Preview = strings.Join(lines[start:], "\n")
-
 	return cm
+}
+
+// ExtractCommandOutputMetaWithError adds a compact one-line failure
+// message for collapsed command rows. The full output stays in the
+// payload and is fetched only when the row expands.
+func ExtractCommandOutputMetaWithError(output string, command string, exitCode int, errorMessage string) CommandOutputMeta {
+	cm := ExtractCommandOutputMeta(output, command, exitCode)
+	cm.ErrorMessage = compactCommandErrorMessage(errorMessage)
+	if cm.ErrorMessage == "" && exitCode != 0 {
+		cm.ErrorMessage = compactCommandErrorMessage(output)
+	}
+	return cm
+}
+
+func compactCommandErrorMessage(text string) string {
+	tailLines := compactTailLines(text, 2)
+	if len(tailLines) == 0 {
+		return ""
+	}
+	message := strings.Join(tailLines, " ")
+	runes := []rune(message)
+	if len(runes) > 240 {
+		return strings.TrimSpace(string(runes[:239])) + "…"
+	}
+	return message
+}
+
+func compactTailLines(text string, maxLines int) []string {
+	if maxLines <= 0 {
+		return nil
+	}
+	lines := make([]string, 0, maxLines)
+	end := len(text)
+	for end >= 0 && len(lines) < maxLines {
+		start := strings.LastIndexByte(text[:end], '\n')
+		line := text[start+1 : end]
+		compact := compactCommandLine(line)
+		if compact != "" {
+			lines = append(lines, compact)
+		}
+		if start < 0 {
+			break
+		}
+		end = start
+	}
+	for left, right := 0, len(lines)-1; left < right; left, right = left+1, right-1 {
+		lines[left], lines[right] = lines[right], lines[left]
+	}
+	return lines
+}
+
+func compactCommandLine(text string) string {
+	return strings.Join(strings.Fields(stripANSIControlSequences(text)), " ")
+}
+
+func stripANSIControlSequences(text string) string {
+	var b strings.Builder
+	for i := 0; i < len(text); i++ {
+		if text[i] != 0x1b || i+1 >= len(text) || text[i+1] != '[' {
+			b.WriteByte(text[i])
+			continue
+		}
+		i += 2
+		for i < len(text) {
+			c := text[i]
+			if c >= 0x40 && c <= 0x7e {
+				break
+			}
+			i++
+		}
+	}
+	return b.String()
 }
 
 // ExtractThinkingMeta extracts preview from a thinking block.

@@ -314,7 +314,8 @@ func buildBackgroundOutputFilePayload(payloadID string, launch store.Item, outpu
 		if exitCode != nil {
 			code = *exitCode
 		}
-		commandMeta := ExtractCommandOutputMeta(string(data), commandFromLaunch(launch), code)
+		commandMeta := ExtractCommandOutputMetaWithError(string(data), commandFromLaunch(launch), code, "")
+		commandMeta.OutputState = "loaded"
 		commandMetaJSON, err := json.Marshal(commandMeta)
 		if err != nil {
 			return nil, fmt.Errorf("marshal command output payload meta: %w", err)
@@ -342,12 +343,7 @@ func buildBackgroundOutputFilePayload(payloadID string, launch store.Item, outpu
 }
 
 func isCommandOutputLaunch(launch store.Item) bool {
-	switch strings.TrimSpace(launch.ToolName) {
-	case "Bash", "command_execution", "exec_command":
-		return true
-	default:
-		return false
-	}
+	return isCommandOutputToolName(launch.ToolName)
 }
 
 func commandFromLaunch(launch store.Item) string {

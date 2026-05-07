@@ -2,7 +2,6 @@ package triage
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -97,9 +96,8 @@ func TestCommandOutputMetaStabilisesOnComplete(t *testing.T) {
 	if finalMeta.Command != "go build" {
 		t.Errorf("final command lost: got %q, want go build", finalMeta.Command)
 	}
-	// Preview should be derived from the tail of the cumulative output.
-	if !strings.Contains(finalMeta.Preview, "line6") {
-		t.Errorf("final preview missing tail: %q", finalMeta.Preview)
+	if finalMeta.Preview != "" {
+		t.Errorf("final preview = %q, want empty", finalMeta.Preview)
 	}
 }
 
@@ -148,5 +146,26 @@ func TestCommandOutputReplaceOverridesEarlierDeltas(t *testing.T) {
 	}
 	if string(data) != "full output\n" {
 		t.Fatalf("payload data = %q, want replacement only", string(data))
+	}
+}
+
+func TestCommandOutputMetaStoresCompactFailureMessage(t *testing.T) {
+	meta := ExtractCommandOutputMetaWithError(
+		"setup\npanic: boom\nstack trace line",
+		"go test",
+		1,
+		"\x1b[31mpermission denied\x1b[0m\nwhile opening file",
+	)
+
+	if meta.ErrorMessage != "permission denied while opening file" {
+		t.Fatalf("errorMessage = %q", meta.ErrorMessage)
+	}
+}
+
+func TestCommandOutputMetaFallsBackToOutputTailForNonZeroExit(t *testing.T) {
+	meta := ExtractCommandOutputMetaWithError("ok\nmissing file\n", "cat missing", 2, "")
+
+	if meta.ErrorMessage != "ok missing file" {
+		t.Fatalf("errorMessage = %q", meta.ErrorMessage)
 	}
 }

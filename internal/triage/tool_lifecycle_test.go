@@ -656,8 +656,8 @@ func TestInlineCompletionPreservesRichPayload(t *testing.T) {
 // TestInlineCompletionAttachesPayloadWhenNoneExists covers the
 // generic-tool path: a Bash invocation with no file_change side-effect
 // arrives with a stdout body in evt.Content. The lifecycle completion
-// stores that body as a tool_call_result payload so the dropdown can
-// render it on demand.
+// stores that body as a command_output payload so Bash rows share the
+// same expandable terminal UI as streamed command output.
 func TestInlineCompletionAttachesPayloadWhenNoneExists(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -680,7 +680,10 @@ func TestInlineCompletionAttachesPayloadWhenNoneExists(t *testing.T) {
 
 	item, _, _ := st.GetItem("bash-1")
 	if item.PayloadID == "" {
-		t.Fatalf("expected tool_call_result payload attached to inline completion")
+		t.Fatalf("expected command_output payload attached to inline completion")
+	}
+	if item.PayloadKind != "command_output" {
+		t.Fatalf("payloadKind = %q, want command_output", item.PayloadKind)
 	}
 	data, err := st.GetPayloadData(item.PayloadID)
 	if err != nil {
@@ -688,6 +691,60 @@ func TestInlineCompletionAttachesPayloadWhenNoneExists(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "total 0") {
 		t.Errorf("payload data lost stdout body: %q", string(data))
+	}
+}
+
+func TestInlineBashCompletionStoresFailureMessage(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Bash",
+		"input":    map[string]any{"command": "cat missing.txt"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bash-fail",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	completeMeta, _ := json.Marshal(map[string]any{
+		"exit_code": 2,
+		"tool_use_result": map[string]any{
+			"stderr": "cat: missing.txt: No such file or directory\n",
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "bash-fail",
+		Meta: completeMeta, Content: "cat: missing.txt: No such file or directory\n", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	item, _, _ := st.GetItem("bash-fail")
+	var meta CommandOutputMeta
+	if err := json.Unmarshal([]byte(item.PayloadMeta), &meta); err != nil {
+		t.Fatalf("payload meta: %v", err)
+	}
+	if meta.Command != "cat missing.txt" {
+		t.Fatalf("command = %q, want cat missing.txt", meta.Command)
+	}
+	if meta.ExitCode != 2 {
+		t.Fatalf("exitCode = %d, want 2", meta.ExitCode)
+	}
+	if meta.ErrorMessage != "cat: missing.txt: No such file or directory" {
+		t.Fatalf("errorMessage = %q", meta.ErrorMessage)
+	}
+}
+
+func TestCommandFromInputPreservesFullCommand(t *testing.T) {
+	longCommand := strings.Repeat("echo full-command ", 12)
+	input, _ := json.Marshal(map[string]any{"command": longCommand})
+
+	want := strings.TrimSpace(longCommand)
+	if got := commandFromInput(input); got != want {
+		t.Fatalf("commandFromInput = %q, want full command %q", got, want)
 	}
 }
 
@@ -1822,8 +1879,8 @@ func TestHandleEventBackgroundTaskTerminal_Enriches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read enriched payload meta: %v", err)
 	}
-	if !strings.Contains(meta.Meta, "outputFile") {
-		t.Errorf("expected enriched meta to carry outputFile, got %q", meta.Meta)
+	if strings.Contains(meta.Meta, "/tmp/bg-output.txt") || strings.Contains(meta.Meta, "outputFile") {
+		t.Errorf("command output payload meta leaked output file path: %q", meta.Meta)
 	}
 	data, err := st.GetPayloadData(done.PayloadID)
 	if err != nil {

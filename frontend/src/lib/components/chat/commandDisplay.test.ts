@@ -13,6 +13,7 @@ describe('commandDisplay', () => {
   it('classifies Claude Bash and Codex command_execution as command tools', () => {
     expect(isCommandToolName('Bash')).toBe(true);
     expect(isCommandToolName('command_execution')).toBe(true);
+    expect(isCommandToolName('exec_command')).toBe(true);
     expect(isCommandToolName('Read')).toBe(false);
   });
 

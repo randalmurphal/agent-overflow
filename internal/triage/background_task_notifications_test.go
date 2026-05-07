@@ -285,8 +285,11 @@ func TestBackgroundTaskNotification_OutputFileFeedsLaterTerminal(t *testing.T) {
 	if commandMeta.Command != "sleep 5; echo done" {
 		t.Fatalf("completion command = %q, want sleep 5; echo done", commandMeta.Command)
 	}
-	if commandMeta.Preview != "line 1\nline 2\n" {
-		t.Fatalf("completion preview = %q, want output preview", commandMeta.Preview)
+	if commandMeta.Preview != "" {
+		t.Fatalf("completion preview = %q, want empty", commandMeta.Preview)
+	}
+	if commandMeta.OutputState != "loaded" {
+		t.Fatalf("completion output state = %q, want loaded", commandMeta.OutputState)
 	}
 	doneMeta := decodeItemMetaMap(t, done.Meta)
 	if got := doneMeta["output_file"]; got != outputPath {

@@ -265,9 +265,8 @@ func TestExtractCommandOutputMeta50Lines(t *testing.T) {
 		t.Errorf("lineCount: got %d, want 50", cm.LineCount)
 	}
 
-	previewLines := strings.Split(cm.Preview, "\n")
-	if len(previewLines) != 10 {
-		t.Errorf("preview lines: got %d, want 10", len(previewLines))
+	if cm.Preview != "" {
+		t.Errorf("preview: got %q, want empty", cm.Preview)
 	}
 
 	if cm.Command != "go build" {
@@ -286,9 +285,8 @@ func TestExtractCommandOutputMeta3Lines(t *testing.T) {
 		t.Errorf("lineCount: got %d, want 3", cm.LineCount)
 	}
 
-	previewLines := strings.Split(cm.Preview, "\n")
-	if len(previewLines) != 3 {
-		t.Errorf("preview lines: got %d, want 3", len(previewLines))
+	if cm.Preview != "" {
+		t.Errorf("preview: got %q, want empty", cm.Preview)
 	}
 
 	if cm.ExitCode != 1 {
