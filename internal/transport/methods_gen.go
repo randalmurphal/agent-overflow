@@ -107,6 +107,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListItemsBeforeTurn", ID: 2147361923}, // main.App.ListItemsBeforeTurn
 	{Name: "ListLiveBackgroundTasks", ID: 320784263}, // main.App.ListLiveBackgroundTasks
 	{Name: "ListPayloadMetas", ID: 1007133701}, // main.App.ListPayloadMetas
+	{Name: "ListPendingInteractiveRequests", ID: 4186874978}, // main.App.ListPendingInteractiveRequests
 	{Name: "ListProjects", ID: 2721360259}, // main.App.ListProjects
 	{Name: "ListProposedPlanComments", ID: 2030403250}, // main.App.ListProposedPlanComments
 	{Name: "ListRecentThreadItems", ID: 2604956482}, // main.App.ListRecentThreadItems

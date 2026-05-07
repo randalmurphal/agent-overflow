@@ -30,7 +30,20 @@ import { setBindingMock } from '../../test/mocks/bindings-app';
 import type { Thread } from '../types/models';
 
 function readyPane(overrides: Partial<Thread> = {}): ReturnType<typeof createThreadPane> {
-  setBindingMock('SwitchThread', async () => {});
+  setBindingMock('SwitchThread', async (threadId: unknown) => ({
+    id: typeof threadId === 'string' ? threadId : 'thread-1',
+  }));
+  setBindingMock('ListRecentThreadItems', async () => ({
+    items: [],
+    oldestTurnIndex: -1,
+    hasMore: false,
+  }));
+  setBindingMock('ListPendingInteractiveRequests', async () => ({
+    approvals: [],
+    userInputs: [],
+  }));
+  setBindingMock('ListRecentTurns', async () => []);
+  setBindingMock('ListThreadCheckpoints', async () => []);
   setBindingMock('ListItems', async () => []);
   setBindingMock('ListPayloadMetas', async () => []);
   const pane = createThreadPane();

@@ -2791,6 +2791,70 @@ func TestCodexHandleServerRequestUserInput(t *testing.T) {
 	}
 }
 
+func TestCodexHandleServerRequestUserInputV2TopLevelRouteFields(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
+
+	line, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      31,
+		"method":  "item/tool/requestUserInput",
+		"params": map[string]any{
+			"threadId": "provider-thread",
+			"turnId":   "turn-31",
+			"itemId":   "item-31",
+			"questions": []map[string]any{{
+				"id":       "scope",
+				"header":   "Scope",
+				"question": "Choose a scope",
+				"isOther":  true,
+				"isSecret": false,
+				"options": []map[string]string{
+					{"label": "turn", "description": "Apply only to this turn"},
+					{"label": "session", "description": "Apply for the whole session"},
+				},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	evt := codexWaitEvent(t, eventCh)
+	if evt.Kind != provider.EventUserInputRequest {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventUserInputRequest)
+	}
+	if evt.TurnID != "turn-31" {
+		t.Errorf("turnID: got %q, want %q", evt.TurnID, "turn-31")
+	}
+	if evt.ItemID != "item-31" {
+		t.Errorf("itemID: got %q, want %q", evt.ItemID, "item-31")
+	}
+
+	var request provider.UserInputRequest
+	if err := json.Unmarshal(evt.Meta, &request); err != nil {
+		t.Fatalf("unmarshal user input request: %v", err)
+	}
+	if request.ThreadID != testThread {
+		t.Errorf("threadID: got %q, want %q", request.ThreadID, testThread)
+	}
+	if request.TurnID != "turn-31" {
+		t.Errorf("request turnID: got %q, want %q", request.TurnID, "turn-31")
+	}
+	if got := len(request.Questions); got != 1 {
+		t.Fatalf("questions len: got %d, want 1", got)
+	}
+	options := request.Questions[0].Options
+	if got := len(options); got != 2 {
+		t.Fatalf("options len: got %d, want 2", got)
+	}
+	if options[1].Label != "session" {
+		t.Errorf("second option label: got %q, want session", options[1].Label)
+	}
+}
+
 func TestCodexHandleServerRequestPermission(t *testing.T) {
 	s, eventCh := newTestCodexSession(t)
 

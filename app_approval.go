@@ -5,10 +5,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
 )
+
+// ListPendingInteractiveRequests returns live approval and structured-input
+// prompts for a thread so a pane that missed the original event can hydrate
+// its composer controls.
+func (a *App) ListPendingInteractiveRequests(threadID string) (provider.PendingInteractiveRequests, error) {
+	snapshot := provider.PendingInteractiveRequests{
+		Approvals:  []provider.ApprovalRequest{},
+		UserInputs: []provider.UserInputRequest{},
+	}
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return snapshot, nil
+	}
+	if a.triage == nil {
+		return snapshot, nil
+	}
+	return a.triage.PendingInteractiveRequests(threadID), nil
+}
 
 // RespondToApproval forwards an interactive response to the active provider session.
 func (a *App) RespondToApproval(threadID string, response provider.ApprovalResponse) error {

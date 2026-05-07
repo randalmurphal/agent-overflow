@@ -72,6 +72,10 @@ export function installPaneMocks(items: Item[] = []): void {
     oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
     hasMore: false,
   }));
+  setBindingMock('ListPendingInteractiveRequests', async () => ({
+    approvals: [],
+    userInputs: [],
+  }));
   setBindingMock('ListItems', async () => items);
   // Empty turn history by default. Tests that want to exercise rehydration
   // override this via setBindingMock('ListRecentTurns', ...) after calling

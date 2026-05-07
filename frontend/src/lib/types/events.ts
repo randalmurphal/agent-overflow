@@ -116,6 +116,11 @@ export interface UserInputEvent {
   detail?: string;
 }
 
+export interface PendingInteractiveRequests {
+  approvals: ApprovalRequest[];
+  userInputs: UserInputRequest[];
+}
+
 export interface ItemDeltaEvent {
   threadId: string;
   itemId: string;

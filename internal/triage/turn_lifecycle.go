@@ -822,6 +822,8 @@ func (r *Router) clearOpenTurn(threadID string) {
 		deleteByPrefix(r.pendingApprovals, approvalPrefix)
 		deleteByPrefix(r.pendingApprovalItems, approvalPrefix)
 		deleteByPrefix(r.pendingUserInputs, approvalPrefix)
+		delete(r.pendingApprovalOrder, threadID)
+		delete(r.pendingUserInputOrder, threadID)
 	}
 	delete(r.openTurns, threadID)
 	delete(r.interruptQueue, threadID)
@@ -1014,6 +1016,8 @@ func (r *Router) CleanupThread(threadID string) {
 	deleteByPrefix(r.pendingApprovals, approvalPrefix)
 	deleteByPrefix(r.pendingApprovalItems, approvalPrefix)
 	deleteByPrefix(r.pendingUserInputs, approvalPrefix)
+	delete(r.pendingApprovalOrder, threadID)
+	delete(r.pendingUserInputOrder, threadID)
 	prefix := threadID + "|"
 	deleteByPrefix(r.segmentIndexByScope, prefix)
 	deleteByPrefix(r.blockIndexByScope, prefix)

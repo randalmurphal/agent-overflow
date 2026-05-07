@@ -361,6 +361,14 @@ type UserInputEvent struct {
 	Detail    string            `json:"detail,omitempty"`
 }
 
+// PendingInteractiveRequests is the app-runtime snapshot of still-open
+// prompts for one thread. The provider process remains the authority: this is
+// only for hydrating UI panes that missed the original live event.
+type PendingInteractiveRequests struct {
+	Approvals  []ApprovalRequest  `json:"approvals"`
+	UserInputs []UserInputRequest `json:"userInputs"`
+}
+
 // UsageEvent is the frontend-facing channel payload for the context-window
 // meter. `usage` updates the ring; `reset` clears it after compaction;
 // `rate_limits` carries a rate-limits snapshot folded onto the same channel

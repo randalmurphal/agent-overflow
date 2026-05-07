@@ -35,6 +35,7 @@ export {
   ReconnectSession,
   SendMessage,
   InterruptTurn,
+  ListPendingInteractiveRequests,
   RespondToApproval,
   RespondToUserInput,
   SendPlanRevisionComments,

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setupEventListeners } from './events';
+import { createThreadPane } from './thread.svelte';
 import { getAllPanes } from './panes.svelte';
 import { getActiveTurn, getThreadStatus, resetForTest as resetThreadStatuses } from './threadStatuses.svelte';
 import { getThreads, refreshThreads } from './threads.svelte';
@@ -7,6 +8,7 @@ import { emitWailsEvent, resetWailsMocks, wailsListenerCount } from '../../test/
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 import type { ProviderStatusEvent } from '../types/events';
+import type { Item } from '../types/models';
 
 function providerStatusEvent(overrides: Partial<ProviderStatusEvent> = {}): ProviderStatusEvent {
   return {
@@ -196,6 +198,68 @@ describe('setupEventListeners', () => {
 
     expect(pane.pendingApprovals).toEqual([]);
     expect(getThreadStatus('thread-1')).toBe('idle');
+  });
+
+  it('records resolve tombstones even when a pane missed the original request', async () => {
+    let releaseSnapshot!: (value: unknown) => void;
+    setBindingMock('SwitchThread', async (threadId: unknown) =>
+      makeThread({ id: typeof threadId === 'string' ? threadId : 'thread-1' }));
+    setBindingMock('ListRecentThreadItems', async () => ({
+      items: [] as Item[],
+      oldestTurnIndex: -1,
+      hasMore: false,
+    }));
+    setBindingMock('ListPendingInteractiveRequests', () => new Promise((resolve) => {
+      releaseSnapshot = resolve;
+    }));
+    setBindingMock('ListRecentTurns', async () => []);
+    setBindingMock('ListThreadCheckpoints', async () => []);
+
+    const pane = createThreadPane();
+    getAllPanes().set('main', pane);
+    const switching = pane.switchThread(makeThread({ id: 'thread-1' }));
+    for (let i = 0; i < 5 && !releaseSnapshot; i++) {
+      await Promise.resolve();
+    }
+    expect(releaseSnapshot).toBeDefined();
+
+    emitWailsEvent('provider:approval', {
+      action: 'resolve',
+      threadId: 'thread-1',
+      requestId: 'approval-1',
+      decision: 'approved',
+    });
+    emitWailsEvent('provider:user_input', {
+      action: 'resolve',
+      threadId: 'thread-1',
+      requestId: 'input-1',
+      decision: 'answered',
+    });
+    releaseSnapshot({
+      approvals: [{
+        requestId: 'approval-1',
+        threadId: 'thread-1',
+        toolName: 'bash',
+        description: 'Allow bash?',
+        input: null,
+        title: 'Approve bash',
+      }],
+      userInputs: [{
+        requestId: 'input-1',
+        threadId: 'thread-1',
+        toolName: 'user_input',
+        title: 'User Input Required',
+        questions: [{
+          id: 'scope',
+          header: 'Scope',
+          question: 'Choose a scope',
+        }],
+      }],
+    });
+    await switching;
+
+    expect(pane.pendingApprovals).toEqual([]);
+    expect(pane.pendingUserInputs).toEqual([]);
   });
 
   it('sets thread error status from an error item upsert', async () => {

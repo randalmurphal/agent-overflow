@@ -3,15 +3,21 @@
 
 export {
     AccountInfo,
+    ApprovalRequest,
     ApprovalResponse,
     ContextWindowOption,
+    ElicitationRequest,
     ElicitationResolution,
     FileSystemPermissions,
     ModelInfo,
     NetworkPermissions,
+    PendingInteractiveRequests,
     PermissionProfile,
     ProviderStatus,
     ReasoningEffortOption,
+    UserInputQuestion,
+    UserInputQuestionOption,
+    UserInputRequest,
     UserInputResponse
 } from "./models.js";
 

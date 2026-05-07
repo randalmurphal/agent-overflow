@@ -417,9 +417,8 @@ function applyApprovalEvent(evt: ApprovalEvent): void {
     for (const pane of getAllPanes().values()) {
       if (evt.threadId && pane.threadId !== evt.threadId) continue;
       const hadApproval = pane.pendingApprovals.some((approval) => approval.requestId === evt.requestId);
-      if (!hadApproval) continue;
       pane.removeApproval(evt.requestId);
-      if (evt.action === 'fail' && evt.detail) {
+      if (hadApproval && evt.action === 'fail' && evt.detail) {
         pane.setGeneralError(`Failed to respond to approval: ${evt.detail}`);
       }
     }
@@ -444,9 +443,8 @@ function applyUserInputEvent(evt: UserInputEvent): void {
     for (const pane of getAllPanes().values()) {
       if (evt.threadId && pane.threadId !== evt.threadId) continue;
       const hadRequest = pane.pendingUserInputs.some((request) => request.requestId === evt.requestId);
-      if (!hadRequest) continue;
       pane.removeUserInput(evt.requestId);
-      if (evt.action === 'fail' && evt.detail) {
+      if (hadRequest && evt.action === 'fail' && evt.detail) {
         pane.setGeneralError(`Failed to submit input: ${evt.detail}`);
       }
     }

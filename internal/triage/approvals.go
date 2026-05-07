@@ -37,6 +37,7 @@ func (r *Router) setPendingApproval(threadID string, approval pendingApprovalSta
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.pendingApprovals[approvalStateKey(threadID, approval.Request.RequestID)] = approval
+	rememberInteractiveRequestOrder(r.pendingApprovalOrder, threadID, approval.Request.RequestID)
 }
 
 func (r *Router) takePendingApproval(threadID, requestID string) (pendingApprovalState, bool) {
@@ -46,6 +47,7 @@ func (r *Router) takePendingApproval(threadID, requestID string) (pendingApprova
 	approval, ok := r.pendingApprovals[key]
 	if ok {
 		delete(r.pendingApprovals, key)
+		removeInteractiveRequestOrder(r.pendingApprovalOrder, threadID, requestID)
 	}
 	return approval, ok
 }

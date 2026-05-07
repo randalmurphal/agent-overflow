@@ -4,6 +4,7 @@ import type {
   ApprovalRequest,
   ContextWindow,
   ItemDeltaEvent,
+  PendingInteractiveRequests,
   TodoStep,
   ProviderStatusEvent,
   SubagentNotificationEvent,
@@ -27,6 +28,7 @@ import type {
 import {
   GetThreadItem,
   LatestDesignOptionSet,
+  ListPendingInteractiveRequests,
   ListItemsBeforeTurn,
   ListRecentThreadItems,
   ListRecentTurns,
@@ -80,6 +82,27 @@ function sameRhsPanel(left: RhsPanel | null, right: RhsPanel | null): boolean {
   if (left.kind !== right.kind) return false;
   if (left.kind !== 'diff-payload' || right.kind !== 'diff-payload') return true;
   return left.payloadId === right.payloadId && left.filePath === right.filePath;
+}
+
+function mergePendingRequests<T extends { requestId: string }>(
+  snapshot: T[],
+  current: T[],
+  resolvedRequestIds: Set<string>,
+): T[] {
+  const merged: T[] = [];
+  const seen = new Set<string>();
+  for (const request of snapshot) {
+    if (!request.requestId || resolvedRequestIds.has(request.requestId)) continue;
+    merged.push(request);
+    seen.add(request.requestId);
+  }
+  for (const request of current) {
+    if (!request.requestId || resolvedRequestIds.has(request.requestId)) continue;
+    if (seen.has(request.requestId)) continue;
+    merged.push(request);
+    seen.add(request.requestId);
+  }
+  return merged;
 }
 
 // ActiveTurn now lives in threadStatuses.svelte.ts (single source of
@@ -385,6 +408,8 @@ export function createThreadPane() {
   let liveSummaryFrame: number | null = null;
   let pendingApprovals: ApprovalRequest[] = $state([]);
   let pendingUserInputs: UserInputRequest[] = $state([]);
+  const resolvedApprovalIds = new Set<string>();
+  const resolvedUserInputIds = new Set<string>();
   let contextWindow: ContextWindow | null = $state(null);
   let providerBanner: ProviderStatusEvent | null = $state(null);
   // generalError is the grab-bag pane-level error slot surfaced by
@@ -1068,6 +1093,30 @@ export function createThreadPane() {
     }
   }
 
+  async function hydratePendingInteractiveRequests(threadID: string, gen: number): Promise<void> {
+    let snapshot: PendingInteractiveRequests;
+    try {
+      snapshot = (await ListPendingInteractiveRequests(threadID)) as PendingInteractiveRequests;
+    } catch (err) {
+      if (gen === switchGeneration && thread?.id === threadID) {
+        console.error('Failed to hydrate pending interactive requests:', err);
+      }
+      return;
+    }
+    if (gen !== switchGeneration || thread?.id !== threadID) return;
+
+    pendingApprovals = mergePendingRequests(
+      snapshot.approvals ?? [],
+      pendingApprovals,
+      resolvedApprovalIds,
+    );
+    pendingUserInputs = mergePendingRequests(
+      snapshot.userInputs ?? [],
+      pendingUserInputs,
+      resolvedUserInputIds,
+    );
+  }
+
   async function refreshCheckpointsForThread(threadID: string): Promise<void> {
     const checkpoints = ((await ListThreadCheckpoints(threadID)) ?? []) as Checkpoint[];
     if (thread?.id !== threadID) return;
@@ -1182,6 +1231,8 @@ export function createThreadPane() {
       try {
         pendingApprovals = [];
         pendingUserInputs = [];
+        resolvedApprovalIds.clear();
+        resolvedUserInputIds.clear();
         contextWindow = seedContextWindow(newThread);
         providerBanner = null;
         generalError = null;
@@ -1290,6 +1341,9 @@ export function createThreadPane() {
           console.error('Failed to notify backend of thread switch:', err);
           addToast('warning', 'Backend was not notified of thread switch');
         }
+        if (gen !== switchGeneration) return;
+
+        await hydratePendingInteractiveRequests(newThread.id, gen);
         if (gen !== switchGeneration) return;
 
         // SwitchThread persists read state for the selection itself. ChatView
@@ -1404,6 +1458,9 @@ export function createThreadPane() {
         if (gen !== switchGeneration) return;
         console.error('Failed to refresh recent turns after gap:', err);
       }
+      pendingApprovals = [];
+      pendingUserInputs = [];
+      await hydratePendingInteractiveRequests(currentThread.id, gen);
     },
 
     clear(): void {
@@ -1413,6 +1470,8 @@ export function createThreadPane() {
       rebuildItemIndexes(items);
       pendingApprovals = [];
       pendingUserInputs = [];
+      resolvedApprovalIds.clear();
+      resolvedUserInputIds.clear();
       contextWindow = null;
       providerBanner = null;
       generalError = null;
@@ -1663,6 +1722,7 @@ export function createThreadPane() {
     // --- Mutations (called by event router) ---
 
     addApproval(approval: ApprovalRequest): void {
+      resolvedApprovalIds.delete(approval.requestId);
       pendingApprovals = [
         ...pendingApprovals.filter((a) => a.requestId !== approval.requestId),
         approval,
@@ -1670,10 +1730,12 @@ export function createThreadPane() {
     },
 
     removeApproval(requestId: string): void {
+      resolvedApprovalIds.add(requestId);
       pendingApprovals = pendingApprovals.filter((a) => a.requestId !== requestId);
     },
 
     addUserInput(request: UserInputRequest): void {
+      resolvedUserInputIds.delete(request.requestId);
       pendingUserInputs = [
         ...pendingUserInputs.filter((r) => r.requestId !== request.requestId),
         request,
@@ -1681,6 +1743,7 @@ export function createThreadPane() {
     },
 
     removeUserInput(requestId: string): void {
+      resolvedUserInputIds.add(requestId);
       pendingUserInputs = pendingUserInputs.filter((r) => r.requestId !== requestId);
     },
 

@@ -51,8 +51,10 @@ type Router struct {
 	mu                     sync.Mutex
 	pendingCommandDiffs    map[string]pendingCommandInlineDiff
 	pendingApprovals       map[string]pendingApprovalState
+	pendingApprovalOrder   map[string][]string
 	pendingApprovalItems   map[string]string
 	pendingUserInputs      map[string]provider.UserInputRequest
+	pendingUserInputOrder  map[string][]string
 	interruptQueue         map[string][]queuedPersistence
 	openTurns              map[string]int
 	segmentIndexByScope    map[string]int
@@ -216,8 +218,10 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		},
 		pendingCommandDiffs:        make(map[string]pendingCommandInlineDiff),
 		pendingApprovals:           make(map[string]pendingApprovalState),
+		pendingApprovalOrder:       make(map[string][]string),
 		pendingApprovalItems:       make(map[string]string),
 		pendingUserInputs:          make(map[string]provider.UserInputRequest),
+		pendingUserInputOrder:      make(map[string][]string),
 		interruptQueue:             make(map[string][]queuedPersistence),
 		openTurns:                  make(map[string]int),
 		segmentIndexByScope:        make(map[string]int),

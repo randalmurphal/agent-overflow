@@ -88,6 +88,7 @@ export const SendMessage = dispatch('SendMessage');
 export const SendMessageWithOptions = dispatch('SendMessageWithOptions');
 export const SteerMessageWithOptions = dispatch('SteerMessageWithOptions');
 export const InterruptTurn = dispatch('InterruptTurn');
+export const ListPendingInteractiveRequests = dispatch('ListPendingInteractiveRequests');
 export const RespondToApproval = dispatch('RespondToApproval');
 export const RespondToUserInput = dispatch('RespondToUserInput');
 export const SendPlanRevisionComments = dispatch('SendPlanRevisionComments');

@@ -38,6 +38,88 @@ export class AccountInfo {
 }
 
 /**
+ * ApprovalRequest is sent when a provider needs user permission.
+ */
+export class ApprovalRequest {
+    "requestId": string;
+    "threadId": string;
+    "turnId"?: string;
+    "toolUseId"?: string;
+    "toolName": string;
+    "description": string;
+    "input": json$0.RawMessage;
+    "title": string;
+
+    /**
+     * Structured approval fields.
+     * "command"|"file-read"|"file-change"|"permission"|"mcp-elicitation"
+     */
+    "kind"?: string;
+
+    /**
+     * populated for permission kind
+     */
+    "permissions"?: PermissionProfile | null;
+
+    /**
+     * Elicitation is populated for the mcp-elicitation kind. Carries the high-
+     * level mode discriminator and the shape the frontend needs to render the
+     * dialog. The schema for form mode is passed through as raw JSON — the
+     * frontend owns its interpretation so this package doesn't have to mirror
+     * the full Codex elicitation schema taxonomy in Go types.
+     */
+    "elicitation"?: ElicitationRequest | null;
+
+    /**
+     * PermissionSuggestions carries the Claude SDK's optional `permission_suggestions`
+     * array from the CanUseTool control_request. The payload is a JSON array of
+     * PermissionUpdate objects; the shape is provider-specific so it flows
+     * through the pipeline as opaque JSON for the frontend to interpret.
+     */
+    "permissionSuggestions"?: json$0.RawMessage;
+
+    /** Creates a new ApprovalRequest instance. */
+    constructor($$source: Partial<ApprovalRequest> = {}) {
+        if (!("requestId" in $$source)) {
+            this["requestId"] = "";
+        }
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("toolName" in $$source)) {
+            this["toolName"] = "";
+        }
+        if (!("description" in $$source)) {
+            this["description"] = "";
+        }
+        if (!("input" in $$source)) {
+            this["input"] = null;
+        }
+        if (!("title" in $$source)) {
+            this["title"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ApprovalRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ApprovalRequest {
+        const $$createField9_0 = $$createType1;
+        const $$createField10_0 = $$createType3;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("permissions" in $$parsedSource) {
+            $$parsedSource["permissions"] = $$createField9_0($$parsedSource["permissions"]);
+        }
+        if ("elicitation" in $$parsedSource) {
+            $$parsedSource["elicitation"] = $$createField10_0($$parsedSource["elicitation"]);
+        }
+        return new ApprovalRequest($$parsedSource as Partial<ApprovalRequest>);
+    }
+}
+
+/**
  * ApprovalResponse is sent back to the provider.
  */
 export class ApprovalResponse {
@@ -94,7 +176,7 @@ export class ApprovalResponse {
      */
     static createFrom($$source: any = {}): ApprovalResponse {
         const $$createField2_0 = $$createType1;
-        const $$createField4_0 = $$createType3;
+        const $$createField4_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("permissions" in $$parsedSource) {
             $$parsedSource["permissions"] = $$createField2_0($$parsedSource["permissions"]);
@@ -135,6 +217,61 @@ export class ContextWindowOption {
     static createFrom($$source: any = {}): ContextWindowOption {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new ContextWindowOption($$parsedSource as Partial<ContextWindowOption>);
+    }
+}
+
+/**
+ * ElicitationRequest is the frontend-facing shape for an MCP elicitation
+ * request, extracted from the raw provider payload. Only one of
+ * (RequestedSchema) or (URL + ElicitationID) is populated depending on Mode.
+ * Wire contract lives at:
+ * /home/rmurphy/repos/codex/codex-rs/app-server-protocol/schema/typescript/v2/McpServerElicitationRequestParams.ts
+ */
+export class ElicitationRequest {
+    /**
+     * "form" or "url"
+     */
+    "mode": string;
+
+    /**
+     * human-readable prompt shown to the user
+     */
+    "message": string;
+
+    /**
+     * name of the MCP server issuing the request
+     */
+    "serverName"?: string;
+
+    /**
+     * Form mode only.
+     */
+    "requestedSchema"?: json$0.RawMessage;
+
+    /**
+     * URL mode only.
+     */
+    "url"?: string;
+    "elicitationId"?: string;
+
+    /** Creates a new ElicitationRequest instance. */
+    constructor($$source: Partial<ElicitationRequest> = {}) {
+        if (!("mode" in $$source)) {
+            this["mode"] = "";
+        }
+        if (!("message" in $$source)) {
+            this["message"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ElicitationRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ElicitationRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ElicitationRequest($$parsedSource as Partial<ElicitationRequest>);
     }
 }
 
@@ -181,8 +318,8 @@ export class FileSystemPermissions {
      * Creates a new FileSystemPermissions instance from a string or object.
      */
     static createFrom($$source: any = {}): FileSystemPermissions {
-        const $$createField0_0 = $$createType4;
-        const $$createField1_0 = $$createType4;
+        const $$createField0_0 = $$createType6;
+        const $$createField1_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("read" in $$parsedSource) {
             $$parsedSource["read"] = $$createField0_0($$parsedSource["read"]);
@@ -225,9 +362,9 @@ export class ModelInfo {
      * Creates a new ModelInfo instance from a string or object.
      */
     static createFrom($$source: any = {}): ModelInfo {
-        const $$createField4_0 = $$createType4;
-        const $$createField5_0 = $$createType6;
-        const $$createField6_0 = $$createType8;
+        const $$createField4_0 = $$createType6;
+        const $$createField5_0 = $$createType8;
+        const $$createField6_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("capabilities" in $$parsedSource) {
             $$parsedSource["capabilities"] = $$createField4_0($$parsedSource["capabilities"]);
@@ -264,6 +401,44 @@ export class NetworkPermissions {
 }
 
 /**
+ * PendingInteractiveRequests is the app-runtime snapshot of still-open
+ * prompts for one thread. The provider process remains the authority: this is
+ * only for hydrating UI panes that missed the original live event.
+ */
+export class PendingInteractiveRequests {
+    "approvals": ApprovalRequest[];
+    "userInputs": UserInputRequest[];
+
+    /** Creates a new PendingInteractiveRequests instance. */
+    constructor($$source: Partial<PendingInteractiveRequests> = {}) {
+        if (!("approvals" in $$source)) {
+            this["approvals"] = [];
+        }
+        if (!("userInputs" in $$source)) {
+            this["userInputs"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PendingInteractiveRequests instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PendingInteractiveRequests {
+        const $$createField0_0 = $$createType12;
+        const $$createField1_0 = $$createType14;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("approvals" in $$parsedSource) {
+            $$parsedSource["approvals"] = $$createField0_0($$parsedSource["approvals"]);
+        }
+        if ("userInputs" in $$parsedSource) {
+            $$parsedSource["userInputs"] = $$createField1_0($$parsedSource["userInputs"]);
+        }
+        return new PendingInteractiveRequests($$parsedSource as Partial<PendingInteractiveRequests>);
+    }
+}
+
+/**
  * PermissionProfile describes requested or granted permissions.
  */
 export class PermissionProfile {
@@ -280,8 +455,8 @@ export class PermissionProfile {
      * Creates a new PermissionProfile instance from a string or object.
      */
     static createFrom($$source: any = {}): PermissionProfile {
-        const $$createField0_0 = $$createType10;
-        const $$createField1_0 = $$createType12;
+        const $$createField0_0 = $$createType16;
+        const $$createField1_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("network" in $$parsedSource) {
             $$parsedSource["network"] = $$createField0_0($$parsedSource["network"]);
@@ -378,6 +553,125 @@ export class ReasoningEffortOption {
 export type UserInputAnswer = any;
 
 /**
+ * UserInputQuestion represents a question in a structured user-input request.
+ */
+export class UserInputQuestion {
+    "id": string;
+    "header": string;
+    "question": string;
+    "options"?: UserInputQuestionOption[];
+    "multiSelect"?: boolean;
+
+    /** Creates a new UserInputQuestion instance. */
+    constructor($$source: Partial<UserInputQuestion> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("header" in $$source)) {
+            this["header"] = "";
+        }
+        if (!("question" in $$source)) {
+            this["question"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UserInputQuestion instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UserInputQuestion {
+        const $$createField3_0 = $$createType20;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("options" in $$parsedSource) {
+            $$parsedSource["options"] = $$createField3_0($$parsedSource["options"]);
+        }
+        return new UserInputQuestion($$parsedSource as Partial<UserInputQuestion>);
+    }
+}
+
+/**
+ * UserInputQuestionOption is a selectable option in a user-input question.
+ * Preview, when non-empty, is markdown-rendered alongside the option list as
+ * a side-by-side mockup/code comparison aid. Preview is single-select only;
+ * Claude Code's tool spec ignores it on multi-select questions.
+ */
+export class UserInputQuestionOption {
+    "label": string;
+    "description": string;
+    "preview"?: string;
+
+    /** Creates a new UserInputQuestionOption instance. */
+    constructor($$source: Partial<UserInputQuestionOption> = {}) {
+        if (!("label" in $$source)) {
+            this["label"] = "";
+        }
+        if (!("description" in $$source)) {
+            this["description"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UserInputQuestionOption instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UserInputQuestionOption {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new UserInputQuestionOption($$parsedSource as Partial<UserInputQuestionOption>);
+    }
+}
+
+/**
+ * UserInputRequest is sent when a provider needs structured user input.
+ * It is deliberately separate from ApprovalRequest: user-input prompts are
+ * answer collection, not permission grants, and the frontend renders them
+ * through a different composer flow.
+ */
+export class UserInputRequest {
+    "requestId": string;
+    "threadId": string;
+    "turnId"?: string;
+    "toolUseId"?: string;
+    "toolName": string;
+    "title": string;
+    "questions": UserInputQuestion[];
+
+    /** Creates a new UserInputRequest instance. */
+    constructor($$source: Partial<UserInputRequest> = {}) {
+        if (!("requestId" in $$source)) {
+            this["requestId"] = "";
+        }
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("toolName" in $$source)) {
+            this["toolName"] = "";
+        }
+        if (!("title" in $$source)) {
+            this["title"] = "";
+        }
+        if (!("questions" in $$source)) {
+            this["questions"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UserInputRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UserInputRequest {
+        const $$createField6_0 = $$createType22;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("questions" in $$parsedSource) {
+            $$parsedSource["questions"] = $$createField6_0($$parsedSource["questions"]);
+        }
+        return new UserInputRequest($$parsedSource as Partial<UserInputRequest>);
+    }
+}
+
+/**
  * UserInputResponse is sent back to the provider for a structured user-input
  * request.
  */
@@ -406,7 +700,7 @@ export class UserInputResponse {
      * Creates a new UserInputResponse instance from a string or object.
      */
     static createFrom($$source: any = {}): UserInputResponse {
-        const $$createField2_0 = $$createType13;
+        const $$createField2_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("answers" in $$parsedSource) {
             $$parsedSource["answers"] = $$createField2_0($$parsedSource["answers"]);
@@ -418,15 +712,25 @@ export class UserInputResponse {
 // Private type creation functions
 const $$createType0 = PermissionProfile.createFrom;
 const $$createType1 = $Create.Nullable($$createType0);
-const $$createType2 = ElicitationResolution.createFrom;
+const $$createType2 = ElicitationRequest.createFrom;
 const $$createType3 = $Create.Nullable($$createType2);
-const $$createType4 = $Create.Array($Create.Any);
-const $$createType5 = ContextWindowOption.createFrom;
-const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = ReasoningEffortOption.createFrom;
+const $$createType4 = ElicitationResolution.createFrom;
+const $$createType5 = $Create.Nullable($$createType4);
+const $$createType6 = $Create.Array($Create.Any);
+const $$createType7 = ContextWindowOption.createFrom;
 const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = NetworkPermissions.createFrom;
-const $$createType10 = $Create.Nullable($$createType9);
-const $$createType11 = FileSystemPermissions.createFrom;
-const $$createType12 = $Create.Nullable($$createType11);
-const $$createType13 = $Create.Map($Create.Any, $Create.Any);
+const $$createType9 = ReasoningEffortOption.createFrom;
+const $$createType10 = $Create.Array($$createType9);
+const $$createType11 = ApprovalRequest.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = UserInputRequest.createFrom;
+const $$createType14 = $Create.Array($$createType13);
+const $$createType15 = NetworkPermissions.createFrom;
+const $$createType16 = $Create.Nullable($$createType15);
+const $$createType17 = FileSystemPermissions.createFrom;
+const $$createType18 = $Create.Nullable($$createType17);
+const $$createType19 = UserInputQuestionOption.createFrom;
+const $$createType20 = $Create.Array($$createType19);
+const $$createType21 = UserInputQuestion.createFrom;
+const $$createType22 = $Create.Array($$createType21);
+const $$createType23 = $Create.Map($Create.Any, $Create.Any);

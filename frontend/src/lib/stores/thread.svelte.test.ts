@@ -29,6 +29,10 @@ describe('createThreadPane', () => {
       oldestTurnIndex: -1,
       hasMore: false,
     }));
+    setBindingMock('ListPendingInteractiveRequests', async () => ({
+      approvals: [],
+      userInputs: [],
+    }));
     setBindingMock('ListItems', async () => [] as Item[]);
     // switchThread calls ListRecentTurns as part of rehydration. Default
     // to an empty list so tests that don't care about turn rehydration
@@ -76,6 +80,66 @@ describe('createThreadPane', () => {
       autoCompactPercent: 90,
       autoCompactTokenLimit: 180000,
     });
+  });
+
+  it('hydrates pending approval and user-input prompts on thread switch', async () => {
+    const pane = createThreadPane();
+    setBindingMock('ListPendingInteractiveRequests', async () => ({
+      approvals: [{
+        requestId: 'approval-1',
+        threadId: 'thread-a',
+        toolName: 'Bash',
+        description: 'Run command',
+        input: { command: 'pwd' },
+        title: 'Approve command',
+      }],
+      userInputs: [{
+        requestId: 'input-1',
+        threadId: 'thread-a',
+        toolName: 'user_input',
+        title: 'User Input Required',
+        questions: [{
+          id: 'scope',
+          header: 'Scope',
+          question: 'Choose a scope',
+          options: [{ label: 'turn', description: 'Apply only to this turn' }],
+        }],
+      }],
+    }));
+
+    await pane.switchThread(makeThread({ id: 'thread-a' }));
+
+    expect(pane.pendingApprovals.map((request) => request.requestId)).toEqual(['approval-1']);
+    expect(pane.pendingUserInputs[0]?.questions[0]?.options?.[0]?.label).toBe('turn');
+  });
+
+  it('does not re-add a prompt resolved while pending snapshot hydration is in flight', async () => {
+    const pane = createThreadPane();
+    let releaseSnapshot!: (value: unknown) => void;
+    setBindingMock('ListPendingInteractiveRequests', () => new Promise((resolve) => {
+      releaseSnapshot = resolve;
+    }));
+
+    const switching = pane.switchThread(makeThread({ id: 'thread-a' }));
+    await Promise.resolve();
+    pane.removeUserInput('input-1');
+    releaseSnapshot({
+      approvals: [],
+      userInputs: [{
+        requestId: 'input-1',
+        threadId: 'thread-a',
+        toolName: 'user_input',
+        title: 'User Input Required',
+        questions: [{
+          id: 'scope',
+          header: 'Scope',
+          question: 'Choose a scope',
+        }],
+      }],
+    });
+    await switching;
+
+    expect(pane.pendingUserInputs).toEqual([]);
   });
 
   it('uses the backend-returned thread from switchThread', async () => {
