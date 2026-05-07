@@ -254,6 +254,7 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 	// See app.go Step 7/7b for the deadlock rationale.
 	want := []string{
 		"drain triage",
+		"drain flush dispatch",
 		"close replay manager",
 		"shutdown telemetry",
 		"close provider sessions",

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 )
 
 // recordingDispatcher captures every dispatch call so tests can assert
@@ -31,6 +32,21 @@ func (rd *recordingDispatcher) snapshot() []dispatchCall {
 	out := make([]dispatchCall, len(rd.calls))
 	copy(out, rd.calls)
 	return out
+}
+
+func (rd *recordingDispatcher) waitForAtLeastCalls(t *testing.T, want int) []dispatchCall {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		calls := rd.snapshot()
+		if len(calls) >= want {
+			return calls
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("dispatcher calls: got %d, want at least %d", len(calls), want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func makeQueueItem(id, message string) QueuedFlushItem {
@@ -215,7 +231,7 @@ func TestTryFlushQueue_FiresAndConsumes(t *testing.T) {
 	if !router.tryFlushQueue("t1") {
 		t.Fatalf("fire: returned false, expected true")
 	}
-	calls := rec.snapshot()
+	calls := rec.waitForAtLeastCalls(t, 1)
 	if len(calls) != 1 {
 		t.Fatalf("dispatch calls: got %d, want 1", len(calls))
 	}
@@ -260,12 +276,19 @@ func TestTryFlushQueue_SecondCallWithNewItems_FiresAgain(t *testing.T) {
 	if !router.tryFlushQueue("t1") {
 		t.Fatalf("second fire (new items, same round): returned false — per-round suppression regressed")
 	}
-	calls := rec.snapshot()
+	calls := rec.waitForAtLeastCalls(t, 2)
 	if len(calls) != 2 {
 		t.Fatalf("dispatch calls: got %d, want 2", len(calls))
 	}
-	if calls[1].Items[0].ID != "queue:1" {
-		t.Errorf("second dispatch item: got %q, want queue:1", calls[1].Items[0].ID)
+	for _, call := range calls {
+		if len(call.Items) != 1 {
+			t.Fatalf("dispatch batch size: got %d, want 1", len(call.Items))
+		}
+	}
+	for i, want := range []string{"queue:0", "queue:1"} {
+		if calls[i].Items[0].ID != want {
+			t.Errorf("dispatch[%d] item: got %q, want %q", i, calls[i].Items[0].ID, want)
+		}
 	}
 	if router.HasQueuedFlushItems("t1") {
 		t.Errorf("queue should be empty after second fire")
@@ -288,7 +311,7 @@ func TestTryFlushQueue_SecondCallEmptyQueue_NoOp(t *testing.T) {
 	if router.tryFlushQueue("t1") {
 		t.Errorf("second fire (empty queue): returned true, want false")
 	}
-	if len(rec.snapshot()) != 1 {
+	if len(rec.waitForAtLeastCalls(t, 1)) != 1 {
 		t.Errorf("dispatch should have fired exactly once when queue stays empty after first drain")
 	}
 }

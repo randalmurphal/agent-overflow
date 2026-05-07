@@ -125,7 +125,7 @@ func TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex(t *testing.T) {
 
 	// 3. provider:queue_flushed must have fired once per accepted item
 	// in original order with deterministic userItemIds.
-	flushedEvts := emittedQueueFlushed(rec)
+	flushedEvts := waitForAtLeastQueueFlushed(t, rec, 2)
 	if len(flushedEvts) != 2 {
 		t.Fatalf("queue_flushed emissions: got %d, want 2", len(flushedEvts))
 	}
@@ -281,7 +281,7 @@ func TestParserToTriageSeam_QueuedCommandReplay_StampsRow(t *testing.T) {
 
 	// Reset captures so the assertions below only see emissions
 	// driven by the parser → triage flow.
-	rec.calls = rec.calls[:0]
+	rec.reset()
 
 	// Parse the queued_command replay shape Claude actually emits.
 	// `message` carries `{role, content}` only — no `id` field. The
@@ -322,7 +322,7 @@ func TestParserToTriageSeam_QueuedCommandReplay_StampsRow(t *testing.T) {
 	// the queue-confirm overlay can clear. Without this emission, the
 	// Zone 2 marker would stay stuck — the original bug.
 	var sawStampedUpsert bool
-	for _, c := range rec.calls {
+	for _, c := range rec.snapshot() {
 		if c.Channel != "provider:item_event" {
 			continue
 		}
@@ -352,7 +352,7 @@ func TestParserToTriageSeam_QueuedCommandReplay_StampsRow(t *testing.T) {
 // when the trigger predicate gates the dispatch.
 func emittedQueueFlushed(rec *emitRecorder) []QueueFlushedEvent {
 	out := make([]QueueFlushedEvent, 0)
-	for _, c := range rec.calls {
+	for _, c := range rec.snapshot() {
 		if c.Channel != "provider:queue_flushed" {
 			continue
 		}
@@ -363,4 +363,19 @@ func emittedQueueFlushed(rec *emitRecorder) []QueueFlushedEvent {
 		out = append(out, evt)
 	}
 	return out
+}
+
+func waitForAtLeastQueueFlushed(t *testing.T, rec *emitRecorder, want int) []QueueFlushedEvent {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		flushed := emittedQueueFlushed(rec)
+		if len(flushed) >= want {
+			return flushed
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("queue_flushed emissions: got %d, want at least %d", len(flushed), want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }

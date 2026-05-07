@@ -100,7 +100,7 @@ func TestHandleToolComplete_FlushesWhenNoBlockingWorkRemains(t *testing.T) {
 		t.Fatalf("handle tool complete: %v", err)
 	}
 
-	calls := rec.snapshot()
+	calls := rec.waitForAtLeastCalls(t, 1)
 	if len(calls) != 1 {
 		t.Fatalf("dispatcher calls: got %d, want 1", len(calls))
 	}
@@ -142,7 +142,7 @@ func TestHandleToolComplete_CodexUnifiedExecCompletionFlushesBoundary(t *testing
 		t.Fatalf("handle unified exec complete: %v", err)
 	}
 
-	calls := rec.snapshot()
+	calls := rec.waitForAtLeastCalls(t, 1)
 	if len(calls) != 1 || len(calls[0].Items) != 1 || calls[0].Items[0].ID != "queue:0" {
 		t.Fatalf("dispatcher calls = %+v, want one queue:0 drain after unified exec completion", calls)
 	}
@@ -187,8 +187,8 @@ func TestHandleToolComplete_WaitsForActiveCodexUnifiedExec(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("handle unified exec complete: %v", err)
 	}
-	if len(rec.snapshot()) != 1 {
-		t.Fatalf("unified exec completion should release queued flush, got calls=%+v", rec.snapshot())
+	if calls := rec.waitForAtLeastCalls(t, 1); len(calls) != 1 {
+		t.Fatalf("unified exec completion should release queued flush, got calls=%+v", calls)
 	}
 }
 
@@ -219,7 +219,7 @@ func TestHandleToolComplete_WaitsForOtherTopLevelTools(t *testing.T) {
 	if err := router.Handle(makeToolCompleteEvent("t1", "tool-2")); err != nil {
 		t.Fatalf("handle second tool complete: %v", err)
 	}
-	calls := rec.snapshot()
+	calls := rec.waitForAtLeastCalls(t, 1)
 	if len(calls) != 1 || len(calls[0].Items) != 1 || calls[0].Items[0].ID != "queue:0" {
 		t.Fatalf("dispatcher calls = %+v, want one queue:0 drain after final completion", calls)
 	}
@@ -254,8 +254,8 @@ func TestHandleSubagentToolComplete_WaitsForParentTool(t *testing.T) {
 	if err := router.Handle(makeToolCompleteEvent("t1", "parent-task")); err != nil {
 		t.Fatalf("handle parent complete: %v", err)
 	}
-	if len(rec.snapshot()) != 1 {
-		t.Fatalf("parent completion should flush queued messages, got calls=%+v", rec.snapshot())
+	if calls := rec.waitForAtLeastCalls(t, 1); len(calls) != 1 {
+		t.Fatalf("parent completion should flush queued messages, got calls=%+v", calls)
 	}
 }
 
@@ -292,7 +292,7 @@ func TestHandleBackgroundTaskTerminal_FlushesAfterHostExitHidesLiveTask(t *testi
 		t.Fatalf("handle background terminal: %v", err)
 	}
 
-	calls := rec.snapshot()
+	calls := rec.waitForAtLeastCalls(t, 1)
 	if len(calls) != 1 || len(calls[0].Items) != 1 || calls[0].Items[0].ID != "queue:0" {
 		t.Fatalf("dispatcher calls = %+v, want one queue:0 drain after task_updated terminal", calls)
 	}
@@ -317,7 +317,7 @@ func TestHandleTurnComplete_FlushesTextOnlyRound(t *testing.T) {
 		t.Fatalf("handle turn complete: %v", err)
 	}
 
-	calls := rec.snapshot()
+	calls := rec.waitForAtLeastCalls(t, 1)
 	if len(calls) != 1 || len(calls[0].Items) != 1 || calls[0].Items[0].ID != "queue:0" {
 		t.Fatalf("dispatcher calls = %+v, want one queue:0 drain on text-only turn completion", calls)
 	}

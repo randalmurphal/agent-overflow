@@ -86,7 +86,7 @@ func (a *App) configureTriageQueueCallbacks() {
 	if a.triage == nil {
 		return
 	}
-	a.triage.SetFlushDispatcher(a.dispatchFlush)
+	a.triage.SetFlushDispatcher(a.enqueueFlushDispatch)
 	a.triage.SetDeferredUserTextConfirmedHook(func(threadID string, item store.Item) {
 		thread, err := a.store.GetThread(threadID)
 		if err != nil {
@@ -95,6 +95,88 @@ func (a *App) configureTriageQueueCallbacks() {
 		}
 		a.captureMessageCheckpoint(thread, item)
 	})
+}
+
+func (a *App) enqueueFlushDispatch(threadID string, items []triage.QueuedFlushItem) {
+	if threadID == "" || len(items) == 0 {
+		return
+	}
+	batch := make([]triage.QueuedFlushItem, len(items))
+	copy(batch, items)
+
+	a.flushDispatchMu.Lock()
+	if a.flushDispatchQueues == nil {
+		a.flushDispatchQueues = make(map[string][][]triage.QueuedFlushItem)
+		a.flushDispatchRunning = make(map[string]bool)
+		a.flushDispatchInflightItems = make(map[string]int)
+	}
+	a.flushDispatchQueues[threadID] = append(a.flushDispatchQueues[threadID], batch)
+	a.flushDispatchInflightItems[threadID] += len(batch)
+	if a.flushDispatchRunning[threadID] {
+		a.flushDispatchMu.Unlock()
+		return
+	}
+	a.flushDispatchRunning[threadID] = true
+	a.flushDispatchWG.Add(1)
+	a.flushDispatchMu.Unlock()
+
+	go a.runFlushDispatchWorker(threadID)
+}
+
+func (a *App) runFlushDispatchWorker(threadID string) {
+	defer a.flushDispatchWG.Done()
+	for {
+		a.flushDispatchMu.Lock()
+		queue := a.flushDispatchQueues[threadID]
+		if len(queue) == 0 {
+			delete(a.flushDispatchQueues, threadID)
+			delete(a.flushDispatchRunning, threadID)
+			a.flushDispatchMu.Unlock()
+			return
+		}
+		batch := queue[0]
+		if len(queue) == 1 {
+			delete(a.flushDispatchQueues, threadID)
+		} else {
+			a.flushDispatchQueues[threadID] = queue[1:]
+		}
+		a.flushDispatchMu.Unlock()
+
+		a.dispatchFlush(threadID, batch)
+
+		a.flushDispatchMu.Lock()
+		a.flushDispatchInflightItems[threadID] -= len(batch)
+		if a.flushDispatchInflightItems[threadID] <= 0 {
+			delete(a.flushDispatchInflightItems, threadID)
+		}
+		a.flushDispatchMu.Unlock()
+	}
+}
+
+func (a *App) flushDispatchItemCount(threadID string) int {
+	a.flushDispatchMu.Lock()
+	defer a.flushDispatchMu.Unlock()
+	return a.flushDispatchInflightItems[threadID]
+}
+
+func (a *App) drainFlushDispatch(ctx context.Context, timeout time.Duration) error {
+	if a == nil {
+		return nil
+	}
+	drainCtx, cancel := contextWithTimeout(ctx, timeout)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		a.flushDispatchWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-drainCtx.Done():
+		return drainCtx.Err()
+	}
 }
 
 // flushQueuePayload is the wire shape of QueuedFlushItem.Payload.
@@ -137,15 +219,16 @@ type flushQueuePayload struct {
 //     ErrNoActiveTurn — the active turn ended between trigger
 //     fire and Steer arrival.
 //
-// On any item error, the dispatcher persists a sibling `error` row,
-// aborts the current batch, and requeues items not yet attempted. The
+// On any definite item error, the dispatcher persists a sibling `error`
+// row, aborts the current batch, and requeues items not yet attempted. The
 // failed item itself never enters Zone 2 because no provider confirmation
-// can arrive for it.
+// can arrive for it. Codex turn/steer timeouts are different: once the
+// request has been written, timeout means the ACK is missing, not that the
+// provider rejected the message. Those stay pending for the provider echo.
 //
-// Synchronously invoked from triage after r.mu is released — the
-// dispatcher MAY call back into the router
-// (RegisterPendingSend, PersistItem, NextErrorSequence) without
-// re-entrancy.
+// Invoked by the app-layer per-thread flush worker, after triage has released
+// r.mu. The worker preserves FIFO order across multiple boundary drains and
+// prevents concurrent sequence allocation for one thread.
 //
 // `provider:queue_state_changed` carries the post-flush snapshot
 //
@@ -162,6 +245,9 @@ func (a *App) dispatchFlush(threadID string, items []triage.QueuedFlushItem) {
 	if len(items) == 0 {
 		return
 	}
+
+	unlock := sendThreadMuRegistry.lockFor(threadID)
+	defer unlock()
 
 	turnIndex, err := a.resolveFlushTurnIndex(threadID)
 	if err != nil {
@@ -226,13 +312,6 @@ func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushIt
 	if err != nil {
 		return fmt.Errorf("attachments: %w", err)
 	}
-
-	// Per-thread critical section: matches the Send/Steer locks so a
-	// concurrent direct send and an in-flight flush dispatch cannot
-	// interleave pending-send registration ordering for the same
-	// thread.
-	unlock := sendThreadMuRegistry.lockFor(threadID)
-	defer unlock()
 
 	sourcePlan, err := a.resolveSourceProposedPlan(threadID, payload.SourceProposedPlan, true)
 	if err != nil {
@@ -334,6 +413,10 @@ func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushIt
 
 	dispatchErr := a.dispatchFlushToProvider(sess, content, sendOpts)
 	if dispatchErr != nil {
+		if isAmbiguousCodexSteerTimeout(dispatchErr) {
+			log.Printf("flush dispatch: thread=%s item=%s: codex steer timed out after write; leaving pending confirmation for provider echo", threadID, item.ID)
+			return nil
+		}
 		a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 		a.persistFlushDispatchError(threadID, turnIndex, dispatchErr)
 		return dispatchErr
@@ -456,6 +539,10 @@ func isNoActiveTurnRace(err error) bool {
 	return strings.Contains(err.Error(), "NoActiveTurn")
 }
 
+func isAmbiguousCodexSteerTimeout(err error) bool {
+	return codex.IsRequestTimeout(err, "turn/steer")
+}
+
 // persistFlushDispatchError persists a system `error` row sibling to
 // the failed user_text. Rows allocate ids via the same per-turn error
 // counter the EventError handler uses (NextErrorSequence) so a later
@@ -536,7 +623,8 @@ func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessag
 		a.configureTriageQueueCallbacks()
 	}
 
-	if a.triage.QueuedFlushItemCount(threadID)+a.triage.DeferredPendingFlushItemCount(threadID) >= maxQueueLength() {
+	totalQueued := a.triage.QueuedFlushItemCount(threadID) + a.triage.DeferredPendingFlushItemCount(threadID) + a.flushDispatchItemCount(threadID)
+	if totalQueued >= maxQueueLength() {
 		return QueuedItem{}, fmt.Errorf("register queue item: queue full (max %d items per thread)", maxQueueLength())
 	}
 

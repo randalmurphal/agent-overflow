@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -330,6 +331,13 @@ func TestDispatchFlush_PerItemFailure_AbortsBatch(t *testing.T) {
 	if app.triage.HasPendingSendForThread(thread.ID) {
 		t.Errorf("pending-send marker live after failed dispatch")
 	}
+	requeued := app.triage.QueuedFlushItems(thread.ID)
+	if len(requeued) != 2 {
+		t.Fatalf("requeued items: got %d, want 2", len(requeued))
+	}
+	if requeued[0].ID != "queue:1" || requeued[1].ID != "queue:2" {
+		t.Fatalf("requeued order: got [%s, %s], want [queue:1, queue:2]", requeued[0].ID, requeued[1].ID)
+	}
 }
 
 func TestDispatchFlush_FailedItemDoesNotEmitQueueFlushed(t *testing.T) {
@@ -367,6 +375,210 @@ func TestDispatchFlush_FailedItemDoesNotEmitQueueFlushed(t *testing.T) {
 
 	if flushed := emittedQueueFlushed(rec); len(flushed) != 0 {
 		t.Fatalf("failed dispatch emitted queue_flushed events: %+v", flushed)
+	}
+}
+
+func TestDispatchFlush_CodexSteerTimeoutKeepsPendingConfirmation(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	thread := testThread("flush-steer-timeout")
+	thread.Provider = string(provider.Codex)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-0",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+
+	sess := installSteerTestSession(t, app, thread, "timeout")
+	codex.SetRequestTimeoutForTest(sess, 25*time.Millisecond)
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Codex),
+		token:    "flush-token",
+		codex:    sess,
+	}
+
+	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+		{ID: "queue:timeout", Message: "eventually accepted"},
+	})
+
+	if flushed := emittedQueueFlushed(rec); len(flushed) != 1 {
+		t.Fatalf("ambiguous timeout should still enter Zone 2, queue_flushed=%+v", flushed)
+	}
+	if !app.triage.HasPendingSendForThread(thread.ID) {
+		t.Fatalf("pending-send marker cleared on ambiguous Codex steer timeout")
+	}
+	items, err := app.store.ListItemsForTurn(thread.ID, 0)
+	if err != nil {
+		t.Fatalf("ListItemsForTurn: %v", err)
+	}
+	for _, it := range items {
+		if it.Kind == "error" {
+			t.Fatalf("ambiguous Codex steer timeout persisted error row: %+v", it)
+		}
+		if strings.HasPrefix(it.ID, "user:0:flush:") {
+			t.Fatalf("flush row should still wait for provider echo, got %+v", it)
+		}
+	}
+
+	echoMeta, _ := json.Marshal(map[string]any{"provider_item_id": "wire-timeout"})
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		ItemID:    "user:0:flush:1",
+		Content:   "eventually accepted",
+		Meta:      echoMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("EventUserText: %v", err)
+	}
+	if app.triage.HasPendingSendForThread(thread.ID) {
+		t.Fatalf("pending-send marker still live after provider echo")
+	}
+	row, found, err := app.store.GetThreadItem(thread.ID, "user:0:flush:1")
+	if err != nil || !found {
+		t.Fatalf("expected deferred row after provider echo: found=%v err=%v", found, err)
+	}
+	if row.Summary != "eventually accepted" {
+		t.Fatalf("row summary = %q, want eventually accepted", row.Summary)
+	}
+}
+
+func TestConfiguredFlushDispatcher_DoesNotBlockProviderEventHandler(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	thread := testThread("flush-dispatch-nonblocking")
+	thread.Provider = string(provider.Codex)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-0",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	sess := installSteerTestSession(t, app, thread, "ok")
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Codex),
+		token:    "flush-token",
+		codex:    sess,
+	}
+
+	if _, err := app.RegisterQueueItem(thread.ID, "queued while provider works", SendMessageOptions{}); err != nil {
+		t.Fatalf("RegisterQueueItem: %v", err)
+	}
+	now := time.Now()
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		Timestamp: now,
+	}); err != nil {
+		t.Fatalf("EventTurnStart: %v", err)
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		ItemID:    "tool-1",
+		ItemType:  "Bash",
+		Timestamp: now,
+	}); err != nil {
+		t.Fatalf("EventToolStart: %v", err)
+	}
+
+	unlock := sendThreadMuRegistry.lockFor(thread.ID)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- app.triage.Handle(provider.ProviderEvent{
+			Kind:      provider.EventToolComplete,
+			ThreadID:  thread.ID,
+			TurnIndex: 0,
+			ItemID:    "tool-1",
+			ItemType:  "Bash",
+			Timestamp: now,
+		})
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("EventToolComplete: %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("configured flush dispatcher blocked provider event handler")
+	}
+	if got := app.flushDispatchItemCount(thread.ID); got != 1 {
+		unlock()
+		t.Fatalf("in-flight flush dispatch count: got %d, want 1", got)
+	}
+	unlock()
+	_ = waitForAtLeastQueueFlushed(t, rec, 1)
+}
+
+func TestEnqueueFlushDispatch_SerializesBatchesForOneThread(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	thread := testThread("flush-dispatch-serialized")
+	thread.Provider = string(provider.Codex)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-0",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	sess := installSteerTestSession(t, app, thread, "ok")
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Codex),
+		token:    "flush-token",
+		codex:    sess,
+	}
+
+	unlock := sendThreadMuRegistry.lockFor(thread.ID)
+	app.enqueueFlushDispatch(thread.ID, []triage.QueuedFlushItem{{ID: "queue:0", Message: "first"}})
+	app.enqueueFlushDispatch(thread.ID, []triage.QueuedFlushItem{{ID: "queue:1", Message: "second"}})
+	if got := app.flushDispatchItemCount(thread.ID); got != 2 {
+		unlock()
+		t.Fatalf("in-flight flush dispatch count: got %d, want 2", got)
+	}
+	if flushed := emittedQueueFlushed(rec); len(flushed) != 0 {
+		unlock()
+		t.Fatalf("flush should be blocked by send lock, got events %+v", flushed)
+	}
+	unlock()
+
+	flushed := waitForAtLeastQueueFlushed(t, rec, 2)
+	wantQueueIDs := []string{"queue:0", "queue:1"}
+	wantUserIDs := []string{"user:0:flush:1", "user:0:flush:2"}
+	for i, evt := range flushed {
+		if len(evt.Items) != 1 {
+			t.Fatalf("queue_flushed[%d] items: got %d, want 1", i, len(evt.Items))
+		}
+		item := evt.Items[0]
+		if item.QueueItemID != wantQueueIDs[i] {
+			t.Errorf("queue_flushed[%d] queueItemID: got %q, want %q", i, item.QueueItemID, wantQueueIDs[i])
+		}
+		if item.UserItemID != wantUserIDs[i] {
+			t.Errorf("queue_flushed[%d] userItemID: got %q, want %q", i, item.UserItemID, wantUserIDs[i])
+		}
 	}
 }
 
@@ -664,6 +876,7 @@ func guardCompileEnsureSendMessageOptionsCompatible(p flushQueuePayload) SendMes
 // pattern used by other App-event tests but kept local to keep the
 // flush-queue test surface self-contained.
 type emitRecorder struct {
+	mu    sync.Mutex
 	calls []emittedCall
 }
 
@@ -673,21 +886,38 @@ type emittedCall struct {
 }
 
 func (r *emitRecorder) capture(channel string, data any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.calls = append(r.calls, emittedCall{Channel: channel, Data: data})
+}
+
+func (r *emitRecorder) snapshot() []emittedCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]emittedCall, len(r.calls))
+	copy(out, r.calls)
+	return out
+}
+
+func (r *emitRecorder) reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = r.calls[:0]
 }
 
 func (r *emitRecorder) lastQueueState(t *testing.T) QueueStateChangedEvent {
 	t.Helper()
-	for i := len(r.calls) - 1; i >= 0; i-- {
-		if r.calls[i].Channel == "provider:queue_state_changed" {
-			evt, ok := r.calls[i].Data.(QueueStateChangedEvent)
+	calls := r.snapshot()
+	for i := len(calls) - 1; i >= 0; i-- {
+		if calls[i].Channel == "provider:queue_state_changed" {
+			evt, ok := calls[i].Data.(QueueStateChangedEvent)
 			if !ok {
-				t.Fatalf("provider:queue_state_changed payload is not QueueStateChangedEvent: %T", r.calls[i].Data)
+				t.Fatalf("provider:queue_state_changed payload is not QueueStateChangedEvent: %T", calls[i].Data)
 			}
 			return evt
 		}
 	}
-	t.Fatalf("no provider:queue_state_changed emission found in calls=%v", r.calls)
+	t.Fatalf("no provider:queue_state_changed emission found in calls=%v", calls)
 	return QueueStateChangedEvent{}
 }
 
@@ -820,7 +1050,7 @@ func TestUndoQueuedItems_EmptyQueue_NoEmission(t *testing.T) {
 	if len(dropped) != 0 {
 		t.Errorf("dropped count on empty queue: got %d, want 0", len(dropped))
 	}
-	for _, c := range rec.calls {
+	for _, c := range rec.snapshot() {
 		if c.Channel == "provider:queue_state_changed" {
 			t.Errorf("unexpected queue_state_changed emission for no-op undo")
 		}

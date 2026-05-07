@@ -34,6 +34,8 @@ func writeCodexSteerBinary(t *testing.T, threadID, steerOutcome string) string {
 		steerBranch = `printf '{"jsonrpc":"2.0","id":%s,"result":{"turnId":"steer-turn"}}\n' "$id"`
 	case "no-active-turn":
 		steerBranch = `printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"NoActiveTurn"}}\n' "$id"`
+	case "timeout":
+		steerBranch = `: # simulate an accepted write whose JSON-RPC ack never arrives`
 	default:
 		t.Fatalf("writeCodexSteerBinary: unknown steerOutcome %q", steerOutcome)
 	}

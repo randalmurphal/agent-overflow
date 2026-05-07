@@ -1,5 +1,7 @@
 package codex
 
+import "time"
+
 // SetActiveTurnIDForTest pre-seeds the session's activeTurnID so Steer
 // doesn't trip its "no active turn" guard. In production the field is
 // populated by the turn/start response or a turn/started notification
@@ -14,5 +16,14 @@ package codex
 func SetActiveTurnIDForTest(s *Session, turnID string) {
 	s.mu.Lock()
 	s.activeTurnID = turnID
+	s.mu.Unlock()
+}
+
+// SetRequestTimeoutForTest replaces the JSON-RPC response timeout. App-layer
+// tests use this to exercise timeout paths without waiting for the production
+// default.
+func SetRequestTimeoutForTest(s *Session, timeout time.Duration) {
+	s.mu.Lock()
+	s.requestTimeoutOverride = timeout
 	s.mu.Unlock()
 }

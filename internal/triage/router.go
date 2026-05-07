@@ -187,10 +187,10 @@ type Router struct {
 	// by CleanupThread on session teardown. See flush_queue.go.
 	queuedFlushItems map[string][]QueuedFlushItem
 	// dispatchFlush is the app-layer callback invoked when the queue
-	// drains. Wired via SetFlushDispatcher; nil disables dispatch.
-	// Triage releases r.mu before invoking so the dispatcher can call
-	// back into the router (RegisterPendingSend, PersistItem) without
-	// re-entrancy. See flush_queue.go.
+	// drains. Wired via SetFlushDispatcher; nil disables dispatch. Triage
+	// releases r.mu before invoking, and the callback must return quickly;
+	// provider writes belong behind the app-layer async/FIFO dispatcher.
+	// See flush_queue.go.
 	dispatchFlush FlushDispatcher
 	// deferredUserTextConfirmed is an app-layer callback invoked after a
 	// deferred queued user_text row has been persisted from a provider

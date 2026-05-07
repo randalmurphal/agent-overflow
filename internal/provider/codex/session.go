@@ -635,8 +635,32 @@ func (s *Session) sendRequest(ctx context.Context, method string, params any) (j
 		return resp, nil
 	case <-time.After(s.requestTimeout()):
 		abandon()
-		return nil, fmt.Errorf("codex: %s: timeout", method)
+		return nil, &RequestTimeoutError{Method: method}
 	}
+}
+
+// RequestTimeoutError means a JSON-RPC request was written to Codex but no
+// response arrived before the client-side timeout. Callers should treat this
+// as an ambiguous ACK-missing state, not proof that Codex rejected the request.
+type RequestTimeoutError struct {
+	Method string
+}
+
+func (e *RequestTimeoutError) Error() string {
+	if e == nil {
+		return "codex: request timeout"
+	}
+	return fmt.Sprintf("codex: %s: timeout", e.Method)
+}
+
+// IsRequestTimeout reports whether err wraps a Codex JSON-RPC timeout for the
+// given method. Pass an empty method to match any Codex request timeout.
+func IsRequestTimeout(err error, method string) bool {
+	var timeoutErr *RequestTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		return false
+	}
+	return method == "" || timeoutErr.Method == method
 }
 
 // defaultRequestTimeout bounds how long sendRequest waits for a JSON-RPC

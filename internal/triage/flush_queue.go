@@ -74,9 +74,10 @@ type QueuedFlushItem struct {
 // responsible for allocating AO item ids, persisting user rows,
 // registering pending-send markers, and writing to the provider.
 //
-// Invoked synchronously after r.mu is released so
-// the dispatcher can call back into the router (RegisterPendingSend,
-// PersistItem, etc) without re-entrancy.
+// Invoked after r.mu is released so the dispatcher can call back into the
+// router (RegisterPendingSend, PersistItem, etc) without re-entrancy. The
+// callback must return quickly; provider writes belong behind the app-layer
+// async/FIFO dispatcher.
 type FlushDispatcher func(threadID string, items []QueuedFlushItem)
 
 // SetFlushDispatcher wires the app-layer callback. Nil disables
@@ -278,11 +279,11 @@ func (r *Router) QueuedFlushItems(threadID string) []QueuedFlushItem {
 // items, no dispatcher, empty threadID). The boolean is
 // informational — lifecycle handlers don't branch on it.
 //
-// Dispatcher invocation happens AFTER r.mu is released so the
-// dispatcher can call back into the router (RegisterPendingSend,
-// PersistItem) without re-entrancy. The batch is copied out under
-// r.mu so a concurrent CleanupThread between unlock and dispatch
-// doesn't observe a partially-cleared queue.
+// Dispatcher invocation happens AFTER r.mu is released so callbacks can call
+// back into the router without re-entrancy. The callback must return quickly;
+// the App-layer dispatcher owns asynchronous provider writes and per-thread
+// ordering. The batch is copied out under r.mu so a concurrent CleanupThread
+// between unlock and dispatch doesn't observe a partially-cleared queue.
 func (r *Router) tryFlushQueue(threadID string) bool {
 	if threadID == "" {
 		return false

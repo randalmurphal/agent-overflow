@@ -111,6 +111,15 @@ type App struct {
 	shuttingDown atomic.Bool
 	mu           sync.Mutex
 	sessions     map[string]session // threadID → active session
+	// flushDispatchQueues serializes queued-message flush batches per
+	// thread. Triage decides when a provider boundary exists; App owns the
+	// asynchronous provider writes so sequence allocation and Send/Steer
+	// locking stay in the same layer.
+	flushDispatchMu            sync.Mutex
+	flushDispatchQueues        map[string][][]triage.QueuedFlushItem
+	flushDispatchRunning       map[string]bool
+	flushDispatchInflightItems map[string]int
+	flushDispatchWG            sync.WaitGroup
 	// threadID → in-flight session start. Concurrent callers wait for the
 	// first start attempt instead of spawning duplicate provider runtimes.
 	startingSessions map[string]*sessionStart
@@ -525,6 +534,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// finish. We use a short timeout so a stuck goroutine can't block
 	// the rest of teardown.
 	record("drain triage", a.drainTriage(ctx, reactorDrainTimeout))
+	record("drain flush dispatch", a.drainFlushDispatch(ctx, reactorDrainTimeout))
 
 	// Step 3: flush observability writers BEFORE closing provider
 	// sessions. Provider close events pass through the replay log; if
