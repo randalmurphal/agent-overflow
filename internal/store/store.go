@@ -137,25 +137,26 @@ type Project struct {
 
 // Item represents a persisted timeline entry.
 type Item struct {
-	ID           string `json:"id"`
-	ThreadID     string `json:"threadId"`
-	TurnIndex    int    `json:"turnIndex"`
-	ItemIndex    int    `json:"itemIndex"`
-	Kind         string `json:"kind"`
-	Role         string `json:"role"`
-	Status       string `json:"status"`
-	Summary      string `json:"summary"`
-	PayloadID    string `json:"payloadId,omitempty"`
-	PayloadKind  string `json:"payloadKind,omitempty"`
-	PayloadMeta  string `json:"payloadMeta,omitempty"`
-	ParentID     string `json:"parentId,omitempty"`
-	IsBackground bool   `json:"isBackground,omitempty"`
-	CompletionOf string `json:"completionOf,omitempty"`
-	ToolName     string `json:"toolName,omitempty"`
-	Decision     string `json:"decision,omitempty"`
-	Meta         string `json:"meta,omitempty"`
-	CreatedAt    int64  `json:"createdAt"`
-	UpdatedAt    int64  `json:"updatedAt"`
+	ID             string `json:"id"`
+	ThreadID       string `json:"threadId"`
+	TurnIndex      int    `json:"turnIndex"`
+	ItemIndex      int    `json:"itemIndex"`
+	Kind           string `json:"kind"`
+	Role           string `json:"role"`
+	Status         string `json:"status"`
+	Summary        string `json:"summary"`
+	PayloadID      string `json:"payloadId,omitempty"`
+	PayloadKind    string `json:"payloadKind,omitempty"`
+	PayloadMeta    string `json:"payloadMeta,omitempty"`
+	InputPayloadID string `json:"inputPayloadId,omitempty"`
+	ParentID       string `json:"parentId,omitempty"`
+	IsBackground   bool   `json:"isBackground,omitempty"`
+	CompletionOf   string `json:"completionOf,omitempty"`
+	ToolName       string `json:"toolName,omitempty"`
+	Decision       string `json:"decision,omitempty"`
+	Meta           string `json:"meta,omitempty"`
+	CreatedAt      int64  `json:"createdAt"`
+	UpdatedAt      int64  `json:"updatedAt"`
 }
 
 // Payload represents heavy content stored for on-demand loading.

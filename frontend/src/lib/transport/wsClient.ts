@@ -40,8 +40,12 @@ export const MAX_REPLAY_CHANNELS = 1024;
 // Defensive cap on concurrent client RPCs. The server caps at 64 per
 // connection — at 10_000 client-side, something pathological is happening.
 export const MAX_PENDING_RPCS = 10_000;
-// Protects the main thread from a hostile/buggy server flooding huge frames.
-const MAX_FRAME_BYTES = 8 * 1024 * 1024;
+// Protects the main thread from a hostile/buggy server flooding huge
+// frames. Symmetric with the server's DefaultReadLimit
+// (internal/transport/conn.go) so a frame that fits the server cap
+// also fits the client cap — earlier asymmetry (8 MiB client / 16 MiB
+// server) silently dropped legitimate large frames.
+export const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 // Logged strings (channel names, error messages) get clamped before
 // reaching console / toast surfaces. Caps the worst-case noise from a
 // pathological remote without losing the prefix that identifies the
@@ -140,6 +144,20 @@ interface Pending {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
   timer: ReturnType<typeof setTimeout>;
+}
+
+// extractRpcIdFromOversizedFrame pulls the `id` out of the leading
+// portion of a frame too large to JSON.parse safely. ServerFrame's
+// `id` is an RPC uuid emitted by call() and is always present at the
+// frame's top level; a tolerant regex over the first ~256 chars is
+// sufficient to recover it without parsing megabytes of payload.
+// Returns null when the prefix doesn't contain an obvious id (frame
+// is not an rpc response or shape changed).
+const oversizedIdRegex = /"id"\s*:\s*"([^"]{1,128})"/;
+function extractRpcIdFromOversizedFrame(text: string): string | null {
+  const prefix = text.slice(0, 256);
+  const m = oversizedIdRegex.exec(prefix);
+  return m ? m[1] : null;
 }
 
 type EventHandler = (data: unknown) => void;
@@ -568,9 +586,26 @@ export class WSClient {
         const text = typeof ev.data === 'string' ? ev.data : '';
         if (!text) return;
         if (text.length > MAX_FRAME_BYTES) {
-          console.warn(
-            `wsClient: dropped oversized frame (${text.length} bytes > ${MAX_FRAME_BYTES})`,
+          // Don't silently drop: previous behavior left the matching
+          // RPC pending until its 30 s timeout fired, leaving the UI
+          // stuck in `loading=true`. Surface it now — extract the RPC
+          // id with a tolerant regex (a full JSON parse of an
+          // oversized payload would itself fail), reject the matching
+          // pending RPC, and fail loud.
+          const id = extractRpcIdFromOversizedFrame(text);
+          const err = new TransportError(
+            'frame_too_large',
+            `frame ${text.length} bytes exceeds cap ${MAX_FRAME_BYTES} (rpc=${id ?? 'unknown'})`,
           );
+          console.error('wsClient:', err.message);
+          if (id !== null) {
+            const pending = this.pending.get(id);
+            if (pending) {
+              this.pending.delete(id);
+              clearTimeout(pending.timer);
+              pending.reject(err);
+            }
+          }
           return;
         }
         try {

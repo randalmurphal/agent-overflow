@@ -169,6 +169,25 @@ describe('createThreadPane', () => {
     expect(pane.items.map((item) => item.id)).toEqual(['current']);
   });
 
+  it('clears loading=false even when an inner mock throws synchronously', async () => {
+    // Regression guard: a synchronous throw inside one of switchThread's
+    // catch handlers (e.g. addToast) used to strand `loading=true`
+    // because the function never reached its trailing `loading = false`.
+    // The try/finally added in the wsClient defense-in-depth pass clears
+    // loading on exit when no newer switch has superseded ours.
+    setBindingMock('SwitchThread', () => {
+      throw new Error('boom — synchronous failure');
+    });
+    setBindingMock('ListRecentThreadItems', () => {
+      throw new Error('and the next call also blows up');
+    });
+
+    const pane = createThreadPane();
+    await pane.switchThread(makeThread({ id: 'thread-failing' }));
+
+    expect(pane.loading).toBe(false);
+  });
+
   it('clears pane-local state on thread switch', async () => {
     const pane = createThreadPane();
     await pane.switchThread(makeThread({ id: 'thread-a' }));

@@ -134,7 +134,12 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 			existing.ParentID = parentToolUseID
 		}
 		existing.UpdatedAt = now
-		return r.persistItem(existing, nil)
+		// Re-shape after the merge: a metaUpdateOnly never carries
+		// heavy input bytes today, but trimming is idempotent and the
+		// existing.InputPayloadID is preserved by shapeToolItemMeta so
+		// the launch's payload stays canonical.
+		inputPayload := r.shapeToolItemMeta(&existing, now)
+		return r.persistItemWithInputPayload(existing, nil, inputPayload)
 	}
 
 	toolName := stringsx.FirstNonEmptyTrimmed(meta.ToolName, evt.ItemType, "tool")
@@ -179,7 +184,14 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 		item.Decision = r.takeApprovalDecision(evt.ThreadID, itemID)
 	}
 
-	return r.persistItem(item, nil)
+	// Promote heavy tool inputs (Edit/Write/MultiEdit/NotebookEdit
+	// content) out of items.meta into a sibling tool_call_input
+	// payload so the persisted row + the live emit stay small. On a
+	// re-discovered launch (item.InputPayloadID already set),
+	// shapeToolItemMeta drops the freshly-extracted payload; the
+	// original launch's payload is canonical.
+	inputPayload := r.shapeToolItemMeta(&item, now)
+	return r.persistItemWithInputPayload(item, nil, inputPayload)
 }
 
 func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
@@ -264,6 +276,13 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	}
 	launch.Meta = mergeItemMetaJSON(launch.Meta, evt.Meta)
 	launch.UpdatedAt = now
+	// Re-shape the merged meta so a completion event whose meta still
+	// carries heavy input bytes (Codex curated input) doesn't re-bloat
+	// the row. shapeToolItemMeta returns nil when launch.InputPayloadID
+	// is already set; for tools registered with PromoteToPayload whose
+	// launch row never carried an input payload, this is the recovery
+	// path that promotes the merged input bytes into a sibling payload.
+	inputPayload := r.shapeToolItemMeta(&launch, now)
 
 	// Command-output payloads accumulate meta jitter across the streaming
 	// hot path: every delta rewrites the payload's meta using just the
@@ -285,14 +304,14 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	payload := completionPayload(launch.ID, evt, meta, now)
 	switch {
 	case payload == nil:
-		return r.persistItem(launch, nil)
+		return r.persistItemWithInputPayload(launch, nil, inputPayload)
 	case launch.PayloadID == "":
-		return r.persistItem(launch, payload)
+		return r.persistItemWithInputPayload(launch, payload, inputPayload)
 	case launch.PayloadKind == payloadKindToolCallResult:
 		payload.ID = launch.PayloadID
-		return r.persistItem(launch, payload)
+		return r.persistItemWithInputPayload(launch, payload, inputPayload)
 	default:
-		return r.persistItem(launch, nil)
+		return r.persistItemWithInputPayload(launch, nil, inputPayload)
 	}
 }
 
@@ -318,7 +337,8 @@ func (r *Router) persistToolCallCompletedWithoutLaunch(evt provider.ProviderEven
 		UpdatedAt: now,
 	}
 	payload := completionPayload(item.ID, evt, meta, now)
-	return r.persistItem(item, payload)
+	inputPayload := r.shapeToolItemMeta(&item, now)
+	return r.persistItemWithInputPayload(item, payload, inputPayload)
 }
 
 func shouldSplitCodexToolCompletion(toolName string) bool {
@@ -346,7 +366,12 @@ func (r *Router) persistSplitToolCompletion(launch store.Item, evt provider.Prov
 	launch.Status = statusCompleted
 	launch.UpdatedAt = now
 	launch.Meta = mergeItemMetaJSON(launch.Meta, evt.Meta)
-	if err := r.persistItem(launch, nil); err != nil {
+	// Re-shape after the merge for the same reason as
+	// persistToolCallCompletion: a registered tool whose launch row
+	// never carried an input payload may still have heavy bytes after
+	// the merge, and shapeToolItemMeta promotes them.
+	launchInputPayload := r.shapeToolItemMeta(&launch, now)
+	if err := r.persistItemWithInputPayload(launch, nil, launchInputPayload); err != nil {
 		return err
 	}
 	completionID := nextToolCompletionID(launch.ID)
@@ -366,7 +391,8 @@ func (r *Router) persistSplitToolCompletion(launch store.Item, evt provider.Prov
 		UpdatedAt:    now,
 	}
 	payload := completionPayload(completion.ID, evt, meta, now)
-	return r.persistItem(completion, payload)
+	inputPayload := r.shapeToolItemMeta(&completion, now)
+	return r.persistItemWithInputPayload(completion, payload, inputPayload)
 }
 
 func preserveCodexWaitLaunchReceiverTargets(launchMeta string, completeMeta json.RawMessage) json.RawMessage {

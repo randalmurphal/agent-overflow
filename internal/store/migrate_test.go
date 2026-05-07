@@ -2372,6 +2372,112 @@ func TestMigrationV43DropsDesignSnapshots(t *testing.T) {
 	}
 }
 
+// TestMigrationV44AddsInputPayloadID asserts the v44 migration adds the
+// items.input_payload_id column, the partial index that backs reverse
+// lookups, and the GC trigger that sweeps a tool_call_input payload
+// when its owning item is deleted (and no other item still references
+// it via either payload column).
+func TestMigrationV44AddsInputPayloadID(t *testing.T) {
+	db := openSQLiteDB(t)
+	if err := configureDatabase(db); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if err := ensureMigrationTable(db); err != nil {
+		t.Fatalf("ensure migration table: %v", err)
+	}
+	for _, m := range migrations {
+		if m.Version >= 44 {
+			break
+		}
+		if err := applyMigration(db, m); err != nil {
+			t.Fatalf("apply v%d: %v", m.Version, err)
+		}
+	}
+
+	// Sanity: column does not exist before v44.
+	if columnExists(t, db, "items", "input_payload_id") {
+		t.Fatalf("items.input_payload_id should not exist before v44")
+	}
+
+	v44 := findMigration(t, 44)
+	if err := applyMigration(db, v44); err != nil {
+		t.Fatalf("apply v44: %v", err)
+	}
+
+	// Column landed.
+	if !columnExists(t, db, "items", "input_payload_id") {
+		t.Fatalf("items.input_payload_id should exist after v44")
+	}
+
+	// Partial index landed with the expected predicate.
+	var indexSQL string
+	if err := db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_items_input_payload_id'`,
+	).Scan(&indexSQL); err != nil {
+		t.Fatalf("read idx_items_input_payload_id sql: %v", err)
+	}
+	if !strings.Contains(indexSQL, "input_payload_id IS NOT NULL") {
+		t.Errorf("expected partial index on input_payload_id IS NOT NULL, got: %s", indexSQL)
+	}
+
+	// GC trigger landed.
+	var triggerSQL string
+	if err := db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='trigger' AND name='trg_items_gc_input_payload'`,
+	).Scan(&triggerSQL); err != nil {
+		t.Fatalf("read trg_items_gc_input_payload sql: %v", err)
+	}
+	if !strings.Contains(triggerSQL, "OLD.input_payload_id") {
+		t.Errorf("trigger must reference OLD.input_payload_id, got: %s", triggerSQL)
+	}
+
+	// migration_versions records v44.
+	var recorded string
+	if err := db.QueryRow(
+		"SELECT name FROM migration_versions WHERE version=44",
+	).Scan(&recorded); err != nil {
+		t.Fatalf("migration_versions row for v44 missing: %v", err)
+	}
+	if recorded != "items_input_payload" {
+		t.Errorf("v44 name = %q, want %q", recorded, "items_input_payload")
+	}
+
+	// End-to-end GC behaviour: deleting an item with input_payload_id
+	// sweeps the matching payload row when nothing else references it.
+	// Seed a project + thread + payload + item, then delete the item.
+	if _, err := db.Exec(`INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-input', '/p', '/p', 1000, 1000)`); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at)
+		VALUES ('t-input', 'p-input', 'T', 'claude', '/tmp', '', 1000, 1000)`); err != nil {
+		t.Fatalf("seed thread: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO payloads (id, kind, meta, data, created_at)
+		VALUES ('p-tool-input', 'tool_call_input', '{}', x'00', 1000)`); err != nil {
+		t.Fatalf("seed payload: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO items
+		(id, thread_id, turn_index, item_index, kind, role, summary, input_payload_id, created_at, updated_at)
+		VALUES ('i-tool', 't-input', 0, 0, 'tool_call', 'assistant', 'Edit', 'p-tool-input', 1000, 1000)`); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+
+	if _, err := db.Exec(`DELETE FROM items WHERE id = 'i-tool'`); err != nil {
+		t.Fatalf("delete item: %v", err)
+	}
+
+	var orphaned int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM payloads WHERE id = 'p-tool-input'`,
+	).Scan(&orphaned); err != nil {
+		t.Fatalf("count payload: %v", err)
+	}
+	if orphaned != 0 {
+		t.Errorf("trg_items_gc_input_payload should sweep p-tool-input, got %d row(s)", orphaned)
+	}
+}
+
 func findMigration(t *testing.T, version int) Migration {
 	t.Helper()
 	for _, m := range migrations {

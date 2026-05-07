@@ -66,9 +66,9 @@ func (s *Store) CloneThreadItems(sourceThreadID, targetThreadID string, throughT
 
 	stmt, err := tx.Prepare(
 		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
-		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
+		    payload_id, input_payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
 		    created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: prepare clone insert: %w", err)
@@ -81,7 +81,7 @@ func (s *Store) CloneThreadItems(sourceThreadID, targetThreadID string, throughT
 		if _, err := stmt.Exec(
 			item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex,
 			item.Kind, item.Role, item.Status, item.Summary,
-			nilIfEmpty(item.PayloadID), item.ParentID,
+			nilIfEmpty(item.PayloadID), nilIfEmpty(item.InputPayloadID), item.ParentID,
 			boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
 			item.CreatedAt, item.UpdatedAt,
 		); err != nil {

@@ -1227,6 +1227,41 @@ CREATE INDEX idx_design_snapshots_parent
 DROP TABLE IF EXISTS design_snapshots;
 `,
 	},
+	{
+		Version: 44,
+		Name:    "items_input_payload",
+		// Tool-call inputs (Edit/Write/MultiEdit `old_string`/`new_string`/
+		// `content`/`edits[]`, etc.) used to ride along inside items.meta,
+		// inflating the row + the wire frame. Triage now promotes those
+		// heavy fields into a dedicated payloads row of kind
+		// "tool_call_input"; this column is the back-reference. NULL for
+		// pre-v44 rows and for tools whose inputs stay inline.
+		//
+		// trg_items_gc_input_payload is the sibling of v9's
+		// trg_items_gc_payload — it sweeps the tool_call_input payload
+		// when the owning item is deleted (and no other item still
+		// references it). Without this trigger, dropping a thread leaks
+		// every input_payload row.
+		SQL: `
+ALTER TABLE items ADD COLUMN input_payload_id TEXT REFERENCES payloads(id);
+CREATE INDEX idx_items_input_payload_id
+    ON items(input_payload_id) WHERE input_payload_id IS NOT NULL;
+
+CREATE TRIGGER trg_items_gc_input_payload
+AFTER DELETE ON items
+WHEN OLD.input_payload_id IS NOT NULL
+BEGIN
+    DELETE FROM payloads
+     WHERE id = OLD.input_payload_id
+       AND NOT EXISTS (
+           SELECT 1 FROM items WHERE payload_id = OLD.input_payload_id
+       )
+       AND NOT EXISTS (
+           SELECT 1 FROM items WHERE input_payload_id = OLD.input_payload_id
+       );
+END;
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

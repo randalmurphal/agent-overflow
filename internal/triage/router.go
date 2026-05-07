@@ -947,14 +947,22 @@ func (r *Router) emitThreadUpdated(threadID string) {
 }
 
 func (r *Router) persistItem(item store.Item, payload *store.Payload) error {
-	return r.persistItemWithEmit(item, payload, true)
+	return r.persistItemWithEmit(item, payload, nil, true)
 }
 
 func (r *Router) persistItemQuiet(item store.Item, payload *store.Payload) error {
-	return r.persistItemWithEmit(item, payload, false)
+	return r.persistItemWithEmit(item, payload, nil, false)
 }
 
-func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, emit bool) error {
+// persistItemWithInputPayload is the two-payload variant of persistItem used
+// by the tool-call lifecycle when applyToolMetaRule has promoted heavy
+// inputs out of items.meta into a sibling tool_call_input payload row.
+// resultPayload and inputPayload may each be nil independently.
+func (r *Router) persistItemWithInputPayload(item store.Item, resultPayload, inputPayload *store.Payload) error {
+	return r.persistItemWithEmit(item, resultPayload, inputPayload, true)
+}
+
+func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, inputPayload *store.Payload, emit bool) error {
 	// parent_id invariant (spec invariant 7): items.parent_id must point
 	// to an existing tool_call row. Drop invalid / cyclic refs here rather
 	// than rejecting the whole persistence — a dangling parent would only
@@ -966,7 +974,7 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, em
 		}
 	}
 
-	persisted, err := r.store.UpsertItem(item, payload)
+	persisted, err := r.store.UpsertItemWithInputPayload(item, payload, inputPayload)
 	if err != nil {
 		return err
 	}
@@ -978,6 +986,10 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, em
 	if payload != nil {
 		r.metrics.PayloadsPersisted.Add(context.Background(), 1,
 			metric.WithAttributes(attribute.String("kind", payload.Kind)))
+	}
+	if inputPayload != nil {
+		r.metrics.PayloadsPersisted.Add(context.Background(), 1,
+			metric.WithAttributes(attribute.String("kind", inputPayload.Kind)))
 	}
 	return nil
 }

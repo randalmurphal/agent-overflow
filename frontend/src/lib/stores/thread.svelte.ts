@@ -1174,175 +1174,191 @@ export function createThreadPane() {
     // --- Thread switching ---
 
     async switchThread(newThread: Thread): Promise<void> {
-      pendingApprovals = [];
-      pendingUserInputs = [];
-      contextWindow = seedContextWindow(newThread);
-      providerBanner = null;
-      generalError = null;
-      sendInFlight = false;
-      channelMessages = [];
-      channelStatus = null;
-      pendingClarification = null;
-      exposedControls = [];
-      activeOptionSet = null;
-      designViewport = 'desktop';
-      // Bottom-drawer state is pane-scoped: opening the terminal on thread A
-      // should not spill into thread B. The RHS sidebar is different: its
-      // active panel + width are snapshotted per thread below.
-      showTerminal = false;
-      const outgoingThreadId = thread?.id ?? null;
-      if (outgoingThreadId) {
-        rhsPanelSlot.snapshotForThread(outgoingThreadId);
-        // Free Shiki tokens cached against the outgoing thread. The
-        // shared cache is partitioned by threadId so this is a clean
-        // segmental drop; new lines tokenized for the incoming thread
-        // start from a fresh per-thread namespace.
-        clearTokensForThread(outgoingThreadId);
-      } else {
-        // No outgoing thread to snapshot under — just reset.
-        rhsPanelSlot.closeForThread();
-      }
-      // Turn-lifecycle reset. The active-turn registry lives in
-      // threadStatuses.svelte.ts and is keyed by threadId, so a thread
-      // switch does NOT clear it — a turn that's still in flight on
-      // another thread keeps lighting the working indicator when the
-      // user comes back. This is the load-bearing fix vs. the prior
-      // per-pane field which dropped state on switch. latestSettledTurn
-      // is per-pane; rehydrate it below from ListRecentTurns. Clear first so
-      // a rehydration failure leaves the pane in a consistent "no
-      // prior turn" state.
-      latestSettledTurn = null;
-      subagentNotifications = [];
-      // Live-todo reset. The todo snapshot is per-thread session state
-      // and must not bleed into the incoming thread; the auto-hide timer
-      // is cancelled to avoid a stale clear firing against the wrong
-      // pane. The dropdown's open/show-all state survives per-thread via
-      // liveTodoUiPrefs so the user's preference for the incoming thread
-      // is restored on re-entry. Default for a thread the user has never
-      // opened the panel in is closed.
-      if (liveTodoAutoHideTimer !== null) {
-        clearTimeout(liveTodoAutoHideTimer);
-        liveTodoAutoHideTimer = null;
-      }
-      liveTodo = null;
-      liveTodoCleared = new Set();
-      const incomingPrefs = readLiveTodoUiPrefs(newThread.id);
-      liveTodoExpanded = incomingPrefs.expanded;
-      liveTodoShowAll = incomingPrefs.showAll;
-      diffPanel.clearForThread();
-      loading = true;
-      items = [];
-      resetLiveBuffers();
-      rebuildItemIndexes(items);
-      clearRowUiState();
-      // Windowed-history reset. A null floor disables the upsert floor
-      // check until the backend tells us otherwise, which is correct:
-      // between thread clear and the ListRecentThreadItems response any
-      // streamed upserts are already ours to append normally.
-      oldestLoadedTurnIndex = null;
-      hasMoreHistory = false;
-      loadingOlder = false;
-      // `pagingGeneration` is kept monotonically increasing for the
-      // pane's lifetime — same argument as `scrollToItemRequest.nonce`
-      // below. A stale pre-switch loadOlder/loadUntilItem is guarded
-      // by `switchGeneration`, so resetting this counter here is
-      // redundant and only introduces a "same generation value before
-      // and after the swap" collision risk if the guards ever get
-      // reordered.
-
-      thread = newThread;
-      // Sync the top tab to the incoming thread's type. Discussion threads
-      // bypass the tab UI (DiscussionView owns the surface), so we leave
-      // activeTab unchanged in that case — preserving the user's last
-      // chat-vs-design intent for when they navigate away.
-      if (newThread.mode === 'design') {
-        activeTab = 'design';
-      } else if (newThread.mode === 'chat' || newThread.mode === 'plan') {
-        activeTab = 'chat';
-      }
-      rhsPanelSlot.restoreForThread(newThread.id);
-      if (rhsPanelSlot.activePanel?.kind === 'diff-checkpoint') {
-        diffPanel.open_();
-      }
-      // Capture the switch generation at the top so every await below can bail
-      // out if the user has already switched away (or back).
-      const gen = ++switchGeneration;
-
-      // Notify the backend so it can mark the thread read durably and
-      // auto-start sessions for threads with session_ref.
+      // `gen` is captured below at the loading=true mark; we need it
+      // visible to the finally block so we only clear `loading` when
+      // no newer switch has superseded ours. Declared up front, set
+      // inside the try body, read in finally.
+      let gen = -1;
       try {
-        const switched = await SwitchThread(newThread.id) as Thread;
-        if (gen !== switchGeneration) return;
-        if (switched.id === newThread.id) {
-          const currentContextWindow = contextWindow;
-          thread = switched;
-          contextWindow = currentContextWindow
-            ? normalizeContextWindowForThread(currentContextWindow, switched)
-            : seedContextWindow(switched);
+        pendingApprovals = [];
+        pendingUserInputs = [];
+        contextWindow = seedContextWindow(newThread);
+        providerBanner = null;
+        generalError = null;
+        sendInFlight = false;
+        channelMessages = [];
+        channelStatus = null;
+        pendingClarification = null;
+        exposedControls = [];
+        activeOptionSet = null;
+        designViewport = 'desktop';
+        // Bottom-drawer state is pane-scoped: opening the terminal on thread A
+        // should not spill into thread B. The RHS sidebar is different: its
+        // active panel + width are snapshotted per thread below.
+        showTerminal = false;
+        const outgoingThreadId = thread?.id ?? null;
+        if (outgoingThreadId) {
+          rhsPanelSlot.snapshotForThread(outgoingThreadId);
+          // Free Shiki tokens cached against the outgoing thread. The
+          // shared cache is partitioned by threadId so this is a clean
+          // segmental drop; new lines tokenized for the incoming thread
+          // start from a fresh per-thread namespace.
+          clearTokensForThread(outgoingThreadId);
+        } else {
+          // No outgoing thread to snapshot under — just reset.
+          rhsPanelSlot.closeForThread();
         }
-      } catch (err) {
-        console.error('Failed to notify backend of thread switch:', err);
-        addToast('warning', 'Backend was not notified of thread switch');
-      }
-      if (gen !== switchGeneration) return;
-
-      // SwitchThread persists read state for the selection itself. ChatView
-      // keeps the active row read as completed turns settle.
-
-      try {
-        const paged = await ListRecentThreadItems(newThread.id, 0);
-        if (gen !== switchGeneration) return;
-        items = itemsForThread((paged.items ?? []) as Item[], newThread.id);
-        rebuildItemIndexes(items);
-        oldestLoadedTurnIndex = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
-        hasMoreHistory = paged.hasMore ?? false;
-      } catch (err) {
-        if (gen !== switchGeneration) return;
-        console.error('Failed to load items:', err);
+        // Turn-lifecycle reset. The active-turn registry lives in
+        // threadStatuses.svelte.ts and is keyed by threadId, so a thread
+        // switch does NOT clear it — a turn that's still in flight on
+        // another thread keeps lighting the working indicator when the
+        // user comes back. This is the load-bearing fix vs. the prior
+        // per-pane field which dropped state on switch. latestSettledTurn
+        // is per-pane; rehydrate it below from ListRecentTurns. Clear first so
+        // a rehydration failure leaves the pane in a consistent "no
+        // prior turn" state.
+        latestSettledTurn = null;
+        subagentNotifications = [];
+        // Live-todo reset. The todo snapshot is per-thread session state
+        // and must not bleed into the incoming thread; the auto-hide timer
+        // is cancelled to avoid a stale clear firing against the wrong
+        // pane. The dropdown's open/show-all state survives per-thread via
+        // liveTodoUiPrefs so the user's preference for the incoming thread
+        // is restored on re-entry. Default for a thread the user has never
+        // opened the panel in is closed.
+        if (liveTodoAutoHideTimer !== null) {
+          clearTimeout(liveTodoAutoHideTimer);
+          liveTodoAutoHideTimer = null;
+        }
+        liveTodo = null;
+        liveTodoCleared = new Set();
+        const incomingPrefs = readLiveTodoUiPrefs(newThread.id);
+        liveTodoExpanded = incomingPrefs.expanded;
+        liveTodoShowAll = incomingPrefs.showAll;
+        diffPanel.clearForThread();
+        loading = true;
         items = [];
+        resetLiveBuffers();
         rebuildItemIndexes(items);
+        clearRowUiState();
+        // Windowed-history reset. A null floor disables the upsert floor
+        // check until the backend tells us otherwise, which is correct:
+        // between thread clear and the ListRecentThreadItems response any
+        // streamed upserts are already ours to append normally.
         oldestLoadedTurnIndex = null;
         hasMoreHistory = false;
-        generalError = `Failed to load thread items: ${errString(err)}`;
-        addToast('error', 'Failed to load thread items');
-      }
+        loadingOlder = false;
+        // `pagingGeneration` is kept monotonically increasing for the
+        // pane's lifetime — same argument as `scrollToItemRequest.nonce`
+        // below. A stale pre-switch loadOlder/loadUntilItem is guarded
+        // by `switchGeneration`, so resetting this counter here is
+        // redundant and only introduces a "same generation value before
+        // and after the swap" collision risk if the guards ever get
+        // reordered.
 
-      if (gen !== switchGeneration) return;
-
-      // Rehydrate latestSettledTurn from the most recent completed row.
-      // We ask for the two most recent turns so a crashed-then-completed
-      // sequence can skip over the in-flight row and still find the prior
-      // settled one. This is a defensive fetch — the happy path is a
-      // single "most recent = settled" row.
-      try {
-        const recent = (await ListRecentTurns(newThread.id, 2)) as TurnRow[] | null;
-        if (gen !== switchGeneration) return;
-        if (recent && recent.length > 0) {
-          const settled = recent.find(
-            (row) => row.completedAt !== null && row.completedAt !== undefined,
-          );
-          if (settled) {
-            latestSettledTurn = turnRowToSettled(settled);
-          }
+        thread = newThread;
+        // Sync the top tab to the incoming thread's type. Discussion threads
+        // bypass the tab UI (DiscussionView owns the surface), so we leave
+        // activeTab unchanged in that case — preserving the user's last
+        // chat-vs-design intent for when they navigate away.
+        if (newThread.mode === 'design') {
+          activeTab = 'design';
+        } else if (newThread.mode === 'chat' || newThread.mode === 'plan') {
+          activeTab = 'chat';
         }
-      } catch (err) {
-        if (gen !== switchGeneration) return;
-        // Rehydration is best-effort — a fetch failure shouldn't block the
-        // thread from rendering items. Log and proceed with
-        // latestSettledTurn=null for the prior turn.
-        console.error('Failed to rehydrate recent turns:', err);
-      }
+        rhsPanelSlot.restoreForThread(newThread.id);
+        if (rhsPanelSlot.activePanel?.kind === 'diff-checkpoint') {
+          diffPanel.open_();
+        }
+        // Capture the switch generation at the top so every await below can bail
+        // out if the user has already switched away (or back).
+        gen = ++switchGeneration;
 
-      try {
-        await refreshCheckpointsForThread(newThread.id);
+        // Notify the backend so it can mark the thread read durably and
+        // auto-start sessions for threads with session_ref.
+        try {
+          const switched = await SwitchThread(newThread.id) as Thread;
+          if (gen !== switchGeneration) return;
+          if (switched.id === newThread.id) {
+            const currentContextWindow = contextWindow;
+            thread = switched;
+            contextWindow = currentContextWindow
+              ? normalizeContextWindowForThread(currentContextWindow, switched)
+              : seedContextWindow(switched);
+          }
+        } catch (err) {
+          console.error('Failed to notify backend of thread switch:', err);
+          addToast('warning', 'Backend was not notified of thread switch');
+        }
         if (gen !== switchGeneration) return;
-      } catch (err) {
-        if (gen !== switchGeneration) return;
-        diffPanel.setError(`Failed to load checkpoints: ${errString(err)}`);
-      }
 
-      if (gen !== switchGeneration) return;
-      loading = false;
+        // SwitchThread persists read state for the selection itself. ChatView
+        // keeps the active row read as completed turns settle.
+
+        try {
+          const paged = await ListRecentThreadItems(newThread.id, 0);
+          if (gen !== switchGeneration) return;
+          items = itemsForThread((paged.items ?? []) as Item[], newThread.id);
+          rebuildItemIndexes(items);
+          oldestLoadedTurnIndex = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
+          hasMoreHistory = paged.hasMore ?? false;
+        } catch (err) {
+          if (gen !== switchGeneration) return;
+          console.error('Failed to load items:', err);
+          items = [];
+          rebuildItemIndexes(items);
+          oldestLoadedTurnIndex = null;
+          hasMoreHistory = false;
+          generalError = `Failed to load thread items: ${errString(err)}`;
+          addToast('error', 'Failed to load thread items');
+        }
+
+        if (gen !== switchGeneration) return;
+
+        // Rehydrate latestSettledTurn from the most recent completed row.
+        // We ask for the two most recent turns so a crashed-then-completed
+        // sequence can skip over the in-flight row and still find the prior
+        // settled one. This is a defensive fetch — the happy path is a
+        // single "most recent = settled" row.
+        try {
+          const recent = (await ListRecentTurns(newThread.id, 2)) as TurnRow[] | null;
+          if (gen !== switchGeneration) return;
+          if (recent && recent.length > 0) {
+            const settled = recent.find(
+              (row) => row.completedAt !== null && row.completedAt !== undefined,
+            );
+            if (settled) {
+              latestSettledTurn = turnRowToSettled(settled);
+            }
+          }
+        } catch (err) {
+          if (gen !== switchGeneration) return;
+          // Rehydration is best-effort — a fetch failure shouldn't block the
+          // thread from rendering items. Log and proceed with
+          // latestSettledTurn=null for the prior turn.
+          console.error('Failed to rehydrate recent turns:', err);
+        }
+
+        try {
+          await refreshCheckpointsForThread(newThread.id);
+          if (gen !== switchGeneration) return;
+        } catch (err) {
+          if (gen !== switchGeneration) return;
+          diffPanel.setError(`Failed to load checkpoints: ${errString(err)}`);
+        }
+
+        if (gen !== switchGeneration) return;
+        loading = false;
+      } finally {
+        // Defense in depth against an uncaught exception (a synchronous
+        // throw before the first await, or an exception inside one of
+        // the catch handlers above) leaving `loading=true` stranded.
+        // Only clear when no newer switch has superseded ours — a
+        // concurrent switch is supposed to keep the indicator up.
+        if (gen === switchGeneration) {
+          loading = false;
+        }
+      }
     },
 
     /**

@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createWSClient,
   DisconnectedError,
+  MAX_FRAME_BYTES,
   MAX_PENDING_RPCS,
   MAX_REPLAY_CHANNELS,
   TransportError,
@@ -89,6 +90,11 @@ class MockWebSocket {
 
   pushFrame(frame: unknown): void {
     const ev = new MessageEvent('message', { data: JSON.stringify(frame) });
+    for (const fn of [...this.listeners.message]) fn(ev);
+  }
+
+  pushRawText(text: string): void {
+    const ev = new MessageEvent('message', { data: text });
     for (const fn of [...this.listeners.message]) fn(ev);
   }
 
@@ -801,6 +807,45 @@ describe('WSClient', () => {
     // A second socket exists immediately, without waiting on the
     // exponential backoff that scheduleReconnect would otherwise impose.
     expect(MockWebSocket.instances).toHaveLength(2);
+
+    client.close();
+  });
+
+  it('rejects matching pending RPC immediately on oversized frame (no 30s timeout wait)', async () => {
+    // Regression guard: a frame that exceeds MAX_FRAME_BYTES used to be
+    // silently dropped via console.warn, leaving the matching RPC
+    // pending until its 30s timeout fired and the UI stuck in
+    // `loading=true`. The handler now extracts the rpc id and rejects
+    // immediately with a TransportError('frame_too_large').
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const p = client.callByID(7, []);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    const id = ws.sent[1]!.id as string;
+
+    // Synthesize an oversize frame whose `id` matches the pending
+    // RPC's. Real-world cause: a heavy `result` payload (large
+    // `items.meta` blob) crosses the cap. Tight overage (cap+1 chars
+    // of filler) keeps the test memory cost minimal — JS engines
+    // back strings with UTF-16, so each filler char is ~2 bytes
+    // resident, and the JSON wrapper alone pushes the wire `text`
+    // length past the cap.
+    const filler = 'x'.repeat(MAX_FRAME_BYTES + 1);
+    const oversized = `{"type":"rpc","id":"${id}","result":"${filler}"}`;
+    expect(oversized.length).toBeGreaterThan(MAX_FRAME_BYTES);
+    ws.pushRawText(oversized);
+
+    let caught: unknown;
+    try {
+      await p;
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(TransportError);
+    expect((caught as TransportError).code).toBe('frame_too_large');
 
     client.close();
   });

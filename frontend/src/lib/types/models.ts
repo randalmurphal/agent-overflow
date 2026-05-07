@@ -133,6 +133,7 @@ export interface Item {
   payloadId?: string;
   payloadKind?: string;
   payloadMeta?: string;
+  inputPayloadId?: string;
   parentId?: string;
   isBackground?: boolean;
   completionOf?: string;

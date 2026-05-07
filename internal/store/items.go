@@ -21,6 +21,7 @@ var ErrItemSettled = errors.New("store: item is no longer streaming")
 const itemColumns = `items.id, items.thread_id, items.turn_index, items.item_index,
     items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''), COALESCE(payloads.kind, ''), COALESCE(payloads.meta, ''),
+    COALESCE(items.input_payload_id, ''),
     items.parent_id, items.is_background, items.completion_of,
     items.tool_name, items.decision, items.meta, items.created_at, items.updated_at`
 
@@ -35,6 +36,7 @@ func scanItemRow(scanner interface{ Scan(...any) error }) (Item, error) {
 		&it.ID, &it.ThreadID, &it.TurnIndex, &it.ItemIndex,
 		&it.Kind, &it.Role, &it.Status, &it.Summary,
 		&it.PayloadID, &it.PayloadKind, &it.PayloadMeta,
+		&it.InputPayloadID,
 		&it.ParentID, &isBackground, &it.CompletionOf,
 		&it.ToolName, &it.Decision, &it.Meta, &it.CreatedAt, &it.UpdatedAt,
 	); err != nil {
@@ -88,11 +90,11 @@ func (s *Store) InsertItem(item Item) error {
 
 	_, err = tx.Exec(
 		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
-		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
+		    payload_id, input_payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
 		    created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
-		nilIfEmpty(item.PayloadID), item.ParentID,
+		nilIfEmpty(item.PayloadID), nilIfEmpty(item.InputPayloadID), item.ParentID,
 		boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
 		item.CreatedAt, item.UpdatedAt,
 	)
@@ -143,11 +145,11 @@ func (s *Store) AppendItem(item Item) (int, error) {
 
 	if _, err := tx.Exec(
 		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
-		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
+		    payload_id, input_payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
 		    created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
-		nilIfEmpty(item.PayloadID), item.ParentID,
+		nilIfEmpty(item.PayloadID), nilIfEmpty(item.InputPayloadID), item.ParentID,
 		boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
 		item.CreatedAt, item.UpdatedAt,
 	); err != nil {
@@ -335,6 +337,21 @@ func (s *Store) AppendItemSummaryPreview(threadID, id, delta string, maxRunes in
 //   - readBackUpsertedItem re-reads the row through the same JOIN used by
 //     ListItems so the returned Item matches what ListItems would surface.
 func (s *Store) UpsertItem(item Item, payload *Payload) (Item, error) {
+	return s.UpsertItemWithInputPayload(item, payload, nil)
+}
+
+// UpsertItemWithInputPayload is the two-payload sibling of UpsertItem:
+// it accepts an optional `inputPayload` whose id is linked into
+// `items.input_payload_id`. Triage uses it to promote heavy tool-call
+// inputs (Edit `old_string`/`new_string`, MultiEdit `edits`, Write
+// `content`, etc.) out of `items.meta` and into a lazy-loaded payload
+// row of kind "tool_call_input". Both payloads land in the same
+// transaction as the item upsert so the FK link can never point at a
+// missing row.
+//
+// Pass nil for either payload to skip it. Passing nil for both is
+// equivalent to UpsertItem(item, nil).
+func (s *Store) UpsertItemWithInputPayload(item Item, resultPayload, inputPayload *Payload) (Item, error) {
 	applyItemDefaults(&item)
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -342,7 +359,10 @@ func (s *Store) UpsertItem(item Item, payload *Payload) (Item, error) {
 	}
 	defer tx.Rollback()
 
-	if err := upsertPayload(tx, payload, &item); err != nil {
+	if err := upsertPayload(tx, resultPayload, &item); err != nil {
+		return Item{}, err
+	}
+	if err := upsertInputPayload(tx, inputPayload, &item); err != nil {
 		return Item{}, err
 	}
 	if err := writeItem(tx, &item); err != nil {
@@ -385,6 +405,27 @@ func upsertPayload(tx *sql.Tx, payload *Payload, item *Item) error {
 	return nil
 }
 
+// upsertInputPayload mirrors upsertPayload but writes the
+// "tool_call_input" sibling payload and links its id onto
+// `item.InputPayloadID` instead of `item.PayloadID`. Used by
+// UpsertItemWithInputPayload to keep promoted heavy tool inputs (Edit
+// `old_string` / `new_string`, MultiEdit `edits`, Write `content`, etc.)
+// out of `items.meta`.
+func upsertInputPayload(tx *sql.Tx, payload *Payload, item *Item) error {
+	if payload == nil {
+		return nil
+	}
+	if _, err := tx.Exec(
+		`INSERT OR REPLACE INTO payloads (id, kind, meta, data, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		payload.ID, payload.Kind, payload.Meta, payload.Data, payload.CreatedAt,
+	); err != nil {
+		return fmt.Errorf("store: upsert item input payload %s: %w", payload.ID, err)
+	}
+	item.InputPayloadID = payload.ID
+	return nil
+}
+
 // writeItem resolves whether `item` already exists on its thread and
 // dispatches to the matching update/insert helper. The lookup query runs
 // inside the same transaction so concurrent upserts can't both see
@@ -411,15 +452,24 @@ func writeItem(tx *sql.Tx, item *Item) error {
 // updateExistingItem writes every mutable column on the existing row.
 // item_index / created_at are preserved (the caller already copied them
 // from the lookup) so the upsert is logically "update-in-place".
+//
+// input_payload_id is preserved when the caller passes an empty value:
+// completion-merge upserts (tool_lifecycle.go) reuse the launch row's
+// input payload and would otherwise null it out. The COALESCE+NULLIF
+// pair "use the new value if non-empty, else keep the existing column"
+// keeps that contract in a single UPDATE.
 func updateExistingItem(tx *sql.Tx, item Item) error {
 	if _, err := tx.Exec(
 		`UPDATE items
 		 SET turn_index = ?, kind = ?, role = ?, status = ?, summary = ?,
-		     payload_id = ?, parent_id = ?, is_background = ?, completion_of = ?,
+		     payload_id = ?,
+		     input_payload_id = COALESCE(NULLIF(?, ''), input_payload_id),
+		     parent_id = ?, is_background = ?, completion_of = ?,
 		     tool_name = ?, decision = ?, meta = ?, updated_at = ?
 		 WHERE thread_id = ? AND id = ?`,
 		item.TurnIndex, item.Kind, item.Role, item.Status, item.Summary,
-		nilIfEmpty(item.PayloadID), item.ParentID, boolToInt(item.IsBackground), item.CompletionOf,
+		nilIfEmpty(item.PayloadID), item.InputPayloadID,
+		item.ParentID, boolToInt(item.IsBackground), item.CompletionOf,
 		item.ToolName, item.Decision, item.Meta, item.UpdatedAt, item.ThreadID, item.ID,
 	); err != nil {
 		return fmt.Errorf("store: update item %s: %w", item.ID, err)
@@ -445,11 +495,11 @@ func insertNewItem(tx *sql.Tx, item *Item) error {
 	}
 	if _, err := tx.Exec(
 		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
-		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
+		    payload_id, input_payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
 		    created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
-		nilIfEmpty(item.PayloadID), item.ParentID, boolToInt(item.IsBackground), item.CompletionOf,
+		nilIfEmpty(item.PayloadID), nilIfEmpty(item.InputPayloadID), item.ParentID, boolToInt(item.IsBackground), item.CompletionOf,
 		item.ToolName, item.Decision, item.Meta, item.CreatedAt, item.UpdatedAt,
 	); err != nil {
 		return fmt.Errorf("store: insert item %s: %w", item.ID, err)
@@ -670,17 +720,26 @@ func (s *Store) FindToolCallItemByTaskID(threadID, taskID string) (Item, bool, e
 }
 
 // GetThreadItemByPayloadID returns the newest item on threadID whose
-// payload_id matches payloadID, so a payload id is not usable outside
-// the thread that references it.
+// payload_id OR input_payload_id matches payloadID, so a payload id is
+// not usable outside the thread that references it. The two partial
+// indexes (idx_items_payload_id, idx_items_input_payload_id) cover the
+// two columns; UNION ALL keeps each branch index-friendly. A single
+// OR-clause forces SQLite onto the broad thread_id index instead, which
+// would scan every row in the thread on every lazy-load click.
 func (s *Store) GetThreadItemByPayloadID(threadID, payloadID string) (Item, bool, error) {
 	row := s.db.QueryRow(
 		`SELECT `+itemColumns+`
-		   FROM items
+		   FROM (
+		         SELECT items.* FROM items
+		          WHERE items.thread_id = ? AND items.payload_id = ?
+		         UNION ALL
+		         SELECT items.* FROM items
+		          WHERE items.thread_id = ? AND items.input_payload_id = ?
+		   ) AS items
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
-		  WHERE items.thread_id = ? AND items.payload_id = ?
 		  ORDER BY items.updated_at DESC
 		  LIMIT 1`,
-		threadID, payloadID,
+		threadID, payloadID, threadID, payloadID,
 	)
 	item, err := scanItemRow(row)
 	if err == sql.ErrNoRows {
@@ -1396,12 +1455,12 @@ func (s *Store) AppendCompletionItem(launch Item, completion Item, completionPay
 
 	if _, err := tx.Exec(
 		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
-		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
+		    payload_id, input_payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
 		    created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		completion.ID, completion.ThreadID, completion.TurnIndex, completion.ItemIndex,
 		completion.Kind, completion.Role, completion.Status, completion.Summary,
-		nilIfEmpty(completion.PayloadID), completion.ParentID,
+		nilIfEmpty(completion.PayloadID), nilIfEmpty(completion.InputPayloadID), completion.ParentID,
 		boolToInt(completion.IsBackground), completion.CompletionOf,
 		completion.ToolName, completion.Decision, completion.Meta,
 		completion.CreatedAt, completion.UpdatedAt,

@@ -1188,6 +1188,141 @@ func TestGetThreadItemByPayloadIDScopesLookupToOwnerThread(t *testing.T) {
 	}
 }
 
+// TestUpsertItemWithInputPayloadRoundTrip pins v44's two-payload
+// upsert: launch persists (item, nil result, input payload), the
+// item's input_payload_id ends up linked, and the data blob is
+// recoverable via GetPayloadData.
+//
+// The follow-up "completion merge" upsert reuses the same launch row
+// with a nil input payload and an empty InputPayloadID on the in-memory
+// struct — the COALESCE+NULLIF dance in updateExistingItem must
+// preserve the launch's payload reference rather than nulling it out.
+// Without that contract, every Edit completion would orphan its launch
+// payload row.
+func TestUpsertItemWithInputPayloadRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	if err := s.CreateThread(Thread{
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	launch := Item{
+		ID: "edit-1", ThreadID: "t", TurnIndex: 0,
+		Kind: "tool_call", Role: "assistant", Status: "running",
+		Summary: "Edit foo.go", ToolName: "Edit",
+		Meta:      `{"toolName":"Edit"}`,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	inputPayload := &Payload{
+		ID: "p-edit-input", Kind: "tool_call_input", Meta: `{"toolName":"Edit","total":42}`,
+		Data: []byte(`{"old_string":"a","new_string":"b"}`), CreatedAt: now,
+	}
+
+	persistedLaunch, err := s.UpsertItemWithInputPayload(launch, nil, inputPayload)
+	if err != nil {
+		t.Fatalf("launch upsert: %v", err)
+	}
+	if persistedLaunch.InputPayloadID != "p-edit-input" {
+		t.Errorf("launch InputPayloadID = %q, want p-edit-input", persistedLaunch.InputPayloadID)
+	}
+	if persistedLaunch.PayloadID != "" {
+		t.Errorf("launch PayloadID = %q, want empty (no result payload)", persistedLaunch.PayloadID)
+	}
+
+	// Completion merge: caller passes the launch row again with the
+	// same item id but an empty in-memory InputPayloadID — the row's
+	// existing column value must be preserved.
+	completion := persistedLaunch
+	completion.InputPayloadID = ""
+	completion.Status = "completed"
+	completion.Summary = "Edit foo.go (done)"
+	completion.UpdatedAt = now + 1
+
+	persistedCompletion, err := s.UpsertItemWithInputPayload(completion, nil, nil)
+	if err != nil {
+		t.Fatalf("completion upsert: %v", err)
+	}
+	if persistedCompletion.InputPayloadID != "p-edit-input" {
+		t.Errorf("completion clobbered InputPayloadID: got %q, want p-edit-input", persistedCompletion.InputPayloadID)
+	}
+	if persistedCompletion.Status != "completed" {
+		t.Errorf("completion status = %q, want completed", persistedCompletion.Status)
+	}
+
+	// Payload bytes survive the second upsert — the input payload row
+	// is not rewritten because the second call passed nil.
+	data, err := s.GetPayloadData("p-edit-input")
+	if err != nil {
+		t.Fatalf("GetPayloadData: %v", err)
+	}
+	if string(data) != `{"old_string":"a","new_string":"b"}` {
+		t.Errorf("payload data round-trip mismatch: got %q", string(data))
+	}
+}
+
+// TestGetThreadItemByPayloadIDResolvesInputPayloadID pins the v44
+// behaviour that GetThreadItemByPayloadID resolves a payload id from
+// either the legacy items.payload_id slot OR the new
+// items.input_payload_id slot. Without this, the frontend's
+// GetPayloadData lazy-load on a tool_call_input payload would fail the
+// thread-scoping authz check (`payload not linked to thread`).
+func TestGetThreadItemByPayloadIDResolvesInputPayloadID(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	if err := s.CreateThread(Thread{
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := s.InsertPayload(Payload{
+		ID: "p-input-1", Kind: "tool_call_input", Meta: "{}",
+		Data: []byte(`{"old_string":"a","new_string":"b"}`), CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert input payload: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "edit-1", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", Summary: "Edit",
+		ToolName: "Edit", InputPayloadID: "p-input-1",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert item: %v", err)
+	}
+
+	got, found, err := s.GetThreadItemByPayloadID("t", "p-input-1")
+	if err != nil {
+		t.Fatalf("lookup by input payload id: %v", err)
+	}
+	if !found {
+		t.Fatal("lookup should resolve the item via input_payload_id")
+	}
+	if got.ID != "edit-1" {
+		t.Errorf("resolved item id = %q, want edit-1", got.ID)
+	}
+	if got.InputPayloadID != "p-input-1" {
+		t.Errorf("scanned input_payload_id = %q, want p-input-1", got.InputPayloadID)
+	}
+
+	// Cross-thread isolation still holds for the input slot.
+	if err := s.CreateThread(Thread{
+		ID: "t2", ProjectID: defaultTestProjectID, Title: "T2", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread t2: %v", err)
+	}
+	_, foundOther, err := s.GetThreadItemByPayloadID("t2", "p-input-1")
+	if err != nil {
+		t.Fatalf("lookup other thread: %v", err)
+	}
+	if foundOther {
+		t.Fatal("input payload should not be visible from a non-owning thread")
+	}
+}
+
 // TestItemsDecisionCHECKRejectsBogusValue pins the v15 CHECK constraint
 // on items.decision. Only the enumerated set is legal at the SQL layer;
 // triage and the frontend depend on this to prune impossible states at

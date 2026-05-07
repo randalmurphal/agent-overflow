@@ -223,3 +223,66 @@ func TestCloneThreadItemsNoBackgroundRowsCopiesEverything(t *testing.T) {
 		t.Errorf("seeded row %q missing from clone (fork filter may be over-eager)", key)
 	}
 }
+
+// TestCloneThreadItemsPreservesInputPayloadID pins that v44's
+// items.input_payload_id propagates through fork-at-point. Without
+// this, expanding the input on a forked Edit row would fail authz
+// because the cloned item lost its FK to the tool_call_input payload.
+// The payload row itself is shared (not duplicated); the
+// trg_items_gc_input_payload trigger's NOT EXISTS guard keeps it from
+// being swept while either thread still references it.
+func TestCloneThreadItemsPreservesInputPayloadID(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	for _, id := range []string{"t-input-src", "t-input-dst"} {
+		if err := s.CreateThread(Thread{
+			ID: id, ProjectID: defaultTestProjectID, Title: "T",
+			Provider: "claude", WorkspacePath: "/tmp",
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("create thread %s: %v", id, err)
+		}
+	}
+	if err := s.InsertPayload(Payload{
+		ID: "p-edit-input", Kind: "tool_call_input", Meta: "{}",
+		Data: []byte(`{"old_string":"a","new_string":"b"}`), CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert payload: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "edit-src", ThreadID: "t-input-src", TurnIndex: 0, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", Summary: "Edit foo.go",
+		ToolName: "Edit", InputPayloadID: "p-edit-input",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert source item: %v", err)
+	}
+
+	if _, err := s.CloneThreadItems("t-input-src", "t-input-dst", nil); err != nil {
+		t.Fatalf("CloneThreadItems: %v", err)
+	}
+
+	dst, err := s.ListItems("t-input-dst")
+	if err != nil {
+		t.Fatalf("ListItems(dst): %v", err)
+	}
+	if len(dst) != 1 {
+		t.Fatalf("dst items = %d, want 1", len(dst))
+	}
+	cloned := dst[0]
+	if cloned.InputPayloadID != "p-edit-input" {
+		t.Errorf("cloned input_payload_id = %q, want p-edit-input", cloned.InputPayloadID)
+	}
+	if cloned.ID == "edit-src" {
+		t.Error("clone should reassign item id, but the source id leaked through")
+	}
+	// Authz lookup from the destination thread succeeds (covers the
+	// frontend lazy-load path).
+	got, found, err := s.GetThreadItemByPayloadID("t-input-dst", "p-edit-input")
+	if err != nil {
+		t.Fatalf("lookup on cloned thread: %v", err)
+	}
+	if !found || got.ID != cloned.ID {
+		t.Errorf("forked thread lookup returned id=%q found=%v, want cloned id=%q", got.ID, found, cloned.ID)
+	}
+}
