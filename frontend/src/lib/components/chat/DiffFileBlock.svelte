@@ -8,8 +8,9 @@
    * files renders N stacked rows.
    *
    * Body is always rendered when `file.lines` carries displayable
-   * rows. Long files (>200 displayable rows) render the first ~30
-   * with a fade-out gradient + a "Show full diff in side panel" CTA.
+   * rows. Files over the inline preview cap render only the capped
+   * rows with a fade-out gradient + a "Show full diff in side panel"
+   * CTA.
    * Empty `file.lines` (loading or pre-upgrade summary-only) keeps
    * the row's outer shell stable — only the indented body region
    * goes absent.
@@ -41,10 +42,7 @@
   } from '../../utils/tokenCacheReactive.svelte';
   import { patchLineSourceKey } from '../../utils/patchLineHash';
   import { openDiffSidebar, isPromoteModifier } from './diffSidebarTrigger';
-  import {
-    DIFF_TEASER_LINE_COUNT,
-    MAX_INLINE_DIFF_LINES,
-  } from '../../utils/inlineThreshold';
+  import { INLINE_DIFF_PREVIEW_LINE_COUNT } from '../../utils/inlineThreshold';
   import { classifyToolName } from './toolCardHeader';
 
   interface Props {
@@ -57,8 +55,7 @@
      *  MultiEdit / NotebookEdit / fileChange). Drives the icon +
      *  uppercase label. Falls back to a generic "Diff" label. */
     toolName?: string;
-    fullThreshold?: number;
-    teaserLineCount?: number;
+    hasMoreDiffContent?: boolean;
   }
 
   let {
@@ -68,19 +65,39 @@
     threadId,
     workspacePath,
     toolName,
-    fullThreshold = MAX_INLINE_DIFF_LINES,
-    teaserLineCount = DIFF_TEASER_LINE_COUNT,
+    hasMoreDiffContent = false,
   }: Props = $props();
 
   type RenderRow =
     | { kind: 'separator' }
     | { kind: 'line'; line: PatchLine; lineNo: number };
 
-  let renderRows = $derived.by((): RenderRow[] => {
+  interface InlineRows {
+    rows: RenderRow[];
+    hasOverflow: boolean;
+    maxLineNo: number;
+  }
+
+  let inlineRows = $derived.by((): InlineRows => {
     const rows: RenderRow[] = [];
     let oldNo = 0;
     let newNo = 0;
     let seenFirstHunk = false;
+    let hasOverflow = false;
+    let maxLineNo = 0;
+
+    function appendRow(row: RenderRow): boolean {
+      if (rows.length >= INLINE_DIFF_PREVIEW_LINE_COUNT) {
+        hasOverflow = true;
+        return false;
+      }
+      rows.push(row);
+      if (row.kind === 'line' && row.lineNo > maxLineNo) {
+        maxLineNo = row.lineNo;
+      }
+      return true;
+    }
+
     for (const line of file.lines) {
       if (line.type === 'meta') {
         if (line.content.startsWith('@@')) {
@@ -90,7 +107,7 @@
             newNo = parsed.newStart;
           }
           if (seenFirstHunk) {
-            rows.push({ kind: 'separator' });
+            if (!appendRow({ kind: 'separator' })) break;
           }
           seenFirstHunk = true;
         }
@@ -108,23 +125,17 @@
         oldNo += 1;
         newNo += 1;
       }
-      rows.push({ kind: 'line', line, lineNo });
+      if (!appendRow({ kind: 'line', line, lineNo })) break;
     }
-    return rows;
+    return { rows, hasOverflow, maxLineNo };
   });
 
-  let totalLineCount = $derived(renderRows.length);
-  let hasBody = $derived(totalLineCount > 0);
-  let isLong = $derived(totalLineCount > fullThreshold);
-  let visibleRows = $derived(isLong ? renderRows.slice(0, teaserLineCount) : renderRows);
-
-  let maxLineNo = $derived.by(() => {
-    let max = 0;
-    for (const row of renderRows) {
-      if (row.kind === 'line' && row.lineNo > max) max = row.lineNo;
-    }
-    return max;
-  });
+  let visibleRows = $derived(inlineRows.rows);
+  let hasBody = $derived(visibleRows.length > 0);
+  let isLong = $derived(inlineRows.hasOverflow);
+  let canPromoteToSidebar = $derived(pane !== undefined && payloadId !== undefined);
+  let shouldShowFullCTA = $derived(canPromoteToSidebar && (isLong || hasMoreDiffContent));
+  let maxLineNo = $derived(inlineRows.maxLineNo);
   let gutterChars = $derived(Math.max(2, String(maxLineNo).length));
 
   // Header label: uppercase tool name (`EDIT`, `WRITE`, `MULTIEDIT`,
@@ -146,10 +157,8 @@
 
   let theme: DiffTheme = $derived(getDiffTheme());
   let lang = $derived(languageFromPath(file.path));
-  let canPromoteToSidebar = $derived(pane !== undefined && payloadId !== undefined);
 
   let dispatchableLines = $derived.by(() => {
-    if (!isLong) return file.lines;
     const out: PatchLine[] = [];
     for (const row of visibleRows) {
       if (row.kind === 'line') out.push(row.line);
@@ -295,7 +304,7 @@
         {/each}
       </div>
 
-      {#if isLong}
+      {#if isLong || hasMoreDiffContent}
         <div
           class="absolute inset-x-0 bottom-0 h-16 pointer-events-none"
           style="background: linear-gradient(to bottom, transparent, var(--color-surface-0))"
@@ -305,7 +314,7 @@
       {/if}
     </div>
 
-    {#if isLong}
+    {#if shouldShowFullCTA}
       <div class="ml-5 border-l border-border-subtle px-3 py-2 bg-surface-0/35">
         <button
           type="button"
@@ -313,9 +322,20 @@
           data-testid="diff-file-show-full"
           class="text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
         >
-          Show full diff in side panel ({totalLineCount} lines) →
+          Show full diff in side panel →
         </button>
       </div>
     {/if}
+  {:else if shouldShowFullCTA}
+    <div class="ml-5 border-l border-border-subtle px-3 py-2 bg-surface-0/35">
+      <button
+        type="button"
+        onclick={openSidebar}
+        data-testid="diff-file-show-full"
+        class="text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+      >
+        Show full diff in side panel →
+      </button>
+    </div>
   {/if}
 </div>

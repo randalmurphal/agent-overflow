@@ -13,9 +13,9 @@
    * already has. Reading payloadId directly from the prop makes the
    * fetch fire reliably the moment we mount.
    *
-   * The 32 KiB preview is sufficient for any file ≤200 lines (the
-   * inline cap) at typical diff densities. Larger files render a
-   * teaser inside DiffFileBlock and direct the user to the sidebar.
+   * The preview fetch is intentionally small because DiffFileBlock
+   * caps chat rendering to the inline diff preview limit. The sidebar
+   * owns full-payload loading.
    *
    * Each file's slice is computed via `parsePatchFiles(payloadData)`
    * + match by path. Files in `meta.inlineDiff.files` without a
@@ -27,6 +27,7 @@
   import type { Item, ToolInlineDiffFile, ToolResultMeta } from '../../types/models';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { parsePatchFiles, type PatchFile, type PatchLine } from '../../utils/patchFiles';
+  import { INLINE_DIFF_PAYLOAD_PREVIEW_BYTES } from '../../utils/inlineThreshold';
   import { createPayloadExpansion } from './payloadExpansion.svelte';
   import DiffFileBlock from './DiffFileBlock.svelte';
 
@@ -50,6 +51,7 @@
     () => payloadId,
     () => item.threadId,
     {
+      previewBytes: INLINE_DIFF_PAYLOAD_PREVIEW_BYTES,
       payloadVersion: () => item.updatedAt,
     },
   );
@@ -66,11 +68,16 @@
   });
 
   let payloadData: string | null = $derived(expansion.displayData);
+  let payloadPreviewIncomplete = $derived(payloadData !== null && !expansion.isComplete);
+
+  let parsedFiles = $derived.by(() => {
+    if (!payloadData) return [] as PatchFile[];
+    return parsePatchFiles(payloadData);
+  });
 
   let parsedByPath = $derived.by(() => {
-    if (!payloadData) return new Map<string, PatchFile>();
     const map = new Map<string, PatchFile>();
-    for (const file of parsePatchFiles(payloadData)) {
+    for (const file of parsedFiles) {
       map.set(file.path, file);
     }
     return map;
@@ -78,10 +85,16 @@
 
   let renderableFiles = $derived.by(() => {
     const files = meta.inlineDiff?.files ?? [];
-    return files.map((metaFile) => ({
-      path: metaFile.path,
-      file: parsedByPath.get(metaFile.path) ?? fallbackFromMeta(metaFile),
-    }));
+    const lastParsedFilePath = parsedFiles.at(-1)?.path ?? null;
+    return files.map((metaFile) => {
+      const parsedFile = parsedByPath.get(metaFile.path);
+      return {
+        path: metaFile.path,
+        file: parsedFile ?? fallbackFromMeta(metaFile),
+        hasMoreDiffContent:
+          payloadPreviewIncomplete && (parsedFile === undefined || metaFile.path === lastParsedFilePath),
+      };
+    });
   });
 
   function fallbackFromMeta(metaFile: ToolInlineDiffFile): PatchFile {
@@ -95,7 +108,7 @@
   }
 </script>
 
-{#each renderableFiles as { path, file } (path)}
+{#each renderableFiles as { path, file, hasMoreDiffContent } (path)}
   <DiffFileBlock
     {pane}
     {file}
@@ -103,5 +116,6 @@
     threadId={item.threadId}
     workspacePath={paneWorkspacePath(pane)}
     toolName={item.toolName}
+    {hasMoreDiffContent}
   />
 {/each}

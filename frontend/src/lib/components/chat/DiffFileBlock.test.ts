@@ -1,7 +1,7 @@
 // DiffFileBlock is the unified per-file inline diff renderer used by
 // both Claude (single-file tool calls) and Codex (multi-file
 // apply_patch). Tests cover the header contract, the always-inline
-// body render, the long-file teaser fallback, and the sidebar promote
+// body render, the capped-file preview fallback, and the sidebar promote
 // affordances.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -180,27 +180,33 @@ describe('<DiffFileBlock>', () => {
     expect(cls).not.toMatch(/overflow-(auto|scroll|y-auto|y-scroll)/);
   });
 
-  it('renders the full body when the file is at or below the threshold', () => {
-    // 5 displayable lines (4 ctx lines + 1 meta hunk header that
-    // gets dropped from rows). Well under the default 200-line cap.
-    const file = makeLongPatchFile(5);
-    const { queryByTestId } = render(DiffFileBlock, {
+  it('renders the full body when the file is at the inline preview cap', () => {
+    const file = makeLongPatchFile(30);
+    const { getByTestId, queryByTestId } = render(DiffFileBlock, {
       props: { file, threadId: 'thread-1' },
     });
+    const bodyText = getByTestId('diff-file-body').textContent ?? '';
+    expect(bodyText).toContain('line 30;');
     expect(queryByTestId('diff-file-fade')).toBeNull();
     expect(queryByTestId('diff-file-show-full')).toBeNull();
   });
 
-  it('renders a fade + sidebar CTA when the file exceeds fullThreshold', () => {
-    const file = makeLongPatchFile(50);
+  it('renders a fade + sidebar CTA when the file exceeds the inline preview cap', async () => {
+    const open = vi.fn();
+    const pane = fakePane(open) as ThreadPane;
+    const file = makeLongPatchFile(31);
     const { getByTestId } = render(DiffFileBlock, {
-      props: { file, threadId: 'thread-1', fullThreshold: 20, teaserLineCount: 5 },
+      props: { pane, file, payloadId: 'p-long', threadId: 'thread-1' },
     });
     expect(getByTestId('diff-file-fade')).toBeInTheDocument();
     const cta = getByTestId('diff-file-show-full');
     expect(cta).toBeInTheDocument();
-    // The CTA should reference the displayable line count.
-    expect(cta.textContent ?? '').toMatch(/50 lines/);
+    expect(cta.textContent ?? '').toContain('Show full diff in side panel');
+    const bodyText = getByTestId('diff-file-body').textContent ?? '';
+    expect(bodyText).toContain('line 30;');
+    expect(bodyText).not.toContain('line 31;');
+    await fireEvent.click(cta);
+    expect(open).toHaveBeenCalledWith({ payloadId: 'p-long', filePath: 'src/big.ts' });
   });
 
   it('renders header-only when file lines are empty (loading / summary-only)', () => {
@@ -229,6 +235,14 @@ describe('<DiffFileBlock>', () => {
       props: { file, threadId: 'thread-1' },
     });
     expect(queryByTestId('diff-file-open-sidebar')).toBeNull();
+  });
+
+  it('does not render an inert long-file CTA when sidebar promotion is unavailable', () => {
+    const file = makeLongPatchFile(31);
+    const { queryByTestId } = render(DiffFileBlock, {
+      props: { file, threadId: 'thread-1' },
+    });
+    expect(queryByTestId('diff-file-show-full')).toBeNull();
   });
 
   it('clicking the sidebar trigger calls pane.openDiffSidebar with payloadId + filePath', async () => {
