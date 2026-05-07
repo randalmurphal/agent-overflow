@@ -486,7 +486,7 @@
 <div class="relative flex h-full flex-col">
   <div
     bind:this={scrollEl}
-    class="flex-1 min-h-0 overflow-y-auto"
+    class="flex-1 min-h-0 overflow-y-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/25"
     style:overscroll-behavior-y="contain"
     style:padding-bottom={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}
     tabindex="-1"
