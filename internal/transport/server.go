@@ -97,7 +97,7 @@ type Config struct {
 	DesignHandler func() http.Handler
 
 	// ReadLimit caps the byte size of a single inbound WS message.
-	// Zero defaults to DefaultReadLimit (16 MiB).
+	// Zero defaults to DefaultReadLimit (75 MiB).
 	ReadLimit int64
 
 	// MaxConcurrentRPCs caps how many in-flight RPC handlers a single

@@ -22,7 +22,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createWSClient,
   DisconnectedError,
-  MAX_FRAME_BYTES,
   MAX_PENDING_RPCS,
   MAX_REPLAY_CHANNELS,
   TransportError,
@@ -812,12 +811,22 @@ describe('WSClient', () => {
   });
 
   it('rejects matching pending RPC immediately on oversized frame (no 30s timeout wait)', async () => {
-    // Regression guard: a frame that exceeds MAX_FRAME_BYTES used to be
+    // Regression guard: a frame that exceeds the cap used to be
     // silently dropped via console.warn, leaving the matching RPC
     // pending until its 30s timeout fired and the UI stuck in
     // `loading=true`. The handler now extracts the rpc id and rejects
     // immediately with a TransportError('frame_too_large').
-    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    //
+    // Production cap is 75 MiB (symmetric with the server's
+    // DefaultReadLimit). Tests pin a 4 KiB cap so a single oversized
+    // frame allocates kilobytes, not megabytes — the code path is the
+    // same and the cap value isn't the contract under test.
+    const testCap = 4 * 1024;
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap,
+      maxFrameBytes: testCap,
+    });
 
     const p = client.callByID(7, []);
     await flushMicrotasks();
@@ -828,14 +837,10 @@ describe('WSClient', () => {
 
     // Synthesize an oversize frame whose `id` matches the pending
     // RPC's. Real-world cause: a heavy `result` payload (large
-    // `items.meta` blob) crosses the cap. Tight overage (cap+1 chars
-    // of filler) keeps the test memory cost minimal — JS engines
-    // back strings with UTF-16, so each filler char is ~2 bytes
-    // resident, and the JSON wrapper alone pushes the wire `text`
-    // length past the cap.
-    const filler = 'x'.repeat(MAX_FRAME_BYTES + 1);
+    // `items.meta` blob) crosses the cap.
+    const filler = 'x'.repeat(testCap + 1);
     const oversized = `{"type":"rpc","id":"${id}","result":"${filler}"}`;
-    expect(oversized.length).toBeGreaterThan(MAX_FRAME_BYTES);
+    expect(oversized.length).toBeGreaterThan(testCap);
     ws.pushRawText(oversized);
 
     let caught: unknown;

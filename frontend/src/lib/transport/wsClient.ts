@@ -43,9 +43,12 @@ export const MAX_PENDING_RPCS = 10_000;
 // Protects the main thread from a hostile/buggy server flooding huge
 // frames. Symmetric with the server's DefaultReadLimit
 // (internal/transport/conn.go) so a frame that fits the server cap
-// also fits the client cap — earlier asymmetry (8 MiB client / 16 MiB
-// server) silently dropped legitimate large frames.
-export const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+// also fits the client cap — keep both values in lockstep. 75 MiB is
+// sized for the worst legitimate load: a long thread's
+// ListRecentThreadItems response (items.meta + payload metadata across
+// hundreds of turns), where spending the memory once per thread switch
+// is the right tradeoff vs. forcing pagination on every load.
+export const MAX_FRAME_BYTES = 75 * 1024 * 1024;
 // Logged strings (channel names, error messages) get clamped before
 // reaching console / toast surfaces. Caps the worst-case noise from a
 // pathological remote without losing the prefix that identifies the
@@ -218,6 +221,12 @@ interface WSClientOptions {
   // For tests: skip the auto-connect on first call so a test can drive
   // events into an explicit harness instead.
   autoConnect?: boolean;
+  // For tests: override MAX_FRAME_BYTES. Production code MUST NOT pass
+  // this — the cap matters as a defence and the symmetry with the
+  // server's DefaultReadLimit is the contract. Tests pass a small
+  // value (~4 KiB) so the oversized-frame regression case can be
+  // exercised without allocating tens of MiB per run.
+  maxFrameBytes?: number;
 }
 
 // clampString truncates noisy / hostile log content before it reaches
@@ -313,6 +322,7 @@ function validateWsUrl(wsUrl: string): void {
 export class WSClient {
   private readonly fetchBootstrap: BootstrapFetcher;
   private readonly WebSocketCtor: WSConstructor;
+  private readonly maxFrameBytes: number;
 
   // Cached bootstrap and the resolved WS URL with token query param.
   private bootstrap: Bootstrap | null = null;
@@ -348,6 +358,7 @@ export class WSClient {
     // never connect don't trip on a missing global.
     this.WebSocketCtor = opts.WebSocketCtor ??
       ((globalThis as { WebSocket?: WSConstructor }).WebSocket as WSConstructor);
+    this.maxFrameBytes = opts.maxFrameBytes ?? MAX_FRAME_BYTES;
   }
 
   // callByID sends an `rpc` frame with a numeric methodId and resolves
@@ -585,7 +596,7 @@ export class WSClient {
       ws.addEventListener('message', (ev: MessageEvent) => {
         const text = typeof ev.data === 'string' ? ev.data : '';
         if (!text) return;
-        if (text.length > MAX_FRAME_BYTES) {
+        if (text.length > this.maxFrameBytes) {
           // Don't silently drop: previous behavior left the matching
           // RPC pending until its 30 s timeout fired, leaving the UI
           // stuck in `loading=true`. Surface it now — extract the RPC
@@ -595,7 +606,7 @@ export class WSClient {
           const id = extractRpcIdFromOversizedFrame(text);
           const err = new TransportError(
             'frame_too_large',
-            `frame ${text.length} bytes exceeds cap ${MAX_FRAME_BYTES} (rpc=${id ?? 'unknown'})`,
+            `frame ${text.length} bytes exceeds cap ${this.maxFrameBytes} (rpc=${id ?? 'unknown'})`,
           );
           console.error('wsClient:', err.message);
           if (id !== null) {

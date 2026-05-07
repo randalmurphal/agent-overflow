@@ -13,11 +13,16 @@ import (
 	"github.com/coder/websocket"
 )
 
-// DefaultReadLimit caps a single inbound message size. Item snapshots
-// can carry substantial state (a long thread's payload metadata, a
-// checkpoint diff manifest), so 16 MiB is the headroom budget.
-// Anything larger belongs on a separate paged endpoint, not over WS.
-const DefaultReadLimit = 16 * 1024 * 1024
+// DefaultReadLimit caps a single inbound message size. A long thread's
+// ListRecentThreadItems response is the worst-case shape — items.meta
+// + payload metadata across hundreds of turns can run into tens of
+// MiB. 75 MiB is the headroom budget: large enough that real threads
+// load without surprise, small enough to keep a hostile/buggy peer
+// from exhausting host memory with a single frame. The frontend
+// MAX_FRAME_BYTES tracks this value 1:1 so the symmetric cap holds —
+// see frontend/src/lib/transport/wsClient.ts. Anything larger than
+// this still belongs on a separate paged endpoint, not over WS.
+const DefaultReadLimit = 75 * 1024 * 1024
 
 // DefaultMaxConcurrentRPCs caps how many RPC dispatches a single WS
 // connection can have in flight at once. Bound exists so a misbehaving
