@@ -636,6 +636,54 @@ func (s *Store) HasItems(threadID string) (bool, error) {
 	return exists != 0, nil
 }
 
+func (s *Store) HasRunningTopLevelForegroundToolCall(threadID string) (bool, error) {
+	var exists int
+	if err := s.db.QueryRow(
+		`SELECT EXISTS(
+		    SELECT 1 FROM items
+		     WHERE thread_id = ?
+		       AND kind = 'tool_call'
+		       AND status = 'running'
+		       AND is_background = 0
+		       AND parent_id = ''
+		     LIMIT 1
+		)`,
+		threadID,
+	).Scan(&exists); err != nil {
+		return false, fmt.Errorf("store: has running top-level foreground tool call for thread %s: %w", threadID, err)
+	}
+	return exists != 0, nil
+}
+
+func (s *Store) HasLiveBackgroundToolCall(threadID string) (bool, error) {
+	var exists int
+	if err := s.db.QueryRow(
+		`SELECT EXISTS(
+		    SELECT 1 FROM items
+		     WHERE thread_id = ?
+		       AND kind = 'tool_call'
+		       AND status = 'running'
+		       AND is_background = 1
+		       AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
+		       AND NOT EXISTS (
+		         SELECT 1 FROM pending_background_task_terminals p
+		          WHERE p.thread_id = items.thread_id
+		            AND p.tool_use_id = items.id
+		       )
+		       AND NOT EXISTS (
+		         SELECT 1 FROM items c
+		          WHERE c.thread_id = items.thread_id
+		            AND c.completion_of = items.id
+		       )
+		     LIMIT 1
+		)`,
+		threadID,
+	).Scan(&exists); err != nil {
+		return false, fmt.Errorf("store: has live background tool call for thread %s: %w", threadID, err)
+	}
+	return exists != 0, nil
+}
+
 func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item, bool, error) {
 	row := s.db.QueryRow(
 		`SELECT `+itemColumns+`

@@ -221,6 +221,7 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	}()
 	if a.triage == nil {
 		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
+		a.configureTriageQueueCallbacks()
 	}
 	hasPriorItems, err := a.store.HasItems(threadID)
 	if err != nil {

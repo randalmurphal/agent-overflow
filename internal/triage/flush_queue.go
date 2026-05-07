@@ -2,28 +2,34 @@ package triage
 
 import (
 	"encoding/json"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
 	"time"
+
+	"agent-overflow/internal/store"
 )
 
-// flush_queue.go owns the per-thread "queued user message awaiting
-// first-tool-use flush" state. The Composer surfaces these items as
-// retractable rows under the working indicator; the trigger fires from
-// handleToolStart on the first non-subagent tool_use of a wire round
-// and consumes the entire batch.
+// flush_queue.go owns the per-thread "queued user message awaiting a
+// provider boundary" state. The Composer surfaces these items as
+// retractable rows under the working indicator; the queue drains when
+// triage observes that the provider has no running top-level tool or
+// live background task left for the thread.
 //
 // Why a backend-owned queue rather than a frontend-owned one:
 //
 //   1. Core Principle 1: triage classifies wire events and the
-//      first-tool-use trigger IS a wire-event-driven decision. Putting
+//      completion-boundary trigger IS a wire-event-driven decision. Putting
 //      it in the frontend would re-derive provider state in JS, which
 //      is exactly the in-memory read model we forbid.
 //   2. Race window correctness: AO writes the user message to the
 //      provider's stdin (Claude) or via a JSON-RPC call (Codex) at
 //      the moment the trigger fires. Doing this from the frontend
 //      adds an event-emission roundtrip during a window where the
-//      provider is already executing tool_use blocks; the in-process
+//      provider is already moving between tool_use blocks; the in-process
 //      backend can fire on the same goroutine that observed the
-//      tool_start, eliminating the JS-bus latency from the seam.
+//      lifecycle boundary, eliminating the JS-bus latency from the seam.
 //   3. Remote-client survivability: an `agent-overflow --connect`
 //      client that attaches mid-round still observes the same flush
 //      behaviour because the queue lives in the backend, not the
@@ -35,10 +41,9 @@ import (
 // per-thread correlation map so a CleanupThread sweep is consistent
 // across all of them.
 
-// QueuedFlushItem is one user message awaiting first-tool-use flush.
+// QueuedFlushItem is one user message awaiting provider-boundary flush.
 // Lives only in router memory — never persisted to SQLite — and is
-// drained when the trigger fires (first non-subagent tool_use of the
-// round) or cleared on session teardown.
+// drained when the boundary trigger fires or cleared on session teardown.
 //
 // The Payload is opaque to triage: the app layer (app_flush_queue.go)
 // owns the wire shape (attachments, source-plan refs, revision
@@ -63,13 +68,13 @@ type QueuedFlushItem struct {
 	EnqueuedAt int64
 }
 
-// FlushDispatcher is the app-layer callback invoked when the first
-// non-subagent tool_use of a wire round fires the flush trigger.
+// FlushDispatcher is the app-layer callback invoked when triage observes
+// a safe provider boundary and drains queued user messages.
 // Triage hands ownership of the consumed batch over; the dispatcher is
 // responsible for allocating AO item ids, persisting user rows,
 // registering pending-send markers, and writing to the provider.
 //
-// Invoked synchronously from handleToolStart AFTER r.mu is released so
+// Invoked synchronously after r.mu is released so
 // the dispatcher can call back into the router (RegisterPendingSend,
 // PersistItem, etc) without re-entrancy.
 type FlushDispatcher func(threadID string, items []QueuedFlushItem)
@@ -82,6 +87,23 @@ func (r *Router) SetFlushDispatcher(fn FlushDispatcher) {
 	r.mu.Lock()
 	r.dispatchFlush = fn
 	r.mu.Unlock()
+}
+
+// SetDeferredUserTextConfirmedHook wires the app-layer callback that runs
+// after a deferred queued user_text row is persisted from provider echo.
+// Nil disables the callback. The hook runs outside r.mu.
+func (r *Router) SetDeferredUserTextConfirmedHook(fn func(threadID string, item store.Item)) {
+	r.mu.Lock()
+	r.deferredUserTextConfirmed = fn
+	r.mu.Unlock()
+}
+
+// FlushQueuedItemsNow drains the queue immediately if a dispatcher is wired.
+// This is used by explicit user interrupts: once the user has asked to stop
+// the current turn and send their queued message, retractability is over and
+// AO should write the batch without waiting for the next provider boundary.
+func (r *Router) FlushQueuedItemsNow(threadID string) bool {
+	return r.tryFlushQueue(threadID)
 }
 
 // RegisterQueueItem appends a queued user message to the per-thread
@@ -188,6 +210,41 @@ func (r *Router) QueuedFlushItemCount(threadID string) int {
 	return len(r.queuedFlushItems[threadID])
 }
 
+func (r *Router) DeferredPendingFlushItemCount(threadID string) int {
+	if threadID == "" {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, pending := range r.pendingByThread[threadID] {
+		if pending.DeferredItem != nil && strings.Contains(pending.AOItemID, ":flush:") {
+			count++
+		}
+	}
+	return count
+}
+
+func (r *Router) MaxPendingFlushSequence(threadID string, turnIndex int) int {
+	if threadID == "" {
+		return 0
+	}
+	prefix := fmt.Sprintf("user:%d:flush:", turnIndex)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	maxSeq := 0
+	for _, pending := range r.pendingByThread[threadID] {
+		if pending.DeferredItem == nil || !strings.HasPrefix(pending.AOItemID, prefix) {
+			continue
+		}
+		seq, err := strconv.Atoi(strings.TrimPrefix(pending.AOItemID, prefix))
+		if err == nil && seq > maxSeq {
+			maxSeq = seq
+		}
+	}
+	return maxSeq
+}
+
 // QueuedFlushItems returns a copy of the per-thread flush queue.
 // Callers receive a fresh slice they may mutate without affecting
 // router state; the underlying QueuedFlushItem values share their
@@ -215,17 +272,11 @@ func (r *Router) QueuedFlushItems(threadID string) []QueuedFlushItem {
 // tryFlushQueue drains the per-thread flush queue when it has items
 // and a dispatcher is wired. Idempotent across repeated calls — once
 // the batch is consumed the queue is empty and subsequent calls
-// no-op until new items are registered. The wire-round id is no
-// longer load-bearing for suppression (a per-round marker used to
-// short-circuit subsequent calls within the same round, but that
-// blocked any user message queued AFTER the first drain from ever
-// flushing in the same round); the maybeFireFlushTrigger gate above
-// still requires a non-empty roundID so we don't drain into a closed
-// round.
+// no-op until new items are registered.
 //
 // Returns true when the dispatcher was invoked; false otherwise (no
 // items, no dispatcher, empty threadID). The boolean is
-// informational — handleToolStart doesn't branch on it.
+// informational — lifecycle handlers don't branch on it.
 //
 // Dispatcher invocation happens AFTER r.mu is released so the
 // dispatcher can call back into the router (RegisterPendingSend,
@@ -254,6 +305,59 @@ func (r *Router) tryFlushQueue(threadID string) bool {
 
 	dispatcher(threadID, batch)
 	return true
+}
+
+func (r *Router) maybeFlushQueueAtBoundary(threadID string) bool {
+	if threadID == "" || !r.HasQueuedFlushItems(threadID) {
+		return false
+	}
+	active, err := r.hasQueueBlockingWork(threadID)
+	if err != nil {
+		// Failing closed keeps the queue retractable instead of racing a
+		// message into provider context on incomplete lifecycle knowledge.
+		log.Printf("triage: queue boundary check failed for thread %s: %v", threadID, err)
+		return false
+	}
+	if active {
+		return false
+	}
+	return r.tryFlushQueue(threadID)
+}
+
+func (r *Router) hasQueueBlockingWork(threadID string) (bool, error) {
+	if r.store == nil {
+		return false, nil
+	}
+	if r.hasActiveCodexUnifiedExec(threadID) {
+		return true, nil
+	}
+	active, err := r.store.HasRunningTopLevelForegroundToolCall(threadID)
+	if err != nil {
+		return false, err
+	}
+	if active {
+		return true, nil
+	}
+	active, err = r.store.HasLiveBackgroundToolCall(threadID)
+	if err != nil {
+		return false, err
+	}
+	return active, nil
+}
+
+func (r *Router) hasActiveCodexUnifiedExec(threadID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.codexBackground[threadID]
+	if state == nil {
+		return false
+	}
+	for _, tracker := range state.unifiedExec {
+		if tracker != nil && !tracker.completed {
+			return true
+		}
+	}
+	return false
 }
 
 // clearFlushQueueLocked drops every queued item for threadID. Caller

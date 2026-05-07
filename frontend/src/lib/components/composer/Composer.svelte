@@ -308,11 +308,10 @@
     const draftSourcePlan = draft.sourceProposedPlan ?? null;
 
     // Mid-round path: backend owns the queue. Both providers go
-    // through the same `RegisterQueueItem` RPC; the trigger fires on
-    // the first non-subagent tool_use of the round (see
-    // internal/triage/flush_queue.go) and the dispatcher delivers
-    // each queued message via Send (Claude) or Steer with Send
-    // fallback (Codex). The Composer is intentionally
+    // through the same `RegisterQueueItem` RPC; triage flushes at safe
+    // provider boundaries and the dispatcher delivers each queued
+    // message via Send (Claude) or Steer with Send fallback (Codex).
+    // The Composer is intentionally
     // provider-agnostic here — provider branching previously needed
     // to choose between Steer and a frontend-side queue, but the
     // unified backend queue removes that choice.

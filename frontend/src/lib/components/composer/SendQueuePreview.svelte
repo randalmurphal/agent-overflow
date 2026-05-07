@@ -7,14 +7,13 @@
   //    flushed to the provider but whose wire echo (Claude
   //    `--replay-user-messages` envelope or Codex
   //    `item/completed userMessage`) has not yet stamped
-  //    `provider_item_id` onto the optimistic timeline row. Reads as
+  //    `provider_item_id` onto the timeline row. Reads as
   //    "in flight, headed to history" — `→` glyph, lower opacity than
   //    Zone 1, no retract affordance. Drops as soon as the matching
   //    `provider:item_event` upsert proves the wire confirmed delivery
   //    (events.ts → confirmFlushedByUserItemId).
   //  - Zone 1 (rendered BELOW Zone 2) — backend-queued items waiting
-  //    for the next round's first non-subagent tool_use to fire the
-  //    flush trigger. Still retractable: the UP-arrow handler in the
+  //    for the next safe provider boundary. Still retractable: the UP-arrow handler in the
   //    composer pulls every queued item back into one editable
   //    composer draft (Claude TUI's `popAllEditable` behaviour).
   //    Rendered with the muscle-memory `↳` prefix + dim italic so the

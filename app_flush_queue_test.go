@@ -14,14 +14,16 @@ import (
 	"agent-overflow/internal/triage"
 )
 
-// TestDispatchFlush_Codex_PersistsUserItemAndDispatchesViaSteer pins
+// TestDispatchFlush_Codex_DefersUserItemUntilWireEcho pins
 // the happy-path Codex flow: a queued message reaches the active
 // turn's pending_input via turn/steer, and the AO-side bookkeeping
-// (user:<turn>:flush:<n> row + pending-send marker) lands so the
-// wire echo can correlate.
-func TestDispatchFlush_Codex_PersistsUserItemAndDispatchesViaSteer(t *testing.T) {
+// registers a deferred pending-send marker. The chat-history row is
+// persisted only when the provider echoes the message with a stable
+// provider_item_id.
+func TestDispatchFlush_Codex_DefersUserItemUntilWireEcho(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.configureTriageQueueCallbacks()
 
 	thread := testThread("flush-codex-ok")
 	thread.Provider = string(provider.Codex)
@@ -58,24 +60,88 @@ func TestDispatchFlush_Codex_PersistsUserItemAndDispatchesViaSteer(t *testing.T)
 	if err != nil {
 		t.Fatalf("ListItemsForTurn: %v", err)
 	}
-	var flushRow *store.Item
-	for i := range items {
-		if items[i].Kind == "user_text" && strings.HasPrefix(items[i].ID, "user:3:flush:") {
-			flushRow = &items[i]
-			break
+	for _, item := range items {
+		if item.Kind == "user_text" && strings.HasPrefix(item.ID, "user:3:flush:") {
+			t.Fatalf("user_text row should wait for provider echo, got %+v", item)
 		}
-	}
-	if flushRow == nil {
-		t.Fatalf("expected user:3:flush:* row, got items %+v", items)
-	}
-	if flushRow.Summary != "drained" {
-		t.Errorf("flush row summary: got %q, want %q", flushRow.Summary, "drained")
 	}
 	if !app.triage.HasPendingSendForThread(thread.ID) {
 		t.Errorf("pending-send marker not registered after Codex Steer dispatch")
 	}
-	if _, ok, err := app.store.GetCheckpointByUserItemID(thread.ID, flushRow.ID); err != nil || !ok {
-		t.Fatalf("checkpoint for flushed user item missing: ok=%v err=%v", ok, err)
+
+	echoMeta, _ := json.Marshal(map[string]any{
+		"provider_item_id": "wire-user-1",
+		"parent_uuid":      "parent-wire-1",
+	})
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  thread.ID,
+		TurnIndex: 3,
+		ItemID:    "user:3:flush:1",
+		Content:   "drained",
+		Meta:      echoMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("EventUserText: %v", err)
+	}
+	flushRow, found, err := app.store.GetThreadItem(thread.ID, "user:3:flush:1")
+	if err != nil || !found {
+		t.Fatalf("expected user:3:flush:1 after echo: found=%v err=%v", found, err)
+	}
+	if flushRow.Summary != "drained" {
+		t.Errorf("flush row summary: got %q, want %q", flushRow.Summary, "drained")
+	}
+	checkpoint, ok, err := app.store.GetCheckpointByUserItemID(thread.ID, "user:3:flush:1")
+	if err != nil || !ok {
+		t.Fatalf("checkpoint for flushed user item missing after echo: ok=%v err=%v", ok, err)
+	}
+	if checkpoint.ProviderUserMessageID != "wire-user-1" || checkpoint.ProviderParentUUID != "parent-wire-1" {
+		t.Fatalf("checkpoint provider ids = %q/%q, want wire-user-1/parent-wire-1",
+			checkpoint.ProviderUserMessageID, checkpoint.ProviderParentUUID)
+	}
+}
+
+func TestDispatchFlush_SecondBatchBeforeEchoAllocatesNextFlushID(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	thread := testThread("flush-id-pending")
+	thread.Provider = string(provider.Codex)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-0",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+
+	sess := installSteerTestSession(t, app, thread, "ok")
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Codex),
+		token:    "flush-token",
+		codex:    sess,
+	}
+
+	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+		{ID: "queue:first", Message: "first"},
+	})
+	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+		{ID: "queue:second", Message: "second"},
+	})
+
+	flushed := emittedQueueFlushed(rec)
+	if len(flushed) != 2 {
+		t.Fatalf("queue_flushed events: got %d, want 2", len(flushed))
+	}
+	gotIDs := []string{flushed[0].Items[0].UserItemID, flushed[1].Items[0].UserItemID}
+	wantIDs := []string{"user:0:flush:1", "user:0:flush:2"}
+	if gotIDs[0] != wantIDs[0] || gotIDs[1] != wantIDs[1] {
+		t.Fatalf("flush ids = %v, want %v", gotIDs, wantIDs)
 	}
 }
 
@@ -86,6 +152,7 @@ func TestDispatchFlush_Codex_PersistsUserItemAndDispatchesViaSteer(t *testing.T)
 func TestDispatchFlush_Codex_NoActiveTurnFallsBackToSend(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.configureTriageQueueCallbacks()
 
 	thread := testThread("flush-codex-fallback")
 	thread.Provider = string(provider.Codex)
@@ -118,8 +185,8 @@ func TestDispatchFlush_Codex_NoActiveTurnFallsBackToSend(t *testing.T) {
 	})
 
 	// Even though Steer returned NoActiveTurn, the fallback path
-	// reaches sess.Send and the user_text row should still be
-	// persisted at the active turn's index. There must be NO
+	// reaches sess.Send. The user_text row still waits for the
+	// provider echo, and there must be NO
 	// sibling `error` row — the fallback succeeded, so this isn't a
 	// failure case from the user's POV.
 	items, err := app.store.ListItemsForTurn(thread.ID, 2)
@@ -131,25 +198,36 @@ func TestDispatchFlush_Codex_NoActiveTurnFallsBackToSend(t *testing.T) {
 			t.Errorf("unexpected error row after fallback: %+v", it)
 		}
 	}
-	var flushRow *store.Item
-	for i := range items {
-		if strings.HasPrefix(items[i].ID, "user:2:flush:") {
-			flushRow = &items[i]
-			break
+	for _, item := range items {
+		if strings.HasPrefix(item.ID, "user:2:flush:") {
+			t.Fatalf("user_text row should wait for provider echo after fallback, got %+v", item)
 		}
 	}
-	if flushRow == nil {
-		t.Fatalf("expected user:2:flush:* row after fallback, got %+v", items)
+	echoMeta, _ := json.Marshal(map[string]any{"provider_item_id": "wire-fallback"})
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  thread.ID,
+		TurnIndex: 2,
+		ItemID:    "user:2:flush:1",
+		Content:   "race",
+		Meta:      echoMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("EventUserText: %v", err)
+	}
+	if _, found, err := app.store.GetThreadItem(thread.ID, "user:2:flush:1"); err != nil || !found {
+		t.Fatalf("expected user:2:flush:1 after echo: found=%v err=%v", found, err)
 	}
 }
 
-// TestDispatchFlush_NoSession_PersistsErrorRow pins the missing-session
+// TestDispatchFlush_NoSession_DoesNotPersistUserRow pins the missing-session
 // guard: a flush trigger fires, but the session was torn down between
 // trigger fire and dispatcher arrival — the dispatcher must not panic
 // or persist a half-baked item.
-func TestDispatchFlush_NoSession_PersistsErrorRow(t *testing.T) {
+func TestDispatchFlush_NoSession_DoesNotPersistUserRow(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.configureTriageQueueCallbacks()
 
 	thread := testThread("flush-no-session")
 	thread.Provider = string(provider.Codex)
@@ -186,6 +264,7 @@ func TestDispatchFlush_NoSession_PersistsErrorRow(t *testing.T) {
 func TestDispatchFlush_PerItemFailure_AbortsBatch(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.configureTriageQueueCallbacks()
 
 	thread := testThread("flush-abort")
 	thread.Provider = string(provider.Codex)
@@ -223,9 +302,9 @@ func TestDispatchFlush_PerItemFailure_AbortsBatch(t *testing.T) {
 		{ID: "queue:2", Message: "third"},
 	})
 
-	// Each attempted item persists a user_text row before its
-	// dispatch (the optimistic write); aborting on item 1 means
-	// item 2 and 3 must not have rows.
+	// The attempted item registers a deferred pending marker before
+	// dispatch, but the failed provider write clears it and persists
+	// only the error row. Items 2 and 3 are not attempted.
 	items, err := app.store.ListItemsForTurn(thread.ID, 4)
 	if err != nil {
 		t.Fatalf("ListItemsForTurn: %v", err)
@@ -240,8 +319,8 @@ func TestDispatchFlush_PerItemFailure_AbortsBatch(t *testing.T) {
 			errorRows++
 		}
 	}
-	if flushRows != 1 {
-		t.Errorf("flush rows persisted: got %d, want 1 (subsequent items aborted)", flushRows)
+	if flushRows != 0 {
+		t.Errorf("flush rows persisted: got %d, want 0 (failed dispatch stays out of chat history)", flushRows)
 	}
 	if errorRows != 1 {
 		t.Errorf("error rows persisted: got %d, want 1 (one per failed item)", errorRows)
@@ -250,6 +329,44 @@ func TestDispatchFlush_PerItemFailure_AbortsBatch(t *testing.T) {
 	// later wire echo can't hijack a future send's correlation.
 	if app.triage.HasPendingSendForThread(thread.ID) {
 		t.Errorf("pending-send marker live after failed dispatch")
+	}
+}
+
+func TestDispatchFlush_FailedItemDoesNotEmitQueueFlushed(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	thread := testThread("flush-failed-no-zone2")
+	thread.Provider = string(provider.Codex)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-0",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+
+	sess := installSteerTestSession(t, app, thread, "no-active-turn")
+	if err := sess.Close(); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Codex),
+		token:    "flush-token",
+		codex:    sess,
+	}
+
+	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+		{ID: "queue:failed", Message: "failed"},
+	})
+
+	if flushed := emittedQueueFlushed(rec); len(flushed) != 0 {
+		t.Fatalf("failed dispatch emitted queue_flushed events: %+v", flushed)
 	}
 }
 
@@ -362,12 +479,12 @@ func (a *App) dispatchFlushToProviderShouldErrorWith(t *testing.T, sess session,
 // TestDispatchFlush_PayloadDecoding pins the Payload roundtrip:
 // flushQueuePayload's JSON shape must match what the frontend
 // produces when it hands attachments + plan refs to the dispatcher.
-// A mis-decoded Payload silently drops attachments — covered here
-// by asserting the user_text row's Meta encodes the attachment
-// reference.
+// The row is deferred until wire echo, so the assertion runs after
+// provider confirmation.
 func TestDispatchFlush_PayloadDecoding(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.configureTriageQueueCallbacks()
 
 	thread := testThread("flush-payload")
 	thread.Provider = string(provider.Codex)
@@ -405,23 +522,37 @@ func TestDispatchFlush_PayloadDecoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListItemsForTurn: %v", err)
 	}
-	var row *store.Item
-	for i := range items {
-		if strings.HasPrefix(items[i].ID, "user:1:flush:") {
-			row = &items[i]
-			break
+	for _, item := range items {
+		if strings.HasPrefix(item.ID, "user:1:flush:") {
+			t.Fatalf("user_text row should wait for provider echo, got %+v", item)
 		}
 	}
-	if row == nil {
-		t.Fatalf("expected flush row, got %+v", items)
+
+	echoMeta, _ := json.Marshal(map[string]any{"provider_item_id": "wire-payload"})
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  thread.ID,
+		TurnIndex: 1,
+		ItemID:    "user:1:flush:1",
+		Content:   "no payload",
+		Meta:      echoMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("EventUserText: %v", err)
 	}
-	// marshalUserMessageMeta returns "" for an all-empty payload;
-	// applyItemDefaults in the store normalises that to "{}" so
-	// downstream JSON consumers always have valid input. The exact
-	// stored value is "{}" — assert the store contract rather than
-	// the marshaller's intermediate empty string.
-	if row.Meta != "{}" {
-		t.Errorf("Meta with empty payload: got %q, want %q", row.Meta, "{}")
+	row, found, err := app.store.GetThreadItem(thread.ID, "user:1:flush:1")
+	if err != nil || !found {
+		t.Fatalf("expected flush row after echo: found=%v err=%v", found, err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(row.Meta), &meta); err != nil {
+		t.Fatalf("decode meta %q: %v", row.Meta, err)
+	}
+	if got, _ := meta["provider_item_id"].(string); got != "wire-payload" {
+		t.Errorf("provider_item_id: got %q, want wire-payload", got)
+	}
+	if _, ok := meta["attachments"]; ok {
+		t.Errorf("empty payload unexpectedly created attachments meta: %s", row.Meta)
 	}
 }
 
@@ -566,7 +697,7 @@ func newAppForFlushQueueRPC(t *testing.T) (*App, *emitRecorder) {
 	rec := &emitRecorder{}
 	app.testEmitHook = rec.capture
 	app.triage = triage.NewRouter(app.store, rec.capture)
-	app.triage.SetFlushDispatcher(app.dispatchFlush)
+	app.configureTriageQueueCallbacks()
 	return app, rec
 }
 

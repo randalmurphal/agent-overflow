@@ -180,20 +180,23 @@ type Router struct {
 	// providerItemIDs we've already observed. Cleared by CleanupThread.
 	wireOnlyUserTextSeen map[string]map[string]struct{}
 	// queuedFlushItems is the per-thread "queued user message awaiting
-	// first-tool-use flush" state. Populated when the user types into
-	// the composer mid-turn and submits; drained when the trigger fires
-	// from handleToolStart on the first non-subagent tool_use of a wire
-	// round. Lifecycle: spans turn boundaries by design (a queue can
-	// outlive the round it was registered in if the model produces
-	// tool-free text-only rounds), so NOT swept by clearOpenTurn —
-	// only by CleanupThread on session teardown. See flush_queue.go.
+	// provider boundary" state. Populated when the user types into the
+	// composer mid-turn and submits; drained when no top-level
+	// foreground tool or live background task remains. Lifecycle: spans
+	// turn boundaries by design, so NOT swept by clearOpenTurn — only
+	// by CleanupThread on session teardown. See flush_queue.go.
 	queuedFlushItems map[string][]QueuedFlushItem
-	// dispatchFlush is the app-layer callback invoked when the trigger
-	// fires. Wired via SetFlushDispatcher; nil disables dispatch.
+	// dispatchFlush is the app-layer callback invoked when the queue
+	// drains. Wired via SetFlushDispatcher; nil disables dispatch.
 	// Triage releases r.mu before invoking so the dispatcher can call
 	// back into the router (RegisterPendingSend, PersistItem) without
 	// re-entrancy. See flush_queue.go.
 	dispatchFlush FlushDispatcher
+	// deferredUserTextConfirmed is an app-layer callback invoked after a
+	// deferred queued user_text row has been persisted from a provider
+	// echo. Used for side effects that require the row to exist, such
+	// as message checkpoint capture.
+	deferredUserTextConfirmed func(threadID string, item store.Item)
 }
 
 // NewRouter creates a triage router. Telemetry is off by default; wire a
@@ -359,7 +362,11 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 	case provider.EventTurnComplete:
 		return r.handleTurnComplete(evt)
 	case provider.EventBackgroundTaskTerminal:
-		return r.handleBackgroundTaskTerminal(evt)
+		if err := r.handleBackgroundTaskTerminal(evt); err != nil {
+			return err
+		}
+		r.maybeFlushQueueAtBoundary(evt.ThreadID)
+		return nil
 	case provider.EventBackgroundTaskNotification:
 		return r.handleBackgroundTaskNotification(evt)
 	case provider.EventSubagentNotification:
@@ -421,18 +428,6 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	if isToolStartMetaUpdateOnly(evt.Meta) {
 		return r.persistToolCallLaunch(evt)
 	}
-	// Flush-queue trigger: the first non-subagent tool_use of a wire
-	// round is the seam where AO drains queued user messages onto the
-	// provider. Subagent tool_use (ParentToolUseID != "") fires inside
-	// a Task tool execution and does NOT signal a top-level seam, so
-	// it never triggers the flush. Fires BEFORE persistence /
-	// streaming-settle so the dispatcher's stdin/RPC write races
-	// against Claude's mid-loop drain (query.ts:1547+) with as much
-	// runway as possible — the trigger position can't beat IPC
-	// latency, but earlier-in-handler is better than later. See
-	// flush_queue.go for the detailed rationale.
-	r.maybeFireFlushTrigger(evt)
-
 	r.settleStreamingBeforeTimelineBoundary(evt, "tool start")
 	r.observeCodexTopLevelToolBoundary(evt)
 	if r.observeCodexToolStart(evt) {
@@ -456,60 +451,11 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	return r.emitInline(evt)
 }
 
-// maybeFireFlushTrigger drives the flush-queue trigger from a wire
-// EventToolStart. Predicates:
-//
-//   - ParentToolUseID == "" — top-level tool use only. A subagent's
-//     tool use happens inside its parent Task tool's execution and
-//     doesn't signal a top-level model→user seam.
-//   - currentRoundID is non-empty — there's an active wire round to
-//     drain into. A tool_start with no open round (mid-init replay
-//     or a Codex-only edge case) is skipped so we don't write to a
-//     closed round.
-//   - tryFlushQueue internally short-circuits on empty-queue /
-//     no-dispatcher. Multiple drains per round are allowed: the
-//     queue-empty check provides idempotency, and a user who queues
-//     a second message after the first drain expects it to flow
-//     through at the next seam, not be silently locked out.
-//
-// The actual dispatch runs synchronously (in tryFlushQueue after
-// r.mu is released). Errors raised by the dispatcher do not
-// propagate through this path — the dispatcher is expected to
-// surface them on its own (toast / error row); a dispatcher panic
-// would bubble up here and abort the rest of handleToolStart, which
-// is the correct behaviour because a dispatcher panic indicates an
-// unrecoverable wiring bug.
-func (r *Router) maybeFireFlushTrigger(evt provider.ProviderEvent) {
-	parentToolUseID := strings.TrimSpace(evt.ParentToolUseID)
-	if parentToolUseID != "" {
-		// Subagent inner tool_use — not a top-level seam by design.
-		// Logged only when the queue has items so a reproduction
-		// trace shows why a queued message is sitting through the
-		// subagent. Bounded by user-typed message frequency, not log
-		// spam.
-		if r.QueuedFlushItemCount(evt.ThreadID) > 0 {
-			log.Printf("triage: flush trigger skipped (subagent tool_use) thread=%s tool=%s parent=%s — queue has %d item(s)",
-				evt.ThreadID, evt.ItemID, parentToolUseID, r.QueuedFlushItemCount(evt.ThreadID))
-		}
-		return
-	}
-	roundID := r.openRoundID(evt.ThreadID)
-	if roundID == "" {
-		if r.QueuedFlushItemCount(evt.ThreadID) > 0 {
-			log.Printf("triage: flush trigger skipped (no open round) thread=%s tool=%s — queue has %d item(s)",
-				evt.ThreadID, evt.ItemID, r.QueuedFlushItemCount(evt.ThreadID))
-		}
-		return
-	}
-	if r.QueuedFlushItemCount(evt.ThreadID) > 0 {
-		log.Printf("triage: flush trigger fire-attempt thread=%s tool=%s round=%s — queue has %d item(s)",
-			evt.ThreadID, evt.ItemID, roundID, r.QueuedFlushItemCount(evt.ThreadID))
-	}
-	r.tryFlushQueue(evt.ThreadID)
-}
-
 func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 	if handled, err := r.observeCodexUnifiedExecComplete(evt); handled || err != nil {
+		if handled && err == nil {
+			r.maybeFlushQueueAtBoundary(evt.ThreadID)
+		}
 		return err
 	}
 	// Same ordering rationale as handleToolStart: keep the lifecycle row
@@ -534,6 +480,7 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 		return err
 	}
 	r.settleToolPaths(evt)
+	r.maybeFlushQueueAtBoundary(evt.ThreadID)
 	return r.emitInline(evt)
 }
 

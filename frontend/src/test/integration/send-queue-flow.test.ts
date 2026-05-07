@@ -243,9 +243,9 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
     expect(getFlushedForThread('thread-1')).toHaveLength(1);
   });
 
-  // ---- T4 — item_event upsert clears Zone 2 on chat-row appearance -----
+  // ---- T4 — confirmed item_event upsert clears Zone 2 ------------------
 
-  it('T4: provider:item_event upsert for a flushed userItemId clears the matching Zone 2 entry on first sight', async () => {
+  it('T4: provider:item_event upsert for a flushed userItemId clears Zone 2 only when provider-confirmed', async () => {
     await mountWithActiveThread();
 
     // Seed Zone 2 directly via the event channel so the test exercises
@@ -263,12 +263,10 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
       'user:0:flush:2',
     ]);
 
-    // The dispatcher's optimistic PersistItem emits an item_event
-    // upsert at flush time — the row appears in chat with whatever
-    // meta the dispatcher seeded (no provider_item_id yet). Zone 2
-    // clears immediately so the queue overlay and the chat-row
-    // appearance read as one transition rather than separated by the
-    // wire round-trip.
+    // A user_text upsert without provider_item_id is not confirmation
+    // that the provider accepted the queued message. Zone 2 must stay
+    // visible so chat history does not get ahead of the provider's
+    // actual context.
     //
     // events.ts coalesces upserts behind requestAnimationFrame +
     // 50 ms timeout; happy-dom doesn't tick raf from svelte's tick(),
@@ -287,16 +285,15 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
       createdAt: 1,
       updatedAt: 1,
     });
-    await waitFor(() => {
-      expect(getFlushedForThread('thread-1').map((f) => f.userItemId)).toEqual([
-        'user:0:flush:2',
-      ]);
-    });
+    await new Promise<void>((r) => setTimeout(r, 60));
+    expect(getFlushedForThread('thread-1').map((f) => f.userItemId)).toEqual([
+      'user:0:flush:1',
+      'user:0:flush:2',
+    ]);
 
     // The wire echo lands later carrying `provider_item_id` in Meta.
-    // Zone 2 is already empty for q-1 (cleared on the optimistic
-    // upsert above). The duplicate confirm is a no-op — q-2 stays
-    // pending because no upsert arrived for it.
+    // That is the confirmation boundary for q-1; q-2 stays pending
+    // because no confirmed upsert arrived for it.
     emitItemEventUpsert({
       id: 'user:0:flush:1',
       threadId: 'thread-1',
@@ -310,10 +307,11 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
       createdAt: 1,
       updatedAt: 2,
     });
-    await new Promise<void>((r) => setTimeout(r, 60));
-    expect(getFlushedForThread('thread-1').map((f) => f.userItemId)).toEqual([
-      'user:0:flush:2',
-    ]);
+    await waitFor(() => {
+      expect(getFlushedForThread('thread-1').map((f) => f.userItemId)).toEqual([
+        'user:0:flush:2',
+      ]);
+    });
   });
 
   // ---- T4b — non-flush user_text upsert never clears Zone 2 ------------

@@ -4,23 +4,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
 // handleUserText routes the wire-confirmation envelope for a user message.
-// Two branches:
+// Three branches:
 //
-//  1. AO-initiated send: a matching pending-send FIFO entry exists. Stamp
-//     `provider_item_id` onto the existing `user:<turnIndex>` row that
-//     `app_send.go` already persisted optimistically, merging the new key
-//     into the row's existing meta so attachments / source-plan refs
-//     survive. The wire content is for traceability; AO's persisted
-//     summary stays authoritative because the send path already trims and
-//     normalises it.
+//  1. AO-initiated direct send: a matching pending-send FIFO entry exists
+//     for an already-persisted `user:<turnIndex>` row. Stamp
+//     `provider_item_id` onto that row, merging the new key into the
+//     existing meta so attachments / source-plan refs survive.
 //
-//  2. Wire-only cascade injection: no pending-send match. The provider
+//  2. AO-initiated queued send: a matching pending-send FIFO entry carries
+//     a deferred row. Persist the `user:<turnIndex>:flush:<n>` row only
+//     after the provider echo supplies a stable `provider_item_id`, so chat
+//     history does not get ahead of provider context.
+//
+//  3. Wire-only cascade injection: no pending-send match. The provider
 //     injected a user message into the agent's context (Claude
 //     `task_notification` echo today; future Codex MCP-injected user
 //     input). Persist a fresh row with id `user:wire:<provider_item_id>`
@@ -38,6 +41,9 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 
 	if eventParentID(evt) == "" {
 		if pending, ok := r.consumePendingSendHead(evt.ThreadID); ok {
+			if pending.DeferredItem != nil {
+				return r.persistDeferredUserText(pending, providerItemID, evt)
+			}
 			return r.attachProviderItemIDToUserRow(evt.ThreadID, pending.AOItemID, providerItemID, evt)
 		}
 	}
@@ -52,6 +58,62 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 		return nil // duplicate — already persisted on prior arrival
 	}
 	return r.persistWireOnlyUserText(evt, providerItemID)
+}
+
+func (r *Router) persistDeferredUserText(pending pendingSend, providerItemID string, evt provider.ProviderEvent) error {
+	if pending.DeferredItem == nil {
+		return nil
+	}
+	item := *pending.DeferredItem
+	if providerItemID == "" {
+		log.Printf("triage: handleUserText popped deferred pending entry %s/%s but wire echo carried no provider_item_id — leaving Zone 2 unconfirmed; check parser coverage for the wire shape", item.ThreadID, item.ID)
+		return nil
+	}
+	now := eventTimestampMillis(evt)
+	item.CreatedAt = now
+	item.UpdatedAt = now
+
+	mergedMeta, err := mergeProviderItemIDIntoMeta(item.Meta, providerItemID)
+	if err != nil {
+		return fmt.Errorf("triage: merge provider_item_id into deferred %s/%s meta: %w", item.ThreadID, item.ID, err)
+	}
+	item.Meta = mergedMeta
+	if strings.TrimSpace(item.ThreadID) == "" {
+		item.ThreadID = evt.ThreadID
+	}
+	if item.TurnIndex == 0 && pending.TurnIndex != 0 {
+		item.TurnIndex = pending.TurnIndex
+	}
+	if item.Kind == "" {
+		item.Kind = string(provider.ItemUserText)
+	}
+	if item.Role == "" {
+		item.Role = "user"
+	}
+	if item.Status == "" {
+		item.Status = statusCompleted
+	}
+	if err := r.persistItem(item, nil); err != nil {
+		return fmt.Errorf("triage: persist deferred user_text %s/%s: %w", item.ThreadID, item.ID, err)
+	}
+	persisted, found, err := r.store.GetThreadItem(item.ThreadID, item.ID)
+	if err != nil {
+		return fmt.Errorf("triage: reload deferred user_text %s/%s: %w", item.ThreadID, item.ID, err)
+	}
+	if !found {
+		persisted = item
+	}
+	parentUUID := readParentUUIDFromMeta(evt.Meta)
+	r.mu.Lock()
+	confirmedHook := r.deferredUserTextConfirmed
+	r.mu.Unlock()
+	if confirmedHook != nil {
+		confirmedHook(item.ThreadID, persisted)
+	}
+	if err := r.store.UpdateCheckpointProviderIDs(item.ThreadID, item.ID, providerItemID, parentUUID); err != nil {
+		return fmt.Errorf("triage: update message checkpoint provider ids: %w", err)
+	}
+	return nil
 }
 
 // readProviderItemIDFromMeta extracts `provider_item_id` from the event

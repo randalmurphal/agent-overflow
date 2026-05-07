@@ -93,6 +93,9 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		metaFields := map[string]any{
 			"task_id": taskID,
 		}
+		if taskType := readRawString(raw["task_type"]); taskType != "" {
+			metaFields["task_type"] = taskType
+		}
 		if taskRef.ParentToolUseID != "" {
 			metaFields["parent_tool_use_id"] = taskRef.ParentToolUseID
 		}

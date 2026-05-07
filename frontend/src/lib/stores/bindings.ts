@@ -344,12 +344,11 @@ export function SteerMessageWithOptions(
 
 /**
  * Send-queue surface — backend-owned per-thread queue for messages
- * the user submits while a wire round is in flight. The trigger fires
- * on the first non-subagent tool_use of the round and the dispatcher
- * delivers each queued message to the provider; until then, items
- * sit in `RegisterQueueItem` and can be retracted via
- * `UndoQueuedItems`. `GetQueueState` is the bootstrap snapshot for
- * remote / re-attached clients.
+ * the user submits while a wire round is in flight. Triage flushes at
+ * safe provider boundaries and the dispatcher delivers each queued
+ * message to the provider; until then, items sit in `RegisterQueueItem`
+ * and can be retracted via `UndoQueuedItems`. `GetQueueState` is the
+ * bootstrap snapshot for remote / re-attached clients.
  */
 import {
   RegisterQueueItem as RegisterQueueItemRaw,

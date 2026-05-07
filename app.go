@@ -53,15 +53,15 @@ var ErrShuttingDown = errors.New("app: shutting down")
 
 // App is the primary Wails-bound struct, registered as a v3 service.
 type App struct {
-	app            *application.App
-	store          *store.Store
-	git            *gitops.Core
-	gitWatch       *gitwatch.Manager
-	settings       *settings.Service
-	triage         *triage.Router
-	checkpoints    *checkpoint.Store
-	registry       *discussion.Registry
-	channels       *discussion.ChannelService
+	app         *application.App
+	store       *store.Store
+	git         *gitops.Core
+	gitWatch    *gitwatch.Manager
+	settings    *settings.Service
+	triage      *triage.Router
+	checkpoints *checkpoint.Store
+	registry    *discussion.Registry
+	channels    *discussion.ChannelService
 	// designWorkdir owns each thread's per-thread {main,options}
 	// directory layout. The base directory is the HTTP file server's
 	// StripPrefix target — designServer below mounts it at /design/
@@ -82,14 +82,14 @@ type App struct {
 	designWatchers   map[string]*design.Watcher
 	reactor          *design.Reactor
 	designMCP        *design.MCPServer
-	terminals      *terminal.Manager
-	attachments    *attachment.Store
-	workspaceFiles *workspacefiles.Searcher
-	logger         *logging.Logger
-	telemetry      *obsotel.Provider
-	replay         *replay.Manager
-	configDir      string
-	uiTraceMu      sync.Mutex
+	terminals        *terminal.Manager
+	attachments      *attachment.Store
+	workspaceFiles   *workspacefiles.Searcher
+	logger           *logging.Logger
+	telemetry        *obsotel.Provider
+	replay           *replay.Manager
+	configDir        string
+	uiTraceMu        sync.Mutex
 	// eventBus is the Phase C transport that owns per-channel seq stamping
 	// and fan-out to connected webview / remote clients. main.go wires it
 	// in via SetEventBus; the atomic.Pointer means SetEventBus and
@@ -376,12 +376,10 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 		ItemsPersisted:    telemetryMetrics.ItemsPersisted,
 		PayloadsPersisted: telemetryMetrics.PayloadsPersisted,
 	})
-	// Flush-queue dispatcher: invoked by the trigger in
-	// triage.handleToolStart on the first non-subagent tool_use of a
-	// wire round. Drains queued user messages onto the provider —
-	// Send for Claude, Steer (with Send fallback on ErrNoActiveTurn)
-	// for Codex. See app_flush_queue.go for the per-item flow.
-	a.triage.SetFlushDispatcher(a.dispatchFlush)
+	// Flush-queue callbacks: drain queued user messages at provider
+	// boundaries and capture message checkpoints once the provider echo
+	// confirms the deferred user row. See app_flush_queue.go.
+	a.configureTriageQueueCallbacks()
 	if err := st.ReconcileProposedPlanStateFromAcceptedTurns(time.Now().UnixMilli()); err != nil {
 		log.Printf("app: reconcile proposed plan state: %v", err)
 	}

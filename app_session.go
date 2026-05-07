@@ -331,6 +331,7 @@ func (a *App) InterruptTurn(threadID string) error {
 		if _, err := a.triage.MarkUserInterrupt(threadID); err != nil {
 			log.Printf("app: interrupt turn: mark user interrupt: %v", err)
 		}
+		a.triage.FlushQueuedItemsNow(threadID)
 	}
 	return nil
 }

@@ -19,20 +19,17 @@ import (
 //  1. Two queue items registered via App.RegisterQueueItem land in
 //     triage's per-thread queue and emit
 //     `provider:queue_state_changed` snapshots after each register.
-//  2. Driving EventTurnStart → EventToolStart (top-level) fires the
-//     flush trigger exactly once for the round.
-//  3. The dispatcher emits `provider:queue_flushed` carrying
-//     (queueItemId, userItemId, message) for every batch entry, then
-//     a follow-up `provider:queue_state_changed` with an empty list
-//     so any client mirroring the queue observes Zone 1 collapsing.
-//  4. Both `user:<turn>:flush:1` and `:flush:2` user_text rows land
-//     in the store with the dispatched message and a pending-send
-//     marker registered against each.
+//  2. Driving EventTurnStart → EventToolStart → EventToolComplete
+//     fires the flush trigger at the first clear provider boundary.
+//  3. The dispatcher emits `provider:queue_state_changed` with an
+//     empty list so any client mirroring the queue observes Zone 1
+//     collapsing, then emits `provider:queue_flushed` for each
+//     successful provider write.
+//  4. No `user:<turn>:flush:*` rows land before provider confirmation;
+//     pending-send markers carry deferred row data instead.
 //  5. Driving the wire echo (EventUserText with provider_item_id meta)
 //     for each row in order consumes the matching pending-send entry
-//     and stamps `provider_item_id` onto the row's Meta — proving the
-//     cross-cutting correlation chain (queue → optimistic persist →
-//     wire confirmation) holds end-to-end.
+//     and creates the row with `provider_item_id` already attached.
 //
 // Per-piece coverage already pins the smaller invariants:
 //   - internal/triage/flush_queue_test.go — trigger predicate + queue
@@ -41,6 +38,7 @@ import (
 //     abort-on-error.
 //   - internal/triage/handle_user_text_test.go — wire correlation +
 //     pending-send pop.
+//
 // This test owns the cross-piece glue: a real wire-shaped event flow
 // from register through wire echo with the dispatcher in place.
 func TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex(t *testing.T) {
@@ -83,9 +81,9 @@ func TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex(t *testing.T) {
 			state.Items[0].ID, state.Items[1].ID, first.ID, second.ID)
 	}
 
-	// 2. Drive EventTurnStart so the round opens; the trigger needs
-	// currentRoundID to be non-empty so it can record "fired this
-	// round" against the round id.
+	// 2. Drive EventTurnStart and a top-level tool lifecycle. Tool
+	// start proves there is active provider work; tool completion is
+	// the boundary where the queued messages can be sent.
 	now := time.Now()
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind:      provider.EventTurnStart,
@@ -96,9 +94,6 @@ func TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex(t *testing.T) {
 		t.Fatalf("EventTurnStart: %v", err)
 	}
 
-	// EventToolStart for a top-level tool (no ParentToolUseID) is the
-	// trigger seam. handleToolStart calls maybeFireFlushTrigger BEFORE
-	// any persistence so the dispatcher sees the queue intact.
 	startMeta, _ := json.Marshal(map[string]any{
 		"toolName": "Bash",
 	})
@@ -113,24 +108,38 @@ func TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("EventToolStart: %v", err)
 	}
+	if len(emittedQueueFlushed(rec)) != 0 {
+		t.Fatalf("tool start should not flush queued messages")
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolComplete,
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		ItemID:    "tool-1",
+		ItemType:  "Bash",
+		Meta:      startMeta,
+		Timestamp: now,
+	}); err != nil {
+		t.Fatalf("EventToolComplete: %v", err)
+	}
 
-	// 3. provider:queue_flushed must have fired carrying both items
+	// 3. provider:queue_flushed must have fired once per accepted item
 	// in original order with deterministic userItemIds.
 	flushedEvts := emittedQueueFlushed(rec)
-	if len(flushedEvts) != 1 {
-		t.Fatalf("queue_flushed emissions: got %d, want exactly 1", len(flushedEvts))
-	}
-	flushed := flushedEvts[0]
-	if flushed.ThreadID != thread.ID {
-		t.Errorf("queue_flushed ThreadID: got %q, want %q", flushed.ThreadID, thread.ID)
-	}
-	if len(flushed.Items) != 2 {
-		t.Fatalf("queue_flushed items: got %d, want 2", len(flushed.Items))
+	if len(flushedEvts) != 2 {
+		t.Fatalf("queue_flushed emissions: got %d, want 2", len(flushedEvts))
 	}
 	wantIDs := []string{"user:0:flush:1", "user:0:flush:2"}
 	wantQueueIDs := []string{first.ID, second.ID}
 	wantMessages := []string{"first queued", "second queued"}
-	for i, item := range flushed.Items {
+	for i, flushed := range flushedEvts {
+		if flushed.ThreadID != thread.ID {
+			t.Errorf("queue_flushed[%d] ThreadID: got %q, want %q", i, flushed.ThreadID, thread.ID)
+		}
+		if len(flushed.Items) != 1 {
+			t.Fatalf("queue_flushed[%d] items: got %d, want 1", i, len(flushed.Items))
+		}
+		item := flushed.Items[0]
 		if item.UserItemID != wantIDs[i] {
 			t.Errorf("flushed[%d].UserItemID: got %q, want %q", i, item.UserItemID, wantIDs[i])
 		}
@@ -142,9 +151,9 @@ func TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex(t *testing.T) {
 		}
 	}
 
-	// Post-flush queue snapshot is empty — fireFlushTriggerOnce
-	// emptied the queue and dispatchFlush emits a follow-up
-	// queue_state_changed so any mirror sees Zone 1 drain.
+	// Post-flush queue snapshot is empty — triage emptied the queue
+	// and dispatchFlush emits a follow-up queue_state_changed so any
+	// mirror sees Zone 1 drain.
 	postFlushState := rec.lastQueueState(t)
 	if postFlushState.ThreadID != thread.ID {
 		t.Errorf("post-flush state ThreadID: got %q, want %q", postFlushState.ThreadID, thread.ID)
@@ -153,31 +162,15 @@ func TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex(t *testing.T) {
 		t.Errorf("post-flush queue items: got %d, want 0", len(postFlushState.Items))
 	}
 
-	// 4. Both user_text rows persisted at the resolved turn index
-	// with the right ids, summaries, and pending-send markers
-	// registered.
+	// 4. Chat-history rows are still absent; they should not render
+	// until the provider confirms the message is in context.
 	items, err := app.store.ListItemsForTurn(thread.ID, 0)
 	if err != nil {
 		t.Fatalf("ListItemsForTurn: %v", err)
 	}
-	flushRowByID := make(map[string]store.Item, 2)
 	for _, item := range items {
 		if item.Kind == "user_text" && strings.HasPrefix(item.ID, "user:0:flush:") {
-			flushRowByID[item.ID] = item
-		}
-	}
-	for i, want := range wantIDs {
-		row, ok := flushRowByID[want]
-		if !ok {
-			t.Errorf("missing flush row %q (got items %+v)", want, items)
-			continue
-		}
-		if row.Summary != wantMessages[i] {
-			t.Errorf("row %s Summary: got %q, want %q", want, row.Summary, wantMessages[i])
-		}
-		if row.Role != "user" || row.Status != "completed" {
-			t.Errorf("row %s role/status: got role=%q status=%q, want user/completed",
-				want, row.Role, row.Status)
+			t.Fatalf("flush row should wait for provider echo, got %+v", item)
 		}
 	}
 
@@ -211,6 +204,13 @@ func TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex(t *testing.T) {
 		stored, found, err := app.store.GetThreadItem(thread.ID, row)
 		if err != nil || !found {
 			t.Fatalf("GetThreadItem(%s) found=%v err=%v", row, found, err)
+		}
+		if stored.Summary != wantMessages[i] {
+			t.Errorf("row %s Summary: got %q, want %q", row, stored.Summary, wantMessages[i])
+		}
+		if stored.Role != "user" || stored.Status != "completed" {
+			t.Errorf("row %s role/status: got role=%q status=%q, want user/completed",
+				row, stored.Role, stored.Status)
 		}
 		var meta map[string]any
 		if stored.Meta != "" && stored.Meta != "{}" {
@@ -261,12 +261,12 @@ func TestParserToTriageSeam_QueuedCommandReplay_StampsRow(t *testing.T) {
 	const aoItemID = "user:0:flush:1"
 	const wireUUID = "queue-uuid-7777"
 
-	// Stand the dispatcher's optimistic-persist + register-pending
-	// state up by hand. The end-to-end Codex test above seeds this via
-	// a real Steer; for this test we want to focus on the parser →
-	// triage seam, not the dispatcher.
+	// Stand the dispatcher's deferred pending-send state up by hand.
+	// The end-to-end Codex test above seeds this via a real Steer; for
+	// this test we want to focus on the parser → triage seam, not the
+	// dispatcher.
 	now := time.Now().UnixMilli()
-	if err := app.triage.PersistItem(store.Item{
+	app.triage.RegisterPendingSendWithDeferredItem(thread.ID, store.Item{
 		ID:        aoItemID,
 		ThreadID:  thread.ID,
 		TurnIndex: 0,
@@ -277,10 +277,7 @@ func TestParserToTriageSeam_QueuedCommandReplay_StampsRow(t *testing.T) {
 		Meta:      `{"attachments":[]}`,
 		CreatedAt: now,
 		UpdatedAt: now,
-	}, nil); err != nil {
-		t.Fatalf("PersistItem: %v", err)
-	}
-	app.triage.RegisterPendingSend(thread.ID, aoItemID, 0)
+	})
 
 	// Reset captures so the assertions below only see emissions
 	// driven by the parser → triage flow.

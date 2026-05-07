@@ -30,6 +30,7 @@ import { getAllPanes, syncThread } from './panes.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
 import { addToast } from './toast.svelte';
 import { getThreadById, getThreads, replaceThread } from './threads.svelte';
+import { parseJsonObject } from '../utils/parseJsonObject';
 import {
   projectApprovalRequest,
   projectApprovalResolution,
@@ -508,20 +509,11 @@ function applyItemUpserts(items: Item[]): void {
     } else {
       itemsByThread.set(item.threadId, [item]);
     }
-    // Zone 2 → chat-history transition: when a user_text row whose
-    // id contains the `:flush:` scope appears in the timeline, the
-    // queued message is now visible to the user as a chat row — Zone
-    // 2's "in flight, headed to history" semantic is satisfied. Drop
-    // the marker on the optimistic upsert (emitted from the
-    // dispatcher's PersistItem at flush time) so the chat-row
-    // appearance and Zone 2 clearance read as one transition rather
-    // than separated by the wire round-trip.
-    //
-    // The wire echo's later upsert (with `provider_item_id` stamped
-    // onto Meta) still flows through here for downstream consumers,
-    // but Zone 2 is already empty by then — confirmFlushedByUserItemId
-    // is idempotent on a missing entry.
-    if (item.kind === 'user_text' && item.id.includes(':flush:')) {
+    // Zone 2 clears only when the provider-confirmed user_text row
+    // arrives. Normal queued sends no longer create an optimistic chat
+    // row at flush time; the row's provider_item_id is the signal that
+    // Claude/Codex accepted it into context.
+    if (item.kind === 'user_text' && item.id.includes(':flush:') && itemHasProviderItemID(item)) {
       confirmFlushedByUserItemId(item.threadId, item.id);
     }
   }
@@ -530,6 +522,12 @@ function applyItemUpserts(items: Item[]): void {
     if (!threadItems) continue;
     pane.upsertItems(threadItems);
   }
+}
+
+function itemHasProviderItemID(item: Item): boolean {
+  const parsed = parseJsonObject(item.meta);
+  const id = parsed?.provider_item_id ?? parsed?.providerItemId;
+  return typeof id === 'string' && id.trim().length > 0;
 }
 
 function applyItemDelta(evt: ItemDeltaEvent): void {
@@ -777,15 +775,11 @@ function applyTurnCompleted(evt: TurnCompletedEvent): void {
     pane.settleTurn(settled);
   }
   syncLatestTurnCompleted(evt);
-  // Send-queue drain is owned by the BACKEND in the new architecture:
-  // the trigger fires on the first non-subagent tool_use of the next
-  // round (see internal/triage/flush_queue.go) and the dispatcher
-  // delivers each queued message via Send / Steer. Frontend just
-  // mirrors backend state via `provider:queue_state_changed` and
-  // `provider:queue_flushed` (handled in applyQueueStateChanged /
-  // applyQueueFlushed below) and clears Zone 2 entries when the
-  // matching `provider:item_event` upsert proves the wire echo
-  // arrived (see applyItemStreamEvent → confirmFlushedByUserItemId).
+  // Send-queue drain is owned by the backend. Triage flushes queued
+  // messages at safe provider boundaries and the frontend mirrors that
+  // state via `provider:queue_state_changed` / `provider:queue_flushed`.
+  // Zone 2 clears only when a matching `provider:item_event` upsert
+  // carries `provider_item_id`, proving the provider echo arrived.
 }
 
 /**
@@ -895,8 +889,8 @@ export function setupEventListeners(): () => void {
   // provider:queue_state_changed — backend per-thread queue snapshot.
   // Authoritative replacement of the frontend's Zone 1 mirror;
   // arrives on RegisterQueueItem / UndoQueuedItems and after the
-  // flush trigger drains the batch. provider:queue_flushed precedes
-  // it on flush so Zone 2 fills before Zone 1 collapses.
+  // flush trigger drains the batch. provider:queue_flushed follows
+  // successful provider writes, so failed items never enter Zone 2.
   const cancelQueueStateChanged = wailsEventOn<QueueStateChangedPayload>(
     'provider:queue_state_changed',
     applyQueueStateChanged,

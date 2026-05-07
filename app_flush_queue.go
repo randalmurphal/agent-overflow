@@ -56,7 +56,7 @@ type QueueStateChangedEvent struct {
 }
 
 // QueueFlushedEvent is emitted by `dispatchFlush` at the start of a
-// trigger fire, before the per-item provider dispatch runs. It carries
+// successful per-item provider dispatch. It carries
 // the (queueItemId → userItemId) mapping the frontend uses to move
 // the items from Zone 1 (retractable queue) to Zone 2 (flushed,
 // awaiting wire-echo confirmation).
@@ -64,7 +64,7 @@ type QueueStateChangedEvent struct {
 // The userItemId is the deterministic AO row id the dispatcher will
 // allocate (`user:<turnIndex>:flush:<n>`). The frontend matches the
 // id against incoming `provider:item_event` upserts: when the
-// corresponding row's Meta gains a `provider_item_id`, the wire echo
+// corresponding row's Meta carries a `provider_item_id`, the wire echo
 // has arrived and the Zone 2 marker can drop.
 type QueueFlushedEvent struct {
 	ThreadID string             `json:"threadId"`
@@ -80,6 +80,21 @@ type QueueFlushedItem struct {
 	QueueItemID string `json:"queueItemId"`
 	UserItemID  string `json:"userItemId"`
 	Message     string `json:"message"`
+}
+
+func (a *App) configureTriageQueueCallbacks() {
+	if a.triage == nil {
+		return
+	}
+	a.triage.SetFlushDispatcher(a.dispatchFlush)
+	a.triage.SetDeferredUserTextConfirmedHook(func(threadID string, item store.Item) {
+		thread, err := a.store.GetThread(threadID)
+		if err != nil {
+			log.Printf("flush queue: load thread for deferred checkpoint %s/%s: %v", threadID, item.ID, err)
+			return
+		}
+		a.captureMessageCheckpoint(thread, item)
+	})
 }
 
 // flushQueuePayload is the wire shape of QueuedFlushItem.Payload.
@@ -98,8 +113,8 @@ type flushQueuePayload struct {
 }
 
 // dispatchFlush is the triage.FlushDispatcher implementation: when
-// the first non-subagent tool_use of a wire round fires, triage
-// hands the queued user messages here for delivery to the provider.
+// triage observes a safe provider boundary, it hands queued user
+// messages here for delivery to the provider.
 //
 // Per-item flow:
 //
@@ -109,14 +124,11 @@ type flushQueuePayload struct {
 //  3. Allocate the AO item id (`user:<turnIndex>:flush:<n>`) — never
 //     collides with the seed `user:<turnIndex>` row or with
 //     `:steer:<n>` rows.
-//  4. Persist the user_text row optimistically through the triage
-//     chokepoint so parent_id validation and ItemsPersisted metric
-//     stay consistent with provider-sourced items.
-//  5. RegisterPendingSend so the wire echo (Claude `--replay-user-
-//     messages` envelope or Codex `item/completed userMessage`)
-//     correlates and stamps `provider_item_id` onto our optimistic
-//     row instead of writing a "wire-only" twin.
-//  6. Call the provider:
+//  4. RegisterPendingSendWithDeferredItem so the wire echo (Claude
+//     `--replay-user-messages` envelope or Codex `item/completed
+//     userMessage`) creates the chat-history row with `provider_item_id`
+//     already attached.
+//  5. Call the provider:
 //     - Claude: sess.Send writes a fresh user envelope to stdin;
 //     Claude's mid-loop drain (query.ts:1547) consumes it on the
 //     next API iteration.
@@ -125,32 +137,27 @@ type flushQueuePayload struct {
 //     ErrNoActiveTurn — the active turn ended between trigger
 //     fire and Steer arrival.
 //
-// On any item error, the dispatcher persists a sibling `error` row
-// and aborts the rest of the batch. Items not yet attempted are
-// dropped from this batch — preserving wire ordering for the
-// SUCCEEDED prefix matters more than best-effort delivery for the
-// failing tail (a partial batch with a wire-visible gap would be
-// more confusing than "two of three messages were not delivered, see
-// error row"). The user can retype the dropped items.
+// On any item error, the dispatcher persists a sibling `error` row,
+// aborts the current batch, and requeues items not yet attempted. The
+// failed item itself never enters Zone 2 because no provider confirmation
+// can arrive for it.
 //
-// Synchronously invoked from triage.fireFlushTriggerOnce after r.mu
-// is released — the dispatcher MAY call back into the router
+// Synchronously invoked from triage after r.mu is released — the
+// dispatcher MAY call back into the router
 // (RegisterPendingSend, PersistItem, NextErrorSequence) without
 // re-entrancy.
 //
-// Two emissions fire BEFORE the per-item dispatch loop so the
-// frontend can move items from Zone 1 (retractable queue) to Zone 2
-// (flushed, awaiting wire echo) before the dispatcher's optimistic
-// user_text row emissions arrive:
+// `provider:queue_state_changed` carries the post-flush snapshot
 //
-//   - `provider:queue_flushed` carries the (queueItemId, userItemId,
-//     message) mapping. The userItemIds are pre-allocated against
-//     the resolved turn index so the frontend can correlate against
-//     the wire echo's Meta-stamped row.
-//   - `provider:queue_state_changed` carries the post-flush snapshot
-//     (empty in the common case) so any client mirroring the queue
-//     (the local webview, remote `--connect` peers) sees Zone 1
-//     drained.
+//	(empty in the common case) so any client mirroring the queue
+//	(the local webview, remote `--connect` peers) sees Zone 1
+//	drained.
+//
+// Each successful per-item provider write then emits
+// `provider:queue_flushed` with the (queueItemId, userItemId, message)
+// mapping. Failed or unattempted items never enter Zone 2, so the
+// frontend cannot get stuck waiting for a provider confirmation that
+// will never arrive.
 func (a *App) dispatchFlush(threadID string, items []triage.QueuedFlushItem) {
 	if len(items) == 0 {
 		return
@@ -168,38 +175,41 @@ func (a *App) dispatchFlush(threadID string, items []triage.QueuedFlushItem) {
 		return
 	}
 
-	flushed := make([]QueueFlushedItem, 0, len(items))
+	flushedItems := make([]QueueFlushedItem, len(items))
 	for i, item := range items {
-		flushed = append(flushed, QueueFlushedItem{
+		flushedItems[i] = QueueFlushedItem{
 			QueueItemID: item.ID,
 			UserItemID:  fmt.Sprintf("user:%d:flush:%d", turnIndex, startSeq+i),
 			Message:     item.Message,
-		})
+		}
 	}
-
-	a.emit("provider:queue_flushed", QueueFlushedEvent{
-		ThreadID: threadID,
-		Items:    flushed,
-	})
-	// fireFlushTriggerOnce already emptied the per-thread queue map
+	// tryFlushQueue already emptied the per-thread queue map
 	// before it invoked us, so the snapshot here is empty in the
 	// common case. Emit explicitly so any client mirroring the queue
-	// observes Zone 1 collapse before the user_text row upserts
-	// arrive.
+	// observes Zone 1 collapse while the user_text rows wait for
+	// provider confirmation.
 	a.emitQueueStateChanged(threadID)
 
 	for i, item := range items {
-		if err := a.dispatchFlushItemWithID(threadID, item, turnIndex, flushed[i].UserItemID); err != nil {
+		if err := a.dispatchFlushItemWithID(threadID, item, turnIndex, flushedItems[i].UserItemID); err != nil {
 			log.Printf("flush dispatch: thread=%s item=%s: %v", threadID, item.ID, err)
+			for _, unattempted := range items[i+1:] {
+				a.triage.RegisterQueueItem(threadID, unattempted)
+			}
+			a.emitQueueStateChanged(threadID)
 			return
 		}
+		a.emit("provider:queue_flushed", QueueFlushedEvent{
+			ThreadID: threadID,
+			Items:    []QueueFlushedItem{flushedItems[i]},
+		})
 	}
 }
 
 // dispatchFlushItemWithID is the per-item flush path with the
 // userItemId pre-allocated. Splits id allocation from the dispatch
-// body so the batch-level dispatchFlush can emit the
-// `provider:queue_flushed` mapping before any persistence runs.
+// body so the batch-level dispatchFlush can keep ids stable while
+// emitting `provider:queue_flushed` only after provider write success.
 func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushItem, turnIndex int, flushItemID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
@@ -288,6 +298,7 @@ func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushIt
 		// here matches the pattern used by sendMessageWithOptions and
 		// steerMessageWithOptions for tests that build a partial App.
 		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
+		a.configureTriageQueueCallbacks()
 	}
 
 	thread, err := a.store.GetThread(threadID)
@@ -308,16 +319,13 @@ func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushIt
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if err := a.triage.PersistItem(userItem, nil); err != nil {
-		return fmt.Errorf("persist user message: %w", err)
-	}
-	a.captureMessageCheckpoint(thread, userItem)
-
 	// Register the pending-send marker BEFORE the provider write so the
 	// wire echo can't race ahead of the marker and miss the
-	// pending-send-present branch in handleUserText. Cleared on
-	// dispatch failure below.
-	a.triage.RegisterPendingSend(threadID, userItem.ID, turnIndex)
+	// pending-send-present branch in handleUserText. The row is deferred:
+	// normal queued sends should not appear in chat history until the
+	// provider confirms they entered context. Cleared on dispatch failure
+	// below.
+	a.triage.RegisterPendingSendWithDeferredItem(threadID, userItem)
 
 	sendOpts := provider.SendOptions{
 		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
@@ -347,7 +355,18 @@ func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushIt
 //
 // Returns 1 for an empty turn (highest+1 with highest=0).
 func (a *App) firstFlushSequenceForTurn(threadID string, turnIndex int) (int, error) {
-	return a.nextSequenceForScope(threadID, turnIndex, "flush")
+	next, err := a.nextSequenceForScope(threadID, turnIndex, "flush")
+	if err != nil {
+		return 0, err
+	}
+	if a.triage == nil {
+		return next, nil
+	}
+	pendingNext := a.triage.MaxPendingFlushSequence(threadID, turnIndex) + 1
+	if pendingNext > next {
+		return pendingNext, nil
+	}
+	return next, nil
 }
 
 // resolveFlushTurnIndex picks the turn index to attribute the
@@ -361,8 +380,8 @@ func (a *App) firstFlushSequenceForTurn(threadID string, turnIndex int) (int, er
 // on the wire bus before the dispatcher's mu acquisition). A flush
 // item that resolves AFTER turn settle should attribute to the next
 // logical turn, not the (now closed) prior one — otherwise the
-// optimistic user_text row lands on a settled turn and the wire echo
-// for it would never arrive (no turn is open).
+// deferred user_text row would later land on a settled turn whose
+// wire echo is no longer associated with an open turn.
 func (a *App) resolveFlushTurnIndex(threadID string) (int, error) {
 	if active, found, err := a.store.GetActiveTurn(threadID); err == nil && found {
 		return active.TurnIndex, nil
@@ -463,7 +482,7 @@ func (a *App) persistFlushDispatchError(threadID string, turnIndex int, dispatch
 // RegisterQueueItem appends a queued user message to the thread's
 // in-flight queue. Called by the composer when the user submits while
 // a wire round is still active — the message waits in the queue until
-// the next first-tool-use trigger fires (see triage flush_queue.go).
+// the next safe provider boundary (see triage flush_queue.go).
 //
 // The wire-shape options carry attachment IDs and plan refs but NOT
 // resolved attachments / plans — the dispatcher re-resolves at
@@ -514,10 +533,10 @@ func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessag
 		// Defensive: production wires triage in initSubsystems.
 		// Mirrors the lazy-init pattern on Send and Steer.
 		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
-		a.triage.SetFlushDispatcher(a.dispatchFlush)
+		a.configureTriageQueueCallbacks()
 	}
 
-	if a.triage.QueuedFlushItemCount(threadID) >= maxQueueLength() {
+	if a.triage.QueuedFlushItemCount(threadID)+a.triage.DeferredPendingFlushItemCount(threadID) >= maxQueueLength() {
 		return QueuedItem{}, fmt.Errorf("register queue item: queue full (max %d items per thread)", maxQueueLength())
 	}
 

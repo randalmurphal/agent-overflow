@@ -261,6 +261,8 @@ func (r *Router) openTurnSpan(evt provider.ProviderEvent) {
 }
 
 func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
+	defer r.maybeFlushQueueAtBoundary(evt.ThreadID)
+
 	// Two-cadence shape (see internal/triage/AGENTS.md "Wire-round vs
 	// logical-turn"):
 	//

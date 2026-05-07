@@ -1,6 +1,10 @@
 package triage
 
-import "time"
+import (
+	"time"
+
+	"agent-overflow/internal/store"
+)
 
 // pending_send.go owns the pending-send correlation state used by the
 // triage router. The send path registers an entry when an AO-initiated
@@ -20,9 +24,10 @@ import "time"
 // EventUserText arrives. Bounded by user attention (typically 0-1
 // entries per thread); swept at CleanupThread as a safety net.
 type pendingSend struct {
-	AOItemID   string // "user:<turnIndex>"
-	TurnIndex  int
-	EnqueuedAt int64
+	AOItemID     string // "user:<turnIndex>"
+	TurnIndex    int
+	EnqueuedAt   int64
+	DeferredItem *store.Item
 }
 
 // RegisterPendingSend appends a new entry to the per-thread FIFO. The
@@ -31,14 +36,27 @@ type pendingSend struct {
 // for diagnostics on stranded entries and the wall clock at the
 // register call is the natural reference.
 func (r *Router) RegisterPendingSend(threadID, aoItemID string, turnIndex int) {
+	r.registerPendingSend(threadID, aoItemID, turnIndex, nil)
+}
+
+// RegisterPendingSendWithDeferredItem appends a pending-send marker whose
+// timeline row should be created only when the provider echo arrives. Used by
+// normal queued sends: Zone 2 remains visible until EventUserText proves the
+// provider accepted the message into context.
+func (r *Router) RegisterPendingSendWithDeferredItem(threadID string, item store.Item) {
+	r.registerPendingSend(threadID, item.ID, item.TurnIndex, &item)
+}
+
+func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, deferredItem *store.Item) {
 	if threadID == "" || aoItemID == "" {
 		return
 	}
 	r.mu.Lock()
 	r.pendingByThread[threadID] = append(r.pendingByThread[threadID], pendingSend{
-		AOItemID:   aoItemID,
-		TurnIndex:  turnIndex,
-		EnqueuedAt: time.Now().UnixMilli(),
+		AOItemID:     aoItemID,
+		TurnIndex:    turnIndex,
+		EnqueuedAt:   time.Now().UnixMilli(),
+		DeferredItem: deferredItem,
 	})
 	r.mu.Unlock()
 }
