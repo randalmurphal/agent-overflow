@@ -1057,8 +1057,21 @@ func TestDispatchLineSuppressesChildTurnLifecycle(t *testing.T) {
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"child-provider-1","turn":{"id":"turn-child-1"}}}`))
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"child-provider-1","turn":{"id":"turn-child-1","status":"completed"}}}`))
 
-	if len(events) != 0 {
-		t.Fatalf("expected child turn lifecycle notifications to be suppressed, got %+v", events)
+	if len(events) != 1 {
+		t.Fatalf("expected one child terminal status event, got %+v", events)
+	}
+	if events[0].Kind != provider.EventSubagentStatus {
+		t.Fatalf("kind = %q, want %q", events[0].Kind, provider.EventSubagentStatus)
+	}
+	if events[0].ItemID != "call-collab-1" {
+		t.Fatalf("ItemID = %q, want call-collab-1", events[0].ItemID)
+	}
+	var meta map[string]string
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if meta["agent_path"] != "child-provider-1" || meta["status"] != "completed" {
+		t.Fatalf("meta = %+v, want child-provider-1 completed", meta)
 	}
 }
 

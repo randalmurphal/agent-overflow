@@ -96,7 +96,9 @@ func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, 
 // — the sibling completion row carries the final state). The launch
 // and its completion must age out together: returning an orphan launch
 // whose completion was pruned would re-render it as "running"
-// indefinitely. A launch with no completion yet still surfaces.
+// indefinitely. A launch with no completion yet still surfaces unless
+// projection meta explicitly marks it inactive with
+// `live_background_active=false`.
 //
 // Tray decoupling (Tray-A): a launch row also drops out of the tray
 // the moment its host-side process exits, even before the agent has
@@ -119,6 +121,7 @@ func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis i
 		      (
 		        items.is_background = 1
 		        AND items.status = 'running'
+		        AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
 		        AND NOT EXISTS (
 		          SELECT 1 FROM pending_background_task_terminals p
 		           WHERE p.thread_id = items.thread_id

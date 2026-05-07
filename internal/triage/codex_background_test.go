@@ -2,6 +2,7 @@ package triage
 
 import (
 	"encoding/json"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -718,6 +719,32 @@ func buildSpawnAgentMetaWithMessage(t *testing.T, childID, childStatus, message 
 	return buildCollabAgentMetaWithMessage(t, "collab_agent", "spawn_agent", childID, childStatus, message)
 }
 
+func buildSpawnAgentMetaForChildren(t *testing.T, childStatuses map[string]string) json.RawMessage {
+	t.Helper()
+	receiverThreadIDs := make([]string, 0, len(childStatuses))
+	agentsStates := make(map[string]any, len(childStatuses))
+	for childID, status := range childStatuses {
+		receiverThreadIDs = append(receiverThreadIDs, childID)
+		agentsStates[childID] = map[string]any{"status": status}
+	}
+	sort.Strings(receiverThreadIDs)
+	m := map[string]any{
+		"source":      "",
+		"item_status": "completed",
+		"toolName":    "collab_agent",
+		"input": map[string]any{
+			"tool":              "spawn_agent",
+			"receiverThreadIds": receiverThreadIDs,
+			"agentsStates":      agentsStates,
+		},
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal multi-child spawn meta: %v", err)
+	}
+	return out
+}
+
 func buildWaitAgentMetaWithMessage(t *testing.T, childID, childStatus, message string) json.RawMessage {
 	t.Helper()
 	return buildCollabAgentMetaWithMessage(t, "wait_agent", "wait_agent", childID, childStatus, message)
@@ -778,6 +805,221 @@ func TestCodexSubagentRunningChildBackgroundsImmediately(t *testing.T) {
 	}
 }
 
+func TestCodexSubagentInactiveStatusHidesLiveBackgroundWithoutCompletion(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMeta(t, "child-inactive", "running")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-inactive",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-inactive",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-inactive",
+		Meta:      json.RawMessage(`{"agent_path":"child-inactive","status":"completed"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("subagent inactive status: %v", err)
+	}
+
+	live, err := st.ListLiveBackgroundTasks("t1", 0)
+	if err != nil {
+		t.Fatalf("live background tasks: %v", err)
+	}
+	if len(live) != 0 {
+		t.Fatalf("inactive unwaited subagent should not be live background, got %+v", live)
+	}
+	if _, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-inactive")); err != nil || found {
+		t.Fatalf("inactive status should not create completion sibling: found=%v err=%v", found, err)
+	}
+	row, found, err := st.GetThreadItem("t1", "spawn-inactive")
+	if err != nil || !found {
+		t.Fatalf("spawn row missing: found=%v err=%v", found, err)
+	}
+	meta := decodeItemMetaMap(t, row.Meta)
+	if meta["live_background_active"] != false {
+		t.Fatalf("live_background_active = %v, want false", meta["live_background_active"])
+	}
+}
+
+func TestCodexSubagentStatusWaitsForAllChildrenBeforeHidingLiveBackground(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMetaForChildren(t, map[string]string{
+		"child-a": "running",
+		"child-b": "running",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-multi-status",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-multi-status",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-multi-status",
+		Meta:      json.RawMessage(`{"agent_path":"child-a","status":"completed"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("first child status: %v", err)
+	}
+	live, err := st.ListLiveBackgroundTasks("t1", 0)
+	if err != nil {
+		t.Fatalf("live background tasks after first child: %v", err)
+	}
+	if len(live) != 1 || live[0].ID != "spawn-multi-status" {
+		t.Fatalf("spawn should stay live while child-b runs, got %+v", live)
+	}
+	row, found, err := st.GetThreadItem("t1", "spawn-multi-status")
+	if err != nil || !found {
+		t.Fatalf("spawn row missing after first child: found=%v err=%v", found, err)
+	}
+	meta := decodeItemMetaMap(t, row.Meta)
+	if meta["live_background_active"] == false {
+		t.Fatalf("live_background_active should not be false until all children finish: %+v", meta)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-multi-status",
+		Meta:      json.RawMessage(`{"agent_path":"child-b","status":"completed"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("second child status: %v", err)
+	}
+	live, err = st.ListLiveBackgroundTasks("t1", 0)
+	if err != nil {
+		t.Fatalf("live background tasks after second child: %v", err)
+	}
+	if len(live) != 0 {
+		t.Fatalf("spawn should hide after all children finish, got %+v", live)
+	}
+}
+
+func TestCodexSubagentWaitAfterInactiveStatusCreatesCompletion(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMeta(t, "child-inactive-wait", "running")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-inactive-wait",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-inactive-wait",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-inactive-wait",
+		Meta:      json.RawMessage(`{"agent_path":"child-inactive-wait","status":"completed"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("subagent inactive status: %v", err)
+	}
+
+	waitMeta := buildWaitAgentMetaWithMessage(t, "child-inactive-wait", "completed", "Final after wait")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "wait-inactive",
+		ItemType: "wait_agent", TurnID: "turn-0", Meta: waitMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("wait start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "wait-inactive",
+		ItemType: "wait_agent", TurnID: "turn-0", Content: "Final after wait",
+		Meta: waitMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("wait complete: %v", err)
+	}
+
+	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-inactive-wait"))
+	if err != nil || !found {
+		t.Fatalf("subagent completion missing after wait: found=%v err=%v", found, err)
+	}
+	if completion.Summary == "" || completion.CompletionOf != "spawn-inactive-wait" {
+		t.Fatalf("unexpected completion: %+v", completion)
+	}
+}
+
+func TestCodexSubagentWaitCompletionRehydratesPersistedLaunch(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMeta(t, "child-rehydrate", "running")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-rehydrate",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-rehydrate",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+
+	router.mu.Lock()
+	delete(router.codexBackground, "t1")
+	router.mu.Unlock()
+
+	waitMeta := buildWaitAgentMetaWithMessage(t, "child-rehydrate", "completed", "Recovered final output")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "wait-rehydrate",
+		ItemType: "wait_agent", TurnID: "turn-0", Meta: waitMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("wait start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "wait-rehydrate",
+		ItemType: "wait_agent", TurnID: "turn-0", Content: "Recovered final output",
+		Meta: waitMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("wait complete: %v", err)
+	}
+
+	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-rehydrate"))
+	if err != nil || !found {
+		t.Fatalf("rehydrated subagent completion missing: found=%v err=%v", found, err)
+	}
+	if completion.CompletionOf != "spawn-rehydrate" {
+		t.Fatalf("completion_of = %q, want spawn-rehydrate", completion.CompletionOf)
+	}
+}
+
 func TestCodexSubagentCompletionSignalsCreateTranscriptSibling(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -816,6 +1058,55 @@ func TestCodexSubagentCompletionSignalsCreateTranscriptSibling(t *testing.T) {
 	}
 	if siblings[0].CompletionOf != "spawn-abc" {
 		t.Fatalf("completion_of=%q, want spawn-abc", siblings[0].CompletionOf)
+	}
+}
+
+func TestCodexSubagentNotificationRehydratesPersistedLaunch(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMeta(t, "child-notify-rehydrate", "running")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-notify-rehydrate",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-notify-rehydrate",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+
+	router.mu.Lock()
+	delete(router.codexBackground, "t1")
+	router.mu.Unlock()
+
+	notifyMeta, _ := json.Marshal(map[string]any{
+		"agent_path": "child-notify-rehydrate",
+		"status":     "completed",
+		"message":    "Recovered notification output",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentNotification, ThreadID: "t1",
+		Meta: notifyMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("subagent notification: %v", err)
+	}
+
+	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-notify-rehydrate"))
+	if err != nil || !found {
+		t.Fatalf("rehydrated notification sibling missing: found=%v err=%v", found, err)
+	}
+	if completion.CompletionOf != "spawn-notify-rehydrate" {
+		t.Fatalf("completion_of = %q, want spawn-notify-rehydrate", completion.CompletionOf)
+	}
+	if completion.Summary == "" {
+		t.Fatalf("completion summary should be populated: %+v", completion)
 	}
 }
 

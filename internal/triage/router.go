@@ -360,6 +360,8 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		return r.handleBackgroundTaskNotification(evt)
 	case provider.EventSubagentNotification:
 		return r.handleSubagentNotification(evt)
+	case provider.EventSubagentStatus:
+		return r.handleSubagentStatus(evt)
 	case provider.EventTerminalInteraction:
 		return r.handleTerminalInteraction(evt)
 	case provider.EventUserText:
@@ -935,6 +937,10 @@ func (r *Router) handleSubagentNotification(evt provider.ProviderEvent) error {
 		Meta:     evt.Meta,
 	})
 	return r.observeCodexSubagentNotification(evt)
+}
+
+func (r *Router) handleSubagentStatus(evt provider.ProviderEvent) error {
+	return r.observeCodexSubagentStatus(evt)
 }
 
 func (r *Router) emitThreadUpdated(threadID string) {

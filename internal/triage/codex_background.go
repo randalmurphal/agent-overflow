@@ -113,6 +113,23 @@ type agentTerminalResult struct {
 	message string
 }
 
+type pendingSubagentCompletionEmit struct {
+	launchID      string
+	status        string
+	childResults  []agentTerminalResult
+	totalChildren int
+	waitCarrierID string
+}
+
+type pendingSubagentNotificationEmit struct {
+	launchID string
+}
+
+type persistedCodexSpawnLaunch struct {
+	item store.Item
+	meta codexItemMeta
+}
+
 type codexBackgroundCompletionOptions struct {
 	sharedPayloadID string
 	waitCarrierID   string
@@ -231,6 +248,26 @@ func addCodexWaitCarrierMeta(raw json.RawMessage, waitCarrierID string) json.Raw
 		return raw
 	}
 	return mergeRawJSONObject(raw, extra)
+}
+
+func codexSubagentTerminalMeta(childID, status string, allTerminal bool) json.RawMessage {
+	childID = strings.TrimSpace(childID)
+	status = strings.TrimSpace(status)
+	if status == "" {
+		status = "completed"
+	}
+	meta := map[string]any{
+		"codex_child_terminal_statuses": map[string]string{childID: status},
+	}
+	if allTerminal {
+		meta["live_background_active"] = false
+		meta["codex_child_status"] = status
+	}
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		return nil
+	}
+	return encoded
 }
 
 func (o *cappedCommandOutput) Append(delta string) {
@@ -1207,54 +1244,27 @@ func (r *Router) resolveSubagentsForWait(evt provider.ProviderEvent) error {
 
 	r.mu.Lock()
 	state := r.codexBackground[evt.ThreadID]
-	if state == nil {
-		r.mu.Unlock()
-		return nil
-	}
-	type pendingEmit struct {
-		launchID      string
-		status        string
-		childResults  []agentTerminalResult
-		totalChildren int
-		waitCarrierID string
-	}
-	toEmit := make([]pendingEmit, 0)
-	for id, tracker := range state.spawnAgent {
-		if !tracker.backgrounded {
-			continue
-		}
-		// A backgrounded spawn_agent still holds receiverThreadIDs
-		// pointing at its children. If any of those children just
-		// reached a terminal state in this wait, the spawn is done.
-		terminalStatus := ""
-		childResults := make([]agentTerminalResult, 0, len(tracker.receiverThreadIDs))
-		allDone := len(tracker.receiverThreadIDs) > 0
-		for _, childID := range tracker.receiverThreadIDs {
-			if terminal, ok := terminalChildren[childID]; ok {
-				if terminalStatus == "" {
-					terminalStatus = terminal.status
-				}
-				if terminal.ordinal <= 0 {
-					terminal.ordinal = len(childResults) + 1
-				}
-				childResults = append(childResults, terminal)
-			} else {
-				allDone = false
+	toEmit := make([]pendingSubagentCompletionEmit, 0)
+	emitted := make(map[string]struct{})
+	if state != nil {
+		for id, tracker := range state.spawnAgent {
+			if !tracker.backgrounded {
+				continue
+			}
+			if pending, ok := pendingSubagentWaitEmit(id, tracker.receiverThreadIDs, terminalChildren, waitCarrierID); ok {
+				toEmit = append(toEmit, pending)
+				emitted[id] = struct{}{}
+				delete(state.spawnAgent, id)
 			}
 		}
-		if !allDone || terminalStatus == "" {
-			continue
-		}
-		toEmit = append(toEmit, pendingEmit{
-			launchID:      id,
-			status:        terminalStatus,
-			childResults:  childResults,
-			totalChildren: len(tracker.receiverThreadIDs),
-			waitCarrierID: waitCarrierID,
-		})
-		delete(state.spawnAgent, id)
 	}
 	r.mu.Unlock()
+
+	persisted, err := r.persistedSubagentWaitEmits(evt.ThreadID, terminalChildren, waitCarrierID, emitted)
+	if err != nil {
+		return err
+	}
+	toEmit = append(toEmit, persisted...)
 
 	for _, p := range toEmit {
 		sort.Slice(p.childResults, func(i, j int) bool {
@@ -1281,6 +1291,60 @@ func (r *Router) resolveSubagentsForWait(evt provider.ProviderEvent) error {
 		}
 	}
 	return nil
+}
+
+func pendingSubagentWaitEmit(launchID string, receiverThreadIDs []string, terminalChildren map[string]agentTerminalResult, waitCarrierID string) (pendingSubagentCompletionEmit, bool) {
+	terminalStatus := ""
+	childResults := make([]agentTerminalResult, 0, len(receiverThreadIDs))
+	allDone := len(receiverThreadIDs) > 0
+	for _, childID := range receiverThreadIDs {
+		if terminal, ok := terminalChildren[childID]; ok {
+			if terminalStatus == "" {
+				terminalStatus = terminal.status
+			}
+			if terminal.ordinal <= 0 {
+				terminal.ordinal = len(childResults) + 1
+			}
+			childResults = append(childResults, terminal)
+		} else {
+			allDone = false
+		}
+	}
+	if !allDone || terminalStatus == "" {
+		return pendingSubagentCompletionEmit{}, false
+	}
+	return pendingSubagentCompletionEmit{
+		launchID:      launchID,
+		status:        terminalStatus,
+		childResults:  childResults,
+		totalChildren: len(receiverThreadIDs),
+		waitCarrierID: waitCarrierID,
+	}, true
+}
+
+func (r *Router) persistedSubagentWaitEmits(
+	threadID string,
+	terminalChildren map[string]agentTerminalResult,
+	waitCarrierID string,
+	already map[string]struct{},
+) ([]pendingSubagentCompletionEmit, error) {
+	if len(terminalChildren) == 0 {
+		return nil, nil
+	}
+	launches, err := r.listPersistedCodexSpawnLaunches(threadID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]pendingSubagentCompletionEmit, 0)
+	for _, launch := range launches {
+		if _, ok := already[launch.item.ID]; ok {
+			continue
+		}
+		if pending, ok := pendingSubagentWaitEmit(launch.item.ID, launch.meta.ReceiverThreadIDs, terminalChildren, waitCarrierID); ok {
+			out = append(out, pending)
+		}
+	}
+	return out, nil
 }
 
 // subagentStatusToItemStatusMeta translates a CollabAgentStatus value
@@ -1350,6 +1414,108 @@ func (r *Router) observeCodexTurnComplete(threadID string) {
 	}
 }
 
+// observeCodexSubagentStatus handles child-thread lifecycle signals that prove
+// a spawned Codex subagent is no longer actively working. This deliberately
+// does NOT synthesize a completion sibling: wait_agent and
+// <subagent_notification> remain the only transcript-result boundaries. The
+// persisted launch row keeps status=running for historical compatibility, but
+// its meta records live_background_active=false once every child is terminal so
+// live background queries can hide inactive, unwaited children.
+func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
+	parsed := decodeCodexSubagentSignalMeta(evt.Meta)
+	childID := strings.TrimSpace(parsed.AgentPath)
+	if childID == "" {
+		return nil
+	}
+	status := strings.TrimSpace(parsed.Status)
+	if status == "" {
+		status = "completed"
+	}
+
+	threadID := evt.ThreadID
+	launchID := strings.TrimSpace(evt.ItemID)
+
+	launch, found, err := r.findPersistedCodexSpawnLaunch(threadID, launchID, childID, true)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+
+	allTerminal, err := r.markCodexSpawnChildTerminal(launch.item, launch.meta, childID, status)
+	if err != nil {
+		return err
+	}
+	r.observeCodexSpawnChildTerminalInMemory(threadID, launch.item.ID, allTerminal)
+	if allTerminal {
+		r.emitCodexBackgroundTasksChanged(threadID)
+	}
+	return nil
+}
+
+func (r *Router) observeCodexSpawnChildTerminalInMemory(threadID, launchID string, allTerminal bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	state := r.codexBackground[threadID]
+	if state == nil {
+		return
+	}
+	tracker := state.spawnAgent[launchID]
+	if tracker == nil {
+		return
+	}
+	if allTerminal {
+		tracker.hasRunningChildren = false
+		delete(state.spawnAgent, launchID)
+	}
+}
+
+func (r *Router) markCodexSpawnChildTerminal(launch store.Item, meta codexItemMeta, childID, status string) (bool, error) {
+	terminalStatuses := decodeCodexChildTerminalStatuses(json.RawMessage(launch.Meta))
+	terminalStatuses[childID] = status
+	allTerminal := allCodexSpawnChildrenTerminal(meta.ReceiverThreadIDs, terminalStatuses)
+	launch.Meta = mergeItemMetaJSON(launch.Meta, codexSubagentTerminalMeta(childID, status, allTerminal))
+	launch.UpdatedAt = time.Now().UnixMilli()
+	return allTerminal, r.persistItem(launch, nil)
+}
+
+func (r *Router) listPersistedCodexSpawnLaunches(threadID string) ([]persistedCodexSpawnLaunch, error) {
+	launches, err := r.store.ListRunningBackgroundToolCalls(threadID)
+	if err != nil {
+		return nil, fmt.Errorf("codex-background list spawn launches for %s: %w", threadID, err)
+	}
+	out := make([]persistedCodexSpawnLaunch, 0, len(launches))
+	for _, launch := range launches {
+		if launch.ToolName != "collab_agent" {
+			continue
+		}
+		meta := decodeCodexItemMeta(json.RawMessage(launch.Meta))
+		out = append(out, persistedCodexSpawnLaunch{item: launch, meta: meta})
+	}
+	return out, nil
+}
+
+func (r *Router) findPersistedCodexSpawnLaunch(threadID, launchID, childID string, requireChild bool) (persistedCodexSpawnLaunch, bool, error) {
+	launches, err := r.listPersistedCodexSpawnLaunches(threadID)
+	if err != nil {
+		return persistedCodexSpawnLaunch{}, false, err
+	}
+	for _, launch := range launches {
+		if launchID != "" && launch.item.ID != launchID {
+			continue
+		}
+		if requireChild && !containsString(launch.meta.ReceiverThreadIDs, childID) {
+			continue
+		}
+		if launchID != "" || containsString(launch.meta.ReceiverThreadIDs, childID) {
+			return launch, true, nil
+		}
+	}
+	return persistedCodexSpawnLaunch{}, false, nil
+}
+
 // observeCodexSubagentNotification handles the detached-child closure
 // signal: Codex core injects a <subagent_notification> tag into the
 // parent's next user message when a backgrounded child finished with no
@@ -1363,7 +1529,7 @@ func (r *Router) observeCodexTurnComplete(threadID string) {
 // handleSubagentNotification surfaces them — we log per failure but the
 // first error still escapes rather than silently leaving the tray stale.
 func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) error {
-	parsed := decodeSubagentNotificationMeta(evt.Meta)
+	parsed := decodeCodexSubagentSignalMeta(evt.Meta)
 	if parsed.AgentPath == "" {
 		return nil
 	}
@@ -1371,33 +1537,34 @@ func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) er
 
 	r.mu.Lock()
 	state := r.codexBackground[threadID]
-	if state == nil {
-		r.mu.Unlock()
-		return nil
-	}
-	type notificationEmit struct {
-		launchID string
-	}
-	toEmit := make([]notificationEmit, 0)
-	if launchID := strings.TrimSpace(evt.ItemID); launchID != "" {
-		if tracker := state.spawnAgent[launchID]; tracker != nil && tracker.backgrounded {
-			toEmit = append(toEmit, notificationEmit{launchID: launchID})
-			delete(state.spawnAgent, launchID)
+	toEmit := make([]pendingSubagentNotificationEmit, 0)
+	if state != nil {
+		if launchID := strings.TrimSpace(evt.ItemID); launchID != "" {
+			if tracker := state.spawnAgent[launchID]; tracker != nil && tracker.backgrounded {
+				toEmit = append(toEmit, pendingSubagentNotificationEmit{launchID: launchID})
+				delete(state.spawnAgent, launchID)
+			}
 		}
-	}
-	if len(toEmit) == 0 {
-		for id, tracker := range state.spawnAgent {
-			if !tracker.backgrounded {
-				continue
+		if len(toEmit) == 0 {
+			for id, tracker := range state.spawnAgent {
+				if !tracker.backgrounded {
+					continue
+				}
+				if !containsString(tracker.receiverThreadIDs, parsed.AgentPath) {
+					continue
+				}
+				toEmit = append(toEmit, pendingSubagentNotificationEmit{launchID: id})
+				delete(state.spawnAgent, id)
 			}
-			if !containsString(tracker.receiverThreadIDs, parsed.AgentPath) {
-				continue
-			}
-			toEmit = append(toEmit, notificationEmit{launchID: id})
-			delete(state.spawnAgent, id)
 		}
 	}
 	r.mu.Unlock()
+
+	if persisted, err := r.persistedSubagentNotificationEmits(threadID, strings.TrimSpace(evt.ItemID), parsed.AgentPath, toEmit); err != nil {
+		return err
+	} else {
+		toEmit = append(toEmit, persisted...)
+	}
 
 	// Translate CollabAgentStatus → item_status so the sibling row
 	// carries a consistent outcome marker.
@@ -1420,6 +1587,38 @@ func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) er
 		}
 	}
 	return firstErr
+}
+
+func (r *Router) persistedSubagentNotificationEmits(
+	threadID string,
+	launchID string,
+	agentPath string,
+	already []pendingSubagentNotificationEmit,
+) ([]pendingSubagentNotificationEmit, error) {
+	seen := make(map[string]struct{}, len(already))
+	for _, item := range already {
+		seen[item.launchID] = struct{}{}
+	}
+	launches, err := r.listPersistedCodexSpawnLaunches(threadID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]pendingSubagentNotificationEmit, 0, 1)
+	for _, launch := range launches {
+		if _, ok := seen[launch.item.ID]; ok {
+			continue
+		}
+		if launchID != "" {
+			if launch.item.ID == launchID {
+				out = append(out, pendingSubagentNotificationEmit{launchID: launch.item.ID})
+			}
+			continue
+		}
+		if containsString(launch.meta.ReceiverThreadIDs, agentPath) {
+			out = append(out, pendingSubagentNotificationEmit{launchID: launch.item.ID})
+		}
+	}
+	return out, nil
 }
 
 // stampCodexItemBackgrounded flips is_background=true on a persisted
@@ -1774,23 +1973,47 @@ func formatAgentCompletionMessage(result agentTerminalResult, totalChildren int)
 	return header + ":\n" + message
 }
 
-// subagentNotificationMeta mirrors the frontend-facing shape emitted by
-// session.go's <subagent_notification> parser.
-type subagentNotificationMeta struct {
+// codexSubagentSignalMeta is the common shape for Codex child-agent
+// terminal signals. <subagent_notification> includes Message and creates
+// transcript history; EventSubagentStatus omits Message and only updates
+// live background projection.
+type codexSubagentSignalMeta struct {
 	AgentPath string `json:"agent_path"`
 	Status    string `json:"status"`
 	Message   string `json:"message"`
 }
 
-func decodeSubagentNotificationMeta(raw json.RawMessage) subagentNotificationMeta {
+func decodeCodexSubagentSignalMeta(raw json.RawMessage) codexSubagentSignalMeta {
 	if len(raw) == 0 {
-		return subagentNotificationMeta{}
+		return codexSubagentSignalMeta{}
 	}
-	var m subagentNotificationMeta
+	var m codexSubagentSignalMeta
 	if err := json.Unmarshal(raw, &m); err != nil {
-		return subagentNotificationMeta{}
+		return codexSubagentSignalMeta{}
 	}
 	return m
+}
+
+func decodeCodexChildTerminalStatuses(raw json.RawMessage) map[string]string {
+	var parsed struct {
+		Statuses map[string]string `json:"codex_child_terminal_statuses"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &parsed) != nil || parsed.Statuses == nil {
+		return make(map[string]string)
+	}
+	return parsed.Statuses
+}
+
+func allCodexSpawnChildrenTerminal(receiverThreadIDs []string, terminalStatuses map[string]string) bool {
+	if len(receiverThreadIDs) == 0 {
+		return false
+	}
+	for _, childID := range receiverThreadIDs {
+		if strings.TrimSpace(terminalStatuses[childID]) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func containsString(values []string, target string) bool {

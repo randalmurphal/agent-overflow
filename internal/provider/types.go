@@ -127,6 +127,12 @@ const (
 	// Codex injected the notification into the parent's next user turn.
 	EventSubagentNotification EventKind = "subagent_notification"
 
+	// EventSubagentStatus is an internal Codex child-thread lifecycle signal.
+	// It marks spawned child work inactive for live background-task projection
+	// without creating the transcript completion row that only wait_agent or a
+	// subagent notification should create.
+	EventSubagentStatus EventKind = "subagent_status"
+
 	// EventTerminalInteraction surfaces Codex's
 	// `TerminalInteractionNotification` — the wire signal when the model
 	// calls `write_stdin` against a backgrounded unified-exec PTY. An
@@ -190,6 +196,7 @@ var AllEventKinds = []EventKind{
 	EventBackgroundTaskTerminal,
 	EventBackgroundTaskNotification,
 	EventSubagentNotification,
+	EventSubagentStatus,
 	EventTerminalInteraction,
 	EventUserText,
 	EventDiff,

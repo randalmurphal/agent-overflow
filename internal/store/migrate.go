@@ -622,7 +622,9 @@ ALTER TABLE threads ADD COLUMN last_read_at INTEGER;
 		SQL: `
 CREATE INDEX IF NOT EXISTS idx_items_live_background
   ON items(thread_id, id)
-  WHERE is_background = 1 AND status = 'running';
+  WHERE is_background = 1
+    AND status = 'running'
+    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0;
 `,
 	},
 	{
@@ -1262,6 +1264,25 @@ BEGIN
 END;
 `,
 	},
+	{
+		Version: 45,
+		Name:    "items_live_background_active_index",
+		// Codex child-agent launches can remain status='running' until a
+		// later wait_agent/subagent_notification creates the transcript
+		// completion row, even after every child has already stopped. The
+		// tray query filters those inactive projection rows with
+		// live_background_active=false, so the partial index needs the same
+		// predicate or accumulated inactive rows become a per-refresh JSON
+		// filter cost.
+		SQL: `
+DROP INDEX IF EXISTS idx_items_live_background;
+CREATE INDEX idx_items_live_background
+  ON items(thread_id, id)
+  WHERE is_background = 1
+    AND status = 'running'
+    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0;
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so
@@ -1560,7 +1581,9 @@ CREATE INDEX idx_items_meta_task_id
  WHERE json_extract(meta, '$.task_id') IS NOT NULL;
 CREATE INDEX idx_items_live_background
     ON items(thread_id, id)
- WHERE is_background = 1 AND status = 'running';
+ WHERE is_background = 1
+   AND status = 'running'
+   AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0;
 
 -- Rebuild the payload GC trigger on the rebuilt table.
 CREATE TRIGGER trg_items_gc_payload
@@ -1672,7 +1695,9 @@ CREATE INDEX idx_items_meta_task_id
  WHERE json_extract(meta, '$.task_id') IS NOT NULL;
 CREATE INDEX idx_items_live_background
     ON items(thread_id, id)
- WHERE is_background = 1 AND status = 'running';
+ WHERE is_background = 1
+   AND status = 'running'
+   AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0;
 
 CREATE TRIGGER trg_items_gc_payload
 AFTER DELETE ON items
@@ -1774,7 +1799,9 @@ CREATE INDEX idx_items_meta_task_id
  WHERE json_extract(meta, '$.task_id') IS NOT NULL;
 CREATE INDEX idx_items_live_background
     ON items(thread_id, id)
- WHERE is_background = 1 AND status = 'running';
+ WHERE is_background = 1
+   AND status = 'running'
+   AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0;
 
 CREATE TRIGGER trg_items_gc_payload
 AFTER DELETE ON items
@@ -1875,7 +1902,9 @@ CREATE INDEX idx_items_meta_task_id
  WHERE json_extract(meta, '$.task_id') IS NOT NULL;
 CREATE INDEX idx_items_live_background
     ON items(thread_id, id)
- WHERE is_background = 1 AND status = 'running';
+ WHERE is_background = 1
+   AND status = 'running'
+   AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0;
 
 CREATE TRIGGER trg_items_gc_payload
 AFTER DELETE ON items
@@ -2000,7 +2029,9 @@ CREATE INDEX idx_items_meta_task_id
  WHERE json_extract(meta, '$.task_id') IS NOT NULL;
 CREATE INDEX idx_items_live_background
     ON items(thread_id, id)
- WHERE is_background = 1 AND status = 'running';
+ WHERE is_background = 1
+   AND status = 'running'
+   AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0;
 
 CREATE TRIGGER trg_items_gc_payload
 AFTER DELETE ON items

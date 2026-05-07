@@ -514,6 +514,38 @@ func TestListLiveBackgroundTasks_RunningOnly(t *testing.T) {
 	}
 }
 
+func TestListLiveBackgroundTasks_ExcludesInactiveCodexSubagent(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "codex")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	if err := s.InsertItem(Item{
+		ID:           "spawn-inactive",
+		ThreadID:     "t",
+		TurnIndex:    0,
+		ItemIndex:    0,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "running",
+		Summary:      "spawn-inactive",
+		IsBackground: true,
+		ToolName:     "collab_agent",
+		Meta:         `{"live_background_active":false}`,
+		CreatedAt:    1000,
+	}); err != nil {
+		t.Fatalf("seed inactive spawn: %v", err)
+	}
+
+	got, err := s.ListLiveBackgroundTasks("t", 0)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("inactive Codex subagent should be excluded, got %+v", got)
+	}
+}
+
 func TestListLiveBackgroundTasks_WithinCompletionCutoff(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {

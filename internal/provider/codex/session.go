@@ -841,6 +841,9 @@ func (s *Session) dispatchLine(line []byte) {
 			s.rememberAgentMetaForProviderThread(providerThreadID, msg.Params)
 		}
 		if parentToolUseID != "" && isChildTurnLifecycleNotification(msg.Method) {
+			if evt := s.childLifecycleEvent(msg.Method, msg.Params, parentToolUseID); evt != nil {
+				s.onEvent(*evt)
+			}
 			return
 		}
 
@@ -1117,6 +1120,49 @@ func isChildTurnLifecycleNotification(method string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func (s *Session) childLifecycleEvent(method string, params json.RawMessage, parentToolUseID string) *provider.ProviderEvent {
+	if method != "turn/completed" {
+		return nil
+	}
+	providerThreadID := providerThreadIDFromParams(params)
+	if providerThreadID == "" {
+		return nil
+	}
+	status := codexSubagentStatusFromTurnCompleted(params)
+	if status == "" {
+		return nil
+	}
+	meta, err := json.Marshal(map[string]string{
+		"agent_path": providerThreadID,
+		"status":     status,
+	})
+	if err != nil {
+		return nil
+	}
+	return &provider.ProviderEvent{
+		Kind:            provider.EventSubagentStatus,
+		ThreadID:        s.threadID,
+		ItemID:          parentToolUseID,
+		ParentToolUseID: parentToolUseID,
+		Meta:            meta,
+		Timestamp:       time.Now(),
+	}
+}
+
+func codexSubagentStatusFromTurnCompleted(params json.RawMessage) string {
+	wire := decodeTurnCompletedParams(params)
+	switch wire.Turn.Status {
+	case "completed":
+		return "completed"
+	case "failed":
+		return "errored"
+	case "interrupted":
+		return "interrupted"
+	default:
+		return ""
 	}
 }
 

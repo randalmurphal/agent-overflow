@@ -1777,8 +1777,10 @@ func TestMigrationV21AddsLiveBackgroundIndex(t *testing.T) {
 	).Scan(&sqlText); err != nil {
 		t.Fatalf("read idx_items_live_background sql: %v", err)
 	}
-	if !strings.Contains(sqlText, "is_background = 1") || !strings.Contains(sqlText, "status = 'running'") {
-		t.Errorf("expected partial predicate on is_background=1 AND status='running', got: %s", sqlText)
+	if !strings.Contains(sqlText, "is_background = 1") ||
+		!strings.Contains(sqlText, "status = 'running'") ||
+		!strings.Contains(sqlText, "live_background_active") {
+		t.Errorf("expected partial predicate on active running background rows, got: %s", sqlText)
 	}
 
 	// The launch branch of ListLiveBackgroundTasks filters by
@@ -1788,7 +1790,10 @@ func TestMigrationV21AddsLiveBackgroundIndex(t *testing.T) {
 	rows, err := s.db.Query(
 		`EXPLAIN QUERY PLAN
 		 SELECT id FROM items
-		  WHERE thread_id = ? AND is_background = 1 AND status = 'running'`,
+		  WHERE thread_id = ?
+		    AND is_background = 1
+		    AND status = 'running'
+		    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0`,
 		"t",
 	)
 	if err != nil {
