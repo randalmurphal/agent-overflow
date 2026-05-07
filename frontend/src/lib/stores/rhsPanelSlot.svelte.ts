@@ -48,11 +48,25 @@ export interface PanelContext {
   replaceThread(thread: Thread): void;
 }
 
+/**
+ * Builds a stable PanelContext for the given pane.
+ *
+ * `threadId` and `workspacePath` are exposed as GETTERS so the returned
+ * object's identity is stable across `pane.thread` reassignments (which
+ * happen on every turn_started, turn_completed, usage event, and
+ * thread:updated event — many per chat message). Reactive consumers
+ * reading `ctx.threadId` still pick up changes via the getter.
+ *
+ * Without getter-based stability, the factory ran inside RhsSidebarShell's
+ * `$derived(makePanelContext(pane))` and re-created the ctx object on
+ * every pane.thread reassignment, propagating prop-identity churn into
+ * PlanSidebar and visibly flickering the sidebar surface.
+ */
 export function makePanelContext(pane: ThreadPane, paneId = 'main'): PanelContext {
   return {
-    threadId: pane.threadId,
     paneId,
-    workspacePath: pane.thread?.workspacePath,
+    get threadId() { return pane.threadId; },
+    get workspacePath() { return pane.thread?.workspacePath; },
     close: () => pane.closeRhsPanel(),
     replaceThread: syncThread,
   };

@@ -76,10 +76,18 @@
   });
 
   // Reset and reload markdown + comments whenever the current plan id or payload changes.
+  // CRITICAL: read the local `threadId` $derived, NOT `ctx.threadId` directly.
+  // ctx.threadId is a getter that reads pane.thread reactively — pane.thread
+  // is reassigned to a new (same-value) Thread reference many times per chat
+  // message via patchThreadDurableStatus / updateThreadUsageCache / syncThread.
+  // Reading the getter inside an effect tracks pane.thread itself, so the
+  // effect fires per chat message and blanks planMarkdown. The local $derived
+  // has value-equality short-circuiting; reading it tracks only the actual
+  // string-id value, which is genuinely stable across thread mutations.
   $effect(() => {
     const planId = planKey;
     const payloadId = planPayloadIdKey;
-    const tid = ctx.threadId;
+    const tid = threadId;
     untrack(() => {
       planMarkdown = null;
       planLoadError = null;
