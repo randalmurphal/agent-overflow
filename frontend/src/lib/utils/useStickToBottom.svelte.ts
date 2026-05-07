@@ -127,6 +127,20 @@ export interface UseStickToBottomController {
   /** "User wants the bottom now" — called by ScrollToBottomButton, send. */
   forceStick(opts?: { animation?: 'instant' | 'spring' }): void;
   /**
+   * Flip intent flags to sticky-bottom WITHOUT writing scrollTop. Pairs
+   * with `listRef.scrollToIndex(last, 'end')` — virtua positioned the
+   * geometry, this just resumes streaming follow.
+   */
+  markAtBottom(): void;
+  /**
+   * Snap to bottom, then re-snap on every positive contentRO delta during
+   * `settleMs` (default `RETAIN_ANIMATION_DURATION_MS`) before allowing
+   * spring chase. For surfaces with no virtua measurement loop
+   * (Discussion's ChannelView) where async typesetting would otherwise
+   * spring-chase visibly.
+   */
+  forceStickAndSettle(opts?: { settleMs?: number }): void;
+  /**
    * Controlled non-native scroll animation for arbitrary timeline jumps.
    * This owns the scrollTop writes so programmatic scroll tagging stays
    * in one place and the sticky-bottom spring cannot race the jump.
@@ -203,6 +217,12 @@ export function createUseStickToBottomController(
   // user scroll already has a meaningful direction baseline; reset to
   // -1 on detach (re-seeded by the next attach).
   let lastUntaggedScrollTop = -1;
+  // Active settle window deadline (epoch-ish ms via nowMs()). 0 = inactive;
+  // any value <= now is also inactive, which is the natural expiration
+  // path. Used by ChannelView's initial-load path (forceStickAndSettle)
+  // to re-snap on contentRO positive deltas instead of springing while
+  // async Streamdown growth is still landing.
+  let settleUntil = 0;
 
   // ===== Geometry =====
   function targetScrollTop(): number {
@@ -392,9 +412,16 @@ export function createUseStickToBottomController(
         // geometric near-bottom (isNearBottomState) momentarily flipped
         // false when the bottom moved out from under us.
         if (isAtBottomState && !escapedFromLockState && pauseDepth === 0) {
-          lastGrewAt = nowMs();
-          stopRequested = false;
-          startSpringIfNeeded();
+          if (nowMs() < settleUntil) {
+            // Settle window (forceStickAndSettle): re-snap instead of
+            // springing. Only valid on virtua-free surfaces — there's
+            // no $fixScrollJump above-viewport compensation to fight.
+            writeScrollTop(targetScrollTop());
+          } else {
+            lastGrewAt = nowMs();
+            stopRequested = false;
+            startSpringIfNeeded();
+          }
         }
       } else if (delta < 0) {
         // Negative delta: re-stick if we're now near bottom and not
@@ -555,6 +582,10 @@ export function createUseStickToBottomController(
       accumulated = 0;
       lastGrewAt = 0;
       isAtBottomState = false;
+      // User explicitly broke from auto-follow; abandon any active
+      // settle window so the next time we re-engage, the contentRO
+      // takes the spring path again (settle is restoration-only).
+      settleUntil = 0;
     }
   }
 
@@ -638,6 +669,21 @@ export function createUseStickToBottomController(
       writeScrollTop(target);
       startSpringIfNeeded();
     }
+  }
+
+  function markAtBottom(): void {
+    // Flag-only counterpart to forceStick({animation:'instant'}): caller
+    // already positioned the geometry, we just resume streaming follow.
+    setEscapedFromLock(false);
+    stopRequested = false;
+    isAtBottomState = true;
+    refreshIsNearBottom();
+  }
+
+  function forceStickAndSettle(opts?: { settleMs?: number }): void {
+    forceStick({ animation: 'instant' });
+    const ms = opts?.settleMs ?? RETAIN_ANIMATION_DURATION_MS;
+    settleUntil = nowMs() + ms;
   }
 
   function notifyContentMaybeGrew(): void {
@@ -727,6 +773,7 @@ export function createUseStickToBottomController(
     lastTickAt = null;
     touchStartY = null;
     lastUntaggedScrollTop = -1;
+    settleUntil = 0;
     scrollEl = undefined;
     contentEl = undefined;
   }
@@ -748,6 +795,8 @@ export function createUseStickToBottomController(
     attach,
     detach,
     forceStick,
+    markAtBottom,
+    forceStickAndSettle,
     animateScrollTo,
     stopScroll,
     setEscapedFromLock,

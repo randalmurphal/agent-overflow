@@ -282,8 +282,11 @@
   // pane.loading flips false, which is too late: the spring has already
   // started. Setting escapedFromLockState=true synchronously here
   // short-circuits startSpringIfNeeded; restoreInitialPosition then
-  // either calls forceStick({animation:'instant'}) (clears escape, snaps
-  // to bottom) or stopScroll() + setEscapedFromLock(true) +
+  // either calls listRef.scrollToIndex(last, 'end') + markAtBottom()
+  // (virtua's measurement loop self-corrects across row resize ticks
+  // and lands the user at the eventual bottom; markAtBottom just flips
+  // the controller intent flag for streaming follow on re-entry into
+  // an active thread) or stopScroll() + setEscapedFromLock(true) +
   // scrollToIndex() (keeps escape true, jumps to anchor) — both leave
   // the controller in the correct end state without any visible transit.
   $effect.pre(() => {
@@ -308,6 +311,26 @@
     void restoreInitialPosition(threadId, ++restoreToken);
   });
 
+  // Bottom-snapshot restore. Routes through virtua's scrollToIndex
+  // measurement loop (self-corrects across row resize ticks) rather
+  // than a one-shot forceStick scrollTop write, which would commit to
+  // a stale scrollHeight while virtua's lazy row measurement and
+  // Streamdown's async typesetting are still growing rows. See
+  // frontend/CLAUDE.md § Scroll architecture for the contract.
+  function restoreToBottom(): void {
+    if (!listRef) return;
+    const lastIndex = groupedNodes.length - 1;
+    if (lastIndex < 0) {
+      stick.markAtBottom();
+      saveScrollSnapshot();
+      return;
+    }
+    stick.stopScroll();
+    listRef.scrollToIndex(lastIndex, { align: 'end' });
+    stick.markAtBottom();
+    saveScrollSnapshot();
+  }
+
   async function restoreInitialPosition(threadId: string, token: number): Promise<void> {
     const release = stick.pauseAutoScroll();
     try {
@@ -317,8 +340,7 @@
 
       const snap = getThreadScrollSnapshot(threadId);
       if (!snap || snap.kind === 'bottom') {
-        stick.forceStick({ animation: 'instant' });
-        saveScrollSnapshot();
+        restoreToBottom();
         return;
       }
 
@@ -327,16 +349,14 @@
       const found = await pane.loadUntilItem(snap.itemId);
       if (token !== restoreToken || pane.threadId !== threadId || !listRef) return;
       if (!found) {
-        stick.forceStick({ animation: 'instant' });
-        saveScrollSnapshot();
+        restoreToBottom();
         return;
       }
       await tick();
       if (token !== restoreToken || pane.threadId !== threadId || !listRef) return;
       const idx = findTimelineNodeIndex(snap.itemId);
       if (idx < 0) {
-        stick.forceStick({ animation: 'instant' });
-        saveScrollSnapshot();
+        restoreToBottom();
         return;
       }
       // User wasn't at bottom when they left — explicit jump elsewhere

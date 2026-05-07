@@ -14,13 +14,25 @@ shape. Operational rules for code in this directory:
   rather than `<VList>` which would own the scroller). Don't query the
   DOM for first-visible-item or write `scrollTop` directly.
 - Programmatic scrolls go through `useStickToBottom` (`forceStick`,
-  `notifyContentMaybeGrew`, `pauseAutoScroll`, `stopScroll`) or directly
-  via `listRef.scrollToIndex(...)`. **Always call `stick.stopScroll()`
-  BEFORE any `listRef.scrollToIndex(...)` and never pass `smooth: true`**
-  — virtua's smooth path uses `scrollEl.scrollTo({behavior:'smooth'})`
-  natively, which would fight the spring. Never `el.scrollIntoView()`
-  on a row that lives inside the virtualizer; virtua won't see it and
-  will fight the scroll.
+  `markAtBottom`, `notifyContentMaybeGrew`, `pauseAutoScroll`,
+  `stopScroll`) or directly via `listRef.scrollToIndex(...)`. **Always
+  call `stick.stopScroll()` BEFORE any `listRef.scrollToIndex(...)` and
+  never pass `smooth: true`** — virtua's smooth path uses
+  `scrollEl.scrollTo({behavior:'smooth'})` natively, which would fight
+  the spring. Never `el.scrollIntoView()` on a row that lives inside
+  the virtualizer; virtua won't see it and will fight the scroll.
+- **Bottom-snapshot restore on thread switch goes through
+  `listRef.scrollToIndex(last, 'end')` paired with
+  `stick.markAtBottom()`.** Don't use `stick.forceStick({animation:
+  'instant'})` for snapshot restore — the one-shot `scrollTop` write
+  against the current `scrollHeight` is stale by the time virtua's row
+  remeasurement and svelte-streamdown's async typesetting (shiki /
+  KaTeX / mermaid / parseIncompleteMarkdown rebalance) finish growing
+  rows. virtua's `scrollToIndex` enters a measurement loop that
+  re-aims on every `ACTION_ITEM_RESIZE` tick and self-terminates
+  150 ms after the last resize, which is what we want.
+  `forceStick({animation:'instant'})` is reserved for user-initiated
+  snap-to-bottom (the scroll-to-bottom chip).
 - Don't add a parallel virtualizer over `pane.items` or `groupedNodes`.
 - The auto-follow `$effect` is gone. Streaming flow is: text rewrites in
   the streaming row → row's height changes → virtua's per-row RO bumps

@@ -84,10 +84,32 @@ flicker source. The frontend layers on top:
   driver (`damping=0.7`, `stiffness=0.05`, `mass=1.25`) chases the moving
   bottom while content keeps growing for ~350ms after the last grow
   event. Programmatic scrolls go through `forceStick({animation})` /
+  `markAtBottom()` / `forceStickAndSettle({settleMs})` /
   `notifyContentMaybeGrew()` / `pauseAutoScroll()` / `stopScroll()`; the
   one place virtua writes scrollTop is `listRef.scrollToIndex(...)`,
   which MUST be preceded by `stick.stopScroll()` so the spring stops
   fighting the jump. Never write `scrollTop` directly.
+  - `forceStick({animation})` is for user-initiated snap-to-bottom
+    (the chip, Discussion's user-post path). It clears escape, sets
+    sticky, and writes `scrollTop` to the current target.
+  - `markAtBottom()` flips the controller flags to sticky-bottom
+    WITHOUT writing `scrollTop`. Pairs with
+    `listRef.scrollToIndex(last, 'end')`: virtua's measurement loop
+    self-corrects across row resize ticks and lands the user at the
+    eventual bottom; `markAtBottom()` only flips intent so streaming
+    follow resumes on the next contentRO positive delta. This is the
+    bottom-snapshot restore path on the chat surface —
+    `forceStick({animation:'instant'})` would commit to a stale
+    `scrollHeight` and let the spring chase the moving bottom visibly.
+  - `forceStickAndSettle({settleMs})` snaps once via `forceStick` and
+    re-snaps on every positive contentRO delta during the settle
+    window before allowing spring chase. Used by surfaces with no
+    virtua measurement loop (Discussion's ChannelView): async
+    typesetting growth in `svelte-streamdown` (shiki / KaTeX / mermaid
+    / parseIncompleteMarkdown rebalance) keeps growing rows for
+    hundreds of ms after the initial snap. Default `settleMs` (350)
+    matches `RETAIN_ANIMATION_DURATION_MS` so the contract is
+    symmetric with the spring's chase window.
 - **`pane.scrollController`** — registration slot. Both
   `MessageTimeline.svelte` (chat) and `ChannelView.svelte` (Discussion)
   publish their `useStickToBottom` controller on mount; external

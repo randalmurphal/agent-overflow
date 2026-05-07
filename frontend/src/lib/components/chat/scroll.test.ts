@@ -96,6 +96,84 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     expect(loadUntilItem).toHaveBeenCalledWith('pinned-item');
   });
 
+  it('bottom-snapshot restore leaves the controller sticky and not escaped (markAtBottom contract)', async () => {
+    // Regression: the previous bottom-restore path was
+    // `forceStick({animation:'instant'})`, a single-shot scrollTop write
+    // against the current scrollHeight that was stale by the time virtua
+    // finished remeasuring rows and svelte-streamdown finished async
+    // typesetting. The visible symptom was a ~1-viewport spring chase
+    // on every re-entry into a thread with a {kind:'bottom'} snapshot.
+    // The new path routes through `listRef.scrollToIndex(last, 'end')`
+    // (virtua's measurement loop self-corrects) paired with
+    // `markAtBottom()` (controller flags only — no scrollTop write).
+    // We can't assert the absence of a spring chase directly in
+    // happy-dom (no real layout), so the contract this test pins is
+    // the controller end-state: after restoration completes, the
+    // controller must be in (isSticky=true, escapedFromLock=false). The
+    // $effect.pre escape guard sets escape=true synchronously on thread
+    // mount; if restoreToBottom didn't call markAtBottom (or replaced it
+    // with something that fails to clear escape), this assertion fails.
+    setThreadScrollSnapshot('thread-bottom-restore', { kind: 'bottom' });
+
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'first' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'second' }),
+      makeItem({ id: 'c', itemIndex: 2, summary: 'last' }),
+    ]);
+    pane.thread!.id = 'thread-bottom-restore';
+
+    render(MessageTimeline, { props: { pane } });
+    // Three ticks: controller attach, $effect.pre escape guard,
+    // restoreInitialPosition awaiting tick before scrollToIndex.
+    await tick();
+    await tick();
+    await tick();
+
+    const ctrl = pane.scrollController as
+      | (PaneScrollController & { isSticky: boolean; escapedFromLock: boolean })
+      | null;
+    expect(ctrl).not.toBeNull();
+    if (!ctrl) return;
+    expect(ctrl.escapedFromLock).toBe(false);
+    expect(ctrl.isSticky).toBe(true);
+  });
+
+  it('bottom-snapshot restore calls stopScroll before virtua scrollToIndex (frontend/CLAUDE.md contract)', async () => {
+    // CLAUDE.md scroll contract: every listRef.scrollToIndex(...) MUST
+    // be preceded by stick.stopScroll() so the spring stops fighting
+    // the jump. The end-state assertion above (isSticky+!escaped) is
+    // satisfied by markAtBottom regardless of whether stopScroll ran;
+    // a regression that drops the stopScroll line in restoreToBottom
+    // would slip through that test. This pins the call directly.
+    //
+    // Sequencing: restoreInitialPosition's inner `await tick()` resolves
+    // in the same flush cycle as $effect (attachScrollController). To
+    // catch the stopScroll call we wrap attachScrollController itself —
+    // the controller is in our hands the moment it's published, before
+    // the microtask drain that runs restoreToBottom.
+    setThreadScrollSnapshot('thread-bottom-stopscroll', { kind: 'bottom' });
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'first' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'second' }),
+    ]);
+    pane.thread!.id = 'thread-bottom-stopscroll';
+
+    let stopScrollSpy: ReturnType<typeof vi.spyOn> | null = null;
+    const origAttach = pane.attachScrollController.bind(pane);
+    pane.attachScrollController = (ctrl: PaneScrollController & { stopScroll(): void }) => {
+      stopScrollSpy = vi.spyOn(ctrl, 'stopScroll');
+      origAttach(ctrl);
+    };
+
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await tick();
+
+    expect(stopScrollSpy).not.toBeNull();
+    expect(stopScrollSpy!).toHaveBeenCalled();
+  });
+
   it('still calls pane.loadUntilItem when a saved anchor item no longer exists', async () => {
     setThreadScrollSnapshot('thread-missing-anchor', {
       kind: 'anchor',
@@ -116,6 +194,75 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
 
     expect(loadUntilItem).toHaveBeenCalledWith('gone-from-history');
   });
+
+  it('falls back to restoreToBottom when loadUntilItem returns false (controller ends sticky+not-escaped)', async () => {
+    // restoreInitialPosition has a `!found` branch that calls
+    // restoreToBottom when the saved anchor's item is gone from the
+    // backend. Pin the controller end-state contract: after the fallback
+    // runs, restoreToBottom calls markAtBottom which clears escape and
+    // sets sticky. A regression that turned the fallback into the
+    // anchor-success path (which sets escape=true) would surface here.
+    setThreadScrollSnapshot('thread-anchor-not-found', {
+      kind: 'anchor',
+      itemId: 'gone-from-history',
+      offsetTop: -120,
+    });
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'present', summary: 'still here' }),
+    ]);
+    pane.thread!.id = 'thread-anchor-not-found';
+    vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(false);
+
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await tick();
+
+    const ctrl = pane.scrollController as
+      | (PaneScrollController & { isSticky: boolean; escapedFromLock: boolean })
+      | null;
+    expect(ctrl).not.toBeNull();
+    if (!ctrl) return;
+    expect(ctrl.escapedFromLock).toBe(false);
+    expect(ctrl.isSticky).toBe(true);
+  });
+
+  it('falls back to restoreToBottom when the anchor item resolves but findTimelineNodeIndex returns -1', async () => {
+    // After loadUntilItem returns true, restoreInitialPosition awaits a
+    // tick and then calls findTimelineNodeIndex(snap.itemId). If virtua
+    // hasn't yet rendered the row (race) or the item id was pruned in
+    // a different code path, idx < 0 → fall back to restoreToBottom.
+    // We force the branch by claiming the item exists (loadUntilItem
+    // returns true) but populating the pane with items that have
+    // different ids, so findTimelineNodeIndex won't find the snapshotted
+    // id in the rendered groupedNodes.
+    setThreadScrollSnapshot('thread-anchor-idx-missing', {
+      kind: 'anchor',
+      itemId: 'never-rendered',
+      offsetTop: -120,
+    });
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'a' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
+    ]);
+    pane.thread!.id = 'thread-anchor-idx-missing';
+    vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(true);
+
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+
+    const ctrl = pane.scrollController as
+      | (PaneScrollController & { isSticky: boolean; escapedFromLock: boolean })
+      | null;
+    expect(ctrl).not.toBeNull();
+    if (!ctrl) return;
+    expect(ctrl.escapedFromLock).toBe(false);
+    expect(ctrl.isSticky).toBe(true);
+  });
+
 });
 
 describe('scroll integration — load older', () => {

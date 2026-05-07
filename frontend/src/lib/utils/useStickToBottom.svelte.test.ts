@@ -543,6 +543,232 @@ describe('createUseStickToBottomController', () => {
     });
   });
 
+  describe('markAtBottom', () => {
+    it('clears escapedFromLock and sets sticky without writing scrollTop', () => {
+      // Caller (MessageTimeline bottom-restore) has just landed the user
+      // at the geometric bottom via listRef.scrollToIndex(last, 'end').
+      // markAtBottom must flip the intent flag WITHOUT also issuing a
+      // redundant scrollTop write that would fight virtua's measurement
+      // loop still in progress.
+      controller.setEscapedFromLock(true);
+      geom.scrollTop = 250;
+      controller.markAtBottom();
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+      expect(geom.scrollTop).toBe(250); // unchanged
+    });
+
+    it('subsequent positive-delta RO fire arms the spring (streaming follow resumes)', async () => {
+      // Re-entry into an active streaming thread: scrollToIndex landed
+      // us at the current bottom, markAtBottom flipped intent, then a
+      // streaming chunk arrives. The contentRO positive-delta path must
+      // arm the spring as normal so the user follows the live tail.
+      controller.setEscapedFromLock(true);
+      geom.scrollTop = 399;
+      controller.markAtBottom();
+      const ro = getRO();
+      ro.fire(contentEl, 800); // initialize previousHeight
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000); // positive delta — should arm spring
+      for (let i = 0; i < 60; i++) {
+        await nextFrame();
+        if (Math.abs(geom.scrollTop - 599) < 1) break;
+      }
+      expect(geom.scrollTop).toBeGreaterThanOrEqual(595);
+    });
+
+    it('first contentRO fire BEFORE markAtBottom does not advance scrollTop while escaped', () => {
+      // Bottom-restore sequence: $effect.pre sets escape=true, virtua
+      // mounts, contentRO observes initial height. The first fire's
+      // first-fire branch must NOT snap to target (escape gate). Only
+      // then does restoreToBottom call scrollToIndex(last,'end') and
+      // markAtBottom. If the first-fire branch leaked through escape,
+      // it would snap to a stale target before virtua's measurement
+      // loop ran — exactly the bug the new path avoids.
+      controller.setEscapedFromLock(true);
+      geom.scrollTop = 250;
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      expect(geom.scrollTop).toBe(250); // first-fire snap suppressed by escape
+      controller.markAtBottom();
+      expect(controller.escapedFromLock).toBe(false);
+      expect(geom.scrollTop).toBe(250); // markAtBottom doesn't write either
+    });
+  });
+
+  describe('forceStickAndSettle', () => {
+    it('snaps to bottom and re-snaps on every positive delta during the settle window', async () => {
+      // ChannelView path: Streamdown's async typesetting (shiki, KaTeX,
+      // mermaid) keeps growing rows for hundreds of ms after the initial
+      // load. With the spring path, each growth event would chase the
+      // moving bottom visibly. With settle, each delta re-snaps instantly.
+      geom.scrollTop = 100;
+      controller.forceStickAndSettle({ settleMs: 100 });
+      expect(geom.scrollTop).toBe(399); // initial snap from forceStick
+      expect(controller.escapedFromLock).toBe(false);
+
+      const ro = getRO();
+      ro.fire(contentEl, 800); // initialize previousHeight
+      // First grow inside window: re-snap, no spring.
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+      expect(geom.scrollTop).toBe(499); // re-snapped to new target
+
+      // No spring frames advance further — geometry stays where the
+      // re-snap put it.
+      const after = geom.scrollTop;
+      for (let i = 0; i < 5; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(after);
+
+      // Second grow inside window: re-snap again.
+      geom.scrollHeight = 1300;
+      geom.contentHeight = 1100;
+      ro.fire(contentEl, 1100);
+      expect(geom.scrollTop).toBe(699);
+    });
+
+    it('after the settle window expires, positive deltas arm the spring as normal', async () => {
+      // The settle behavior is restoration-only. Once the window passes,
+      // ongoing growth (e.g. real streaming) must use the spring path —
+      // otherwise instant writes would fight virtua's $fixScrollJump on
+      // surfaces that have a virtualizer (the controller doesn't know
+      // which surface it's attached to, so the contract has to be uniform).
+      controller.forceStickAndSettle({ settleMs: 50 });
+      const ro = getRO();
+      ro.fire(contentEl, 800); // initialize previousHeight
+      // Advance past the settle window.
+      mockNow += 60;
+      geom.scrollHeight = 1500;
+      geom.contentHeight = 1300;
+      ro.fire(contentEl, 1300);
+      // Spring drives convergence over multiple frames, not a single snap.
+      // First frame should not yet be at target.
+      await nextFrame();
+      expect(geom.scrollTop).toBeLessThan(899);
+      // Eventually converges.
+      for (let i = 0; i < 60; i++) {
+        await nextFrame();
+        if (Math.abs(geom.scrollTop - 899) < 1) break;
+      }
+      expect(geom.scrollTop).toBeGreaterThanOrEqual(895);
+    });
+
+    it('user wheel-up during settle window cancels both re-snap and spring', async () => {
+      // The escape gate must take precedence: a user gesture during the
+      // window stops everything. Without this, the re-snap would fight
+      // the user's intent to scroll up.
+      controller.forceStickAndSettle({ settleMs: 200 });
+      const ro = getRO();
+      ro.fire(contentEl, 800); // initialize previousHeight
+
+      fireWheel(scrollEl, -50, scrollEl);
+      expect(controller.escapedFromLock).toBe(true);
+
+      geom.scrollTop = 100;
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+      // Escape gate prevents both re-snap and spring.
+      for (let i = 0; i < 5; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(100);
+    });
+
+    it('honors the exact window boundary: delta at t<settleMs re-snaps, at t>=settleMs springs', async () => {
+      // Boundary regression: the predicate is `nowMs() < settleUntil`,
+      // so a delta arriving exactly AT the deadline must take the spring
+      // path. Verifies the strict-less-than gate, not <=.
+      controller.forceStickAndSettle({ settleMs: 100 });
+      const ro = getRO();
+      ro.fire(contentEl, 800); // initialize previousHeight
+
+      // Tick to t=99 (still inside window): re-snap path.
+      mockNow += 99;
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+      expect(geom.scrollTop).toBe(499); // re-snapped, no spring frames yet
+
+      // Tick to exactly t=100 (deadline): spring path. The first frame
+      // can't fully converge to the new target — that's the observable
+      // distinction from a same-frame re-snap.
+      mockNow += 1; // now at exactly settleUntil
+      geom.scrollHeight = 1300;
+      geom.contentHeight = 1100;
+      ro.fire(contentEl, 1100);
+      // Spring needs multiple frames; the first one should be partial.
+      await nextFrame();
+      expect(geom.scrollTop).toBeLessThan(699);
+    });
+
+    it('escape during settle clears the window so the next forceStick uses normal spring semantics', async () => {
+      // setEscapedFromLock(true) resets settleUntil. After escape, a
+      // subsequent re-engagement (forceStick) must NOT inherit the old
+      // window — otherwise streaming after the user returns to bottom
+      // would mistakenly re-snap instead of springing.
+      controller.forceStickAndSettle({ settleMs: 500 });
+      const ro = getRO();
+      ro.fire(contentEl, 800); // initialize previousHeight
+
+      // User escapes mid-window.
+      fireWheel(scrollEl, -50, scrollEl);
+      expect(controller.escapedFromLock).toBe(true);
+
+      // User clicks the chip to come back. forceStick (spring) — no
+      // settle window should be active.
+      controller.forceStick({ animation: 'spring' });
+      expect(controller.escapedFromLock).toBe(false);
+
+      // Stay well within what WOULD have been the original 500ms window
+      // (we've only advanced through wheel + forceStick, not 500ms of
+      // mockNow). A positive delta here must take the spring path.
+      geom.scrollHeight = 1300;
+      geom.contentHeight = 1100;
+      ro.fire(contentEl, 1100);
+      // Spring is multi-frame; first frame is partial.
+      await nextFrame();
+      expect(geom.scrollTop).toBeLessThan(699);
+    });
+
+    it('detach mid-window clears settleUntil so re-attach starts with normal spring semantics', async () => {
+      // detach() is the lifecycle reset. A controller can be re-used
+      // across surface remounts (thread switch, channel remount); the
+      // settle window must not survive detach or a reattached surface
+      // would silently lose spring-driven streaming for the residual
+      // window duration.
+      controller.forceStickAndSettle({ settleMs: 500 });
+      const ro = getRO();
+      ro.fire(contentEl, 800); // initialize previousHeight
+
+      // Detach mid-window (settleUntil is set, but not expired).
+      controller.detach();
+
+      // Re-attach to a fresh surface. New geometry; would-have-been
+      // window is still in the future per nowMs() if not cleared.
+      const newScroll = document.createElement('div');
+      const newContent = document.createElement('div');
+      newScroll.appendChild(newContent);
+      document.body.appendChild(newScroll);
+      const newGeom: Geometry = { scrollHeight: 2000, clientHeight: 800, scrollTop: 1199, contentHeight: 1500 };
+      stubGeometry(newScroll, newContent, newGeom);
+      controller.attach(newScroll, newContent);
+
+      const ro2 = getRO();
+      ro2.fire(newContent, 1500); // initialize previousHeight on the new surface
+
+      // Positive delta on the re-attached surface must take the spring
+      // path, not re-snap. Same observable test: spring is multi-frame.
+      newGeom.scrollHeight = 2200;
+      newGeom.contentHeight = 1700;
+      ro2.fire(newContent, 1700);
+      await nextFrame();
+      expect(newGeom.scrollTop).toBeLessThan(1399);
+
+      newScroll.remove();
+    });
+  });
+
   describe('animateScrollTo', () => {
     it('does not break sticky-bottom state when the target is already current', async () => {
       expect(controller.isSticky).toBe(true);

@@ -243,6 +243,74 @@ describe('<ChannelView>', () => {
     expect(pane.channelMessages.map((m) => m.sequence)).toEqual([1, 2, 3]);
   });
 
+  it('initial channel load uses forceStickAndSettle so async row growth re-snaps instantly instead of spring-chasing', async () => {
+    // Regression: previously the initial-load path called
+    // `forceStick({animation:'instant'})`, which writes scrollTop once
+    // against the current scrollHeight. svelte-streamdown's async
+    // typesetting (shiki / KaTeX / mermaid / parseIncompleteMarkdown
+    // rebalance) keeps growing message rows for hundreds of ms after
+    // first paint. The single-shot write was stale by the time those
+    // grows landed; the spring then chased the moving bottom visibly.
+    // The fix is forceStickAndSettle(): snap once, then re-snap on every
+    // positive content-RO delta during the settle window (default 350ms,
+    // matching RETAIN_ANIMATION_DURATION_MS). After the window expires,
+    // normal spring behavior resumes.
+    const pane = await buildPane();
+    setBindingMock('GetChannelMessages', async () => [
+      makeMsg({ id: 'a', sequence: 1, content: 'first' }),
+      makeMsg({ id: 'b', sequence: 2, content: 'second' }),
+    ]);
+    const { getByTestId } = render(ChannelView, {
+      props: { pane, channelId: 'channel-1' },
+    });
+    const scroll = getByTestId('channel-message-list') as HTMLElement;
+    let scrollHeightValue = 1000;
+    Object.defineProperty(scroll, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeightValue,
+    });
+    Object.defineProperty(scroll, 'clientHeight', {
+      configurable: true,
+      get: () => 600,
+    });
+
+    // Initial poll completes; ChannelView calls forceStickAndSettle.
+    await vi.advanceTimersByTimeAsync(0);
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    const ro = FireableResizeObserver.instances.at(-1);
+    if (!ro) throw new Error('expected useStickToBottom to install a ResizeObserver');
+    const contentEl = ro.observed[0] as HTMLElement;
+
+    // First RO fire seeds previousHeight. forceStickAndSettle has
+    // already written scrollTop to the current target (= 1000 - 1 - 600
+    // = 399), so the first-fire branch is a no-op for scrollTop.
+    ro.fire(contentEl, 400);
+    expect(scroll.scrollTop).toBe(399);
+
+    // Streamdown async typesetting #1: scrollHeight grows from 1000 to
+    // 1100. With the spring path, scrollTop would converge to the new
+    // target 499 over multiple rAF frames. With the settle path, it
+    // re-snaps to 499 in the same frame as the RO callback.
+    scrollHeightValue = 1100;
+    ro.fire(contentEl, 500);
+    expect(scroll.scrollTop).toBe(499);
+
+    // Streamdown async typesetting #2: another grow. Re-snaps again.
+    scrollHeightValue = 1200;
+    ro.fire(contentEl, 600);
+    expect(scroll.scrollTop).toBe(599);
+
+    // No spring frames advance scrollTop further — the settle path
+    // produces single-frame re-snaps, not a multi-frame chase. If a
+    // future regression replaced settle with spring, scrollTop would
+    // either lag the target on the immediate-after-fire assertion above
+    // or continue advancing here.
+    const after = scroll.scrollTop;
+    await vi.advanceTimersByTimeAsync(16);
+    for (let i = 0; i < 3; i++) await Promise.resolve();
+    expect(scroll.scrollTop).toBe(after);
+  });
+
   it('reveals the scroll-to-bottom chip after a wheel-up gesture, ignores content arrivals while escaped, and hides it on forceStick', async () => {
     // The unified controller (useStickToBottom) treats wheel-up as the
     // canonical "I want to read above" intent signal — escapedFromLock

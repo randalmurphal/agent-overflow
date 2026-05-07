@@ -121,14 +121,13 @@
       if (generation === pollGeneration) {
         if (initial) {
           loadingInitial = false;
-          // The $effect on channelId set escapedFromLock=true to suppress
-          // the open-channel scroll animation. Now that the initial batch
-          // of messages is in the DOM, snap to bottom instantly. Awaiting
-          // tick ensures the {#each} re-render has flushed before we read
-          // scrollHeight.
+          // Initial batch is in the DOM; snap to bottom and absorb async
+          // Streamdown row growth via the settle window. Awaiting tick
+          // ensures the {#each} re-render has flushed before scrollHeight
+          // is read.
           await tick();
           if (generation === pollGeneration) {
-            stick.forceStick({ animation: 'instant' });
+            stick.forceStickAndSettle();
           }
         }
         // Exponential backoff on consecutive failures so a stuck backend
