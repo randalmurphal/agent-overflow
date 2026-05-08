@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import Terminal from 'lucide-svelte/icons/terminal';
   import Icon from '../primitives/Icon.svelte';
   import CopyFooter from './CopyFooter.svelte';
@@ -6,7 +7,10 @@
   import { untrack } from 'svelte';
   import type { CommandOutputMeta, Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
+  import {
+    completionBadgeTitleForStatus,
+    deriveCompletionStatus,
+  } from '../../utils/toolCompletionStatus';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import {
     createPayloadExpansion,
@@ -27,6 +31,11 @@
     meta,
     payloadId,
     showCompletionBadge = true,
+    displayItem,
+    statusItem,
+    durationLabel = '',
+    showTimestamp = true,
+    trailingActions,
   }: {
     pane?: ThreadPane;
     item: Item;
@@ -37,7 +46,19 @@
      * Loader/Check/AlertCircle/Square). Defaults to true so the
      * chat-timeline rendering is unaffected. */
     showCompletionBadge?: boolean;
+    /** Item used for command extraction and user-facing command text. */
+    displayItem?: Item;
+    /** Item used for status/badge derivation. Useful for launch+completion pairs. */
+    statusItem?: Item;
+    /** Optional duration/elapsed label rendered in the metadata area. */
+    durationLabel?: string;
+    /** Tray surfaces show elapsed time instead of the absolute transcript timestamp. */
+    showTimestamp?: boolean;
+    /** Optional actions rendered outside the disclosure button. */
+    trailingActions?: Snippet;
   } = $props();
+  let effectiveDisplayItem = $derived(displayItem ?? item);
+  let effectiveStatusItem = $derived(statusItem ?? item);
 
   // pane is stable across a row's lifetime; read once via `untrack`.
   const localFallback = untrack(() =>
@@ -53,6 +74,7 @@
   let hasPayload = $derived(Boolean(payloadId));
   let itemMeta = $derived(parseJsonObject(item.meta));
   let payloadMeta = $derived(parseJsonObject(item.payloadMeta));
+  let statusMeta = $derived(parseJsonObject(effectiveStatusItem.payloadMeta));
   let deferredOutputState = $derived.by(() => {
     if (!itemMeta) return '';
     const state = itemMeta.notification_output_state ?? itemMeta.output_file_state;
@@ -66,12 +88,14 @@
   let hasBody = $derived(
     hasPayload || deferredOutputState === 'loading' || deferredOutputState === 'error',
   );
-  let rawCommand = $derived(commandTextForItem(item, meta));
-  let displayCommand = $derived(displayCommandForItem(item, meta));
-  let isBackgroundedLaunch = $derived(item.kind === 'tool_call' && item.isBackground === true);
+  let rawCommand = $derived(commandTextForItem(effectiveDisplayItem, meta));
+  let displayCommand = $derived(displayCommandForItem(effectiveDisplayItem, meta));
+  let isBackgroundedLaunch = $derived(
+    effectiveStatusItem.kind === 'tool_call' && effectiveStatusItem.isBackground === true,
+  );
 
   let time = $derived(
-    new Date(item.createdAt).toLocaleTimeString(undefined, {
+    new Date(effectiveStatusItem.createdAt).toLocaleTimeString(undefined, {
       hour: 'numeric',
       minute: '2-digit',
     }),
@@ -82,17 +106,20 @@
   // display fields, while raw payloadMeta can also carry snake-case
   // exit/error fields from provider-specific paths.
   let completionStatus = $derived(
-    deriveCompletionStatus(item, {
-      meta: payloadMeta ?? (meta as unknown as Record<string, unknown> | undefined),
+    deriveCompletionStatus(effectiveStatusItem, {
+      meta: statusMeta ?? (meta as unknown as Record<string, unknown> | undefined),
     }),
   );
+  let completionTitle = $derived(completionBadgeTitleForStatus(effectiveStatusItem.status));
   let errorLine = $derived(
-    completionStatus === 'failure'
-      ? commandErrorLineForItem(item, meta, itemMeta, payloadMeta)
+    completionStatus === 'failure' &&
+      effectiveStatusItem.status !== 'killed' &&
+      effectiveStatusItem.status !== 'declined'
+      ? commandErrorLineForItem(item, meta, itemMeta, statusMeta ?? payloadMeta)
       : '',
   );
   let isForegroundRunning = $derived(
-    !isBackgroundedLaunch && (item.status === 'running' || item.status === 'streaming'),
+    !isBackgroundedLaunch && (effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming'),
   );
   let showStatusSlot = $derived(
     isBackgroundedLaunch || isForegroundRunning || (showCompletionBadge && completionStatus !== null),
@@ -114,7 +141,7 @@
 
   {#snippet headerActions()}
     <span class="ml-auto flex shrink-0 items-center gap-2">
-      <ToolDecisionChip decision={item.decision} />
+      <ToolDecisionChip decision={effectiveDisplayItem.decision} />
       {#if showStatusSlot}
         <span
           class="flex w-12 shrink-0 items-center justify-center"
@@ -139,17 +166,30 @@
               …
             </span>
           {:else if showCompletionBadge && completionStatus !== null}
-            <CompletionBadge status={completionStatus} />
+            <CompletionBadge status={completionStatus} title={completionTitle} />
           {/if}
         </span>
       {/if}
-      <time
-        class="text-[10px] text-fg-hint shrink-0 tabular-nums"
-        datetime={new Date(item.createdAt).toISOString()}
-        data-testid="command-output-time"
-      >
-        {time}
-      </time>
+      {#if durationLabel}
+        <span
+          class="text-[10px] text-fg-hint shrink-0 tabular-nums"
+          data-testid="command-output-duration"
+        >
+          {durationLabel}
+        </span>
+      {/if}
+      {#if showTimestamp}
+        <time
+          class="text-[10px] text-fg-hint shrink-0 tabular-nums"
+          datetime={new Date(effectiveStatusItem.createdAt).toISOString()}
+          data-testid="command-output-time"
+        >
+          {time}
+        </time>
+      {/if}
+      {#if trailingActions}
+        {@render trailingActions()}
+      {/if}
     </span>
   {/snippet}
 

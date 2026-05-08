@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import { untrack } from 'svelte';
   import Bot from 'lucide-svelte/icons/bot';
   import MessageSquare from 'lucide-svelte/icons/message-square';
@@ -19,7 +20,10 @@
     codexSubagentLaunchInfo,
     isCodexSubagentLaunchItem,
   } from '../../utils/subagentLaunch';
-  import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
+  import {
+    completionBadgeTitleForStatus,
+    deriveCompletionStatus,
+  } from '../../utils/toolCompletionStatus';
   import {
     createPayloadExpansion,
     formatPayloadSize,
@@ -30,11 +34,27 @@
     pane,
     item,
     codexSubagentReceiverLabels = new Map<string, string>(),
+    statusItem,
+    durationLabel = '',
+    showTimestamp = false,
+    showSpawnStatus = false,
+    trailingActions,
   }: {
     pane?: ThreadPane;
     item: Item;
     codexSubagentReceiverLabels?: ReadonlyMap<string, string>;
+    /** Item used for running/completion status. */
+    statusItem?: Item;
+    /** Optional duration/elapsed label rendered in the metadata area. */
+    durationLabel?: string;
+    /** Chat collab rows currently omit timestamps; tray can keep that default. */
+    showTimestamp?: boolean;
+    /** Tray rows need status metadata even for spawn_agent launches. */
+    showSpawnStatus?: boolean;
+    /** Optional actions rendered outside the row content. */
+    trailingActions?: Snippet;
   } = $props();
+  let effectiveStatusItem = $derived(statusItem ?? item);
 
   const localFallback = untrack(() =>
     createPayloadExpansion(
@@ -45,6 +65,7 @@
   );
   let meta = $derived(parseJsonObject(item.meta));
   let payloadMeta = $derived(parseJsonObject(item.payloadMeta));
+  let statusPayloadMeta = $derived(parseJsonObject(effectiveStatusItem.payloadMeta));
   let input = $derived.by<Record<string, unknown>>(() => {
     const raw = meta?.input ?? payloadMeta?.input;
     return raw && typeof raw === 'object' && !Array.isArray(raw)
@@ -186,15 +207,18 @@
     return Bot;
   });
 
-  let completionStatus = $derived(deriveCompletionStatus(item, { meta: payloadMeta }));
   let badgeStatus = $derived.by<'success' | 'failure' | null>(() => {
     if (tool === 'wait_agent' && item.kind === 'tool_call') return null;
-    return completionStatus;
+    return deriveCompletionStatus(effectiveStatusItem, { meta: statusPayloadMeta });
   });
+  let completionTitle = $derived(completionBadgeTitleForStatus(effectiveStatusItem.status));
+  let isStatusBackgroundedLaunch = $derived(
+    effectiveStatusItem.kind === 'tool_call' && effectiveStatusItem.isBackground === true,
+  );
   let showRunningStatus = $derived(
-    !spawnInfo &&
+    (showSpawnStatus || !spawnInfo) &&
       tool !== 'wait_agent' &&
-      (item.status === 'running' || item.status === 'streaming'),
+      (effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming'),
   );
   let hasOutputShell = $derived(
     item.kind === 'tool_completion' &&
@@ -214,6 +238,13 @@
     if (expansion === null) return;
     await expansion.toggle();
   }
+
+  let time = $derived(
+    new Date(effectiveStatusItem.createdAt).toLocaleTimeString(undefined, {
+      hour: 'numeric',
+      minute: '2-digit',
+    }),
+  );
 </script>
 
 {#snippet rowContent()}
@@ -225,9 +256,35 @@
 
 {#snippet rowActions()}
   {#if showRunningStatus}
-    <span class="shrink-0 text-[10px] text-accent opacity-70">running</span>
+    <span
+      class="shrink-0 {isStatusBackgroundedLaunch ? 'text-[20px] leading-none' : 'text-[10px]'} text-accent opacity-70"
+      data-testid="collab-tool-row-status"
+      aria-label={isStatusBackgroundedLaunch ? 'Backgrounded' : 'Running'}
+    >
+      {isStatusBackgroundedLaunch ? '…' : 'running'}
+    </span>
   {:else if badgeStatus}
-    <CompletionBadge status={badgeStatus} class="opacity-80" />
+    <CompletionBadge status={badgeStatus} title={completionTitle} class="opacity-80" />
+  {/if}
+  {#if durationLabel}
+    <span
+      class="shrink-0 tabular-nums text-[10px] text-fg-hint"
+      data-testid="collab-tool-row-duration"
+    >
+      {durationLabel}
+    </span>
+  {/if}
+  {#if showTimestamp}
+    <time
+      class="shrink-0 tabular-nums text-[10px] text-fg-hint"
+      datetime={new Date(effectiveStatusItem.createdAt).toISOString()}
+      data-testid="collab-tool-row-time"
+    >
+      {time}
+    </time>
+  {/if}
+  {#if trailingActions}
+    {@render trailingActions()}
   {/if}
 {/snippet}
 

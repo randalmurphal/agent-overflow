@@ -300,6 +300,7 @@
             <li>
               <BackgroundTaskTrayRow
                 {task}
+                {provider}
                 stopTarget={rowStopTarget(task)}
                 isStopping={stoppingRows.has(task.rowId)}
                 onStop={onStopRow}

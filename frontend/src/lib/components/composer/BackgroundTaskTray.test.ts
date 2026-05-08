@@ -371,7 +371,7 @@ describe('<BackgroundTaskTray>', () => {
     expect(queryByTestId('background-task-tray')).toBeNull();
   });
 
-  it('renders a declined completion with error styling, not as a green checkmark', async () => {
+  it('renders a declined completion with the shared failure badge, not as a success', async () => {
     const pane = await makePaneWithBackground([
       item({
         id: 'launch-a',
@@ -395,11 +395,14 @@ describe('<BackgroundTaskTray>', () => {
     const { getByTestId } = await renderTray(pane, { expand: true });
     const status = getByTestId('background-task-tray-row-status');
     expect(status.getAttribute('data-status')).toBe('declined');
-    expect(status.className).toContain('text-error');
-    expect(status.textContent).toContain('declined');
+    const badge = getByTestId('completion-badge');
+    expect(badge.getAttribute('data-status')).toBe('failure');
+    expect(badge.getAttribute('title')).toBe('Declined');
+    expect(badge.className).toContain('text-error');
+    expect(badge.className).not.toContain('text-success');
   });
 
-  it('renders a killed completion with gray "Stopped" styling, distinct from failed', async () => {
+  it('renders a killed completion with a stopped failure badge title', async () => {
     const pane = await makePaneWithBackground([
       item({
         id: 'launch-a',
@@ -423,12 +426,12 @@ describe('<BackgroundTaskTray>', () => {
     const { getByTestId } = await renderTray(pane, { expand: true });
     const status = getByTestId('background-task-tray-row-status');
     expect(status.getAttribute('data-status')).toBe('killed');
-    expect(status.textContent).toContain('stopped');
-    // Must NOT read as an error — red palette is reserved for actual
-    // failures, and killed is a user-initiated stop.
-    expect(status.className).not.toContain('text-error');
-    expect(status.className).not.toContain('text-success');
-    expect(status.className).toContain('text-text-secondary');
+    const badge = getByTestId('completion-badge');
+    expect(badge.getAttribute('data-status')).toBe('failure');
+    expect(badge.getAttribute('title')).toBe('Stopped');
+    expect(badge.className).toContain('text-error');
+    expect(badge.className).not.toContain('text-success');
+    expect(getByTestId('background-task-tray-row').textContent).not.toContain('error code 0');
   });
 
   it('suppresses the elapsed label for an orphan completion (no launch)', async () => {
@@ -730,8 +733,87 @@ describe('<BackgroundTaskTray>', () => {
 
     const { getByTestId, queryByTestId } = await renderTray(pane, { expand: true });
     expect(getByTestId('background-task-tray-row')).toBeInTheDocument();
-    expect(getByTestId('background-task-tray-row-status').textContent).toContain('running');
+    expect(getByTestId('command-output-status').getAttribute('aria-label')).toBe('Running');
     expect(queryByTestId('background-task-tray-stop-all')).toBeNull();
+  });
+
+  it('renders Codex command rows with the same stripped command text as chat history', async () => {
+    const pane = await makePaneWithBackground(
+      [
+        item({
+          id: 'launch-pending',
+          isBackground: false,
+          status: 'running',
+          summary: "Bash: /usr/bin/zsh -lc 'git status --short'",
+          toolName: 'command_execution',
+          createdAt: 1_000_000 - 1_000,
+        }),
+      ],
+      makeThread({ provider: 'codex' }),
+    );
+
+    const { getByTestId } = await renderTray(pane, { expand: true });
+    expect(getByTestId('command-output-row')).toBeInTheDocument();
+    expect(getByTestId('command-output-command').textContent).toBe('git status --short');
+    expect(getByTestId('background-task-tray-row').textContent).not.toContain('command_execution -');
+  });
+
+  it('uses completion payload metadata for paired command-row status badges', async () => {
+    const pane = await makePaneWithBackground([
+      item({
+        id: 'launch-a',
+        isBackground: true,
+        status: 'running',
+        summary: 'Bash: false',
+        toolName: 'Bash',
+        createdAt: 1_000_000 - 5_000,
+        updatedAt: 1_000_000 - 5_000,
+      }),
+      item({
+        id: 'done-a',
+        kind: 'tool_completion',
+        isBackground: true,
+        status: 'completed',
+        completionOf: 'launch-a',
+        summary: 'Bash -> done',
+        toolName: 'Bash',
+        payloadMeta: JSON.stringify({ exitCode: 7 }),
+        createdAt: 1_000_000 - 100,
+        updatedAt: 1_000_000 - 100,
+      }),
+    ]);
+
+    const { getByTestId } = await renderTray(pane, { expand: true });
+    expect(getByTestId('completion-badge').getAttribute('data-status')).toBe('failure');
+  });
+
+  it('keeps launch decision metadata on paired command rows', async () => {
+    const pane = await makePaneWithBackground([
+      item({
+        id: 'launch-a',
+        isBackground: true,
+        status: 'running',
+        summary: 'Bash: echo ok',
+        toolName: 'Bash',
+        decision: 'approved',
+        createdAt: 1_000_000 - 5_000,
+        updatedAt: 1_000_000 - 5_000,
+      }),
+      item({
+        id: 'done-a',
+        kind: 'tool_completion',
+        isBackground: true,
+        status: 'completed',
+        completionOf: 'launch-a',
+        summary: 'Bash -> done',
+        toolName: 'Bash',
+        createdAt: 1_000_000 - 100,
+        updatedAt: 1_000_000 - 100,
+      }),
+    ]);
+
+    const { getByTestId } = await renderTray(pane, { expand: true });
+    expect(getByTestId('tool-decision-chip').textContent).toContain('Approved');
   });
 
   it('hides the Stop-all button on a Codex thread even when a row somehow carries a task_id in meta', async () => {
@@ -839,6 +921,97 @@ describe('<BackgroundTaskTray>', () => {
 
     const { queryByTestId } = await renderTray(pane);
     expect(queryByTestId('background-task-tray-stop-all')).toBeNull();
+  });
+
+  it('renders Codex subagent rows through the shared collab row, not raw tool metadata', async () => {
+    const pane = await makePaneWithBackground(
+      [
+        item({
+          id: 'launch-subagent',
+          isBackground: true,
+          status: 'running',
+          summary: 'collab_agent: Review the harness',
+          toolName: 'collab_agent',
+          meta: JSON.stringify({
+            input: {
+              tool: 'spawn_agent',
+              prompt: 'Review the harness',
+              receiverThreadIds: ['child-1'],
+              newAgentNickname: 'Plato',
+              newAgentRole: 'default',
+              model: 'gpt-5.5',
+              reasoningEffort: 'low',
+            },
+          }),
+          createdAt: 1_000_000 - 1_000,
+        }),
+      ],
+      makeThread({ provider: 'codex' }),
+    );
+
+    const { getByTestId } = await renderTray(pane, { expand: true });
+    const row = getByTestId('background-task-tray-row');
+    expect(getByTestId('collab-tool-row')).toBeInTheDocument();
+    expect(row.textContent).toContain('Spawned Plato [default]');
+    expect(row.textContent).toContain('Review the harness');
+    expect(row.textContent).not.toContain('collab_agent -');
+  });
+
+  it('uses completion payload metadata for paired Codex collab-row status badges', async () => {
+    const pane = await makePaneWithBackground(
+      [
+        item({
+          id: 'launch-subagent',
+          isBackground: true,
+          status: 'running',
+          summary: 'collab_agent: Review the harness',
+          toolName: 'collab_agent',
+          meta: JSON.stringify({
+            input: {
+              tool: 'spawn_agent',
+              prompt: 'Review the harness',
+              receiverThreadIds: ['child-1'],
+              newAgentNickname: 'Plato',
+              newAgentRole: 'default',
+            },
+          }),
+          createdAt: 1_000_000 - 1_000,
+        }),
+        item({
+          id: 'done-subagent',
+          kind: 'tool_completion',
+          isBackground: true,
+          status: 'completed',
+          summary: 'collab_agent -> done',
+          toolName: 'collab_agent',
+          completionOf: 'launch-subagent',
+          payloadMeta: JSON.stringify({ is_error: true }),
+          createdAt: 1_000_000 - 100,
+        }),
+      ],
+      makeThread({ provider: 'codex' }),
+    );
+
+    const { getByTestId } = await renderTray(pane, { expand: true });
+    expect(getByTestId('collab-tool-row')).toBeInTheDocument();
+    expect(getByTestId('completion-badge').getAttribute('data-status')).toBe('failure');
+  });
+
+  it('does not route Codex-only collab controls on Claude threads', async () => {
+    const pane = await makePaneWithBackground([
+      item({
+        id: 'launch-send-input',
+        isBackground: true,
+        status: 'running',
+        summary: 'send_input: hello',
+        toolName: 'send_input',
+        createdAt: 1_000_000 - 1_000,
+      }),
+    ]);
+
+    const { getByTestId, queryByTestId } = await renderTray(pane, { expand: true });
+    expect(queryByTestId('collab-tool-row')).toBeNull();
+    expect(getByTestId('tool-call-card')).toBeInTheDocument();
   });
 
   it('Stop-all keeps dispatching every task even when earlier ones reject (Promise.allSettled, not Promise.all)', async () => {
@@ -995,13 +1168,13 @@ describe('<BackgroundTaskTray>', () => {
     const scrollSpy = vi.spyOn(pane, 'requestScrollToItem');
 
     const rendered = await renderTray(pane, { expand: true });
-    expect(rendered.queryByTestId('background-task-tray-row-output')).toBeNull();
+    expect(rendered.queryByText('full output')).toBeNull();
 
     await fireEvent.click(rendered.getByRole('button', { name: /Toggle command output/i }));
     await tick();
     await tick();
 
-    expect(rendered.getByTestId('background-task-tray-row-output')).toBeInTheDocument();
+    expect(rendered.getByText('full output')).toBeInTheDocument();
     const outputToggles = rendered.getAllByRole('button', { name: /Toggle command output: sleep 1; echo done/i });
     await fireEvent.click(outputToggles[outputToggles.length - 1]!);
     await tick();

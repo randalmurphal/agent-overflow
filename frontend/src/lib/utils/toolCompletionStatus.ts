@@ -37,6 +37,13 @@ export function deriveCompletionStatus(
   return 'success';
 }
 
+export function completionBadgeTitleForStatus(status: ItemSubset['status']): string | undefined {
+  if (status === 'killed') return 'Stopped';
+  if (status === 'declined') return 'Declined';
+  if (status === 'errored') return 'Failed';
+  return undefined;
+}
+
 // Both casings appear in practice: Claude's parse_user.go writes
 // `is_error` (snake), tool_lifecycle.go writes `isError` (camel) in
 // some completion headers. Either flag signals failure.

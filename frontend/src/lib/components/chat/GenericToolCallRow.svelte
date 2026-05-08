@@ -1,10 +1,14 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import { untrack } from 'svelte';
   import CopyFooter from './CopyFooter.svelte';
   import CompletionBadge from './CompletionBadge.svelte';
   import type { Item } from '../../types/models';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
-  import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
+  import {
+    completionBadgeTitleForStatus,
+    deriveCompletionStatus,
+  } from '../../utils/toolCompletionStatus';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   import { classifyToolName } from './toolCardHeader';
@@ -31,9 +35,32 @@
   // network-bound tools.
   const RUNNING_ELAPSED_THRESHOLD_MS = 2_000;
 
-  let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
+  let {
+    pane,
+    item,
+    displayItem,
+    statusItem,
+    durationLabel = '',
+    showTimestamp = true,
+    trailingActions,
+  }: {
+    pane?: ThreadPane;
+    item: Item;
+    /** Item used for the tool label/input preview. */
+    displayItem?: Item;
+    /** Item used for running/completion status. */
+    statusItem?: Item;
+    /** Optional duration/elapsed label rendered in the metadata slot. */
+    durationLabel?: string;
+    /** Tray surfaces show elapsed time instead of the absolute transcript timestamp. */
+    showTimestamp?: boolean;
+    /** Optional actions rendered outside the disclosure button. */
+    trailingActions?: Snippet;
+  } = $props();
+  let effectiveDisplayItem = $derived(displayItem ?? item);
+  let effectiveStatusItem = $derived(statusItem ?? item);
 
-  let classification = $derived(classifyToolName(item.toolName ?? item.summary));
+  let classification = $derived(classifyToolName(effectiveDisplayItem.toolName ?? effectiveDisplayItem.summary));
   // Use the pane's per-itemId registry when available so expand/collapse
   // and loaded chunks survive virtua's overscan eviction. Falls back to
   // local state when rendered outside a pane (e.g. unit tests or surfaces
@@ -52,18 +79,20 @@
   );
   const expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
 
-  let summaryMeta = $derived(parseJsonObject(item.payloadMeta));
+  let summaryMeta = $derived(parseJsonObject(effectiveDisplayItem.payloadMeta));
+  let displayMeta = $derived(parseJsonObject(effectiveDisplayItem.meta));
   let itemMeta = $derived(parseJsonObject(item.meta));
+  let statusMeta = $derived(parseJsonObject(effectiveStatusItem.payloadMeta));
 
   let time = $derived(
-    new Date(item.createdAt).toLocaleTimeString(undefined, {
+    new Date(effectiveStatusItem.createdAt).toLocaleTimeString(undefined, {
       hour: 'numeric',
       minute: '2-digit',
     }),
   );
 
   let inputPreview = $derived.by<string>(() => {
-    return toolCardInputPreview(item, classification, summaryMeta, itemMeta);
+    return toolCardInputPreview(effectiveDisplayItem, classification, summaryMeta, displayMeta);
   });
 
   // When the preview leads with a path, surface a sibling EditorLink
@@ -84,18 +113,20 @@
   // row; Codex spawn_agent rows are informational child-thread markers,
   // so their running state lives in the tray instead.
   let isBackgroundedLaunch = $derived(
-    item.kind === 'tool_call' && item.isBackground === true,
+    effectiveStatusItem.kind === 'tool_call' && effectiveStatusItem.isBackground === true,
   );
-  let isCodexSubagentLaunch = $derived(isCodexSubagentLaunchItem(item));
+  let isCodexSubagentLaunch = $derived(isCodexSubagentLaunchItem(effectiveStatusItem));
 
   let runningLabel = $derived.by<string | null>(() => {
     if (isCodexSubagentLaunch) return null;
     if (isBackgroundedLaunch) return '…';
-    if (item.status === 'running' || item.status === 'streaming') return 'running';
+    if (effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming') return 'running';
     return null;
   });
 
-  let completionStatus = $derived(deriveCompletionStatus(item, { meta: summaryMeta }));
+  let completionStatus = $derived(deriveCompletionStatus(effectiveStatusItem, { meta: statusMeta }));
+  let completionTitle = $derived(completionBadgeTitleForStatus(effectiveStatusItem.status));
+  let shouldTickElapsed = $derived(runningLabel !== null && durationLabel === '');
 
   // Wall-clock ticker, paused when the row isn't running. Mirrors the
   // SubagentGroup elapsed-display pattern: the interval clears on
@@ -105,7 +136,7 @@
   // ticking entirely.
   let now = $state(Date.now());
   $effect(() => {
-    if (runningLabel === null) return;
+    if (!shouldTickElapsed) return;
     now = Date.now();
     const id = setInterval(() => {
       now = Date.now();
@@ -118,7 +149,7 @@
   // before completing. Empty when running but under threshold so the
   // reserved-width duration slot stays visually empty in that window.
   let runningElapsedLabel = $derived.by<string>(() => {
-    if (runningLabel === null) return '';
+    if (!shouldTickElapsed) return '';
     const start = item.createdAt;
     if (!Number.isFinite(start) || start <= 0) return '';
     const elapsedMs = now - start;
@@ -234,6 +265,7 @@
     {:else if completionStatus !== null}
       <CompletionBadge
         status={completionStatus}
+        title={completionTitle}
         class="opacity-80 transition-opacity group-hover/tool:opacity-100"
       />
     {/if}
@@ -249,15 +281,20 @@
     class="shrink-0 inline-block min-w-[3rem] text-right tabular-nums text-[10px] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
     data-testid="tool-call-card-duration"
   >
-    {durationMs !== null ? formatDuration(durationMs) : runningElapsedLabel}
+    {durationLabel || (durationMs !== null ? formatDuration(durationMs) : runningElapsedLabel)}
   </span>
-  <time
-    class="shrink-0 tabular-nums text-[10px] text-fg-hint"
-    datetime={new Date(item.createdAt).toISOString()}
-    data-testid="tool-call-card-time"
-  >
-    {time}
-  </time>
+  {#if showTimestamp}
+    <time
+      class="shrink-0 tabular-nums text-[10px] text-fg-hint"
+      datetime={new Date(effectiveStatusItem.createdAt).toISOString()}
+      data-testid="tool-call-card-time"
+    >
+      {time}
+    </time>
+  {/if}
+  {#if trailingActions}
+    {@render trailingActions()}
+  {/if}
 {/snippet}
 
 <div
