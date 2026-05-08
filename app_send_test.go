@@ -90,6 +90,114 @@ func TestSendMessageLazyStartsSession(t *testing.T) {
 	}
 }
 
+func TestSendMessagePersistsUserItemBeforeLazyStartCompletes(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-send-visible-before-start")
+	thread.Provider = string(provider.Codex)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	userItemUpserted := make(chan store.Item, 1)
+	app.testEmitHook = func(name string, data any) {
+		if name != "provider:item_event" {
+			return
+		}
+		event, ok := data.(triage.ItemStreamEvent)
+		if !ok || event.Item == nil {
+			return
+		}
+		if event.Item.ThreadID == thread.ID && event.Item.Kind == "user_text" && event.Item.Summary == "visible now" {
+			select {
+			case userItemUpserted <- *event.Item:
+			default:
+			}
+		}
+	}
+
+	startEntered := make(chan struct{})
+	allowStartReturn := make(chan struct{})
+	var releaseStartOnce sync.Once
+	releaseStart := func() {
+		releaseStartOnce.Do(func() {
+			close(allowStartReturn)
+		})
+	}
+	defer releaseStart()
+	app.startSessionFn = func(threadID string) error {
+		if threadID != thread.ID {
+			t.Errorf("startSessionFn threadID = %q, want %q", threadID, thread.ID)
+		}
+		close(startEntered)
+		<-allowStartReturn
+		app.mu.Lock()
+		app.sessions[threadID] = session{provider: string(provider.Codex), token: "lazy"}
+		app.mu.Unlock()
+		return nil
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- app.SendMessage(thread.ID, "visible now", nil)
+	}()
+
+	select {
+	case <-startEntered:
+	case <-time.After(time.Second):
+		t.Fatal("SendMessage did not enter lazy start")
+	}
+
+	select {
+	case <-userItemUpserted:
+	default:
+		t.Fatal("user_text upsert should emit before lazy start completes")
+	}
+
+	releaseStart()
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "session has no provider") {
+			t.Fatalf("SendMessage() error = %v, want session-has-no-provider after lazy start returns", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SendMessage did not return after lazy start was released")
+	}
+}
+
+func TestSendMessagePersistsUserItemAndErrorWhenLazyStartFails(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-send-start-fail")
+	thread.Provider = string(provider.Codex)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	app.startSessionFn = func(string) error {
+		return errors.New("provider boot exploded")
+	}
+
+	err := app.SendMessage(thread.ID, "still visible", nil)
+	if err == nil || !strings.Contains(err.Error(), "provider boot exploded") {
+		t.Fatalf("SendMessage() error = %v, want lazy-start failure", err)
+	}
+
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	var userFound, errorFound bool
+	for _, item := range items {
+		if item.Kind == "user_text" && item.Role == "user" && item.Summary == "still visible" {
+			userFound = true
+		}
+		if item.Kind == "error" && strings.Contains(item.Summary, "provider boot exploded") {
+			errorFound = true
+		}
+	}
+	if !userFound || !errorFound {
+		t.Fatalf("expected user_text + error after lazy-start failure, got %+v", items)
+	}
+}
+
 func TestSendMessageWithOptionsAppliesRuntimeModeBeforeLazyStart(t *testing.T) {
 	app := newTestAppWithStore(t)
 	emissions := captureEmissions(app)

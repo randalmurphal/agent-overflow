@@ -119,11 +119,10 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	}
 
 	// Per-thread critical section: only one Send per thread at a time.
-	// This keeps the lazy-session-start + read-turn-index + insert-user-item +
-	// call-provider sequence atomic for a single thread while letting
-	// different threads proceed in parallel. Held across the lazy start so
-	// concurrent sends on a session-less thread don't race on spawn
-	// ordering.
+	// This keeps the runtime-mode update, turn-index read, optimistic
+	// user-item persist, lazy session start, pending-send registration, and
+	// provider dispatch sequence atomic for a single thread while letting
+	// different threads proceed in parallel.
 	unlock := sendThreadMuRegistry.lockFor(threadID)
 	defer unlock()
 
@@ -189,26 +188,6 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		return store.Item{}, fmt.Errorf("send message: user meta: %w", err)
 	}
 
-	// A thread is session-less until the first message is sent — we don't
-	// spawn the provider subprocess at thread creation. Lazy-start here so
-	// the user's "new thread → type → send" flow works without an explicit
-	// Start step. runSessionStart dedupes with any in-flight start kicked
-	// off by SwitchThread auto-resume.
-	a.mu.Lock()
-	sess, ok := a.sessions[threadID]
-	a.mu.Unlock()
-	if !ok {
-		if err := a.startSession(threadID); err != nil {
-			return store.Item{}, fmt.Errorf("send message: start session: %w", err)
-		}
-		a.mu.Lock()
-		sess, ok = a.sessions[threadID]
-		a.mu.Unlock()
-		if !ok {
-			return store.Item{}, fmt.Errorf("send message: session unavailable after start for thread %s", threadID)
-		}
-	}
-
 	thread, restoreImplementMode, err := a.beginImplementModeSwitch(threadID, sourcePlan)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
@@ -258,6 +237,31 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	userMsgKept = true
 	a.captureMessageCheckpoint(thread, userItem)
 
+	// A thread is session-less until the first message is sent — we don't
+	// spawn the provider subprocess at thread creation. Lazy-start only
+	// after the user row has landed so a cold provider startup cannot leave
+	// the visible transcript looking idle while the app is already trying to
+	// send. runSessionStart dedupes with any in-flight start kicked off by
+	// SwitchThread auto-resume.
+	a.mu.Lock()
+	sess, ok := a.sessions[threadID]
+	a.mu.Unlock()
+	if !ok {
+		if startErr := a.startSession(threadID); startErr != nil {
+			err = fmt.Errorf("start session: %w", startErr)
+			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
+			return store.Item{}, fmt.Errorf("send message: %w", err)
+		}
+		a.mu.Lock()
+		sess, ok = a.sessions[threadID]
+		a.mu.Unlock()
+		if !ok {
+			err = fmt.Errorf("session unavailable after start for thread %s", threadID)
+			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
+			return store.Item{}, fmt.Errorf("send message: %w", err)
+		}
+	}
+
 	// Register the pending-send marker BEFORE sendToProvider writes to
 	// stdin. The wire-init from Claude (or wire turn/started from Codex)
 	// can otherwise race ahead of the marker and miss the
@@ -280,42 +284,10 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	if err := sendToProvider(sess, threadID, content, provider.NormalizeInteractionMode(thread.Mode), providerAttachments); err != nil {
 		// Drop the pending-send marker before persisting the error row.
 		// Without this, the marker would still be live when the next AO
-		// send registers a new entry, and a stale wire init for an
-		// orphaned subprocess could hijack the new send's turn-start
-		// path.
+		// send registers a new entry, and a stale wire init for an orphaned
+		// subprocess could hijack the new send's turn-start path.
 		a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
-
-		// Allocate an error id from the same per-turn counter the
-		// EventError handler uses so a subsequent provider error on
-		// the same turn doesn't collide on "error:<turn>:0".
-		errSeq := a.triage.NextErrorSequence(threadID, turnIndex, "")
-		errNow := time.Now().UnixMilli()
-		errorItem := store.Item{
-			ID:        triage.NewErrorID(turnIndex, "", errSeq),
-			ThreadID:  threadID,
-			TurnIndex: turnIndex,
-			Kind:      "error",
-			Role:      "system",
-			Status:    "completed",
-			Summary:   fmt.Sprintf("Failed to send: %v", err),
-			CreatedAt: errNow,
-			UpdatedAt: errNow,
-		}
-		if persistErr := a.triage.PersistItem(errorItem, nil); persistErr != nil {
-			log.Printf("send message: persist send-failure error: %v", persistErr)
-		}
-		if completeErr := a.triage.Handle(provider.ProviderEvent{
-			Kind:         provider.EventTurnComplete,
-			ThreadID:     threadID,
-			TurnComplete: &provider.TruncatedTurnCompleteMeta{},
-			Timestamp:    time.Now(),
-		}); completeErr != nil {
-			// Log rather than propagate — the send error we're about to
-			// return is the primary failure. A secondary triage hiccup
-			// here (e.g. store closed mid-teardown) shouldn't swallow the
-			// original send error.
-			log.Printf("send message: turn complete after send failure: %v", completeErr)
-		}
+		a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
 		return store.Item{}, err
 	}
 
@@ -332,6 +304,43 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		}
 	}
 	return userItem, nil
+}
+
+func (a *App) recordSendFailureAndCompleteTurn(threadID string, turnIndex int, sendErr error) {
+	if a.triage == nil {
+		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
+		a.configureTriageQueueCallbacks()
+	}
+	// Allocate an error id from the same per-turn counter the EventError
+	// handler uses so a subsequent provider error on the same turn doesn't
+	// collide on "error:<turn>:0".
+	errSeq := a.triage.NextErrorSequence(threadID, turnIndex, "")
+	errNow := time.Now().UnixMilli()
+	errorItem := store.Item{
+		ID:        triage.NewErrorID(turnIndex, "", errSeq),
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		Kind:      "error",
+		Role:      "system",
+		Status:    "completed",
+		Summary:   fmt.Sprintf("Failed to send: %v", sendErr),
+		CreatedAt: errNow,
+		UpdatedAt: errNow,
+	}
+	if persistErr := a.triage.PersistItem(errorItem, nil); persistErr != nil {
+		log.Printf("send message: persist send-failure error: %v", persistErr)
+	}
+	if completeErr := a.triage.Handle(provider.ProviderEvent{
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     threadID,
+		TurnComplete: &provider.TruncatedTurnCompleteMeta{},
+		Timestamp:    time.Now(),
+	}); completeErr != nil {
+		// Log rather than propagate — the send error we're about to return is
+		// the primary failure. A secondary triage hiccup here (e.g. store
+		// closed mid-teardown) shouldn't swallow the original send error.
+		log.Printf("send message: turn complete after send failure: %v", completeErr)
+	}
 }
 
 // resolveSendMessageAttachments validates the requested attachment IDs,
