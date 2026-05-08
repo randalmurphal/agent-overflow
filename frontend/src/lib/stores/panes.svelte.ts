@@ -1,5 +1,6 @@
 import type { Thread } from '../types/models';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
+import { touchProjectActivity } from './projects.svelte';
 import { replaceThread as replaceThreadInRegistry } from './threads.svelte';
 
 // Active panes, keyed by pane ID. v1 has exactly one pane ("main").
@@ -43,4 +44,5 @@ export function syncThread(thread: Thread): void {
     if (pane.threadId !== thread.id || !pane.thread) continue;
     pane.replaceThread(thread);
   }
+  touchProjectActivity(thread.projectId, thread.updatedAt);
 }

@@ -86,6 +86,24 @@ export function updateProjectLocal(p: Project): void {
   );
 }
 
+/**
+ * Bump a project's activity projection when one of its threads receives
+ * newer live activity. Mirrors the backend's ListProjects lastActive value
+ * without refetching the whole projects list for every streamed item.
+ */
+export function touchProjectActivity(projectId: string | undefined, updatedAt: number): void {
+  if (!projectId || !Number.isFinite(updatedAt)) return;
+  const index = projects.findIndex((p) => p.project.id === projectId);
+  if (index === -1) return;
+
+  const existing = projects[index];
+  if ((existing.lastActive ?? 0) >= updatedAt) return;
+
+  const next = [...projects];
+  next[index] = { ...existing, lastActive: updatedAt };
+  projects = next;
+}
+
 /** Drop a project row and any related thread counts. */
 export function removeProjectLocal(id: string): void {
   projects = projects.filter((p) => p.project.id !== id);

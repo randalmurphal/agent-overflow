@@ -11,7 +11,9 @@ import {
 import {
   refreshProjects,
   resetProjectsForTest,
+  touchProjectActivity,
 } from '../../../stores/projects.svelte';
+import { syncThread } from '../../../stores/panes.svelte';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import type { Project, ProjectWithCounts } from '../../../types/models';
 import { setThreadFilterQuery } from '../../../stores/threadFilter.svelte';
@@ -105,6 +107,54 @@ describe('<ProjectsSection>', () => {
       container.querySelectorAll('[data-testid="project-item"]'),
     ).map((el) => el.getAttribute('data-project-id'));
     expect(ids).toEqual(['p-fresh', 'p-stale']);
+  });
+
+  it('re-sorts when a project receives newer live activity', async () => {
+    await seedProjects([
+      { project: mkProject('p-stale', { name: 'Stale' }), threadCount: 1, lastActive: 100 },
+      { project: mkProject('p-fresh', { name: 'Fresh' }), threadCount: 1, lastActive: 9000 },
+    ]);
+    const pane = createThreadPane();
+    const { container } = render(ProjectsSection, { props: { pane } });
+    await tick();
+
+    touchProjectActivity('p-stale', 10_000);
+    await tick();
+
+    const ids = Array.from(
+      container.querySelectorAll('[data-testid="project-item"]'),
+    ).map((el) => el.getAttribute('data-project-id'));
+    expect(ids).toEqual(['p-stale', 'p-fresh']);
+  });
+
+  it('re-sorts when syncThread carries newer project activity', async () => {
+    await seedProjects([
+      { project: mkProject('p-stale', { name: 'Stale' }), threadCount: 1, lastActive: 100 },
+      { project: mkProject('p-fresh', { name: 'Fresh' }), threadCount: 1, lastActive: 9000 },
+    ]);
+    const pane = createThreadPane();
+    const { container } = render(ProjectsSection, { props: { pane } });
+    await tick();
+
+    syncThread({
+      id: 'thread-stale',
+      title: 'Stale thread',
+      provider: 'claude',
+      workspacePath: '/tmp/stale',
+      projectPath: '/tmp/stale',
+      projectId: 'p-stale',
+      mode: 'chat',
+      model: 'claude-sonnet-4-6',
+      createdAt: 0,
+      updatedAt: 10_000,
+      archived: false,
+    });
+    await tick();
+
+    const ids = Array.from(
+      container.querySelectorAll('[data-testid="project-item"]'),
+    ).map((el) => el.getAttribute('data-project-id'));
+    expect(ids).toEqual(['p-stale', 'p-fresh']);
   });
 
   it('switches to createdAt sort and re-orders projects', async () => {

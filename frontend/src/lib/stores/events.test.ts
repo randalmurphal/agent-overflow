@@ -4,11 +4,13 @@ import { createThreadPane } from './thread.svelte';
 import { getAllPanes } from './panes.svelte';
 import { getActiveTurn, getThreadStatus, resetForTest as resetThreadStatuses } from './threadStatuses.svelte';
 import { getThreads, refreshThreads } from './threads.svelte';
+import { getProjects, refreshProjects, resetProjectsForTest } from './projects.svelte';
+import { transportGapChannel } from '../transport/wsClient';
 import { emitWailsEvent, resetWailsMocks, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 import type { ProviderStatusEvent } from '../types/events';
-import type { Item } from '../types/models';
+import type { Item, ProjectWithCounts } from '../types/models';
 
 function providerStatusEvent(overrides: Partial<ProviderStatusEvent> = {}): ProviderStatusEvent {
   return {
@@ -17,6 +19,22 @@ function providerStatusEvent(overrides: Partial<ProviderStatusEvent> = {}): Prov
     message: 'Claude CLI not found',
     actionable: true,
     ...overrides,
+  };
+}
+
+function projectWithCounts(id: string, lastActive = 0): ProjectWithCounts {
+  return {
+    project: {
+      id,
+      path: `/tmp/${id}`,
+      name: id,
+      sortPosition: 0,
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    },
+    threadCount: 1,
+    lastActive,
   };
 }
 
@@ -33,8 +51,10 @@ describe('setupEventListeners', () => {
     resetWailsMocks();
     resetBindingMocks();
     resetThreadStatuses();
+    resetProjectsForTest();
     getAllPanes().clear();
     setBindingMock('ListThreads', async () => []);
+    setBindingMock('ListProjects', async () => []);
     cleanup = setupEventListeners();
   });
 
@@ -606,6 +626,120 @@ describe('setupEventListeners', () => {
     expect(getThreads()[0]?.model).toBe('claude-opus-4-1');
     expect(getThreads()[0]?.lastReadAt).toBe(300);
     expect(getThreads()[0]?.latestTurnCompletedAt).toBe(300);
+  });
+
+  it('updates cached project activity from item_event upserts', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 100 }),
+      makeThread({ id: 'thread-fresh', projectId: 'project-fresh', updatedAt: 9000 }),
+    ]);
+    setBindingMock('ListProjects', async () => [
+      projectWithCounts('project-stale', 100),
+      projectWithCounts('project-fresh', 9000),
+    ]);
+    await refreshThreads();
+    await refreshProjects();
+    const pane = await buildPane(makeThread({
+      id: 'thread-stale',
+      projectId: 'project-stale',
+      updatedAt: 100,
+    }));
+    getAllPanes().set('main', pane);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-stale',
+      item: makeItem({
+        id: 'item-new',
+        threadId: 'thread-stale',
+        updatedAt: 10_000,
+      }),
+    });
+    await nextFrame();
+
+    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(10_000);
+    expect(pane.thread?.updatedAt).toBe(10_000);
+    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(10_000);
+  });
+
+  it('updates cached project activity from item_event deltas', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 100 }),
+      makeThread({ id: 'thread-fresh', projectId: 'project-fresh', updatedAt: 9000 }),
+    ]);
+    setBindingMock('ListProjects', async () => [
+      projectWithCounts('project-stale', 100),
+      projectWithCounts('project-fresh', 9000),
+    ]);
+    await refreshThreads();
+    await refreshProjects();
+
+    emitWailsEvent('provider:item_event', {
+      action: 'delta',
+      threadId: 'thread-stale',
+      itemId: 'text-1',
+      kind: 'assistant_text',
+      delta: 'streamed',
+      updatedAt: 10_000,
+    });
+    await nextFrame();
+
+    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(10_000);
+    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(10_000);
+  });
+
+  it('does not regress project activity from stale thread:updated events', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', projectId: 'project-1', title: 'Old', updatedAt: 500 }),
+    ]);
+    setBindingMock('ListProjects', async () => [
+      projectWithCounts('project-1', 500),
+    ]);
+    await refreshThreads();
+    await refreshProjects();
+
+    emitWailsEvent('thread:updated', makeThread({
+      id: 'thread-1',
+      projectId: 'project-1',
+      title: 'New title',
+      updatedAt: 100,
+    }));
+
+    expect(getThreads()[0]?.title).toBe('New title');
+    expect(getThreads()[0]?.updatedAt).toBe(500);
+    expect(getProjects()[0]?.lastActive).toBe(500);
+  });
+
+  it('refreshes sidebar project activity after provider event transport gaps', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 100 }),
+      makeThread({ id: 'thread-fresh', projectId: 'project-fresh', updatedAt: 9000 }),
+    ]);
+    setBindingMock('ListProjects', async () => [
+      projectWithCounts('project-stale', 100),
+      projectWithCounts('project-fresh', 9000),
+    ]);
+    await refreshThreads();
+    await refreshProjects();
+
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 10_000 }),
+      makeThread({ id: 'thread-fresh', projectId: 'project-fresh', updatedAt: 9000 }),
+    ]);
+    setBindingMock('ListProjects', async () => [
+      projectWithCounts('project-stale', 10_000),
+      projectWithCounts('project-fresh', 9000),
+    ]);
+
+    emitWailsEvent(transportGapChannel, {
+      channel: 'provider:item_event',
+      seq: 42,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(10_000);
+    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(10_000);
   });
 
   it('preserves an explicit unread marker when thread:updated is stale', async () => {

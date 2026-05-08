@@ -7,6 +7,7 @@ import {
   updateThreadTitle,
   updateThreadModel,
   replaceThread,
+  touchThreadActivity,
 } from './threads.svelte';
 import type { Thread } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -120,6 +121,31 @@ describe('threads store', () => {
       replaceThread(makeThread('missing', { title: 'x' }));
       expect(getThreads()).toHaveLength(1);
       expect(getThreads()[0].id).toBe('a');
+    });
+
+    it('touchThreadActivity bumps updatedAt when newer and returns the row', async () => {
+      setBindingMock('ListThreads', async () => [makeThread('a', { updatedAt: 100 })]);
+      await refreshThreads();
+
+      const touched = touchThreadActivity('a', 500);
+
+      expect(touched?.id).toBe('a');
+      expect(touched?.updatedAt).toBe(500);
+      expect(getThreads()[0].updatedAt).toBe(500);
+    });
+
+    it('touchThreadActivity ignores stale timestamps and missing threads', async () => {
+      setBindingMock('ListThreads', async () => [makeThread('a', { updatedAt: 500 })]);
+      await refreshThreads();
+
+      const stale = touchThreadActivity('a', 100);
+      const missing = touchThreadActivity('missing', 900);
+      const invalid = touchThreadActivity('a', Number.NaN);
+
+      expect(stale?.updatedAt).toBe(500);
+      expect(missing).toBeUndefined();
+      expect(invalid).toBeUndefined();
+      expect(getThreads()[0].updatedAt).toBe(500);
     });
   });
 });

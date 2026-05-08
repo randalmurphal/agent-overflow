@@ -7,6 +7,7 @@ import {
   refreshProjects,
   removeProjectLocal,
   resetProjectsForTest,
+  touchProjectActivity,
   updateProjectLocal,
 } from './projects.svelte';
 import type { Project, ProjectWithCounts } from '../types/models';
@@ -105,6 +106,30 @@ describe('projects store', () => {
       await refreshProjects();
       removeProjectLocal('missing');
       expect(getProjects()).toHaveLength(1);
+    });
+
+    it('touchProjectActivity bumps lastActive when newer', async () => {
+      setBindingMock('ListProjects', async () => [
+        { ...wrap(makeProject('a')), lastActive: 100 },
+      ]);
+      await refreshProjects();
+
+      touchProjectActivity('a', 500);
+
+      expect(getProject('a')?.lastActive).toBe(500);
+    });
+
+    it('touchProjectActivity ignores stale timestamps and missing projects', async () => {
+      setBindingMock('ListProjects', async () => [
+        { ...wrap(makeProject('a')), lastActive: 500 },
+      ]);
+      await refreshProjects();
+
+      touchProjectActivity('a', 100);
+      touchProjectActivity('missing', 900);
+      touchProjectActivity('a', Number.NaN);
+
+      expect(getProject('a')?.lastActive).toBe(500);
     });
   });
 });

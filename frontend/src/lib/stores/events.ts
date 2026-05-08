@@ -28,9 +28,10 @@ import {
 } from './sendQueue.svelte';
 import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
 import { getAllPanes, syncThread } from './panes.svelte';
+import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
 import { addToast } from './toast.svelte';
-import { getThreadById, getThreads, replaceThread } from './threads.svelte';
+import { getThreadById, getThreads, refreshThreads, replaceThread, touchThreadActivity } from './threads.svelte';
 import { parseJsonObject } from '../utils/parseJsonObject';
 import {
   projectApprovalRequest,
@@ -289,15 +290,19 @@ interface RuntimeModeChangedPayload {
   needsReconnect: boolean;
 }
 
-function syncThreadRow(updated: Thread): void {
+function syncThreadRow(updated: Thread): Thread {
   const readMarkers = [updated.lastReadAt];
   const latestCompletions = [updated.latestTurnCompletedAt];
+  const activityMarkers = [updated.updatedAt];
   const cachedThread = getThreadById(updated.id);
   if (cachedThread?.lastReadAt !== undefined) {
     readMarkers.push(cachedThread.lastReadAt);
   }
   if (cachedThread?.latestTurnCompletedAt !== undefined) {
     latestCompletions.push(cachedThread.latestTurnCompletedAt);
+  }
+  if (cachedThread && Number.isFinite(cachedThread.updatedAt)) {
+    activityMarkers.push(cachedThread.updatedAt);
   }
 
   for (const pane of getAllPanes().values()) {
@@ -308,11 +313,17 @@ function syncThreadRow(updated: Thread): void {
     if (pane.thread.latestTurnCompletedAt !== undefined) {
       latestCompletions.push(pane.thread.latestTurnCompletedAt);
     }
+    if (Number.isFinite(pane.thread.updatedAt)) {
+      activityMarkers.push(pane.thread.updatedAt);
+    }
   }
 
   const lastReadAt = mergeReadMarkersPreservingUnread(readMarkers);
   const latestTurnCompletedAt = mergeLatestTurnCompletedAt(latestCompletions);
-  syncThread({ ...updated, lastReadAt, latestTurnCompletedAt });
+  const updatedAt = mergeLatestActivityAt(activityMarkers);
+  const merged = { ...updated, updatedAt, lastReadAt, latestTurnCompletedAt };
+  syncThread(merged);
+  return merged;
 }
 
 function syncLatestTurnCompleted(evt: TurnCompletedEvent): void {
@@ -329,6 +340,29 @@ function syncLatestTurnCompleted(evt: TurnCompletedEvent): void {
     ...cachedThread,
     latestTurnCompletedAt,
   });
+}
+
+function syncThreadActivity(threadId: string, updatedAt: number): void {
+  if (!threadId || !Number.isFinite(updatedAt)) return;
+  const thread = touchThreadActivity(threadId, updatedAt);
+  let projectId = thread?.projectId;
+  let latestUpdatedAt = thread?.updatedAt ?? updatedAt;
+
+  for (const pane of getAllPanes().values()) {
+    if (pane.threadId !== threadId || !pane.thread) continue;
+    projectId = projectId ?? pane.thread.projectId;
+    const paneUpdatedAt = Math.max(pane.thread.updatedAt ?? 0, updatedAt);
+    latestUpdatedAt = Math.max(latestUpdatedAt, paneUpdatedAt);
+    if (pane.thread.updatedAt === paneUpdatedAt) continue;
+    pane.replaceThread({ ...pane.thread, updatedAt: paneUpdatedAt });
+  }
+
+  touchProjectActivity(projectId, latestUpdatedAt);
+}
+
+function refreshSidebarProjections(): void {
+  void refreshThreads();
+  void refreshProjects();
 }
 
 function mergeReadMarkersPreservingUnread(readMarkers: Array<number | undefined>): number | undefined {
@@ -348,6 +382,13 @@ function mergeLatestTurnCompletedAt(completions: Array<number | undefined>): num
     return undefined;
   }
   return Math.max(...definedCompletions);
+}
+
+function mergeLatestActivityAt(activityMarkers: Array<number | undefined>): number {
+  const definedActivity = activityMarkers.filter((value): value is number =>
+    value !== undefined && Number.isFinite(value));
+  if (definedActivity.length === 0) return 0;
+  return Math.max(...definedActivity);
 }
 
 function updateThreadUsageCache(threadId: string, raw: string): void {
@@ -592,6 +633,13 @@ function flushItemEventQueue(): void {
   const notifiedUpserts: Item[] = [];
   const pendingDeltas = new Map<string, ItemDeltaEvent & { chunks: string[] }>();
   const deltaThreadIds = new Set<string>();
+  const activityAtByThread = new Map<string, number>();
+
+  const recordThreadActivity = (threadId: string, updatedAt: number) => {
+    if (!threadId || !isFiniteNumber(updatedAt)) return;
+    const existing = activityAtByThread.get(threadId) ?? Number.NEGATIVE_INFINITY;
+    if (updatedAt > existing) activityAtByThread.set(threadId, updatedAt);
+  };
 
   const flushPendingUpserts = () => {
     if (pendingUpserts.length === 0) return;
@@ -633,12 +681,14 @@ function flushItemEventQueue(): void {
       flushPendingDeltas();
       if (!isValidItemForThread(evt.item, evt.threadId)) continue;
       pendingUpserts.push(evt.item);
+      recordThreadActivity(evt.threadId, evt.item.updatedAt);
       continue;
     }
     if (evt.action !== 'delta') continue;
 
     flushPendingUpserts();
     queueDelta(evt);
+    recordThreadActivity(evt.threadId, evt.updatedAt);
   }
 
   flushPendingDeltas();
@@ -652,6 +702,9 @@ function flushItemEventQueue(): void {
     }
   }
   notifyItemUpserts(notifiedUpserts);
+  for (const [threadId, updatedAt] of activityAtByThread) {
+    syncThreadActivity(threadId, updatedAt);
+  }
   if (itemEventQueueStart < itemEventQueue.length) {
     scheduleItemEventFlush();
   }
@@ -981,6 +1034,7 @@ export function setupEventListeners(): () => void {
         case 'provider:turn_started':
         case 'provider:turn_completed':
         case 'thread:updated': {
+          refreshSidebarProjections();
           for (const pane of getAllPanes().values()) {
             if (!pane.threadId) continue;
             void pane.refreshFromBackend();
@@ -994,6 +1048,7 @@ export function setupEventListeners(): () => void {
           console.warn(
             `events: transport gap on unknown channel "${gap.channel}" — refreshing active panes`,
           );
+          refreshSidebarProjections();
           for (const pane of getAllPanes().values()) {
             if (!pane.threadId) continue;
             void pane.refreshFromBackend();

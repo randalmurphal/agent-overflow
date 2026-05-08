@@ -49,6 +49,28 @@ export function replaceThread(thread: Thread): void {
 }
 
 /**
+ * Bump a cached thread's activity timestamp when a live provider event
+ * proves the backend touched it. Returns the current cached row so callers
+ * can reconcile project-level projections without re-scanning the list.
+ */
+export function touchThreadActivity(id: string, updatedAt: number): Thread | undefined {
+  if (!id || !Number.isFinite(updatedAt)) return undefined;
+  const index = threads.findIndex((t) => t.id === id);
+  if (index === -1) return undefined;
+
+  const existing = threads[index];
+  if ((existing.updatedAt ?? 0) >= updatedAt) {
+    return existing;
+  }
+
+  const updated = { ...existing, updatedAt };
+  const next = [...threads];
+  next[index] = updated;
+  threads = next;
+  return updated;
+}
+
+/**
  * Patches local sidebar read state immediately after a MarkThreadRead /
  * MarkThreadUnread request. `hasIncompleteTurn` is included because
  * Interrupted is also unseen read-state; opening the thread clears it
