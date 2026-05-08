@@ -197,23 +197,23 @@
     <div id="diff-sidebar-file-{safeId}" class="ml-5 border-l border-border-subtle bg-surface-0/35">
       {#if shouldRender}
         {#if viewMode === 'split'}
-          <div class="grid grid-cols-2 gap-px bg-border-subtle font-mono text-[11px] leading-tight {wrapClass}">
+          <div class="grid grid-cols-2 gap-px bg-border-subtle font-mono text-[11px] leading-tight" data-testid="diff-sidebar-split-body">
             {#each splitRows as row, i (i)}
-              <div class="px-2 py-px {row.left ? lineTintClass(row.left.type) : 'bg-surface-0/40'} {row.left?.type === 'context' ? 'bg-surface-0' : ''}">
+              <div class="px-2 py-px {wrapClass} {row.left ? lineTintClass(row.left.type) : 'bg-surface-0/40'} {row.left?.type === 'context' ? 'bg-surface-0' : ''}">
                 {#if row.left}<DiffLineContent line={row.left} tokens={getTokens(row.left)} />{:else}{' '}{/if}
               </div>
-              <div class="px-2 py-px {row.right ? lineTintClass(row.right.type) : 'bg-surface-0/40'} {row.right?.type === 'context' ? 'bg-surface-0' : ''}">
+              <div class="px-2 py-px {wrapClass} {row.right ? lineTintClass(row.right.type) : 'bg-surface-0/40'} {row.right?.type === 'context' ? 'bg-surface-0' : ''}">
                 {#if row.right}<DiffLineContent line={row.right} tokens={getTokens(row.right)} />{:else}{' '}{/if}
               </div>
             {/each}
           </div>
         {:else}
-          <div class="px-3 py-2 font-mono text-[11px] leading-tight {wrapClass}">
+          <div class="py-2 font-mono text-[11px] leading-tight" data-testid="diff-sidebar-stacked-body">
             {#each displayLines as line, i (i)}
-              <div class="block {lineTintClass(line.type)}"><DiffLineContent {line} tokens={getTokens(line)} /></div>
+              <div class="block px-3 {wrapClass} {lineTintClass(line.type)}"><DiffLineContent {line} tokens={getTokens(line)} /></div>
               {#if separatorAfter.has(i)}
                 <div
-                  class="my-1 flex items-center gap-2 select-none"
+                  class="my-1 flex items-center gap-2 px-3 select-none"
                   aria-hidden="true"
                   data-testid="diff-sidebar-hunk-separator"
                 >

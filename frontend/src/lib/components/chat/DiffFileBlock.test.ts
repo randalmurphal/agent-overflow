@@ -144,9 +144,19 @@ describe('<DiffFileBlock>', () => {
     // assert on Shiki tokens (they land asynchronously); just on the
     // raw text content.
     const body = getByTestId('diff-file-body');
+    expect(body.className).not.toContain('whitespace-pre');
     expect(body.textContent).toContain('const x = 1;');
     expect(body.textContent).toContain('const y = 2;');
     expect(body.textContent).toContain('const y = 3;');
+
+    const rows = Array.from(body.children);
+    expect(rows).toHaveLength(3);
+    expect(rows.every((row) => row.className.includes('whitespace-pre'))).toBe(true);
+    expect(rows.map((row) => row.textContent)).toEqual([
+      '1 const x = 1;',
+      '2-const y = 2;',
+      '2+const y = 3;',
+    ]);
   });
 
   it('renders a hunk separator between hunks within one file', () => {

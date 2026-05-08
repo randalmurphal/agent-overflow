@@ -276,7 +276,7 @@
   {#if hasBody}
     <div class="ml-5 border-l border-border-subtle bg-surface-0/35 relative">
       <div
-        class="font-mono text-xs leading-tight whitespace-pre py-1"
+        class="font-mono text-xs leading-tight py-1"
         data-testid="diff-file-body"
         style="--gutter-w: {gutterChars + 1}ch"
       >
@@ -292,7 +292,7 @@
               <span class="flex-1 border-t border-border-subtle"></span>
             </div>
           {:else}
-            <div class="flex {lineTintClass(row.line.type)}">
+            <div class="flex whitespace-pre {lineTintClass(row.line.type)}">
               <span
                 class="select-none tabular-nums text-fg-subtle/60 px-3 text-right shrink-0"
                 style="width: var(--gutter-w)"
