@@ -2,6 +2,8 @@ package triage
 
 import (
 	"encoding/json"
+	"strings"
+	"time"
 
 	"agent-overflow/internal/provider"
 )
@@ -15,6 +17,20 @@ func decodeUserInputRequest(raw json.RawMessage) provider.UserInputRequest {
 		return provider.UserInputRequest{}
 	}
 	return request
+}
+
+func decodeUserInputResolvedMeta(raw json.RawMessage) (requestID string, decision string, answers map[string]provider.UserInputAnswer) {
+	requestID, decision, _ = decodeApprovalResolvedMeta(raw)
+	if len(raw) == 0 {
+		return requestID, decision, nil
+	}
+	var payload struct {
+		Answers map[string]provider.UserInputAnswer `json:"answers"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return requestID, decision, nil
+	}
+	return requestID, decision, payload.Answers
 }
 
 func (r *Router) setPendingUserInput(threadID string, request provider.UserInputRequest) {
@@ -50,6 +66,9 @@ func (r *Router) handleUserInputRequest(evt provider.ProviderEvent) error {
 	if request.TurnID == "" {
 		request.TurnID = evt.TurnID
 	}
+	if request.ToolUseID == "" && request.ToolName == "user_input" {
+		request.ToolUseID = evt.ItemID
+	}
 	if request.RequestID == "" || request.ThreadID == "" || len(request.Questions) == 0 {
 		return r.handleError(provider.ProviderEvent{
 			Kind:      provider.EventError,
@@ -69,11 +88,16 @@ func (r *Router) handleUserInputRequest(evt provider.ProviderEvent) error {
 }
 
 func (r *Router) handleUserInputResolved(evt provider.ProviderEvent) error {
-	requestID, decision, _ := decodeApprovalResolvedMeta(evt.Meta)
+	requestID, decision, answers := decodeUserInputResolvedMeta(evt.Meta)
 	if requestID == "" {
 		requestID = evt.ItemID
 	}
-	r.takePendingUserInput(evt.ThreadID, requestID)
+	request, ok := r.takePendingUserInput(evt.ThreadID, requestID)
+	if ok {
+		if err := r.completeCodexUserInputToolCall(evt, request, decision, answers); err != nil {
+			return err
+		}
+	}
 	r.emit("provider:user_input", provider.UserInputEvent{
 		Action:    "resolve",
 		ThreadID:  evt.ThreadID,
@@ -81,4 +105,51 @@ func (r *Router) handleUserInputResolved(evt provider.ProviderEvent) error {
 		Decision:  decision,
 	})
 	return nil
+}
+
+func (r *Router) completeCodexUserInputToolCall(evt provider.ProviderEvent, request provider.UserInputRequest, decision string, answers map[string]provider.UserInputAnswer) error {
+	if r.store == nil || request.ToolUseID == "" {
+		return nil
+	}
+	if strings.TrimSpace(request.ToolName) != "user_input" {
+		return nil
+	}
+	codexThread, err := r.isCodexThread(evt.ThreadID)
+	if err != nil {
+		return err
+	}
+	if !codexThread {
+		return nil
+	}
+	if answers == nil {
+		answers = map[string]provider.UserInputAnswer{}
+	}
+
+	metaFields := map[string]any{
+		"toolName": "request_user_input",
+		"answers":  answers,
+		"decision": decision,
+	}
+	if decision != "" && decision != "answered" {
+		metaFields["is_error"] = true
+	}
+	meta, _ := json.Marshal(metaFields)
+
+	timestamp := evt.Timestamp
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+	turnID := request.TurnID
+	if turnID == "" {
+		turnID = evt.TurnID
+	}
+	return r.handleToolComplete(provider.ProviderEvent{
+		Kind:      provider.EventToolComplete,
+		ThreadID:  evt.ThreadID,
+		TurnID:    turnID,
+		ItemID:    request.ToolUseID,
+		ItemType:  "request_user_input",
+		Meta:      meta,
+		Timestamp: timestamp,
+	})
 }

@@ -700,7 +700,7 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 		Decision:  decision,
 	}
 	inputFields := map[string]any{
-		"answers": resp.Answers,
+		"answers": claudeAskUserQuestionAnswers(questions, resp.Answers),
 	}
 	if len(questions) > 0 {
 		inputFields["questions"] = questions
@@ -715,6 +715,67 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 		return err
 	}
 	return s.proc.WriteLine(data)
+}
+
+func claudeAskUserQuestionAnswers(questions []provider.UserInputQuestion, answers map[string]provider.UserInputAnswer) map[string]string {
+	out := make(map[string]string, len(answers))
+	used := make(map[string]struct{}, len(answers))
+	keyCounts := claudeAskUserQuestionKeyCounts(questions)
+	for _, question := range questions {
+		answer, sourceKey, ok := answerForClaudeQuestion(question, answers)
+		if !ok {
+			continue
+		}
+		key := claudeAskUserQuestionAnswerKey(question, sourceKey, keyCounts)
+		out[key] = strings.Join([]string(answer), ", ")
+		used[sourceKey] = struct{}{}
+	}
+	for key, answer := range answers {
+		if _, ok := used[key]; ok {
+			continue
+		}
+		out[key] = strings.Join([]string(answer), ", ")
+	}
+	return out
+}
+
+func claudeAskUserQuestionKeyCounts(questions []provider.UserInputQuestion) map[string]int {
+	counts := make(map[string]int, len(questions)*3)
+	for _, question := range questions {
+		for _, key := range []string{question.Question, question.Header, question.ID} {
+			key = strings.TrimSpace(key)
+			if key != "" {
+				counts[key]++
+			}
+		}
+	}
+	return counts
+}
+
+func claudeAskUserQuestionAnswerKey(question provider.UserInputQuestion, sourceKey string, keyCounts map[string]int) string {
+	for _, key := range []string{question.Question, question.Header, question.ID} {
+		key = strings.TrimSpace(key)
+		if key != "" && keyCounts[key] == 1 {
+			return key
+		}
+	}
+	if sourceKey != "" {
+		return sourceKey
+	}
+	return strings.TrimSpace(question.ID)
+}
+
+func answerForClaudeQuestion(question provider.UserInputQuestion, answers map[string]provider.UserInputAnswer) (provider.UserInputAnswer, string, bool) {
+	for _, key := range []string{question.ID, question.Header, question.Question} {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if answer, ok := answers[key]; ok {
+			return answer, key, true
+		}
+	}
+	return nil, "", false
 }
 
 // ErrApprovalAlreadyResolved is returned by RespondToApproval when the

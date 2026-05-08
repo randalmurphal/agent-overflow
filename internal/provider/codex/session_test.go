@@ -2760,9 +2760,20 @@ func TestCodexHandleServerRequestUserInput(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
+	start := codexWaitEvent(t, eventCh)
+	if start.Kind != provider.EventToolStart {
+		t.Fatalf("start kind: got %q, want %q", start.Kind, provider.EventToolStart)
+	}
+	if start.ItemType != "request_user_input" {
+		t.Fatalf("start itemType: got %q, want request_user_input", start.ItemType)
+	}
+	if start.ItemID != "item-8" {
+		t.Errorf("start itemID: got %q, want %q", start.ItemID, "item-8")
+	}
+
 	evt := codexWaitEvent(t, eventCh)
 	if evt.Kind != provider.EventUserInputRequest {
-		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventUserInputRequest)
+		t.Fatalf("request kind: got %q, want %q", evt.Kind, provider.EventUserInputRequest)
 	}
 	if evt.TurnID != "turn-3" {
 		t.Errorf("turnID: got %q, want %q", evt.TurnID, "turn-3")
@@ -2777,6 +2788,9 @@ func TestCodexHandleServerRequestUserInput(t *testing.T) {
 	}
 	if len(request.Questions) != 1 {
 		t.Fatalf("questions len: got %d, want 1", len(request.Questions))
+	}
+	if request.ToolUseID != "item-8" {
+		t.Errorf("toolUseID: got %q, want item-8", request.ToolUseID)
 	}
 	if request.Questions[0].ID != "scope" {
 		t.Errorf("question id: got %q, want %q", request.Questions[0].ID, "scope")
@@ -2814,9 +2828,17 @@ func TestCodexHandleServerRequestUserInputV2TopLevelRouteFields(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
+	start := codexWaitEvent(t, eventCh)
+	if start.Kind != provider.EventToolStart {
+		t.Fatalf("start kind: got %q, want %q", start.Kind, provider.EventToolStart)
+	}
+	if start.ItemID != "item-31" {
+		t.Errorf("start itemID: got %q, want item-31", start.ItemID)
+	}
+
 	evt := codexWaitEvent(t, eventCh)
 	if evt.Kind != provider.EventUserInputRequest {
-		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventUserInputRequest)
+		t.Fatalf("request kind: got %q, want %q", evt.Kind, provider.EventUserInputRequest)
 	}
 	if evt.TurnID != "turn-31" {
 		t.Errorf("turnID: got %q, want %q", evt.TurnID, "turn-31")
@@ -2834,6 +2856,9 @@ func TestCodexHandleServerRequestUserInputV2TopLevelRouteFields(t *testing.T) {
 	}
 	if request.TurnID != "turn-31" {
 		t.Errorf("request turnID: got %q, want %q", request.TurnID, "turn-31")
+	}
+	if request.ToolUseID != "item-31" {
+		t.Errorf("request toolUseID: got %q, want item-31", request.ToolUseID)
 	}
 	if got := len(request.Questions); got != 1 {
 		t.Fatalf("questions len: got %d, want 1", got)

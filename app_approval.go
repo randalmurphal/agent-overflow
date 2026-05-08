@@ -90,7 +90,7 @@ func (a *App) RespondToUserInput(threadID string, response provider.UserInputRes
 	if response.Decision == "decline" || response.Decision == "cancel" {
 		decision = "declined"
 	}
-	a.emitUserInputResolution(threadID, response.RequestID, decision)
+	a.emitUserInputResolution(threadID, response.RequestID, decision, response.Answers)
 	return nil
 }
 
@@ -134,10 +134,11 @@ func (a *App) emitApprovalFailure(threadID, requestID string, err error) {
 	})
 }
 
-func (a *App) emitUserInputResolution(threadID, requestID, decision string) {
+func (a *App) emitUserInputResolution(threadID, requestID, decision string, answers map[string]provider.UserInputAnswer) {
 	meta, _ := json.Marshal(map[string]any{
 		"requestId": requestID,
 		"decision":  decision,
+		"answers":   answers,
 	})
 	evt := provider.ProviderEvent{
 		Kind:      provider.EventUserInputResolved,

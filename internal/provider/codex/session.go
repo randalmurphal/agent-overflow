@@ -2203,8 +2203,11 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 			}
 			return
 		}
-		meta := buildUserInputMetaFromQuestions(s.threadID, turnID, rpcID, questions)
+		meta := buildUserInputMetaFromQuestions(s.threadID, turnID, itemID, rpcID, questions)
 		s.trackPendingApproval(rpcID, provider.EventUserInputResolved)
+		if itemID != "" {
+			s.onEvent(buildUserInputToolStartEvent(s.threadID, turnID, itemID, questions, line))
+		}
 		s.onEvent(buildUserInputEvent(s.threadID, turnID, itemID, meta, line))
 
 	case "item/permissions/requestApproval":
@@ -2413,6 +2416,19 @@ func buildUserInputEvent(threadID, turnID, itemID string, meta json.RawMessage, 
 		TurnID:    turnID,
 		ItemID:    itemID,
 		Meta:      meta,
+		Timestamp: time.Now(),
+		Raw:       raw,
+	}
+}
+
+func buildUserInputToolStartEvent(threadID, turnID, itemID string, questions []provider.UserInputQuestion, raw json.RawMessage) provider.ProviderEvent {
+	return provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  threadID,
+		TurnID:    turnID,
+		ItemID:    itemID,
+		ItemType:  "request_user_input",
+		Meta:      buildUserInputToolStartMeta(questions),
 		Timestamp: time.Now(),
 		Raw:       raw,
 	}

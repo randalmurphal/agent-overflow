@@ -137,6 +137,98 @@ func TestPendingInteractiveRequestsCleanupThreadClearsOrder(t *testing.T) {
 	}
 }
 
+func TestUserInputResolutionCompletesCodexRequestUserInputToolCall(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexQueueTestThread(t, st, "thread-1")
+
+	questions := []provider.UserInputQuestion{{
+		ID:       "scope",
+		Header:   "Scope",
+		Question: "Choose a scope",
+		Options: []provider.UserInputQuestionOption{{
+			Label:       "turn",
+			Description: "Apply only to this turn",
+		}},
+	}}
+	startMeta := mustMarshalJSON(t, map[string]any{
+		"toolName": "request_user_input",
+		"input": map[string]any{
+			"questions": questions,
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "thread-1",
+		TurnID:    "turn-1",
+		ItemID:    "item-8",
+		ItemType:  "request_user_input",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle tool start: %v", err)
+	}
+
+	requestMeta := mustMarshalJSON(t, provider.UserInputRequest{
+		RequestID: "3",
+		ThreadID:  "thread-1",
+		TurnID:    "turn-1",
+		ToolUseID: "item-8",
+		ToolName:  "user_input",
+		Title:     "User Input Required",
+		Questions: questions,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserInputRequest,
+		ThreadID:  "thread-1",
+		TurnID:    "turn-1",
+		ItemID:    "item-8",
+		Meta:      requestMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle user-input request: %v", err)
+	}
+
+	resolveMeta := mustMarshalJSON(t, map[string]any{
+		"requestId": "3",
+		"decision":  "answered",
+		"answers": map[string]provider.UserInputAnswer{
+			"scope": provider.SingleUserInputAnswer("turn"),
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserInputResolved,
+		ThreadID:  "thread-1",
+		ItemID:    "3",
+		Meta:      resolveMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle user-input resolve: %v", err)
+	}
+
+	item, found, err := st.GetThreadItem("thread-1", "item-8")
+	if err != nil {
+		t.Fatalf("get item: %v", err)
+	}
+	if !found {
+		t.Fatal("request_user_input tool call was not persisted")
+	}
+	if item.Status != statusCompleted {
+		t.Fatalf("status = %q, want %q", item.Status, statusCompleted)
+	}
+	if item.ToolName != "request_user_input" {
+		t.Fatalf("toolName = %q, want request_user_input", item.ToolName)
+	}
+	var meta struct {
+		Answers map[string]provider.UserInputAnswer `json:"answers"`
+	}
+	if err := json.Unmarshal([]byte(item.Meta), &meta); err != nil {
+		t.Fatalf("unmarshal item meta: %v", err)
+	}
+	if got := meta.Answers["scope"]; len(got) != 1 || got[0] != "turn" {
+		t.Fatalf("answers = %+v, want scope=turn", meta.Answers)
+	}
+}
+
 func mustMarshalJSON(t *testing.T, value any) json.RawMessage {
 	t.Helper()
 	data, err := json.Marshal(value)

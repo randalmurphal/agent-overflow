@@ -1544,6 +1544,18 @@ func TestSessionRespondToUserInputIncludesQuestionsInUpdatedInput(t *testing.T) 
 			Label:       "Svelte",
 			Description: "Use Svelte",
 		}},
+	}, {
+		ID:          "extras",
+		Header:      "Extras",
+		Question:    "Pick extras",
+		MultiSelect: true,
+		Options: []provider.UserInputQuestionOption{{
+			Label:       "lint",
+			Description: "Run lint",
+		}, {
+			Label:       "tests",
+			Description: "Run tests",
+		}},
 	}}
 	s.trackPendingApprovalWithQuestions("req-user-input", provider.EventUserInputResolved, questions)
 
@@ -1552,6 +1564,7 @@ func TestSessionRespondToUserInputIncludesQuestionsInUpdatedInput(t *testing.T) 
 		Decision:  "accept",
 		Answers: map[string]provider.UserInputAnswer{
 			"framework": provider.SingleUserInputAnswer("Svelte"),
+			"extras":    provider.UserInputAnswer{"lint", "tests"},
 		},
 	})
 	if err != nil {
@@ -1587,11 +1600,41 @@ func TestSessionRespondToUserInputIncludesQuestionsInUpdatedInput(t *testing.T) 
 	if msg.Response.Response.Behavior != "allow" {
 		t.Fatalf("behavior = %q, want allow", msg.Response.Response.Behavior)
 	}
-	if msg.Response.Response.UpdatedInput.Answers["framework"] != "Svelte" {
-		t.Fatalf("answers = %+v, want framework=Svelte", msg.Response.Response.UpdatedInput.Answers)
+	if msg.Response.Response.UpdatedInput.Answers["Pick one"] != "Svelte" {
+		t.Fatalf("answers = %+v, want Pick one=Svelte", msg.Response.Response.UpdatedInput.Answers)
+	}
+	if msg.Response.Response.UpdatedInput.Answers["Pick extras"] != "lint, tests" {
+		t.Fatalf("answers = %+v, want Pick extras=\"lint, tests\"", msg.Response.Response.UpdatedInput.Answers)
 	}
 	if !reflect.DeepEqual(msg.Response.Response.UpdatedInput.Questions, questions) {
 		t.Fatalf("questions = %+v, want %+v", msg.Response.Response.UpdatedInput.Questions, questions)
+	}
+}
+
+func TestClaudeAskUserQuestionAnswersAvoidsDuplicateQuestionTextCollision(t *testing.T) {
+	questions := []provider.UserInputQuestion{{
+		ID:       "first",
+		Header:   "First choice",
+		Question: "Pick one",
+	}, {
+		ID:       "second",
+		Header:   "Second choice",
+		Question: "Pick one",
+	}}
+
+	got := claudeAskUserQuestionAnswers(questions, map[string]provider.UserInputAnswer{
+		"first":  provider.SingleUserInputAnswer("React"),
+		"second": provider.SingleUserInputAnswer("Svelte"),
+	})
+
+	if got["First choice"] != "React" {
+		t.Fatalf("first answer = %+v, want First choice=React", got)
+	}
+	if got["Second choice"] != "Svelte" {
+		t.Fatalf("second answer = %+v, want Second choice=Svelte", got)
+	}
+	if _, ok := got["Pick one"]; ok {
+		t.Fatalf("duplicate question text key was used: %+v", got)
 	}
 }
 

@@ -298,19 +298,32 @@ func isJSONNull(raw json.RawMessage) bool {
 
 func buildUserInputMeta(threadID, turnID string, rpcID int64, params json.RawMessage) json.RawMessage {
 	questions := parseUserInputQuestions(params)
-	return buildUserInputMetaFromQuestions(threadID, turnID, rpcID, questions)
+	_, itemID := readRouteFields(params)
+	return buildUserInputMetaFromQuestions(threadID, turnID, itemID, rpcID, questions)
 }
 
-func buildUserInputMetaFromQuestions(threadID, turnID string, rpcID int64, questions []provider.UserInputQuestion) json.RawMessage {
+func buildUserInputMetaFromQuestions(threadID, turnID, toolUseID string, rpcID int64, questions []provider.UserInputQuestion) json.RawMessage {
 	request := provider.UserInputRequest{
 		RequestID: fmt.Sprintf("%d", rpcID),
 		ThreadID:  threadID,
 		TurnID:    turnID,
+		ToolUseID: toolUseID,
 		ToolName:  "user_input",
 		Questions: questions,
 		Title:     "User Input Required",
 	}
 	data, _ := json.Marshal(request)
+	return data
+}
+
+func buildUserInputToolStartMeta(questions []provider.UserInputQuestion) json.RawMessage {
+	input, _ := json.Marshal(map[string]any{
+		"questions": questions,
+	})
+	data, _ := json.Marshal(map[string]any{
+		"toolName": "request_user_input",
+		"input":    json.RawMessage(input),
+	})
 	return data
 }
 

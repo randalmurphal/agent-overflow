@@ -13,11 +13,26 @@ import { makeItem } from '../../../test/helpers/chat';
  * card has only a handful of test variants and inlining keeps each
  * assertion self-evident.
  */
-function buildMeta(parts: { questions: unknown[]; answers?: Record<string, unknown> }): string {
+function buildMeta(parts: {
+  questions: unknown[];
+  answers?: Record<string, unknown>;
+  directAnswers?: Record<string, unknown>;
+  toolResultContent?: unknown;
+  toolName?: string;
+}): string {
   const meta: Record<string, unknown> = {
-    toolName: 'AskUserQuestion',
+    toolName: parts.toolName ?? 'AskUserQuestion',
     input: { questions: parts.questions },
   };
+  if (parts.directAnswers) {
+    meta.answers = parts.directAnswers;
+  }
+  if (parts.toolResultContent) {
+    meta.tool_result = {
+      content: parts.toolResultContent,
+    };
+    return JSON.stringify(meta);
+  }
   if (parts.answers) {
     meta.tool_result = {
       content: JSON.stringify({ answers: parts.answers }),
@@ -251,6 +266,112 @@ describe('<AskUserQuestionCard>', () => {
     expect(options[1].getAttribute('data-selected')).toBe('false'); // Code highlighting
     expect(options[2].getAttribute('data-selected')).toBe('true'); // Attachments
     expect(options[3].getAttribute('data-selected')).toBe('false'); // Slash commands
+  });
+
+  it('parses Claude AskUserQuestion tool-result sentences keyed by question text', async () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'AskUserQuestion',
+      meta: buildMeta({
+        questions: [
+          {
+            id: 'features',
+            header: 'Features',
+            question: 'Which features?',
+            multiSelect: true,
+            options: [
+              { label: 'Markdown', description: '' },
+              { label: 'Code highlighting', description: '' },
+              { label: 'Attachments', description: '' },
+            ],
+          },
+        ],
+        toolResultContent:
+          'User has answered your questions: "Which features?"="Markdown, Attachments". You can now continue with the task.',
+      }),
+    });
+
+    const { getByTestId, getAllByTestId, queryByText } = render(AskUserQuestionCard, {
+      props: { item },
+    });
+
+    await fireEvent.click(getByTestId('ask-user-question-toggle'));
+
+    expect(queryByText('No answer recorded.')).toBeNull();
+    const options = getAllByTestId('ask-user-question-option');
+    expect(options[0].getAttribute('data-selected')).toBe('true');
+    expect(options[1].getAttribute('data-selected')).toBe('false');
+    expect(options[2].getAttribute('data-selected')).toBe('true');
+  });
+
+  it('keeps comma-containing option labels intact when parsing Claude multi-select answers', async () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'AskUserQuestion',
+      meta: buildMeta({
+        questions: [
+          {
+            id: 'platforms',
+            header: 'Platforms',
+            question: 'Which platforms?',
+            multiSelect: true,
+            options: [
+              { label: 'Web, mobile', description: '' },
+              { label: 'API', description: '' },
+              { label: 'Desktop', description: '' },
+            ],
+          },
+        ],
+        toolResultContent:
+          'User has answered your questions: "Which platforms?"="Web, mobile, API". You can now continue with the task.',
+      }),
+    });
+
+    const { getByTestId, getAllByTestId } = render(AskUserQuestionCard, {
+      props: { item },
+    });
+
+    await fireEvent.click(getByTestId('ask-user-question-toggle'));
+
+    const options = getAllByTestId('ask-user-question-option');
+    expect(options[0].getAttribute('data-selected')).toBe('true');
+    expect(options[1].getAttribute('data-selected')).toBe('true');
+    expect(options[2].getAttribute('data-selected')).toBe('false');
+  });
+
+  it('reads Codex request_user_input answers from item metadata', async () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'request_user_input',
+      meta: buildMeta({
+        toolName: 'request_user_input',
+        questions: [
+          {
+            id: 'scope',
+            header: 'Scope',
+            question: 'Choose a scope',
+            options: [
+              { label: 'turn', description: '' },
+              { label: 'session', description: '' },
+            ],
+          },
+        ],
+        directAnswers: { scope: 'session' },
+      }),
+    });
+
+    const { getByTestId, getAllByTestId } = render(AskUserQuestionCard, {
+      props: { item },
+    });
+
+    await fireEvent.click(getByTestId('ask-user-question-toggle'));
+
+    const options = getAllByTestId('ask-user-question-option');
+    expect(options[0].getAttribute('data-selected')).toBe('false');
+    expect(options[1].getAttribute('data-selected')).toBe('true');
   });
 
   it('renders one block per question for multi-question prompts', async () => {

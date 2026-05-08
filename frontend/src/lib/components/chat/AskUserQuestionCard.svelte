@@ -1,19 +1,21 @@
 <script lang="ts">
   /*
-   * AskUserQuestionCard renders the persisted timeline row for a Claude
-   * AskUserQuestion tool call. The live interaction lives in the
-   * in-composer panel (ComposerPendingUserInputPanel); this card is the
-   * historical record that survives across reloads, forks, and restores
-   * — the user can come back later and see what they were asked and
-   * what they answered.
+   * AskUserQuestionCard renders persisted timeline rows for Claude
+   * AskUserQuestion and Codex request_user_input tool calls. The live
+   * interaction lives in the in-composer panel
+   * (ComposerPendingUserInputPanel); this card is the historical record
+   * that survives across reloads, forks, and restores — the user can
+   * come back later and see what they were asked and what they answered.
    *
    * Data sources:
    * - `item.meta.input.questions` — the questions array, set by the
    *   tool_use launch event. Always present.
+   * - `item.meta.answers` — Codex's persisted answers, set when AO
+   *   resolves the synthetic request_user_input tool call.
    * - `item.meta.tool_result.content` — Claude's echo of the user's
    *   answers, set by the tool_result completion event. Present once
-   *   the user has answered. Parsed as JSON `{answers, questions}` (the
-   *   shape we sent via RespondToUserInput).
+   *   the user has answered. Parsed from Claude's canonical
+   *   `"question"="answer"` sentence, with JSON kept for legacy rows.
    *
    * Status rendering reuses `deriveCompletionStatus` so the badge logic
    * stays consistent with every other tool card. Running shows the
@@ -83,18 +85,17 @@
     return list.filter((q): q is AskQuestion => !!q && typeof q === 'object' && typeof (q as Record<string, unknown>).question === 'string');
   });
 
-  // Answers are echoed back inside `tool_result.content` after the user
-  // submits. The content is whatever shape Claude's CLI synthesizes for
-  // an AskUserQuestion tool_result; the most common shape is a JSON
-  // string of `{answers: {questionId: string | string[]}}`. Parse
-  // defensively — if the shape is unexpected we just render no answers
-  // (the row still shows the questions that were asked).
+  // Answers are persisted directly on Codex request_user_input rows and
+  // echoed inside Claude's `tool_result.content` after the user submits.
+  // Parse defensively — if the shape is unexpected we just render no
+  // answers (the row still shows the questions that were asked).
   const answersByQuestion = $derived.by<Record<string, string | string[]>>(() => {
     if (!itemMeta) return {};
+    const directAnswers = extractAnswers((itemMeta as Record<string, unknown>).answers);
     const toolResult = itemMeta.tool_result;
-    if (!toolResult || typeof toolResult !== 'object') return {};
-    const content = (toolResult as Record<string, unknown>).content;
-    return extractAnswers(content);
+    if (!toolResult || typeof toolResult !== 'object') return directAnswers;
+    const toolResultAnswers = extractAnswers((toolResult as Record<string, unknown>).content);
+    return { ...directAnswers, ...toolResultAnswers };
   });
 
   function extractAnswers(content: unknown): Record<string, string | string[]> {
@@ -114,6 +115,10 @@
         .join('');
       return parseAnswersString(text);
     }
+    if (content && typeof content === 'object') {
+      const candidate = (content as Record<string, unknown>).answers ?? content;
+      return normalizeAnswerObject(candidate);
+    }
     return {};
   }
 
@@ -123,23 +128,46 @@
     try {
       const parsed = JSON.parse(trimmed) as unknown;
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        const candidate = (parsed as Record<string, unknown>).answers ?? parsed;
-        if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
-          const out: Record<string, string | string[]> = {};
-          for (const [k, v] of Object.entries(candidate as Record<string, unknown>)) {
-            if (typeof v === 'string') out[k] = v;
-            else if (Array.isArray(v)) {
-              const list = v.filter((entry): entry is string => typeof entry === 'string');
-              if (list.length > 0) out[k] = list;
-            }
-          }
-          return out;
-        }
+        const answers = normalizeAnswerObject((parsed as Record<string, unknown>).answers ?? parsed);
+        if (Object.keys(answers).length > 0) return answers;
       }
     } catch {
       // Not JSON — fall through.
     }
-    return {};
+    return parseClaudeAnsweredSentence(trimmed);
+  }
+
+  function normalizeAnswerObject(candidate: unknown): Record<string, string | string[]> {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return {};
+    const out: Record<string, string | string[]> = {};
+    for (const [k, v] of Object.entries(candidate as Record<string, unknown>)) {
+      if (typeof v === 'string') out[k] = v;
+      else if (Array.isArray(v)) {
+        const list = v.filter((entry): entry is string => typeof entry === 'string');
+        if (list.length > 0) out[k] = list;
+      }
+    }
+    return out;
+  }
+
+  function parseClaudeAnsweredSentence(text: string): Record<string, string> {
+    if (!text.startsWith('User has answered your questions:')) return {};
+    const out: Record<string, string> = {};
+    const pairPattern = /"((?:\\.|[^"\\])*)"\s*=\s*"((?:\\.|[^"\\])*)"/g;
+    for (const match of text.matchAll(pairPattern)) {
+      const key = decodeQuotedSegment(match[1] ?? '');
+      const value = decodeQuotedSegment(match[2] ?? '');
+      if (key) out[key] = value;
+    }
+    return out;
+  }
+
+  function decodeQuotedSegment(value: string): string {
+    try {
+      return JSON.parse(`"${value}"`) as string;
+    } catch {
+      return value.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    }
   }
 
   // Title rendering rule:
@@ -164,14 +192,48 @@
   function answersForQuestion(q: AskQuestion): string[] {
     const id = q.id ?? '';
     const direct = id ? answersByQuestion[id] : undefined;
-    if (direct !== undefined) return Array.isArray(direct) ? direct : [direct];
+    if (direct !== undefined) return normalizeQuestionAnswers(q, direct);
     // Some answers come back keyed by header or by question text. Try
     // those before giving up.
     const byHeader = q.header ? answersByQuestion[q.header] : undefined;
-    if (byHeader !== undefined) return Array.isArray(byHeader) ? byHeader : [byHeader];
+    if (byHeader !== undefined) return normalizeQuestionAnswers(q, byHeader);
     const byQuestion = answersByQuestion[q.question];
-    if (byQuestion !== undefined) return Array.isArray(byQuestion) ? byQuestion : [byQuestion];
+    if (byQuestion !== undefined) return normalizeQuestionAnswers(q, byQuestion);
     return [];
+  }
+
+  function normalizeQuestionAnswers(q: AskQuestion, answer: string | string[]): string[] {
+    if (Array.isArray(answer)) return answer;
+    if (q.multiSelect) {
+      const parsedOptions = splitKnownMultiSelectOptions(answer, q.options ?? []);
+      if (parsedOptions.length > 1) return parsedOptions;
+    }
+    return [answer];
+  }
+
+  function splitKnownMultiSelectOptions(answer: string, options: AskOption[]): string[] {
+    const optionLabels = new Set(options.map((option) => option.label));
+    if (optionLabels.size === 0 || optionLabels.has(answer)) return [];
+    const parts = answer
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (parts.length < 2) return [];
+    return parseKnownOptionSequence(parts, optionLabels) ?? [];
+  }
+
+  function parseKnownOptionSequence(parts: string[], optionLabels: Set<string>): string[] | null {
+    function parseFrom(index: number): string[] | null {
+      if (index >= parts.length) return [];
+      for (let end = index + 1; end <= parts.length; end++) {
+        const candidate = parts.slice(index, end).join(', ');
+        if (!optionLabels.has(candidate)) continue;
+        const rest = parseFrom(end);
+        if (rest) return [candidate, ...rest];
+      }
+      return null;
+    }
+    return parseFrom(0);
   }
 
   /**

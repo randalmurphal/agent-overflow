@@ -133,6 +133,40 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(queryByTestId("tool-call-card")).toBeNull();
   });
 
+  it("dispatches Codex request_user_input items to AskUserQuestionCard", async () => {
+    const pane = await buildPane(makeThread({ provider: "codex" }));
+    const item = makeItem({
+      id: "codex-user-input-1",
+      kind: "tool_call",
+      status: "completed",
+      toolName: "request_user_input",
+      meta: JSON.stringify({
+        toolName: "request_user_input",
+        input: {
+          questions: [
+            {
+              id: "scope",
+              header: "Scope",
+              question: "Choose a scope",
+              options: [
+                { label: "turn", description: "" },
+                { label: "session", description: "" },
+              ],
+            },
+          ],
+        },
+        answers: { scope: "turn" },
+      }),
+    });
+
+    const { getByTestId, queryByTestId } = render(ToolCallCard, {
+      props: { pane, item },
+    });
+
+    expect(getByTestId("ask-user-question-card")).toBeInTheDocument();
+    expect(queryByTestId("tool-call-card")).toBeNull();
+  });
+
   it("renders a file icon for Edit/Write/MultiEdit tools", async () => {
     const pane = await buildPane();
     for (const toolName of ["Edit", "Write", "MultiEdit"]) {

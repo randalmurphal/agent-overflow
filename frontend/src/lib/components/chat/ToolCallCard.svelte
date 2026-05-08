@@ -89,6 +89,9 @@
   let isCollabControlRow = $derived(
     pane.thread?.provider === 'codex' && isCodexCollabControlToolName(item.toolName),
   );
+  let isUserInputRow = $derived(
+    item.toolName === 'AskUserQuestion' || item.toolName === 'request_user_input',
+  );
 
   // Single-file PatchFile derived from a `payloadKind === 'diff'`
   // DiffMeta. The meta carries a complete (or sliced) unified-diff
@@ -114,13 +117,14 @@
   );
 </script>
 
-{#if item.toolName === 'AskUserQuestion'}
-  <!-- AskUserQuestion is a UI tool with no real payload — questions live
-       on item.meta.input.questions, answers come back via the
-       tool_result echo on item.meta.tool_result.content. The dedicated
-       card renders both with check/X marks per option. Branch must come
-       BEFORE the generic payloadKind dispatch so the JSON-string
-       answers don't accidentally route to a wrong specialised renderer. -->
+{#if isUserInputRow}
+  <!-- AskUserQuestion and request_user_input are UI tools with no real
+       payload — questions live on item.meta.input.questions, answers
+       are either persisted on item.meta.answers (Codex) or echoed via
+       item.meta.tool_result.content (Claude). The dedicated card renders
+       both with check/X marks per option. Branch must come BEFORE the
+       generic payloadKind dispatch so answer blobs do not route to an
+       unrelated specialised renderer. -->
   <AskUserQuestionCard {pane} {item} />
 {:else if isCollabControlRow}
   <CollabToolRow {pane} {item} {codexSubagentReceiverLabels} />
