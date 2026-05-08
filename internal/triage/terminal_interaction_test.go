@@ -463,6 +463,352 @@ func TestTerminalInteraction_CommandCompletionSettlesVisibleWaitCarrierBeforeRaw
 	}
 }
 
+func TestTerminalInteraction_LateTypedPollAfterRawCompletionDoesNotCreateDuplicateWait(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 2)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-1",
+		ItemType: "commandExecution", TurnID: "turn-0",
+		Meta:      buildUnifiedExecStartMeta(t, "pid-42", "false"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle command start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "backgrounded",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle yield: %v", err)
+	}
+
+	rawStart := provider.ProviderEvent{
+		Kind:     provider.EventTerminalInteraction,
+		ThreadID: "t1",
+		TurnID:   "turn-2",
+		ItemID:   "call-wait",
+		Content:  "",
+		Meta: terminalInteractionMetaBlobWith(t, "pid-42", "", map[string]any{
+			"source":       "rawResponseItem/function_call",
+			"tool_call_id": "call-wait",
+		}),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(rawStart); err != nil {
+		t.Fatalf("handle raw wait start: %v", err)
+	}
+
+	completeMeta := buildUnifiedExecCompleteMeta(t, "failed", "pid-42", "false", 1)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-1",
+		ItemType: "commandExecution", TurnID: "turn-0", Content: "",
+		Meta: completeMeta, Replace: true, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle command output: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "cmd-1",
+		ItemType: "commandExecution", TurnID: "turn-0", Meta: completeMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle command completion: %v", err)
+	}
+
+	rawOutput := provider.ProviderEvent{
+		Kind:     provider.EventTerminalInteraction,
+		ThreadID: "t1",
+		TurnID:   "turn-2",
+		ItemID:   "call-wait",
+		Content:  "",
+		Meta: terminalInteractionMetaBlobWith(t, "pid-42", "", map[string]any{
+			"source":       "rawResponseItem/function_call_output",
+			"tool_call_id": "call-wait",
+			"wait_result":  provider.TerminalWaitResultExited,
+		}),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(rawOutput); err != nil {
+		t.Fatalf("handle raw wait output: %v", err)
+	}
+
+	lateTypedPoll := provider.ProviderEvent{
+		Kind:      provider.EventTerminalInteraction,
+		ThreadID:  "t1",
+		TurnID:    "turn-2",
+		ItemID:    "cmd-1",
+		Content:   "",
+		Meta:      terminalInteractionMetaBlob(t, "pid-42", ""),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(lateTypedPoll); err != nil {
+		t.Fatalf("handle late typed poll: %v", err)
+	}
+
+	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
+	if len(waits) != 1 {
+		t.Fatalf("wait rows after late typed poll = %d, want 1: %+v", len(waits), waits)
+	}
+	if !strings.Contains(waits[0].Summary, "Bash: false") {
+		t.Fatalf("wait summary after late typed poll = %q, want to preserve command summary", waits[0].Summary)
+	}
+}
+
+func TestTerminalInteraction_TypedPollDuringRawWaitDoesNotCreateDuplicateWait(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 2)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-1",
+		ItemType: "commandExecution", TurnID: "turn-0",
+		Meta:      buildUnifiedExecStartMeta(t, "pid-42", "false"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle command start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "backgrounded",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle yield: %v", err)
+	}
+
+	rawStart := provider.ProviderEvent{
+		Kind:     provider.EventTerminalInteraction,
+		ThreadID: "t1",
+		TurnID:   "turn-2",
+		ItemID:   "call-wait",
+		Content:  "",
+		Meta: terminalInteractionMetaBlobWith(t, "pid-42", "", map[string]any{
+			"source":       "rawResponseItem/function_call",
+			"tool_call_id": "call-wait",
+		}),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(rawStart); err != nil {
+		t.Fatalf("handle raw wait start: %v", err)
+	}
+
+	typedPoll := provider.ProviderEvent{
+		Kind:      provider.EventTerminalInteraction,
+		ThreadID:  "t1",
+		TurnID:    "turn-2",
+		ItemID:    "cmd-1",
+		Content:   "",
+		Meta:      terminalInteractionMetaBlob(t, "pid-42", ""),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(typedPoll); err != nil {
+		t.Fatalf("handle typed poll: %v", err)
+	}
+
+	rawOutput := provider.ProviderEvent{
+		Kind:     provider.EventTerminalInteraction,
+		ThreadID: "t1",
+		TurnID:   "turn-2",
+		ItemID:   "call-wait",
+		Content:  "",
+		Meta: terminalInteractionMetaBlobWith(t, "pid-42", "", map[string]any{
+			"source":       "rawResponseItem/function_call_output",
+			"tool_call_id": "call-wait",
+			"wait_result":  provider.TerminalWaitResultRunning,
+		}),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(rawOutput); err != nil {
+		t.Fatalf("handle raw wait output: %v", err)
+	}
+
+	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
+	if len(waits) != 1 {
+		t.Fatalf("wait rows after typed poll during raw wait = %d, want 1: %+v", len(waits), waits)
+	}
+}
+
+func TestTerminalInteraction_TypedPollAfterRawWaitWithoutLiveTrackerDoesNotCreateDuplicateWait(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 2)
+
+	rawStart := provider.ProviderEvent{
+		Kind:     provider.EventTerminalInteraction,
+		ThreadID: "t1",
+		TurnID:   "turn-2",
+		ItemID:   "call-wait",
+		Content:  "",
+		Meta: terminalInteractionMetaBlobWith(t, "pid-42", "", map[string]any{
+			"source":       "rawResponseItem/function_call",
+			"tool_call_id": "call-wait",
+		}),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(rawStart); err != nil {
+		t.Fatalf("handle raw wait start: %v", err)
+	}
+
+	typedPoll := provider.ProviderEvent{
+		Kind:      provider.EventTerminalInteraction,
+		ThreadID:  "t1",
+		TurnID:    "turn-2",
+		ItemID:    "cmd-1",
+		Content:   "",
+		Meta:      terminalInteractionMetaBlob(t, "pid-42", ""),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(typedPoll); err != nil {
+		t.Fatalf("handle typed poll: %v", err)
+	}
+
+	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
+	if len(waits) != 1 {
+		t.Fatalf("wait rows after typed poll without live tracker = %d, want 1: %+v", len(waits), waits)
+	}
+}
+
+func TestTerminalInteraction_StaleCarrierWithoutLiveTrackerClearsAtBoundary(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 2)
+
+	rawStart := provider.ProviderEvent{
+		Kind:     provider.EventTerminalInteraction,
+		ThreadID: "t1",
+		TurnID:   "turn-2",
+		ItemID:   "call-wait",
+		Content:  "",
+		Meta: terminalInteractionMetaBlobWith(t, "pid-42", "", map[string]any{
+			"source":       "rawResponseItem/function_call",
+			"tool_call_id": "call-wait",
+		}),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(rawStart); err != nil {
+		t.Fatalf("handle raw wait start: %v", err)
+	}
+
+	typedPoll := provider.ProviderEvent{
+		Kind:      provider.EventTerminalInteraction,
+		ThreadID:  "t1",
+		TurnID:    "turn-2",
+		ItemID:    "cmd-1",
+		Content:   "",
+		Meta:      terminalInteractionMetaBlob(t, "pid-42", ""),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(typedPoll); err != nil {
+		t.Fatalf("handle typed poll: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		TurnID:    "turn-2",
+		Content:   "next boundary",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle boundary text: %v", err)
+	}
+	if err := router.Handle(typedPoll); err != nil {
+		t.Fatalf("handle second typed poll: %v", err)
+	}
+
+	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
+	if len(waits) != 2 {
+		t.Fatalf("wait rows after stale-carrier boundary = %d, want 2: %+v", len(waits), waits)
+	}
+	seen := make(map[string]struct{}, len(waits))
+	for _, wait := range waits {
+		seen[wait.ID] = struct{}{}
+	}
+	if _, ok := seen["waited:pid-42:2:0"]; !ok {
+		t.Fatalf("missing original wait carrier: %+v", waits)
+	}
+	if _, ok := seen["waited:pid-42:2:1"]; !ok {
+		t.Fatalf("missing fresh wait carrier after boundary: %+v", waits)
+	}
+}
+
+func TestTerminalInteraction_LateTypedPollAfterRawRunningOutputDoesNotReopenSettledWait(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 2)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-1",
+		ItemType: "commandExecution", TurnID: "turn-0",
+		Meta:      buildUnifiedExecStartMeta(t, "pid-42", "sleep 10"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle command start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "backgrounded",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle yield: %v", err)
+	}
+
+	rawStart := provider.ProviderEvent{
+		Kind:     provider.EventTerminalInteraction,
+		ThreadID: "t1",
+		TurnID:   "turn-2",
+		ItemID:   "call-wait",
+		Content:  "",
+		Meta: terminalInteractionMetaBlobWith(t, "pid-42", "", map[string]any{
+			"source":       "rawResponseItem/function_call",
+			"tool_call_id": "call-wait",
+		}),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(rawStart); err != nil {
+		t.Fatalf("handle raw wait start: %v", err)
+	}
+
+	rawOutput := provider.ProviderEvent{
+		Kind:     provider.EventTerminalInteraction,
+		ThreadID: "t1",
+		TurnID:   "turn-2",
+		ItemID:   "call-wait",
+		Content:  "",
+		Meta: terminalInteractionMetaBlobWith(t, "pid-42", "", map[string]any{
+			"source":       "rawResponseItem/function_call_output",
+			"tool_call_id": "call-wait",
+			"wait_result":  provider.TerminalWaitResultRunning,
+		}),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(rawOutput); err != nil {
+		t.Fatalf("handle raw wait output: %v", err)
+	}
+
+	typedPoll := provider.ProviderEvent{
+		Kind:      provider.EventTerminalInteraction,
+		ThreadID:  "t1",
+		TurnID:    "turn-2",
+		ItemID:    "cmd-1",
+		Content:   "",
+		Meta:      terminalInteractionMetaBlob(t, "pid-42", ""),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(typedPoll); err != nil {
+		t.Fatalf("handle late typed poll: %v", err)
+	}
+
+	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
+	if len(waits) != 1 {
+		t.Fatalf("wait rows after raw running output then typed poll = %d, want 1: %+v", len(waits), waits)
+	}
+	if waits[0].Status != statusCompleted {
+		t.Fatalf("wait status after late typed poll = %q, want completed", waits[0].Status)
+	}
+}
+
 func TestTerminalInteraction_RawWaitMarksUnifiedExecBackgroundedBeforeCompletion(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -763,21 +1109,11 @@ func TestTerminalInteraction_NoOpenTurn_Dropped(t *testing.T) {
 }
 
 // TestTerminalInteraction_StableIDIdempotenceForLiteralReplay pins the
-// stable-id contract under literal event replay: dispatching the SAME
-// EventTerminalInteraction twice (with no router state mutation between)
-// must produce one row, not two. The id-allocating counter must NOT
-// advance for the duplicate dispatch.
-//
-// The earlier version of this test wiped terminalInteractionSeq between
-// the two Handle calls and asserted the resulting collision collapsed
-// to one row. That encoded the multi-result-per-turn data-loss bug as
-// desirable behavior. The architectural fix (counters survive turn
-// boundaries; cleared only at CleanupThread) means the only way two
-// distinct events land at the same id is genuine literal replay —
-// covered here. The "two distinct polls accidentally compute the same
-// id because the counter was wiped" scenario is now covered by
-// TestTerminalInteraction_DoubledResultPreservesDistinctRows, which
-// asserts the OPPOSITE (two distinct rows).
+// same-process poll coalescing contract: dispatching the SAME empty-stdin
+// EventTerminalInteraction twice must update the same visible wait carrier,
+// not create a second row. Codex can expose a raw write_stdin call and the
+// canonical typed TerminalInteraction for the same model wait; the timeline
+// should display that as one "Waited" row.
 func TestTerminalInteraction_StableIDIdempotenceForLiteralReplay(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -803,10 +1139,6 @@ func TestTerminalInteraction_StableIDIdempotenceForLiteralReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list turn items: %v", err)
 	}
-	// Literal replay should naturally produce two events that the seq
-	// counter assigns distinct ids to — that's the architectural fix.
-	// Two distinct rows is the expected outcome here, not idempotence
-	// via collision collapse.
 	count := 0
 	seenIDs := make(map[string]struct{})
 	for _, it := range items {
@@ -815,44 +1147,42 @@ func TestTerminalInteraction_StableIDIdempotenceForLiteralReplay(t *testing.T) {
 			count++
 		}
 	}
-	if count != 2 {
-		t.Errorf("literal replay of two distinct events produced %d rows, want 2 (each at its own seq)", count)
+	if count != 1 {
+		t.Errorf("literal replay of the same poll produced %d rows, want 1 carrier", count)
 	}
-	if len(seenIDs) != 2 {
-		t.Errorf("expected 2 distinct row ids, got %d (counter did not advance for replay)", len(seenIDs))
+	if len(seenIDs) != 1 {
+		t.Errorf("expected 1 carrier id, got %d", len(seenIDs))
 	}
 }
 
-// TestTerminalInteraction_DoubledResultPreservesDistinctRows pins the
+// TestTerminalInteraction_DoubledResultPreservesInteractedSeq pins the
 // architectural fix for the multi-result-per-turn class of bugs: a
 // second EventTurnComplete on the same logical turn (Claude's
 // task_notification + synthesized user envelope flow, fatal-error race)
-// MUST NOT wipe the terminalInteractionSeq counter. If it did, the
-// next post-clear EventTerminalInteraction would compute the same id
-// (waited:pid-42:0:0) as the first poll and silently overwrite it via
-// UpsertItem's INSERT-OR-UPDATE semantics — exactly the data-loss
-// shape that text/thinking/error rows also fell into.
-func TestTerminalInteraction_DoubledResultPreservesDistinctRows(t *testing.T) {
+// MUST NOT wipe the terminalInteractionSeq counter. Empty polls now
+// intentionally coalesce by process, so this drives forwarded-stdin
+// interactions where each event must still allocate its own row.
+func TestTerminalInteraction_DoubledResultPreservesInteractedSeq(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
-	firstPoll := provider.ProviderEvent{
+	firstInteraction := provider.ProviderEvent{
 		Kind:      provider.EventTerminalInteraction,
 		ThreadID:  "t1",
 		TurnID:    "turn-0",
 		ItemID:    "cmd-1",
-		Content:   "",
-		Meta:      terminalInteractionMetaBlob(t, "pid-42", ""),
+		Content:   "q",
+		Meta:      terminalInteractionMetaBlob(t, "pid-42", "q"),
 		Timestamp: time.Now(),
 	}
-	if err := router.Handle(firstPoll); err != nil {
-		t.Fatalf("first poll: %v", err)
+	if err := router.Handle(firstInteraction); err != nil {
+		t.Fatalf("first interaction: %v", err)
 	}
 
 	// Drive a turn-complete: clearOpenTurn fires under the hood. Under
 	// the architectural fix the counter survives. Without it, the next
-	// poll would land at seq=0 and overwrite the first row.
+	// interaction would land at seq=0 and overwrite the first row.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:         provider.EventTurnComplete,
 		ThreadID:     "t1",
@@ -864,7 +1194,7 @@ func TestTerminalInteraction_DoubledResultPreservesDistinctRows(t *testing.T) {
 
 	// Re-open the turn so handleTerminalInteraction's openTurnIndex
 	// guard (which drops events when no turn is open) doesn't reject
-	// the post-close poll. In the real wire pattern Codex would emit a
+	// the post-close interaction. In the real wire pattern Codex would emit a
 	// second `turn/started` for the same turnId — we just call
 	// setOpenTurn directly here since the turns row already exists from
 	// the first seedOpenTurn (the production handleTurnStart is
@@ -872,17 +1202,17 @@ func TestTerminalInteraction_DoubledResultPreservesDistinctRows(t *testing.T) {
 	// uses InsertTurn directly which is not).
 	router.setOpenTurn("t1", 0)
 
-	secondPoll := provider.ProviderEvent{
+	secondInteraction := provider.ProviderEvent{
 		Kind:      provider.EventTerminalInteraction,
 		ThreadID:  "t1",
 		TurnID:    "turn-0",
 		ItemID:    "cmd-2",
-		Content:   "",
-		Meta:      terminalInteractionMetaBlob(t, "pid-42", ""),
+		Content:   "q",
+		Meta:      terminalInteractionMetaBlob(t, "pid-42", "q"),
 		Timestamp: time.Now(),
 	}
-	if err := router.Handle(secondPoll); err != nil {
-		t.Fatalf("second poll: %v", err)
+	if err := router.Handle(secondInteraction); err != nil {
+		t.Fatalf("second interaction: %v", err)
 	}
 
 	items, err := st.ListTurnItems("t1", 0)
@@ -897,13 +1227,13 @@ func TestTerminalInteraction_DoubledResultPreservesDistinctRows(t *testing.T) {
 		seenIDs[it.ID] = struct{}{}
 	}
 	if len(seenIDs) != 2 {
-		t.Errorf("expected 2 distinct rows across the doubled-turn-complete, got %d (counter wipe regression?)", len(seenIDs))
+		t.Errorf("expected 2 distinct interacted rows across the doubled-turn-complete, got %d (counter wipe regression?)", len(seenIDs))
 	}
-	if _, ok := seenIDs["waited:pid-42:0:0"]; !ok {
-		t.Errorf("missing waited:pid-42:0:0 row; second poll likely overwrote the first via colliding seq=0 id")
+	if _, ok := seenIDs["interacted:pid-42:0:0"]; !ok {
+		t.Errorf("missing interacted:pid-42:0:0 row; second interaction likely overwrote the first via colliding seq=0 id")
 	}
-	if _, ok := seenIDs["waited:pid-42:0:1"]; !ok {
-		t.Errorf("missing waited:pid-42:0:1 row; counter did not advance after clearOpenTurn")
+	if _, ok := seenIDs["interacted:pid-42:0:1"]; !ok {
+		t.Errorf("missing interacted:pid-42:0:1 row; counter did not advance after clearOpenTurn")
 	}
 }
 
@@ -956,12 +1286,11 @@ func TestTerminalInteraction_EmptyProcessIDSubstitutesDash(t *testing.T) {
 	}
 }
 
-// TestTerminalInteraction_MultiplePollsDistinctRows exercises the
-// normal multi-poll case: Codex polls the same PTY five times in a
-// turn. We should see five distinct rows — matching Codex's own TUI
-// behavior (the unified_exec_wait_streak tracker collapses runs
-// visually but our timeline stays flat at the event level).
-func TestTerminalInteraction_MultiplePollsDistinctRows(t *testing.T) {
+// TestTerminalInteraction_MultiplePollsCoalesceByProcess exercises the
+// normal multi-poll case: Codex can surface raw and typed signals for the
+// same PTY wait. We keep one visible carrier per process until another
+// timeline boundary settles it, matching Codex's visible TUI behavior.
+func TestTerminalInteraction_MultiplePollsCoalesceByProcess(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -997,7 +1326,7 @@ func TestTerminalInteraction_MultiplePollsDistinctRows(t *testing.T) {
 		seenIDs[it.ID] = struct{}{}
 		count++
 	}
-	if count != 5 {
-		t.Errorf("expected 5 distinct terminal_interaction rows, got %d", count)
+	if count != 1 {
+		t.Errorf("expected 1 coalesced terminal_interaction row, got %d", count)
 	}
 }

@@ -131,12 +131,13 @@ type Router struct {
 	// codex_background.go for the lifecycle details and invariant 25 for
 	// the wire-typed-signal rule this implements.
 	codexBackground map[string]*codexBackgroundState
-	// terminalInteractionSeq counts persisted "Waited for background
-	// terminal" rows per (thread, turn, processID) so each poll lands
-	// at its own id (waited:<pid>:<turn>:<seq>). Bounded the same way
-	// other per-turn counters are: prefix-swept on clearOpenTurn and
-	// CleanupThread so a long-lived session doesn't accumulate stale
-	// entries. See terminal_interaction.go for the handler.
+	// terminalInteractionSeq counts terminal interaction carriers per
+	// (thread, turn, processID). Empty wait polls may reuse the latest
+	// carrier for that process; forwarded-stdin interactions always take
+	// the next id. Bounded the same way other id-allocating counters are:
+	// retained across clearOpenTurn to avoid multi-result id collisions and
+	// swept on CleanupThread / selective turn re-init reset. See
+	// terminal_interaction.go for the handler.
 	terminalInteractionSeq map[string]int
 	// openAPIRetryRows flags threads whose current api_retry row is in
 	// status=running and therefore eligible to flip on the next

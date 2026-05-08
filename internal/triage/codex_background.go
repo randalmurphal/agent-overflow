@@ -169,6 +169,12 @@ type codexBackgroundState struct {
 	// it must not allocate a second wait row after the typed command
 	// completion has already attached beneath the first one.
 	pendingWaitByToolCall map[string]string
+	// waitCarrierByProcess maps process_id → latest empty-stdin wait
+	// carrier in the current turn. It outlives pendingWaitByProcess so
+	// the canonical typed TerminalInteraction signal can settle/update a
+	// provisional raw write_stdin carrier even after the PTY wait has
+	// already completed.
+	waitCarrierByProcess map[string]pendingTerminalWait
 	// spawnAgent maps launchID → tracker for collabAgentToolCall
 	// spawn_agent items that may outlive their parent turn.
 	spawnAgent map[string]*spawnAgentTracker
@@ -180,6 +186,7 @@ func newCodexBackgroundState() *codexBackgroundState {
 		unifiedExecByProcess:  make(map[string]string),
 		pendingWaitByProcess:  make(map[string]pendingTerminalWait),
 		pendingWaitByToolCall: make(map[string]string),
+		waitCarrierByProcess:  make(map[string]pendingTerminalWait),
 		spawnAgent:            make(map[string]*spawnAgentTracker),
 	}
 }
@@ -357,6 +364,7 @@ func (r *Router) pruneExpiredCodexCompletedTrackersLocked(state *codexBackground
 		if tracker.processID != "" {
 			delete(state.unifiedExecByProcess, tracker.processID)
 			delete(state.pendingWaitByProcess, tracker.processID)
+			delete(state.waitCarrierByProcess, tracker.processID)
 		}
 		delete(state.unifiedExec, id)
 		changed = true
@@ -376,6 +384,7 @@ func (r *Router) scheduleCodexCompletedTrackerPrune(threadID, launchID string) {
 				if tracker.processID != "" {
 					delete(state.unifiedExecByProcess, tracker.processID)
 					delete(state.pendingWaitByProcess, tracker.processID)
+					delete(state.waitCarrierByProcess, tracker.processID)
 				}
 				delete(state.unifiedExec, launchID)
 				pruned = true
@@ -598,11 +607,31 @@ func (r *Router) settleCodexPendingTerminalWaits(threadID string) {
 		wait      pendingTerminalWait
 	}
 	var waits []pendingProcessWait
+	seenItemIDs := make(map[string]struct{})
 	r.mu.Lock()
 	state := r.codexBackground[threadID]
-	if state != nil && len(state.pendingWaitByProcess) > 0 {
-		waits = make([]pendingProcessWait, 0, len(state.pendingWaitByProcess))
+	if state != nil {
+		waits = make([]pendingProcessWait, 0, len(state.pendingWaitByProcess)+len(state.waitCarrierByProcess))
 		for processID, wait := range state.pendingWaitByProcess {
+			itemID := strings.TrimSpace(wait.itemID)
+			if itemID == "" {
+				continue
+			}
+			seenItemIDs[itemID] = struct{}{}
+			waits = append(waits, pendingProcessWait{
+				processID: processID,
+				wait:      wait,
+			})
+		}
+		for processID, wait := range state.waitCarrierByProcess {
+			itemID := strings.TrimSpace(wait.itemID)
+			if itemID == "" {
+				continue
+			}
+			if _, seen := seenItemIDs[itemID]; seen {
+				continue
+			}
+			seenItemIDs[itemID] = struct{}{}
 			waits = append(waits, pendingProcessWait{
 				processID: processID,
 				wait:      wait,
@@ -616,6 +645,7 @@ func (r *Router) settleCodexPendingTerminalWaits(threadID string) {
 			continue
 		}
 		r.clearCodexPendingTerminalWaitState(threadID, wait.processID, wait.wait.itemID)
+		r.clearCodexTerminalWaitCarrierIfMatches(threadID, wait.processID, wait.wait.itemID)
 	}
 }
 
@@ -651,6 +681,38 @@ func (r *Router) trackCodexPendingTerminalWait(threadID, processID, itemID strin
 		}
 	}
 	return false
+}
+
+func (r *Router) rememberCodexTerminalWaitCarrier(threadID, processID, itemID string, turnIndex int, createdAt int64) {
+	processID = strings.TrimSpace(processID)
+	itemID = strings.TrimSpace(itemID)
+	if processID == "" || itemID == "" {
+		return
+	}
+	r.mu.Lock()
+	state := r.codexBackgroundForThread(threadID)
+	state.waitCarrierByProcess[processID] = pendingTerminalWait{
+		itemID:    itemID,
+		turnIndex: turnIndex,
+		createdAt: createdAt,
+	}
+	r.mu.Unlock()
+}
+
+func (r *Router) clearCodexTerminalWaitCarrierIfMatches(threadID, processID, itemID string) {
+	processID = strings.TrimSpace(processID)
+	itemID = strings.TrimSpace(itemID)
+	if processID == "" || itemID == "" {
+		return
+	}
+	r.mu.Lock()
+	state := r.codexBackground[threadID]
+	if state != nil {
+		if wait := state.waitCarrierByProcess[processID]; strings.TrimSpace(wait.itemID) == itemID {
+			delete(state.waitCarrierByProcess, processID)
+		}
+	}
+	r.mu.Unlock()
 }
 
 func (r *Router) clearCodexPendingTerminalWait(threadID, processID string) error {
@@ -695,7 +757,7 @@ func (r *Router) clearCodexPendingTerminalWaitState(threadID, processID, itemID 
 	r.mu.Unlock()
 }
 
-func (r *Router) pendingCodexTerminalWaitItemID(threadID, processID string) string {
+func (r *Router) codexTerminalWaitItemIDForProcess(threadID, processID string, turnIndex int) string {
 	processID = strings.TrimSpace(processID)
 	if processID == "" {
 		return ""
@@ -706,7 +768,13 @@ func (r *Router) pendingCodexTerminalWaitItemID(threadID, processID string) stri
 	if state == nil {
 		return ""
 	}
-	return state.pendingWaitByProcess[processID].itemID
+	if wait := state.pendingWaitByProcess[processID]; wait.itemID != "" && wait.turnIndex == turnIndex {
+		return wait.itemID
+	}
+	if wait := state.waitCarrierByProcess[processID]; wait.itemID != "" && wait.turnIndex == turnIndex {
+		return wait.itemID
+	}
+	return ""
 }
 
 func (r *Router) rememberCodexTerminalWaitToolCall(threadID, toolCallID, itemID string) {
@@ -814,6 +882,7 @@ func rebindCodexUnifiedExecProcessLocked(state *codexBackgroundState, tracker *u
 	if tracker.processID != "" {
 		delete(state.unifiedExecByProcess, tracker.processID)
 		delete(state.pendingWaitByProcess, tracker.processID)
+		delete(state.waitCarrierByProcess, tracker.processID)
 	}
 	tracker.processID = processID
 	state.unifiedExecByProcess[processID] = tracker.launchID
@@ -923,6 +992,7 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 			if live.processID != "" {
 				delete(state.unifiedExecByProcess, live.processID)
 				delete(state.pendingWaitByProcess, live.processID)
+				delete(state.waitCarrierByProcess, live.processID)
 			}
 			if state.pendingUnifiedExec > 0 {
 				state.pendingUnifiedExec--

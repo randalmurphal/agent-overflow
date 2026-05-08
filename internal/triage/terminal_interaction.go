@@ -19,7 +19,9 @@ import (
 //
 //   - `stdin == ""`: the model polled the PTY without sending input.
 //     Codex's own TUI renders a "Waited for background terminal" cell
-//     (chatwidget.rs:618). Pending polls reuse one row until output lands.
+//     (chatwidget.rs). Raw write_stdin and canonical typed notifications
+//     for the same process reuse one visible carrier until output lands or
+//     another timeline boundary makes the wait stale.
 //   - `stdin != ""`: keystrokes were forwarded. We persist an
 //     "Interacted with background terminal" marker, but never persist
 //     stdin bytes because interactive input can contain secrets.
@@ -67,10 +69,11 @@ func decodeTerminalInteractionMeta(raw json.RawMessage) terminalInteractionMeta 
 //     fall back to store.LastTurnIndex: attaching a live
 //     terminal_interaction to a CLOSED turn would make the completion
 //     divider appear below a row that happened AFTER it.
-//   - Stable ids use `waited:<processID>:<turn_index>:<seq>` for polls and
-//     `interacted:<processID>:<turn_index>:<seq>` for forwarded stdin.
-//     Pending polls can reuse their prior id so repeated empty polls update
-//     the same visible row until output arrives.
+//   - Stable ids use `waited:<processID>:<turn_index>:<seq>` for wait
+//     carriers and `interacted:<processID>:<turn_index>:<seq>` for forwarded
+//     stdin. Empty polls for the same process can reuse their prior id so
+//     repeated raw/typed wait signals update the same visible row until output
+//     arrives or a later timeline boundary settles it as stale.
 func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	meta := decodeTerminalInteractionMeta(evt.Meta)
 
@@ -105,7 +108,7 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 			return nil
 		}
 	} else if isPoll {
-		itemID = r.pendingCodexTerminalWaitItemID(evt.ThreadID, meta.ProcessID)
+		itemID = r.codexTerminalWaitItemIDForProcess(evt.ThreadID, meta.ProcessID, turnIndex)
 	}
 	if itemID == "" {
 		seq := r.nextTerminalInteractionSequence(evt.ThreadID, turnIndex, meta.ProcessID)
@@ -145,7 +148,8 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	if !isPoll {
 		summary = "Interacted with background terminal"
 	}
-	if commandSummary := r.codexTerminalSummaryForProcess(evt.ThreadID, meta.ProcessID); commandSummary != "" {
+	commandSummary := r.codexTerminalSummaryForProcess(evt.ThreadID, meta.ProcessID)
+	if commandSummary != "" {
 		summary += ": " + commandSummary
 	}
 
@@ -166,10 +170,25 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		item.CreatedAt = existing.CreatedAt
 		item.ItemIndex = existing.ItemIndex
 		item.PayloadID = existing.PayloadID
+		item.Meta = validJSONObjectString(mergeRawJSONObject(json.RawMessage(existing.Meta), metaBlob))
+		existingSettledPoll := isPoll && existing.Status != statusRunning && existing.Status != statusStreaming
+		if existingSettledPoll {
+			item.Status = existing.Status
+		}
+		if isPoll && commandSummary == "" && strings.TrimSpace(existing.Summary) != "" {
+			item.Summary = existing.Summary
+		}
+		if existingSettledPoll && meta.WaitResult == "" {
+			if err := r.persistItem(item, nil); err != nil {
+				return err
+			}
+			return nil
+		}
 	} else if err != nil {
 		return fmt.Errorf("terminal_interaction existing lookup %s: %w", item.ID, err)
 	}
 	if isPoll {
+		r.rememberCodexTerminalWaitCarrier(evt.ThreadID, meta.ProcessID, item.ID, turnIndex, now)
 		if meta.WaitResult == provider.TerminalWaitResultRunning {
 			item.Status = statusCompleted
 			if err := r.persistItem(item, nil); err != nil {
@@ -232,12 +251,11 @@ func terminalInteractionStatus(isPoll bool) string {
 	return statusCompleted
 }
 
-// terminalInteractionID builds the stable id for a persisted terminal
-// interaction row. Shape: `<kind>:<processID>:<turn_index>:<seq>`. Encoding
-// turn_index and seq in the id keeps replays idempotent — the same
-// (processID, turn_index, seq) always maps to the same row, so an
-// accidental double-dispatch (session reconnect, event bus fan-out)
-// upserts in place rather than inserting a duplicate.
+// terminalInteractionID builds the id for a persisted terminal interaction
+// row after the caller has chosen a sequence. Shape:
+// `<kind>:<processID>:<turn_index>:<seq>`. Empty poll reuse is owned by
+// codexTerminalWaitItemIDForProcess; forwarded stdin interactions always take
+// a fresh sequence.
 //
 // processID CAN be empty on the wire (older Codex revisions omitted it
 // from some builds). In that case we substitute the literal "-" so the
@@ -254,11 +272,10 @@ func terminalInteractionID(processID string, turnIndex, seq int, poll bool) stri
 	return fmt.Sprintf("%s:%s:%d:%d", prefix, processID, turnIndex, seq)
 }
 
-// nextTerminalInteractionSequence returns a monotonically-increasing
-// counter per (thread, turn, processID). Stored on the Router so it
-// survives across events within a turn but resets on CleanupThread /
-// clearOpenTurn via the same prefix sweep that handles other per-turn
-// maps.
+// nextTerminalInteractionSequence returns a monotonically-increasing counter
+// per (thread, turn, processID). Stored on the Router so it survives
+// clearOpenTurn and multi-result boundaries; CleanupThread / selective
+// turn re-init reset sweep the key by prefix.
 func (r *Router) nextTerminalInteractionSequence(threadID string, turnIndex int, processID string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
