@@ -107,9 +107,9 @@ async function buildPane(
   }));
   setBindingMock('ListRecentTurns', async () => []);
   setBindingMock('ListPayloadMetas', async () => []);
-  // Thread-wide aggregate bindings — PlanSidebar / BackgroundTaskTray fetch
-  // these on mount. Default to empty; tests
-  // that need a populated tray override these before rendering.
+  // Thread-wide aggregate bindings — PlanSidebar / ActivityRail fetch
+  // these on mount. Default to empty; tests that need a populated rail
+  // override these before rendering.
   setBindingMock('ListThreadProposedPlans', async () => []);
   setBindingMock('ListLiveBackgroundTasks', async () => []);
   // GitActionsControl calls GetGitStatus on mount; return "not a repo"
@@ -154,11 +154,11 @@ describe('<ChatView>', () => {
     expect(queryByTestId('plan-sidebar-toggle')).toBeNull();
   });
 
-  it('renders the below-composer bar', async () => {
+  it('renders the in-card workspace strip', async () => {
     const pane = await buildPane();
     const { getByTestId } = render(ChatView, { props: { pane } });
     await tick();
-    expect(getByTestId('below-composer-bar')).toBeInTheDocument();
+    expect(getByTestId('composer-workspace-strip')).toBeInTheDocument();
   });
 
   it.each([
@@ -637,9 +637,9 @@ describe('<ChatView>', () => {
       await tick();
       await tick();
 
-      // Tray defaults to collapsed in production — expand it before
-      // reaching for the row.
-      await fireEvent.click(getByTestId('background-task-tray-header'));
+      // Background section defaults to collapsed in production — expand
+      // it via the rail toggle before reaching for the row.
+      await fireEvent.click(getByTestId('activity-rail-background-toggle'));
       await tick();
 
       const row = getByTestId('background-task-tray-row');

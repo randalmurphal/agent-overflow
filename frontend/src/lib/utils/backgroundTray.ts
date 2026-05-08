@@ -1,6 +1,7 @@
-// Pure derivation helpers for BackgroundTaskTray. Kept in utils/ so the
-// grouping/pruning/sort logic can be unit-tested without mounting the
-// component and so the .svelte file stays under the 300-line ceiling.
+// Pure derivation helpers for the activity rail's Background segment.
+// Kept in utils/ so the grouping/pruning/sort logic can be unit-tested
+// without mounting the component and so the .svelte file stays under
+// the 300-line ceiling.
 
 import type { Item } from '../types/models';
 import { isCodexSubagentLaunchItem } from './subagentLaunch';

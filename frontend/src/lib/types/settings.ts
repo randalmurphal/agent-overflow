@@ -50,7 +50,6 @@ export interface Settings {
   monoFont: MonoFont;
   recentWorkspaces: string[];
   diffWordWrap: boolean;
-  backgroundTrayExpanded: boolean;
   streamingEnabled: boolean;
   confirmArchive: boolean;
   confirmDelete: boolean;

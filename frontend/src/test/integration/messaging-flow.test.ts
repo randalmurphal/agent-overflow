@@ -481,23 +481,24 @@ describe('App integration — messaging flow', () => {
   });
 
   // Backgrounded-launch integration: the launch row stays status=running
-  // after turn_completed (invariant 24), the BackgroundTaskTray renders
-  // it as a pending row, the "…" badge renders on the inline card, and
-  // when the sibling tool_completion finally lands the tray row updates
-  // rather than duplicating. This pins the cross-cutting behavior that
-  // was the chief migration risk out of forge's buffered mode.
+  // after turn_completed (invariant 24), the activity rail's Background
+  // segment renders it as a pending row, the "…" badge renders on the
+  // inline card, and when the sibling tool_completion finally lands the
+  // row updates rather than duplicating. This pins the cross-cutting
+  // behavior that was the chief migration risk out of forge's buffered
+  // mode.
   //
-  // BackgroundTaskTray's retention clock is 2 s from completion.createdAt
-  // (COMPLETION_RETENTION_MS). We stamp createdAt using Date.now()
-  // rather than a small static number so the pruning window starts at
-  // test-wall-clock, otherwise the completion would be "aged out"
-  // before it ever renders.
+  // The Background segment's retention clock is 2 s from
+  // completion.createdAt (COMPLETION_RETENTION_MS). We stamp createdAt
+  // using Date.now() rather than a small static number so the pruning
+  // window starts at test-wall-clock, otherwise the completion would be
+  // "aged out" before it ever renders.
   it('backgrounded tool outlives turn; badge renders; sibling arrives after', async () => {
     const { queryByTestId, findByTestId } = await mountWithActiveThread();
     const paneMod = await import('../../lib/stores/panes.svelte');
     const pane = paneMod.getMainPane();
 
-    // BackgroundTaskTray sources its rows from ListLiveBackgroundTasks
+    // The activity rail's Background segment sources its rows from ListLiveBackgroundTasks
     // (thread-scoped, independent of the paged timeline). Install a
     // stateful mock AFTER mount so it isn't overwritten by the
     // installThreadViewDefaults → empty default. Each
@@ -559,18 +560,19 @@ describe('App integration — messaging flow', () => {
       stopReason: 'end_turn',
     });
     await waitFor(() => expect(getActiveTurn(pane.threadId)).toBeNull());
-    await waitFor(() => expect(queryByTestId('chat-working-indicator')).toBeNull());
+    await waitFor(() => expect(queryByTestId('activity-rail-working')).toBeNull());
 
     // The "…" label is still present — invariant 24. The launch row
     // renders as background+running until the sibling terminal lands.
     expect(status.textContent?.trim()).toBe('…');
 
-    // The background tray now renders the launch — the tray consumes
-    // pane.items and only filters by isBackground/kind/completionOf,
-    // so it picks up the launch regardless of the turn state.
-    const tray = await findByTestId('background-task-tray');
-    expect(tray).toBeInTheDocument();
-    expect((await findByTestId('background-task-tray-count')).textContent).toBe('1');
+    // The activity rail's Background segment now renders the launch
+    // — the segment consumes pane.items and only filters by
+    // isBackground/kind/completionOf, so it picks up the launch
+    // regardless of the turn state.
+    const rail = await findByTestId('activity-rail');
+    expect(rail).toBeInTheDocument();
+    expect((await findByTestId('activity-rail-background-count')).textContent).toBe('1');
 
     // 4. The sibling tool_completion arrives later (task_updated via
     // EventBackgroundTaskTerminal → triage idempotent sibling upsert).
@@ -597,14 +599,14 @@ describe('App integration — messaging flow', () => {
     emitItemEventUpsert(completionItem);
     await flush();
 
-    // BackgroundTaskTray pairs launch + completion by completionOf;
-    // the tray count stays at 1 (one logical task), and the row
-    // status flips to completed. Use waitFor so the 100 ms debounced
-    // tray refresh has time to pick up the completion. The tray
-    // defaults to collapsed in production, so expand it before
-    // inspecting the row.
-    expect((await findByTestId('background-task-tray-count')).textContent).toBe('1');
-    await fireEvent.click(await findByTestId('background-task-tray-header'));
+    // The activity rail's Background segment pairs launch + completion
+    // by completionOf; the count stays at 1 (one logical task), and the
+    // row status flips to completed. Use waitFor so the 100 ms debounced
+    // background refresh has time to pick up the completion. The rail's
+    // Background body defaults to collapsed in production, so expand it
+    // before inspecting the row.
+    expect((await findByTestId('activity-rail-background-count')).textContent).toBe('1');
+    await fireEvent.click(await findByTestId('activity-rail-background-toggle'));
     await waitFor(async () => {
       const rowStatus = await findByTestId('background-task-tray-row-status');
       expect(rowStatus.getAttribute('data-status')).toBe('completed');
@@ -650,7 +652,7 @@ describe('App integration — messaging flow', () => {
       startedAt: Date.now(),
     });
     await waitFor(() => expect(getActiveTurn(pane.threadId)?.turnId).toBe('round-1'));
-    expect(await findByTestId('chat-working-indicator')).toBeInTheDocument();
+    expect(await findByTestId('activity-rail-working')).toBeInTheDocument();
 
     // Round 1 ends — model handed off to backgrounded work and is
     // idle. Frontend MUST observe no active turn during the gap.
@@ -663,7 +665,7 @@ describe('App integration — messaging flow', () => {
       stopReason: 'end_turn',
     });
     await waitFor(() => expect(getActiveTurn(pane.threadId)).toBeNull());
-    expect(queryByTestId('chat-working-indicator')).toBeNull();
+    expect(queryByTestId('activity-rail-working')).toBeNull();
 
     // Round 2 begins (Claude system.init re-emit after a
     // task_notification provoked another model call). Distinct
@@ -678,7 +680,7 @@ describe('App integration — messaging flow', () => {
     });
     await waitFor(() => expect(getActiveTurn(pane.threadId)?.turnId).toBe('round-2'));
     expect(getActiveTurn(pane.threadId)?.startedAt).toBe(round2StartedAt);
-    expect(await findByTestId('chat-working-indicator')).toBeInTheDocument();
+    expect(await findByTestId('activity-rail-working')).toBeInTheDocument();
 
     // Round 2 ends — the cascade is complete and the indicator
     // hides for good.
@@ -691,7 +693,7 @@ describe('App integration — messaging flow', () => {
       stopReason: 'end_turn',
     });
     await waitFor(() => expect(getActiveTurn(pane.threadId)).toBeNull());
-    expect(queryByTestId('chat-working-indicator')).toBeNull();
+    expect(queryByTestId('activity-rail-working')).toBeNull();
   });
 
   // Composer is enabled between rounds — the user can send a

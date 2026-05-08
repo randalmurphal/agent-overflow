@@ -63,7 +63,7 @@ describe('<MessageTimeline>', () => {
 
     const scroll = getByTestId('message-timeline-scroll');
     expect(scroll.querySelectorAll('[data-testid="message-timeline-node"]')).toHaveLength(1);
-    expect(queryByTestId('chat-working-indicator')).toBeNull();
+    expect(queryByTestId('activity-rail-working')).toBeNull();
   });
 
   it('hides the empty state while a blank thread is working without mounting live UI', async () => {
@@ -72,7 +72,7 @@ describe('<MessageTimeline>', () => {
 
     const { queryByTestId, queryByText } = render(MessageTimeline, { props: { pane } });
 
-    expect(queryByTestId('chat-working-indicator')).toBeNull();
+    expect(queryByTestId('activity-rail-working')).toBeNull();
     expect(queryByText(/No messages yet/i)).toBeNull();
   });
 

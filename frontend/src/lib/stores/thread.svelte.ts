@@ -141,10 +141,10 @@ export interface SettledTurn {
 }
 
 /**
- * LiveTodo is the snapshot the working-indicator panel renders.
+ * LiveTodo is the snapshot the activity rail's Todos segment renders.
  * Populated from `provider:todo_update` events (Claude TodoWrite reroute
  * + Codex update_plan, both normalised in the parser). Survives turn
- * boundaries by design: the panel keeps showing while items remain
+ * boundaries by design: the segment keeps showing while items remain
  * incomplete and auto-hides on a timer when every step is `completed`.
  */
 export interface LiveTodo {
@@ -152,29 +152,28 @@ export interface LiveTodo {
 }
 
 /**
- * LIVE_TODO_AUTOHIDE_MS is how long the panel lingers after every step
- * is `completed` before the auto-hide timer clears it. Long enough for
- * the user to see the satisfying all-done state, short enough that the
- * panel doesn't squat on the working indicator slot indefinitely.
+ * LIVE_TODO_AUTOHIDE_MS is how long the snapshot lingers after every
+ * step is `completed` before the auto-hide timer clears it. Long
+ * enough for the user to see the satisfying all-done state, short
+ * enough that the segment doesn't squat on the rail indefinitely.
  */
 export const LIVE_TODO_AUTOHIDE_MS = 5_000;
 
 /**
- * Per-thread live-todo dropdown UI preferences (expanded / show-all).
+ * Per-thread live-todo dropdown UI preferences (show-all reveal).
  * Module-scoped so a thread switch can save the outgoing thread's
  * state and restore the incoming thread's. Lives in process memory by
  * design — survives thread switches within a session, dies on app
  * restart, no SQLite roundtrip.
  */
 interface LiveTodoUiPrefs {
-  expanded: boolean;
   showAll: boolean;
 }
 const liveTodoUiPrefs = new Map<string, LiveTodoUiPrefs>();
 
 function readLiveTodoUiPrefs(threadID: string | null): LiveTodoUiPrefs {
-  if (!threadID) return { expanded: false, showAll: false };
-  return liveTodoUiPrefs.get(threadID) ?? { expanded: false, showAll: false };
+  if (!threadID) return { showAll: false };
+  return liveTodoUiPrefs.get(threadID) ?? { showAll: false };
 }
 
 function writeLiveTodoUiPrefs(threadID: string | null, prefs: LiveTodoUiPrefs): void {
@@ -204,6 +203,39 @@ export function dropLiveTodoUiPrefs(threadID: string | null): void {
  */
 export function __resetLiveTodoUiPrefsForTest(): void {
   liveTodoUiPrefs.clear();
+}
+
+/**
+ * Per-thread Activity Rail expansion state. The rail itself appears
+ * only when there's active work (turn / todos / background tasks);
+ * these flags govern whether the Todos and Background section bodies
+ * below the rail are open. Independent toggles — both can be open at
+ * once. Same shape and lifecycle rules as `liveTodoUiPrefs`: lives in
+ * process memory, survives thread switches, dies on app restart.
+ */
+interface ActivityRailUiPrefs {
+  todosOpen: boolean;
+  backgroundOpen: boolean;
+}
+const activityRailUiPrefs = new Map<string, ActivityRailUiPrefs>();
+
+function readActivityRailUiPrefs(threadID: string | null): ActivityRailUiPrefs {
+  if (!threadID) return { todosOpen: false, backgroundOpen: false };
+  return activityRailUiPrefs.get(threadID) ?? { todosOpen: false, backgroundOpen: false };
+}
+
+function writeActivityRailUiPrefs(threadID: string | null, prefs: ActivityRailUiPrefs): void {
+  if (!threadID) return;
+  activityRailUiPrefs.set(threadID, prefs);
+}
+
+export function dropActivityRailUiPrefs(threadID: string | null): void {
+  if (!threadID) return;
+  activityRailUiPrefs.delete(threadID);
+}
+
+export function __resetActivityRailUiPrefsForTest(): void {
+  activityRailUiPrefs.clear();
 }
 
 // Diff-sidebar UI types are owned by stores/rhsPanelSlot.svelte.ts.
@@ -536,9 +568,14 @@ export function createThreadPane() {
   // update_plan funnel through that channel after parser
   // normalisation. Lost on app restart by design.
   let liveTodo: LiveTodo | null = $state(null);
-  let liveTodoExpanded = $state(false);
   let liveTodoShowAll = $state(false);
   let liveTodoAutoHideTimer: ReturnType<typeof setTimeout> | null = null;
+  // Activity rail per-section open flags. The rail itself derives
+  // visibility from the union of working / todos / background state;
+  // these flags govern only whether each accordion BODY is open.
+  // Restored from `activityRailUiPrefs` on switchThread; default false.
+  let activityRailTodosOpen = $state(false);
+  let activityRailBackgroundOpen = $state(false);
   // Step texts that were on-screen when the previous all-completed todo list
   // auto-hid. The agent re-emits the FULL todo list on each update, so
   // without this set the next update would re-show the prior completed
@@ -1278,10 +1315,9 @@ export function createThreadPane() {
         // Live-todo reset. The todo snapshot is per-thread session state
         // and must not bleed into the incoming thread; the auto-hide timer
         // is cancelled to avoid a stale clear firing against the wrong
-        // pane. The dropdown's open/show-all state survives per-thread via
-        // liveTodoUiPrefs so the user's preference for the incoming thread
-        // is restored on re-entry. Default for a thread the user has never
-        // opened the panel in is closed.
+        // pane. Show-all (the "Show N more…" reveal in the activity rail
+        // body) survives per-thread via liveTodoUiPrefs; the rail's own
+        // open/closed state lives in activityRailUiPrefs.
         if (liveTodoAutoHideTimer !== null) {
           clearTimeout(liveTodoAutoHideTimer);
           liveTodoAutoHideTimer = null;
@@ -1289,8 +1325,10 @@ export function createThreadPane() {
         liveTodo = null;
         liveTodoCleared = new Set();
         const incomingPrefs = readLiveTodoUiPrefs(newThread.id);
-        liveTodoExpanded = incomingPrefs.expanded;
         liveTodoShowAll = incomingPrefs.showAll;
+        const incomingRailPrefs = readActivityRailUiPrefs(newThread.id);
+        activityRailTodosOpen = incomingRailPrefs.todosOpen;
+        activityRailBackgroundOpen = incomingRailPrefs.backgroundOpen;
         diffPanel.clearForThread();
         loading = true;
         items = [];
@@ -1507,8 +1545,9 @@ export function createThreadPane() {
       }
       liveTodo = null;
       liveTodoCleared = new Set();
-      liveTodoExpanded = false;
       liveTodoShowAll = false;
+      activityRailTodosOpen = false;
+      activityRailBackgroundOpen = false;
       oldestLoadedTurnIndex = null;
       hasMoreHistory = false;
       loadingOlder = false;
@@ -1897,10 +1936,9 @@ export function createThreadPane() {
       latestSettledTurn = null;
     },
 
-    // --- Live todo (working-indicator panel) ---
+    // --- Live todo (activity rail Todos segment) ---
 
     get liveTodo() { return liveTodo; },
-    get liveTodoExpanded() { return liveTodoExpanded; },
     get liveTodoShowAll() { return liveTodoShowAll; },
 
     /**
@@ -1979,21 +2017,34 @@ export function createThreadPane() {
       liveTodoCleared = new Set();
     },
 
-    /** Toggle the dropdown between collapsed counts header and expanded list. */
-    toggleLiveTodoExpanded(): void {
-      liveTodoExpanded = !liveTodoExpanded;
-      writeLiveTodoUiPrefs(thread?.id ?? null, {
-        expanded: liveTodoExpanded,
-        showAll: liveTodoShowAll,
-      });
-    },
-
     /** Toggle the "Show X more…" reveal under the truncated list. */
     toggleLiveTodoShowAll(): void {
       liveTodoShowAll = !liveTodoShowAll;
       writeLiveTodoUiPrefs(thread?.id ?? null, {
-        expanded: liveTodoExpanded,
         showAll: liveTodoShowAll,
+      });
+    },
+
+    // --- Activity rail (consolidated working/todos/background) ---
+
+    get activityRailTodosOpen() { return activityRailTodosOpen; },
+    get activityRailBackgroundOpen() { return activityRailBackgroundOpen; },
+
+    /** Toggle the Todos accordion body inside the activity rail. */
+    toggleActivityRailTodos(): void {
+      activityRailTodosOpen = !activityRailTodosOpen;
+      writeActivityRailUiPrefs(thread?.id ?? null, {
+        todosOpen: activityRailTodosOpen,
+        backgroundOpen: activityRailBackgroundOpen,
+      });
+    },
+
+    /** Toggle the Background accordion body inside the activity rail. */
+    toggleActivityRailBackground(): void {
+      activityRailBackgroundOpen = !activityRailBackgroundOpen;
+      writeActivityRailUiPrefs(thread?.id ?? null, {
+        todosOpen: activityRailTodosOpen,
+        backgroundOpen: activityRailBackgroundOpen,
       });
     },
 

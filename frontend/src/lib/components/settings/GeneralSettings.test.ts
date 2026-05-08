@@ -12,7 +12,6 @@ const BASE_SETTINGS: Settings = {
   monoFont: 'geist',
   recentWorkspaces: [],
   diffWordWrap: false,
-  backgroundTrayExpanded: false,
   streamingEnabled: true,
   confirmArchive: true,
   confirmDelete: true,

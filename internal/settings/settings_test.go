@@ -34,9 +34,6 @@ func TestGetReturnsDefaultsOnMissingFile(t *testing.T) {
 	if got.RecentWorkspaces != nil {
 		t.Errorf("RecentWorkspaces = %v, want nil", got.RecentWorkspaces)
 	}
-	if got.BackgroundTrayExpanded {
-		t.Error("BackgroundTrayExpanded = true, want false by default")
-	}
 	if got.ObservabilityTracingEnabled {
 		t.Error("ObservabilityTracingEnabled = true, want false by default")
 	}
@@ -197,44 +194,6 @@ func TestNetworkSettingsBindAllRoundTripAndSparseDefault(t *testing.T) {
 	}
 	if _, ok := fileMap["network"]; ok {
 		t.Fatalf("settings file = %s, want network omitted when default", string(data))
-	}
-}
-
-func TestBackgroundTrayExpandedRoundTripAndSparseDefault(t *testing.T) {
-	dir := t.TempDir()
-	svc := NewService(dir)
-
-	updated, err := svc.Update(map[string]any{"backgroundTrayExpanded": true})
-	if err != nil {
-		t.Fatalf("Update(true) error = %v", err)
-	}
-	if !updated.BackgroundTrayExpanded {
-		t.Fatal("BackgroundTrayExpanded = false, want true")
-	}
-
-	reloaded := NewService(dir).Get()
-	if !reloaded.BackgroundTrayExpanded {
-		t.Fatal("reloaded BackgroundTrayExpanded = false, want true")
-	}
-
-	updated, err = svc.Update(map[string]any{"backgroundTrayExpanded": false})
-	if err != nil {
-		t.Fatalf("Update(false) error = %v", err)
-	}
-	if updated.BackgroundTrayExpanded {
-		t.Fatal("BackgroundTrayExpanded = true, want false")
-	}
-
-	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	var fileMap map[string]any
-	if err := json.Unmarshal(data, &fileMap); err != nil {
-		t.Fatalf("unmarshal settings file: %v", err)
-	}
-	if _, ok := fileMap["backgroundTrayExpanded"]; ok {
-		t.Fatalf("settings file = %s, want backgroundTrayExpanded omitted when default false", string(data))
 	}
 }
 

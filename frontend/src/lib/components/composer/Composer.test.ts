@@ -1017,11 +1017,11 @@ describe('<Composer>', () => {
     await tick();
 
     const root = getByTestId('composer-root');
-    const tray = getByTestId('background-task-tray');
+    const rail = getByTestId('activity-rail');
     const input = getByLabelText('Message Input');
 
-    expect(root.contains(tray)).toBe(true);
-    expect(tray.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(root.contains(rail)).toBe(true);
+    expect(rail.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('enqueues mid-turn instead of dispatching SendMessage (Enter key)', async () => {

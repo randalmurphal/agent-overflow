@@ -139,7 +139,7 @@ describe('<ComposerHint>', () => {
 
   it('reserves the slot height even when the hint is hidden', async () => {
     // The composer's bottom edge is anchored by the bottom of the overlay
-    // in ChatView; reserving a fixed-height slot under the BelowComposerBar
+    // in ChatView; reserving a fixed-height slot under the composer card
     // ensures the composer doesn't shift between hint-visible and
     // hint-hidden states. Treat the wrapper element + its min-h class as a
     // structural invariant the layout depends on.

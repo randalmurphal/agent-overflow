@@ -825,10 +825,10 @@ function applySubagentNotification(evt: SubagentNotificationEvent): void {
 
 /**
  * Route `provider:todo_update` to the matching pane. Updates the
- * live-todo panel that anchors under the working indicator. Empty step
- * arrays clear the panel; an all-completed snapshot starts the
- * auto-hide timer inside `setLiveTodo`. Todo updates do NOT add a
- * timeline row — the snapshot lives only in pane state.
+ * Todos segment of the activity rail. Empty step arrays clear the
+ * snapshot; an all-completed snapshot starts the auto-hide timer
+ * inside `setLiveTodo`. Todo updates do NOT add a timeline row — the
+ * snapshot lives only in pane state.
  */
 function applyTodoUpdate(evt: TodoUpdateEvent): void {
   if (!evt?.threadId) return;
@@ -878,9 +878,9 @@ export function setupEventListeners(): () => void {
     applySubagentNotification,
   );
   // provider:todo_update — Claude TodoWrite + Codex update_plan funnel
-  // through here after parser normalisation. Drives the LiveTodoPanel
-  // anchored to the working indicator. Has zero timeline footprint by
-  // design (see LiveTodoPanel.svelte).
+  // through here after parser normalisation. Drives the activity
+  // rail's Todos segment. Has zero timeline footprint by design (see
+  // ActivityRail.svelte).
   const cancelTodoUpdate = wailsEventOn<TodoUpdateEvent>(
     'provider:todo_update',
     applyTodoUpdate,

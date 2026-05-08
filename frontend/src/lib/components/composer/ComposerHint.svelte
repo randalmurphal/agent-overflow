@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Single-line hint rendered immediately under the BelowComposerBar.
+  // Single-line hint rendered immediately under the composer card.
   // Surfaces the UP-arrow retract affordance only when a plain UP would
   // actually retract — otherwise the textarea's native cursor-up runs
   // and the hint would be a lie. The conditions mirror
@@ -11,7 +11,7 @@
   // Reserved-slot pattern: the wrapper carries a `min-h-*` so toggling
   // visibility never animates the composer's vertical position. The
   // composerOverlay (ChatView.svelte) is bottom-anchored, so the slot's
-  // height is reserved beneath the BelowComposerBar without pushing the
+  // height is reserved beneath the composer card without pushing the
   // textarea down. Same trick ProviderStatusBanner / TransportStatusBanner
   // use upstream — see frontend/CLAUDE.md "Reserved-slot banners".
   //

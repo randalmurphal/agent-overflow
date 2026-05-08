@@ -1,7 +1,7 @@
 <script lang="ts">
-  // One row of the BackgroundTaskTray. The tray owns task grouping and
-  // stop dispatch; chat row components own the actual tool presentation
-  // so background rows do not drift from transcript styling.
+  // One row of the activity rail's Background body. The rail owns task
+  // grouping and stop dispatch; chat row components own the actual tool
+  // presentation so background rows do not drift from transcript styling.
   import CommandOutput from '../chat/CommandOutput.svelte';
   import CollabToolRow from '../chat/CollabToolRow.svelte';
   import GenericToolCallRow from '../chat/GenericToolCallRow.svelte';

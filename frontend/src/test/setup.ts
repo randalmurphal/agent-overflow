@@ -5,6 +5,10 @@ import { resetWailsMocks } from './mocks/wailsio-runtime';
 import { resetBindingMocks } from './mocks/bindings-app';
 import { resetForTest as resetThreadStatusesForTest } from '../lib/stores/threadStatuses.svelte';
 import { resetDiffReviewCommentsForTest } from '../lib/stores/diffReviewComments.svelte';
+import {
+  __resetActivityRailUiPrefsForTest,
+  __resetLiveTodoUiPrefsForTest,
+} from '../lib/stores/thread.svelte';
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class StubResizeObserver {
@@ -167,11 +171,19 @@ afterEach(() => {
   cleanup();
   resetWailsMocks();
   resetBindingMocks();
-  // The thread-statuses store holds the global active-turn registry that
-  // backs ChatWorkingIndicator + sidebar pills. It's $state-backed and
-  // shared across all panes, so test-to-test leaks would surface as
-  // "this test sees a turn in flight from the previous test" failures.
+  // The thread-statuses store holds the global active-turn registry
+  // that backs the activity rail's working timer + sidebar pills. It's
+  // $state-backed and shared across all panes, so test-to-test leaks
+  // would surface as "this test sees a turn in flight from the previous
+  // test" failures.
   resetThreadStatusesForTest();
+  // Per-thread UI pref maps for the live-todo dropdown and the
+  // activity rail's section toggles are module-scoped and survive
+  // thread switches by design — clear them between tests so a
+  // previous test's "I had Todos open on thread-1" doesn't leak into
+  // the next test's fresh pane.
+  __resetLiveTodoUiPrefsForTest();
+  __resetActivityRailUiPrefsForTest();
   // Wipe the in-memory localStorage between tests so persistence-aware
   // stores don't leak state across suites.
   try {

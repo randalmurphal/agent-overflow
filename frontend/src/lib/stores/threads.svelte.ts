@@ -1,6 +1,6 @@
 import type { Thread } from '../types/models';
 import { ListThreads } from './bindings';
-import { dropLiveTodoUiPrefs } from './thread.svelte';
+import { dropActivityRailUiPrefs, dropLiveTodoUiPrefs } from './thread.svelte';
 import { clearThreadStatus } from './threadStatuses.svelte';
 import { addToast } from './toast.svelte';
 
@@ -33,6 +33,7 @@ export function removeThread(id: string): void {
   // Drop the live-todo UI prefs entry too so the module-scoped map
   // doesn't accumulate dead-thread keys across long sessions.
   dropLiveTodoUiPrefs(id);
+  dropActivityRailUiPrefs(id);
 }
 
 export function updateThreadTitle(id: string, title: string): void {

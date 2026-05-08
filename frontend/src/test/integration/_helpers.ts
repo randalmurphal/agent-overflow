@@ -103,10 +103,10 @@ export function seedSidebarProject(threads: Thread[]): Project {
 }
 
 // Bindings that start firing the moment a thread becomes active: ChatView
-// mounts GitActionsControl (header) and the below-composer BranchPicker,
-// which call GetGitStatus / GitListBranches in $effect. Tests that
-// switch into a thread need these mocked even if they don't assert on
-// git UI.
+// mounts GitActionsControl (header) and the in-card ComposerWorkspaceStrip
+// hosts BranchPicker, which call GetGitStatus / GitListBranches in
+// $effect. Tests that switch into a thread need these mocked even if
+// they don't assert on git UI.
 export function installThreadViewDefaults(): void {
   setBindingMock('SwitchThread', async (threadId: unknown) => {
     const id = typeof threadId === 'string' ? threadId : 'thread-1';
@@ -148,7 +148,7 @@ export function installThreadViewDefaults(): void {
   setBindingMock('GitStatusUnsubscribe', async () => {});
   setBindingMock('GitListBranches', async () => []);
   setBindingMock('ListThreadCheckpoints', async () => []);
-  // Thread-wide aggregate surfaces (PlanSidebar / BackgroundTaskTray) fetch
+  // Thread-wide aggregate surfaces (PlanSidebar / ActivityRail) fetch
   // these bindings on mount / thread-switch.
   // Default to empty lists so tests that don't assert on those
   // surfaces don't have to stub each one themselves.

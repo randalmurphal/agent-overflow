@@ -13,7 +13,8 @@
   import ComposerSlashPopover from './ComposerSlashPopover.svelte';
   import ComposerTerminalChip from './ComposerTerminalChip.svelte';
   import ComposerToolbar from './toolbar/ComposerToolbar.svelte';
-  import BackgroundTaskTray from './BackgroundTaskTray.svelte';
+  import ActivityRail from './ActivityRail.svelte';
+  import ComposerWorkspaceStrip from './ComposerWorkspaceStrip.svelte';
   import ComposerPendingApprovalPanel from './ComposerPendingApprovalPanel.svelte';
   import ComposerPendingUserInputPanel from './ComposerPendingUserInputPanel.svelte';
   import {
@@ -598,7 +599,7 @@
     class="mx-auto w-full max-w-[68rem] rounded-[var(--radius-composer)] border border-border-subtle bg-card/70 backdrop-blur-sm shadow-sheet overflow-hidden
            focus-within:border-border focus-within:shadow-menu transition-[border-color,box-shadow] duration-200"
   >
-    <BackgroundTaskTray {pane} />
+    <ActivityRail {pane} />
 
     {#if activeApproval}
       {#key activeApproval.requestId}
@@ -724,5 +725,6 @@
         onInterrupt={interrupt}
       />
     {/if}
+    <ComposerWorkspaceStrip {pane} />
   </div>
 </div>

@@ -340,9 +340,8 @@ export interface TodoStep {
  * TodoUpdateEvent is the payload for `provider:todo_update`. Carries
  * the latest live-todo snapshot from either Claude TodoWrite or Codex
  * update_plan. The listener writes it to `pane.liveTodo`; the
- * `LiveTodoPanel` component renders the panel anchored to the working
- * indicator. There is no timeline footprint — todos are session state,
- * not history.
+ * activity rail's Todos segment renders the snapshot. There is no
+ * timeline footprint — todos are session state, not history.
  */
 export interface TodoUpdateEvent {
   threadId: string;

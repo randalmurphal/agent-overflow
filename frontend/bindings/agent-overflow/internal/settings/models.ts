@@ -153,13 +153,6 @@ export class Settings {
     "monoFont": string;
     "recentWorkspaces": string[];
     "diffWordWrap": boolean;
-
-    /**
-     * BackgroundTrayExpanded remembers the user's global background-task
-     * tray preference. False keeps fresh installs collapsed; opening the
-     * tray persists across thread switches and app restarts.
-     */
-    "backgroundTrayExpanded": boolean;
     "streamingEnabled": boolean;
     "confirmArchive": boolean;
     "confirmDelete": boolean;
@@ -299,9 +292,6 @@ export class Settings {
         if (!("diffWordWrap" in $$source)) {
             this["diffWordWrap"] = false;
         }
-        if (!("backgroundTrayExpanded" in $$source)) {
-            this["backgroundTrayExpanded"] = false;
-        }
         if (!("streamingEnabled" in $$source)) {
             this["streamingEnabled"] = false;
         }
@@ -374,21 +364,21 @@ export class Settings {
      */
     static createFrom($$source: any = {}): Settings {
         const $$createField5_0 = $$createType0;
-        const $$createField27_0 = $$createType1;
-        const $$createField28_0 = $$createType2;
-        const $$createField29_0 = $$createType4;
+        const $$createField26_0 = $$createType1;
+        const $$createField27_0 = $$createType2;
+        const $$createField28_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
         }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField27_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField26_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField28_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField27_0($$parsedSource["editor"]);
         }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField29_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField28_0($$parsedSource["remoteEndpoints"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

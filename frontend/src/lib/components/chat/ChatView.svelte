@@ -6,10 +6,7 @@
   import Composer from '../composer/Composer.svelte';
   import ComposerHint from '../composer/ComposerHint.svelte';
   import SendQueuePreview from '../composer/SendQueuePreview.svelte';
-  import BelowComposerBar from '../composer/belowbar/BelowComposerBar.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
-  import ChatWorkingIndicator from './ChatWorkingIndicator.svelte';
-  import LiveTodoPanel from './LiveTodoPanel.svelte';
   import LazyThreadTerminalDrawer from '../terminal/LazyThreadTerminalDrawer.svelte';
   import DiscussionView from '../discussion/DiscussionView.svelte';
   import DesignPreviewPanel from '../design/DesignPreviewPanel.svelte';
@@ -66,9 +63,9 @@
   let chatColumn: HTMLDivElement | undefined = $state(undefined);
   let composerOverlay: HTMLDivElement | undefined = $state(undefined);
   // Initial value matches the typical resting composer height (textarea,
-  // toolbar, BelowComposerBar) so the first render does not place the last
-  // timeline row beneath an unmeasured composer. The ResizeObserver below
-  // refines this within one frame.
+  // toolbar, ComposerWorkspaceStrip) so the first render does not place
+  // the last timeline row beneath an unmeasured composer. The
+  // ResizeObserver below refines this within one frame.
   let composerHeight = $state(120);
   let expandedImagePreview: ExpandedImagePreview | null = $state(null);
   interface RevertMessageTarget {
@@ -531,15 +528,10 @@
         data-testid="composer-overlay"
       >
         <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6">
-          <ChatWorkingIndicator {pane} />
           <SendQueuePreview {pane} />
-          <LiveTodoPanel {pane} />
         </div>
         <div class="pointer-events-auto">
           <Composer {pane} {draft} onImageExpand={openImagePreview} />
-        </div>
-        <div class="pointer-events-auto">
-          <BelowComposerBar {pane} />
         </div>
         <div class="pointer-events-auto">
           <ComposerHint {pane} {draft} />

@@ -1,7 +1,7 @@
 <script lang="ts">
   // Send-queue overlay. Renders inside the composerOverlay
-  // (ChatView.svelte) between the working indicator and the composer
-  // textarea. Two visually distinct zones in arrival order:
+  // (ChatView.svelte) above the composer card. Two visually distinct
+  // zones in arrival order:
   //
   //  - Zone 2 (rendered FIRST / on top) — items the dispatcher has
   //    flushed to the provider but whose wire echo (Claude
@@ -40,7 +40,6 @@
     getFlushedForThread,
     getQueueForThread,
   } from '../../stores/sendQueue.svelte';
-  import { getActiveTurn, hasPendingSend } from '../../stores/threadStatuses.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -52,19 +51,11 @@
   let flushed = $derived(getFlushedForThread(pane.threadId ?? ''));
   let hasAny = $derived(queued.length > 0 || flushed.length > 0);
   let hasBothZones = $derived(queued.length > 0 && flushed.length > 0);
-
-  // Pull up against the working indicator (mb-6) when the indicator
-  // is showing — same trick LiveTodoPanel uses so both read as
-  // adjacent lines of one logical "what's happening" block.
-  let pulledUp = $derived(
-    getActiveTurn(pane.threadId) !== null
-    || hasPendingSend(pane.threadId),
-  );
 </script>
 
 {#if hasAny && pane.threadId}
   <div
-    class={`mb-2 flex flex-col gap-0.5 pl-1.5 text-[11px] leading-snug ${pulledUp ? '-mt-5' : ''}`}
+    class="mb-2 flex flex-col gap-0.5 pl-1.5 text-[11px] leading-snug"
     data-testid="send-queue-preview"
     aria-label="Queued user messages"
   >
