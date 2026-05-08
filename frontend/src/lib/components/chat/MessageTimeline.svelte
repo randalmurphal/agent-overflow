@@ -307,24 +307,29 @@
     const loading = pane.loading;
     if (!threadId || loading) return;
     if (restoredThreadId === threadId) return;
+    const hasTimelineRows = groupedNodes.length > 0;
+    if (hasTimelineRows && !listRef) return;
     restoredThreadId = threadId;
     void restoreInitialPosition(threadId, ++restoreToken);
   });
 
-  // Bottom-snapshot restore. Routes through virtua's scrollToIndex
-  // measurement loop (self-corrects across row resize ticks) rather
-  // than a one-shot forceStick scrollTop write, which would commit to
-  // a stale scrollHeight while virtua's lazy row measurement and
-  // Streamdown's async typesetting are still growing rows. See
-  // frontend/CLAUDE.md § Scroll architecture for the contract.
+  // Bottom restore. Empty timelines have no virtua handle yet, but they
+  // still need sticky-bottom intent for the first streamed rows. Non-empty
+  // timelines route through virtua's scrollToIndex measurement loop
+  // (self-corrects across row resize ticks) rather than a one-shot
+  // forceStick scrollTop write, which would commit to a stale scrollHeight
+  // while virtua's lazy row measurement and Streamdown's async typesetting
+  // are still growing rows. See frontend/CLAUDE.md § Scroll architecture
+  // for the contract.
   function restoreToBottom(): void {
-    if (!listRef) return;
     const lastIndex = groupedNodes.length - 1;
     if (lastIndex < 0) {
       stick.markAtBottom();
-      saveScrollSnapshot();
+      const threadId = snapshotThreadId();
+      if (threadId) setThreadScrollSnapshot(threadId, { kind: 'bottom' });
       return;
     }
+    if (!listRef) return;
     stick.stopScroll();
     listRef.scrollToIndex(lastIndex, { align: 'end' });
     stick.markAtBottom();
@@ -336,18 +341,19 @@
     try {
       // Let virtua mount with the current data so listRef is populated.
       await tick();
-      if (token !== restoreToken || pane.threadId !== threadId || !listRef) return;
+      if (token !== restoreToken || pane.threadId !== threadId) return;
 
       const snap = getThreadScrollSnapshot(threadId);
       if (!snap || snap.kind === 'bottom') {
         restoreToBottom();
         return;
       }
+      if (groupedNodes.length > 0 && !listRef) return;
 
       // Anchor snapshot: ensure the target item is loaded, then scroll
       // to it preserving the recorded offset within its row.
       const found = await pane.loadUntilItem(snap.itemId);
-      if (token !== restoreToken || pane.threadId !== threadId || !listRef) return;
+      if (token !== restoreToken || pane.threadId !== threadId) return;
       if (!found) {
         restoreToBottom();
         return;

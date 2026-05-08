@@ -138,6 +138,60 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     expect(ctrl.isSticky).toBe(true);
   });
 
+  it('blank loaded threads default to sticky-bottom even before virtualized rows mount', async () => {
+    // New draft threads load with zero items, so MessageTimeline renders
+    // the empty-state branch instead of the Virtualizer/contentEl branch.
+    // The thread-switch guard still sets escapedFromLock=true before
+    // restore; restoration must clear it anyway so the first streamed
+    // rows auto-follow once the transcript grows beyond the viewport.
+    const pane = await buildPane(makeThread({ id: 'new-blank-thread' }), []);
+
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await tick();
+
+    const ctrl = pane.scrollController as
+      | (PaneScrollController & { isSticky: boolean; escapedFromLock: boolean })
+      | null;
+    expect(ctrl).not.toBeNull();
+    if (!ctrl) return;
+    expect(ctrl.escapedFromLock).toBe(false);
+    expect(ctrl.isSticky).toBe(true);
+    expect(getThreadScrollSnapshot('new-blank-thread')).toEqual({ kind: 'bottom' });
+  });
+
+  it('keeps an anchor snapshot when a thread initially has no visible rows', async () => {
+    const thread = makeThread({ id: 'thread-empty-anchor' });
+    const target = makeItem({
+      id: 'old-anchor',
+      threadId: thread.id,
+      turnIndex: 3,
+      summary: 'older target',
+    });
+    const pane = await buildPane(thread, []);
+    setThreadScrollSnapshot(thread.id, {
+      kind: 'anchor',
+      itemId: target.id,
+      offsetTop: -120,
+    });
+    setBindingMock('GetThreadItem', async () => target);
+    setBindingMock('ListItemsBeforeTurn', async () => ({
+      items: [target],
+      oldestTurnIndex: target.turnIndex,
+      hasMore: false,
+    }));
+    const loadUntilItem = vi.spyOn(pane, 'loadUntilItem');
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+
+    await waitFor(() => expect(loadUntilItem).toHaveBeenCalledWith(target.id));
+    await waitFor(() => {
+      expect(container.querySelector(`[data-item-id="${target.id}"]`)).not.toBeNull();
+    });
+    expect(getThreadScrollSnapshot(thread.id)).not.toEqual({ kind: 'bottom' });
+  });
+
   it('bottom-snapshot restore calls stopScroll before virtua scrollToIndex (frontend/CLAUDE.md contract)', async () => {
     // CLAUDE.md scroll contract: every listRef.scrollToIndex(...) MUST
     // be preceded by stick.stopScroll() so the spring stops fighting
