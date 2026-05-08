@@ -23,10 +23,11 @@ describe('<ComposerWorkspaceStrip>', () => {
     expect(getByTestId('branch-picker-trigger')).toBeInTheDocument();
   });
 
-  it('renders branch picker before env picker in DOM order', async () => {
-    // Branch leads on the left so the most-changed item sits where the
-    // eye lands. A revert or accidental re-order would otherwise sail
-    // past the existence-only assertion above.
+  it('renders env picker before branch picker in DOM order', async () => {
+    // Env (worktree) leads, branch follows — both on the left so the
+    // strip reads as a single "where am I" group. A revert or
+    // accidental re-order would otherwise sail past the existence-only
+    // assertion above.
     const pane = await buildPane(makeThread());
     const { getByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
     const strip = getByTestId('composer-workspace-strip');
@@ -34,8 +35,8 @@ describe('<ComposerWorkspaceStrip>', () => {
       strip.querySelectorAll<HTMLElement>('[data-testid$="-picker-trigger"]'),
     );
     expect(triggers.map((el) => el.getAttribute('data-testid'))).toEqual([
-      'branch-picker-trigger',
       'env-picker-trigger',
+      'branch-picker-trigger',
     ]);
   });
 

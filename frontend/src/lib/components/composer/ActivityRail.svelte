@@ -122,7 +122,7 @@
   >
     {#if isWorking}
       <span
-        class="activity-shimmer pointer-events-none absolute inset-x-0 top-0 z-10 block h-px"
+        class="activity-shimmer pointer-events-none absolute inset-x-0 top-0 z-10 block h-px overflow-hidden"
         aria-hidden="true"
         data-testid="activity-rail-shimmer"
       ></span>

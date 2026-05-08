@@ -1,9 +1,10 @@
 <script lang="ts">
   // Workspace strip rendered INSIDE the composer card as the bottom-
-  // most row. Branch picker leads on the left so the most-changed item
-  // sits where the eye lands; env (workspace/worktree) picker trails on
-  // the right with the worktree branch-name input slotted next to it
-  // when the user has staged a new worktree.
+  // most row. Env (workspace/worktree) picker leads on the left, then
+  // the worktree branch-name input slotted next to it when the user
+  // has staged a new worktree, then the branch picker. Both pickers
+  // sit on the left so the strip reads as a single "where am I" group
+  // rather than two opposing controls.
 
   import type { ThreadPane } from '../../stores/thread.svelte';
   import EnvPicker from './workspace/EnvPicker.svelte';
@@ -21,13 +22,11 @@
 
 {#if pane.thread}
   <div
-    class="flex items-center justify-between gap-2 border-t border-border-subtle bg-surface-0 px-3 py-1.5 text-[11px] text-fg-muted"
+    class="flex min-w-0 items-center gap-2 border-t border-border-subtle px-3 py-1.5 text-[11px] text-fg-muted"
     data-testid="composer-workspace-strip"
   >
+    <EnvPicker {pane} {workspaceLock} />
+    <WorktreeNameInput {pane} />
     <BranchPicker {pane} {workspaceLock} />
-    <div class="flex min-w-0 items-center gap-2">
-      <EnvPicker {pane} {workspaceLock} />
-      <WorktreeNameInput {pane} />
-    </div>
   </div>
 {/if}

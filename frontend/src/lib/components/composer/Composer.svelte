@@ -639,7 +639,7 @@
 
     {#if !hasInteractivePrompt && draft.terminalChips.length > 0}
       <div
-        class="flex flex-col gap-1 border-b border-border-subtle bg-surface-0 px-4 py-2"
+        class="flex flex-col gap-1 border-b border-border-subtle px-4 py-2"
         data-testid="terminal-chip-row"
       >
         {#each draft.terminalChips as chip (chip.id)}
