@@ -654,7 +654,8 @@ and [`turn-lifecycle.md §Codex background projection`](turn-lifecycle.md#codex-
 ## 25. Codex backgrounding uses wire-typed signals, never heuristics
 
 **Rule.** `is_background=true` may only be set on a Codex item when a
-**wire-typed** source field authorizes it. Two sanctioned signals today:
+**wire-typed** source field authorizes it. Two sanctioned authorization
+signals today:
 
 1. `CommandExecution.source == "unifiedExecStartup"` — the classifier
    for backgrounded shell commands. See
@@ -669,10 +670,13 @@ Heuristic classifiers ("assistant text after tool start", "turn still
 open while tool running", etc.) are forbidden as the AUTHORIZATION for
 setting `is_background`. That rule is what protects against the
 ghost-row problem the former `BackgroundClassifier` had. The TRIGGER
-for stamping an already-authorized row — on a model-produced yield
-(text/reasoning delta) or the turn boundary catchall — is not a
-classifier; it's the observable moment at which the wire-typed
-commitment becomes visible. See `internal/triage/codex_background.go`.
+for stamping an already-authorized row is not a classifier; it's the
+observable moment at which the wire-typed commitment becomes visible.
+Valid triggers are a model-produced yield (text/reasoning delta), the
+turn boundary catchall, or an explicit raw empty `write_stdin`
+`function_call` against that unified-exec process. The raw wait trigger
+is process-scoped and only applies after `unifiedExecStartup` has already
+authorized the tracker. See `internal/triage/codex_background.go`.
 
 **Rationale.** Codex has no `run_in_background` flag on ThreadItems, but
 it does have backgrounded execution: `exec_command` yields to the model

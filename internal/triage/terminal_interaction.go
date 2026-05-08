@@ -91,6 +91,13 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	itemID := ""
 	isRawWaitStart := isPoll && meta.Source == "rawResponseItem/function_call"
 	isRawWaitOutput := isPoll && meta.Source == "rawResponseItem/function_call_output"
+	if isRawWaitStart {
+		// Raw write_stdin is emitted before Codex waits on the PTY. Seeing
+		// it is typed proof that the referenced unified exec is now being
+		// resumed as a background terminal, even if no assistant text or
+		// follow-up tool boundary has happened yet.
+		r.markCodexUnifiedExecProcessBackgrounded(evt.ThreadID, meta.ProcessID)
+	}
 	if isRawWaitOutput {
 		var found bool
 		itemID, found = r.codexTerminalWaitItemIDForToolCall(evt.ThreadID, meta.ToolCallID)

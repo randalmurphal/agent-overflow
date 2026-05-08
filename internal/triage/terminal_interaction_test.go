@@ -339,6 +339,205 @@ func TestTerminalInteraction_RawExitedOutputUpdatesOriginalWaitCarrier(t *testin
 	}
 }
 
+func TestTerminalInteraction_CommandCompletionSettlesVisibleWaitCarrierBeforeRawOutput(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 2)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-1",
+		ItemType: "commandExecution", TurnID: "turn-0",
+		Meta:      buildUnifiedExecStartMeta(t, "pid-42", "false"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle command start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "backgrounded",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle yield: %v", err)
+	}
+
+	rawStart := provider.ProviderEvent{
+		Kind:     provider.EventTerminalInteraction,
+		ThreadID: "t1",
+		TurnID:   "turn-2",
+		ItemID:   "call-wait",
+		Content:  "",
+		Meta: terminalInteractionMetaBlobWith(t, "pid-42", "", map[string]any{
+			"source":       "rawResponseItem/function_call",
+			"tool_call_id": "call-wait",
+		}),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(rawStart); err != nil {
+		t.Fatalf("handle raw wait start: %v", err)
+	}
+
+	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
+	if len(waits) != 1 {
+		t.Fatalf("wait rows after raw wait start = %d, want 1: %+v", len(waits), waits)
+	}
+	waitID := waits[0].ID
+	if waits[0].Status != statusRunning {
+		t.Fatalf("wait status after raw wait start = %q, want running", waits[0].Status)
+	}
+
+	completeMeta := buildUnifiedExecCompleteMeta(t, "failed", "pid-42", "false", 1)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-1",
+		ItemType: "commandExecution", TurnID: "turn-0", Content: "",
+		Meta: completeMeta, Replace: true, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle command output: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "cmd-1",
+		ItemType: "commandExecution", TurnID: "turn-0", Meta: completeMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle command completion: %v", err)
+	}
+
+	wait, found, err := st.GetThreadItem("t1", waitID)
+	if err != nil || !found {
+		t.Fatalf("wait row missing after command completion: found=%v err=%v", found, err)
+	}
+	if wait.Status != statusCompleted {
+		t.Fatalf("wait status after command completion = %q, want completed", wait.Status)
+	}
+	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("cmd-1"))
+	if err != nil || !found {
+		t.Fatalf("command completion missing: found=%v err=%v", found, err)
+	}
+	completionMeta := decodeItemMetaMap(t, completion.Meta)
+	if completionMeta["wait_carrier_id"] != waitID {
+		t.Fatalf("completion wait_carrier_id = %v, want %s", completionMeta["wait_carrier_id"], waitID)
+	}
+
+	upsertsBeforeRawOutput := len(filterItemEventUpserts(*emissions))
+	rawOutput := provider.ProviderEvent{
+		Kind:     provider.EventTerminalInteraction,
+		ThreadID: "t1",
+		TurnID:   "turn-2",
+		ItemID:   "call-wait",
+		Content:  "",
+		Meta: terminalInteractionMetaBlobWith(t, "pid-42", "", map[string]any{
+			"source":       "rawResponseItem/function_call_output",
+			"tool_call_id": "call-wait",
+			"wait_result":  provider.TerminalWaitResultExited,
+		}),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(rawOutput); err != nil {
+		t.Fatalf("handle raw wait output after command completion: %v", err)
+	}
+	if upsertsAfterRawOutput := len(filterItemEventUpserts(*emissions)); upsertsAfterRawOutput != upsertsBeforeRawOutput {
+		t.Fatalf("late raw output emitted %d new upserts, want 0", upsertsAfterRawOutput-upsertsBeforeRawOutput)
+	}
+
+	seenCompletionBeforeWaitUpdate := false
+	for i, emission := range *emissions {
+		if emission.eventName != "provider:item_event" {
+			continue
+		}
+		stream, ok := emission.data.(ItemStreamEvent)
+		if !ok || stream.Action != "upsert" || stream.Item == nil {
+			continue
+		}
+		if stream.Item.ID == completion.ID {
+			for _, later := range (*emissions)[i+1:] {
+				laterStream, ok := later.data.(ItemStreamEvent)
+				if later.eventName == "provider:item_event" && ok && laterStream.Action == "upsert" && laterStream.Item != nil && laterStream.Item.ID == waitID && laterStream.Item.Status == statusCompleted {
+					seenCompletionBeforeWaitUpdate = true
+					break
+				}
+			}
+		}
+	}
+	if !seenCompletionBeforeWaitUpdate {
+		t.Fatalf("expected command completion upsert followed by completed wait upsert; emissions=%+v", *emissions)
+	}
+}
+
+func TestTerminalInteraction_RawWaitMarksUnifiedExecBackgroundedBeforeCompletion(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 2)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-1",
+		ItemType: "commandExecution", TurnID: "turn-0",
+		Meta:      buildUnifiedExecStartMeta(t, "pid-42", "false"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle command start: %v", err)
+	}
+	router.mu.Lock()
+	delete(router.codexBackground["t1"].unifiedExecByProcess, "pid-42")
+	router.mu.Unlock()
+
+	rawStart := provider.ProviderEvent{
+		Kind:     provider.EventTerminalInteraction,
+		ThreadID: "t1",
+		TurnID:   "turn-2",
+		ItemID:   "call-wait",
+		Content:  "",
+		Meta: terminalInteractionMetaBlobWith(t, "pid-42", "", map[string]any{
+			"source":       "rawResponseItem/function_call",
+			"tool_call_id": "call-wait",
+		}),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(rawStart); err != nil {
+		t.Fatalf("handle raw wait start: %v", err)
+	}
+
+	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
+	if len(waits) != 1 {
+		t.Fatalf("wait rows after raw wait start = %d, want 1: %+v", len(waits), waits)
+	}
+	waitID := waits[0].ID
+	if waits[0].Status != statusRunning {
+		t.Fatalf("wait status after raw wait start = %q, want running", waits[0].Status)
+	}
+
+	completeMeta := buildUnifiedExecCompleteMeta(t, "failed", "pid-42", "false", 1)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-1",
+		ItemType: "commandExecution", TurnID: "turn-0", Content: "",
+		Meta: completeMeta, Replace: true, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle command output: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "cmd-1",
+		ItemType: "commandExecution", TurnID: "turn-0", Meta: completeMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle command completion: %v", err)
+	}
+
+	wait, found, err := st.GetThreadItem("t1", waitID)
+	if err != nil || !found {
+		t.Fatalf("wait row missing after command completion: found=%v err=%v", found, err)
+	}
+	if wait.Status != statusCompleted {
+		t.Fatalf("wait status after command completion = %q, want completed", wait.Status)
+	}
+	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("cmd-1"))
+	if err != nil || !found {
+		t.Fatalf("background command completion missing: found=%v err=%v", found, err)
+	}
+	completionMeta := decodeItemMetaMap(t, completion.Meta)
+	if completionMeta["wait_carrier_id"] != waitID {
+		t.Fatalf("completion wait_carrier_id = %v, want %s", completionMeta["wait_carrier_id"], waitID)
+	}
+}
+
 func TestTerminalInteraction_RawOutputAfterModelMovesOnDoesNotReuseStaleCarrier(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

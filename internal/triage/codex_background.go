@@ -16,7 +16,7 @@ import (
 //
 // Invariant 25: is_background=true on a Codex item is set ONLY from a
 // wire-typed signal, never from event-ordering heuristics. The sanctioned
-// signals today:
+// authorization signals today:
 //
 //   1. CommandExecution.source == "unifiedExecStartup" — a command that
 //      the model yielded on while its PTY kept running.
@@ -28,11 +28,13 @@ import (
 // It tracks per-thread inProgress unifiedExec items in transient state
 // and spawn_agent launch rows in SQLite. A unifiedExec is shown in the
 // running-task tray immediately, but it only becomes a background task
-// when a yield signal proves Codex moved on while the PTY kept running.
-// Completed background output becomes transcript history only after an
-// explicit terminal wait/poll, as a command completion row. A spawn_agent
-// with running children still stamps its persisted launch row
-// is_background=true because that tool call is real transcript history.
+// when a typed trigger proves Codex moved on while the PTY kept running:
+// model output, a turn boundary, or an explicit empty write_stdin wait
+// against that process. Completed background output becomes transcript
+// history only after an explicit terminal wait/poll, as a command
+// completion row. A spawn_agent with running children still stamps its
+// persisted launch row is_background=true because that tool call is real
+// transcript history.
 //
 // The correlation is bounded: quick unifiedExec entries are dropped on
 // item/completed, completed backgrounded unifiedExec entries are
@@ -399,11 +401,46 @@ func (r *Router) markCodexUnifiedExecBackgrounded(threadID, excludeItemID string
 			if id == excludeItemID || tracker.backgrounded || tracker.completed {
 				continue
 			}
-			tracker.backgrounded = true
-			tracker.updatedAt = time.Now().UnixMilli()
-			if state.pendingUnifiedExec > 0 {
-				state.pendingUnifiedExec--
+			if markCodexUnifiedExecTrackerBackgroundedLocked(state, tracker, time.Now().UnixMilli()) {
+				changed = true
 			}
+		}
+	}
+	r.mu.Unlock()
+	if changed {
+		r.emitCodexBackgroundTasksChanged(threadID)
+	}
+}
+
+func markCodexUnifiedExecTrackerBackgroundedLocked(state *codexBackgroundState, tracker *unifiedExecTracker, now int64) bool {
+	if state == nil || tracker == nil || tracker.backgrounded || tracker.completed {
+		return false
+	}
+	tracker.backgrounded = true
+	tracker.updatedAt = now
+	if state.pendingUnifiedExec > 0 {
+		state.pendingUnifiedExec--
+	}
+	return true
+}
+
+func (r *Router) markCodexUnifiedExecProcessBackgrounded(threadID, processID string) {
+	processID = strings.TrimSpace(processID)
+	if processID == "" {
+		return
+	}
+	changed := false
+	r.mu.Lock()
+	state := r.codexBackground[threadID]
+	if state != nil {
+		tracker := codexUnifiedExecTrackerByProcessLocked(state, processID)
+		if tracker == nil {
+			tracker = codexFirstUnboundUnifiedExecTrackerLocked(state)
+			if tracker != nil {
+				rebindCodexUnifiedExecProcessLocked(state, tracker, processID)
+			}
+		}
+		if markCodexUnifiedExecTrackerBackgroundedLocked(state, tracker, time.Now().UnixMilli()) {
 			changed = true
 		}
 	}
@@ -411,6 +448,43 @@ func (r *Router) markCodexUnifiedExecBackgrounded(threadID, excludeItemID string
 	if changed {
 		r.emitCodexBackgroundTasksChanged(threadID)
 	}
+}
+
+func codexUnifiedExecTrackerByProcessLocked(state *codexBackgroundState, processID string) *unifiedExecTracker {
+	processID = strings.TrimSpace(processID)
+	if state == nil || processID == "" {
+		return nil
+	}
+	if launchID := state.unifiedExecByProcess[processID]; launchID != "" {
+		if tracker := state.unifiedExec[launchID]; tracker != nil {
+			if tracker.processID == "" {
+				tracker.processID = processID
+			}
+			if tracker.processID == processID {
+				return tracker
+			}
+		}
+		delete(state.unifiedExecByProcess, processID)
+	}
+	for _, tracker := range state.unifiedExec {
+		if tracker != nil && tracker.processID == processID {
+			state.unifiedExecByProcess[processID] = tracker.launchID
+			return tracker
+		}
+	}
+	return nil
+}
+
+func codexFirstUnboundUnifiedExecTrackerLocked(state *codexBackgroundState) *unifiedExecTracker {
+	if state == nil {
+		return nil
+	}
+	for _, tracker := range state.unifiedExec {
+		if tracker != nil && tracker.processID == "" && !tracker.completed {
+			return tracker
+		}
+	}
+	return nil
 }
 
 // observeCodexToolStart records Codex items that may outlive the parent
@@ -556,8 +630,7 @@ func (r *Router) trackCodexPendingTerminalWait(threadID, processID, itemID strin
 	if state == nil {
 		return false
 	}
-	launchID := state.unifiedExecByProcess[processID]
-	tracker := state.unifiedExec[launchID]
+	tracker := codexUnifiedExecTrackerByProcessLocked(state, processID)
 	if tracker != nil && !tracker.completed {
 		state.pendingWaitByProcess[processID] = pendingTerminalWait{
 			itemID:    itemID,
@@ -566,15 +639,15 @@ func (r *Router) trackCodexPendingTerminalWait(threadID, processID, itemID strin
 		}
 		return true
 	} else {
-		for _, candidate := range state.unifiedExec {
-			if candidate != nil && candidate.processID == "" && !candidate.completed {
-				state.pendingWaitByProcess[processID] = pendingTerminalWait{
-					itemID:    itemID,
-					turnIndex: turnIndex,
-					createdAt: createdAt,
-				}
-				return true
+		candidate := codexFirstUnboundUnifiedExecTrackerLocked(state)
+		if candidate != nil {
+			rebindCodexUnifiedExecProcessLocked(state, candidate, processID)
+			state.pendingWaitByProcess[processID] = pendingTerminalWait{
+				itemID:    itemID,
+				turnIndex: turnIndex,
+				createdAt: createdAt,
 			}
+			return true
 		}
 	}
 	return false
@@ -880,6 +953,7 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 			if err := r.settleCodexTerminalWaitCarrier(evt.ThreadID, pendingWait.itemID); err != nil {
 				return true, err
 			}
+			r.clearCodexPendingTerminalWaitState(evt.ThreadID, tracker.processID, pendingWait.itemID)
 			r.clearCodexCompletedOutputTracker(evt.ThreadID, tracker.processID)
 			return true, nil
 		}
@@ -1402,11 +1476,9 @@ func (r *Router) observeCodexTurnComplete(threadID string) {
 		if tracker.backgrounded || tracker.completed {
 			continue
 		}
-		tracker.backgrounded = true
-		if state.pendingUnifiedExec > 0 {
-			state.pendingUnifiedExec--
+		if markCodexUnifiedExecTrackerBackgroundedLocked(state, tracker, time.Now().UnixMilli()) {
+			unifiedChanged = true
 		}
-		unifiedChanged = true
 	}
 	r.mu.Unlock()
 	if unifiedChanged {

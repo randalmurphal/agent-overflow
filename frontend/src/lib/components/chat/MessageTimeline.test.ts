@@ -113,6 +113,48 @@ describe('<MessageTimeline>', () => {
     expect(row.textContent).toContain('Waited for background terminal');
   });
 
+  it('updates a visible terminal wait carrier when its command completion arrives', async () => {
+    const wait = makeItem({
+      id: 'waited:pid-42:0:0',
+      kind: 'terminal_interaction',
+      role: 'assistant',
+      status: 'running',
+      summary: 'Waiting for background terminal',
+      meta: JSON.stringify({ process_id: 'pid-42' }),
+    });
+    const completion = makeItem({
+      id: 'complete-cmd-1',
+      itemIndex: 1,
+      kind: 'tool_completion',
+      toolName: 'command_execution',
+      completionOf: 'cmd-1',
+      status: 'errored',
+      summary: 'Command failed',
+      meta: JSON.stringify({ process_id: 'pid-42', wait_carrier_id: wait.id }),
+    });
+    const completedWait = makeItem({
+      ...wait,
+      status: 'completed',
+      summary: 'Waited for background terminal',
+      updatedAt: 1,
+    });
+    const pane = await buildPane(makeThread({ provider: 'codex' }), [wait]);
+    const { getByTestId, queryByTestId } = render(MessageTimeline, { props: { pane } });
+
+    expect(getByTestId('terminal-interaction-row').textContent?.trim()).toBe(
+      'Waiting for background terminal',
+    );
+    expect(queryByTestId('wait-group-children')).toBeNull();
+
+    pane.upsertItems([completion, completedWait]);
+    await tick();
+
+    expect(getByTestId('terminal-interaction-row').textContent?.trim()).toBe(
+      'Waited for background terminal',
+    );
+    expect(getByTestId('wait-group-children').textContent).toContain('Command failed');
+  });
+
   it('renders notification rows without routing them through tool lifecycle cards', async () => {
     const pane = await buildPane(undefined, [
       makeItem({
