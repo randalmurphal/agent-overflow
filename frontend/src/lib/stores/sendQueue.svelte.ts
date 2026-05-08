@@ -71,6 +71,7 @@ export interface QueueDraftSnapshot {
 
 const queueByThread = new SvelteMap<string, readonly QueueItem[]>();
 const flushedByThread = new SvelteMap<string, readonly FlushedItem[]>();
+const queueRevisionByThread = new Map<string, number>();
 
 const EMPTY_QUEUE: readonly QueueItem[] = Object.freeze([]);
 const EMPTY_FLUSHED: readonly FlushedItem[] = Object.freeze([]);
@@ -109,6 +110,16 @@ export function hasRetractableQueueItems(threadId: string | null | undefined): b
   if (!threadId) return false;
   const q = queueByThread.get(threadId);
   return !!q && q.length > 0;
+}
+
+/** Monotonic Zone 1 revision for stale-hydration guards. */
+export function getQueueRevisionForThread(threadId: string | null | undefined): number {
+  if (!threadId) return 0;
+  return queueRevisionByThread.get(threadId) ?? 0;
+}
+
+function bumpQueueRevision(threadId: string): void {
+  queueRevisionByThread.set(threadId, getQueueRevisionForThread(threadId) + 1);
 }
 
 // ---- Backend RPC mutations ------------------------------------------
@@ -174,11 +185,27 @@ export function replaceQueueForThread(
   items: readonly QueueItem[],
 ): void {
   if (!threadId) return;
+  if (items.length === 0 && !queueByThread.has(threadId)) return;
+  bumpQueueRevision(threadId);
   if (items.length === 0) {
     queueByThread.delete(threadId);
     return;
   }
   queueByThread.set(threadId, items);
+}
+
+export function replaceFlushedForThread(
+  threadId: string,
+  items: readonly FlushedItem[],
+): void {
+  if (!threadId) return;
+  if (items.length === 0 && !flushedByThread.has(threadId)) return;
+  bumpQueueRevision(threadId);
+  if (items.length === 0) {
+    flushedByThread.delete(threadId);
+    return;
+  }
+  flushedByThread.set(threadId, items);
 }
 
 /** Move a batch of items to Zone 2. Called by the
@@ -198,6 +225,7 @@ export function markItemsFlushed(
     flushedAt: now,
   }));
   const current = flushedByThread.get(threadId) ?? EMPTY_FLUSHED;
+  bumpQueueRevision(threadId);
   flushedByThread.set(threadId, [...current, ...additions]);
 }
 
@@ -214,6 +242,7 @@ export function confirmFlushedByUserItemId(
   if (!current || current.length === 0) return;
   const next = current.filter((entry) => entry.userItemId !== userItemId);
   if (next.length === current.length) return; // no match, no mutation
+  bumpQueueRevision(threadId);
   if (next.length === 0) {
     flushedByThread.delete(threadId);
   } else {
@@ -227,6 +256,8 @@ export function confirmFlushedByUserItemId(
  * bleed into the next. */
 export function clearForThread(threadId: string): void {
   if (!threadId) return;
+  if (!queueByThread.has(threadId) && !flushedByThread.has(threadId)) return;
+  bumpQueueRevision(threadId);
   queueByThread.delete(threadId);
   flushedByThread.delete(threadId);
 }
@@ -278,9 +309,10 @@ export function combineForRetract(
   };
 }
 
-// ---- Internal helpers ------------------------------------------------
+// ---- Wire conversion -------------------------------------------------
 
-function queueItemFromWire(item: WireQueuedItem): QueueItem {
+/** Convert the generated Wails queue DTO to the local send-queue shape. */
+export function queueItemFromWire(item: WireQueuedItem): QueueItem {
   return {
     id: item.id,
     threadId: item.threadId,
@@ -308,4 +340,5 @@ function queueItemFromWire(item: WireQueuedItem): QueueItem {
 export function resetForTest(): void {
   queueByThread.clear();
   flushedByThread.clear();
+  queueRevisionByThread.clear();
 }

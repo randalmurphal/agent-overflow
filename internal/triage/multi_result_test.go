@@ -436,7 +436,7 @@ func TestRoundStartedAfterSystemInit(t *testing.T) {
 // contract:
 //
 //   - EventInit yields no provider:turn_started (no settled marker).
-//   - EventTurnComplete finds an empty currentRoundID slot
+//   - EventTurnComplete finds an empty currentRoundByThread slot
 //     (takeOpenRound returns "") and skips the wire-round emission.
 //   - claimTurnSettlement gates persistence; the orphan complete folds
 //     late token usage onto whatever turns row exists (or is a
@@ -477,14 +477,14 @@ func TestRoundEmission_RecoveryResume_OrphanCompleteIsSilent(t *testing.T) {
 	}
 }
 
-// TestCurrentRoundIDIsBoundedByCleanupThread pins the round-id
-// leak guard. CleanupThread MUST wipe currentRoundID along with the
+// TestCurrentRoundByThreadIsBoundedByCleanupThread pins the round snapshot
+// leak guard. CleanupThread MUST wipe currentRoundByThread along with the
 // other per-thread maps so a long-running session bouncing across
 // many threads doesn't accumulate stale round entries.
 //
-// Mirrors TestCounterMapsBoundedByCleanupThread for the round-id
+// Mirrors TestCounterMapsBoundedByCleanupThread for the round snapshot
 // map specifically.
-func TestCurrentRoundIDIsBoundedByCleanupThread(t *testing.T) {
+func TestCurrentRoundByThreadIsBoundedByCleanupThread(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -497,26 +497,26 @@ func TestCurrentRoundIDIsBoundedByCleanupThread(t *testing.T) {
 	}
 
 	router.mu.Lock()
-	openRound, hasOpenRound := router.currentRoundID["t1"]
+	openRound, hasOpenRound := router.currentRoundByThread["t1"]
 	router.mu.Unlock()
-	if !hasOpenRound || openRound == "" {
-		t.Fatalf("expected currentRoundID[t1] to be set after EventTurnStart, got %q (present=%v)", openRound, hasOpenRound)
+	if !hasOpenRound || openRound.TurnID == "" {
+		t.Fatalf("expected currentRoundByThread[t1] to be set after EventTurnStart, got %+v (present=%v)", openRound, hasOpenRound)
 	}
 
 	router.CleanupThread("t1")
 
 	router.mu.Lock()
 	defer router.mu.Unlock()
-	if _, leaked := router.currentRoundID["t1"]; leaked {
-		t.Errorf("currentRoundID leaked entry for t1 past CleanupThread")
+	if _, leaked := router.currentRoundByThread["t1"]; leaked {
+		t.Errorf("currentRoundByThread leaked entry for t1 past CleanupThread")
 	}
-	if got := len(router.currentRoundID); got != 0 {
-		t.Errorf("currentRoundID has %d entries past CleanupThread, want 0", got)
+	if got := len(router.currentRoundByThread); got != 0 {
+		t.Errorf("currentRoundByThread has %d entries past CleanupThread, want 0", got)
 	}
 }
 
 // TestRoundEmission_CrossThreadIsolation pins the per-thread keying
-// of currentRoundID: thread A's round id must never be returned for
+// of currentRoundByThread: thread A's round id must never be returned for
 // thread B's takeOpenRound. Provider events are serialized per
 // thread, so this isolation isn't a concurrency requirement today —
 // but it's a correctness boundary the design depends on, and a
@@ -582,10 +582,10 @@ func TestRoundEmission_CrossThreadIsolation(t *testing.T) {
 	}
 	// t2's slot must still be open.
 	router.mu.Lock()
-	t2RoundStillOpen := router.currentRoundID["t2"]
+	t2RoundStillOpen := router.currentRoundByThread["t2"]
 	router.mu.Unlock()
-	if t2RoundStillOpen != t2Round {
-		t.Errorf("t2 round slot was disturbed: got %q, want %q", t2RoundStillOpen, t2Round)
+	if t2RoundStillOpen.TurnID != t2Round {
+		t.Errorf("t2 round slot was disturbed: got %q, want %q", t2RoundStillOpen.TurnID, t2Round)
 	}
 
 	// Complete t2 — emit must carry t2's round id, not t1's.
@@ -840,16 +840,16 @@ func TestCounterMapsBoundedByCleanupThread(t *testing.T) {
 	if got := len(router.terminalInteractionSeq); got != 0 {
 		t.Errorf("terminalInteractionSeq leaked %d entries past CleanupThread", got)
 	}
-		// Logical-turn settlement state survives turn boundaries by design
-		// but should not outlive the session.
-		if got := len(router.settledTurns); got != 0 {
-			t.Errorf("settledTurns leaked %d entries past CleanupThread", got)
-		}
+	// Logical-turn settlement state survives turn boundaries by design
+	// but should not outlive the session.
+	if got := len(router.settledTurns); got != 0 {
+		t.Errorf("settledTurns leaked %d entries past CleanupThread", got)
+	}
 	// Per-wire-round id slot — every wire complete clears its own
 	// thread's slot via takeOpenRound, but CleanupThread is the safety
 	// net for sessions that ended mid-round (no final wire complete).
-	if got := len(router.currentRoundID); got != 0 {
-		t.Errorf("currentRoundID leaked %d entries past CleanupThread", got)
+	if got := len(router.currentRoundByThread); got != 0 {
+		t.Errorf("currentRoundByThread leaked %d entries past CleanupThread", got)
 	}
 }
 

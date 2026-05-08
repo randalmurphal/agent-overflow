@@ -56,6 +56,15 @@ func createCodexQueueTestThread(t *testing.T, st *store.Store, id string) {
 	}
 }
 
+func setOpenRoundForTest(router *Router, threadID, roundID string) {
+	router.setOpenRoundSnapshot(ActiveTurnSnapshot{
+		ThreadID:  threadID,
+		TurnID:    roundID,
+		TurnIndex: 0,
+		StartedAt: time.Now().UnixMilli(),
+	})
+}
+
 func TestHandleToolStart_DoesNotFlushQueuedMessages(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -63,7 +72,7 @@ func TestHandleToolStart_DoesNotFlushQueuedMessages(t *testing.T) {
 	router.SetFlushDispatcher(rec.dispatch)
 
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
-	router.setOpenRound("t1", "round-A")
+	setOpenRoundForTest(router, "t1", "round-A")
 
 	if err := router.Handle(makeToolStartEvent("t1", "tool-1")); err != nil {
 		t.Fatalf("handle tool start: %v", err)
@@ -91,7 +100,7 @@ func TestHandleToolComplete_FlushesWhenNoBlockingWorkRemains(t *testing.T) {
 	router.SetFlushDispatcher(rec.dispatch)
 
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
-	router.setOpenRound("t1", "round-A")
+	setOpenRoundForTest(router, "t1", "round-A")
 
 	if err := router.Handle(makeToolStartEvent("t1", "tool-1")); err != nil {
 		t.Fatalf("handle tool start: %v", err)
@@ -117,7 +126,7 @@ func TestHandleToolComplete_CodexUnifiedExecCompletionFlushesBoundary(t *testing
 	createCodexQueueTestThread(t, st, "t1")
 	rec := &recordingDispatcher{}
 	router.SetFlushDispatcher(rec.dispatch)
-	router.setOpenRound("t1", "round-A")
+	setOpenRoundForTest(router, "t1", "round-A")
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventToolStart,
@@ -153,7 +162,7 @@ func TestHandleToolComplete_WaitsForActiveCodexUnifiedExec(t *testing.T) {
 	createCodexQueueTestThread(t, st, "t1")
 	rec := &recordingDispatcher{}
 	router.SetFlushDispatcher(rec.dispatch)
-	router.setOpenRound("t1", "round-A")
+	setOpenRoundForTest(router, "t1", "round-A")
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventToolStart,
@@ -199,7 +208,7 @@ func TestHandleToolComplete_WaitsForOtherTopLevelTools(t *testing.T) {
 	router.SetFlushDispatcher(rec.dispatch)
 
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
-	router.setOpenRound("t1", "round-A")
+	setOpenRoundForTest(router, "t1", "round-A")
 
 	for _, id := range []string{"tool-1", "tool-2"} {
 		if err := router.Handle(makeToolStartEvent("t1", id)); err != nil {
@@ -232,7 +241,7 @@ func TestHandleSubagentToolComplete_WaitsForParentTool(t *testing.T) {
 	router.SetFlushDispatcher(rec.dispatch)
 
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
-	router.setOpenRound("t1", "round-A")
+	setOpenRoundForTest(router, "t1", "round-A")
 
 	if err := router.Handle(makeToolStartEvent("t1", "parent-task")); err != nil {
 		t.Fatalf("handle parent start: %v", err)
@@ -265,7 +274,7 @@ func TestHandleBackgroundTaskTerminal_FlushesAfterHostExitHidesLiveTask(t *testi
 	rec := &recordingDispatcher{}
 	router.SetFlushDispatcher(rec.dispatch)
 
-	router.setOpenRound("t1", "round-A")
+	setOpenRoundForTest(router, "t1", "round-A")
 	bgStart := makeToolStartEvent("t1", "bg-tool")
 	bgStart.Meta = json.RawMessage(`{"toolName":"Bash","is_background":true,"task_id":"task-1"}`)
 	if err := router.Handle(bgStart); err != nil {
@@ -329,7 +338,7 @@ func TestHandleToolComplete_DispatcherNilKeepsQueue(t *testing.T) {
 	router.SetFlushDispatcher(nil)
 
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "x"))
-	router.setOpenRound("t1", "round-A")
+	setOpenRoundForTest(router, "t1", "round-A")
 
 	if err := router.Handle(makeToolStartEvent("t1", "tool-1")); err != nil {
 		t.Fatalf("handle tool start: %v", err)

@@ -35,6 +35,7 @@ export {
   ReconnectSession,
   SendMessage,
   InterruptTurn,
+  GetThreadLiveState,
   ListPendingInteractiveRequests,
   RespondToApproval,
   RespondToUserInput,

@@ -23,9 +23,10 @@ import { transportGapChannel } from '../transport/wsClient';
 import {
   confirmFlushedByUserItemId,
   markItemsFlushed,
+  queueItemFromWire,
   replaceQueueForThread,
-  type QueueItem as SendQueueItem,
 } from './sendQueue.svelte';
+import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
 import { getAllPanes, syncThread } from './panes.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
 import { addToast } from './toast.svelte';
@@ -723,8 +724,9 @@ function applyThreadUpdated(updated: Thread): void {
  * Route `provider:turn_started` to the global active-turn registry
  * (single source of truth — see threadStatuses.svelte.ts). Both the
  * sidebar pill and the chat working indicator read from there. This
- * is the only path that can record a live turn — invariant 22 (turn
- * activity is wire-pushed, never derived from items).
+ * is one of two live backend sources that can record a turn; the other
+ * is `GetThreadLiveState` hydration after refresh. Neither path derives
+ * turn activity from durable item history.
  */
 function applyTurnStarted(evt: TurnStartedEvent): void {
   if (!evt?.threadId || !evt.turnId) return;
@@ -1117,16 +1119,7 @@ export function setupEventListeners(): () => void {
 
 interface QueueStateChangedPayload {
   threadId: string;
-  items: Array<{
-    id: string;
-    threadId: string;
-    message: string;
-    attachmentIds?: string[];
-    sourceProposedPlan?: SendQueueItem['sourceProposedPlan'];
-    revisionSourceProposedPlan?: SendQueueItem['revisionSourceProposedPlan'];
-    revisionSourceCommentIds?: string[];
-    enqueuedAt: number;
-  }>;
+  items: WireQueuedItem[];
 }
 
 interface QueueFlushedPayload {
@@ -1136,18 +1129,7 @@ interface QueueFlushedPayload {
 
 function applyQueueStateChanged(evt: QueueStateChangedPayload | undefined): void {
   if (!evt || !evt.threadId) return;
-  const items: SendQueueItem[] = (evt.items ?? []).map((item) => ({
-    id: item.id,
-    threadId: item.threadId,
-    message: item.message,
-    attachmentIds: item.attachmentIds ? [...item.attachmentIds] : [],
-    sourceProposedPlan: item.sourceProposedPlan ?? null,
-    revisionSourceProposedPlan: item.revisionSourceProposedPlan ?? null,
-    revisionSourceCommentIds: item.revisionSourceCommentIds
-      ? [...item.revisionSourceCommentIds]
-      : undefined,
-    enqueuedAt: item.enqueuedAt,
-  }));
+  const items = (evt.items ?? []).map(queueItemFromWire);
   replaceQueueForThread(evt.threadId, items);
 }
 

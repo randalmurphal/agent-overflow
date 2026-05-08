@@ -27,6 +27,7 @@ import type {
 } from '../types/design';
 import {
   GetThreadItem,
+  GetThreadLiveState,
   LatestDesignOptionSet,
   ListPendingInteractiveRequests,
   ListItemsBeforeTurn,
@@ -63,11 +64,24 @@ import {
 import { errString } from '../utils/errors';
 import { clearTokensForThread } from '../utils/tokenCacheReactive.svelte';
 import {
+  beginThreadLiveStateHydration,
+  finishThreadLiveStateHydration,
   getActiveTurn,
+  isThreadLiveStateHydrationCurrent,
   projectTurnCompleted,
   projectTurnStarted,
+  replaceInteractiveRequestsForThread,
   type ActiveTurn,
 } from './threadStatuses.svelte';
+import {
+  getQueueRevisionForThread,
+  queueItemFromWire,
+  replaceFlushedForThread,
+  replaceQueueForThread,
+  type FlushedItem,
+  type QueueItem as SendQueueItem,
+} from './sendQueue.svelte';
+import type { ThreadLiveState } from '../../../bindings/agent-overflow/models';
 
 /**
  * Default batch size for "Load older" fetches. Matches the initial window
@@ -323,6 +337,14 @@ interface TurnRow {
   assistantMessageId?: string;
   tokenUsageJson?: string;
   errorMessage?: string;
+}
+
+type LiveTodoSnapshot = NonNullable<ThreadLiveState['todo']>;
+
+interface LiveStateHydrationGuard {
+  activeTurnAtRequest: ActiveTurn | null;
+  queueRevisionAtRequest: number;
+  liveTodoRevisionAtRequest: number;
 }
 
 /**
@@ -585,6 +607,7 @@ export function createThreadPane() {
   // memory; oldest entries drop first.
   let liveTodoCleared = new Set<string>();
   const liveTodoClearedCap = 1_000;
+  let liveTodoRevision = 0;
   // Subagent notification log. The backend emits
   // `provider:subagent_notification` as a pass-through; no UI consumes it
   // today, but keeping a bounded in-pane log lets future surfaces (tray,
@@ -593,6 +616,67 @@ export function createThreadPane() {
   // session that generates many notifications.
   let subagentNotifications: SubagentNotificationEvent[] = $state([]);
   const subagentNotificationLimit = 32;
+
+  function clearLiveTodoState(): void {
+    liveTodoRevision += 1;
+    if (liveTodoAutoHideTimer !== null) {
+      clearTimeout(liveTodoAutoHideTimer);
+      liveTodoAutoHideTimer = null;
+    }
+    liveTodo = null;
+    liveTodoCleared = new Set();
+  }
+
+  function shouldHydrateLiveTodoSnapshot(snapshot: LiveTodoSnapshot): boolean {
+    if (!Array.isArray(snapshot.steps) || snapshot.steps.length === 0) {
+      return false;
+    }
+    const allCompleted = snapshot.steps.every((step) => step.status === 'completed');
+    if (!allCompleted) return true;
+    const age = Date.now() - snapshot.updatedAt;
+    return age >= 0 && age <= LIVE_TODO_AUTOHIDE_MS;
+  }
+
+  function setLiveTodoState(steps: TodoStep[]): void {
+    liveTodoRevision += 1;
+    if (liveTodoAutoHideTimer !== null) {
+      clearTimeout(liveTodoAutoHideTimer);
+      liveTodoAutoHideTimer = null;
+    }
+    const filtered = liveTodoCleared.size === 0
+      ? steps
+      : steps.filter(
+          (s) => !(s.status === 'completed' && liveTodoCleared.has(s.step)),
+        );
+    if (filtered.length === 0) {
+      liveTodo = null;
+      return;
+    }
+    liveTodo = { steps: filtered };
+    const allComplete = filtered.every((s) => s.status === 'completed');
+    if (allComplete) {
+      liveTodoAutoHideTimer = setTimeout(() => {
+        if (liveTodo) {
+          for (const s of liveTodo.steps) {
+            liveTodoCleared.add(s.step);
+          }
+          if (liveTodoCleared.size > liveTodoClearedCap) {
+            const arr = Array.from(liveTodoCleared);
+            liveTodoCleared = new Set(arr.slice(arr.length - liveTodoClearedCap));
+          }
+        }
+        liveTodo = null;
+        liveTodoAutoHideTimer = null;
+      }, LIVE_TODO_AUTOHIDE_MS);
+    }
+  }
+
+  function sameActiveTurn(left: ActiveTurn | null, right: ActiveTurn | null): boolean {
+    if (left === null || right === null) return left === right;
+    return left.turnId === right.turnId
+      && left.turnIndex === right.turnIndex
+      && left.startedAt === right.startedAt;
+  }
 
   /**
    * Generation counter for switchThread. Incremented on every switchThread
@@ -1135,7 +1219,39 @@ export function createThreadPane() {
     }
   }
 
-  async function hydratePendingInteractiveRequests(threadID: string, gen: number): Promise<void> {
+  function filteredPendingInteractiveSnapshot(
+    snapshot: PendingInteractiveRequests | null | undefined,
+  ): PendingInteractiveRequests {
+    const approvals = (snapshot?.approvals ?? [])
+      .filter((request) => request.requestId && !resolvedApprovalIds.has(request.requestId));
+    const userInputs = (snapshot?.userInputs ?? [])
+      .filter((request) => request.requestId && !resolvedUserInputIds.has(request.requestId));
+    return { approvals, userInputs };
+  }
+
+  function applyPendingInteractiveSnapshot(
+    threadID: string,
+    snapshot: PendingInteractiveRequests | null | undefined,
+  ): void {
+    const filtered = filteredPendingInteractiveSnapshot(snapshot);
+    pendingApprovals = mergePendingRequests(
+      filtered.approvals,
+      pendingApprovals,
+      resolvedApprovalIds,
+    );
+    pendingUserInputs = mergePendingRequests(
+      filtered.userInputs,
+      pendingUserInputs,
+      resolvedUserInputIds,
+    );
+    replaceInteractiveRequestsForThread(threadID, filtered);
+  }
+
+  async function hydratePendingInteractiveRequests(
+    threadID: string,
+    gen: number,
+    hydrationToken?: number,
+  ): Promise<void> {
     let snapshot: PendingInteractiveRequests;
     try {
       snapshot = (await ListPendingInteractiveRequests(threadID)) as PendingInteractiveRequests;
@@ -1146,17 +1262,83 @@ export function createThreadPane() {
       return;
     }
     if (gen !== switchGeneration || thread?.id !== threadID) return;
+    if (hydrationToken !== undefined && !isThreadLiveStateHydrationCurrent(threadID, hydrationToken)) return;
 
-    pendingApprovals = mergePendingRequests(
-      snapshot.approvals ?? [],
-      pendingApprovals,
-      resolvedApprovalIds,
-    );
-    pendingUserInputs = mergePendingRequests(
-      snapshot.userInputs ?? [],
-      pendingUserInputs,
-      resolvedUserInputIds,
-    );
+    applyPendingInteractiveSnapshot(threadID, snapshot);
+  }
+
+  function applyThreadLiveStateSnapshot(
+    snapshot: ThreadLiveState,
+    threadID: string,
+    guard: LiveStateHydrationGuard,
+  ): void {
+    if (snapshot.threadId !== threadID) return;
+    const current = getActiveTurn(threadID);
+    if (sameActiveTurn(current, guard.activeTurnAtRequest)) {
+      const active = snapshot.activeTurn;
+      if (active && active.threadId === threadID && active.turnId) {
+        projectTurnStarted(threadID, active.turnId, active.turnIndex, active.startedAt);
+      } else if (current) {
+        projectTurnCompleted(threadID, current.turnId);
+      }
+    }
+
+    if (getQueueRevisionForThread(threadID) === guard.queueRevisionAtRequest) {
+      const queueItems: SendQueueItem[] = (snapshot.queueItems ?? [])
+        .filter((item) => item.threadId === threadID)
+        .map(queueItemFromWire);
+      replaceQueueForThread(threadID, queueItems);
+      const flushedItems: FlushedItem[] = (snapshot.flushedItems ?? [])
+        .filter((item) => item.userItemId && item.queueItemId)
+        .map((item) => ({
+          queueItemId: item.queueItemId,
+          userItemId: item.userItemId,
+          message: item.message,
+          flushedAt: Date.now(),
+        }));
+      replaceFlushedForThread(threadID, flushedItems);
+    }
+
+    applyPendingInteractiveSnapshot(threadID, snapshot.interactive as PendingInteractiveRequests);
+
+    if (liveTodoRevision === guard.liveTodoRevisionAtRequest) {
+      const todo = snapshot.todo;
+      if (todo && todo.threadId === threadID && shouldHydrateLiveTodoSnapshot(todo)) {
+        setLiveTodoState(todo.steps as TodoStep[]);
+      } else {
+        clearLiveTodoState();
+      }
+    }
+  }
+
+  async function hydrateThreadLiveState(
+    threadID: string,
+    gen: number,
+    existingHydrationToken?: number,
+  ): Promise<void> {
+    const hydrationToken = existingHydrationToken ?? beginThreadLiveStateHydration(threadID);
+    const guard: LiveStateHydrationGuard = {
+      activeTurnAtRequest: getActiveTurn(threadID),
+      queueRevisionAtRequest: getQueueRevisionForThread(threadID),
+      liveTodoRevisionAtRequest: liveTodoRevision,
+    };
+    try {
+      let snapshot: ThreadLiveState;
+      try {
+        snapshot = (await GetThreadLiveState(threadID)) as ThreadLiveState;
+      } catch (err) {
+        if (gen === switchGeneration && thread?.id === threadID) {
+          console.error('Failed to hydrate thread live state:', err);
+        }
+        await hydratePendingInteractiveRequests(threadID, gen, hydrationToken);
+        return;
+      }
+      if (gen !== switchGeneration || thread?.id !== threadID) return;
+      if (!isThreadLiveStateHydrationCurrent(threadID, hydrationToken)) return;
+      applyThreadLiveStateSnapshot(snapshot, threadID, guard);
+    } finally {
+      finishThreadLiveStateHydration(threadID, hydrationToken);
+    }
   }
 
   async function refreshCheckpointsForThread(threadID: string): Promise<void> {
@@ -1270,6 +1452,7 @@ export function createThreadPane() {
       // no newer switch has superseded ours. Declared up front, set
       // inside the try body, read in finally.
       let gen = -1;
+      let liveStateHydrationToken = 0;
       try {
         pendingApprovals = [];
         pendingUserInputs = [];
@@ -1350,6 +1533,7 @@ export function createThreadPane() {
         // and after the swap" collision risk if the guards ever get
         // reordered.
 
+        liveStateHydrationToken = beginThreadLiveStateHydration(newThread.id);
         thread = newThread;
         // Sync the top tab to the incoming thread's type. Discussion threads
         // bypass the tab UI (DiscussionView owns the surface), so we leave
@@ -1386,7 +1570,8 @@ export function createThreadPane() {
         }
         if (gen !== switchGeneration) return;
 
-        await hydratePendingInteractiveRequests(newThread.id, gen);
+        await hydrateThreadLiveState(newThread.id, gen, liveStateHydrationToken);
+        liveStateHydrationToken = 0;
         if (gen !== switchGeneration) return;
 
         // SwitchThread persists read state for the selection itself. ChatView
@@ -1455,6 +1640,9 @@ export function createThreadPane() {
         if (gen === switchGeneration) {
           loading = false;
         }
+        if (liveStateHydrationToken !== 0) {
+          finishThreadLiveStateHydration(newThread.id, liveStateHydrationToken);
+        }
       }
     },
 
@@ -1474,36 +1662,44 @@ export function createThreadPane() {
       const currentThread = thread;
       if (!currentThread) return;
       const gen = switchGeneration;
+      let liveStateHydrationToken = beginThreadLiveStateHydration(currentThread.id);
       try {
-        const paged = await ListRecentThreadItems(currentThread.id, 0);
-        if (gen !== switchGeneration) return;
-        items = itemsForThread((paged.items ?? []) as Item[], currentThread.id);
-        rebuildItemIndexes(items);
-        oldestLoadedTurnIndex = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
-        hasMoreHistory = paged.hasMore ?? false;
-      } catch (err) {
-        if (gen !== switchGeneration) return;
-        console.error('Failed to refresh thread items after gap:', err);
-        return;
-      }
-      try {
-        const recent = (await ListRecentTurns(currentThread.id, 2)) as TurnRow[] | null;
-        if (gen !== switchGeneration) return;
-        if (recent && recent.length > 0) {
-          const settled = recent.find(
-            (row) => row.completedAt !== null && row.completedAt !== undefined,
-          );
-          if (settled) {
-            latestSettledTurn = turnRowToSettled(settled);
-          }
+        try {
+          const paged = await ListRecentThreadItems(currentThread.id, 0);
+          if (gen !== switchGeneration) return;
+          items = itemsForThread((paged.items ?? []) as Item[], currentThread.id);
+          rebuildItemIndexes(items);
+          oldestLoadedTurnIndex = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
+          hasMoreHistory = paged.hasMore ?? false;
+        } catch (err) {
+          if (gen !== switchGeneration) return;
+          console.error('Failed to refresh thread items after gap:', err);
+          return;
         }
-      } catch (err) {
-        if (gen !== switchGeneration) return;
-        console.error('Failed to refresh recent turns after gap:', err);
+        try {
+          const recent = (await ListRecentTurns(currentThread.id, 2)) as TurnRow[] | null;
+          if (gen !== switchGeneration) return;
+          if (recent && recent.length > 0) {
+            const settled = recent.find(
+              (row) => row.completedAt !== null && row.completedAt !== undefined,
+            );
+            if (settled) {
+              latestSettledTurn = turnRowToSettled(settled);
+            }
+          }
+        } catch (err) {
+          if (gen !== switchGeneration) return;
+          console.error('Failed to refresh recent turns after gap:', err);
+        }
+        pendingApprovals = [];
+        pendingUserInputs = [];
+        await hydrateThreadLiveState(currentThread.id, gen, liveStateHydrationToken);
+        liveStateHydrationToken = 0;
+      } finally {
+        if (liveStateHydrationToken !== 0) {
+          finishThreadLiveStateHydration(currentThread.id, liveStateHydrationToken);
+        }
       }
-      pendingApprovals = [];
-      pendingUserInputs = [];
-      await hydratePendingInteractiveRequests(currentThread.id, gen);
     },
 
     clear(): void {
@@ -1955,46 +2151,13 @@ export function createThreadPane() {
      * the todo list briefly disappearing and reappearing within a thread.
      */
     setLiveTodo(steps: TodoStep[]): void {
-      if (liveTodoAutoHideTimer !== null) {
-        clearTimeout(liveTodoAutoHideTimer);
-        liveTodoAutoHideTimer = null;
-      }
       // The provider:todo_update listener (events.ts:applyTodoUpdate) is
       // the wire boundary and validates `steps` is an array before
       // calling here; trust the input from that point on.
       // Subtract steps that the previous all-completed cycle already
       // cleared so the agent's full-list re-emission doesn't repaint
       // those rows under a new logical todo cycle.
-      const filtered = liveTodoCleared.size === 0
-        ? steps
-        : steps.filter(
-            (s) => !(s.status === 'completed' && liveTodoCleared.has(s.step)),
-          );
-      if (filtered.length === 0) {
-        liveTodo = null;
-        return;
-      }
-      liveTodo = { steps: filtered };
-      const allComplete = filtered.every((s) => s.status === 'completed');
-      if (allComplete) {
-        liveTodoAutoHideTimer = setTimeout(() => {
-          // Snapshot the just-cleared step texts so the next update
-          // starts the panel fresh. Cap the set to bound memory across
-          // long sessions with many todo cycles; insertion-ordered
-          // iteration drops the oldest entries first.
-          if (liveTodo) {
-            for (const s of liveTodo.steps) {
-              liveTodoCleared.add(s.step);
-            }
-            if (liveTodoCleared.size > liveTodoClearedCap) {
-              const arr = Array.from(liveTodoCleared);
-              liveTodoCleared = new Set(arr.slice(arr.length - liveTodoClearedCap));
-            }
-          }
-          liveTodo = null;
-          liveTodoAutoHideTimer = null;
-        }, LIVE_TODO_AUTOHIDE_MS);
-      }
+      setLiveTodoState(steps);
     },
 
     /**
@@ -2009,12 +2172,7 @@ export function createThreadPane() {
      * a prior auto-hide cycle.
      */
     clearLiveTodo(): void {
-      if (liveTodoAutoHideTimer !== null) {
-        clearTimeout(liveTodoAutoHideTimer);
-        liveTodoAutoHideTimer = null;
-      }
-      liveTodo = null;
-      liveTodoCleared = new Set();
+      clearLiveTodoState();
     },
 
     /** Toggle the "Show X more…" reveal under the truncated list. */

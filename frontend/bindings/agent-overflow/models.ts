@@ -692,6 +692,97 @@ export class Keybinding {
     }
 }
 
+export class LiveStateActiveTurn {
+    "threadId": string;
+    "turnId": string;
+    "turnIndex": number;
+    "startedAt": number;
+
+    /** Creates a new LiveStateActiveTurn instance. */
+    constructor($$source: Partial<LiveStateActiveTurn> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("turnId" in $$source)) {
+            this["turnId"] = "";
+        }
+        if (!("turnIndex" in $$source)) {
+            this["turnIndex"] = 0;
+        }
+        if (!("startedAt" in $$source)) {
+            this["startedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LiveStateActiveTurn instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LiveStateActiveTurn {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new LiveStateActiveTurn($$parsedSource as Partial<LiveStateActiveTurn>);
+    }
+}
+
+export class LiveStateTodo {
+    "threadId": string;
+    "steps": LiveStateTodoStep[];
+    "updatedAt": number;
+
+    /** Creates a new LiveStateTodo instance. */
+    constructor($$source: Partial<LiveStateTodo> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("steps" in $$source)) {
+            this["steps"] = [];
+        }
+        if (!("updatedAt" in $$source)) {
+            this["updatedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LiveStateTodo instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LiveStateTodo {
+        const $$createField1_0 = $$createType13;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("steps" in $$parsedSource) {
+            $$parsedSource["steps"] = $$createField1_0($$parsedSource["steps"]);
+        }
+        return new LiveStateTodo($$parsedSource as Partial<LiveStateTodo>);
+    }
+}
+
+export class LiveStateTodoStep {
+    "step": string;
+    "status": string;
+
+    /** Creates a new LiveStateTodoStep instance. */
+    constructor($$source: Partial<LiveStateTodoStep> = {}) {
+        if (!("step" in $$source)) {
+            this["step"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LiveStateTodoStep instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LiveStateTodoStep {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new LiveStateTodoStep($$parsedSource as Partial<LiveStateTodoStep>);
+    }
+}
+
 /**
  * NetworkSettings is the wire-shaped network preferences a settings
  * UI reads / writes. Mirrors settings.NetworkSettings (which only
@@ -856,6 +947,42 @@ export class PayloadPreview {
 }
 
 /**
+ * QueueFlushedItem is one entry inside a QueueFlushedEvent. Carries
+ * the original frontend-allocated queueItemId, the backend-allocated
+ * userItemId (deterministic row id), and the message text so the
+ * frontend's Zone 2 overlay can render without re-reading the
+ * timeline.
+ */
+export class QueueFlushedItem {
+    "queueItemId": string;
+    "userItemId": string;
+    "message": string;
+
+    /** Creates a new QueueFlushedItem instance. */
+    constructor($$source: Partial<QueueFlushedItem> = {}) {
+        if (!("queueItemId" in $$source)) {
+            this["queueItemId"] = "";
+        }
+        if (!("userItemId" in $$source)) {
+            this["userItemId"] = "";
+        }
+        if (!("message" in $$source)) {
+            this["message"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new QueueFlushedItem instance from a string or object.
+     */
+    static createFrom($$source: any = {}): QueueFlushedItem {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new QueueFlushedItem($$parsedSource as Partial<QueueFlushedItem>);
+    }
+}
+
+/**
  * QueuedItem is the wire-side projection of a triage QueuedFlushItem,
  * used by the frontend to mirror the backend's per-thread queue. The
  * wire shape mirrors SendMessageOptions's data fields plus the
@@ -907,7 +1034,7 @@ export class QueuedItem {
         const $$createField4_0 = $$createType10;
         const $$createField5_0 = $$createType10;
         const $$createField6_0 = $$createType4;
-        const $$createField7_0 = $$createType13;
+        const $$createField7_0 = $$createType15;
         const $$createField8_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
@@ -1002,7 +1129,7 @@ export class SendMessageOptions {
         const $$createField2_0 = $$createType10;
         const $$createField3_0 = $$createType10;
         const $$createField4_0 = $$createType4;
-        const $$createField5_0 = $$createType13;
+        const $$createField5_0 = $$createType15;
         const $$createField6_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
@@ -1111,7 +1238,7 @@ export class TerminalHandle {
      * Creates a new TerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): TerminalHandle {
-        const $$createField2_0 = $$createType14;
+        const $$createField2_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -1146,6 +1273,67 @@ export class TerminalOpenOptions {
     static createFrom($$source: any = {}): TerminalOpenOptions {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new TerminalOpenOptions($$parsedSource as Partial<TerminalOpenOptions>);
+    }
+}
+
+/**
+ * ThreadLiveState is the backend-owned live projection a freshly loaded
+ * frontend needs after refresh/reconnect. SQLite remains the history cache;
+ * this shape carries only in-memory session state that should mirror what
+ * active provider processes are doing right now.
+ */
+export class ThreadLiveState {
+    "threadId": string;
+    "activeTurn"?: LiveStateActiveTurn | null;
+    "queueItems": QueuedItem[];
+    "flushedItems": QueueFlushedItem[];
+    "interactive": provider$0.PendingInteractiveRequests;
+    "todo"?: LiveStateTodo | null;
+
+    /** Creates a new ThreadLiveState instance. */
+    constructor($$source: Partial<ThreadLiveState> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("queueItems" in $$source)) {
+            this["queueItems"] = [];
+        }
+        if (!("flushedItems" in $$source)) {
+            this["flushedItems"] = [];
+        }
+        if (!("interactive" in $$source)) {
+            this["interactive"] = (new provider$0.PendingInteractiveRequests());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadLiveState instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadLiveState {
+        const $$createField1_0 = $$createType18;
+        const $$createField2_0 = $$createType20;
+        const $$createField3_0 = $$createType22;
+        const $$createField4_0 = $$createType23;
+        const $$createField5_0 = $$createType25;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("activeTurn" in $$parsedSource) {
+            $$parsedSource["activeTurn"] = $$createField1_0($$parsedSource["activeTurn"]);
+        }
+        if ("queueItems" in $$parsedSource) {
+            $$parsedSource["queueItems"] = $$createField2_0($$parsedSource["queueItems"]);
+        }
+        if ("flushedItems" in $$parsedSource) {
+            $$parsedSource["flushedItems"] = $$createField3_0($$parsedSource["flushedItems"]);
+        }
+        if ("interactive" in $$parsedSource) {
+            $$parsedSource["interactive"] = $$createField4_0($$parsedSource["interactive"]);
+        }
+        if ("todo" in $$parsedSource) {
+            $$parsedSource["todo"] = $$createField5_0($$parsedSource["todo"]);
+        }
+        return new ThreadLiveState($$parsedSource as Partial<ThreadLiveState>);
     }
 }
 
@@ -1211,7 +1399,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType16;
+        const $$createField0_0 = $$createType27;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -1233,8 +1421,19 @@ const $$createType8 = $Create.Array($$createType7);
 const $$createType9 = store$0.ProposedPlanSourceRef.createFrom;
 const $$createType10 = $Create.Nullable($$createType9);
 const $$createType11 = git$0.GitStatus.createFrom;
-const $$createType12 = store$0.DiffReviewSourceRef.createFrom;
-const $$createType13 = $Create.Nullable($$createType12);
-const $$createType14 = terminal$0.SessionSummary.createFrom;
-const $$createType15 = workspacefiles$0.WorkspaceFile.createFrom;
-const $$createType16 = $Create.Array($$createType15);
+const $$createType12 = LiveStateTodoStep.createFrom;
+const $$createType13 = $Create.Array($$createType12);
+const $$createType14 = store$0.DiffReviewSourceRef.createFrom;
+const $$createType15 = $Create.Nullable($$createType14);
+const $$createType16 = terminal$0.SessionSummary.createFrom;
+const $$createType17 = LiveStateActiveTurn.createFrom;
+const $$createType18 = $Create.Nullable($$createType17);
+const $$createType19 = QueuedItem.createFrom;
+const $$createType20 = $Create.Array($$createType19);
+const $$createType21 = QueueFlushedItem.createFrom;
+const $$createType22 = $Create.Array($$createType21);
+const $$createType23 = provider$0.PendingInteractiveRequests.createFrom;
+const $$createType24 = LiveStateTodo.createFrom;
+const $$createType25 = $Create.Nullable($$createType24);
+const $$createType26 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType27 = $Create.Array($$createType26);

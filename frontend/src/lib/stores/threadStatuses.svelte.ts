@@ -1,14 +1,15 @@
 import { SvelteMap } from 'svelte/reactivity';
 import type { ApprovalKind } from '../types/events';
-import type { Item } from '../types/models';
+import type { Item, Thread } from '../types/models';
 import { clearForThread as clearSendQueueForThread } from './sendQueue.svelte';
 
 /**
- * ActiveTurn is the live in-flight turn for a thread. Populated
- * exclusively from the `provider:turn_started` wire event; cleared on
- * `provider:turn_completed`. Never hydrated from persistence —
- * invariant 22 (turn activity is wire-pushed, never derived from
- * items).
+ * ActiveTurn is the live in-flight turn for a thread. Populated from
+ * backend live signals only: `provider:turn_started` pushes during a
+ * connected session, and `GetThreadLiveState` hydration after refresh.
+ * Cleared on `provider:turn_completed` or an idle backend snapshot.
+ * Never hydrated from durable item history — invariant 22 (turn
+ * activity is live backend state, never derived from persisted items).
  *
  * The shape lives here because this store owns the per-thread active-
  * turn map: both the sidebar pill and the chat working indicator read
@@ -60,6 +61,7 @@ export type ThreadLiveStatus =
   | 'interrupted';
 
 let statuses: Map<string, ThreadLiveStatus> = $state(new Map());
+let liveStateHydratingThreads: Set<string> = $state(new Set());
 const activeItemIDsByThread = new Map<string, Set<string>>();
 const approvalIDsByThread = new Map<string, Set<string>>();
 const awaitingInputIDsByThread = new Map<string, Set<string>>();
@@ -87,6 +89,7 @@ const pendingSendThreads = new Set<string>();
 const planReadyThreads = new Set<string>();
 const errorThreads = new Set<string>();
 const interruptedThreads = new Set<string>();
+const liveStateHydrationTokenByThread = new Map<string, number>();
 
 function trackedIDsFor(map: Map<string, Set<string>>, threadId: string): Set<string> {
   let ids = map.get(threadId);
@@ -164,6 +167,55 @@ export function getThreadStatus(threadId: string): ThreadLiveStatus {
   return statuses.get(threadId) ?? 'idle';
 }
 
+export function getEffectiveThreadStatus(
+  thread: Pick<Thread, 'id' | 'hasIncompleteTurn' | 'hasActionableProposedPlan'>,
+): ThreadLiveStatus {
+  const liveStatus = getThreadStatus(thread.id);
+  if (liveStatus !== 'idle') return liveStatus;
+  if (thread.hasIncompleteTurn && !isThreadLiveStateHydrating(thread.id)) return 'interrupted';
+  if (thread.hasActionableProposedPlan) return 'plan-ready';
+  return 'idle';
+}
+
+/**
+ * Mark that the frontend has asked the backend for this thread's live
+ * state and is waiting on the authoritative answer. During this gap the
+ * sidebar must not promote durable `hasIncompleteTurn` to Interrupted:
+ * the incomplete row may simply be the current active provider turn.
+ *
+ * Returns a token so overlapping hydrations for the same thread cannot
+ * clear each other's guard out of order.
+ */
+export function beginThreadLiveStateHydration(threadId: string): number {
+  if (!threadId) return 0;
+  const token = (liveStateHydrationTokenByThread.get(threadId) ?? 0) + 1;
+  liveStateHydrationTokenByThread.set(threadId, token);
+  if (!liveStateHydratingThreads.has(threadId)) {
+    liveStateHydratingThreads = new Set(liveStateHydratingThreads).add(threadId);
+  }
+  return token;
+}
+
+export function finishThreadLiveStateHydration(threadId: string, token: number): void {
+  if (!threadId || token === 0) return;
+  if (liveStateHydrationTokenByThread.get(threadId) !== token) return;
+  liveStateHydrationTokenByThread.delete(threadId);
+  if (!liveStateHydratingThreads.has(threadId)) return;
+  const next = new Set(liveStateHydratingThreads);
+  next.delete(threadId);
+  liveStateHydratingThreads = next;
+}
+
+export function isThreadLiveStateHydrating(threadId: string | null | undefined): boolean {
+  if (!threadId) return false;
+  return liveStateHydratingThreads.has(threadId);
+}
+
+export function isThreadLiveStateHydrationCurrent(threadId: string, token: number): boolean {
+  if (!threadId || token === 0) return false;
+  return liveStateHydrationTokenByThread.get(threadId) === token;
+}
+
 /**
  * Set or replace a thread's live status. Writing 'idle' is equivalent
  * to clearing — we drop the entry so the map doesn't grow with stale
@@ -207,6 +259,12 @@ export function clearThreadStatus(threadId: string): void {
   awaitingInputIDsByThread.delete(threadId);
   errorThreads.delete(threadId);
   interruptedThreads.delete(threadId);
+  liveStateHydrationTokenByThread.delete(threadId);
+  if (liveStateHydratingThreads.has(threadId)) {
+    const next = new Set(liveStateHydratingThreads);
+    next.delete(threadId);
+    liveStateHydratingThreads = next;
+  }
   clearSendQueueForThread(threadId);
   if (!statuses.has(threadId)) return;
   const next = new Map(statuses);
@@ -277,6 +335,58 @@ export function hasPendingSend(threadId: string | null | undefined): boolean {
 export function clearPendingSend(threadId: string): void {
   if (!threadId) return;
   if (!pendingSendThreads.delete(threadId)) return;
+  recalculateThreadStatus(threadId);
+}
+
+export function replaceInteractiveRequestsForThread(
+  threadId: string,
+  snapshot: {
+    approvals: readonly { requestId: string }[];
+    userInputs: readonly { requestId: string }[];
+  },
+): void {
+  if (!threadId) return;
+
+  const previousApprovalIDs = approvalIDsByThread.get(threadId);
+  if (previousApprovalIDs) {
+    for (const requestId of previousApprovalIDs) {
+      approvalThreadByID.delete(requestId);
+    }
+  }
+  const previousUserInputIDs = awaitingInputIDsByThread.get(threadId);
+  if (previousUserInputIDs) {
+    for (const requestId of previousUserInputIDs) {
+      approvalThreadByID.delete(requestId);
+    }
+  }
+
+  const nextApprovalIDs = new Set<string>();
+  for (const request of snapshot.approvals) {
+    if (!request.requestId) continue;
+    nextApprovalIDs.add(request.requestId);
+    approvalThreadByID.set(request.requestId, threadId);
+  }
+  const nextUserInputIDs = new Set<string>();
+  for (const request of snapshot.userInputs) {
+    if (!request.requestId) continue;
+    nextUserInputIDs.add(request.requestId);
+    approvalThreadByID.set(request.requestId, threadId);
+  }
+
+  if (nextApprovalIDs.size > 0) {
+    approvalIDsByThread.set(threadId, nextApprovalIDs);
+  } else {
+    approvalIDsByThread.delete(threadId);
+  }
+  if (nextUserInputIDs.size > 0) {
+    awaitingInputIDsByThread.set(threadId, nextUserInputIDs);
+  } else {
+    awaitingInputIDsByThread.delete(threadId);
+  }
+  if (nextApprovalIDs.size > 0 || nextUserInputIDs.size > 0) {
+    errorThreads.delete(threadId);
+    interruptedThreads.delete(threadId);
+  }
   recalculateThreadStatus(threadId);
 }
 
@@ -570,6 +680,8 @@ export function resetForTest(): void {
   approvalThreadByID.clear();
   errorThreads.clear();
   interruptedThreads.clear();
+  liveStateHydrationTokenByThread.clear();
+  liveStateHydratingThreads = new Set();
   if (statuses.size === 0) return;
   statuses = new Map();
 }

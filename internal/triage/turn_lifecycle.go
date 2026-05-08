@@ -64,14 +64,14 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 	// duplicate EventTurnStart for the same logical turn (Codex retry,
 	// Claude system.init replay before any complete) replaces the prior
 	// active-turn entry rather than accumulating stale state.
-	roundID := uuid.NewString()
-	r.setOpenRound(evt.ThreadID, roundID)
-	r.emit("provider:turn_started", TurnStartedEvent{
+	snapshot := ActiveTurnSnapshot{
 		ThreadID:  evt.ThreadID,
-		TurnID:    roundID,
+		TurnID:    uuid.NewString(),
 		TurnIndex: turnIndex,
 		StartedAt: startedAt,
-	})
+	}
+	r.setOpenRoundSnapshot(snapshot)
+	r.emit("provider:turn_started", TurnStartedEvent(snapshot))
 	return nil
 }
 
@@ -314,9 +314,9 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// so a second `result` envelope for the same logical turn still
 	// emits the round-end signal. takeOpenRound is a read-and-clear:
 	// at most one emit per round, regardless of synthesis races.
-	roundID := r.takeOpenRound(evt.ThreadID)
-	if roundID != "" && err == nil {
-		r.emit("provider:turn_completed", r.buildRoundCompletedEvent(evt, roundID, turnIndex, now, meta))
+	round, hasRound := r.takeOpenRound(evt.ThreadID)
+	if hasRound && err == nil {
+		r.emit("provider:turn_completed", r.buildRoundCompletedEvent(evt, round.TurnID, turnIndex, now, meta))
 	}
 
 	if err == nil {
@@ -707,7 +707,7 @@ func settledTurnKey(threadID string, turnIndex int) string {
 	return fmt.Sprintf("%s|%d", threadID, turnIndex)
 }
 
-// setOpenRound records the active wire-round id for threadID. A round
+// setOpenRoundSnapshot records the active wire-round snapshot for threadID. A round
 // begins on either:
 //
 //   - handleTurnStart (per user-typed send) — the canonical first
@@ -726,20 +726,20 @@ func settledTurnKey(threadID string, turnIndex int) string {
 // id. See internal/triage/AGENTS.md "Wire-round vs logical-turn" for
 // the full mental model.
 //
-// Overwrites any prior round id for the thread — a leaked round (e.g.
+// Overwrites any prior round snapshot for the thread — a leaked round (e.g.
 // if currentTurnIndex failed in the prior handleTurnComplete and the
 // emit at the top was skipped) cannot survive into the next round.
 // CleanupThread also sweeps this map.
-func (r *Router) setOpenRound(threadID, roundID string) {
-	if threadID == "" || roundID == "" {
+func (r *Router) setOpenRoundSnapshot(snapshot ActiveTurnSnapshot) {
+	if snapshot.ThreadID == "" || snapshot.TurnID == "" {
 		return
 	}
 	r.mu.Lock()
-	r.currentRoundID[threadID] = roundID
+	r.currentRoundByThread[snapshot.ThreadID] = snapshot
 	r.mu.Unlock()
 }
 
-// takeOpenRound returns the active wire-round id for threadID and
+// takeOpenRound returns the active wire-round snapshot for threadID and
 // clears the slot in the same critical section. Empty string when no
 // round is open — the caller (handleTurnComplete) skips the per-round
 // `provider:turn_completed` emission in that case. The
@@ -748,12 +748,12 @@ func (r *Router) setOpenRound(threadID, roundID string) {
 // the real complete finds it empty and skips, so the frontend sees
 // exactly one `provider:turn_completed` per round even when handleError
 // synthesizes ahead of the wire's own turn-complete.
-func (r *Router) takeOpenRound(threadID string) string {
+func (r *Router) takeOpenRound(threadID string) (ActiveTurnSnapshot, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	roundID := r.currentRoundID[threadID]
-	delete(r.currentRoundID, threadID)
-	return roundID
+	round, ok := r.currentRoundByThread[threadID]
+	delete(r.currentRoundByThread, threadID)
+	return round, ok
 }
 
 // openRoundID returns the active wire-round id for threadID without
@@ -766,7 +766,21 @@ func (r *Router) takeOpenRound(threadID string) string {
 func (r *Router) openRoundID(threadID string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.currentRoundID[threadID]
+	return r.currentRoundByThread[threadID].TurnID
+}
+
+// ActiveTurnSnapshot returns the current live wire-round snapshot for a
+// thread without clearing it. Most production hydration goes through
+// LiveStateSnapshotForThread; this narrow accessor remains for tests and
+// diagnostics that only need the active-turn slot.
+func (r *Router) ActiveTurnSnapshot(threadID string) (ActiveTurnSnapshot, bool) {
+	if r == nil || threadID == "" {
+		return ActiveTurnSnapshot{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	snapshot, ok := r.currentRoundByThread[threadID]
+	return snapshot, ok
 }
 
 // clearOpenTurn drops per-turn flow-control state at EventTurnComplete.
@@ -1037,12 +1051,13 @@ func (r *Router) CleanupThread(threadID string) {
 	}
 	deleteByPrefix(r.terminalInteractionSeq, prefix)
 	deleteByPrefix(r.settledTurns, prefix)
-	// currentRoundID is keyed by threadID — a single delete is the
+	// currentRoundByThread is keyed by threadID — a single delete is the
 	// correct primitive. Cleared every wire-complete by takeOpenRound;
 	// CleanupThread is the safety net for sessions that ended without
 	// a final wire turn-complete (clean stdout EOF, host-side
 	// StopSession during a round).
-	delete(r.currentRoundID, threadID)
+	delete(r.currentRoundByThread, threadID)
+	delete(r.latestTodoByThread, threadID)
 	delete(r.openAPIRetryRows, threadID)
 	// Drop the Codex background projector's per-thread trackers. A
 	// restarted session never inherits trackers from a prior session —

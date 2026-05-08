@@ -1083,6 +1083,94 @@ func TestGetQueueState_ReturnsSnapshot(t *testing.T) {
 	}
 }
 
+func TestGetThreadLiveState_ReturnsServerSideSnapshot(t *testing.T) {
+	app, _ := newAppForFlushQueueRPC(t)
+	thread := testThread("rpc-live-state")
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  thread.ID,
+		TurnIndex: 7,
+		Timestamp: time.UnixMilli(1_700_000_000_000),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	queued, err := app.RegisterQueueItem(thread.ID, "queued text", SendMessageOptions{
+		AttachmentIDs: []string{"att-1"},
+	})
+	if err != nil {
+		t.Fatalf("RegisterQueueItem: %v", err)
+	}
+	approvalMeta, err := json.Marshal(provider.ApprovalRequest{
+		RequestID:   "approval-1",
+		ThreadID:    thread.ID,
+		TurnID:      "round-1",
+		ToolName:    "Bash",
+		Description: "Run command",
+		Title:       "Approve command",
+	})
+	if err != nil {
+		t.Fatalf("marshal approval: %v", err)
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventApprovalRequest,
+		ThreadID:  thread.ID,
+		TurnID:    "round-1",
+		ItemID:    "approval-1",
+		Meta:      approvalMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("approval request: %v", err)
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTodoUpdate,
+		ThreadID:  thread.ID,
+		Meta:      json.RawMessage(`{"plan":[{"step":"one","status":"inProgress"}]}`),
+		Timestamp: time.UnixMilli(1_700_000_000_100),
+	}); err != nil {
+		t.Fatalf("todo update: %v", err)
+	}
+	app.triage.RegisterPendingFlushSend(thread.ID, "queue-flushed", store.Item{
+		ID:        "user:7:flush:1",
+		ThreadID:  thread.ID,
+		TurnIndex: 7,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "flushed text",
+	})
+
+	state, err := app.GetThreadLiveState(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThreadLiveState: %v", err)
+	}
+	if state.ThreadID != thread.ID {
+		t.Fatalf("ThreadID = %q, want %q", state.ThreadID, thread.ID)
+	}
+	if state.ActiveTurn == nil || state.ActiveTurn.TurnID == "" || state.ActiveTurn.TurnIndex != 7 {
+		t.Fatalf("ActiveTurn = %+v, want live turn index 7", state.ActiveTurn)
+	}
+	if len(state.QueueItems) != 1 {
+		t.Fatalf("QueueItems = %+v, want 1 queued item", state.QueueItems)
+	}
+	if state.QueueItems[0].ID != queued.ID || len(state.QueueItems[0].AttachmentIDs) != 1 || state.QueueItems[0].AttachmentIDs[0] != "att-1" {
+		t.Fatalf("QueueItems = %+v, want queued item %s with att-1", state.QueueItems, queued.ID)
+	}
+	if len(state.Interactive.Approvals) != 1 || state.Interactive.Approvals[0].RequestID != "approval-1" {
+		t.Fatalf("Interactive approvals = %+v, want approval-1", state.Interactive.Approvals)
+	}
+	if len(state.FlushedItems) != 1 || state.FlushedItems[0].QueueItemID != "queue-flushed" || state.FlushedItems[0].UserItemID != "user:7:flush:1" {
+		t.Fatalf("FlushedItems = %+v, want queued flushed marker", state.FlushedItems)
+	}
+	if state.Todo == nil || state.Todo.UpdatedAt != 1_700_000_000_100 || len(state.Todo.Steps) != 1 || state.Todo.Steps[0].Step != "one" {
+		t.Fatalf("Todo = %+v, want live todo snapshot", state.Todo)
+	}
+}
+
 func TestQueueStateChanged_PayloadDecodesAttachmentIDs(t *testing.T) {
 	app, rec := newAppForFlushQueueRPC(t)
 	thread := testThread("rpc-payload")

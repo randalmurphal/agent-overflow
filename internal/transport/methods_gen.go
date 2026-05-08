@@ -73,6 +73,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetTerminalReplay", ID: 2329592604}, // main.App.GetTerminalReplay
 	{Name: "GetThread", ID: 1098302047}, // main.App.GetThread
 	{Name: "GetThreadItem", ID: 1969869112}, // main.App.GetThreadItem
+	{Name: "GetThreadLiveState", ID: 70226550}, // main.App.GetThreadLiveState
 	{Name: "GetThreadRuntimeMode", ID: 2573491630}, // main.App.GetThreadRuntimeMode
 	{Name: "GetThreadSlashCommands", ID: 520969054}, // main.App.GetThreadSlashCommands
 	{Name: "GetUIRenderTracePath", ID: 1009213933}, // main.App.GetUIRenderTracePath

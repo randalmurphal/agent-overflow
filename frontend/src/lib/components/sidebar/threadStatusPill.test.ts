@@ -59,6 +59,14 @@ describe('resolveEffectiveThreadStatus', () => {
     expect(resolveEffectiveThreadStatus(t({ hasIncompleteTurn: true }), 'idle')).toBe('interrupted');
   });
 
+  it('does not infer interrupted while authoritative live state is hydrating', () => {
+    expect(
+      resolveEffectiveThreadStatus(t({ hasIncompleteTurn: true }), 'idle', {
+        suppressDurableInterrupted: true,
+      }),
+    ).toBe('idle');
+  });
+
   it('restores plan-ready from an actionable proposed plan when idle', () => {
     expect(resolveEffectiveThreadStatus(t({ hasActionableProposedPlan: true }), 'idle')).toBe('plan-ready');
   });

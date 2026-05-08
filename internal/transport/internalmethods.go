@@ -153,14 +153,15 @@ var LocalOnlyMethods = map[string]bool{
 	// Flush-queue surface: RegisterQueueItem stages a user message
 	// awaiting first-tool-use trigger fire (and the dispatcher then
 	// writes to the local provider's stdin / JSON-RPC). UndoQueuedItems
-	// drops them. GetQueueState returns the per-thread snapshot —
-	// disclosure of pending user-typed text + attachment IDs + plan
-	// refs is the same threat shape as the diff-returning bindings
+	// drops them. GetQueueState and GetThreadLiveState return per-thread
+	// snapshots — disclosure of pending user-typed text + attachment IDs
+	// + plan refs is the same threat shape as the diff-returning bindings
 	// (category 6 below): in-progress drafted work shouldn't be
-	// readable by a LAN token-holder. All three are loopback-only.
+	// readable by a LAN token-holder. These bindings are loopback-only.
 	"RegisterQueueItem":              true,
 	"UndoQueuedItems":                true,
 	"GetQueueState":                  true,
+	"GetThreadLiveState":             true,
 	"StartDiscussion":                true,
 	"StartDiscussionByID":            true,
 	"UpdateThreadMode":               true,

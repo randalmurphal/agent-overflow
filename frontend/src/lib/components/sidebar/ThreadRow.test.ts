@@ -4,7 +4,12 @@ import ThreadRow from './ThreadRow.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { refreshThreads, getThreads } from '../../stores/threads.svelte';
-import { resetForTest as resetThreadStatuses, setThreadStatus } from '../../stores/threadStatuses.svelte';
+import {
+  beginThreadLiveStateHydration,
+  finishThreadLiveStateHydration,
+  resetForTest as resetThreadStatuses,
+  setThreadStatus,
+} from '../../stores/threadStatuses.svelte';
 import type { Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { emitItemEventUpsert } from '../../../test/helpers/chat';
@@ -476,6 +481,22 @@ describe('<ThreadRow> live status dot', () => {
     expect(dot.getAttribute('aria-label')).toBe('Interrupted');
     expect(dot.classList.contains('bg-warning')).toBe(true);
     expect(dot.classList.contains('animate-pulse')).toBe(false);
+  });
+
+  it('does not render durable Interrupted while server live state is hydrating', () => {
+    const token = beginThreadLiveStateHydration('t-hydrating');
+    try {
+      const pane = createThreadPane();
+      const { queryByTestId } = render(ThreadRow, {
+        props: {
+          thread: makeThread({ id: 't-hydrating', hasIncompleteTurn: true }),
+          pane,
+        },
+      });
+      expect(queryByTestId('thread-row-status-dot')).toBeNull();
+    } finally {
+      finishThreadLiveStateHydration('t-hydrating', token);
+    }
   });
 
   it('live running overrides durable Interrupted', () => {

@@ -25,7 +25,9 @@
     isProjectExpanded,
     toggleProject,
   } from '../../stores/sidebar.svelte';
-  import { getThreadStatus } from '../../stores/threadStatuses.svelte';
+  import {
+    getEffectiveThreadStatus,
+  } from '../../stores/threadStatuses.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
@@ -84,7 +86,7 @@
     if (expanded) return null;
     const tree = buildSidebarThreadTree({
       threads,
-      liveStatusOf: (id) => getThreadStatus(id),
+      statusOf: (thread) => getEffectiveThreadStatus(thread),
     });
     return rollupDisplayStatus(tree);
   });

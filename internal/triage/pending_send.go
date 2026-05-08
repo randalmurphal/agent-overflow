@@ -25,9 +25,16 @@ import (
 // entries per thread); swept at CleanupThread as a safety net.
 type pendingSend struct {
 	AOItemID     string // "user:<turnIndex>"
+	QueueItemID  string
 	TurnIndex    int
 	EnqueuedAt   int64
 	DeferredItem *store.Item
+}
+
+type PendingFlushItemSnapshot struct {
+	QueueItemID string
+	UserItemID  string
+	Message     string
 }
 
 // RegisterPendingSend appends a new entry to the per-thread FIFO. The
@@ -36,7 +43,7 @@ type pendingSend struct {
 // for diagnostics on stranded entries and the wall clock at the
 // register call is the natural reference.
 func (r *Router) RegisterPendingSend(threadID, aoItemID string, turnIndex int) {
-	r.registerPendingSend(threadID, aoItemID, turnIndex, nil)
+	r.registerPendingSend(threadID, aoItemID, turnIndex, "", nil)
 }
 
 // RegisterPendingSendWithDeferredItem appends a pending-send marker whose
@@ -44,16 +51,21 @@ func (r *Router) RegisterPendingSend(threadID, aoItemID string, turnIndex int) {
 // normal queued sends: Zone 2 remains visible until EventUserText proves the
 // provider accepted the message into context.
 func (r *Router) RegisterPendingSendWithDeferredItem(threadID string, item store.Item) {
-	r.registerPendingSend(threadID, item.ID, item.TurnIndex, &item)
+	r.RegisterPendingFlushSend(threadID, item.ID, item)
 }
 
-func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, deferredItem *store.Item) {
+func (r *Router) RegisterPendingFlushSend(threadID, queueItemID string, item store.Item) {
+	r.registerPendingSend(threadID, item.ID, item.TurnIndex, queueItemID, &item)
+}
+
+func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, queueItemID string, deferredItem *store.Item) {
 	if threadID == "" || aoItemID == "" {
 		return
 	}
 	r.mu.Lock()
 	r.pendingByThread[threadID] = append(r.pendingByThread[threadID], pendingSend{
 		AOItemID:     aoItemID,
+		QueueItemID:  queueItemID,
 		TurnIndex:    turnIndex,
 		EnqueuedAt:   time.Now().UnixMilli(),
 		DeferredItem: deferredItem,

@@ -226,6 +226,9 @@ func (h *connHandler) handleReplay(ctx context.Context, frame ClientFrame) {
 	}
 	missed := h.bus.Replay(frame.LastSeqByChannel)
 	for _, e := range missed {
+		if !eventVisibleToOrigin(e.Channel, h.isLoopback) {
+			continue
+		}
 		h.writeEventFrame(ctx, e)
 	}
 }
@@ -241,6 +244,9 @@ func (h *connHandler) pumpEvents(ctx context.Context) {
 		case <-h.sub.Done():
 			return
 		case e := <-h.sub.Events():
+			if !eventVisibleToOrigin(e.Channel, h.isLoopback) {
+				continue
+			}
 			h.writeEventFrame(ctx, e)
 		}
 	}

@@ -104,7 +104,8 @@ export interface SidebarTreeVisibleNode extends SidebarTreeNode {
 
 export interface BuildSidebarThreadTreeInput {
   threads: readonly Thread[];
-  liveStatusOf: (threadId: string) => ThreadLiveStatus;
+  statusOf?: (thread: Thread) => ThreadLiveStatus;
+  liveStatusOf?: (threadId: string) => ThreadLiveStatus;
   maxDepth?: number;
 }
 
@@ -252,7 +253,9 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
             .map((child) => buildNode(child, depth + 1))
             .sort(compareTreeNodes);
 
-    const ownLiveStatus = resolveEffectiveThreadStatus(thread, input.liveStatusOf(thread.id));
+    const ownLiveStatus = input.statusOf
+      ? input.statusOf(thread)
+      : resolveEffectiveThreadStatus(thread, input.liveStatusOf?.(thread.id) ?? 'idle');
     const ownPill = resolveThreadStatusPill(thread, ownLiveStatus);
     const ownGroup = getStatusSortGroup(thread, ownLiveStatus);
     const display = resolveDisplay(ownLiveStatus, ownPill, ownGroup, children);

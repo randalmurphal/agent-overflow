@@ -6,7 +6,10 @@
   import { getSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
-  import { getThreadStatus, type ThreadLiveStatus } from '../../stores/threadStatuses.svelte';
+  import {
+    getEffectiveThreadStatus,
+    type ThreadLiveStatus,
+  } from '../../stores/threadStatuses.svelte';
   import type { Thread } from '../../types/models';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import Icon from '../primitives/Icon.svelte';
@@ -25,7 +28,6 @@
   } from './threadRowActions';
   import {
     hasUnread,
-    resolveEffectiveThreadStatus,
     resolveThreadStatusPill,
     type ThreadStatusPill,
   } from './threadStatusPill';
@@ -71,8 +73,8 @@
 
   let isActive = $derived(pane.threadId === thread.id);
 
-  let liveStatus = $derived(getThreadStatus(thread.id));
-  let effectiveStatus = $derived(displayLiveStatus ?? resolveEffectiveThreadStatus(thread, liveStatus));
+  let liveStatus = $derived(getEffectiveThreadStatus(thread));
+  let effectiveStatus = $derived(displayLiveStatus ?? liveStatus);
   let pill = $derived(displayStatus !== undefined ? displayStatus : resolveThreadStatusPill(thread, effectiveStatus));
   let unread = $derived(hasUnread(thread));
 

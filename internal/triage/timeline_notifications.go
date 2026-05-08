@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -18,22 +19,92 @@ type timelineNotificationMeta struct {
 // handleTodoUpdate routes EventTodoUpdate (Claude TodoWrite reroute,
 // Codex turn/plan/updated) directly to the frontend without
 // persisting a timeline notification row. The live todo list is session
-// state owned by ThreadPane; SQLite is not its source of truth. See
-// TodoUpdateEvent / LiveTodoPanel.svelte for the rendering side.
+// state owned by triage for refresh/reconnect; SQLite is not its source of
+// truth, and ThreadPane is only the visible projection. See TodoUpdateEvent
+// / ActivityRailTodosBody.svelte for the rendering side.
 //
-// An empty list is dropped: the parser already skips empty TodoWrite
-// inputs, but defensive normalisation here means a malformed wire
-// payload also can't render an empty panel.
+// An empty list clears the backend snapshot without emitting. The
+// frontend also treats empty todo_update events as a clear signal, but
+// provider parsers usually suppress empty updates before they reach
+// users; keeping triage's snapshot clear prevents refresh from
+// resurrecting stale todo state.
 func (r *Router) handleTodoUpdate(evt provider.ProviderEvent) error {
 	steps := decodeTodoSteps(evt.Meta)
 	if len(steps) == 0 {
+		r.clearLiveTodoSnapshot(evt.ThreadID)
 		return nil
 	}
+	r.setLiveTodoSnapshot(LiveTodoSnapshot{
+		ThreadID:  evt.ThreadID,
+		Steps:     steps,
+		UpdatedAt: eventTimestampMillis(evt),
+	})
 	r.emit("provider:todo_update", TodoUpdateEvent{
 		ThreadID: evt.ThreadID,
 		Steps:    steps,
 	})
 	return nil
+}
+
+func (r *Router) setLiveTodoSnapshot(snapshot LiveTodoSnapshot) {
+	if r == nil || snapshot.ThreadID == "" || len(snapshot.Steps) == 0 {
+		return
+	}
+	r.mu.Lock()
+	r.latestTodoByThread[snapshot.ThreadID] = snapshot
+	r.mu.Unlock()
+}
+
+func (r *Router) clearLiveTodoSnapshot(threadID string) {
+	if r == nil || threadID == "" {
+		return
+	}
+	r.mu.Lock()
+	delete(r.latestTodoByThread, threadID)
+	r.mu.Unlock()
+}
+
+// LiveTodoSnapshot returns the latest per-thread live todo/update_plan
+// snapshot without handing callers the map-owned steps slice.
+func (r *Router) LiveTodoSnapshot(threadID string) (LiveTodoSnapshot, bool) {
+	if r == nil || threadID == "" {
+		return LiveTodoSnapshot{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if snapshot := r.liveTodoSnapshotLocked(threadID, time.Now().UnixMilli()); snapshot != nil {
+		return *snapshot, true
+	}
+	return LiveTodoSnapshot{}, false
+}
+
+const liveTodoCompletedSnapshotTTLMillis int64 = 5_000
+
+func (r *Router) liveTodoSnapshotLocked(threadID string, nowMillis int64) *LiveTodoSnapshot {
+	snapshot, ok := r.latestTodoByThread[threadID]
+	if !ok {
+		return nil
+	}
+	if liveTodoSnapshotExpired(snapshot, nowMillis) {
+		delete(r.latestTodoByThread, threadID)
+		return nil
+	}
+	steps := make([]TodoStep, len(snapshot.Steps))
+	copy(steps, snapshot.Steps)
+	snapshot.Steps = steps
+	return &snapshot
+}
+
+func liveTodoSnapshotExpired(snapshot LiveTodoSnapshot, nowMillis int64) bool {
+	if len(snapshot.Steps) == 0 {
+		return true
+	}
+	for _, step := range snapshot.Steps {
+		if step.Status != "completed" {
+			return false
+		}
+	}
+	return nowMillis-snapshot.UpdatedAt > liveTodoCompletedSnapshotTTLMillis
 }
 
 // decodeTodoSteps reads the wire-shaped {plan: [{step, status}]}

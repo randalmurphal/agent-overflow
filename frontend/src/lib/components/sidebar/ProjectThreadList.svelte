@@ -23,7 +23,9 @@
     isThreadSelected,
     toggleThreadSelection,
   } from '../../stores/threadFilter.svelte';
-  import { getThreadStatus } from '../../stores/threadStatuses.svelte';
+  import {
+    getEffectiveThreadStatus,
+  } from '../../stores/threadStatuses.svelte';
   import { autoAnimate } from '../../utils/autoAnimate';
   import Plus from 'lucide-svelte/icons/plus';
   import Icon from '../primitives/Icon.svelte';
@@ -48,11 +50,11 @@
   let { projectId, threads, pane, onNewThread }: Props = $props();
 
   // Tree is built per-render: cheap (small N) and lets us reactively
-  // pick up live-status changes through getThreadStatus.
+  // pick up effective live-status changes from the status store.
   let tree = $derived(
     buildSidebarThreadTree({
       threads,
-      liveStatusOf: (id) => getThreadStatus(id),
+      statusOf: (thread) => getEffectiveThreadStatus(thread),
     }),
   );
 

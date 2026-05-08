@@ -83,12 +83,12 @@ type Router struct {
 	//
 	// Note: this gate operates at LOGICAL-TURN granularity. The
 	// frontend-facing `provider:turn_completed` emission is gated
-	// independently per WIRE ROUND via currentRoundID/takeOpenRound
+	// independently per WIRE ROUND via currentRoundByThread/takeOpenRound
 	// below — so a multi-result-per-turn cascade emits one
 	// turn_completed per `result` envelope while persistence stays at
 	// one settle per logical turn.
 	settledTurns map[string]bool
-	// currentRoundID names the active wire-round for each thread.
+	// currentRoundByThread names the active wire-round for each thread.
 	// Frontend `provider:turn_started` / `provider:turn_completed`
 	// emissions are gated per round via this slot — handleTurnStart and
 	// the re-round branch of handleInit allocate a fresh round id;
@@ -102,7 +102,11 @@ type Router struct {
 	// which want "model is engaged right now" semantics rather than
 	// "user-typed prompt is in flight." Key = threadID. Cleared by
 	// takeOpenRound (every wire complete) and CleanupThread.
-	currentRoundID map[string]string
+	currentRoundByThread map[string]ActiveTurnSnapshot
+	// latestTodoByThread carries the latest live todo/update_plan snapshot
+	// per thread for frontend refresh / reconnect. Todo state is session
+	// state, not history; this map is the backend-owned live projection.
+	latestTodoByThread map[string]LiveTodoSnapshot
 	// turnSpans holds the active span for each in-flight turn so we can
 	// close it when the matching EventTurnComplete arrives. Keyed by
 	// threadID since the provider treats each thread as its own turn
@@ -237,7 +241,8 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		notificationSeqByScope:     make(map[string]int),
 		streamPersistBuffers:       make(map[string]*streamPersistBuffer),
 		settledTurns:               make(map[string]bool),
-		currentRoundID:             make(map[string]string),
+		currentRoundByThread:       make(map[string]ActiveTurnSnapshot),
+		latestTodoByThread:         make(map[string]LiveTodoSnapshot),
 		turnSpans:                  make(map[string]trace.Span),
 		stoppedThreads:             make(map[string]struct{}),
 		unknownSessionStatusLogged: make(map[string]struct{}),
@@ -638,16 +643,15 @@ func (r *Router) maybeEmitReRoundOnInit(evt provider.ProviderEvent) {
 		return
 	}
 
-	roundID := uuid.NewString()
-	r.setOpenRound(evt.ThreadID, roundID)
-
 	startedAt := eventTimestampMillis(evt)
-	r.emit("provider:turn_started", TurnStartedEvent{
+	snapshot := ActiveTurnSnapshot{
 		ThreadID:  evt.ThreadID,
-		TurnID:    roundID,
+		TurnID:    uuid.NewString(),
 		TurnIndex: turnIndex,
 		StartedAt: startedAt,
-	})
+	}
+	r.setOpenRoundSnapshot(snapshot)
+	r.emit("provider:turn_started", TurnStartedEvent(snapshot))
 }
 
 func (r *Router) handleThreadModelUpdate(evt provider.ProviderEvent) error {

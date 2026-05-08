@@ -9,6 +9,41 @@ import (
 	"agent-overflow/internal/provider"
 )
 
+func TestActiveTurnSnapshotTracksAndClearsLiveRound(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startedAt := time.UnixMilli(1_700_000_000_000)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  "t1",
+		TurnIndex: 3,
+		Timestamp: startedAt,
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	snapshot, ok := router.ActiveTurnSnapshot("t1")
+	if !ok {
+		t.Fatalf("expected active turn snapshot")
+	}
+	if snapshot.ThreadID != "t1" || snapshot.TurnID == "" || snapshot.TurnIndex != 3 || snapshot.StartedAt != startedAt.UnixMilli() {
+		t.Fatalf("snapshot = %+v, want thread=t1 non-empty turn id index=3 startedAt=%d", snapshot, startedAt.UnixMilli())
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.UnixMilli(1_700_000_000_500),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+	if snapshot, ok := router.ActiveTurnSnapshot("t1"); ok {
+		t.Fatalf("active turn snapshot leaked after complete: %+v", snapshot)
+	}
+}
+
 // TestTurnCompleteTruncatedFlipsRunningAndDrainsQueueAsErrored is the
 // spec-critical contract for turn interruption. A single
 // EventTurnComplete with provider.TruncatedTurnCompleteMeta must:
@@ -815,7 +850,7 @@ func TestHandleEventTurnStart_UsesWireTurnIDForCodex(t *testing.T) {
 	// provider:turn_completed payload carries the SAME per-round uuid
 	// that turn_started emitted — the round opened by handleTurnStart
 	// closes here. A different value would mean the round bookkeeping
-	// (currentRoundID / takeOpenRound) is mis-routing rounds.
+	// (currentRoundByThread / takeOpenRound) is mis-routing rounds.
 	completed := filterEmissions(*emissions, "provider:turn_completed")
 	if len(completed) != 1 {
 		t.Fatalf("expected 1 provider:turn_completed emission, got %d", len(completed))

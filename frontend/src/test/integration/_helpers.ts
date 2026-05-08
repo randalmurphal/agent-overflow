@@ -131,6 +131,13 @@ export function installThreadViewDefaults(): void {
     approvals: [],
     userInputs: [],
   }));
+  setBindingMock('GetThreadLiveState', async (threadId: string) => ({
+    threadId,
+    activeTurn: null,
+    queueItems: [...getQueueForThread(threadId)],
+    interactive: { approvals: [], userInputs: [] },
+    todo: null,
+  }));
   setBindingMock('ListItems', async () => []);
   // switchThread rehydrates latestSettledTurn via ListRecentTurns — default
   // to an empty list so tests that don't care about turn history don't

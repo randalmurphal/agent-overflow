@@ -67,6 +67,22 @@ describe('buildSidebarThreadTree', () => {
     expect(tree[1].displayLiveStatus).toBe('interrupted');
   });
 
+  it('does not bubble durable interrupted while authoritative live state is hydrating', () => {
+    const parent = mkThread('parent', { updatedAt: 1 });
+    const child = mkThread('child', {
+      parentThreadId: 'parent',
+      updatedAt: 2,
+      hasIncompleteTurn: true,
+    });
+    const tree = buildSidebarThreadTree({
+      threads: [parent, child],
+      statusOf: (thread) => thread.id === 'child' ? 'idle' : liveStatusMap({})(thread.id),
+    });
+
+    expect(tree[0].displayLiveStatus).toBe('idle');
+    expect(tree[0].children[0].ownLiveStatus).toBe('idle');
+  });
+
   it('puts pinned threads above needs-attention regardless of status', () => {
     const pinned = mkThread('pinned', { updatedAt: 1, pinnedAt: 100 });
     const blocking = mkThread('blocking', { updatedAt: 9000 });

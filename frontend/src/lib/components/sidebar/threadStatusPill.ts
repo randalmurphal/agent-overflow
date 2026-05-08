@@ -31,6 +31,15 @@ export interface ThreadStatusPill {
   glowClass?: string;
 }
 
+export interface EffectiveThreadStatusOptions {
+  /**
+   * Suppress the durable interrupted fallback while the backend live-state
+   * snapshot is in flight. Without this, a refresh can briefly label an
+   * actually-running turn as Interrupted from stale row metadata.
+   */
+  suppressDurableInterrupted?: boolean;
+}
+
 const RUNNING_SUCCESS = {
   dotClass: 'bg-success',
   labelClass: 'text-success',
@@ -58,9 +67,10 @@ export function hasUnread(thread: Pick<Thread, 'lastReadAt' | 'latestTurnComplet
 export function resolveEffectiveThreadStatus(
   thread: Pick<Thread, 'hasIncompleteTurn' | 'hasActionableProposedPlan'>,
   liveStatus: ThreadLiveStatus,
+  options: EffectiveThreadStatusOptions = {},
 ): ThreadLiveStatus {
   if (liveStatus !== 'idle') return liveStatus;
-  if (thread.hasIncompleteTurn) return 'interrupted';
+  if (thread.hasIncompleteTurn && !options.suppressDurableInterrupted) return 'interrupted';
   if (thread.hasActionableProposedPlan) return 'plan-ready';
   return 'idle';
 }

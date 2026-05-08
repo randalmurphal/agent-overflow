@@ -1,5 +1,6 @@
 import { getAllPanes } from '../../lib/stores/panes.svelte';
 import { upsertProposedPlanForTests } from '../../lib/stores/proposedPlans.svelte';
+import { getQueueForThread } from '../../lib/stores/sendQueue.svelte';
 import { createThreadPane, type ThreadPane } from '../../lib/stores/thread.svelte';
 import type { ItemDeltaEvent } from '../../lib/types/events';
 import type { Item, Thread } from '../../lib/types/models';
@@ -75,6 +76,13 @@ export function installPaneMocks(items: Item[] = []): void {
   setBindingMock('ListPendingInteractiveRequests', async () => ({
     approvals: [],
     userInputs: [],
+  }));
+  setBindingMock('GetThreadLiveState', async (threadId: string) => ({
+    threadId,
+    activeTurn: null,
+    queueItems: [...getQueueForThread(threadId)],
+    interactive: { approvals: [], userInputs: [] },
+    todo: null,
   }));
   setBindingMock('ListItems', async () => items);
   // Empty turn history by default. Tests that want to exercise rehydration

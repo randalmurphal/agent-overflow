@@ -21,10 +21,14 @@ export {
     GeneratedCommitMessage,
     GitStatusSubscriptionResult,
     Keybinding,
+    LiveStateActiveTurn,
+    LiveStateTodo,
+    LiveStateTodoStep,
     NetworkSettings,
     PayloadChunk,
     PayloadContent,
     PayloadPreview,
+    QueueFlushedItem,
     QueuedItem,
     RemoteEndpointSummary,
     SendMessageOptions,
@@ -33,6 +37,7 @@ export {
     TerminalChip,
     TerminalHandle,
     TerminalOpenOptions,
+    ThreadLiveState,
     ThreadRuntimeModeChangedEvent,
     WorkspaceFileSearchResult
 } from "./models.js";

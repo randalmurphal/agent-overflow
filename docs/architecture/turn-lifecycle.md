@@ -298,19 +298,19 @@ Two cadences run in parallel:
 
 | Cadence | Driver | Granularity | What it controls |
 |---|---|---|---|
-| Frontend visibility | `currentRoundID` / `setOpenRound` / `takeOpenRound` | Per wire round | `provider:turn_started`/`provider:turn_completed` emissions — working indicator, Stop button, composer block, read-state projection |
+| Frontend visibility | `currentRoundByThread` / `setOpenRoundSnapshot` / `takeOpenRound` | Per wire round | `provider:turn_started`/`provider:turn_completed` emissions — working indicator, Stop button, composer block, read-state projection |
 | Persistence | `claimTurnSettlement` / `settleTurnRow` | Per logical turn (turnIndex) | `turns` row UPDATE, streaming-item settlement |
 
 Round entry points:
 
 - **`handleTurnStart`** opens round 1 of every logical turn. It calls
   BOTH `setOpenTurn` (per-turn flow-control + counter re-init) AND
-  `setOpenRound` (per-round id allocation), then emits
+  `setOpenRoundSnapshot` (per-round id allocation), then emits
   `provider:turn_started` with the per-round uuid as TurnID.
 - **`handleInit` re-round branch** opens rounds 2+ when an
   `EventInit` arrives for a thread whose current logical turn is
   already settled (`settledTurns[turnKey]==true`). Calls
-  `setOpenRound` only — does NOT call `setOpenTurn`. This is
+  `setOpenRoundSnapshot` only — does NOT call `setOpenTurn`. This is
   load-bearing: id-allocating counters must survive across the
   multi-result-per-turn boundary so post-round-1 rows don't collide
   with rows already persisted under the same logical turn (see
@@ -333,7 +333,7 @@ stateDiagram-v2
     Idle --> RoundOpen: handleTurnStart
     note right of RoundOpen
       openTurns[thread]=turnIndex
-      currentRoundID[thread]=roundID
+      currentRoundByThread[thread]=roundID
       emit provider:turn_started
     end note
 
@@ -348,7 +348,7 @@ stateDiagram-v2
 
     SettledBetweenRounds --> ReRoundOpen: EventInit after settled turn
     note right of ReRoundOpen
-      currentRoundID[thread]=newRoundID
+      currentRoundByThread[thread]=newRoundID
       openTurns remains empty
       emit provider:turn_started
     end note
@@ -363,7 +363,7 @@ stateDiagram-v2
     RoundOpen --> Idle: session_died / cleanup
     note right of Idle
       synthesize truncated complete if open turn exists
-      delete openTurns/currentRoundID/settledTurns
+      delete openTurns/currentRoundByThread/settledTurns
     end note
 
     SettledBetweenRounds --> Idle: cleanup
@@ -590,7 +590,7 @@ the next round's `provider:turn_started` arms a fresh `startedAt`
 and the counter ticks from `0s`.
 
 **Approval gate.** During a pending tool approval, the wire round
-hasn't completed (backend's `currentRoundID` stays set). No
+hasn't completed (backend's `currentRoundByThread` stays set). No
 `turn_completed` fires until approval resolves. Drain naturally
 waits — there's no special-case approval-aware drain code.
 

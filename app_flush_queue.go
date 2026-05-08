@@ -404,7 +404,7 @@ func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushIt
 	// normal queued sends should not appear in chat history until the
 	// provider confirms they entered context. Cleared on dispatch failure
 	// below.
-	a.triage.RegisterPendingSendWithDeferredItem(threadID, userItem)
+	a.triage.RegisterPendingFlushSend(threadID, item.ID, userItem)
 
 	sendOpts := provider.SendOptions{
 		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),

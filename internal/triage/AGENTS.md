@@ -27,6 +27,9 @@ none fits.
 - `turn_lifecycle.go` — per-turn and per-thread correlation state
   (open turns, interrupt queue, stopped-thread markers, turn span
   bookkeeping, cleanup paths).
+- `live_state.go` — refresh/reconnect snapshot of backend-owned live
+  session state (active wire round, queue, interactive prompts, live todo)
+  copied under one router lock for the App transport DTO.
 - `tool_lifecycle.go` — tool-call launch/completion rows,
   background-task pairing (Claude), summary/status derivation.
 - `codex_background.go` — Codex-specific background projection.
@@ -166,19 +169,19 @@ Two cadences run in parallel:
 
 | Cadence | Driver | Granularity | Owner |
 |---|---|---|---|
-| Frontend visibility | `currentRoundID` / `setOpenRound` / `takeOpenRound` | Per wire round | `provider:turn_started`/`provider:turn_completed` emissions |
+| Frontend visibility | `currentRoundByThread` / `setOpenRoundSnapshot` / `takeOpenRound` | Per wire round | `provider:turn_started`/`provider:turn_completed` emissions |
 | Persistence | `claimTurnSettlement` / `settleTurnRow` | Per logical turn (turnIndex) | `turns` row UPDATE, streaming-item settlement |
 
 Round entry points:
 
 - **`handleTurnStart`** opens round 1 of every logical turn. It calls
   BOTH `setOpenTurn` (per-turn flow-control + counter re-init) AND
-  `setOpenRound` (per-round id allocation), then emits
+  `setOpenRoundSnapshot` (per-round id allocation), then emits
   `provider:turn_started` with the per-round uuid as TurnID.
 - **`handleInit` re-round branch** (`maybeEmitReRoundOnInit`) opens
   round 2+ when an `EventInit` arrives for a thread whose current
   logical turn is already settled (`settledTurns[turnKey]==true`).
-  Calls `setOpenRound` ONLY — does **not** call `setOpenTurn`. This
+  Calls `setOpenRoundSnapshot` ONLY — does **not** call `setOpenTurn`. This
   is load-bearing: id-allocating counters (`segmentIndexByScope`,
   `blockIndexByScope`, `errorSeqByScope`, `terminalInteractionSeq`)
   must survive the multi-result-per-turn boundary so post-round-1
@@ -307,7 +310,7 @@ marker so a re-init (Claude `system.init` resend after interrupt;
 Codex `turn/started` resend) can re-settle the same turn.
 
 Frontend `provider:turn_completed` emissions are gated INDEPENDENTLY
-per wire round via `currentRoundID` / `takeOpenRound` (see
+per wire round via `currentRoundByThread` / `takeOpenRound` (see
 "Wire-round vs logical-turn cadence" above) — so a multi-result-per-
 turn cascade emits one `turn_completed` per `result` envelope while
 persistence stays at one settle per logical turn.

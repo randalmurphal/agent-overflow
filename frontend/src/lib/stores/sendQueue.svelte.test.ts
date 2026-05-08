@@ -4,10 +4,12 @@ import {
   combineForRetract,
   confirmFlushedByUserItemId,
   getFlushedForThread,
+  getQueueRevisionForThread,
   getQueueForThread,
   hasQueueItems,
   hasRetractableQueueItems,
   markItemsFlushed,
+  replaceFlushedForThread,
   replaceQueueForThread,
   resetForTest as resetSendQueueForTest,
   type QueueItem,
@@ -45,6 +47,11 @@ describe('sendQueue store', () => {
       expect(getQueueForThread('t1')).toHaveLength(0);
     });
 
+    it('replaceQueueForThread empty no-op does not create revision state', () => {
+      replaceQueueForThread('t1', []);
+      expect(getQueueRevisionForThread('t1')).toBe(0);
+    });
+
     it('hasRetractableQueueItems is true only when Zone 1 non-empty', () => {
       expect(hasRetractableQueueItems('t1')).toBe(false);
       replaceQueueForThread('t1', [makeItem({ threadId: 't1', message: 'a' })]);
@@ -66,6 +73,19 @@ describe('sendQueue store', () => {
       ]);
       const flushed = getFlushedForThread('t1');
       expect(flushed.map((f) => f.userItemId)).toEqual(['user:0:flush:1']);
+    });
+
+    it('replaceFlushedForThread replaces the hydrated snapshot', () => {
+      markItemsFlushed('t1', [
+        { queueItemId: 'queue:old', userItemId: 'user:0:flush:1', message: 'old' },
+      ]);
+      replaceFlushedForThread('t1', [{
+        queueItemId: 'queue:new',
+        userItemId: 'user:0:flush:2',
+        message: 'new',
+        flushedAt: 10,
+      }]);
+      expect(getFlushedForThread('t1').map((f) => f.message)).toEqual(['new']);
     });
 
     it('markItemsFlushed with multiple appends in order', () => {

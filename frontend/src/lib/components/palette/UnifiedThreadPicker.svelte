@@ -3,9 +3,11 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Thread } from '../../types/models';
   import { getThreads } from '../../stores/threads.svelte';
-  import { getThreadStatus } from '../../stores/threadStatuses.svelte';
+  import {
+    getEffectiveThreadStatus,
+  } from '../../stores/threadStatuses.svelte';
   import { computeHighlightSegments } from '../../utils/highlight';
-  import { resolveEffectiveThreadStatus, resolveThreadStatusPill } from '../sidebar/threadStatusPill';
+  import { resolveThreadStatusPill } from '../sidebar/threadStatusPill';
 
   interface Props {
     open: boolean;
@@ -135,8 +137,7 @@
       {:else}
         <ul class="py-1 -mx-1" data-testid="thread-picker-results">
           {#each hits as hit, i (hit.thread.id)}
-            {@const liveStatus = getThreadStatus(hit.thread.id)}
-            {@const status = resolveEffectiveThreadStatus(hit.thread, liveStatus)}
+            {@const status = getEffectiveThreadStatus(hit.thread)}
             {@const statusPill = resolveThreadStatusPill(hit.thread, status)}
             {@const basename = projectBasename(hit.thread.projectPath)}
             <li>

@@ -96,6 +96,27 @@ func TestTodoUpdateEmitsWithoutPersistence(t *testing.T) {
 	if todoEmits != 1 {
 		t.Fatalf("expected exactly 1 provider:todo_update emit, got %d", todoEmits)
 	}
+
+	snapshot, ok := router.LiveTodoSnapshot("t1")
+	if !ok {
+		t.Fatalf("expected live todo snapshot")
+	}
+	want := []TodoStep{
+		{Step: "one", Status: "inProgress"},
+		{Step: "two", Status: "pending"},
+	}
+	if snapshot.ThreadID != "t1" || snapshot.UpdatedAt != 1_700_000_000_000 || !reflect.DeepEqual(snapshot.Steps, want) {
+		t.Fatalf("live todo snapshot = %+v, want thread=t1 updatedAt=1700000000000 steps=%+v", snapshot, want)
+	}
+
+	snapshot.Steps[0].Step = "mutated"
+	again, ok := router.LiveTodoSnapshot("t1")
+	if !ok {
+		t.Fatalf("expected live todo snapshot after copy mutation")
+	}
+	if again.Steps[0].Step != "one" {
+		t.Fatalf("LiveTodoSnapshot returned map-owned steps slice; got %+v", again.Steps)
+	}
 }
 
 // TestTodoUpdateEmptyDropsSilently guards the defensive empty check —
@@ -126,6 +147,81 @@ func TestTodoUpdateEmptyDropsSilently(t *testing.T) {
 		if e.eventName == "provider:todo_update" {
 			t.Fatalf("empty todos must not emit; got %+v", e)
 		}
+	}
+	if snapshot, ok := router.LiveTodoSnapshot("t1"); ok {
+		t.Fatalf("empty todos must not store live snapshot; got %+v", snapshot)
+	}
+}
+
+func TestTodoUpdateEmptyClearsPriorLiveSnapshot(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTodoUpdate,
+		ThreadID:  "t1",
+		Meta:      json.RawMessage(`{"plan":[{"step":"one","status":"inProgress"}]}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("todo update: %v", err)
+	}
+	if _, ok := router.LiveTodoSnapshot("t1"); !ok {
+		t.Fatalf("expected live todo snapshot before clear")
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTodoUpdate,
+		ThreadID:  "t1",
+		Meta:      json.RawMessage(`{"plan":[]}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("empty todo update: %v", err)
+	}
+	if snapshot, ok := router.LiveTodoSnapshot("t1"); ok {
+		t.Fatalf("empty todo update did not clear live snapshot: %+v", snapshot)
+	}
+}
+
+func TestLiveTodoSnapshotExpiresCompletedSnapshot(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTodoUpdate,
+		ThreadID:  "t1",
+		Meta:      json.RawMessage(`{"plan":[{"step":"done","status":"completed"}]}`),
+		Timestamp: time.Now().Add(-10 * time.Second),
+	}); err != nil {
+		t.Fatalf("todo update: %v", err)
+	}
+	if snapshot, ok := router.LiveTodoSnapshot("t1"); ok {
+		t.Fatalf("completed live todo snapshot should expire: %+v", snapshot)
+	}
+	if snapshot := router.LiveStateSnapshotForThread("t1"); snapshot.Todo != nil {
+		t.Fatalf("live state returned expired todo snapshot: %+v", snapshot.Todo)
+	}
+}
+
+func TestCleanupThreadClearsLiveTodoSnapshot(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTodoUpdate,
+		ThreadID:  "t1",
+		Meta:      json.RawMessage(`{"plan":[{"step":"one","status":"inProgress"}]}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("todo update: %v", err)
+	}
+	if _, ok := router.LiveTodoSnapshot("t1"); !ok {
+		t.Fatalf("expected live todo snapshot before cleanup")
+	}
+	router.CleanupThread("t1")
+	if snapshot, ok := router.LiveTodoSnapshot("t1"); ok {
+		t.Fatalf("live todo snapshot leaked after cleanup: %+v", snapshot)
 	}
 }
 

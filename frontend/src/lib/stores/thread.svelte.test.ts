@@ -1,6 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createThreadPane } from './thread.svelte';
-import { getActiveTurn } from './threadStatuses.svelte';
+import { createThreadPane, LIVE_TODO_AUTOHIDE_MS } from './thread.svelte';
+import {
+  getActiveTurn,
+  getThreadStatus,
+  isThreadLiveStateHydrating,
+  resetForTest as resetThreadStatuses,
+} from './threadStatuses.svelte';
+import {
+  getFlushedForThread,
+  getQueueForThread,
+  replaceQueueForThread,
+  resetForTest as resetSendQueueForTest,
+} from './sendQueue.svelte';
 import type { Item } from '../types/models';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { makeItem, makeThread } from '../../test/helpers/chat';
@@ -19,6 +30,8 @@ describe('createThreadPane', () => {
       value: 1400,
     });
     resetBindingMocks();
+    resetThreadStatuses();
+    resetSendQueueForTest();
     setBindingMock('SwitchThread', async (threadId: unknown) =>
       makeThread({ id: typeof threadId === 'string' ? threadId : 'thread-1' }));
     // switchThread loads items via ListRecentThreadItems. Tests override
@@ -32,6 +45,13 @@ describe('createThreadPane', () => {
     setBindingMock('ListPendingInteractiveRequests', async () => ({
       approvals: [],
       userInputs: [],
+    }));
+    setBindingMock('GetThreadLiveState', async (threadId: string) => ({
+      threadId,
+      activeTurn: null,
+      queueItems: [...getQueueForThread(threadId)],
+      interactive: { approvals: [], userInputs: [] },
+      todo: null,
     }));
     setBindingMock('ListItems', async () => [] as Item[]);
     // switchThread calls ListRecentTurns as part of rehydration. Default
@@ -50,6 +70,22 @@ describe('createThreadPane', () => {
     expect(pane.contextWindow).toBeNull();
     expect(pane.generalError).toBeNull();
     expect(getActiveTurn(pane.threadId) !== null).toBe(false);
+  });
+
+  it('marks live state as hydrating before the backend switch round-trip returns', async () => {
+    const pane = createThreadPane();
+    let releaseSwitch!: (value: unknown) => void;
+    setBindingMock('SwitchThread', (threadId: unknown) => new Promise((resolve) => {
+      releaseSwitch = resolve;
+      void threadId;
+    }));
+
+    const switching = pane.switchThread(makeThread({ id: 'thread-hydrating' }));
+    expect(isThreadLiveStateHydrating('thread-hydrating')).toBe(true);
+
+    releaseSwitch(makeThread({ id: 'thread-hydrating' }));
+    await switching;
+    expect(isThreadLiveStateHydrating('thread-hydrating')).toBe(false);
   });
 
   it('loads items and seeds the context window from thread.lastTokenUsage', async () => {
@@ -84,27 +120,33 @@ describe('createThreadPane', () => {
 
   it('hydrates pending approval and user-input prompts on thread switch', async () => {
     const pane = createThreadPane();
-    setBindingMock('ListPendingInteractiveRequests', async () => ({
-      approvals: [{
-        requestId: 'approval-1',
-        threadId: 'thread-a',
-        toolName: 'Bash',
-        description: 'Run command',
-        input: { command: 'pwd' },
-        title: 'Approve command',
-      }],
-      userInputs: [{
-        requestId: 'input-1',
-        threadId: 'thread-a',
-        toolName: 'user_input',
-        title: 'User Input Required',
-        questions: [{
-          id: 'scope',
-          header: 'Scope',
-          question: 'Choose a scope',
-          options: [{ label: 'turn', description: 'Apply only to this turn' }],
+    setBindingMock('GetThreadLiveState', async (threadId: string) => ({
+      threadId,
+      activeTurn: null,
+      queueItems: [],
+      interactive: {
+        approvals: [{
+          requestId: 'approval-1',
+          threadId: 'thread-a',
+          toolName: 'Bash',
+          description: 'Run command',
+          input: { command: 'pwd' },
+          title: 'Approve command',
         }],
-      }],
+        userInputs: [{
+          requestId: 'input-1',
+          threadId: 'thread-a',
+          toolName: 'user_input',
+          title: 'User Input Required',
+          questions: [{
+            id: 'scope',
+            header: 'Scope',
+            question: 'Choose a scope',
+            options: [{ label: 'turn', description: 'Apply only to this turn' }],
+          }],
+        }],
+      },
+      todo: null,
     }));
 
     await pane.switchThread(makeThread({ id: 'thread-a' }));
@@ -116,7 +158,7 @@ describe('createThreadPane', () => {
   it('does not re-add a prompt resolved while pending snapshot hydration is in flight', async () => {
     const pane = createThreadPane();
     let releaseSnapshot!: (value: unknown) => void;
-    setBindingMock('ListPendingInteractiveRequests', () => new Promise((resolve) => {
+    setBindingMock('GetThreadLiveState', () => new Promise((resolve) => {
       releaseSnapshot = resolve;
     }));
 
@@ -124,18 +166,24 @@ describe('createThreadPane', () => {
     await Promise.resolve();
     pane.removeUserInput('input-1');
     releaseSnapshot({
-      approvals: [],
-      userInputs: [{
-        requestId: 'input-1',
-        threadId: 'thread-a',
-        toolName: 'user_input',
-        title: 'User Input Required',
-        questions: [{
-          id: 'scope',
-          header: 'Scope',
-          question: 'Choose a scope',
+      threadId: 'thread-a',
+      activeTurn: null,
+      queueItems: [],
+      interactive: {
+        approvals: [],
+        userInputs: [{
+          requestId: 'input-1',
+          threadId: 'thread-a',
+          toolName: 'user_input',
+          title: 'User Input Required',
+          questions: [{
+            id: 'scope',
+            header: 'Scope',
+            question: 'Choose a scope',
+          }],
         }],
-      }],
+      },
+      todo: null,
     });
     await switching;
 
@@ -1034,6 +1082,238 @@ describe('createThreadPane', () => {
       errorMessage: '',
     });
     expect(getActiveTurn(pane.threadId) !== null).toBe(false);
+  });
+
+  it('hydrates live server state on thread switch', async () => {
+    const pane = createThreadPane();
+    setBindingMock('GetThreadLiveState', async (threadId: string) => ({
+      threadId,
+      activeTurn: {
+        threadId,
+        turnId: 'round-1',
+        turnIndex: 4,
+        startedAt: 1_700_000_000_000,
+      },
+      queueItems: [{
+        id: 'queue-1',
+        threadId,
+        message: 'queued while working',
+        attachmentIds: ['att-1'],
+        enqueuedAt: 1_700_000_000_100,
+      }],
+      flushedItems: [{
+        queueItemId: 'queue-flushed',
+        userItemId: 'user:4:flush:1',
+        message: 'already sent to provider',
+      }],
+      interactive: {
+        approvals: [{
+          requestId: 'approval-1',
+          threadId,
+          toolName: 'Edit',
+          description: 'Allow edit?',
+          input: null,
+          title: 'Approve edit',
+        }],
+        userInputs: [],
+      },
+      todo: {
+        threadId,
+        steps: [{ step: 'keep working', status: 'inProgress' }],
+        updatedAt: Date.now(),
+      },
+    }));
+
+    await pane.switchThread(makeThread({ id: 'thread-live' }));
+
+    expect(getActiveTurn('thread-live')).toEqual({
+      turnId: 'round-1',
+      turnIndex: 4,
+      startedAt: 1_700_000_000_000,
+    });
+    expect(getQueueForThread('thread-live')).toEqual([{
+      id: 'queue-1',
+      threadId: 'thread-live',
+      message: 'queued while working',
+      attachmentIds: ['att-1'],
+      sourceProposedPlan: null,
+      revisionSourceProposedPlan: null,
+      revisionSourceCommentIds: undefined,
+      revisionSourceDiffReview: null,
+      revisionSourceDiffCommentIds: undefined,
+      enqueuedAt: 1_700_000_000_100,
+    }]);
+    expect(getFlushedForThread('thread-live').map((item) => ({
+      queueItemId: item.queueItemId,
+      userItemId: item.userItemId,
+      message: item.message,
+    }))).toEqual([{
+      queueItemId: 'queue-flushed',
+      userItemId: 'user:4:flush:1',
+      message: 'already sent to provider',
+    }]);
+    expect(pane.pendingApprovals.map((approval) => approval.requestId)).toEqual(['approval-1']);
+    expect(getThreadStatus('thread-live')).toBe('pending-approval');
+    expect(pane.liveTodo?.steps).toEqual([{ step: 'keep working', status: 'inProgress' }]);
+  });
+
+  it('does not revive stale all-completed live todos from backend snapshot', async () => {
+    const pane = createThreadPane();
+    setBindingMock('GetThreadLiveState', async (threadId: string) => ({
+      threadId,
+      activeTurn: null,
+      queueItems: [],
+      interactive: { approvals: [], userInputs: [] },
+      todo: {
+        threadId,
+        steps: [{ step: 'already done', status: 'completed' }],
+        updatedAt: Date.now() - LIVE_TODO_AUTOHIDE_MS - 1,
+      },
+    }));
+
+    await pane.switchThread(makeThread({ id: 'thread-done' }));
+
+    expect(pane.liveTodo).toBeNull();
+  });
+
+  it('clears stale active turn when backend live snapshot is idle', async () => {
+    const pane = createThreadPane();
+    await pane.switchThread(makeThread({ id: 'thread-idle' }));
+    pane.setActiveTurn({ turnId: 'stale-round', turnIndex: 1, startedAt: 1 });
+    expect(getActiveTurn('thread-idle')).not.toBeNull();
+
+    await pane.refreshFromBackend();
+
+    expect(getActiveTurn('thread-idle')).toBeNull();
+  });
+
+  it('does not let a delayed idle live snapshot clear a newer active turn', async () => {
+    const pane = createThreadPane();
+    let releaseSnapshot!: (value: unknown) => void;
+    setBindingMock('GetThreadLiveState', () => new Promise((resolve) => {
+      releaseSnapshot = resolve;
+    }));
+
+    const switching = pane.switchThread(makeThread({ id: 'thread-race' }));
+    await Promise.resolve();
+    pane.setActiveTurn({ turnId: 'new-round', turnIndex: 2, startedAt: 2 });
+    releaseSnapshot({
+      threadId: 'thread-race',
+      activeTurn: null,
+      queueItems: [],
+      interactive: { approvals: [], userInputs: [] },
+      todo: null,
+    });
+    await switching;
+
+    expect(getActiveTurn('thread-race')).toEqual({
+      turnId: 'new-round',
+      turnIndex: 2,
+      startedAt: 2,
+    });
+  });
+
+  it('does not let an older live-state hydration apply after a newer one completed', async () => {
+    const pane = createThreadPane();
+    await pane.switchThread(makeThread({ id: 'thread-hydration-order' }));
+
+    const releases: Array<(value: unknown) => void> = [];
+    setBindingMock('GetThreadLiveState', () => new Promise((resolve) => {
+      releases.push(resolve);
+    }));
+
+    const older = pane.refreshFromBackend();
+    for (let i = 0; i < 4 && releases.length < 1; i += 1) await Promise.resolve();
+    const newer = pane.refreshFromBackend();
+    for (let i = 0; i < 4 && releases.length < 2; i += 1) await Promise.resolve();
+    expect(releases).toHaveLength(2);
+
+    releases[1]({
+      threadId: 'thread-hydration-order',
+      activeTurn: {
+        threadId: 'thread-hydration-order',
+        turnId: 'new-round',
+        turnIndex: 3,
+        startedAt: 30,
+      },
+      queueItems: [],
+      interactive: { approvals: [], userInputs: [] },
+      todo: null,
+    });
+    await newer;
+
+    releases[0]({
+      threadId: 'thread-hydration-order',
+      activeTurn: {
+        threadId: 'thread-hydration-order',
+        turnId: 'old-round',
+        turnIndex: 2,
+        startedAt: 20,
+      },
+      queueItems: [{
+        id: 'stale-queue',
+        threadId: 'thread-hydration-order',
+        message: 'stale',
+        attachmentIds: [],
+        enqueuedAt: 1,
+      }],
+      interactive: {
+        approvals: [{
+          requestId: 'stale-approval',
+          threadId: 'thread-hydration-order',
+          toolName: 'Edit',
+          description: 'stale',
+          input: null,
+          title: 'Stale',
+        }],
+        userInputs: [],
+      },
+      todo: {
+        threadId: 'thread-hydration-order',
+        steps: [{ step: 'stale todo', status: 'inProgress' }],
+        updatedAt: Date.now(),
+      },
+    });
+    await older;
+
+    expect(getActiveTurn('thread-hydration-order')).toEqual({
+      turnId: 'new-round',
+      turnIndex: 3,
+      startedAt: 30,
+    });
+    expect(getQueueForThread('thread-hydration-order')).toEqual([]);
+    expect(pane.pendingApprovals).toEqual([]);
+    expect(pane.liveTodo).toBeNull();
+  });
+
+  it('does not let a delayed queue snapshot wipe a newer queue projection', async () => {
+    const pane = createThreadPane();
+    let releaseSnapshot!: (value: unknown) => void;
+    setBindingMock('GetThreadLiveState', () => new Promise((resolve) => {
+      releaseSnapshot = resolve;
+    }));
+
+    const switching = pane.switchThread(makeThread({ id: 'thread-queue-race' }));
+    await Promise.resolve();
+    replaceQueueForThread('thread-queue-race', [{
+      id: 'queue-new',
+      threadId: 'thread-queue-race',
+      message: 'newer queue',
+      attachmentIds: [],
+      sourceProposedPlan: null,
+      revisionSourceProposedPlan: null,
+      enqueuedAt: 5,
+    }]);
+    releaseSnapshot({
+      threadId: 'thread-queue-race',
+      activeTurn: null,
+      queueItems: [],
+      interactive: { approvals: [], userInputs: [] },
+      todo: null,
+    });
+    await switching;
+
+    expect(getQueueForThread('thread-queue-race').map((item) => item.message)).toEqual(['newer queue']);
   });
 
   it('clear resets the pane completely', async () => {
