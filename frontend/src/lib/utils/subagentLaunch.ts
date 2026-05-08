@@ -79,6 +79,9 @@ export function isCodexSubagentLaunchItem(item: Item): boolean {
 
 export function codexSubagentLaunchInfo(item: Item): CodexSubagentLaunchInfo {
   const parsed = parseCodexSubagentInput(item);
+  const failedWithoutReceiver =
+    parsed.receiverThreadIds.length === 0 &&
+    (item.status === 'errored' || item.status === 'killed' || item.status === 'declined');
   const fallbackLabel = parsed.receiverThreadIds.length === 1
     ? 'Agent'
     : parsed.receiverThreadIds.length > 1
@@ -90,7 +93,7 @@ export function codexSubagentLaunchInfo(item: Item): CodexSubagentLaunchInfo {
     ...parsed,
     agentLabel: roleLabel,
     modelAffix,
-    title: `Spawned ${roleLabel}`,
+    title: failedWithoutReceiver ? 'Agent spawn failed' : `Spawned ${roleLabel}`,
   };
 }
 

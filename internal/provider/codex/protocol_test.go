@@ -493,6 +493,32 @@ func TestClassifyNotification_CollabSpawnUsesCollabAgentType(t *testing.T) {
 	}
 }
 
+func TestClassifyNotification_FailedCollabSpawnCarriesFailedStatus(t *testing.T) {
+	params := json.RawMessage(`{"item":{"id":"call-1","type":"collabAgentToolCall","tool":"spawnAgent","prompt":"Spawn beyond the limit","receiverThreadIds":[],"status":"failed"}}`)
+	events := ClassifyNotification("t1", "item/completed", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].ItemType != "collab_agent" {
+		t.Fatalf("itemType: got %q, want collab_agent", events[0].ItemType)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["item_status"] != "failed" {
+		t.Fatalf("item_status = %v, want failed", meta["item_status"])
+	}
+	input, ok := meta["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("input missing from meta: %+v", meta)
+	}
+	if input["prompt"] != "Spawn beyond the limit" {
+		t.Fatalf("prompt: got %v", input["prompt"])
+	}
+}
+
 func TestClassifyNotification_CollabSendInputUsesDedicatedType(t *testing.T) {
 	params := json.RawMessage(`{"item":{"id":"call-2","type":"collabAgentToolCall","tool":"sendInput","prompt":"continue","receiverThreadIds":["child-1"],"status":"completed"}}`)
 	events := ClassifyNotification("t1", "item/completed", params)
@@ -876,6 +902,16 @@ func TestClassifyNotification_RawResponseWriteStdinOutputCompletesWait(t *testin
 	}
 	if meta["source"] != "rawResponseItem/function_call_output" {
 		t.Errorf("meta.source = %v", meta["source"])
+	}
+}
+
+func TestClassifyNotification_RawSpawnAgentOutputDropped(t *testing.T) {
+	params := json.RawMessage(
+		`{"threadId":"th-1","turnId":"turn-2","item":{"type":"function_call_output","call_id":"spawn-1","rawToolName":"spawn_agent","output":"agent thread limit reached"}}`,
+	)
+	events := ClassifyNotification("th-1", "rawResponseItem/completed", params)
+	if len(events) != 0 {
+		t.Fatalf("expected raw spawn_agent output to stay non-visual, got %d events", len(events))
 	}
 }
 

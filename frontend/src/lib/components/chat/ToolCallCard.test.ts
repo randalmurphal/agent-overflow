@@ -361,6 +361,57 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(queryByTestId("subagent-group")).toBeNull();
   });
 
+  it("renders terminal Codex spawn_agent failures without receivers as failed spawns", async () => {
+    const pane = await buildPane(makeThread({ provider: "codex" }));
+    const item = makeItem({
+      id: "spawn-failed",
+      kind: "tool_call",
+      status: "errored",
+      toolName: "collab_agent",
+      meta: JSON.stringify({
+        input: {
+          tool: "spawn_agent",
+          prompt: "Spawn beyond the agent thread limit",
+        },
+      }),
+    });
+
+    const { getByTestId } = render(ToolCallCard, {
+      props: { pane, item },
+    });
+
+    expect(getByTestId("collab-tool-row").textContent).toContain(
+      "Agent spawn failed",
+    );
+  });
+
+  it("keeps receiver identity on terminal Codex spawn_agent failures with receivers", async () => {
+    const pane = await buildPane(makeThread({ provider: "codex" }));
+    const item = makeItem({
+      id: "spawn-failed-with-receiver",
+      kind: "tool_call",
+      status: "errored",
+      toolName: "collab_agent",
+      meta: JSON.stringify({
+        input: {
+          tool: "spawn_agent",
+          prompt: "Start an agent that later fails",
+          receiverThreadIds: ["child-1"],
+          newAgentNickname: "Curie",
+          newAgentRole: "explorer",
+        },
+      }),
+    });
+
+    const { getByTestId } = render(ToolCallCard, {
+      props: { pane, item },
+    });
+
+    expect(getByTestId("collab-tool-row").textContent).toContain(
+      "Spawned Curie [explorer]",
+    );
+  });
+
   it("expands Codex subagent completion payload output", async () => {
     const output = [
       "Run `sleep 20` in /home/rmurphy/repos/agent-overflow",

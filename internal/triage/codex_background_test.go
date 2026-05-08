@@ -12,6 +12,14 @@ import (
 	"agent-overflow/internal/store"
 )
 
+func createCodexBackgroundTestThread(t *testing.T, st *store.Store, id string) {
+	t.Helper()
+	createTestThread(t, st, id)
+	if err := st.UpdateProvider(id, "codex"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
+}
+
 func buildUnifiedExecStartMeta(t *testing.T, processID, command string) json.RawMessage {
 	t.Helper()
 	meta := map[string]any{
@@ -67,7 +75,7 @@ func seedOpenTurn(t *testing.T, router *Router, st *store.Store, threadID string
 
 func TestCodexUnifiedExecStartIsVisibleBeforeYield(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -109,7 +117,7 @@ func TestCodexUnifiedExecStartIsVisibleBeforeYield(t *testing.T) {
 
 func TestCodexUnifiedExecQuickCompletionPersistsNormalCommand(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	startMeta := buildUnifiedExecStartMeta(t, "pid-quick", "echo ok")
@@ -169,7 +177,7 @@ func TestCodexUnifiedExecQuickCompletionPersistsNormalCommand(t *testing.T) {
 
 func TestCodexLiveCommandOutputIsBounded(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -226,7 +234,7 @@ func TestCodexLiveCommandOutputIsBounded(t *testing.T) {
 
 func TestCodexUnifiedExecBackgroundCompletionStaysOutOfTimeline(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -277,7 +285,7 @@ func TestCodexUnifiedExecBackgroundCompletionStaysOutOfTimeline(t *testing.T) {
 
 func TestCodexTerminalInteractionAttachesCompletedOutputAndClearsTray(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -351,7 +359,7 @@ func TestCodexTerminalInteractionAttachesCompletedOutputAndClearsTray(t *testing
 
 func TestCodexTerminalInteractionWhileRunningAttachesCompletionBeforeNextText(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -427,7 +435,7 @@ func TestCodexTerminalInteractionWhileRunningAttachesCompletionBeforeNextText(t 
 
 func TestCodexTerminalInteractionDoesNotAttachAfterModelMovesOn(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -487,7 +495,7 @@ func TestCodexTerminalInteractionDoesNotAttachAfterModelMovesOn(t *testing.T) {
 
 func TestCodexTerminalInteractionTurnCompleteSettlesPendingWait(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -540,7 +548,7 @@ func TestCodexTerminalInteractionTurnCompleteSettlesPendingWait(t *testing.T) {
 
 func TestCodexTerminalInteractionDoesNotAttachAfterLaterToolStart(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -646,7 +654,7 @@ func TestCodexTerminalInteractionDoesNotAttachAfterLaterToolStart(t *testing.T) 
 
 func TestCodexTerminalInteractionAttachesWhenProcessIDArrivesOnCompletion(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -777,7 +785,7 @@ func buildCollabAgentMetaWithMessage(t *testing.T, toolName, tool, childID, chil
 
 func TestCodexSubagentRunningChildBackgroundsImmediately(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	spawnMeta := buildSpawnAgentMeta(t, "child-1", "running")
@@ -805,9 +813,103 @@ func TestCodexSubagentRunningChildBackgroundsImmediately(t *testing.T) {
 	}
 }
 
+func TestCodexSpawnStartIsPendingOnly(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMeta(t, "child-pending", "running")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-pending",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+
+	if _, found, err := st.GetThreadItem("t1", "spawn-pending"); err != nil || found {
+		t.Fatalf("spawn start should not persist timeline row: found=%v err=%v", found, err)
+	}
+}
+
+func TestCodexSpawnPendingStartClearsAtTurnComplete(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMeta(t, "child-rejected", "running")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-rejected",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	router.mu.Lock()
+	before := len(router.codexBackground["t1"].spawnAgent)
+	router.mu.Unlock()
+	if before != 1 {
+		t.Fatalf("pending spawn trackers before turn complete = %d, want 1", before)
+	}
+
+	router.observeCodexTurnComplete("t1")
+
+	router.mu.Lock()
+	after := len(router.codexBackground["t1"].spawnAgent)
+	router.mu.Unlock()
+	if after != 0 {
+		t.Fatalf("pending spawn trackers after turn complete = %d, want 0", after)
+	}
+}
+
+func TestCodexSpawnFailedCompletionWithoutReceiverPersistsErrored(t *testing.T) {
+	for _, itemStatus := range []string{"failed", "errored"} {
+		t.Run(itemStatus, func(t *testing.T) {
+			router, st, _ := newTestRouter(t)
+			createCodexBackgroundTestThread(t, st, "t1")
+			seedOpenTurn(t, router, st, "t1", 0)
+
+			itemID := "spawn-" + itemStatus
+			spawnMeta, _ := json.Marshal(map[string]any{
+				"item_status": itemStatus,
+				"toolName":    "collab_agent",
+				"input": map[string]any{
+					"tool":   "spawn_agent",
+					"prompt": "try to spawn beyond the agent thread limit",
+				},
+			})
+			if err := router.Handle(provider.ProviderEvent{
+				Kind: provider.EventToolStart, ThreadID: "t1", ItemID: itemID,
+				ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+				Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("spawn start: %v", err)
+			}
+			if err := router.Handle(provider.ProviderEvent{
+				Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: itemID,
+				ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+				Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("spawn complete: %v", err)
+			}
+
+			row, found, err := st.GetThreadItem("t1", itemID)
+			if err != nil || !found {
+				t.Fatalf("failed spawn row missing: found=%v err=%v", found, err)
+			}
+			if row.Status != statusErrored || row.IsBackground {
+				t.Fatalf("failed spawn row = %+v, want errored foreground row", row)
+			}
+			if !strings.Contains(row.Summary, "("+itemStatus+")") {
+				t.Fatalf("summary = %q, want %s suffix", row.Summary, itemStatus)
+			}
+		})
+	}
+}
+
 func TestCodexSubagentInactiveStatusHidesLiveBackgroundWithoutCompletion(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	spawnMeta := buildSpawnAgentMeta(t, "child-inactive", "running")
@@ -856,7 +958,7 @@ func TestCodexSubagentInactiveStatusHidesLiveBackgroundWithoutCompletion(t *test
 
 func TestCodexSubagentStatusWaitsForAllChildrenBeforeHidingLiveBackground(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	spawnMeta := buildSpawnAgentMetaForChildren(t, map[string]string{
@@ -919,7 +1021,7 @@ func TestCodexSubagentStatusWaitsForAllChildrenBeforeHidingLiveBackground(t *tes
 
 func TestCodexSubagentWaitAfterInactiveStatusCreatesCompletion(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	spawnMeta := buildSpawnAgentMeta(t, "child-inactive-wait", "running")
@@ -972,7 +1074,7 @@ func TestCodexSubagentWaitAfterInactiveStatusCreatesCompletion(t *testing.T) {
 
 func TestCodexSubagentWaitCompletionRehydratesPersistedLaunch(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	spawnMeta := buildSpawnAgentMeta(t, "child-rehydrate", "running")
@@ -1022,7 +1124,7 @@ func TestCodexSubagentWaitCompletionRehydratesPersistedLaunch(t *testing.T) {
 
 func TestCodexSubagentCompletionSignalsCreateTranscriptSibling(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	spawnMeta := buildSpawnAgentMeta(t, "child-abc", "running")
@@ -1063,7 +1165,7 @@ func TestCodexSubagentCompletionSignalsCreateTranscriptSibling(t *testing.T) {
 
 func TestCodexSubagentNotificationRehydratesPersistedLaunch(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	spawnMeta := buildSpawnAgentMeta(t, "child-notify-rehydrate", "running")
@@ -1112,7 +1214,7 @@ func TestCodexSubagentNotificationRehydratesPersistedLaunch(t *testing.T) {
 
 func TestCodexSubagentNotificationAfterWaitTimeoutDoesNotAttachToWaitCarrier(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	spawnMeta := buildSpawnAgentMeta(t, "child-provider-1", "running")
@@ -1171,10 +1273,7 @@ func TestCodexSubagentNotificationAfterWaitTimeoutDoesNotAttachToWaitCarrier(t *
 
 func TestCodexSubagentWaitCompletionCarriesFinalOutputPayload(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	if err := st.UpdateProvider("t1", "codex"); err != nil {
-		t.Fatalf("set provider: %v", err)
-	}
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	spawnMeta := buildSpawnAgentMeta(t, "child-wait", "running")
@@ -1244,10 +1343,7 @@ func TestCodexSubagentWaitCompletionCarriesFinalOutputPayload(t *testing.T) {
 
 func TestCodexSubagentDuplicateBlankCompletionPreservesPayload(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	if err := st.UpdateProvider("t1", "codex"); err != nil {
-		t.Fatalf("set provider: %v", err)
-	}
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	spawnMeta := buildSpawnAgentMeta(t, "child-blank-dup", "running")
@@ -1327,10 +1423,7 @@ func TestCodexSubagentDuplicateBlankCompletionPreservesPayload(t *testing.T) {
 
 func TestCodexSubagentWaitCompletionPersistsImmediatelyWithActiveStream(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	if err := st.UpdateProvider("t1", "codex"); err != nil {
-		t.Fatalf("set provider: %v", err)
-	}
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	spawnMeta := buildSpawnAgentMeta(t, "child-immediate", "running")
@@ -1389,10 +1482,7 @@ func TestCodexSubagentWaitCompletionPersistsImmediatelyWithActiveStream(t *testi
 
 func TestCodexSubagentWaitCompletionReusesPayloadForOutOfOrderChildren(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	if err := st.UpdateProvider("t1", "codex"); err != nil {
-		t.Fatalf("set provider: %v", err)
-	}
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	spawnMeta := buildCollabAgentMetaWithMessage(t, "collab_agent", "spawn_agent", "child-b", "running", "")
@@ -1479,7 +1569,7 @@ func TestCodexSubagentWaitCompletionReusesPayloadForOutOfOrderChildren(t *testin
 
 func TestCodexSubagentNotificationCarriesFinalOutputPayload(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	spawnMeta := buildSpawnAgentMeta(t, "child-notify", "running")
@@ -1538,7 +1628,7 @@ func TestCodexSubagentNotificationCarriesFinalOutputPayload(t *testing.T) {
 // process Codex says is still running.
 func TestCodexUnifiedExecBackgroundedOnUserInterrupt(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	// Start a unifiedExec command — pre-yield (no text/reasoning delta
@@ -1590,7 +1680,7 @@ func TestCodexUnifiedExecBackgroundedOnUserInterrupt(t *testing.T) {
 
 func TestCodexBackgroundProjectorCleanupDropsLiveState(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	if err := router.Handle(provider.ProviderEvent{

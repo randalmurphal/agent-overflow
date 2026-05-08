@@ -26,22 +26,22 @@ import (
 //
 // The projector sits between the wire signal and the is_background stamp.
 // It tracks per-thread inProgress unifiedExec items in transient state
-// and spawn_agent launch rows in SQLite. A unifiedExec is shown in the
-// running-task tray immediately, but it only becomes a background task
-// when a typed trigger proves Codex moved on while the PTY kept running:
-// model output, a turn boundary, or an explicit empty write_stdin wait
-// against that process. Completed background output becomes transcript
-// history only after an explicit terminal wait/poll, as a command
-// completion row. A spawn_agent with running children still stamps its
-// persisted launch row is_background=true because that tool call is real
-// transcript history.
+// and spawn_agent starts in transient state. A unifiedExec is shown in
+// the running-task tray immediately, but it only becomes a background
+// task when a typed trigger proves Codex moved on while the PTY kept
+// running: model output, a turn boundary, or an explicit empty
+// write_stdin wait against that process. Completed background output
+// becomes transcript history only after an explicit terminal wait/poll,
+// as a command completion row. A spawn_agent start becomes transcript
+// history only when Codex emits the terminal spawn completion.
 //
 // The correlation is bounded: quick unifiedExec entries are dropped on
 // item/completed, completed backgrounded unifiedExec entries are
 // retained only long enough for tray visibility / wait-row enrichment,
-// completed spawn_agent entries are dropped on wait/subagent
-// notification, and all thread state clears on CleanupThread. Nothing
-// persists across sessions.
+// pending spawn_agent starts are dropped at the turn boundary if no
+// terminal spawn completion arrived, completed spawn_agent entries are
+// dropped on wait/subagent notification, and all thread state clears on
+// CleanupThread. Nothing persists across sessions.
 //
 // Claude's handleBackgroundTaskTerminal remains the shape-of-truth for
 // persisted completion sibling rows. Codex unifiedExec intentionally
@@ -505,9 +505,9 @@ func codexFirstUnboundUnifiedExecTrackerLocked(state *codexBackgroundState) *uni
 //   - unifiedExec startup: wire-typed `source == "unifiedExecStartup"`.
 //     Tracked as transient live state for the running tray; not
 //     persisted as a launch row.
-//   - collabAgentToolCall spawn_agent: tracked so item/completed can stamp
-//     the persisted row backgrounded if agentsStates reports a running
-//     child. The spawn row itself closes on the wire immediately.
+//   - collabAgentToolCall spawn_agent: start is pending-only, matching
+//     Codex TUI. Track it so item/completed can create the visible row
+//     and stamp it backgrounded if agentsStates reports a running child.
 //
 // No-op for any other item type / provider — Claude runs a different
 // background projection entirely (EventBackgroundTaskTerminal).
@@ -579,18 +579,16 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 		}
 		return true
 	case isSpawnAgentCandidate && meta.Tool == "spawn_agent":
-		// Spawn_agent rows rarely stay inProgress — the item/started event
-		// is a very short-lived marker before the immediate completed
-		// envelope. We stamp on the completed envelope instead (see
-		// observeCodexToolComplete); tracking here just establishes the
-		// tracker so the later refresh can attach the running-children
-		// flag and receiver ids.
+		// Spawn_agent starts are pending-only. Codex TUI records the begin
+		// event internally and renders only CollabAgentSpawnEnd; doing the
+		// same here avoids persisted ghost rows when core rejects before it
+		// can emit a terminal spawn event.
 		if _, ok := state.spawnAgent[itemID]; ok {
 			r.mu.Unlock()
 			if emitChanged {
 				r.emitCodexBackgroundTasksChanged(evt.ThreadID)
 			}
-			return false
+			return true
 		}
 		state.spawnAgent[itemID] = &spawnAgentTracker{}
 	}
@@ -598,7 +596,7 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 	if emitChanged {
 		r.emitCodexBackgroundTasksChanged(evt.ThreadID)
 	}
-	return false
+	return isSpawnAgentCandidate && meta.Tool == "spawn_agent"
 }
 
 func (r *Router) settleCodexPendingTerminalWaits(threadID string) {
@@ -1537,8 +1535,12 @@ func (r *Router) observeCodexTurnComplete(threadID string) {
 		r.mu.Unlock()
 		return
 	}
+	spawnChanged := clearPendingCodexSpawnTrackersLocked(state)
 	if state.pendingUnifiedExec == 0 {
 		r.mu.Unlock()
+		if spawnChanged {
+			r.emitCodexBackgroundTasksChanged(threadID)
+		}
 		return
 	}
 	unifiedChanged := false
@@ -1551,9 +1553,24 @@ func (r *Router) observeCodexTurnComplete(threadID string) {
 		}
 	}
 	r.mu.Unlock()
-	if unifiedChanged {
+	if unifiedChanged || spawnChanged {
 		r.emitCodexBackgroundTasksChanged(threadID)
 	}
+}
+
+func clearPendingCodexSpawnTrackersLocked(state *codexBackgroundState) bool {
+	if state == nil {
+		return false
+	}
+	changed := false
+	for id, tracker := range state.spawnAgent {
+		if tracker == nil || tracker.backgrounded || tracker.hasRunningChildren || len(tracker.receiverThreadIDs) > 0 {
+			continue
+		}
+		delete(state.spawnAgent, id)
+		changed = true
+	}
+	return changed
 }
 
 // observeCodexSubagentStatus handles child-thread lifecycle signals that prove

@@ -35,9 +35,10 @@ none fits.
   background output as command completion rows only when the model
   explicitly polls via terminal interaction. Pending unifiedExec commands
   are tray-visible before yield but only become backgrounded after a
-  wire-typed yield signal. Spawn-agent rows stay persisted transcript
-  items and use background sibling completion rows. Authorized by the
-  wire-typed signals enriched onto Meta in
+  wire-typed yield signal. Spawn-agent starts are tracker-only; terminal
+  spawn completions create the visible transcript row and may later use
+  background sibling completion rows. Authorized by the wire-typed signals
+  enriched onto Meta in
   `internal/provider/codex/protocol.go` (see invariant 25).
 - `terminal_interaction.go` — Codex-specific "Waited for background
   terminal" row persistence. Handles `EventTerminalInteraction` for
@@ -87,7 +88,7 @@ none fits.
 | Turn metadata (cost/tokens) | Persist on turn completion. |
 | Context-window usage | Frontend context meter + `threads.last_token_usage`. |
 | Background task terminal (Claude) | `tool_completion` sibling row upsert (idempotent). See `turn-lifecycle.md`. |
-| Codex unifiedExec / spawn_agent | unifiedExec starts are transient running-tray state; quick completions persist as normal command rows; yielded/background output persists as a command `tool_completion` row after an explicit wait/poll. Spawn-agent rows are persisted and use sibling `tool_completion` rows. See `codex_background.go` + invariant 25. |
+| Codex unifiedExec / spawn_agent | unifiedExec starts are transient running-tray state; quick completions persist as normal command rows; yielded/background output persists as a command `tool_completion` row after an explicit wait/poll. Spawn-agent starts are pending-only; terminal spawn completions persist the visible row and use sibling `tool_completion` rows. See `codex_background.go` + invariant 25. |
 | Codex terminal interaction | Empty stdin persists/reuses a visible `terminal_interaction` wait carrier on the current open turn; completed command output is linked underneath with `wait_carrier_id`. Non-empty stdin persists an interaction marker without storing stdin bytes. See `terminal_interaction.go`. |
 | Turn start/complete | Write `turns` row; emit `provider:turn_*` to frontend; force-close orphan tool_calls on complete. |
 | Error | Distinct event kind; frontend renders as status/alert. |
@@ -134,9 +135,10 @@ Authoritative mental model:
   EventThinking, later tool start, or turn complete). Quick unifiedExec
   completions persist as normal command rows. Backgrounded unifiedExec
   completions stay transient until an explicit terminal wait/poll row
-  can own the output. Spawn-agent rows are different: they are persisted
-  tool rows and still use sibling `tool_completion` rows when a
-  wait_agent or subagent_notification proves the child completed.
+  can own the output. Spawn-agent starts are different: they are
+  tracker-only until terminal spawn completion creates the visible tool
+  row, and still use sibling `tool_completion` rows when a wait_agent or
+  subagent_notification proves the child completed.
   Authorized only by the wire-typed signals in Meta (invariant 25); no
   heuristic classifiers.
 - **Turn lifecycle** — `EventTurnStart` writes a `turns` row with

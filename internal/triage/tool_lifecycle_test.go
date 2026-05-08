@@ -1109,6 +1109,9 @@ func TestSubagentModelMergesIntoItemMetaWithoutClobber(t *testing.T) {
 func TestCodexSpawnLabelMetaUpdatePreservesFullReceiverList(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
+	if err := st.UpdateProvider("t1", "codex"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
 
 	startMeta, _ := json.Marshal(map[string]any{
 		"toolName": "collab_agent",
@@ -1123,6 +1126,12 @@ func TestCodexSpawnLabelMetaUpdatePreservesFullReceiverList(t *testing.T) {
 		ItemType: "collab_agent", Meta: startMeta, Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("tool start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-1",
+		ItemType: "collab_agent", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool complete: %v", err)
 	}
 
 	updateMeta, _ := json.Marshal(map[string]any{

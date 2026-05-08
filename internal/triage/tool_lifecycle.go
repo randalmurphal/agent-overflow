@@ -352,7 +352,7 @@ func shouldSplitCodexToolCompletion(toolName string) bool {
 
 func shouldPersistCodexCompletionWithoutLaunch(toolName string) bool {
 	switch strings.TrimSpace(toolName) {
-	case "send_input", "close_agent":
+	case "collab_agent", "send_input", "close_agent":
 		return true
 	default:
 		return false
@@ -1188,6 +1188,8 @@ func completionSuffix(meta toolCompleteMeta) string {
 		return fmt.Sprintf("(exit %d)", *meta.ExitCode)
 	case meta.ItemStatus == "failed":
 		return "(failed)"
+	case meta.ItemStatus == "errored":
+		return "(errored)"
 	case meta.ItemStatus == "killed":
 		return "(killed)"
 	case meta.ItemStatus == "declined":
@@ -1198,7 +1200,7 @@ func completionSuffix(meta toolCompleteMeta) string {
 }
 
 func completionStatus(meta toolCompleteMeta) string {
-	if meta.IsError || meta.ItemStatus == "failed" || meta.ItemStatus == "killed" {
+	if meta.IsError || meta.ItemStatus == "failed" || meta.ItemStatus == "errored" || meta.ItemStatus == "killed" {
 		return statusErrored
 	}
 	if meta.ItemStatus == "declined" {
