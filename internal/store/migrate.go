@@ -469,7 +469,6 @@ CREATE TABLE items (
         'approved',
         'declined',
         'amended',
-        'timeout',
         'lost'
     )),
     meta          TEXT    NOT NULL DEFAULT '{}',
@@ -1537,7 +1536,6 @@ CREATE TABLE items_v22 (
         'approved',
         'declined',
         'amended',
-        'timeout',
         'lost'
     )),
     meta                TEXT    NOT NULL DEFAULT '{}',
@@ -1653,7 +1651,6 @@ CREATE TABLE items_v23 (
         'approved',
         'declined',
         'amended',
-        'timeout',
         'lost'
     )),
     meta                TEXT    NOT NULL DEFAULT '{}',
@@ -1760,7 +1757,6 @@ CREATE TABLE items_v24 (
         'approved',
         'declined',
         'amended',
-        'timeout',
         'lost'
     )),
     meta                TEXT    NOT NULL DEFAULT '{}',
@@ -1864,7 +1860,6 @@ CREATE TABLE items_v25 (
         'approved',
         'declined',
         'amended',
-        'timeout',
         'lost'
     )),
     meta                TEXT    NOT NULL DEFAULT '{}',
@@ -1991,7 +1986,6 @@ CREATE TABLE items_v37 (
         'approved',
         'declined',
         'amended',
-        'timeout',
         'lost'
     )),
     meta                TEXT    NOT NULL DEFAULT '{}',

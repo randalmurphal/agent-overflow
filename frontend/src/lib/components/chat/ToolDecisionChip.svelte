@@ -8,7 +8,6 @@
       case 'approved': return 'Approved';
       case 'declined': return 'Declined';
       case 'amended': return 'Amended';
-      case 'timeout': return 'Timed out';
       case 'lost': return 'Lost';
       default: return '';
     }
@@ -19,7 +18,6 @@
       case 'approved': return 'border-success/30 bg-success/10 text-success';
       case 'declined': return 'border-error/30 bg-error/10 text-error';
       case 'amended': return 'border-warning/30 bg-warning/10 text-warning';
-      case 'timeout': return 'border-warning/30 bg-warning/10 text-warning';
       case 'lost': return 'border-text-secondary/30 bg-surface-0 text-text-secondary';
       default: return '';
     }

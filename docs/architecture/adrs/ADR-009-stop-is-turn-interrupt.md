@@ -74,7 +74,8 @@ Considered alternatives:
   the turn can upsert-replace rather than duplicate the marker.
 - The interrupt queue drains on stop — deferred events after the
   stop don't land as completed; they land as errored.
-- Stop does NOT cancel pending approval requests. Those are
-  modeled separately; if an approval is mid-flight when Stop
-  fires, it resolves as `timeout` via the normal approval
-  lifecycle.
+- Stop drains pending approval and user-input requests for the
+  interrupted turn. There is no app-side approval timeout: prompts stay
+  open until the user responds, an explicit stop/interrupt/provider
+  cancel resolves them as `cancel` where applicable, or session/provider
+  death resolves them as `lost`.

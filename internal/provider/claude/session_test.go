@@ -1500,7 +1500,7 @@ func TestSessionRespondToApproval(t *testing.T) {
 	decisions := []string{"allow", "deny", "allow_session"}
 	for _, d := range decisions {
 		t.Run(d, func(t *testing.T) {
-			s.startApprovalTimer("req-"+d, provider.EventApprovalResolved)
+			s.trackPendingApproval("req-"+d, provider.EventApprovalResolved)
 			err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
 				RequestID: "req-" + d,
 				Decision:  d,
@@ -1526,11 +1526,10 @@ func TestSessionRespondToUserInputIncludesQuestionsInUpdatedInput(t *testing.T) 
 		t.Fatalf("spawn capture process: %v", err)
 	}
 	s := &Session{
-		proc:            proc,
-		threadID:        testThread,
-		approvalTimeout: 5 * time.Second,
-		onEvent:         func(provider.ProviderEvent) {},
-		cancel:          cancel,
+		proc:     proc,
+		threadID: testThread,
+		onEvent:  func(provider.ProviderEvent) {},
+		cancel:   cancel,
 	}
 	t.Cleanup(func() {
 		cancel()
@@ -1546,7 +1545,7 @@ func TestSessionRespondToUserInputIncludesQuestionsInUpdatedInput(t *testing.T) 
 			Description: "Use Svelte",
 		}},
 	}}
-	s.startApprovalTimerWithQuestions("req-user-input", provider.EventUserInputResolved, questions)
+	s.trackPendingApprovalWithQuestions("req-user-input", provider.EventUserInputResolved, questions)
 
 	err = s.RespondToUserInput(context.Background(), provider.UserInputResponse{
 		RequestID: "req-user-input",
@@ -1755,72 +1754,92 @@ func TestCloseWaitsForDisconnectedHandler(t *testing.T) {
 	}
 }
 
-// TestApprovalTimeoutAutoDeniesClaude exercises Bug B3 for the Claude
-// stdio approval flow: when CanUseTool arrives and no RespondToApproval
-// follows within the timeout, the session auto-denies (so the subprocess
-// is unblocked) and emits an EventError describing the timeout. The
-// session must stay alive — only that single pending request is resolved.
-func TestApprovalTimeoutAutoDeniesClaude(t *testing.T) {
-	s, eventCh := newTestClaudeSessionWithApprovalTimeout(t, 100*time.Millisecond)
+func TestClaudeApprovalWaitsForUserResponseWithoutTimeout(t *testing.T) {
+	s, eventCh := newTestClaudeSessionWithPendingRequests(t)
 
-	// Drive a CanUseTool request through the readLoop.
-	approvalLine := []byte(`{"type":"control_request","request_id":"req-timeout","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}`)
+	approvalLine := []byte(`{"type":"control_request","request_id":"req-waiting","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}`)
 	if err := s.proc.WriteLine(approvalLine); err != nil {
 		t.Fatalf("write approval: %v", err)
 	}
 
-	// Expect the approval event, then an error event within the timeout.
-	var gotApprovalReq, gotError bool
-	deadline := time.After(3 * time.Second)
-	for !(gotApprovalReq && gotError) {
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventApprovalRequest {
+				goto waitWithoutResolution
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("no approval event")
+		}
+	}
+
+waitWithoutResolution:
+	deadline := time.After(200 * time.Millisecond)
+	for {
 		select {
 		case evt := <-eventCh:
 			switch evt.Kind {
-			case provider.EventApprovalRequest:
-				gotApprovalReq = true
-			case provider.EventError:
-				if containsAny(evt.Content, "approval timed out", "approval timeout") {
-					gotError = true
-				}
+			case provider.EventError, provider.EventApprovalResolved:
+				t.Fatalf("pending approval resolved without user action: %+v", evt)
 			}
 		case <-deadline:
-			t.Fatalf("timeout waiting for approval req + auto-deny error (req=%v err=%v)", gotApprovalReq, gotError)
+			if err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
+				RequestID: "req-waiting",
+				Decision:  "allow",
+			}); err != nil {
+				t.Fatalf("RespondToApproval after waiting: %v", err)
+			}
+			return
 		}
 	}
-
-	// The provider (cat) will have echoed our deny control_response back.
-	// Drain until we see it so we verify the deny was actually written.
-	findDeny := make(chan string, 1)
-	go func() {
-		for evt := range eventCh {
-			_ = evt // drain so the channel is still consumed
-		}
-	}()
-
-	// Inspect the process's written bytes by writing a marker line; our
-	// session's readLoop echoes it. If the session had died we'd never
-	// see the marker.
-	marker := []byte(`{"type":"system","subtype":"future_feature"}`)
-	if err := s.proc.WriteLine(marker); err != nil {
-		t.Fatalf("write marker: %v", err)
-	}
-
-	// Give readLoop a moment to process the marker.
-	time.Sleep(50 * time.Millisecond)
-
-	// Session should still be alive.
-	select {
-	case <-s.proc.Done():
-		t.Fatal("session died after auto-deny; should stay alive for future turns")
-	default:
-	}
-	_ = findDeny
 }
 
-// TestApprovalResponseCancelsTimeoutClaude confirms the happy path: when
-// RespondToApproval arrives before the timeout, no auto-deny fires.
-func TestApprovalResponseCancelsTimeoutClaude(t *testing.T) {
-	s, eventCh := newTestClaudeSessionWithApprovalTimeout(t, 500*time.Millisecond)
+func TestClaudeUserInputWaitsForUserResponseWithoutTimeout(t *testing.T) {
+	s, eventCh := newTestClaudeSessionWithPendingRequests(t)
+
+	uqLine := []byte(`{"type":"control_request","request_id":"uq-waiting","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}}`)
+	if err := s.proc.WriteLine(uqLine); err != nil {
+		t.Fatalf("write user-input request: %v", err)
+	}
+
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventUserInputRequest {
+				goto waitWithoutResolution
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("no user-input request event")
+		}
+	}
+
+waitWithoutResolution:
+	deadline := time.After(200 * time.Millisecond)
+	for {
+		select {
+		case evt := <-eventCh:
+			switch evt.Kind {
+			case provider.EventError, provider.EventUserInputResolved, provider.EventApprovalResolved:
+				t.Fatalf("pending user input resolved without user action: %+v", evt)
+			}
+		case <-deadline:
+			err := s.RespondToUserInput(context.Background(), provider.UserInputResponse{
+				RequestID: "uq-waiting",
+				Decision:  "accept",
+				Answers: map[string]provider.UserInputAnswer{
+					"scope": provider.SingleUserInputAnswer("turn"),
+				},
+			})
+			if err != nil {
+				t.Fatalf("RespondToUserInput after waiting: %v", err)
+			}
+			return
+		}
+	}
+}
+
+func TestApprovalResponseResolvesPendingClaude(t *testing.T) {
+	s, eventCh := newTestClaudeSessionWithPendingRequests(t)
 
 	approvalLine := []byte(`{"type":"control_request","request_id":"req-normal","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}`)
 	if err := s.proc.WriteLine(approvalLine); err != nil {
@@ -1840,7 +1859,6 @@ func TestApprovalResponseCancelsTimeoutClaude(t *testing.T) {
 		}
 	}
 
-	// Respond promptly.
 	if err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
 		RequestID: "req-normal",
 		Decision:  "allow",
@@ -1848,26 +1866,16 @@ func TestApprovalResponseCancelsTimeoutClaude(t *testing.T) {
 		t.Fatalf("RespondToApproval: %v", err)
 	}
 
-	// Wait past the timeout. No EventError with "timeout" should arrive.
-	deadline := time.After(800 * time.Millisecond)
-	for {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind == provider.EventError && containsAny(evt.Content, "approval timed out", "approval timeout") {
-				t.Fatalf("auto-deny fired despite timely response: %v", evt.Content)
-			}
-		case <-deadline:
-			return
-		}
+	if err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
+		RequestID: "req-normal",
+		Decision:  "deny",
+	}); !errors.Is(err, provider.ErrStaleInteractiveRequest) {
+		t.Fatalf("second RespondToApproval error = %v, want ErrStaleInteractiveRequest", err)
 	}
 }
 
-// TestApprovalTimeoutClearedOnCloseClaude exercises the close-mid-pending
-// case: the session tears down while an approval timer is active. The
-// timer must be cancelled cleanly (no spurious auto-deny emitted after
-// Close returns).
-func TestApprovalTimeoutClearedOnCloseClaude(t *testing.T) {
-	s, eventCh := newTestClaudeSessionWithApprovalTimeout(t, 200*time.Millisecond)
+func TestClaudeCloseResolvesPendingApprovalAsLost(t *testing.T) {
+	s, eventCh := newTestClaudeSessionWithPendingRequests(t)
 
 	approvalLine := []byte(`{"type":"control_request","request_id":"req-close","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}`)
 	if err := s.proc.WriteLine(approvalLine); err != nil {
@@ -1886,25 +1894,136 @@ func TestApprovalTimeoutClearedOnCloseClaude(t *testing.T) {
 		}
 	}
 
-	// Close before the timeout fires.
 	if err := s.Close(); err != nil {
 		t.Logf("close returned %v (acceptable)", err)
 	}
 
-	// After close, give the would-be timeout extra time to potentially
-	// fire — it must not.
-	deadline := time.After(500 * time.Millisecond)
+	deadline := time.After(2 * time.Second)
 	for {
 		select {
 		case evt, ok := <-eventCh:
 			if !ok {
-				return
+				t.Fatal("event channel closed before approval resolved")
 			}
-			if evt.Kind == provider.EventError && containsAny(evt.Content, "approval timed out", "approval timeout") {
-				t.Fatalf("auto-deny fired after session closed: %v", evt.Content)
+			if evt.Kind != provider.EventApprovalResolved {
+				continue
 			}
-		case <-deadline:
+			var meta map[string]any
+			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+				t.Fatalf("unmarshal resolved meta: %v", err)
+			}
+			if meta["decision"] != "lost" {
+				t.Fatalf("decision = %v, want lost", meta["decision"])
+			}
 			return
+		case <-deadline:
+			t.Fatal("pending approval was not resolved on close")
+		}
+	}
+}
+
+func TestClaudeProviderExitResolvesPendingUserInputAsLost(t *testing.T) {
+	s, eventCh := newTestClaudeSessionWithPendingRequests(t)
+
+	uqLine := []byte(`{"type":"control_request","request_id":"uq-exit","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}}`)
+	if err := s.proc.WriteLine(uqLine); err != nil {
+		t.Fatalf("write user-input request: %v", err)
+	}
+
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventUserInputRequest {
+				goto closeProvider
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("no user-input request event")
+		}
+	}
+
+closeProvider:
+	if err := s.proc.Close(); err != nil {
+		t.Fatalf("close provider process: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind != provider.EventUserInputResolved {
+				continue
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+				t.Fatalf("unmarshal resolved meta: %v", err)
+			}
+			if meta["decision"] != "lost" {
+				t.Fatalf("decision = %v, want lost", meta["decision"])
+			}
+			if _, ok := meta["answers"].(map[string]any); !ok {
+				t.Fatalf("answers missing or wrong type: %v", meta["answers"])
+			}
+			return
+		case <-deadline:
+			t.Fatal("pending user input was not resolved after provider exit")
+		}
+	}
+}
+
+func TestClaudeCloseResolvesPendingUserInputAsLost(t *testing.T) {
+	s, eventCh := newTestClaudeSessionWithPendingRequests(t)
+
+	uqLine := []byte(`{"type":"control_request","request_id":"uq-close","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}}`)
+	if err := s.proc.WriteLine(uqLine); err != nil {
+		t.Fatalf("write user-input request: %v", err)
+	}
+
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventUserInputRequest {
+				goto closeSession
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("no user-input request event")
+		}
+	}
+
+closeSession:
+	if err := s.Close(); err != nil {
+		t.Logf("close returned %v (acceptable)", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind != provider.EventUserInputResolved {
+				continue
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+				t.Fatalf("unmarshal resolved meta: %v", err)
+			}
+			if meta["decision"] != "lost" {
+				t.Fatalf("decision = %v, want lost", meta["decision"])
+			}
+			if _, ok := meta["answers"].(map[string]any); !ok {
+				t.Fatalf("answers missing or wrong type: %v", meta["answers"])
+			}
+			err := s.RespondToUserInput(context.Background(), provider.UserInputResponse{
+				RequestID: "uq-close",
+				Decision:  "accept",
+				Answers: map[string]provider.UserInputAnswer{
+					"scope": provider.SingleUserInputAnswer("turn"),
+				},
+			})
+			if !errors.Is(err, provider.ErrStaleInteractiveRequest) {
+				t.Fatalf("RespondToUserInput after close error = %v, want ErrStaleInteractiveRequest", err)
+			}
+			return
+		case <-deadline:
+			t.Fatal("pending user input was not resolved on close")
 		}
 	}
 }
@@ -1916,13 +2035,12 @@ func TestApprovalTimeoutClearedOnCloseClaude(t *testing.T) {
 //   - clear the pending approval / user-input state (so the panel
 //     disappears),
 //   - emit the matching resolved event with cancel semantics,
-//   - NOT write a control_response (the CLI is no longer waiting),
-//   - cancel the auto-deny timer so it doesn't fire later.
+//   - NOT write a control_response (the CLI is no longer waiting).
 //
 // Mirror tests for both the approval and user-input flavours. Bug-fix
 // tracker: agent-overflow merry-wirth plan, step 3.
 func TestControlCancelRequestClearsPendingApproval(t *testing.T) {
-	s, eventCh := newTestClaudeSessionWithApprovalTimeout(t, 1500*time.Millisecond)
+	s, eventCh := newTestClaudeSessionWithPendingRequests(t)
 
 	// 1. CLI emits an approval request.
 	approvalLine := []byte(`{"type":"control_request","request_id":"req-cancel","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}`)
@@ -1965,9 +2083,6 @@ func TestControlCancelRequestClearsPendingApproval(t *testing.T) {
 				}
 				gotResolved = true
 			}
-			if evt.Kind == provider.EventError && containsAny(evt.Content, "approval timed out", "approval timeout") {
-				t.Fatalf("unexpected auto-deny error after cancel: %v", evt.Content)
-			}
 		case <-deadline:
 			t.Fatal("never saw EventApprovalResolved for cancelled request")
 		}
@@ -1992,7 +2107,7 @@ func TestControlCancelRequestClearsPendingApproval(t *testing.T) {
 // resolved event must carry empty answers and decision="cancel" so
 // the panel above the composer clears.
 func TestControlCancelRequestClearsPendingUserInput(t *testing.T) {
-	s, eventCh := newTestClaudeSessionWithApprovalTimeout(t, 1500*time.Millisecond)
+	s, eventCh := newTestClaudeSessionWithPendingRequests(t)
 
 	uqLine := []byte(`{"type":"control_request","request_id":"uq-cancel","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"id":"q","header":"Pick","question":"a or b?","options":[{"label":"a","description":"opt a"},{"label":"b","description":"opt b"}]}]}}}`)
 	if err := s.proc.WriteLine(uqLine); err != nil {
@@ -2037,18 +2152,15 @@ func TestControlCancelRequestClearsPendingUserInput(t *testing.T) {
 				}
 				return
 			}
-			if evt.Kind == provider.EventError && containsAny(evt.Content, "user input timed out", "user input timeout") {
-				t.Fatalf("unexpected auto-deny error after cancel: %v", evt.Content)
-			}
 		case <-deadline:
 			t.Fatal("never saw EventUserInputResolved for cancelled request")
 		}
 	}
 }
 
-// newTestClaudeSessionWithApprovalTimeout wires up a cat-backed session
-// with a custom approval watchdog window for Bug B3 tests.
-func newTestClaudeSessionWithApprovalTimeout(t *testing.T, timeout time.Duration) (*Session, <-chan provider.ProviderEvent) {
+// newTestClaudeSessionWithPendingRequests wires up a cat-backed session
+// for tests that need a live read loop plus pending interactive requests.
+func newTestClaudeSessionWithPendingRequests(t *testing.T) (*Session, <-chan provider.ProviderEvent) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
@@ -2062,9 +2174,8 @@ func newTestClaudeSessionWithApprovalTimeout(t *testing.T, timeout time.Duration
 		onEvent: func(evt provider.ProviderEvent) {
 			eventCh <- evt
 		},
-		cancel:          cancel,
-		readDone:        make(chan struct{}),
-		approvalTimeout: timeout,
+		cancel:   cancel,
+		readDone: make(chan struct{}),
 	}
 	go s.readLoop()
 	t.Cleanup(func() {

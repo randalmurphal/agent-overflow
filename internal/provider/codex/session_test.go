@@ -803,7 +803,7 @@ func TestSendTurnStartFormat(t *testing.T) {
 
 func TestRespondToApprovalAccept(t *testing.T) {
 	s, _ := newTestCodexSession(t)
-	s.startApprovalTimer(42, provider.EventApprovalResolved)
+	s.trackPendingApproval(42, provider.EventApprovalResolved)
 
 	// Call the actual RespondToApproval method with an accept decision.
 	// The cat-backed session writes the JSON-RPC response to stdin successfully.
@@ -818,7 +818,7 @@ func TestRespondToApprovalAccept(t *testing.T) {
 
 func TestRespondToApprovalDecline(t *testing.T) {
 	s, _ := newTestCodexSession(t)
-	s.startApprovalTimer(42, provider.EventApprovalResolved)
+	s.trackPendingApproval(42, provider.EventApprovalResolved)
 
 	// Call the actual RespondToApproval method with a decline decision.
 	err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
@@ -1826,46 +1826,6 @@ func newTestCodexSession(t *testing.T) (*Session, <-chan provider.ProviderEvent)
 	return s, eventCh
 }
 
-// newTestCodexSessionWithApprovalTimeout mirrors newTestCodexSession with
-// a custom approval-watchdog window for Bug B3 tests. Codex approval
-// requests come in as JSON-RPC server requests with integer IDs; the
-// session auto-denies if the user fails to respond in time.
-func newTestCodexSessionWithApprovalTimeout(t *testing.T, timeout time.Duration) (*Session, <-chan provider.ProviderEvent) {
-	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
-	if err != nil {
-		t.Fatalf("spawn cat: %v", err)
-	}
-	eventCh := make(chan provider.ProviderEvent, 200)
-	s := &Session{
-		proc:            proc,
-		threadID:        testThread,
-		codexThreadID:   "codex-thread-1",
-		pending:         make(map[int64]chan json.RawMessage),
-		approvalTimeout: timeout,
-		onEvent: func(evt provider.ProviderEvent) {
-			eventCh <- evt
-		},
-		cancel: cancel,
-	}
-	go s.readLoop()
-	t.Cleanup(func() {
-		cancel()
-		proc.Close()
-	})
-	return s, eventCh
-}
-
-func containsAny(s string, subs ...string) bool {
-	for _, sub := range subs {
-		if strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
-}
-
 // TestTurnStartEmittedExactlyOncePerTurn exercises Bug B6: one user
 // turn must produce exactly one EventTurnStart. Pre-fix, Send's RPC
 // response emitter and dispatchLine's turn/started notification path
@@ -2076,75 +2036,68 @@ drain:
 	}
 }
 
-// TestApprovalTimeoutAutoDeniesCodex exercises Bug B3 for Codex: when
-// an approval arrives and no RespondToApproval follows within the timeout,
-// the session writes a decline response to the provider and emits an
-// EventError. The subprocess must stay alive.
-func TestApprovalTimeoutAutoDeniesCodex(t *testing.T) {
-	s, eventCh := newTestCodexSessionWithApprovalTimeout(t, 100*time.Millisecond)
+func TestCodexApprovalWaitsForUserResponseWithoutTimeout(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
 
-	// Drive an approval server request through dispatchLine; rpcID 42 is
-	// the wire identifier the auto-deny must echo back.
 	line := []byte(`{"jsonrpc":"2.0","id":42,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
 	s.dispatchLine(line)
 
-	var gotApproval, gotError bool
-	deadline := time.After(3 * time.Second)
-	for !(gotApproval && gotError) {
+	evt := codexWaitEvent(t, eventCh)
+	if evt.Kind != provider.EventApprovalRequest {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventApprovalRequest)
+	}
+
+	deadline := time.After(200 * time.Millisecond)
+	for {
 		select {
 		case evt := <-eventCh:
 			switch evt.Kind {
-			case provider.EventApprovalRequest:
-				gotApproval = true
-			case provider.EventError:
-				if containsAny(evt.Content, "approval timed out", "approval timeout") {
-					gotError = true
-				}
+			case provider.EventError, provider.EventApprovalResolved:
+				t.Fatalf("pending approval resolved without user action: %+v", evt)
 			}
 		case <-deadline:
-			t.Fatalf("timeout (approval=%v err=%v)", gotApproval, gotError)
+			if err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
+				RequestID: "42",
+				Decision:  "allow",
+			}); err != nil {
+				t.Fatalf("RespondToApproval after waiting: %v", err)
+			}
+			return
 		}
-	}
-
-	// Session must stay alive — only the single approval request is resolved.
-	select {
-	case <-s.proc.Done():
-		t.Fatal("codex session died after auto-deny")
-	default:
 	}
 }
 
-func TestUserInputTimeoutResolvesUserInputChannelCodex(t *testing.T) {
-	s, eventCh := newTestCodexSessionWithApprovalTimeout(t, 100*time.Millisecond)
+func TestCodexUserInputWaitsForUserResponseWithoutTimeout(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":43,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
 	s.dispatchLine(line)
 
-	var gotRequest, gotResolved bool
-	deadline := time.After(3 * time.Second)
-	for !(gotRequest && gotResolved) {
+	evt := codexWaitEvent(t, eventCh)
+	if evt.Kind != provider.EventUserInputRequest {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventUserInputRequest)
+	}
+
+	deadline := time.After(200 * time.Millisecond)
+	for {
 		select {
 		case evt := <-eventCh:
 			switch evt.Kind {
-			case provider.EventUserInputRequest:
-				gotRequest = true
-			case provider.EventUserInputResolved:
-				gotResolved = true
-				var meta struct {
-					RequestID string `json:"requestId"`
-					Decision  string `json:"decision"`
-				}
-				if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-					t.Fatalf("unmarshal resolved meta: %v", err)
-				}
-				if meta.RequestID != "43" || meta.Decision != "timeout" {
-					t.Fatalf("resolved meta = (%q, %q), want (43, timeout)", meta.RequestID, meta.Decision)
-				}
-			case provider.EventApprovalResolved:
-				t.Fatalf("user input timeout resolved on approval channel: %+v", evt)
+			case provider.EventError, provider.EventUserInputResolved, provider.EventApprovalResolved:
+				t.Fatalf("pending user input resolved without user action: %+v", evt)
 			}
 		case <-deadline:
-			t.Fatalf("timeout (request=%v resolved=%v)", gotRequest, gotResolved)
+			err := s.RespondToUserInput(context.Background(), provider.UserInputResponse{
+				RequestID: "43",
+				Decision:  "accept",
+				Answers: map[string]provider.UserInputAnswer{
+					"scope": provider.SingleUserInputAnswer("turn"),
+				},
+			})
+			if err != nil {
+				t.Fatalf("RespondToUserInput after waiting: %v", err)
+			}
+			return
 		}
 	}
 }
@@ -2164,9 +2117,8 @@ func TestCodexRejectsRequestUserInputWithoutQuestions(t *testing.T) {
 	}
 }
 
-// TestApprovalResponseCancelsTimeoutCodex confirms the happy path.
-func TestApprovalResponseCancelsTimeoutCodex(t *testing.T) {
-	s, eventCh := newTestCodexSessionWithApprovalTimeout(t, 500*time.Millisecond)
+func TestApprovalResponseResolvesPendingCodex(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
 	s.dispatchLine(line)
@@ -2189,23 +2141,16 @@ respond:
 		t.Fatalf("RespondToApproval: %v", err)
 	}
 
-	deadline := time.After(800 * time.Millisecond)
-	for {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind == provider.EventError && containsAny(evt.Content, "approval timed out", "approval timeout") {
-				t.Fatalf("auto-deny fired despite timely response: %v", evt.Content)
-			}
-		case <-deadline:
-			return
-		}
+	if err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
+		RequestID: "7",
+		Decision:  "allow",
+	}); !errors.Is(err, provider.ErrStaleInteractiveRequest) {
+		t.Fatalf("second RespondToApproval error = %v, want ErrStaleInteractiveRequest", err)
 	}
 }
 
-// TestApprovalTimeoutClearedOnCloseCodex exercises Close with a pending
-// approval — the timer must be cancelled cleanly.
-func TestApprovalTimeoutClearedOnCloseCodex(t *testing.T) {
-	s, eventCh := newTestCodexSessionWithApprovalTimeout(t, 200*time.Millisecond)
+func TestCodexCloseResolvesPendingApprovalAsLost(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":9,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
 	s.dispatchLine(line)
@@ -2225,18 +2170,26 @@ closeNow:
 		t.Logf("close returned %v (acceptable)", err)
 	}
 
-	deadline := time.After(500 * time.Millisecond)
+	deadline := time.After(2 * time.Second)
 	for {
 		select {
 		case evt, ok := <-eventCh:
 			if !ok {
-				return
+				t.Fatal("event channel closed before approval resolved")
 			}
-			if evt.Kind == provider.EventError && containsAny(evt.Content, "approval timed out", "approval timeout") {
-				t.Fatalf("auto-deny fired after session closed: %v", evt.Content)
+			if evt.Kind != provider.EventApprovalResolved {
+				continue
 			}
-		case <-deadline:
+			var meta map[string]any
+			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+				t.Fatalf("unmarshal resolved meta: %v", err)
+			}
+			if meta["decision"] != "lost" {
+				t.Fatalf("decision = %v, want lost", meta["decision"])
+			}
 			return
+		case <-deadline:
+			t.Fatal("pending approval was not resolved on close")
 		}
 	}
 }
@@ -2248,7 +2201,7 @@ closeNow:
 // beyond t3-code's CodexSessionRuntime.interruptTurn, which leaves the
 // local Deferred parked.
 func TestCodexInterruptDrainsPendingApproval(t *testing.T) {
-	s, eventCh := newTestCodexSessionWithApprovalTimeout(t, 5*time.Second)
+	s, eventCh := newTestCodexSession(t)
 
 	// Need an active turn for Interrupt to attempt the RPC at all —
 	// before that gate the function returns "no active turn".
@@ -2310,7 +2263,7 @@ interrupt:
 // carry decision="cancel" AND answers={} so the frontend's user-input
 // panel clears with a well-formed payload.
 func TestCodexInterruptDrainsPendingUserInput(t *testing.T) {
-	s, eventCh := newTestCodexSessionWithApprovalTimeout(t, 5*time.Second)
+	s, eventCh := newTestCodexSession(t)
 
 	s.mu.Lock()
 	s.activeTurnID = "turn-1"
@@ -2373,7 +2326,7 @@ interrupt:
 // `answers` map alongside the historic decision="lost". The frontend
 // type contract requires the field on every UserInputResolved meta.
 func TestCodexCloseDrainsPendingUserInputWithAnswers(t *testing.T) {
-	s, eventCh := newTestCodexSessionWithApprovalTimeout(t, 5*time.Second)
+	s, eventCh := newTestCodexSession(t)
 
 	line := []byte(`{"jsonrpc":"2.0","id":13,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
 	s.dispatchLine(line)
@@ -2427,6 +2380,45 @@ closeNow:
 	}
 }
 
+func TestCodexProviderExitResolvesPendingUserInputAsLost(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
+
+	line := []byte(`{"jsonrpc":"2.0","id":14,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
+	s.dispatchLine(line)
+
+	evt := codexWaitEvent(t, eventCh)
+	if evt.Kind != provider.EventUserInputRequest {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventUserInputRequest)
+	}
+
+	if err := s.proc.Close(); err != nil {
+		t.Fatalf("close provider process: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind != provider.EventUserInputResolved {
+				continue
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+				t.Fatalf("unmarshal resolved meta: %v", err)
+			}
+			if meta["decision"] != "lost" {
+				t.Fatalf("decision = %v, want lost", meta["decision"])
+			}
+			if _, ok := meta["answers"].(map[string]any); !ok {
+				t.Fatalf("answers missing or wrong type: %v", meta["answers"])
+			}
+			return
+		case <-deadline:
+			t.Fatal("pending user input was not resolved after provider exit")
+		}
+	}
+}
+
 // TestCodexDrainWritesTurnTransitionError verifies the wire shape of
 // the JSON-RPC error our drain writes to the Codex app-server. The
 // `data.reason = "turnTransition"` field is the magic value Codex uses
@@ -2465,9 +2457,9 @@ func TestCodexDrainWritesTurnTransitionError(t *testing.T) {
 
 	// Seed a pending approval (rpcID 99) so the drain has something
 	// to write a response for.
-	s.startApprovalTimer(99, provider.EventApprovalResolved)
+	s.trackPendingApproval(99, provider.EventApprovalResolved)
 
-	s.drainPendingApprovals("cancel", false)
+	s.drainPendingApprovals("cancel", false, true)
 
 	// Give the capture script a moment to flush, then read.
 	deadline := time.Now().Add(2 * time.Second)
@@ -2655,7 +2647,7 @@ func TestBuildApprovalResponseResultInvalidRequestID(t *testing.T) {
 
 func TestCodexRespondToApprovalMethod(t *testing.T) {
 	s, _ := newTestCodexSession(t)
-	s.startApprovalTimer(42, provider.EventApprovalResolved)
+	s.trackPendingApproval(42, provider.EventApprovalResolved)
 
 	err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
 		RequestID: "42",
@@ -2886,6 +2878,43 @@ func TestCodexHandleServerRequestPermission(t *testing.T) {
 	}
 	if approval.Permissions.FileSystem.Read[0] != "/tmp/project/src" {
 		t.Errorf("fileSystem.read[0]: got %q, want %q", approval.Permissions.FileSystem.Read[0], "/tmp/project/src")
+	}
+}
+
+func TestCodexPermissionApprovalWaitsForUserResponseWithoutTimeout(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
+
+	line := []byte(`{"jsonrpc":"2.0","id":24,"method":"item/permissions/requestApproval","params":{"turnId":"turn-24","itemId":"item-24","reason":"Need broader write access","permissions":{"fileSystem":{"read":["/tmp/project/src"]}}}}`)
+	s.dispatchLine(line)
+
+	evt := codexWaitEvent(t, eventCh)
+	if evt.Kind != provider.EventApprovalRequest {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventApprovalRequest)
+	}
+
+	deadline := time.After(200 * time.Millisecond)
+	for {
+		select {
+		case evt := <-eventCh:
+			switch evt.Kind {
+			case provider.EventError, provider.EventApprovalResolved:
+				t.Fatalf("pending permission approval resolved without user action: %+v", evt)
+			}
+		case <-deadline:
+			if err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
+				RequestID: "24",
+				Decision:  "allow",
+			}); err != nil {
+				t.Fatalf("RespondToApproval after waiting: %v", err)
+			}
+			if err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
+				RequestID: "24",
+				Decision:  "allow",
+			}); !errors.Is(err, provider.ErrStaleInteractiveRequest) {
+				t.Fatalf("second RespondToApproval error = %v, want ErrStaleInteractiveRequest", err)
+			}
+			return
+		}
 	}
 }
 
@@ -3668,7 +3697,7 @@ func TestCodexHandleServerRequestElicitation(t *testing.T) {
 	}
 }
 
-func TestCodexMcpElicitationTimeoutWritesDeclineAction(t *testing.T) {
+func TestCodexMcpElicitationWaitsForUserResponseWithoutTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
@@ -3683,9 +3712,8 @@ func TestCodexMcpElicitationTimeoutWritesDeclineAction(t *testing.T) {
 	}
 	eventCh := make(chan provider.ProviderEvent, 10)
 	s := &Session{
-		proc:            proc,
-		threadID:        testThread,
-		approvalTimeout: 50 * time.Millisecond,
+		proc:     proc,
+		threadID: testThread,
 		onEvent: func(evt provider.ProviderEvent) {
 			eventCh <- evt
 		},
@@ -3701,15 +3729,31 @@ func TestCodexMcpElicitationTimeoutWritesDeclineAction(t *testing.T) {
 		select {
 		case evt := <-eventCh:
 			if evt.Kind == provider.EventApprovalRequest {
-				goto waitForTimeoutResponse
+				goto waitWithoutResponse
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatal("timeout waiting for MCP elicitation request")
 		}
 	}
 
-waitForTimeoutResponse:
-	var captured []byte
+waitWithoutResponse:
+	time.Sleep(200 * time.Millisecond)
+	captured, err := os.ReadFile(capturePath)
+	if err == nil && len(captured) > 0 {
+		t.Fatalf("MCP elicitation wrote response without user action: %s", captured)
+	}
+
+	err = s.RespondToApproval(context.Background(), provider.ApprovalResponse{
+		RequestID: "5",
+		Elicitation: &provider.ElicitationResolution{
+			Action:  "confirm",
+			Content: json.RawMessage(`{"accepted":true}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("RespondToApproval after waiting: %v", err)
+	}
+
 	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
 		captured, err = os.ReadFile(capturePath)
 		if err == nil && len(captured) > 0 {
@@ -3718,14 +3762,12 @@ waitForTimeoutResponse:
 		time.Sleep(10 * time.Millisecond)
 	}
 	if len(captured) == 0 {
-		t.Fatalf("capture file was empty: %v", err)
+		t.Fatalf("MCP elicitation response was not written: %v", err)
 	}
-
 	var frame struct {
 		ID     int64 `json:"id"`
 		Result struct {
-			Action   string `json:"action"`
-			Decision string `json:"decision"`
+			Action string `json:"action"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(captured, &frame); err != nil {
@@ -3734,11 +3776,8 @@ waitForTimeoutResponse:
 	if frame.ID != 5 {
 		t.Fatalf("id = %d, want 5", frame.ID)
 	}
-	if frame.Result.Action != "decline" {
-		t.Fatalf("action = %q, want decline", frame.Result.Action)
-	}
-	if frame.Result.Decision != "" {
-		t.Fatalf("decision should be omitted for MCP elicitation timeout, got %q", frame.Result.Decision)
+	if frame.Result.Action != "confirm" {
+		t.Fatalf("action = %q, want confirm", frame.Result.Action)
 	}
 }
 

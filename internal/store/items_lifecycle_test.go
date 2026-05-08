@@ -1361,7 +1361,6 @@ func TestItemsDecisionCHECKRejectsBogusValue(t *testing.T) {
 		{name: "approved", decision: "approved"},
 		{name: "declined", decision: "declined"},
 		{name: "amended", decision: "amended"},
-		{name: "timeout", decision: "timeout"},
 		{name: "lost", decision: "lost"},
 	}
 	for i, tc := range cases {

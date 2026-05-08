@@ -332,7 +332,7 @@ type ApprovalEvent struct {
 	ThreadID  string           `json:"threadId,omitempty"`
 	Request   *ApprovalRequest `json:"request,omitempty"`
 	RequestID string           `json:"requestId,omitempty"`
-	Decision  string           `json:"decision,omitempty"` // approved|declined|amended|timeout|lost|failed
+	Decision  string           `json:"decision,omitempty"` // approved|declined|amended|lost|failed
 	Detail    string           `json:"detail,omitempty"`
 }
 
@@ -357,7 +357,7 @@ type UserInputEvent struct {
 	ThreadID  string            `json:"threadId,omitempty"`
 	Request   *UserInputRequest `json:"request,omitempty"`
 	RequestID string            `json:"requestId,omitempty"`
-	Decision  string            `json:"decision,omitempty"` // answered|declined|timeout|lost|failed
+	Decision  string            `json:"decision,omitempty"` // answered|declined|lost|failed
 	Detail    string            `json:"detail,omitempty"`
 }
 

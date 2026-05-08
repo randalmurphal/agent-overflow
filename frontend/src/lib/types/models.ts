@@ -138,7 +138,7 @@ export interface Item {
   isBackground?: boolean;
   completionOf?: string;
   toolName?: string;
-  decision?: "" | "approved" | "declined" | "amended" | "timeout" | "lost";
+  decision?: "" | "approved" | "declined" | "amended" | "lost";
   meta?: string;
   createdAt: number;
   updatedAt: number;

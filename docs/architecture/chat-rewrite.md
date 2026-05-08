@@ -80,8 +80,8 @@ completion_of   optional fk to the tool_call this row completes
 tool_name       optional string (for kind=tool_call: bash/edit/read/etc.)
                 drives the per-kind header dispatch in the renderer
 decision        optional enum (tool_call lifecycle annotation):
-                approved | declined | amended | timeout | lost
-                approved/declined/amended/timeout populate from
+                approved | declined | amended | lost
+                approved/declined/amended populate from
                 approval resolutions; lost populates on restart
                 for approvals OR backgrounded tool_calls that died
                 with their session. Renders as a small chip on
@@ -776,8 +776,6 @@ the frontend, persisted as a `decision` field on the underlying
   not a prior draft. If audit of the ORIGINAL ask matters, that
   belongs to the approval request's meta (preserved in payload, not
   in the item row).
-- `timeout`: provider timed out the request. Treated as decline. Tool
-  status flips to `declined`.
 - `lost`: the app or provider session died before the user could
   respond. See "Approval lost on restart" below.
 
@@ -810,7 +808,7 @@ user's decline is visibly lost. The created tool_call row carries
 the permanent record of what was asked and that it was rejected.
 
 **Decision chip scope**: the chip (`✔ approved`, `✗ declined`,
-`~ amended`, `⏱ timeout`, `⊘ lost`) is meaningful for
+`~ amended`, `⊘ lost`) is meaningful for
 **tool-flavored approvals** (kinds: `command`, `file-read`,
 `file-change`, `permission`). Non-tool approval kinds
 (`user-input`, `mcp-elicitation`) don't create tool_calls — they
@@ -823,7 +821,7 @@ on resolve.
 Scrolling back you can see what was approved/declined/lost when,
 without polluting the timeline with extra items. The tool_call's
 `summary` shows the input that was ultimately used — the original
-for approved/declined/timeout/lost, the modified for amended.
+for approved/declined/lost, the modified for amended.
 
 **AskUser-style tools** (an explicit "ask the user a question" tool)
 are NORMAL `tool_call` items — the question is in the summary, the
@@ -1046,7 +1044,7 @@ type ApprovalEvent struct {
     Action    string              `json:"action"`    // "request" | "resolve"
     Request   *ApprovalRequest    `json:"request,omitempty"`
     RequestID string              `json:"requestId,omitempty"`
-    Decision  string              `json:"decision,omitempty"` // approved|declined|amended|timeout|lost
+    Decision  string              `json:"decision,omitempty"` // approved|declined|amended|lost
 }
 ```
 
@@ -1326,7 +1324,7 @@ Triggered by any of:
    the reader loop detects and calls the handler.
 3. **`EventError` with `meta.fatal == true`** — the emitting adapter
    sets the fatal flag to signal "this error ended the turn."
-   Non-fatal errors (transient tool failures, approval timeouts,
+   Non-fatal errors (transient tool failures,
    Codex `turn/completed{status:"failed"}` with a recoverable-ish
    error) do NOT flip streaming items; they create an `error` item
    and let the turn's own completion signal land.

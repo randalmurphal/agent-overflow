@@ -93,7 +93,7 @@ export interface ApprovalEvent {
   threadId?: string;
   request?: ApprovalRequest;
   requestId?: string;
-  decision?: '' | 'approved' | 'declined' | 'amended' | 'timeout' | 'lost' | 'failed';
+  decision?: '' | 'approved' | 'declined' | 'amended' | 'lost' | 'failed';
   detail?: string;
 }
 
@@ -112,7 +112,7 @@ export interface UserInputEvent {
   threadId?: string;
   request?: UserInputRequest;
   requestId?: string;
-  decision?: '' | 'answered' | 'declined' | 'timeout' | 'lost' | 'failed';
+  decision?: '' | 'answered' | 'declined' | 'lost' | 'failed';
   detail?: string;
 }
 

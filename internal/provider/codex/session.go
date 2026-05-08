@@ -19,12 +19,6 @@ import (
 	"agent-overflow/internal/stringsx"
 )
 
-// DefaultApprovalTimeout is the ceiling on how long Codex will wait for the
-// user to answer a tool-use approval before auto-declining. Mirrors the
-// Claude session constant so both providers behave identically from the
-// user's perspective.
-const DefaultApprovalTimeout = 10 * time.Minute
-
 const (
 	maxPlanDeltaBufferBytes = 256 * 1024
 	maxPlanDeltaBuffers     = 16
@@ -32,9 +26,8 @@ const (
 )
 
 // ErrApprovalAlreadyResolved is returned by RespondToApproval when the
-// request ID has already been answered (either by an earlier response or
-// by the auto-deny timeout). Prevents a second write landing at the
-// provider with a stale decision.
+// request ID has already been answered. Prevents a second write landing
+// at the provider with a stale decision.
 var ErrApprovalAlreadyResolved = fmt.Errorf("codex: approval already resolved: %w", provider.ErrStaleInteractiveRequest)
 
 // ErrNoActiveTurn is returned by Steer when there is no active turn to
@@ -73,14 +66,12 @@ type Session struct {
 	cancel             context.CancelFunc
 	closing            atomic.Bool
 	readDone           chan struct{}
-	// approvalTimeout overrides DefaultApprovalTimeout when non-zero.
-	approvalTimeout time.Duration
 	// approvalsMu guards pendingApprovals, resolvedApprovals, and
 	// approvalsClosed.
 	approvalsMu sync.Mutex
 	// pendingApprovals maps request ID (string form, matching the
-	// RequestID field of ApprovalResponse) to the cancel channel for
-	// the auto-deny timer goroutine.
+	// RequestID field of ApprovalResponse) to the in-flight request
+	// metadata needed to resolve, cancel, or drain it.
 	pendingApprovals map[string]*pendingApproval
 	// resolvedApprovals remembers request IDs that have already been
 	// answered so a second RespondToApproval returns
@@ -88,7 +79,7 @@ type Session struct {
 	// another response to the provider.
 	resolvedApprovals map[string]struct{}
 	// approvalsClosed is set by Close so late-arriving approvals don't
-	// schedule new timers after teardown.
+	// register new pending requests after teardown.
 	approvalsClosed bool
 	// seenTurnStarts dedupes EventTurnStart emissions (Bug B6). Keyed by
 	// turnID. Entries are added by claimTurnStart and cleared by
@@ -175,12 +166,11 @@ type planBuffer struct {
 	truncated bool
 }
 
-// pendingApproval tracks one in-flight approval so the timer can be
-// cancelled when the user responds (Bug B3) or the session closes.
+// pendingApproval tracks one in-flight interactive request so user
+// responses, provider cancels, interrupt drains, and session close all
+// resolve the same request ID exactly once.
 type pendingApproval struct {
-	cancel              chan struct{}
-	resolveKind         provider.EventKind
-	timeoutResponseKind string
+	resolveKind provider.EventKind
 }
 
 // Config for creating a Codex session.
@@ -459,7 +449,7 @@ func (s *Session) Interrupt(ctx context.Context) error {
 		"turnId":   turnID,
 	})
 
-	s.drainPendingApprovals("cancel", false)
+	s.drainPendingApprovals("cancel", false, true)
 	return err
 }
 
@@ -769,6 +759,11 @@ func (s *Session) readLoop() {
 			delete(s.pending, id)
 		}
 		s.mu.Unlock()
+
+		// If the app-server exits while an approval or user-input request is
+		// waiting, resolve it as lost so the frontend prompt does not linger.
+		// The process is already gone, so only emit local resolution events.
+		s.drainPendingApprovals("lost", true, false)
 
 		if !s.closing.Load() {
 			exitErr := provider.WaitProcessExitErr(s.proc)
@@ -2179,12 +2174,12 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 		"execCommandApproval":
 
 		meta := buildApprovalMeta(s.threadID, turnID, method, rpcID, params)
-		s.startApprovalTimer(rpcID, provider.EventApprovalResolved)
+		s.trackPendingApproval(rpcID, provider.EventApprovalResolved)
 		s.onEvent(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
 
 	case "mcpServer/elicitation/request":
 		meta := buildElicitationMeta(s.threadID, turnID, rpcID, params)
-		s.startApprovalTimer(rpcID, provider.EventApprovalResolved, "mcp-elicitation")
+		s.trackPendingApproval(rpcID, provider.EventApprovalResolved)
 		s.onEvent(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
 
 	case "item/tool/call", "dynamicToolCall":
@@ -2209,12 +2204,12 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 			return
 		}
 		meta := buildUserInputMetaFromQuestions(s.threadID, turnID, rpcID, questions)
-		s.startApprovalTimer(rpcID, provider.EventUserInputResolved)
+		s.trackPendingApproval(rpcID, provider.EventUserInputResolved)
 		s.onEvent(buildUserInputEvent(s.threadID, turnID, itemID, meta, line))
 
 	case "item/permissions/requestApproval":
 		meta := buildPermissionMeta(s.threadID, turnID, rpcID, params)
-		s.startApprovalTimer(rpcID, provider.EventApprovalResolved)
+		s.trackPendingApproval(rpcID, provider.EventApprovalResolved)
 		s.onEvent(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
 
 	default:
@@ -2224,16 +2219,11 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 	}
 }
 
-// startApprovalTimer registers the approval and arms the auto-deny timer.
-// Uses the numeric JSON-RPC id rendered as a string so dedup (Bug B9) and
-// response routing both use the same key.
-func (s *Session) startApprovalTimer(rpcID int64, resolveKind provider.EventKind, timeoutResponseKind ...string) {
+// trackPendingApproval registers an interactive request. Uses the numeric
+// JSON-RPC id rendered as a string so dedup (Bug B9) and response routing
+// both use the same key.
+func (s *Session) trackPendingApproval(rpcID int64, resolveKind provider.EventKind) {
 	requestID := fmt.Sprintf("%d", rpcID)
-	timeout := s.approvalTimeout
-	if timeout <= 0 {
-		timeout = DefaultApprovalTimeout
-	}
-	cancel := make(chan struct{})
 	s.approvalsMu.Lock()
 	if s.approvalsClosed {
 		s.approvalsMu.Unlock()
@@ -2242,86 +2232,19 @@ func (s *Session) startApprovalTimer(rpcID int64, resolveKind provider.EventKind
 	if s.pendingApprovals == nil {
 		s.pendingApprovals = make(map[string]*pendingApproval)
 	}
-	if existing, ok := s.pendingApprovals[requestID]; ok {
-		close(existing.cancel)
-	}
-	responseKind := ""
-	if len(timeoutResponseKind) > 0 {
-		responseKind = timeoutResponseKind[0]
-	}
 	s.pendingApprovals[requestID] = &pendingApproval{
-		cancel:              cancel,
-		resolveKind:         resolveKind,
-		timeoutResponseKind: responseKind,
+		resolveKind: resolveKind,
 	}
-	// Starting a new timer re-opens the ID: e.g. if we previously
+	// Starting a new pending request re-opens the ID: e.g. if we previously
 	// resolved it and the provider re-sent the request (unusual, but
 	// cheap to support).
 	delete(s.resolvedApprovals, requestID)
 	s.approvalsMu.Unlock()
-	go s.runApprovalTimer(rpcID, requestID, timeout, cancel, resolveKind, responseKind)
-}
-
-// runApprovalTimer fires the auto-decline when the user fails to respond
-// in time. The cancel signal means the user answered first or the session
-// is shutting down.
-func (s *Session) runApprovalTimer(rpcID int64, requestID string, timeout time.Duration, cancel <-chan struct{}, resolveKind provider.EventKind, timeoutResponseKind string) {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-cancel:
-		return
-	case <-timer.C:
-	}
-
-	if !s.claimApproval(requestID, resolveKind) {
-		return
-	}
-
-	timeoutSubject := "approval"
-	if resolveKind == provider.EventUserInputResolved {
-		timeoutSubject = "user input"
-	} else if timeoutResponseKind == "mcp-elicitation" {
-		timeoutSubject = "MCP elicitation"
-	}
-	s.onEvent(provider.ProviderEvent{
-		Kind:      provider.EventError,
-		ThreadID:  s.threadID,
-		Content:   fmt.Sprintf("codex: %s timed out for request %s after %s — auto-denied to keep session alive", timeoutSubject, requestID, timeout),
-		Timestamp: time.Now(),
-	})
-	meta, _ := json.Marshal(map[string]any{
-		"requestId": requestID,
-		"decision":  "timeout",
-	})
-	s.onEvent(provider.ProviderEvent{
-		Kind:      resolveKind,
-		ThreadID:  s.threadID,
-		ItemID:    requestID,
-		Meta:      meta,
-		Timestamp: time.Now(),
-	})
-	if resolveKind == provider.EventUserInputResolved {
-		if err := s.writeErrorResponse(rpcID, -32000, "user input timed out"); err != nil {
-			log.Printf("codex: write user-input timeout for %s: %v", requestID, err)
-		}
-		return
-	}
-	if timeoutResponseKind == "mcp-elicitation" {
-		if err := s.writeResponse(rpcID, map[string]any{"action": "decline"}); err != nil {
-			log.Printf("codex: write MCP elicitation timeout for %s: %v", requestID, err)
-		}
-		return
-	}
-	if err := s.writeResponse(rpcID, map[string]any{"decision": "decline"}); err != nil {
-		log.Printf("codex: write auto-deny for %s: %v", requestID, err)
-	}
 }
 
 // claimApproval returns true when the caller is the first to answer the
 // approval for requestID. False means either we already answered (Bug B9
-// dedup) or the session is closing. Cancels any pending auto-deny timer
-// so the goroutine exits.
+// dedup) or the session is closing.
 func (s *Session) claimApproval(requestID string, expectedKind provider.EventKind) bool {
 	s.approvalsMu.Lock()
 	if _, already := s.resolvedApprovals[requestID]; already {
@@ -2347,9 +2270,6 @@ func (s *Session) claimApproval(requestID string, expectedKind provider.EventKin
 	}
 	s.resolvedApprovals[requestID] = struct{}{}
 	s.approvalsMu.Unlock()
-	if hadPending {
-		close(pending.cancel)
-	}
 	return true
 }
 
@@ -2358,28 +2278,28 @@ func (s *Session) claimApproval(requestID string, expectedKind provider.EventKin
 // with `decision: "lost"` (the session-died-mid-prompt signal triage
 // uses to flip rows to errored).
 func (s *Session) clearPendingApprovals() {
-	s.drainPendingApprovals("lost", true)
+	s.drainPendingApprovals("lost", true, true)
 }
 
 // drainPendingApprovals resolves every outstanding approval and
 // user-input request. For each one we:
 //
-//  1. Cancel the auto-deny timer so its goroutine exits.
-//  2. Write a JSON-RPC response (decline / error) to the provider so
+//  1. Optionally write a JSON-RPC response (decline / error) to the provider so
 //     the in-flight server request unblocks. Skipped silently when the
-//     request ID is malformed (defensive only — startApprovalTimer
-//     formats it from int64).
-//  3. Emit the matching EventApprovalResolved / EventUserInputResolved
+//     request ID is malformed (defensive only — trackPendingApproval
+//     formats it from int64) or when writeResponse is false because the
+//     provider process already exited.
+//  2. Emit the matching EventApprovalResolved / EventUserInputResolved
 //     so the frontend clears its prompt panel. User-input variants
 //     additionally carry an empty `answers: {}` map to satisfy the
 //     frontend type contract.
 //
 // closeSession=true is the Close path — set approvalsClosed so late
-// approval requests can't schedule fresh timers, and drop the
+// approval requests can't register as pending, and drop the
 // resolvedApprovals dedup set since no duplicate response can reach
 // the provider after Close. closeSession=false is the Interrupt path —
 // the session keeps running and may receive new approval requests.
-func (s *Session) drainPendingApprovals(decisionWord string, closeSession bool) {
+func (s *Session) drainPendingApprovals(decisionWord string, closeSession bool, writeResponse bool) {
 	s.approvalsMu.Lock()
 	if closeSession {
 		s.approvalsClosed = true
@@ -2392,8 +2312,9 @@ func (s *Session) drainPendingApprovals(decisionWord string, closeSession bool) 
 	s.approvalsMu.Unlock()
 
 	for requestID, p := range pending {
-		close(p.cancel)
-		s.writeDrainResponse(requestID, p, decisionWord)
+		if writeResponse {
+			s.writeDrainResponse(requestID, p, decisionWord)
+		}
 
 		metaFields := map[string]any{
 			"requestId": requestID,
