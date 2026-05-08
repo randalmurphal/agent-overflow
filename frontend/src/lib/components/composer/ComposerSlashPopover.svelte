@@ -1,8 +1,8 @@
 <script lang="ts">
   // Slash-command popover anchored to the textarea. Uses the Popover
   // primitive (which portals to document.body) so it escapes the
-  // composer card's `backdrop-blur-sm overflow-hidden` containing-block
-  // trap — see Popover.svelte for the CSS-spec explanation.
+  // composer card's `overflow-hidden` clip and any other containing-
+  // block ancestor — see Popover.svelte for the CSS-spec explanation.
 
   import Popover from '../primitives/Popover.svelte';
 

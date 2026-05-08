@@ -69,7 +69,7 @@
 </script>
 
 <div
-  class="rounded-[var(--radius-control)] border border-border-subtle/60 bg-surface-0/20 px-1 py-1"
+  class="rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-1 py-1"
   data-testid="background-task-tray-row"
   data-row-id={task.rowId}
 >

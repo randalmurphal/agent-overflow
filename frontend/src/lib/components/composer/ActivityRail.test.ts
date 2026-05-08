@@ -73,6 +73,27 @@ describe('<ActivityRail>', () => {
     expect(await findByTestId('activity-rail-working')).toBeInTheDocument();
     expect(await findByTestId('activity-rail-working-elapsed')).toBeInTheDocument();
     expect(queryByTestId('activity-rail-working-bridge')).toBeNull();
+    // Shimmer mounts whenever a turn is active.
+    expect(await findByTestId('activity-rail-shimmer')).toBeInTheDocument();
+  });
+
+  it('mounts the shimmer in the bridge state too (queue item, no active turn)', async () => {
+    const pane = await buildPane();
+    enqueueSimple(pane.threadId!, 'queued bridge');
+    const { findByTestId } = render(ActivityRail, { props: { pane } });
+    await tick();
+    expect(await findByTestId('activity-rail-shimmer')).toBeInTheDocument();
+  });
+
+  it('does not mount the shimmer when only todos are visible (rail visible, isWorking false)', async () => {
+    // Guards against a regression that hangs the shimmer off
+    // `railVisible` instead of the stricter `isWorking` predicate.
+    const pane = await buildPane();
+    pane.setLiveTodo([{ step: 'one', status: 'inProgress' }]);
+    const { findByTestId, queryByTestId } = render(ActivityRail, { props: { pane } });
+    await tick();
+    expect(await findByTestId('activity-rail')).toBeInTheDocument();
+    expect(queryByTestId('activity-rail-shimmer')).toBeNull();
   });
 
   it('shows the Todos toggle and counts when a liveTodo snapshot is present', async () => {

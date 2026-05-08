@@ -410,6 +410,29 @@ pre, code, kbd, samp, .ansi-body {
 }
 
 /*
+ * Activity-rail working shimmer: a thin accent-tinted highlight that
+ * sweeps across the top edge of the composer card while the agent is
+ * working. Uses `animation-direction: alternate` so the highlight
+ * bounces back and forth instead of looping in a single direction —
+ * the visual cue stays in view both halves of the cycle.
+ */
+.activity-shimmer {
+  background: linear-gradient(
+    90deg,
+    transparent 30%,
+    color-mix(in oklab, var(--accent) 75%, transparent) 50%,
+    transparent 70%
+  );
+  background-size: 220% 100%;
+  background-position: 100% 0;
+  animation: activity-shimmer 1.6s ease-in-out infinite alternate;
+}
+@keyframes activity-shimmer {
+  from { background-position: 100% 0; }
+  to   { background-position: -100% 0; }
+}
+
+/*
  * Reduced-motion reset. One place to silence every transition /
  * animation so individual components don't have to care. Scroll
  * behavior is also snapped so `scroll-smooth` usages don't fight a

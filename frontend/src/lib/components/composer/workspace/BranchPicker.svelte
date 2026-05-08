@@ -6,6 +6,8 @@
 
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import GitBranchIcon from 'lucide-svelte/icons/git-branch';
+  import Icon from '../../primitives/Icon.svelte';
+  import { composerTriggerClasses } from '../triggerClasses';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { GitBranch } from '../../../types/git';
   import type { Thread } from '../../../types/models';
@@ -152,18 +154,11 @@
   aria-haspopup="menu"
   aria-expanded={open}
   data-testid="branch-picker-trigger"
-  class={[
-    'inline-flex items-center gap-1 rounded border border-border',
-    'px-2 py-0.5 text-[11px] text-text-secondary',
-    'transition-colors cursor-pointer',
-    'hover:border-text-secondary hover:text-text-primary',
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
-    'disabled:opacity-60 disabled:cursor-not-allowed',
-  ].join(' ')}
+  class={composerTriggerClasses}
 >
-  <GitBranchIcon class="h-3 w-3" aria-hidden="true" />
-  <span class="truncate max-w-[160px]">{triggerLabel}</span>
-  <ChevronDown class="h-3 w-3" aria-hidden="true" />
+  <Icon icon={GitBranchIcon} size={12} strokeWidth={2} class="opacity-70" />
+  <span class="truncate max-w-[160px] text-fg">{triggerLabel}</span>
+  <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
 </button>
 
 <Popover

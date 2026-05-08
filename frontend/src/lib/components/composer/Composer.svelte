@@ -596,7 +596,7 @@
   data-testid="composer-root"
 >
   <div
-    class="mx-auto w-full max-w-[68rem] rounded-[var(--radius-composer)] border border-border-subtle bg-card/70 backdrop-blur-sm shadow-sheet overflow-hidden
+    class="mx-auto w-full max-w-[68rem] rounded-[var(--radius-composer)] border border-border-subtle bg-card shadow-sheet overflow-hidden
            focus-within:border-border focus-within:shadow-menu transition-[border-color,box-shadow] duration-200"
   >
     <ActivityRail {pane} />
@@ -639,7 +639,7 @@
 
     {#if !hasInteractivePrompt && draft.terminalChips.length > 0}
       <div
-        class="flex flex-col gap-1 border-b border-border-subtle bg-surface-0/40 px-4 py-2"
+        class="flex flex-col gap-1 border-b border-border-subtle bg-surface-0 px-4 py-2"
         data-testid="terminal-chip-row"
       >
         {#each draft.terminalChips as chip (chip.id)}

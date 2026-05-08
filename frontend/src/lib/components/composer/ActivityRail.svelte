@@ -115,11 +115,18 @@
 
 {#if railVisible}
   <div
-    class="border-b border-border-subtle"
+    class="relative border-b border-border-subtle"
     role="region"
     aria-label="Activity"
     data-testid="activity-rail"
   >
+    {#if isWorking}
+      <span
+        class="activity-shimmer pointer-events-none absolute inset-x-0 top-0 z-10 block h-px"
+        aria-hidden="true"
+        data-testid="activity-rail-shimmer"
+      ></span>
+    {/if}
     <div class="flex flex-wrap items-center gap-1.5 px-3 py-2 text-[11px] leading-tight">
       {#if isWorking}
         <span

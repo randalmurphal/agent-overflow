@@ -97,9 +97,9 @@
   // `transform`, `filter`, `perspective`, `contain: paint`, etc.) would
   // position relative to that ancestor's padding box instead of the
   // viewport — and any `overflow: hidden` on the chain would then clip
-  // it out of sight. The composer card (backdrop-blur-sm + overflow-
-  // hidden) is the in-tree trigger, but the bug would reproduce under
-  // any fixed-CB ancestor.
+  // it out of sight. The composer card's `overflow-hidden` clip is the
+  // closest in-tree concern; portaling preempts both that and any
+  // other containing-block ancestor in the chain.
   //
   // Cleanup explicitly `.remove()`s the node so it goes away with the
   // component even if the caller's tree gets torn down externally

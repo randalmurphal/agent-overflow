@@ -3,6 +3,7 @@
   import Icon from '../../primitives/Icon.svelte';
   import ClaudeIcon from '../../primitives/brand/ClaudeIcon.svelte';
   import OpenAIIcon from '../../primitives/brand/OpenAIIcon.svelte';
+  import { composerTriggerClasses } from '../triggerClasses';
 
   interface Props {
     buttonEl: HTMLButtonElement | undefined;
@@ -34,14 +35,7 @@
   aria-expanded={open}
   data-provider={provider}
   data-testid="composer-model-menu-trigger"
-  class={[
-    'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
-    'px-1.5 py-1 text-[11px] text-fg-muted',
-    'transition-colors cursor-pointer',
-    'hover:text-fg hover:bg-surface-2/30',
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-    'disabled:opacity-60 disabled:cursor-not-allowed',
-  ].join(' ')}
+  class={composerTriggerClasses}
 >
   {#if isCodex}
     <OpenAIIcon size={13} class="opacity-95" />

@@ -1,8 +1,8 @@
 <script lang="ts">
   // Mention-search popover anchored to the textarea. Uses the Popover
   // primitive (which portals to document.body) so it escapes the
-  // composer card's `backdrop-blur-sm overflow-hidden` containing-block
-  // trap — see Popover.svelte for the CSS-spec explanation.
+  // composer card's `overflow-hidden` clip and any other containing-
+  // block ancestor — see Popover.svelte for the CSS-spec explanation.
 
   import type { WorkspaceFile } from '../../types/workspaceFile';
   import Popover from '../primitives/Popover.svelte';
