@@ -23,19 +23,24 @@ shape. Operational rules for code in this directory:
   inside the virtualizer; virtua won't see it and will fight the
   scroll.
 - **Bottom-snapshot restore on thread switch goes through
-  `listRef.scrollToIndex(last, 'end')` paired with
-  `stick.markAtBottom()`.** Don't use `stick.forceStick()` for
-  snapshot restore — the one-shot `scrollTop` write against the
-  current `scrollHeight` is stale by the time virtua's row
-  remeasurement and svelte-streamdown's async typesetting (shiki /
-  KaTeX / mermaid / parseIncompleteMarkdown rebalance) finish growing
-  rows, and the controller's contentRO sync-pin would absorb the gap
-  through repeated re-pins as rows grew (visible as a top-to-bottom
-  scroll preamble). virtua's `scrollToIndex` enters a measurement loop
-  that re-aims on every `ACTION_ITEM_RESIZE` tick and self-terminates
-  150 ms after the last resize, which is what we want. `forceStick()`
-  is reserved for user-initiated snap-to-bottom (the scroll-to-bottom
-  chip).
+  `stick.forceStick()`.** A single scrollTop write against the
+  current target. The per-thread virtua row-size cache (replayed via
+  `<Virtualizer cache={pane.cachedVirtuaCache}>` inside
+  `{#key pane.threadId}`) gives virtua the correct `totalSize` from
+  frame 0, so the target is right from the first paint. Subsequent
+  contentEl growth from svelte-streamdown's async typesetting (shiki /
+  KaTeX / mermaid / parseIncompleteMarkdown rebalance) and from
+  virtua's per-row ResizeObservers refining row heights gets handled
+  invisibly by the controller's contentRO sync-pin: each positive
+  delta re-pins to the new bottom inside the RO callback, before
+  paint. **Don't pair `listRef.scrollToIndex(last, 'end')` with
+  `stick.markAtBottom()` here** — virtua's measurement loop would
+  keep writing scrollTop on every ACTION_ITEM_RESIZE tick for ~150ms
+  while the controller's sync-pin (enabled by markAtBottom) ALSO
+  wrote scrollTop on every positive contentRO delta, targeting a
+  slightly different value. They oscillate visibly around the middle
+  of the viewport on every Streamdown async typesetting tick. Single
+  writer or none.
 - **`<Virtualizer>` is wrapped in `{#key pane.threadId}`** so its
   `cache` prop is re-read on thread switch. The cache itself comes
   from `pane.cachedVirtuaCache` (sourced from the LRU snapshot in

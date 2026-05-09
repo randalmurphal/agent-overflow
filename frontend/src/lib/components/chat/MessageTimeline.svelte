@@ -333,14 +333,29 @@
     void restoreInitialPosition(threadId, ++restoreToken);
   });
 
-  // Bottom restore. Empty timelines have no virtua handle yet, but they
-  // still need sticky-bottom intent for the first streamed rows. Non-empty
-  // timelines route through virtua's scrollToIndex measurement loop
-  // (self-corrects across row resize ticks) rather than a one-shot
-  // forceStick scrollTop write, which would commit to a stale scrollHeight
-  // while virtua's lazy row measurement and Streamdown's async typesetting
-  // are still growing rows. See frontend/CLAUDE.md § Scroll architecture
-  // for the contract.
+  // Bottom restore. Two cases:
+  //
+  // - Empty timeline (no rows yet): just flip the controller's intent
+  //   flag so the first streamed row's contentRO sync-pin lands at the
+  //   bottom. There's no scrollTop to write yet.
+  //
+  // - Non-empty timeline: forceStick() lands scrollTop at the current
+  //   target in a single write. The per-thread virtua row-size cache
+  //   (replayed via `<Virtualizer cache={pane.cachedVirtuaCache}>` in
+  //   the {#key pane.threadId} wrapper) gives virtua the correct
+  //   totalSize from frame 0, so the target is right from the first
+  //   paint. Any subsequent contentEl growth from svelte-streamdown's
+  //   async typesetting (shiki / KaTeX / mermaid /
+  //   parseIncompleteMarkdown rebalance) and from virtua's per-row
+  //   ResizeObservers refining row heights gets handled invisibly by
+  //   the controller's contentRO sync-pin path: each positive delta
+  //   re-pins to the new bottom inside the RO callback, before paint.
+  //
+  // Don't pair `scrollToIndex(last, 'end')` with `markAtBottom()` here
+  // — they create two writers (virtua's measurement loop + our
+  // sync-pin) targeting slightly different scrollTop values for the
+  // same content-grow trigger, and they oscillate. forceStick() alone
+  // is the single writer.
   function restoreToBottom(): void {
     const lastIndex = groupedNodes.length - 1;
     if (lastIndex < 0) {
@@ -349,10 +364,7 @@
       if (threadId) setThreadScrollSnapshot(threadId, { kind: 'bottom' });
       return;
     }
-    if (!listRef) return;
-    stick.stopScroll();
-    listRef.scrollToIndex(lastIndex, { align: 'end' });
-    stick.markAtBottom();
+    stick.forceStick();
     saveScrollSnapshot();
   }
 

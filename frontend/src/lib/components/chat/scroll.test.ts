@@ -96,24 +96,24 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     expect(loadUntilItem).toHaveBeenCalledWith('pinned-item');
   });
 
-  it('bottom-snapshot restore leaves the controller sticky and not escaped (markAtBottom contract)', async () => {
-    // Regression: the previous bottom-restore path was `forceStick()`
-    // (a single-shot scrollTop write against the current scrollHeight),
-    // which was stale by the time virtua finished remeasuring rows and
-    // svelte-streamdown finished async typesetting. The visible symptom was a ~1-viewport scroll preamble
-    // on every re-entry into a thread with a {kind:'bottom'} snapshot,
-    // because each subsequent contentRO positive delta sync-pinned to
-    // the new (larger) bottom from the stale starting offset. The new
-    // path routes through `listRef.scrollToIndex(last, 'end')` (virtua's
-    // measurement loop self-corrects) paired with `markAtBottom()`
-    // (controller flags only — no scrollTop write). We can't assert the
-    // absence of the preamble directly in happy-dom (no real layout),
-    // so the contract this test pins is the controller end-state: after
-    // restoration completes, the controller must be in (isSticky=true,
-    // escapedFromLock=false). The $effect.pre escape guard sets
-    // escape=true synchronously on thread mount; if restoreToBottom
-    // didn't call markAtBottom (or replaced it
-    // with something that fails to clear escape), this assertion fails.
+  it('bottom-snapshot restore leaves the controller sticky and not escaped', async () => {
+    // The bottom-restore path uses `stick.forceStick()` — a single
+    // scrollTop write against the current target, with the per-thread
+    // virtua row-size cache (replayed via `<Virtualizer cache={...}>`
+    // inside `{#key pane.threadId}`) ensuring `totalSize` is correct
+    // from frame 0. Subsequent svelte-streamdown async typesetting
+    // (shiki / KaTeX / mermaid / parseIncompleteMarkdown rebalance)
+    // and virtua's per-row remeasurement get handled invisibly by the
+    // controller's contentRO sync-pin path.
+    //
+    // We can't assert the absence of a scroll preamble directly in
+    // happy-dom (no real layout), so the contract this test pins is
+    // the controller end-state: after restoration completes, the
+    // controller must be in (isSticky=true, escapedFromLock=false).
+    // The $effect.pre escape guard sets escape=true synchronously on
+    // thread mount; if restoreToBottom didn't call forceStick (or
+    // replaced it with something that fails to clear escape), this
+    // assertion fails.
     setThreadScrollSnapshot('thread-bottom-restore', { kind: 'bottom' });
 
     const pane = await buildPane(undefined, [
@@ -193,31 +193,34 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     expect(getThreadScrollSnapshot(thread.id)).not.toEqual({ kind: 'bottom' });
   });
 
-  it('bottom-snapshot restore calls stopScroll before virtua scrollToIndex (frontend/CLAUDE.md contract)', async () => {
-    // CLAUDE.md scroll contract: every listRef.scrollToIndex(...) MUST
-    // be preceded by stick.stopScroll() so the controller doesn't
-    // auto-restick mid-jump if virtua's measurement loop happens to
-    // land near the bottom. The end-state assertion above (isSticky+!escaped) is
-    // satisfied by markAtBottom regardless of whether stopScroll ran;
-    // a regression that drops the stopScroll line in restoreToBottom
-    // would slip through that test. This pins the call directly.
+  it('bottom-snapshot restore writes scrollTop exactly once via forceStick (no virtua-scroll fight)', async () => {
+    // Regression: an earlier iteration of restoreToBottom paired
+    // `listRef.scrollToIndex(last, 'end')` with `stick.markAtBottom()`.
+    // virtua's measurement loop kept writing scrollTop on every
+    // ACTION_ITEM_RESIZE tick for ~150ms, while the controller's
+    // contentRO sync-pin (enabled by markAtBottom) ALSO wrote scrollTop
+    // on every positive contentEl delta. They targeted slightly
+    // different values (virtua: itemOffset+itemSize-clientHeight;
+    // controller: scrollHeight-1-clientHeight) and oscillated visibly
+    // on every Streamdown async typesetting tick. The single-writer
+    // contract closes that hole: forceStick() lands scrollTop once,
+    // then sync-pin owns subsequent re-pins.
     //
-    // Sequencing: restoreInitialPosition's inner `await tick()` resolves
-    // in the same flush cycle as $effect (attachScrollController). To
-    // catch the stopScroll call we wrap attachScrollController itself —
-    // the controller is in our hands the moment it's published, before
-    // the microtask drain that runs restoreToBottom.
-    setThreadScrollSnapshot('thread-bottom-stopscroll', { kind: 'bottom' });
+    // Pin the call by spying on stick.forceStick AND ensuring
+    // scrollToIndex is NOT called as part of the bottom-restore path.
+    setThreadScrollSnapshot('thread-bottom-force-stick', { kind: 'bottom' });
     const pane = await buildPane(undefined, [
       makeItem({ id: 'a', summary: 'first' }),
       makeItem({ id: 'b', itemIndex: 1, summary: 'second' }),
     ]);
-    pane.thread!.id = 'thread-bottom-stopscroll';
+    pane.thread!.id = 'thread-bottom-force-stick';
 
-    let stopScrollSpy: ReturnType<typeof vi.spyOn> | null = null;
+    let forceStickSpy: ReturnType<typeof vi.spyOn> | null = null;
     const origAttach = pane.attachScrollController.bind(pane);
-    pane.attachScrollController = (ctrl: PaneScrollController & { stopScroll(): void }) => {
-      stopScrollSpy = vi.spyOn(ctrl, 'stopScroll');
+    pane.attachScrollController = (
+      ctrl: PaneScrollController & { forceStick(): void },
+    ) => {
+      forceStickSpy = vi.spyOn(ctrl, 'forceStick');
       origAttach(ctrl);
     };
 
@@ -226,8 +229,12 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await tick();
 
-    expect(stopScrollSpy).not.toBeNull();
-    expect(stopScrollSpy!).toHaveBeenCalled();
+    expect(forceStickSpy).not.toBeNull();
+    // Exactly one forceStick call — the bottom restore. A regression
+    // that re-introduced an extra scrollTop writer (e.g. routing
+    // through scrollToIndex+markAtBottom plus a fallback forceStick)
+    // would surface here as count > 1.
+    expect(forceStickSpy!).toHaveBeenCalledTimes(1);
   });
 
   it('still calls pane.loadUntilItem when a saved anchor item no longer exists', async () => {
@@ -255,7 +262,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     // restoreInitialPosition has a `!found` branch that calls
     // restoreToBottom when the saved anchor's item is gone from the
     // backend. Pin the controller end-state contract: after the fallback
-    // runs, restoreToBottom calls markAtBottom which clears escape and
+    // runs, restoreToBottom calls forceStick which clears escape and
     // sets sticky. A regression that turned the fallback into the
     // anchor-success path (which sets escape=true) would surface here.
     setThreadScrollSnapshot('thread-anchor-not-found', {

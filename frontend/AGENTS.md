@@ -143,17 +143,20 @@ frontend layers on top:
   if virtua's measurement loop happens to land near the bottom. Never
   write `scrollTop` directly.
   - `forceStick()` clears escape, sets sticky, and writes `scrollTop`
-    to the current target. Used by the scroll-to-bottom chip (the user
-    clicked "go to bottom") and by Discussion's initial channel load.
+    to the current target. Used by the scroll-to-bottom chip, by
+    Discussion's initial channel load, and by chat's bottom-snapshot
+    restore on thread switch (paired with the per-thread virtua
+    row-size cache, which makes the target correct from frame 0 — see
+    below).
   - `markAtBottom()` flips the controller flags to sticky-bottom
-    WITHOUT writing `scrollTop`. Pairs with
-    `listRef.scrollToIndex(last, 'end')`: virtua's measurement loop
-    self-corrects across row resize ticks and lands the user at the
-    eventual bottom; `markAtBottom()` only flips intent so streaming
-    follow resumes on the next contentRO positive delta. This is the
-    bottom-snapshot restore path on the chat surface — `forceStick()`
-    would commit to a stale `scrollHeight` and the new snapshot would
-    land above the eventual bottom while virtua remeasures.
+    WITHOUT writing `scrollTop`. Used for the empty-timeline branch of
+    bottom-snapshot restore (no rows to anchor against yet, but the
+    first streamed row's contentRO sync-pin must land at the bottom).
+    Don't pair with `listRef.scrollToIndex(last, 'end')` — that
+    creates two writers (virtua's measurement loop + the controller's
+    sync-pin) targeting slightly different scrollTop values for the
+    same content-grow trigger, and they oscillate around the middle of
+    the viewport.
   - `animateScrollTo(target, {durationMs})` runs an easeOutCubic
     interpolation for arbitrary timeline jumps (load-older, scroll-to-
     item). Owns the scrollTop writes so programmatic-write tagging
