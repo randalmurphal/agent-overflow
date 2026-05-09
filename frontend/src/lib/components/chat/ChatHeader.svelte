@@ -26,6 +26,7 @@
   import { getProject } from '../../stores/projects.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { formatChord } from '../../stores/keybindings.svelte';
   import GitActionsControl from '../git/GitActionsControl.svelte';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -208,7 +209,7 @@
         size="xs"
         pressed={pane.showTerminal}
         ariaLabel="Toggle Terminal"
-        title="Toggle Terminal (⌘J)"
+        title={`Toggle Terminal (${formatChord('mod+j')})`}
         onclick={() => pane.toggleTerminal()}
         testId="terminal-toggle"
         class="shrink-0 w-6 px-0"
@@ -223,7 +224,7 @@
         size="xs"
         pressed={pane.diffPanel.open}
         ariaLabel="Toggle Diff Panel"
-        title="Toggle Diff Panel (⇧⌘G)"
+        title={`Toggle Diff Panel (${formatChord('mod+shift+g')})`}
         onclick={() => pane.toggleDiffPanel()}
         testId="diff-panel-toggle"
         class="shrink-0 w-6 px-0"

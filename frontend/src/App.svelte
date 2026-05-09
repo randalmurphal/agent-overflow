@@ -23,6 +23,7 @@
   import { closeThreadPicker, isThreadPickerOpen } from './lib/stores/threadPicker.svelte';
   import {
     dispatchKey,
+    eventMatchesKeybindingCommand,
     loadKeybindings,
   } from './lib/stores/keybindings.svelte';
   import { clearCommandRegistry } from './lib/stores/commandRegistry.svelte';
@@ -50,6 +51,21 @@
   let openFromPR = $state<(() => void) | null>(null);
 
   const pane = getMainPane();
+  const EDITABLE_REACHABLE_COMMANDS = new Set([
+    'sidebar.focus-search',
+    'palette.open',
+    'mode.cycle',
+    'thread.interrupt',
+    'thread.jump.1',
+    'thread.jump.2',
+    'thread.jump.3',
+    'thread.jump.4',
+    'thread.jump.5',
+    'thread.jump.6',
+    'thread.jump.7',
+    'thread.jump.8',
+    'thread.jump.9',
+  ]);
 
   function handleStartDiscussion(thread: Thread): void {
     discussionStartFor = thread;
@@ -98,18 +114,7 @@
       tag === 'TEXTAREA' ||
       tag === 'SELECT' ||
       target?.isContentEditable === true;
-    // Allow Cmd/Ctrl+K even from editable elements so the sidebar search
-    // and palette chords (⌘K / ⌘⇧K) are always reachable. Shift+Tab is
-    // also allowed through so `mode.cycle` works while the composer
-    // textarea has focus — the textarea handler yields without
-    // preventDefault, and this handler preventDefaults below on
-    // successful dispatch to suppress the browser's focus-shift.
-    const isSidebarOrPaletteChord =
-      (ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'k' && !ev.altKey;
-    const isShiftTab = ev.key === 'Tab' && ev.shiftKey && !ev.metaKey && !ev.ctrlKey && !ev.altKey;
-    const isPlainEscape =
-      ev.key === 'Escape' && !ev.metaKey && !ev.ctrlKey && !ev.altKey && !ev.shiftKey;
-    if (editable && !isSidebarOrPaletteChord && !isShiftTab && !isPlainEscape) return;
+    if (editable && !eventMatchesKeybindingCommand(ev, paletteContext, EDITABLE_REACHABLE_COMMANDS)) return;
 
     const handled = dispatchKey(ev, paletteContext);
     if (handled) ev.preventDefault();

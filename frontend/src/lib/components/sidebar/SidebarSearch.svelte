@@ -1,7 +1,7 @@
 <script lang="ts">
   // Sidebar search input. Drives the shared threadFilter store so the
   // command palette can imperatively focus us even when this component
-  // isn't the active focus. The ⌘K pill on the right is a hint only —
+  // isn't the active focus. The shortcut pill on the right is a hint only —
   // the real Cmd/Ctrl+K keybinding is registered globally in App.svelte.
 
   import Search from 'lucide-svelte/icons/search';
@@ -10,6 +10,7 @@
     getThreadFilterQuery,
     setThreadFilterQuery,
   } from '../../stores/threadFilter.svelte';
+  import { formatChord } from '../../stores/keybindings.svelte';
   import Icon from '../primitives/Icon.svelte';
   import Kbd from '../primitives/Kbd.svelte';
 
@@ -22,6 +23,7 @@
 
   let searchEl: HTMLInputElement | undefined = $state(undefined);
   let query = $derived(getThreadFilterQuery());
+  let searchShortcut = $derived(formatChord('mod+k'));
 
   $effect(() => {
     if (registerFocusSearch && searchEl) {
@@ -73,7 +75,7 @@
         aria-hidden="true"
         data-testid="sidebar-thread-search-kbd"
       >
-        <Kbd>⌘K</Kbd>
+        <Kbd>{searchShortcut}</Kbd>
       </span>
     {/if}
   </div>

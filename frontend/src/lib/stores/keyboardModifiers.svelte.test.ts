@@ -10,19 +10,20 @@ import {
   getJumpHintsVisible,
   jumpLabelForThread,
   resetKeyboardModifiersForTest,
+  setKeyboardModifierPlatformForTest,
   subscribeJumpHints,
 } from './keyboardModifiers.svelte';
 
-function dispatchModKeyDown(target?: HTMLElement): void {
-  const event = new KeyboardEvent('keydown', { key: 'Meta', bubbles: true });
+function dispatchModKeyDown(target?: HTMLElement, key: 'Control' | 'Meta' = 'Control'): void {
+  const event = new KeyboardEvent('keydown', { key, bubbles: true });
   if (target) {
     Object.defineProperty(event, 'target', { value: target });
   }
   window.dispatchEvent(event);
 }
 
-function dispatchModKeyUp(): void {
-  window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Meta', bubbles: true }));
+function dispatchModKeyUp(key: 'Control' | 'Meta' = 'Control'): void {
+  window.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true }));
 }
 
 function dispatchBlur(): void {
@@ -95,26 +96,47 @@ describe('keyboardModifiers store', () => {
       expect(getJumpHintsVisible()).toBe(false);
       release();
     });
-  });
 
-  describe('editable-target guard', () => {
-    it('ignores keydown that originates inside an input', () => {
+    it('ignores Meta on non-macOS hosts', () => {
       const release = subscribeJumpHints();
-      const input = document.createElement('input');
-      document.body.appendChild(input);
-      dispatchModKeyDown(input);
+      makeRow('t1');
+      dispatchModKeyDown(undefined, 'Meta');
       vi.advanceTimersByTime(200);
       expect(getJumpHintsVisible()).toBe(false);
       release();
     });
 
-    it('ignores keydown that originates inside a textarea', () => {
+    it('ignores Control on macOS hosts', () => {
+      setKeyboardModifierPlatformForTest(true);
+      const release = subscribeJumpHints();
+      makeRow('t1');
+      dispatchModKeyDown(undefined, 'Control');
+      vi.advanceTimersByTime(200);
+      expect(getJumpHintsVisible()).toBe(false);
+      release();
+    });
+  });
+
+  describe('editable-target behavior', () => {
+    it('shows hints when the modifier hold starts inside an input', () => {
+      const release = subscribeJumpHints();
+      const input = document.createElement('input');
+      document.body.appendChild(input);
+      makeRow('t1');
+      dispatchModKeyDown(input);
+      vi.advanceTimersByTime(200);
+      expect(getJumpHintsVisible()).toBe(true);
+      release();
+    });
+
+    it('shows hints when the modifier hold starts inside a textarea', () => {
       const release = subscribeJumpHints();
       const textarea = document.createElement('textarea');
       document.body.appendChild(textarea);
+      makeRow('t1');
       dispatchModKeyDown(textarea);
       vi.advanceTimersByTime(200);
-      expect(getJumpHintsVisible()).toBe(false);
+      expect(getJumpHintsVisible()).toBe(true);
       release();
     });
   });

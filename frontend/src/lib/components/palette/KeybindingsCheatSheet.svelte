@@ -3,7 +3,7 @@
   import Button from '../primitives/Button.svelte';
   import Kbd from '../primitives/Kbd.svelte';
   import { listCommands, type Command } from '../../stores/commandRegistry.svelte';
-  import { keybindingForCommand } from '../../stores/keybindings.svelte';
+  import { formatChord, keybindingForCommand } from '../../stores/keybindings.svelte';
 
   interface Props {
     open: boolean;
@@ -83,25 +83,6 @@
       .sort((a, b) => a.category.localeCompare(b.category));
   });
 
-  // Pretty-print a chord: "mod+k" → "⌘K" on Mac, "Ctrl+K" otherwise. Kept
-  // trivial — the raw chord string is already readable enough for most users,
-  // and we surface both for discoverability.
-  function displayChord(chord: string): string {
-    const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
-    return chord
-      .split('+')
-      .map((part) => {
-        const p = part.trim().toLowerCase();
-        if (p === 'mod') return isMac ? '⌘' : 'Ctrl';
-        if (p === 'ctrl') return 'Ctrl';
-        if (p === 'shift') return isMac ? '⇧' : 'Shift';
-        if (p === 'alt') return isMac ? '⌥' : 'Alt';
-        if (p === 'meta') return isMac ? '⌘' : 'Meta';
-        if (p.length === 1) return p.toUpperCase();
-        return part.trim();
-      })
-      .join(isMac ? '' : ' + ');
-  }
 </script>
 
 <Modal
@@ -159,7 +140,7 @@
                           data-testid="keybindings-cheatsheet-chord-{row.command.id}"
                           title={row.chord}
                         >
-                          <Kbd>{displayChord(row.chord)}</Kbd>
+                          <Kbd>{formatChord(row.chord)}</Kbd>
                         </span>
                       {:else}
                         <span

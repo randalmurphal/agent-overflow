@@ -8,6 +8,8 @@ import {
   saveKeybindings,
   getKeybindingIssues,
   resetKeybindingsToDefaults,
+  formatChord,
+  eventMatchesKeybindingCommand,
 } from './keybindings.svelte';
 import {
   clearCommandRegistry,
@@ -25,6 +27,8 @@ function baseCtx(extra: Partial<CommandContext> = {}): CommandContext {
     anyModalOpen: false,
     hasActiveThread: false,
     turnActive: false,
+    sendInFlight: false,
+    hasPendingPrompt: false,
     canForkActiveThread: false,
     canStartDiscussion: false,
     ...extra,
@@ -121,6 +125,28 @@ describe('keybindings store — dispatch', () => {
     ]);
     expect(keybindingForCommand('palette.open')).toBe('mod+shift+p');
   });
+
+  it('detects whether an event matches an allowed command binding without running it', () => {
+    const run = vi.fn();
+    registerCommand({ id: 'thread.jump.2', label: 'Jump 2', run });
+    setKeybindingsForTest([{ key: 'ctrl+alt+2', command: 'thread.jump.2' }]);
+
+    const allowed = new Set(['thread.jump.2']);
+    expect(
+      eventMatchesKeybindingCommand(ev('2', { ctrlKey: true, altKey: true }), baseCtx(), allowed, { isMac: false }),
+    ).toBe(true);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('does not allow disabled commands through editable preflight', () => {
+    registerCommand({ id: 'thread.jump.2', label: 'Jump 2', when: 'hasActiveThread', run: vi.fn() });
+    setKeybindingsForTest([{ key: 'mod+2', command: 'thread.jump.2' }]);
+
+    const allowed = new Set(['thread.jump.2']);
+    expect(
+      eventMatchesKeybindingCommand(ev('2', { ctrlKey: true }), baseCtx({ hasActiveThread: false }), allowed, { isMac: false }),
+    ).toBe(false);
+  });
 });
 
 describe('keybindings store — loading', () => {
@@ -187,5 +213,17 @@ describe('keybindings store — loading', () => {
     await resetKeybindingsToDefaults();
     expect(reset).toHaveBeenCalledTimes(1);
     expect(keybindingForCommand('palette.open')).toBe('mod+k');
+  });
+});
+
+describe('keybindings store — display formatting', () => {
+  it('formats mod as Ctrl on non-macOS hosts', () => {
+    expect(formatChord('mod+k', false)).toBe('Ctrl+K');
+    expect(formatChord('mod+shift+g', false)).toBe('Ctrl+Shift+G');
+  });
+
+  it('formats mod as Command on macOS hosts', () => {
+    expect(formatChord('mod+k', true)).toBe('⌘K');
+    expect(formatChord('mod+shift+g', true)).toBe('⇧⌘G');
   });
 });

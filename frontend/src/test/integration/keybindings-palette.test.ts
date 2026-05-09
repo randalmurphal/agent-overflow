@@ -39,6 +39,11 @@ async function mountBareApp(threads: Thread[] = []) {
   return rendered;
 }
 
+async function waitForThreadStore(count: number): Promise<void> {
+  const threadsMod = await import('../../lib/stores/threads.svelte');
+  await waitFor(() => expect(threadsMod.getThreads()).toHaveLength(count));
+}
+
 describe('App integration — keybindings + palette', () => {
   beforeEach(() => {
     resetAppState();
@@ -127,6 +132,7 @@ describe('App integration — keybindings + palette', () => {
       makeThread({ id: 't-3', title: 'Thread Three' }),
     ];
     const rendered = await mountBareApp(threads);
+    await waitForThreadStore(threads.length);
     await loadKeybindingsFromMock([
       { key: 'mod+1', command: 'thread.jump.1' },
       { key: 'mod+2', command: 'thread.jump.2' },
@@ -141,6 +147,33 @@ describe('App integration — keybindings + palette', () => {
     // Pane should now be showing thread 2. Check the pane state directly.
     const paneMod = await import('../../lib/stores/panes.svelte');
     const pane = paneMod.getMainPane();
+    await waitFor(() => expect(pane.thread?.id).toBe('t-2'));
+  });
+
+  it('mod+1..9 jumps while the composer textarea is focused', async () => {
+    const threads: Thread[] = [
+      makeThread({ id: 't-1', title: 'Thread One' }),
+      makeThread({ id: 't-2', title: 'Thread Two' }),
+      makeThread({ id: 't-3', title: 'Thread Three' }),
+    ];
+    const rendered = await mountBareApp(threads);
+    await waitForThreadStore(threads.length);
+    await loadKeybindingsFromMock([
+      { key: 'mod+1', command: 'thread.jump.1' },
+      { key: 'ctrl+alt+2', command: 'thread.jump.2' },
+      { key: 'mod+3', command: 'thread.jump.3' },
+    ]);
+
+    const paneMod = await import('../../lib/stores/panes.svelte');
+    const pane = paneMod.getMainPane();
+    await pane.switchThread(threads[0]);
+    await flush(15);
+
+    const input = rendered.getByLabelText('Message Input') as HTMLTextAreaElement;
+    input.focus();
+    await fireEvent.keyDown(input, { key: '2', ctrlKey: true, altKey: true });
+    await flush(15);
+
     await waitFor(() => expect(pane.thread?.id).toBe('t-2'));
   });
 });

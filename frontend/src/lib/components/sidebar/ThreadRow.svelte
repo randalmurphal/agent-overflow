@@ -3,6 +3,7 @@
     getJumpHintsVisible,
     jumpLabelForThread,
   } from '../../stores/keyboardModifiers.svelte';
+  import { formatChord, keybindingForCommand } from '../../stores/keybindings.svelte';
   import { getSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
@@ -193,6 +194,10 @@
     if (!getJumpHintsVisible()) return null;
     return jumpLabelForThread(thread.id) ?? null;
   });
+  let jumpShortcut = $derived.by<string | null>(() => {
+    if (!jumpLabel) return null;
+    return formatChord(keybindingForCommand(`thread.jump.${jumpLabel}`) ?? `mod+${jumpLabel}`);
+  });
 
   async function handleUnarchive(e: MouseEvent) {
     e.stopPropagation();
@@ -310,10 +315,10 @@
       the time without pushing layout.
     -->
     <div class="ml-auto relative shrink-0 flex items-center justify-end min-w-12">
-      {#if jumpLabel}
+      {#if jumpShortcut}
         <!--
-          Cmd-held jump-hint pill. Fades in on the right side, replacing
-          the relative-time stamp. The Cmd+N keybinding navigates to
+          Modifier-held jump-hint pill. Fades in on the right side,
+          replacing the relative-time stamp. The shown keybinding navigates to
           this row when active.
         -->
         <span
@@ -321,7 +326,7 @@
           aria-hidden="true"
           data-testid="thread-row-jump-hint"
         >
-          ⌘{jumpLabel}
+          {jumpShortcut}
         </span>
       {:else}
         <span

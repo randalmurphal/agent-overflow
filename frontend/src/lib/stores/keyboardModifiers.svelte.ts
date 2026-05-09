@@ -1,12 +1,12 @@
-// Tracks the user's modifier-key state with a visibility delay so the
-// sidebar can fade in keyboard-jump hint pills only after a deliberate
-// hold (mirrors forge / t3-code: a quick Cmd-tap shouldn't flash hint
+// Tracks the user's platform modifier-key state with a visibility delay so
+// the sidebar can fade in keyboard-jump hint pills only after a deliberate
+// hold (mirrors forge / t3-code: a quick modifier tap shouldn't flash hint
 // pills on every project row).
 //
 // Single window listener pair, attached lazily on first subscription
 // and cleaned up when the last subscriber disconnects. We deliberately
-// don't track other modifiers (shift / alt) — the sidebar only needs
-// the Cmd / Ctrl signal for the Cmd+1..9 / Cmd+↑↓ commands.
+// don't track other modifiers (shift / alt) — the sidebar only needs the
+// platform modifier signal for the thread-jump commands.
 
 const HINT_SHOW_DELAY_MS = 100;
 const MAX_JUMP_INDEX = 9;
@@ -16,16 +16,13 @@ let jumpLabelsByThreadId: ReadonlyMap<string, string> = $state(new Map());
 let listenerCount = 0;
 let installed = false;
 let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+let platformIsMacForTest: boolean | null = null;
 
 function isJumpModifier(event: KeyboardEvent): boolean {
-  return event.key === 'Meta' || event.key === 'Control';
-}
-
-function isInEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  if (target.isContentEditable) return true;
-  const tag = target.tagName;
-  return tag === 'INPUT' || tag === 'TEXTAREA';
+  const isMac =
+    platformIsMacForTest ??
+    (typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform));
+  return isMac ? event.key === 'Meta' : event.key === 'Control';
 }
 
 function clearPendingTimer(): void {
@@ -41,13 +38,12 @@ function rebuildJumpLabels(): void {
     return;
   }
   const next = new Map<string, string>();
-  const rows = Array.from(
-    document.querySelectorAll<HTMLElement>('[data-sidebar-thread-id]'),
-  );
-  for (let i = 0; i < rows.length && i < MAX_JUMP_INDEX; i += 1) {
-    const id = rows[i].dataset.sidebarThreadId;
+  const rows = document.querySelectorAll<HTMLElement>('[data-sidebar-thread-id]');
+  for (const row of rows) {
+    if (next.size >= MAX_JUMP_INDEX) break;
+    const id = row.dataset.sidebarThreadId;
     if (!id || next.has(id)) continue;
-    next.set(id, String(i + 1));
+    next.set(id, String(next.size + 1));
   }
   jumpLabelsByThreadId = next;
 }
@@ -55,7 +51,6 @@ function rebuildJumpLabels(): void {
 function handleKeyDown(event: KeyboardEvent): void {
   if (!isJumpModifier(event)) return;
   if (jumpHintsVisible || pendingTimer) return;
-  if (isInEditableTarget(event.target)) return;
   pendingTimer = setTimeout(() => {
     pendingTimer = null;
     rebuildJumpLabels();
@@ -139,6 +134,11 @@ export function resetKeyboardModifiersForTest(): void {
   clearPendingTimer();
   jumpHintsVisible = false;
   jumpLabelsByThreadId = new Map();
+  platformIsMacForTest = null;
   listenerCount = 0;
   if (installed) teardown();
+}
+
+export function setKeyboardModifierPlatformForTest(isMac: boolean | null): void {
+  platformIsMacForTest = isMac;
 }

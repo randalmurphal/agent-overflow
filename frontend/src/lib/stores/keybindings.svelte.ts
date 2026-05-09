@@ -13,7 +13,7 @@
 
 import { addToast } from './toast.svelte';
 import { GetKeybindings, Keybinding, ResetKeybindings, UpdateKeybindings } from './bindings';
-import { runCommand, type CommandContext } from './commandRegistry.svelte';
+import { isCommandEnabled, runCommand, type CommandContext } from './commandRegistry.svelte';
 import type { Chord, WhenNode } from './keybindingParser';
 import {
   chordMatches,
@@ -189,6 +189,27 @@ export function dispatchKey(
     if (handled) return true;
     // Chord matched but the command was disabled; keep searching so a later
     // rule with the same chord and a different when can still fire.
+  }
+  return false;
+}
+
+export function eventMatchesKeybindingCommand(
+  event: KeyboardEvent,
+  ctx: CommandContext,
+  commandIds: ReadonlySet<string>,
+  options: { isMac?: boolean } = {},
+): boolean {
+  const isMac =
+    options.isMac ??
+    (typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform));
+
+  for (let i = resolved.length - 1; i >= 0; i -= 1) {
+    const r = resolved[i];
+    if (!commandIds.has(r.rule.command)) continue;
+    if (!chordMatches(r.chord, event, isMac)) continue;
+    if (r.whenAst && !evaluateRuleWhen(r.whenAst, ctx)) continue;
+    if (!isCommandEnabled(r.rule.command, ctx)) continue;
+    return true;
   }
   return false;
 }

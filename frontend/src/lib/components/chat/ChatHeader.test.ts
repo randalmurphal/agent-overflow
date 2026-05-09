@@ -245,6 +245,14 @@ describe('<ChatHeader>', () => {
     expect(pane.showTerminal).toBe(false);
   });
 
+  it('uses platform-aware shortcut labels in action tooltips', async () => {
+    const pane = await buildPane();
+    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    await tick();
+    expect(getByTestId('terminal-toggle').getAttribute('title')).toBe('Toggle Terminal (Ctrl+J)');
+    expect(getByTestId('diff-panel-toggle').getAttribute('title')).toBe('Toggle Diff Panel (Ctrl+Shift+G)');
+  });
+
   it('opens the project root in the editor via the Open button', async () => {
     const now = Date.now();
     addProjectLocal({

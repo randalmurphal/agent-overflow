@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import ThreadRow from './ThreadRow.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
@@ -10,6 +11,14 @@ import {
   resetForTest as resetThreadStatuses,
   setThreadStatus,
 } from '../../stores/threadStatuses.svelte';
+import {
+  resetKeybindingsStore,
+  setKeybindingsForTest,
+} from '../../stores/keybindings.svelte';
+import {
+  resetKeyboardModifiersForTest,
+  subscribeJumpHints,
+} from '../../stores/keyboardModifiers.svelte';
 import type { Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { emitItemEventUpsert } from '../../../test/helpers/chat';
@@ -46,6 +55,8 @@ describe('<ThreadRow> unarchive', () => {
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await refreshThreads();
+    resetKeybindingsStore();
+    resetKeyboardModifiersForTest();
   });
 
   it('does not show the unarchive action for an active thread', async () => {
@@ -540,6 +551,29 @@ describe('<ThreadRow> live status dot', () => {
     const dotB = rowB.container.querySelector<HTMLElement>('[data-testid="thread-row-status-dot"]');
     expect(dotB?.getAttribute('data-status')).toBe('error');
     rowB.unmount();
+  });
+
+  it('renders the active thread-jump keybinding in the jump hint', async () => {
+    vi.useFakeTimers();
+    try {
+      setKeybindingsForTest([{ key: 'ctrl+alt+2', command: 'thread.jump.1' }]);
+      const release = subscribeJumpHints();
+      const pane = createThreadPane();
+      const { getByTestId } = render(ThreadRow, {
+        props: { thread: makeThread({ id: 'jump-target' }), pane },
+      });
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', bubbles: true }));
+      vi.advanceTimersByTime(101);
+      await tick();
+
+      expect(getByTestId('thread-row-jump-hint').textContent?.trim()).toBe('Ctrl+Alt+2');
+      release();
+    } finally {
+      resetKeyboardModifiersForTest();
+      resetKeybindingsStore();
+      vi.useRealTimers();
+    }
   });
 });
 
