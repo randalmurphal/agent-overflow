@@ -57,10 +57,10 @@
   let todosOpen = $derived(pane.activityRailTodosOpen);
   let backgroundOpen = $derived(pane.activityRailBackgroundOpen);
 
-  let inProgressCount = $derived.by(() => {
+  let completedCount = $derived.by(() => {
     if (!liveTodo) return 0;
     let n = 0;
-    for (const step of liveTodo.steps) if (step.status === 'inProgress') n++;
+    for (const step of liveTodo.steps) if (step.status === 'completed') n++;
     return n;
   });
 
@@ -175,7 +175,7 @@
           <span
             class="rounded-[var(--radius-field)] bg-accent/15 px-1 text-[10px] font-medium text-accent"
             data-testid="activity-rail-todos-count"
-          >{inProgressCount}/{liveTodo.steps.length}</span>
+          >{completedCount}/{liveTodo.steps.length}</span>
           {#if inProgressPreview}
             <span
               class="hidden text-fg-hint/70 sm:inline"

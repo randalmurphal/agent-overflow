@@ -108,7 +108,8 @@ describe('<ActivityRail>', () => {
     await tick();
     const toggle = await findByTestId('activity-rail-todos-toggle');
     expect(toggle).toBeInTheDocument();
-    expect((await findByTestId('activity-rail-todos-count')).textContent?.trim()).toBe('2/4');
+    // Pill is `completed/total`, so 1 completed of 4 total → "1/4".
+    expect((await findByTestId('activity-rail-todos-count')).textContent?.trim()).toBe('1/4');
     // Body collapsed by default.
     expect(queryByTestId('activity-rail-todos-body')).toBeNull();
 
@@ -116,6 +117,21 @@ describe('<ActivityRail>', () => {
     await tick();
     expect(await findByTestId('activity-rail-todos-body')).toBeInTheDocument();
     expect(await findByTestId('activity-rail-todos-list')).toBeInTheDocument();
+  });
+
+  it('shows N/N in the count pill when every step is completed', async () => {
+    // Regression: the numerator counts completed steps, so "all done"
+    // reads N/N — not 0/N, which was the symptom when the pill was
+    // wired to in-progress count.
+    const pane = await buildPane();
+    pane.setLiveTodo([
+      { step: 'one', status: 'completed' },
+      { step: 'two', status: 'completed' },
+      { step: 'three', status: 'completed' },
+    ]);
+    const { findByTestId } = render(ActivityRail, { props: { pane } });
+    await tick();
+    expect((await findByTestId('activity-rail-todos-count')).textContent?.trim()).toBe('3/3');
   });
 
   it('shows the Background toggle and expanded body with rows when tasks are running', async () => {
