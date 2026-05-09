@@ -68,7 +68,7 @@ const openUpperBound = int64(1 << 31)
 // turn_index) to load the entire thread. Empty threads return
 // PagedItems{Items: nil, OldestTurnIndex: -1, HasMore: false}.
 func (s *Store) ListRecentItemsWithAncestors(threadID string, floorTurnIndex int) (PagedItems, error) {
-	items, err := s.queryPagedItems(threadID, int64(floorTurnIndex), openUpperBound, floorTurnIndex)
+	items, err := s.queryPagedItems(threadID, int64(floorTurnIndex), openUpperBound, floorTurnIndex, "")
 	if err != nil {
 		return PagedItems{}, err
 	}
@@ -105,7 +105,7 @@ func (s *Store) ListItemsBeforeTurn(threadID string, beforeTurnIndex, turnLimit 
 	// Constrain ancestors to those strictly below newFloor so items that
 	// were already in the caller's previously-loaded window (turn_index
 	// >= beforeTurnIndex) don't duplicate when prepended.
-	items, err := s.queryPagedItems(threadID, int64(newFloor), int64(beforeTurnIndex), newFloor)
+	items, err := s.queryPagedItems(threadID, int64(newFloor), int64(beforeTurnIndex), newFloor, "")
 	if err != nil {
 		return PagedItems{}, err
 	}
@@ -121,13 +121,18 @@ func (s *Store) ListItemsBeforeTurn(threadID string, beforeTurnIndex, turnLimit 
 	}, nil
 }
 
-// queryItemsWithAncestors runs the "items in [floor, upper) plus any
-// ancestor" query. `ancestorCutoff` is the turn_index below which
-// ancestors are accepted; pass the same value as `floor` for the
-// initial-load case (any ancestor that happens to live above floor is
-// already captured by the primary clause). For paged loads pass the
-// new floor so ancestors above it — already in the caller's window — are
-// excluded.
+// queryPagedItems runs the "items in [floor, upper) plus any ancestor"
+// query. `ancestorCutoff` is the turn_index below which ancestors are
+// accepted; pass the same value as `floor` for the initial-load case
+// (any ancestor that happens to live above floor is already captured by
+// the primary clause). For paged loads pass the new floor so ancestors
+// above it — already in the caller's window — are excluded.
+//
+// When `anchorParentID` is non-empty, the WHERE clause grows an extra
+// disjunct `OR items.parent_id = ?` so a subagent group containing the
+// anchor renders intact even if some siblings sit outside [floor,
+// upper). Pass `""` for the non-slice cases (initial load, paginate
+// older).
 //
 // `threadID` is bound into every scope of the query: the seed, the
 // recursive step, the outer SELECT, and — defence-in-depth — the
@@ -135,7 +140,30 @@ func (s *Store) ListItemsBeforeTurn(threadID string, beforeTurnIndex, turnLimit 
 // (see migrate.go: PRIMARY KEY on id alone, but identical ids across
 // threads are schema-allowed), so without the outer `items.thread_id`
 // guard a cross-thread id collision would leak rows from another thread.
-func (s *Store) queryPagedItems(threadID string, floor, upper int64, ancestorCutoff int) ([]Item, error) {
+//
+// Placeholders in order:
+//
+//  1. thread_id      (CTE seed)
+//  2. floor          (CTE seed: turn_index >= floor)
+//  3. upper          (CTE seed: turn_index < upper)
+//  4. thread_id      (CTE recursive step)
+//  5. thread_id      (outer)
+//  6. floor          (outer turn range)
+//  7. upper          (outer turn range)
+//  8. ancestorCutoff
+//  9. anchorParentID (only when non-empty)
+func (s *Store) queryPagedItems(threadID string, floor, upper int64, ancestorCutoff int, anchorParentID string) ([]Item, error) {
+	siblingClause := ""
+	args := []any{
+		threadID, floor, upper,
+		threadID,
+		threadID,
+		floor, upper, int64(ancestorCutoff),
+	}
+	if anchorParentID != "" {
+		siblingClause = ` OR items.parent_id = ?`
+		args = append(args, anchorParentID)
+	}
 	rows, err := s.db.Query(ancestorCTE+`
 		SELECT `+itemColumns+`
 		  FROM items
@@ -145,11 +173,10 @@ func (s *Store) queryPagedItems(threadID string, floor, upper int64, ancestorCut
 		   AND (
 		     (items.turn_index >= ? AND items.turn_index < ?)
 		     OR (items.id IN (SELECT id FROM ancestors)
-		         AND items.turn_index < ?)
+		         AND items.turn_index < ?)`+siblingClause+`
 		   )
 		 ORDER BY items.turn_index, items.item_index`,
-		threadID, floor, upper, threadID,
-		threadID, floor, upper, int64(ancestorCutoff),
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: query paged items for %s: %w", threadID, err)
@@ -276,7 +303,7 @@ func (s *Store) ListThreadSliceAround(threadID, anchorItemID string, targetItemC
 	if err != nil {
 		return PagedItems{}, err
 	}
-	items, err := s.querySliceItems(threadID, int64(floor), int64(upper)+1, floor, anchor.ParentID)
+	items, err := s.queryPagedItems(threadID, int64(floor), int64(upper)+1, floor, anchor.ParentID)
 	if err != nil {
 		return PagedItems{}, err
 	}
@@ -294,7 +321,7 @@ func (s *Store) listTailSlice(threadID string, targetItemCount int) (PagedItems,
 	if !found {
 		return PagedItems{Items: []Item{}, OldestTurnIndex: -1, HasMore: false}, nil
 	}
-	items, err := s.queryPagedItems(threadID, int64(floor), openUpperBound, floor)
+	items, err := s.queryPagedItems(threadID, int64(floor), openUpperBound, floor, "")
 	if err != nil {
 		return PagedItems{}, err
 	}
@@ -444,71 +471,6 @@ func boundedSliceTurnLimit(budget int) int {
 		limit = absoluteCap
 	}
 	return limit
-}
-
-// querySliceItems mirrors queryPagedItems but extends the WHERE clause
-// with an optional sibling-expansion disjunct: when `anchorParentID` is
-// non-empty, items whose `parent_id = anchorParentID` are included
-// regardless of turn_index, so a subagent group containing the anchor
-// renders intact even if some siblings sit outside [floor, upper).
-//
-// Placeholders in order:
-//
-//  1. thread_id   (CTE seed)
-//  2. floor       (CTE seed: turn_index >= floor)
-//  3. upper       (CTE seed: turn_index < upper)
-//  4. thread_id   (CTE recursive step)
-//  5. thread_id   (outer)
-//  6. floor       (outer turn range)
-//  7. upper       (outer turn range)
-//  8. ancestorCutoff
-//  9. anchorParentID  (only when non-empty)
-func (s *Store) querySliceItems(threadID string, floor, upper int64, ancestorCutoff int, anchorParentID string) ([]Item, error) {
-	siblingClause := ""
-	args := []any{
-		threadID, floor, upper,
-		threadID,
-		threadID,
-		floor, upper, int64(ancestorCutoff),
-	}
-	if anchorParentID != "" {
-		siblingClause = ` OR items.parent_id = ?`
-		args = append(args, anchorParentID)
-	}
-	rows, err := s.db.Query(ancestorCTE+`
-		SELECT `+itemColumns+`
-		  FROM items
-		  LEFT JOIN payloads ON payloads.id = items.payload_id
-		 WHERE items.thread_id = ?
-		   AND NOT (items.kind = 'notification' AND items.tool_name = 'plan_update')
-		   AND (
-		     (items.turn_index >= ? AND items.turn_index < ?)
-		     OR (items.id IN (SELECT id FROM ancestors)
-		         AND items.turn_index < ?)`+siblingClause+`
-		   )
-		 ORDER BY items.turn_index, items.item_index`,
-		args...,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: query slice items for %s: %w", threadID, err)
-	}
-	defer rows.Close()
-	items := []Item{}
-	for rows.Next() {
-		it, err := scanItemRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: scan slice item row: %w", err)
-		}
-		items = append(items, it)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate slice items for %s: %w", threadID, err)
-	}
-	decorated, err := s.decorateProposedPlanItems(threadID, items)
-	if err != nil {
-		return nil, fmt.Errorf("store: decorate slice proposed plans for %s: %w", threadID, err)
-	}
-	return decorated, nil
 }
 
 // smallestTurnIndexBefore returns the minimum turn_index across both the

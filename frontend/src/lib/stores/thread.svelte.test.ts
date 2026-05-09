@@ -2332,6 +2332,84 @@ describe('createThreadPane', () => {
       // Items should still come from cache + phase 2.
       expect(pane.items.map((it) => it.id)).toEqual(['cached']);
     });
+
+    it('phase 1 narrow policy does not widen the floor when phase 2 already loaded deeper', async () => {
+      // Pins the cursorPolicy: 'narrow' contract on applyPagedItems.
+      // 'narrow' = "only write when pagedFloor < current floor"
+      // (i.e. when phase 1's data extends further back). The risk is
+      // a slow phase 1 landing AFTER a fast phase 2 with a HIGHER
+      // floor index (less inclusive); 'narrow' must reject it so
+      // phase 2's wider window survives.
+      const pane = createThreadPane();
+      // Phase 2 fast: deep floor at 0, hasMore=true (wider window).
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [makeItem({ id: 'a', threadId: 't', turnIndex: 0 })],
+        oldestTurnIndex: 0,
+        hasMore: true,
+      }));
+      // Phase 1 slow: claims floor=10 (higher / less inclusive).
+      // 'narrow' policy MUST NOT overwrite the deeper floor.
+      let releasePhase1!: (value: unknown) => void;
+      setBindingMock('ListThreadSliceAround', () => new Promise((resolve) => {
+        releasePhase1 = resolve;
+      }));
+
+      const switching = pane.switchThread(makeThread({ id: 't' }));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      releasePhase1({
+        items: [makeItem({ id: 'b', threadId: 't', turnIndex: 10 })],
+        oldestTurnIndex: 10,
+        hasMore: false,
+      });
+      await switching;
+
+      // Phase 2's wider window must survive intact.
+      expect(pane.oldestLoadedTurnIndex).toBe(0);
+      expect(pane.hasMoreHistory).toBe(true);
+    });
+
+    it('a stale-gen phase 2 rejection does not blank items or stamp generalError', async () => {
+      // Pins withGenGuard's contract: when capturedGen !== switchGeneration,
+      // onError must NOT run. A regression that flipped the gen-check
+      // order would let a slow phase 2 from switch #1 write generalError
+      // and items=[] against the pane that switch #2 already populated.
+      const pane = createThreadPane();
+      // First switch: phase 2 hangs forever.
+      let rejectFirstPhase2!: (err: Error) => void;
+      setBindingMock('ListRecentThreadItems', () => new Promise((_, reject) => {
+        rejectFirstPhase2 = reject;
+      }));
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [], oldestTurnIndex: -1, hasMore: false,
+      }));
+      const firstSwitch = pane.switchThread(makeThread({ id: 'first' }));
+
+      // Second switch supersedes; populates with real data.
+      const secondItems = [
+        makeItem({ id: 'live', threadId: 'second', turnIndex: 0, itemIndex: 0 }),
+      ];
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: secondItems, oldestTurnIndex: 0, hasMore: false,
+      }));
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: secondItems, oldestTurnIndex: 0, hasMore: false,
+      }));
+      await pane.switchThread(makeThread({ id: 'second' }));
+      expect(pane.items.map((it) => it.id)).toEqual(['live']);
+      expect(pane.generalError).toBeNull();
+
+      // Now reject the first switch's phase 2. Stale-gen guard MUST
+      // suppress the onError side effects.
+      rejectFirstPhase2(new Error('phase 2 backend down'));
+      await firstSwitch;
+
+      // Items unchanged — second switch's data still painted.
+      expect(pane.items.map((it) => it.id)).toEqual(['live']);
+      // generalError still null — stale onError did not stamp.
+      expect(pane.generalError).toBeNull();
+    });
   });
 
   describe('switchThread spinner-flash gate', () => {

@@ -1421,38 +1421,70 @@ export function createThreadPane() {
   }
 
   /**
-   * Apply the phase-1 (viewport-sized slice) load result to pane state.
-   * Items are merged additively so anything painted from the cache or
-   * appended via in-flight stream events is preserved. Cursors only
-   * tighten the floor when phase 2 hasn't already produced a wider
-   * window — phase 2 is canonical when both have run.
+   * Run an async leg of `switchThread`'s parallel fan-out and apply its
+   * result via `onSuccess` only if the switch generation hasn't moved
+   * on. Failures are logged under `label` and routed to optional
+   * `onError` (also gen-guarded). The shared helper keeps the
+   * gen-guard cadence in one place — adding a new leg is a one-line
+   * change instead of a copy of a try/catch block whose early-return
+   * order is easy to get wrong.
    */
-  function applyPhase1Items(paged: PagedItems, threadID: string): void {
-    const sliceItems = itemsForThread((paged.items ?? []) as Item[], threadID);
-    items = mergeMissingItemsById(sliceItems, items);
-    rebuildItemIndexes(items);
-    const pagedFloor = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
-    if (pagedFloor !== null && (oldestLoadedTurnIndex === null || pagedFloor < oldestLoadedTurnIndex)) {
-      oldestLoadedTurnIndex = pagedFloor;
-      hasMoreHistory = paged.hasMore ?? false;
-    }
+  function withGenGuard<T>(
+    label: string,
+    capturedGen: number,
+    fn: () => Promise<T>,
+    onSuccess: (result: T) => void,
+    onError?: (err: unknown) => void,
+  ): Promise<void> {
+    return (async () => {
+      try {
+        const result = await fn();
+        if (capturedGen !== switchGeneration) return;
+        onSuccess(result);
+      } catch (err) {
+        if (capturedGen !== switchGeneration) return;
+        console.error(`Failed to ${label}:`, err);
+        onError?.(err);
+      }
+    })();
   }
 
   /**
-   * Apply the phase-2 (canonical full-window) load result to pane
-   * state. Items merge additively — any items already present (from
-   * cache, phase 1, or streamed events that landed mid-load) keep
-   * their current reference; missing rows are added and the array is
-   * re-sorted by (turnIndex, itemIndex). Cursors are always taken from
-   * phase 2 because its window is the widest signal we get for what's
-   * actually loaded.
+   * Apply a paged-load result to pane state. Used by both phases of
+   * `switchThread`'s two-phase load. Items merge additively — anything
+   * already present (from cache, sibling phase, or streamed events
+   * that landed mid-load) keeps its current reference; missing rows
+   * are added and the array is re-sorted by (turnIndex, itemIndex).
+   *
+   * `cursorPolicy` controls how `oldestLoadedTurnIndex` /
+   * `hasMoreHistory` move:
+   *
+   *  - `'narrow'` — phase 1's policy. Only tighten the floor; never
+   *    widen it. Phase 2's wider window is canonical when both have
+   *    run, so phase 1 must not overwrite a phase-2 cursor.
+   *  - `'overwrite'` — phase 2's policy. Always take the cursors from
+   *    this load. Phase 2's window is the widest signal for what's
+   *    actually loaded.
    */
-  function applyPhase2Items(paged: PagedItems, threadID: string): void {
-    const phase2Items = itemsForThread((paged.items ?? []) as Item[], threadID);
-    items = mergeMissingItemsById(phase2Items, items);
+  function applyPagedItems(
+    paged: PagedItems,
+    threadID: string,
+    cursorPolicy: 'narrow' | 'overwrite',
+  ): void {
+    const incoming = itemsForThread((paged.items ?? []) as Item[], threadID);
+    items = mergeMissingItemsById(incoming, items);
     rebuildItemIndexes(items);
-    oldestLoadedTurnIndex = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
-    hasMoreHistory = paged.hasMore ?? false;
+    const pagedFloor = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
+    if (cursorPolicy === 'overwrite') {
+      oldestLoadedTurnIndex = pagedFloor;
+      hasMoreHistory = paged.hasMore ?? false;
+    } else if (
+      pagedFloor !== null &&
+      (oldestLoadedTurnIndex === null || pagedFloor < oldestLoadedTurnIndex)
+    ) {
+      oldestLoadedTurnIndex = pagedFloor;
+      hasMoreHistory = paged.hasMore ?? false;
+    }
   }
 
   async function refreshCheckpointsForThread(threadID: string): Promise<void> {
@@ -1460,6 +1492,315 @@ export function createThreadPane() {
     if (thread?.id !== threadID) return;
     const sorted = [...checkpoints].sort((a, b) => a.turnIndex - b.turnIndex);
     diffPanel.setCheckpoints(sorted);
+  }
+
+  /**
+   * Snapshot the outgoing thread into the LRU cache (when worth it),
+   * the RHS panel slot, and the partitioned shiki token cache.
+   * Same-thread re-switch (revert-to-checkpoint flows) skips the
+   * snapshot AND force-evicts the cache entry so the incoming load
+   * fetches fresh state instead of flashing the stale view through
+   * `cache.get`. Streamed events evict the cache entry on every
+   * `applyItemUpserts` batch in `events.ts`, so a stale snapshot can't
+   * outlive a backend mutation.
+   */
+  function snapshotOutgoingPane(incomingThreadId: string): void {
+    const outgoingThreadId = thread?.id ?? null;
+    const sameThreadReswitch = outgoingThreadId === incomingThreadId;
+    if (
+      outgoingThreadId &&
+      !sameThreadReswitch &&
+      !loading &&
+      items.length > 0 &&
+      items.length <= MAX_CACHED_SNAPSHOT_ITEMS
+    ) {
+      threadItemCache.set(outgoingThreadId, {
+        items,
+        oldestLoadedTurnIndex,
+        hasMoreHistory,
+        latestSettledTurn,
+      });
+    }
+    if (sameThreadReswitch) {
+      threadItemCache.evict(incomingThreadId);
+    }
+    if (outgoingThreadId) {
+      rhsPanelSlot.snapshotForThread(outgoingThreadId);
+      // Free Shiki tokens cached against the outgoing thread. The shared
+      // cache is partitioned by threadId so this is a clean segmental
+      // drop; new lines tokenized for the incoming thread start from a
+      // fresh per-thread namespace.
+      clearTokensForThread(outgoingThreadId);
+    } else {
+      rhsPanelSlot.closeForThread();
+    }
+  }
+
+  /**
+   * Wipe pane-scoped state to the empty/default shape for the incoming
+   * thread: transient fields, turn-lifecycle pointers, live-todo state,
+   * and the diff panel. Pure mutation of pane state — no cache or
+   * outgoing-thread side effects.
+   */
+  function resetIncomingPaneState(newThread: Thread): void {
+    pendingApprovals = [];
+    pendingUserInputs = [];
+    resolvedApprovalIds.clear();
+    resolvedUserInputIds.clear();
+    contextWindow = seedContextWindow(newThread);
+    providerBanner = null;
+    generalError = null;
+    sendInFlight = false;
+    channelMessages = [];
+    channelStatus = null;
+    pendingClarification = null;
+    exposedControls = [];
+    activeOptionSet = null;
+    designViewport = 'desktop';
+    // Bottom-drawer state is pane-scoped: opening the terminal on thread
+    // A should not spill into thread B. The RHS sidebar is different:
+    // its active panel + width are snapshotted per thread by
+    // snapshotOutgoingPane.
+    showTerminal = false;
+
+    // Turn-lifecycle reset. The active-turn registry lives in
+    // threadStatuses.svelte.ts and is keyed by threadId, so a thread
+    // switch does NOT clear it — a turn that's still in flight on
+    // another thread keeps lighting the working indicator when the user
+    // comes back. latestSettledTurn is per-pane; rehydrate it from
+    // ListRecentTurns OR from the cache when available. Clear first so
+    // a rehydration failure leaves the pane in a consistent state.
+    latestSettledTurn = null;
+    subagentNotifications = [];
+
+    // Live-todo reset. The auto-hide timer is cancelled to avoid a stale
+    // clear firing against the wrong pane. Show-all survives per-thread
+    // via liveTodoUiPrefs; the rail's open/closed state lives in
+    // activityRailUiPrefs.
+    if (liveTodoAutoHideTimer !== null) {
+      clearTimeout(liveTodoAutoHideTimer);
+      liveTodoAutoHideTimer = null;
+    }
+    liveTodo = null;
+    liveTodoCleared = new Set();
+    const incomingPrefs = readLiveTodoUiPrefs(newThread.id);
+    liveTodoShowAll = incomingPrefs.showAll;
+    const incomingRailPrefs = readActivityRailUiPrefs(newThread.id);
+    activityRailTodosOpen = incomingRailPrefs.todosOpen;
+    activityRailBackgroundOpen = incomingRailPrefs.backgroundOpen;
+    diffPanel.clearForThread();
+  }
+
+  /**
+   * Look up the incoming thread's cached snapshot and saved scroll
+   * anchor, install the snapshot (or fresh empty state) onto the pane,
+   * and reset per-row UI registries. Returns the snapshot (so phase 2
+   * can decide whether to suppress the empty-timeline error path) and
+   * the phase-1 anchor item id (empty string means tail-load).
+   */
+  function installCacheOrFreshState(
+    newThread: Thread,
+  ): { cached: ThreadItemSnapshot | null; phase1AnchorId: string } {
+    const cached = threadItemCache.get(newThread.id);
+    const scrollSnapshot = getThreadScrollSnapshot(newThread.id);
+    const phase1AnchorId = scrollSnapshot?.kind === 'anchor' ? scrollSnapshot.itemId : '';
+
+    loading = true;
+    if (cached) {
+      items = cached.items;
+      oldestLoadedTurnIndex = cached.oldestLoadedTurnIndex;
+      hasMoreHistory = cached.hasMoreHistory;
+      latestSettledTurn = cached.latestSettledTurn;
+    } else {
+      items = [];
+      // Windowed-history reset. A null floor disables the upsert floor
+      // check until the backend tells us otherwise — between thread
+      // clear and the ListRecentThreadItems response any streamed
+      // upserts are already ours to append normally.
+      oldestLoadedTurnIndex = null;
+      hasMoreHistory = false;
+    }
+    resetLiveBuffers();
+    rebuildItemIndexes(items);
+    clearRowUiState();
+    loadingOlder = false;
+    return { cached, phase1AnchorId };
+  }
+
+  /**
+   * Arm the spinner-flash gate. `loading` flips true the moment
+   * `switchThread` starts; `showLoadingSpinner` only resolves to true
+   * after `SPINNER_THRESHOLD_MS` AND when items.length === 0. Cache
+   * hits never see the spinner because items render immediately;
+   * sub-100ms cache misses skip it because phase 1 populates items
+   * before the timer fires.
+   */
+  function armSpinnerThreshold(): void {
+    if (spinnerThresholdTimer !== null) {
+      clearTimeout(spinnerThresholdTimer);
+      spinnerThresholdTimer = null;
+    }
+    pastSpinnerThreshold = false;
+    spinnerThresholdTimer = setTimeout(() => {
+      pastSpinnerThreshold = true;
+      spinnerThresholdTimer = null;
+    }, SPINNER_THRESHOLD_MS);
+  }
+
+  /**
+   * Commit the incoming thread to the pane. Sets `thread`, syncs the
+   * top tab to the thread's mode (Discussion threads bypass the tab
+   * UI so we leave activeTab unchanged), restores the per-thread RHS
+   * panel snapshot, and re-opens the diff panel when the restored
+   * panel was a diff-checkpoint.
+   */
+  function commitIncomingThread(newThread: Thread): void {
+    thread = newThread;
+    if (newThread.mode === 'design') {
+      activeTab = 'design';
+    } else if (newThread.mode === 'chat' || newThread.mode === 'plan') {
+      activeTab = 'chat';
+    }
+    rhsPanelSlot.restoreForThread(newThread.id);
+    if (rhsPanelSlot.activePanel?.kind === 'diff-checkpoint') {
+      diffPanel.open_();
+    }
+  }
+
+  /**
+   * Run the six independent backend fetches that hydrate a thread
+   * switch in parallel. Serializing them was the dominant source of
+   * switch latency; under `Promise.allSettled` the wall-clock cost is
+   * bounded by the slowest leg, not their sum. Each leg gen-guards its
+   * own pane writes so a thread swap mid-flight invalidates late
+   * resolutions. `switchPromise` and `liveStatePromise` keep their
+   * bespoke shapes (the former logs unconditionally; the latter
+   * consumes the live-state hydration token); the four canonical
+   * paged/list legs go through `withGenGuard`.
+   *
+   * Returns `{ liveStateHydrationConsumed }` so the caller can decide
+   * whether its outer `finally` still needs to call
+   * `finishThreadLiveStateHydration` — the live-state leg always
+   * consumes the token through `hydrateThreadLiveState`'s own
+   * `finally`, but if the leg is invalidated before reaching
+   * `hydrateThreadLiveState` (it isn't, today, but the contract is
+   * explicit) the caller would still be on the hook.
+   */
+  async function runParallelLoad(
+    newThread: Thread,
+    gen: number,
+    cached: ThreadItemSnapshot | null,
+    phase1AnchorId: string,
+    liveStateHydrationToken: number,
+  ): Promise<{ liveStateHydrationConsumed: boolean }> {
+    let liveStateHydrationConsumed = false;
+    const switchPromise = (async () => {
+      try {
+        const switched = (await SwitchThread(newThread.id)) as Thread;
+        if (gen !== switchGeneration) return;
+        if (switched.id === newThread.id) {
+          const currentContextWindow = contextWindow;
+          thread = switched;
+          contextWindow = currentContextWindow
+            ? normalizeContextWindowForThread(currentContextWindow, switched)
+            : seedContextWindow(switched);
+        }
+      } catch (err) {
+        console.error('Failed to notify backend of thread switch:', err);
+        addToast('warning', 'Backend was not notified of thread switch');
+      }
+    })();
+
+    const liveStatePromise = (async () => {
+      try {
+        await hydrateThreadLiveState(newThread.id, gen, liveStateHydrationToken);
+      } finally {
+        // hydrateThreadLiveState always passes the token through to
+        // finishThreadLiveStateHydration in its own finally, so by the
+        // time we get here the token is consumed. Flag it so the outer
+        // switchThread finally doesn't double-finish.
+        liveStateHydrationConsumed = true;
+      }
+    })();
+
+    // Phase 1: viewport-sized fast slice. Skip on cache hit — the
+    // cached items already cover the visible window; phase 2 fills in
+    // the rest. Failure is non-fatal — phase 2 is the canonical
+    // full-window load and will fill in.
+    const phase1Promise = cached
+      ? Promise.resolve()
+      : withGenGuard(
+          'load phase 1 slice',
+          gen,
+          () => ListThreadSliceAround(newThread.id, phase1AnchorId, SLICE_AROUND_ITEM_COUNT),
+          (paged) => {
+            applyPagedItems(paged, newThread.id, 'narrow');
+          },
+        );
+
+    const phase2Promise = withGenGuard(
+      'load items',
+      gen,
+      () => ListRecentThreadItems(newThread.id, 0),
+      (paged) => {
+        applyPagedItems(paged, newThread.id, 'overwrite');
+      },
+      (err) => {
+        // Only blank the timeline AND raise a hard error when nothing
+        // was painted from cache or phase 1. When something rendered
+        // already, the user keeps seeing the best view we have; phase 2
+        // was a refresh, and a refresh failure becomes a quiet toast (so
+        // streaming events have a chance to fill the gap).
+        if (!cached && items.length === 0) {
+          items = [];
+          rebuildItemIndexes(items);
+          oldestLoadedTurnIndex = null;
+          hasMoreHistory = false;
+          generalError = `Failed to load thread items: ${errString(err)}`;
+          addToast('error', 'Failed to load thread items');
+        } else {
+          addToast('warning', 'Failed to refresh thread items');
+        }
+      },
+    );
+
+    // Two rows of safety so a crashed-then-completed sequence can skip
+    // over the in-flight row and still find the prior settled one.
+    const recentTurnsPromise = withGenGuard(
+      'rehydrate recent turns',
+      gen,
+      () => ListRecentTurns(newThread.id, 2) as Promise<TurnRow[] | null>,
+      (recent) => {
+        if (recent && recent.length > 0) {
+          const settled = recent.find(
+            (row) => row.completedAt !== null && row.completedAt !== undefined,
+          );
+          if (settled) {
+            latestSettledTurn = turnRowToSettled(settled);
+          }
+        }
+      },
+    );
+
+    const checkpointsPromise = withGenGuard(
+      'load checkpoints',
+      gen,
+      () => refreshCheckpointsForThread(newThread.id),
+      () => {},
+      (err) => {
+        diffPanel.setError(`Failed to load checkpoints: ${errString(err)}`);
+      },
+    );
+
+    await Promise.allSettled([
+      switchPromise,
+      liveStatePromise,
+      phase1Promise,
+      phase2Promise,
+      recentTurnsPromise,
+      checkpointsPromise,
+    ]);
+    return { liveStateHydrationConsumed };
   }
 
   return {
@@ -1575,326 +1916,39 @@ export function createThreadPane() {
     // --- Thread switching ---
 
     async switchThread(newThread: Thread): Promise<void> {
-      // `gen` is captured below at the loading=true mark; we need it
-      // visible to the finally block so we only clear `loading` when
-      // no newer switch has superseded ours. Declared up front, set
-      // inside the try body, read in finally.
-      let gen = -1;
+      // Bump the switch generation BEFORE any synchronous mutation so
+      // any in-flight prior switch's late resolutions are invalidated
+      // before we touch pane state. `gen` is read by every async leg
+      // below and by the outer finally to decide whether the spinner
+      // can be cleared (a concurrent switch keeps it up).
+      const gen = ++switchGeneration;
+      // Live-state hydration token. The live-state leg always consumes
+      // it through `hydrateThreadLiveState`'s own finally; the outer
+      // finally below only finishes it as defense-in-depth against a
+      // synchronous throw before runParallelLoad runs.
+      let liveStateHydrationConsumed = false;
       let liveStateHydrationToken = 0;
       try {
-        pendingApprovals = [];
-        pendingUserInputs = [];
-        resolvedApprovalIds.clear();
-        resolvedUserInputIds.clear();
-        contextWindow = seedContextWindow(newThread);
-        providerBanner = null;
-        generalError = null;
-        sendInFlight = false;
-        channelMessages = [];
-        channelStatus = null;
-        pendingClarification = null;
-        exposedControls = [];
-        activeOptionSet = null;
-        designViewport = 'desktop';
-        // Bottom-drawer state is pane-scoped: opening the terminal on thread A
-        // should not spill into thread B. The RHS sidebar is different: its
-        // active panel + width are snapshotted per thread below.
-        showTerminal = false;
-        const outgoingThreadId = thread?.id ?? null;
-        // Same-thread re-switch (e.g. revert-to-checkpoint flows in
-        // ChatView call switchThread on the same target) means the
-        // current items may already be stale relative to disk. Skip the
-        // outgoing snapshot AND force-evict the cache entry so the
-        // incoming load fetches fresh state instead of flashing the
-        // stale view through cache.get below.
-        const sameThreadReswitch = outgoingThreadId === newThread.id;
-        // Capture the outgoing pane snapshot BEFORE the wipe so re-entering
-        // this thread later can paint immediately. Skip when the outgoing
-        // pane is empty (nothing to gain), still loading (we'd cache a
-        // partial slice), this is a same-thread re-switch (caller wants
-        // fresh state), or the snapshot would exceed
-        // MAX_CACHED_SNAPSHOT_ITEMS (cost-to-benefit inverts above that
-        // size). Streamed events evict this entry on every
-        // applyItemUpserts batch in events.ts so a stale snapshot can't
-        // outlive a backend mutation.
-        if (
-          outgoingThreadId &&
-          !sameThreadReswitch &&
-          !loading &&
-          items.length > 0 &&
-          items.length <= MAX_CACHED_SNAPSHOT_ITEMS
-        ) {
-          threadItemCache.set(outgoingThreadId, {
-            items,
-            oldestLoadedTurnIndex,
-            hasMoreHistory,
-            latestSettledTurn,
-          });
-        }
-        if (sameThreadReswitch) {
-          threadItemCache.evict(newThread.id);
-        }
-        if (outgoingThreadId) {
-          rhsPanelSlot.snapshotForThread(outgoingThreadId);
-          // Free Shiki tokens cached against the outgoing thread. The
-          // shared cache is partitioned by threadId so this is a clean
-          // segmental drop; new lines tokenized for the incoming thread
-          // start from a fresh per-thread namespace.
-          clearTokensForThread(outgoingThreadId);
-        } else {
-          // No outgoing thread to snapshot under — just reset.
-          rhsPanelSlot.closeForThread();
-        }
-        // Turn-lifecycle reset. The active-turn registry lives in
-        // threadStatuses.svelte.ts and is keyed by threadId, so a thread
-        // switch does NOT clear it — a turn that's still in flight on
-        // another thread keeps lighting the working indicator when the
-        // user comes back. This is the load-bearing fix vs. the prior
-        // per-pane field which dropped state on switch. latestSettledTurn
-        // is per-pane; rehydrate it below from ListRecentTurns OR from the
-        // cache when available. Clear first so a rehydration failure leaves
-        // the pane in a consistent "no prior turn" state.
-        latestSettledTurn = null;
-        subagentNotifications = [];
-        // Live-todo reset. The todo snapshot is per-thread session state
-        // and must not bleed into the incoming thread; the auto-hide timer
-        // is cancelled to avoid a stale clear firing against the wrong
-        // pane. Show-all (the "Show N more…" reveal in the activity rail
-        // body) survives per-thread via liveTodoUiPrefs; the rail's own
-        // open/closed state lives in activityRailUiPrefs.
-        if (liveTodoAutoHideTimer !== null) {
-          clearTimeout(liveTodoAutoHideTimer);
-          liveTodoAutoHideTimer = null;
-        }
-        liveTodo = null;
-        liveTodoCleared = new Set();
-        const incomingPrefs = readLiveTodoUiPrefs(newThread.id);
-        liveTodoShowAll = incomingPrefs.showAll;
-        const incomingRailPrefs = readActivityRailUiPrefs(newThread.id);
-        activityRailTodosOpen = incomingRailPrefs.todosOpen;
-        activityRailBackgroundOpen = incomingRailPrefs.backgroundOpen;
-        diffPanel.clearForThread();
-
-        // === Cache lookup for the incoming thread ===
-        // A hit lets us paint the timeline synchronously; phase 2 still
-        // runs in the background to refresh against the canonical DB
-        // view. A miss leaves items=[] and the spinner-threshold timer
-        // gates whether the spinner ever appears.
-        const cached = threadItemCache.get(newThread.id);
-
-        // === Scroll snapshot lookup for phase-1 anchor ===
-        // 'bottom' snapshots and missing snapshots both feed an empty
-        // anchor id, which the backend treats as a tail-load. 'anchor'
-        // snapshots feed the recorded item id so phase 1 brings back the
-        // viewport-sized slice around it.
-        const scrollSnapshot = getThreadScrollSnapshot(newThread.id);
-        const phase1AnchorId = scrollSnapshot?.kind === 'anchor' ? scrollSnapshot.itemId : '';
-
-        loading = true;
-        if (cached) {
-          items = cached.items;
-          oldestLoadedTurnIndex = cached.oldestLoadedTurnIndex;
-          hasMoreHistory = cached.hasMoreHistory;
-          latestSettledTurn = cached.latestSettledTurn;
-        } else {
-          items = [];
-          // Windowed-history reset. A null floor disables the upsert
-          // floor check until the backend tells us otherwise, which is
-          // correct: between thread clear and the ListRecentThreadItems
-          // response any streamed upserts are already ours to append
-          // normally.
-          oldestLoadedTurnIndex = null;
-          hasMoreHistory = false;
-        }
-        resetLiveBuffers();
-        rebuildItemIndexes(items);
-        clearRowUiState();
-        loadingOlder = false;
-        // `pagingGeneration` is kept monotonically increasing for the
-        // pane's lifetime — same argument as `scrollToItemRequest.nonce`
-        // below. A stale pre-switch loadOlder/loadUntilItem is guarded
-        // by `switchGeneration`, so resetting this counter here is
-        // redundant and only introduces a "same generation value before
-        // and after the swap" collision risk if the guards ever get
-        // reordered.
-
-        // === Spinner-threshold gate ===
-        // Even on cache hit `loading` stays true until phase 2 returns
-        // — but `showLoadingSpinner` only flips true when (a) the
-        // SPINNER_THRESHOLD_MS timer fires AND (b) the timeline is
-        // empty. Cache hits never see the spinner because items.length
-        // is non-zero; sub-100ms cache misses also never see it because
-        // phase 1 populates items before the timer fires.
-        if (spinnerThresholdTimer !== null) {
-          clearTimeout(spinnerThresholdTimer);
-          spinnerThresholdTimer = null;
-        }
-        pastSpinnerThreshold = false;
-        spinnerThresholdTimer = setTimeout(() => {
-          pastSpinnerThreshold = true;
-          spinnerThresholdTimer = null;
-        }, SPINNER_THRESHOLD_MS);
-
+        snapshotOutgoingPane(newThread.id);
+        resetIncomingPaneState(newThread);
+        const { cached, phase1AnchorId } = installCacheOrFreshState(newThread);
+        armSpinnerThreshold();
         liveStateHydrationToken = beginThreadLiveStateHydration(newThread.id);
-        thread = newThread;
-        // Sync the top tab to the incoming thread's type. Discussion threads
-        // bypass the tab UI (DiscussionView owns the surface), so we leave
-        // activeTab unchanged in that case — preserving the user's last
-        // chat-vs-design intent for when they navigate away.
-        if (newThread.mode === 'design') {
-          activeTab = 'design';
-        } else if (newThread.mode === 'chat' || newThread.mode === 'plan') {
-          activeTab = 'chat';
-        }
-        rhsPanelSlot.restoreForThread(newThread.id);
-        if (rhsPanelSlot.activePanel?.kind === 'diff-checkpoint') {
-          diffPanel.open_();
-        }
-        // Capture the switch generation at the top so every async leg
-        // below can bail out if the user has already switched away
-        // (or back).
-        gen = ++switchGeneration;
-
-        // === Parallel fetches ===
-        // The five backend calls are independent; serializing them was
-        // the dominant source of switch latency. Each leg writes to
-        // pane state inside its own gen-guarded callback. We await
-        // Promise.allSettled so the spinner stays up until every leg
-        // either succeeds, fails, or is invalidated by a newer switch.
-
-        const switchPromise = (async () => {
-          try {
-            const switched = await SwitchThread(newThread.id) as Thread;
-            if (gen !== switchGeneration) return;
-            if (switched.id === newThread.id) {
-              const currentContextWindow = contextWindow;
-              thread = switched;
-              contextWindow = currentContextWindow
-                ? normalizeContextWindowForThread(currentContextWindow, switched)
-                : seedContextWindow(switched);
-            }
-          } catch (err) {
-            console.error('Failed to notify backend of thread switch:', err);
-            addToast('warning', 'Backend was not notified of thread switch');
-          }
-        })();
-
-        const liveStatePromise = (async () => {
-          const tokenAtCall = liveStateHydrationToken;
-          try {
-            await hydrateThreadLiveState(newThread.id, gen, tokenAtCall);
-          } finally {
-            // Mark consumed so the finally block at the bottom of
-            // switchThread doesn't double-finish the same token.
-            if (liveStateHydrationToken === tokenAtCall) {
-              liveStateHydrationToken = 0;
-            }
-          }
-        })();
-
-        // Phase 1: viewport-sized fast slice. Skip on cache hit — the
-        // cached items already cover the visible window; phase 2 fills
-        // in the rest.
-        const phase1Promise = cached
-          ? Promise.resolve()
-          : (async () => {
-              try {
-                const paged = await ListThreadSliceAround(
-                  newThread.id,
-                  phase1AnchorId,
-                  SLICE_AROUND_ITEM_COUNT,
-                );
-                if (gen !== switchGeneration) return;
-                applyPhase1Items(paged, newThread.id);
-              } catch (err) {
-                if (gen !== switchGeneration) return;
-                // Phase 1 failure is non-fatal — phase 2 is the
-                // canonical full-window load and will fill in. Spinner
-                // stays on until phase 2 resolves.
-                console.error('Failed to load phase 1 slice:', err);
-              }
-            })();
-
-        const phase2Promise = (async () => {
-          try {
-            const paged = await ListRecentThreadItems(newThread.id, 0);
-            if (gen !== switchGeneration) return;
-            applyPhase2Items(paged, newThread.id);
-          } catch (err) {
-            if (gen !== switchGeneration) return;
-            console.error('Failed to load items:', err);
-            // Only blank the timeline AND raise a hard error when
-            // nothing was painted from cache or phase 1. When
-            // something rendered already, the user keeps seeing the
-            // best view we have; phase 2 was a refresh, and a refresh
-            // failure becomes a quiet toast (so streaming events have
-            // a chance to fill the gap) rather than a banner that
-            // covers the existing content.
-            if (!cached && items.length === 0) {
-              items = [];
-              rebuildItemIndexes(items);
-              oldestLoadedTurnIndex = null;
-              hasMoreHistory = false;
-              generalError = `Failed to load thread items: ${errString(err)}`;
-              addToast('error', 'Failed to load thread items');
-            } else {
-              addToast('warning', 'Failed to refresh thread items');
-            }
-          }
-        })();
-
-        // Rehydrate latestSettledTurn from the most recent completed
-        // row. Two rows of safety so a crashed-then-completed sequence
-        // can skip over the in-flight row and still find the prior
-        // settled one.
-        const recentTurnsPromise = (async () => {
-          try {
-            const recent = (await ListRecentTurns(newThread.id, 2)) as TurnRow[] | null;
-            if (gen !== switchGeneration) return;
-            if (recent && recent.length > 0) {
-              const settled = recent.find(
-                (row) => row.completedAt !== null && row.completedAt !== undefined,
-              );
-              if (settled) {
-                latestSettledTurn = turnRowToSettled(settled);
-              }
-            }
-          } catch (err) {
-            if (gen !== switchGeneration) return;
-            console.error('Failed to rehydrate recent turns:', err);
-          }
-        })();
-
-        const checkpointsPromise = (async () => {
-          try {
-            await refreshCheckpointsForThread(newThread.id);
-          } catch (err) {
-            if (gen !== switchGeneration) return;
-            diffPanel.setError(`Failed to load checkpoints: ${errString(err)}`);
-          }
-        })();
-
-        await Promise.allSettled([
-          switchPromise,
-          liveStatePromise,
-          phase1Promise,
-          phase2Promise,
-          recentTurnsPromise,
-          checkpointsPromise,
-        ]);
-
+        commitIncomingThread(newThread);
+        const result = await runParallelLoad(newThread, gen, cached, phase1AnchorId, liveStateHydrationToken);
+        liveStateHydrationConsumed = result.liveStateHydrationConsumed;
         if (gen !== switchGeneration) return;
         loading = false;
       } finally {
         // Defense in depth against an uncaught exception (a synchronous
-        // throw before the first await, or an exception inside one of
-        // the catch handlers above) leaving `loading=true` stranded.
-        // Only clear when no newer switch has superseded ours — a
-        // concurrent switch is supposed to keep the indicator up.
+        // throw between bumping `gen` and runParallelLoad's own gen
+        // checks) leaving `loading=true` stranded. Only clear when no
+        // newer switch has superseded ours — a concurrent switch is
+        // supposed to keep the indicator up.
         if (gen === switchGeneration) {
           loading = false;
         }
-        if (liveStateHydrationToken !== 0) {
+        if (liveStateHydrationToken !== 0 && !liveStateHydrationConsumed) {
           finishThreadLiveStateHydration(newThread.id, liveStateHydrationToken);
         }
       }
