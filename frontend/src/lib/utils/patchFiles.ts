@@ -5,11 +5,6 @@ export interface PatchLine {
   type: LineTintType;
 }
 
-export interface SplitDiffRow {
-  left: PatchLine | null;
-  right: PatchLine | null;
-}
-
 export interface PatchDisplayRow {
   id: string;
   line: PatchLine;
@@ -113,50 +108,6 @@ export function extractPatchFile(patch: string, filePath: string): string | null
   }
 
   return flush();
-}
-
-export function buildSplitRows(lines: PatchLine[]): SplitDiffRow[] {
-  const rows: SplitDiffRow[] = [];
-  let index = 0;
-
-  while (index < lines.length) {
-    const line = lines[index];
-    if (!line) break;
-
-    if (line.type === 'del') {
-      const deletions: PatchLine[] = [];
-      while (lines[index]?.type === 'del') {
-        deletions.push(lines[index]);
-        index += 1;
-      }
-
-      const additions: PatchLine[] = [];
-      while (lines[index]?.type === 'add') {
-        additions.push(lines[index]);
-        index += 1;
-      }
-
-      const rowCount = Math.max(deletions.length, additions.length);
-      for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
-        rows.push({
-          left: deletions[rowIndex] ?? null,
-          right: additions[rowIndex] ?? null,
-        });
-      }
-      continue;
-    }
-
-    if (line.type === 'add') {
-      rows.push({ left: null, right: line });
-      index += 1;
-      continue;
-    }
-
-    rows.push({ left: line, right: line });
-    index += 1;
-  }
-
-  return rows;
 }
 
 export function buildPatchDisplayRows(lines: PatchLine[]): PatchDisplayRow[] {

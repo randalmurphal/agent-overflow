@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { buildPatchDisplayRows, buildSplitRows, extractPatchFile, parsePatchFiles, patchFileRowId, stripPatchLinePrefix } from './patchFiles';
+import {
+  buildPatchDisplayRows,
+  buildSplitDisplayRows,
+  extractPatchFile,
+  parsePatchFiles,
+  patchFileRowId,
+  stripPatchLinePrefix,
+} from './patchFiles';
 
 describe('parsePatchFiles', () => {
   it('builds aligned split rows for replacement hunks', () => {
@@ -14,9 +21,12 @@ describe('parsePatchFiles', () => {
 `);
 
     expect(file.path).toBe('app.ts');
-    const replacement = buildSplitRows(file.lines).find((row) => row.left?.type === 'del' && row.right?.type === 'add');
-    expect(replacement?.left?.content).toBe("-const value = 'old';");
-    expect(replacement?.right?.content).toBe("+const value = 'new';");
+    const splitRows = buildSplitDisplayRows(buildPatchDisplayRows(file.lines));
+    const replacement = splitRows.find(
+      (row) => row.left?.line.type === 'del' && row.right?.line.type === 'add',
+    );
+    expect(replacement?.left?.line.content).toBe("-const value = 'old';");
+    expect(replacement?.right?.line.content).toBe("+const value = 'new';");
   });
 
   it('places added-only rows on the right side', () => {
@@ -28,7 +38,10 @@ describe('parsePatchFiles', () => {
 +const added = true;
 `);
 
-    const addedOnly = buildSplitRows(file.lines).find((row) => row.right?.content === '+const added = true;');
+    const splitRows = buildSplitDisplayRows(buildPatchDisplayRows(file.lines));
+    const addedOnly = splitRows.find(
+      (row) => row.right?.line.content === '+const added = true;',
+    );
     expect(addedOnly?.left).toBeNull();
   });
 

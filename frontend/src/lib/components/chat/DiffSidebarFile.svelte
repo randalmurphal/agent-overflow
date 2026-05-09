@@ -19,8 +19,17 @@
   import Icon from '../primitives/Icon.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   import DiffLineContent from './DiffLineContent.svelte';
-  import type { PatchFile, PatchLine, SplitDiffRow } from '../../utils/patchFiles';
-  import { buildSplitRows, stripPatchLinePrefix } from '../../utils/patchFiles';
+  import type {
+    PatchDisplayRow,
+    PatchFile,
+    PatchLine,
+    SplitDisplayRow,
+  } from '../../utils/patchFiles';
+  import {
+    buildPatchDisplayRows,
+    buildSplitDisplayRows,
+    stripPatchLinePrefix,
+  } from '../../utils/patchFiles';
   import { lineTintClass } from '../../utils/diffLineTint';
   import type { FileVirtualizerHandle } from '../../utils/diffSidebarVirtualizer.svelte';
   import { languageFromPath } from '../../utils/diffLanguage';
@@ -89,18 +98,20 @@
     return `${previousPath} → ${file.path}`;
   });
 
-  // Drop ALL meta lines (`diff --git`, `---`, `+++`, `@@` hunk
-  // headers) from the visible stream. The header above already
+  // Build the visible row stream: `buildPatchDisplayRows` drops meta
+  // lines (`diff --git`, `---`, `+++`, `@@` hunk headers) and tracks
+  // old/new line numbers across hunks. The header above already
   // identifies the file; hunk headers are noisy as raw text and
   // don't help a reader scanning a rendered diff. Hunk separators
   // (`⋮`) below mark gaps between hunks visually instead.
-  let displayLines = $derived(file.lines.filter((line) => line.type !== 'meta'));
+  let displayRows: PatchDisplayRow[] = $derived(buildPatchDisplayRows(file.lines));
 
   // Track hunk boundaries so the body can interleave separator rows
   // between hunks (gives the reader a visual cue when line numbers
-  // jump). Each entry is the index in `displayLines` AFTER which a
+  // jump). Each entry is the index in `displayRows` AFTER which a
   // separator should appear; the first hunk doesn't get a leading
-  // separator.
+  // separator. `buildPatchDisplayRows` skips meta lines in the same
+  // order this loop does, so the resulting indices align row-for-row.
   let separatorAfter = $derived.by((): Set<number> => {
     const out = new Set<number>();
     let displayIdx = -1;
@@ -125,7 +136,23 @@
     return out;
   });
 
-  let splitRows: SplitDiffRow[] = $derived(viewMode === 'split' ? buildSplitRows(displayLines) : []);
+  let splitRows: SplitDisplayRow[] = $derived(
+    viewMode === 'split' ? buildSplitDisplayRows(displayRows) : [],
+  );
+
+  // Gutter width tracks the longest line number in the file so the
+  // column never reflows mid-scroll. Match `DiffFileBlock`'s minimum
+  // of 2 chars so single-digit hunks still leave room for a separator
+  // tick.
+  let maxLineNo = $derived.by(() => {
+    let max = 0;
+    for (const row of displayRows) {
+      if (row.newLine > max) max = row.newLine;
+      if (row.oldLine > max) max = row.oldLine;
+    }
+    return max;
+  });
+  let gutterChars = $derived(Math.max(2, String(maxLineNo).length));
 
   const cache = getSharedTokenCache();
   let lang = $derived(languageFromPath(file.path));
@@ -197,20 +224,34 @@
     <div id="diff-sidebar-file-{safeId}" class="ml-5 border-l border-border-subtle bg-surface-0/35">
       {#if shouldRender}
         {#if viewMode === 'split'}
-          <div class="grid grid-cols-2 gap-px bg-border-subtle font-mono text-[11px] leading-tight" data-testid="diff-sidebar-split-body">
+          <div
+            class="grid grid-cols-2 gap-px bg-border-subtle font-mono text-[11px] leading-tight"
+            style="--gutter-w: {gutterChars + 1}ch"
+            data-testid="diff-sidebar-split-body"
+          >
             {#each splitRows as row, i (i)}
-              <div class="px-2 py-px {wrapClass} {row.left ? lineTintClass(row.left.type) : 'bg-surface-0/40'} {row.left?.type === 'context' ? 'bg-surface-0' : ''}">
-                {#if row.left}<DiffLineContent line={row.left} tokens={getTokens(row.left)} />{:else}{' '}{/if}
-              </div>
-              <div class="px-2 py-px {wrapClass} {row.right ? lineTintClass(row.right.type) : 'bg-surface-0/40'} {row.right?.type === 'context' ? 'bg-surface-0' : ''}">
-                {#if row.right}<DiffLineContent line={row.right} tokens={getTokens(row.right)} />{:else}{' '}{/if}
-              </div>
+              {@render splitSide(row.left, row.left?.oldLine ?? 0)}
+              {@render splitSide(row.right, row.right?.newLine ?? 0)}
             {/each}
           </div>
         {:else}
-          <div class="py-2 font-mono text-[11px] leading-tight" data-testid="diff-sidebar-stacked-body">
-            {#each displayLines as line, i (i)}
-              <div class="block px-3 {wrapClass} {lineTintClass(line.type)}"><DiffLineContent {line} tokens={getTokens(line)} /></div>
+          <div
+            class="py-2 font-mono text-[11px] leading-tight"
+            style="--gutter-w: {gutterChars + 1}ch"
+            data-testid="diff-sidebar-stacked-body"
+          >
+            {#each displayRows as row, i (row.id)}
+              <div class="flex {lineTintClass(row.line.type)}">
+                <span
+                  class="select-none tabular-nums text-fg-subtle/60 px-3 text-right shrink-0"
+                  style="width: var(--gutter-w)"
+                  aria-hidden="true"
+                  data-testid="diff-sidebar-line-gutter"
+                >{row.newLine || row.oldLine || ''}</span><span
+                  class="pl-1 pr-3 flex-1 min-w-0 {wrapClass}"
+                  data-testid="diff-sidebar-line-content"
+                ><DiffLineContent line={row.line} tokens={getTokens(row.line)} /></span>
+              </div>
               {#if separatorAfter.has(i)}
                 <div
                   class="my-1 flex items-center gap-2 px-3 select-none"
@@ -236,3 +277,17 @@
     </div>
   {/if}
 </section>
+
+{#snippet splitSide(side: PatchDisplayRow | null, lineNo: number)}
+  <div class="flex py-px {side ? lineTintClass(side.line.type) : 'bg-surface-0/40'} {side?.line.type === 'context' ? 'bg-surface-0' : ''}">
+    <span
+      class="select-none tabular-nums text-fg-subtle/60 px-2 text-right shrink-0"
+      style="width: var(--gutter-w)"
+      aria-hidden="true"
+      data-testid="diff-sidebar-line-gutter"
+    >{lineNo || ''}</span><span
+      class="pl-1 pr-2 flex-1 min-w-0 {wrapClass}"
+      data-testid="diff-sidebar-line-content"
+    >{#if side}<DiffLineContent line={side.line} tokens={getTokens(side.line)} />{:else}{' '}{/if}</span>
+  </div>
+{/snippet}
