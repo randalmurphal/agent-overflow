@@ -175,7 +175,7 @@
     parent.kind === 'tool_call' && parent.isBackground === true,
   );
   let runningLabel = $derived.by<string | null>(() => {
-    if (isBackgroundedLaunch) return '…';
+    if (isBackgroundedLaunch && (parent.status === 'running' || parent.status === 'streaming')) return '…';
     if (parent.status === 'running' || parent.status === 'streaming') return 'running';
     return null;
   });

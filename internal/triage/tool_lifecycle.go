@@ -245,6 +245,17 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	if codexThread && shouldSplitCodexToolCompletion(launch.ToolName) {
 		return r.persistSplitToolCompletion(launch, evt, meta, now)
 	}
+	if codexThread && isCodexSpawnAgentLaunch(launch, evt.Meta) {
+		launch.Status = completionStatus(meta)
+		launch.Summary = buildCompletionSummary(completionBaseSummary(launch, meta, evt.ItemType), meta)
+		if meta.IsBackground {
+			launch.IsBackground = true
+		}
+		launch.Meta = mergeItemMetaJSON(launch.Meta, evt.Meta)
+		launch.UpdatedAt = now
+		launchInputPayload := r.shapeToolItemMeta(&launch, now)
+		return r.persistItemWithInputPayload(launch, nil, launchInputPayload)
+	}
 
 	// Backgrounded tool_result is a placeholder — Claude sends it to
 	// close the wire-level tool_use block (universal tool-lifecycle
@@ -358,6 +369,17 @@ func shouldPersistCodexCompletionWithoutLaunch(toolName string) bool {
 	default:
 		return false
 	}
+}
+
+func isCodexSpawnAgentLaunch(launch store.Item, completionMeta json.RawMessage) bool {
+	if launch.ToolName != "collab_agent" {
+		return false
+	}
+	launchMeta := decodeCodexItemMeta(json.RawMessage(launch.Meta))
+	if launchMeta.Tool == "spawn_agent" {
+		return true
+	}
+	return decodeCodexItemMeta(completionMeta).Tool == "spawn_agent"
 }
 
 func (r *Router) persistSplitToolCompletion(launch store.Item, evt provider.ProviderEvent, meta toolCompleteMeta, now int64) error {

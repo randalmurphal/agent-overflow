@@ -103,9 +103,10 @@ Authoritative mental model:
 [`turn-lifecycle.md`](../../docs/architecture/turn-lifecycle.md).
 
 - **Tool lifecycle** — `EventToolStart`/`EventToolComplete` keyed by
-  tool_use_id. Triage upserts `tool_call` rows. Per-spec backgrounded
-  launches stay `status=running` (the `tool_completion` sibling is
-  written by the task lifecycle).
+  tool_use_id. Triage upserts `tool_call` rows. Claude background
+  placeholders stay `status=running` until the task lifecycle writes the
+  `tool_completion` sibling. Codex spawn_agent launch rows settle as the
+  completed "spawned" event; child completion is a separate sibling row.
 - **Task lifecycle (Claude only)** — two-phase decoupling between
   the host-side process exit and the agent-observation event:
   - `EventBackgroundTaskTerminal` with `source="task_updated"` and
@@ -139,9 +140,10 @@ Authoritative mental model:
   completions persist as normal command rows. Backgrounded unifiedExec
   completions stay transient until an explicit terminal wait/poll row
   can own the output. Spawn-agent starts are different: they are
-  tracker-only until terminal spawn completion creates the visible tool
-  row, and still use sibling `tool_completion` rows when a wait_agent or
-  subagent_notification proves the child completed.
+	  tracker-only until terminal spawn completion creates the visible tool
+	  row, and still use sibling `tool_completion` rows when a wait_agent,
+	  child `turn/completed` lifecycle signal, or subagent_notification
+	  proves the child completed.
   Authorized only by the wire-typed signals in Meta (invariant 25); no
   heuristic classifiers.
 - **Turn lifecycle** — `EventTurnStart` writes a `turns` row with

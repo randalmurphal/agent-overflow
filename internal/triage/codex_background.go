@@ -259,7 +259,7 @@ func addCodexWaitCarrierMeta(raw json.RawMessage, waitCarrierID string) json.Raw
 	return mergeRawJSONObject(raw, extra)
 }
 
-func codexSubagentTerminalMeta(childID, status string, allTerminal bool) json.RawMessage {
+func codexSubagentTerminalMeta(childID, status string, allTerminal bool, aggregateStatus string) json.RawMessage {
 	childID = strings.TrimSpace(childID)
 	status = strings.TrimSpace(status)
 	if status == "" {
@@ -270,7 +270,7 @@ func codexSubagentTerminalMeta(childID, status string, allTerminal bool) json.Ra
 	}
 	if allTerminal {
 		meta["live_background_active"] = false
-		meta["codex_child_status"] = status
+		meta["codex_child_status"] = aggregateStatus
 	}
 	encoded, err := json.Marshal(meta)
 	if err != nil {
@@ -1574,12 +1574,14 @@ func clearPendingCodexSpawnTrackersLocked(state *codexBackgroundState) bool {
 }
 
 // observeCodexSubagentStatus handles child-thread lifecycle signals that prove
-// a spawned Codex subagent is no longer actively working. This deliberately
-// does NOT synthesize a completion sibling: wait_agent and
-// <subagent_notification> remain the only transcript-result boundaries. The
-// persisted launch row keeps status=running for historical compatibility, but
-// its meta records live_background_active=false once every child is terminal so
-// live background queries can hide inactive, unwaited children.
+// a spawned Codex subagent is no longer actively working. Codex core forwards
+// terminal child turns to the parent mailbox as subagent notifications; the
+// app-server also exposes the child turn lifecycle directly. Treat the direct
+// lifecycle signal as a transcript boundary once all receiver children are
+// terminal so the UI shows the completion when the parent can observe it,
+// matching Codex TUI behavior. The persisted launch row remains the completed
+// "spawned" event; child terminal state is represented by the separate
+// completion sibling.
 func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 	parsed := decodeCodexSubagentSignalMeta(evt.Meta)
 	childID := strings.TrimSpace(parsed.AgentPath)
@@ -1602,15 +1604,45 @@ func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 		return nil
 	}
 
-	allTerminal, err := r.markCodexSpawnChildTerminal(launch.item, launch.meta, childID, status)
+	allTerminal, aggregateStatus, err := r.markCodexSpawnChildTerminal(launch.item, launch.meta, childID, status)
 	if err != nil {
 		return err
 	}
 	r.observeCodexSpawnChildTerminalInMemory(threadID, launch.item.ID, allTerminal)
 	if allTerminal {
 		r.emitCodexBackgroundTasksChanged(threadID)
+		content := strings.TrimSpace(parsed.Message)
+		if content == "" {
+			if err := r.settleStreamingScope(threadID, launch.item.ID); err != nil {
+				log.Printf("triage: codex subagent child stream flush %s: %v", launch.item.ID, err)
+			}
+			content = r.latestCodexSubagentChildMessage(threadID, launch.item.ID)
+		}
+		completionEvent := provider.ProviderEvent{
+			ThreadID:  threadID,
+			ItemID:    launch.item.ID,
+			Content:   content,
+			Meta:      subagentStatusToItemStatusMeta(aggregateStatus),
+			Timestamp: evt.Timestamp,
+		}
+		return r.synthesizeCodexBackgroundCompletion(completionEvent, launch.item.ID, codexBackgroundCompletionOptions{})
 	}
 	return nil
+}
+
+func (r *Router) latestCodexSubagentChildMessage(threadID, launchID string) string {
+	if r.store == nil || strings.TrimSpace(threadID) == "" || strings.TrimSpace(launchID) == "" {
+		return ""
+	}
+	summary, found, err := r.store.LatestAssistantTextSummaryForParent(threadID, launchID)
+	if err != nil {
+		log.Printf("triage: codex subagent child message lookup %s: %v", launchID, err)
+		return ""
+	}
+	if !found {
+		return ""
+	}
+	return summary
 }
 
 func (r *Router) observeCodexSpawnChildTerminalInMemory(threadID, launchID string, allTerminal bool) {
@@ -1631,17 +1663,35 @@ func (r *Router) observeCodexSpawnChildTerminalInMemory(threadID, launchID strin
 	}
 }
 
-func (r *Router) markCodexSpawnChildTerminal(launch store.Item, meta codexItemMeta, childID, status string) (bool, error) {
+func (r *Router) markCodexSpawnChildTerminal(launch store.Item, meta codexItemMeta, childID, status string) (bool, string, error) {
 	terminalStatuses := decodeCodexChildTerminalStatuses(json.RawMessage(launch.Meta))
 	terminalStatuses[childID] = status
 	allTerminal := allCodexSpawnChildrenTerminal(meta.ReceiverThreadIDs, terminalStatuses)
-	launch.Meta = mergeItemMetaJSON(launch.Meta, codexSubagentTerminalMeta(childID, status, allTerminal))
+	aggregateStatus := aggregateCodexSubagentTerminalStatus(meta.ReceiverThreadIDs, terminalStatuses)
+	launch.Meta = mergeItemMetaJSON(launch.Meta, codexSubagentTerminalMeta(childID, status, allTerminal, aggregateStatus))
 	launch.UpdatedAt = time.Now().UnixMilli()
-	return allTerminal, r.persistItem(launch, nil)
+	return allTerminal, aggregateStatus, r.persistItem(launch, nil)
+}
+
+func aggregateCodexSubagentTerminalStatus(receiverThreadIDs []string, terminalStatuses map[string]string) string {
+	hasInterrupted := false
+	for _, childID := range receiverThreadIDs {
+		status := strings.TrimSpace(terminalStatuses[strings.TrimSpace(childID)])
+		switch status {
+		case "errored":
+			return "errored"
+		case "interrupted", "notFound":
+			hasInterrupted = true
+		}
+	}
+	if hasInterrupted {
+		return "interrupted"
+	}
+	return "completed"
 }
 
 func (r *Router) listPersistedCodexSpawnLaunches(threadID string) ([]persistedCodexSpawnLaunch, error) {
-	launches, err := r.store.ListRunningBackgroundToolCalls(threadID)
+	launches, err := r.store.ListActiveCodexSubagentLaunches(threadID)
 	if err != nil {
 		return nil, fmt.Errorf("codex-background list spawn launches for %s: %w", threadID, err)
 	}
@@ -1780,22 +1830,10 @@ func (r *Router) persistedSubagentNotificationEmits(
 	return out, nil
 }
 
-// stampCodexItemBackgrounded flips is_background=true on a persisted
-// row and re-emits the upsert. The row MUST already exist — the
-// projector only tracks ids that went through persistToolCallLaunch,
-// so a missing row is a sign of a race we can't silently heal.
-//
-// For spawn_agent rows (collab_agent toolName), the row's wire-level
-// status is `completed` as of item/completed but the child thread is
-// still doing work — we also revert the row to `status=running` so
-// the tray's ListLiveBackgroundTasks query surfaces it as a live
-// background launch. See invariant 24: backgrounded launches stay
-// `status=running` and the sibling completion row carries the terminal
-// state. The status flip mirrors what unifiedExec rows already show
-// (they never flipped to completed in the first place — the
-// is_background branch in persistToolCallCompletion short-circuits the
-// status flip when the projector stamped the launch before
-// item/completed fired).
+// stampCodexItemBackgrounded flips is_background=true on a persisted row. The
+// row MUST already exist — the projector only tracks ids that went through
+// persistToolCallLaunch, so a missing row is a sign of a race we can't silently
+// heal.
 func (r *Router) stampCodexItemBackgrounded(threadID, itemID string) error {
 	launch, found, err := r.store.GetThreadItem(threadID, itemID)
 	if err != nil {
@@ -1805,14 +1843,10 @@ func (r *Router) stampCodexItemBackgrounded(threadID, itemID string) error {
 		log.Printf("triage: codex-background stamp target %s missing on thread %s", itemID, threadID)
 		return nil
 	}
-	needsStatusRevert := launch.ToolName == "collab_agent" && launch.Status != statusRunning
-	if launch.IsBackground && !needsStatusRevert {
+	if launch.IsBackground {
 		return nil
 	}
 	launch.IsBackground = true
-	if needsStatusRevert {
-		launch.Status = statusRunning
-	}
 	launch.UpdatedAt = time.Now().UnixMilli()
 	return r.persistItem(launch, nil)
 }
@@ -2132,10 +2166,10 @@ func formatAgentCompletionMessage(result agentTerminalResult, totalChildren int)
 	return header + ":\n" + message
 }
 
-// codexSubagentSignalMeta is the common shape for Codex child-agent
-// terminal signals. <subagent_notification> includes Message and creates
-// transcript history; EventSubagentStatus omits Message and only updates
-// live background projection.
+// codexSubagentSignalMeta is the common shape for Codex child-agent terminal
+// signals. <subagent_notification> includes Message; EventSubagentStatus may
+// omit it, in which case triage falls back to the latest persisted child
+// assistant text when synthesizing the completion sibling.
 type codexSubagentSignalMeta struct {
 	AgentPath string `json:"agent_path"`
 	Status    string `json:"status"`

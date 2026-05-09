@@ -67,6 +67,40 @@ func TestNewCreatesTablesSuccessfully(t *testing.T) {
 	}
 }
 
+func TestLatestAssistantTextSummaryForParent(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t1", "codex")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	items := []Item{
+		{ID: "older", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "older", ParentID: "spawn", CreatedAt: now, UpdatedAt: now},
+		{ID: "ignored-empty", ThreadID: "t1", TurnIndex: 1, ItemIndex: 2, Kind: "assistant_text", Role: "assistant", Status: "completed", ParentID: "spawn", CreatedAt: now, UpdatedAt: now},
+		{ID: "ignored-kind", ThreadID: "t1", TurnIndex: 2, ItemIndex: 3, Kind: "thinking", Role: "assistant", Status: "completed", Summary: "thinking", ParentID: "spawn", CreatedAt: now, UpdatedAt: now},
+		{ID: "newer", ThreadID: "t1", TurnIndex: 2, ItemIndex: 4, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "newer", ParentID: "spawn", CreatedAt: now, UpdatedAt: now},
+	}
+	for _, item := range items {
+		if _, err := s.AppendItem(item); err != nil {
+			t.Fatalf("append %s: %v", item.ID, err)
+		}
+	}
+
+	summary, found, err := s.LatestAssistantTextSummaryForParent("t1", "spawn")
+	if err != nil {
+		t.Fatalf("latest summary: %v", err)
+	}
+	if !found || summary != "newer" {
+		t.Fatalf("latest summary = (%q, %v), want newer true", summary, found)
+	}
+	_, found, err = s.LatestAssistantTextSummaryForParent("t1", "missing")
+	if err != nil {
+		t.Fatalf("latest missing summary: %v", err)
+	}
+	if found {
+		t.Fatal("missing parent should not be found")
+	}
+}
+
 func TestCreateAndGetThreadRoundTrip(t *testing.T) {
 	s := newTestStore(t)
 

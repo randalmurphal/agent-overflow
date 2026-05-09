@@ -75,12 +75,14 @@ signals:
   reports a non-terminal child when the parent yields or reaches
   `turn/completed`.
 
-Once stamped, the Codex launch row follows the same UI contract as
-Claude: it stays `status='running'`, renders the `…` badge inline,
-appears in the background tray, and later gets a separate
-`tool_completion` sibling. Codex reports terminal state via
-`item/completed` for commands, `wait_agent`, or injected
-`<subagent_notification>` fragments for detached child agents.
+Codex command executions follow the same sibling completion contract as
+Claude background work. Codex `spawn_agent` is different: the parent
+launch row is only the completed "spawned" event. Child-agent terminal
+state is shown by a separate `tool_completion` sibling, created from
+`wait_agent`, child `turn/completed` lifecycle notifications, or injected
+`<subagent_notification>` fragments. Child lifecycle and subagent
+notifications use the same sibling row shape; whichever signal arrives
+first establishes the visible transcript boundary.
 
 Codex `unifiedExecStartup` command executions are the exception to the
 persisted-launch-row shape. Their starts are tracked as transient

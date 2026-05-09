@@ -554,6 +554,29 @@ func (s *Store) ListItemsForTurn(threadID string, turnIndex int) ([]Item, error)
 	return items, rows.Err()
 }
 
+func (s *Store) LatestAssistantTextSummaryForParent(threadID, parentID string) (string, bool, error) {
+	var summary string
+	err := s.db.QueryRow(
+		`SELECT summary
+		   FROM items
+		  WHERE thread_id = ?
+		    AND parent_id = ?
+		    AND kind = 'assistant_text'
+		    AND summary <> ''
+		  ORDER BY turn_index DESC, item_index DESC
+		  LIMIT 1`,
+		threadID,
+		parentID,
+	).Scan(&summary)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("store: latest assistant text summary for parent %s/%s: %w", threadID, parentID, err)
+	}
+	return summary, true, nil
+}
+
 // NextItemIndex returns the next available item_index for the given
 // (thread, turn). Prefer AppendItem for anything that follows the read
 // with an insert: NextItemIndex + InsertItem is a read-then-write pair
@@ -1052,6 +1075,40 @@ func (s *Store) ListRunningBackgroundToolCalls(threadID string) ([]Item, error) 
 		it, err := scanItemRow(rows)
 		if err != nil {
 			return nil, fmt.Errorf("store: scan running bg tool call row: %w", err)
+		}
+		items = append(items, it)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) ListActiveCodexSubagentLaunches(threadID string) ([]Item, error) {
+	rows, err := s.db.Query(
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.thread_id = ?
+		    AND items.kind = 'tool_call'
+		    AND items.tool_name = 'collab_agent'
+		    AND items.is_background = 1
+		    AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
+		    AND NOT EXISTS (
+		      SELECT 1 FROM items c
+		       WHERE c.thread_id = items.thread_id
+		         AND c.completion_of = items.id
+		    )
+		  ORDER BY items.turn_index, items.item_index`,
+		threadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list active Codex subagent launches for thread %s: %w", threadID, err)
+	}
+	defer rows.Close()
+
+	var items []Item
+	for rows.Next() {
+		it, err := scanItemRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan active Codex subagent launch row: %w", err)
 		}
 		items = append(items, it)
 	}

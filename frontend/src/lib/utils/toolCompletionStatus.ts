@@ -1,10 +1,10 @@
 // Backgrounded launch rows are persistent transcript records: per
 // docs/architecture/turn-lifecycle.md §1 the launch row stays
-// `status='running'` and renders `…` for the lifetime of the row;
-// the actual completion lands on a separate `tool_completion` sibling
-// row, which is where the badge belongs. The `null` return below
-// preserves that invariant — backgrounded launches never receive a
-// success/failure verdict here.
+// active while the host-side background work is unobserved; the actual
+// completion lands on a separate `tool_completion` sibling row, which
+// is where the badge belongs. The `null` return below preserves that
+// invariant — backgrounded launches never receive a success/failure
+// verdict here.
 
 import type { Item } from '../types/models';
 import { parseJsonObject } from './parseJsonObject';

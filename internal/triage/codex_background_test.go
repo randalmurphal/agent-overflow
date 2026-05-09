@@ -808,8 +808,8 @@ func TestCodexSubagentRunningChildBackgroundsImmediately(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("spawn row missing: found=%v err=%v", found, err)
 	}
-	if !row.IsBackground || row.Status != statusRunning {
-		t.Fatalf("spawn row did not become live background immediately: %+v", row)
+	if !row.IsBackground || row.Status != statusCompleted {
+		t.Fatalf("spawn row did not settle as a backgrounded launch event: %+v", row)
 	}
 }
 
@@ -907,7 +907,7 @@ func TestCodexSpawnFailedCompletionWithoutReceiverPersistsErrored(t *testing.T) 
 	}
 }
 
-func TestCodexSubagentInactiveStatusHidesLiveBackgroundWithoutCompletion(t *testing.T) {
+func TestCodexSubagentInactiveStatusCreatesCompletionAtChildTurnTerminal(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -927,6 +927,20 @@ func TestCodexSubagentInactiveStatusHidesLiveBackgroundWithoutCompletion(t *test
 	}); err != nil {
 		t.Fatalf("spawn complete: %v", err)
 	}
+	if _, err := st.AppendItem(store.Item{
+		ID:        "child-final",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		Kind:      itemKindAssistantText,
+		Role:      "assistant",
+		Status:    statusCompleted,
+		ParentID:  "spawn-inactive",
+		Summary:   "Child final answer",
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("seed child final text: %v", err)
+	}
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-inactive",
@@ -940,11 +954,22 @@ func TestCodexSubagentInactiveStatusHidesLiveBackgroundWithoutCompletion(t *test
 	if err != nil {
 		t.Fatalf("live background tasks: %v", err)
 	}
-	if len(live) != 0 {
-		t.Fatalf("inactive unwaited subagent should not be live background, got %+v", live)
+	if len(live) != 1 || live[0].ID != nextToolCompletionID("spawn-inactive") {
+		t.Fatalf("inactive subagent should surface only its recent completion, got %+v", live)
 	}
-	if _, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-inactive")); err != nil || found {
-		t.Fatalf("inactive status should not create completion sibling: found=%v err=%v", found, err)
+	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-inactive"))
+	if err != nil || !found {
+		t.Fatalf("inactive status should create completion sibling: found=%v err=%v", found, err)
+	}
+	if completion.CompletionOf != "spawn-inactive" || completion.Status != statusCompleted {
+		t.Fatalf("unexpected completion sibling: %+v", completion)
+	}
+	data, err := st.GetPayloadData(completion.PayloadID)
+	if err != nil {
+		t.Fatalf("completion payload: %v", err)
+	}
+	if string(data) != "Child final answer" {
+		t.Fatalf("completion payload = %q, want child final answer", string(data))
 	}
 	row, found, err := st.GetThreadItem("t1", "spawn-inactive")
 	if err != nil || !found {
@@ -987,13 +1012,6 @@ func TestCodexSubagentStatusWaitsForAllChildrenBeforeHidingLiveBackground(t *tes
 	}); err != nil {
 		t.Fatalf("first child status: %v", err)
 	}
-	live, err := st.ListLiveBackgroundTasks("t1", 0)
-	if err != nil {
-		t.Fatalf("live background tasks after first child: %v", err)
-	}
-	if len(live) != 1 || live[0].ID != "spawn-multi-status" {
-		t.Fatalf("spawn should stay live while child-b runs, got %+v", live)
-	}
 	row, found, err := st.GetThreadItem("t1", "spawn-multi-status")
 	if err != nil || !found {
 		t.Fatalf("spawn row missing after first child: found=%v err=%v", found, err)
@@ -1010,12 +1028,122 @@ func TestCodexSubagentStatusWaitsForAllChildrenBeforeHidingLiveBackground(t *tes
 	}); err != nil {
 		t.Fatalf("second child status: %v", err)
 	}
-	live, err = st.ListLiveBackgroundTasks("t1", 0)
+	live, err := st.ListLiveBackgroundTasks("t1", 0)
 	if err != nil {
 		t.Fatalf("live background tasks after second child: %v", err)
 	}
-	if len(live) != 0 {
-		t.Fatalf("spawn should hide after all children finish, got %+v", live)
+	if len(live) != 1 || live[0].ID != nextToolCompletionID("spawn-multi-status") {
+		t.Fatalf("spawn should hide after all children finish and show only completion, got %+v", live)
+	}
+	if _, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-multi-status")); err != nil || !found {
+		t.Fatalf("all-terminal subagents should create completion sibling: found=%v err=%v", found, err)
+	}
+}
+
+func TestCodexSubagentStatusAggregatesMultiChildFailures(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMetaForChildren(t, map[string]string{
+		"child-a": "running",
+		"child-b": "running",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-mixed-status",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-mixed-status",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-mixed-status",
+		Meta:      json.RawMessage(`{"agent_path":"child-a","status":"errored"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("first child status: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-mixed-status",
+		Meta:      json.RawMessage(`{"agent_path":"child-b","status":"completed"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("second child status: %v", err)
+	}
+
+	launch, found, err := st.GetThreadItem("t1", "spawn-mixed-status")
+	if err != nil || !found {
+		t.Fatalf("spawn row missing: found=%v err=%v", found, err)
+	}
+	meta := decodeItemMetaMap(t, launch.Meta)
+	if meta["codex_child_status"] != "errored" {
+		t.Fatalf("codex_child_status = %v, want errored", meta["codex_child_status"])
+	}
+	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-mixed-status"))
+	if err != nil || !found {
+		t.Fatalf("completion row missing: found=%v err=%v", found, err)
+	}
+	if completion.Status != statusErrored {
+		t.Fatalf("completion status = %q, want errored", completion.Status)
+	}
+}
+
+func TestCodexSubagentStatusFlushesBufferedChildTextBeforeCompletion(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMeta(t, "child-buffered", "running")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-buffered",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-buffered",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+	for _, content := range []string{"first ", "second"} {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind:            provider.EventTextDelta,
+			ThreadID:        "t1",
+			ParentToolUseID: "spawn-buffered",
+			Content:         content,
+			Timestamp:       time.Now(),
+		}); err != nil {
+			t.Fatalf("child text delta %q: %v", content, err)
+		}
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-buffered",
+		Meta:      json.RawMessage(`{"agent_path":"child-buffered","status":"completed"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("subagent status: %v", err)
+	}
+
+	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-buffered"))
+	if err != nil || !found {
+		t.Fatalf("completion row missing: found=%v err=%v", found, err)
+	}
+	data, err := st.GetPayloadData(completion.PayloadID)
+	if err != nil {
+		t.Fatalf("completion payload: %v", err)
+	}
+	if string(data) != "first second" {
+		t.Fatalf("completion payload = %q, want full buffered text", string(data))
 	}
 }
 

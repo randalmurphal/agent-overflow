@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { Item } from '../types/models';
-import { completionBadgeTitleForStatus, deriveCompletionStatus } from './toolCompletionStatus';
+import {
+  completionBadgeTitleForStatus,
+  deriveCompletionStatus,
+} from './toolCompletionStatus';
 
 function makeItem(overrides: Partial<Item>): Item {
   return {
@@ -91,10 +94,9 @@ describe('deriveCompletionStatus', () => {
       expect(deriveCompletionStatus(item)).toBeNull();
     });
 
-    it('returns null for a backgrounded tool_call even when status flips to completed', () => {
-      // Per spec the launch row stays running, but defensively: even if a
-      // bug or future change flips the launch row to completed, the helper
-      // must NOT produce a badge — completion belongs on the sibling row.
+    it('returns null for a backgrounded tool_call even when status is completed', () => {
+      // The launch row is only the launch event. Completion belongs on the
+      // sibling row, so the launch itself must not produce a badge.
       const item = makeItem({ kind: 'tool_call', isBackground: true, status: 'completed' });
       expect(deriveCompletionStatus(item)).toBeNull();
     });

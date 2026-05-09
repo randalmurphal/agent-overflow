@@ -128,9 +128,9 @@ const (
 	EventSubagentNotification EventKind = "subagent_notification"
 
 	// EventSubagentStatus is an internal Codex child-thread lifecycle signal.
-	// It marks spawned child work inactive for live background-task projection
-	// without creating the transcript completion row that only wait_agent or a
-	// subagent notification should create.
+	// It marks spawned child work inactive for live background-task projection.
+	// When every child for the spawn is terminal, triage also writes the same
+	// transcript completion sibling used by wait_agent / subagent_notification.
 	EventSubagentStatus EventKind = "subagent_status"
 
 	// EventTerminalInteraction surfaces Codex's
