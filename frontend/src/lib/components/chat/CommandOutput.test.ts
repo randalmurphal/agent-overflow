@@ -273,7 +273,7 @@ describe('<CommandOutput>', () => {
 
     const slot = getByTestId('command-output-status-slot');
     const status = getByTestId('command-output-status');
-    expect(slot.className).toContain('w-12');
+    expect(slot.className).toContain('min-w-[3.5rem]');
     expect(status.textContent?.trim()).toBe('…');
     expect(status.className).toContain('animate-pulse');
     expect(status.getAttribute('aria-label')).toBe('Running');
@@ -289,7 +289,7 @@ describe('<CommandOutput>', () => {
       },
     });
 
-    expect(getByTestId('command-output-status-slot').className).toContain('w-12');
+    expect(getByTestId('command-output-status-slot').className).toContain('min-w-[3.5rem]');
     expect(getByTestId('command-output-status').getAttribute('aria-label')).toBe('Running');
     expect(queryByTestId('completion-badge')).toBeNull();
   });
@@ -305,7 +305,7 @@ describe('<CommandOutput>', () => {
     });
 
     const runningSlot = getByTestId('command-output-status-slot');
-    expect(runningSlot.className).toContain('w-12');
+    expect(runningSlot.className).toContain('min-w-[3.5rem]');
     expect(getByTestId('command-output-status').textContent?.trim()).toBe('…');
 
     await rerender({
@@ -316,6 +316,48 @@ describe('<CommandOutput>', () => {
     const completedSlot = getByTestId('command-output-status-slot');
     expect(completedSlot.className).toBe(runningSlot.className);
     expect(getByTestId('completion-badge').getAttribute('data-status')).toBe('success');
+  });
+
+  it('uses the same metadata lane contract as generic tool rows', async () => {
+    const command = render(CommandOutput, {
+      props: {
+        item: makeItem({ id: 'tool-cmd', kind: 'tool_completion', status: 'completed' }),
+        meta: commandMeta({ command: 'ls', exitCode: 0 }),
+      },
+    });
+    const { default: GenericToolCallRow } = await import('./GenericToolCallRow.svelte');
+    const generic = render(GenericToolCallRow, {
+      props: {
+        item: makeItem({
+          id: 'tool-read',
+          kind: 'tool_call',
+          status: 'completed',
+          toolName: 'Read',
+          summary: 'README.md',
+        }),
+      },
+    });
+
+    for (const slot of [
+      command.getByTestId('command-output-status-slot'),
+      generic.getByTestId('tool-call-card-status-slot'),
+    ]) {
+      expect(slot.className).toContain('inline-flex');
+      expect(slot.className).toContain('justify-end');
+      expect(slot.className).toContain('min-w-[3.5rem]');
+    }
+
+    for (const duration of [
+      command.getByTestId('command-output-duration'),
+      generic.getByTestId('tool-call-card-duration'),
+    ]) {
+      expect(duration.className).toContain('min-w-[3rem]');
+      expect(duration.className).toContain('text-right');
+      expect(duration.className).toContain('tabular-nums');
+    }
+
+    command.unmount();
+    generic.unmount();
   });
 
   it('places the command completion badge before the timestamp', () => {

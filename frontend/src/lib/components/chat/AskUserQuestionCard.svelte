@@ -35,6 +35,7 @@
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { createPayloadExpansion } from './payloadExpansion.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
+  import ToolHeaderMeta from './ToolHeaderMeta.svelte';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
@@ -287,36 +288,28 @@
       {headerLabel}
     </span>
     {#snippet actions()}
-      <!-- Reserved-width status slot. Same pattern as
-           GenericToolCallRow / SubagentGroup: keeps the trailing time
-           chip from shifting when the running pill flips to the
-           completion badge on submission. -->
-      <span
-        class="inline-flex shrink-0 items-center justify-end min-w-[3.5rem]"
-        data-testid="ask-user-question-status-slot"
+      <ToolHeaderMeta
+        statusSlotTestId="ask-user-question-status-slot"
+        duration={{ testId: 'ask-user-question-duration', label: '' }}
+        timestamp={{ testId: 'ask-user-question-time', value: item.createdAt, label: time }}
       >
-        {#if showRunningPill}
-          <span
-            class="text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
-            data-testid="ask-user-question-status"
-            data-status={item.status}
-          >
-            running
-          </span>
-        {:else if completionStatus !== null}
-          <CompletionBadge
-            status={completionStatus}
-            class="opacity-80 transition-opacity group-hover/tool:opacity-100"
-          />
-        {/if}
-      </span>
-      <time
-        class="shrink-0 tabular-nums text-[10px] text-fg-hint"
-        datetime={new Date(item.createdAt).toISOString()}
-        data-testid="ask-user-question-time"
-      >
-        {time}
-      </time>
+        {#snippet status()}
+          {#if showRunningPill}
+            <span
+              class="text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
+              data-testid="ask-user-question-status"
+              data-status={item.status}
+            >
+              running
+            </span>
+          {:else if completionStatus !== null}
+            <CompletionBadge
+              status={completionStatus}
+              class="opacity-80 transition-opacity group-hover/tool:opacity-100"
+            />
+          {/if}
+        {/snippet}
+      </ToolHeaderMeta>
     {/snippet}
   </TranscriptDisclosureHeader>
 

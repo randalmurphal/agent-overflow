@@ -29,6 +29,7 @@
     formatPayloadSize,
     keepExpandedPayloadFresh,
   } from './payloadExpansion.svelte';
+  import ToolHeaderMeta from './ToolHeaderMeta.svelte';
 
   let {
     pane,
@@ -255,40 +256,31 @@
 {/snippet}
 
 {#snippet rowActions()}
-  {#if showRunningStatus}
-    <span
-      class="shrink-0 {isStatusBackgroundedLaunch ? 'text-[20px] leading-none' : 'text-[10px]'} text-accent opacity-70"
-      data-testid="collab-tool-row-status"
-      aria-label={isStatusBackgroundedLaunch ? 'Backgrounded' : 'Running'}
-    >
-      {isStatusBackgroundedLaunch ? '…' : 'running'}
-    </span>
-  {:else if badgeStatus}
-    <CompletionBadge status={badgeStatus} title={completionTitle} class="opacity-80" />
-  {/if}
-  {#if durationLabel}
-    <span
-      class="shrink-0 tabular-nums text-[10px] text-fg-hint"
-      data-testid="collab-tool-row-duration"
-    >
-      {durationLabel}
-    </span>
-  {/if}
-  {#if showTimestamp}
-    <time
-      class="shrink-0 tabular-nums text-[10px] text-fg-hint"
-      datetime={new Date(effectiveStatusItem.createdAt).toISOString()}
-      data-testid="collab-tool-row-time"
-    >
-      {time}
-    </time>
-  {/if}
-  {#if trailingActions}
-    {@render trailingActions()}
-  {/if}
+  <ToolHeaderMeta
+    statusSlotTestId="collab-tool-row-status-slot"
+    duration={{ testId: 'collab-tool-row-duration', label: durationLabel }}
+    timestamp={showTimestamp
+      ? { testId: 'collab-tool-row-time', value: effectiveStatusItem.createdAt, label: time }
+      : undefined}
+    {trailingActions}
+  >
+    {#snippet status()}
+      {#if showRunningStatus}
+        <span
+          class="shrink-0 {isStatusBackgroundedLaunch ? 'text-[20px] leading-none' : 'text-[10px]'} text-accent opacity-70"
+          data-testid="collab-tool-row-status"
+          aria-label={isStatusBackgroundedLaunch ? 'Backgrounded' : 'Running'}
+        >
+          {isStatusBackgroundedLaunch ? '…' : 'running'}
+        </span>
+      {:else if badgeStatus}
+        <CompletionBadge status={badgeStatus} title={completionTitle} class="opacity-80" />
+      {/if}
+    {/snippet}
+  </ToolHeaderMeta>
 {/snippet}
 
-<div class="mb-1.5 px-1 py-1 text-[12px] text-fg-muted" data-testid="collab-tool-row">
+<div class="group/tool mb-1.5 px-1 py-1 text-[12px] text-fg-muted" data-testid="collab-tool-row">
   {#if hasOutputShell}
     <TranscriptDisclosureHeader
       expanded={expansion?.expanded ?? false}

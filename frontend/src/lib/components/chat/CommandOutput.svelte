@@ -24,6 +24,7 @@
   } from './commandDisplay';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
+  import ToolHeaderMeta from './ToolHeaderMeta.svelte';
 
   let {
     pane,
@@ -121,14 +122,14 @@
   let isForegroundRunning = $derived(
     !isBackgroundedLaunch && (effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming'),
   );
-  let showStatusSlot = $derived(
+  let statusSlotHasContent = $derived(
     isBackgroundedLaunch || isForegroundRunning || (showCompletionBadge && completionStatus !== null),
   );
 
   keepExpandedPayloadFresh(() => expansion, () => hasPayload);
 </script>
 
-<div class="mb-1.5 overflow-hidden" data-testid="command-output-row">
+<div class="group/tool mb-1.5 overflow-hidden" data-testid="command-output-row">
   {#snippet headerContent()}
     <span class="flex size-3.5 shrink-0 items-center justify-center text-text-secondary" data-testid="command-output-icon" aria-hidden="true">
       <Icon icon={Terminal} size={14} strokeWidth={2} class="opacity-75" />
@@ -140,13 +141,17 @@
   {/snippet}
 
   {#snippet headerActions()}
-    <span class="ml-auto flex shrink-0 items-center gap-2">
-      <ToolDecisionChip decision={effectiveDisplayItem.decision} />
-      {#if showStatusSlot}
-        <span
-          class="flex w-12 shrink-0 items-center justify-center"
-          data-testid="command-output-status-slot"
-        >
+    <ToolDecisionChip decision={effectiveDisplayItem.decision} />
+    <ToolHeaderMeta
+      statusSlotTestId="command-output-status-slot"
+      duration={{ testId: 'command-output-duration', label: durationLabel }}
+      timestamp={showTimestamp
+        ? { testId: 'command-output-time', value: effectiveStatusItem.createdAt, label: time }
+        : undefined}
+      {trailingActions}
+    >
+      {#snippet status()}
+        {#if statusSlotHasContent}
           {#if isBackgroundedLaunch}
             <span
               class="shrink-0 text-[20px] leading-none text-accent opacity-90 transition-opacity"
@@ -168,29 +173,9 @@
           {:else if showCompletionBadge && completionStatus !== null}
             <CompletionBadge status={completionStatus} title={completionTitle} />
           {/if}
-        </span>
-      {/if}
-      {#if durationLabel}
-        <span
-          class="text-[10px] text-fg-hint shrink-0 tabular-nums"
-          data-testid="command-output-duration"
-        >
-          {durationLabel}
-        </span>
-      {/if}
-      {#if showTimestamp}
-        <time
-          class="text-[10px] text-fg-hint shrink-0 tabular-nums"
-          datetime={new Date(effectiveStatusItem.createdAt).toISOString()}
-          data-testid="command-output-time"
-        >
-          {time}
-        </time>
-      {/if}
-      {#if trailingActions}
-        {@render trailingActions()}
-      {/if}
-    </span>
+        {/if}
+      {/snippet}
+    </ToolHeaderMeta>
   {/snippet}
 
   <!-- Header -->

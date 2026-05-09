@@ -26,6 +26,7 @@
   import { formatElapsedSeconds } from '../../utils/format';
   import { isCodexSubagentLaunchItem } from '../../utils/subagentLaunch';
   import { parseClaudeSubagentTranscript } from '../../utils/claudeSubagentTranscript';
+  import ToolHeaderMeta from './ToolHeaderMeta.svelte';
 
   // Threshold (ms) at which the running row starts displaying elapsed
   // time in the duration slot. Sub-2s tools (most Read/Edit/Write/etc.)
@@ -232,69 +233,47 @@
     />
   {/if}
   <ToolDecisionChip decision={item.decision} />
-  <!-- Reserved-width status slot. Mirrors SubagentGroup so the running
-       label and the completion badge swap without shifting the duration
-       and time chrome to their right on the running → done transition.
-       `min-w-[3.5rem]` covers the wider of the two ("running" text);
-       `justify-end` anchors both variants to the slot's right edge so
-       the visible right-of-status boundary stays put. -->
-  <span
-    class="inline-flex shrink-0 items-center justify-end min-w-[3.5rem]"
-    data-testid="tool-call-card-status-slot"
+  <ToolHeaderMeta
+    statusSlotTestId="tool-call-card-status-slot"
+    duration={{
+      testId: 'tool-call-card-duration',
+      label: durationLabel || (durationMs !== null ? formatDuration(durationMs) : runningElapsedLabel),
+    }}
+    timestamp={showTimestamp
+      ? { testId: 'tool-call-card-time', value: effectiveStatusItem.createdAt, label: time }
+      : undefined}
+    {trailingActions}
   >
-    {#if runningLabel !== null}
-      {#if isBackgroundedLaunch}
-        <span
-          class="text-[20px] leading-none text-accent opacity-90 transition-opacity group-hover/tool:opacity-100"
-          data-testid="tool-call-card-status"
-          data-status={item.status}
-          title="Running in background"
-          aria-label="Backgrounded"
-        >
-          …
-        </span>
-      {:else}
-        <span
-          class="text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
-          data-testid="tool-call-card-status"
-          data-status={item.status}
-        >
-          {runningLabel}
-        </span>
+    {#snippet status()}
+      {#if runningLabel !== null}
+        {#if isBackgroundedLaunch}
+          <span
+            class="text-[20px] leading-none text-accent opacity-90 transition-opacity group-hover/tool:opacity-100"
+            data-testid="tool-call-card-status"
+            data-status={item.status}
+            title="Running in background"
+            aria-label="Backgrounded"
+          >
+            …
+          </span>
+        {:else}
+          <span
+            class="text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
+            data-testid="tool-call-card-status"
+            data-status={item.status}
+          >
+            {runningLabel}
+          </span>
+        {/if}
+      {:else if completionStatus !== null}
+        <CompletionBadge
+          status={completionStatus}
+          title={completionTitle}
+          class="opacity-80 transition-opacity group-hover/tool:opacity-100"
+        />
       {/if}
-    {:else if completionStatus !== null}
-      <CompletionBadge
-        status={completionStatus}
-        title={completionTitle}
-        class="opacity-80 transition-opacity group-hover/tool:opacity-100"
-      />
-    {/if}
-  </span>
-  <!-- Always-rendered duration slot. While running, shows wall-clock
-       elapsed once the tool has been alive for >= 2s (sub-2s tools
-       complete before the digits would update). On completion, swaps
-       to the provider-stamped exact `summaryMeta.durationMs` so the
-       transcript shows precise final duration. The reserved width
-       keeps the slot from materializing on completion and shoving
-       the time chip leftward. -->
-  <span
-    class="shrink-0 inline-block min-w-[3rem] text-right tabular-nums text-[10px] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
-    data-testid="tool-call-card-duration"
-  >
-    {durationLabel || (durationMs !== null ? formatDuration(durationMs) : runningElapsedLabel)}
-  </span>
-  {#if showTimestamp}
-    <time
-      class="shrink-0 tabular-nums text-[10px] text-fg-hint"
-      datetime={new Date(effectiveStatusItem.createdAt).toISOString()}
-      data-testid="tool-call-card-time"
-    >
-      {time}
-    </time>
-  {/if}
-  {#if trailingActions}
-    {@render trailingActions()}
-  {/if}
+    {/snippet}
+  </ToolHeaderMeta>
 {/snippet}
 
 <div

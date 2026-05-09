@@ -28,6 +28,7 @@
   import type { Snippet } from 'svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   import CompletionBadge from './CompletionBadge.svelte';
+  import ToolHeaderMeta from './ToolHeaderMeta.svelte';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { formatElapsedSeconds } from '../../utils/format';
@@ -264,55 +265,39 @@
         >
           {entryCountLabel}
         </span>
-        <!-- Stable-width status slot: the running label and the
-             completion badge have very different widths, so swapping
-             one for the other on terminal transition would shift the
-             entry-count and elapsed labels left/right. Reserving a
-             min-width on the wrapper keeps the layout stable across
-             the running → terminal flip. -->
-        <span
-          class="inline-flex shrink-0 items-center justify-end min-w-[3.5rem]"
-          data-testid="subagent-group-status-slot"
+        <ToolHeaderMeta
+          statusSlotTestId="subagent-group-status-slot"
+          duration={{ testId: 'subagent-group-duration', label: elapsedLabel }}
         >
-          {#if runningLabel !== null}
-            {#if isBackgroundedLaunch}
-              <span
-                class="text-[20px] leading-none text-accent opacity-90 transition-opacity group-hover/tool:opacity-100"
-                data-testid="subagent-group-status"
-                data-status={parent.status}
-                title="Running in background"
-                aria-label="Backgrounded"
-              >
-                …
-              </span>
-            {:else}
-              <span
-                class="text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
-                data-testid="subagent-group-status"
-                data-status={parent.status}
-              >
-                {runningLabel}
-              </span>
+          {#snippet status()}
+            {#if runningLabel !== null}
+              {#if isBackgroundedLaunch}
+                <span
+                  class="text-[20px] leading-none text-accent opacity-90 transition-opacity group-hover/tool:opacity-100"
+                  data-testid="subagent-group-status"
+                  data-status={parent.status}
+                  title="Running in background"
+                  aria-label="Backgrounded"
+                >
+                  …
+                </span>
+              {:else}
+                <span
+                  class="text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
+                  data-testid="subagent-group-status"
+                  data-status={parent.status}
+                >
+                  {runningLabel}
+                </span>
+              {/if}
+            {:else if completionStatus !== null}
+              <CompletionBadge
+                status={completionStatus}
+                class="opacity-80 transition-opacity group-hover/tool:opacity-100"
+              />
             {/if}
-          {:else if completionStatus !== null}
-            <CompletionBadge
-              status={completionStatus}
-              class="opacity-80 transition-opacity group-hover/tool:opacity-100"
-            />
-          {/if}
-        </span>
-        <!-- Always-rendered elapsed slot, even when the label string
-             is empty. Without the reserved width, the slot only
-             mounts after the first second tick, causing a one-time
-             rightward layout shift of any trailing chrome. The
-             tabular-nums + right-alignment keeps `0s → 1m 30s` from
-             reflowing the row as digits roll over. -->
-        <span
-          class="shrink-0 tabular-nums text-[10px] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100 inline-block min-w-[3rem] text-right"
-          data-testid="subagent-group-duration"
-        >
-          {elapsedLabel}
-        </span>
+          {/snippet}
+        </ToolHeaderMeta>
       {/snippet}
     </TranscriptDisclosureHeader>
 
