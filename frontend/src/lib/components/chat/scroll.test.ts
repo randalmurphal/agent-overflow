@@ -8,7 +8,7 @@
 //     library (see /inokawa/virtua tests upstream); duplicating those
 //     assertions in a happy-dom env that lacks real layout would be
 //     fiction.
-//   - Pure controller behavior (spring physics, content RO, gesture
+//   - Pure controller behavior (sync-pin, content RO, gesture
 //     handlers, pause-lease semantics) — covered exhaustively in
 //     `useStickToBottom.svelte.test.ts`.
 //
@@ -97,21 +97,22 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
   });
 
   it('bottom-snapshot restore leaves the controller sticky and not escaped (markAtBottom contract)', async () => {
-    // Regression: the previous bottom-restore path was
-    // `forceStick({animation:'instant'})`, a single-shot scrollTop write
-    // against the current scrollHeight that was stale by the time virtua
-    // finished remeasuring rows and svelte-streamdown finished async
-    // typesetting. The visible symptom was a ~1-viewport spring chase
-    // on every re-entry into a thread with a {kind:'bottom'} snapshot.
-    // The new path routes through `listRef.scrollToIndex(last, 'end')`
-    // (virtua's measurement loop self-corrects) paired with
-    // `markAtBottom()` (controller flags only — no scrollTop write).
-    // We can't assert the absence of a spring chase directly in
-    // happy-dom (no real layout), so the contract this test pins is
-    // the controller end-state: after restoration completes, the
-    // controller must be in (isSticky=true, escapedFromLock=false). The
-    // $effect.pre escape guard sets escape=true synchronously on thread
-    // mount; if restoreToBottom didn't call markAtBottom (or replaced it
+    // Regression: the previous bottom-restore path was `forceStick()`
+    // (a single-shot scrollTop write against the current scrollHeight),
+    // which was stale by the time virtua finished remeasuring rows and
+    // svelte-streamdown finished async typesetting. The visible symptom was a ~1-viewport scroll preamble
+    // on every re-entry into a thread with a {kind:'bottom'} snapshot,
+    // because each subsequent contentRO positive delta sync-pinned to
+    // the new (larger) bottom from the stale starting offset. The new
+    // path routes through `listRef.scrollToIndex(last, 'end')` (virtua's
+    // measurement loop self-corrects) paired with `markAtBottom()`
+    // (controller flags only — no scrollTop write). We can't assert the
+    // absence of the preamble directly in happy-dom (no real layout),
+    // so the contract this test pins is the controller end-state: after
+    // restoration completes, the controller must be in (isSticky=true,
+    // escapedFromLock=false). The $effect.pre escape guard sets
+    // escape=true synchronously on thread mount; if restoreToBottom
+    // didn't call markAtBottom (or replaced it
     // with something that fails to clear escape), this assertion fails.
     setThreadScrollSnapshot('thread-bottom-restore', { kind: 'bottom' });
 
@@ -194,8 +195,9 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
 
   it('bottom-snapshot restore calls stopScroll before virtua scrollToIndex (frontend/CLAUDE.md contract)', async () => {
     // CLAUDE.md scroll contract: every listRef.scrollToIndex(...) MUST
-    // be preceded by stick.stopScroll() so the spring stops fighting
-    // the jump. The end-state assertion above (isSticky+!escaped) is
+    // be preceded by stick.stopScroll() so the controller doesn't
+    // auto-restick mid-jump if virtua's measurement loop happens to
+    // land near the bottom. The end-state assertion above (isSticky+!escaped) is
     // satisfied by markAtBottom regardless of whether stopScroll ran;
     // a regression that drops the stopScroll line in restoreToBottom
     // would slip through that test. This pins the call directly.
@@ -384,6 +386,55 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     expect(loadUntilItem).toHaveBeenCalledWith('anchor-row');
   });
 
+  it('publishes a virtua-cache getter on mount that delegates to virtua, and clears it on unmount', async () => {
+    // Per-thread virtua cache wiring. Two invariants:
+    //   1. The getter is attached on mount and detached on unmount —
+    //      a stale closure capturing the torn-down virtualizer must
+    //      not survive past component teardown. The detach call must
+    //      pass the SAME getter reference (matched-pair guard in
+    //      thread.svelte.ts) so a stale teardown can't dispose a
+    //      freshly remounted timeline's getter during fast switches.
+    //   2. The getter actually delegates to virtua's listRef.getCache(),
+    //      not a stub that returns a constant. Verified indirectly by
+    //      rendering virtua (test-mode ssrCount populates listRef) and
+    //      asserting the getter returns the same value as a direct
+    //      listRef.getCache() call would — i.e. the CacheSnapshot
+    //      tuple shape `[number[], number]`. A regression that swapped
+    //      the closure to `() => undefined` or `() => null` fails
+    //      assertion #2 even though assertion #1 still passes.
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'first' }),
+    ]);
+    const attachVirtuaCacheGetter = vi.spyOn(pane, 'attachVirtuaCacheGetter');
+    const detachVirtuaCacheGetter = vi.spyOn(pane, 'detachVirtuaCacheGetter');
+
+    const { unmount } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+
+    expect(attachVirtuaCacheGetter).toHaveBeenCalledTimes(1);
+    const registered = attachVirtuaCacheGetter.mock.calls[0][0];
+    expect(typeof registered).toBe('function');
+
+    // Invariant #2: the returned value matches virtua's CacheSnapshot
+    // shape — `[number[], number]`. happy-dom's ssrCount-mode virtua
+    // mount populates listRef synchronously, so the getter resolves to
+    // a real tuple, not undefined. Stubbed-getter regressions surface
+    // here because they return primitives or null instead of the tuple.
+    const captured = registered!();
+    expect(Array.isArray(captured)).toBe(true);
+    expect(captured).toHaveLength(2);
+    expect(Array.isArray((captured as unknown as [unknown, unknown])[0])).toBe(true);
+    expect(typeof (captured as unknown as [unknown, number])[1]).toBe('number');
+
+    unmount();
+    // Invariant #1: detach must be called with the same getter
+    // reference that was attached — the matched-pair guard in
+    // thread.svelte.ts only clears the slot on a reference match.
+    expect(detachVirtuaCacheGetter).toHaveBeenCalledTimes(1);
+    expect(detachVirtuaCacheGetter).toHaveBeenLastCalledWith(registered);
+  });
+
 });
 
 describe('scroll integration — load older', () => {
@@ -539,8 +590,8 @@ describe('scroll integration — auto-follow + button', () => {
 
     const wrapper = container.querySelector('[data-testid="message-timeline-scroll"]') as HTMLElement;
     expect(wrapper).not.toBeNull();
-    // The spring controller's wheel handler short-circuits when the
-    // container isn't scrollable (`scrollHeight <= clientHeight`).
+    // The sticky-bottom controller's wheel handler short-circuits when
+    // the container isn't scrollable (`scrollHeight <= clientHeight`).
     // happy-dom returns 0 for both unless we override, so the test
     // wheel would otherwise be ignored. Stub geometry so the wheel
     // handler proceeds to flip escapedFromLock — and so the scroll
@@ -721,7 +772,7 @@ describe('scroll integration — load older noop / error paths', () => {
 // below.
 
 describe('scroll integration — useStickToBottom wiring', () => {
-  // Controller-internal behavior (spring physics, content-RO, gesture
+  // Controller-internal behavior (sync-pin, content-RO, gesture
   // handlers, pause-lease semantics, programmatic-write tagging) is
   // covered exhaustively in `useStickToBottom.svelte.test.ts` against
   // raw scrollEl/contentEl divs with stubbed geometry.
@@ -776,7 +827,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     // Replaces the deleted visibility-mask test that asserted appending
     // a child to a running inline subagent doesn't flicker. Under the new
     // architecture there is no mask — the guarantee is structural: the
-    // spring controller does NOT infer up-gesture from scrollTop direction
+    // controller does NOT infer up-gesture from scrollTop direction
     // (R4 mitigation), so virtua's $fixScrollJump or any per-row resize
     // that nudges scrollTop cannot flip escapedFromLock. Mid-stream
     // upserts therefore leave intent/stickiness untouched.
@@ -789,7 +840,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
 
     // The pane interface only exposes pauseAutoScroll / notifyContentMaybeGrew
     // (PaneScrollController is narrow by design — see thread.svelte.ts);
-    // peek at the underlying spring controller's intent state to verify
+    // peek at the underlying controller's intent state to verify
     // stickiness survives the upsert without inferring up-gesture from
     // scrollTop direction.
     const ctrl = pane.scrollController as

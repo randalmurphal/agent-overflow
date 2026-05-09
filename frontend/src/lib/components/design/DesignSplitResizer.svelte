@@ -7,7 +7,7 @@
   //
   // While dragging we acquire a pauseAutoScroll lease on the chat
   // timeline so a streaming chunk arriving mid-drag doesn't fire the
-  // spring controller's content-RO and yank the user. Released on
+  // controller's content-RO sync-pin and yank the user. Released on
   // pointerup or component teardown.
 
   import { onDestroy } from 'svelte';

@@ -24,8 +24,8 @@ if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
 // no-op; happy-dom's native RO doesn't fire on stubbed-getter geometry
 // changes either. We install our own observer so wheel-up + escape +
 // content-grow tests can fire the RO callback explicitly with a
-// chosen height — that's the only way to exercise the spring-driver
-// path without a real layout engine.
+// chosen height — that's the only way to exercise the controller's
+// content-RO path without a real layout engine.
 class FireableResizeObserver {
   static instances: FireableResizeObserver[] = [];
   callback: ResizeObserverCallback;
@@ -108,7 +108,7 @@ describe('<ChannelView>', () => {
     // this, a prior test (or a prior file in the same Vitest worker)
     // that fired mousedown without a matching mouseup/click would leak
     // mouseDown=true into this file, where the controller's
-    // isSelectingInside() would silently pause the spring.
+    // isSelectingInside() would silently suppress sync-pin writes.
     resetUseStickToBottomModuleStateForTest();
     // Install the controllable RO. Tests that don't need to fire it
     // (the existing six cases) just don't call .fire() — observe is
@@ -243,18 +243,17 @@ describe('<ChannelView>', () => {
     expect(pane.channelMessages.map((m) => m.sequence)).toEqual([1, 2, 3]);
   });
 
-  it('initial channel load uses forceStickAndSettle so async row growth re-snaps instantly instead of spring-chasing', async () => {
-    // Regression: previously the initial-load path called
-    // `forceStick({animation:'instant'})`, which writes scrollTop once
-    // against the current scrollHeight. svelte-streamdown's async
-    // typesetting (shiki / KaTeX / mermaid / parseIncompleteMarkdown
-    // rebalance) keeps growing message rows for hundreds of ms after
-    // first paint. The single-shot write was stale by the time those
-    // grows landed; the spring then chased the moving bottom visibly.
-    // The fix is forceStickAndSettle(): snap once, then re-snap on every
-    // positive content-RO delta during the settle window (default 350ms,
-    // matching RETAIN_ANIMATION_DURATION_MS). After the window expires,
-    // normal spring behavior resumes.
+  it('initial channel load + async row growth sync-pins scrollTop in the same paint as each contentRO delta', async () => {
+    // Regression: before sync-pin landed, autonomous content growth on
+    // a sticky session armed a spring driver that chased the moving
+    // bottom visibly. svelte-streamdown's async typesetting (shiki /
+    // KaTeX / mermaid / parseIncompleteMarkdown rebalance) keeps
+    // growing message rows for hundreds of ms after first paint, so
+    // the chase showed up as a top-to-bottom scroll preamble on every
+    // channel load. The fix routes autonomous growth through the
+    // contentRO's synchronous re-pin: each positive delta writes
+    // scrollTop to the new target inside the RO callback, so the
+    // browser only paints the final state per frame.
     const pane = await buildPane();
     setBindingMock('GetChannelMessages', async () => [
       makeMsg({ id: 'a', sequence: 1, content: 'first' }),
@@ -274,37 +273,37 @@ describe('<ChannelView>', () => {
       get: () => 600,
     });
 
-    // Initial poll completes; ChannelView calls forceStickAndSettle.
+    // Initial poll completes; ChannelView's post-poll forceStick()
+    // writes scrollTop to the current target (= 1000 - 1 - 600 = 399).
     await vi.advanceTimersByTimeAsync(0);
     for (let i = 0; i < 5; i++) await Promise.resolve();
     const ro = FireableResizeObserver.instances.at(-1);
     if (!ro) throw new Error('expected useStickToBottom to install a ResizeObserver');
     const contentEl = ro.observed[0] as HTMLElement;
 
-    // First RO fire seeds previousHeight. forceStickAndSettle has
-    // already written scrollTop to the current target (= 1000 - 1 - 600
-    // = 399), so the first-fire branch is a no-op for scrollTop.
+    // First RO fire seeds previousHeight. The first-fire branch writes
+    // scrollTop to the current target if sticky; we're already at 399,
+    // so this is a no-op visually.
     ro.fire(contentEl, 400);
     expect(scroll.scrollTop).toBe(399);
 
-    // Streamdown async typesetting #1: scrollHeight grows from 1000 to
-    // 1100. With the spring path, scrollTop would converge to the new
-    // target 499 over multiple rAF frames. With the settle path, it
-    // re-snaps to 499 in the same frame as the RO callback.
+    // Streamdown async typesetting #1: scrollHeight grows to 1100.
+    // contentRO's positive-delta sync-pin writes scrollTop=499 in the
+    // same frame as the callback. No rAF gap.
     scrollHeightValue = 1100;
     ro.fire(contentEl, 500);
     expect(scroll.scrollTop).toBe(499);
 
-    // Streamdown async typesetting #2: another grow. Re-snaps again.
+    // Streamdown async typesetting #2: another grow. Same single-write
+    // convergence.
     scrollHeightValue = 1200;
     ro.fire(contentEl, 600);
     expect(scroll.scrollTop).toBe(599);
 
-    // No spring frames advance scrollTop further — the settle path
-    // produces single-frame re-snaps, not a multi-frame chase. If a
-    // future regression replaced settle with spring, scrollTop would
-    // either lag the target on the immediate-after-fire assertion above
-    // or continue advancing here.
+    // No rAF frames advance scrollTop further. If a future regression
+    // re-introduced an autonomous chase loop on contentRO deltas,
+    // scrollTop would lag target on the immediate-after-fire
+    // assertions above or continue advancing here.
     const after = scroll.scrollTop;
     await vi.advanceTimersByTimeAsync(16);
     for (let i = 0; i < 3; i++) await Promise.resolve();
@@ -315,10 +314,10 @@ describe('<ChannelView>', () => {
     // The unified controller (useStickToBottom) treats wheel-up as the
     // canonical "I want to read above" intent signal — escapedFromLock
     // flips synchronously, geometric near-bottom flips false, the chip
-    // becomes visible, and the spring-driver's RO callback path bails
-    // out for as long as escapedFromLock stays true. Clicking the chip
-    // calls forceStick which slams scrollTop back to bottom and clears
-    // the escape, so the chip hides.
+    // becomes visible, and the contentRO's sync-pin path bails out for
+    // as long as escapedFromLock stays true. Clicking the chip calls
+    // forceStick which slams scrollTop back to bottom and clears the
+    // escape, so the chip hides.
     const pane = await buildPane();
     let callCount = 0;
     setBindingMock('GetChannelMessages', async () => {
@@ -368,7 +367,7 @@ describe('<ChannelView>', () => {
 
     // Subsequent poll cycle: a new message arrives, contentEl grows,
     // and the RO fires a positive delta. The escape state must block
-    // the spring — scrollTop stays at 200 and the chip stays visible.
+    // the sync-pin — scrollTop stays at 200 and the chip stays visible.
     scrollHeightValue = 1100;
     await vi.advanceTimersByTimeAsync(2500);
     for (let i = 0; i < 5; i++) await Promise.resolve();

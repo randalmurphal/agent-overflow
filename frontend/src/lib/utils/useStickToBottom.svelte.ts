@@ -1,12 +1,17 @@
-// Spring-driven sticky-bottom controller, shared by chat MessageTimeline
+// Sync-pin sticky-bottom controller, shared by chat MessageTimeline
 // and Discussion ChannelView.
 //
-// Port of stackblitz-labs/use-stick-to-bottom adapted to Svelte 5. Owns
-// the user's intent ("glued to bottom" or "free") and a velocity spring
-// that smoothly chases the bottom while content grows. A ResizeObserver
-// on the content element triggers the spring within the same render
-// cycle as a layout change — there's no rAF gap between content arriving
-// and the scroll position catching up.
+// Port of stackblitz-labs/use-stick-to-bottom adapted to Svelte 5,
+// stripped of the upstream velocity-spring chase loop. Owns the user's
+// intent ("glued to bottom" or "free") and a single ResizeObserver on
+// the content element. Autonomous content growth pins synchronously
+// inside the RO callback: the same paint frame where contentEl grows
+// also lands scrollTop at the new target, so the user sees content
+// arriving at the bottom with no perceptible scroll motion. There's no
+// rAF gap between content arriving and the scroll position catching
+// up, and no parallel animation loop that could fight a programmatic
+// jump. User-initiated snaps (the scroll-to-bottom chip, send) go
+// through `forceStick()` which writes scrollTop directly.
 //
 // Unlike the previous controller, this owns the scroll element directly.
 // MessageTimeline pairs it with virtua's <Virtualizer scrollRef={scrollEl}>
@@ -24,8 +29,6 @@
 // when their out-of-content height changes; the seam is identical on
 // both surfaces.
 
-const DEFAULT_SPRING = { damping: 0.7, stiffness: 0.05, mass: 1.25 } as const;
-const SIXTY_FPS_INTERVAL_MS = 1000 / 60;
 // "Near bottom" threshold for the geometric flag (button visibility,
 // negative-delta repin). Loose on purpose: when the user is within 70px,
 // the bottom is essentially in view and the scroll-to-bottom chip is
@@ -43,13 +46,8 @@ const STICK_TO_BOTTOM_OFFSET_PX = 70;
 // margin for sub-pixel rounding while still excluding any deliberate
 // wheel/touch gesture wider than a few pixels.
 const RE_STICK_OFFSET_PX = 5;
-const RETAIN_ANIMATION_DURATION_MS = 350;
 const RESIZE_CLEAR_PADDING_MS = 1;
 const DEFAULT_PROGRAMMATIC_SCROLL_DURATION_MS = 420;
-// Spring arrival thresholds: distance ≤1px from target AND velocity below
-// 0.5 px-per-60fps-frame means we've effectively settled.
-const ARRIVAL_DISTANCE_PX = 1;
-const ARRIVAL_VELOCITY_THRESHOLD = 0.5;
 const PROGRAMMATIC_SCROLL_DISTANCE_THRESHOLD_PX = 1;
 
 const UP_KEYS: ReadonlySet<string> = new Set(['PageUp', 'ArrowUp', 'Home']);
@@ -125,7 +123,7 @@ export interface UseStickToBottomController {
   detach(): void;
 
   /** "User wants the bottom now" — called by ScrollToBottomButton, send. */
-  forceStick(opts?: { animation?: 'instant' | 'spring' }): void;
+  forceStick(): void;
   /**
    * Flip intent flags to sticky-bottom WITHOUT writing scrollTop. Pairs
    * with `listRef.scrollToIndex(last, 'end')` — virtua positioned the
@@ -133,48 +131,33 @@ export interface UseStickToBottomController {
    */
   markAtBottom(): void;
   /**
-   * Snap to bottom, then re-snap on every positive contentRO delta during
-   * `settleMs` (default `RETAIN_ANIMATION_DURATION_MS`) before allowing
-   * spring chase. For surfaces with no virtua measurement loop
-   * (Discussion's ChannelView) where async typesetting would otherwise
-   * spring-chase visibly.
-   */
-  forceStickAndSettle(opts?: { settleMs?: number }): void;
-  /**
    * Controlled non-native scroll animation for arbitrary timeline jumps.
    * This owns the scrollTop writes so programmatic scroll tagging stays
-   * in one place and the sticky-bottom spring cannot race the jump.
+   * in one place. Used by handleLoadOlder / scrollToItem.
    */
   animateScrollTo(targetTop: number, opts?: { durationMs?: number }): Promise<'completed' | 'cancelled'>;
-  /** Cancel any in-flight spring. Call before virtua scrollToIndex. */
+  /**
+   * Mark the upcoming external scroll as not user-driven. Call before
+   * `listRef.scrollToIndex(...)` so the controller doesn't auto-restick
+   * if virtua's jump happens to land near the bottom.
+   */
   stopScroll(): void;
   /** Public so handleLoadOlder / scrollToItem can opt out of auto-restick. */
   setEscapedFromLock(next: boolean): void;
 }
 
-export interface UseStickToBottomOptions {
-  /**
-   * Spring tuning. Defaults match upstream use-stick-to-bottom
-   * (damping 0.7, stiffness 0.05, mass 1.25). Override only if the
-   * default chase feels wrong against our event cadence.
-   */
-  spring?: Partial<typeof DEFAULT_SPRING>;
-}
-
-export function createUseStickToBottomController(
-  options: UseStickToBottomOptions = {},
-): UseStickToBottomController {
+export function createUseStickToBottomController(): UseStickToBottomController {
   installModuleSelectionListeners();
-
-  const spring = { ...DEFAULT_SPRING, ...(options.spring ?? {}) };
 
   // ===== Reactive state (consumed by templates / $derived) =====
   // Intent flag: "we want to be glued to the bottom". Mirrors upstream's
   // state.isAtBottom — set true on initial mount, on forceStick, and when
   // a re-stick condition fires from the scroll handler. Set false on
   // explicit escape (wheel/key/touch/select) and on stopScroll. Crucially
-  // this is NOT geometry-derived; the spring relies on it staying true
-  // even when content grew the bottom out from under us.
+  // this is NOT geometry-derived; the contentRO sync-pin path relies on
+  // it staying true even when content grew the bottom out from under us
+  // — that's the gate that keeps the pin from running after the user
+  // explicitly scrolled away.
   let isAtBottomState = $state(true);
   // Geometric ≤70px-from-bottom flag. Updated by refreshIsNearBottom on
   // every scroll event and after every programmatic write. The public
@@ -192,10 +175,6 @@ export function createUseStickToBottomController(
   let detachScroll: (() => void) | undefined;
   let detachKeyTouch: (() => void) | undefined;
 
-  let velocity = 0;
-  let accumulated = 0;
-  let lastTickAt: number | null = null;
-  let animationToken: symbol | null = null;
   let targetAnimationFrame: number | null = null;
   let targetAnimationResolve: ((result: 'completed' | 'cancelled') => void) | null = null;
   let restoreTargetScrollBehavior: (() => void) | null = null;
@@ -203,8 +182,6 @@ export function createUseStickToBottomController(
   let resizeClearTimer: ReturnType<typeof setTimeout> | null = null;
   let ignoreScrollToTop = -1;
   let previousHeight: number | undefined;
-  let lastGrewAt = 0;
-  let stopRequested = false;
   let touchStartY: number | null = null;
   // Last user-driven (untagged) scrollTop seen by the scroll handler.
   // Used by the re-stick path to gate on direction: only DOWN-direction
@@ -217,18 +194,13 @@ export function createUseStickToBottomController(
   // user scroll already has a meaningful direction baseline; reset to
   // -1 on detach (re-seeded by the next attach).
   let lastUntaggedScrollTop = -1;
-  // Active settle window deadline (epoch-ish ms via nowMs()). 0 = inactive;
-  // any value <= now is also inactive, which is the natural expiration
-  // path. Used by ChannelView's initial-load path (forceStickAndSettle)
-  // to re-snap on contentRO positive deltas instead of springing while
-  // async Streamdown growth is still landing.
-  let settleUntil = 0;
 
   // ===== Geometry =====
   function targetScrollTop(): number {
     if (!scrollEl) return 0;
-    // The -1 is load-bearing: matches upstream so the spring always has
-    // a sub-pixel diff to chase, keeping isAtBottom from oscillating.
+    // The -1 is load-bearing: matches upstream so the geometric "at
+    // bottom" check always has a sub-pixel diff, keeping isAtBottom
+    // from oscillating across browser sub-pixel rounding.
     return Math.max(0, scrollEl.scrollHeight - 1 - scrollEl.clientHeight);
   }
   function distanceFromBottom(): number {
@@ -310,65 +282,6 @@ export function createUseStickToBottomController(
     finishTargetAnimation('cancelled');
   }
 
-  // ===== Spring tick =====
-  function startSpringIfNeeded(): void {
-    if (animationToken) return;
-    if (stopRequested || pauseDepth > 0) return;
-    if (!isAtBottomState || escapedFromLockState) return;
-    const myToken = Symbol('spring');
-    animationToken = myToken;
-    lastTickAt = null;
-
-    const tick = (now: number): void => {
-      if (animationToken !== myToken) return;
-      if (!scrollEl || stopRequested || pauseDepth > 0) {
-        animationToken = null;
-        return;
-      }
-      if (!isAtBottomState || escapedFromLockState) {
-        animationToken = null;
-        velocity = 0;
-        accumulated = 0;
-        return;
-      }
-      if (isSelectingInside(scrollEl)) {
-        // Re-rAF without advancing — selection should never fight the user.
-        requestAnimationFrame(tick);
-        return;
-      }
-
-      const dt = lastTickAt === null ? 1 : (now - lastTickAt) / SIXTY_FPS_INTERVAL_MS;
-      lastTickAt = now;
-
-      const target = targetScrollTop();
-      const current = scrollEl.scrollTop;
-      const diff = target - current;
-
-      if (current < target) {
-        velocity = (spring.damping * velocity + spring.stiffness * diff) / spring.mass;
-        accumulated += velocity * dt;
-        const before = scrollEl.scrollTop;
-        writeScrollTop(current + accumulated);
-        if (scrollEl.scrollTop !== before) accumulated = 0;
-        // Overscroll guard.
-        if (scrollEl.scrollTop > target) writeScrollTop(target);
-      }
-
-      const stillChasing = nowMs() - lastGrewAt < RETAIN_ANIMATION_DURATION_MS;
-      const arrived =
-        Math.abs(scrollEl.scrollTop - targetScrollTop()) < ARRIVAL_DISTANCE_PX &&
-        Math.abs(velocity) < ARRIVAL_VELOCITY_THRESHOLD;
-      if (arrived && !stillChasing) {
-        animationToken = null;
-        velocity = 0;
-        accumulated = 0;
-        return;
-      }
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-  }
-
   // ===== Content RO =====
   function setupContentRO(): void {
     if (!contentEl) return;
@@ -405,23 +318,16 @@ export function createUseStickToBottomController(
       }
 
       if (delta > 0) {
-        // Positive delta: chase the new bottom. The spring closes any
-        // gap smoothly; instant write here would fight virtua's
-        // $fixScrollJump on rows above the viewport. The intent flag
-        // (isAtBottomState) carries through the chase even though
-        // geometric near-bottom (isNearBottomState) momentarily flipped
-        // false when the bottom moved out from under us.
+        // Positive delta: re-pin to the new bottom synchronously, before
+        // paint. The browser only paints the final state per frame, so
+        // contentEl growing AND scrollTop catching up happen in the same
+        // visual frame — no perceptible scroll motion, just content
+        // arriving at the bottom. Works regardless of WHY the bottom is
+        // moving: streaming chunks, svelte-streamdown async typesetting
+        // (shiki/KaTeX/mermaid), virtua's per-row remeasurement after a
+        // cache-hit mount, parseIncompleteMarkdown rebalance.
         if (isAtBottomState && !escapedFromLockState && pauseDepth === 0) {
-          if (nowMs() < settleUntil) {
-            // Settle window (forceStickAndSettle): re-snap instead of
-            // springing. Only valid on virtua-free surfaces — there's
-            // no $fixScrollJump above-viewport compensation to fight.
-            writeScrollTop(targetScrollTop());
-          } else {
-            lastGrewAt = nowMs();
-            stopRequested = false;
-            startSpringIfNeeded();
-          }
+          writeScrollTop(targetScrollTop());
         }
       } else if (delta < 0) {
         // Negative delta: re-stick if we're now near bottom and not
@@ -484,12 +390,13 @@ export function createUseStickToBottomController(
     ignoreScrollToTop = -1;
     refreshIsNearBottom();
     // Tagged programmatic write — bail synchronously without scheduling
-    // the deferral timer. Steady-state streaming fires ~60 spring writes
-    // per second; allocating a closure + timer registration for each one
-    // just to no-op inside the callback was ~60 throwaway allocs/sec.
-    // The 1 ms RO-race deferral below isn't needed for tagged writes —
-    // the tag is set synchronously by writeScrollTop, so we already know
-    // this event reflects our own write, not user intent.
+    // the deferral timer. Steady-state streaming fires a sync-pin write
+    // on every contentRO positive delta; allocating a closure + timer
+    // registration for each one just to no-op inside the callback was
+    // hundreds of throwaway allocs/sec on long assistant turns. The 1 ms
+    // RO-race deferral below isn't needed for tagged writes — the tag is
+    // set synchronously by writeScrollTop, so we already know this event
+    // reflects our own write, not user intent.
     if (scrollTopAtEvent === tag) return;
     cancelTargetAnimation();
     // Capture direction baseline BEFORE the deferral. We're inside the
@@ -521,8 +428,8 @@ export function createUseStickToBottomController(
 
       // Re-stick: user scrolled BACK essentially to the bottom by hand
       // (touch, scrollbar drag, keyboard). Restore intent flag so the
-      // spring can resume on the next content grow. Don't start the
-      // spring here — they're already there.
+      // contentRO sync-pin can resume on the next content grow. No
+      // scrollTop write here — they're already at the bottom.
       //
       // Two gates:
       //   1. Direction. The scroll event from a wheel-up gesture itself
@@ -577,22 +484,17 @@ export function createUseStickToBottomController(
     if (escapedFromLockState === next) return;
     escapedFromLockState = next;
     if (next) {
-      // Cancel chase: the spring tick will observe and bail.
-      velocity = 0;
-      accumulated = 0;
-      lastGrewAt = 0;
       isAtBottomState = false;
-      // User explicitly broke from auto-follow; abandon any active
-      // settle window so the next time we re-engage, the contentRO
-      // takes the spring path again (settle is restoration-only).
-      settleUntil = 0;
     }
   }
 
   function stopScroll(): void {
+    // Mark the upcoming external scroll as not user-driven so the
+    // controller doesn't auto-restick if virtua's jump (or another
+    // programmatic write) lands near the bottom. Also cancels any
+    // in-flight animateScrollTo via setEscapedFromLock's
+    // cancelTargetAnimation call.
     setEscapedFromLock(true);
-    stopRequested = true;
-    // Next rAF tick observes stopRequested and clears animationToken.
   }
 
   function animateScrollTo(
@@ -602,10 +504,6 @@ export function createUseStickToBottomController(
     if (!scrollEl) return Promise.resolve('cancelled');
     const targetScrollEl = scrollEl;
     cancelTargetAnimation();
-    animationToken = null;
-    velocity = 0;
-    accumulated = 0;
-    lastGrewAt = 0;
 
     const targetTop = clampScrollTop(rawTargetTop);
     const startTop = targetScrollEl.scrollTop;
@@ -613,7 +511,6 @@ export function createUseStickToBottomController(
     if (Math.abs(distance) <= PROGRAMMATIC_SCROLL_DISTANCE_THRESHOLD_PX) {
       return Promise.resolve('completed');
     }
-    stopRequested = true;
     setEscapedFromLock(true);
     const durationMs = opts?.durationMs ?? DEFAULT_PROGRAMMATIC_SCROLL_DURATION_MS;
     if (
@@ -653,37 +550,20 @@ export function createUseStickToBottomController(
     });
   }
 
-  function forceStick(opts?: { animation?: 'instant' | 'spring' }): void {
+  function forceStick(): void {
     setEscapedFromLock(false);
-    stopRequested = false;
     if (!scrollEl) return;
     isAtBottomState = true;
-    const target = targetScrollTop();
-    const animation = opts?.animation ?? 'instant';
-    if (animation === 'instant') {
-      writeScrollTop(target);
-    } else {
-      lastGrewAt = nowMs();
-      // Slam first, then spring chases any further growth in the chase
-      // window. Otherwise the click-to-stick feels laggy on large gaps.
-      writeScrollTop(target);
-      startSpringIfNeeded();
-    }
+    writeScrollTop(targetScrollTop());
   }
 
   function markAtBottom(): void {
-    // Flag-only counterpart to forceStick({animation:'instant'}): caller
-    // already positioned the geometry, we just resume streaming follow.
+    // Flag-only counterpart to forceStick: caller already positioned
+    // the geometry (typically via virtua's listRef.scrollToIndex(last,
+    // 'end')), we just resume streaming follow.
     setEscapedFromLock(false);
-    stopRequested = false;
     isAtBottomState = true;
     refreshIsNearBottom();
-  }
-
-  function forceStickAndSettle(opts?: { settleMs?: number }): void {
-    forceStick({ animation: 'instant' });
-    const ms = opts?.settleMs ?? RETAIN_ANIMATION_DURATION_MS;
-    settleUntil = nowMs() + ms;
   }
 
   function notifyContentMaybeGrew(): void {
@@ -765,15 +645,10 @@ export function createUseStickToBottomController(
       resizeClearTimer = null;
     }
     cancelTargetAnimation();
-    animationToken = null;
-    velocity = 0;
-    accumulated = 0;
     resizeDifference = 0;
     previousHeight = undefined;
-    lastTickAt = null;
     touchStartY = null;
     lastUntaggedScrollTop = -1;
-    settleUntil = 0;
     scrollEl = undefined;
     contentEl = undefined;
   }
@@ -796,7 +671,6 @@ export function createUseStickToBottomController(
     detach,
     forceStick,
     markAtBottom,
-    forceStickAndSettle,
     animateScrollTo,
     stopScroll,
     setEscapedFromLock,

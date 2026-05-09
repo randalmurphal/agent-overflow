@@ -113,9 +113,9 @@
       if (next > 0 && next !== composerHeight) {
         // ORDERING IS LOAD-BEARING: write `composerHeight = next` BEFORE
         // calling `notifyContentMaybeGrew()`. The composer overlay sits
-        // OUTSIDE the timeline's `contentEl` (which is what the spring
-        // controller's content-RO observes), so growing the composer does
-        // not fire that RO. The flow is:
+        // OUTSIDE the timeline's `contentEl` (which is what the
+        // sticky-bottom controller's content-RO observes), so growing
+        // the composer does not fire that RO. The flow is:
         //   1. write composerHeight → reactive style update writes a new
         //      `padding-bottom` on the scroll wrapper → browser begins a
         //      layout pass that will change `scrollHeight`.

@@ -3,10 +3,10 @@
 // controller during a drag, and release it on pointerup / pointercancel.
 //
 // Without this lease, a streaming chat turn that grows content mid-drag
-// would fire the controller's content-RO + spring chase, writing scrollTop
+// would fire the controller's content-RO sync-pin, writing scrollTop
 // underneath the user as they're trying to resize. The lease bumps
-// `pauseDepth` so both `notifyContentMaybeGrew()` calls and the spring
-// driver no-op until the drag completes.
+// `pauseDepth` so both `notifyContentMaybeGrew()` calls and the
+// content-RO sync-pin path no-op until the drag completes.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
@@ -200,13 +200,13 @@ describe('Pause-lease integration with the real controller', () => {
   // Uses the actual useStickToBottom controller via the pane's
   // attachScrollController seam. The controller's notifyContentMaybeGrew
   // is a no-op while the lease is held; releasing resumes the writes.
-  it('blocks the spring chase from ChannelView via SidebarResizer drag', async () => {
+  it('blocks the contentRO sync-pin from ChannelView via SidebarResizer drag', async () => {
     // Discussion-mode integration: mounting ChannelView registers a
     // useStickToBottom controller on `pane.scrollController`, and a
-    // SidebarResizer drag takes a lease that suspends the spring even
-    // while content RO fires with positive deltas. Proves the
-    // resizer→pane→controller wiring works on Discussion the same as
-    // chat, end-to-end.
+    // SidebarResizer drag takes a lease that suspends the contentRO
+    // sync-pin even while content RO fires with positive deltas. Proves
+    // the resizer→pane→controller wiring works on Discussion the same
+    // as chat, end-to-end.
     const { default: ChannelView } = await import('../discussion/ChannelView.svelte');
     const { setBindingMock } = await import('../../../test/mocks/bindings-app');
     const { loadSettings } = await import('../../stores/settings.svelte');
@@ -216,7 +216,8 @@ describe('Pause-lease integration with the real controller', () => {
 
     // Module-global mouseDown reset — prevents a prior test's mousedown
     // (without matching mouseup) from leaking into isSelectingInside()
-    // and silently pausing the spring during this test's RO fires.
+    // and silently suppressing sync-pin writes during this test's RO
+    // fires.
     resetUseStickToBottomModuleStateForTest();
 
     // Seed every binding switchThread fans out to. Without these,
@@ -318,7 +319,7 @@ describe('Pause-lease integration with the real controller', () => {
       await fireEvent.pointerDown(handle, { clientX: 100, pointerId: 1 });
 
       // While leased: a positive-delta content RO must NOT advance
-      // scrollTop (spring chase blocked).
+      // scrollTop (sync-pin blocked).
       const beforeLease = geom.scrollTop;
       geom.scrollHeight = 1300;
       fireRO(700);

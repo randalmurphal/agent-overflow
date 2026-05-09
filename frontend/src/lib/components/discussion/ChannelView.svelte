@@ -51,11 +51,17 @@
     // state that pollOnce reads/writes, or we loop on every new message.
     if (!channelId) return;
     untrack(() => {
-      // Suspend auto-follow until the initial poll lands and we explicitly
-      // forceStick. Without this, mergeChannelMessages grows contentEl in
-      // one or two frames and the spring chases the bottom — visible as a
-      // scrolling animation when opening the channel. Mirrors the chat
-      // surface's MessageTimeline.$effect.pre fix.
+      // Suspend auto-follow until the initial poll lands and we
+      // explicitly forceStick. Without this, mergeChannelMessages
+      // grows contentEl on the next frame while the controller is
+      // still in its default isAtBottom state — the contentRO would
+      // sync-pin to the eventual bottom of the seeded batch, but the
+      // user perceives the snap because contentEl jumped from empty
+      // to populated under their cursor. Setting the escape flag here
+      // makes the post-poll forceStick() the single, intentional
+      // commitment to the bottom. Mirrors the
+      // chat surface's MessageTimeline.$effect.pre escape guard on
+      // threadId change.
       stick.setEscapedFromLock(true);
       // Only wipe the channel buffer when we're switching to a different
       // channel — re-entry of the same channel preserves whatever status
@@ -121,13 +127,14 @@
       if (generation === pollGeneration) {
         if (initial) {
           loadingInitial = false;
-          // Initial batch is in the DOM; snap to bottom and absorb async
-          // Streamdown row growth via the settle window. Awaiting tick
-          // ensures the {#each} re-render has flushed before scrollHeight
-          // is read.
+          // Initial batch is in the DOM; snap to bottom. Subsequent
+          // async Streamdown row growth fires contentRO positive deltas
+          // which sync-pin scrollTop to the new bottom each frame —
+          // the view stays at the bottom without any layered animation
+          // on top of the content arrival.
           await tick();
           if (generation === pollGeneration) {
-            stick.forceStickAndSettle();
+            stick.forceStick();
           }
         }
         // Exponential backoff on consecutive failures so a stuck backend
@@ -153,9 +160,9 @@
     return () => pane.detachScrollController(stick);
   });
 
-  // Bind the controller to the actual DOM elements. The content RO,
-  // wheel/scroll/keydown/touch listeners, and spring driver all start
-  // here. Re-runs if either ref changes (thread switch / HMR).
+  // Bind the controller to the actual DOM elements. The content RO and
+  // wheel/scroll/keydown/touch listeners all start here. Re-runs if
+  // either ref changes (thread switch / HMR).
   $effect(() => {
     if (!scrollEl || !contentEl) return;
     stick.attach(scrollEl, contentEl);

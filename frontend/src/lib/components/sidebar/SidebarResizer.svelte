@@ -25,8 +25,8 @@
      * Active pane whose timeline scroll-controller should suspend
      * auto-follow during the drag. Width changes here reflow every
      * paragraph in the chat column, so without this lease a concurrent
-     * stream chunk would fire the controller's content-RO and the
-     * spring driver would write `scrollTop` mid-drag, yanking the user.
+     * stream chunk would fire the controller's content-RO and sync-pin
+     * scrollTop mid-drag, yanking the user.
      * Idempotent — when the pane has no registered controller (timeline
      * not mounted yet, or pane is settings/empty), the lease is a no-op.
      */

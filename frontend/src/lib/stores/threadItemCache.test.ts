@@ -180,4 +180,43 @@ describe('threadItemCache', () => {
     expect(got.hasMoreHistory).toBe(true);
     expect(got.latestSettledTurn).toBe(settled);
   });
+
+  it('round-trips the virtua row-size cache verbatim', () => {
+    // The virtua CacheSnapshot is opaque to us — virtua serializes it
+    // as `[number[], number]` (per-row sizes + computed offsets epoch
+    // counter) but we must not depend on that shape. The contract here
+    // is reference-preserving round-trip: whatever the caller sets is
+    // what we return, with no transformation.
+    const cache = createThreadItemCache();
+    const virtuaCache = [[90, 240, 180], 7] as unknown as never;
+    cache.set('t1', {
+      items: [makeItem('a')],
+      oldestLoadedTurnIndex: 0,
+      hasMoreHistory: false,
+      latestSettledTurn: null,
+      virtuaCache,
+    });
+
+    const got = cache.get('t1')!;
+    expect(got.virtuaCache).toBe(virtuaCache);
+  });
+
+  it('omits virtuaCache when the caller did not provide one', () => {
+    // Callers (the pane) pass the field as `undefined` for surfaces
+    // without a virtualizer (Discussion's ChannelView uses the same
+    // LRU shape but never registers a getter). The stored snapshot
+    // must reflect that — replaying `undefined` makes virtua mount
+    // fresh, which is what we want for any non-virtualized capture
+    // path.
+    const cache = createThreadItemCache();
+    cache.set('t1', {
+      items: [makeItem('a')],
+      oldestLoadedTurnIndex: 0,
+      hasMoreHistory: false,
+      latestSettledTurn: null,
+    });
+
+    const got = cache.get('t1')!;
+    expect(got.virtuaCache).toBeUndefined();
+  });
 });

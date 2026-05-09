@@ -19,26 +19,44 @@ shape. Operational rules for code in this directory:
   call `stick.stopScroll()` BEFORE any `listRef.scrollToIndex(...)` and
   never pass `smooth: true`** — virtua's smooth path uses
   `scrollEl.scrollTo({behavior:'smooth'})` natively, which would fight
-  the spring. Never `el.scrollIntoView()` on a row that lives inside
-  the virtualizer; virtua won't see it and will fight the scroll.
+  the controller. Never `el.scrollIntoView()` on a row that lives
+  inside the virtualizer; virtua won't see it and will fight the
+  scroll.
 - **Bottom-snapshot restore on thread switch goes through
   `listRef.scrollToIndex(last, 'end')` paired with
-  `stick.markAtBottom()`.** Don't use `stick.forceStick({animation:
-  'instant'})` for snapshot restore — the one-shot `scrollTop` write
-  against the current `scrollHeight` is stale by the time virtua's row
+  `stick.markAtBottom()`.** Don't use `stick.forceStick()` for
+  snapshot restore — the one-shot `scrollTop` write against the
+  current `scrollHeight` is stale by the time virtua's row
   remeasurement and svelte-streamdown's async typesetting (shiki /
   KaTeX / mermaid / parseIncompleteMarkdown rebalance) finish growing
-  rows. virtua's `scrollToIndex` enters a measurement loop that
-  re-aims on every `ACTION_ITEM_RESIZE` tick and self-terminates
-  150 ms after the last resize, which is what we want.
-  `forceStick({animation:'instant'})` is reserved for user-initiated
-  snap-to-bottom (the scroll-to-bottom chip).
+  rows, and the controller's contentRO sync-pin would absorb the gap
+  through repeated re-pins as rows grew (visible as a top-to-bottom
+  scroll preamble). virtua's `scrollToIndex` enters a measurement loop
+  that re-aims on every `ACTION_ITEM_RESIZE` tick and self-terminates
+  150 ms after the last resize, which is what we want. `forceStick()`
+  is reserved for user-initiated snap-to-bottom (the scroll-to-bottom
+  chip).
+- **`<Virtualizer>` is wrapped in `{#key pane.threadId}`** so its
+  `cache` prop is re-read on thread switch. The cache itself comes
+  from `pane.cachedVirtuaCache` (sourced from the LRU snapshot in
+  `threadItemCache.ts`); MessageTimeline registers the capture getter
+  via the matched-pair `pane.attachVirtuaCacheGetter(getter)` on
+  mount and `pane.detachVirtuaCacheGetter(getter)` on destroy
+  (symmetric with `pane.attachScrollController` /
+  `pane.detachScrollController` — the same getter reference must be
+  passed to detach so a stale teardown can't dispose a freshly
+  remounted timeline's getter during fast switches). Without the
+  `{#key}` the cache prop silently goes stale on thread switch
+  (`createVirtualStore` reads it once); without the getter the LRU
+  snapshot has no `virtuaCache` field and a re-entered thread eats
+  the underestimate-then-grow pass at first paint.
 - Don't add a parallel virtualizer over `pane.items` or `groupedNodes`.
 - The auto-follow `$effect` is gone. Streaming flow is: text rewrites in
   the streaming row → row's height changes → virtua's per-row RO bumps
   `totalSize` → `contentEl.scrollHeight` changes → our content-RO fires
-  before paint → spring slams to new target in the same paint. Don't
-  reintroduce a length-watching effect that calls `scrollToIndex(last)`.
+  before paint → controller sync-pins scrollTop to the new target in
+  the same paint. Don't reintroduce a length-watching effect that
+  calls `scrollToIndex(last)`.
 - Scroll-behavior tests live in `scroll.test.ts`. Component-shape tests
   for individual rows (TimelineLeaf, SubagentGroup, CommandOutput, etc.)
   stay in their own `*.test.ts` files.
@@ -210,15 +228,16 @@ virtua mount zero rows. `MessageTimeline.svelte` switches virtua into
 tests can assert on rendered DOM. Production (`vite dev` / `vite build`)
 sees the default `undefined`, leaving virtua free to virtualize.
 
-`useStickToBottom.svelte.test.ts` covers the spring controller's full
-state machine in isolation: spring tick + arrival, content-RO
-positive/negative deltas, wheel/scroll/keydown/touchmove gesture
-handlers, programmatic-write tagging (`ignoreScrollToTop`), pause-lease
-depth-counting, and lifecycle (re-attach detaches old listeners; detach
-clears all timers). Geometry is stubbed per-test via
+`useStickToBottom.svelte.test.ts` covers the controller's full state
+machine in isolation: forceStick / markAtBottom / animateScrollTo,
+content-RO positive/negative deltas (sync-pin gating on
+escapedFromLockState / pauseDepth), wheel/scroll/keydown/touchmove
+gesture handlers, programmatic-write tagging (`ignoreScrollToTop`),
+pause-lease depth-counting, and lifecycle (re-attach detaches old
+listeners; detach clears all timers). Geometry is stubbed per-test via
 `Object.defineProperty` on `scrollHeight`/`clientHeight`/`scrollTop`,
 and `performance.now` is mocked to advance 16.67ms per `nextFrame()` so
-spring physics are deterministic.
+animateScrollTo's easeOutCubic interpolation is deterministic.
 
 `scroll.test.ts` covers the MessageTimeline-level integration: snapshot
 save/restore, load-older flow, scroll-to-item routing, and layout

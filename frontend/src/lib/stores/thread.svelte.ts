@@ -1,3 +1,4 @@
+import type { CacheSnapshot } from 'virtua';
 import type { Item, Thread } from '../types/models';
 import type { Checkpoint } from '../types/checkpoint';
 import type {
@@ -580,10 +581,10 @@ export function createThreadPane() {
    */
   function activatePanel(target: RhsPanel | null): void {
     // Right-edge sidebars (plan / diff / diff-payload) reflow the chat
-    // column when they open or close. Hold a brief lease so the spring
-    // controller's chase + content-RO re-pin both no-op while the
-    // column's clientWidth is settling — preventing the timeline from
-    // yanking mid-transition.
+    // column when they open or close. Hold a brief lease so the
+    // controller's content-RO sync-pin no-ops while the column's
+    // clientWidth is settling — preventing the timeline from yanking
+    // mid-transition.
     const current = rhsPanelSlot.activePanel;
     const willChange = !sameRhsPanel(current, target);
     if (!willChange) {
@@ -778,6 +779,39 @@ export function createThreadPane() {
    * controller's full type, so the contract stays cheap to honour.
    */
   let scrollController: PaneScrollController | null = $state(null);
+
+  /**
+   * MessageTimeline registers a getter that returns virtua's per-row
+   * size cache (`listRef.getCache()`). `snapshotOutgoingPane` calls
+   * the getter synchronously before items mutate to the incoming
+   * thread, capturing the outgoing thread's measured row sizes into
+   * the LRU snapshot. On the next switch back, virtua mounts with the
+   * replayed cache so `totalSize` is accurate from the first paint —
+   * no underestimate-then-grow pass that the controller would have to
+   * absorb via repeated sync re-pins. ChannelView (no virtualizer)
+   * leaves this null. Non-reactive — read inside switchThread, never
+   * by templates.
+   */
+  let virtuaCacheGetter: (() => CacheSnapshot | undefined) | null = null;
+  /**
+   * Cached virtua snapshot for the currently-mounted thread, set in
+   * `installCacheOrFreshState` from the LRU's `virtuaCache` field.
+   * MessageTimeline reads this once per `{#key pane.threadId}` mount
+   * and passes it to `<Virtualizer cache={...}>`. `undefined` means
+   * "fresh measurement" — the first switch into a thread, an
+   * evicted-cache re-entry, or a same-thread re-switch that
+   * deliberately drops the entry.
+   *
+   * Deliberately NOT `$state` — virtua's CacheSnapshot is an opaque
+   * tuple `[number[], number]`, and `$state` would wrap it in a
+   * deeply-reactive Proxy that breaks reference equality with the
+   * original snapshot (Virtualizer captures `cache` once at mount
+   * via `createVirtualStore(...)`, so reactive tracking would not
+   * help anyway). The {#key pane.threadId} wrapper in MessageTimeline
+   * forces a fresh prop read on every thread change, which is the
+   * only re-read we need.
+   */
+  let cachedVirtuaCache: CacheSnapshot | undefined = undefined;
 
   function requestFrame(callback: () => void): number {
     if (typeof requestAnimationFrame === 'function') {
@@ -1514,11 +1548,27 @@ export function createThreadPane() {
       items.length > 0 &&
       items.length <= MAX_CACHED_SNAPSHOT_ITEMS
     ) {
+      // Capture virtua's per-row size cache while the OLD virtualizer
+      // is still mounted (this runs synchronously inside switchThread,
+      // before {#key pane.threadId} unmounts and remounts the
+      // <Virtualizer> in MessageTimeline). Replay on next switch-back
+      // gives virtua the correct totalSize at first paint, eliminating
+      // the underestimate-then-grow pass that the controller would
+      // otherwise have to absorb via repeated sync re-pins.
+      //
+      // Two `undefined` cases collapse intentionally here: (a) no
+      // getter registered (ChannelView, or a chat surface mid-mount)
+      // and (b) getter returned undefined (virtualizer not yet
+      // mounted). Both mean "no cache to capture" for the LRU's
+      // optional `virtuaCache` field, so the resolved value is the
+      // same and the merge is safe.
+      const virtuaCache = virtuaCacheGetter?.() ?? undefined;
       threadItemCache.set(outgoingThreadId, {
         items,
         oldestLoadedTurnIndex,
         hasMoreHistory,
         latestSettledTurn,
+        virtuaCache,
       });
     }
     if (sameThreadReswitch) {
@@ -1611,6 +1661,7 @@ export function createThreadPane() {
       oldestLoadedTurnIndex = cached.oldestLoadedTurnIndex;
       hasMoreHistory = cached.hasMoreHistory;
       latestSettledTurn = cached.latestSettledTurn;
+      cachedVirtuaCache = cached.virtuaCache;
     } else {
       items = [];
       // Windowed-history reset. A null floor disables the upsert floor
@@ -1619,6 +1670,7 @@ export function createThreadPane() {
       // upserts are already ours to append normally.
       oldestLoadedTurnIndex = null;
       hasMoreHistory = false;
+      cachedVirtuaCache = undefined;
     }
     resetLiveBuffers();
     rebuildItemIndexes(items);
@@ -2278,6 +2330,52 @@ export function createThreadPane() {
       }
     },
 
+    /**
+     * Cached virtua row-size snapshot for the current thread. Read by
+     * MessageTimeline on `<Virtualizer cache={...}>` mount inside its
+     * `{#key pane.threadId}` wrapper. `undefined` means fresh start —
+     * a thread visited for the first time, an evicted-cache re-entry,
+     * or a same-thread re-switch.
+     *
+     * Read-once-at-mount: virtua's `cache` prop is consumed inside
+     * `createVirtualStore(...)` and not reactive afterward. Do NOT
+     * subscribe to this getter from a `$derived` or `$effect` — only
+     * read it from the `<Virtualizer cache={...}>` prop position
+     * inside `{#key pane.threadId}`. Reading it elsewhere creates a
+     * dependency that would force re-derives whenever the underlying
+     * snapshot is replaced (e.g. after a switch-out write) without
+     * any matching virtua re-mount, which is wasteful at best and
+     * misleading at worst.
+     */
+    get cachedVirtuaCache(): CacheSnapshot | undefined {
+      return cachedVirtuaCache;
+    },
+
+    /**
+     * Register a virtua-cache getter from the timeline. Called by
+     * `snapshotOutgoingPane` (synchronously, while the old virtualizer
+     * is still mounted) to capture per-row sizes into the LRU.
+     * ChannelView (no virtualizer) leaves the slot unattached.
+     *
+     * Symmetric with `attachScrollController`/`detachScrollController`
+     * — call from MessageTimeline's `$effect` on mount, return a
+     * teardown that calls `detachVirtuaCacheGetter(getter)` so a
+     * stale teardown from a fast thread switch can't dispose the
+     * fresh getter registered by the remounted timeline.
+     */
+    attachVirtuaCacheGetter(getter: () => CacheSnapshot | undefined): void {
+      virtuaCacheGetter = getter;
+    },
+
+    detachVirtuaCacheGetter(getter: () => CacheSnapshot | undefined): void {
+      // Only clear if the registered getter matches — protects
+      // against a stale teardown disposing a freshly remounted
+      // timeline's getter during fast thread switches.
+      if (virtuaCacheGetter === getter) {
+        virtuaCacheGetter = null;
+      }
+    },
+
     // --- Mutations (called by event router) ---
 
     addApproval(approval: ApprovalRequest): void {
@@ -2547,8 +2645,8 @@ export function createThreadPane() {
 
     toggleTerminal(): void {
       // Bottom drawer mount/unmount reflows the chat column. Hold a
-      // brief lease so the spring controller's chase + content-RO
-      // re-pin both no-op while the column's clientHeight is settling.
+      // brief lease so the controller's content-RO sync-pin no-ops
+      // while the column's clientHeight is settling.
       leaseDuringSettle(scrollController);
       showTerminal = !showTerminal;
     },

@@ -120,44 +120,44 @@ The MessageTimeline scroll surface is built on **`virtua/svelte`**'s
 anchor preservation (ResizeObserver + binary-searched jump-correction);
 the frontend owns the scroll container itself, which is the outer
 `<div class="overflow-y-auto">` in `MessageTimeline.svelte`. Owning the
-container is what lets the spring controller observe content growth
-**before paint** (single content-element ResizeObserver) and write
-`scrollTop` synchronously in the same paint cycle — eliminating the
-rAF gap between content layout and scroll correction that was the
-flicker source. The frontend layers on top:
+container is what lets the controller observe content growth **before
+paint** (single content-element ResizeObserver) and write `scrollTop`
+synchronously in the same paint cycle — eliminating the rAF gap between
+content layout and scroll correction that was the flicker source. The
+frontend layers on top:
 
 - **`useStickToBottom.svelte.ts`** — Svelte-5 port of stackblitz-labs'
-  `use-stick-to-bottom`. Single owner of intent (`isAtBottom` flag) and
-  the only writer to `scrollTop` outside virtua's internals. Spring
-  driver (`damping=0.7`, `stiffness=0.05`, `mass=1.25`) chases the moving
-  bottom while content keeps growing for ~350ms after the last grow
-  event. Programmatic scrolls go through `forceStick({animation})` /
-  `markAtBottom()` / `forceStickAndSettle({settleMs})` /
-  `notifyContentMaybeGrew()` / `pauseAutoScroll()` / `stopScroll()`; the
-  one place virtua writes scrollTop is `listRef.scrollToIndex(...)`,
-  which MUST be preceded by `stick.stopScroll()` so the spring stops
-  fighting the jump. Never write `scrollTop` directly.
-  - `forceStick({animation})` is for user-initiated snap-to-bottom
-    (the chip, Discussion's user-post path). It clears escape, sets
-    sticky, and writes `scrollTop` to the current target.
+  `use-stick-to-bottom`, stripped of the upstream velocity-spring chase
+  loop. Single owner of intent (`isAtBottom` flag) and the only writer
+  to `scrollTop` outside virtua's internals. Autonomous content growth
+  on a sticky session pins synchronously inside the contentRO callback:
+  the same paint frame where contentEl grows also lands scrollTop at
+  the new target, so the user sees content arriving at the bottom with
+  no perceptible scroll motion — and no parallel animation loop that
+  could fight a programmatic jump or overshoot the sync-pin target.
+  Programmatic scrolls go through `forceStick()` / `markAtBottom()` /
+  `notifyContentMaybeGrew()` / `pauseAutoScroll()` / `stopScroll()` /
+  `animateScrollTo()`; the one place virtua writes scrollTop is
+  `listRef.scrollToIndex(...)`, which MUST be preceded by
+  `stick.stopScroll()` so the controller doesn't auto-restick mid-jump
+  if virtua's measurement loop happens to land near the bottom. Never
+  write `scrollTop` directly.
+  - `forceStick()` clears escape, sets sticky, and writes `scrollTop`
+    to the current target. Used by the scroll-to-bottom chip (the user
+    clicked "go to bottom") and by Discussion's initial channel load.
   - `markAtBottom()` flips the controller flags to sticky-bottom
     WITHOUT writing `scrollTop`. Pairs with
     `listRef.scrollToIndex(last, 'end')`: virtua's measurement loop
     self-corrects across row resize ticks and lands the user at the
     eventual bottom; `markAtBottom()` only flips intent so streaming
     follow resumes on the next contentRO positive delta. This is the
-    bottom-snapshot restore path on the chat surface —
-    `forceStick({animation:'instant'})` would commit to a stale
-    `scrollHeight` and let the spring chase the moving bottom visibly.
-  - `forceStickAndSettle({settleMs})` snaps once via `forceStick` and
-    re-snaps on every positive contentRO delta during the settle
-    window before allowing spring chase. Used by surfaces with no
-    virtua measurement loop (Discussion's ChannelView): async
-    typesetting growth in `svelte-streamdown` (shiki / KaTeX / mermaid
-    / parseIncompleteMarkdown rebalance) keeps growing rows for
-    hundreds of ms after the initial snap. Default `settleMs` (350)
-    matches `RETAIN_ANIMATION_DURATION_MS` so the contract is
-    symmetric with the spring's chase window.
+    bottom-snapshot restore path on the chat surface — `forceStick()`
+    would commit to a stale `scrollHeight` and the new snapshot would
+    land above the eventual bottom while virtua remeasures.
+  - `animateScrollTo(target, {durationMs})` runs an easeOutCubic
+    interpolation for arbitrary timeline jumps (load-older, scroll-to-
+    item). Owns the scrollTop writes so programmatic-write tagging
+    stays in one place.
 - **`pane.scrollController`** — registration slot. Both
   `MessageTimeline.svelte` (chat) and `ChannelView.svelte` (Discussion)
   publish their `useStickToBottom` controller on mount; external
@@ -172,6 +172,25 @@ flicker source. The frontend layers on top:
   `{kind:'bottom'} | {kind:'anchor', itemId, offsetTop}`. Snapshots are
   semantic (item id + offset), not virtua's internal cache shape, so
   they survive virtua version bumps.
+- **Per-thread virtua row-size cache.** `threadItemCache.ts`'s
+  `ThreadItemSnapshot` carries an optional `virtuaCache` field
+  (virtua's `CacheSnapshot`). On `switchThread`, the pane calls a
+  getter registered by `MessageTimeline` (matched-pair
+  `pane.attachVirtuaCacheGetter(getter)` /
+  `pane.detachVirtuaCacheGetter(getter)`, symmetric with the scroll
+  controller pair) that returns `listRef.getCache()` — captured
+  synchronously while the OLD virtualizer is still mounted. On
+  switch-back, the snapshot surfaces as `pane.cachedVirtuaCache` and
+  the timeline passes it to `<Virtualizer cache={...}>`. The
+  Virtualizer is wrapped in `{#key pane.threadId}` so this prop is
+  re-read at mount (virtua's `cache` is consumed once at
+  `createVirtualStore(...)`, not reactively). Without the cache,
+  virtua's lazy mount-time measurement underestimates `totalSize` at
+  `ESTIMATED_ROW_SIZE × N`
+  until per-row ResizeObservers fire, and a `{kind:'bottom'}`
+  restoration lands above the eventual bottom — the controller would
+  then absorb the gap through repeated sync re-pins as rows grew.
+  ChannelView (no virtualizer) leaves the getter unregistered.
 - **Layout decoupling** — `ChatView.svelte` positions the composer +
   live-turn UI + below-bar as an absolute overlay inside the timeline's
   relative container. A `--composer-height` CSS variable, written by a
@@ -222,10 +241,12 @@ flicker source. The frontend layers on top:
 `ChannelView.svelte` (Discussion mode) shares the same
 `useStickToBottom` controller. It scrolls a plain DOM container with no
 virtualizer, but the controller's content-element ResizeObserver is
-agnostic to what's inside contentEl — so the spring chases the bottom
-the same way as the chat surface. Discussion's contentEl wraps the
-`{#each}` over channel messages; the scroll element is the surrounding
-`overflow-y-auto` div. The intervening
+agnostic to what's inside contentEl — so the same sync-pin handles
+streaming-driven growth on both surfaces (Discussion's
+`svelte-streamdown` async typesetting passes count as positive
+contentRO deltas just like virtua row remeasurement). Discussion's
+contentEl wraps the `{#each}` over channel messages; the scroll
+element is the surrounding `overflow-y-auto` div. The intervening
 `<div bind:this={contentEl} class="space-y-3">` is intentional — it
 gives the content-RO a target whose height tracks message-list growth
 without including the scroll container's padding, mirroring chat's
@@ -243,8 +264,10 @@ What NOT to add:
   eliminated.
 - `smooth: true` on any `listRef.scrollToIndex(...)` call. Virtua's
   smooth path uses the native `scrollTo({behavior:'smooth'})` which
-  fights the spring driver. Always pair `scrollToIndex` with a preceding
-  `stick.stopScroll()`.
+  fires its own scroll events asynchronously and would race the
+  controller's auto-restick / programmatic-write tagging. Always pair
+  `scrollToIndex` with a preceding `stick.stopScroll()` and let virtua
+  jump synchronously.
 - `transition:slide` adjacent to the scroll area — animated height
   shifts visible content under the user's cursor.
 - Late transcript adornments on completion. If the UI needs a marker,
@@ -267,9 +290,10 @@ What NOT to add:
   'center' })`. The two-step (load-then-scroll) is necessary because
   virtua only knows about items present in `pane.items`. Never pass
   `smooth: true` — virtua's smooth path uses
-  `scrollEl.scrollTo({behavior:'smooth'})` which races the spring; if
-  smooth-to-hit is wanted later, route through a controller-owned
-  `springTo(target)` API.
+  `scrollEl.scrollTo({behavior:'smooth'})` which fires its own scroll
+  events asynchronously and races the controller; if smooth-to-hit is
+  wanted later, route through a controller-owned animateScrollTo call
+  with the per-row offset computed from `listRef.getItemOffset(idx)`.
 
 ## Accepted scroll-surface tradeoffs
 

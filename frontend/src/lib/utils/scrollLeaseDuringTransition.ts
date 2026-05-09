@@ -3,8 +3,8 @@
  * to absorb a layout-changing UI gesture (drawer toggle, sidebar
  * fly-in/out, panel mount/unmount). The chat column's `clientHeight` /
  * `clientWidth` changes while this lease is held, so the controller's
- * spring chase + content-RO re-pin both no-op for the duration —
- * preventing the viewport from yanking mid-transition.
+ * content-RO sync-pin no-ops for the duration — preventing the
+ * viewport from yanking mid-transition.
  *
  * - Default settle window: two `requestAnimationFrame` ticks. Long enough
  *   for layout + virtua's per-row ResizeObserver to fire after the

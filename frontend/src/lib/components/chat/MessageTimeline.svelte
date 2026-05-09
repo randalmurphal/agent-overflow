@@ -139,12 +139,25 @@
     return () => pane.detachScrollController(stick);
   });
 
-  // Bind the controller to the actual DOM elements. The content RO,
-  // wheel/scroll/keydown/touch listeners, and spring driver all start
-  // here. Re-runs if either ref changes (thread switch / HMR).
+  // Bind the controller to the actual DOM elements. The content RO and
+  // wheel/scroll/keydown/touch listeners all start here. Re-runs if
+  // either ref changes (thread switch / HMR).
   $effect(() => {
     if (!scrollEl || !contentEl) return;
     stick.attach(scrollEl, contentEl);
+  });
+
+  // Publish a virtua-cache getter so `pane.snapshotOutgoingPane` can
+  // capture the OUTGOING thread's per-row sizes into the LRU before
+  // {#key pane.threadId} unmounts the <Virtualizer>. The next switch
+  // back replays the cache via `cache={pane.cachedVirtuaCache}` below,
+  // so virtua starts with the correct totalSize at first paint instead
+  // of the ESTIMATED_ROW_SIZE × N underestimate that lazy mount-time
+  // measurement would otherwise produce.
+  $effect(() => {
+    const getter = () => listRef?.getCache();
+    pane.attachVirtuaCacheGetter(getter);
+    return () => pane.detachVirtuaCacheGetter(getter);
   });
 
   // Diagnostic UI render trace — extracted to messageTimelineTrace.ts.
@@ -276,29 +289,24 @@
     }
   }
 
-  // Persist + reset state on thread change BEFORE the new thread's
+  // Reset restoration tracking on thread change BEFORE the new thread's
   // effects run, AND suspend auto-follow until restoreInitialPosition
-  // takes over.
-  // Without this, virtua's per-row measurements grow contentEl over
-  // multiple frames as it remeasures; the controller's content-RO sees
-  // positive deltas and the spring chases the bottom — visible to the
-  // user as a top→bottom scroll animation on every thread open. The
-  // existing $effect that calls restoreInitialPosition runs only after
-  // pane.loading flips false, which is too late: the spring has already
-  // started. Setting escapedFromLockState=true synchronously here
-  // short-circuits startSpringIfNeeded; restoreInitialPosition then
-  // either calls listRef.scrollToIndex(last, 'end') + markAtBottom()
-  // (virtua's measurement loop self-corrects across row resize ticks
-  // and lands the user at the eventual bottom; markAtBottom just flips
-  // the controller intent flag for streaming follow on re-entry into
-  // an active thread) or stopScroll() + setEscapedFromLock(true) +
-  // scrollToIndex() (keeps escape true, jumps to anchor) — both leave
-  // the controller in the correct end state without any visible transit.
+  // takes over. Setting escapedFromLockState=true synchronously here
+  // freezes the controller until the new thread's restoration runs.
+  //
+  // We do NOT call saveScrollSnapshotForThread for the outgoing thread
+  // here. By the time this effect runs, switchThread has already mutated
+  // pane.items to the incoming thread's cached items — so virtua's
+  // listRef.findItemIndex would return an index in the WRONG thread's
+  // array, and the saved anchor would carry the incoming thread's item
+  // id under the outgoing thread's snapshot key. The continuous
+  // scroll-event-driven saves (handleVirtuaScroll, handleVirtuaScrollEnd)
+  // already keep the outgoing thread's snapshot fresh — the most recent
+  // user scroll IS the snapshot.
   $effect.pre(() => {
     const nextThreadId = pane.threadId;
     if (scrollSnapshotThreadId !== nextThreadId) {
       if (scrollSnapshotThreadId) {
-        saveScrollSnapshotForThread(scrollSnapshotThreadId);
         restoredThreadId = null;
         restoreToken += 1;
       }
@@ -378,9 +386,10 @@
         return;
       }
       // User wasn't at bottom when they left — explicit jump elsewhere
-      // must not restick. stopScroll cancels any in-flight spring before
-      // virtua's scrollToIndex writes scrollTop, then setEscapedFromLock
-      // ensures the resulting near-bottom check doesn't auto-restick.
+      // must not restick. stopScroll marks the upcoming scrollToIndex
+      // as not user-driven (and cancels any in-flight animateScrollTo);
+      // setEscapedFromLock ensures the resulting near-bottom check
+      // doesn't auto-restick.
       stick.stopScroll();
       stick.setEscapedFromLock(true);
       listRef.scrollToIndex(idx, { align: 'start', offset: -snap.offsetTop });
@@ -408,8 +417,8 @@
     const release = stick.pauseAutoScroll();
     // The user is reading older — must not auto-restick from the
     // post-prepend scrollHeight jump. Without this, the controller's
-    // content RO would observe the positive delta and the spring would
-    // yank the user to the new bottom.
+    // content RO would observe the positive delta and sync-pin the
+    // user to the new bottom.
     stick.setEscapedFromLock(true);
     const myToken = ++restoreToken;
     try {
@@ -449,10 +458,11 @@
     if (idx < 0) return;
     const targetNode = groupedNodes[idx];
     const targetItemId = targetNode?.kind === 'leaf' ? targetNode.item.id : id;
-    // Programmatic jump elsewhere — cancel spring + escape so the new
-    // position holds. `smooth: true` would route through the browser's
-    // native smooth scroll (scrollEl.scrollTo({behavior:'smooth'})),
-    // which would race the spring driver — drop it.
+    // Programmatic jump elsewhere — cancel any in-flight
+    // animateScrollTo + escape so the new position holds. `smooth:
+    // true` would route through the browser's native smooth scroll
+    // (scrollEl.scrollTo({behavior:'smooth'})), which fires its own
+    // scroll events asynchronously and races the controller — drop it.
     if (options.behavior === 'animated' && scrollEl) {
       const targetTop = centeredScrollTopForIndex(idx);
       const result = await stick.animateScrollTo(targetTop);
@@ -548,8 +558,16 @@
 
       <!-- contentEl is the controller's content-RO observation target.
            Virtua's container has `contain: size; height: totalSize+'px'`,
-           so contentEl.scrollHeight reflects virtua's totalSize exactly. -->
+           so contentEl.scrollHeight reflects virtua's totalSize exactly.
+           {#key pane.threadId} forces the <Virtualizer> to remount on
+           every thread switch so it can re-read the `cache` prop. The
+           prop is consumed only at `createVirtualStore(...)` mount time
+           (see virtua/svelte/Virtualizer.svelte) — without the {#key},
+           a thread switch back would still render the old cache and
+           virtua would underestimate `totalSize` until per-row
+           ResizeObservers re-measured every visible row. -->
       <div bind:this={contentEl}>
+        {#key pane.threadId}
         <Virtualizer
           bind:this={listRef}
           scrollRef={scrollEl}
@@ -558,6 +576,7 @@
           itemSize={ESTIMATED_ROW_SIZE}
           bufferSize={BUFFER_SIZE_PX}
           ssrCount={IS_TEST ? 100_000 : undefined}
+          cache={pane.cachedVirtuaCache}
           onscroll={handleVirtuaScroll}
           onscrollend={handleVirtuaScrollEnd}
         >
@@ -632,6 +651,7 @@
             </div>
           {/snippet}
         </Virtualizer>
+        {/key}
       </div>
     {/if}
   </div>

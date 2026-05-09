@@ -1,3 +1,4 @@
+import type { CacheSnapshot } from 'virtua';
 import type { Item } from '../types/models';
 // Type-only import: SettledTurn lives next to ThreadPane in
 // thread.svelte.ts. A value-level import would cycle through the
@@ -16,12 +17,23 @@ import type { SettledTurn } from './thread.svelte';
  * Items are treated as immutable by callers (the pane reassigns
  * `items =` rather than mutating in place), so snapshots store
  * references to the same string heap the live pane already holds.
+ *
+ * `virtuaCache` is virtua's per-row size cache (see
+ * `VirtualizerHandle.getCache`). Replaying it on the next mount via
+ * `<Virtualizer cache={...}>` avoids the lazy-measurement startup pass
+ * where virtua underestimates `totalSize` at `ESTIMATED_ROW_SIZE × N`
+ * until per-row ResizeObservers fire. Without it, a cache-hit thread
+ * switch paints with a too-short `scrollHeight`, the bottom snapshot
+ * lands above the eventual bottom, and the controller has to re-pin
+ * across many positive contentRO deltas as rows remeasure. Optional
+ * because virtua's mount path tolerates `undefined` (fresh start).
  */
 export interface ThreadItemSnapshot {
   items: Item[];
   oldestLoadedTurnIndex: number | null;
   hasMoreHistory: boolean;
   latestSettledTurn: SettledTurn | null;
+  virtuaCache?: CacheSnapshot;
 }
 
 /**
@@ -84,11 +96,14 @@ export function createThreadItemCache(cap: number = THREAD_ITEM_CACHE_CAP): Thre
       // post-set caller mutation can't poison the cache. Item is a
       // flat primitive shape (see frontend/src/lib/types/models.ts);
       // strings/numbers are value types or reference-immutable.
+      // `virtuaCache` is treated as opaque — virtua owns its shape and
+      // freezes it for us via the public `getCache()` API.
       const stored: ThreadItemSnapshot = {
         items: snapshot.items.map((it) => ({ ...it })),
         oldestLoadedTurnIndex: snapshot.oldestLoadedTurnIndex,
         hasMoreHistory: snapshot.hasMoreHistory,
         latestSettledTurn: snapshot.latestSettledTurn,
+        virtuaCache: snapshot.virtuaCache,
       };
       byThread.delete(threadId);
       byThread.set(threadId, stored);
