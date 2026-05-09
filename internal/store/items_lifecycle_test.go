@@ -276,13 +276,15 @@ func TestUpdateItemStatusTransitionsRunningToCompleted(t *testing.T) {
 		t.Errorf("UpdatedAt = %d, want 2000", got.UpdatedAt)
 	}
 
-	// Thread's updated_at must move in the same transaction.
+	// Thread's updated_at is decoupled from item status flips. Tool
+	// completions inside an active turn don't move the sidebar; the
+	// bump arrives when the turn settles via Store.MarkThreadActivity.
 	thr, err := s.GetThread("t")
 	if err != nil {
 		t.Fatalf("get thread: %v", err)
 	}
-	if thr.UpdatedAt != 2000 {
-		t.Errorf("thread UpdatedAt = %d, want 2000", thr.UpdatedAt)
+	if thr.UpdatedAt != 1000 {
+		t.Errorf("thread UpdatedAt = %d, want 1000 (UpdateItemStatus must not bump activity)", thr.UpdatedAt)
 	}
 }
 
@@ -415,13 +417,14 @@ func TestAppendCompletionItemPairsLaunchAndCompletion(t *testing.T) {
 		t.Errorf("Kind = %q, want tool_completion", got.Kind)
 	}
 
-	// Thread updated_at should match the completion's timestamp.
+	// Background-task completion siblings are not a sidebar-bump
+	// boundary — the turn-settle path owns the activity bump.
 	thr, err := s.GetThread("t")
 	if err != nil {
 		t.Fatalf("get thread: %v", err)
 	}
-	if thr.UpdatedAt != 2000 {
-		t.Errorf("thread updated_at = %d, want 2000", thr.UpdatedAt)
+	if thr.UpdatedAt != 1000 {
+		t.Errorf("thread updated_at = %d, want 1000 (AppendCompletionItem must not bump activity)", thr.UpdatedAt)
 	}
 }
 
@@ -801,13 +804,16 @@ func TestAppendItemSummaryConcatenatesInPlace(t *testing.T) {
 		t.Errorf("after 2nd append Summary = %q, want %q", got2.Summary, "hello world!")
 	}
 
-	// Thread updated_at moves in the same transaction.
+	// Streaming text appends are NOT a sidebar-bump boundary. This is
+	// the regression guard for the "sidebar reshuffles on every chunk"
+	// bug: AppendItemSummary leaves threads.updated_at alone so the
+	// sort key stays anchored at the last interaction.
 	thr, err := s.GetThread("t")
 	if err != nil {
 		t.Fatalf("get thread: %v", err)
 	}
-	if thr.UpdatedAt != 4000 {
-		t.Errorf("thread UpdatedAt = %d, want 4000", thr.UpdatedAt)
+	if thr.UpdatedAt != 1000 {
+		t.Errorf("thread UpdatedAt = %d, want 1000 (AppendItemSummary must not bump activity)", thr.UpdatedAt)
 	}
 }
 

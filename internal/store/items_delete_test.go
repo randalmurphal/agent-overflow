@@ -92,7 +92,12 @@ func TestDeleteConversationFromTurnEmptyIsNoop(t *testing.T) {
 	}
 }
 
-func TestDeleteConversationFromTurnTouchesThreadUpdatedAt(t *testing.T) {
+// TestDeleteConversationFromTurnDoesNotBumpThreadUpdatedAt — conversation
+// truncation is a structural cleanup, not a meaningful interaction. The
+// sidebar timestamp stays anchored at the previous interaction. The
+// next user_text persist (or whatever the user does next) bumps via
+// Store.MarkThreadActivity.
+func TestDeleteConversationFromTurnDoesNotBumpThreadUpdatedAt(t *testing.T) {
 	s := newTestStore(t)
 	base := time.Now().UnixMilli() - 10_000
 	createDeleteConversationThread(t, s, "t-touch", base)
@@ -109,8 +114,8 @@ func TestDeleteConversationFromTurnTouchesThreadUpdatedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after: %v", err)
 	}
-	if after.UpdatedAt <= before.UpdatedAt {
-		t.Errorf("updated_at not bumped: before=%d after=%d", before.UpdatedAt, after.UpdatedAt)
+	if after.UpdatedAt != before.UpdatedAt {
+		t.Errorf("updated_at unexpectedly moved across truncation: before=%d after=%d", before.UpdatedAt, after.UpdatedAt)
 	}
 }
 

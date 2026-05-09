@@ -522,6 +522,12 @@ func decodeTurnCompleteFields(evt provider.ProviderEvent, turnIndex int, meta tu
 // facing `provider:turn_completed` emission has already fired by the
 // time this runs (see handleTurnComplete: takeOpenRound + emit at the
 // top, then claimTurnSettlement gate, then this).
+//
+// Bumps thread activity through Store.MarkThreadActivity. Turn settle
+// — including synthesized session-died / abort flavors that flow
+// through this same path — is one of the three sidebar-bump
+// boundaries; the other two are user_text persist and approval /
+// user-input request creation.
 func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now int64, meta turnCompleteMeta, persistErr error) {
 	fields := decodeTurnCompleteFields(evt, turnIndex, meta, persistErr)
 
@@ -533,6 +539,7 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 	if err := r.store.UpdateTurnCompleted(fields.logicalTurnID, now, fields.stopReason, fields.assistantMessageID, usageJSON, fields.errorMessage); err != nil {
 		log.Printf("triage: update turn %s: %v", fields.logicalTurnID, err)
 	}
+	r.bumpThreadActivity(evt.ThreadID, now, "turn settle")
 }
 
 // buildRoundCompletedEvent builds the frontend-facing

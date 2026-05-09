@@ -431,6 +431,35 @@ func (s *Store) UnarchiveThread(id string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: unarchive thread %s", id))
 }
 
+// MarkThreadActivity bumps threads.updated_at to `at`. Sidebar sort and
+// the per-row "last activity" display both key off this column, so the
+// helper is the explicit one-stop point for "a meaningful interaction
+// just happened on this thread." Triage calls it on user_text persist,
+// turn settlement, and approval / user-input request creation; nothing
+// else should touch updated_at on a live thread.
+//
+// Per-row writes (item upserts, streaming summary appends) deliberately
+// do NOT bump activity — that used to make the sidebar reshuffle on
+// every assistant token. Passive bookkeeping (token-usage cache, model
+// rename, branch swap) also leaves activity alone.
+//
+// Monotonic guard: only the largest seen timestamp wins. Late-arriving
+// stale events (e.g. a synthesized turn-complete that races a real
+// one) cannot pull activity backward.
+func (s *Store) MarkThreadActivity(threadID string, at int64) error {
+	if threadID == "" {
+		return fmt.Errorf("store: mark thread activity: thread id is required")
+	}
+	_, err := s.db.Exec(
+		`UPDATE threads SET updated_at = ? WHERE id = ? AND updated_at < ?`,
+		at, threadID, at,
+	)
+	if err != nil {
+		return fmt.Errorf("store: mark thread activity %s: %w", threadID, err)
+	}
+	return nil
+}
+
 // MarkThreadReadNow stamps last_read_at with the current unix-ms, clamped to
 // the latest sidebar read target. Completed turns key off completed_at; an
 // interrupted newest turn keys off started_at so opening it clears the
@@ -586,9 +615,17 @@ func (s *Store) UpdateSessionRef(threadID, ref string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update session ref for %s", threadID))
 }
 
+// In-thread setters below intentionally do NOT bump updated_at. Title
+// renames, model / mode / effort / fast-mode / context-window edits,
+// branch / workspace-path swaps, token-usage refreshes, and runtime-mode
+// flips are in-place mutations that should not move the sidebar.
+// Sidebar activity is owned by Store.MarkThreadActivity, called from
+// triage at user_text persist, turn settle, and approval / user-input
+// request creation.
+
 func (s *Store) UpdateTitle(threadID, title string) error {
-	result, err := s.db.Exec(`UPDATE threads SET title = ?, updated_at = ? WHERE id = ?`,
-		title, nowMillis(), threadID)
+	result, err := s.db.Exec(`UPDATE threads SET title = ? WHERE id = ?`,
+		title, threadID)
 	if err != nil {
 		return fmt.Errorf("store: update title for %s: %w", threadID, err)
 	}
@@ -597,8 +634,8 @@ func (s *Store) UpdateTitle(threadID, title string) error {
 
 func (s *Store) UpdateTitleIfCurrent(threadID, currentTitle, newTitle string) (bool, error) {
 	result, err := s.db.Exec(
-		`UPDATE threads SET title = ?, updated_at = ? WHERE id = ? AND title = ?`,
-		newTitle, nowMillis(), threadID, currentTitle,
+		`UPDATE threads SET title = ? WHERE id = ? AND title = ?`,
+		newTitle, threadID, currentTitle,
 	)
 	if err != nil {
 		return false, fmt.Errorf("store: compare-and-swap title for %s: %w", threadID, err)
@@ -611,8 +648,8 @@ func (s *Store) UpdateTitleIfCurrent(threadID, currentTitle, newTitle string) (b
 }
 
 func (s *Store) UpdateModel(threadID, model string) error {
-	result, err := s.db.Exec(`UPDATE threads SET model = ?, updated_at = ? WHERE id = ?`,
-		model, nowMillis(), threadID)
+	result, err := s.db.Exec(`UPDATE threads SET model = ? WHERE id = ?`,
+		model, threadID)
 	if err != nil {
 		return fmt.Errorf("store: update model for %s: %w", threadID, err)
 	}
@@ -624,8 +661,8 @@ func (s *Store) UpdateModelAndContextWindow(threadID, model string, tokens int) 
 		return fmt.Errorf("%w: %d", ErrInvalidContextWindow, tokens)
 	}
 	result, err := s.db.Exec(
-		`UPDATE threads SET model = ?, context_window = ?, updated_at = ? WHERE id = ?`,
-		model, tokens, nowMillis(), threadID,
+		`UPDATE threads SET model = ?, context_window = ? WHERE id = ?`,
+		model, tokens, threadID,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update model/context for %s: %w", threadID, err)
@@ -635,8 +672,8 @@ func (s *Store) UpdateModelAndContextWindow(threadID, model string, tokens int) 
 
 func (s *Store) UpdateLastTokenUsage(threadID, usage string) error {
 	result, err := s.db.Exec(
-		`UPDATE threads SET last_token_usage = ?, updated_at = ? WHERE id = ?`,
-		usage, nowMillis(), threadID,
+		`UPDATE threads SET last_token_usage = ? WHERE id = ?`,
+		usage, threadID,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update last token usage for %s: %w", threadID, err)
@@ -655,8 +692,8 @@ func (s *Store) UpdateProvider(threadID, prov string) error {
 	if _, ok := legalProviders[prov]; !ok {
 		return fmt.Errorf("%w: %q", ErrInvalidProvider, prov)
 	}
-	result, err := s.db.Exec(`UPDATE threads SET provider = ?, updated_at = ? WHERE id = ?`,
-		prov, nowMillis(), threadID)
+	result, err := s.db.Exec(`UPDATE threads SET provider = ? WHERE id = ?`,
+		prov, threadID)
 	if err != nil {
 		return fmt.Errorf("store: update provider for %s: %w", threadID, err)
 	}
@@ -671,8 +708,8 @@ func (s *Store) UpdateMode(threadID, mode string) error {
 	if _, ok := legalModes[mode]; !ok {
 		return fmt.Errorf("%w: %q", ErrInvalidMode, mode)
 	}
-	result, err := s.db.Exec(`UPDATE threads SET mode = ?, updated_at = ? WHERE id = ?`,
-		mode, nowMillis(), threadID)
+	result, err := s.db.Exec(`UPDATE threads SET mode = ? WHERE id = ?`,
+		mode, threadID)
 	if err != nil {
 		return fmt.Errorf("store: update mode for %s: %w", threadID, err)
 	}
@@ -693,8 +730,8 @@ func (s *Store) UpdateReasoningEffort(threadID, effort string) error {
 	if !legalEffortForProvider(providerName, normalized) {
 		return fmt.Errorf("%w: %s/%s", ErrInvalidEffort, providerName, normalized)
 	}
-	result, err := s.db.Exec(`UPDATE threads SET reasoning_effort = ?, updated_at = ? WHERE id = ?`,
-		normalized, nowMillis(), threadID)
+	result, err := s.db.Exec(`UPDATE threads SET reasoning_effort = ? WHERE id = ?`,
+		normalized, threadID)
 	if err != nil {
 		return fmt.Errorf("store: update reasoning effort for %s: %w", threadID, err)
 	}
@@ -703,8 +740,8 @@ func (s *Store) UpdateReasoningEffort(threadID, effort string) error {
 
 // UpdateFastMode flips the fast-mode boolean.
 func (s *Store) UpdateFastMode(threadID string, on bool) error {
-	result, err := s.db.Exec(`UPDATE threads SET fast_mode = ?, updated_at = ? WHERE id = ?`,
-		boolToInt(on), nowMillis(), threadID)
+	result, err := s.db.Exec(`UPDATE threads SET fast_mode = ? WHERE id = ?`,
+		boolToInt(on), threadID)
 	if err != nil {
 		return fmt.Errorf("store: update fast mode for %s: %w", threadID, err)
 	}
@@ -716,8 +753,8 @@ func (s *Store) UpdateContextWindow(threadID string, tokens int) error {
 	if !validContextWindow(tokens) {
 		return fmt.Errorf("%w: %d", ErrInvalidContextWindow, tokens)
 	}
-	result, err := s.db.Exec(`UPDATE threads SET context_window = ?, updated_at = ? WHERE id = ?`,
-		tokens, nowMillis(), threadID)
+	result, err := s.db.Exec(`UPDATE threads SET context_window = ? WHERE id = ?`,
+		tokens, threadID)
 	if err != nil {
 		return fmt.Errorf("store: update context window for %s: %w", threadID, err)
 	}
@@ -761,10 +798,9 @@ func (s *Store) UpdateContextSettings(threadID string, tokens, standardPercent, 
 		`UPDATE threads
 		    SET context_window = ?,
 		        auto_compact_standard_percent = ?,
-		        auto_compact_extended_percent = ?,
-		        updated_at = ?
+		        auto_compact_extended_percent = ?
 		  WHERE id = ?`,
-		tokens, standardPercent, extendedPercent, nowMillis(), threadID,
+		tokens, standardPercent, extendedPercent, threadID,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update context settings for %s: %w", threadID, err)
@@ -776,8 +812,8 @@ func (s *Store) UpdateContextSettings(threadID string, tokens, standardPercent, 
 // working tree. Callers that want to actually switch branches should
 // wrap this with the git checkout side effect.
 func (s *Store) UpdateBranch(threadID, branch string) error {
-	result, err := s.db.Exec(`UPDATE threads SET branch = ?, updated_at = ? WHERE id = ?`,
-		nilIfEmpty(branch), nowMillis(), threadID)
+	result, err := s.db.Exec(`UPDATE threads SET branch = ? WHERE id = ?`,
+		nilIfEmpty(branch), threadID)
 	if err != nil {
 		return fmt.Errorf("store: update branch for %s: %w", threadID, err)
 	}
@@ -787,8 +823,8 @@ func (s *Store) UpdateBranch(threadID, branch string) error {
 // UpdateWorkspacePath overwrites workspace_path. Used by the env/worktree
 // picker when a thread switches between the project root and a worktree.
 func (s *Store) UpdateWorkspacePath(threadID, path string) error {
-	result, err := s.db.Exec(`UPDATE threads SET workspace_path = ?, updated_at = ? WHERE id = ?`,
-		path, nowMillis(), threadID)
+	result, err := s.db.Exec(`UPDATE threads SET workspace_path = ? WHERE id = ?`,
+		path, threadID)
 	if err != nil {
 		return fmt.Errorf("store: update workspace path for %s: %w", threadID, err)
 	}
@@ -802,8 +838,8 @@ func (s *Store) UpdateWorkspacePath(threadID, path string) error {
 // breaking a session restart for an old client that sent a stale string.
 func (s *Store) UpdateRuntimeMode(threadID, mode string) error {
 	mode = normalizeRuntimeMode(mode)
-	result, err := s.db.Exec(`UPDATE threads SET runtime_mode = ?, updated_at = ? WHERE id = ?`,
-		mode, nowMillis(), threadID)
+	result, err := s.db.Exec(`UPDATE threads SET runtime_mode = ? WHERE id = ?`,
+		mode, threadID)
 	if err != nil {
 		return fmt.Errorf("store: update runtime mode for %s: %w", threadID, err)
 	}

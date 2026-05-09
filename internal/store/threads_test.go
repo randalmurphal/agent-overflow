@@ -461,7 +461,11 @@ func TestUpdateModeReturnsNotFoundForMissing(t *testing.T) {
 	}
 }
 
-func TestUpdateModeBumpsUpdatedAt(t *testing.T) {
+// TestUpdateModeDoesNotBumpUpdatedAt — mode is an in-thread edit and
+// must not advance the sidebar timestamp. The interaction-point bump
+// helper (Store.MarkThreadActivity) is the only writer to updated_at on
+// a live thread.
+func TestUpdateModeDoesNotBumpUpdatedAt(t *testing.T) {
 	s := newTestStore(t)
 	proj := newTestProject(t, s, "proj-mode-ua", "/tmp/ua")
 
@@ -480,8 +484,8 @@ func TestUpdateModeBumpsUpdatedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if got.UpdatedAt <= thr.UpdatedAt {
-		t.Fatalf("UpdatedAt = %d, want > %d (should have been bumped)", got.UpdatedAt, thr.UpdatedAt)
+	if got.UpdatedAt != thr.UpdatedAt {
+		t.Fatalf("UpdatedAt = %d, want %d (mode change must not bump activity)", got.UpdatedAt, thr.UpdatedAt)
 	}
 }
 

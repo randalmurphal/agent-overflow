@@ -197,9 +197,12 @@ func TestMode_SetInteractionModeUnknownThreadErrors(t *testing.T) {
 	}
 }
 
-// TestMode_SetInteractionModeUpdatesUpdatedAt: the store bumps updated_at on
-// every mode change so the sidebar can resort the thread to the top.
-func TestMode_SetInteractionModeUpdatesUpdatedAt(t *testing.T) {
+// TestMode_SetInteractionModeDoesNotBumpUpdatedAt: mode is an in-thread
+// edit, not a sidebar-bump boundary. Activity is owned by
+// Store.MarkThreadActivity (user_text persist, turn settle, approval /
+// user-input request creation) — bumping on every mode flip would
+// reshuffle the sidebar for non-interactions.
+func TestMode_SetInteractionModeDoesNotBumpUpdatedAt(t *testing.T) {
 	app := newTestAppWithStore(t)
 
 	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-updated", "claude-sonnet-4-6", "")
@@ -208,16 +211,16 @@ func TestMode_SetInteractionModeUpdatesUpdatedAt(t *testing.T) {
 	}
 	originalUpdatedAt := thread.UpdatedAt
 
-	// Force a measurable gap so the timestamp comparison can't false-pass on a
-	// single-millisecond tick.
+	// Force a measurable gap so a regression that re-introduces the bump
+	// can't false-pass on a single-millisecond tick.
 	time.Sleep(5 * time.Millisecond)
 
 	updated, err := app.UpdateThreadMode(thread.ID, "plan")
 	if err != nil {
 		t.Fatalf("UpdateThreadMode() error = %v", err)
 	}
-	if updated.UpdatedAt <= originalUpdatedAt {
-		t.Fatalf("updatedAt = %d, want > %d (should have bumped)", updated.UpdatedAt, originalUpdatedAt)
+	if updated.UpdatedAt != originalUpdatedAt {
+		t.Fatalf("updatedAt = %d, want %d (mode change must not bump activity)", updated.UpdatedAt, originalUpdatedAt)
 	}
 
 	// Confirm via direct read, in case the returned row was a stale snapshot.
@@ -225,8 +228,8 @@ func TestMode_SetInteractionModeUpdatesUpdatedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.UpdatedAt <= originalUpdatedAt {
-		t.Fatalf("stored updatedAt = %d, want > %d", stored.UpdatedAt, originalUpdatedAt)
+	if stored.UpdatedAt != originalUpdatedAt {
+		t.Fatalf("stored updatedAt = %d, want %d", stored.UpdatedAt, originalUpdatedAt)
 	}
 }
 

@@ -389,8 +389,11 @@ func TestUpdateTitle(t *testing.T) {
 	if got.Title != "Renamed Thread" {
 		t.Fatalf("expected updated title, got %q", got.Title)
 	}
-	if got.UpdatedAt <= 1000 {
-		t.Fatalf("expected updated_at to be bumped from 1000, got %d", got.UpdatedAt)
+	// Title rename is an in-thread edit, not a sidebar-bump boundary.
+	// updated_at is owned by Store.MarkThreadActivity (user_text persist,
+	// turn settle, approval / user-input request) and stays put here.
+	if got.UpdatedAt != 1000 {
+		t.Fatalf("expected updated_at to stay at 1000 after rename, got %d", got.UpdatedAt)
 	}
 }
 
@@ -448,8 +451,9 @@ func TestUpdateModel(t *testing.T) {
 	if got.Model != "gpt-5.4" {
 		t.Fatalf("expected updated model, got %q", got.Model)
 	}
-	if got.UpdatedAt <= 1000 {
-		t.Fatalf("expected updated_at to be bumped from 1000, got %d", got.UpdatedAt)
+	// Model swap is an in-thread edit, not a sidebar-bump boundary.
+	if got.UpdatedAt != 1000 {
+		t.Fatalf("expected updated_at to stay at 1000 after model swap, got %d", got.UpdatedAt)
 	}
 }
 
@@ -910,7 +914,14 @@ func TestHasItems(t *testing.T) {
 	}
 }
 
-func TestInsertItemBumpsThreadUpdatedAt(t *testing.T) {
+// TestInsertItemDoesNotBumpThreadUpdatedAt pins the new sidebar-activity
+// semantics: per-row writes (item inserts, summary appends, payload
+// upgrades, status flips) do not advance threads.updated_at on their
+// own. Thread activity is owned by Store.MarkThreadActivity, called
+// from triage at the three interaction boundaries (user_text persist,
+// turn settle, approval / user-input request). That's what keeps the
+// sidebar from reshuffling on every streaming chunk.
+func TestInsertItemDoesNotBumpThreadUpdatedAt(t *testing.T) {
 	s := newTestStore(t)
 
 	thr := makeThread("t1", "claude")
@@ -938,8 +949,67 @@ func TestInsertItemBumpsThreadUpdatedAt(t *testing.T) {
 		t.Fatalf("get thread: %v", err)
 	}
 
-	if got.UpdatedAt != itemTime {
-		t.Errorf("thread updated_at: got %d, want %d", got.UpdatedAt, itemTime)
+	if got.UpdatedAt != 1000 {
+		t.Errorf("thread updated_at after InsertItem: got %d, want 1000 (no implicit bump)", got.UpdatedAt)
+	}
+}
+
+// TestMarkThreadActivityBumpsUpdatedAt is the positive companion to
+// TestInsertItemDoesNotBumpThreadUpdatedAt. The explicit helper is the
+// single sidebar-activity entry point.
+func TestMarkThreadActivityBumpsUpdatedAt(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("t1", "claude")
+	thr.UpdatedAt = 1000
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	if err := s.MarkThreadActivity("t1", 5000); err != nil {
+		t.Fatalf("mark activity: %v", err)
+	}
+
+	got, err := s.GetThread("t1")
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if got.UpdatedAt != 5000 {
+		t.Errorf("thread updated_at after MarkThreadActivity: got %d, want 5000", got.UpdatedAt)
+	}
+
+	// Monotonic guard: a stale timestamp must not pull updated_at
+	// backward.
+	if err := s.MarkThreadActivity("t1", 2000); err != nil {
+		t.Fatalf("mark stale activity: %v", err)
+	}
+	got, err = s.GetThread("t1")
+	if err != nil {
+		t.Fatalf("re-get thread: %v", err)
+	}
+	if got.UpdatedAt != 5000 {
+		t.Errorf("stale MarkThreadActivity should be ignored: got %d, want 5000", got.UpdatedAt)
+	}
+
+	// Equal timestamp is a no-op under the strict-`<` guard. This locks
+	// the contract so a future change to `<=` would surface here rather
+	// than silently breaking monotonicity for callers that legitimately
+	// re-bump with the same instant (e.g. retry after a transient
+	// SQLite contention).
+	if err := s.MarkThreadActivity("t1", 5000); err != nil {
+		t.Fatalf("mark equal activity: %v", err)
+	}
+	got, err = s.GetThread("t1")
+	if err != nil {
+		t.Fatalf("re-get thread after equal: %v", err)
+	}
+	if got.UpdatedAt != 5000 {
+		t.Errorf("equal-timestamp MarkThreadActivity should be a no-op: got %d, want 5000", got.UpdatedAt)
+	}
+
+	// Empty thread id surfaces an error rather than silently writing.
+	if err := s.MarkThreadActivity("", 9000); err == nil {
+		t.Errorf("expected error for empty thread id, got nil")
 	}
 }
 
@@ -1356,14 +1426,16 @@ func TestUpdateItemPayloadReturnsErrorForMissingItem(t *testing.T) {
 	}
 }
 
-// TestUpdateItemPayloadAtomicThreadTouch proves the thread's updated_at
-// is revised in the SAME transaction as the item's payload link. Before
-// A8, the thread touch ran outside any tx — a failure there was logged
-// and swallowed. We verify commit-order by mutating updatedAt and
-// confirming both rows moved together.
-func TestUpdateItemPayloadAtomicThreadTouch(t *testing.T) {
+// TestUpdateItemPayloadDoesNotBumpThread proves payload upgrades on an
+// existing item never advance the thread's updated_at. Payload upgrades
+// happen mid-turn (late-arriving diff/command-output payloads) and must
+// not move the sidebar — sidebar activity is owned by
+// Store.MarkThreadActivity at user_text / turn-settle / approval
+// boundaries.
+func TestUpdateItemPayloadDoesNotBumpThread(t *testing.T) {
 	s := newTestStore(t)
 	thr := makeThread("t-atomic", "codex")
+	thr.UpdatedAt = 100
 	if err := s.CreateThread(thr); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1386,8 +1458,8 @@ func TestUpdateItemPayloadAtomicThreadTouch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get thread: %v", err)
 	}
-	if got.UpdatedAt != 999 {
-		t.Errorf("thread updated_at: got %d, want 999", got.UpdatedAt)
+	if got.UpdatedAt != 100 {
+		t.Errorf("thread updated_at after payload upgrade: got %d, want 100 (no implicit bump)", got.UpdatedAt)
 	}
 	item, ok, err := s.GetItem("i-1")
 	if err != nil {
@@ -1406,11 +1478,11 @@ func TestUpdateItemPayloadAtomicThreadTouch(t *testing.T) {
 
 // TestUpdateItemPayloadConcurrentCallsSerialise drives many concurrent
 // updates at the same item; with single-connection serialisation all
-// calls must succeed and final state must be coherent (whichever
-// updated_at wrote last wins for both item and thread).
+// calls must succeed and final state must be coherent.
 func TestUpdateItemPayloadConcurrentCallsSerialise(t *testing.T) {
 	s := newTestStore(t)
 	thr := makeThread("t-conc", "codex")
+	thr.UpdatedAt = 100
 	if err := s.CreateThread(thr); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1440,8 +1512,6 @@ func TestUpdateItemPayloadConcurrentCallsSerialise(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Thread.updated_at must match some call's updatedAt, and item.updated_at
-	// must match a call's updatedAt — both must agree (both within the same tx).
 	thread, err := s.GetThread("t-conc")
 	if err != nil {
 		t.Fatalf("get thread: %v", err)
@@ -1453,19 +1523,14 @@ func TestUpdateItemPayloadConcurrentCallsSerialise(t *testing.T) {
 	if !ok {
 		t.Fatal("item missing")
 	}
-	// Both must be in the range of writes.
-	if thread.UpdatedAt < 1000 || thread.UpdatedAt > int64(1000+writers-1) {
-		t.Errorf("thread.UpdatedAt out of range: %d", thread.UpdatedAt)
-	}
+	// Item.UpdatedAt reflects whichever concurrent call wrote last.
 	if item.UpdatedAt < 1000 || item.UpdatedAt > int64(1000+writers-1) {
 		t.Errorf("item.UpdatedAt out of range: %d", item.UpdatedAt)
 	}
-	// Because the fix made both updates atomic, the final item.updated_at
-	// and thread.updated_at must match exactly — they were committed from
-	// the same transaction with the same timestamp.
-	if item.UpdatedAt != thread.UpdatedAt {
-		t.Errorf("item.UpdatedAt (%d) and thread.UpdatedAt (%d) must be equal after atomic update",
-			item.UpdatedAt, thread.UpdatedAt)
+	// Thread.UpdatedAt is decoupled from item writes now — payload
+	// upgrades are not a sidebar-bump boundary.
+	if thread.UpdatedAt != 100 {
+		t.Errorf("thread.UpdatedAt should stay at 100 (no implicit bump from payload upgrades), got %d", thread.UpdatedAt)
 	}
 }
 

@@ -79,10 +79,17 @@ func (r *Router) handleUserInputRequest(evt provider.ProviderEvent) error {
 	}
 
 	r.setPendingUserInput(evt.ThreadID, request)
+	// User-input requests are a sidebar-bump boundary alongside
+	// user_text persist and turn settle: the agent is paused waiting
+	// for the user. Resolutions ride on the user's submitted answer,
+	// not on this request, so they don't bump separately.
+	requestedAt := eventTimestampMillis(evt)
+	r.bumpThreadActivity(evt.ThreadID, requestedAt, "user_input request")
 	r.emit("provider:user_input", provider.UserInputEvent{
-		Action:   "request",
-		ThreadID: evt.ThreadID,
-		Request:  &request,
+		Action:      "request",
+		ThreadID:    evt.ThreadID,
+		Request:     &request,
+		RequestedAt: requestedAt,
 	})
 	return nil
 }

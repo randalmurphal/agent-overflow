@@ -666,7 +666,7 @@ describe('setupEventListeners', () => {
     expect(getThreads()[0]?.latestTurnCompletedAt).toBe(300);
   });
 
-  it('updates cached project activity from item_event upserts', async () => {
+  it('does NOT bump cached project activity from non-user_text item_event upserts', async () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 100 }),
       makeThread({ id: 'thread-fresh', projectId: 'project-fresh', updatedAt: 9000 }),
@@ -690,17 +690,20 @@ describe('setupEventListeners', () => {
       item: makeItem({
         id: 'item-new',
         threadId: 'thread-stale',
+        kind: 'assistant_text',
         updatedAt: 10_000,
       }),
     });
     await nextFrame();
 
-    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(10_000);
-    expect(pane.thread?.updatedAt).toBe(10_000);
-    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(10_000);
+    // assistant_text upserts must not advance the sidebar activity —
+    // that's the bug fix for "sidebar reshuffles on every chunk".
+    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(100);
+    expect(pane.thread?.updatedAt).toBe(100);
+    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(100);
   });
 
-  it('updates cached project activity from item_event deltas', async () => {
+  it('does NOT bump cached project activity from item_event deltas', async () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 100 }),
       makeThread({ id: 'thread-fresh', projectId: 'project-fresh', updatedAt: 9000 }),
@@ -722,8 +725,185 @@ describe('setupEventListeners', () => {
     });
     await nextFrame();
 
+    // Streaming deltas are the most-frequent firing path; they must
+    // never advance the sidebar timestamp.
+    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(100);
+    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(100);
+  });
+
+  it('bumps cached project activity from user_text item_event upserts', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 100 }),
+      makeThread({ id: 'thread-fresh', projectId: 'project-fresh', updatedAt: 9000 }),
+    ]);
+    setBindingMock('ListProjects', async () => [
+      projectWithCounts('project-stale', 100),
+      projectWithCounts('project-fresh', 9000),
+    ]);
+    await refreshThreads();
+    await refreshProjects();
+    const pane = await buildPane(makeThread({
+      id: 'thread-stale',
+      projectId: 'project-stale',
+      updatedAt: 100,
+    }));
+    getAllPanes().set('main', pane);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-stale',
+      item: makeItem({
+        id: 'user:0',
+        threadId: 'thread-stale',
+        kind: 'user_text',
+        updatedAt: 10_000,
+      }),
+    });
+    await nextFrame();
+
+    // user_text is one of three sidebar-bump boundaries: send →
+    // surface the thread to the top.
     expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(10_000);
+    expect(pane.thread?.updatedAt).toBe(10_000);
     expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(10_000);
+  });
+
+  it('bumps cached project activity on provider:turn_completed', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 100 }),
+    ]);
+    setBindingMock('ListProjects', async () => [
+      projectWithCounts('project-stale', 100),
+    ]);
+    await refreshThreads();
+    await refreshProjects();
+
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-stale',
+      turnId: 'turn-1',
+      turnIndex: 0,
+      startedAt: 100,
+      completedAt: 12_000,
+      stopReason: 'end_turn',
+      assistantMessageId: '',
+      tokenUsage: '',
+      aborted: false,
+      errorMessage: '',
+    });
+    await nextFrame();
+
+    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(12_000);
+    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(12_000);
+  });
+
+  it('bumps cached project activity on provider:approval request', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 100 }),
+    ]);
+    setBindingMock('ListProjects', async () => [
+      projectWithCounts('project-stale', 100),
+    ]);
+    await refreshThreads();
+    await refreshProjects();
+    const pane = await buildPane(makeThread({
+      id: 'thread-stale',
+      projectId: 'project-stale',
+      updatedAt: 100,
+    }));
+    getAllPanes().set('main', pane);
+
+    const requestedAt = Date.now();
+    emitWailsEvent('provider:approval', {
+      action: 'request',
+      threadId: 'thread-stale',
+      requestedAt,
+      request: {
+        requestId: 'req-1',
+        threadId: 'thread-stale',
+        turnId: 'turn-1',
+        kind: 'tool_call',
+        toolName: 'Bash',
+        title: 'Approve command',
+      },
+    });
+    await nextFrame();
+
+    // Wire-pushed requestedAt is what the backend wrote to
+    // threads.updated_at via MarkThreadActivity; the cached value
+    // should match exactly so live order and persisted order agree.
+    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(requestedAt);
+    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(requestedAt);
+  });
+
+  it('bumps cached project activity on provider:user_input request', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 100 }),
+    ]);
+    setBindingMock('ListProjects', async () => [
+      projectWithCounts('project-stale', 100),
+    ]);
+    await refreshThreads();
+    await refreshProjects();
+    const pane = await buildPane(makeThread({
+      id: 'thread-stale',
+      projectId: 'project-stale',
+      updatedAt: 100,
+    }));
+    getAllPanes().set('main', pane);
+
+    const requestedAt = Date.now();
+    emitWailsEvent('provider:user_input', {
+      action: 'request',
+      threadId: 'thread-stale',
+      requestedAt,
+      request: {
+        requestId: 'input-1',
+        threadId: 'thread-stale',
+        turnId: 'turn-1',
+        toolName: 'user_input',
+        title: 'Choose one',
+        questions: [
+          {
+            id: 'scope',
+            question: 'Which scope?',
+            options: [
+              { label: 'turn', description: 'Just this turn' },
+            ],
+          },
+        ],
+      },
+    });
+    await nextFrame();
+
+    // Wire-pushed requestedAt is what the backend wrote to
+    // threads.updated_at; the cached value should match exactly so live
+    // and persisted order agree.
+    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(requestedAt);
+    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(requestedAt);
+  });
+
+  it('does NOT bump activity on provider:approval resolve', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 100 }),
+    ]);
+    setBindingMock('ListProjects', async () => [
+      projectWithCounts('project-stale', 100),
+    ]);
+    await refreshThreads();
+    await refreshProjects();
+
+    emitWailsEvent('provider:approval', {
+      action: 'resolve',
+      threadId: 'thread-stale',
+      requestId: 'req-1',
+      decision: 'approved',
+    });
+    await nextFrame();
+
+    // Approval resolutions ride on the user's reply (a user_text
+    // upsert path) — no separate bump here.
+    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(100);
+    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(100);
   });
 
   it('does not regress project activity from stale thread:updated events', async () => {

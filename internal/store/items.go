@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
 )
 
 // ErrItemSettled is returned by AppendItemSummary
@@ -101,10 +100,10 @@ func (s *Store) InsertItem(item Item) error {
 	if err != nil {
 		return fmt.Errorf("store: insert item: %w", err)
 	}
-	// Touch the parent thread's updated_at.
-	if _, err := tx.Exec(`UPDATE threads SET updated_at = ? WHERE id = ?`, item.UpdatedAt, item.ThreadID); err != nil {
-		return fmt.Errorf("store: touch thread updated_at for %s: %w", item.ThreadID, err)
-	}
+	// Thread activity is bumped explicitly via Store.MarkThreadActivity by
+	// the triage paths that count as a meaningful interaction (user_text
+	// persist, turn settle, approval / user-input request creation). Item
+	// inserts on their own do not advance the sidebar timestamp.
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit insert item tx: %w", err)
 	}
@@ -155,12 +154,8 @@ func (s *Store) AppendItem(item Item) (int, error) {
 	); err != nil {
 		return 0, fmt.Errorf("store: append item insert: %w", err)
 	}
-	if _, err := tx.Exec(
-		`UPDATE threads SET updated_at = ? WHERE id = ?`,
-		item.UpdatedAt, item.ThreadID,
-	); err != nil {
-		return 0, fmt.Errorf("store: append item touch thread %s: %w", item.ThreadID, err)
-	}
+	// Thread activity is bumped explicitly by triage interaction paths,
+	// not on every appended item. See InsertItem and MarkThreadActivity.
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("store: commit append item tx: %w", err)
 	}
@@ -188,6 +183,10 @@ func (s *Store) AppendItem(item Item) (int, error) {
 // Returns sql.ErrNoRows (wrapped) if no item matches id. Callers that
 // need to create the item on the first delta should call UpsertItem for
 // the initial delta and AppendItemSummary for every subsequent delta.
+//
+// Does NOT bump threads.updated_at — sidebar activity is bumped only at
+// interaction points (user_text persist, turn settle, approval/user-input
+// requests) via Store.MarkThreadActivity.
 func (s *Store) AppendItemSummary(threadID, id, delta string, updatedAt int64) (Item, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -221,15 +220,6 @@ func (s *Store) AppendItemSummary(threadID, id, delta string, updatedAt int64) (
 			return Item{}, fmt.Errorf("store: probe status for append item summary %s/%s: %w", threadID, id, probeErr)
 		}
 		return Item{}, ErrItemSettled
-	}
-
-	// Bump the owning thread's updated_at in the same transaction so the
-	// sidebar ordering stays in lockstep with the stream.
-	if _, err := tx.Exec(
-		`UPDATE threads SET updated_at = ? WHERE id = ?`,
-		updatedAt, threadID,
-	); err != nil {
-		return Item{}, fmt.Errorf("store: touch thread for item %s/%s: %w", threadID, id, err)
 	}
 
 	row := tx.QueryRow(
@@ -296,13 +286,6 @@ func (s *Store) AppendItemSummaryPreview(threadID, id, delta string, maxRunes in
 		return Item{}, ErrItemSettled
 	}
 
-	if _, err := tx.Exec(
-		`UPDATE threads SET updated_at = ? WHERE id = ?`,
-		updatedAt, threadID,
-	); err != nil {
-		return Item{}, fmt.Errorf("store: touch thread for item summary preview %s/%s: %w", threadID, id, err)
-	}
-
 	row := tx.QueryRow(
 		`SELECT `+itemColumns+`
 		   FROM items
@@ -322,9 +305,11 @@ func (s *Store) AppendItemSummaryPreview(threadID, id, delta string, maxRunes in
 
 // UpsertItem persists `item` (inserting or updating depending on whether a
 // row with the same (thread_id, id) already exists) together with an
-// optional `payload`, bumps the owning thread's updated_at, and returns the
-// re-read row (joined with its payload meta/kind) so the caller can emit
-// the canonical persisted state without a separate round-trip.
+// optional `payload` and returns the re-read row (joined with its payload
+// meta/kind) so the caller can emit the canonical persisted state without a
+// separate round-trip. Thread activity is bumped explicitly via
+// Store.MarkThreadActivity from triage; this helper does not touch
+// threads.updated_at.
 //
 // The method is split into three small helpers that run inside one
 // transaction:
@@ -367,13 +352,6 @@ func (s *Store) UpsertItemWithInputPayload(item Item, resultPayload, inputPayloa
 	}
 	if err := writeItem(tx, &item); err != nil {
 		return Item{}, err
-	}
-
-	if _, err := tx.Exec(
-		`UPDATE threads SET updated_at = ? WHERE id = ?`,
-		item.UpdatedAt, item.ThreadID,
-	); err != nil {
-		return Item{}, fmt.Errorf("store: touch thread updated_at for %s: %w", item.ThreadID, err)
 	}
 
 	persisted, err := readBackUpsertedItem(tx, item.ThreadID, item.ID)
@@ -1025,13 +1003,9 @@ func (s *Store) ForceCloseRunningToolCallsInTurn(
 		}
 	}
 
-	if _, err := tx.Exec(
-		`UPDATE threads SET updated_at = ? WHERE id = ?`,
-		updatedAt, threadID,
-	); err != nil {
-		return nil, fmt.Errorf("store: force-close touch thread %s: %w", threadID, err)
-	}
-
+	// Thread activity is bumped at the turn-settle path (via
+	// MarkThreadActivity in triage), not here. Force-closing orphan
+	// tool_calls is part of that same boundary.
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("store: commit force-close tx: %w", err)
 	}
@@ -1227,13 +1201,8 @@ func (s *Store) FlipGhostBackgroundRowsOnStart(
 		}
 	}
 
-	if _, err := tx.Exec(
-		`UPDATE threads SET updated_at = ? WHERE id = ?`,
-		updatedAt, threadID,
-	); err != nil {
-		return nil, fmt.Errorf("store: ghost-flip touch thread %s: %w", threadID, err)
-	}
-
+	// Sweeping crash-recovery cleanup is not a meaningful interaction;
+	// thread activity stays where the previous interaction left it.
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("store: commit ghost-flip tx: %w", err)
 	}
@@ -1323,12 +1292,9 @@ func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (
 	); err != nil {
 		return 0, fmt.Errorf("store: delete tracked files from turn for thread %s: %w", threadID, err)
 	}
-	if _, err := tx.Exec(
-		`UPDATE threads SET updated_at = ? WHERE id = ?`,
-		time.Now().UnixMilli(), threadID,
-	); err != nil {
-		return 0, fmt.Errorf("store: touch thread %s after conversation truncation: %w", threadID, err)
-	}
+	// Truncating the conversation is a structural change, not a fresh
+	// interaction. The next user_text persist (or a turn settle that
+	// follows the resume) bumps activity through MarkThreadActivity.
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("store: commit delete conversation from turn tx: %w", err)
 	}
@@ -1336,15 +1302,13 @@ func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (
 }
 
 // UpdateItemPayload updates a single item's payload link, summary, and
-// timestamp, and bumps the parent thread's updated_at so the sidebar
-// reshuffles. Both updates run inside one transaction so the thread's
-// updated_at never drifts out of sync with the item it describes. The
-// thread-touch error used to be log-only; a write failure there is just
-// as meaningful as a failure on the item update and callers deserve to
-// see it.
+// timestamp. The parent thread's updated_at is NOT touched — payload
+// upgrades are a row mutation, not a sidebar-worthy interaction. Triage
+// bumps activity via MarkThreadActivity at the user_text /
+// turn-settle / approval-request boundaries.
 //
 // Returns an error if the item does not exist or its thread has been
-// deleted (caught by RowsAffected on each UPDATE), instead of silently
+// deleted (caught by RowsAffected on the UPDATE), instead of silently
 // succeeding on a no-op update.
 func (s *Store) UpdateItemPayload(id, payloadID, summary string, createdAt int64) error {
 	tx, err := s.db.Begin()
@@ -1367,19 +1331,6 @@ func (s *Store) UpdateItemPayload(id, payloadID, summary string, createdAt int64
 		return err
 	}
 
-	threadResult, err := tx.Exec(`UPDATE threads SET updated_at = ? WHERE id = (
-		SELECT thread_id FROM items WHERE id = ?
-		)`, createdAt, id)
-	if err != nil {
-		return fmt.Errorf("store: touch thread updated_at for item %s: %w", id, err)
-	}
-	if err := requireRowsAffected(
-		threadResult,
-		fmt.Sprintf("store: touch thread updated_at for item %s", id),
-	); err != nil {
-		return err
-	}
-
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit update item payload tx: %w", err)
 	}
@@ -1388,16 +1339,19 @@ func (s *Store) UpdateItemPayload(id, payloadID, summary string, createdAt int64
 
 // UpdateItemStatus transitions an inline tool-call item from its current
 // status (typically "running") to the supplied status, replaces its
-// summary, and re-links (or clears) its payload_id. The parent thread's
-// updated_at is bumped in the same transaction so the sidebar resorts
-// consistently with the status change. status must be one of the four
-// values the v14 CHECK constraint allows; an invalid value surfaces as a
-// SQLite CHECK error.
+// summary, and re-links (or clears) its payload_id. status must be one
+// of the four values the v14 CHECK constraint allows; an invalid value
+// surfaces as a SQLite CHECK error.
 //
 // Inline tool calls use this method to flip running → completed|errored
 // without rewriting any other item. Background launches do NOT go through
 // here — their completion is a NEW item appended via AppendCompletionItem,
 // keeping the launch row frozen.
+//
+// Does NOT bump threads.updated_at — sidebar activity is owned by the
+// turn-settle / interaction-point paths via MarkThreadActivity. Tool
+// completions inside an active turn don't move the sidebar; the bump
+// arrives when the turn itself settles.
 //
 // Returns sql.ErrNoRows (wrapped) if no item matches id.
 func (s *Store) UpdateItemStatus(id, status, summary, payloadID string, createdAt int64) error {
@@ -1419,22 +1373,6 @@ func (s *Store) UpdateItemStatus(id, status, summary, payloadID string, createdA
 	if err := requireRowsAffected(
 		result,
 		fmt.Sprintf("store: update item status %s", id),
-	); err != nil {
-		return err
-	}
-
-	threadResult, err := tx.Exec(
-		`UPDATE threads SET updated_at = ? WHERE id = (
-			SELECT thread_id FROM items WHERE id = ?
-		)`,
-		createdAt, id,
-	)
-	if err != nil {
-		return fmt.Errorf("store: touch thread for item status %s: %w", id, err)
-	}
-	if err := requireRowsAffected(
-		threadResult,
-		fmt.Sprintf("store: touch thread for item status %s", id),
 	); err != nil {
 		return err
 	}
@@ -1516,13 +1454,9 @@ func (s *Store) AppendCompletionItem(launch Item, completion Item, completionPay
 		return 0, fmt.Errorf("store: append completion item insert: %w", err)
 	}
 
-	if _, err := tx.Exec(
-		`UPDATE threads SET updated_at = ? WHERE id = ?`,
-		completion.UpdatedAt, completion.ThreadID,
-	); err != nil {
-		return 0, fmt.Errorf("store: append completion touch thread %s: %w", completion.ThreadID, err)
-	}
-
+	// Background-task completion rows are siblings to a running tool_call;
+	// they do not represent a fresh interaction. Activity is bumped by
+	// the turn-settle path through MarkThreadActivity.
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("store: commit append completion item tx: %w", err)
 	}

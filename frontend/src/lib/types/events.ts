@@ -95,6 +95,7 @@ export interface ApprovalEvent {
   requestId?: string;
   decision?: '' | 'approved' | 'declined' | 'amended' | 'lost' | 'failed';
   detail?: string;
+  requestedAt?: number;
 }
 
 export interface UserInputRequest {
@@ -114,6 +115,7 @@ export interface UserInputEvent {
   requestId?: string;
   decision?: '' | 'answered' | 'declined' | 'lost' | 'failed';
   detail?: string;
+  requestedAt?: number;
 }
 
 export interface PendingInteractiveRequests {

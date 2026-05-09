@@ -18,6 +18,7 @@ const (
 	itemKindToolCall       = "tool_call"
 	itemKindBackgroundDone = "tool_completion"
 	itemKindNotification   = "notification"
+	itemKindUserText       = "user_text"
 	// itemKindAPIRetry is the live-updating retry indicator. One row
 	// per turn, deterministic id `retry:<turnIndex>` so re-attempts
 	// upsert in place. Status flips from running to completed when a

@@ -217,10 +217,17 @@ func (r *Router) handleApprovalRequest(evt provider.ProviderEvent) error {
 		Request: request,
 		ItemID:  itemID,
 	})
+	// Approval requests are one of the three sidebar-bump boundaries
+	// (alongside user_text persist and turn settle): the agent is
+	// blocked waiting on the user. Resolutions don't bump — the user's
+	// reply lands as a user_text upsert which already bumps activity.
+	requestedAt := eventTimestampMillis(evt)
+	r.bumpThreadActivity(evt.ThreadID, requestedAt, "approval request")
 	r.emit("provider:approval", provider.ApprovalEvent{
-		Action:   "request",
-		ThreadID: evt.ThreadID,
-		Request:  &request,
+		Action:      "request",
+		ThreadID:    evt.ThreadID,
+		Request:     &request,
+		RequestedAt: requestedAt,
 	})
 	return nil
 }

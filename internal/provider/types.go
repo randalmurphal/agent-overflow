@@ -334,6 +334,11 @@ type ApprovalEvent struct {
 	RequestID string           `json:"requestId,omitempty"`
 	Decision  string           `json:"decision,omitempty"` // approved|declined|amended|lost|failed
 	Detail    string           `json:"detail,omitempty"`
+	// RequestedAt is the wire-event timestamp (millis since epoch) for
+	// action="request"; lets the frontend bump cached thread activity
+	// using the same clock the backend wrote to threads.updated_at via
+	// MarkThreadActivity, instead of drifting on Date.now().
+	RequestedAt int64 `json:"requestedAt,omitempty"`
 }
 
 // UserInputRequest is sent when a provider needs structured user input.
@@ -359,6 +364,10 @@ type UserInputEvent struct {
 	RequestID string            `json:"requestId,omitempty"`
 	Decision  string            `json:"decision,omitempty"` // answered|declined|lost|failed
 	Detail    string            `json:"detail,omitempty"`
+	// RequestedAt mirrors ApprovalEvent.RequestedAt — wire-event
+	// timestamp for action="request" so the frontend's cached activity
+	// matches the persisted threads.updated_at written by triage.
+	RequestedAt int64 `json:"requestedAt,omitempty"`
 }
 
 // PendingInteractiveRequests is the app-runtime snapshot of still-open

@@ -453,6 +453,12 @@ function applyApprovalEvent(evt: ApprovalEvent): void {
         pane.addApproval(evt.request);
       }
     }
+    // Approval requests are a sidebar-bump boundary: the agent is
+    // paused waiting on the user. Resolutions ride on the user's
+    // reply — no separate bump there. Use the wire-event timestamp
+    // (matches the value MarkThreadActivity wrote on the backend) so
+    // the cached activity doesn't drift on local clock skew.
+    syncThreadActivity(evt.request.threadId, evt.requestedAt ?? Date.now());
     return;
   }
 
@@ -479,6 +485,12 @@ function applyUserInputEvent(evt: UserInputEvent): void {
         pane.addUserInput(evt.request);
       }
     }
+    // User-input requests are a sidebar-bump boundary alongside
+    // approvals and turn complete. The user's submitted answer
+    // arrives via a separate user_text path that bumps on its own.
+    // Use the wire-event timestamp so the cached activity stays in
+    // lockstep with the persisted threads.updated_at.
+    syncThreadActivity(evt.request.threadId, evt.requestedAt ?? Date.now());
     return;
   }
 
@@ -545,6 +557,7 @@ function applyUsageEvent(evt: UsageEvent): void {
 function applyItemUpserts(items: Item[]): void {
   if (items.length === 0) return;
   const itemsByThread = new Map<string, Item[]>();
+  const userTextActivityByThread = new Map<string, number>();
   for (const item of items) {
     const list = itemsByThread.get(item.threadId);
     if (list) {
@@ -559,6 +572,16 @@ function applyItemUpserts(items: Item[]): void {
     if (item.kind === 'user_text' && item.id.includes(':flush:') && itemHasProviderItemID(item)) {
       confirmFlushedByUserItemId(item.threadId, item.id);
     }
+    // user_text upserts are one of three sidebar-bump boundaries —
+    // alongside provider:turn_completed and approval / user-input
+    // request creation. assistant_text / thinking / tool_call / etc.
+    // upserts deliberately do NOT advance the sidebar timestamp.
+    if (item.kind === 'user_text' && Number.isFinite(item.updatedAt)) {
+      const existing = userTextActivityByThread.get(item.threadId) ?? Number.NEGATIVE_INFINITY;
+      if (item.updatedAt > existing) {
+        userTextActivityByThread.set(item.threadId, item.updatedAt);
+      }
+    }
   }
   for (const pane of getAllPanes().values()) {
     const threadItems = pane.threadId ? itemsByThread.get(pane.threadId) : undefined;
@@ -572,6 +595,9 @@ function applyItemUpserts(items: Item[]): void {
   // delete per coalesced flush.
   for (const threadId of itemsByThread.keys()) {
     threadItemCache.evict(threadId);
+  }
+  for (const [threadId, updatedAt] of userTextActivityByThread) {
+    syncThreadActivity(threadId, updatedAt);
   }
 }
 
@@ -642,13 +668,6 @@ function flushItemEventQueue(): void {
   const notifiedUpserts: Item[] = [];
   const pendingDeltas = new Map<string, ItemDeltaEvent & { chunks: string[] }>();
   const deltaThreadIds = new Set<string>();
-  const activityAtByThread = new Map<string, number>();
-
-  const recordThreadActivity = (threadId: string, updatedAt: number) => {
-    if (!threadId || !isFiniteNumber(updatedAt)) return;
-    const existing = activityAtByThread.get(threadId) ?? Number.NEGATIVE_INFINITY;
-    if (updatedAt > existing) activityAtByThread.set(threadId, updatedAt);
-  };
 
   const flushPendingUpserts = () => {
     if (pendingUpserts.length === 0) return;
@@ -690,14 +709,12 @@ function flushItemEventQueue(): void {
       flushPendingDeltas();
       if (!isValidItemForThread(evt.item, evt.threadId)) continue;
       pendingUpserts.push(evt.item);
-      recordThreadActivity(evt.threadId, evt.item.updatedAt);
       continue;
     }
     if (evt.action !== 'delta') continue;
 
     flushPendingUpserts();
     queueDelta(evt);
-    recordThreadActivity(evt.threadId, evt.updatedAt);
   }
 
   flushPendingDeltas();
@@ -710,10 +727,14 @@ function flushItemEventQueue(): void {
       }
     }
   }
+  // Sidebar activity is bumped only at meaningful interaction
+  // boundaries: user_text upsert (handled in applyItemUpserts),
+  // provider:turn_completed (applyTurnCompleted), and approval /
+  // user-input request creation (applyApprovalEvent /
+  // applyUserInputEvent). Streaming deltas and assistant / tool /
+  // thinking upserts deliberately do NOT advance the timestamp —
+  // that used to make the sidebar reshuffle every chunk.
   notifyItemUpserts(notifiedUpserts);
-  for (const [threadId, updatedAt] of activityAtByThread) {
-    syncThreadActivity(threadId, updatedAt);
-  }
   if (itemEventQueueStart < itemEventQueue.length) {
     scheduleItemEventFlush();
   }
@@ -839,6 +860,13 @@ function applyTurnCompleted(evt: TurnCompletedEvent): void {
     pane.settleTurn(settled);
   }
   syncLatestTurnCompleted(evt);
+  // Turn complete (clean, errored, or synthesized for session_died) is
+  // a sidebar-bump boundary. Use the wire-reported completedAt so
+  // multi-pane / cold-restart ordering matches the backend's persisted
+  // timestamp written by Store.MarkThreadActivity in settleTurnRow.
+  if (Number.isFinite(evt.completedAt)) {
+    syncThreadActivity(evt.threadId, evt.completedAt);
+  }
   // Send-queue drain is owned by the backend. Triage flushes queued
   // messages at safe provider boundaries and the frontend mirrors that
   // state via `provider:queue_state_changed` / `provider:queue_flushed`.

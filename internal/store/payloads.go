@@ -20,8 +20,9 @@ func (s *Store) InsertPayload(p Payload) error {
 // InsertItemWithPayload persists a payload + its matching item atomically
 // in a single transaction. Either both land or neither does, so triage
 // never leaves an orphan payload row when the item insert fails (Bug B10).
-// The thread's updated_at column is also bumped in the same transaction
-// so the sidebar ordering stays consistent with the newly persisted item.
+// Thread activity is bumped explicitly via Store.MarkThreadActivity from
+// triage at user_text persist / turn settle / approval-or-input request,
+// not implicitly here.
 func (s *Store) InsertItemWithPayload(item Item, payload Payload) error {
 	applyItemDefaults(&item)
 	tx, err := s.db.Begin()
@@ -49,13 +50,6 @@ func (s *Store) InsertItemWithPayload(item Item, payload Payload) error {
 		item.CreatedAt, item.UpdatedAt,
 	); err != nil {
 		return fmt.Errorf("store: insert item: %w", err)
-	}
-
-	if _, err := tx.Exec(
-		`UPDATE threads SET updated_at = ? WHERE id = ?`,
-		item.UpdatedAt, item.ThreadID,
-	); err != nil {
-		return fmt.Errorf("store: touch thread updated_at for %s: %w", item.ThreadID, err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -110,13 +104,6 @@ func (s *Store) AppendItemWithPayload(item Item, payload Payload) (int, error) {
 		item.CreatedAt, item.UpdatedAt,
 	); err != nil {
 		return 0, fmt.Errorf("store: append item+payload insert item: %w", err)
-	}
-
-	if _, err := tx.Exec(
-		`UPDATE threads SET updated_at = ? WHERE id = ?`,
-		item.UpdatedAt, item.ThreadID,
-	); err != nil {
-		return 0, fmt.Errorf("store: append item+payload touch thread %s: %w", item.ThreadID, err)
 	}
 
 	if err := tx.Commit(); err != nil {

@@ -908,6 +908,22 @@ func (r *Router) emitThreadUpdated(threadID string) {
 	r.emit("thread:updated", thread)
 }
 
+// bumpThreadActivity is the single chokepoint for advancing
+// threads.updated_at at the three sidebar-bump boundaries (user_text
+// persist, turn settle, approval / user-input request). Logs and
+// continues on error — the underlying turn/approval/persist write
+// already succeeded; sidebar ordering is best-effort. The nil-store
+// short-circuit supports tests that construct a Router with no store
+// (e.g. interactive_requests_test.go).
+func (r *Router) bumpThreadActivity(threadID string, at int64, reason string) {
+	if r.store == nil || threadID == "" {
+		return
+	}
+	if err := r.store.MarkThreadActivity(threadID, at); err != nil {
+		log.Printf("triage: mark thread activity on %s for %s: %v", reason, threadID, err)
+	}
+}
+
 func (r *Router) persistItem(item store.Item, payload *store.Payload) error {
 	return r.persistItemWithEmit(item, payload, nil, true)
 }
@@ -939,6 +955,17 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 	persisted, err := r.store.UpsertItemWithInputPayload(item, payload, inputPayload)
 	if err != nil {
 		return err
+	}
+	// Bump sidebar activity on user_text persist. This covers all three
+	// user-message sources that funnel through PersistItem: direct
+	// sends (app_send), queued flushes (app_flush_queue), and steer
+	// (app_steer); plus the wire-only cascade-injected path inside
+	// handleUserText. Other kinds — assistant_text deltas, tool_call
+	// rows, thinking, etc. — must not bump activity, otherwise the
+	// sidebar reshuffles on every streaming chunk (the bug this fix
+	// addresses).
+	if persisted.Kind == itemKindUserText {
+		r.bumpThreadActivity(persisted.ThreadID, persisted.UpdatedAt, "user_text persist")
 	}
 	if emit {
 		r.emitItemUpsert(persisted)
