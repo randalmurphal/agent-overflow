@@ -13,7 +13,7 @@ const (
 )
 
 var invalidBranchChars = regexp.MustCompile(`[^a-z0-9_-]+`)
-var invalidBranchNameChars = regexp.MustCompile(`[^a-z0-9_/-]+`)
+var invalidBranchNameChars = regexp.MustCompile(`[^A-Za-z0-9_/-]+`)
 
 // BuildTemporaryWorktreeBranchName creates the default temporary branch
 // shape used until the first user turn can rename it descriptively.
@@ -95,11 +95,11 @@ func SanitizeBranchFragment(raw string) string {
 }
 
 // SanitizeBranchNamePreservingSlashes collapses user-entered branch names into
-// a git-friendly branch while preserving path separators such as
-// "feature/login". It is intended for explicit branch-name input, not generated
-// names derived from prompts.
+// a git-friendly branch while preserving path separators and letter case. It is
+// intended for explicit branch-name input, not generated names derived from
+// prompts.
 func SanitizeBranchNamePreservingSlashes(raw string) string {
-	normalized := strings.TrimSpace(strings.ToLower(raw))
+	normalized := strings.TrimSpace(raw)
 	normalized = strings.TrimPrefix(normalized, "refs/heads/")
 	normalized = strings.NewReplacer("'", "", `"`, "", "`", "").Replace(normalized)
 	normalized = strings.Trim(normalized, "./ _-\t\r\n")

@@ -176,6 +176,76 @@ func TestGitCreateAndRemoveWorktree(t *testing.T) {
 	}
 }
 
+func TestGitCreateWorktreePreservesExplicitBranchCase(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	if err := app.gitCore().CreateBranch(repo, "case-probe-branch"); err != nil {
+		t.Fatalf("CreateBranch(case probe lower) error = %v", err)
+	}
+	if err := app.gitCore().CreateBranch(repo, "CASE-PROBE-BRANCH"); err != nil {
+		t.Skipf("git on this host does not support case-distinct branch refs: %v", err)
+	}
+
+	lowerThread := testThread("thread-worktree-lowercase")
+	lowerThread.ProjectID = project.ID
+	lowerThread.WorkspacePath = repo
+	if err := app.store.CreateThread(lowerThread); err != nil {
+		t.Fatalf("CreateThread(lower) error = %v", err)
+	}
+	lowerWorktreePath, err := app.GitCreateWorktree(lowerThread.ID, "blitz-73")
+	if err != nil {
+		t.Fatalf("GitCreateWorktree(lower) error = %v", err)
+	}
+
+	upperThread := testThread("thread-worktree-uppercase")
+	upperThread.ProjectID = project.ID
+	upperThread.WorkspacePath = repo
+	upperThread.Branch = "main"
+	if err := app.store.CreateThread(upperThread); err != nil {
+		t.Fatalf("CreateThread(upper) error = %v", err)
+	}
+	upperWorktreePath, err := app.GitCreateWorktree(upperThread.ID, "BLITZ-73")
+	if err != nil {
+		t.Fatalf("GitCreateWorktree(upper) error = %v", err)
+	}
+
+	if samePath(lowerWorktreePath, upperWorktreePath) {
+		t.Fatalf("worktree paths should differ for case-distinct branches, got %q", lowerWorktreePath)
+	}
+
+	lowerStored, err := app.store.GetThread(lowerThread.ID)
+	if err != nil {
+		t.Fatalf("GetThread(lower) error = %v", err)
+	}
+	if lowerStored.Branch != "blitz-73" {
+		t.Fatalf("lower Branch = %q, want blitz-73", lowerStored.Branch)
+	}
+
+	upperStored, err := app.store.GetThread(upperThread.ID)
+	if err != nil {
+		t.Fatalf("GetThread(upper) error = %v", err)
+	}
+	if upperStored.Branch != "BLITZ-73" {
+		t.Fatalf("upper Branch = %q, want BLITZ-73", upperStored.Branch)
+	}
+
+	branches, err := app.GitListBranches(lowerThread.ID)
+	if err != nil {
+		t.Fatalf("GitListBranches() error = %v", err)
+	}
+	if !containsBranch(branches, "blitz-73") {
+		t.Fatalf("expected blitz-73 in branches: %+v", branches)
+	}
+	if !containsBranch(branches, "BLITZ-73") {
+		t.Fatalf("expected BLITZ-73 in branches: %+v", branches)
+	}
+}
+
 func TestGitCreateWorktreeUsesTemporaryBranchWhenEmpty(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)

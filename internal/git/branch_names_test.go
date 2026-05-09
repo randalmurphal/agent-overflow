@@ -66,7 +66,8 @@ func TestSanitizeBranchNamePreservingSlashes(t *testing.T) {
 		want string
 	}{
 		{raw: "feature/worktree", want: "feature/worktree"},
-		{raw: "Feature Worktree", want: "feature-worktree"},
+		{raw: "Feature Worktree", want: "Feature-Worktree"},
+		{raw: "BLITZ-73", want: "BLITZ-73"},
 		{raw: "refs/heads/team/fix login", want: "team/fix-login"},
 		{raw: "///bad//name///", want: "bad/name"},
 	}

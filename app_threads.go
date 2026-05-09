@@ -186,7 +186,7 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		// No worktree path supplied. If the caller passes an explicit
 		// branch (e.g. for the project root), sanitize it the same way
 		// we'd sanitize user-typed branch names elsewhere — preserves
-		// `feature/login` while collapsing shell-meta and weird casing.
+		// `feature/login` and branch-name casing while collapsing shell-meta.
 		if explicit := strings.TrimSpace(opts.Branch); explicit != "" {
 			branch = gitops.SanitizeBranchNamePreservingSlashes(explicit)
 		}
