@@ -1060,6 +1060,271 @@ func TestListItemsBeforeTurn_ReturnsAncestorOnEachEligiblePage(t *testing.T) {
 	}
 }
 
+func TestListThreadSliceAround_EmptyAnchorReturnsTail(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	// Five turns, one item each.
+	for i := 0; i < 5; i++ {
+		seedItem(t, s, "t", idForTurn(i), i, 0, "")
+	}
+
+	paged, err := s.ListThreadSliceAround("t", "", 3)
+	if err != nil {
+		t.Fatalf("slice around: %v", err)
+	}
+
+	gotIDs := collectIDs(paged.Items)
+	// Tail of size 3 = the three newest turns.
+	wantIDs := []string{idForTurn(2), idForTurn(3), idForTurn(4)}
+	if !equalStringSlice(gotIDs, wantIDs) {
+		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
+	}
+	if paged.OldestTurnIndex != 2 {
+		t.Errorf("oldest: got %d, want 2", paged.OldestTurnIndex)
+	}
+	if !paged.HasMore {
+		t.Error("expected HasMore=true (turns 0,1 below floor)")
+	}
+}
+
+func TestListThreadSliceAround_EmptyThreadReturnsEmpty(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	paged, err := s.ListThreadSliceAround("t", "", 50)
+	if err != nil {
+		t.Fatalf("slice around: %v", err)
+	}
+	if len(paged.Items) != 0 {
+		t.Errorf("empty thread items: got %d, want 0", len(paged.Items))
+	}
+	if paged.OldestTurnIndex != -1 {
+		t.Errorf("oldest: got %d, want -1", paged.OldestTurnIndex)
+	}
+	if paged.HasMore {
+		t.Error("empty thread should not report HasMore")
+	}
+}
+
+func TestListThreadSliceAround_AnchorInMiddle(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	// Ten turns, one item each. Anchor on turn 5.
+	for i := 0; i < 10; i++ {
+		seedItem(t, s, "t", idForTurn(i), i, 0, "")
+	}
+
+	paged, err := s.ListThreadSliceAround("t", idForTurn(5), 4)
+	if err != nil {
+		t.Fatalf("slice around: %v", err)
+	}
+
+	gotIDs := collectIDs(paged.Items)
+	// Half budget=2 each side. Floor walks at-or-below 5 picking up
+	// turns 5,4 (cumulative=2, stops). Upper walks above 5 picking up
+	// turns 6,7. Window [4,7] inclusive yields four items.
+	wantIDs := []string{idForTurn(4), idForTurn(5), idForTurn(6), idForTurn(7)}
+	if !equalStringSlice(gotIDs, wantIDs) {
+		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
+	}
+	if paged.OldestTurnIndex != 4 {
+		t.Errorf("oldest: got %d, want 4", paged.OldestTurnIndex)
+	}
+	if !paged.HasMore {
+		t.Error("expected HasMore=true (turns 0..3 below floor)")
+	}
+}
+
+func TestListThreadSliceAround_MissingAnchorFallsBackToTail(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	for i := 0; i < 4; i++ {
+		seedItem(t, s, "t", idForTurn(i), i, 0, "")
+	}
+
+	paged, err := s.ListThreadSliceAround("t", "ghost", 2)
+	if err != nil {
+		t.Fatalf("slice around: %v", err)
+	}
+
+	gotIDs := collectIDs(paged.Items)
+	wantIDs := []string{idForTurn(2), idForTurn(3)}
+	if !equalStringSlice(gotIDs, wantIDs) {
+		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
+	}
+}
+
+func TestListThreadSliceAround_PullsAncestorBelowFloor(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	// Subagent parent in turn 0; anchor child in turn 6.
+	seedItem(t, s, "t", "parent", 0, 0, "")
+	for i := 1; i <= 5; i++ {
+		seedItem(t, s, "t", idForTurn(i), i, 0, "")
+	}
+	seedItem(t, s, "t", "child", 6, 0, "parent")
+
+	paged, err := s.ListThreadSliceAround("t", "child", 4)
+	if err != nil {
+		t.Fatalf("slice around: %v", err)
+	}
+
+	gotIDs := collectIDs(paged.Items)
+	// Half=2. Floor walk at-or-below 6 picks up turns 6,5 (cum=2, stop;
+	// floor=5). Upper walk strictly above 6 finds none, so upper stays
+	// at 6. Window [5,6] = items "t5-i0", "child". Plus the ancestor
+	// CTE pulls "parent" (turn 0) since "child".parent_id="parent".
+	wantIDs := []string{"parent", idForTurn(5), "child"}
+	if !equalStringSlice(gotIDs, wantIDs) {
+		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
+	}
+}
+
+func TestListThreadSliceAround_AnchorChildExpandsSiblings(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	// Subagent group: parent in turn 1, six children spanning turns 1-6.
+	// Anchor on the child in turn 4 with half-budget windows that would
+	// otherwise miss the children at turns 1 and 6.
+	seedItem(t, s, "t", "parent", 1, 0, "")
+	seedItem(t, s, "t", "c-1", 1, 1, "parent")
+	seedItem(t, s, "t", "c-2", 2, 0, "parent")
+	seedItem(t, s, "t", "c-3", 3, 0, "parent")
+	seedItem(t, s, "t", "c-4", 4, 0, "parent")
+	seedItem(t, s, "t", "c-5", 5, 0, "parent")
+	seedItem(t, s, "t", "c-6", 6, 0, "parent")
+	// Some unrelated noise above and below the group so the window is
+	// definitely not "the whole thread."
+	seedItem(t, s, "t", "noise-0", 0, 0, "")
+	seedItem(t, s, "t", "noise-7", 7, 0, "")
+
+	paged, err := s.ListThreadSliceAround("t", "c-4", 2)
+	if err != nil {
+		t.Fatalf("slice around: %v", err)
+	}
+
+	gotIDs := collectIDs(paged.Items)
+	// Half=1 each side. Floor walk at-or-below 4 picks turn 4 (cum=1,
+	// stop; floor=4). Upper walk above 4 picks turn 5 (cum=1, stop;
+	// upper=5). Window [4,5] alone yields "c-4","c-5". Sibling-expansion
+	// adds every item with parent_id="parent": c-1,c-2,c-3,c-4,c-5,c-6.
+	// Ancestor CTE adds "parent" itself (turn 1, below floor).
+	// "noise-0" and "noise-7" stay excluded.
+	wantIDs := []string{
+		"parent", "c-1", "c-2", "c-3", "c-4", "c-5", "c-6",
+	}
+	if !equalStringSlice(gotIDs, wantIDs) {
+		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
+	}
+}
+
+func TestListThreadSliceAround_CrossThreadIsolation(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("a", "claude")); err != nil {
+		t.Fatalf("create thread a: %v", err)
+	}
+	if err := s.CreateThread(makeThread("b", "claude")); err != nil {
+		t.Fatalf("create thread b: %v", err)
+	}
+	// Same id "anchor" lives on both threads at different turns. The
+	// outer items.thread_id guard MUST prevent thread b's row from
+	// leaking when we query thread a.
+	seedItem(t, s, "a", "anchor", 5, 0, "")
+	seedItem(t, s, "a", "neighbor", 6, 0, "")
+	seedItem(t, s, "b", "anchor", 0, 0, "")
+	seedItem(t, s, "b", "intruder", 1, 0, "")
+
+	paged, err := s.ListThreadSliceAround("a", "anchor", 4)
+	if err != nil {
+		t.Fatalf("slice around: %v", err)
+	}
+
+	gotIDs := collectIDs(paged.Items)
+	// Only thread "a" rows should appear, regardless of cross-thread id.
+	for _, id := range gotIDs {
+		if id == "intruder" {
+			t.Errorf("thread b row leaked into thread a slice")
+		}
+	}
+	wantIDs := []string{"anchor", "neighbor"}
+	if !equalStringSlice(gotIDs, wantIDs) {
+		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
+	}
+}
+
+func TestListThreadSliceAround_DefaultsToFiftyItems(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	for i := 0; i < 80; i++ {
+		seedItem(t, s, "t", idForTurn(i), i, 0, "")
+	}
+
+	paged, err := s.ListThreadSliceAround("t", "", 0) // <=0 → default 50
+	if err != nil {
+		t.Fatalf("slice around: %v", err)
+	}
+	if got := len(paged.Items); got != 50 {
+		t.Errorf("default item count: got %d, want 50", got)
+	}
+	// Tail of 50 from a thread of 80 → floor at turn 30.
+	if paged.OldestTurnIndex != 30 {
+		t.Errorf("oldest: got %d, want 30", paged.OldestTurnIndex)
+	}
+	if !paged.HasMore {
+		t.Error("expected HasMore=true (turns 0..29 below floor)")
+	}
+}
+
+func TestListThreadSliceAround_FiltersPlanUpdateNotifications(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	// Seed plain items plus a plan_update notification mid-window.
+	seedItem(t, s, "t", "a", 0, 0, "")
+	seedItem(t, s, "t", "b", 1, 0, "")
+	if err := s.InsertItem(Item{
+		ID:        "p",
+		ThreadID:  "t",
+		TurnIndex: 1,
+		ItemIndex: 1,
+		Kind:      "notification",
+		ToolName:  "plan_update",
+		Role:      "system",
+		Summary:   "p",
+		CreatedAt: 11,
+	}); err != nil {
+		t.Fatalf("insert plan notif: %v", err)
+	}
+	seedItem(t, s, "t", "c", 2, 0, "")
+
+	paged, err := s.ListThreadSliceAround("t", "b", 4)
+	if err != nil {
+		t.Fatalf("slice around: %v", err)
+	}
+
+	gotIDs := collectIDs(paged.Items)
+	// "p" must be filtered out the same way the other paged paths do.
+	wantIDs := []string{"a", "b", "c"}
+	if !equalStringSlice(gotIDs, wantIDs) {
+		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
+	}
+}
+
 func idForItem(turn, idx int) string {
 	return fmt.Sprintf("t%d-i%d", turn, idx)
 }

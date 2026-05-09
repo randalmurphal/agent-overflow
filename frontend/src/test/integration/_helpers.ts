@@ -127,6 +127,11 @@ export function installThreadViewDefaults(): void {
     oldestTurnIndex: -1,
     hasMore: false,
   }));
+  setBindingMock('ListThreadSliceAround', async () => ({
+    items: [],
+    oldestTurnIndex: -1,
+    hasMore: false,
+  }));
   setBindingMock('ListPendingInteractiveRequests', async () => ({
     approvals: [],
     userInputs: [],

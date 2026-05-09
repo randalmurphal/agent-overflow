@@ -1,6 +1,8 @@
 import type { Thread } from '../types/models';
+import { clearTokensForThread } from '../utils/tokenCacheReactive.svelte';
 import { ListThreads } from './bindings';
 import { dropActivityRailUiPrefs, dropLiveTodoUiPrefs } from './thread.svelte';
+import { threadItemCache } from './threadItemCache';
 import { clearThreadStatus } from './threadStatuses.svelte';
 import { addToast } from './toast.svelte';
 
@@ -34,6 +36,11 @@ export function removeThread(id: string): void {
   // doesn't accumulate dead-thread keys across long sessions.
   dropLiveTodoUiPrefs(id);
   dropActivityRailUiPrefs(id);
+  // Symmetric eviction so a deleted thread doesn't leave a multi-MB
+  // snapshot wedged in the LRU and so a fork-then-delete-then-fork
+  // pattern can't surface stale items if a generated id ever recurs.
+  threadItemCache.evict(id);
+  clearTokensForThread(id);
 }
 
 export function updateThreadTitle(id: string, title: string): void {

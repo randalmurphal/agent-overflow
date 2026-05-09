@@ -73,6 +73,14 @@ export function installPaneMocks(items: Item[] = []): void {
     oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
     hasMore: false,
   }));
+  // The two-phase switch also calls ListThreadSliceAround for the
+  // viewport-sized fast slice. Default to the same items so the merge
+  // is idempotent for tests that only care about the canonical view.
+  setBindingMock('ListThreadSliceAround', async () => ({
+    items,
+    oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
+    hasMore: false,
+  }));
   setBindingMock('ListPendingInteractiveRequests', async () => ({
     approvals: [],
     userInputs: [],

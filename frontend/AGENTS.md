@@ -59,6 +59,54 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 - The sidebar thread list is its own store — it doesn't hold pane
   state.
 
+## Thread switch — cache + two-phase load
+
+`pane.switchThread` is the entry point. The flow has three pieces:
+
+- **`threadItemCache`** (`stores/threadItemCache.ts`) — bounded LRU
+  (default cap 5) of `{ items, oldestLoadedTurnIndex, hasMoreHistory,
+  latestSettledTurn }` snapshots keyed by thread id. The outgoing pane
+  writes its current state on every `switchThread`; the incoming pane
+  reads it and paints synchronously when present. Memory cost per
+  snapshot is dominated by per-item `summary` and `payloadMeta` strings
+  (unbounded provider text); a soft cap of `MAX_CACHED_SNAPSHOT_ITEMS`
+  (1000 rows) on the write side rejects pathologically large snapshots
+  where the cost-to-benefit inverts. Strings are reference-shared with
+  the live pane until the user navigates away — once a snapshot is the
+  sole root, GC reclaims it on eviction. Three eviction paths keep the
+  cache fresh: (1) LRU drop when capacity is hit; (2) `events.ts`
+  evicts every thread touched by an `applyItemUpserts` batch so a
+  persisted mutation never reads stale; (3) `removeThread` evicts on
+  delete so a deleted thread can't wedge a multi-MB snapshot.
+  Same-thread re-switch (the revert-then-switchThread UX) skips the
+  outgoing snapshot AND force-evicts the entry so the load fetches
+  fresh state instead of flashing the stale view.
+- **Two-phase load.** Phase 1 calls `App.ListThreadSliceAround(threadID,
+  anchorItemID, 50)` for a viewport-sized slice (~50 items around the
+  saved scroll anchor, or the tail when the snapshot is bottom /
+  missing). Phase 2 calls `App.ListRecentThreadItems(threadID, 0)` for
+  the full window. Both run concurrently with `SwitchThread`,
+  `hydrateThreadLiveState`, `ListRecentTurns`, and
+  `refreshCheckpointsForThread` under a single `Promise.allSettled` so
+  the wall-clock cost of a switch is bounded by the slowest fetch, not
+  their sum. On cache hit, phase 1 is skipped — the cache already
+  covers the visible window.
+- **`mergeMissingItemsById`** is the merge contract for both phases:
+  rows already in `pane.items` (from cache, phase 1, or streamed
+  events that landed mid-load) keep their reference; missing rows are
+  added and the array is re-sorted. Reference equality on unchanged
+  rows keeps virtua's per-row ResizeObserver from firing spuriously,
+  and triage's persist-then-emit ordering means any in-flight stream
+  event is already baked into phase 2's SQL — preferring the in-memory
+  row over a re-fetch is always correct.
+- **Spinner-flash gate.** `pane.loading` flips true the moment
+  `switchThread` starts; `MessageTimeline` reads
+  `pane.showLoadingSpinner` instead, which only resolves to true after
+  `SPINNER_THRESHOLD_MS` (100ms — the Doherty perception threshold)
+  AND when `pane.items.length === 0`. Cache hits never flash the
+  spinner because items render immediately; sub-100ms cache misses
+  skip it because phase 1 populates items before the timer fires.
+
 ## Events in
 
 - `app.Event.On('provider-event', ...)` — fan out to active panes.

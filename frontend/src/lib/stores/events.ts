@@ -43,6 +43,7 @@ import {
   projectUserInputResolution,
 } from './threadStatuses.svelte';
 import { parseTokenUsage } from './thread.svelte';
+import { threadItemCache } from './threadItemCache';
 
 /**
  * Min interval between consecutive `design:reload-main` cache-bust
@@ -563,6 +564,14 @@ function applyItemUpserts(items: Item[]): void {
     const threadItems = pane.threadId ? itemsByThread.get(pane.threadId) : undefined;
     if (!threadItems) continue;
     pane.upsertItems(threadItems);
+  }
+  // Evict cached snapshots for every thread touched by this batch — a
+  // persisted item upsert may invalidate the snapshot we'd otherwise
+  // serve on next switch. Eviction is one delete per thread per batch
+  // (not per item), so a long streaming run amortises to ~one hash
+  // delete per coalesced flush.
+  for (const threadId of itemsByThread.keys()) {
+    threadItemCache.evict(threadId);
   }
 }
 

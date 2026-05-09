@@ -233,11 +233,16 @@
   function saveScrollSnapshot(): void {
     const threadId = snapshotThreadId();
     if (!threadId) return;
-    saveScrollSnapshotForThread(threadId, false);
+    saveScrollSnapshotForThread(threadId);
   }
 
-  function saveScrollSnapshotForThread(threadId: string, ignoreLoading: boolean): void {
-    if (!listRef || (!ignoreLoading && pane.loading) || restoredThreadId !== threadId) return;
+  function saveScrollSnapshotForThread(threadId: string): void {
+    // The `restoredThreadId !== threadId` guard already covers the
+    // "ignore scroll events fired before restoration" case — once
+    // restoration runs (which happens as soon as the timeline has
+    // items, including the cache-hit fast path), saves are allowed.
+    // No separate loading check is needed.
+    if (!listRef || restoredThreadId !== threadId) return;
     // virtua's internal ref can be in a teardown state where any geometry
     // read throws (the inner ref is null while our outer handle is still
     // bound). The TypeError is the documented teardown shape — swallow
@@ -293,7 +298,7 @@
     const nextThreadId = pane.threadId;
     if (scrollSnapshotThreadId !== nextThreadId) {
       if (scrollSnapshotThreadId) {
-        saveScrollSnapshotForThread(scrollSnapshotThreadId, true);
+        saveScrollSnapshotForThread(scrollSnapshotThreadId);
         restoredThreadId = null;
         restoreToken += 1;
       }
@@ -304,9 +309,16 @@
 
   $effect(() => {
     const threadId = pane.threadId;
+    const itemsLength = pane.items.length;
     const loading = pane.loading;
-    if (!threadId || loading) return;
+    if (!threadId) return;
     if (restoredThreadId === threadId) return;
+    // Restore as soon as we have items to anchor against — that's the
+    // cache-hit fast path. For the cache-miss case where the thread
+    // turned out to be genuinely empty, fall through when loading
+    // flips false so the bottom-snapshot branch can still call
+    // markAtBottom for streaming arrival.
+    if (itemsLength === 0 && loading) return;
     const hasTimelineRows = groupedNodes.length > 0;
     if (hasTimelineRows && !listRef) return;
     restoredThreadId = threadId;
@@ -467,7 +479,7 @@
   });
 
   onDestroy(() => {
-    if (restoredThreadId) saveScrollSnapshotForThread(restoredThreadId, true);
+    if (restoredThreadId) saveScrollSnapshotForThread(restoredThreadId);
     clearTargetFlash();
     stick.detach();
   });
@@ -500,11 +512,11 @@
     role="log"
     aria-label="Message History"
   >
-    {#if pane.loading}
+    {#if pane.showLoadingSpinner}
       <div class="flex items-center justify-center h-full text-fg-subtle text-sm" role="status" aria-live="polite">
         <span class="animate-pulse">Loading thread...</span>
       </div>
-    {:else if pane.items.length === 0 && !getActiveTurn(pane.threadId)}
+    {:else if pane.items.length === 0 && !getActiveTurn(pane.threadId) && !pane.loading}
       <div class="flex items-center justify-center h-full text-fg-subtle text-sm">
         No messages yet. Send a message to get started.
       </div>

@@ -117,6 +117,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListTerminals", ID: 2445206506}, // main.App.ListTerminals
 	{Name: "ListThreadCheckpoints", ID: 1853132444}, // main.App.ListThreadCheckpoints
 	{Name: "ListThreadProposedPlans", ID: 2485050629}, // main.App.ListThreadProposedPlans
+	{Name: "ListThreadSliceAround", ID: 4176102096}, // main.App.ListThreadSliceAround
 	{Name: "ListThreads", ID: 1090132042}, // main.App.ListThreads
 	{Name: "ListWSLDistros", ID: 2332614075}, // main.App.ListWSLDistros
 	{Name: "MarkThreadRead", ID: 1480646012}, // main.App.MarkThreadRead

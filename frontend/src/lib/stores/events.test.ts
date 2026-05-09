@@ -111,6 +111,44 @@ describe('setupEventListeners', () => {
     expect(paneB.items).toEqual([]);
   });
 
+  it('evicts the cached snapshot for every thread touched by an item upsert batch', async () => {
+    const cacheModule = await import('./threadItemCache');
+    cacheModule.threadItemCache.clear();
+    // Seed snapshots for two threads.
+    cacheModule.threadItemCache.set('thread-a', {
+      items: [makeItem({ id: 'cached-a', threadId: 'thread-a' })],
+      oldestLoadedTurnIndex: 0,
+      hasMoreHistory: false,
+      latestSettledTurn: null,
+    });
+    cacheModule.threadItemCache.set('thread-other', {
+      items: [makeItem({ id: 'cached-other', threadId: 'thread-other' })],
+      oldestLoadedTurnIndex: 0,
+      hasMoreHistory: false,
+      latestSettledTurn: null,
+    });
+    expect(cacheModule.threadItemCache.size).toBe(2);
+
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    getAllPanes().set('a', pane);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: makeItem({
+        id: 'fresh', threadId: 'thread-a', kind: 'assistant_text',
+      }),
+    });
+    await nextFrame();
+
+    // 'thread-a' was touched — its snapshot must be gone.
+    expect(cacheModule.threadItemCache.get('thread-a')).toBeNull();
+    // 'thread-other' was untouched — its snapshot survives.
+    expect(cacheModule.threadItemCache.get('thread-other')).not.toBeNull();
+
+    cacheModule.threadItemCache.clear();
+  });
+
   it('drops item_event upserts whose item thread does not match the event envelope', async () => {
     const paneA = await buildPane(makeThread({ id: 'thread-a' }));
     const paneB = await buildPane(makeThread({ id: 'thread-b' }));

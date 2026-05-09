@@ -316,6 +316,7 @@ export const ListRecentTurns = dispatch('ListRecentTurns');
 // back dedicated sidebar / tray surfaces that need the full
 // thread regardless of the timeline window.
 export const ListRecentThreadItems = dispatch('ListRecentThreadItems');
+export const ListThreadSliceAround = dispatch('ListThreadSliceAround');
 export const ListItemsBeforeTurn = dispatch('ListItemsBeforeTurn');
 export const ListThreadProposedPlans = dispatch('ListThreadProposedPlans');
 export const ListProposedPlanComments = dispatch('ListProposedPlanComments');

@@ -317,6 +317,73 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     expect(ctrl.isSticky).toBe(true);
   });
 
+  it('phase-1 slice already contains the anchor — loadUntilItem short-circuits without GetThreadItem', async () => {
+    // The plan-of-record for the two-phase load: ListThreadSliceAround
+    // returns ~50 items centered on the saved anchor, so by the time
+    // restoreInitialPosition reaches `pane.loadUntilItem(anchorId)`,
+    // the row is already in `pane.items`. The fast path inside
+    // loadUntilItem (`items.some(it => it.id === itemID) → return true`)
+    // takes over and no `GetThreadItem` round-trip happens. Spying on
+    // GetThreadItem and asserting it never fires pins that contract.
+    setThreadScrollSnapshot('thread-anchor-fast-path', {
+      kind: 'anchor',
+      itemId: 'in-slice',
+      offsetTop: -42,
+    });
+    const items = [
+      makeItem({ id: 'before', threadId: 'thread-anchor-fast-path', turnIndex: 0 }),
+      makeItem({ id: 'in-slice', threadId: 'thread-anchor-fast-path', turnIndex: 1 }),
+      makeItem({ id: 'after', threadId: 'thread-anchor-fast-path', turnIndex: 2 }),
+    ];
+    const getThreadItemSpy = vi.fn(async () =>
+      makeItem({ id: 'should-never-be-called' }),
+    );
+    setBindingMock('GetThreadItem', getThreadItemSpy);
+
+    const pane = await buildPane(makeThread({ id: 'thread-anchor-fast-path' }), items);
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await tick();
+
+    // GetThreadItem must NOT have been called — the in-memory shortcut
+    // inside loadUntilItem (`items.some(...)`) handles the in-window
+    // anchor without a round-trip.
+    expect(getThreadItemSpy).not.toHaveBeenCalled();
+  });
+
+  it('cache-hit restoration runs as soon as items appear, not after loading flips false', async () => {
+    // The restoration $effect now fires on `items.length > 0 || !loading`
+    // so a cache-hit paint can restore the saved anchor BEFORE phase 2
+    // resolves. Stage: items are present from cache, but pane.loading
+    // is still true because phase 2 hangs. Assert restoration ran
+    // anyway (loadUntilItem was called for the snapshotted anchor).
+    setThreadScrollSnapshot('cache-hit-restore', {
+      kind: 'anchor',
+      itemId: 'anchor-row',
+      offsetTop: 0,
+    });
+    const items = [
+      makeItem({ id: 'before', threadId: 'cache-hit-restore', turnIndex: 0 }),
+      makeItem({ id: 'anchor-row', threadId: 'cache-hit-restore', turnIndex: 1 }),
+    ];
+    // Phase 2 hangs so pane.loading stays true while items are visible.
+    setBindingMock('ListRecentThreadItems', () => new Promise(() => {}));
+    setBindingMock('ListThreadSliceAround', () => new Promise(() => {}));
+
+    const pane = await buildPane(makeThread({ id: 'cache-hit-restore' }), items);
+    // Ensure pane.loading reflects the in-flight phase 2.
+    expect(pane.items.length).toBeGreaterThan(0);
+    const loadUntilItem = vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(true);
+
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await tick();
+
+    expect(loadUntilItem).toHaveBeenCalledWith('anchor-row');
+  });
+
 });
 
 describe('scroll integration — load older', () => {

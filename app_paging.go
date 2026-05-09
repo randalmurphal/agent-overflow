@@ -17,6 +17,15 @@ const (
 	maxWindowItems    = 2000
 	paginationTurns   = 50
 
+	// sliceAroundDefaultItems is the target size for the phase-1
+	// fast-path slice loaded on thread switch. ~50 items covers a
+	// desktop-sized viewport (10–15 items) plus enough overscan above
+	// and below for virtua's measurement loop to land cleanly on the
+	// bottom or anchor. Phase 2 always re-runs the full
+	// initialTurnWindow load, so undershooting here is corrected within
+	// a frame.
+	sliceAroundDefaultItems = 50
+
 	// backgroundTaskRetentionMillis matches
 	// COMPLETION_RETENTION_MS in BackgroundTaskTray.svelte. Completed
 	// background rows older than this cutoff don't appear in the tray
@@ -47,6 +56,34 @@ func (a *App) ListRecentThreadItems(threadID string, turnLimit int) (store.Paged
 	paged, err := a.store.ListRecentItemsWithAncestors(threadID, floor)
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list recent thread items: %w", err)
+	}
+	return normalizePagedItems(paged), nil
+}
+
+// ListThreadSliceAround loads a small slice of items around an anchor
+// for the phase-1 fast path on thread switch. Roughly `targetItemCount`
+// items are returned (defaulting to sliceAroundDefaultItems when <= 0):
+// half above and half below the anchor's turn position. When
+// `anchorItemID` is "" or no longer exists, the function returns the
+// tail `targetItemCount` items — the bottom-snapshot restore case.
+//
+// Phase 2 of the thread switch always re-runs `ListRecentThreadItems`
+// to fill in the full window; this binding exists to paint the visible
+// viewport quickly while phase 2 runs in parallel.
+func (a *App) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount int) (store.PagedItems, error) {
+	if targetItemCount <= 0 {
+		targetItemCount = sliceAroundDefaultItems
+	}
+	// Cap at maxWindowItems so a malicious LAN-attached caller can't
+	// request a slice covering the whole thread and OOM the process.
+	// Phase 2 (ListRecentThreadItems) is the right surface for the full
+	// window; this binding is for a viewport-sized fast path.
+	if targetItemCount > maxWindowItems {
+		targetItemCount = maxWindowItems
+	}
+	paged, err := a.store.ListThreadSliceAround(threadID, anchorItemID, targetItemCount)
+	if err != nil {
+		return store.PagedItems{}, fmt.Errorf("list thread slice around: %w", err)
 	}
 	return normalizePagedItems(paged), nil
 }

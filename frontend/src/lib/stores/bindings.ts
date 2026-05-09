@@ -190,6 +190,7 @@ export {
   // others back dedicated panel/sidebar surfaces (plans, tray)
   // so they don't under-report against a partial timeline window.
   ListRecentThreadItems,
+  ListThreadSliceAround,
   ListItemsBeforeTurn,
   ListThreadProposedPlans,
   ListProposedPlanComments,

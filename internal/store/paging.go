@@ -238,6 +238,279 @@ func (s *Store) floorTurnIndexBefore(threadID string, beforeTurnIndex, turnLimit
 	return ti, true, nil
 }
 
+// ListThreadSliceAround loads a small slice of items around an anchor
+// for the phase-1 fast path on thread switch. The slice contains roughly
+// `targetItemCount` items (defaults to 50 when <= 0), split half above
+// and half below the anchor's turn position. Subagent ancestors above
+// the floor are stitched in via the same recursive CTE other paged loads
+// use. When the anchor itself sits inside a subagent group
+// (anchor.parent_id != ""), every sibling under that parent is included
+// so the group renders intact even if some siblings live outside the
+// turn window.
+//
+// When `anchorItemID` is "" or the item doesn't belong to `threadID`
+// (bottom-snapshot restore, stale snapshot whose anchor has been
+// deleted), the function returns the tail `targetItemCount` items.
+//
+// `OldestTurnIndex` and `HasMore` populate the same way the other paged
+// loads do, so the frontend's pagination controls work without
+// special-casing this entry point. Phase 2 of the switch always re-runs
+// `ListRecentThreadItems` to fill in the full window — this slice is a
+// fast first paint, not the canonical history view.
+func (s *Store) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount int) (PagedItems, error) {
+	if targetItemCount <= 0 {
+		targetItemCount = 50
+	}
+	if anchorItemID == "" {
+		return s.listTailSlice(threadID, targetItemCount)
+	}
+	anchor, found, err := s.GetThreadItem(threadID, anchorItemID)
+	if err != nil {
+		return PagedItems{}, fmt.Errorf("store: list thread slice for %s anchor=%s: %w", threadID, anchorItemID, err)
+	}
+	if !found {
+		return s.listTailSlice(threadID, targetItemCount)
+	}
+
+	floor, upper, err := s.pickSliceTurnRange(threadID, anchor.TurnIndex, targetItemCount)
+	if err != nil {
+		return PagedItems{}, err
+	}
+	items, err := s.querySliceItems(threadID, int64(floor), int64(upper)+1, floor, anchor.ParentID)
+	if err != nil {
+		return PagedItems{}, err
+	}
+	return s.finalizePagedItems(threadID, items)
+}
+
+// listTailSlice returns the newest `targetItemCount` items with subagent
+// ancestors stitched in. Used when the snapshot is a bottom-restore or
+// the anchor item has been deleted.
+func (s *Store) listTailSlice(threadID string, targetItemCount int) (PagedItems, error) {
+	floor, found, err := s.tailFloorTurn(threadID, targetItemCount)
+	if err != nil {
+		return PagedItems{}, err
+	}
+	if !found {
+		return PagedItems{Items: []Item{}, OldestTurnIndex: -1, HasMore: false}, nil
+	}
+	items, err := s.queryPagedItems(threadID, int64(floor), openUpperBound, floor)
+	if err != nil {
+		return PagedItems{}, err
+	}
+	return s.finalizePagedItems(threadID, items)
+}
+
+// tailFloorTurn returns the smallest turn_index whose items, summed with
+// every newer turn's items, reach `targetItemCount`. Returns
+// (0, false, nil) when the thread has no items.
+func (s *Store) tailFloorTurn(threadID string, targetItemCount int) (int, bool, error) {
+	if targetItemCount < 1 {
+		targetItemCount = 1
+	}
+	limit := boundedSliceTurnLimit(targetItemCount)
+	rows, err := s.db.Query(
+		`SELECT turn_index, COUNT(*) AS item_count
+		   FROM items
+		  WHERE thread_id = ?
+		    AND NOT (kind = 'notification' AND tool_name = 'plan_update')
+		  GROUP BY turn_index
+		  ORDER BY turn_index DESC
+		  LIMIT ?`,
+		threadID, limit,
+	)
+	if err != nil {
+		return 0, false, fmt.Errorf("store: tail floor turn for %s: %w", threadID, err)
+	}
+	defer rows.Close()
+
+	cumulative := 0
+	floor := 0
+	saw := false
+	for rows.Next() {
+		var ti, cnt int
+		if err := rows.Scan(&ti, &cnt); err != nil {
+			return 0, false, fmt.Errorf("store: scan tail floor turn: %w", err)
+		}
+		floor = ti
+		saw = true
+		cumulative += cnt
+		if cumulative >= targetItemCount {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, false, fmt.Errorf("store: iterate tail floor turn for %s: %w", threadID, err)
+	}
+	return floor, saw, nil
+}
+
+// pickSliceTurnRange returns inclusive (floor, upper) turn_index bounds
+// covering enough turns above and below the anchor to total roughly
+// `targetItemCount` items, split evenly. Either side may fall short if
+// the thread has fewer items on that side — the missing items are filled
+// in by phase 2 of the thread switch.
+func (s *Store) pickSliceTurnRange(threadID string, anchorTurnIndex, targetItemCount int) (floor, upper int, err error) {
+	half := targetItemCount / 2
+	if half < 1 {
+		half = 1
+	}
+	floor, err = s.walkSliceTurns(threadID, anchorTurnIndex, half, sliceWalkAtOrBelow)
+	if err != nil {
+		return 0, 0, err
+	}
+	upper, err = s.walkSliceTurns(threadID, anchorTurnIndex, half, sliceWalkAbove)
+	if err != nil {
+		return 0, 0, err
+	}
+	return floor, upper, nil
+}
+
+type sliceWalkDir int
+
+const (
+	sliceWalkAtOrBelow sliceWalkDir = iota
+	sliceWalkAbove
+)
+
+// walkSliceTurns scans turn rows around an anchor in the given direction,
+// accumulating item counts until cumulative >= budget, and returns the
+// outermost turn_index reached. For sliceWalkAtOrBelow the scan is
+// `turn_index <= anchor` ORDER BY turn_index DESC; for sliceWalkAbove
+// it's `turn_index > anchor` ORDER BY turn_index ASC. When the side is
+// empty the anchor's own turn_index is returned, which is harmless
+// because the caller's [floor, upper] window still includes the anchor
+// turn via the other walk.
+func (s *Store) walkSliceTurns(threadID string, anchorTurnIndex, budget int, dir sliceWalkDir) (int, error) {
+	if budget < 1 {
+		budget = 1
+	}
+	limit := boundedSliceTurnLimit(budget)
+	var query string
+	switch dir {
+	case sliceWalkAtOrBelow:
+		query = `SELECT turn_index, COUNT(*) AS item_count
+		   FROM items
+		  WHERE thread_id = ? AND turn_index <= ?
+		    AND NOT (kind = 'notification' AND tool_name = 'plan_update')
+		  GROUP BY turn_index
+		  ORDER BY turn_index DESC
+		  LIMIT ?`
+	case sliceWalkAbove:
+		query = `SELECT turn_index, COUNT(*) AS item_count
+		   FROM items
+		  WHERE thread_id = ? AND turn_index > ?
+		    AND NOT (kind = 'notification' AND tool_name = 'plan_update')
+		  GROUP BY turn_index
+		  ORDER BY turn_index ASC
+		  LIMIT ?`
+	default:
+		return 0, fmt.Errorf("store: walk slice turns invalid direction %d", dir)
+	}
+	rows, err := s.db.Query(query, threadID, anchorTurnIndex, limit)
+	if err != nil {
+		return 0, fmt.Errorf("store: walk slice turns for %s: %w", threadID, err)
+	}
+	defer rows.Close()
+	cumulative := 0
+	outer := anchorTurnIndex
+	for rows.Next() {
+		var ti, cnt int
+		if err := rows.Scan(&ti, &cnt); err != nil {
+			return 0, fmt.Errorf("store: scan slice turn count: %w", err)
+		}
+		outer = ti
+		cumulative += cnt
+		if cumulative >= budget {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("store: iterate slice turns for %s: %w", threadID, err)
+	}
+	return outer, nil
+}
+
+// boundedSliceTurnLimit caps the number of turn rows scanned per slice
+// walk. Worst case (one item per turn) needs `budget` turns; a 4×
+// overshoot keeps the planner honest on burst threads where a turn might
+// be a no-item placeholder, and the absolute cap prevents pathological
+// scans on multi-thousand-turn threads.
+func boundedSliceTurnLimit(budget int) int {
+	const overshoot = 4
+	const absoluteCap = 5000
+	limit := budget * overshoot
+	if limit > absoluteCap {
+		limit = absoluteCap
+	}
+	return limit
+}
+
+// querySliceItems mirrors queryPagedItems but extends the WHERE clause
+// with an optional sibling-expansion disjunct: when `anchorParentID` is
+// non-empty, items whose `parent_id = anchorParentID` are included
+// regardless of turn_index, so a subagent group containing the anchor
+// renders intact even if some siblings sit outside [floor, upper).
+//
+// Placeholders in order:
+//
+//  1. thread_id   (CTE seed)
+//  2. floor       (CTE seed: turn_index >= floor)
+//  3. upper       (CTE seed: turn_index < upper)
+//  4. thread_id   (CTE recursive step)
+//  5. thread_id   (outer)
+//  6. floor       (outer turn range)
+//  7. upper       (outer turn range)
+//  8. ancestorCutoff
+//  9. anchorParentID  (only when non-empty)
+func (s *Store) querySliceItems(threadID string, floor, upper int64, ancestorCutoff int, anchorParentID string) ([]Item, error) {
+	siblingClause := ""
+	args := []any{
+		threadID, floor, upper,
+		threadID,
+		threadID,
+		floor, upper, int64(ancestorCutoff),
+	}
+	if anchorParentID != "" {
+		siblingClause = ` OR items.parent_id = ?`
+		args = append(args, anchorParentID)
+	}
+	rows, err := s.db.Query(ancestorCTE+`
+		SELECT `+itemColumns+`
+		  FROM items
+		  LEFT JOIN payloads ON payloads.id = items.payload_id
+		 WHERE items.thread_id = ?
+		   AND NOT (items.kind = 'notification' AND items.tool_name = 'plan_update')
+		   AND (
+		     (items.turn_index >= ? AND items.turn_index < ?)
+		     OR (items.id IN (SELECT id FROM ancestors)
+		         AND items.turn_index < ?)`+siblingClause+`
+		   )
+		 ORDER BY items.turn_index, items.item_index`,
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query slice items for %s: %w", threadID, err)
+	}
+	defer rows.Close()
+	items := []Item{}
+	for rows.Next() {
+		it, err := scanItemRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan slice item row: %w", err)
+		}
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate slice items for %s: %w", threadID, err)
+	}
+	decorated, err := s.decorateProposedPlanItems(threadID, items)
+	if err != nil {
+		return nil, fmt.Errorf("store: decorate slice proposed plans for %s: %w", threadID, err)
+	}
+	return decorated, nil
+}
+
 // smallestTurnIndexBefore returns the minimum turn_index across both the
 // turns and items tables that is strictly below `beforeTurnIndex`. Used
 // when `floorTurnIndexBefore` runs out of turn rows — we still want to

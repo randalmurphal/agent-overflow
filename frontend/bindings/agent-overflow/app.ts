@@ -46,7 +46,7 @@ import * as $models from "./models.js";
  * AddRemoteEndpoint persists a new --connect target. The settings
  * service mints the ID; the operator-supplied name is optional (a
  * blank nickname renders as the URL).
- *
+ * 
  * SECURITY: returns the redacted Summary shape, not the raw stored
  * record. A LAN-attached token-holder calling AddRemoteEndpoint with
  * arbitrary inputs would otherwise see the persisted token echoed back
@@ -629,6 +629,7 @@ export function GetThreadItem(threadID: string, itemID: string): $CancellablePro
  * GetThreadLiveState returns the current server-side live state for a thread.
  * It is the refresh/reconnect companion to the push events emitted during a
  * normal uninterrupted frontend session.
+ * 
  * LocalOnly: the payload can expose pending prompts, tool approvals, drafted
  * queued messages, attachment ids, and provider session state. It belongs in
  * the same loopback-only class as GetQueueState and ListPendingInteractiveRequests.
@@ -1091,6 +1092,24 @@ export function ListThreadCheckpoints(threadID: string): $CancellablePromise<$mo
 export function ListThreadProposedPlans(threadID: string): $CancellablePromise<store$0.Item[]> {
     return $Call.ByID(2485050629, threadID).then(($result: any) => {
         return $$createType48($result);
+    });
+}
+
+/**
+ * ListThreadSliceAround loads a small slice of items around an anchor
+ * for the phase-1 fast path on thread switch. Roughly `targetItemCount`
+ * items are returned (defaulting to sliceAroundDefaultItems when <= 0):
+ * half above and half below the anchor's turn position. When
+ * `anchorItemID` is "" or no longer exists, the function returns the
+ * tail `targetItemCount` items — the bottom-snapshot restore case.
+ * 
+ * Phase 2 of the thread switch always re-runs `ListRecentThreadItems`
+ * to fill in the full window; this binding exists to paint the visible
+ * viewport quickly while phase 2 runs in parallel.
+ */
+export function ListThreadSliceAround(threadID: string, anchorItemID: string, targetItemCount: number): $CancellablePromise<store$0.PagedItems> {
+    return $Call.ByID(4176102096, threadID, anchorItemID, targetItemCount).then(($result: any) => {
+        return $$createType49($result);
     });
 }
 
