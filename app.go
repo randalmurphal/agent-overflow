@@ -112,11 +112,11 @@ type App struct {
 	mu           sync.Mutex
 	sessions     map[string]session // threadID → active session
 	// flushDispatchQueues serializes queued-message flush batches per
-	// thread. Triage decides when a provider boundary exists; App owns the
-	// asynchronous provider writes so sequence allocation and Send/Steer
-	// locking stay in the same layer.
+	// thread. Triage decides whether the drain is boundary or immediate;
+	// App owns the asynchronous provider writes so sequence allocation and
+	// Send/Steer locking stay in the same layer.
 	flushDispatchMu            sync.Mutex
-	flushDispatchQueues        map[string][][]triage.QueuedFlushItem
+	flushDispatchQueues        map[string][]flushDispatchBatch
 	flushDispatchRunning       map[string]bool
 	flushDispatchInflightItems map[string]int
 	flushDispatchWG            sync.WaitGroup

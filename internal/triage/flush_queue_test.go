@@ -18,12 +18,13 @@ type recordingDispatcher struct {
 type dispatchCall struct {
 	ThreadID string
 	Items    []QueuedFlushItem
+	Mode     FlushDispatchMode
 }
 
-func (rd *recordingDispatcher) dispatch(threadID string, items []QueuedFlushItem) {
+func (rd *recordingDispatcher) dispatch(threadID string, items []QueuedFlushItem, mode FlushDispatchMode) {
 	rd.mu.Lock()
 	defer rd.mu.Unlock()
-	rd.calls = append(rd.calls, dispatchCall{ThreadID: threadID, Items: items})
+	rd.calls = append(rd.calls, dispatchCall{ThreadID: threadID, Items: items, Mode: mode})
 }
 
 func (rd *recordingDispatcher) snapshot() []dispatchCall {
@@ -238,11 +239,33 @@ func TestTryFlushQueue_FiresAndConsumes(t *testing.T) {
 	if calls[0].ThreadID != "t1" || len(calls[0].Items) != 2 {
 		t.Errorf("dispatch[0]: got threadID=%q, items=%d, want t1 / 2", calls[0].ThreadID, len(calls[0].Items))
 	}
+	if calls[0].Mode != FlushDispatchModeBoundary {
+		t.Errorf("dispatch mode: got %q, want %q", calls[0].Mode, FlushDispatchModeBoundary)
+	}
 	if calls[0].Items[0].ID != "queue:0" || calls[0].Items[1].ID != "queue:1" {
 		t.Errorf("dispatch order: got [%s, %s], want [queue:0, queue:1]", calls[0].Items[0].ID, calls[0].Items[1].ID)
 	}
 	if router.HasQueuedFlushItems("t1") {
 		t.Errorf("queue should be empty after fire")
+	}
+}
+
+func TestFlushQueuedItemsNow_UsesImmediateMode(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+	rec := &recordingDispatcher{}
+	router.SetFlushDispatcher(rec.dispatch)
+
+	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
+
+	if !router.FlushQueuedItemsNow("t1") {
+		t.Fatalf("FlushQueuedItemsNow returned false")
+	}
+	calls := rec.waitForAtLeastCalls(t, 1)
+	if len(calls) != 1 {
+		t.Fatalf("dispatch calls: got %d, want 1", len(calls))
+	}
+	if calls[0].Mode != FlushDispatchModeImmediate {
+		t.Fatalf("dispatch mode: got %q, want %q", calls[0].Mode, FlushDispatchModeImmediate)
 	}
 }
 

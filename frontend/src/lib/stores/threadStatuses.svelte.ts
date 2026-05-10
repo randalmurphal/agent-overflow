@@ -273,13 +273,12 @@ export function clearThreadStatus(threadId: string): void {
 }
 
 /**
- * Optimistically flip a thread to running the moment the composer
- * dispatches SendMessage. This covers the cold-start window for new
- * threads where the provider session takes multiple seconds to spawn
- * before emitting its first `provider:turn_started` — without this the
- * sidebar row would sit idle while the user is clearly waiting on the
- * provider. Paired with projectSendResolved / turn lifecycle events to
- * clear the flag.
+ * Optimistically flip a thread to running when AO has started a
+ * provider send/write that should open a fresh round, but the backend
+ * has not emitted `provider:turn_started` yet. This covers normal
+ * composer sends and Send Now's immediate queue drain after interrupt.
+ * Paired with projectSendResolved / turn lifecycle events to clear the
+ * flag.
  */
 export function projectSendStarted(threadId: string): void {
   if (!threadId) return;
@@ -308,7 +307,7 @@ export function projectSendResolved(threadId: string, opts: { error?: boolean } 
 }
 
 /**
- * Read whether a `SendMessage` RPC is currently in flight for this
+ * Read whether a fresh provider send/write is currently in flight for this
  * thread. Set by `projectSendStarted`; cleared by `projectSendResolved`
  * (failure path) or `projectTurnStarted` (success path: backend has
  * confirmed the round). Used by the working-indicator bridge predicate
@@ -323,14 +322,15 @@ export function hasPendingSend(threadId: string | null | undefined): boolean {
 
 /**
  * Explicit clear for the pending-send flag without changing other
- * status flags. The drain failure path uses this — `projectTurnStarted`
- * clears the flag on a successful drain (the backend confirmed the new
- * round), but on a thrown SendMessage the flag would otherwise leak
- * forever. Distinct from `projectSendResolved({error:true})` because
- * we don't want to flip the thread to a Failed status pill: the queue
- * preview is still showing the user's restored item, the error banner
- * carries the failure context, and another drain attempt should be
- * possible from a clean state.
+ * status flags. The immediate queue-drain failure path uses this —
+ * `projectTurnStarted` clears the flag on a successful fresh-send
+ * drain (the backend confirmed the new round), but on a thrown
+ * provider write the flag would otherwise leak forever. Distinct from
+ * `projectSendResolved({error:true})` because we don't want to flip the
+ * thread to a Failed status pill: the queue preview is still showing
+ * the user's restored item, the error banner carries the failure
+ * context, and another drain attempt should be possible from a clean
+ * state.
  */
 export function clearPendingSend(threadId: string): void {
   if (!threadId) return;

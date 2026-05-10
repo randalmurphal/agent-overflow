@@ -68,8 +68,9 @@ type QueuedFlushItem struct {
 	EnqueuedAt int64
 }
 
-// FlushDispatcher is the app-layer callback invoked when triage observes
-// a safe provider boundary and drains queued user messages.
+// FlushDispatcher is the app-layer callback invoked when triage drains
+// queued user messages, either at a safe provider boundary or because
+// the user explicitly forced delivery with Send Now.
 // Triage hands ownership of the consumed batch over; the dispatcher is
 // responsible for allocating AO item ids, persisting user rows,
 // registering pending-send markers, and writing to the provider.
@@ -77,8 +78,16 @@ type QueuedFlushItem struct {
 // Invoked after r.mu is released so the dispatcher can call back into the
 // router (RegisterPendingSend, PersistItem, etc) without re-entrancy. The
 // callback must return quickly; provider writes belong behind the app-layer
-// async/FIFO dispatcher.
-type FlushDispatcher func(threadID string, items []QueuedFlushItem)
+// async/FIFO dispatcher. FlushDispatchMode carries the distinction
+// between same-round boundary drains and fresh-turn immediate drains.
+type FlushDispatchMode string
+
+const (
+	FlushDispatchModeBoundary  FlushDispatchMode = "boundary"
+	FlushDispatchModeImmediate FlushDispatchMode = "immediate"
+)
+
+type FlushDispatcher func(threadID string, items []QueuedFlushItem, mode FlushDispatchMode)
 
 // SetFlushDispatcher wires the app-layer callback. Nil disables
 // dispatch — useful for tests that exercise registration-only paths
@@ -104,7 +113,7 @@ func (r *Router) SetDeferredUserTextConfirmedHook(fn func(threadID string, item 
 // the current turn and send their queued message, retractability is over and
 // AO should write the batch without waiting for the next provider boundary.
 func (r *Router) FlushQueuedItemsNow(threadID string) bool {
-	return r.tryFlushQueue(threadID)
+	return r.tryFlushQueueWithMode(threadID, FlushDispatchModeImmediate)
 }
 
 // RegisterQueueItem appends a queued user message to the per-thread
@@ -285,6 +294,10 @@ func (r *Router) QueuedFlushItems(threadID string) []QueuedFlushItem {
 // ordering. The batch is copied out under r.mu so a concurrent CleanupThread
 // between unlock and dispatch doesn't observe a partially-cleared queue.
 func (r *Router) tryFlushQueue(threadID string) bool {
+	return r.tryFlushQueueWithMode(threadID, FlushDispatchModeBoundary)
+}
+
+func (r *Router) tryFlushQueueWithMode(threadID string, mode FlushDispatchMode) bool {
 	if threadID == "" {
 		return false
 	}
@@ -304,7 +317,7 @@ func (r *Router) tryFlushQueue(threadID string) bool {
 	delete(r.queuedFlushItems, threadID)
 	r.mu.Unlock()
 
-	dispatcher(threadID, batch)
+	dispatcher(threadID, batch, mode)
 	return true
 }
 

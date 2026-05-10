@@ -50,9 +50,25 @@ type QueuedItem struct {
 // reconcile state without keeping its own ordering log; the SvelteMap
 // store assigns the `Items` slice to its per-thread entry and the
 // reactive bindings update.
+//
+// Reason is intentionally sparse. The frontend does not infer dispatch
+// lifecycle from an empty snapshot because undo and flush can both
+// produce one; explicit flush reasons let it bridge the working indicator
+// exactly like a normal user send while the provider write is in flight.
 type QueueStateChangedEvent struct {
 	ThreadID string       `json:"threadId"`
 	Items    []QueuedItem `json:"items"`
+	Reason   string       `json:"reason,omitempty"`
+}
+
+const (
+	queueStateReasonFlushStarted = "flush_started"
+	queueStateReasonFlushFailed  = "flush_failed"
+)
+
+type flushDispatchBatch struct {
+	items []triage.QueuedFlushItem
+	mode  triage.FlushDispatchMode
 }
 
 // QueueFlushedEvent is emitted by `dispatchFlush` at the start of a
@@ -97,7 +113,7 @@ func (a *App) configureTriageQueueCallbacks() {
 	})
 }
 
-func (a *App) enqueueFlushDispatch(threadID string, items []triage.QueuedFlushItem) {
+func (a *App) enqueueFlushDispatch(threadID string, items []triage.QueuedFlushItem, mode triage.FlushDispatchMode) {
 	if threadID == "" || len(items) == 0 {
 		return
 	}
@@ -106,11 +122,14 @@ func (a *App) enqueueFlushDispatch(threadID string, items []triage.QueuedFlushIt
 
 	a.flushDispatchMu.Lock()
 	if a.flushDispatchQueues == nil {
-		a.flushDispatchQueues = make(map[string][][]triage.QueuedFlushItem)
+		a.flushDispatchQueues = make(map[string][]flushDispatchBatch)
 		a.flushDispatchRunning = make(map[string]bool)
 		a.flushDispatchInflightItems = make(map[string]int)
 	}
-	a.flushDispatchQueues[threadID] = append(a.flushDispatchQueues[threadID], batch)
+	a.flushDispatchQueues[threadID] = append(a.flushDispatchQueues[threadID], flushDispatchBatch{
+		items: batch,
+		mode:  mode,
+	})
 	a.flushDispatchInflightItems[threadID] += len(batch)
 	if a.flushDispatchRunning[threadID] {
 		a.flushDispatchMu.Unlock()
@@ -142,10 +161,10 @@ func (a *App) runFlushDispatchWorker(threadID string) {
 		}
 		a.flushDispatchMu.Unlock()
 
-		a.dispatchFlush(threadID, batch)
+		a.dispatchFlush(threadID, batch.items, batch.mode)
 
 		a.flushDispatchMu.Lock()
-		a.flushDispatchInflightItems[threadID] -= len(batch)
+		a.flushDispatchInflightItems[threadID] -= len(batch.items)
 		if a.flushDispatchInflightItems[threadID] <= 0 {
 			delete(a.flushDispatchInflightItems, threadID)
 		}
@@ -214,10 +233,14 @@ type flushQueuePayload struct {
 //     - Claude: sess.Send writes a fresh user envelope to stdin;
 //     Claude's mid-loop drain (query.ts:1547) consumes it on the
 //     next API iteration.
-//     - Codex: sess.Steer pushes onto the active turn's
-//     pending_input. Falls back to sess.Send when Steer returns
-//     ErrNoActiveTurn — the active turn ended between trigger
-//     fire and Steer arrival.
+//     - Codex boundary drains: sess.Steer pushes onto the active
+//     turn's pending_input. Falls back to sess.Send when Steer returns
+//     ErrNoActiveTurn — the active turn ended between trigger fire and
+//     Steer arrival.
+//     - Codex immediate drains (Send Now after interrupt): sess.Send
+//     starts a fresh turn. This intentionally matches a manual
+//     post-interrupt send instead of steering into the turn the user
+//     just stopped.
 //
 // On any definite item error, the dispatcher persists a sibling `error`
 // row, aborts the current batch, and requeues items not yet attempted. The
@@ -241,7 +264,7 @@ type flushQueuePayload struct {
 // mapping. Failed or unattempted items never enter Zone 2, so the
 // frontend cannot get stuck waiting for a provider confirmation that
 // will never arrive.
-func (a *App) dispatchFlush(threadID string, items []triage.QueuedFlushItem) {
+func (a *App) dispatchFlush(threadID string, items []triage.QueuedFlushItem, mode triage.FlushDispatchMode) {
 	if len(items) == 0 {
 		return
 	}
@@ -249,15 +272,17 @@ func (a *App) dispatchFlush(threadID string, items []triage.QueuedFlushItem) {
 	unlock := sendThreadMuRegistry.lockFor(threadID)
 	defer unlock()
 
-	turnIndex, err := a.resolveFlushTurnIndex(threadID)
+	turnIndex, err := a.resolveFlushTurnIndex(threadID, mode)
 	if err != nil {
 		log.Printf("flush dispatch: resolve turn index: %v", err)
+		a.requeueFailedFlushBatch(threadID, items, mode)
 		return
 	}
 
 	startSeq, err := a.firstFlushSequenceForTurn(threadID, turnIndex)
 	if err != nil {
 		log.Printf("flush dispatch: allocate id: %v", err)
+		a.requeueFailedFlushBatch(threadID, items, mode)
 		return
 	}
 
@@ -274,15 +299,23 @@ func (a *App) dispatchFlush(threadID string, items []triage.QueuedFlushItem) {
 	// common case. Emit explicitly so any client mirroring the queue
 	// observes Zone 1 collapse while the user_text rows wait for
 	// provider confirmation.
-	a.emitQueueStateChanged(threadID)
+	if mode == triage.FlushDispatchModeImmediate {
+		a.emitQueueStateChangedWithReason(threadID, queueStateReasonFlushStarted)
+	} else {
+		a.emitQueueStateChanged(threadID)
+	}
 
 	for i, item := range items {
-		if err := a.dispatchFlushItemWithID(threadID, item, turnIndex, flushedItems[i].UserItemID); err != nil {
+		if err := a.dispatchFlushItemWithID(threadID, item, turnIndex, flushedItems[i].UserItemID, mode); err != nil {
 			log.Printf("flush dispatch: thread=%s item=%s: %v", threadID, item.ID, err)
 			for _, unattempted := range items[i+1:] {
 				a.triage.RegisterQueueItem(threadID, unattempted)
 			}
-			a.emitQueueStateChanged(threadID)
+			if mode == triage.FlushDispatchModeImmediate {
+				a.emitQueueStateChangedWithReason(threadID, queueStateReasonFlushFailed)
+			} else {
+				a.emitQueueStateChanged(threadID)
+			}
 			return
 		}
 		a.emit("provider:queue_flushed", QueueFlushedEvent{
@@ -292,11 +325,24 @@ func (a *App) dispatchFlush(threadID string, items []triage.QueuedFlushItem) {
 	}
 }
 
+func (a *App) requeueFailedFlushBatch(threadID string, items []triage.QueuedFlushItem, mode triage.FlushDispatchMode) {
+	if a.triage != nil {
+		for _, item := range items {
+			a.triage.RegisterQueueItem(threadID, item)
+		}
+	}
+	if mode == triage.FlushDispatchModeImmediate {
+		a.emitQueueStateChangedWithReason(threadID, queueStateReasonFlushFailed)
+	} else {
+		a.emitQueueStateChanged(threadID)
+	}
+}
+
 // dispatchFlushItemWithID is the per-item flush path with the
 // userItemId pre-allocated. Splits id allocation from the dispatch
 // body so the batch-level dispatchFlush can keep ids stable while
 // emitting `provider:queue_flushed` only after provider write success.
-func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushItem, turnIndex int, flushItemID string) error {
+func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushItem, turnIndex int, flushItemID string, mode triage.FlushDispatchMode) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
@@ -411,7 +457,7 @@ func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushIt
 		Attachments:     providerAttachments,
 	}
 
-	dispatchErr := a.dispatchFlushToProvider(sess, content, sendOpts)
+	dispatchErr := a.dispatchFlushToProvider(sess, content, sendOpts, mode)
 	if dispatchErr != nil {
 		if isAmbiguousCodexSteerTimeout(dispatchErr) {
 			log.Printf("flush dispatch: thread=%s item=%s: codex steer timed out after write; leaving pending confirmation for provider echo", threadID, item.ID)
@@ -453,10 +499,10 @@ func (a *App) firstFlushSequenceForTurn(threadID string, turnIndex int) (int, er
 }
 
 // resolveFlushTurnIndex picks the turn index to attribute the
-// dispatched user_text row to. Prefers the active turn (the trigger
-// fired mid-round, so it's present in the common case); falls back
-// to the next-turn-index calculation Send uses when the active turn
-// has just ended.
+// dispatched user_text row to. Boundary flushes prefer the active turn
+// because they are same-round queue drains. Immediate flushes come from
+// Send Now after an interrupt and intentionally use the same next-turn
+// calculation as a normal user send.
 //
 // The fallback exists because between trigger fire and dispatcher
 // invocation, the active wire round can settle (turn/completed lands
@@ -465,13 +511,20 @@ func (a *App) firstFlushSequenceForTurn(threadID string, turnIndex int) (int, er
 // logical turn, not the (now closed) prior one — otherwise the
 // deferred user_text row would later land on a settled turn whose
 // wire echo is no longer associated with an open turn.
-func (a *App) resolveFlushTurnIndex(threadID string) (int, error) {
+func (a *App) resolveFlushTurnIndex(threadID string, mode triage.FlushDispatchMode) (int, error) {
+	if mode == triage.FlushDispatchModeImmediate {
+		return a.nextSendTurnIndex(threadID)
+	}
 	if active, found, err := a.store.GetActiveTurn(threadID); err == nil && found {
 		return active.TurnIndex, nil
 	} else if err != nil {
 		return 0, fmt.Errorf("lookup active turn: %w", err)
 	}
 	// No active turn: derive next index using the same shape Send does.
+	return a.nextSendTurnIndex(threadID)
+}
+
+func (a *App) nextSendTurnIndex(threadID string) (int, error) {
 	hasPriorItems, err := a.store.HasItems(threadID)
 	if err != nil {
 		return 0, fmt.Errorf("check prior items: %w", err)
@@ -487,12 +540,15 @@ func (a *App) resolveFlushTurnIndex(threadID string) (int, error) {
 }
 
 // dispatchFlushToProvider routes the actual provider call based on
-// session type. Codex prefers Steer (mid-turn pending_input) and
-// falls back to Send on the no-active-turn race — the active turn
-// ended between trigger fire and Steer arrival, and a fresh Send
-// starts a new turn carrying the queued message. Claude has no
-// Steer equivalent; sess.Send writes a user envelope that Claude's
-// mid-loop drain (query.ts:1547) consumes at the next API iteration.
+// session type and flush mode. Codex boundary drains prefer Steer
+// (mid-turn pending_input) and fall back to Send on the no-active-turn
+// race — the active turn ended between trigger fire and Steer arrival,
+// and a fresh Send starts a new turn carrying the queued message.
+// Immediate drains come from explicit Send Now / interrupt and always
+// use Send so the queued message behaves like a normal user message
+// submitted after stopping the turn. Claude has no Steer equivalent;
+// sess.Send writes a user envelope that Claude's mid-loop drain
+// (query.ts:1547) consumes at the next API iteration.
 //
 // Two distinct race shapes both trigger the fallback:
 //
@@ -507,8 +563,11 @@ func (a *App) resolveFlushTurnIndex(threadID string) (int, error) {
 //     package surfaces wire errors as `fmt.Errorf("codex: %s: %s
 //     (code %d)", ...)` rather than a typed wrapper. Upstream's
 //     error string is stable per codex-rs/core/src/session/mod.rs.
-func (a *App) dispatchFlushToProvider(sess session, content string, opts provider.SendOptions) error {
+func (a *App) dispatchFlushToProvider(sess session, content string, opts provider.SendOptions, mode triage.FlushDispatchMode) error {
 	if sess.codex != nil {
+		if mode == triage.FlushDispatchModeImmediate {
+			return sess.codex.Send(context.Background(), content, opts)
+		}
 		err := sess.codex.Steer(context.Background(), content, opts)
 		if err == nil {
 			return nil
@@ -733,6 +792,10 @@ func (a *App) GetQueueState(threadID string) ([]QueuedItem, error) {
 // authoritative — observers don't have to combine deltas to get
 // state.
 func (a *App) emitQueueStateChanged(threadID string) {
+	a.emitQueueStateChangedWithReason(threadID, "")
+}
+
+func (a *App) emitQueueStateChangedWithReason(threadID string, reason string) {
 	var items []QueuedItem
 	if a.triage != nil {
 		current := a.triage.QueuedFlushItems(threadID)
@@ -744,6 +807,7 @@ func (a *App) emitQueueStateChanged(threadID string) {
 	a.emit("provider:queue_state_changed", QueueStateChangedEvent{
 		ThreadID: threadID,
 		Items:    items,
+		Reason:   reason,
 	})
 }
 

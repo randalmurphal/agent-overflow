@@ -37,8 +37,10 @@ import { addToast } from './toast.svelte';
 import { getThreadById, getThreads, refreshThreads, replaceThread, touchThreadActivity } from './threads.svelte';
 import { parseJsonObject } from '../utils/parseJsonObject';
 import {
+  clearPendingSend,
   projectApprovalRequest,
   projectApprovalResolution,
+  projectSendStarted,
   projectThreadItem,
   projectTurnCompleted,
   projectTurnStarted,
@@ -1232,6 +1234,7 @@ export function setupEventListeners(): () => void {
 interface QueueStateChangedPayload {
   threadId: string;
   items: WireQueuedItem[];
+  reason?: QueueStateChangedReason | string;
 }
 
 interface QueueFlushedPayload {
@@ -1239,10 +1242,22 @@ interface QueueFlushedPayload {
   items: Array<{ queueItemId: string; userItemId: string; message: string }>;
 }
 
+export const QUEUE_STATE_REASON_FLUSH_STARTED = 'flush_started';
+export const QUEUE_STATE_REASON_FLUSH_FAILED = 'flush_failed';
+
+type QueueStateChangedReason =
+  | typeof QUEUE_STATE_REASON_FLUSH_STARTED
+  | typeof QUEUE_STATE_REASON_FLUSH_FAILED;
+
 function applyQueueStateChanged(evt: QueueStateChangedPayload | undefined): void {
   if (!evt || !evt.threadId) return;
   const items = (evt.items ?? []).map(queueItemFromWire);
   replaceQueueForThread(evt.threadId, items);
+  if (evt.reason === QUEUE_STATE_REASON_FLUSH_STARTED) {
+    projectSendStarted(evt.threadId);
+  } else if (evt.reason === QUEUE_STATE_REASON_FLUSH_FAILED) {
+    clearPendingSend(evt.threadId);
+  }
 }
 
 function applyQueueFlushed(evt: QueueFlushedPayload | undefined): void {
