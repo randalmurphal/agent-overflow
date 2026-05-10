@@ -412,8 +412,6 @@ func classifyRawResponseItemCompleted(threadID string, params json.RawMessage, n
 	}
 
 	processID := readRawString(item, "processId")
-	waitResult := readRawString(item, "waitResult")
-	source := "rawResponseItem/completed"
 	switch itemType {
 	case "function_call":
 		args, ok := decodeFunctionArguments(readRawString(item, "arguments"))
@@ -421,9 +419,11 @@ func classifyRawResponseItemCompleted(threadID string, params json.RawMessage, n
 			return nil
 		}
 		processID = readFlexibleString(args, "session_id")
-		source = "rawResponseItem/function_call"
 	case "function_call_output":
-		source = "rawResponseItem/function_call_output"
+		// Raw outputs are not a transcript lifecycle source. Codex emits the
+		// canonical typed TerminalInteraction after write_stdin returns, and
+		// command item/completed owns final output/status.
+		return nil
 	default:
 		return nil
 	}
@@ -435,10 +435,7 @@ func classifyRawResponseItemCompleted(threadID string, params json.RawMessage, n
 	metaMap := map[string]any{
 		"process_id": processID,
 		"stdin":      "",
-		"source":     source,
-	}
-	if waitResult != "" {
-		metaMap["wait_result"] = waitResult
+		"source":     "rawResponseItem/function_call",
 	}
 	if callID := readRawString(item, "call_id"); callID != "" {
 		metaMap["tool_call_id"] = callID

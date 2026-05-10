@@ -520,12 +520,12 @@ Extraction is wired at the parser (`session.go` pulls
 `<subagent_notification>` fragments out of user-message item text) and
 emits `EventSubagentNotification`. The provider also maps child
 `turn/completed` lifecycle notifications to `EventSubagentStatus`, which
-is the app-server-side signal that the parent can observe the child
-completion. The provider maps named `agent_path` values back to the
+is used as live-state evidence only; it does not write parent transcript
+completion rows. The provider maps named `agent_path` values back to the
 parent `spawn_agent` item when it has seen the child `thread/started`;
 triage falls back to receiver-thread matching for legacy unnamed flows.
-Either path writes the same `tool_completion` sibling row used by
-explicit `wait_agent` completion.
+Parent transcript completions are written from explicit `wait_agent`
+completion or `<subagent_notification>`.
 
 ---
 

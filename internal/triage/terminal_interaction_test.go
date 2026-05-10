@@ -181,7 +181,7 @@ func TestTerminalInteraction_StoresCommandMetadataWhenTrackerKnown(t *testing.T)
 	}
 }
 
-func TestTerminalInteraction_RawRunningResultSettlesWaitWithoutCompletion(t *testing.T) {
+func TestTerminalInteraction_RawRunningResultDoesNotSettleWait(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 2)
@@ -226,19 +226,19 @@ func TestTerminalInteraction_RawRunningResultSettlesWaitWithoutCompletion(t *tes
 	if len(waits) != 1 {
 		t.Fatalf("wait rows = %d, want 1", len(waits))
 	}
-	if waits[0].Status != statusCompleted {
-		t.Fatalf("wait status = %q, want completed", waits[0].Status)
+	if waits[0].Status != statusRunning {
+		t.Fatalf("wait status = %q, want running", waits[0].Status)
 	}
 
 	router.mu.Lock()
 	_, stillPending := router.codexBackground["t1"].pendingWaitByProcess["pid-42"]
 	router.mu.Unlock()
-	if stillPending {
-		t.Fatalf("timed-out wait must not remain pending for a later command completion")
+	if !stillPending {
+		t.Fatalf("raw output must not settle the wait; typed events own the lifecycle")
 	}
 }
 
-func TestTerminalInteraction_RawExitedOutputUpdatesOriginalWaitCarrier(t *testing.T) {
+func TestTerminalInteraction_RawExitedOutputDoesNotRewriteCompletedWaitCarrier(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 2)
@@ -732,7 +732,7 @@ func TestTerminalInteraction_StaleCarrierWithoutLiveTrackerClearsAtBoundary(t *t
 	}
 }
 
-func TestTerminalInteraction_LateTypedPollAfterRawRunningOutputDoesNotReopenSettledWait(t *testing.T) {
+func TestTerminalInteraction_TypedPollAfterIgnoredRawRunningOutputKeepsWaitPending(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 2)
@@ -804,8 +804,8 @@ func TestTerminalInteraction_LateTypedPollAfterRawRunningOutputDoesNotReopenSett
 	if len(waits) != 1 {
 		t.Fatalf("wait rows after raw running output then typed poll = %d, want 1: %+v", len(waits), waits)
 	}
-	if waits[0].Status != statusCompleted {
-		t.Fatalf("wait status after late typed poll = %q, want completed", waits[0].Status)
+	if waits[0].Status != statusRunning {
+		t.Fatalf("wait status after late typed poll = %q, want running", waits[0].Status)
 	}
 }
 
@@ -931,13 +931,6 @@ func TestTerminalInteraction_RawOutputAfterModelMovesOnDoesNotReuseStaleCarrier(
 	if waits[0].Status != statusCompleted {
 		t.Fatalf("stale wait status = %q, want completed", waits[0].Status)
 	}
-	router.mu.Lock()
-	_, stillMapped := router.codexBackground["t1"].pendingWaitByToolCall["call-wait"]
-	router.mu.Unlock()
-	if stillMapped {
-		t.Fatal("stale raw wait tool_call_id should be cleared when the model moves on")
-	}
-
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:     provider.EventToolComplete,
 		ThreadID: "t1",

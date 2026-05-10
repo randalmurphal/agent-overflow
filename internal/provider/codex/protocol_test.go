@@ -875,33 +875,13 @@ func TestClassifyNotification_RawResponseWriteStdinWithInputDropped(t *testing.T
 	}
 }
 
-func TestClassifyNotification_RawResponseWriteStdinOutputCompletesWait(t *testing.T) {
+func TestClassifyNotification_RawResponseWriteStdinOutputDropped(t *testing.T) {
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"turn-2","item":{"type":"function_call_output","call_id":"call-stdin","rawToolName":"write_stdin","processId":"17313","waitResult":"running","output":"Chunk ID: x\nWall time: 1.0000 seconds\nProcess running with session ID 17313\nOutput:\n"}}`,
 	)
 	events := ClassifyNotification("th-1", "rawResponseItem/completed", params)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event for write_stdin raw output, got %d", len(events))
-	}
-	evt := events[0]
-	if evt.Kind != provider.EventTerminalInteraction {
-		t.Errorf("Kind = %q, want %q", evt.Kind, provider.EventTerminalInteraction)
-	}
-	if evt.ItemID != "call-stdin" {
-		t.Errorf("ItemID = %q, want call-stdin", evt.ItemID)
-	}
-	var meta map[string]any
-	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
-	}
-	if meta["process_id"] != "17313" {
-		t.Errorf("meta.process_id = %v, want 17313", meta["process_id"])
-	}
-	if meta["wait_result"] != "running" {
-		t.Errorf("meta.wait_result = %v, want running", meta["wait_result"])
-	}
-	if meta["source"] != "rawResponseItem/function_call_output" {
-		t.Errorf("meta.source = %v", meta["source"])
+	if len(events) != 0 {
+		t.Fatalf("expected write_stdin raw output to be dropped, got %d events", len(events))
 	}
 }
 

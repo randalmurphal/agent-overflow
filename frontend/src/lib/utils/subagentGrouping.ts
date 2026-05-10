@@ -212,16 +212,22 @@ function isTerminalWaitCarrier(item: Item): boolean {
   return meta?.has_stdin !== true;
 }
 
-function isWaitCarrier(item: Item): boolean {
-  return isTerminalWaitCarrier(item)
-    || (item.kind === 'tool_call' && item.toolName === 'wait_agent');
+function nestedMetaString(meta: Record<string, unknown> | null, parentKey: string, key: string): string {
+  const parent = meta?.[parentKey];
+  if (!parent || typeof parent !== 'object' || Array.isArray(parent)) return '';
+  const value = (parent as Record<string, unknown>)[key];
+  return typeof value === 'string' ? value.trim() : '';
 }
 
-function isInternalWaitCompletion(item: Item, itemByID: ReadonlyMap<string, Item>): boolean {
-  return item.kind === 'tool_completion'
-    && item.toolName === 'wait_agent'
-    && Boolean(item.completionOf)
-    && itemByID.has(item.completionOf ?? '');
+function isCodexWaitAgentCarrier(item: Item): boolean {
+  if (item.kind !== 'tool_call' || item.toolName !== 'wait_agent') return false;
+  const meta = parseJsonObject(item.meta);
+  return nestedMetaString(meta, 'input', 'tool') === 'wait_agent';
+}
+
+function isWaitCarrier(item: Item): boolean {
+  return isTerminalWaitCarrier(item)
+    || isCodexWaitAgentCarrier(item);
 }
 
 function subagentNodeGroupKey(item: Item, inlineGroupKey: string): string {
@@ -519,8 +525,11 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
       if (processID) latestTerminalWaitByProcessID.set(processID, item.id);
       continue;
     }
-    if (item.kind === 'tool_completion' && item.toolName === 'wait_agent' && item.completionOf && item.payloadId) {
-      waitCompletionPayloadCarrierByPayloadID.set(item.payloadId, item.completionOf);
+    if (item.kind === 'tool_completion' && item.toolName === 'wait_agent' && item.completionOf) {
+      addWaitChild(item.completionOf, item);
+      if (item.payloadId) {
+        waitCompletionPayloadCarrierByPayloadID.set(item.payloadId, item.completionOf);
+      }
       continue;
     }
     if (item.kind !== 'tool_completion' || !item.completionOf || item.toolName === 'wait_agent') {
@@ -547,7 +556,6 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
     if (parentID && codexSpawnIDs.has(parentID)) {
       return false;
     }
-    if (isInternalWaitCompletion(item, itemByID)) return false;
     if (waitChildIDs.has(item.id)) return false;
     return true;
   });

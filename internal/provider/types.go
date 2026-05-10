@@ -129,8 +129,8 @@ const (
 
 	// EventSubagentStatus is an internal Codex child-thread lifecycle signal.
 	// It marks spawned child work inactive for live background-task projection.
-	// When every child for the spawn is terminal, triage also writes the same
-	// transcript completion sibling used by wait_agent / subagent_notification.
+	// Parent transcript completion is owned by wait_agent completions or
+	// Codex's injected <subagent_notification> fragments.
 	EventSubagentStatus EventKind = "subagent_status"
 
 	// EventTerminalInteraction surfaces Codex's
@@ -140,10 +140,10 @@ const (
 	// without sending input); a non-empty value carries the keystrokes
 	// Codex forwarded. Triage persists a lightweight
 	// `terminal_interaction` row for the empty case so the timeline can
-	// render "Waited for background terminal" inline, mirroring Codex's
-	// own TUI (chatwidget.rs:618). The non-empty case persists an
-	// "Interacted with background terminal" marker while redacting the
-	// stdin bytes from durable item metadata.
+	// render the explicit wait as chat history; Codex's own TUI keeps this
+	// as status text unless output is returned by the wait. The non-empty
+	// case persists an "Interacted with background terminal" marker while
+	// redacting the stdin bytes from durable item metadata.
 	EventTerminalInteraction EventKind = "terminal_interaction"
 
 	// EventUserText is the wire-confirmation envelope for an AO-initiated

@@ -123,10 +123,6 @@ type pendingSubagentCompletionEmit struct {
 	waitCarrierID string
 }
 
-type pendingSubagentNotificationEmit struct {
-	launchID string
-}
-
 type persistedCodexSpawnLaunch struct {
 	item store.Item
 	meta codexItemMeta
@@ -163,12 +159,6 @@ type codexBackgroundState struct {
 	// carrier and detaches it so old wait rows do not receive ghost
 	// completions.
 	pendingWaitByProcess map[string]pendingTerminalWait
-	// pendingWaitByToolCall maps raw write_stdin tool_call_id → the
-	// terminal_interaction carrier created by that raw function_call.
-	// The raw function_call_output must update this exact row or drop;
-	// it must not allocate a second wait row after the typed command
-	// completion has already attached beneath the first one.
-	pendingWaitByToolCall map[string]string
 	// waitCarrierByProcess maps process_id → latest empty-stdin wait
 	// carrier in the current turn. It outlives pendingWaitByProcess so
 	// the canonical typed TerminalInteraction signal can settle/update a
@@ -182,12 +172,11 @@ type codexBackgroundState struct {
 
 func newCodexBackgroundState() *codexBackgroundState {
 	return &codexBackgroundState{
-		unifiedExec:           make(map[string]*unifiedExecTracker),
-		unifiedExecByProcess:  make(map[string]string),
-		pendingWaitByProcess:  make(map[string]pendingTerminalWait),
-		pendingWaitByToolCall: make(map[string]string),
-		waitCarrierByProcess:  make(map[string]pendingTerminalWait),
-		spawnAgent:            make(map[string]*spawnAgentTracker),
+		unifiedExec:          make(map[string]*unifiedExecTracker),
+		unifiedExecByProcess: make(map[string]string),
+		pendingWaitByProcess: make(map[string]pendingTerminalWait),
+		waitCarrierByProcess: make(map[string]pendingTerminalWait),
+		spawnAgent:           make(map[string]*spawnAgentTracker),
 	}
 }
 
@@ -526,14 +515,6 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 		return false
 	}
 
-	// A subsequent tool call means the model has moved past earlier
-	// unified exec calls. Mark existing live commands as backgrounded
-	// before registering the new one; this avoids treating "sleep 15
-	// yielded, then run another command" as a quick synchronous command
-	// just because no assistant text streamed between the calls.
-	r.settleCodexPendingTerminalWaits(evt.ThreadID)
-	r.markCodexUnifiedExecBackgrounded(evt.ThreadID, itemID)
-
 	emitChanged := false
 	r.mu.Lock()
 	state := r.codexBackgroundForThread(evt.ThreadID)
@@ -744,13 +725,6 @@ func (r *Router) clearCodexPendingTerminalWaitState(threadID, processID, itemID 
 				delete(state.pendingWaitByProcess, processID)
 			}
 		}
-		if itemID != "" {
-			for toolCallID, waitItemID := range state.pendingWaitByToolCall {
-				if strings.TrimSpace(waitItemID) == itemID {
-					delete(state.pendingWaitByToolCall, toolCallID)
-				}
-			}
-		}
 	}
 	r.mu.Unlock()
 }
@@ -773,45 +747,6 @@ func (r *Router) codexTerminalWaitItemIDForProcess(threadID, processID string, t
 		return wait.itemID
 	}
 	return ""
-}
-
-func (r *Router) rememberCodexTerminalWaitToolCall(threadID, toolCallID, itemID string) {
-	toolCallID = strings.TrimSpace(toolCallID)
-	itemID = strings.TrimSpace(itemID)
-	if toolCallID == "" || itemID == "" {
-		return
-	}
-	r.mu.Lock()
-	state := r.codexBackgroundForThread(threadID)
-	state.pendingWaitByToolCall[toolCallID] = itemID
-	r.mu.Unlock()
-}
-
-func (r *Router) codexTerminalWaitItemIDForToolCall(threadID, toolCallID string) (string, bool) {
-	toolCallID = strings.TrimSpace(toolCallID)
-	if toolCallID == "" {
-		return "", false
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	state := r.codexBackground[threadID]
-	if state == nil {
-		return "", false
-	}
-	itemID := strings.TrimSpace(state.pendingWaitByToolCall[toolCallID])
-	return itemID, itemID != ""
-}
-
-func (r *Router) forgetCodexTerminalWaitToolCall(threadID, toolCallID string) {
-	toolCallID = strings.TrimSpace(toolCallID)
-	if toolCallID == "" {
-		return
-	}
-	r.mu.Lock()
-	if state := r.codexBackground[threadID]; state != nil {
-		delete(state.pendingWaitByToolCall, toolCallID)
-	}
-	r.mu.Unlock()
 }
 
 func (r *Router) settleCodexTerminalWaitCarrier(threadID, itemID string) error {
@@ -1292,9 +1227,9 @@ func (r *Router) ListLiveCodexBackgroundTasks(threadID string, nowMillis, retent
 //
 //  2. A wait_agent item closed — the agent used `wait` to block on
 //     children; the wait's agentsStates reports each awaited child's
-//     terminal status. Any backgrounded spawn_agent tracker whose
-//     children are now terminal gets a sibling completion row, and is
-//     cleared from the projector state.
+//     terminal status. Any incomplete spawn_agent launch whose children
+//     are now terminal gets a sibling completion row, and is cleared from
+//     the projector state.
 //
 // Called from handleToolComplete AFTER tool_lifecycle has written the
 // terminal status so the sibling row lands at the right (launch,
@@ -1348,10 +1283,9 @@ func (r *Router) observeCodexToolComplete(evt provider.ProviderEvent) error {
 
 // resolveSubagentsForWait handles a wait_agent item/completed. The
 // wait's Meta carries receiverThreadIds plus agentsStates entries
-// (child thread id -> {status, message?}). For each backgrounded
-// spawn_agent tracker whose children are now terminal, synthesize a
-// sibling completion row and use any final message as that sibling's
-// expandable payload.
+// (child thread id -> {status, message?}). For each incomplete spawn_agent
+// launch whose children are now terminal, synthesize a sibling completion row
+// and use any final message as that sibling's expandable payload.
 func (r *Router) resolveSubagentsForWait(evt provider.ProviderEvent) error {
 	meta := decodeCodexItemMeta(evt.Meta)
 	if len(meta.AgentsStates) == 0 && len(meta.ReceiverThreadIDs) == 0 {
@@ -1436,28 +1370,40 @@ func (r *Router) resolveSubagentsForWait(evt provider.ProviderEvent) error {
 }
 
 func pendingSubagentWaitEmit(launchID string, receiverThreadIDs []string, terminalChildren map[string]agentTerminalResult, waitCarrierID string) (pendingSubagentCompletionEmit, bool) {
-	terminalStatus := ""
 	childResults := make([]agentTerminalResult, 0, len(receiverThreadIDs))
 	allDone := len(receiverThreadIDs) > 0
+	hasTerminal := false
+	hasInterrupted := false
+	hasErrored := false
 	for _, childID := range receiverThreadIDs {
 		if terminal, ok := terminalChildren[childID]; ok {
-			if terminalStatus == "" {
-				terminalStatus = terminal.status
-			}
 			if terminal.ordinal <= 0 {
 				terminal.ordinal = len(childResults) + 1
 			}
 			childResults = append(childResults, terminal)
+			hasTerminal = true
+			switch strings.TrimSpace(terminal.status) {
+			case "errored":
+				hasErrored = true
+			case "interrupted", "notFound":
+				hasInterrupted = true
+			}
 		} else {
 			allDone = false
 		}
 	}
-	if !allDone || terminalStatus == "" {
+	if !allDone || !hasTerminal {
 		return pendingSubagentCompletionEmit{}, false
+	}
+	status := "completed"
+	if hasErrored {
+		status = "errored"
+	} else if hasInterrupted {
+		status = "interrupted"
 	}
 	return pendingSubagentCompletionEmit{
 		launchID:      launchID,
-		status:        terminalStatus,
+		status:        status,
 		childResults:  childResults,
 		totalChildren: len(receiverThreadIDs),
 		waitCarrierID: waitCarrierID,
@@ -1482,11 +1428,30 @@ func (r *Router) persistedSubagentWaitEmits(
 		if _, ok := already[launch.item.ID]; ok {
 			continue
 		}
-		if pending, ok := pendingSubagentWaitEmit(launch.item.ID, launch.meta.ReceiverThreadIDs, terminalChildren, waitCarrierID); ok {
+		mergedTerminalChildren := mergeStoredCodexSubagentTerminals(launch.item, terminalChildren)
+		if pending, ok := pendingSubagentWaitEmit(launch.item.ID, launch.meta.ReceiverThreadIDs, mergedTerminalChildren, waitCarrierID); ok {
 			out = append(out, pending)
 		}
 	}
 	return out, nil
+}
+
+func mergeStoredCodexSubagentTerminals(launch store.Item, waitTerminalChildren map[string]agentTerminalResult) map[string]agentTerminalResult {
+	storedStatuses := decodeCodexChildTerminalStatuses(json.RawMessage(launch.Meta))
+	if len(storedStatuses) == 0 {
+		return waitTerminalChildren
+	}
+	merged := make(map[string]agentTerminalResult, len(storedStatuses)+len(waitTerminalChildren))
+	for childID, status := range storedStatuses {
+		switch strings.TrimSpace(status) {
+		case "completed", "errored", "interrupted", "notFound", "shutdown":
+			merged[childID] = agentTerminalResult{childID: childID, status: status}
+		}
+	}
+	for childID, terminal := range waitTerminalChildren {
+		merged[childID] = terminal
+	}
+	return merged
 }
 
 // subagentStatusToItemStatusMeta translates a CollabAgentStatus value
@@ -1574,14 +1539,9 @@ func clearPendingCodexSpawnTrackersLocked(state *codexBackgroundState) bool {
 }
 
 // observeCodexSubagentStatus handles child-thread lifecycle signals that prove
-// a spawned Codex subagent is no longer actively working. Codex core forwards
-// terminal child turns to the parent mailbox as subagent notifications; the
-// app-server also exposes the child turn lifecycle directly. Treat the direct
-// lifecycle signal as a transcript boundary once all receiver children are
-// terminal so the UI shows the completion when the parent can observe it,
-// matching Codex TUI behavior. The persisted launch row remains the completed
-// "spawned" event; child terminal state is represented by the separate
-// completion sibling.
+// a spawned Codex subagent is no longer actively working. Direct child
+// lifecycle is live-state evidence only; parent transcript completion is owned
+// by typed wait_agent completions or Codex's injected <subagent_notification>.
 func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 	parsed := decodeCodexSubagentSignalMeta(evt.Meta)
 	childID := strings.TrimSpace(parsed.AgentPath)
@@ -1604,45 +1564,15 @@ func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 		return nil
 	}
 
-	allTerminal, aggregateStatus, err := r.markCodexSpawnChildTerminal(launch.item, launch.meta, childID, status)
+	allTerminal, _, err := r.markCodexSpawnChildTerminal(launch.item, launch.meta, childID, status)
 	if err != nil {
 		return err
 	}
 	r.observeCodexSpawnChildTerminalInMemory(threadID, launch.item.ID, allTerminal)
 	if allTerminal {
 		r.emitCodexBackgroundTasksChanged(threadID)
-		content := strings.TrimSpace(parsed.Message)
-		if content == "" {
-			if err := r.settleStreamingScope(threadID, launch.item.ID); err != nil {
-				log.Printf("triage: codex subagent child stream flush %s: %v", launch.item.ID, err)
-			}
-			content = r.latestCodexSubagentChildMessage(threadID, launch.item.ID)
-		}
-		completionEvent := provider.ProviderEvent{
-			ThreadID:  threadID,
-			ItemID:    launch.item.ID,
-			Content:   content,
-			Meta:      subagentStatusToItemStatusMeta(aggregateStatus),
-			Timestamp: evt.Timestamp,
-		}
-		return r.synthesizeCodexBackgroundCompletion(completionEvent, launch.item.ID, codexBackgroundCompletionOptions{})
 	}
 	return nil
-}
-
-func (r *Router) latestCodexSubagentChildMessage(threadID, launchID string) string {
-	if r.store == nil || strings.TrimSpace(threadID) == "" || strings.TrimSpace(launchID) == "" {
-		return ""
-	}
-	summary, found, err := r.store.LatestAssistantTextSummaryForParent(threadID, launchID)
-	if err != nil {
-		log.Printf("triage: codex subagent child message lookup %s: %v", launchID, err)
-		return ""
-	}
-	if !found {
-		return ""
-	}
-	return summary
 }
 
 func (r *Router) observeCodexSpawnChildTerminalInMemory(threadID, launchID string, allTerminal bool) {
@@ -1691,7 +1621,7 @@ func aggregateCodexSubagentTerminalStatus(receiverThreadIDs []string, terminalSt
 }
 
 func (r *Router) listPersistedCodexSpawnLaunches(threadID string) ([]persistedCodexSpawnLaunch, error) {
-	launches, err := r.store.ListActiveCodexSubagentLaunches(threadID)
+	launches, err := r.store.ListIncompleteCodexSubagentLaunches(threadID)
 	if err != nil {
 		return nil, fmt.Errorf("codex-background list spawn launches for %s: %w", threadID, err)
 	}
@@ -1707,18 +1637,30 @@ func (r *Router) listPersistedCodexSpawnLaunches(threadID string) ([]persistedCo
 }
 
 func (r *Router) findPersistedCodexSpawnLaunch(threadID, launchID, childID string, requireChild bool) (persistedCodexSpawnLaunch, bool, error) {
+	if launchID != "" {
+		launch, found, err := r.store.GetIncompleteCodexSubagentLaunch(threadID, launchID)
+		if err != nil {
+			return persistedCodexSpawnLaunch{}, false, err
+		}
+		if !found {
+			return persistedCodexSpawnLaunch{}, false, nil
+		}
+		meta := decodeCodexItemMeta(json.RawMessage(launch.Meta))
+		if requireChild && !containsString(meta.ReceiverThreadIDs, childID) {
+			return persistedCodexSpawnLaunch{}, false, nil
+		}
+		return persistedCodexSpawnLaunch{item: launch, meta: meta}, true, nil
+	}
+
 	launches, err := r.listPersistedCodexSpawnLaunches(threadID)
 	if err != nil {
 		return persistedCodexSpawnLaunch{}, false, err
 	}
 	for _, launch := range launches {
-		if launchID != "" && launch.item.ID != launchID {
-			continue
-		}
 		if requireChild && !containsString(launch.meta.ReceiverThreadIDs, childID) {
 			continue
 		}
-		if launchID != "" || containsString(launch.meta.ReceiverThreadIDs, childID) {
+		if containsString(launch.meta.ReceiverThreadIDs, childID) {
 			return launch, true, nil
 		}
 	}
@@ -1727,69 +1669,56 @@ func (r *Router) findPersistedCodexSpawnLaunch(threadID, launchID, childID strin
 
 // observeCodexSubagentNotification handles the detached-child closure
 // signal: Codex core injects a <subagent_notification> tag into the
-// parent's next user message when a backgrounded child finished with no
-// wait outstanding. The projector matches on agent_path (the child
-// path) and synthesizes a sibling completion row for any is_background=true
-// spawn_agent row that owns the now-closed child. When the provider
-// resolved the path to a parent card, evt.ItemID is the authoritative
-// launch id; otherwise we fall back to receiverThreadIDs for older
-// unnamed-agent builds where agent_path was the receiver thread id.
-// Persistence failures on any single sibling return up so the calling
-// handleSubagentNotification surfaces them — we log per failure but the
-// first error still escapes rather than silently leaving the tray stale.
+// parent's next user message when a backgrounded child finished with no wait
+// outstanding. The projector records terminal status on the owning spawn row
+// and only synthesizes the transcript sibling once every child in that spawn is
+// terminal. When the provider resolved the path to a parent card, evt.ItemID is
+// the authoritative launch id; otherwise we fall back to receiverThreadIDs for
+// older unnamed-agent builds where agent_path was the receiver thread id.
 func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) error {
 	parsed := decodeCodexSubagentSignalMeta(evt.Meta)
 	if parsed.AgentPath == "" {
 		return nil
 	}
 	threadID := evt.ThreadID
-
-	r.mu.Lock()
-	state := r.codexBackground[threadID]
-	toEmit := make([]pendingSubagentNotificationEmit, 0)
-	if state != nil {
-		if launchID := strings.TrimSpace(evt.ItemID); launchID != "" {
-			if tracker := state.spawnAgent[launchID]; tracker != nil && tracker.backgrounded {
-				toEmit = append(toEmit, pendingSubagentNotificationEmit{launchID: launchID})
-				delete(state.spawnAgent, launchID)
-			}
-		}
-		if len(toEmit) == 0 {
-			for id, tracker := range state.spawnAgent {
-				if !tracker.backgrounded {
-					continue
-				}
-				if !containsString(tracker.receiverThreadIDs, parsed.AgentPath) {
-					continue
-				}
-				toEmit = append(toEmit, pendingSubagentNotificationEmit{launchID: id})
-				delete(state.spawnAgent, id)
-			}
-		}
+	status := strings.TrimSpace(parsed.Status)
+	if status == "" {
+		status = "completed"
 	}
-	r.mu.Unlock()
 
-	if persisted, err := r.persistedSubagentNotificationEmits(threadID, strings.TrimSpace(evt.ItemID), parsed.AgentPath, toEmit); err != nil {
+	launches, err := r.persistedSubagentNotificationLaunches(threadID, strings.TrimSpace(evt.ItemID), parsed.AgentPath)
+	if err != nil {
 		return err
-	} else {
-		toEmit = append(toEmit, persisted...)
 	}
-
-	// Translate CollabAgentStatus → item_status so the sibling row
-	// carries a consistent outcome marker.
-	syntheticMeta := subagentStatusToItemStatusMeta(parsed.Status)
 
 	var firstErr error
-	for _, item := range toEmit {
+	for _, launch := range launches {
+		childID, ok := codexNotificationChildID(launch.meta, parsed.AgentPath)
+		if !ok {
+			continue
+		}
+		allTerminal, aggregateStatus, err := r.markCodexSpawnChildTerminal(launch.item, launch.meta, childID, status)
+		if err != nil {
+			log.Printf("triage: codex-background subagent notification mark %s: %v", launch.item.ID, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		r.observeCodexSpawnChildTerminalInMemory(threadID, launch.item.ID, allTerminal)
+		if !allTerminal {
+			continue
+		}
+		r.emitCodexBackgroundTasksChanged(threadID)
 		evt := provider.ProviderEvent{
 			ThreadID:  threadID,
-			ItemID:    item.launchID,
+			ItemID:    launch.item.ID,
 			Content:   strings.TrimSpace(parsed.Message),
-			Meta:      syntheticMeta,
+			Meta:      subagentStatusToItemStatusMeta(aggregateStatus),
 			Timestamp: time.Now(),
 		}
-		if err := r.synthesizeCodexBackgroundCompletion(evt, item.launchID, codexBackgroundCompletionOptions{}); err != nil {
-			log.Printf("triage: codex-background subagent completion %s: %v", item.launchID, err)
+		if err := r.synthesizeCodexBackgroundCompletion(evt, launch.item.ID, codexBackgroundCompletionOptions{}); err != nil {
+			log.Printf("triage: codex-background subagent completion %s: %v", launch.item.ID, err)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -1798,33 +1727,38 @@ func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) er
 	return firstErr
 }
 
-func (r *Router) persistedSubagentNotificationEmits(
+func codexNotificationChildID(meta codexItemMeta, agentPath string) (string, bool) {
+	agentPath = strings.TrimSpace(agentPath)
+	if containsString(meta.ReceiverThreadIDs, agentPath) {
+		return agentPath, true
+	}
+	if len(meta.ReceiverThreadIDs) == 1 {
+		childID := strings.TrimSpace(meta.ReceiverThreadIDs[0])
+		return childID, childID != ""
+	}
+	return "", false
+}
+
+func (r *Router) persistedSubagentNotificationLaunches(
 	threadID string,
 	launchID string,
 	agentPath string,
-	already []pendingSubagentNotificationEmit,
-) ([]pendingSubagentNotificationEmit, error) {
-	seen := make(map[string]struct{}, len(already))
-	for _, item := range already {
-		seen[item.launchID] = struct{}{}
+) ([]persistedCodexSpawnLaunch, error) {
+	if launchID != "" {
+		launch, found, err := r.findPersistedCodexSpawnLaunch(threadID, launchID, agentPath, false)
+		if err != nil || !found {
+			return nil, err
+		}
+		return []persistedCodexSpawnLaunch{launch}, nil
 	}
 	launches, err := r.listPersistedCodexSpawnLaunches(threadID)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]pendingSubagentNotificationEmit, 0, 1)
+	out := make([]persistedCodexSpawnLaunch, 0, 1)
 	for _, launch := range launches {
-		if _, ok := seen[launch.item.ID]; ok {
-			continue
-		}
-		if launchID != "" {
-			if launch.item.ID == launchID {
-				out = append(out, pendingSubagentNotificationEmit{launchID: launch.item.ID})
-			}
-			continue
-		}
 		if containsString(launch.meta.ReceiverThreadIDs, agentPath) {
-			out = append(out, pendingSubagentNotificationEmit{launchID: launch.item.ID})
+			out = append(out, launch)
 		}
 	}
 	return out, nil
@@ -2167,9 +2101,9 @@ func formatAgentCompletionMessage(result agentTerminalResult, totalChildren int)
 }
 
 // codexSubagentSignalMeta is the common shape for Codex child-agent terminal
-// signals. <subagent_notification> includes Message; EventSubagentStatus may
-// omit it, in which case triage falls back to the latest persisted child
-// assistant text when synthesizing the completion sibling.
+// signals. <subagent_notification> includes Message and can create transcript
+// completion once every child in the spawn is terminal. EventSubagentStatus is
+// status-only live-state evidence and does not synthesize transcript rows.
 type codexSubagentSignalMeta struct {
 	AgentPath string `json:"agent_path"`
 	Status    string `json:"status"`

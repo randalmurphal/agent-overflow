@@ -36,6 +36,10 @@ function toolMeta(values: Record<string, unknown>): string {
   return JSON.stringify(values);
 }
 
+function codexWaitAgentMeta(): string {
+  return toolMeta({ toolName: 'wait_agent', input: { tool: 'wait_agent' } });
+}
+
 function inlineAgent(id: string, itemIndex: number, assistantMessageID = 'assistant-1'): Item {
   return mkItem({
     id,
@@ -308,6 +312,7 @@ describe('groupItemsBySubagent', () => {
         itemIndex: 0,
         kind: 'tool_call',
         toolName: 'wait_agent',
+        meta: codexWaitAgentMeta(),
       }),
       mkItem({
         id: 'complete-wait-1',
@@ -332,7 +337,10 @@ describe('groupItemsBySubagent', () => {
     expect(nodes).toHaveLength(1);
     const group = expectWaitGroup(nodes[0]);
     expect(group.parent.id).toBe('wait-1');
-    expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-spawn-1']);
+    expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual([
+      'complete-wait-1',
+      'complete-spawn-1',
+    ]);
     expect(nodeContainsItem(group, 'complete-spawn-1')).toBe(true);
   });
 
@@ -391,6 +399,7 @@ describe('groupItemsBySubagent', () => {
         itemIndex: 0,
         kind: 'tool_call',
         toolName: 'wait_agent',
+        meta: codexWaitAgentMeta(),
       }),
       mkItem({
         id: 'complete-spawn-1',
@@ -415,6 +424,7 @@ describe('groupItemsBySubagent', () => {
         itemIndex: 0,
         kind: 'tool_call',
         toolName: 'wait_agent',
+        meta: codexWaitAgentMeta(),
       }),
       mkItem({
         id: 'complete-spawn-1',
@@ -432,7 +442,7 @@ describe('groupItemsBySubagent', () => {
     expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-spawn-1']);
   });
 
-  it('keeps a timeout wait as a single neutral carrier row when no target completed', () => {
+  it('nests a timeout wait completion under the neutral wait carrier', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'wait-child',
@@ -440,6 +450,7 @@ describe('groupItemsBySubagent', () => {
         kind: 'tool_call',
         toolName: 'wait_agent',
         status: 'completed',
+        meta: codexWaitAgentMeta(),
       }),
       mkItem({
         id: 'complete-wait-child',
@@ -453,7 +464,29 @@ describe('groupItemsBySubagent', () => {
     expect(nodes).toHaveLength(1);
     const group = expectWaitGroup(nodes[0]);
     expect(group.parent.id).toBe('wait-child');
-    expect(group.children).toHaveLength(0);
+    expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-wait-child']);
+  });
+
+  it('keeps a non-Codex wait_agent-named tool flat', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'foreign-wait',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'wait_agent',
+        meta: toolMeta({ toolName: 'wait_agent', input: { query: 'not Codex wait_agent' } }),
+      }),
+      mkItem({
+        id: 'foreign-completion',
+        itemIndex: 1,
+        kind: 'tool_completion',
+        toolName: 'wait_agent',
+        completionOf: 'foreign-wait',
+      }),
+    ]);
+
+    expect(nodes).toHaveLength(2);
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['foreign-wait', 'foreign-completion']);
   });
 
   it('does not treat non-empty terminal interactions as wait carriers', () => {

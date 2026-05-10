@@ -136,14 +136,13 @@ Authoritative mental model:
   `codex_background.go` tracks unifiedExec items as transient state and
   shows them in the running tray immediately. They only become
   backgrounded after a wire-typed yield signal (EventTextDelta /
-  EventThinking, later tool start, or turn complete). Quick unifiedExec
-  completions persist as normal command rows. Backgrounded unifiedExec
-  completions stay transient until an explicit terminal wait/poll row
-  can own the output. Spawn-agent starts are different: they are
-	  tracker-only until terminal spawn completion creates the visible tool
-	  row, and still use sibling `tool_completion` rows when a wait_agent,
-	  child `turn/completed` lifecycle signal, or subagent_notification
-	  proves the child completed.
+  EventThinking, turn complete, or an explicit empty write_stdin poll).
+  Quick unifiedExec completions persist as normal command rows.
+  Backgrounded unifiedExec completions stay transient until an explicit
+  terminal wait/poll row can own the output. Spawn-agent starts are
+  tracker-only until terminal spawn completion creates the visible tool
+  row. Child-agent transcript completions are owned by wait_agent or
+  subagent_notification; direct child lifecycle only updates live state.
   Authorized only by the wire-typed signals in Meta (invariant 25); no
   heuristic classifiers.
 - **Turn lifecycle** — `EventTurnStart` writes a `turns` row with

@@ -18,19 +18,19 @@ import (
 // two variants on the wire:
 //
 //   - `stdin == ""`: the model polled the PTY without sending input.
-//     Codex's own TUI renders a "Waited for background terminal" cell
-//     (chatwidget.rs). Raw write_stdin and canonical typed notifications
-//     for the same process reuse one visible carrier until output lands or
-//     another timeline boundary makes the wait stale.
+//     Codex's own TUI keeps this as a status streak. Agent Overflow adds a
+//     visible carrier row, so raw write_stdin and canonical typed
+//     notifications for the same process reuse one carrier until output lands
+//     or another timeline boundary makes the wait stale.
 //   - `stdin != ""`: keystrokes were forwarded. We persist an
 //     "Interacted with background terminal" marker, but never persist
 //     stdin bytes because interactive input can contain secrets.
 //
-// Empty polls always leave a visible wait carrier. If that poll observes
-// completed command output, the command completion row is linked back with
-// `wait_carrier_id` so the frontend can indent the completion under the
-// wait. Interactive markers can still carry completed output payloads for
-// legacy/non-poll signals.
+// Empty polls always leave a visible wait carrier. Command item/completed owns
+// final output/status; if it arrives while a carrier is pending, the command
+// completion row is linked back with `wait_carrier_id` so the frontend can
+// indent the completion under the wait. Interactive markers can still carry
+// completed output payloads for legacy/non-poll signals.
 
 // terminalInteractionMeta is the Meta shape populated by
 // buildTerminalInteractionMeta in the Codex parser. Only the fields we
@@ -76,6 +76,12 @@ func decodeTerminalInteractionMeta(raw json.RawMessage) terminalInteractionMeta 
 //     arrives or a later timeline boundary settles it as stale.
 func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	meta := decodeTerminalInteractionMeta(evt.Meta)
+	isPoll := evt.Content == "" && meta.Stdin == ""
+	isRawWaitStart := isPoll && meta.Source == "rawResponseItem/function_call"
+	isRawWaitOutput := isPoll && meta.Source == "rawResponseItem/function_call_output"
+	if isRawWaitOutput {
+		return nil
+	}
 
 	turnIndex, ok := r.openTurnIndex(evt.ThreadID)
 	if !ok {
@@ -90,10 +96,7 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	r.settleStreamingBeforeTimelineBoundary(evt, "terminal interaction")
 
 	now := eventTimestampMillis(evt)
-	isPoll := evt.Content == "" && meta.Stdin == ""
 	itemID := ""
-	isRawWaitStart := isPoll && meta.Source == "rawResponseItem/function_call"
-	isRawWaitOutput := isPoll && meta.Source == "rawResponseItem/function_call_output"
 	if isRawWaitStart {
 		// Raw write_stdin is emitted before Codex waits on the PTY. Seeing
 		// it is typed proof that the referenced unified exec is now being
@@ -101,23 +104,13 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		// follow-up tool boundary has happened yet.
 		r.markCodexUnifiedExecProcessBackgrounded(evt.ThreadID, meta.ProcessID)
 	}
-	if isRawWaitOutput {
-		var found bool
-		itemID, found = r.codexTerminalWaitItemIDForToolCall(evt.ThreadID, meta.ToolCallID)
-		if !found {
-			return nil
-		}
-	} else if isPoll {
+	if isPoll {
 		itemID = r.codexTerminalWaitItemIDForProcess(evt.ThreadID, meta.ProcessID, turnIndex)
 	}
 	if itemID == "" {
 		seq := r.nextTerminalInteractionSequence(evt.ThreadID, turnIndex, meta.ProcessID)
 		itemID = terminalInteractionID(meta.ProcessID, turnIndex, seq, isPoll)
 	}
-	if isRawWaitStart {
-		r.rememberCodexTerminalWaitToolCall(evt.ThreadID, meta.ToolCallID, itemID)
-	}
-
 	metaMap := map[string]any{
 		"process_id": meta.ProcessID,
 		"kind":       "terminal_interaction",
@@ -194,7 +187,6 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 			if err := r.persistItem(item, nil); err != nil {
 				return err
 			}
-			r.forgetCodexTerminalWaitToolCall(evt.ThreadID, meta.ToolCallID)
 			if err := r.clearCodexPendingTerminalWait(evt.ThreadID, meta.ProcessID); err != nil {
 				return err
 			}
@@ -208,13 +200,11 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 			if err := r.persistCodexUnifiedExecCompletion(evt, tracker, turnIndex, item.ID); err != nil {
 				return err
 			}
-			r.forgetCodexTerminalWaitToolCall(evt.ThreadID, meta.ToolCallID)
 			r.clearCodexCompletedOutputTracker(evt.ThreadID, meta.ProcessID)
 			return nil
 		}
 		if meta.WaitResult == provider.TerminalWaitResultExited {
 			item.Status = statusCompleted
-			r.forgetCodexTerminalWaitToolCall(evt.ThreadID, meta.ToolCallID)
 		}
 	}
 	var payload *store.Payload
@@ -237,9 +227,6 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	}
 	if err := r.persistItem(item, payload); err != nil {
 		return err
-	}
-	if isRawWaitOutput {
-		r.forgetCodexTerminalWaitToolCall(evt.ThreadID, meta.ToolCallID)
 	}
 	return nil
 }

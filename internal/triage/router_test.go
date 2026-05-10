@@ -81,7 +81,7 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventBackgroundTaskTerminal:     true, // Wave 1 — new, Wave 2 wires triage
 		provider.EventBackgroundTaskNotification: true, // Claude task_notification is a notification, not a terminal lifecycle signal
 		provider.EventSubagentNotification:       true, // reserved for Codex subagent UI
-		provider.EventSubagentStatus:             true, // Codex child lifecycle terminal marker; can synthesize spawn completion
+		provider.EventSubagentStatus:             true, // Codex child lifecycle marker; updates live state only
 		provider.EventTerminalInteraction:        true, // Codex polling marker; triage persists empty-stdin variant
 		provider.EventUserText:                   true, // Phase A: dispatch case wired; full handler lands in Phase E
 		provider.EventDiff:                       true,

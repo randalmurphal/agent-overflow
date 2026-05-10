@@ -1081,7 +1081,7 @@ func (s *Store) ListRunningBackgroundToolCalls(threadID string) ([]Item, error) 
 	return items, rows.Err()
 }
 
-func (s *Store) ListActiveCodexSubagentLaunches(threadID string) ([]Item, error) {
+func (s *Store) ListIncompleteCodexSubagentLaunches(threadID string) ([]Item, error) {
 	rows, err := s.db.Query(
 		`SELECT `+itemColumns+`
 		   FROM items
@@ -1090,7 +1090,6 @@ func (s *Store) ListActiveCodexSubagentLaunches(threadID string) ([]Item, error)
 		    AND items.kind = 'tool_call'
 		    AND items.tool_name = 'collab_agent'
 		    AND items.is_background = 1
-		    AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
 		    AND NOT EXISTS (
 		      SELECT 1 FROM items c
 		       WHERE c.thread_id = items.thread_id
@@ -1100,7 +1099,7 @@ func (s *Store) ListActiveCodexSubagentLaunches(threadID string) ([]Item, error)
 		threadID,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("store: list active Codex subagent launches for thread %s: %w", threadID, err)
+		return nil, fmt.Errorf("store: list incomplete Codex subagent launches for thread %s: %w", threadID, err)
 	}
 	defer rows.Close()
 
@@ -1108,11 +1107,39 @@ func (s *Store) ListActiveCodexSubagentLaunches(threadID string) ([]Item, error)
 	for rows.Next() {
 		it, err := scanItemRow(rows)
 		if err != nil {
-			return nil, fmt.Errorf("store: scan active Codex subagent launch row: %w", err)
+			return nil, fmt.Errorf("store: scan incomplete Codex subagent launch row: %w", err)
 		}
 		items = append(items, it)
 	}
 	return items, rows.Err()
+}
+
+func (s *Store) GetIncompleteCodexSubagentLaunch(threadID, itemID string) (Item, bool, error) {
+	row := s.db.QueryRow(
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.thread_id = ?
+		    AND items.id = ?
+		    AND items.kind = 'tool_call'
+		    AND items.tool_name = 'collab_agent'
+		    AND items.is_background = 1
+		    AND NOT EXISTS (
+		      SELECT 1 FROM items c
+		       WHERE c.thread_id = items.thread_id
+		         AND c.completion_of = items.id
+		    )`,
+		threadID,
+		itemID,
+	)
+	it, err := scanItemRow(row)
+	if err == nil {
+		return it, true, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return Item{}, false, nil
+	}
+	return Item{}, false, fmt.Errorf("store: get incomplete Codex subagent launch %s on thread %s: %w", itemID, threadID, err)
 }
 
 // ListOrphanedBackgroundLaunches returns every backgrounded tool_call

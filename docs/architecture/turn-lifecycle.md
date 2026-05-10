@@ -78,11 +78,10 @@ signals:
 Codex command executions follow the same sibling completion contract as
 Claude background work. Codex `spawn_agent` is different: the parent
 launch row is only the completed "spawned" event. Child-agent terminal
-state is shown by a separate `tool_completion` sibling, created from
-`wait_agent`, child `turn/completed` lifecycle notifications, or injected
-`<subagent_notification>` fragments. Child lifecycle and subagent
-notifications use the same sibling row shape; whichever signal arrives
-first establishes the visible transcript boundary.
+state is shown by a separate `tool_completion` sibling created from
+`wait_agent` or injected `<subagent_notification>` fragments. Direct child
+lifecycle notifications only update live/incomplete state so later explicit
+wait or notification output can own the visible transcript boundary.
 
 Codex `unifiedExecStartup` command executions are the exception to the
 persisted-launch-row shape. Their starts are tracked as transient
