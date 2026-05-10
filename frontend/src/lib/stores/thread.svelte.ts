@@ -2655,7 +2655,12 @@ export function createThreadPane() {
     replaceThread(nextThread: Thread): void {
       thread = nextThread;
       contextWindow = seedContextWindow(nextThread);
-      rateLimitsByWindow = new Map();
+      // rateLimitsByWindow intentionally NOT reset here — replaceThread
+      // fires for every thread metadata update during a session
+      // (lastTokenUsage bumps from `provider:usage`, runtime/mode
+      // patches, activity touch). Wiping the rate-limit map on those
+      // would make the rings flicker empty between rate_limits events.
+      // Reset belongs to switchThread/clear only.
     },
 
     toggleTerminal(): void {
