@@ -266,7 +266,7 @@ describe('Pause-lease integration with the real controller', () => {
       const scroll = channelRender.getByTestId('channel-message-list') as HTMLElement;
 
       // Stub geometry to make the controller think the user is at-bottom.
-      const geom = { scrollHeight: 1000, clientHeight: 600, scrollTop: 399 };
+      const geom = { scrollHeight: 1000, clientHeight: 600, scrollTop: 400 };
       Object.defineProperty(scroll, 'scrollHeight', {
         configurable: true,
         get: () => geom.scrollHeight,
@@ -325,9 +325,9 @@ describe('Pause-lease integration with the real controller', () => {
       fireRO(700);
       expect(geom.scrollTop).toBe(beforeLease);
 
-      // Releasing the lease re-pins to the new target = 1300 - 1 - 600 = 699.
+      // Releasing the lease re-pins to the new target = 1300 - 600 = 700.
       await fireEvent.pointerUp(handle, { clientX: 100, pointerId: 1 });
-      expect(geom.scrollTop).toBe(699);
+      expect(geom.scrollTop).toBe(700);
     } finally {
       (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver
         = originalRO;
@@ -344,8 +344,8 @@ describe('Pause-lease integration with the real controller', () => {
     document.body.appendChild(scrollEl);
 
     // Stub geometry: at-bottom (distance = scrollHeight - scrollTop -
-    // clientHeight = 1000 - 399 - 600 = 1).
-    const geom = { scrollHeight: 1000, clientHeight: 600, scrollTop: 399, contentHeight: 800 };
+    // clientHeight = 1000 - 400 - 600 = 0).
+    const geom = { scrollHeight: 1000, clientHeight: 600, scrollTop: 400, contentHeight: 800 };
     Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => geom.scrollHeight });
     Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, get: () => geom.clientHeight });
     Object.defineProperty(scrollEl, 'scrollTop', {
@@ -363,18 +363,18 @@ describe('Pause-lease integration with the real controller', () => {
       // Baseline: composer-height-style nudge writes scrollTop = target.
       geom.scrollHeight = 1100;
       controller.notifyContentMaybeGrew();
-      expect(geom.scrollTop).toBe(499); // target = 1100 - 1 - 600
+      expect(geom.scrollTop).toBe(500); // target = 1100 - 600
 
       // Acquire the lease. Notifications during the drag are no-ops.
       const release = pane.scrollController!.pauseAutoScroll();
       geom.scrollHeight = 1300;
       controller.notifyContentMaybeGrew();
       controller.notifyContentMaybeGrew();
-      expect(geom.scrollTop).toBe(499); // unchanged during lease
+      expect(geom.scrollTop).toBe(500); // unchanged during lease
 
       // Releasing resumes auto-follow and re-pins to the new bottom.
       release();
-      expect(geom.scrollTop).toBe(699); // target = 1300 - 1 - 600
+      expect(geom.scrollTop).toBe(700); // target = 1300 - 600
     } finally {
       pane.detachScrollController(controller);
       controller.detach();

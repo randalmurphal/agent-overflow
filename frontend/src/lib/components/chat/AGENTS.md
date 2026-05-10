@@ -23,24 +23,59 @@ shape. Operational rules for code in this directory:
   inside the virtualizer; virtua won't see it and will fight the
   scroll.
 - **Bottom-snapshot restore on thread switch goes through
-  `stick.forceStick()`.** A single scrollTop write against the
-  current target. The per-thread virtua row-size cache (replayed via
+  `stick.forceStick()` synchronously inside the restore `$effect`,
+  followed by a single rAF `notifyContentMaybeGrew()` settle pass.**
+  The synchronous forceStick is the primary writer — running it inline
+  (no `pauseAutoScroll` lease, no `await tick()`) keeps the
+  contentRO sync-pin enabled across the new-thread mount and avoids
+  the microtask boundary that races with virtua's deferred scroller
+  attach (`Virtualizer.svelte`'s `tick().then(observe)` defers
+  scrollEl observation by one tick). The trailing rAF
+  `notifyContentMaybeGrew()` covers late layout settling: composer-
+  height RO updating scrollEl's `padding-bottom` (padding-only growth
+  doesn't refire contentRO), virtua's per-row ResizeObservers refining
+  sizes one frame after mount, and the first burst of Streamdown async
+  typesetting (shiki / KaTeX / mermaid / parseIncompleteMarkdown
+  rebalance). The trailing pin is escape-aware (`notifyContentMaybeGrew`
+  bails on `escapedFromLockState || pauseDepth>0 || !isAtBottomState`)
+  so a user wheel-up between frames cancels it; thread-switch is also
+  guarded explicitly via a captured-`restoredThreadId` check inside
+  the rAF. The per-thread virtua row-size cache (replayed via
   `<Virtualizer cache={pane.cachedVirtuaCache}>` inside
   `{#key pane.threadId}`) gives virtua the correct `totalSize` from
-  frame 0, so the target is right from the first paint. Subsequent
-  contentEl growth from svelte-streamdown's async typesetting (shiki /
-  KaTeX / mermaid / parseIncompleteMarkdown rebalance) and from
-  virtua's per-row ResizeObservers refining row heights gets handled
-  invisibly by the controller's contentRO sync-pin: each positive
-  delta re-pins to the new bottom inside the RO callback, before
-  paint. **Don't pair `listRef.scrollToIndex(last, 'end')` with
-  `stick.markAtBottom()` here** — virtua's measurement loop would
-  keep writing scrollTop on every ACTION_ITEM_RESIZE tick for ~150ms
-  while the controller's sync-pin (enabled by markAtBottom) ALSO
-  wrote scrollTop on every positive contentRO delta, targeting a
+  frame 0, so the synchronous `forceStick` target is right at first
+  paint. Subsequent contentEl growth from streaming or further
+  typesetting gets handled invisibly by the controller's contentRO
+  sync-pin: each positive delta re-pins to the new bottom inside the
+  RO callback, before paint. **Don't pair `listRef.scrollToIndex(last,
+  'end')` with `stick.markAtBottom()` here** — virtua's measurement
+  loop would keep writing scrollTop on every ACTION_ITEM_RESIZE tick
+  for ~150ms while the controller's sync-pin (enabled by markAtBottom)
+  ALSO wrote scrollTop on every positive contentRO delta, targeting a
   slightly different value. They oscillate visibly around the middle
   of the viewport on every Streamdown async typesetting tick. Single
-  writer or none.
+  synchronous writer (forceStick) plus a deferred escape-aware re-pin
+  (notifyContentMaybeGrew) — never the two-loop fight.
+- **`overflow-anchor: none` on `scrollEl` is load-bearing.** Browser
+  default scroll anchoring adjusts `scrollTop` whenever an element above
+  the viewport changes size, to keep the topmost-visible element fixed.
+  That heuristic fights both virtua's measurement-loop jump correction
+  AND the controller's contentRO sync-pin — Streamdown async typesetting
+  growing rows above the viewport on a sticky session would produce
+  visible scrollTop oscillation between the browser's anchor adjustment
+  and our re-pin. virtua already sets `overflow-anchor: none` on its
+  own container, so a defensive copy on contentEl is redundant; only
+  the outer scrollEl needs the opt-out.
+- **`padding-bottom` for composer clearance stays on `scrollEl`, not
+  on `contentEl`.** Tempting to move it to contentEl so the controller's
+  contentRO catches `--composer-height` changes natively — but the
+  controller observes content-box (W3C ResizeObserver default) and
+  `entry.contentRect.height` reports content-box even when the callback
+  does fire. Padding-only changes to contentEl would not show up as a
+  positive delta and the sync-pin would short-circuit. ChatView's
+  composer RO calls `notifyContentMaybeGrew()` to handle this seam
+  explicitly — that call is the load-bearing pin for composer-height-
+  driven re-pinning on the chat surface; don't drop it.
 - **`<Virtualizer>` is wrapped in `{#key pane.threadId}`** so its
   `cache` prop is re-read on thread switch. The cache itself comes
   from `pane.cachedVirtuaCache` (sourced from the LRU snapshot in
@@ -110,11 +145,15 @@ Every row rendered inside `<Virtualizer>`'s children snippet:
   keyed on `item.id` / `payloadId` and survive remount. See:
   - `pane.expansionStateFor(item)` — payload expansion handle
     (preview/full toggle, loaded chunks). Used by
-    `GenericToolCallRow`, `CommandOutput`, `DiffFileStack`,
-    `ThinkingBlock`, `LazyContentBlock`. Diff rows render
-    always-inline through `DiffFileBlock`, so the body of the
-    expansion handle here is just the lazy fetch — there is no
-    user-facing expand/collapse for diffs.
+    `GenericToolCallRow`, `CommandOutput`, `ThinkingBlock`,
+    `LazyContentBlock`. The handle survives virtua remount but is
+    cleared on `switchThread` (toggle state is per-pane, not
+    cross-thread). `DiffFileStack` deliberately uses a LOCAL
+    `createPayloadExpansion` instead — diff rows render always-inline
+    so there is no user-facing expand/collapse, and a per-row local
+    handle keeps the fetch wired straight to the prop without going
+    through the pane's payloadId-by-item lookup (which can lag the
+    prop by a tick during fast switches).
   - `pane.attachmentCacheFor(itemId)` — image-attachment blob URL
     cache. `UserMessage` threads this into `createAttachmentPreviews`
     so a user-message row doesn't re-fetch `GetAttachmentData` on
@@ -126,6 +165,29 @@ Every row rendered inside `<Virtualizer>`'s children snippet:
   Read pattern: `const handle = $derived(pane.expansionStateFor(item))`,
   with any local fallback wrapped in `untrack(() => createPayloadExpansion(...))`
   so the fallback doesn't bind to initial prop values.
+- Reads any payload BYTES through the module-level data cache in
+  `utils/payloadDataCache.ts`. The per-pane registry above tracks
+  toggle/expansion intent; the data cache tracks the bytes themselves,
+  keyed by `(threadId, payloadId, version)` with NUL delimiters and
+  type-tagged version keys, byte-bounded by a 16 MB LRU. The cache
+  survives `switchThread` so re-entering a thread with already-loaded
+  payloads paints synchronously at full height from frame 0 —
+  eliminating the empty-then-loaded oscillation that whipsaws
+  virtua's per-row size cache and produces visible scroll-anchoring
+  jumps. `createPayloadExpansion` reads the cache synchronously in
+  its constructor and writes back after every successful
+  `loadPreview` / `showFull`. The `loadOnMount` option pairs with
+  the cache: callers like `DiffFileStack` whose body always renders
+  open opt in to "synchronously hydrate AND auto-expand on cache
+  hit". Toggle-style consumers (the `expansionStateFor` callers
+  above) leave `loadOnMount` false so their thread-switch reset of
+  `expanded=false` survives a cache hit — the data is hydrated in
+  the background and flashes in instantly when the user later clicks
+  expand. Eviction: `removeThread` drops the deleted thread's slice
+  via `clearPayloadCacheForThread`; the byte cap evicts oldest
+  entries when exceeded; the `loadOnMount` effect fires once per
+  unique `payloadId` so a future collapse path cannot re-trigger an
+  unwanted re-expand.
 - Defers heavy work (Mermaid render, Shiki highlight, KaTeX typeset,
   attachment image load) to dynamic imports / IntersectionObserver
   triggered from the row itself. Module-level singletons in

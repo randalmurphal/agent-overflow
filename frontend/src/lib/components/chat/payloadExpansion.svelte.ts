@@ -1,4 +1,5 @@
 import { GetPayloadChunk, GetPayloadData, GetPayloadPreview } from '../../stores/bindings';
+import { readPayloadCache, writePayloadCache } from '../../utils/payloadDataCache';
 
 export const DEFAULT_PAYLOAD_PREVIEW_BYTES = 32 * 1024;
 export const DEFAULT_PAYLOAD_CHUNK_BYTES = 256 * 1024;
@@ -41,6 +42,17 @@ export interface PayloadExpansionOptions {
   requestTimeoutMs?: number;
   payloadVersion?: PayloadVersionSource;
   loadMode?: 'preview' | 'full';
+  /**
+   * When true, the expansion auto-expands as soon as the payloadID is
+   * available — at construction if already set, otherwise via an
+   * internal $effect when it arrives. Used by callers like
+   * DiffFileStack whose body always renders open. Combined with the
+   * module-level payload cache, a cache-hit at construction time
+   * produces a fully-rendered row at first paint (no empty-then-loaded
+   * flash on thread re-entry). Default false — toggle-style consumers
+   * keep their explicit expand-on-click contract.
+   */
+  loadOnMount?: boolean;
 }
 
 export function createPayloadExpansion(
@@ -73,6 +85,62 @@ export function createPayloadExpansion(
   let loadedPayloadVersion: unknown;
   let overridePayloadVersion = $state<unknown>(undefined);
   let hasOverridePayloadVersion = $state(false);
+
+  // Synchronous cache hydration. Runs during construction so the very
+  // first paint after mount sees `chunks` populated, and the row that
+  // hosts this expansion renders at its full height from frame 0
+  // instead of the empty-then-loaded oscillation that breaks
+  // virtua's per-row size cache on thread re-entry. The corresponding
+  // write happens after a successful fetch in `loadPreview` /
+  // `showFull`.
+  //
+  // We only flip `expanded = true` on cache hit when `loadOnMount` is
+  // set. Otherwise we hydrate the data without changing the open/closed
+  // intent — toggle-style consumers (GenericToolCallRow, ThinkingBlock)
+  // expect their thread-switch reset of `expanded=false` to survive the
+  // cache hit; the data simply flashes in instantly when the user later
+  // clicks expand.
+  {
+    const id = currentPayloadID();
+    const tid = currentThreadID();
+    if (id && tid) {
+      const cached = readPayloadCache(tid, id, currentPayloadVersion());
+      if (cached) {
+        chunks = cached.chunks;
+        hasFullChunks = cached.hasFullChunks;
+        totalSize = cached.totalSize;
+        isComplete = cached.isComplete;
+        loadedBytes = cached.loadedBytes;
+        loadedPayloadID = id;
+        loadedPayloadVersion = currentPayloadVersion();
+        if (options.loadOnMount) expanded = true;
+      }
+    }
+  }
+
+  // loadOnMount: drive expand() as soon as a payloadID becomes
+  // available. Replaces the per-consumer `$effect(() => {
+  // if (!payloadId) return; void expansion.expand(); })` boilerplate
+  // and lets the synchronous cache check above own setting `expanded`
+  // before the first paint. On cache hit, expand() short-circuits at
+  // the loadPreview early-return because chunks are already populated.
+  //
+  // The fire-once-per-id guard (`loadOnMountInvokedFor`) keeps the
+  // effect from re-arming if a future consumer ever exposes a collapse
+  // path: the user collapses → `expanded = false` flips → without the
+  // guard this effect would re-fire on the next reactive tick and
+  // resurrect `expanded = true` against the user's intent. Tracking
+  // by payloadID (not just a boolean) means a genuine payloadID change
+  // — fork into a different attachment, etc. — DOES re-fire.
+  let loadOnMountInvokedFor: string | null = null;
+  if (options.loadOnMount) {
+    $effect(() => {
+      const id = currentPayloadID();
+      if (!id || id === loadOnMountInvokedFor) return;
+      loadOnMountInvokedFor = id;
+      void expand();
+    });
+  }
 
   // $derived caches the join — re-runs only when `chunks` actually
   // changes (Svelte 5's reactivity, not on every read).
@@ -146,6 +214,13 @@ export function createPayloadExpansion(
       loadedBytes = result.nextOffset;
       loadedPayloadID = id;
       loadedPayloadVersion = version;
+      writePayloadCache(ownerThreadID, id, version, {
+        chunks,
+        hasFullChunks,
+        totalSize,
+        isComplete,
+        loadedBytes,
+      });
       return true;
     } catch (err) {
       if (generation !== requestGeneration || !expanded) return false;
@@ -241,6 +316,13 @@ export function createPayloadExpansion(
       totalSize = content.totalSize;
       loadedBytes = content.nextOffset;
       isComplete = content.isComplete;
+      writePayloadCache(ownerThreadID, id, currentPayloadVersion(), {
+        chunks,
+        hasFullChunks,
+        totalSize,
+        isComplete,
+        loadedBytes,
+      });
     } catch (err) {
       if (generation !== requestGeneration || !expanded) return;
       error = err instanceof Error ? err.message : String(err);

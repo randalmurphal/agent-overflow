@@ -117,7 +117,7 @@ describe('createUseStickToBottomController', () => {
     scrollEl.appendChild(contentEl);
     document.body.appendChild(scrollEl);
 
-    geom = { scrollHeight: 1000, clientHeight: 600, scrollTop: 399, contentHeight: 800 };
+    geom = { scrollHeight: 1000, clientHeight: 600, scrollTop: 400, contentHeight: 800 };
     stubGeometry(scrollEl, contentEl, geom);
 
     controller = createUseStickToBottomController();
@@ -141,7 +141,7 @@ describe('createUseStickToBottomController', () => {
 
   describe('initial state', () => {
     it('starts isSticky=true and isAtBottom=true', () => {
-      // distance = 1000 - 399 - 600 = 1, ≤ 70 → near-bottom true.
+      // distance = 1000 - 400 - 600 = 0, ≤ 70 → near-bottom true.
       expect(controller.isSticky).toBe(true);
       expect(controller.isAtBottom).toBe(true);
       expect(controller.escapedFromLock).toBe(false);
@@ -162,8 +162,8 @@ describe('createUseStickToBottomController', () => {
       geom.scrollTop = 0; // start at top
       const ro = getRO();
       ro.fire(contentEl, 800);
-      // target = max(0, scrollHeight - 1 - clientHeight) = 1000 - 1 - 600 = 399
-      expect(geom.scrollTop).toBe(399);
+      // target = max(0, scrollHeight - clientHeight) = 1000 - 600 = 400
+      expect(geom.scrollTop).toBe(400);
     });
 
     it('escape suppresses both first-fire snap AND positive-delta sync-pin', async () => {
@@ -196,7 +196,7 @@ describe('createUseStickToBottomController', () => {
       // the scroll-to-bottom chip does (and what ChannelView does on
       // initial poll completion).
       controller.forceStick();
-      expect(geom.scrollTop).toBe(399);
+      expect(geom.scrollTop).toBe(400);
       expect(controller.escapedFromLock).toBe(false);
     });
   });
@@ -270,7 +270,7 @@ describe('createUseStickToBottomController', () => {
       const ro = getRO();
       // No prior height; this is the initial fire.
       ro.fire(contentEl, 800);
-      expect(geom.scrollTop).toBe(399); // snapped to target
+      expect(geom.scrollTop).toBe(400); // snapped to target
     });
 
     it('positive delta + sticky sync-pins scrollTop to the new target in the same callback', async () => {
@@ -283,7 +283,7 @@ describe('createUseStickToBottomController', () => {
       geom.contentHeight = 1000;
       ro.fire(contentEl, 1000);
       // Single synchronous write inside the RO callback.
-      expect(geom.scrollTop).toBe(599);
+      expect(geom.scrollTop).toBe(600);
       // No rAF tick advances scrollTop further.
       const after = geom.scrollTop;
       for (let i = 0; i < 5; i++) await nextFrame();
@@ -307,26 +307,26 @@ describe('createUseStickToBottomController', () => {
 
     it('negative delta with isNearBottom re-pins to target', async () => {
       const ro = getRO();
-      ro.fire(contentEl, 800); // initial; scrollTop becomes 399
+      ro.fire(contentEl, 800); // initial; scrollTop becomes 400
       // Shrink content. Use distance just inside the 70px threshold.
       geom.scrollHeight = 800;
       geom.contentHeight = 600;
-      // Without a re-pin, scrollTop=399 means distance = 800 - 399 - 600 = -199.
+      // Without a re-pin, scrollTop=400 means distance = 800 - 400 - 600 = -200.
       ro.fire(contentEl, 600);
-      // Re-pinned to target = max(0, 800 - 1 - 600) = 199.
-      expect(geom.scrollTop).toBe(199);
+      // Re-pinned to target = max(0, 800 - 600) = 200.
+      expect(geom.scrollTop).toBe(200);
     });
 
     it('overscroll guard clamps scrollTop > target', () => {
       const ro = getRO();
       ro.fire(contentEl, 800); // initial
       // Force scrollTop above target externally (e.g. virtua mis-correction).
-      geom.scrollTop = 500; // target = 399
+      geom.scrollTop = 500; // target = 400
       geom.scrollHeight = 900; // shrink
       geom.contentHeight = 700;
       ro.fire(contentEl, 700);
-      // Target now = max(0, 900 - 1 - 600) = 299; clamped.
-      expect(geom.scrollTop).toBeLessThanOrEqual(299);
+      // Target now = max(0, 900 - 600) = 300; clamped.
+      expect(geom.scrollTop).toBeLessThanOrEqual(300);
     });
 
     it('clears resizeDifference after rAF + 1ms', async () => {
@@ -357,7 +357,7 @@ describe('createUseStickToBottomController', () => {
 
     it('scroll event with scrollTop === ignoreScrollToTop is ignored', async () => {
       const ro = getRO();
-      ro.fire(contentEl, 800); // writes scrollTop=399, tags ignoreScrollToTop=399
+      ro.fire(contentEl, 800); // writes scrollTop=400, tags ignoreScrollToTop=400
       // Fire a scroll event reading the same value.
       fireScroll(scrollEl);
       await nextTimer();
@@ -373,7 +373,7 @@ describe('createUseStickToBottomController', () => {
       // scrollTop value — the very scenario the synchronous consume
       // defends against.
       const ro = getRO();
-      ro.fire(contentEl, 800); // initial RO write tags scrollTop=399
+      ro.fire(contentEl, 800); // initial RO write tags scrollTop=400
       // First scroll event consumes the tag.
       fireScroll(scrollEl);
       await nextTimer();
@@ -392,7 +392,7 @@ describe('createUseStickToBottomController', () => {
       geom.scrollTop = 100;
       fireScroll(scrollEl);
       await nextTimer();
-      geom.scrollTop = 399;
+      geom.scrollTop = 400;
       fireScroll(scrollEl);
       await nextTimer();
       // Re-stick path observes near-bottom + DOWN direction and clears
@@ -432,7 +432,7 @@ describe('createUseStickToBottomController', () => {
 
     it('reaching near-bottom while escaped clears escapedFromLock', async () => {
       const ro = getRO();
-      ro.fire(contentEl, 800); // initial, scrollTop=399
+      ro.fire(contentEl, 800); // initial, scrollTop=400
 
       // User scrolled away first, then wheel-up to escape.
       geom.scrollTop = 100;
@@ -444,9 +444,10 @@ describe('createUseStickToBottomController', () => {
 
       // User scrolls back to within the small re-stick band.
       // distance = 1000 - 396 - 600 = 4, ≤ RE_STICK_OFFSET_PX(5).
-      // Using 396 (not 399) deliberately exercises the new tight band:
-      // an old test using scrollTop=399 (distance=1) would have passed
-      // even with the buggy `isNearBottomState` check (1 ≤ 70).
+      // Using 396 (not the at-bottom 400) deliberately exercises the
+      // tight re-stick band: an old test using scrollTop=400 (distance=0)
+      // would have passed even with the buggy `isNearBottomState` check
+      // (0 ≤ 70).
       geom.scrollTop = 396;
       fireScroll(scrollEl);
       await nextTimer();
@@ -462,7 +463,7 @@ describe('createUseStickToBottomController', () => {
       // and then the same scroll event would observe distance=30 ≤ 70
       // and immediately re-stick — undoing the user's gesture.
       const ro = getRO();
-      ro.fire(contentEl, 800); // initial, geom.scrollTop=399 (target=399, distance=1)
+      ro.fire(contentEl, 800); // initial, geom.scrollTop=400 (target=400, distance=0)
       // First scroll event consumes the programmatic-write tag.
       fireScroll(scrollEl);
       await nextTimer();
@@ -493,16 +494,16 @@ describe('createUseStickToBottomController', () => {
       // on DOWN-direction scrolls (scrollTop INCREASING), never on the
       // user's UP gesture itself.
       const ro = getRO();
-      ro.fire(contentEl, 800); // initial, scrollTop=399, sticky
+      ro.fire(contentEl, 800); // initial, scrollTop=400, sticky
       fireScroll(scrollEl); // consumes tag
       await nextTimer();
       expect(controller.isSticky).toBe(true);
 
-      // User wheels up by 3 px. distance = 1000 - 396 - 600 = 4, well
+      // User wheels up by 4 px. distance = 1000 - 396 - 600 = 4, well
       // inside the 5 px re-stick band; without direction gating, the
       // post-wheel scroll event would re-stick.
       geom.scrollTop = 396;
-      fireWheel(scrollEl, -3, scrollEl);
+      fireWheel(scrollEl, -4, scrollEl);
       fireScroll(scrollEl);
       await nextTimer();
 
@@ -519,7 +520,7 @@ describe('createUseStickToBottomController', () => {
 
       controller.forceStick();
       expect(controller.escapedFromLock).toBe(false);
-      expect(geom.scrollTop).toBe(399);
+      expect(geom.scrollTop).toBe(400);
       expect(controller.isAtBottom).toBe(true);
     });
 
@@ -535,14 +536,14 @@ describe('createUseStickToBottomController', () => {
       fireWheel(scrollEl, -50, scrollEl);
       geom.scrollTop = 100;
       controller.forceStick();
-      expect(geom.scrollTop).toBe(399);
+      expect(geom.scrollTop).toBe(400);
 
       geom.scrollHeight = 1200;
       geom.contentHeight = 1000;
       const ro = getRO();
       ro.fire(contentEl, 800); // initialize previousHeight
       ro.fire(contentEl, 1000); // positive delta — sync pin
-      expect(geom.scrollTop).toBe(599);
+      expect(geom.scrollTop).toBe(600);
 
       // No rAF tick advances scrollTop further — there's no chase loop
       // running in the background that could overshoot the sync pin.
@@ -574,14 +575,14 @@ describe('createUseStickToBottomController', () => {
       // sync-pin to the new target so the user follows the live tail
       // without any visible scroll motion.
       controller.setEscapedFromLock(true);
-      geom.scrollTop = 399;
+      geom.scrollTop = 400;
       controller.markAtBottom();
       const ro = getRO();
       ro.fire(contentEl, 800); // initialize previousHeight
       geom.scrollHeight = 1200;
       geom.contentHeight = 1000;
       ro.fire(contentEl, 1000); // positive delta — sync pin
-      expect(geom.scrollTop).toBe(599); // single-write convergence
+      expect(geom.scrollTop).toBe(600); // single-write convergence
       const after = geom.scrollTop;
       for (let i = 0; i < 5; i++) await nextFrame();
       expect(geom.scrollTop).toBe(after);
@@ -610,9 +611,9 @@ describe('createUseStickToBottomController', () => {
     it('does not break sticky-bottom state when the target is already current', async () => {
       expect(controller.isSticky).toBe(true);
 
-      await expect(controller.animateScrollTo(399)).resolves.toBe('completed');
+      await expect(controller.animateScrollTo(400)).resolves.toBe('completed');
 
-      expect(geom.scrollTop).toBe(399);
+      expect(geom.scrollTop).toBe(400);
       expect(controller.escapedFromLock).toBe(false);
       expect(controller.isSticky).toBe(true);
     });
@@ -755,7 +756,7 @@ describe('createUseStickToBottomController', () => {
 
       r2();
       // Now released — re-pinned synchronously.
-      expect(geom.scrollTop).toBe(599);
+      expect(geom.scrollTop).toBe(600);
     });
 
     it('release does NOT re-pin when escapedFromLock', () => {
@@ -777,8 +778,8 @@ describe('createUseStickToBottomController', () => {
       // notifyContentMaybeGrew explicitly.
       geom.scrollHeight = 1100;
       controller.notifyContentMaybeGrew();
-      // target = 1100 - 1 - 600 = 499.
-      expect(geom.scrollTop).toBe(499);
+      // target = 1100 - 600 = 500.
+      expect(geom.scrollTop).toBe(500);
     });
 
     it('no-op when escaped', () => {
@@ -892,7 +893,7 @@ describe('createUseStickToBottomController', () => {
       // handler's "user scrolled back" path, the forceStick path, or
       // the content RO's negative-delta restick path — none of which
       // are triggered here.
-      geom.scrollTop = 399;
+      geom.scrollTop = 400;
 
       // Without a scroll event firing the re-stick path, isSticky stays
       // false even though geometrically we'd be at-bottom.
@@ -915,7 +916,7 @@ describe('createUseStickToBottomController', () => {
       await nextTimer();
       expect(controller.escapedFromLock).toBe(true);
 
-      geom.scrollTop = 399;
+      geom.scrollTop = 400;
       fireScroll(scrollEl);
       await nextTimer();
 

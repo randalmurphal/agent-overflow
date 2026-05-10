@@ -14,6 +14,7 @@
   import {
     getThreadScrollSnapshot,
     setThreadScrollSnapshot,
+    type ScrollSnapshot,
   } from '../../utils/threadScrollSnapshots';
   import {
     finalAssistantTextIdsByTurn,
@@ -38,6 +39,7 @@
   import WaitGroup from './WaitGroup.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { recordTimelineRenderTrace } from './messageTimelineTrace';
+  import { isUiRenderTraceEnabled, recordUiTrace } from '../../utils/uiRenderTrace';
   import type { UserMessageActions } from './userMessageActions';
 
   // Initial item-size estimate for virtua. Real sizes come from the
@@ -172,6 +174,143 @@
     recordTimelineRenderTrace(pane, groupedNodes, scrollEl, listRef);
   });
 
+  // Trace virtua remount transitions: listRef goes undefined → defined
+  // when the {#key pane.threadId} block remounts the Virtualizer. This
+  // is the seam where virtua's deferred scroller attach
+  // (`tick().then(observe)` in Virtualizer.svelte) fires; a stale
+  // scrollTop from the outgoing thread can be visible here.
+  $effect(() => {
+    if (!isUiRenderTraceEnabled()) return;
+    const bound = listRef !== undefined;
+    recordUiTrace('timeline.listRef.bind', {
+      bound,
+      threadId: pane.threadId,
+      restoredThreadId,
+      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+      scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+      clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+      groupedNodesLength: groupedNodes.length,
+    });
+  });
+
+  // Per-row resize tracker. Diagnostic-only — gated on the trace flag, so
+  // production builds skip the observer wiring entirely. Observes every
+  // [data-row-index] wrapper virtua mounts and records each height delta
+  // alongside a small tag fingerprint of suspect descendants (shiki,
+  // skeleton, mermaid, katex, sd-code, img, approval/todo/working). This
+  // is the surface that names which row(s) and which child element class
+  // is responsible for an unexpected ±N px oscillation on thread re-entry.
+  $effect(() => {
+    if (!isUiRenderTraceEnabled() || !contentEl) return;
+    const root = contentEl;
+    const ROW_SELECTOR = '[data-row-index]';
+    const tracked = new Map<Element, { rowIndex: string; height: number }>();
+
+    const fingerprintRow = (el: Element): string => {
+      const tags: string[] = [];
+      if (el.querySelector('pre.shiki, pre[class*="shiki"]')) tags.push('shiki');
+      if (el.querySelector('[class*="skeleton"], [class*="animate-pulse"]')) tags.push('skeleton');
+      if (el.querySelector('[data-mermaid-source], svg.mermaid, .mermaid svg')) tags.push('mermaid');
+      if (el.querySelector('.katex, [class*="katex"]')) tags.push('katex');
+      if (el.querySelector('[data-streamdown-code]')) tags.push('sd-code');
+      if (el.querySelector('img')) tags.push('img');
+      if (el.querySelector('[data-testid="approval-card"]')) tags.push('approval');
+      if (el.querySelector('[data-testid="todo-list"]')) tags.push('todo');
+      if (el.querySelector('[data-testid*="working"]')) tags.push('working');
+      return tags.join(',');
+    };
+
+    const inspectDescendants = (el: Element): Record<string, unknown> => {
+      const out: Record<string, unknown> = {};
+      const pre = el.querySelector('pre');
+      if (pre) {
+        out.preClass = (pre.className?.toString() ?? '').slice(0, 120);
+        out.preChildCount = pre.children.length;
+        out.preTextLen = (pre.textContent ?? '').length;
+      }
+      const sdCode = el.querySelector('[data-streamdown-code]');
+      if (sdCode) out.sdCodeId = sdCode.getAttribute('data-streamdown-code') ?? '';
+      const mermaid = el.querySelector('[data-mermaid-source]');
+      if (mermaid) {
+        out.mermaidHasSvg = mermaid.querySelector('svg') !== null;
+        out.mermaidChildCount = mermaid.children.length;
+      }
+      const katex = el.querySelector('.katex, [class*="katex"]');
+      if (katex) out.katexRendered = katex.querySelector('.katex-mathml') !== null;
+      const img = el.querySelector('img');
+      if (img) {
+        out.imgComplete = (img as HTMLImageElement).complete;
+        out.imgNaturalH = (img as HTMLImageElement).naturalHeight;
+      }
+      return out;
+    };
+
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const t = tracked.get(entry.target);
+        if (!t) continue;
+        const newHeight = Math.round(entry.contentRect.height);
+        if (newHeight === t.height) continue;
+        const prevHeight = t.height;
+        t.height = newHeight;
+        // Skip the initial 0/-1 → N first measurement (no real "change").
+        if (prevHeight < 0) continue;
+        const targetEl = entry.target as HTMLElement;
+        const itemId = targetEl.querySelector<HTMLElement>('[data-item-id]')?.dataset.itemId ?? '';
+        const textPreview = (targetEl.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 100);
+        recordUiTrace('timeline.row.resize', {
+          rowIndex: t.rowIndex,
+          itemId,
+          prevHeight,
+          newHeight,
+          delta: newHeight - prevHeight,
+          contentTags: fingerprintRow(targetEl),
+          outerHTMLLen: targetEl.outerHTML.length,
+          childCount: targetEl.querySelectorAll('*').length,
+          descendants: inspectDescendants(targetEl),
+          textPreview,
+        });
+      }
+    });
+
+    const trackElement = (el: Element) => {
+      if (tracked.has(el)) return;
+      tracked.set(el, {
+        rowIndex: (el as HTMLElement).dataset.rowIndex ?? '',
+        height: -1,
+      });
+      ro.observe(el);
+    };
+    const untrackElement = (el: Element) => {
+      if (!tracked.delete(el)) return;
+      ro.unobserve(el);
+    };
+
+    root.querySelectorAll(ROW_SELECTOR).forEach(trackElement);
+
+    const mo = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        m.addedNodes.forEach((n) => {
+          if (!(n instanceof Element)) return;
+          if (n.matches(ROW_SELECTOR)) trackElement(n);
+          n.querySelectorAll?.(ROW_SELECTOR).forEach(trackElement);
+        });
+        m.removedNodes.forEach((n) => {
+          if (!(n instanceof Element)) return;
+          if (n.matches(ROW_SELECTOR)) untrackElement(n);
+          n.querySelectorAll?.(ROW_SELECTOR).forEach(untrackElement);
+        });
+      }
+    });
+    mo.observe(root, { childList: true, subtree: true });
+
+    return () => {
+      mo.disconnect();
+      ro.disconnect();
+      tracked.clear();
+    };
+  });
+
   // ============================================================
   // Helpers
   // ============================================================
@@ -290,8 +429,8 @@
   }
 
   // Reset restoration tracking on thread change BEFORE the new thread's
-  // effects run, AND suspend auto-follow until restoreInitialPosition
-  // takes over. Setting escapedFromLockState=true synchronously here
+  // effects run, AND suspend auto-follow until restoreToBottom (or
+  // restoreAnchor) takes over. Setting escapedFromLockState=true synchronously here
   // freezes the controller until the new thread's restoration runs.
   //
   // We do NOT call saveScrollSnapshotForThread for the outgoing thread
@@ -306,6 +445,18 @@
   $effect.pre(() => {
     const nextThreadId = pane.threadId;
     if (scrollSnapshotThreadId !== nextThreadId) {
+      if (isUiRenderTraceEnabled()) {
+        recordUiTrace('timeline.restore.effectPre', {
+          oldThreadId: scrollSnapshotThreadId,
+          newThreadId: nextThreadId,
+          scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+          scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+          clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+          paneItems: pane.items.length,
+          paneLoading: pane.loading,
+          hasCachedVirtuaCache: pane.cachedVirtuaCache !== undefined,
+        });
+      }
       if (scrollSnapshotThreadId) {
         restoredThreadId = null;
         restoreToken += 1;
@@ -330,7 +481,38 @@
     const hasTimelineRows = groupedNodes.length > 0;
     if (hasTimelineRows && !listRef) return;
     restoredThreadId = threadId;
-    void restoreInitialPosition(threadId, ++restoreToken);
+    // Branch synchronously on snapshot kind. The bottom branch only
+    // needs scrollEl (forceStick) — running it inline keeps the
+    // controller's pauseAutoScroll lease and the `await tick()`
+    // microtask boundary out of the critical "switch in → land at
+    // bottom" path. Awaiting tick gates the contentRO sync-pin off
+    // (pauseDepth>0) for an extra microtask while virtua's deferred
+    // scroller attach (Virtualizer.svelte's `tick().then(observe)`)
+    // races to read scrollEl.scrollTop — the visible flash on long
+    // threads was virtua reading the carry-over scrollTop from the
+    // outgoing thread before our forceStick landed.
+    const snap = getThreadScrollSnapshot(threadId);
+    if (isUiRenderTraceEnabled()) {
+      recordUiTrace('timeline.restore.effect', {
+        threadId,
+        snapKind: snap?.kind ?? null,
+        snapItemId: snap?.kind === 'anchor' ? snap.itemId : null,
+        snapOffsetTop: snap?.kind === 'anchor' ? snap.offsetTop : null,
+        itemsLength,
+        loading,
+        groupedNodesLength: groupedNodes.length,
+        hasListRef: listRef !== undefined,
+        hasScrollEl: scrollEl !== undefined,
+        scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+        scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+        clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+      });
+    }
+    if (!snap || snap.kind === 'bottom') {
+      restoreToBottom();
+      return;
+    }
+    void restoreAnchor(threadId, snap, ++restoreToken);
   });
 
   // Bottom restore. Two cases:
@@ -356,35 +538,124 @@
   // sync-pin) targeting slightly different scrollTop values for the
   // same content-grow trigger, and they oscillate. forceStick() alone
   // is the single writer.
+  //
+  // The trailing rAF `notifyContentMaybeGrew()` is a defensive late-
+  // settling re-pin: composer-height RO updates flowing into scrollEl's
+  // padding-bottom, virtua's per-row ResizeObservers firing a frame
+  // after mount, and the first burst of Streamdown async typesetting
+  // can all change geometry one frame after the initial forceStick.
+  // Padding-only changes don't re-fire contentRO (W3C ResizeObserver
+  // observes content-box) so a paint-time settle that nudges the bottom
+  // by a few px would otherwise leave the user "half a tick" above
+  // bottom. notifyContentMaybeGrew is escape-aware (bails if the user
+  // gestured up between frames) so it can't yank them.
   function restoreToBottom(): void {
     const lastIndex = groupedNodes.length - 1;
+    if (isUiRenderTraceEnabled()) {
+      recordUiTrace('timeline.restore.bottom.entry', {
+        threadId: restoredThreadId,
+        lastIndex,
+        groupedNodesLength: groupedNodes.length,
+        hasListRef: listRef !== undefined,
+        hasScrollEl: scrollEl !== undefined,
+        scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+        scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+        clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+      });
+    }
     if (lastIndex < 0) {
       stick.markAtBottom();
       const threadId = snapshotThreadId();
       if (threadId) setThreadScrollSnapshot(threadId, { kind: 'bottom' });
+      if (isUiRenderTraceEnabled()) {
+        recordUiTrace('timeline.restore.bottom.exit', {
+          threadId: restoredThreadId,
+          branch: 'empty',
+        });
+      }
       return;
     }
     stick.forceStick();
     saveScrollSnapshot();
+    // Capture the thread the rAF was scheduled for so a thread switch
+    // between forceStick and the next frame doesn't run the late re-pin
+    // against the new thread's geometry. notifyContentMaybeGrew also
+    // bails on escape/pause as a second-line defense.
+    const expectedThreadId = restoredThreadId;
+    if (isUiRenderTraceEnabled()) {
+      recordUiTrace('timeline.restore.bottom.exit', {
+        threadId: restoredThreadId,
+        branch: 'forceStick',
+        scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+        scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+      });
+    }
+    requestAnimationFrame(() => {
+      const stillSameThread = restoredThreadId === expectedThreadId;
+      if (isUiRenderTraceEnabled()) {
+        recordUiTrace('timeline.restore.bottom.raf', {
+          threadId: restoredThreadId,
+          expectedThreadId,
+          stillSameThread,
+          scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+          scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+          clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+        });
+      }
+      if (!stillSameThread) return;
+      stick.notifyContentMaybeGrew();
+    });
   }
 
-  async function restoreInitialPosition(threadId: string, token: number): Promise<void> {
+  async function restoreAnchor(
+    threadId: string,
+    snap: Extract<ScrollSnapshot, { kind: 'anchor' }>,
+    token: number,
+  ): Promise<void> {
+    if (isUiRenderTraceEnabled()) {
+      recordUiTrace('timeline.restore.anchor.entry', {
+        threadId,
+        token,
+        itemId: snap.itemId,
+        offsetTop: snap.offsetTop,
+      });
+    }
     const release = stick.pauseAutoScroll();
     try {
-      // Let virtua mount with the current data so listRef is populated.
       await tick();
-      if (token !== restoreToken || pane.threadId !== threadId) return;
-
-      const snap = getThreadScrollSnapshot(threadId);
-      if (!snap || snap.kind === 'bottom') {
-        restoreToBottom();
+      if (token !== restoreToken || pane.threadId !== threadId) {
+        if (isUiRenderTraceEnabled()) {
+          recordUiTrace('timeline.restore.anchor.bail', {
+            threadId,
+            token,
+            currentRestoreToken: restoreToken,
+            currentPaneThreadId: pane.threadId,
+            stage: 'after-tick',
+          });
+        }
         return;
       }
-      if (groupedNodes.length > 0 && !listRef) return;
+      if (groupedNodes.length > 0 && !listRef) {
+        if (isUiRenderTraceEnabled()) {
+          recordUiTrace('timeline.restore.anchor.bail', {
+            threadId,
+            token,
+            stage: 'no-listref',
+            groupedNodesLength: groupedNodes.length,
+          });
+        }
+        return;
+      }
 
-      // Anchor snapshot: ensure the target item is loaded, then scroll
-      // to it preserving the recorded offset within its row.
       const found = await pane.loadUntilItem(snap.itemId);
+      if (isUiRenderTraceEnabled()) {
+        recordUiTrace('timeline.restore.anchor.loaded', {
+          threadId,
+          token,
+          found,
+          itemId: snap.itemId,
+        });
+      }
       if (token !== restoreToken || pane.threadId !== threadId) return;
       if (!found) {
         restoreToBottom();
@@ -393,15 +664,21 @@
       await tick();
       if (token !== restoreToken || pane.threadId !== threadId || !listRef) return;
       const idx = findTimelineNodeIndex(snap.itemId);
+      if (isUiRenderTraceEnabled()) {
+        recordUiTrace('timeline.restore.anchor.scrollToIndex', {
+          threadId,
+          token,
+          idx,
+          offsetTop: snap.offsetTop,
+          scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+          scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+          clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+        });
+      }
       if (idx < 0) {
         restoreToBottom();
         return;
       }
-      // User wasn't at bottom when they left — explicit jump elsewhere
-      // must not restick. stopScroll marks the upcoming scrollToIndex
-      // as not user-driven (and cancels any in-flight animateScrollTo);
-      // setEscapedFromLock ensures the resulting near-bottom check
-      // doesn't auto-restick.
       stick.stopScroll();
       stick.setEscapedFromLock(true);
       listRef.scrollToIndex(idx, { align: 'start', offset: -snap.offsetTop });
@@ -517,10 +794,23 @@
      inner div is the actual scroll container that <Virtualizer
      scrollRef={scrollEl}> reads/writes via, that the controller's
      wheel/scroll/keydown/touch listeners and content ResizeObserver
-     bind to. The padding-bottom (= composer height + visual breathing
-     room) keeps the last message clear of the absolute composer
-     overlay without putting a synthetic spacer row inside the
-     virtualized data. Layout shape mirrors discussion/ChannelView.svelte
+     bind to. `overflow-anchor: none` disables the browser's
+     scroll-anchor adjustment — virtua already owns row-anchor
+     preservation via its measurement loop, and the controller owns
+     bottom-pinning via the contentRO sync-pin; leaving the browser's
+     anchor heuristic ON makes it fight both, producing visible
+     scrollTop oscillation as Streamdown's async typesetting (shiki /
+     KaTeX / mermaid) grows rows above the viewport. The padding-bottom
+     (= composer height + visual breathing room) keeps the last message
+     clear of the absolute composer overlay without putting a synthetic
+     spacer row inside the virtualized data; it lives on scrollEl
+     because contentEl's contentRO observes content-box and
+     padding-only changes neither fire the callback (W3C ResizeObserver
+     spec — default observation is content-box) nor change
+     `entry.contentRect.height`, so a contentEl padding wouldn't
+     re-pin via the contentRO seam. ChatView's composer-overlay RO
+     calls `notifyContentMaybeGrew()` to handle that case explicitly.
+     Layout shape mirrors discussion/ChannelView.svelte
      (`relative flex h-full flex-col` + `flex-1 min-h-0 overflow-y-auto`)
      so the two surfaces stay in lockstep. -->
 <div class="relative flex h-full flex-col">
@@ -528,6 +818,7 @@
     bind:this={scrollEl}
     class="flex-1 min-h-0 overflow-y-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/25"
     style:overscroll-behavior-y="contain"
+    style:overflow-anchor="none"
     style:padding-bottom={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}
     tabindex="-1"
     data-testid="message-timeline-scroll"

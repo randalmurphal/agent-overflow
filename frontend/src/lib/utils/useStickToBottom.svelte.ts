@@ -29,6 +29,19 @@
 // when their out-of-content height changes; the seam is identical on
 // both surfaces.
 
+import { isUiRenderTraceEnabled, recordUiTrace } from './uiRenderTrace';
+
+// Diagnostic trace helper — no-op in production (gated by
+// `isUiRenderTraceEnabled` which only returns true in dev with
+// `VITE_AGENT_OVERFLOW_UI_TRACE=1`, set by `make dev DEBUG=1`). The
+// thunk skips object construction when disabled. Records flow into
+// `${configDir}/ui-trace/ui-render.jsonl` via the same batched
+// `AppendUIRenderTraceBatch` binding the timeline render trace uses.
+function trace(label: string, build: () => Record<string, unknown>): void {
+  if (!isUiRenderTraceEnabled()) return;
+  recordUiTrace(label, build());
+}
+
 // "Near bottom" threshold for the geometric flag (button visibility,
 // negative-delta repin). Loose on purpose: when the user is within 70px,
 // the bottom is essentially in view and the scroll-to-bottom chip is
@@ -39,11 +52,10 @@ const STICK_TO_BOTTOM_OFFSET_PX = 70;
 // inside the threshold, so the same scroll handler that observed the
 // escape immediately re-sticks them — their gesture is undone. Keep this
 // near-zero so re-stick only triggers when the user has actually scrolled
-// essentially all the way back to the bottom. The minimum useful value
-// is 1: at sticky-bottom, `targetScrollTop()` returns
-// `scrollHeight - 1 - clientHeight` (the load-bearing -1), so the
-// distance-to-bottom from a sticky session reads as 1 px. 5 leaves
-// margin for sub-pixel rounding while still excluding any deliberate
+// essentially all the way back to the bottom. At sticky-bottom,
+// `targetScrollTop()` returns `scrollHeight - clientHeight` exactly, so
+// the distance-to-bottom from a sticky session is 0 px. 5 leaves margin
+// for sub-pixel rounding while still excluding any deliberate
 // wheel/touch gesture wider than a few pixels.
 const RE_STICK_OFFSET_PX = 5;
 const RESIZE_CLEAR_PADDING_MS = 1;
@@ -198,10 +210,16 @@ export function createUseStickToBottomController(): UseStickToBottomController {
   // ===== Geometry =====
   function targetScrollTop(): number {
     if (!scrollEl) return 0;
-    // The -1 is load-bearing: matches upstream so the geometric "at
-    // bottom" check always has a sub-pixel diff, keeping isAtBottom
-    // from oscillating across browser sub-pixel rounding.
-    return Math.max(0, scrollEl.scrollHeight - 1 - scrollEl.clientHeight);
+    // Land at the actual bottom (scrollHeight - clientHeight). Upstream
+    // use-stick-to-bottom subtracts an extra -1 px to avoid sub-pixel
+    // rounding flipping their geometric isAtBottom check, but this
+    // controller's isAtBottom uses a 70 px STICK_TO_BOTTOM_OFFSET_PX
+    // band (button visibility) and re-stick uses RE_STICK_OFFSET_PX
+    // (5 px) — both wide enough that one sub-pixel doesn't matter.
+    // Subtracting -1 here just left the user 1 px above the actual
+    // bottom; the scrollbar showed a one-tick gap and the snap felt
+    // incomplete.
+    return Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
   }
   function distanceFromBottom(): number {
     if (!scrollEl) return 0;
@@ -214,13 +232,37 @@ export function createUseStickToBottomController(): UseStickToBottomController {
   }
 
   // ===== Programmatic scroll write =====
+  // Diagnostic: `writeCaller` is set by the public-facing scrollTop
+  // writer (forceStick / notifyContentMaybeGrew / contentRO /
+  // animateScrollTo / overscroll-guard) before delegating to
+  // `writeScrollTop` so the trace can attribute every write to its
+  // origin. No semantic effect; production builds short-circuit at the
+  // `isUiRenderTraceEnabled` check inside `trace()`.
+  let writeCaller: string = 'unknown';
   function writeProgrammaticScrollTop(value: number): void {
     if (!scrollEl) return;
+    const beforeTop = scrollEl.scrollTop;
+    const beforeHeight = scrollEl.scrollHeight;
+    const beforeClient = scrollEl.clientHeight;
     scrollEl.scrollTop = value;
     // Tag using the BROWSER-rounded read so the scroll handler's
     // `scrollTop === ignoreScrollToTop` check matches.
     ignoreScrollToTop = scrollEl.scrollTop;
     refreshIsNearBottom();
+    trace('scroll.write', () => ({
+      caller: writeCaller,
+      requested: Math.round(value),
+      beforeTop: Math.round(beforeTop),
+      afterTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+      scrollHeight: Math.round(beforeHeight),
+      clientHeight: Math.round(beforeClient),
+      maxTarget: Math.round(Math.max(0, beforeHeight - beforeClient)),
+      ignoreScrollToTop,
+      isAtBottomState,
+      escapedFromLockState,
+      pauseDepth,
+      isNearBottomState,
+    }));
   }
 
   function writeScrollTop(value: number): void {
@@ -297,7 +339,18 @@ export function createUseStickToBottomController(): UseStickToBottomController {
         // First fire: snap to bottom synchronously so the initial paint
         // lands at the right place. Matches upstream's `initial` behavior
         // when isAtBottom starts true.
-        if (isAtBottomState && !escapedFromLockState) {
+        const willPin = isAtBottomState && !escapedFromLockState;
+        trace('scroll.contentRO.firstFire', () => ({
+          nextHeight: Math.round(nextHeight),
+          willPin,
+          isAtBottomState,
+          escapedFromLockState,
+          scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+          scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+          clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+        }));
+        if (willPin) {
+          writeCaller = 'contentRO.firstFire';
           writeScrollTop(targetScrollTop());
         }
         refreshIsNearBottom();
@@ -311,9 +364,38 @@ export function createUseStickToBottomController(): UseStickToBottomController {
       if (delta === 0) return;
       resizeDifference = delta;
 
+      const overshoot = scrollEl.scrollTop > targetScrollTop();
+      const positiveWillPin = delta > 0
+        && isAtBottomState && !escapedFromLockState && pauseDepth === 0;
+      const negativeWillPin = delta < 0
+        && (() => {
+          // Mirror the negative branch's near-bottom check WITHOUT
+          // mutating refreshIsNearBottom side effects in the trace.
+          const dist = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
+          return dist <= STICK_TO_BOTTOM_OFFSET_PX
+            && !escapedFromLockState && pauseDepth === 0;
+        })();
+      trace('scroll.contentRO', () => ({
+        prev: Math.round(prev),
+        next: Math.round(nextHeight),
+        delta: Math.round(delta),
+        overshoot,
+        positiveWillPin,
+        negativeWillPin,
+        isAtBottomState,
+        escapedFromLockState,
+        pauseDepth,
+        isNearBottomState,
+        scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+        scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+        clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+        target: scrollEl ? Math.round(targetScrollTop()) : null,
+      }));
+
       // Overscroll guard: if browser auto-clamping or virtua corrections
       // pushed us past the target, snap back.
-      if (scrollEl.scrollTop > targetScrollTop()) {
+      if (overshoot) {
+        writeCaller = 'contentRO.overshoot';
         writeScrollTop(targetScrollTop());
       }
 
@@ -327,6 +409,7 @@ export function createUseStickToBottomController(): UseStickToBottomController {
         // (shiki/KaTeX/mermaid), virtua's per-row remeasurement after a
         // cache-hit mount, parseIncompleteMarkdown rebalance.
         if (isAtBottomState && !escapedFromLockState && pauseDepth === 0) {
+          writeCaller = 'contentRO.positiveDelta';
           writeScrollTop(targetScrollTop());
         }
       } else if (delta < 0) {
@@ -335,6 +418,7 @@ export function createUseStickToBottomController(): UseStickToBottomController {
         refreshIsNearBottom();
         if (isNearBottomState && !escapedFromLockState && pauseDepth === 0) {
           isAtBottomState = true;
+          writeCaller = 'contentRO.negativeDelta';
           writeScrollTop(targetScrollTop());
         }
       }
@@ -376,6 +460,12 @@ export function createUseStickToBottomController(): UseStickToBottomController {
     }
     if (cur !== scrollEl) return;
     if (scrollEl.scrollHeight <= scrollEl.clientHeight) return;
+    trace('scroll.wheel.escape', () => ({
+      deltaY: e.deltaY,
+      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+      isAtBottomState,
+      escapedFromLockState,
+    }));
     setEscapedFromLock(true);
   }
 
@@ -389,6 +479,19 @@ export function createUseStickToBottomController(): UseStickToBottomController {
     const tag = ignoreScrollToTop;
     ignoreScrollToTop = -1;
     refreshIsNearBottom();
+    const tagged = scrollTopAtEvent === tag;
+    trace('scroll.scrollEvent', () => ({
+      scrollTop: Math.round(scrollTopAtEvent),
+      tag: Math.round(tag),
+      tagged,
+      scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+      clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+      resizeDifference: Math.round(resizeDifference),
+      isAtBottomState,
+      escapedFromLockState,
+      pauseDepth,
+      isNearBottomState,
+    }));
     // Tagged programmatic write — bail synchronously without scheduling
     // the deferral timer. Steady-state streaming fires a sync-pin write
     // on every contentRO positive delta; allocating a closure + timer
@@ -397,7 +500,7 @@ export function createUseStickToBottomController(): UseStickToBottomController {
     // RO-race deferral below isn't needed for tagged writes — the tag is
     // set synchronously by writeScrollTop, so we already know this event
     // reflects our own write, not user intent.
-    if (scrollTopAtEvent === tag) return;
+    if (tagged) return;
     cancelTargetAnimation();
     // Capture direction baseline BEFORE the deferral. We're inside the
     // synchronous handler for the current scroll event; this scrollTop
@@ -419,9 +522,18 @@ export function createUseStickToBottomController(): UseStickToBottomController {
       // after each content-RO fire — vanishingly unlikely to swallow a
       // real user gesture, since the window only opens immediately after
       // a layout change.
-      if (resizeDifference !== 0) return;
+      if (resizeDifference !== 0) {
+        trace('scroll.scrollEvent.deferred.bailRO', () => ({
+          resizeDifference: Math.round(resizeDifference),
+          scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+        }));
+        return;
+      }
 
       if (isSelectingInside(scrollEl)) {
+        trace('scroll.scrollEvent.deferred.escapeSelection', () => ({
+          scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+        }));
         setEscapedFromLock(true);
         return;
       }
@@ -444,11 +556,20 @@ export function createUseStickToBottomController(): UseStickToBottomController {
       const scrolledDown = previousUntagged < 0
         ? false
         : scrollTopAtEvent > previousUntagged;
-      if (
-        scrolledDown
+      const distFromBottom = distanceFromBottom();
+      const willRestick = scrolledDown
         && escapedFromLockState
-        && distanceFromBottom() <= RE_STICK_OFFSET_PX
-      ) {
+        && distFromBottom <= RE_STICK_OFFSET_PX;
+      trace('scroll.scrollEvent.deferred', () => ({
+        scrollTop: Math.round(scrollTopAtEvent),
+        previousUntagged: Math.round(previousUntagged),
+        scrolledDown,
+        distanceFromBottom: Math.round(distFromBottom),
+        willRestick,
+        isAtBottomState,
+        escapedFromLockState,
+      }));
+      if (willRestick) {
         escapedFromLockState = false;
         isAtBottomState = true;
       }
@@ -482,10 +603,21 @@ export function createUseStickToBottomController(): UseStickToBottomController {
   function setEscapedFromLock(next: boolean): void {
     if (next) cancelTargetAnimation();
     if (escapedFromLockState === next) return;
+    const previousIsAtBottom = isAtBottomState;
     escapedFromLockState = next;
     if (next) {
       isAtBottomState = false;
     }
+    trace('scroll.escape.set', () => ({
+      next,
+      previousIsAtBottom,
+      isAtBottomState,
+      pauseDepth,
+      isNearBottomState,
+      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+      scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+      clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+    }));
   }
 
   function stopScroll(): void {
@@ -517,6 +649,7 @@ export function createUseStickToBottomController(): UseStickToBottomController {
       prefersReducedMotion()
       || durationMs <= 0
     ) {
+      writeCaller = 'animateScrollTo.instant';
       writeScrollTop(targetTop);
       return Promise.resolve('completed');
     }
@@ -537,8 +670,10 @@ export function createUseStickToBottomController(): UseStickToBottomController {
         const elapsed = Math.max(0, now - startedAt);
         const progress = Math.min(1, elapsed / durationMs);
         const eased = easeOutCubic(progress);
+        writeCaller = 'animateScrollTo.tick';
         writeProgrammaticScrollTop(startTop + distance * eased);
         if (progress >= 1 || Math.abs(scrollEl.scrollTop - targetTop) <= PROGRAMMATIC_SCROLL_DISTANCE_THRESHOLD_PX) {
+          writeCaller = 'animateScrollTo.finish';
           writeProgrammaticScrollTop(targetTop);
           finishTargetAnimation('completed');
           return;
@@ -551,9 +686,19 @@ export function createUseStickToBottomController(): UseStickToBottomController {
   }
 
   function forceStick(): void {
+    trace('scroll.forceStick.entry', () => ({
+      isAtBottomState,
+      escapedFromLockState,
+      pauseDepth,
+      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+      scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+      clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+      target: scrollEl ? Math.round(targetScrollTop()) : null,
+    }));
     setEscapedFromLock(false);
     if (!scrollEl) return;
     isAtBottomState = true;
+    writeCaller = 'forceStick';
     writeScrollTop(targetScrollTop());
   }
 
@@ -561,12 +706,38 @@ export function createUseStickToBottomController(): UseStickToBottomController {
     // Flag-only counterpart to forceStick: caller already positioned
     // the geometry (typically via virtua's listRef.scrollToIndex(last,
     // 'end')), we just resume streaming follow.
+    trace('scroll.markAtBottom', () => ({
+      isAtBottomState,
+      escapedFromLockState,
+      pauseDepth,
+      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+      scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+      clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+    }));
     setEscapedFromLock(false);
     isAtBottomState = true;
     refreshIsNearBottom();
   }
 
   function notifyContentMaybeGrew(): void {
+    const gateScrollEl = scrollEl !== undefined;
+    const gateEscape = escapedFromLockState;
+    const gatePause = pauseDepth > 0;
+    const gateNotAtBottom = !isAtBottomState;
+    const willPin = gateScrollEl && !gateEscape && !gatePause && !gateNotAtBottom;
+    trace('scroll.notifyContentMaybeGrew', () => ({
+      willPin,
+      gateScrollEl,
+      gateEscape,
+      gatePause,
+      gateNotAtBottom,
+      pauseDepth,
+      isNearBottomState,
+      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+      scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+      clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+      target: scrollEl ? Math.round(targetScrollTop()) : null,
+    }));
     if (!scrollEl) return;
     if (escapedFromLockState || pauseDepth > 0) return;
     if (!isAtBottomState) return;
@@ -581,20 +752,38 @@ export function createUseStickToBottomController(): UseStickToBottomController {
         if (resizeDifference === 1) resizeDifference = 0;
       });
     }, RESIZE_CLEAR_PADDING_MS);
+    writeCaller = 'notifyContentMaybeGrew';
     writeScrollTop(targetScrollTop());
   }
 
   function pauseAutoScroll(): () => void {
     pauseDepth += 1;
+    trace('scroll.pause.acquire', () => ({
+      pauseDepth,
+      isAtBottomState,
+      escapedFromLockState,
+    }));
     let released = false;
     return () => {
       if (released) return;
       released = true;
       pauseDepth = Math.max(0, pauseDepth - 1);
-      if (pauseDepth === 0 && !escapedFromLockState && isAtBottomState) {
+      const willRepin = pauseDepth === 0 && !escapedFromLockState && isAtBottomState;
+      trace('scroll.pause.release', () => ({
+        pauseDepth,
+        willRepin,
+        isAtBottomState,
+        escapedFromLockState,
+        scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+        scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+        clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+        target: scrollEl ? Math.round(targetScrollTop()) : null,
+      }));
+      if (willRepin) {
         // Re-pin on lease release: layout-changing surfaces (sidebar
         // resize, terminal toggle) shrink/grow the chat column during
         // the lease; without this re-pin, sticky users drift.
+        writeCaller = 'pauseAutoScroll.release';
         writeScrollTop(targetScrollTop());
       }
     };
@@ -606,6 +795,16 @@ export function createUseStickToBottomController(): UseStickToBottomController {
     detach();
     scrollEl = nextScrollEl;
     contentEl = nextContentEl;
+    trace('scroll.attach', () => ({
+      surface: nextScrollEl.dataset?.testid ?? '',
+      scrollTop: Math.round(nextScrollEl.scrollTop),
+      scrollHeight: Math.round(nextScrollEl.scrollHeight),
+      clientHeight: Math.round(nextScrollEl.clientHeight),
+      contentHeight: Math.round(nextContentEl.getBoundingClientRect().height),
+      isAtBottomState,
+      escapedFromLockState,
+      pauseDepth,
+    }));
     setupContentRO();
     nextScrollEl.addEventListener('wheel', handleWheel, { passive: true });
     nextScrollEl.addEventListener('scroll', handleScroll, { passive: true });

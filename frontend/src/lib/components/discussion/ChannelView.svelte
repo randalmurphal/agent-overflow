@@ -259,9 +259,18 @@
   </div>
 
   <div class="relative flex-1 min-h-0 flex flex-col">
+    <!-- overflow-anchor: none disables the browser's scroll-anchor
+         heuristic, which would adjust scrollTop when content above the
+         viewport changes size to keep the topmost-visible element fixed.
+         That fights the controller's contentRO sync-pin: Streamdown's
+         async typesetting (shiki / KaTeX / mermaid) growing rows above
+         the viewport on a sticky session would produce visible scrollTop
+         oscillation between the browser's anchor adjustment and our
+         re-pin. See frontend/AGENTS.md § Scroll architecture. -->
     <div
       bind:this={scrollEl}
       class="flex-1 min-h-0 overflow-y-auto px-5 py-4"
+      style:overflow-anchor="none"
       role="log"
       aria-live="polite"
       aria-label="Discussion Channel Messages"

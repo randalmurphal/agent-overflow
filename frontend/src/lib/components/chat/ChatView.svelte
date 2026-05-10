@@ -101,7 +101,7 @@
   // bottom padding of the rendered content so the last row always clears
   // the composer overlay regardless of textarea autosize, attachment tray,
   // approval panel, etc. Decoupled this way, composer growth never alters
-  // the scroll surface's geometry — it only changes how much trailing
+  // the scroll surface's `clientHeight` — it only changes how much trailing
   // whitespace sits below the last message.
   $effect(() => {
     if (!composerOverlay) return;
@@ -111,26 +111,46 @@
       if (!entry) return;
       const next = Math.round(entry.contentRect.height);
       if (next > 0 && next !== composerHeight) {
-        // ORDERING IS LOAD-BEARING: write `composerHeight = next` BEFORE
-        // calling `notifyContentMaybeGrew()`. The composer overlay sits
-        // OUTSIDE the timeline's `contentEl` (which is what the
-        // sticky-bottom controller's content-RO observes), so growing
-        // the composer does not fire that RO. The flow is:
-        //   1. write composerHeight → reactive style update writes a new
-        //      `padding-bottom` on the scroll wrapper → browser begins a
-        //      layout pass that will change `scrollHeight`.
-        //   2. notifyContentMaybeGrew() stamps `resizeDifference = 1` and
-        //      writes `scrollTop = target` synchronously. The stamp
-        //      prevents the layout-flush `scroll` event from being
-        //      mis-classified as a user-driven scroll (which would set
-        //      `escapedFromLock = true` and break stickiness for the
-        //      rest of the session).
-        // If you flip the order — call notify first, then mutate
-        // composerHeight — the new scrollHeight isn't materialized yet,
-        // `target` reads stale geometry, and the subsequent layout flush
-        // emits an untagged scroll event. Don't rearrange.
+        if (isUiRenderTraceEnabled()) {
+          recordUiTrace('chat.composer.height', {
+            threadId: pane.threadId,
+            prev: composerHeight,
+            next,
+            delta: next - composerHeight,
+          });
+        }
+        // Write composerHeight (the reactive style update writes a new
+        // `padding-bottom` on scrollEl), then defer `notifyContentMaybeGrew`
+        // to the next animation frame.
+        //
+        // Why rAF, not synchronous: writing `composerHeight = next`
+        // schedules a Svelte reactive flush, but the new style value
+        // isn't applied to scrollEl's `padding-bottom` until that flush
+        // runs in a microtask. A synchronous `notifyContentMaybeGrew()`
+        // call here reads `scrollEl.scrollHeight` BEFORE the layout
+        // reflects the new padding, so it pins to the OLD target and
+        // strands the user one composer-delta above the eventual bottom
+        // — observed as a "half a scroll tick from the bottom" miss
+        // when bottom-restoring an already-cached thread (the trace
+        // showed forceStick lands at 1819 with scrollHeight 3047, then
+        // composer-RO fires +59px, then sync notify re-pins to 1819
+        // with stale scrollHeight, and final scrollHeight settles at
+        // 3106 leaving the user 59px above bottom).
+        //
+        // Padding-only changes to scrollEl don't fire the controller's
+        // contentRO (W3C ResizeObserver observes content-box), so this
+        // notify is the only seam that re-pins after composer growth.
+        // The rAF runs after Svelte's reactive flush AND the browser's
+        // layout pass, so `targetScrollTop()` reads the post-flush
+        // scrollHeight. The rAF callback also re-checks the threadId
+        // so a thread switch between RO fire and the next frame can't
+        // run the re-pin against the new thread's controller.
+        const writeAtThreadId = pane.threadId;
         composerHeight = next;
-        pane.scrollController?.notifyContentMaybeGrew();
+        requestAnimationFrame(() => {
+          if (pane.threadId !== writeAtThreadId) return;
+          pane.scrollController?.notifyContentMaybeGrew();
+        });
       }
     });
     obs.observe(observed);

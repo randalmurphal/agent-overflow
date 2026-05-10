@@ -125,7 +125,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
 
     render(MessageTimeline, { props: { pane } });
     // Three ticks: controller attach, $effect.pre escape guard,
-    // restoreInitialPosition awaiting tick before scrollToIndex.
+    // restoreAnchor awaiting tick before scrollToIndex.
     await tick();
     await tick();
     await tick();
@@ -201,7 +201,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     // contentRO sync-pin (enabled by markAtBottom) ALSO wrote scrollTop
     // on every positive contentEl delta. They targeted slightly
     // different values (virtua: itemOffset+itemSize-clientHeight;
-    // controller: scrollHeight-1-clientHeight) and oscillated visibly
+    // controller: scrollHeight-clientHeight) and oscillated visibly
     // on every Streamdown async typesetting tick. The single-writer
     // contract closes that hole: forceStick() lands scrollTop once,
     // then sync-pin owns subsequent re-pins.
@@ -237,6 +237,46 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     expect(forceStickSpy!).toHaveBeenCalledTimes(1);
   });
 
+  it('bottom-snapshot restore schedules a rAF notifyContentMaybeGrew settle pass', async () => {
+    // The synchronous forceStick at restore time lands scrollTop against
+    // the geometry virtua reports at frame 0 from the cached row sizes.
+    // Late layout settling — composer-height RO updating scrollEl's
+    // padding-bottom (padding-only growth doesn't refire the contentRO),
+    // virtua's per-row remeasurement on the next frame, and the first
+    // burst of Streamdown async typesetting (shiki / KaTeX / mermaid) —
+    // can shift the bottom by a few pixels one frame after forceStick.
+    // The user-visible symptom of dropping the trailing rAF was landing
+    // "half a scroll tick from the bottom" intermittently. Pin the
+    // contract by spying on notifyContentMaybeGrew and asserting it
+    // fires after one rAF tick.
+    setThreadScrollSnapshot('thread-bottom-settle', { kind: 'bottom' });
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'first' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'second' }),
+    ]);
+    pane.thread!.id = 'thread-bottom-settle';
+
+    let notifySpy: ReturnType<typeof vi.spyOn> | null = null;
+    const origAttach = pane.attachScrollController.bind(pane);
+    pane.attachScrollController = (
+      ctrl: PaneScrollController & { notifyContentMaybeGrew(): void },
+    ) => {
+      notifySpy = vi.spyOn(ctrl, 'notifyContentMaybeGrew');
+      origAttach(ctrl);
+    };
+
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await tick();
+
+    expect(notifySpy).not.toBeNull();
+    const callsBeforeRaf = notifySpy!.mock.calls.length;
+    // Drive one animation frame so the trailing settle pass fires.
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(notifySpy!.mock.calls.length).toBeGreaterThan(callsBeforeRaf);
+  });
+
   it('still calls pane.loadUntilItem when a saved anchor item no longer exists', async () => {
     setThreadScrollSnapshot('thread-missing-anchor', {
       kind: 'anchor',
@@ -259,7 +299,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
   });
 
   it('falls back to restoreToBottom when loadUntilItem returns false (controller ends sticky+not-escaped)', async () => {
-    // restoreInitialPosition has a `!found` branch that calls
+    // restoreAnchor has a `!found` branch that calls
     // restoreToBottom when the saved anchor's item is gone from the
     // backend. Pin the controller end-state contract: after the fallback
     // runs, restoreToBottom calls forceStick which clears escape and
@@ -291,7 +331,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
   });
 
   it('falls back to restoreToBottom when the anchor item resolves but findTimelineNodeIndex returns -1', async () => {
-    // After loadUntilItem returns true, restoreInitialPosition awaits a
+    // After loadUntilItem returns true, restoreAnchor awaits a
     // tick and then calls findTimelineNodeIndex(snap.itemId). If virtua
     // hasn't yet rendered the row (race) or the item id was pruned in
     // a different code path, idx < 0 → fall back to restoreToBottom.
@@ -329,7 +369,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
   it('phase-1 slice already contains the anchor — loadUntilItem short-circuits without GetThreadItem', async () => {
     // The plan-of-record for the two-phase load: ListThreadSliceAround
     // returns ~50 items centered on the saved anchor, so by the time
-    // restoreInitialPosition reaches `pane.loadUntilItem(anchorId)`,
+    // restoreAnchor reaches `pane.loadUntilItem(anchorId)`,
     // the row is already in `pane.items`. The fast path inside
     // loadUntilItem (`items.some(it => it.id === itemID) → return true`)
     // takes over and no `GetThreadItem` round-trip happens. Spying on
@@ -552,6 +592,25 @@ describe('scroll integration — composer height + layout invariance', () => {
     const cls = overlay.className;
     expect(cls).toContain('absolute');
     expect(cls).toContain('bottom-0');
+  });
+
+  it('opts out of browser scroll-anchor on the scroll container', async () => {
+    // Regression guard: the browser's default `overflow-anchor: auto`
+    // adjusts scrollTop to keep the topmost-visible element fixed when
+    // content above the viewport changes size — well-intentioned for
+    // static documents, but it actively fights virtua's measurement-loop
+    // jump correction AND the controller's contentRO sync-pin. Streamdown
+    // async typesetting (shiki / KaTeX / mermaid) growing rows above the
+    // viewport on a sticky session would produce visible scrollTop
+    // oscillation between the browser's anchor adjustment and our re-pin
+    // without this opt-out.
+    const pane = await buildPane(makeThread(), [
+      makeItem({ id: 'tail', summary: 'tail' }),
+    ]);
+    const { getByTestId } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    const scroll = getByTestId('message-timeline-scroll') as HTMLElement;
+    expect(scroll.style.overflowAnchor).toBe('none');
   });
 });
 

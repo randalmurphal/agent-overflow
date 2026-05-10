@@ -128,6 +128,26 @@ describe('<ChannelView>', () => {
     vi.useRealTimers();
   });
 
+  it('opts out of browser scroll-anchor on the scroll container', async () => {
+    // Regression guard: the browser's default `overflow-anchor: auto`
+    // adjusts scrollTop to keep the topmost-visible element fixed when
+    // content above the viewport changes size — which fights the
+    // controller's contentRO sync-pin. Streamdown async typesetting
+    // (shiki / KaTeX / mermaid) growing rows above the viewport on a
+    // sticky session would produce visible scrollTop oscillation between
+    // the browser's anchor adjustment and our re-pin without this
+    // opt-out.
+    const pane = await buildPane();
+    setBindingMock('GetChannelMessages', async () => [
+      makeMsg({ id: 'a', sequence: 1, content: 'first' }),
+    ]);
+    const { getByTestId } = render(ChannelView, {
+      props: { pane, channelId: 'channel-1' },
+    });
+    const scroll = getByTestId('channel-message-list') as HTMLElement;
+    expect(scroll.style.overflowAnchor).toBe('none');
+  });
+
   it('loads initial channel messages via GetChannelMessages and renders them', async () => {
     const pane = await buildPane();
     const getMock = setBindingMock('GetChannelMessages', async () => [
@@ -274,7 +294,7 @@ describe('<ChannelView>', () => {
     });
 
     // Initial poll completes; ChannelView's post-poll forceStick()
-    // writes scrollTop to the current target (= 1000 - 1 - 600 = 399).
+    // writes scrollTop to the current target (= 1000 - 600 = 400).
     await vi.advanceTimersByTimeAsync(0);
     for (let i = 0; i < 5; i++) await Promise.resolve();
     const ro = FireableResizeObserver.instances.at(-1);
@@ -282,23 +302,23 @@ describe('<ChannelView>', () => {
     const contentEl = ro.observed[0] as HTMLElement;
 
     // First RO fire seeds previousHeight. The first-fire branch writes
-    // scrollTop to the current target if sticky; we're already at 399,
+    // scrollTop to the current target if sticky; we're already at 400,
     // so this is a no-op visually.
     ro.fire(contentEl, 400);
-    expect(scroll.scrollTop).toBe(399);
+    expect(scroll.scrollTop).toBe(400);
 
     // Streamdown async typesetting #1: scrollHeight grows to 1100.
-    // contentRO's positive-delta sync-pin writes scrollTop=499 in the
+    // contentRO's positive-delta sync-pin writes scrollTop=500 in the
     // same frame as the callback. No rAF gap.
     scrollHeightValue = 1100;
     ro.fire(contentEl, 500);
-    expect(scroll.scrollTop).toBe(499);
+    expect(scroll.scrollTop).toBe(500);
 
     // Streamdown async typesetting #2: another grow. Same single-write
     // convergence.
     scrollHeightValue = 1200;
     ro.fire(contentEl, 600);
-    expect(scroll.scrollTop).toBe(599);
+    expect(scroll.scrollTop).toBe(600);
 
     // No rAF frames advance scrollTop further. If a future regression
     // re-introduced an autonomous chase loop on contentRO deltas,
@@ -378,11 +398,11 @@ describe('<ChannelView>', () => {
     expect(getByTestId('scroll-to-bottom')).toBeInTheDocument();
 
     // Click the chip → forceStick: clears escape, writes scrollTop to
-    // target (= scrollHeight - 1 - clientHeight = 499), hides chip.
+    // target (= scrollHeight - clientHeight = 500), hides chip.
     await fireEvent.click(getByTestId('scroll-to-bottom'));
     await vi.advanceTimersByTimeAsync(16);
     for (let i = 0; i < 3; i++) await Promise.resolve();
-    expect(scroll.scrollTop).toBe(499);
+    expect(scroll.scrollTop).toBe(500);
     expect(queryByTestId('scroll-to-bottom')).toBeNull();
   });
 
@@ -419,8 +439,8 @@ describe('<ChannelView>', () => {
     expect(getByTestId('scroll-to-bottom')).toBeInTheDocument();
 
     // User types and clicks Post. handlePost calls stick.forceStick()
-    // synchronously, which slams scrollTop to target = 1000 - 1 - 600
-    // = 399 and clears the escape. The chip must hide.
+    // synchronously, which slams scrollTop to target = 1000 - 600
+    // = 400 and clears the escape. The chip must hide.
     const textarea = container.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="Channel Message Input"]',
     )!;
@@ -429,7 +449,7 @@ describe('<ChannelView>', () => {
     await vi.advanceTimersByTimeAsync(16);
     for (let i = 0; i < 3; i++) await Promise.resolve();
 
-    expect(scroll.scrollTop).toBe(399);
+    expect(scroll.scrollTop).toBe(400);
     expect(queryByTestId('scroll-to-bottom')).toBeNull();
   });
 
@@ -441,8 +461,8 @@ describe('<ChannelView>', () => {
     // changes — but useStickToBottom's content RO doesn't fire because
     // contentEl didn't change. ChannelView installs a second RO on the
     // composer section that calls notifyContentMaybeGrew(), and the
-    // controller writes scrollTop = max(0, scrollHeight - 1 -
-    // clientHeight) so the user stays pinned to the last message.
+    // controller writes scrollTop = max(0, scrollHeight - clientHeight)
+    // so the user stays pinned to the last message.
     const pane = await buildPane();
     setBindingMock('GetChannelMessages', async () => [
       makeMsg({ id: 'a', sequence: 1, content: 'first' }),
@@ -482,7 +502,7 @@ describe('<ChannelView>', () => {
     const contentRO = FireableResizeObserver.instances.find((r) => r !== composerRO);
     if (!contentRO) throw new Error('expected useStickToBottom to install a content RO');
     contentRO.fire(contentRO.observed[0], 400);
-    scroll.scrollTop = 399; // = scrollHeight - 1 - clientHeight
+    scroll.scrollTop = 400; // = scrollHeight - clientHeight
     await fireEvent.scroll(scroll);
     await vi.advanceTimersByTimeAsync(16);
     for (let i = 0; i < 3; i++) await Promise.resolve();
@@ -500,8 +520,8 @@ describe('<ChannelView>', () => {
     // so the re-pin is observable on the next microtask.
     for (let i = 0; i < 3; i++) await Promise.resolve();
 
-    // New target = 1000 - 1 - 640 = 359. Controller wrote scrollTop to
+    // New target = 1000 - 640 = 360. Controller wrote scrollTop to
     // this value via the notify path.
-    expect(scroll.scrollTop).toBe(359);
+    expect(scroll.scrollTop).toBe(360);
   });
 });

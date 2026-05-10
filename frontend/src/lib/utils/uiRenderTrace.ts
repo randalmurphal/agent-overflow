@@ -3,9 +3,28 @@ import { getActiveTurn } from '../stores/threadStatuses.svelte';
 import type { ThreadPane } from '../stores/thread.svelte';
 import type { Item } from '../types/models';
 
-const STORAGE_KEY = 'agent-overflow:ui-trace-enabled';
+// The trace surface is opt-in at build time via VITE_AGENT_OVERFLOW_UI_TRACE
+// (set by `make dev DEBUG=1` / `make dev-wsl DEBUG=1`). Vite inlines the
+// env var at build time as a string literal — production builds without
+// the env var set leave UI_TRACE_BUILD_GATE === false, so the entire
+// surface dead-code-eliminates. We previously gated on `import.meta.env.DEV`,
+// but the WSL launcher path runs the `build:dev` output as a Wails-built
+// binary and `import.meta.env.DEV` was returning false there. The env var
+// is the explicit user-controlled signal regardless of build mode.
+//
+// Test mode also enables the gate so unit tests can flip `enabled` on
+// and off via the public setter.
+const UI_TRACE_BUILD_GATE: boolean =
+  import.meta.env.VITE_AGENT_OVERFLOW_UI_TRACE === '1' ||
+  import.meta.env.MODE === 'test';
+
 const MAX_RECORDS = 500;
 const MAX_PENDING_FILE_LINES = 200;
+// Mirror app_ui_trace.go's `uiTraceMaxLineBytes`. The Go side rejects
+// the WHOLE batch on a single oversized line, so we filter client-side
+// to keep small per-event diagnostic traces from being collateral
+// damage when a snapshot trace (chat.dom / chat.state) blows the cap.
+const MAX_LINE_BYTES = 64 * 1024;
 const MAX_ITEMS = 120;
 const MAX_DOM_ROWS = 160;
 const PREVIEW_CHARS = 120;
@@ -45,35 +64,20 @@ let fileFlushTimer: number | null = null;
 let lastTraceFilePath: string | null = null;
 
 function initialEnabled(): boolean {
-  if (!import.meta.env.DEV) return false;
-  if (import.meta.env.VITE_AGENT_OVERFLOW_UI_TRACE === '1') return true;
-  try {
-    return localStorage.getItem(STORAGE_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-function persistEnabled(next: boolean): void {
-  try {
-    if (next) {
-      localStorage.setItem(STORAGE_KEY, '1');
-    } else {
-      localStorage.removeItem(STORAGE_KEY);
-    }
-  } catch {
-    // localStorage can be unavailable in restricted browser contexts.
-  }
+  // When the build gate is true, the env var was set at build time —
+  // tracing is on by default. The localStorage toggle only matters in
+  // builds where the env var is intentionally not set; with the env-var
+  // gate, that path is unreachable.
+  return UI_TRACE_BUILD_GATE;
 }
 
 export function isUiRenderTraceEnabled(): boolean {
-  return import.meta.env.DEV && enabled;
+  return UI_TRACE_BUILD_GATE && enabled;
 }
 
 export function setUiRenderTraceEnabled(next: boolean): void {
-  if (!import.meta.env.DEV) return;
+  if (!UI_TRACE_BUILD_GATE) return;
   enabled = next;
-  persistEnabled(next);
   if (!next) {
     void flushUiRenderTrace();
   }
@@ -122,7 +126,7 @@ export function scheduleDomUiTrace(
 }
 
 export function installUiRenderTraceApi(): void {
-  if (!import.meta.env.DEV || typeof window === 'undefined') return;
+  if (!UI_TRACE_BUILD_GATE || typeof window === 'undefined') return;
   window.__agentOverflowUiTrace = {
     enable: () => setUiRenderTraceEnabled(true),
     disable: () => setUiRenderTraceEnabled(false),
@@ -141,7 +145,7 @@ export function installUiRenderTraceApi(): void {
 }
 
 export async function flushUiRenderTrace(): Promise<string | null> {
-  if (!import.meta.env.DEV || pendingFileLines.length === 0) {
+  if (!UI_TRACE_BUILD_GATE || pendingFileLines.length === 0) {
     return lastTraceFilePath;
   }
   if (fileFlushTimer !== null) {
@@ -161,8 +165,17 @@ export async function flushUiRenderTrace(): Promise<string | null> {
 function queueTraceRecordForFile(record: UiTraceRecord): void {
   const line = stringifyTraceRecord(record);
   if (!line) return;
-
-  pendingFileLines.push(line);
+  // Oversize lines are replaced with a stub placeholder so the
+  // existence of the dropped record is still visible in the trace
+  // file, but the batch sent to Go stays under the per-line cap.
+  // Without this, one fat snapshot trace blows AppendUIRenderTraceBatch
+  // for the entire batch (validateUITraceLines fails fast on the first
+  // offender) and we lose dozens of small adjacent diagnostic traces.
+  const safeLine = line.length <= MAX_LINE_BYTES
+    ? line
+    : stubLineForOversizeRecord(record, line.length);
+  if (!safeLine) return;
+  pendingFileLines.push(safeLine);
   if (pendingFileLines.length > MAX_PENDING_FILE_LINES) {
     pendingFileLines.splice(0, pendingFileLines.length - MAX_PENDING_FILE_LINES);
   }
@@ -178,8 +191,20 @@ function stringifyTraceRecord(record: UiTraceRecord): string | null {
   }
 }
 
+function stubLineForOversizeRecord(
+  record: UiTraceRecord,
+  originalBytes: number,
+): string | null {
+  return stringifyTraceRecord({
+    seq: record.seq,
+    at: record.at,
+    label: record.label,
+    data: { __droppedOversize: true, originalBytes, maxBytes: MAX_LINE_BYTES },
+  });
+}
+
 function scheduleFileFlush(): void {
-  if (!import.meta.env.DEV || fileFlushTimer !== null || typeof window === 'undefined') return;
+  if (!UI_TRACE_BUILD_GATE || fileFlushTimer !== null || typeof window === 'undefined') return;
   fileFlushTimer = window.setTimeout(() => {
     fileFlushTimer = null;
     void flushUiRenderTrace();

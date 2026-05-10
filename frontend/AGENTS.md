@@ -147,7 +147,14 @@ frontend layers on top:
     Discussion's initial channel load, and by chat's bottom-snapshot
     restore on thread switch (paired with the per-thread virtua
     row-size cache, which makes the target correct from frame 0 — see
-    below).
+    below). Chat's bottom restore additionally schedules a single rAF
+    `notifyContentMaybeGrew()` after `forceStick()` to catch late layout
+    settling — composer-height RO updating scrollEl's padding-bottom
+    (padding-only growth doesn't refire contentRO), virtua's per-row
+    remeasurement after mount, and the first burst of Streamdown async
+    typesetting can each shift the bottom by a few pixels one frame
+    later. The trailing pin is escape-aware, so a user wheel-up between
+    frames cancels it.
   - `markAtBottom()` flips the controller flags to sticky-bottom
     WITHOUT writing `scrollTop`. Used for the empty-timeline branch of
     bottom-snapshot restore (no rows to anchor against yet, but the
@@ -197,9 +204,33 @@ frontend layers on top:
 - **Layout decoupling** — `ChatView.svelte` positions the composer +
   live-turn UI + below-bar as an absolute overlay inside the timeline's
   relative container. A `--composer-height` CSS variable, written by a
-  ResizeObserver on the overlay, drives the timeline's bottom padding
-  so composer growth, working/todo panels, attachment trays, and
-  approval panels never alter the scroll surface's `clientHeight`.
+  ResizeObserver on the overlay, drives the timeline's `padding-bottom`
+  on `scrollEl` so composer growth, working/todo panels, attachment
+  trays, and approval panels never alter the scroll surface's
+  `clientHeight`. The padding lives on scrollEl (not contentEl) because
+  the controller's contentRO defaults to observing the content-box —
+  per W3C ResizeObserver spec, padding-only changes neither fire the
+  callback nor change `entry.contentRect.height`, so a contentEl
+  padding wouldn't re-pin via the contentRO seam. ChatView's composer
+  RO calls `notifyContentMaybeGrew()` to stamp the resize and re-pin
+  scrollTop after the padding update flows through. ChannelView's
+  composer-section RO calls the same hook for an analogous reason: in
+  Discussion the composer sits OUTSIDE scrollEl (different layout —
+  flex sibling, not absolute overlay), so composer growth there changes
+  `scrollEl.clientHeight` rather than `scrollHeight`, and the contentRO
+  also doesn't see it.
+- **`overflow-anchor: none` on `scrollEl`.** Both MessageTimeline and
+  ChannelView set `overflow-anchor: none` on the scroll container. The
+  browser's default scroll-anchor heuristic adjusts `scrollTop` when
+  content above the viewport changes size — well-intentioned for static
+  documents, but it actively fights virtua's measurement-loop jump
+  correction AND the controller's contentRO sync-pin. Streamdown async
+  typesetting (shiki / KaTeX / mermaid) growing rows above the viewport
+  on a sticky session would produce visible scrollTop oscillation
+  between the browser's anchor adjustment and our re-pin without this
+  opt-out. virtua already sets `overflow-anchor: none` on its inner
+  container, so the controller doesn't need a defensive copy on
+  contentEl — only the outer scrollEl needs the opt-out.
 - **Reserved-slot banners** — `ProviderStatusBanner.svelte` and
   `TransportStatusBanner.svelte` both use `min-h-N` wrappers +
   `transition:fade` so banner mount/unmount does not animate adjacent

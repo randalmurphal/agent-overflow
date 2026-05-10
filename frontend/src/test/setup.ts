@@ -9,6 +9,7 @@ import {
   __resetActivityRailUiPrefsForTest,
   __resetLiveTodoUiPrefsForTest,
 } from '../lib/stores/thread.svelte';
+import { __resetPayloadCacheForTest } from '../lib/utils/payloadDataCache';
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class StubResizeObserver {
@@ -184,6 +185,12 @@ afterEach(() => {
   // the next test's fresh pane.
   __resetLiveTodoUiPrefsForTest();
   __resetActivityRailUiPrefsForTest();
+  // The module-level payload-data cache survives thread switches by
+  // design (the whole point — re-entering a thread renders synchronously
+  // from cache instead of replaying empty-then-loaded). Reset it
+  // between tests so a previous test's "thread-1/payload-1" hit doesn't
+  // skip the next test's expected fetch.
+  __resetPayloadCacheForTest();
   // Wipe the in-memory localStorage between tests so persistence-aware
   // stores don't leak state across suites.
   try {

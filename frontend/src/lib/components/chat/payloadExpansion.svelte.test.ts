@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { writePayloadCache } from '../../utils/payloadDataCache';
 import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
 
 describe('payloadExpansion', () => {
@@ -244,5 +245,96 @@ describe('payloadExpansion', () => {
     expect(expansion.displayData).toBeNull();
     expect(expansion.previewData).toBeNull();
     expect(expansion.fullData).toBeNull();
+  });
+
+  it('hydrates synchronously from the module cache without touching the binding', () => {
+    // Pre-populate the cache as if a prior expansion had loaded this
+    // payload. The new handle must surface `displayData` at construction
+    // — no async fetch, no binding call. This is the architectural
+    // contract that prevents the empty-then-loaded oscillation on
+    // thread re-entry.
+    writePayloadCache('thread-cache', 'payload-cached', 99, {
+      chunks: ['cached chunk'],
+      hasFullChunks: true,
+      totalSize: 12,
+      isComplete: true,
+      loadedBytes: 12,
+    });
+    const preview = setBindingMock('GetPayloadPreview', async () => {
+      throw new Error('cache hydration must not refetch');
+    });
+
+    const expansion = createPayloadExpansion(
+      'payload-cached',
+      'thread-cache',
+      { payloadVersion: () => 99 },
+    );
+
+    expect(expansion.displayData).toBe('cached chunk');
+    expect(expansion.fullData).toBe('cached chunk');
+    expect(expansion.totalSize).toBe(12);
+    expect(expansion.isComplete).toBe(true);
+    // `expanded` stays false unless loadOnMount is set — toggle-style
+    // consumers expect their thread-switch reset of `expanded=false` to
+    // survive the cache hit.
+    expect(expansion.expanded).toBe(false);
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('cache hit with loadOnMount also flips expanded=true synchronously', () => {
+    writePayloadCache('thread-cache', 'payload-cached', 7, {
+      chunks: ['hit'],
+      hasFullChunks: true,
+      totalSize: 3,
+      isComplete: true,
+      loadedBytes: 3,
+    });
+    const preview = setBindingMock('GetPayloadPreview', async () => {
+      throw new Error('loadOnMount cache hit must not refetch');
+    });
+
+    // loadOnMount registers a $effect, so the handle must be created
+    // inside an effect root in tests (mimics component instantiation).
+    const dispose = $effect.root(() => {
+      const expansion = createPayloadExpansion(
+        'payload-cached',
+        'thread-cache',
+        { payloadVersion: () => 7, loadOnMount: true },
+      );
+
+      expect(expansion.expanded).toBe(true);
+      expect(expansion.displayData).toBe('hit');
+    });
+    dispose();
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('cache miss on version mismatch falls through to a fresh fetch', async () => {
+    writePayloadCache('thread-cache', 'payload-cached', 1, {
+      chunks: ['stale'],
+      hasFullChunks: true,
+      totalSize: 5,
+      isComplete: true,
+      loadedBytes: 5,
+    });
+    const preview = setBindingMock('GetPayloadPreview', async () => ({
+      data: 'fresh',
+      nextOffset: 5,
+      totalSize: 5,
+      isComplete: true,
+    }));
+
+    const expansion = createPayloadExpansion(
+      'payload-cached',
+      'thread-cache',
+      { payloadVersion: () => 2 },
+    );
+
+    // Pre-expand: cache miss ⇒ no synchronous chunks.
+    expect(expansion.displayData).toBeNull();
+
+    await expansion.expand();
+    expect(expansion.displayData).toBe('fresh');
+    expect(preview).toHaveBeenCalledTimes(1);
   });
 });

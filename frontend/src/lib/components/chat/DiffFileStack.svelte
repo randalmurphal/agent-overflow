@@ -23,7 +23,6 @@
    * upgrade, Codex pre-upgrade) render a header-only placeholder
    * PatchFile so the row still appears with its metadata.
    */
-  import { untrack } from 'svelte';
   import type { Item, ToolInlineDiffFile, ToolResultMeta } from '../../types/models';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { parsePatchFiles, type PatchFile, type PatchLine } from '../../utils/patchFiles';
@@ -47,25 +46,24 @@
   // pane-keyed handle); for diff rows this is fine because each row
   // owns one fetch and there's no expand/collapse interaction sharing
   // state across mounts.
+  //
+  // `loadOnMount: true` does two things on every mount:
+  //   1. Synchronously hydrates from the module-level payload cache
+  //      when (threadId, payloadId, updatedAt) hits — so re-entering
+  //      a thread we've already loaded paints with full diff content
+  //      at frame 0 (no empty-then-loaded oscillation that whipsaws
+  //      virtua's per-row size cache and the controller's contentRO).
+  //   2. Drives `expand()` itself so we don't carry a per-component
+  //      $effect just to trigger the fetch.
   const expansion = createPayloadExpansion(
     () => payloadId,
     () => item.threadId,
     {
       previewBytes: INLINE_DIFF_PAYLOAD_PREVIEW_BYTES,
       payloadVersion: () => item.updatedAt,
+      loadOnMount: true,
     },
   );
-
-  // Auto-trigger the preview fetch on mount and on any subsequent
-  // payloadId change. Untracked because expand() mutates internal
-  // $state we don't want re-firing this effect.
-  $effect(() => {
-    const id = payloadId;
-    if (!id) return;
-    untrack(() => {
-      void expansion.expand();
-    });
-  });
 
   let payloadData: string | null = $derived(expansion.displayData);
   let payloadPreviewIncomplete = $derived(payloadData !== null && !expansion.isComplete);
