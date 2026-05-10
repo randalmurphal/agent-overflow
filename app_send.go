@@ -136,15 +136,9 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: source proposed plan: %w", err)
 	}
-	if sourcePlan != nil {
-		state, found, err := a.store.GetProposedPlanState(sourcePlan.ThreadID, sourcePlan.ItemID)
-		if err != nil {
-			return store.Item{}, fmt.Errorf("send message: source proposed plan state: %w", err)
-		}
-		if found && state.ImplementedAt > 0 {
-			return store.Item{}, fmt.Errorf("send message: source proposed plan: %w", store.ErrProposedPlanAlreadyImplemented)
-		}
-	}
+	// implemented_at is durable UI/history state, not a send-time lock.
+	// An explicit source-plan send is still valid after the plan is marked
+	// accepted, including restored drafts after a conversation revert.
 	revisionSourcePlan, err := a.resolveSourceProposedPlan(threadID, opts.RevisionSourceProposedPlan, false)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: revision source proposed plan: %w", err)

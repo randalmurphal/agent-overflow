@@ -153,6 +153,64 @@ func TestReconcileProposedPlanStateFromAcceptedTurns(t *testing.T) {
 	}
 }
 
+func TestReconcileProposedPlanStateKeepsFirstImplementationAttribution(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	seedPayloadItem(t, s, "t", "plan-1", 0, 0, "assistant_text", "proposed_plan", "{}")
+	if _, err := s.EnsureProposedPlanState("t", "plan-1", 100); err != nil {
+		t.Fatalf("ensure plan: %v", err)
+	}
+	if err := s.InsertTurn(Turn{TurnID: "turn-1", ThreadID: "t", TurnIndex: 1, StartedAt: 200}); err != nil {
+		t.Fatalf("insert turn 1: %v", err)
+	}
+	if err := s.InsertTurn(Turn{TurnID: "turn-2", ThreadID: "t", TurnIndex: 2, StartedAt: 250}); err != nil {
+		t.Fatalf("insert turn 2: %v", err)
+	}
+	for _, item := range []Item{
+		{
+			ID:        "user:1",
+			ThreadID:  "t",
+			TurnIndex: 1,
+			ItemIndex: 0,
+			Kind:      "user_text",
+			Role:      "user",
+			Summary:   "Implement the plan.",
+			Meta:      `{"sourceProposedPlan":{"threadId":"t","itemId":"plan-1"}}`,
+			CreatedAt: 200,
+			UpdatedAt: 200,
+		},
+		{
+			ID:        "user:2",
+			ThreadID:  "t",
+			TurnIndex: 2,
+			ItemIndex: 0,
+			Kind:      "user_text",
+			Role:      "user",
+			Summary:   "Implement the plan again.",
+			Meta:      `{"sourceProposedPlan":{"threadId":"t","itemId":"plan-1"}}`,
+			CreatedAt: 250,
+			UpdatedAt: 250,
+		},
+	} {
+		if err := s.InsertItem(item); err != nil {
+			t.Fatalf("insert user item %s: %v", item.ID, err)
+		}
+	}
+
+	if err := s.ReconcileProposedPlanStateFromAcceptedTurns(300); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	state, found, err := s.GetProposedPlanState("t", "plan-1")
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	if !found || state.ImplementedByItemID != "user:1" || state.ImplementedAt != 200 {
+		t.Fatalf("state = %+v, want first accepted implementation user:1 at 200", state)
+	}
+}
+
 func TestReconcileProposedPlanStateAllowsCrossThreadImplementationSource(t *testing.T) {
 	s := newTestStore(t)
 	for _, threadID := range []string{"source", "impl"} {

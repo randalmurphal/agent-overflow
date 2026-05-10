@@ -539,8 +539,60 @@ func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
 	_, err = app.SendMessageWithOptions(thread.ID, "Implement the plan again.", SendMessageOptions{
 		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "proposed plan already implemented") {
-		t.Fatalf("second SendMessageWithOptions() error = %v, want already implemented", err)
+	if err != nil {
+		t.Fatalf("second SendMessageWithOptions() error = %v", err)
+	}
+
+	items, err = app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems after second send: %v", err)
+	}
+	var secondUserItem store.Item
+	for _, item := range items {
+		if item.Role == "user" && item.Summary == "Implement the plan again." {
+			if secondUserItem.ID != "" {
+				t.Fatalf("found multiple second implementation user items: %q and %q", secondUserItem.ID, item.ID)
+			}
+			secondUserItem = item
+		}
+	}
+	if secondUserItem.ID == "" {
+		t.Fatal("second user item missing")
+	}
+	if secondUserItem.Meta == "" {
+		t.Fatal("second user item meta is empty")
+	}
+	var secondMeta userMessageMeta
+	if err := json.Unmarshal([]byte(secondUserItem.Meta), &secondMeta); err != nil {
+		t.Fatalf("unmarshal second user meta: %v", err)
+	}
+	if secondMeta.SourceProposedPlan == nil || secondMeta.SourceProposedPlan.ItemID != "plan-item" {
+		t.Fatalf("second sourceProposedPlan = %+v, want plan-item", secondMeta.SourceProposedPlan)
+	}
+
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventInit,
+		ThreadID:  thread.ID,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("simulate second wire init: %v", err)
+	}
+	state, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
+	if err != nil {
+		t.Fatalf("GetProposedPlanState after second send: %v", err)
+	}
+	if !found {
+		t.Fatal("plan state missing after second send")
+	}
+	if state.ImplementedByItemID != userItem.ID {
+		t.Fatalf("ImplementedByItemID after second send = %q, want first implementation item %q", state.ImplementedByItemID, userItem.ID)
+	}
+	threadAfterSecondSend, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread after second send: %v", err)
+	}
+	if threadAfterSecondSend.HasActionableProposedPlan {
+		t.Fatal("HasActionableProposedPlan = true after second send, want accepted plan to stay non-actionable")
 	}
 }
 
