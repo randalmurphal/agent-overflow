@@ -166,6 +166,119 @@ describe('rateLimitsInfo', () => {
     expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(42);
   });
 
+  // The window-reset stale-event defense.
+  //
+  // Around a window-reset boundary, multiple Claude sessions
+  // emit independently. A long-running session can keep emitting
+  // its pre-reset reading for several requests after a fresher
+  // session has observed the post-reset reading. Without a guard
+  // these events overwrite each other and the ring visibly
+  // oscillates between the old high percent and the new low one.
+  //
+  // `resetsAt` is the natural version stamp: a pre-reset event's
+  // resetsAt is the boundary about to fire, a post-reset event's
+  // resetsAt is the boundary 5h/7d later. Drop incoming entries
+  // whose resetsAt is older than what's already stored.
+  it('drops a stale pre-reset entry when a post-reset entry is already stored', () => {
+    // Post-reset reading lands first.
+    setProviderRateLimits({
+      provider: 'claude',
+      limits: [
+        { limitId: 'five_hour', limitName: '5h', usedPercent: 5, windowMins: 300, resetsAt: 1776300000 },
+      ],
+      updatedAt: 1776284000,
+    });
+
+    // Stale pre-reset reading from a slow session arrives next —
+    // its resetsAt is the OLD boundary that has already fired.
+    setProviderRateLimits({
+      provider: 'claude',
+      limits: [
+        { limitId: 'five_hour', limitName: '5h', usedPercent: 95, windowMins: 300, resetsAt: 1776282000 },
+      ],
+      updatedAt: 1776285000,
+    });
+
+    // Post-reset value sticks; the stale event was dropped.
+    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(5);
+    expect(getProviderRateLimit('claude', 300)?.resetsAt).toBe(1776300000);
+  });
+
+  // Window rollover from below: existing (pre-reset) is replaced by
+  // incoming (post-reset). This is the path the global store
+  // observes the boundary itself; the next test covers what happens
+  // afterwards when a stale session keeps emitting.
+  it('takes a post-reset entry when the existing entry is from before the boundary', () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      limits: [
+        { limitId: 'five_hour', limitName: '5h', usedPercent: 95, windowMins: 300, resetsAt: 1776282000 },
+      ],
+      updatedAt: 1776280000,
+    });
+    setProviderRateLimits({
+      provider: 'claude',
+      limits: [
+        { limitId: 'five_hour', limitName: '5h', usedPercent: 5, windowMins: 300, resetsAt: 1776300000 },
+      ],
+      updatedAt: 1776284000,
+    });
+
+    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(5);
+    expect(getProviderRateLimit('claude', 300)?.resetsAt).toBe(1776300000);
+  });
+
+  // Equal `resetsAt` = same window, latest reading wins. Within a
+  // window, usedPercent climbs monotonically as the user makes
+  // requests. Each new event carries the most current reading and
+  // must update — the stale-event defense is keyed strictly on a
+  // newer boundary, not on equal boundaries.
+  it('updates on a same-window-later-reading event (equal resetsAt is not stale)', () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      limits: [
+        { limitId: 'five_hour', limitName: '5h', usedPercent: 30, windowMins: 300, resetsAt: 1776300000 },
+      ],
+      updatedAt: 1776284000,
+    });
+    setProviderRateLimits({
+      provider: 'claude',
+      limits: [
+        { limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: 1776300000 },
+      ],
+      updatedAt: 1776285000,
+    });
+
+    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(42);
+  });
+
+  // The defense applies per-window: a stale 5h event must not
+  // disturb a fresh 7d entry, and vice versa. Otherwise a snapshot
+  // carrying both windows where one is stale would taint the other.
+  it('applies stale-event defense per window slot', () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      limits: [
+        { limitId: 'five_hour', limitName: '5h', usedPercent: 5, windowMins: 300, resetsAt: 1776300000 },
+        { limitId: 'seven_day', limitName: '7d', usedPercent: 51, windowMins: 10080, resetsAt: 1776981600 },
+      ],
+      updatedAt: 1776284000,
+    });
+
+    // Stale 5h, fresh 7d in the same snapshot.
+    setProviderRateLimits({
+      provider: 'claude',
+      limits: [
+        { limitId: 'five_hour', limitName: '5h', usedPercent: 95, windowMins: 300, resetsAt: 1776282000 },
+        { limitId: 'seven_day', limitName: '7d', usedPercent: 60, windowMins: 10080, resetsAt: 1776981600 },
+      ],
+      updatedAt: 1776285000,
+    });
+
+    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(5);
+    expect(getProviderRateLimit('claude', 10080)?.usedPercent).toBe(60);
+  });
+
   // Unknown providers (anything other than claude/codex) are dropped
   // rather than coerced. This keeps the store's key space tight to
   // the union type RateLimitMeter consumes.

@@ -42,9 +42,31 @@ export function setProviderRateLimits(snapshot: RateLimitsSnapshot): void {
     // windowMins=0 = parser fallback for unknown rate-limit types
     // (e.g. Claude's `thirty_day` if it ever appeared on the wire).
     // Don't pollute the map with an unrenderable slot.
-    if (entry.windowMins > 0) {
-      merged.set(entry.windowMins, entry);
-    }
+    if (entry.windowMins <= 0) continue;
+
+    // Stale-event defense around window-reset boundaries.
+    //
+    // Multiple sessions emit `rate_limit_event` independently, and a
+    // long-running Claude session can keep emitting its in-process
+    // pre-reset reading for several requests after a fresher session
+    // has already observed the new (post-reset) reading. The events
+    // arrive interleaved on the wire, so without this guard the ring
+    // visibly oscillates between the old high percentage and the new
+    // low one until every session catches up.
+    //
+    // `resetsAt` is the next reset boundary as the wire saw it: a
+    // pre-reset event reports the boundary that's about to fire,
+    // a post-reset event reports the boundary 5h/7d later. The newer
+    // window's `resetsAt` strictly dominates. Drop incoming entries
+    // whose `resetsAt` is older than what we've already stored.
+    //
+    // Equal `resetsAt` (= same window, fresher reading) DOES update —
+    // usedPercent climbs monotonically inside a window, so the latest
+    // event always carries the most current reading.
+    const prior = merged.get(entry.windowMins);
+    if (prior && prior.resetsAt > entry.resetsAt) continue;
+
+    merged.set(entry.windowMins, entry);
   }
 
   // Reassign the outer Map so $derived consumers re-run. Svelte 5 runes
