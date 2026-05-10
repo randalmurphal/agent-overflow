@@ -39,9 +39,11 @@ export function setProviderRateLimits(snapshot: RateLimitsSnapshot): void {
   const existing = limitsByProvider.get(provider) ?? new Map<number, RateLimitEntry>();
   const merged = new Map(existing);
   for (const entry of snapshot.limits) {
-    // windowMins=0 = parser fallback for unknown rate-limit types
-    // (e.g. Claude's `thirty_day` if it ever appeared on the wire).
-    // Don't pollute the map with an unrenderable slot.
+    // Defense-in-depth: each provider's parser drops snapshots for
+    // unknown windows, but multiple parsers feed this same map (Claude,
+    // Codex, plus any future provider). Refuse `windowMins<=0` here so
+    // a parser regression upstream can't pollute the global store with
+    // a slot the rings can't render.
     if (entry.windowMins <= 0) continue;
 
     // Stale-event defense around window-reset boundaries.

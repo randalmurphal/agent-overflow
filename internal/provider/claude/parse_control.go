@@ -110,18 +110,28 @@ func parseAskUserQuestions(input json.RawMessage) []provider.UserInputQuestion {
 //
 // Wire shape (docs/references/claude-wire.md):
 //
+//	// Warning-band envelope — carries a usable percentage.
 //	{"type":"rate_limit_event",
 //	 "rate_limit_info":{"status":"allowed_warning","resetsAt":1776981600,
 //	   "rateLimitType":"five_hour"|"seven_day",
 //	   "utilization":0.51,"isUsingOverage":false}}
 //
+//	// Steady-state envelope during normal usage — no percentage.
+//	{"type":"rate_limit_event",
+//	 "rate_limit_info":{"status":"allowed","resetsAt":1777920000,
+//	   "rateLimitType":"five_hour","isUsingOverage":false}}
+//
 // Each event carries a single window. UsedPercent is sourced from the
 // wire's `utilization` field (0.0–1.0) so partial fills render
 // correctly; WindowMins is derived from rateLimitType so the UI can
-// key off it without re-deriving from the string. `utilization` is
-// occasionally omitted (e.g. some "allowed" events with overage
-// metadata) — Go's zero-value gives UsedPercent=0 in that case, which
-// is the right empty-ring rendering.
+// key off it without re-deriving from the string.
+//
+// Claude only emits `utilization` once you cross the warning band — the
+// "allowed" events that fire during normal usage have no usable
+// percentage. Synthesizing 0% would either clobber a previously-known
+// good value in the global store or render an empty ring identical to
+// "no data". Drop the snapshot instead so the store keeps its last-known
+// good reading.
 func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
 	infoRaw, ok := raw["rate_limit_info"]
 	if !ok {
@@ -129,19 +139,28 @@ func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now ti
 	}
 
 	var info struct {
-		ResetsAt      int64   `json:"resetsAt"`
-		RateLimitType string  `json:"rateLimitType"`
-		Utilization   float64 `json:"utilization"`
+		ResetsAt      int64    `json:"resetsAt"`
+		RateLimitType string   `json:"rateLimitType"`
+		Utilization   *float64 `json:"utilization"`
 	}
 	if json.Unmarshal(infoRaw, &info) != nil {
+		return nil, nil
+	}
+
+	if info.Utilization == nil {
+		return nil, nil
+	}
+
+	windowMins := windowMinsForRateLimitType(info.RateLimitType)
+	if windowMins == 0 {
 		return nil, nil
 	}
 
 	entry := provider.RateLimitEntry{
 		LimitID:     info.RateLimitType,
 		LimitName:   info.RateLimitType,
-		UsedPercent: info.Utilization * 100,
-		WindowMins:  windowMinsForRateLimitType(info.RateLimitType),
+		UsedPercent: *info.Utilization * 100,
+		WindowMins:  windowMins,
 		ResetsAt:    info.ResetsAt,
 	}
 
@@ -163,7 +182,8 @@ func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now ti
 // windowMinsForRateLimitType maps Claude's `rateLimitType` enum onto
 // the window length so RateLimitEntry.WindowMins matches the Codex
 // shape (where the wire carries `windowDurationMins` directly).
-// Returns 0 for unknown types — callers treat 0 as "don't render".
+// Returns 0 for unknown types; the parser drops the event before
+// constructing a snapshot, so 0 never reaches the global store.
 func windowMinsForRateLimitType(rateLimitType string) int {
 	switch rateLimitType {
 	case "five_hour":

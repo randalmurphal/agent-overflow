@@ -83,32 +83,22 @@ func TestParseRateLimitEvent_SevenDayUtilization(t *testing.T) {
 }
 
 // TestParseRateLimitEvent_MissingUtilization covers the wire shape
-// observed in some "allowed" events (e.g. fixtures
-// local_agent_outlives.ndjson) where Claude omits `utilization`
-// entirely and surfaces overage metadata instead. Go's zero-value
-// gives UsedPercent=0 — the right empty-ring rendering.
+// observed during normal usage (e.g. fixtures
+// local_agent_outlives.ndjson) where Claude emits status:"allowed"
+// envelopes without a `utilization` field. Claude only populates
+// utilization once we cross the warning threshold, so synthesizing 0%
+// would either render an empty ring (visually identical to "no data")
+// or — worse — clobber a previously-known good reading in the
+// process-global store. The parser drops the snapshot instead so the
+// store retains its last-known good value.
 func TestParseRateLimitEvent_MissingUtilization(t *testing.T) {
 	line := []byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1777920000,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false}}`)
 	events, err := ParseLine(testThread, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	var snap provider.RateLimitsSnapshot
-	if err := json.Unmarshal(events[0].Meta, &snap); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	got := snap.Limits[0]
-	if got.UsedPercent != 0 {
-		t.Errorf("UsedPercent: got %v, want 0 (utilization absent)", got.UsedPercent)
-	}
-	if got.WindowMins != 300 {
-		t.Errorf("WindowMins: got %d, want 300", got.WindowMins)
-	}
-	if got.ResetsAt != 1777920000 {
-		t.Errorf("ResetsAt: got %d, want 1777920000", got.ResetsAt)
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events (utilization absent → drop snapshot), got %d", len(events))
 	}
 }
 
@@ -122,6 +112,9 @@ func TestParseRateLimitEvent_FullUtilization(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
 	var snap provider.RateLimitsSnapshot
 	if err := json.Unmarshal(events[0].Meta, &snap); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -131,29 +124,47 @@ func TestParseRateLimitEvent_FullUtilization(t *testing.T) {
 	}
 }
 
+// TestParseRateLimitEvent_ExplicitZeroUtilization pins the load-bearing
+// distinction the *float64 type buys us: an explicit `utilization: 0.0`
+// on the wire IS a real reading (0% used) and must be emitted, while a
+// missing field is a no-signal envelope and must be dropped (covered by
+// TestParseRateLimitEvent_MissingUtilization). Without the *float64
+// switch, both cases would collapse to UsedPercent=0 and we'd lose the
+// ability to tell them apart.
+func TestParseRateLimitEvent_ExplicitZeroUtilization(t *testing.T) {
+	line := []byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1776981600,"rateLimitType":"five_hour","utilization":0.0}}`)
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event (explicit 0.0 is a real reading), got %d", len(events))
+	}
+	var snap provider.RateLimitsSnapshot
+	if err := json.Unmarshal(events[0].Meta, &snap); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if snap.Limits[0].UsedPercent != 0 {
+		t.Errorf("UsedPercent: got %v, want 0", snap.Limits[0].UsedPercent)
+	}
+	if snap.Limits[0].WindowMins != 300 {
+		t.Errorf("WindowMins: got %d, want 300", snap.Limits[0].WindowMins)
+	}
+}
+
 // TestParseRateLimitEvent_UnknownRateLimitType — when the wire emits a
-// rateLimitType we don't recognise, WindowMins falls back to 0 and
-// the LimitID is preserved. This keeps the parser future-proof if
-// Claude ships a third window length.
+// rateLimitType we don't recognise, the snapshot is dropped. The
+// frontend rings key off WindowMins (300/10080) so a snapshot with
+// WindowMins=0 would never render anyway, and emitting one risks
+// polluting the process-global store with a row no UI can use.
 func TestParseRateLimitEvent_UnknownRateLimitType(t *testing.T) {
 	line := []byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1776981600,"rateLimitType":"thirty_day","utilization":0.1}}`)
 	events, err := ParseLine(testThread, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	var snap provider.RateLimitsSnapshot
-	if err := json.Unmarshal(events[0].Meta, &snap); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	got := snap.Limits[0]
-	if got.LimitID != "thirty_day" {
-		t.Errorf("LimitID: got %q, want %q", got.LimitID, "thirty_day")
-	}
-	if got.WindowMins != 0 {
-		t.Errorf("WindowMins: got %d, want 0 (unknown type → fallback)", got.WindowMins)
-	}
-	if got.UsedPercent != 10 {
-		t.Errorf("UsedPercent: got %v, want 10", got.UsedPercent)
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events (unknown rateLimitType → drop), got %d", len(events))
 	}
 }
 

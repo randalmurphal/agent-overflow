@@ -848,6 +848,7 @@ tasks in the [BackgroundTaskTray](../architecture/chat-rewrite.md).
 ## `rate_limit_event`
 
 ```json
+// Warning-band envelope — carries a usable `utilization`.
 {"type": "rate_limit_event",
  "rate_limit_info": {
    "status": "allowed_warning",
@@ -856,10 +857,28 @@ tasks in the [BackgroundTaskTray](../architecture/chat-rewrite.md).
    "utilization": 0.51,
    "isUsingOverage": false
  }}
+
+// Steady-state envelope during normal usage — `utilization` is OMITTED.
+// Claude only populates that field once you cross the warning band.
+{"type": "rate_limit_event",
+ "rate_limit_info": {
+   "status": "allowed",
+   "resetsAt": 1777920000,
+   "rateLimitType": "five_hour",
+   "isUsingOverage": false
+ }}
 ```
 
 camelCase wire fields (`resetsAt`, `rateLimitType`, etc.). See
-`parse_rate_limit.go`.
+`parse_control.go` (`parseRateLimitEvent`).
+
+**Important consumer note**: `utilization` is an optional field on the
+wire — present only when Claude has signal to share (warning band,
+overload). The parser uses `*float64` to distinguish absent (drop the
+snapshot, preserve last-known good in the global store) from explicit
+`0.0` (a real "0% used" reading). Don't synthesize 0% when the field is
+missing — the empty ring would be visually identical to "no data" and
+could clobber a previously-known good reading.
 
 ---
 
