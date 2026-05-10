@@ -75,6 +75,37 @@ export function formatElapsedSeconds(seconds: number): string {
 }
 
 /**
+ * Format a future Unix timestamp (seconds, like Claude's `resetsAt`
+ * and Codex's `resets_at`) as a "Resets in Xh Ym" countdown.
+ *
+ * Sub-minute → "Resets in <1m" (collapse so we don't flicker through
+ * "in 59s"/"in 58s" — at sub-minute the countdown is no longer the
+ * meaningful fact). Past timestamps → "Resetting now" (the wire is
+ * stale by a few seconds; the next event will refresh it).
+ *
+ * The wire is in seconds for both providers (Anthropic + OpenAI
+ * convention). Callers pass the raw `resetsAt` value; this function
+ * compares it against `Date.now() / 1000`.
+ */
+export function formatResetCountdown(resetsAtSeconds: number): string {
+  if (!Number.isFinite(resetsAtSeconds) || resetsAtSeconds <= 0) return '';
+  const nowSec = Math.floor(Date.now() / 1000);
+  const diffSec = resetsAtSeconds - nowSec;
+  if (diffSec <= 0) return 'Resetting now';
+  if (diffSec < 60) return 'Resets in <1m';
+  const minutes = Math.floor(diffSec / 60);
+  if (minutes < 60) return `Resets in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remMin = minutes % 60;
+  if (hours < 24) {
+    return remMin > 0 ? `Resets in ${hours}h ${remMin}m` : `Resets in ${hours}h`;
+  }
+  const days = Math.floor(hours / 24);
+  const remHr = hours % 24;
+  return remHr > 0 ? `Resets in ${days}d ${remHr}h` : `Resets in ${days}d`;
+}
+
+/**
  * Format a turn-completion token count as a human-readable label fragment.
  * Returns "150 tokens" below 1_000 and "1.23k tokens" at/above 1_000 (two
  * decimals of k per docs/architecture/turn-lifecycle.md). Negative / non-

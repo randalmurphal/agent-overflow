@@ -91,6 +91,8 @@ export {
   GetProviderStatuses,
   GetModelsForProvider,
   ProbeClaudeAccount,
+  RecheckClaudeAccount,
+  RecheckCodexAccount,
 
   // Git operations
   GenerateCommitMessage,

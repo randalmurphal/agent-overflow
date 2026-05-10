@@ -3,7 +3,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     GetProviderStatuses,
-    ProbeClaudeAccount,
+    RecheckClaudeAccount,
     ReconnectSession,
   } from '../../stores/bindings';
   import { userFacingError } from '../../utils/userFacingError';
@@ -113,12 +113,15 @@
     if (rechecking) return;
     rechecking = true;
     try {
-      // ProbeClaudeAccount re-emits provider:status on its own (both on
-      // a successful auth result and on the unauthenticated case), so we
-      // just trigger it — the store update happens through the event bus.
-      await ProbeClaudeAccount();
+      // RecheckClaudeAccount evicts the per-process probe cache before
+      // re-running the probe — the cached pre-login zero-value would
+      // otherwise mask the new auth state for up to 5 minutes. The
+      // refreshed auth state lands on the store via `provider:status`
+      // (banner) and `provider:account` (popover plan label), both
+      // emitted from inside the probe's cache-miss path.
+      await RecheckClaudeAccount();
     } catch (err) {
-      console.error('Failed to probe Claude account:', err);
+      console.error('Failed to recheck Claude account:', err);
     } finally {
       rechecking = false;
     }

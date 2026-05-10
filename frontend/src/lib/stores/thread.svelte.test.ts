@@ -14,7 +14,7 @@ import {
 } from './sendQueue.svelte';
 import type { Item } from '../types/models';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { makeItem, makeThread } from '../../test/helpers/chat';
+import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => {
@@ -79,7 +79,23 @@ describe('createThreadPane', () => {
     expect(pane.pendingApprovals).toEqual([]);
     expect(pane.contextWindow).toBeNull();
     expect(pane.generalError).toBeNull();
+    expect(pane.isLocked).toBe(false);
+    expect(pane.rateLimits.size).toBe(0);
     expect(getActiveTurn(pane.threadId) !== null).toBe(false);
+  });
+
+  // `isLocked` tracks whether the user has committed the
+  // provider/model selection by sending at least one message. It's
+  // the gate for both the model-picker disable and the rate-limit
+  // ring visibility — both paths read the same getter, so a behavior
+  // drift here would mean those two affordances disagree on whether
+  // the thread is configurable.
+  it('flips isLocked once the timeline carries any item', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-lock' }));
+    expect(pane.isLocked).toBe(false);
+
+    pane.upsertItem(makeItem({ id: 'user:0', threadId: 'thread-lock', kind: 'user_text', role: 'user' }));
+    expect(pane.isLocked).toBe(true);
   });
 
   it('marks live state as hydrating before the backend switch round-trip returns', async () => {

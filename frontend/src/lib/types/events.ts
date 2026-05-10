@@ -225,6 +225,23 @@ export interface ProviderStatusEvent {
   threadId?: string;
 }
 
+/**
+ * Authenticated account info for a provider, populated by the startup
+ * probe (Claude: control_request{subtype:"initialize"}, Codex:
+ * account/rateLimits/read). Surfaced via the `provider:account` event
+ * and rendered in the rate-limit ring popover. Empty subscriptionType
+ * means "probe succeeded but plan info isn't available" — the popover
+ * branches on that to keep its layout stable.
+ */
+export interface ProviderAccountEvent {
+  provider: 'claude' | 'codex';
+  account: {
+    subscriptionType?: string;
+    tokenSource?: string;
+    apiProvider?: string;
+  };
+}
+
 export interface RateLimitEntry {
   limitId: string;
   limitName: string;

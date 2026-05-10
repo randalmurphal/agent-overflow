@@ -12,25 +12,52 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// --- Gap 2: zero-token subscription probe ---
-
-// writeMockClaudeInitScript writes a shell script to tmpDir that mimics the
-// Claude CLI during a `--max-turns 0` probe: it emits one system/init line
-// to stdout carrying the provided account JSON, reads one line from stdin
-// (the probe's user message), then exits cleanly.
-func writeMockClaudeInitScript(t *testing.T, tmpDir, accountJSON string) string {
+// writeMockClaudeInitScript writes a shell script to tmpDir that mimics
+// the Claude CLI during a probe: it reads ONE line from stdin (the
+// probe's control_request{subtype:"initialize"}), then prints a
+// control_response carrying the supplied accountJSON in
+// `response.response.account`. A leading hook envelope is also
+// emitted to mirror the live wire ordering observed during the spike,
+// where SessionStart hook events arrive BEFORE the control_response.
+//
+// When accountJSON is empty, the response carries no `account` field —
+// modeling the unauthenticated case where the CLI succeeds but has no
+// subscription data to share. When `subtype` is non-empty and not
+// "success", the response is shaped as an error reply and the probe
+// must return a typed error.
+func writeMockClaudeInitScript(t *testing.T, tmpDir, accountJSON, subtype, errMsg string) string {
 	t.Helper()
 	path := filepath.Join(tmpDir, "mock-claude")
+	if subtype == "" {
+		subtype = "success"
+	}
+	innerResponse := "{}"
+	if subtype == "success" {
+		if accountJSON == "" {
+			innerResponse = "{}"
+		} else {
+			innerResponse = `{"account":` + accountJSON + `}`
+		}
+	}
+
+	// JSON-escape the request_id we expect — the script just echoes the
+	// wire shape; the probe matches on `response.request_id`.
+	respLine := `{"type":"control_response","response":{"subtype":"` + subtype +
+		`","request_id":"` + probeInitRequestID + `"`
+	if subtype == "success" {
+		respLine += `,"response":` + innerResponse
+	} else if errMsg != "" {
+		respLine += `,"error":"` + errMsg + `"`
+	}
+	respLine += `}}`
+
 	script := "#!/bin/bash\n" +
-		"printf '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"probe-s1\",\"model\":\"claude-opus-4-7\",\"cwd\":\"/tmp\",\"tools\":[],\"claude_code_version\":\"2.0.0\"" +
-		func() string {
-			if accountJSON == "" {
-				return ""
-			}
-			return ",\"account\":" + accountJSON
-		}() + "}\\n'\n" +
-		"read -r _ || true\n" +
-		"exit 0\n"
+		// Hook noise the live CLI emits before the control_response.
+		`printf '{"type":"system","subtype":"hook_started","hook_event":"SessionStart"}\n'` + "\n" +
+		`printf '{"type":"system","subtype":"hook_response","hook_event":"SessionStart","exit_code":0}\n'` + "\n" +
+		`read -r _ || true` + "\n" +
+		`printf '%s\n' '` + respLine + `'` + "\n" +
+		`exit 0` + "\n"
 	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
 		t.Fatalf("write mock: %v", err)
 	}
@@ -39,33 +66,47 @@ func writeMockClaudeInitScript(t *testing.T, tmpDir, accountJSON string) string 
 
 func TestProbeAccountExtractsSubscriptionType(t *testing.T) {
 	binary := writeMockClaudeInitScript(t, t.TempDir(),
-		`{"subscriptionType":"max_20x","tokenSource":"oauth","apiProvider":"anthropic"}`)
+		`{"subscriptionType":"Claude Max","tokenSource":"oauth","apiProvider":"firstParty"}`,
+		"success", "")
 
 	info, err := ProbeAccount(context.Background(), ProbeConfig{Binary: binary})
 	if err != nil {
 		t.Fatalf("ProbeAccount: %v", err)
 	}
-	if info.SubscriptionType != "max_20x" {
-		t.Errorf("SubscriptionType: got %q, want %q", info.SubscriptionType, "max_20x")
+	if info.SubscriptionType != "Claude Max" {
+		t.Errorf("SubscriptionType: got %q, want %q", info.SubscriptionType, "Claude Max")
 	}
 	if info.TokenSource != "oauth" {
 		t.Errorf("TokenSource: got %q, want %q", info.TokenSource, "oauth")
 	}
-	if info.APIProvider != "anthropic" {
-		t.Errorf("APIProvider: got %q, want %q", info.APIProvider, "anthropic")
+	if info.APIProvider != "firstParty" {
+		t.Errorf("APIProvider: got %q, want %q", info.APIProvider, "firstParty")
 	}
-	if info.Model != "claude-opus-4-7" {
-		t.Errorf("Model: got %q, want %q", info.Model, "claude-opus-4-7")
+}
+
+func TestProbeAccountSkipsHookNoiseBeforeResponse(t *testing.T) {
+	// The probe reads the control_response specifically; intervening
+	// system events (SessionStart hooks observed in the live spike)
+	// must not confuse the matcher.
+	binary := writeMockClaudeInitScript(t, t.TempDir(),
+		`{"subscriptionType":"Claude Pro"}`,
+		"success", "")
+
+	info, err := ProbeAccount(context.Background(), ProbeConfig{Binary: binary})
+	if err != nil {
+		t.Fatalf("ProbeAccount: %v", err)
 	}
-	if info.Version != "2.0.0" {
-		t.Errorf("Version: got %q, want %q", info.Version, "2.0.0")
+	if info.SubscriptionType != "Claude Pro" {
+		t.Errorf("SubscriptionType: got %q, want Claude Pro", info.SubscriptionType)
 	}
 }
 
 func TestProbeAccountMissingAccountReturnsZero(t *testing.T) {
-	// Non-Max accounts (and older CLIs) omit the account field entirely.
-	// Probe must return a zero-value AccountInfo, not error.
-	binary := writeMockClaudeInitScript(t, t.TempDir(), "")
+	// Unauthenticated / older CLI: the response succeeds but the inner
+	// payload has no `account` field. Probe must return zero-value
+	// AccountInfo, not error — `claudeUnauthenticatedStatus` keys off
+	// the empty-fields signal.
+	binary := writeMockClaudeInitScript(t, t.TempDir(), "", "success", "")
 
 	info, err := ProbeAccount(context.Background(), ProbeConfig{Binary: binary})
 	if err != nil {
@@ -74,14 +115,30 @@ func TestProbeAccountMissingAccountReturnsZero(t *testing.T) {
 	if info.SubscriptionType != "" {
 		t.Errorf("SubscriptionType should be empty, got %q", info.SubscriptionType)
 	}
-	// Session metadata still flows through.
-	if info.Model != "claude-opus-4-7" {
-		t.Errorf("Model: got %q, want claude-opus-4-7", info.Model)
+	if info.TokenSource != "" {
+		t.Errorf("TokenSource should be empty, got %q", info.TokenSource)
+	}
+}
+
+func TestProbeAccountSurfacesErrorSubtype(t *testing.T) {
+	// A control_response with subtype:"error" and an `error` field
+	// must propagate as a typed Go error — the probe is the line of
+	// defense for "claude is broken at startup", not silent zero.
+	binary := writeMockClaudeInitScript(t, t.TempDir(), "", "error", "auth expired")
+
+	_, err := ProbeAccount(context.Background(), ProbeConfig{Binary: binary})
+	if err == nil {
+		t.Fatal("expected error for non-success subtype")
+	}
+	if !strings.Contains(err.Error(), "auth expired") {
+		t.Errorf("expected error message to surface error field; got %v", err)
 	}
 }
 
 func TestProbeAccountBuildsMaxTurnsZeroArgs(t *testing.T) {
-	// Zero-token guarantee depends on --max-turns 0 being passed to the CLI.
+	// Zero-token guarantee depends on --max-turns 0 being passed to the
+	// CLI even though the probe never sends a user turn — defense in
+	// depth in case the process linger past our control_request reply.
 	args := buildProbeArgs()
 
 	var hasMaxTurnsZero bool
@@ -94,7 +151,6 @@ func TestProbeAccountBuildsMaxTurnsZeroArgs(t *testing.T) {
 		t.Fatalf("probe args missing --max-turns 0: %v", args)
 	}
 
-	// Must include the minimal stream-json scaffolding.
 	wantFlags := []string{"--input-format", "stream-json", "--output-format", "stream-json", "--verbose"}
 	for _, want := range wantFlags {
 		var found bool
@@ -120,15 +176,13 @@ func TestProbeAccountReturnsErrorOnSpawnFailure(t *testing.T) {
 	}
 }
 
-func TestProbeAccountReturnsErrorWhenInitMissing(t *testing.T) {
-	// Simulate a binary that exits before emitting a system/init message.
-	// The probe must surface the EOF via a structured error — not hit the
-	// configured Timeout fallback. Assert elapsed < Timeout so we're
-	// explicitly verifying the EOF path beat the timeout path, rather than
-	// hard-coding a wall-clock number that flakes on loaded runners.
+func TestProbeAccountReturnsErrorWhenResponseMissing(t *testing.T) {
+	// Simulate a binary that exits before emitting any control_response.
+	// The probe must surface the EOF via a structured error well below
+	// the configured Timeout so the unauthenticated banner can react
+	// immediately on misconfigured environments.
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "silent")
-	// Read stdin and exit with no stdout output.
 	if err := os.WriteFile(path, []byte("#!/bin/bash\nread -r _ || true\nexit 0\n"), 0755); err != nil {
 		t.Fatalf("write silent: %v", err)
 	}
@@ -141,29 +195,23 @@ func TestProbeAccountReturnsErrorWhenInitMissing(t *testing.T) {
 	})
 	elapsed := time.Since(start)
 	if err == nil {
-		t.Fatal("expected error when CLI exits without init")
+		t.Fatal("expected error when CLI exits without response")
 	}
 	if !strings.Contains(err.Error(), "claude:") {
 		t.Errorf("error should mention claude: got %v", err)
 	}
-	// If the EOF path worked, elapsed is bounded by process-spawn latency,
-	// not the probe Timeout. Allow a generous margin for slow CI while
-	// still catching the bug where Timeout becomes the backstop.
 	if elapsed >= probeTimeout {
 		t.Errorf("probe hit timeout path (%v) instead of EOF path", elapsed)
 	}
 }
 
 func TestProbeAccountRespectsConfigTimeout(t *testing.T) {
-	// Simulate a binary that blocks on stdin with no output. The probe's
-	// internal Timeout must be the thing that unblocks readInitFromProc.
-	// The script exits cleanly on stdin close, so no hard-kill is needed —
-	// this keeps the test cooperative with Go's exec WaitDelay tracking.
+	// Simulate a binary that blocks indefinitely after reading our
+	// control_request. The probe's internal Timeout is what unblocks
+	// readControlInitResponse; without it, the probe would hang the
+	// whole app at startup if Claude misbehaves.
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "slow")
-	// Read one line, wait, then exit. The probe's Timeout will fire
-	// before the read completes most of the time — but if the read
-	// completes, the script sleeps briefly without emitting anything.
 	script := "#!/bin/bash\n" +
 		"read -r _ || true\n" +
 		"sleep 5\n"
@@ -180,10 +228,12 @@ func TestProbeAccountRespectsConfigTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	// After the ProbeAccount returns with a context-deadline error, the
-	// defer proc.Close() closes stdin. The script exits cleanly.
-	if elapsed > 8*time.Second {
-		t.Errorf("probe took too long: %v", elapsed)
+	// Tight bound: the configured timeout was 150ms, so anything above
+	// ~1s indicates we hit the default-timeout path instead of the
+	// configured one — meaning a regression where Timeout is ignored
+	// would slip past an 8s assertion.
+	if elapsed > time.Second {
+		t.Errorf("probe took too long: %v (Timeout=150ms)", elapsed)
 	}
 }
 
@@ -208,7 +258,6 @@ func TestAccountInfoCacheExpires(t *testing.T) {
 	cache := NewProbeCache(10 * time.Millisecond)
 	cache.Set("/usr/bin/claude", provider.AccountInfo{SubscriptionType: "team"})
 
-	// Shortly before expiration — still a hit.
 	if _, ok := cache.Get("/usr/bin/claude"); !ok {
 		t.Fatal("expected immediate cache hit")
 	}
@@ -235,41 +284,41 @@ func TestAccountInfoCacheScopedPerBinary(t *testing.T) {
 	}
 }
 
-// --- extractAccountInfo helper ---
+// --- extractAccountInfoFromInitResponse helper ---
 
-func TestExtractAccountInfoFromInitLine(t *testing.T) {
-	init := map[string]any{
-		"type":                "system",
-		"subtype":             "init",
-		"session_id":          "s1",
-		"model":               "claude-opus-4-6",
-		"cwd":                 "/tmp",
-		"claude_code_version": "1.2.3",
+func TestExtractAccountInfoFromInitResponsePopulatesAllFields(t *testing.T) {
+	payload, _ := json.Marshal(map[string]any{
+		"commands": []any{},
 		"account": map[string]any{
-			"subscriptionType": "pro",
+			"email":            "user@example.com",
+			"organization":     "User's Org",
+			"subscriptionType": "Claude Max",
 			"tokenSource":      "oauth",
-			"apiProvider":      "anthropic",
+			"apiProvider":      "firstParty",
 		},
-	}
-	data, _ := json.Marshal(init)
+		"pid": 12345,
+	})
 
-	info, err := extractAccountInfoFromInit(data)
-	if err != nil {
-		t.Fatalf("extract: %v", err)
-	}
-	if info.SubscriptionType != "pro" {
-		t.Errorf("SubscriptionType: got %q, want pro", info.SubscriptionType)
+	info := extractAccountInfoFromInitResponse(payload)
+	if info.SubscriptionType != "Claude Max" {
+		t.Errorf("SubscriptionType: got %q, want Claude Max", info.SubscriptionType)
 	}
 	if info.TokenSource != "oauth" {
 		t.Errorf("TokenSource: got %q, want oauth", info.TokenSource)
 	}
-	if info.APIProvider != "anthropic" {
-		t.Errorf("APIProvider: got %q, want anthropic", info.APIProvider)
+	if info.APIProvider != "firstParty" {
+		t.Errorf("APIProvider: got %q, want firstParty", info.APIProvider)
 	}
-	if info.Model != "claude-opus-4-6" {
-		t.Errorf("Model: got %q, want claude-opus-4-6", info.Model)
+}
+
+func TestExtractAccountInfoFromInitResponseTreatsEmptyAsZero(t *testing.T) {
+	if got := extractAccountInfoFromInitResponse(nil); got != (provider.AccountInfo{}) {
+		t.Errorf("nil payload: got %+v, want zero", got)
 	}
-	if info.Version != "1.2.3" {
-		t.Errorf("Version: got %q, want 1.2.3", info.Version)
+	if got := extractAccountInfoFromInitResponse([]byte(`{"commands":[]}`)); got != (provider.AccountInfo{}) {
+		t.Errorf("payload without account: got %+v, want zero", got)
+	}
+	if got := extractAccountInfoFromInitResponse([]byte(`not-json`)); got != (provider.AccountInfo{}) {
+		t.Errorf("non-JSON payload: got %+v, want zero", got)
 	}
 }

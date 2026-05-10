@@ -997,6 +997,54 @@ describe('setupEventListeners', () => {
     expect(pane.providerBanner).toBeNull();
   });
 
+  it('hydrates accountInfo store from provider:account', async () => {
+    const accountInfo = await import('./accountInfo.svelte');
+    accountInfo.resetForTest();
+
+    emitWailsEvent('provider:account', {
+      provider: 'claude',
+      account: { subscriptionType: 'Claude Max', tokenSource: 'oauth', apiProvider: 'firstParty' },
+    });
+
+    expect(accountInfo.getProviderAccount('claude')?.subscriptionType).toBe('Claude Max');
+    expect(accountInfo.getProviderAccount('codex')).toBeNull();
+
+    emitWailsEvent('provider:account', {
+      provider: 'codex',
+      account: { subscriptionType: 'pro', apiProvider: 'openai' },
+    });
+
+    expect(accountInfo.getProviderAccount('codex')?.subscriptionType).toBe('pro');
+    // Both providers populate independently — Claude entry survives the codex update.
+    expect(accountInfo.getProviderAccount('claude')?.subscriptionType).toBe('Claude Max');
+
+    accountInfo.resetForTest();
+  });
+
+  it('drops malformed provider:account events before hitting the store', async () => {
+    const accountInfo = await import('./accountInfo.svelte');
+    accountInfo.resetForTest();
+
+    // Unknown provider name — should be ignored, not silently inserted.
+    emitWailsEvent('provider:account', {
+      provider: 'mystery',
+      account: { subscriptionType: 'enterprise' },
+    });
+    // account is a string instead of object — passes a "truthy account"
+    // gate but type-narrowed validation must drop it.
+    emitWailsEvent('provider:account', {
+      provider: 'claude',
+      account: 'not-an-object',
+    });
+    // No account at all.
+    emitWailsEvent('provider:account', { provider: 'claude' });
+
+    expect(accountInfo.getProviderAccount('claude')).toBeNull();
+    expect(accountInfo.getProviderAccount('codex')).toBeNull();
+
+    accountInfo.resetForTest();
+  });
+
   it('updates and clears the context meter through provider:usage', async () => {
     const pane = await buildPane();
     getAllPanes().set('main', pane);
@@ -1025,11 +1073,9 @@ describe('setupEventListeners', () => {
 
   // Chat-rewrite routing: EventRateLimits folds onto provider:usage
   // via `action: 'rate_limits'`. The listener must NOT treat this as a
-  // reset — the last-seen context-window ring stays in place so the
-  // meter keeps rendering its existing value while the popover picks up
-  // the new rate-limits row (future work — see the "Future work" note in
-  // applyUsageEvent's rate_limits branch).
-  it('routes EventRateLimits to provider:usage without clobbering the context ring', async () => {
+  // reset — the last-seen context-window ring stays in place — and it
+  // MUST land the snapshot on `pane.rateLimits`, keyed by windowMins.
+  it('routes EventRateLimits to pane.rateLimits without clobbering the context ring', async () => {
     const pane = await buildPane();
     getAllPanes().set('main', pane);
 
@@ -1056,10 +1102,103 @@ describe('setupEventListeners', () => {
       },
     });
 
-    // Context window is unchanged; the rate-limits payload is a sibling
-    // signal on the same channel rather than a ring update.
+    // Context window untouched.
     expect(pane.contextWindow?.usedTokens).toBe(5000);
     expect(pane.contextWindow?.maxTokens).toBe(200000);
+
+    // Rate-limits map populated with the 5h entry.
+    const fiveHour = pane.rateLimits.get(300);
+    expect(fiveHour).toBeDefined();
+    expect(fiveHour?.usedPercent).toBe(62.5);
+    expect(fiveHour?.resetsAt).toBe(1776283200);
+  });
+
+  // Claude emits one window per `rate_limit_event` (5h XOR 7d). A
+  // subsequent event for the OTHER window must merge into the same
+  // pane state, not replace it. Codex emits both together; we test
+  // the harder Claude case here because it's the merge-correctness
+  // pin.
+  it('merges Claude single-window updates without clobbering the other window', async () => {
+    const pane = await buildPane();
+    getAllPanes().set('main', pane);
+
+    emitWailsEvent('provider:usage', {
+      action: 'rate_limits',
+      threadId: 'thread-1',
+      rateLimits: {
+        provider: 'claude',
+        limits: [
+          { limitId: 'five_hour', limitName: '5h', usedPercent: 30, windowMins: 300, resetsAt: 1776283200 },
+        ],
+        updatedAt: 1776283000,
+      },
+    });
+
+    emitWailsEvent('provider:usage', {
+      action: 'rate_limits',
+      threadId: 'thread-1',
+      rateLimits: {
+        provider: 'claude',
+        limits: [
+          { limitId: 'seven_day', limitName: '7d', usedPercent: 51, windowMins: 10080, resetsAt: 1776981600 },
+        ],
+        updatedAt: 1776283500,
+      },
+    });
+
+    expect(pane.rateLimits.size).toBe(2);
+    expect(pane.rateLimits.get(300)?.usedPercent).toBe(30);
+    expect(pane.rateLimits.get(10080)?.usedPercent).toBe(51);
+  });
+
+  // Unknown rate-limit types arrive with windowMins=0 from the parser
+  // (Claude's `windowMinsForRateLimitType` fallback). The store must
+  // drop those rather than write a 0-keyed slot — the toolbar reads
+  // `rateLimits.get(300)` / `rateLimits.get(10080)` and a stray 0 entry
+  // would let an unrenderable window fill memory forever.
+  it('filters out windowMins=0 entries so unknown rate-limit types do not pollute the map', async () => {
+    const pane = await buildPane();
+    getAllPanes().set('main', pane);
+
+    emitWailsEvent('provider:usage', {
+      action: 'rate_limits',
+      threadId: 'thread-1',
+      rateLimits: {
+        provider: 'claude',
+        limits: [
+          { limitId: 'thirty_day', limitName: 'thirty_day', usedPercent: 10, windowMins: 0, resetsAt: 1776283200 },
+          { limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: 1776283200 },
+        ],
+        updatedAt: 1776283000,
+      },
+    });
+
+    expect(pane.rateLimits.size).toBe(1);
+    expect(pane.rateLimits.get(300)?.usedPercent).toBe(42);
+    expect(pane.rateLimits.has(0)).toBe(false);
+  });
+
+  // The rate-limits event MUST be ignored when the threadId doesn't
+  // match a pane — pane is per-thread, snapshots cross-thread shouldn't
+  // leak. Without this guard, multi-pane setups would mirror the same
+  // rings everywhere.
+  it('does not apply rate_limits to a pane on a different thread', async () => {
+    const pane = await buildPane();
+    getAllPanes().set('main', pane);
+
+    emitWailsEvent('provider:usage', {
+      action: 'rate_limits',
+      threadId: 'thread-OTHER',
+      rateLimits: {
+        provider: 'claude',
+        limits: [
+          { limitId: 'five_hour', limitName: '5h', usedPercent: 99, windowMins: 300, resetsAt: 1776283200 },
+        ],
+        updatedAt: 1776283000,
+      },
+    });
+
+    expect(pane.rateLimits.size).toBe(0);
   });
 
   // EventSessionStatus routing: persistent kinds surface on

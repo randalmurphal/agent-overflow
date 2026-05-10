@@ -1239,19 +1239,78 @@ export function PrepareThreadWorktree(threadID: string, baseBranch: string, requ
 }
 
 /**
- * ProbeClaudeAccount spawns a short-lived Claude CLI subprocess with
- * `--max-turns 0` and returns the authenticated account metadata from
- * the emitted `system/init` message. Results are cached per binary path
- * for 5 minutes. Zero tokens are consumed — the CLI aborts before any
- * API call.
+ * ProbeClaudeAccount spawns a short-lived Claude CLI subprocess (via
+ * the SDK initialize handshake) and returns the authenticated account
+ * metadata. Results are cached per binary path for 5 minutes. Zero
+ * tokens are consumed — the CLI never runs inference (`--max-turns 0`).
  * 
  * On a successful probe that returns an empty AccountInfo (no
- * subscription and no token source) we also emit a `provider:status`
- * event with Status="unauthenticated" so the thread-level banner can
- * prompt the user to run `claude login`.
+ * subscription and no token source) we emit a `provider:status` event
+ * with Status="unauthenticated" so the thread-level banner can prompt
+ * the user to run `claude login`. On any cache-miss success we also
+ * emit a `provider:account` event so the rate-limit ring popover's
+ * plan label hydrates from the same code path that the startup hook
+ * uses — no separate emit step in callers.
+ * 
+ * Cache hits do NOT re-emit `provider:account`: the frontend store
+ * already has the value from the original miss.
  */
 export function ProbeClaudeAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(1313986574).then(($result: any) => {
+        return $$createType67($result);
+    });
+}
+
+/**
+ * ProbeCodexAccount spawns a short-lived `codex app-server` subprocess,
+ * runs the JSON-RPC initialize handshake, calls
+ * `account/rateLimits/read`, and returns AccountInfo whose
+ * SubscriptionType carries the wire's planType (e.g. "pro", "plus").
+ * Results are cached per binary path for 5 minutes.
+ * 
+ * Zero tokens are consumed: no thread is opened, no inference is
+ * performed. Failure modes (binary missing, auth required) propagate as
+ * typed errors so the caller can decide whether to surface a banner.
+ * 
+ * On any cache-miss success we also emit a `provider:account` event so
+ * the rate-limit ring popover's plan label hydrates from the same code
+ * path that the startup hook uses. Cache hits do NOT re-emit — the
+ * frontend store already has the value from the original miss.
+ */
+export function ProbeCodexAccount(): $CancellablePromise<provider$0.AccountInfo> {
+    return $Call.ByID(2614227175).then(($result: any) => {
+        return $$createType67($result);
+    });
+}
+
+/**
+ * RecheckClaudeAccount evicts the cached result for the configured
+ * Claude binary and re-runs ProbeClaudeAccount. This is the surface
+ * the auth banner's "Recheck Auth" button calls after the user runs
+ * `claude login` (or logs out and wants to clear the cached plan
+ * info). Without invalidation, the cache would mask the new state
+ * for up to 5 minutes — see the comment on `Invalidate`.
+ * 
+ * Splitting Recheck from Probe keeps user intent visible at the call
+ * site: any caller that wants live state asks for it explicitly,
+ * rather than passing a `bypassCache` flag that's easy to forget.
+ */
+export function RecheckClaudeAccount(): $CancellablePromise<provider$0.AccountInfo> {
+    return $Call.ByID(2274850917).then(($result: any) => {
+        return $$createType67($result);
+    });
+}
+
+/**
+ * RecheckCodexAccount evicts the cached result for the configured
+ * Codex binary and re-runs ProbeCodexAccount. Mirrors
+ * `RecheckClaudeAccount` — the symmetry exists so any user-initiated
+ * auth-state refresh has explicit intent on both providers; today
+ * only Claude has a Recheck UI but the surface is here when Codex
+ * needs one (e.g. after a `codex login` flow lands).
+ */
+export function RecheckCodexAccount(): $CancellablePromise<provider$0.AccountInfo> {
+    return $Call.ByID(227978482).then(($result: any) => {
         return $$createType67($result);
     });
 }

@@ -107,6 +107,21 @@ func parseAskUserQuestions(input json.RawMessage) []provider.UserInputQuestion {
 }
 
 // parseRateLimitEvent handles Claude's rate_limit_event message type.
+//
+// Wire shape (docs/references/claude-wire.md):
+//
+//	{"type":"rate_limit_event",
+//	 "rate_limit_info":{"status":"allowed_warning","resetsAt":1776981600,
+//	   "rateLimitType":"five_hour"|"seven_day",
+//	   "utilization":0.51,"isUsingOverage":false}}
+//
+// Each event carries a single window. UsedPercent is sourced from the
+// wire's `utilization` field (0.0–1.0) so partial fills render
+// correctly; WindowMins is derived from rateLimitType so the UI can
+// key off it without re-deriving from the string. `utilization` is
+// occasionally omitted (e.g. some "allowed" events with overage
+// metadata) — Go's zero-value gives UsedPercent=0 in that case, which
+// is the right empty-ring rendering.
 func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
 	infoRaw, ok := raw["rate_limit_info"]
 	if !ok {
@@ -114,21 +129,20 @@ func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now ti
 	}
 
 	var info struct {
-		Status        string `json:"status"`
-		ResetsAt      int64  `json:"resetsAt"`
-		RateLimitType string `json:"rateLimitType"`
+		ResetsAt      int64   `json:"resetsAt"`
+		RateLimitType string  `json:"rateLimitType"`
+		Utilization   float64 `json:"utilization"`
 	}
 	if json.Unmarshal(infoRaw, &info) != nil {
 		return nil, nil
 	}
 
 	entry := provider.RateLimitEntry{
-		LimitID:   info.RateLimitType,
-		LimitName: info.RateLimitType,
-		ResetsAt:  info.ResetsAt,
-	}
-	if info.Status != "allowed" {
-		entry.UsedPercent = 100
+		LimitID:     info.RateLimitType,
+		LimitName:   info.RateLimitType,
+		UsedPercent: info.Utilization * 100,
+		WindowMins:  windowMinsForRateLimitType(info.RateLimitType),
+		ResetsAt:    info.ResetsAt,
 	}
 
 	snapshot := provider.RateLimitsSnapshot{
@@ -144,4 +158,19 @@ func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now ti
 		Meta:      meta,
 		Timestamp: now,
 	}}, nil
+}
+
+// windowMinsForRateLimitType maps Claude's `rateLimitType` enum onto
+// the window length so RateLimitEntry.WindowMins matches the Codex
+// shape (where the wire carries `windowDurationMins` directly).
+// Returns 0 for unknown types — callers treat 0 as "don't render".
+func windowMinsForRateLimitType(rateLimitType string) int {
+	switch rateLimitType {
+	case "five_hour":
+		return 300
+	case "seven_day":
+		return 10080
+	default:
+		return 0
+	}
 }

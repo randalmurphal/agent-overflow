@@ -210,6 +210,8 @@ export class NetworkSettings {
 export const GetProviderStatuses = dispatch('GetProviderStatuses');
 export const GetModelsForProvider = dispatch('GetModelsForProvider');
 export const ProbeClaudeAccount = dispatch('ProbeClaudeAccount');
+export const RecheckClaudeAccount = dispatch('RecheckClaudeAccount');
+export const RecheckCodexAccount = dispatch('RecheckCodexAccount');
 
 export const GetGitStatus = dispatch('GetGitStatus');
 export const GitStatusSubscribe = dispatch('GitStatusSubscribe');

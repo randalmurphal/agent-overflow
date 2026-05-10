@@ -6,6 +6,8 @@ import type {
   ContextWindow,
   ItemDeltaEvent,
   PendingInteractiveRequests,
+  RateLimitEntry,
+  RateLimitsSnapshot,
   TodoStep,
   ProviderStatusEvent,
   SubagentNotificationEvent,
@@ -496,6 +498,16 @@ export function createThreadPane() {
   const resolvedApprovalIds = new Set<string>();
   const resolvedUserInputIds = new Set<string>();
   let contextWindow: ContextWindow | null = $state(null);
+  /**
+   * Per-thread rate-limit snapshots, keyed by `windowMins` (300 = 5h,
+   * 10080 = 7d). Live state only — not persisted. Each provider event
+   * (`UsageEvent` with `action: 'rate_limits'`) merges its entries
+   * into this map: Claude emits one window per event, Codex emits
+   * both windows together. The map is reassigned (not mutated) so
+   * Svelte runes-reactivity propagates to the composer toolbar's
+   * `RateLimitMeter` instances.
+   */
+  let rateLimitsByWindow: Map<number, RateLimitEntry> = $state(new Map());
   let providerBanner: ProviderStatusEvent | null = $state(null);
   // generalError is the grab-bag pane-level error slot surfaced by
   // ProviderStatusBanner for non-wire failures: thread load failures,
@@ -1582,6 +1594,7 @@ export function createThreadPane() {
     resolvedApprovalIds.clear();
     resolvedUserInputIds.clear();
     contextWindow = seedContextWindow(newThread);
+    rateLimitsByWindow = new Map();
     providerBanner = null;
     generalError = null;
     sendInFlight = false;
@@ -1832,6 +1845,15 @@ export function createThreadPane() {
     get thread() { return thread; },
     get threadId() { return thread?.id ?? null; },
     get items() { return items; },
+    /**
+     * "Locked in" — the user has sent at least one message, so the
+     * provider/model selection is committed for this thread. UI
+     * affordances that should hide while the thread is still in its
+     * pre-send configuration phase (rate-limit rings, model picker
+     * disable) read this getter rather than re-deriving from
+     * `items.length`.
+     */
+    get isLocked() { return items.length > 0; },
     get timelineRevision() { return timelineRevision; },
     get liveItemSummaries() { return liveItemSummaries; },
     /**
@@ -1844,6 +1866,7 @@ export function createThreadPane() {
     get pendingApprovals() { return pendingApprovals; },
     get pendingUserInputs() { return pendingUserInputs; },
     get contextWindow() { return contextWindow; },
+    get rateLimits() { return rateLimitsByWindow; },
     get providerBanner() { return providerBanner; },
     get generalError() { return generalError; },
     get loading() { return loading; },
@@ -2045,6 +2068,7 @@ export function createThreadPane() {
       resolvedApprovalIds.clear();
       resolvedUserInputIds.clear();
       contextWindow = null;
+      rateLimitsByWindow = new Map();
       providerBanner = null;
       generalError = null;
       loading = false;
@@ -2444,6 +2468,23 @@ export function createThreadPane() {
       contextWindow = null;
     },
 
+    /**
+     * Merge a rate-limits snapshot into the per-window map. Entries
+     * with `windowMins == 0` are dropped — that's the parser's signal
+     * for "unrecognised window length, don't render". Reassigns the
+     * Map reference so reactive consumers re-read.
+     */
+    setRateLimits(snapshot: RateLimitsSnapshot): void {
+      if (!snapshot.limits.length) return;
+      const next = new Map(rateLimitsByWindow);
+      for (const entry of snapshot.limits) {
+        if (entry.windowMins > 0) {
+          next.set(entry.windowMins, entry);
+        }
+      }
+      rateLimitsByWindow = next;
+    },
+
     setProviderBanner(status: ProviderStatusEvent | null): void {
       providerBanner = status;
     },
@@ -2614,6 +2655,7 @@ export function createThreadPane() {
     replaceThread(nextThread: Thread): void {
       thread = nextThread;
       contextWindow = seedContextWindow(nextThread);
+      rateLimitsByWindow = new Map();
     },
 
     toggleTerminal(): void {

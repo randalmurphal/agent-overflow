@@ -45,16 +45,21 @@ func resetClaudeProbeCacheForTest() {
 	claudeProbeCache = claude.NewProbeCache(claude.DefaultProbeTTL)
 }
 
-// ProbeClaudeAccount spawns a short-lived Claude CLI subprocess with
-// `--max-turns 0` and returns the authenticated account metadata from
-// the emitted `system/init` message. Results are cached per binary path
-// for 5 minutes. Zero tokens are consumed — the CLI aborts before any
-// API call.
+// ProbeClaudeAccount spawns a short-lived Claude CLI subprocess (via
+// the SDK initialize handshake) and returns the authenticated account
+// metadata. Results are cached per binary path for 5 minutes. Zero
+// tokens are consumed — the CLI never runs inference (`--max-turns 0`).
 //
 // On a successful probe that returns an empty AccountInfo (no
-// subscription and no token source) we also emit a `provider:status`
-// event with Status="unauthenticated" so the thread-level banner can
-// prompt the user to run `claude login`.
+// subscription and no token source) we emit a `provider:status` event
+// with Status="unauthenticated" so the thread-level banner can prompt
+// the user to run `claude login`. On any cache-miss success we also
+// emit a `provider:account` event so the rate-limit ring popover's
+// plan label hydrates from the same code path that the startup hook
+// uses — no separate emit step in callers.
+//
+// Cache hits do NOT re-emit `provider:account`: the frontend store
+// already has the value from the original miss.
 func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
 	binary := a.providerBinaryPath(string(provider.Claude))
 
@@ -77,5 +82,25 @@ func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
 	if claudeUnauthenticatedStatus(info) {
 		a.emitClaudeUnauthenticatedStatus()
 	}
+	a.emit("provider:account", ProviderAccountEvent{
+		Provider: string(provider.Claude),
+		Account:  info,
+	})
 	return info, nil
+}
+
+// RecheckClaudeAccount evicts the cached result for the configured
+// Claude binary and re-runs ProbeClaudeAccount. This is the surface
+// the auth banner's "Recheck Auth" button calls after the user runs
+// `claude login` (or logs out and wants to clear the cached plan
+// info). Without invalidation, the cache would mask the new state
+// for up to 5 minutes — see the comment on `Invalidate`.
+//
+// Splitting Recheck from Probe keeps user intent visible at the call
+// site: any caller that wants live state asks for it explicitly,
+// rather than passing a `bypassCache` flag that's easy to forget.
+func (a *App) RecheckClaudeAccount() (provider.AccountInfo, error) {
+	binary := a.providerBinaryPath(string(provider.Claude))
+	claudeAccountProbeCache().Invalidate(binary)
+	return a.ProbeClaudeAccount()
 }

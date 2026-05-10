@@ -3,6 +3,7 @@ import type {
   ApprovalEvent,
   ItemDeltaEvent,
   ItemStreamEvent,
+  ProviderAccountEvent,
   TodoUpdateEvent,
   ProviderStatusEvent,
   SessionDiedEvent,
@@ -19,6 +20,7 @@ import type {
   CheckpointRevertedEvent,
   CheckpointUnavailableEvent,
 } from '../types/checkpoint';
+import { setProviderAccount } from './accountInfo.svelte';
 import { transportGapChannel } from '../transport/wsClient';
 import {
   confirmFlushedByUserItemId,
@@ -511,13 +513,15 @@ function applyUsageEvent(evt: UsageEvent): void {
   if (!evt?.threadId) return;
 
   // `rate_limits` piggybacks on the same channel but doesn't touch the
-  // context-window ring. Bail before the ring-update path so a rate-limit
-  // refresh never clobbers the last known token-window snapshot.
+  // context-window ring. Route to the pane's rate-limit slot and bail
+  // before the context-window update path so a rate-limit refresh
+  // never clobbers the last known token-window snapshot.
   if (evt.action === 'rate_limits') {
-    // Future work: thread this onto a pane-level rateLimits state so the
-    // popover can render the snapshot. For v1 the backend just keeps
-    // capturing it; no pane surface yet. Explicitly returning here makes
-    // the "no-op" intentional and greppable.
+    if (!evt.rateLimits) return;
+    for (const pane of getAllPanes().values()) {
+      if (pane.threadId !== evt.threadId) continue;
+      pane.setRateLimits(evt.rateLimits);
+    }
     return;
   }
 
@@ -945,6 +949,18 @@ export function setupEventListeners(): () => void {
 
   const cancelProviderStatus = wailsEventOn<ProviderStatusEvent>('provider:status', applyProviderStatus);
 
+  // provider:account — startup probe result (one event per provider).
+  // Hydrates the global accountInfo store; the rate-limit ring popover
+  // reads it for the "Plan: <planType>" line.
+  const cancelProviderAccount = wailsEventOn<ProviderAccountEvent>(
+    'provider:account',
+    (evt) => {
+      if (!evt || typeof evt.account !== 'object' || evt.account === null) return;
+      if (evt.provider !== 'claude' && evt.provider !== 'codex') return;
+      setProviderAccount(evt.provider, evt.account);
+    },
+  );
+
   // provider:item_event is the canonical ordered timeline mutation stream.
   // Upserts and deltas intentionally share one Wails channel so streaming
   // text cannot race lifecycle snapshots across separate event names.
@@ -1179,6 +1195,7 @@ export function setupEventListeners(): () => void {
     cancelUserInput();
     cancelUsage();
     cancelProviderStatus();
+    cancelProviderAccount();
     cancelItemEvent();
     cancelTurnStarted();
     cancelTurnCompleted();

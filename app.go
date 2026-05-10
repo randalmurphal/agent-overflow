@@ -284,6 +284,13 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	// (up to 5s per provider) and we never want that blocking app startup.
 	go a.probeStartupProviderStatuses()
 
+	// Probe authenticated account info (planType, subscription) for both
+	// providers. Separate goroutine because the account probe spawns a
+	// short-lived provider process and runs the wire handshake — slower
+	// than DetectProvider's version check. Results land on the frontend
+	// via the `provider:account` event.
+	go a.probeStartupAccountInfo()
+
 	return nil
 }
 

@@ -129,6 +129,9 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "PostChannelMessage", ID: 1315440605}, // main.App.PostChannelMessage
 	{Name: "PrepareThreadWorktree", ID: 2870364785}, // main.App.PrepareThreadWorktree
 	{Name: "ProbeClaudeAccount", ID: 1313986574}, // main.App.ProbeClaudeAccount
+	{Name: "ProbeCodexAccount", ID: 2614227175}, // main.App.ProbeCodexAccount
+	{Name: "RecheckClaudeAccount", ID: 2274850917}, // main.App.RecheckClaudeAccount
+	{Name: "RecheckCodexAccount", ID: 227978482}, // main.App.RecheckCodexAccount
 	{Name: "ReconfigureObservability", ID: 225050321}, // main.App.ReconfigureObservability
 	{Name: "ReconnectSession", ID: 1420075138}, // main.App.ReconnectSession
 	{Name: "RegisterQueueItem", ID: 1034543696}, // main.App.RegisterQueueItem

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { formatElapsedSeconds, formatTurnTokens } from './format';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { formatElapsedSeconds, formatResetCountdown, formatTurnTokens } from './format';
 
 describe('formatElapsedSeconds', () => {
   it('formats sub-60s values as "Xs"', () => {
@@ -46,5 +46,58 @@ describe('formatTurnTokens', () => {
   it('clamps negative / non-finite values to zero rather than rendering garbage', () => {
     expect(formatTurnTokens(-1)).toBe('0 tokens');
     expect(formatTurnTokens(Number.NaN)).toBe('0 tokens');
+  });
+});
+
+describe('formatResetCountdown', () => {
+  // Pin Date.now() so countdown math is deterministic. The seconds
+  // values below are computed against this fixed "now" (in seconds:
+  // 1_000_000).
+  const NOW_MS = 1_000_000_000;
+  const NOW_SEC = Math.floor(NOW_MS / 1000);
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW_MS);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('renders sub-minute as "<1m" rather than counting down seconds', () => {
+    expect(formatResetCountdown(NOW_SEC + 30)).toBe('Resets in <1m');
+    expect(formatResetCountdown(NOW_SEC + 59)).toBe('Resets in <1m');
+  });
+
+  it('renders 1–59 minutes as "Xm"', () => {
+    expect(formatResetCountdown(NOW_SEC + 60)).toBe('Resets in 1m');
+    expect(formatResetCountdown(NOW_SEC + 60 * 23)).toBe('Resets in 23m');
+    expect(formatResetCountdown(NOW_SEC + 60 * 59)).toBe('Resets in 59m');
+  });
+
+  it('renders 1–23 hours as "Xh Ym" (or just "Xh" when remainder is 0)', () => {
+    expect(formatResetCountdown(NOW_SEC + 3600)).toBe('Resets in 1h');
+    expect(formatResetCountdown(NOW_SEC + 3600 + 60 * 12)).toBe('Resets in 1h 12m');
+    expect(formatResetCountdown(NOW_SEC + 3600 * 5)).toBe('Resets in 5h');
+    expect(formatResetCountdown(NOW_SEC + 3600 * 23 + 60 * 59)).toBe('Resets in 23h 59m');
+  });
+
+  it('renders 24h+ as "Xd Yh" so the 7-day window doesn\'t collapse to a six-figure hour count', () => {
+    expect(formatResetCountdown(NOW_SEC + 3600 * 24)).toBe('Resets in 1d');
+    expect(formatResetCountdown(NOW_SEC + 3600 * 24 + 3600 * 3)).toBe('Resets in 1d 3h');
+    expect(formatResetCountdown(NOW_SEC + 3600 * 24 * 7)).toBe('Resets in 7d');
+  });
+
+  it('renders past timestamps as "Resetting now" (wire is stale, next event refreshes)', () => {
+    expect(formatResetCountdown(NOW_SEC - 1)).toBe('Resetting now');
+    expect(formatResetCountdown(NOW_SEC - 3600)).toBe('Resetting now');
+    expect(formatResetCountdown(NOW_SEC)).toBe('Resetting now');
+  });
+
+  it('returns empty string for unset / non-finite inputs', () => {
+    expect(formatResetCountdown(0)).toBe('');
+    expect(formatResetCountdown(-1)).toBe('');
+    expect(formatResetCountdown(Number.NaN)).toBe('');
+    expect(formatResetCountdown(Number.POSITIVE_INFINITY)).toBe('');
   });
 });

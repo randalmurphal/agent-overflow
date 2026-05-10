@@ -8,6 +8,7 @@ func TestEventVisibleToOrigin(t *testing.T) {
 		"provider:queue_flushed",
 		"provider:queue_state_changed",
 		"provider:user_input",
+		"provider:account",
 	} {
 		if eventVisibleToOrigin(channel, false) {
 			t.Fatalf("%s visible to non-loopback peer", channel)

@@ -196,7 +196,7 @@
   let isCodex = $derived(pane.thread?.provider === 'codex');
   let modelLabel = $derived(displayModelLabel(pane.thread?.provider ?? '', pane.thread?.model ?? 'No model'));
 
-  let isLocked = $derived(pane.items.length > 0);
+  let isLocked = $derived(pane.isLocked);
   let isDiscussion = $derived(pane.thread?.mode === 'discussion');
   let activeProvider = $derived(pane.thread?.provider ?? null);
   let showCodexSubmenu = $derived(!isDiscussion && (!isLocked || activeProvider === 'codex'));

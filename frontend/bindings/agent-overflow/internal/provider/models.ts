@@ -10,17 +10,20 @@ import { Create as $Create } from "@wailsio/runtime";
 import * as json$0 from "../../../encoding/json/models.js";
 
 /**
- * AccountInfo describes the authenticated Claude account surfaced through
- * the `system/init` message. Subscription type and token source fields are
- * populated only when the CLI includes them; older CLI versions or
- * unauthenticated invocations may leave them empty.
+ * AccountInfo describes the authenticated provider account surfaced
+ * through a startup probe. For Claude the data lands on the inner
+ * `response.response.account` of a `control_request{subtype:"initialize"}`
+ * reply (NOT on `system/init`, which doesn't carry account fields on
+ * the live wire). For Codex the data lands on the `RateLimitSnapshot`
+ * returned by `account/rateLimits/read` (planType + apiProvider hint).
+ * 
+ * Empty SubscriptionType + empty TokenSource are the unauthenticated
+ * signal forge has used historically; consumers branch on that.
  */
 export class AccountInfo {
     "subscriptionType"?: string;
     "tokenSource"?: string;
     "apiProvider"?: string;
-    "model"?: string;
-    "version"?: string;
 
     /** Creates a new AccountInfo instance. */
     constructor($$source: Partial<AccountInfo> = {}) {

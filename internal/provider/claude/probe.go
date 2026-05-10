@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sync"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -26,15 +25,25 @@ const defaultProbeTimeout = 8 * time.Second
 // given binary path. Matches forge's subscription-probe TTL.
 const DefaultProbeTTL = 5 * time.Minute
 
-// ProbeAccount spawns a short-lived `claude --max-turns 0` subprocess, reads
-// the initial `system/init` message, extracts the authenticated account
-// fields, and returns a zero-token AccountInfo.  The subprocess is shut
-// down via stdin close as soon as the init message has been parsed.
+// probeInitRequestID is the request_id we send for the probe's
+// initialize control_request. Fixed because the probe is one-shot — no
+// concurrency, no need for a sequence allocator.
+const probeInitRequestID = "ao-probe-init"
+
+// ProbeAccount spawns a short-lived `claude --max-turns 0` subprocess,
+// sends a `control_request{subtype:"initialize"}` as the first wire
+// message, reads the matching `control_response`, and returns the
+// authenticated account info from the embedded `account` object.
 //
-// The `--max-turns 0` flag guarantees no inference occurs: Claude aborts
-// before making an API call. A zero-value AccountInfo with nil error is a
-// valid result when the CLI does not emit an `account` object (older CLIs
-// or unauthenticated environments).
+// `--max-turns 0` is defense-in-depth: even if we somehow fail to tear
+// the process down promptly, the CLI cannot perform inference. The
+// account data is on the control_response payload (verified live —
+// `system/init` does NOT carry `account` fields), so this probe does
+// NOT depend on a system/init line being emitted.
+//
+// A zero-value AccountInfo with nil error is a valid result when the
+// CLI returns success but the account object is empty (older CLI
+// versions or unauthenticated environments).
 func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, error) {
 	binary := cfg.Binary
 	if binary == "" {
@@ -57,28 +66,29 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 	if err != nil {
 		return provider.AccountInfo{}, fmt.Errorf("claude: probe spawn: %w", err)
 	}
-	// Fire-and-forget: close pipes and reap the child on every exit path.
 	defer func() {
 		_ = proc.Close()
 	}()
 
-	// Send the user prompt so the CLI flushes its init message. With
-	// --max-turns 0 the CLI emits `system/init` and then aborts before any
-	// API call, so this costs zero tokens.
-	if err := proc.WriteLine([]byte(`{"type":"user","message":{"role":"user","content":"."}}`)); err != nil {
-		return provider.AccountInfo{}, fmt.Errorf("claude: probe write prompt: %w", err)
+	req := map[string]any{
+		"type":       "control_request",
+		"request_id": probeInitRequestID,
+		"request":    map[string]any{"subtype": "initialize"},
+	}
+	reqLine, err := json.Marshal(req)
+	if err != nil {
+		return provider.AccountInfo{}, fmt.Errorf("claude: probe marshal initialize: %w", err)
+	}
+	if err := proc.WriteLine(reqLine); err != nil {
+		return provider.AccountInfo{}, fmt.Errorf("claude: probe write initialize: %w", err)
 	}
 
-	info, err := readInitFromProc(probeCtx, proc)
-	if err != nil {
-		return provider.AccountInfo{}, err
-	}
-	return info, nil
+	return readControlInitResponse(probeCtx, proc)
 }
 
-// buildProbeArgs returns the CLI flags used by ProbeAccount. Kept separate
-// from buildArgs so the probe's zero-token guarantee is visible and testable
-// without running a full session.
+// buildProbeArgs returns the CLI flags used by ProbeAccount. Kept
+// separate so the zero-token guarantee (`--max-turns 0`) is visible
+// and testable without running a full session.
 func buildProbeArgs() []string {
 	return []string{
 		"--input-format", "stream-json",
@@ -88,10 +98,11 @@ func buildProbeArgs() []string {
 	}
 }
 
-// readInitFromProc reads stdout lines until the first `system/init` message
-// appears, respecting ctx cancellation. Runs ReadLine in a helper goroutine
-// so the ctx can interrupt blocked reads.
-func readInitFromProc(ctx context.Context, proc *provider.Process) (provider.AccountInfo, error) {
+// readControlInitResponse reads stdout lines, skips intervening system
+// events (e.g. SessionStart hook envelopes), and returns the parsed
+// account info from the matching control_response. ReadLine runs in a
+// helper goroutine so ctx cancellation can interrupt blocked reads.
+func readControlInitResponse(ctx context.Context, proc *provider.Process) (provider.AccountInfo, error) {
 	type readResult struct {
 		line []byte
 		err  error
@@ -119,109 +130,99 @@ func readInitFromProc(ctx context.Context, proc *provider.Process) (provider.Acc
 		case r := <-ch:
 			if r.err != nil {
 				if errors.Is(r.err, io.EOF) {
-					return provider.AccountInfo{}, fmt.Errorf("claude: probe: CLI exited before emitting init")
+					return provider.AccountInfo{}, fmt.Errorf("claude: probe: CLI exited before emitting initialize response")
 				}
 				return provider.AccountInfo{}, fmt.Errorf("claude: probe read: %w", r.err)
 			}
 			if len(r.line) == 0 {
 				continue
 			}
-			isInit, err := lineIsSystemInit(r.line)
+			info, matched, err := tryParseControlInitResponse(r.line)
 			if err != nil {
-				// Non-JSON or unparseable line — skip and continue.
+				return provider.AccountInfo{}, err
+			}
+			if !matched {
+				// Some other envelope (system event, hook, etc.); keep reading.
 				continue
 			}
-			if !isInit {
-				continue
-			}
-			return extractAccountInfoFromInit(r.line)
+			return info, nil
 		}
 	}
 }
 
-// lineIsSystemInit returns true when the given NDJSON line is the
-// `system/init` message. Other system subtypes and non-system messages
-// return false.
-func lineIsSystemInit(line []byte) (bool, error) {
+// tryParseControlInitResponse inspects one NDJSON line. Returns
+// (info, true, nil) when the line is the matching control_response,
+// (zero, false, nil) for any other envelope, and (zero, false, err)
+// when the matching response carries a non-success subtype (auth
+// failure, etc).
+func tryParseControlInitResponse(line []byte) (provider.AccountInfo, bool, error) {
 	var envelope struct {
-		Type    string `json:"type"`
-		Subtype string `json:"subtype"`
+		Type     string `json:"type"`
+		Response struct {
+			Subtype   string          `json:"subtype"`
+			RequestID string          `json:"request_id"`
+			Response  json.RawMessage `json:"response"`
+			Error     string          `json:"error"`
+		} `json:"response"`
 	}
 	if err := json.Unmarshal(line, &envelope); err != nil {
-		return false, err
+		// Non-JSON or unrelated envelope (e.g. some debug logs). Skip.
+		return provider.AccountInfo{}, false, nil
 	}
-	return envelope.Type == "system" && envelope.Subtype == "init", nil
+	if envelope.Type != "control_response" || envelope.Response.RequestID != probeInitRequestID {
+		return provider.AccountInfo{}, false, nil
+	}
+	if envelope.Response.Subtype != "success" {
+		msg := envelope.Response.Error
+		if msg == "" {
+			msg = envelope.Response.Subtype
+		}
+		return provider.AccountInfo{}, true, fmt.Errorf("claude: probe initialize: %s", msg)
+	}
+	return extractAccountInfoFromInitResponse(envelope.Response.Response), true, nil
 }
 
-// extractAccountInfoFromInit parses the `account` object (when present) and
-// the top-level model / version fields from a system/init line.  A missing
-// `account` field is not an error — it returns a zero-value AccountInfo
-// with whatever session metadata the CLI did provide.
-func extractAccountInfoFromInit(line []byte) (provider.AccountInfo, error) {
-	var payload struct {
-		Model   string `json:"model"`
-		Version string `json:"claude_code_version"`
+// extractAccountInfoFromInitResponse decodes the `account` object out
+// of the inner `response.response` payload returned by the CLI's
+// initialize handler. The wire shape (verified via spike against the
+// real CLI) is:
+//
+//	{"type":"control_response",
+//	 "response":{"subtype":"success","request_id":"…","response":{
+//	    "commands":[…],"agents":[…],
+//	    "account":{"email":"…","subscriptionType":"Claude Max",
+//	               "apiProvider":"firstParty","tokenSource":"…?"},
+//	    …}}}
+//
+// A missing `account` field yields a zero-value AccountInfo (legitimate
+// when the CLI is unauthenticated).
+func extractAccountInfoFromInitResponse(payload json.RawMessage) provider.AccountInfo {
+	if len(payload) == 0 {
+		return provider.AccountInfo{}
+	}
+	var inner struct {
 		Account struct {
 			SubscriptionType string `json:"subscriptionType"`
 			TokenSource      string `json:"tokenSource"`
 			APIProvider      string `json:"apiProvider"`
 		} `json:"account"`
 	}
-	if err := json.Unmarshal(line, &payload); err != nil {
-		return provider.AccountInfo{}, fmt.Errorf("claude: probe parse init: %w", err)
+	if err := json.Unmarshal(payload, &inner); err != nil {
+		return provider.AccountInfo{}
 	}
-
 	return provider.AccountInfo{
-		SubscriptionType: payload.Account.SubscriptionType,
-		TokenSource:      payload.Account.TokenSource,
-		APIProvider:      payload.Account.APIProvider,
-		Model:            payload.Model,
-		Version:          payload.Version,
-	}, nil
+		SubscriptionType: inner.Account.SubscriptionType,
+		TokenSource:      inner.Account.TokenSource,
+		APIProvider:      inner.Account.APIProvider,
+	}
 }
 
-// ProbeCache stores recent AccountInfo results keyed by binary path.
-// Results older than TTL are considered stale. Safe for concurrent use.
-type ProbeCache struct {
-	mu      sync.Mutex
-	ttl     time.Duration
-	entries map[string]probeCacheEntry
-}
-
-type probeCacheEntry struct {
-	info    provider.AccountInfo
-	storeAt time.Time
-}
+// ProbeCache aliases the shared `provider.ProbeCache` so existing callers
+// keep working. All cache logic lives in `internal/provider/probecache.go`.
+type ProbeCache = provider.ProbeCache
 
 // NewProbeCache returns a fresh cache with the given entry lifetime.
+// Thin wrapper around `provider.NewProbeCache` for call-site symmetry.
 func NewProbeCache(ttl time.Duration) *ProbeCache {
-	return &ProbeCache{
-		ttl:     ttl,
-		entries: make(map[string]probeCacheEntry),
-	}
-}
-
-// Get returns a cached AccountInfo for the binary path, if present and
-// not expired.
-func (c *ProbeCache) Get(key string) (provider.AccountInfo, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	entry, ok := c.entries[key]
-	if !ok {
-		return provider.AccountInfo{}, false
-	}
-	if time.Since(entry.storeAt) > c.ttl {
-		delete(c.entries, key)
-		return provider.AccountInfo{}, false
-	}
-	return entry.info, true
-}
-
-// Set stores an AccountInfo under the given binary path key.
-func (c *ProbeCache) Set(key string, info provider.AccountInfo) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.entries[key] = probeCacheEntry{info: info, storeAt: time.Now()}
+	return provider.NewProbeCache(ttl)
 }
