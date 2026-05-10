@@ -97,6 +97,21 @@ shape. Operational rules for code in this directory:
   before paint → controller sync-pins scrollTop to the new target in
   the same paint. Don't reintroduce a length-watching effect that
   calls `scrollToIndex(last)`.
+- **Auto-load-older trigger.** Virtualizer's `onscroll` calls
+  `maybeAutoLoadOlder(offset)` which fires `pane.loadOlder()` when the
+  user scrolls within `AUTO_LOAD_OFFSET_PX=800` of the top AND the
+  topmost rendered row index is `<= AUTO_LOAD_INDEX_THRESHOLD=5`. Both
+  gates matter: the offset gate keeps fast scrolls past the trigger
+  zone from oversubscribing the binding; the index gate prevents an
+  idle small-thread render from auto-loading just because the whole
+  thing fits in the viewport. Restoration must finish first
+  (`restoredThreadId === pane.threadId`) so `handleLoadOlder`'s anchor
+  capture isn't racing an unstable scrollTop. A
+  `autoLoadAttemptedAtFloor` guard prevents re-firing while
+  `pane.oldestLoadedTurnIndex` hasn't advanced — cleared on thread
+  switch. The "Load older messages" button at the top of the timeline
+  is the explicit fallback path; both routes funnel into the same
+  `handleLoadOlder()`.
 - Scroll-behavior tests live in `scroll.test.ts`. Component-shape tests
   for individual rows (TimelineLeaf, SubagentGroup, CommandOutput, etc.)
   stay in their own `*.test.ts` files.

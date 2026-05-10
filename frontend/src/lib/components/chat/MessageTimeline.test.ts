@@ -286,9 +286,9 @@ describe('<MessageTimeline>', () => {
 
   describe('windowed history', () => {
     // Build a pane driven directly (not via buildPane) so the test can
-    // prime ListRecentThreadItems with its own items + hasMore flag. The
-    // integration shape is stable: createThreadPane + switchThread reads
-    // the paged bindings we stub below.
+    // prime the initial-slice binding with its own items + hasMore flag.
+    // The integration shape is stable: createThreadPane + switchThread
+    // reads the paged binding we stub below.
     async function buildWindowedPane(opts: {
       items: ReturnType<typeof makeItem>[];
       hasMore?: boolean;
@@ -298,7 +298,7 @@ describe('<MessageTimeline>', () => {
       const floor =
         oldestTurnIndex ?? (items.length > 0 ? items[0].turnIndex : -1);
       setBindingMock('SwitchThread', async () => {});
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items,
         oldestTurnIndex: floor,
         hasMore,

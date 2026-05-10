@@ -63,20 +63,17 @@ export function installPaneMocks(items: Item[] = []): void {
   // don't care don't have to stub them.
   setBindingMock('MarkThreadRead', async () => {});
   setBindingMock('MarkThreadUnread', async () => {});
-  // The pane now loads the tail of history via ListRecentThreadItems on
-  // switch; ListItems remains mocked because a few component tests (and
-  // a couple of integration fixtures) still reach for it directly.
-  // Both default to the same items array so helpers and raw mocks
-  // behave consistently.
-  setBindingMock('ListRecentThreadItems', async () => ({
+  // The pane loads the initial slice of history via ListThreadSliceAround
+  // on switch (works for both bottom-snapshot and saved-anchor cases).
+  // ListRecentThreadItems is the canonical wider-window binding used by
+  // the transport-gap recovery path (`refreshFromBackend`); component
+  // tests that don't exercise that path leave the default empty.
+  setBindingMock('ListThreadSliceAround', async () => ({
     items,
     oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
     hasMore: false,
   }));
-  // The two-phase switch also calls ListThreadSliceAround for the
-  // viewport-sized fast slice. Default to the same items so the merge
-  // is idempotent for tests that only care about the canonical view.
-  setBindingMock('ListThreadSliceAround', async () => ({
+  setBindingMock('ListRecentThreadItems', async () => ({
     items,
     oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
     hasMore: false,

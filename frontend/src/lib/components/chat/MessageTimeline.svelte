@@ -58,6 +58,14 @@
   // overlay; combined with the --composer-height variable from ChatView.
   const BOTTOM_PAD_PX = 24;
   const TARGET_FLASH_MS = 900;
+  // Auto-load-older trigger thresholds. When the user scrolls within
+  // AUTO_LOAD_OFFSET_PX of the top AND the topmost rendered row is one
+  // of the first AUTO_LOAD_INDEX_THRESHOLD items, fire `pane.loadOlder()`
+  // so the next batch slots in before the user runs out of buffer. The
+  // index gate is what keeps an idle small-thread render from auto-
+  // loading just because the whole thing fits in viewport.
+  const AUTO_LOAD_OFFSET_PX = 800;
+  const AUTO_LOAD_INDEX_THRESHOLD = 5;
   // happy-dom returns 0 for clientHeight/clientWidth, which makes virtua
   // mount zero rows. In test runs we ask virtua to mount everything via
   // ssrCount so test assertions can find the rendered DOM. Production
@@ -113,6 +121,13 @@
   // scroll, programmatic scrollToItem — so async restore work can detect
   // staleness and bail.
   let restoreToken = 0;
+  // Progress guard for the scroll-driven auto-load-older trigger. Pins
+  // the floor a previous auto-load attempted so subsequent scroll events
+  // in the same range don't re-fire the same query. Plain `let` (not
+  // `$state`) because it's read only inside `maybeAutoLoadOlder` (a
+  // passive scroll-event callback) and reset in `$effect.pre` — no
+  // template or `$derived` consumers.
+  let autoLoadAttemptedAtFloor: number | null = null;
   let flashingItemId: string | null = $state(null);
   let targetFlashNonce = $state(0);
   let flashTimer: ReturnType<typeof setTimeout> | null = null;
@@ -366,12 +381,52 @@
   // Virtualizer's callbacks here are only for snapshot persistence so
   // back-button / thread-switch returns to the same place.
 
-  function handleVirtuaScroll(_offset: number): void {
+  function handleVirtuaScroll(offset: number): void {
     saveScrollSnapshot();
+    maybeAutoLoadOlder(offset);
   }
 
   function handleVirtuaScrollEnd(): void {
     saveScrollSnapshot();
+  }
+
+  // Auto-load-older trigger. Fires `pane.loadOlder()` when the user is
+  // reading near the top of the loaded window, so older items page in
+  // before they hit a wall. The "Load older messages" button at the
+  // top of the timeline is the explicit fallback when auto-load is
+  // bypassed (no progress, fast-skip past the threshold, etc.).
+  function maybeAutoLoadOlder(offset: number): void {
+    if (!listRef) return;
+    if (!pane.hasMoreHistory) return;
+    if (pane.loadingOlder) return;
+    // Defensive null-floor exit. `pane.loadOlder()` already noops when
+    // `oldestLoadedTurnIndex === null`, but leaving the guard at
+    // `null === null` would let every scroll tick re-fire the auto-load
+    // (the `!== null` precondition on the progress guard means the
+    // identity comparison below never engages for null floors). The
+    // combination only arises with a malformed backend response
+    // (`hasMore=true` alongside no items), but the cost of pinning it
+    // here is one comparison per scroll tick.
+    if (pane.oldestLoadedTurnIndex === null) return;
+    // Restoration must finish first — auto-loading mid-restore would
+    // race the anchor capture in handleLoadOlder against an unstable
+    // scrollTop.
+    if (restoredThreadId !== pane.threadId) return;
+    if (offset >= AUTO_LOAD_OFFSET_PX) return;
+    const firstIdx = listRef.findItemIndex(offset);
+    if (firstIdx > AUTO_LOAD_INDEX_THRESHOLD) return;
+    // Progress guard. A previous auto-load attempt that resolved
+    // without advancing the floor (no older items returned, stale
+    // generation, error path, or backend signaled hasMore=true without
+    // actually shifting the floor) sets this so we don't hammer the
+    // same query while the user lingers near the top. Cleared
+    // implicitly when loadOlder advances the floor (the identity
+    // comparison becomes false again) or explicitly on thread switch
+    // in the $effect.pre reset block.
+    if (autoLoadAttemptedAtFloor !== null
+        && autoLoadAttemptedAtFloor === pane.oldestLoadedTurnIndex) return;
+    autoLoadAttemptedAtFloor = pane.oldestLoadedTurnIndex;
+    void handleLoadOlder();
   }
 
   // ============================================================
@@ -461,6 +516,7 @@
         restoredThreadId = null;
         restoreToken += 1;
       }
+      autoLoadAttemptedAtFloor = null;
       stick.setEscapedFromLock(true);
     }
     scrollSnapshotThreadId = nextThreadId;

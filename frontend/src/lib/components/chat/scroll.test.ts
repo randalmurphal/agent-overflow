@@ -402,11 +402,12 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
   });
 
   it('cache-hit restoration runs as soon as items appear, not after loading flips false', async () => {
-    // The restoration $effect now fires on `items.length > 0 || !loading`
-    // so a cache-hit paint can restore the saved anchor BEFORE phase 2
-    // resolves. Stage: items are present from cache, but pane.loading
-    // is still true because phase 2 hangs. Assert restoration ran
-    // anyway (loadUntilItem was called for the snapshotted anchor).
+    // The restoration $effect fires on `items.length > 0 || !loading`
+    // so a cache-hit paint can restore the saved anchor while the
+    // initial-load slice is still in flight. Stage: items are present
+    // from cache, but pane.loading is still true because the slice
+    // load hangs. Assert restoration ran anyway (loadUntilItem was
+    // called for the snapshotted anchor).
     setThreadScrollSnapshot('cache-hit-restore', {
       kind: 'anchor',
       itemId: 'anchor-row',
@@ -416,12 +417,11 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
       makeItem({ id: 'before', threadId: 'cache-hit-restore', turnIndex: 0 }),
       makeItem({ id: 'anchor-row', threadId: 'cache-hit-restore', turnIndex: 1 }),
     ];
-    // Phase 2 hangs so pane.loading stays true while items are visible.
-    setBindingMock('ListRecentThreadItems', () => new Promise(() => {}));
+    // Initial load hangs so pane.loading stays true while items are visible.
     setBindingMock('ListThreadSliceAround', () => new Promise(() => {}));
 
     const pane = await buildPane(makeThread({ id: 'cache-hit-restore' }), items);
-    // Ensure pane.loading reflects the in-flight phase 2.
+    // Ensure pane.loading reflects the in-flight slice load.
     expect(pane.items.length).toBeGreaterThan(0);
     const loadUntilItem = vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(true);
 
@@ -827,6 +827,82 @@ describe('scroll integration — load older noop / error paths', () => {
     const newToasts = getToasts().slice(toastsBefore);
     expect(loadOlder).toHaveBeenCalled();
     expect(newToasts).toHaveLength(0);
+  });
+});
+
+describe('scroll integration — auto-load-older trigger', () => {
+  // The auto-load trigger fires from the Virtualizer's `onscroll` prop
+  // (handleVirtuaScroll → maybeAutoLoadOlder → handleLoadOlder). Under
+  // happy-dom + ssrCount, virtua's onscroll callback fires synchronously
+  // when scrollEl dispatches a `scroll` event; that's the seam these
+  // tests use to drive the trigger end-to-end.
+  function dispatchScroll(container: HTMLElement): HTMLElement {
+    const scrollEl = container.querySelector(
+      '[data-testid="message-timeline-scroll"]',
+    ) as HTMLElement;
+    expect(scrollEl).not.toBeNull();
+    Object.defineProperty(scrollEl, 'scrollTop', {
+      configurable: true, get: () => 0, set: () => {},
+    });
+    Object.defineProperty(scrollEl, 'scrollHeight', {
+      configurable: true, get: () => 1000,
+    });
+    Object.defineProperty(scrollEl, 'clientHeight', {
+      configurable: true, get: () => 600,
+    });
+    scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
+    return scrollEl;
+  }
+
+  it('does not fire pane.loadOlder when pane.hasMoreHistory is false', async () => {
+    const items = [makeItem({ id: 'a', turnIndex: 5, summary: 'a' })];
+    const pane = await buildPane(undefined, items);
+    Object.defineProperty(pane, 'hasMoreHistory', { configurable: true, get: () => false });
+    const loadOlder = vi.spyOn(pane, 'loadOlder');
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    dispatchScroll(container);
+    await tick();
+
+    expect(loadOlder).not.toHaveBeenCalled();
+  });
+
+  it('does not fire pane.loadOlder when oldestLoadedTurnIndex is null (defensive null-floor exit)', async () => {
+    // Edge case: backend returns hasMore=true with no items so floor
+    // stays null. Without the null-floor early-return in
+    // maybeAutoLoadOlder, every scroll tick would re-enter loadOlder
+    // (which itself noops on null floor) — the guard's `!== null`
+    // precondition would never engage. Pin the defensive exit.
+    const pane = await buildPane(undefined, []);
+    Object.defineProperty(pane, 'hasMoreHistory', { configurable: true, get: () => true });
+    Object.defineProperty(pane, 'loadingOlder', { configurable: true, get: () => false });
+    Object.defineProperty(pane, 'oldestLoadedTurnIndex', { configurable: true, get: () => null });
+    const loadOlder = vi.spyOn(pane, 'loadOlder');
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    dispatchScroll(container);
+    dispatchScroll(container);
+    await tick();
+
+    expect(loadOlder).not.toHaveBeenCalled();
+  });
+
+  it('does not fire pane.loadOlder while a load is already in flight', async () => {
+    const items = [makeItem({ id: 'a', turnIndex: 5, summary: 'a' })];
+    const pane = await buildPane(undefined, items);
+    Object.defineProperty(pane, 'hasMoreHistory', { configurable: true, get: () => true });
+    Object.defineProperty(pane, 'loadingOlder', { configurable: true, get: () => true });
+    Object.defineProperty(pane, 'oldestLoadedTurnIndex', { configurable: true, get: () => 5 });
+    const loadOlder = vi.spyOn(pane, 'loadOlder');
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    dispatchScroll(container);
+    await tick();
+
+    expect(loadOlder).not.toHaveBeenCalled();
   });
 });
 

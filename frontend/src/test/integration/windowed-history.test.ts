@@ -43,7 +43,7 @@ beforeAll(installAnimateShim);
  * OVERWRITE the bindings they care about before the thread click
  * triggers a fresh fetch. The default helper in `_helpers.ts` installs
  * defaults and mounts in one step, which would clobber any custom
- * `ListRecentThreadItems` / `ListThreadProposedPlans` mock the test
+ * `ListThreadSliceAround` / `ListThreadProposedPlans` mock the test
  * set beforehand.
  */
 async function mountAndActivateThread(
@@ -76,8 +76,8 @@ describe('App integration — windowed thread history', () => {
   });
 
   it('loads older messages through the button and prepends them into the DOM', async () => {
-    // Seed the thread so ListRecentThreadItems returns a tail window with
-    // hasMore=true. The MessageTimeline must render the "Load older
+    // Seed the thread so the initial-slice load returns a tail window
+    // with hasMore=true. The MessageTimeline must render the "Load older
     // messages" control; the click path must flow through
     // pane.loadOlder → ListItemsBeforeTurn → store prepend, and the
     // newly loaded item must be visible in the timeline.
@@ -85,7 +85,7 @@ describe('App integration — windowed thread history', () => {
     const { findByTestId, queryByTestId, findByText } = await mountAndActivateThread(
       makeThread({ title: 'Windowed Thread' }),
       () => {
-        setBindingMock('ListRecentThreadItems', async () => ({
+        setBindingMock('ListThreadSliceAround', async () => ({
           items: [
             makeItem({
               id: 'tail-1',
@@ -165,7 +165,7 @@ describe('App integration — windowed thread history', () => {
     const { findByTestId } = await mountAndActivateThread(
       makeThread({ title: 'Windowed Thread' }),
       () => {
-        setBindingMock('ListRecentThreadItems', async () => ({
+        setBindingMock('ListThreadSliceAround', async () => ({
           items: [
             makeItem({
               id: 'tail-1',
@@ -256,7 +256,7 @@ describe('App integration — windowed thread history', () => {
     const { findAllByText } = await mountAndActivateThread(
       makeThread({ title: 'Windowed Thread' }),
       () => {
-        setBindingMock('ListRecentThreadItems', async () => ({
+        setBindingMock('ListThreadSliceAround', async () => ({
           items: [
             makeItem({
               id: 'tail',

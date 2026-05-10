@@ -100,6 +100,11 @@ async function buildPane(
   setBindingMock('MarkThreadRead', async () => {});
   setBindingMock('MarkThreadUnread', async () => {});
   setBindingMock('ListItems', async () => items);
+  setBindingMock('ListThreadSliceAround', async () => ({
+    items,
+    oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
+    hasMore: false,
+  }));
   setBindingMock('ListRecentThreadItems', async () => ({
     items,
     oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,

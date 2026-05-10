@@ -44,10 +44,10 @@ function makeItem(overrides: Partial<Item> = {}): Item {
 
 async function buildPane(thread: Thread, items: Item[] = []) {
   setBindingMock('SwitchThread', async () => thread);
-  // ListRecentThreadItems is the binding switchThread actually calls;
+  // ListThreadSliceAround is the binding switchThread actually calls;
   // returning a populated `items` array is how we simulate a "used" thread
   // (one with persisted history) without spinning a backend.
-  setBindingMock('ListRecentThreadItems', async () => ({
+  setBindingMock('ListThreadSliceAround', async () => ({
     items,
     oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
     hasMore: false,

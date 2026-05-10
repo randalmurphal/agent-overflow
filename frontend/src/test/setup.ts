@@ -10,6 +10,7 @@ import {
   __resetLiveTodoUiPrefsForTest,
 } from '../lib/stores/thread.svelte';
 import { __resetPayloadCacheForTest } from '../lib/utils/payloadDataCache';
+import { clearThreadItemCacheForTest } from '../lib/stores/threadItemCache';
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class StubResizeObserver {
@@ -191,6 +192,11 @@ afterEach(() => {
   // between tests so a previous test's "thread-1/payload-1" hit doesn't
   // skip the next test's expected fetch.
   __resetPayloadCacheForTest();
+  // Same shape: the per-thread items snapshot LRU survives switchThread
+  // by design so re-entering a thread paints from cache. A previous
+  // test's snapshot for thread-1 would otherwise let the next test's
+  // pane skip its mocked load entirely.
+  clearThreadItemCacheForTest();
   // Wipe the in-memory localStorage between tests so persistence-aware
   // stores don't leak state across suites.
   try {

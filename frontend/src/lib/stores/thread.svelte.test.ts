@@ -15,7 +15,6 @@ import {
 import type { Item } from '../types/models';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { makeItem, makeThread } from '../../test/helpers/chat';
-import { clearThreadItemCacheForTest } from './threadItemCache';
 
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => {
@@ -33,21 +32,22 @@ describe('createThreadPane', () => {
     resetBindingMocks();
     resetThreadStatuses();
     resetSendQueueForTest();
-    clearThreadItemCacheForTest();
     setBindingMock('SwitchThread', async (threadId: unknown) =>
       makeThread({ id: typeof threadId === 'string' ? threadId : 'thread-1' }));
-    // switchThread loads items via ListRecentThreadItems. Tests override
+    // switchThread loads the initial slice via ListThreadSliceAround
+    // (works for both bottom-snapshot and saved-anchor cases — empty
+    // anchor id resolves to the tail at the backend). Tests override
     // the mock to supply specific items; the default is an empty thread
     // so unrelated tests don't have to plumb it.
-    setBindingMock('ListRecentThreadItems', async () => ({
+    setBindingMock('ListThreadSliceAround', async () => ({
       items: [] as Item[],
       oldestTurnIndex: -1,
       hasMore: false,
     }));
-    // The two-phase switch also calls ListThreadSliceAround for the
-    // viewport-sized fast slice. Default to empty so tests that only
-    // care about the canonical phase 2 view don't have to plumb both.
-    setBindingMock('ListThreadSliceAround', async () => ({
+    // ListRecentThreadItems is still used by `refreshFromBackend` for the
+    // transport-gap recovery path. Default to empty so tests that don't
+    // exercise that path don't have to plumb the mock.
+    setBindingMock('ListRecentThreadItems', async () => ({
       items: [] as Item[],
       oldestTurnIndex: -1,
       hasMore: false,
@@ -104,7 +104,7 @@ describe('createThreadPane', () => {
       makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),
       makeItem({ id: 'text:0:0', itemIndex: 1, summary: 'hello back' }),
     ];
-    setBindingMock('ListRecentThreadItems', async () => ({
+    setBindingMock('ListThreadSliceAround', async () => ({
       items,
       oldestTurnIndex: 0,
       hasMore: false,
@@ -277,7 +277,7 @@ describe('createThreadPane', () => {
 
   it('drops wrong-thread rows from initial history hydration', async () => {
     const pane = createThreadPane();
-    setBindingMock('ListRecentThreadItems', async () => ({
+    setBindingMock('ListThreadSliceAround', async () => ({
       items: [
         makeItem({ id: 'current', threadId: 'thread-a' }),
         makeItem({ id: 'leaked', threadId: 'thread-b' }),
@@ -300,7 +300,7 @@ describe('createThreadPane', () => {
     setBindingMock('SwitchThread', () => {
       throw new Error('boom — synchronous failure');
     });
-    setBindingMock('ListRecentThreadItems', () => {
+    setBindingMock('ListThreadSliceAround', () => {
       throw new Error('and the next call also blows up');
     });
 
@@ -652,7 +652,7 @@ describe('createThreadPane', () => {
     });
   });
 
-  it('ignores stale ListRecentThreadItems resolutions after a second thread switch', async () => {
+  it('ignores stale initial-load resolutions after a second thread switch', async () => {
     const pane = createThreadPane();
     type Paged = { items: Item[]; oldestTurnIndex: number; hasMore: boolean };
     let resolveA!: (paged: Paged) => void;
@@ -660,7 +660,7 @@ describe('createThreadPane', () => {
     const listA = new Promise<Paged>((resolve) => { resolveA = resolve; });
     const listB = new Promise<Paged>((resolve) => { resolveB = resolve; });
 
-    setBindingMock('ListRecentThreadItems', (threadId: string) => (
+    setBindingMock('ListThreadSliceAround', (threadId: string) => (
       threadId === 'thread-a' ? listA : listB
     ));
 
@@ -1355,7 +1355,7 @@ describe('createThreadPane', () => {
       const seed: Item[] = [
         makeItem({ id: 'at-floor', threadId: 'thread-windowed', turnIndex: 5, itemIndex: 0 }),
       ];
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: seed,
         oldestTurnIndex: 5,
         hasMore: true,
@@ -1375,7 +1375,7 @@ describe('createThreadPane', () => {
       const seed: Item[] = [
         makeItem({ id: 'known', threadId: 't', turnIndex: 5, itemIndex: 0, summary: 'old' }),
       ];
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: seed,
         oldestTurnIndex: 5,
         hasMore: true,
@@ -1390,7 +1390,7 @@ describe('createThreadPane', () => {
 
     it('upsertItem drops live buffers for new streaming rows below the floor', async () => {
       const pane = createThreadPane();
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [makeItem({ id: 'at-floor', threadId: 't', turnIndex: 5, itemIndex: 0 })],
         oldestTurnIndex: 5,
         hasMore: true,
@@ -1415,7 +1415,7 @@ describe('createThreadPane', () => {
       const tail: Item[] = [
         makeItem({ id: 't5', threadId: 't', turnIndex: 5, itemIndex: 0 }),
       ];
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: tail,
         oldestTurnIndex: 5,
         hasMore: true,
@@ -1440,7 +1440,7 @@ describe('createThreadPane', () => {
 
     it('loadOlder is a no-op when hasMoreHistory is false', async () => {
       const pane = createThreadPane();
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [makeItem({ id: 'a', turnIndex: 0, itemIndex: 0 })],
         oldestTurnIndex: 0,
         hasMore: false,
@@ -1464,7 +1464,7 @@ describe('createThreadPane', () => {
       const olderPromise = new Promise<{
         items: Item[]; oldestTurnIndex: number; hasMore: boolean;
       }>((r) => { resolveOlder = r; });
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [makeItem({ id: 'tail', turnIndex: 5 })],
         oldestTurnIndex: 5,
         hasMore: true,
@@ -1490,7 +1490,7 @@ describe('createThreadPane', () => {
 
     it('loadUntilItem returns true when the item is already in-window', async () => {
       const pane = createThreadPane();
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [makeItem({ id: 'here', threadId: 't', turnIndex: 5 })],
         oldestTurnIndex: 5,
         hasMore: true,
@@ -1508,7 +1508,7 @@ describe('createThreadPane', () => {
 
     it('loadUntilItem replaces the window to cover a below-floor item', async () => {
       const pane = createThreadPane();
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [makeItem({ id: 't5', threadId: 't', turnIndex: 5 })],
         oldestTurnIndex: 5,
         hasMore: true,
@@ -1538,7 +1538,7 @@ describe('createThreadPane', () => {
 
     it('loadUntilItem returns false when the item is unknown to the backend', async () => {
       const pane = createThreadPane();
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [makeItem({ id: 't5', turnIndex: 5 })],
         oldestTurnIndex: 5,
         hasMore: true,
@@ -1581,7 +1581,7 @@ describe('createThreadPane', () => {
       // would compare against the lingering higher handled value and
       // silently not dispatch. Keep the nonce monotonic.
       const pane = createThreadPane();
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [],
         oldestTurnIndex: -1,
         hasMore: false,
@@ -1603,7 +1603,7 @@ describe('createThreadPane', () => {
       // to pull in history when the user triggers scroll-to-item from
       // search — not skip the fetch and short-circuit to `true`.
       const pane = createThreadPane();
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [],
         oldestTurnIndex: -1,
         hasMore: false,
@@ -1637,7 +1637,7 @@ describe('createThreadPane', () => {
       // a pane. loadUntilItem must treat the mismatch as "not found"
       // rather than trying to page an item that doesn't belong here.
       const pane = createThreadPane();
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [makeItem({ id: 'tail', threadId: 't', turnIndex: 5 })],
         oldestTurnIndex: 5,
         hasMore: true,
@@ -1665,7 +1665,7 @@ describe('createThreadPane', () => {
       // break the loop by forcing hasMoreHistory=false when no rows
       // were returned AND the floor did not decrease.
       const pane = createThreadPane();
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [makeItem({ id: 'tail', threadId: 't', turnIndex: 10 })],
         oldestTurnIndex: 10,
         hasMore: true,
@@ -1696,7 +1696,7 @@ describe('createThreadPane', () => {
       // the Load Older button forever. The fix resets the flag
       // unconditionally.
       const pane = createThreadPane();
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [makeItem({ id: 'tail', threadId: 't', turnIndex: 10 })],
         oldestTurnIndex: 10,
         hasMore: true,
@@ -1732,7 +1732,7 @@ describe('createThreadPane', () => {
       // bounded turnLimit rather than a sentinel number. Check that
       // the actual turnLimit argument is the default batch size.
       const pane = createThreadPane();
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [],
         oldestTurnIndex: -1,
         hasMore: false,
@@ -1771,7 +1771,7 @@ describe('createThreadPane', () => {
       // but pinning the monotonicity invariant here prevents a
       // future refactor from reintroducing the reset.
       const pane = createThreadPane();
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [makeItem({ id: 'a', threadId: 't', turnIndex: 0 })],
         oldestTurnIndex: 0,
         hasMore: true,
@@ -1794,7 +1794,7 @@ describe('createThreadPane', () => {
       // chaining two calls and ensuring the second still makes a
       // network call (i.e. the guards remain accurate).
       let postSwitchCalls = 0;
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [makeItem({ id: 'b', threadId: 't2', turnIndex: 3 })],
         oldestTurnIndex: 3,
         hasMore: true,
@@ -1815,7 +1815,7 @@ describe('createThreadPane', () => {
       // ancestor CTE). The store must not duplicate the row in
       // `items` — the dedup happens via `mergeItemsById`.
       const pane = createThreadPane();
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [
           makeItem({ id: 'ancestor', threadId: 't', turnIndex: 0 }),
           makeItem({ id: 'child', threadId: 't', turnIndex: 5 }),
@@ -1850,7 +1850,7 @@ describe('createThreadPane', () => {
 
     it('loadOlder replaces duplicate rows with enriched backend copies', async () => {
       const pane = createThreadPane();
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [
           makeItem({
             id: 'ancestor',
@@ -1889,7 +1889,7 @@ describe('createThreadPane', () => {
 
     it('loadOlder reports rows inserted after an ancestor above the floor', async () => {
       const pane = createThreadPane();
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [
           makeItem({ id: 'ancestor', threadId: 't', turnIndex: 0 }),
           makeItem({ id: 'child', threadId: 't', turnIndex: 5 }),
@@ -1920,7 +1920,7 @@ describe('createThreadPane', () => {
       // a row already present by id (e.g. the subagent ancestor), no
       // duplicate should land in the window.
       const pane = createThreadPane();
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [
           makeItem({ id: 'ancestor', threadId: 't', turnIndex: 0 }),
           makeItem({ id: 'tail', threadId: 't', turnIndex: 5 }),
@@ -1953,7 +1953,7 @@ describe('createThreadPane', () => {
       // fresh pane still land. Without the null check, every first
       // item on a brand-new thread would be dropped.
       const pane = createThreadPane();
-      setBindingMock('ListRecentThreadItems', async () => ({
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [],
         oldestTurnIndex: -1,
         hasMore: false,
@@ -1965,17 +1965,14 @@ describe('createThreadPane', () => {
     });
   });
 
-  describe('switchThread cache + two-phase load', () => {
+  describe('switchThread cache + initial load', () => {
     it('paints cached items synchronously on re-entry without waiting for the network', async () => {
       const pane = createThreadPane();
       const items = [
         makeItem({ id: 'a', threadId: 't', turnIndex: 0, itemIndex: 0 }),
         makeItem({ id: 'b', threadId: 't', turnIndex: 1, itemIndex: 0 }),
       ];
-      // Initial switch: cache is empty, both phases return the items.
-      setBindingMock('ListRecentThreadItems', async () => ({
-        items, oldestTurnIndex: 0, hasMore: false,
-      }));
+      // Initial switch: cache is empty, the load returns the items.
       setBindingMock('ListThreadSliceAround', async () => ({
         items, oldestTurnIndex: 0, hasMore: false,
       }));
@@ -1985,24 +1982,19 @@ describe('createThreadPane', () => {
       // Switch away — outgoing thread snapshot lands in the cache.
       await pane.switchThread(makeThread({ id: 'other' }));
 
-      // Make phase 2 hang so the cache is the only painter on re-entry.
-      let releasePhase2!: (value: unknown) => void;
-      setBindingMock('ListRecentThreadItems', () => new Promise((resolve) => {
-        releasePhase2 = resolve;
-      }));
+      // Make the load hang so the cache is the only painter on re-entry.
+      // (Cache hit short-circuits the load; this hang would only apply
+      // if the cache lookup failed.)
       setBindingMock('ListThreadSliceAround', () => new Promise(() => {}));
 
       // Kick off the re-entry but DON'T await — assert items are
-      // already painted before phase 2 resolves.
+      // already painted from cache.
       const switching = pane.switchThread(makeThread({ id: 't' }));
       expect(pane.items.map((it) => it.id)).toEqual(['a', 'b']);
       expect(pane.oldestLoadedTurnIndex).toBe(0);
-
-      releasePhase2({ items, oldestTurnIndex: 0, hasMore: false });
-      await switching;
-      // After phase 2 resolves, items still match (mergeMissingItemsById
-      // is a no-op when phase 2 returns the same set).
-      expect(pane.items.map((it) => it.id)).toEqual(['a', 'b']);
+      // Don't actually await — the load mock hangs forever; cache hit
+      // means we never wait on it anyway.
+      void switching;
     });
 
     it('skips the cache write when the outgoing pane is empty', async () => {
@@ -2015,60 +2007,52 @@ describe('createThreadPane', () => {
       const other = [
         makeItem({ id: 'x', threadId: 'other', turnIndex: 0, itemIndex: 0 }),
       ];
-      setBindingMock('ListRecentThreadItems', async () => ({
-        items: other, oldestTurnIndex: 0, hasMore: false,
-      }));
       setBindingMock('ListThreadSliceAround', async () => ({
         items: other, oldestTurnIndex: 0, hasMore: false,
       }));
       await pane.switchThread(makeThread({ id: 'other' }));
 
-      // Make phase 2 hang so cache is the only paint source.
-      setBindingMock('ListRecentThreadItems', () => new Promise(() => {}));
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [], oldestTurnIndex: -1, hasMore: false,
-      }));
+      // Make the load hang. With no cached items the empty re-entry
+      // would have to wait on the network — we assert items stays []
+      // before it resolves.
+      setBindingMock('ListThreadSliceAround', () => new Promise(() => {}));
 
       // Re-enter the empty thread. No cached items → items stays [].
       const switching = pane.switchThread(makeThread({ id: 'empty' }));
-      // Yield once for phase 1's microtask.
+      // Yield once for the load's microtask.
       await Promise.resolve();
       expect(pane.items).toEqual([]);
-      // Don't actually await — phase 2 hangs forever.
+      // Don't actually await — the load hangs forever.
       void switching;
     });
 
-    it('phase 2 result preserves items appended via streamed events during the load', async () => {
+    it('initial-load result preserves items appended via streamed events during the load', async () => {
       const pane = createThreadPane();
-      // Stage: phase 2 hangs, phase 1 returns one item immediately.
-      const phase1Items = [
-        makeItem({ id: 'phase1', threadId: 't', turnIndex: 0, itemIndex: 0 }),
-      ];
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: phase1Items, oldestTurnIndex: 0, hasMore: false,
-      }));
-      let releasePhase2!: (value: unknown) => void;
-      setBindingMock('ListRecentThreadItems', () => new Promise((resolve) => {
-        releasePhase2 = resolve;
+      // Stage: load hangs so a streamed upsert can land before its
+      // result.
+      let releaseLoad!: (value: unknown) => void;
+      setBindingMock('ListThreadSliceAround', () => new Promise((resolve) => {
+        releaseLoad = resolve;
       }));
 
       const switching = pane.switchThread(makeThread({ id: 't' }));
-      // Drain microtasks so phase 1 resolves and items are seeded.
+      // Drain microtasks so the switch sets up.
       await Promise.resolve();
       await Promise.resolve();
 
       // Streamed event arrives mid-load — upsert into the same items
-      // array. mergeMissingItemsById in phase 2 must keep it.
+      // array. mergeMissingItemsById in the load callback must keep it.
       pane.upsertItem(makeItem({
         id: 'streamed', threadId: 't', turnIndex: 1, itemIndex: 0,
       }));
-      expect(pane.items.map((it) => it.id)).toEqual(['phase1', 'streamed']);
+      expect(pane.items.map((it) => it.id)).toEqual(['streamed']);
 
-      // Phase 2 returns the canonical view. Triage's persist-then-emit
-      // contract means phase 2 SHOULD include 'streamed'; simulate that.
-      releasePhase2({
+      // Load returns the canonical view. Triage's persist-then-emit
+      // contract means the load SHOULD include 'streamed'; simulate
+      // that.
+      releaseLoad({
         items: [
-          makeItem({ id: 'phase1', threadId: 't', turnIndex: 0, itemIndex: 0 }),
+          makeItem({ id: 'load', threadId: 't', turnIndex: 0, itemIndex: 0 }),
           makeItem({ id: 'streamed', threadId: 't', turnIndex: 1, itemIndex: 0 }),
         ],
         oldestTurnIndex: 0,
@@ -2078,18 +2062,15 @@ describe('createThreadPane', () => {
 
       // Both items survive; no duplicates from mergeMissingItemsById.
       const ids = pane.items.map((it) => it.id);
-      expect(ids).toEqual(['phase1', 'streamed']);
+      expect(ids).toEqual(['load', 'streamed']);
     });
 
-    it('a same-thread re-switch invalidates the in-flight phase results', async () => {
+    it('a same-thread re-switch invalidates the in-flight load result', async () => {
       const pane = createThreadPane();
-      // First switch: phase 2 hangs.
-      let releaseFirstPhase2!: (value: unknown) => void;
-      setBindingMock('ListRecentThreadItems', () => new Promise((resolve) => {
-        releaseFirstPhase2 = resolve;
-      }));
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [], oldestTurnIndex: -1, hasMore: false,
+      // First switch: load hangs.
+      let releaseFirstLoad!: (value: unknown) => void;
+      setBindingMock('ListThreadSliceAround', () => new Promise((resolve) => {
+        releaseFirstLoad = resolve;
       }));
 
       const firstSwitch = pane.switchThread(makeThread({ id: 't' }));
@@ -2099,9 +2080,6 @@ describe('createThreadPane', () => {
       const secondItems = [
         makeItem({ id: 'second', threadId: 't', turnIndex: 0, itemIndex: 0 }),
       ];
-      setBindingMock('ListRecentThreadItems', async () => ({
-        items: secondItems, oldestTurnIndex: 0, hasMore: false,
-      }));
       setBindingMock('ListThreadSliceAround', async () => ({
         items: secondItems, oldestTurnIndex: 0, hasMore: false,
       }));
@@ -2110,12 +2088,12 @@ describe('createThreadPane', () => {
 
       expect(pane.items.map((it) => it.id)).toEqual(['second']);
 
-      // Now release the first switch's phase 2 with stale data using
+      // Now release the first switch's load with stale data using
       // an id DISJOINT from `secondItems`. Without the gen-guard,
       // mergeMissingItemsById would happily slot 'stale-only' in next
       // to 'second' (no id collision). The assertion below confirms
       // the guard short-circuits the callback before the merge runs.
-      releaseFirstPhase2({
+      releaseFirstLoad({
         items: [
           makeItem({ id: 'stale-only', threadId: 't', turnIndex: 99 }),
         ],
@@ -2129,14 +2107,11 @@ describe('createThreadPane', () => {
 
     it('forces a fresh fetch on same-thread re-switch (revert-then-switch UX)', async () => {
       const pane = createThreadPane();
-      // First load: phase 1 + 2 return [a, b].
+      // First load returns [a, b].
       const initialItems = [
         makeItem({ id: 'a', threadId: 't', turnIndex: 0, itemIndex: 0 }),
         makeItem({ id: 'b', threadId: 't', turnIndex: 1, itemIndex: 0 }),
       ];
-      setBindingMock('ListRecentThreadItems', async () => ({
-        items: initialItems, oldestTurnIndex: 0, hasMore: false,
-      }));
       setBindingMock('ListThreadSliceAround', async () => ({
         items: initialItems, oldestTurnIndex: 0, hasMore: false,
       }));
@@ -2145,13 +2120,10 @@ describe('createThreadPane', () => {
 
       // Revert removes 'b'. Same-thread re-switch should NOT cache the
       // pre-revert view and read it back — that would flash 'b' before
-      // phase 2 corrects. Stage phase 1+2 to return only 'a'.
+      // the load corrects. Stage the load to return only 'a'.
       const revertedItems = [
         makeItem({ id: 'a', threadId: 't', turnIndex: 0, itemIndex: 0 }),
       ];
-      setBindingMock('ListRecentThreadItems', async () => ({
-        items: revertedItems, oldestTurnIndex: 0, hasMore: false,
-      }));
       setBindingMock('ListThreadSliceAround', async () => ({
         items: revertedItems, oldestTurnIndex: 0, hasMore: false,
       }));
@@ -2166,30 +2138,28 @@ describe('createThreadPane', () => {
 
     it('mergeMissingItemsById preserves the existing item reference for unchanged rows', async () => {
       const pane = createThreadPane();
-      // Phase 1 paints first; phase 2 hangs to give us a window to
-      // capture references before the merge.
-      const phase1Items = [
-        makeItem({ id: 'a', threadId: 't', turnIndex: 0, itemIndex: 0 }),
-      ];
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: phase1Items, oldestTurnIndex: 0, hasMore: false,
-      }));
-      let releasePhase2!: (value: unknown) => void;
-      setBindingMock('ListRecentThreadItems', () => new Promise((resolve) => {
-        releasePhase2 = resolve;
+      // Initial load returns [a]; streaming upserts a fresh copy of a
+      // mid-load so we can assert the load's merge keeps the
+      // upserted reference rather than overwriting it.
+      let releaseLoad!: (value: unknown) => void;
+      setBindingMock('ListThreadSliceAround', () => new Promise((resolve) => {
+        releaseLoad = resolve;
       }));
 
       const switching = pane.switchThread(makeThread({ id: 't' }));
-      // Drain microtasks so phase 1 lands.
+      // Drain microtasks so the switch sets up.
       await Promise.resolve();
       await Promise.resolve();
 
-      const aRefBeforePhase2 = pane.items[0];
-      expect(aRefBeforePhase2.id).toBe('a');
+      // Streamed upsert lands BEFORE the load resolves, seeding `a`.
+      pane.upsertItem(makeItem({ id: 'a', threadId: 't', turnIndex: 0, itemIndex: 0 }));
+      const aRefBeforeLoad = pane.items[0];
+      expect(aRefBeforeLoad.id).toBe('a');
 
-      // Phase 2 returns [a (different shell), b]. Reference-preservation
-      // contract says we keep the old `a` ref and only allocate `b`.
-      releasePhase2({
+      // Load returns [a (different shell), b]. Reference-preservation
+      // contract says we keep the upserted `a` ref and only allocate
+      // `b`.
+      releaseLoad({
         items: [
           makeItem({ id: 'a', threadId: 't', turnIndex: 0, itemIndex: 0 }),
           makeItem({ id: 'b', threadId: 't', turnIndex: 1, itemIndex: 0 }),
@@ -2200,14 +2170,13 @@ describe('createThreadPane', () => {
       await switching;
 
       // a's reference survives unchanged; b is fresh.
-      expect(pane.items[0]).toBe(aRefBeforePhase2);
+      expect(pane.items[0]).toBe(aRefBeforeLoad);
       expect(pane.items.map((it) => it.id)).toEqual(['a', 'b']);
     });
 
     it('does not cache the outgoing pane while it is still loading', async () => {
       const pane = createThreadPane();
       // First switch hangs forever — outgoing items never resolve.
-      setBindingMock('ListRecentThreadItems', () => new Promise(() => {}));
       setBindingMock('ListThreadSliceAround', () => new Promise(() => {}));
       void pane.switchThread(makeThread({ id: 'first' }));
       // Yield so the load gets to the top of switchThread.
@@ -2218,9 +2187,6 @@ describe('createThreadPane', () => {
       // cache write must be skipped — otherwise we'd snapshot an
       // empty in-flight pane and a future switch back would paint
       // empty even though the real thread has content.
-      setBindingMock('ListRecentThreadItems', async () => ({
-        items: [], oldestTurnIndex: -1, hasMore: false,
-      }));
       setBindingMock('ListThreadSliceAround', async () => ({
         items: [], oldestTurnIndex: -1, hasMore: false,
       }));
@@ -2230,12 +2196,12 @@ describe('createThreadPane', () => {
       expect(cacheModule.threadItemCache.get('first')).toBeNull();
     });
 
-    it('runs the five backend fetches in parallel rather than serialising them', async () => {
+    it('runs all backend fetches in parallel rather than serialising them', async () => {
       const pane = createThreadPane();
       // Each mock records its own start timestamp on entry. With
       // parallelisation, all five start within a microtask of each
-      // other; with the legacy serialised flow, ListRecentTurns waits
-      // for ListRecentThreadItems to resolve.
+      // other; with the legacy serialised flow, ListRecentTurns would
+      // wait for ListThreadSliceAround to resolve.
       const startedAt: Record<string, number> = {};
       let nextSlot = 0;
       const stamp = (name: string) => () => {
@@ -2245,7 +2211,6 @@ describe('createThreadPane', () => {
       setBindingMock('SwitchThread', stamp('SwitchThread'));
       setBindingMock('GetThreadLiveState', stamp('GetThreadLiveState'));
       setBindingMock('ListThreadSliceAround', stamp('ListThreadSliceAround'));
-      setBindingMock('ListRecentThreadItems', stamp('ListRecentThreadItems'));
       setBindingMock('ListRecentTurns', stamp('ListRecentTurns'));
       setBindingMock('ListThreadCheckpoints', stamp('ListThreadCheckpoints'));
 
@@ -2262,12 +2227,31 @@ describe('createThreadPane', () => {
       // is missing — which it would be under serialisation.
       expect(Object.keys(startedAt).sort()).toEqual([
         'GetThreadLiveState',
-        'ListRecentThreadItems',
         'ListRecentTurns',
         'ListThreadCheckpoints',
         'ListThreadSliceAround',
         'SwitchThread',
       ]);
+    });
+
+    it('does not call ListRecentThreadItems on switchThread (single-load contract)', async () => {
+      // Pin the no-Phase-2 invariant: if the wider-window probe ever
+      // creeps back into the switch path, the residual flicker
+      // (Phase 2 prepend → applyJump fight with the controller's
+      // sync-pin) returns. ListRecentThreadItems is reserved for
+      // refreshFromBackend (transport-gap recovery), nothing else.
+      const calls: string[] = [];
+      setBindingMock('ListThreadSliceAround', async () => {
+        calls.push('ListThreadSliceAround');
+        return { items: [], oldestTurnIndex: -1, hasMore: false };
+      });
+      setBindingMock('ListRecentThreadItems', async () => {
+        calls.push('ListRecentThreadItems');
+        return { items: [], oldestTurnIndex: -1, hasMore: false };
+      });
+      const pane = createThreadPane();
+      await pane.switchThread(makeThread({ id: 't' }));
+      expect(calls).toEqual(['ListThreadSliceAround']);
     });
 
     it('uses the scroll snapshot anchor when calling ListThreadSliceAround', async () => {
@@ -2313,9 +2297,6 @@ describe('createThreadPane', () => {
     it('cache hit completes loading=false even when SwitchThread fails', async () => {
       const pane = createThreadPane();
       const items = [makeItem({ id: 'cached', threadId: 't', turnIndex: 0 })];
-      setBindingMock('ListRecentThreadItems', async () => ({
-        items, oldestTurnIndex: 0, hasMore: false,
-      }));
       setBindingMock('ListThreadSliceAround', async () => ({
         items, oldestTurnIndex: 0, hasMore: false,
       }));
@@ -2329,60 +2310,21 @@ describe('createThreadPane', () => {
       });
       await pane.switchThread(makeThread({ id: 't' }));
       expect(pane.loading).toBe(false);
-      // Items should still come from cache + phase 2.
+      // Items still surface from the cache.
       expect(pane.items.map((it) => it.id)).toEqual(['cached']);
     });
 
-    it('phase 1 narrow policy does not widen the floor when phase 2 already loaded deeper', async () => {
-      // Pins the cursorPolicy: 'narrow' contract on applyPagedItems.
-      // 'narrow' = "only write when pagedFloor < current floor"
-      // (i.e. when phase 1's data extends further back). The risk is
-      // a slow phase 1 landing AFTER a fast phase 2 with a HIGHER
-      // floor index (less inclusive); 'narrow' must reject it so
-      // phase 2's wider window survives.
-      const pane = createThreadPane();
-      // Phase 2 fast: deep floor at 0, hasMore=true (wider window).
-      setBindingMock('ListRecentThreadItems', async () => ({
-        items: [makeItem({ id: 'a', threadId: 't', turnIndex: 0 })],
-        oldestTurnIndex: 0,
-        hasMore: true,
-      }));
-      // Phase 1 slow: claims floor=10 (higher / less inclusive).
-      // 'narrow' policy MUST NOT overwrite the deeper floor.
-      let releasePhase1!: (value: unknown) => void;
-      setBindingMock('ListThreadSliceAround', () => new Promise((resolve) => {
-        releasePhase1 = resolve;
-      }));
-
-      const switching = pane.switchThread(makeThread({ id: 't' }));
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      releasePhase1({
-        items: [makeItem({ id: 'b', threadId: 't', turnIndex: 10 })],
-        oldestTurnIndex: 10,
-        hasMore: false,
-      });
-      await switching;
-
-      // Phase 2's wider window must survive intact.
-      expect(pane.oldestLoadedTurnIndex).toBe(0);
-      expect(pane.hasMoreHistory).toBe(true);
-    });
-
-    it('a stale-gen phase 2 rejection does not blank items or stamp generalError', async () => {
+    it('a stale-gen rejection of the initial load does not blank items or stamp generalError', async () => {
       // Pins withGenGuard's contract: when capturedGen !== switchGeneration,
       // onError must NOT run. A regression that flipped the gen-check
-      // order would let a slow phase 2 from switch #1 write generalError
+      // order would let a slow load from switch #1 write generalError
       // and items=[] against the pane that switch #2 already populated.
       const pane = createThreadPane();
-      // First switch: phase 2 hangs forever.
-      let rejectFirstPhase2!: (err: Error) => void;
-      setBindingMock('ListRecentThreadItems', () => new Promise((_, reject) => {
-        rejectFirstPhase2 = reject;
-      }));
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [], oldestTurnIndex: -1, hasMore: false,
+      // First switch: load hangs forever (a Promise that will be
+      // rejected later).
+      let rejectFirstLoad!: (err: Error) => void;
+      setBindingMock('ListThreadSliceAround', () => new Promise((_, reject) => {
+        rejectFirstLoad = reject;
       }));
       const firstSwitch = pane.switchThread(makeThread({ id: 'first' }));
 
@@ -2390,9 +2332,6 @@ describe('createThreadPane', () => {
       const secondItems = [
         makeItem({ id: 'live', threadId: 'second', turnIndex: 0, itemIndex: 0 }),
       ];
-      setBindingMock('ListRecentThreadItems', async () => ({
-        items: secondItems, oldestTurnIndex: 0, hasMore: false,
-      }));
       setBindingMock('ListThreadSliceAround', async () => ({
         items: secondItems, oldestTurnIndex: 0, hasMore: false,
       }));
@@ -2400,9 +2339,9 @@ describe('createThreadPane', () => {
       expect(pane.items.map((it) => it.id)).toEqual(['live']);
       expect(pane.generalError).toBeNull();
 
-      // Now reject the first switch's phase 2. Stale-gen guard MUST
+      // Now reject the first switch's load. Stale-gen guard MUST
       // suppress the onError side effects.
-      rejectFirstPhase2(new Error('phase 2 backend down'));
+      rejectFirstLoad(new Error('initial load backend down'));
       await firstSwitch;
 
       // Items unchanged — second switch's data still painted.
@@ -2428,9 +2367,6 @@ describe('createThreadPane', () => {
       const items = [
         makeItem({ id: 'a', threadId: 't', turnIndex: 0, itemIndex: 0 }),
       ];
-      setBindingMock('ListRecentThreadItems', async () => ({
-        items, oldestTurnIndex: 0, hasMore: false,
-      }));
       setBindingMock('ListThreadSliceAround', async () => ({
         items, oldestTurnIndex: 0, hasMore: false,
       }));
@@ -2486,11 +2422,6 @@ describe('createThreadPane', () => {
       const itemsB = [
         makeItem({ id: 'b', threadId: 'other', turnIndex: 0, itemIndex: 0 }),
       ];
-      setBindingMock('ListRecentThreadItems', async (threadId: unknown) => ({
-        items: threadId === 'other' ? itemsB : itemsA,
-        oldestTurnIndex: 0,
-        hasMore: false,
-      }));
       setBindingMock('ListThreadSliceAround', async (threadId: unknown) => ({
         items: threadId === 'other' ? itemsB : itemsA,
         oldestTurnIndex: 0,
@@ -2526,9 +2457,6 @@ describe('createThreadPane', () => {
       const items = [
         makeItem({ id: 'a', threadId: 't', turnIndex: 0, itemIndex: 0 }),
       ];
-      setBindingMock('ListRecentThreadItems', async () => ({
-        items, oldestTurnIndex: 0, hasMore: false,
-      }));
       setBindingMock('ListThreadSliceAround', async () => ({
         items, oldestTurnIndex: 0, hasMore: false,
       }));
@@ -2566,17 +2494,13 @@ describe('createThreadPane', () => {
         const items = [
           makeItem({ id: 'a', threadId: 't', turnIndex: 0, itemIndex: 0 }),
         ];
-        setBindingMock('ListRecentThreadItems', async () => ({
-          items, oldestTurnIndex: 0, hasMore: false,
-        }));
         setBindingMock('ListThreadSliceAround', async () => ({
           items, oldestTurnIndex: 0, hasMore: false,
         }));
         await pane.switchThread(makeThread({ id: 't' }));
         await pane.switchThread(makeThread({ id: 'other' }));
 
-        // Re-enter — phase 2 hangs so loading=true persists.
-        setBindingMock('ListRecentThreadItems', () => new Promise(() => {}));
+        // Re-enter — initial load hangs so loading=true persists.
         setBindingMock('ListThreadSliceAround', () => new Promise(() => {}));
         void pane.switchThread(makeThread({ id: 't' }));
         await Promise.resolve();
@@ -2597,8 +2521,7 @@ describe('createThreadPane', () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
       try {
         const pane = createThreadPane();
-        // Both phases hang so items stays empty and loading stays true.
-        setBindingMock('ListRecentThreadItems', () => new Promise(() => {}));
+        // Initial load hangs so items stays empty and loading stays true.
         setBindingMock('ListThreadSliceAround', () => new Promise(() => {}));
         void pane.switchThread(makeThread({ id: 't' }));
         await Promise.resolve();
@@ -2619,9 +2542,6 @@ describe('createThreadPane', () => {
         const items = [
           makeItem({ id: 'a', threadId: 't', turnIndex: 0, itemIndex: 0 }),
         ];
-        setBindingMock('ListRecentThreadItems', async () => ({
-          items, oldestTurnIndex: 0, hasMore: false,
-        }));
         setBindingMock('ListThreadSliceAround', async () => ({
           items, oldestTurnIndex: 0, hasMore: false,
         }));

@@ -102,10 +102,14 @@ import type { PagedItems } from '../../../bindings/agent-overflow/internal/store
 const LOAD_OLDER_TURN_BATCH = 50;
 
 /**
- * Phase-1 fast-path slice size on `switchThread`. Roughly covers a
- * desktop viewport (10–15 rows) plus enough overscan for virtua's
- * measurement loop to land cleanly on the bottom or anchor. Phase 2
- * always fills in the rest of the window.
+ * Initial-load slice size on `switchThread`. Sized to cover a desktop
+ * viewport (10–15 rows) plus several screens of overscan — enough that
+ * the user can free-scroll a few viewports before the auto-load-older
+ * trigger in `MessageTimeline.svelte` kicks in. There is no separate
+ * "wider window" load: older items page in lazily as the user scrolls
+ * up, so the initial scrollHeight stays small and stable from frame 0
+ * (eliminating the Phase 2 → applyJump fight that produced visible
+ * scrollTop oscillation on cache miss).
  */
 const SLICE_AROUND_ITEM_COUNT = 50;
 
@@ -718,14 +722,14 @@ export function createThreadPane() {
 
   /**
    * Generation counter for switchThread. Incremented on every switchThread
-   * entry so a slow ListRecentThreadItems from thread A cannot clobber
-   * thread B's items when the user flips between them quickly.
+   * entry so a slow paged fetch from thread A cannot clobber thread B's
+   * items when the user flips between them quickly.
    */
   let switchGeneration = 0;
 
   /**
    * Windowed-history state. The pane holds a contiguous tail of the
-   * thread's items (last ~50 turns by default); older history loads
+   * thread's items (~50 items on initial load); older history loads
    * on demand via `loadOlder()` or `loadUntilItem()`.
    *
    *  - `oldestLoadedTurnIndex` is the inclusive floor of the window.
@@ -1124,18 +1128,17 @@ export function createThreadPane() {
    * Like `mergeItemsById` but only ADDS items not already present —
    * existing rows keep their current reference, and the merged result
    * is RE-SORTED by `(turnIndex, itemIndex)` so additions slot into
-   * the right transcript position. Used by the two-phase `switchThread`
-   * load: phase 1 (or a cache hit) seeds the timeline, then phase 2
-   * fills in the remaining window items without replacing rows that
-   * have already been updated by streamed events that landed mid-load.
-   * Reference equality on unchanged rows keeps virtua's per-row
-   * ResizeObserver from firing spuriously.
+   * the right transcript position. Used by `switchThread`'s initial
+   * slice load and by `loadOlder` so a streamed event that landed
+   * mid-load is not clobbered by the slightly-older row coming back
+   * from SQLite. Reference equality on unchanged rows keeps virtua's
+   * per-row ResizeObserver from firing spuriously.
    *
    * Triage's contract is "persist then emit", so any in-flight stream
-   * event during phase 2 has already been baked into SQLite by the time
-   * phase 2's SQL runs. The phase-2 row therefore equals (or is older
-   * than) the row already in `current`; preferring `current` is the
-   * correct choice in either case.
+   * event has already been baked into SQLite by the time the SQL runs.
+   * The fetched row therefore equals (or is older than) the row already
+   * in `current`; preferring `current` is the correct choice in either
+   * case.
    *
    * Returns the original `current` reference when every incoming row is
    * already present, so callers can skip the reactive write and the
@@ -1484,41 +1487,22 @@ export function createThreadPane() {
   }
 
   /**
-   * Apply a paged-load result to pane state. Used by both phases of
-   * `switchThread`'s two-phase load. Items merge additively — anything
-   * already present (from cache, sibling phase, or streamed events
-   * that landed mid-load) keeps its current reference; missing rows
-   * are added and the array is re-sorted by (turnIndex, itemIndex).
-   *
-   * `cursorPolicy` controls how `oldestLoadedTurnIndex` /
-   * `hasMoreHistory` move:
-   *
-   *  - `'narrow'` — phase 1's policy. Only tighten the floor; never
-   *    widen it. Phase 2's wider window is canonical when both have
-   *    run, so phase 1 must not overwrite a phase-2 cursor.
-   *  - `'overwrite'` — phase 2's policy. Always take the cursors from
-   *    this load. Phase 2's window is the widest signal for what's
-   *    actually loaded.
+   * Apply a paged-load result to pane state. Used by `switchThread`'s
+   * single initial load. Items merge additively — anything already
+   * present (from cache or streamed events that landed mid-load)
+   * keeps its current reference; missing rows are added and the
+   * array is re-sorted by (turnIndex, itemIndex). Cursors
+   * (`oldestLoadedTurnIndex` / `hasMoreHistory`) are taken straight
+   * from the load — there is no second phase whose wider window
+   * would need to be preserved.
    */
-  function applyPagedItems(
-    paged: PagedItems,
-    threadID: string,
-    cursorPolicy: 'narrow' | 'overwrite',
-  ): void {
+  function applyPagedItems(paged: PagedItems, threadID: string): void {
     const incoming = itemsForThread((paged.items ?? []) as Item[], threadID);
     items = mergeMissingItemsById(incoming, items);
     rebuildItemIndexes(items);
     const pagedFloor = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
-    if (cursorPolicy === 'overwrite') {
-      oldestLoadedTurnIndex = pagedFloor;
-      hasMoreHistory = paged.hasMore ?? false;
-    } else if (
-      pagedFloor !== null &&
-      (oldestLoadedTurnIndex === null || pagedFloor < oldestLoadedTurnIndex)
-    ) {
-      oldestLoadedTurnIndex = pagedFloor;
-      hasMoreHistory = paged.hasMore ?? false;
-    }
+    oldestLoadedTurnIndex = pagedFloor;
+    hasMoreHistory = paged.hasMore ?? false;
   }
 
   async function refreshCheckpointsForThread(threadID: string): Promise<void> {
@@ -1644,16 +1628,16 @@ export function createThreadPane() {
   /**
    * Look up the incoming thread's cached snapshot and saved scroll
    * anchor, install the snapshot (or fresh empty state) onto the pane,
-   * and reset per-row UI registries. Returns the snapshot (so phase 2
-   * can decide whether to suppress the empty-timeline error path) and
-   * the phase-1 anchor item id (empty string means tail-load).
+   * and reset per-row UI registries. Returns the snapshot (so the
+   * initial load can decide to skip the fetch on cache hit) and the
+   * anchor item id (empty string means tail-load).
    */
   function installCacheOrFreshState(
     newThread: Thread,
-  ): { cached: ThreadItemSnapshot | null; phase1AnchorId: string } {
+  ): { cached: ThreadItemSnapshot | null; sliceAnchorId: string } {
     const cached = threadItemCache.get(newThread.id);
     const scrollSnapshot = getThreadScrollSnapshot(newThread.id);
-    const phase1AnchorId = scrollSnapshot?.kind === 'anchor' ? scrollSnapshot.itemId : '';
+    const sliceAnchorId = scrollSnapshot?.kind === 'anchor' ? scrollSnapshot.itemId : '';
 
     loading = true;
     if (cached) {
@@ -1666,8 +1650,8 @@ export function createThreadPane() {
       items = [];
       // Windowed-history reset. A null floor disables the upsert floor
       // check until the backend tells us otherwise — between thread
-      // clear and the ListRecentThreadItems response any streamed
-      // upserts are already ours to append normally.
+      // clear and the initial-slice response any streamed upserts are
+      // already ours to append normally.
       oldestLoadedTurnIndex = null;
       hasMoreHistory = false;
       cachedVirtuaCache = undefined;
@@ -1676,7 +1660,7 @@ export function createThreadPane() {
     rebuildItemIndexes(items);
     clearRowUiState();
     loadingOlder = false;
-    return { cached, phase1AnchorId };
+    return { cached, sliceAnchorId };
   }
 
   /**
@@ -1684,8 +1668,8 @@ export function createThreadPane() {
    * `switchThread` starts; `showLoadingSpinner` only resolves to true
    * after `SPINNER_THRESHOLD_MS` AND when items.length === 0. Cache
    * hits never see the spinner because items render immediately;
-   * sub-100ms cache misses skip it because phase 1 populates items
-   * before the timer fires.
+   * sub-100ms cache misses skip it because the initial slice
+   * populates items before the timer fires.
    */
   function armSpinnerThreshold(): void {
     if (spinnerThresholdTimer !== null) {
@@ -1720,14 +1704,14 @@ export function createThreadPane() {
   }
 
   /**
-   * Run the six independent backend fetches that hydrate a thread
+   * Run the five independent backend fetches that hydrate a thread
    * switch in parallel. Serializing them was the dominant source of
    * switch latency; under `Promise.allSettled` the wall-clock cost is
    * bounded by the slowest leg, not their sum. Each leg gen-guards its
    * own pane writes so a thread swap mid-flight invalidates late
    * resolutions. `switchPromise` and `liveStatePromise` keep their
    * bespoke shapes (the former logs unconditionally; the latter
-   * consumes the live-state hydration token); the four canonical
+   * consumes the live-state hydration token); the three canonical
    * paged/list legs go through `withGenGuard`.
    *
    * Returns `{ liveStateHydrationConsumed }` so the caller can decide
@@ -1742,7 +1726,7 @@ export function createThreadPane() {
     newThread: Thread,
     gen: number,
     cached: ThreadItemSnapshot | null,
-    phase1AnchorId: string,
+    sliceAnchorId: string,
     liveStateHydrationToken: number,
   ): Promise<{ liveStateHydrationConsumed: boolean }> {
     let liveStateHydrationConsumed = false;
@@ -1775,46 +1759,35 @@ export function createThreadPane() {
       }
     })();
 
-    // Phase 1: viewport-sized fast slice. Skip on cache hit — the
-    // cached items already cover the visible window; phase 2 fills in
-    // the rest. Failure is non-fatal — phase 2 is the canonical
-    // full-window load and will fill in.
-    const phase1Promise = cached
+    // Single initial slice via `ListThreadSliceAround`. Empty
+    // anchor id resolves to the tail at the backend, so this binding
+    // covers both bottom-snapshot and saved-anchor restores. Skip on
+    // cache hit — the cached items already cover the visible window
+    // and the cache is invalidated on `applyItemUpserts` so it's
+    // never stale. Older items page in lazily via `pane.loadOlder()`
+    // (driven by the auto-load trigger in `MessageTimeline.svelte`
+    // and the manual "Load older" button as fallback).
+    const loadItemsPromise = cached
       ? Promise.resolve()
       : withGenGuard(
-          'load phase 1 slice',
+          'load items',
           gen,
-          () => ListThreadSliceAround(newThread.id, phase1AnchorId, SLICE_AROUND_ITEM_COUNT),
+          () => ListThreadSliceAround(newThread.id, sliceAnchorId, SLICE_AROUND_ITEM_COUNT),
           (paged) => {
-            applyPagedItems(paged, newThread.id, 'narrow');
+            applyPagedItems(paged, newThread.id);
+          },
+          (err) => {
+            // Cache miss + load failure leaves the timeline blank and
+            // raises a hard error. (Cache hits skip the load entirely
+            // so they can't reach this branch.)
+            items = [];
+            rebuildItemIndexes(items);
+            oldestLoadedTurnIndex = null;
+            hasMoreHistory = false;
+            generalError = `Failed to load thread items: ${errString(err)}`;
+            addToast('error', 'Failed to load thread items');
           },
         );
-
-    const phase2Promise = withGenGuard(
-      'load items',
-      gen,
-      () => ListRecentThreadItems(newThread.id, 0),
-      (paged) => {
-        applyPagedItems(paged, newThread.id, 'overwrite');
-      },
-      (err) => {
-        // Only blank the timeline AND raise a hard error when nothing
-        // was painted from cache or phase 1. When something rendered
-        // already, the user keeps seeing the best view we have; phase 2
-        // was a refresh, and a refresh failure becomes a quiet toast (so
-        // streaming events have a chance to fill the gap).
-        if (!cached && items.length === 0) {
-          items = [];
-          rebuildItemIndexes(items);
-          oldestLoadedTurnIndex = null;
-          hasMoreHistory = false;
-          generalError = `Failed to load thread items: ${errString(err)}`;
-          addToast('error', 'Failed to load thread items');
-        } else {
-          addToast('warning', 'Failed to refresh thread items');
-        }
-      },
-    );
 
     // Two rows of safety so a crashed-then-completed sequence can skip
     // over the in-flight row and still find the prior settled one.
@@ -1847,8 +1820,7 @@ export function createThreadPane() {
     await Promise.allSettled([
       switchPromise,
       liveStatePromise,
-      phase1Promise,
-      phase2Promise,
+      loadItemsPromise,
       recentTurnsPromise,
       checkpointsPromise,
     ]);
@@ -1884,9 +1856,10 @@ export function createThreadPane() {
      */
     get showLoadingSpinner() {
       // Items present is the second half of the gate: a cache hit paints
-      // synchronously even while phase 2 still runs (loading=true), and we
-      // must not flash a spinner over visible content. Single source of
-      // truth here so call sites stay simple.
+      // synchronously even while the recent-turns / live-state fetches
+      // still run (loading=true), and we must not flash a spinner over
+      // visible content. Single source of truth here so call sites
+      // stay simple.
       return loading && pastSpinnerThreshold && items.length === 0;
     },
     /**
@@ -1983,11 +1956,11 @@ export function createThreadPane() {
       try {
         snapshotOutgoingPane(newThread.id);
         resetIncomingPaneState(newThread);
-        const { cached, phase1AnchorId } = installCacheOrFreshState(newThread);
+        const { cached, sliceAnchorId } = installCacheOrFreshState(newThread);
         armSpinnerThreshold();
         liveStateHydrationToken = beginThreadLiveStateHydration(newThread.id);
         commitIncomingThread(newThread);
-        const result = await runParallelLoad(newThread, gen, cached, phase1AnchorId, liveStateHydrationToken);
+        const result = await runParallelLoad(newThread, gen, cached, sliceAnchorId, liveStateHydrationToken);
         liveStateHydrationConsumed = result.liveStateHydrationConsumed;
         if (gen !== switchGeneration) return;
         loading = false;

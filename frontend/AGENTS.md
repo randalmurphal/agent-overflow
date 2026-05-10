@@ -59,9 +59,9 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 - The sidebar thread list is its own store — it doesn't hold pane
   state.
 
-## Thread switch — cache + two-phase load
+## Thread switch — cache + tail-only initial load
 
-`pane.switchThread` is the entry point. The flow has three pieces:
+`pane.switchThread` is the entry point. The flow has four pieces:
 
 - **`threadItemCache`** (`stores/threadItemCache.ts`) — bounded LRU
   (default cap 5) of `{ items, oldestLoadedTurnIndex, hasMoreHistory,
@@ -81,31 +81,48 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
   Same-thread re-switch (the revert-then-switchThread UX) skips the
   outgoing snapshot AND force-evicts the entry so the load fetches
   fresh state instead of flashing the stale view.
-- **Two-phase load.** Phase 1 calls `App.ListThreadSliceAround(threadID,
-  anchorItemID, 50)` for a viewport-sized slice (~50 items around the
-  saved scroll anchor, or the tail when the snapshot is bottom /
-  missing). Phase 2 calls `App.ListRecentThreadItems(threadID, 0)` for
-  the full window. Both run concurrently with `SwitchThread`,
-  `hydrateThreadLiveState`, `ListRecentTurns`, and
-  `refreshCheckpointsForThread` under a single `Promise.allSettled` so
-  the wall-clock cost of a switch is bounded by the slowest fetch, not
-  their sum. On cache hit, phase 1 is skipped — the cache already
-  covers the visible window.
-- **`mergeMissingItemsById`** is the merge contract for both phases:
-  rows already in `pane.items` (from cache, phase 1, or streamed
-  events that landed mid-load) keep their reference; missing rows are
-  added and the array is re-sorted. Reference equality on unchanged
-  rows keeps virtua's per-row ResizeObserver from firing spuriously,
-  and triage's persist-then-emit ordering means any in-flight stream
-  event is already baked into phase 2's SQL — preferring the in-memory
-  row over a re-fetch is always correct.
+- **Single initial load.** `App.ListThreadSliceAround(threadID,
+  anchorItemID, 50)` returns a viewport-sized slice (~50 items
+  around the saved scroll anchor, or the tail when the anchor is empty
+  / unknown). That's the only items fetch on switch. It runs
+  concurrently with `SwitchThread`, `hydrateThreadLiveState`,
+  `ListRecentTurns`, and `refreshCheckpointsForThread` under a single
+  `Promise.allSettled` so the wall-clock cost of a switch is bounded
+  by the slowest fetch, not their sum. On cache hit, the load is
+  skipped entirely — the snapshot already covers the visible window
+  and is invariant-fresh (events.ts evicts on every persisted
+  mutation). The previous "Phase 2 wider window" load is gone:
+  scrollHeight stays bounded to ~50 rows from frame 0, eliminating the
+  applyJump per-row anchor preservation fight that produced visible
+  scrollTop oscillation on cache miss.
+- **Auto-load-older.** Older items page in lazily as the user scrolls
+  toward the top. `MessageTimeline.maybeAutoLoadOlder` (driven from
+  Virtualizer's `onscroll`) fires `pane.loadOlder()` when offset is
+  within `AUTO_LOAD_OFFSET_PX=800` of the top AND the topmost
+  rendered row is one of the first `AUTO_LOAD_INDEX_THRESHOLD=5`
+  items. A `autoLoadAttemptedAtFloor` guard prevents hammering the
+  same query while the user lingers near the top — cleared when
+  `pane.oldestLoadedTurnIndex` advances or on thread switch. The
+  manual "Load older messages" button (`MessageTimeline.svelte`) is
+  the explicit fallback. `ListRecentThreadItems` is no longer used on
+  switch; it survives only as the wider-window probe inside
+  `pane.refreshFromBackend()` (transport-gap recovery).
+- **`mergeMissingItemsById`** is the merge contract for both initial
+  load and `loadOlder`: rows already in `pane.items` (from cache or
+  streamed events that landed mid-load) keep their reference; missing
+  rows are added and the array is re-sorted. Reference equality on
+  unchanged rows keeps virtua's per-row ResizeObserver from firing
+  spuriously, and triage's persist-then-emit ordering means any
+  in-flight stream event is already baked into the slice's SQL —
+  preferring the in-memory row over a re-fetch is always correct.
 - **Spinner-flash gate.** `pane.loading` flips true the moment
   `switchThread` starts; `MessageTimeline` reads
   `pane.showLoadingSpinner` instead, which only resolves to true after
   `SPINNER_THRESHOLD_MS` (100ms — the Doherty perception threshold)
   AND when `pane.items.length === 0`. Cache hits never flash the
   spinner because items render immediately; sub-100ms cache misses
-  skip it because phase 1 populates items before the timer fires.
+  skip it because the slice load populates items before the timer
+  fires.
 
 ## Events in
 
