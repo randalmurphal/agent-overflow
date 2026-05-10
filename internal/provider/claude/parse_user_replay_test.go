@@ -285,13 +285,19 @@ func TestParseUser_ReplayWithBothToolResultAndIsReplay(t *testing.T) {
 //   - <bash-stderr>...</bash-stderr>                  (processBashCommand.tsx)
 //   - <local-command-stdout>...</local-command-stdout> (processSlashCommand.tsx)
 
-// TestParseUser_Replay_TaskNotificationTerminal_Suppressed exercises
-// the load-bearing path: a backgrounded bash completes, the queue
-// drains the XML attachment, Claude echoes it back via
-// `--replay-user-messages`. The wire body is the
-// `wrapCommandText('task-notification', ...)` output. Must NOT
-// produce an EventUserText (that would render as a user-bubble row).
-func TestParseUser_Replay_TaskNotificationTerminal_Suppressed(t *testing.T) {
+// TestParseUser_Replay_TaskNotificationTerminal_EmitsBackgroundTaskNotification
+// exercises the load-bearing path: a background subagent (or
+// backgrounded bash) completes WHILE a concurrent foreground
+// tool_result is in flight, so Claude's CLI skips the structured
+// `system/task_notification` envelope and only echoes the inline
+// `wrapCommandText('task-notification', ...)` body via
+// `--replay-user-messages`. The parser MUST NOT produce an
+// EventUserText (would render as a user bubble), AND MUST emit
+// EventBackgroundTaskNotification carrying the inner XML fields so
+// triage can drain the pending-terminal stash and write the
+// `tool_completion` sibling. Without this emission the subagent's
+// launch row stays `running` forever (the original bug).
+func TestParseUser_Replay_TaskNotificationTerminal_EmitsBackgroundTaskNotification(t *testing.T) {
 	parser := NewParser()
 	line := []byte(`{"type":"user","isReplay":true,"uuid":"task-notif-uuid-1","message":{"role":"user","content":"A background agent completed a task:\n<task-notification>\n<task-id>task-bg-1</task-id>\n<tool-use-id>tool-bg-1</tool-use-id>\n<output-file>/tmp/agent-out</output-file>\n<status>completed</status>\n<summary>Background command \"sleep 5\" completed (exit code 0)</summary>\n</task-notification>"}}`)
 
@@ -299,19 +305,49 @@ func TestParseUser_Replay_TaskNotificationTerminal_Suppressed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(events) != 0 {
-		t.Fatalf("expected 0 events for Claude-injected task-notification echo, got %d: %+v", len(events), events)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 EventBackgroundTaskNotification, got %d: %+v", len(events), events)
+	}
+	got := events[0]
+	if got.Kind != provider.EventBackgroundTaskNotification {
+		t.Fatalf("Kind: got %q, want EventBackgroundTaskNotification (and NOT EventUserText)", got.Kind)
+	}
+	if got.ItemID != "tool-bg-1" {
+		t.Fatalf("ItemID: got %q, want tool-bg-1", got.ItemID)
+	}
+	if got.Content != `Background command "sleep 5" completed (exit code 0)` {
+		t.Fatalf("Content: got %q, want the summary text", got.Content)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(got.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["task_id"] != "task-bg-1" {
+		t.Fatalf("meta.task_id: got %v, want task-bg-1", meta["task_id"])
+	}
+	if meta["tool_use_id"] != "tool-bg-1" {
+		t.Fatalf("meta.tool_use_id: got %v, want tool-bg-1", meta["tool_use_id"])
+	}
+	if meta["status"] != "completed" {
+		t.Fatalf("meta.status: got %v, want completed", meta["status"])
+	}
+	if meta["output_file"] != "/tmp/agent-out" {
+		t.Fatalf("meta.output_file: got %v, want /tmp/agent-out", meta["output_file"])
+	}
+	if meta["source"] != "task_notification" {
+		t.Fatalf("meta.source: got %v, want task_notification (parallel to system-envelope path)", meta["source"])
 	}
 }
 
-// TestParseUser_Replay_TaskNotificationStallPing_Suppressed pins the
+// TestParseUser_Replay_TaskNotificationStallPing_EmitsWithoutStatus pins the
 // statusless variant emitted by the stall watchdog
 // (`LocalShellTask.tsx:80-95`). No <status> tag, otherwise same shape.
-// SDK system event path doesn't fire (`print.ts:2070` gates on
-// status), so the wire-replay echo is the only surface — and we
-// suppress it. v1 simplification; can re-add as a notification-kind
-// row later if user demand surfaces.
-func TestParseUser_Replay_TaskNotificationStallPing_Suppressed(t *testing.T) {
+// The SDK system event path doesn't fire (`print.ts:2070` gates on
+// status), so this is the only surface — surface it as a
+// notification row so the user sees that a backgrounded command is
+// waiting for input. `meta.status` is absent (not empty-string) so
+// the downstream handler can branch on its presence.
+func TestParseUser_Replay_TaskNotificationStallPing_EmitsWithoutStatus(t *testing.T) {
 	parser := NewParser()
 	line := []byte(`{"type":"user","isReplay":true,"uuid":"stall-ping-uuid","message":{"role":"user","content":"A background agent completed a task:\n<task-notification>\n<task-id>task-stall-1</task-id>\n<output-file>/tmp/agent-stall</output-file>\n<summary>Background command \"npm install\" appears to be waiting for interactive input</summary>\n</task-notification>"}}`)
 
@@ -319,18 +355,35 @@ func TestParseUser_Replay_TaskNotificationStallPing_Suppressed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(events) != 0 {
-		t.Fatalf("expected 0 events for statusless stall-ping echo, got %d: %+v", len(events), events)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 EventBackgroundTaskNotification, got %d: %+v", len(events), events)
+	}
+	got := events[0]
+	if got.Kind != provider.EventBackgroundTaskNotification {
+		t.Fatalf("Kind: got %q, want EventBackgroundTaskNotification", got.Kind)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(got.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["task_id"] != "task-stall-1" {
+		t.Fatalf("meta.task_id: got %v, want task-stall-1", meta["task_id"])
+	}
+	if _, hasStatus := meta["status"]; hasStatus {
+		t.Fatalf("meta.status: present but the wire body had no <status> tag — must omit so downstream can branch on absence: %v", meta["status"])
+	}
+	if meta["output_file"] != "/tmp/agent-stall" {
+		t.Fatalf("meta.output_file: got %v, want /tmp/agent-stall", meta["output_file"])
 	}
 }
 
-// TestParseUser_Replay_BareTaskNotificationXML_Suppressed covers the
+// TestParseUser_Replay_BareTaskNotificationXML_Emits covers the
 // defensive path where the wrap prefix is missing but the XML body
 // is present. Could happen if a future upstream change ships the
 // XML directly without the human-facing prefix. Both tags must match
 // — open + close — so a single mention in real user text doesn't
 // trigger the suppression.
-func TestParseUser_Replay_BareTaskNotificationXML_Suppressed(t *testing.T) {
+func TestParseUser_Replay_BareTaskNotificationXML_Emits(t *testing.T) {
 	parser := NewParser()
 	line := []byte(`{"type":"user","isReplay":true,"uuid":"bare-xml-uuid","message":{"role":"user","content":"<task-notification>\n<task-id>task-bare</task-id>\n<status>failed</status>\n<summary>oops</summary>\n</task-notification>"}}`)
 
@@ -338,8 +391,137 @@ func TestParseUser_Replay_BareTaskNotificationXML_Suppressed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 EventBackgroundTaskNotification, got %d: %+v", len(events), events)
+	}
+	got := events[0]
+	if got.Kind != provider.EventBackgroundTaskNotification {
+		t.Fatalf("Kind: got %q, want EventBackgroundTaskNotification", got.Kind)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(got.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["task_id"] != "task-bare" {
+		t.Fatalf("meta.task_id: got %v, want task-bare", meta["task_id"])
+	}
+	if meta["status"] != "failed" {
+		t.Fatalf("meta.status: got %v, want failed", meta["status"])
+	}
+}
+
+// TestParseUser_Replay_TaskNotificationWithoutTaskID_NoEmission pins
+// the idempotency-key safety: a `<task-notification>` body whose
+// inner `<task-id>` is missing or empty cannot be routed downstream
+// (the triage handler keys the stash drain on task_id). Emitting a
+// no-task-id event would fabricate a row that resolves to no launch
+// and can't be deduped. Stay silent — drop both the EventUserText
+// AND the synthetic notification.
+func TestParseUser_Replay_TaskNotificationWithoutTaskID_NoEmission(t *testing.T) {
+	parser := NewParser()
+	line := []byte(`{"type":"user","isReplay":true,"uuid":"no-task-id","message":{"role":"user","content":"<task-notification>\n<status>completed</status>\n<summary>missing task id</summary>\n</task-notification>"}}`)
+
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
 	if len(events) != 0 {
-		t.Fatalf("expected 0 events for bare task-notification XML, got %d: %+v", len(events), events)
+		t.Fatalf("expected 0 events when <task-id> is missing, got %d: %+v", len(events), events)
+	}
+}
+
+// TestParseUser_Replay_TaskNotificationFallsBackToParserMap covers
+// the wire variant where the XML omits `<tool-use-id>` but the
+// parser's task_id ↔ tool_use_id map already carries the mapping
+// from a prior `system/task_started` envelope. The structured
+// `parseTaskNotificationEvent` path uses the same fallback
+// (parse_system.go); the replay path must mirror it so the
+// downstream handler receives the same ItemID regardless of which
+// wire shape Claude chose.
+func TestParseUser_Replay_TaskNotificationFallsBackToParserMap(t *testing.T) {
+	parser := NewParser()
+	// Seed the map via a structured task_started envelope. This is
+	// the wire ordering the live session exhibits — task_started
+	// fires before any task_notification on the same task_id.
+	seed := []byte(`{"type":"system","subtype":"task_started","task_id":"task-fallback-1","tool_use_id":"tool-fallback-1","task_type":"local_agent"}`)
+	if _, err := parser.ParseLine(testThread, seed); err != nil {
+		t.Fatalf("seed task_started: %v", err)
+	}
+
+	// Replay XML body deliberately omits <tool-use-id>; expect the
+	// parser to fill it from taskToolUses.
+	line := []byte(`{"type":"user","isReplay":true,"uuid":"fallback","message":{"role":"user","content":"<task-notification>\n<task-id>task-fallback-1</task-id>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>"}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	if events[0].ItemID != "tool-fallback-1" {
+		t.Fatalf("ItemID: got %q, want tool-fallback-1 (parser-map fallback)", events[0].ItemID)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["tool_use_id"] != "tool-fallback-1" {
+		t.Fatalf("meta.tool_use_id: got %v, want tool-fallback-1", meta["tool_use_id"])
+	}
+}
+
+// TestParseUser_Replay_TaskNotificationBlockArrayShape_Emits pins the
+// defensive content shape: `[{type:"text",text:"<task-notification>..."}]`.
+// Real captures haven't shown this for the synthetic-XML path, but the
+// SDK's content union allows it and `extractToolResultText` already
+// covers both shapes — the synthetic-XML extractor must apply to
+// either representation so a future SDK change doesn't silently
+// reintroduce the stuck-running bug.
+func TestParseUser_Replay_TaskNotificationBlockArrayShape_Emits(t *testing.T) {
+	parser := NewParser()
+	body := "<task-notification>\n<task-id>task-block-1</task-id>\n<tool-use-id>tool-block-1</tool-use-id>\n<status>completed</status>\n<summary>done via block array</summary>\n</task-notification>"
+	line := []byte(`{"type":"user","isReplay":true,"uuid":"block-shape","message":{"role":"user","content":[{"type":"text","text":` + jsonString(body) + `}]}}`)
+
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event for block-array synthetic-XML content, got %d: %+v", len(events), events)
+	}
+	got := events[0]
+	if got.Kind != provider.EventBackgroundTaskNotification {
+		t.Fatalf("Kind: got %q, want EventBackgroundTaskNotification", got.Kind)
+	}
+	if got.ItemID != "tool-block-1" {
+		t.Fatalf("ItemID: got %q, want tool-block-1", got.ItemID)
+	}
+	if got.Content != "done via block array" {
+		t.Fatalf("Content: got %q, want %q", got.Content, "done via block array")
+	}
+}
+
+// TestParseUser_Replay_TaskNotificationDecodesXMLEntities pins entity
+// decoding for fields that ride through to user-visible state. The
+// summary text in particular can carry shell-quoted commands or
+// snippets that the CLI escapes on the wire as `&amp;` / `&lt;` /
+// `&gt;` / `&quot;`. Without `html.UnescapeString` those entities
+// would leak into the AO timeline.
+func TestParseUser_Replay_TaskNotificationDecodesXMLEntities(t *testing.T) {
+	parser := NewParser()
+	body := "<task-notification>\n<task-id>task-ent-1</task-id>\n<tool-use-id>tool-ent-1</tool-use-id>\n<status>completed</status>\n<summary>echo &amp;&amp; ls &lt;dir&gt; ran with exit &quot;0&quot;</summary>\n</task-notification>"
+	line := []byte(`{"type":"user","isReplay":true,"uuid":"entities","message":{"role":"user","content":` + jsonString(body) + `}}`)
+
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	want := `echo && ls <dir> ran with exit "0"`
+	if events[0].Content != want {
+		t.Fatalf("Content: got %q, want %q (XML entities must be decoded)", events[0].Content, want)
 	}
 }
 

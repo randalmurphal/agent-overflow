@@ -387,6 +387,39 @@ assistant message/result generated for the agent, e.g. "Background
 task ... completed (exit code 0)." That follow-up text is agent-visible
 conversation, not a replacement for the task lifecycle.
 
+### Synthetic-XML delivery channel (concurrent-tool path)
+
+When a backgrounded subagent (Task / Bash with `run_in_background:true`)
+completes WHILE a concurrent foreground `tool_result` is in flight,
+the CLI does NOT emit a structured `system/task_notification`
+envelope for the backgrounded task. The completion observation is
+delivered ONLY as inline XML inside the next `user{isReplay:true}`
+envelope's content — `LocalShellTask.tsx:160-165` wraps the queued
+attachment via `wrapCommandText('task-notification', ...)`:
+
+```
+A background agent completed a task:
+<task-notification>
+<task-id>...</task-id>
+<tool-use-id>...</tool-use-id>
+<status>completed</status>
+<output-file>...</output-file>
+<summary>...</summary>
+</task-notification>
+```
+
+The 5s-subagent-alone scenario (no concurrent foreground tool) emits
+the structured envelope as documented above and never the inline XML.
+The two channels are mutually exclusive in practice.
+
+`internal/provider/claude/parse_user_replay.go` extracts the inner
+fields out of the suppressed `isReplay` envelope before discarding it
+and emits `EventBackgroundTaskNotification` with the same meta shape
+the structured-envelope path produces, so triage's stash-drain ->
+`tool_completion` sibling write runs in either case. Without this
+parser fallback, the launch row stays `running` indefinitely. See
+`internal/provider/claude/CLAUDE.md` §Synthetic XML extraction.
+
 ---
 
 ## `user` message — `tool_result` blocks

@@ -89,6 +89,20 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		return nil
 	}
 
+	// Foreground tools (Bash without run_in_background:true) also receive
+	// task_notification envelopes from Claude on completion — the CLI emits
+	// them for every Bash/Task lifecycle, not just backgrounded ones (see
+	// provider/claude/CLAUDE.md §task_started). The launch's own status
+	// flip is the user-visible completion signal; an additional notification
+	// row would be redundant (and the frontend filter at
+	// notificationFilter.ts already drops it). Skip the row write but still
+	// drain the stash defensively — foreground tools shouldn't populate it
+	// today, but the drain is the one load-bearing side effect we must not
+	// regress if a future wire change reroutes a backgrounded terminal.
+	if !launch.IsBackground {
+		return r.drainTaskNotificationStash(evt, meta, launch)
+	}
+
 	now := eventTimestampMillis(evt)
 	turnIndex, err := r.notificationTurnIndex(evt.ThreadID, launch, found)
 	if err != nil {
@@ -167,12 +181,17 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		return err
 	}
 
-	// Drain the stash: if task_updated stashed earlier and the sibling
-	// has not been written yet, this is the agent's first observation
-	// of the completion. Materialise the sibling at the current write
-	// head. If nothing is stashed (foreground stall, or sibling already
-	// exists from a TaskOutput drain), the notification row write above
-	// is the entire result.
+	return r.drainTaskNotificationStash(evt, meta, launch)
+}
+
+// drainTaskNotificationStash drains the pending-background-terminal
+// stash for the notification's task_id and, if one was waiting, writes
+// the `tool_completion` sibling at the current write head. Extracted
+// so both the backgrounded-tool path (post notification-row write) and
+// the foreground-tool skip path (no row write) share the load-bearing
+// drain logic. A foreground stash is pathological today but the drain
+// is idempotent on absence — safe to invoke either way.
+func (r *Router) drainTaskNotificationStash(evt provider.ProviderEvent, meta backgroundTaskNotificationMeta, launch store.Item) error {
 	stash, stashFound, err := r.store.TakePendingBackgroundTerminal(evt.ThreadID, meta.TaskID)
 	if err != nil {
 		log.Printf("triage: drain stash on task_notification %s: %v", meta.TaskID, err)

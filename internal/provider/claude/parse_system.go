@@ -207,19 +207,50 @@ func (p *Parser) parseTaskNotificationEvent(threadID string, raw map[string]json
 	if taskID == "" {
 		return nil, nil
 	}
-	taskRef := p.taskToolUseRef(taskID)
-	toolUseID := firstNonEmpty(
-		readRawString(raw["tool_use_id"]),
-		readRawString(raw["toolUseId"]),
-		taskRef.ToolUseID,
-	)
-	parentToolUseID := firstNonEmpty(taskRef.ParentToolUseID, readRawString(raw["parent_tool_use_id"]), readRawString(raw["parentToolUseId"]))
-	status := strings.TrimSpace(firstNonEmpty(readRawString(raw["status"]), readRawString(raw["patch"])))
-	summary := readRawString(raw["summary"])
-	outputFile := firstNonEmpty(readRawString(raw["output_file"]), readRawString(raw["outputFile"]))
+	fields := backgroundTaskNotificationFields{
+		TaskID:          taskID,
+		ToolUseID:       firstNonEmpty(readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"])),
+		ParentToolUseID: firstNonEmpty(readRawString(raw["parent_tool_use_id"]), readRawString(raw["parentToolUseId"])),
+		Status:          strings.TrimSpace(firstNonEmpty(readRawString(raw["status"]), readRawString(raw["patch"]))),
+		OutputFile:      firstNonEmpty(readRawString(raw["output_file"]), readRawString(raw["outputFile"])),
+		Summary:         readRawString(raw["summary"]),
+	}
+	return []provider.ProviderEvent{p.buildBackgroundTaskNotificationEvent(threadID, fields, now)}, nil
+}
+
+// backgroundTaskNotificationFields is the shared input shape both the
+// structured `system/task_notification` path and the synthetic
+// `<task-notification>` XML path in `parseUserReplay` use to build an
+// EventBackgroundTaskNotification. Keeping a single builder eliminates
+// drift between the two paths.
+//
+// ParentToolUseID is the wire-provided hint; an empty value falls back
+// to the parser's task_id ↔ tool_use_id map. The synthetic XML path
+// always passes "" because the wrapper doesn't expose it; the
+// structured path defensively reads `parent_tool_use_id` /
+// `parentToolUseId` from the envelope.
+type backgroundTaskNotificationFields struct {
+	TaskID          string
+	ToolUseID       string
+	ParentToolUseID string
+	Status          string
+	OutputFile      string
+	Summary         string
+}
+
+// buildBackgroundTaskNotificationEvent assembles the
+// EventBackgroundTaskNotification. The parser's task_id ↔ tool_use_id
+// map resolves the tool_use_id and parent_tool_use_id when the wire
+// caller didn't carry them inline. Callers are responsible for
+// guaranteeing a non-empty TaskID — without it triage can't route the
+// event.
+func (p *Parser) buildBackgroundTaskNotificationEvent(threadID string, fields backgroundTaskNotificationFields, now time.Time) provider.ProviderEvent {
+	taskRef := p.taskToolUseRef(fields.TaskID)
+	toolUseID := firstNonEmpty(fields.ToolUseID, taskRef.ToolUseID)
+	parentToolUseID := firstNonEmpty(fields.ParentToolUseID, taskRef.ParentToolUseID)
 
 	metaFields := map[string]any{
-		"task_id": taskID,
+		"task_id": fields.TaskID,
 		"source":  "task_notification",
 	}
 	if toolUseID != "" {
@@ -228,23 +259,23 @@ func (p *Parser) parseTaskNotificationEvent(threadID string, raw map[string]json
 	if parentToolUseID != "" {
 		metaFields["parent_tool_use_id"] = parentToolUseID
 	}
-	if status != "" {
-		metaFields["status"] = status
+	if fields.Status != "" {
+		metaFields["status"] = fields.Status
 	}
-	if outputFile != "" {
-		metaFields["output_file"] = outputFile
+	if fields.OutputFile != "" {
+		metaFields["output_file"] = fields.OutputFile
 	}
 	meta, _ := json.Marshal(metaFields)
 
-	return []provider.ProviderEvent{{
+	return provider.ProviderEvent{
 		Kind:            provider.EventBackgroundTaskNotification,
 		ThreadID:        threadID,
 		ItemID:          toolUseID,
-		Content:         summary,
+		Content:         fields.Summary,
 		Meta:            meta,
 		ParentToolUseID: parentToolUseID,
 		Timestamp:       now,
-	}}, nil
+	}
 }
 
 func normalizeTaskTerminalStatus(status string) string {

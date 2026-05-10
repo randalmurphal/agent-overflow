@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 )
 
 func decodeItemMetaMap(t *testing.T, raw string) map[string]any {
@@ -180,6 +182,384 @@ func TestBackgroundTaskNotification_WithoutLaunchOrStashDoesNotCreateRow(t *test
 	if len(items) != 0 {
 		t.Fatalf("hidden task notification must not create parent rows, got %+v", items)
 	}
+}
+
+// TestBackgroundTaskNotification_StashedTerminalThenNotificationWritesSibling
+// pins the case-1 regression from the screenshot scenario: a
+// background subagent (local_agent) completes WHILE a concurrent
+// foreground tool_result is in flight. Claude's CLI delivers the
+// completion through `system/task_updated{completed}` (which the
+// router stashes) and then the synthetic `<task-notification>` XML
+// echo on a `user{isReplay:true}` envelope (parser-side fix at
+// parse_user_replay.go promotes this to EventBackgroundTaskNotification).
+// The structured `system/task_notification` envelope is NEVER emitted
+// for this scenario. The handler MUST drain the stash and write the
+// `tool_completion` sibling so the launch row gets its "-> done"
+// companion in the UI. Without this drain the launch stays running
+// forever (the original bug).
+func TestBackgroundTaskNotification_StashedTerminalThenNotificationWritesSibling(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	// Background subagent launch (run_in_background:true, like the
+	// `Agent` tool with run_in_background).
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Agent",
+		"is_background": true,
+		"input": map[string]any{
+			"description":       "Background python sleep test",
+			"prompt":            "sleep then report done",
+			"run_in_background": true,
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "bg-subagent",
+		ItemType:  "Agent",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// task_started meta-update stamps task_id onto the launch (the
+	// real parser emits this; we feed it directly to mirror).
+	taskStartedMeta, _ := json.Marshal(map[string]any{
+		"task_id": "task-bg-subagent-1",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "bg-subagent",
+		Meta:      taskStartedMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_started meta-update: %v", err)
+	}
+
+	// 1. task_updated{completed} arrives — host signalled exit. Triage
+	// stashes; no sibling yet, launch stays running.
+	stashMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "task-bg-subagent-1",
+		"tool_use_id": "bg-subagent",
+		"status":      "completed",
+		"source":      "task_updated",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventBackgroundTaskTerminal,
+		ThreadID:  "t1",
+		Meta:      stashMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_updated stash: %v", err)
+	}
+	if dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(dones) != 0 {
+		t.Fatalf("task_updated{completed} must NOT write a sibling yet, got %d", len(dones))
+	}
+	if _, found, err := st.GetPendingBackgroundTerminal("t1", "task-bg-subagent-1"); err != nil {
+		t.Fatalf("read stash: %v", err)
+	} else if !found {
+		t.Fatal("expected stash entry after task_updated{completed}")
+	}
+
+	// 2. Synthetic XML echo arrives (the parser fix promotes the
+	// isReplay envelope to this EventBackgroundTaskNotification).
+	// The handler must: write notification row, drain stash, write
+	// tool_completion sibling.
+	notificationMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "task-bg-subagent-1",
+		"tool_use_id": "bg-subagent",
+		"status":      "completed",
+		"source":      "task_notification",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventBackgroundTaskNotification,
+		ThreadID:  "t1",
+		ItemID:    "bg-subagent",
+		Meta:      notificationMeta,
+		Content:   `Agent "Background python sleep test" completed`,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_notification: %v", err)
+	}
+
+	if _, found, err := st.GetPendingBackgroundTerminal("t1", "task-bg-subagent-1"); err != nil {
+		t.Fatalf("read drained stash: %v", err)
+	} else if found {
+		t.Fatal("stash must be drained after task_notification")
+	}
+
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
+		t.Fatalf("expected 1 tool_completion sibling, got %d (the case-1 bug)", len(dones))
+	}
+	done := dones[0]
+	if done.ID != nextToolCompletionID("bg-subagent") {
+		t.Fatalf("sibling.id = %q, want %q (stable per-launch derivation)", done.ID, nextToolCompletionID("bg-subagent"))
+	}
+	if done.CompletionOf != "bg-subagent" {
+		t.Fatalf("sibling.completionOf = %q, want bg-subagent", done.CompletionOf)
+	}
+	if done.Status != statusCompleted {
+		t.Fatalf("sibling.status = %q, want completed", done.Status)
+	}
+	if !done.IsBackground {
+		t.Fatal("sibling.isBackground = false, want true (inherited from launch)")
+	}
+	// `buildBackgroundTerminalSummary` joins the launch summary with the
+	// outcome marker as "launch -> done" — pin both halves so a refactor
+	// of either piece fails loudly. The launch summary for the Agent
+	// tool with `description: "Background python sleep test"` derives
+	// from the description.
+	if !strings.HasSuffix(done.Summary, " -> done") {
+		t.Fatalf("sibling.summary = %q, want trailing ` -> done` outcome marker", done.Summary)
+	}
+	if !strings.Contains(done.Summary, "Background python sleep test") {
+		t.Fatalf("sibling.summary = %q, want launch-summary prefix derived from Agent description", done.Summary)
+	}
+	doneMeta := decodeItemMetaMap(t, done.Meta)
+	if doneMeta["task_id"] != "task-bg-subagent-1" {
+		t.Fatalf("sibling.meta.task_id = %v, want task-bg-subagent-1", doneMeta["task_id"])
+	}
+	// `drainTaskNotificationStash` stamps Source="task_notification"
+	// on the synthetic terminal it builds from the merged stash+notif
+	// fields (background_task_notifications.go), so the persisted
+	// status_source reflects the wire envelope that drove the write
+	// — the notification, not the stash entry that supplied the rest.
+	if doneMeta["status_source"] != "task_notification" {
+		t.Fatalf("sibling.meta.status_source = %v, want task_notification (drain stamps the source)", doneMeta["status_source"])
+	}
+	if doneMeta["tool_use_id"] != "bg-subagent" {
+		t.Fatalf("sibling.meta.tool_use_id = %v, want bg-subagent", doneMeta["tool_use_id"])
+	}
+
+	// Notification row also written (subagent is is_background=true).
+	notifications := findItemsByKind(t, st, "t1", itemKindNotification)
+	if len(notifications) != 1 {
+		t.Fatalf("expected 1 notification row alongside the sibling, got %d", len(notifications))
+	}
+}
+
+// TestBackgroundTaskNotification_StashedTerminalThenNotificationIsIdempotent
+// pins the safety property for the rare scenario where Claude's CLI
+// delivers BOTH the structured `system/task_notification` envelope AND
+// the synthetic `<task-notification>` XML echo for the same task_id
+// (e.g. a future wire change that overlaps the channels). The router
+// must produce exactly one `tool_completion` sibling row and exactly
+// one notification row, regardless of how many notification events
+// arrive on the same task_id. The stash is one-shot via
+// `RemovePendingBackgroundTerminal`; the second notification finds it
+// empty and no-ops the sibling write.
+func TestBackgroundTaskNotification_StashedTerminalThenNotificationIsIdempotent(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Agent",
+		"is_background": true,
+		"input": map[string]any{
+			"description":       "idempotency probe",
+			"run_in_background": true,
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:     provider.EventToolStart,
+		ThreadID: "t1", ItemID: "bg-idemp", ItemType: "Agent",
+		Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	stashMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-idemp",
+		"tool_use_id": "bg-idemp",
+		"status":      "completed",
+		"source":      "task_updated",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1",
+		Meta: stashMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_updated stash: %v", err)
+	}
+
+	notifMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-idemp",
+		"tool_use_id": "bg-idemp",
+		"status":      "completed",
+		"source":      "task_notification",
+	})
+	// First notification — drains stash, writes sibling.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskNotification, ThreadID: "t1", ItemID: "bg-idemp",
+		Meta: notifMeta, Content: "first observation", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("first notification: %v", err)
+	}
+	// Second notification — stash is gone, must not double-write.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskNotification, ThreadID: "t1", ItemID: "bg-idemp",
+		Meta: notifMeta, Content: "duplicate observation", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("second notification: %v", err)
+	}
+
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
+		t.Fatalf("expected exactly 1 sibling after duplicate notifications, got %d (idempotency broken)", len(dones))
+	}
+	notifications := findItemsByKind(t, st, "t1", itemKindNotification)
+	if len(notifications) != 1 {
+		t.Fatalf("expected exactly 1 notification row (id keyed by task_id), got %d", len(notifications))
+	}
+}
+
+// TestBackgroundTaskNotification_ForegroundToolSkipsNotificationRow
+// pins Fix B: Claude's CLI emits `system/task_notification` for EVERY
+// Bash/Task lifecycle, including foreground inline calls (not just
+// run_in_background:true). The launch's own status flip is the
+// user-visible completion signal; an additional notification row
+// would be redundant and the frontend filter
+// (notificationFilter.ts) already drops it. The triage handler must
+// skip the row write so we don't accumulate dead SQLite rows. The
+// launch row itself stays untouched (any status flip is the
+// EventToolComplete handler's job).
+func TestBackgroundTaskNotification_ForegroundToolSkipsNotificationRow(t *testing.T) {
+	t.Run("notification_without_stash_skips_row", func(t *testing.T) {
+		router, st, _ := newTestRouter(t)
+		createTestThread(t, st, "t1")
+
+		// Launch a FOREGROUND Bash (no is_background flag).
+		startMeta, _ := json.Marshal(map[string]any{
+			"toolName": "Bash",
+			"input":    map[string]any{"command": "echo hi"},
+		})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventToolStart,
+			ThreadID:  "t1",
+			ItemID:    "fg-bash",
+			ItemType:  "Bash",
+			Meta:      startMeta,
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+
+		notificationMeta, _ := json.Marshal(map[string]any{
+			"task_id":     "task-fg-1",
+			"tool_use_id": "fg-bash",
+			"status":      "completed",
+		})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventBackgroundTaskNotification,
+			ThreadID:  "t1",
+			ItemID:    "fg-bash",
+			Meta:      notificationMeta,
+			Content:   `Bash "echo hi" completed`,
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("notification: %v", err)
+		}
+
+		notifications := findItemsByKind(t, st, "t1", itemKindNotification)
+		if len(notifications) != 0 {
+			t.Fatalf("foreground task_notification must NOT write a notification row, got %d: %+v", len(notifications), notifications)
+		}
+
+		// Launch row unchanged — task_notification carries no
+		// EventToolComplete semantics, so the bash's `running` status stays
+		// running until the tool_result envelope flips it.
+		launch, ok, err := st.GetThreadItem("t1", "fg-bash")
+		if err != nil || !ok {
+			t.Fatalf("lookup launch: ok=%v err=%v", ok, err)
+		}
+		if launch.IsBackground {
+			t.Fatal("foreground launch must not flip to is_background")
+		}
+		if launch.Status != statusRunning {
+			t.Fatalf("launch status = %q, want running (task_notification is not a lifecycle source)", launch.Status)
+		}
+
+		dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+		if len(dones) != 0 {
+			t.Fatalf("foreground task_notification must not synthesize completion rows, got %+v", dones)
+		}
+	})
+
+	// The Fix B early-return preserves the defensive stash drain for the
+	// foreground path. Foreground tools don't stash today (only
+	// task_updated{completed,failed} for backgrounded launches stages a
+	// row), but if a future change ever stages one for a foreground
+	// task_id, the drain must still execute so the stash doesn't
+	// leak. This subtest fabricates that condition by writing the stash
+	// directly through the store API, then asserts the foreground-path
+	// notification still drains it. Guards against a refactor that
+	// returns early before reaching the drain helper.
+	t.Run("notification_with_stash_still_drains_stash", func(t *testing.T) {
+		router, st, _ := newTestRouter(t)
+		createTestThread(t, st, "t1")
+
+		startMeta, _ := json.Marshal(map[string]any{
+			"toolName": "Bash",
+			"input":    map[string]any{"command": "echo hi"},
+		})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventToolStart,
+			ThreadID:  "t1",
+			ItemID:    "fg-bash-stash",
+			ItemType:  "Bash",
+			Meta:      startMeta,
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+
+		// Fabricate the stash directly. Foreground task_updated doesn't
+		// stash today; we want to prove the drain helper still runs from
+		// the foreground notification path even when one exists.
+		if err := st.UpsertPendingBackgroundTerminal(store.PendingBackgroundTaskTerminal{
+			ThreadID:  "t1",
+			TaskID:    "task-fg-stash",
+			ToolUseID: "fg-bash-stash",
+			Status:    "completed",
+			Source:    "task_updated",
+			CreatedAt: time.Now().UnixMilli(),
+		}); err != nil {
+			t.Fatalf("seed stash: %v", err)
+		}
+		if _, found, err := st.GetPendingBackgroundTerminal("t1", "task-fg-stash"); err != nil {
+			t.Fatalf("read stash: %v", err)
+		} else if !found {
+			t.Fatal("expected stash before notification")
+		}
+
+		notificationMeta, _ := json.Marshal(map[string]any{
+			"task_id":     "task-fg-stash",
+			"tool_use_id": "fg-bash-stash",
+			"status":      "completed",
+		})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventBackgroundTaskNotification, ThreadID: "t1",
+			ItemID: "fg-bash-stash", Meta: notificationMeta,
+			Content: "fg notif w/ stash", Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("notification: %v", err)
+		}
+
+		if _, found, err := st.GetPendingBackgroundTerminal("t1", "task-fg-stash"); err != nil {
+			t.Fatalf("read drained stash: %v", err)
+		} else if found {
+			t.Fatal("foreground notification must still drain the stash even though it skips the notification-row write")
+		}
+
+		notifications := findItemsByKind(t, st, "t1", itemKindNotification)
+		if len(notifications) != 0 {
+			t.Fatalf("foreground notification must NOT write a notification row even with stash drain, got %d", len(notifications))
+		}
+	})
 }
 
 func TestBackgroundTaskNotification_OutputFileFeedsLaterTerminal(t *testing.T) {

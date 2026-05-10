@@ -81,6 +81,13 @@ Summary of what `ParseLine` dispatches:
   notification row and optionally ingest `output_file` into SQLite.
   See [`claude-wire.md §task_notification`](../../../docs/references/claude-wire.md#systemtask_notification)
   and [`turn-lifecycle.md §Task lifecycle`](../../../docs/architecture/turn-lifecycle.md#2-task-lifecycle-claude-only).
+  `parseTaskNotificationEvent` and the synthetic-XML extraction in
+  `parse_user_replay.go` share a single
+  `buildBackgroundTaskNotificationEvent` so both wire paths produce
+  identical inputs for triage. The synthetic-XML path runs when a
+  backgrounded subagent completes while a concurrent foreground
+  tool_result is in flight; the CLI then delivers the observation only
+  via `<task-notification>` inside an `isReplay:true` user envelope.
 - `assistant` — text deltas, tool_use, thinking, exit_plan_mode,
   usage. Subagent messages identified by top-level
   `parent_tool_use_id`.

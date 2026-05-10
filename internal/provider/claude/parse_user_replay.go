@@ -23,6 +23,7 @@ package claude
 
 import (
 	"encoding/json"
+	"html"
 	"strings"
 	"time"
 
@@ -147,6 +148,17 @@ func isClaudeInjectedReplayContent(content string) bool {
 // an EventUserText for non-user content — see
 // isClaudeInjectedReplayContent's doc.
 //
+// Synthetic `<task-notification>` bodies are a special case inside
+// the suppressed branch: when a background subagent completes WHILE
+// a concurrent foreground tool_result is in flight, Claude's CLI
+// skips the structured `system/task_notification` envelope and
+// delivers the completion only as inline XML on this isReplay user
+// envelope (LocalShellTask.tsx:160-165 wraps the queued attachment).
+// We still suppress the EventUserText, but extract the inner fields
+// and emit `EventBackgroundTaskNotification` so triage's stash-drain
+// path can write the `tool_completion` sibling. Idempotent with the
+// structured path — if both arrive the second drain returns no-op.
+//
 // `provider_item_id` resolution: top-level `uuid` is the source for
 // every replay shape current Claude releases emit (queued_command at
 // claude-code-source-code/src/QueryEngine.ts:880-892, initial-user ack
@@ -178,6 +190,9 @@ func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage
 	content := extractToolResultText(msg.Content)
 
 	if isClaudeInjectedReplayContent(content) {
+		if fields, ok := extractReplayTaskNotificationFields(content); ok {
+			return p.replayTaskNotificationEvents(threadID, fields, now), nil
+		}
 		return nil, nil
 	}
 
@@ -203,4 +218,97 @@ func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage
 		Timestamp: now,
 		Raw:       line,
 	}}, nil
+}
+
+// replayTaskNotificationFields holds the inner-tag values lifted from
+// a `<task-notification>...</task-notification>` body in a suppressed
+// isReplay user envelope. Mirrors the field set the structured
+// `system/task_notification` envelope carries — only TaskID is
+// required; everything else is best-effort enrichment.
+type replayTaskNotificationFields struct {
+	TaskID     string
+	ToolUseID  string
+	Status     string
+	OutputFile string
+	Summary    string
+}
+
+// extractReplayTaskNotificationFields lifts the inner tags out of a
+// `<task-notification>...</task-notification>` body when present.
+// Returns (fields, true) only when both wrapper tags appear AND the
+// body has a non-empty `<task-id>` — task_id is the idempotency key
+// triage uses to drain the pending-terminal stash and resolve the
+// launch; without it the event would be unroutable.
+//
+// Tags are extracted by shallow substring scan; the upstream wire
+// shape (LocalShellTask.tsx:160-165) keeps children non-nested
+// except for `<usage>`, which we ignore. A close-tag-before-open or
+// missing close returns ok=false so a malformed echo can't fabricate
+// fields.
+func extractReplayTaskNotificationFields(content string) (replayTaskNotificationFields, bool) {
+	const openPrefix = "<task-notification"
+	const closeTag = "</task-notification>"
+	openIdx := strings.Index(content, openPrefix)
+	closeIdx := strings.Index(content, closeTag)
+	if openIdx < 0 || closeIdx < 0 || closeIdx < openIdx {
+		return replayTaskNotificationFields{}, false
+	}
+	// Advance past the opening tag's `>` so `body` represents inner
+	// content only. Tolerant of an attribute-bearing variant
+	// `<task-notification foo="bar">` even though we don't expect one
+	// from current Claude releases.
+	bodyStart := strings.Index(content[openIdx:closeIdx], ">")
+	if bodyStart < 0 {
+		return replayTaskNotificationFields{}, false
+	}
+	body := content[openIdx+bodyStart+1 : closeIdx]
+	fields := replayTaskNotificationFields{
+		TaskID:     extractXMLChild(body, "task-id"),
+		ToolUseID:  extractXMLChild(body, "tool-use-id"),
+		Status:     extractXMLChild(body, "status"),
+		OutputFile: extractXMLChild(body, "output-file"),
+		Summary:    extractXMLChild(body, "summary"),
+	}
+	if fields.TaskID == "" {
+		return fields, false
+	}
+	return fields, true
+}
+
+// extractXMLChild returns the trimmed, entity-decoded inner text of
+// `<tag>...</tag>` inside body, or "" when the tag is missing or
+// unbalanced. The upstream wrapper emits children without attributes,
+// so the literal open `<tag>` and close `</tag>` match exactly. We
+// decode `&amp;` / `&lt;` / `&gt;` / `&quot;` / `&apos;` because the
+// summary text in particular can carry user-visible characters that
+// the CLI escapes on the wire.
+func extractXMLChild(body, tag string) string {
+	openTag := "<" + tag + ">"
+	closeTag := "</" + tag + ">"
+	o := strings.Index(body, openTag)
+	if o < 0 {
+		return ""
+	}
+	o += len(openTag)
+	c := strings.Index(body[o:], closeTag)
+	if c < 0 {
+		return ""
+	}
+	return html.UnescapeString(strings.TrimSpace(body[o : o+c]))
+}
+
+// replayTaskNotificationEvents routes the synthetic-XML
+// `<task-notification>` payload through the shared
+// EventBackgroundTaskNotification builder so triage receives identical
+// inputs whichever wire path Claude chose. The XML wrapper doesn't
+// expose `parent_tool_use_id`; the shared builder falls back to the
+// parser's task_id ↔ tool_use_id map for it.
+func (p *Parser) replayTaskNotificationEvents(threadID string, fields replayTaskNotificationFields, now time.Time) []provider.ProviderEvent {
+	return []provider.ProviderEvent{p.buildBackgroundTaskNotificationEvent(threadID, backgroundTaskNotificationFields{
+		TaskID:     fields.TaskID,
+		ToolUseID:  fields.ToolUseID,
+		Status:     fields.Status,
+		OutputFile: fields.OutputFile,
+		Summary:    fields.Summary,
+	}, now)}
 }
