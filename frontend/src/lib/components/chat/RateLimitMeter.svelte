@@ -1,30 +1,31 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import type { RateLimitEntry } from '../../types/events';
   import { formatResetCountdown } from '../../utils/format';
   import { getProviderAccount } from '../../stores/accountInfo.svelte';
+  import { getProviderRateLimit } from '../../stores/rateLimitsInfo.svelte';
   import Popover from '../primitives/Popover.svelte';
 
-  // `entry` is null until the first `rate_limits` event lands for this
-  // thread. The empty-ring rendering for null is intentional. The ring
-  // face shows a static window label ("5h"/"7d"); the percentage and
-  // reset countdown live in the popover. `windowMins` is the only
-  // identity prop — both the label and the popover header derive from
-  // it so the two can never drift.
+  // The ring face shows a static window label ("5h"/"7d"); the
+  // percentage and reset countdown live in the popover. `windowMins`
+  // identifies the window slot to look up — both the label and the
+  // popover header derive from it so the two can never drift.
   //
-  // `provider` is optional because the rings can render before the
-  // pane has a committed provider (and the popover gracefully omits
-  // the plan line when missing). When supplied, the popover reads
-  // the global accountInfo store and renders "Plan: <subscriptionType>".
+  // `provider` keys into the global rate-limits store
+  // (`rateLimitsInfo.svelte.ts`). The store is account-scoped, so a
+  // freshly switched-to thread shows the same data its sibling thread
+  // had. When provider is undefined (transient state during thread
+  // setup) the entry resolves to null and the ring renders empty.
   let {
-    entry,
     windowMins,
     provider,
   }: {
-    entry: RateLimitEntry | null;
     windowMins: number;
     provider?: 'claude' | 'codex';
   } = $props();
+
+  // Re-runs whenever the global store's Map identity flips on
+  // `setProviderRateLimits`. Empty/missing → null → empty ring.
+  let entry = $derived(getProviderRateLimit(provider, windowMins));
 
   let buttonEl: HTMLButtonElement | undefined = $state(undefined);
   let showPopover = $state(false);

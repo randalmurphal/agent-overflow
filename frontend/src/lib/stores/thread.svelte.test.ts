@@ -80,7 +80,6 @@ describe('createThreadPane', () => {
     expect(pane.contextWindow).toBeNull();
     expect(pane.generalError).toBeNull();
     expect(pane.isLocked).toBe(false);
-    expect(pane.rateLimits.size).toBe(0);
     expect(getActiveTurn(pane.threadId) !== null).toBe(false);
   });
 
@@ -326,32 +325,6 @@ describe('createThreadPane', () => {
     expect(pane.loading).toBe(false);
   });
 
-  // replaceThread fires for every thread metadata update during a
-  // session — token-usage bumps from `provider:usage`, runtime-mode
-  // patches, sidebar activity touch. Each call gets a freshly-cloned
-  // Thread object, so any pane state that has no backing field on
-  // Thread must survive replaceThread or the UI flickers between
-  // empty and populated. Rate limits have no Thread field; this test
-  // pins the survival contract.
-  it('replaceThread preserves rateLimitsByWindow across metadata updates', async () => {
-    const pane = await buildPane(makeThread({ id: 'thread-rate' }));
-    pane.setRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'five_hour', limitName: '5h', usedPercent: 30, windowMins: 300, resetsAt: 1776283200 },
-        { limitId: 'seven_day', limitName: '7d', usedPercent: 51, windowMins: 10080, resetsAt: 1776981600 },
-      ],
-      updatedAt: 1776283000,
-    });
-    expect(pane.rateLimits.size).toBe(2);
-
-    pane.replaceThread(makeThread({ id: 'thread-rate', lastTokenUsage: '{"usedTokens":1234}' }));
-
-    expect(pane.rateLimits.size).toBe(2);
-    expect(pane.rateLimits.get(300)?.usedPercent).toBe(30);
-    expect(pane.rateLimits.get(10080)?.usedPercent).toBe(51);
-  });
-
   it('clears pane-local state on thread switch', async () => {
     const pane = createThreadPane();
     await pane.switchThread(makeThread({ id: 'thread-a' }));
@@ -367,14 +340,6 @@ describe('createThreadPane', () => {
     pane.setShowTerminal(true);
     pane.setShowPlanSidebar(true);
     pane.openDiffSidebar({ payloadId: 'p1' });
-    pane.setRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: 1776283200 },
-      ],
-      updatedAt: 1776283000,
-    });
-    expect(pane.rateLimits.size).toBe(1);
 
     await pane.switchThread(makeThread({ id: 'thread-b' }));
 
@@ -383,7 +348,6 @@ describe('createThreadPane', () => {
     expect(pane.showTerminal).toBe(false);
     expect(pane.showPlanSidebar).toBe(false);
     expect(pane.activeDiffPayload).toBeNull();
-    expect(pane.rateLimits.size).toBe(0);
   });
 
   describe('right-side panel mutex', () => {

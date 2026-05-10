@@ -32,6 +32,7 @@ import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overf
 import { getAllPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
+import { setProviderRateLimits } from './rateLimitsInfo.svelte';
 import { addToast } from './toast.svelte';
 import { getThreadById, getThreads, refreshThreads, replaceThread, touchThreadActivity } from './threads.svelte';
 import { parseJsonObject } from '../utils/parseJsonObject';
@@ -513,15 +514,17 @@ function applyUsageEvent(evt: UsageEvent): void {
   if (!evt?.threadId) return;
 
   // `rate_limits` piggybacks on the same channel but doesn't touch the
-  // context-window ring. Route to the pane's rate-limit slot and bail
+  // context-window ring. Route to the provider-global store and bail
   // before the context-window update path so a rate-limit refresh
   // never clobbers the last known token-window snapshot.
+  //
+  // Rate limits are an account property, not a thread property — every
+  // pane on the same provider sees the same value. The global store
+  // also makes the rings persist across thread switches and turn
+  // completions until the next non-empty event arrives.
   if (evt.action === 'rate_limits') {
     if (!evt.rateLimits) return;
-    for (const pane of getAllPanes().values()) {
-      if (pane.threadId !== evt.threadId) continue;
-      pane.setRateLimits(evt.rateLimits);
-    }
+    setProviderRateLimits(evt.rateLimits);
     return;
   }
 

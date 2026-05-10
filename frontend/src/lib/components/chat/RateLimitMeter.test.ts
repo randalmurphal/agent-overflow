@@ -6,47 +6,67 @@ import {
   resetForTest as resetAccountInfoForTest,
   setProviderAccount,
 } from '../../stores/accountInfo.svelte';
+import {
+  resetForTest as resetRateLimitsInfoForTest,
+  setProviderRateLimits,
+} from '../../stores/rateLimitsInfo.svelte';
+import type { RateLimitEntry } from '../../types/events';
 
 // Pin Date.now() so the popover countdown text is deterministic.
 const NOW_MS = 1_700_000_000_000;
 const NOW_SEC = Math.floor(NOW_MS / 1000);
+
+// Helper: seed the provider-global store with a single entry under
+// `provider` so RateLimitMeter's derived lookup resolves to it.
+function seedProviderEntry(
+  provider: 'claude' | 'codex',
+  entry: RateLimitEntry,
+): void {
+  setProviderRateLimits({
+    provider,
+    limits: [entry],
+    updatedAt: NOW_SEC,
+  });
+}
 
 describe('<RateLimitMeter>', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW_MS);
     resetAccountInfoForTest();
+    resetRateLimitsInfoForTest();
   });
   afterEach(() => {
     vi.useRealTimers();
     resetAccountInfoForTest();
+    resetRateLimitsInfoForTest();
   });
 
   it('renders the static window label inside the ring (not a percent)', () => {
+    seedProviderEntry('claude', {
+      limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: NOW_SEC + 3600,
+    });
     const { getByLabelText } = render(RateLimitMeter, {
-      props: {
-        entry: { limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: NOW_SEC + 3600 },
-        windowMins: 300,
-      },
+      props: { windowMins: 300, provider: 'claude' as const },
     });
     const button = getByLabelText(/5-hour limit/);
     expect(button.textContent?.trim()).toBe('5h');
   });
 
-  it('derives the 7-hour label and header from windowMins=10080', () => {
+  it('derives the 7-day label and header from windowMins=10080', () => {
     const { getByLabelText } = render(RateLimitMeter, {
-      props: { entry: null, windowMins: 10080 },
+      props: { windowMins: 10080, provider: 'claude' as const },
     });
     const button = getByLabelText(/7-day limit/);
     expect(button.textContent?.trim()).toBe('7d');
   });
 
   it('shows percent + countdown in the popover when entry is present', async () => {
+    seedProviderEntry('claude', {
+      limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: NOW_SEC + 3600,
+    });
     const { getByLabelText } = render(RateLimitMeter, {
-      props: {
-        entry: { limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: NOW_SEC + 3600 },
-        windowMins: 300,
-      },
+      props: { windowMins: 300, provider: 'claude' as const },
     });
     await fireEvent.mouseEnter(getByLabelText(/5-hour limit/));
 
@@ -55,11 +75,11 @@ describe('<RateLimitMeter>', () => {
   });
 
   it('refreshes countdown text on each hover-open so a stale derived value cannot persist', async () => {
+    seedProviderEntry('claude', {
+      limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: NOW_SEC + 3600,
+    });
     const { getByLabelText } = render(RateLimitMeter, {
-      props: {
-        entry: { limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: NOW_SEC + 3600 },
-        windowMins: 300,
-      },
+      props: { windowMins: 300, provider: 'claude' as const },
     });
     const button = getByLabelText(/5-hour limit/);
 
@@ -74,9 +94,9 @@ describe('<RateLimitMeter>', () => {
     expect(await screen.findByText('Resets in 30m')).toBeTruthy();
   });
 
-  it('shows "Awaiting first update" placeholder when entry is null', async () => {
+  it('shows "Awaiting first update" placeholder when the global store has no entry', async () => {
     const { getByLabelText } = render(RateLimitMeter, {
-      props: { entry: null, windowMins: 10080 },
+      props: { windowMins: 10080, provider: 'claude' as const },
     });
     await fireEvent.mouseEnter(getByLabelText(/7-day limit/));
 
@@ -89,21 +109,21 @@ describe('<RateLimitMeter>', () => {
   // the grey background circumference. A regression here would either
   // (a) leak a 0%-fill arc with the linecap rounding artifact, or
   // (b) draw a full ring at the warning color when entry is null.
-  it('omits the progress-arc circle when entry is null', () => {
+  it('omits the progress-arc circle when no entry is in the store', () => {
     const { container } = render(RateLimitMeter, {
-      props: { entry: null, windowMins: 300 },
+      props: { windowMins: 300, provider: 'claude' as const },
     });
     const circles = container.querySelectorAll('svg circle');
     // Only the background circle, no progress arc.
     expect(circles.length).toBe(1);
   });
 
-  it('renders the progress arc when entry is present', () => {
+  it('renders the progress arc when an entry exists in the store', () => {
+    seedProviderEntry('claude', {
+      limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: NOW_SEC + 3600,
+    });
     const { container } = render(RateLimitMeter, {
-      props: {
-        entry: { limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: NOW_SEC + 3600 },
-        windowMins: 300,
-      },
+      props: { windowMins: 300, provider: 'claude' as const },
     });
     const circles = container.querySelectorAll('svg circle');
     expect(circles.length).toBe(2);
@@ -115,59 +135,59 @@ describe('<RateLimitMeter>', () => {
   // and visually invisible until the wire happens to land right on a
   // boundary.
   it('keeps the subtle stroke at exactly 80% used (boundary is exclusive)', () => {
+    seedProviderEntry('claude', {
+      limitId: 'five_hour', limitName: '5h', usedPercent: 80, windowMins: 300, resetsAt: NOW_SEC + 3600,
+    });
     const { container } = render(RateLimitMeter, {
-      props: {
-        entry: { limitId: 'five_hour', limitName: '5h', usedPercent: 80, windowMins: 300, resetsAt: NOW_SEC + 3600 },
-        windowMins: 300,
-      },
+      props: { windowMins: 300, provider: 'claude' as const },
     });
     const arc = container.querySelectorAll('svg circle')[1];
     expect(arc.getAttribute('class')).toContain('stroke-fg-subtle');
   });
 
   it('flips to warning at 81% used', () => {
+    seedProviderEntry('claude', {
+      limitId: 'five_hour', limitName: '5h', usedPercent: 81, windowMins: 300, resetsAt: NOW_SEC + 3600,
+    });
     const { container } = render(RateLimitMeter, {
-      props: {
-        entry: { limitId: 'five_hour', limitName: '5h', usedPercent: 81, windowMins: 300, resetsAt: NOW_SEC + 3600 },
-        windowMins: 300,
-      },
+      props: { windowMins: 300, provider: 'claude' as const },
     });
     const arc = container.querySelectorAll('svg circle')[1];
     expect(arc.getAttribute('class')).toContain('stroke-warning');
   });
 
   it('keeps the warning stroke at exactly 95% used (boundary is exclusive)', () => {
+    seedProviderEntry('claude', {
+      limitId: 'five_hour', limitName: '5h', usedPercent: 95, windowMins: 300, resetsAt: NOW_SEC + 3600,
+    });
     const { container } = render(RateLimitMeter, {
-      props: {
-        entry: { limitId: 'five_hour', limitName: '5h', usedPercent: 95, windowMins: 300, resetsAt: NOW_SEC + 3600 },
-        windowMins: 300,
-      },
+      props: { windowMins: 300, provider: 'claude' as const },
     });
     const arc = container.querySelectorAll('svg circle')[1];
     expect(arc.getAttribute('class')).toContain('stroke-warning');
   });
 
   it('flips to error at 96% used', () => {
+    seedProviderEntry('claude', {
+      limitId: 'five_hour', limitName: '5h', usedPercent: 96, windowMins: 300, resetsAt: NOW_SEC + 3600,
+    });
     const { container } = render(RateLimitMeter, {
-      props: {
-        entry: { limitId: 'five_hour', limitName: '5h', usedPercent: 96, windowMins: 300, resetsAt: NOW_SEC + 3600 },
-        windowMins: 300,
-      },
+      props: { windowMins: 300, provider: 'claude' as const },
     });
     const arc = container.querySelectorAll('svg circle')[1];
     expect(arc.getAttribute('class')).toContain('stroke-error');
   });
 
   it('clamps usedPercent to [0, 100] for ring fill so a wire glitch can\'t draw past the circumference', () => {
+    seedProviderEntry('claude', {
+      // Wildly out-of-range values shouldn't break the SVG dasharray
+      // math or the clamp. Neither -50 nor 150 should produce a
+      // negative dashoffset (which would render as a longer-than-full
+      // arc on some browsers).
+      limitId: 'five_hour', limitName: '5h', usedPercent: 150, windowMins: 300, resetsAt: NOW_SEC + 3600,
+    });
     const { container } = render(RateLimitMeter, {
-      props: {
-        // Wildly out-of-range values shouldn't break the SVG dasharray
-        // math or the clamp. Neither -50 nor 150 should produce a
-        // negative dashoffset (which would render as a longer-than-full
-        // arc on some browsers).
-        entry: { limitId: 'five_hour', limitName: '5h', usedPercent: 150, windowMins: 300, resetsAt: NOW_SEC + 3600 },
-        windowMins: 300,
-      },
+      props: { windowMins: 300, provider: 'claude' as const },
     });
     const arc = container.querySelectorAll('svg circle')[1];
     const dashOffset = Number(arc.getAttribute('stroke-dashoffset'));
@@ -178,13 +198,12 @@ describe('<RateLimitMeter>', () => {
 
   it('renders the plan label in the popover when provider + accountInfo are populated', async () => {
     setProviderAccount('claude', { subscriptionType: 'Claude Max' });
+    seedProviderEntry('claude', {
+      limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: NOW_SEC + 3600,
+    });
 
     const { getByLabelText } = render(RateLimitMeter, {
-      props: {
-        entry: { limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: NOW_SEC + 3600 },
-        windowMins: 300,
-        provider: 'claude' as const,
-      },
+      props: { windowMins: 300, provider: 'claude' as const },
     });
     await fireEvent.mouseEnter(getByLabelText(/5-hour limit/));
 
@@ -193,13 +212,12 @@ describe('<RateLimitMeter>', () => {
 
   it('omits the plan label when provider is supplied but accountInfo has no subscriptionType', async () => {
     setProviderAccount('codex', { apiProvider: 'openai' }); // no subscriptionType
+    seedProviderEntry('codex', {
+      limitId: 'primary', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: NOW_SEC + 3600,
+    });
 
     const { getByLabelText } = render(RateLimitMeter, {
-      props: {
-        entry: { limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: NOW_SEC + 3600 },
-        windowMins: 300,
-        provider: 'codex' as const,
-      },
+      props: { windowMins: 300, provider: 'codex' as const },
     });
     await fireEvent.mouseEnter(getByLabelText(/5-hour limit/));
 
@@ -209,26 +227,23 @@ describe('<RateLimitMeter>', () => {
   });
 
   it('omits the plan label when no provider is supplied', async () => {
-    setProviderAccount('claude', { subscriptionType: 'Claude Max' });
-
+    // Provider undefined — no global lookup, no plan line. Component
+    // gracefully renders the empty-state ring.
     const { getByLabelText } = render(RateLimitMeter, {
-      props: {
-        entry: { limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: NOW_SEC + 3600 },
-        windowMins: 300,
-      },
+      props: { windowMins: 300 },
     });
     await fireEvent.mouseEnter(getByLabelText(/5-hour limit/));
 
-    expect(await screen.findByText('42% used')).toBeTruthy();
+    expect(await screen.findByText(/Awaiting first update/i)).toBeTruthy();
     expect(screen.queryByText(/^Plan:/)).toBeNull();
   });
 
   it('treats NaN usedPercent as 0% so a non-numeric wire payload renders an empty ring', () => {
+    seedProviderEntry('claude', {
+      limitId: 'five_hour', limitName: '5h', usedPercent: NaN, windowMins: 300, resetsAt: NOW_SEC + 3600,
+    });
     const { container } = render(RateLimitMeter, {
-      props: {
-        entry: { limitId: 'five_hour', limitName: '5h', usedPercent: NaN, windowMins: 300, resetsAt: NOW_SEC + 3600 },
-        windowMins: 300,
-      },
+      props: { windowMins: 300, provider: 'claude' as const },
     });
     const arc = container.querySelectorAll('svg circle')[1];
     const dashOffset = Number(arc.getAttribute('stroke-dashoffset'));

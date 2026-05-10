@@ -5,6 +5,10 @@ import { getAllPanes } from './panes.svelte';
 import { getActiveTurn, getThreadStatus, resetForTest as resetThreadStatuses } from './threadStatuses.svelte';
 import { getThreads, refreshThreads } from './threads.svelte';
 import { getProjects, refreshProjects, resetProjectsForTest } from './projects.svelte';
+import {
+  getProviderRateLimit,
+  resetForTest as resetRateLimitsInfo,
+} from './rateLimitsInfo.svelte';
 import { transportGapChannel } from '../transport/wsClient';
 import { emitWailsEvent, resetWailsMocks, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
@@ -52,6 +56,7 @@ describe('setupEventListeners', () => {
     resetBindingMocks();
     resetThreadStatuses();
     resetProjectsForTest();
+    resetRateLimitsInfo();
     getAllPanes().clear();
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
@@ -1074,8 +1079,9 @@ describe('setupEventListeners', () => {
   // Chat-rewrite routing: EventRateLimits folds onto provider:usage
   // via `action: 'rate_limits'`. The listener must NOT treat this as a
   // reset — the last-seen context-window ring stays in place — and it
-  // MUST land the snapshot on `pane.rateLimits`, keyed by windowMins.
-  it('routes EventRateLimits to pane.rateLimits without clobbering the context ring', async () => {
+  // MUST land the snapshot in the provider-keyed global store
+  // (`rateLimitsInfo.svelte.ts`).
+  it('routes EventRateLimits to the provider-global store without clobbering the context ring', async () => {
     const pane = await buildPane();
     getAllPanes().set('main', pane);
 
@@ -1106,18 +1112,17 @@ describe('setupEventListeners', () => {
     expect(pane.contextWindow?.usedTokens).toBe(5000);
     expect(pane.contextWindow?.maxTokens).toBe(200000);
 
-    // Rate-limits map populated with the 5h entry.
-    const fiveHour = pane.rateLimits.get(300);
-    expect(fiveHour).toBeDefined();
+    // Global store populated with the 5h entry under provider 'claude'.
+    const fiveHour = getProviderRateLimit('claude', 300);
+    expect(fiveHour).not.toBeNull();
     expect(fiveHour?.usedPercent).toBe(62.5);
     expect(fiveHour?.resetsAt).toBe(1776283200);
   });
 
   // Claude emits one window per `rate_limit_event` (5h XOR 7d). A
   // subsequent event for the OTHER window must merge into the same
-  // pane state, not replace it. Codex emits both together; we test
-  // the harder Claude case here because it's the merge-correctness
-  // pin.
+  // provider slot, not replace it. Codex emits both together; we test
+  // the harder Claude case here because it's the merge-correctness pin.
   it('merges Claude single-window updates without clobbering the other window', async () => {
     const pane = await buildPane();
     getAllPanes().set('main', pane);
@@ -1146,17 +1151,16 @@ describe('setupEventListeners', () => {
       },
     });
 
-    expect(pane.rateLimits.size).toBe(2);
-    expect(pane.rateLimits.get(300)?.usedPercent).toBe(30);
-    expect(pane.rateLimits.get(10080)?.usedPercent).toBe(51);
+    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(30);
+    expect(getProviderRateLimit('claude', 10080)?.usedPercent).toBe(51);
   });
 
   // Unknown rate-limit types arrive with windowMins=0 from the parser
   // (Claude's `windowMinsForRateLimitType` fallback). The store must
   // drop those rather than write a 0-keyed slot — the toolbar reads
-  // `rateLimits.get(300)` / `rateLimits.get(10080)` and a stray 0 entry
-  // would let an unrenderable window fill memory forever.
-  it('filters out windowMins=0 entries so unknown rate-limit types do not pollute the map', async () => {
+  // `getProviderRateLimit(provider, 300)` / `(provider, 10080)` and a
+  // stray 0 entry would let an unrenderable window fill memory forever.
+  it('filters out windowMins=0 entries so unknown rate-limit types do not pollute the store', async () => {
     const pane = await buildPane();
     getAllPanes().set('main', pane);
 
@@ -1173,32 +1177,86 @@ describe('setupEventListeners', () => {
       },
     });
 
-    expect(pane.rateLimits.size).toBe(1);
-    expect(pane.rateLimits.get(300)?.usedPercent).toBe(42);
-    expect(pane.rateLimits.has(0)).toBe(false);
+    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(42);
+    expect(getProviderRateLimit('claude', 0)).toBeNull();
   });
 
-  // The rate-limits event MUST be ignored when the threadId doesn't
-  // match a pane — pane is per-thread, snapshots cross-thread shouldn't
-  // leak. Without this guard, multi-pane setups would mirror the same
-  // rings everywhere.
-  it('does not apply rate_limits to a pane on a different thread', async () => {
-    const pane = await buildPane();
-    getAllPanes().set('main', pane);
-
+  // Rate-limit data is account-wide, not thread-wide. A snapshot for
+  // provider 'claude' is visible to every pane that reads with
+  // provider 'claude' — including freshly-switched-to threads. This
+  // is the opposite of the legacy per-pane behavior and the whole
+  // point of the global store. Keep the user expectation pinned:
+  // "values persist even if you switch to a new thread."
+  it('rate-limit snapshots are visible across thread switches', async () => {
     emitWailsEvent('provider:usage', {
       action: 'rate_limits',
-      threadId: 'thread-OTHER',
+      threadId: 'thread-A',
       rateLimits: {
         provider: 'claude',
         limits: [
-          { limitId: 'five_hour', limitName: '5h', usedPercent: 99, windowMins: 300, resetsAt: 1776283200 },
+          { limitId: 'five_hour', limitName: '5h', usedPercent: 73, windowMins: 300, resetsAt: 1776283200 },
         ],
         updatedAt: 1776283000,
       },
     });
 
-    expect(pane.rateLimits.size).toBe(0);
+    // Even before any pane registers itself for thread-B, the global
+    // store carries the value — RateLimitMeter reads from it directly.
+    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(73);
+  });
+
+  // Provider isolation: a Codex snapshot must not bleed into the
+  // Claude slot, even though both flow through the same UsageEvent
+  // listener. The store keys by `snapshot.provider`.
+  it('isolates provider slots so codex snapshots do not bleed into claude', async () => {
+    emitWailsEvent('provider:usage', {
+      action: 'rate_limits',
+      threadId: 'thread-1',
+      rateLimits: {
+        provider: 'codex',
+        limits: [
+          { limitId: 'primary', limitName: '5h', usedPercent: 88, windowMins: 300, resetsAt: 1776283200 },
+        ],
+        updatedAt: 1776283000,
+      },
+    });
+
+    expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(88);
+    expect(getProviderRateLimit('claude', 300)).toBeNull();
+  });
+
+  // Empty snapshots (no `limits` entries) arrive in edge cases — the
+  // store must NOT wipe its last-known state. Holding on to the
+  // previous good value is the entire reason for the global store
+  // (the per-pane prior implementation had a wipe-on-replaceThread
+  // bug that flickered the rings during a session).
+  it('does not wipe last-known values on an empty rate_limits snapshot', async () => {
+    emitWailsEvent('provider:usage', {
+      action: 'rate_limits',
+      threadId: 'thread-1',
+      rateLimits: {
+        provider: 'claude',
+        limits: [
+          { limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: 1776283200 },
+        ],
+        updatedAt: 1776283000,
+      },
+    });
+
+    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(42);
+
+    // Empty-limits snapshot — must be a no-op, not a wipe.
+    emitWailsEvent('provider:usage', {
+      action: 'rate_limits',
+      threadId: 'thread-1',
+      rateLimits: {
+        provider: 'claude',
+        limits: [],
+        updatedAt: 1776284000,
+      },
+    });
+
+    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(42);
   });
 
   // EventSessionStatus routing: persistent kinds surface on

@@ -75,10 +75,12 @@
 
   // Rate-limit rings appear once the thread is "locked in" — the
   // user has sent at least one message and the provider/model
-  // selection is committed. Both 5h and 7d slots render — empty until
-  // a `provider:usage` rate-limits event lands for the thread, then
-  // filling in independently.
-  let showLimitRings = $derived(pane.isLocked);
+  // selection is committed. The data itself lives in the global
+  // `rateLimitsInfo.svelte.ts` store keyed by provider, so a freshly
+  // locked thread immediately reflects the most recent observation
+  // for that account (5h/7d limits don't reset on thread switch or
+  // turn completion).
+  let showLimitRings = $derived(pane.isLocked && !!pane.thread?.provider);
 </script>
 
 <div
@@ -98,14 +100,12 @@
     {#if showLimitRings}
       <div class="shrink-0 flex items-center" data-testid="composer-rate-limit-5h">
         <RateLimitMeter
-          entry={pane.rateLimits.get(300) ?? null}
           windowMins={300}
           provider={pane.thread?.provider as 'claude' | 'codex' | undefined}
         />
       </div>
       <div class="shrink-0 flex items-center" data-testid="composer-rate-limit-7d">
         <RateLimitMeter
-          entry={pane.rateLimits.get(10080) ?? null}
           windowMins={10080}
           provider={pane.thread?.provider as 'claude' | 'codex' | undefined}
         />
