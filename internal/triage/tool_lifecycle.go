@@ -610,12 +610,20 @@ func (r *Router) stashBackgroundTaskTerminal(evt provider.ProviderEvent, meta ba
 }
 
 // RecoverOrphanedBackgroundTasks walks every persisted backgrounded
-// tool_call row that is still `running`, has no completion sibling,
-// and has no stash entry — these are launches whose owning provider
-// session died with the previous app instance. The agent will never
-// observe completion (the session is gone), so we synthesise the
-// observation here by writing the chat-side `tool_completion` sibling
-// directly with source="session_died" and status="killed".
+// tool_call row that is still `running` and has no completion sibling.
+// These are launches whose owning provider session died with the
+// previous app instance — the agent will never observe completion (the
+// session is gone), so we synthesise the observation here by writing
+// the chat-side `tool_completion` sibling directly.
+//
+// If a `pending_background_task_terminals` stash row exists for the
+// launch, we drain it and merge its data (status/exit_code/output_file)
+// into the synthesized meta so the recovered sibling reflects the real
+// outcome the host captured. When there's no stash we fall back to
+// status="killed" — the host never reported an exit, so "we killed it
+// at app shutdown" is the closest truthful state. The sibling carries
+// `source="session_died"` in both cases so the frontend can render the
+// distinct provenance.
 //
 // Called once during App.ServiceStartup, after the store is open and
 // before any provider session can spawn. Idempotent: running this twice
@@ -623,9 +631,9 @@ func (r *Router) stashBackgroundTaskTerminal(evt provider.ProviderEvent, meta ba
 // skips the launch via the NOT EXISTS predicate in
 // ListOrphanedBackgroundLaunches. Crash-safe: if the process dies
 // mid-loop before a sibling is written, the launch row is still
-// `running` with no sibling and no stash, so the next boot's sweep
-// finds it again — we never write a stash entry for the recovery path,
-// so there's no half-state to leak.
+// `running` with no sibling. The stash drain is atomic, so a crash
+// after drain but before sibling write leaves the launch as a stashless
+// orphan that the next boot's sweep recovers with status="killed".
 //
 // Launches whose meta carries no task_id (rare race: tool_use block
 // persisted before the task_started envelope) skip the sibling write —
@@ -656,14 +664,20 @@ func (r *Router) RecoverOrphanedBackgroundTasks() (int, error) {
 		meta := backgroundTaskTerminalMeta{
 			TaskID:    taskID,
 			ToolUseID: launch.ID,
-			Status:    "killed",
 			Source:    "session_died",
 		}
-		// Write the sibling directly — no stash dance. The orphan
-		// query already proved no stash exists for this launch, and
-		// writing the sibling is the same terminal step the steady-
-		// state observation path takes after draining a stash.
-		if err := r.writeBackgroundCompletionSibling(syntheticEvt, meta, false); err != nil {
+		stash, stashFound, err := r.store.TakePendingBackgroundTerminal(launch.ThreadID, taskID)
+		if err != nil {
+			log.Printf("triage: drain orphan stash %s/%s: %v", launch.ThreadID, taskID, err)
+		}
+		if stashFound {
+			mergeStashIntoTerminalMeta(&meta, stash)
+		} else {
+			// No host-reported outcome — the launch was running when the
+			// app died. "killed" is the closest truthful state.
+			meta.Status = "killed"
+		}
+		if err := r.writeBackgroundCompletionSibling(syntheticEvt, meta, stashFound); err != nil {
 			log.Printf("triage: synthesise session_died sibling %s/%s: %v", launch.ThreadID, taskID, err)
 			continue
 		}

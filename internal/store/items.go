@@ -1143,17 +1143,18 @@ func (s *Store) GetIncompleteCodexSubagentLaunch(threadID, itemID string) (Item,
 }
 
 // ListOrphanedBackgroundLaunches returns every backgrounded tool_call
-// row across all threads that is still running, has no completion
-// sibling, and has no pending_background_task_terminals stash entry.
-// Used by app startup to detect launches whose owning provider session
-// died with the previous app instance — the agent will never observe
-// completion, so the launch would otherwise hang forever in the tray
-// and chat.
+// row across all threads that is still running and has no completion
+// sibling. Used by app startup to detect launches whose owning provider
+// session died with the previous app instance — the agent will never
+// observe completion, so the launch would otherwise hang forever in
+// the tray and chat.
 //
-// The triple "running + no sibling + no stash" predicate is the same
-// shape the tray query uses to decide visibility, just inverted: tray
-// hides when ANY of (sibling exists, stash exists, status != running)
-// is true; recovery acts when ALL three are false.
+// Launches with a `pending_background_task_terminals` stash entry are
+// included: at boot time no provider session is alive yet, so any
+// stash row is by definition orphaned (the observer that would drain
+// it is dead). The recovery path drains the stash and uses its data
+// when synthesising the completion sibling, so the user sees the real
+// exit state rather than a generic session_died/killed badge.
 func (s *Store) ListOrphanedBackgroundLaunches() ([]Item, error) {
 	rows, err := s.db.Query(
 		`SELECT ` + itemColumns + `
@@ -1166,11 +1167,6 @@ func (s *Store) ListOrphanedBackgroundLaunches() ([]Item, error) {
 		      SELECT 1 FROM items c
 		       WHERE c.thread_id = items.thread_id
 		         AND c.completion_of = items.id
-		    )
-		    AND NOT EXISTS (
-		      SELECT 1 FROM pending_background_task_terminals p
-		       WHERE p.thread_id = items.thread_id
-		         AND p.tool_use_id = items.id
 		    )
 		  ORDER BY items.thread_id, items.turn_index, items.item_index`,
 	)

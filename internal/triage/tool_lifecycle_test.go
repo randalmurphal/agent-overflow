@@ -2210,6 +2210,109 @@ func TestRecoverOrphanedBackgroundTasksSkipsLaunchWithoutTaskID(t *testing.T) {
 	}
 }
 
+// TestRecoverOrphanedBackgroundTasksDrainsStash pins the regression
+// guard for the "old session left a stash row stranded" path. Before
+// the fix, `ListLiveBackgroundTasks` hid stash-affected launches via
+// a NOT EXISTS predicate; that predicate was dropped so the tray
+// could pair the launch with the synthetic completion item. But the
+// orphan recovery sweep also skipped stash-affected launches, which
+// meant a stash row stranded from a prior app session would leave
+// its launch visible as "running" forever on next boot.
+//
+// Now recovery drains the stash and uses its data — status, exit
+// code, output file — to write the session_died sibling. The user
+// sees the real outcome the host captured rather than a generic
+// "killed" badge.
+func TestRecoverOrphanedBackgroundTasksDrainsStash(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Same as TestRecoverOrphanedBackgroundTasks: seed the launch with
+	// a task_id meta merge.
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "long-running"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-stash-orphan",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed launch: %v", err)
+	}
+	taskStartedMeta, _ := json.Marshal(map[string]any{"task_id": "tsk-stash-orphan"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-stash-orphan",
+		Meta: taskStartedMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_started meta merge: %v", err)
+	}
+
+	// Stage a stash entry representing the previous app session's
+	// task_updated{completed} that never got drained because the
+	// observation event arrived after the session died.
+	exit := int64(0)
+	if err := st.UpsertPendingBackgroundTerminal(store.PendingBackgroundTaskTerminal{
+		ThreadID:   "t1",
+		TaskID:     "tsk-stash-orphan",
+		ToolUseID:  "bg-stash-orphan",
+		Status:     "completed",
+		ExitCode:   &exit,
+		OutputFile: "/tmp/stash-output.txt",
+		Source:     "task_updated",
+		CreatedAt:  100, // ancient — would be filtered by synth retention
+	}); err != nil {
+		t.Fatalf("seed stash: %v", err)
+	}
+
+	recovered, err := router.RecoverOrphanedBackgroundTasks()
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if recovered != 1 {
+		t.Fatalf("recovered = %d, want 1", recovered)
+	}
+
+	// Sibling materialised with the stash's status — "completed" with
+	// exit 0 maps to statusCompleted, not statusKilled.
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
+		t.Fatalf("expected 1 recovery sibling, got %+v", dones)
+	}
+	if dones[0].CompletionOf != "bg-stash-orphan" {
+		t.Errorf("CompletionOf = %q, want bg-stash-orphan", dones[0].CompletionOf)
+	}
+	if dones[0].Status != statusCompleted {
+		t.Errorf("Status = %q, want %q (merged from stash, not the no-stash 'killed' default)", dones[0].Status, statusCompleted)
+	}
+
+	// Stash row is gone — the drain is atomic, no half-state left.
+	if _, found, err := st.GetPendingBackgroundTerminal("t1", "tsk-stash-orphan"); err != nil {
+		t.Fatalf("read stash: %v", err)
+	} else if found {
+		t.Error("recovery should have drained the stash")
+	}
+
+	// Tray no longer shows the launch as "running alone" — the new
+	// sibling pairs with it.
+	live, err := st.ListLiveBackgroundTasks("t1", 0)
+	if err != nil {
+		t.Fatalf("list live: %v", err)
+	}
+	var sawLaunch, sawSibling bool
+	for _, row := range live {
+		switch row.ID {
+		case "bg-stash-orphan":
+			sawLaunch = true
+		case backgroundCompletionID("bg-stash-orphan", "tsk-stash-orphan"):
+			sawSibling = true
+		}
+	}
+	if !sawLaunch || !sawSibling {
+		t.Errorf("expected launch + recovery sibling in tray, sawLaunch=%v sawSibling=%v", sawLaunch, sawSibling)
+	}
+}
+
 // TestForceClosedRow_LateCompletionDoesNotResurrect pins spec
 // invariant 23 (docs/architecture/turn-lifecycle.md §Force-close
 // safety net): once the turn-complete handler has force-closed a
