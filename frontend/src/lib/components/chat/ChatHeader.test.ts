@@ -15,7 +15,7 @@ import {
   addProjectLocal,
   resetProjectsForTest,
 } from '../../stores/projects.svelte';
-import { collapseProject, resetSidebarForTest, isProjectExpanded } from '../../stores/sidebar.svelte';
+import { resetSidebarForTest } from '../../stores/sidebar.svelte';
 import type { Thread } from '../../types/models';
 
 beforeAll(() => {
@@ -176,53 +176,6 @@ describe('<ChatHeader>', () => {
 
     expect(pane.generalError).toMatch(/Failed to rename thread/);
     consoleErr.mockRestore();
-  });
-
-  it('renders the project badge when the projects store has the thread project', async () => {
-    const now = Date.now();
-    addProjectLocal({
-      id: 'project-1',
-      path: '/tmp/proj',
-      name: 'Alpha',
-      sortPosition: 0,
-      createdAt: now,
-      updatedAt: now,
-      archived: false,
-    });
-    const pane = await buildPane();
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-    const badge = getByTestId('chat-header-project');
-    expect(badge.textContent?.trim()).toBe('Alpha');
-  });
-
-  it('hides the project badge when the thread has no projectId', async () => {
-    const pane = await buildPane(makeThread({ projectId: undefined }));
-    const { queryByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-    expect(queryByTestId('chat-header-project')).toBeNull();
-  });
-
-  it('expands the project in the sidebar when the badge is clicked', async () => {
-    const now = Date.now();
-    addProjectLocal({
-      id: 'project-1',
-      path: '/tmp/proj',
-      name: 'Alpha',
-      sortPosition: 0,
-      createdAt: now,
-      updatedAt: now,
-      archived: false,
-    });
-    // Projects default to expanded — collapse explicitly so the badge
-    // click has something to expand.
-    collapseProject('project-1');
-    const pane = await buildPane();
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-    expect(isProjectExpanded('project-1')).toBe(false);
-    await fireEvent.click(getByTestId('chat-header-project'));
-    expect(isProjectExpanded('project-1')).toBe(true);
   });
 
   it('toggles the diff panel via the Diffs button', async () => {

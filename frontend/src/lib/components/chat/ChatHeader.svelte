@@ -24,7 +24,6 @@
   import { syncThread } from '../../stores/panes.svelte';
   import { errString } from '../../utils/errors';
   import { getProject } from '../../stores/projects.svelte';
-  import { expandProject } from '../../stores/sidebar.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { formatChord } from '../../stores/keybindings.svelte';
   import GitActionsControl from '../git/GitActionsControl.svelte';
@@ -122,11 +121,6 @@
     }
   }
 
-  function focusProjectInSidebar(): void {
-    if (!projectBadge) return;
-    expandProject(projectBadge.id);
-  }
-
   async function openProjectInEditor(): Promise<void> {
     if (!projectBadge) return;
     try {
@@ -165,21 +159,6 @@
         class="text-sm font-medium text-fg truncate min-w-0 text-left bg-transparent border-none p-0 cursor-text hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded transition-colors"
       >
         {pane.thread.title}
-      </button>
-    {/if}
-
-    <!-- Project chip sits inline with the title (matches t3-code's
-         layout: thread name + project pill on the left, action cluster
-         on the right). Click focuses the project in the sidebar. -->
-    {#if projectBadge}
-      <button
-        type="button"
-        onclick={focusProjectInSidebar}
-        data-testid="chat-header-project"
-        title={`Project: ${projectBadge.name}`}
-        class="rounded-[var(--radius-field)] border border-border-subtle px-1.5 py-0.5 text-[11px] text-fg-muted hover:text-fg hover:border-border transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 max-w-[160px] truncate shrink-0"
-      >
-        {projectBadge.name}
       </button>
     {/if}
 
