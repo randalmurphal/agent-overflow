@@ -1,7 +1,16 @@
 # internal/provider/claude/
 
 Wraps the Claude Code CLI. One process per active thread, NDJSON over
-stdio both ways. The CLI owns OAuth; we never see credentials.
+stdio both ways. The CLI owns OAuth for the parser/session path; we
+never touch credentials from any code that talks to the subprocess.
+
+The lone exception is `ratelimits_probe.go`, which reads the OAuth
+bearer from `~/.claude/.credentials.json` to make a direct HTTP call
+to the Anthropic Messages API. Claude only emits `utilization` on the
+NDJSON wire above the 89% warning band, so steady-state rate-limit
+rings can only be populated by reading the `anthropic-ratelimit-unified-*`
+response headers. The probe is read-only on the credential file and
+never writes back.
 
 ## Invocation
 
@@ -41,6 +50,12 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
 - `json_helpers.go` — tiny JSON-inspection utilities.
 - `options.go` / `probe.go` — non-parser subsystems (session options,
   binary probe).
+- `ratelimits_probe.go` — out-of-band HTTP probe of the Anthropic
+  Messages API. Reads OAuth bearer from `~/.claude/.credentials.json`,
+  POSTs a 1-token Haiku request, parses `anthropic-ratelimit-unified-*`
+  response headers into a `RateLimitsSnapshot`. Triggered from
+  `app_claude_ratelimits.go` (startup, periodic, turn-complete);
+  emits go through the standard `provider:usage` channel.
 
 Parser state method names are part of the contract:
 

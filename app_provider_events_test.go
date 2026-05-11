@@ -91,7 +91,7 @@ func TestSessionEventHandlerDisconnectUnregistersSession(t *testing.T) {
 		token:    "token-disconnect",
 	}
 
-	handler := app.sessionEventHandler(thread.ID, "token-disconnect")
+	handler := app.sessionEventHandler(thread.ID, "token-disconnect", "")
 	handler(provider.ProviderEvent{
 		Kind:      provider.EventSessionStatus,
 		ThreadID:  thread.ID,
@@ -122,7 +122,7 @@ func TestSessionEventHandlerNonDisconnectStatusPreservesSession(t *testing.T) {
 		token:    "token-ok",
 	}
 
-	handler := app.sessionEventHandler(thread.ID, "token-ok")
+	handler := app.sessionEventHandler(thread.ID, "token-ok", "")
 	handler(provider.ProviderEvent{
 		Kind:      provider.EventSessionStatus,
 		ThreadID:  thread.ID,

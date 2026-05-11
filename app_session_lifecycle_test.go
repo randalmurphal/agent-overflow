@@ -33,7 +33,7 @@ func TestSwitchThreadAutoResumesAfterSessionDisconnect(t *testing.T) {
 		return nil
 	}
 
-	app.sessionEventHandler(thread.ID, "session-current")(provider.ProviderEvent{
+	app.sessionEventHandler(thread.ID, "session-current", "")(provider.ProviderEvent{
 		Kind:      provider.EventSessionStatus,
 		ThreadID:  thread.ID,
 		Content:   "disconnected",
@@ -73,7 +73,7 @@ func TestStaleSessionDisconnectDoesNotRemoveReplacement(t *testing.T) {
 		return nil
 	}
 
-	app.sessionEventHandler(thread.ID, "session-stale")(provider.ProviderEvent{
+	app.sessionEventHandler(thread.ID, "session-stale", "")(provider.ProviderEvent{
 		Kind:      provider.EventSessionStatus,
 		ThreadID:  thread.ID,
 		Content:   "disconnected",
@@ -107,7 +107,7 @@ func TestServiceShutdownClosesSessionsWithoutDeadlock(t *testing.T) {
 			Binary:  writeClaudePassthroughBinary(t),
 			WorkDir: thread.WorkspacePath,
 		},
-		app.sessionEventHandler(thread.ID, "shutdown-token"),
+		app.sessionEventHandler(thread.ID, "shutdown-token", ""),
 	)
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
@@ -150,7 +150,7 @@ func TestServiceShutdownReturnsSessionCloseErrors(t *testing.T) {
 			Binary:  "false",
 			WorkDir: thread.WorkspacePath,
 		},
-		app.sessionEventHandler(thread.ID, "shutdown-error-token"),
+		app.sessionEventHandler(thread.ID, "shutdown-error-token", ""),
 	)
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
@@ -195,7 +195,7 @@ func TestStartSessionReturnsExistingSessionCloseError(t *testing.T) {
 			Binary:  writeClaudeFailOnCloseBinary(t),
 			WorkDir: thread.WorkspacePath,
 		},
-		app.sessionEventHandler(thread.ID, "replace-close-error-token"),
+		app.sessionEventHandler(thread.ID, "replace-close-error-token", ""),
 	)
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)

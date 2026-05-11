@@ -189,6 +189,11 @@ type App struct {
 	// the real Wails dialog runs; tests install a stub that returns a
 	// canned path (or empty for "cancelled").
 	savePayloadPickerFn savePayloadPicker
+	// rateLimitProbeClientOverride is a test-only injection seam for
+	// the Claude rate-limit probe's HTTP client. Production leaves it
+	// nil and the probe uses the package-level singleton; tests assign
+	// a client pointing at a local httptest server.
+	rateLimitProbeClientOverride *http.Client
 }
 
 // session wraps a provider session regardless of type. Exactly one of
@@ -290,6 +295,14 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	// than DetectProvider's version check. Results land on the frontend
 	// via the `provider:account` event.
 	go a.probeStartupAccountInfo()
+
+	// Start the Claude rate-limit probe loop. Fires once at startup,
+	// then every 2 mins while at least one Claude session is alive;
+	// turn-complete is wired separately in sessionEventHandler. The
+	// probe reads `anthropic-ratelimit-unified-*` response headers from
+	// a minimal Messages API call — see internal/provider/claude/
+	// ratelimits_probe.go for the rationale.
+	a.startClaudeRateLimitProbeLoop()
 
 	return nil
 }

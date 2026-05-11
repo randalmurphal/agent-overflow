@@ -47,7 +47,7 @@ func (a *App) startSessionNow(threadID string) error {
 	}
 
 	sessionToken := uuid.NewString()
-	onEvent := a.sessionEventHandler(threadID, sessionToken)
+	onEvent := a.sessionEventHandler(threadID, sessionToken, t.Provider)
 
 	// Design-mode plumbing (extra system prompt + Codex MCP servers) is
 	// caller-owned: the provider package intentionally doesn't know about

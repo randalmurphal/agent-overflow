@@ -45,7 +45,7 @@ func TestGetThreadSlashCommands_PopulatedByInitEvent(t *testing.T) {
 		t.Fatalf("marshal session info: %v", err)
 	}
 
-	handler := app.sessionEventHandler(thread.ID, "token-init")
+	handler := app.sessionEventHandler(thread.ID, "token-init", "")
 	handler(provider.ProviderEvent{
 		Kind:      provider.EventInit,
 		ThreadID:  thread.ID,

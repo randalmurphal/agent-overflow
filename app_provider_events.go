@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -8,7 +9,7 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-func (a *App) sessionEventHandler(threadID, sessionToken string) func(provider.ProviderEvent) {
+func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) func(provider.ProviderEvent) {
 	return func(evt provider.ProviderEvent) {
 		// Design-mode tools used to be wired through Claude event
 		// interception (handleClaudeDesignTool); after the v42 rewrite
@@ -32,6 +33,15 @@ func (a *App) sessionEventHandler(threadID, sessionToken string) func(provider.P
 				// failed. The turn-complete event still propagates (we can't
 				// block it), but the error should be visible.
 				a.emitErrorToThread(threadID, fmt.Sprintf("discussion sync failed: %v", err))
+			}
+			// Rate-limit refresh on Claude turn completion: piggy-back on
+			// the event the user already triggered so the rings reflect
+			// the cost of the turn that just finished. Fires in a
+			// goroutine so the HTTP call doesn't block downstream event
+			// handlers; Codex turns intentionally skip this because the
+			// probe targets Anthropic's API.
+			if providerType == string(provider.Claude) {
+				go a.probeClaudeRateLimits(context.Background())
 			}
 		}
 

@@ -513,7 +513,7 @@ function applyUserInputEvent(evt: UserInputEvent): void {
 }
 
 function applyUsageEvent(evt: UsageEvent): void {
-  if (!evt?.threadId) return;
+  if (!evt) return;
 
   // `rate_limits` piggybacks on the same channel but doesn't touch the
   // context-window ring. Route to the provider-global store and bail
@@ -523,12 +523,20 @@ function applyUsageEvent(evt: UsageEvent): void {
   // Rate limits are an account property, not a thread property — every
   // pane on the same provider sees the same value. The global store
   // also makes the rings persist across thread switches and turn
-  // completions until the next non-empty event arrives.
+  // completions until the next non-empty event arrives. The Go-side
+  // Claude probe (internal/provider/claude/ratelimits_probe.go) emits
+  // these events with no threadId because the probe is account-wide;
+  // wire-driven envelopes from a live session still carry one but the
+  // rate-limits branch doesn't read it.
   if (evt.action === 'rate_limits') {
     if (!evt.rateLimits) return;
     setProviderRateLimits(evt.rateLimits);
     return;
   }
+
+  // Context-window updates require a threadId because they target a
+  // specific pane's ring.
+  if (!evt.threadId) return;
 
   const payload = evt.action === 'usage'
     ? {

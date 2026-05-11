@@ -381,7 +381,7 @@ func TestStartDiscussionMirrorsEarlyParticipantTurnDuringStartup(t *testing.T) {
 			return err
 		}
 
-		app.sessionEventHandler(threadID, "session-"+threadID)(provider.ProviderEvent{
+		app.sessionEventHandler(threadID, "session-"+threadID, "")(provider.ProviderEvent{
 			Kind:         provider.EventTurnComplete,
 			ThreadID:     threadID,
 			TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
@@ -602,7 +602,7 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 	}
 	app.installDeliberation(parent.DiscussionID, 2)
 
-	firstHandler := app.sessionEventHandler(children[0].ID, "session-a")
+	firstHandler := app.sessionEventHandler(children[0].ID, "session-a", "")
 	firstHandler(provider.ProviderEvent{
 		Kind:      provider.EventTextDelta,
 		ThreadID:  children[0].ID,
@@ -638,7 +638,7 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 		t.Fatalf("state after first turn = %+v, want turnCount=1 and not concluded", state)
 	}
 
-	secondHandler := app.sessionEventHandler(children[1].ID, "session-b")
+	secondHandler := app.sessionEventHandler(children[1].ID, "session-b", "")
 	secondHandler(provider.ProviderEvent{
 		Kind:      provider.EventTextDelta,
 		ThreadID:  children[1].ID,
