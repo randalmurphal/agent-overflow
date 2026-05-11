@@ -122,16 +122,18 @@ func parseAskUserQuestions(input json.RawMessage) []provider.UserInputQuestion {
 //	   "rateLimitType":"five_hour","isUsingOverage":false}}
 //
 // Each event carries a single window. UsedPercent is sourced from the
-// wire's `utilization` field (0.0–1.0) so partial fills render
-// correctly; WindowMins is derived from rateLimitType so the UI can
-// key off it without re-deriving from the string.
+// wire's `utilization` field (0.0–1.0) when present; WindowMins is
+// derived from rateLimitType so the UI can key off it without
+// re-deriving from the string.
 //
-// Claude only emits `utilization` once you cross the warning band — the
-// "allowed" events that fire during normal usage have no usable
-// percentage. Synthesizing 0% would either clobber a previously-known
-// good value in the global store or render an empty ring identical to
-// "no data". Drop the snapshot instead so the store keeps its last-known
-// good reading.
+// Steady-state ("allowed") events carry no `utilization`. The previous
+// implementation dropped these entirely, which produced "Awaiting first
+// update…" forever for any session that never crosses the warning band
+// (i.e. most sessions). Emit them with UsedPercent=0 instead — the
+// ring still renders no fill arc at 0%, but the popover surfaces the
+// resetsAt countdown so the user sees the window is being tracked.
+// Once the user crosses into the warning band, the same handler
+// overwrites with the real percent.
 func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
 	infoRaw, ok := raw["rate_limit_info"]
 	if !ok {
@@ -147,19 +149,20 @@ func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now ti
 		return nil, nil
 	}
 
-	if info.Utilization == nil {
-		return nil, nil
-	}
-
 	windowMins := windowMinsForRateLimitType(info.RateLimitType)
 	if windowMins == 0 {
 		return nil, nil
 	}
 
+	var usedPercent float64
+	if info.Utilization != nil {
+		usedPercent = *info.Utilization * 100
+	}
+
 	entry := provider.RateLimitEntry{
 		LimitID:     info.RateLimitType,
 		LimitName:   info.RateLimitType,
-		UsedPercent: *info.Utilization * 100,
+		UsedPercent: usedPercent,
 		WindowMins:  windowMins,
 		ResetsAt:    info.ResetsAt,
 	}

@@ -86,19 +86,37 @@ func TestParseRateLimitEvent_SevenDayUtilization(t *testing.T) {
 // observed during normal usage (e.g. fixtures
 // local_agent_outlives.ndjson) where Claude emits status:"allowed"
 // envelopes without a `utilization` field. Claude only populates
-// utilization once we cross the warning threshold, so synthesizing 0%
-// would either render an empty ring (visually identical to "no data")
-// or — worse — clobber a previously-known good reading in the
-// process-global store. The parser drops the snapshot instead so the
-// store retains its last-known good value.
+// utilization once we cross the warning threshold, so most sessions
+// never see one. Dropping the event entirely produces "Awaiting first
+// update…" forever in the UI. Emit it with UsedPercent=0 instead — the
+// ring still renders no fill arc at 0%, but the popover surfaces the
+// resetsAt countdown so the user sees the window is being tracked. The
+// WindowMins must still be set so the frontend keys correctly.
 func TestParseRateLimitEvent_MissingUtilization(t *testing.T) {
 	line := []byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1777920000,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false}}`)
 	events, err := ParseLine(testThread, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(events) != 0 {
-		t.Fatalf("expected 0 events (utilization absent → drop snapshot), got %d", len(events))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event (utilization absent → emit with UsedPercent=0), got %d", len(events))
+	}
+	var snap provider.RateLimitsSnapshot
+	if err := json.Unmarshal(events[0].Meta, &snap); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(snap.Limits) != 1 {
+		t.Fatalf("Limits len: got %d, want 1", len(snap.Limits))
+	}
+	got := snap.Limits[0]
+	if got.UsedPercent != 0 {
+		t.Errorf("UsedPercent: got %v, want 0 (steady-state fallback)", got.UsedPercent)
+	}
+	if got.WindowMins != 300 {
+		t.Errorf("WindowMins: got %d, want 300", got.WindowMins)
+	}
+	if got.ResetsAt != 1777920000 {
+		t.Errorf("ResetsAt: got %d, want 1777920000", got.ResetsAt)
 	}
 }
 
@@ -124,13 +142,13 @@ func TestParseRateLimitEvent_FullUtilization(t *testing.T) {
 	}
 }
 
-// TestParseRateLimitEvent_ExplicitZeroUtilization pins the load-bearing
-// distinction the *float64 type buys us: an explicit `utilization: 0.0`
-// on the wire IS a real reading (0% used) and must be emitted, while a
-// missing field is a no-signal envelope and must be dropped (covered by
-// TestParseRateLimitEvent_MissingUtilization). Without the *float64
-// switch, both cases would collapse to UsedPercent=0 and we'd lose the
-// ability to tell them apart.
+// TestParseRateLimitEvent_ExplicitZeroUtilization confirms that an
+// explicit `utilization: 0.0` on the wire still rounds to UsedPercent=0
+// — same outcome as the steady-state missing-utilization case. Pinned
+// because the *float64 parsing distinguishes "present but zero" from
+// "absent"; we choose to render both the same way (entry with 0% fill)
+// for UX simplicity, but the test catches a regression where a future
+// edit treats explicit 0.0 as "no data".
 func TestParseRateLimitEvent_ExplicitZeroUtilization(t *testing.T) {
 	line := []byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1776981600,"rateLimitType":"five_hour","utilization":0.0}}`)
 	events, err := ParseLine(testThread, line)
