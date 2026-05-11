@@ -4,7 +4,7 @@
   //
   //  - Working timer: visible when a wire round is active or a queued
   //    user message is bridging the gap between rounds. Information-
-  //    only (the rail's interrupt button is the actionable peer).
+  //    only (the composer's Send button doubles as Stop).
   //  - Todos segment: visible when `pane.liveTodo` carries a snapshot.
   //    Toggle expands an inline body listing the steps. State of the
   //    toggle is `pane.activityRailTodosOpen` so it survives thread
@@ -21,14 +21,12 @@
   import { getActiveTurn, hasPendingSend } from '../../stores/threadStatuses.svelte';
   import { hasQueueItems } from '../../stores/sendQueue.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
-  import { dispatchInterrupt } from './composerSend';
   import { createBackgroundController } from './activityRailBackground.svelte';
   import ActivityRailTodosBody from './ActivityRailTodosBody.svelte';
   import ActivityRailBackgroundBody from './ActivityRailBackgroundBody.svelte';
   import Icon from '../primitives/Icon.svelte';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
-  import Square from 'lucide-svelte/icons/square';
 
   interface Props {
     pane: ThreadPane;
@@ -39,7 +37,6 @@
   const PREVIEW_MAX_CHARS = 60;
 
   let now = $state(Date.now());
-  let interrupting = $state(false);
 
   let activeTurn = $derived(getActiveTurn(pane.threadId));
   let bridgeActive = $derived(
@@ -101,16 +98,6 @@
     return () => clearInterval(id);
   });
 
-  async function interrupt(): Promise<void> {
-    const tid = pane.threadId;
-    if (!tid || !activeTurn || interrupting) return;
-    interrupting = true;
-    try {
-      await dispatchInterrupt(tid, (msg) => pane.setGeneralError(msg));
-    } finally {
-      interrupting = false;
-    }
-  }
 </script>
 
 {#if railVisible}
@@ -215,26 +202,6 @@
               data-testid="activity-rail-background-pulse"
             ></span>
           {/if}
-        </button>
-      {/if}
-
-      {#if isWorking}
-        <button
-          type="button"
-          class="ml-auto inline-flex h-5 items-center gap-1 rounded-[var(--radius-field)] px-1.5 text-[10.5px] text-fg-hint/70 transition-colors hover:bg-surface-2/40 hover:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-40"
-          onclick={interrupt}
-          disabled={interrupting || !activeTurn}
-          data-testid="activity-rail-interrupt"
-          aria-label="Interrupt Current Turn"
-          title="Interrupt Current Turn"
-        >
-          <Icon
-            icon={Square}
-            size={10}
-            strokeWidth={2.5}
-            class={interrupting ? 'animate-pulse' : ''}
-          />
-          <span>interrupt</span>
         </button>
       {/if}
     </div>

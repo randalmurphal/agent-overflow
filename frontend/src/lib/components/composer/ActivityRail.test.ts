@@ -48,7 +48,6 @@ describe('<ActivityRail>', () => {
     __resetLiveTodoUiPrefsForTest();
     __resetActivityRailUiPrefsForTest();
     setBindingMock('ListLiveBackgroundTasks', async () => []);
-    setBindingMock('InterruptTurn', async () => {});
     setBindingMock('StopClaudeTask', async () => {});
     setBindingMock('CleanCodexBackgroundTerminals', async () => {});
   });
@@ -192,7 +191,6 @@ describe('<ActivityRail>', () => {
     await tick();
     expect(await findByTestId('activity-rail')).toBeInTheDocument();
     expect(queryByTestId('activity-rail-working')).toBeNull();
-    expect(queryByTestId('activity-rail-interrupt')).toBeNull();
   });
 
   it('per-thread expansion state survives a thread switch', async () => {
@@ -226,20 +224,6 @@ describe('<ActivityRail>', () => {
     expect(queryByTestId('activity-rail-todos-body')).not.toBeNull();
   });
 
-  it('clicking interrupt dispatches an InterruptTurn RPC', async () => {
-    let called = 0;
-    setBindingMock('InterruptTurn', async () => {
-      called++;
-    });
-    const pane = await buildPane();
-    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() });
-    const { findByTestId } = render(ActivityRail, { props: { pane } });
-    await tick();
-    await fireEvent.click(await findByTestId('activity-rail-interrupt'));
-    await tick();
-    expect(called).toBe(1);
-  });
-
   it('shows the bridge label when a queue item is present without an active turn', async () => {
     const pane = await buildPane();
     enqueueSimple(pane.threadId!, 'queued follow-up');
@@ -250,29 +234,6 @@ describe('<ActivityRail>', () => {
     expect(await findByTestId('activity-rail-working')).toBeInTheDocument();
     expect(await findByTestId('activity-rail-working-bridge')).toBeInTheDocument();
     expect(queryByTestId('activity-rail-working-elapsed')).toBeNull();
-  });
-
-  it('disables the interrupt button during the bridge (no active turn)', async () => {
-    const pane = await buildPane();
-    enqueueSimple(pane.threadId!, 'queued');
-    const { findByTestId } = render(ActivityRail, { props: { pane } });
-    await tick();
-    const btn = await findByTestId('activity-rail-interrupt');
-    expect((btn as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it('passes the active threadId to the InterruptTurn RPC', async () => {
-    const seen: unknown[] = [];
-    setBindingMock('InterruptTurn', async (id: unknown) => {
-      seen.push(id);
-    });
-    const pane = await buildPane();
-    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() });
-    const { findByTestId } = render(ActivityRail, { props: { pane } });
-    await tick();
-    await fireEvent.click(await findByTestId('activity-rail-interrupt'));
-    await tick();
-    expect(seen).toEqual([pane.thread!.id]);
   });
 
   it('sorts todo steps in-progress -> pending -> completed and preserves wire order within buckets', async () => {
