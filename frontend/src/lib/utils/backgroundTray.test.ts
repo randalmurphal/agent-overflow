@@ -401,42 +401,4 @@ describe('deriveTrayTasks', () => {
     const done = makeItem({ id: 'D', status: 'completed' });
     expect(deriveTrayTasks([done], 10, RETENTION_MS)).toHaveLength(0);
   });
-
-  it('synthetic completions bypass retention so the launch stays paired during long agent gaps', () => {
-    // The backend synthesises a `tool_completion` from the stash table
-    // while the host process has exited but the agent hasn't observed
-    // yet — meta.synthetic=true distinguishes it from a real persisted
-    // completion. A concurrent inline tool can block the agent for many
-    // seconds, so the synth must NOT age out on the 2s window that
-    // applies to real completions.
-    const launch = makeItem({ id: 'L', status: 'running', createdAt: 0 });
-    const synth = makeItem({
-      id: 'complete:L',
-      status: 'completed',
-      completionOf: 'L',
-      createdAt: 1_000,
-      isBackground: true,
-      meta: '{"task_id":"tsk-1","synthetic":true,"status":"completed","status_source":"task_updated"}',
-    });
-    // t=15_000 — far past the retention boundary. The pair must stay.
-    const out = deriveTrayTasks([launch, synth], 15_000, RETENTION_MS);
-    expect(out).toHaveLength(1);
-    expect(out[0].status).toBe('completed');
-    expect(out[0].completion?.id).toBe('complete:L');
-  });
-
-  it('real completions still age out when synth meta is malformed (defensive)', () => {
-    const launch = makeItem({ id: 'L', status: 'running', createdAt: 0 });
-    const completion = makeItem({
-      id: 'C',
-      status: 'completed',
-      completionOf: 'L',
-      createdAt: 1_000,
-      isBackground: false,
-      meta: 'not-valid-json',
-    });
-    // Malformed meta means isSyntheticCompletion returns false →
-    // retention applies as normal.
-    expect(deriveTrayTasks([launch, completion], 3_500, RETENTION_MS)).toHaveLength(0);
-  });
 });

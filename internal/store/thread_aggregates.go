@@ -100,18 +100,6 @@ func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, 
 // projection meta explicitly marks it inactive with
 // `live_background_active=false`.
 //
-// Tray decoupling (Tray-A): the host-side process exit is signalled by
-// an entry in `pending_background_task_terminals` (inserted on Claude
-// system/task_updated, drained on the agent observation event). The
-// launch row stays visible during that stash window so the tray can
-// pair it with the synthetic completion item from
-// `ListPendingBackgroundCompletionsAsItems` (mirroring the Codex
-// tracker pattern at `triage.ListLiveCodexBackgroundTasks`). Without
-// this pairing the tray would have nothing to render between
-// process-exit and the agent-observation event that writes the real
-// chat sibling — the launch would either vanish or stay stuck on
-// "running" until the chat row landed.
-//
 // Thread-scoped. Live launches surface regardless of turn_index.
 // Ordering is (turn_index, item_index) so launches precede completions.
 func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis int64) ([]Item, error) {

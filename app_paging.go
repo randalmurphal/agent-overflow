@@ -123,15 +123,6 @@ func (a *App) ListThreadProposedPlans(threadID string) ([]store.Item, error) {
 // router appends transient Codex unified-exec tasks that intentionally
 // do not exist in chat history. Pending Codex unifiedExec launches
 // surface here before they are known to be backgrounded.
-//
-// For Claude background launches whose host process has exited but
-// whose chat sibling has not landed yet (the gap between
-// `system/task_updated` and the agent observation event), the store
-// also returns synthetic `tool_completion` items derived from the
-// `pending_background_task_terminals` stash — mirroring the Codex
-// tracker pattern so the tray reflects process state immediately
-// without waiting for the chat-side write. When the real sibling
-// eventually lands the synthetic stops being returned.
 func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 	now := time.Now().UnixMilli()
 	cutoff := now - backgroundTaskRetentionMillis
@@ -139,11 +130,6 @@ func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list live background tasks: %w", err)
 	}
-	pending, err := a.store.ListPendingBackgroundCompletionsAsItems(threadID)
-	if err != nil {
-		return nil, fmt.Errorf("list pending background completions: %w", err)
-	}
-	items = append(items, pending...)
 	if a.triage != nil {
 		items = append(items, a.triage.ListLiveCodexBackgroundTasks(threadID, now, cutoff)...)
 	}
