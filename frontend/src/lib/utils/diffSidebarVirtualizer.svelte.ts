@@ -1,14 +1,18 @@
 // File-level virtualizer for the diff sidebar.
 //
-// IntersectionObserver-based — the file's outer container becomes
-// "visible" as a wide overscroll region (default 600px), at which
-// point the file body renders. Files outside the region render an
-// empty placeholder sized via the last measured height. This bounds
-// DOM cost to the viewport regardless of patch size.
+// IntersectionObserver-based — tracks each file's intersection with
+// the scroll root expanded by a wide overscroll region (default
+// 600px). Used by the file row to capture the last measured height
+// for the (now-unreached) placeholder fallback.
 //
-// The body's tokenization coordinator subscribes to `visiblePaths`
-// to gate Shiki worker dispatch on visibility — out-of-viewport
-// files never dispatch.
+// Earlier revisions also gated body rendering and Shiki worker
+// dispatch on `visiblePaths`, but the observer turned out to be
+// unreliable on initial mount and never re-fires for a fully-visible
+// file when the user scrolls within it. Both gates were dropped:
+// rendering happens on expand (see d382d68), tokenization happens
+// on expand. The visible set is still maintained — it's the natural
+// signal for future per-file dispatch priority — but no consumer
+// currently gates correctness on it.
 
 export interface FileVirtualizerHandle {
   /** Reactive set of currently-visible (or near-visible) file paths. */

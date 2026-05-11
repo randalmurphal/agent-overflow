@@ -74,11 +74,13 @@
   // body rendering on `expanded && inViewport`, but the observer
   // hadn't reliably fired before the user looked at the sidebar in
   // some cases — the body would stay stuck on the empty placeholder
-  // until the first scroll-triggered tick. Visibility data is still
-  // collected (cachedHeight, visiblePaths) so the body's tokenizer
-  // dispatcher can keep gating Shiki worker calls on actual
-  // viewport intersection; rendering itself stays unconditional once
-  // the user opens a file.
+  // until the first scroll-triggered tick. The body's tokenizer
+  // dispatcher had the same hole (the lower portion of a long diff
+  // would stay plain even after scrolling, because a fully-visible
+  // file never re-fires the observer); dispatch is now gated on
+  // expand, not visibility. The IO is still observed for `cachedHeight`
+  // — kept so future per-file priority ordering has a viewport signal
+  // to read — but the dispatch path no longer depends on it.
   let cachedHeight = $derived(virtualizer.height(rowId));
   let shouldRender = $derived(expanded);
 
