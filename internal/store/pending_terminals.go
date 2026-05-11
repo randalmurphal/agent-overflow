@@ -173,15 +173,21 @@ func nullableInt64(v *int64) interface{} {
 //
 // The synthesized id MUST match triage's `nextToolCompletionID(launchID)`
 // shape (`complete:<launchID>`) — that's the dedup key the frontend's
-// `deriveTrayTasks` buckets by. The `NOT EXISTS` predicate in the
-// query is the primary suppression mechanism once the real sibling
-// lands; the frontend's `b.completion.createdAt < item.createdAt`
-// check is a defensive backstop against any out-of-order arrival.
+// `deriveTrayTasks` buckets by. The `NOT EXISTS` predicate is the
+// primary (and sufficient) suppression mechanism: once the real
+// sibling lands the synth disappears immediately.
 //
-// `retentionCutoffMillis` matches the value passed to
-// `ListLiveBackgroundTasks` so synthetic and real completions age
-// out on the same clock.
-func (s *Store) ListPendingBackgroundCompletionsAsItems(threadID string, retentionCutoffMillis int64) ([]Item, error) {
+// **No retention filter applies here.** The synth's lifetime is the
+// lifetime of the unresolved launch — it lives until the real sibling
+// arrives (which can be seconds or minutes after the stash, while the
+// agent is busy with concurrent inline tools) or until the launch is
+// no longer `running`. A retention cutoff equivalent to the persisted
+// sibling's would prematurely strand the launch as "running" in the
+// tray during the long gap, which is the exact bug this code path
+// was added to fix. Stale stash rows from prior app sessions are
+// drained by `Router.RecoverOrphanedBackgroundTasks` at boot, so at
+// runtime every stash row is genuinely current.
+func (s *Store) ListPendingBackgroundCompletionsAsItems(threadID string) ([]Item, error) {
 	if threadID == "" {
 		return nil, nil
 	}
@@ -196,7 +202,6 @@ func (s *Store) ListPendingBackgroundCompletionsAsItems(threadID string, retenti
 		     ON launch.thread_id = p.thread_id
 		    AND launch.id = p.tool_use_id
 		   WHERE p.thread_id = ?
-		     AND p.created_at >= ?
 		     AND launch.is_background = 1
 		     AND launch.status = 'running'
 		     AND NOT EXISTS (
@@ -205,7 +210,7 @@ func (s *Store) ListPendingBackgroundCompletionsAsItems(threadID string, retenti
 		          AND existing.completion_of = launch.id
 		     )
 		   ORDER BY p.created_at`,
-		threadID, retentionCutoffMillis,
+		threadID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list pending background completions for %s: %w", threadID, err)

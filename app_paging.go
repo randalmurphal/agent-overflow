@@ -139,7 +139,7 @@ func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list live background tasks: %w", err)
 	}
-	pending, err := a.store.ListPendingBackgroundCompletionsAsItems(threadID, cutoff)
+	pending, err := a.store.ListPendingBackgroundCompletionsAsItems(threadID)
 	if err != nil {
 		return nil, fmt.Errorf("list pending background completions: %w", err)
 	}

@@ -140,10 +140,33 @@ export function formatElapsed(ms: number): string {
 }
 
 /**
+ * Returns true when the completion is a backend-synthesized stand-in
+ * for a Claude background task whose host process has exited but
+ * whose chat sibling hasn't been written yet. The synth carries
+ * `meta.synthetic = true` (see `store.buildPendingTerminalMeta`).
+ *
+ * Synthetic completions live until the real sibling lands — they
+ * are not subject to the post-completion fade because their purpose
+ * is to bridge the (potentially long) gap between host exit and
+ * agent observation. The real sibling, once written, replaces the
+ * synth in the buckets and starts its own retention timer.
+ */
+function isSyntheticCompletion(item: Item): boolean {
+  const raw = item.meta;
+  if (!raw) return false;
+  try {
+    const parsed = JSON.parse(raw) as { synthetic?: unknown };
+    return parsed?.synthetic === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Group each running launch with its tool_completion sibling, prune
- * pairs whose completion has aged past `retentionMs`, and sort oldest
- * created first to match the composer-attached tray's stable reading
- * order.
+ * pairs whose (real) completion has aged past `retentionMs`, and sort
+ * oldest created first to match the composer-attached tray's stable
+ * reading order.
  *
  * Persisted background rows arrive as independent immutable rows: the
  * launch stays `status='running'` forever (spec invariant — see
@@ -156,6 +179,14 @@ export function formatElapsed(ms: number): string {
  * retention elapsed. Pending Codex foreground commands are transient
  * launches with no completion sibling until they either complete
  * quickly or become backgrounded.
+ *
+ * Synthetic Claude completions (`meta.synthetic = true`) bypass the
+ * retention check — they live as long as the launch is unresolved
+ * because the agent observation that produces the real sibling can
+ * trail the host-process exit by many seconds when concurrent
+ * foreground tools are in flight. When the real sibling lands, the
+ * backend stops returning the synth and the retention timer on the
+ * persisted completion takes over.
  */
 export function deriveTrayTasks(
   items: readonly Item[],
@@ -195,8 +226,13 @@ export function deriveTrayTasks(
     // Drop the whole pair once the completion ages out. A completion
     // without a launch (launch already pruned from the source list)
     // still renders during the window so the user sees the final
-    // state land.
-    if (completion && now - completion.createdAt >= retentionMs) continue;
+    // state land. Synthetic Claude completions don't age out — see
+    // `isSyntheticCompletion` for the why.
+    if (
+      completion &&
+      !isSyntheticCompletion(completion) &&
+      now - completion.createdAt >= retentionMs
+    ) continue;
     const anchor = launch ?? completion;
     if (!anchor) continue;
 

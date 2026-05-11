@@ -1595,7 +1595,7 @@ func TestHandleEventBackgroundTaskTerminal_TaskUpdatedStashesNoSibling(t *testin
 
 	// Synthetic completion item must surface from the stash so the
 	// tray has something paired to the launch.
-	pending, err := st.ListPendingBackgroundCompletionsAsItems("t1", 0)
+	pending, err := st.ListPendingBackgroundCompletionsAsItems("t1")
 	if err != nil {
 		t.Fatalf("list pending completions: %v", err)
 	}

@@ -883,7 +883,7 @@ func TestListPendingBackgroundCompletionsAsItems_SynthesizesFromStash(t *testing
 		t.Fatalf("upsert stash: %v", err)
 	}
 
-	got, err := s.ListPendingBackgroundCompletionsAsItems("t", 0)
+	got, err := s.ListPendingBackgroundCompletionsAsItems("t")
 	if err != nil {
 		t.Fatalf("list pending: %v", err)
 	}
@@ -945,7 +945,7 @@ func TestListPendingBackgroundCompletionsAsItems_ExcludedWhenRealSiblingExists(t
 		t.Fatalf("upsert stash: %v", err)
 	}
 
-	got, err := s.ListPendingBackgroundCompletionsAsItems("t", 0)
+	got, err := s.ListPendingBackgroundCompletionsAsItems("t")
 	if err != nil {
 		t.Fatalf("list pending: %v", err)
 	}
@@ -1004,7 +1004,7 @@ func TestListPendingBackgroundCompletionsAsItems_StatusMapping(t *testing.T) {
 				t.Fatalf("upsert stash: %v", err)
 			}
 
-			got, err := s.ListPendingBackgroundCompletionsAsItems("t", 0)
+			got, err := s.ListPendingBackgroundCompletionsAsItems("t")
 			if err != nil {
 				t.Fatalf("list pending: %v", err)
 			}
@@ -1022,46 +1022,41 @@ func TestListPendingBackgroundCompletionsAsItems_StatusMapping(t *testing.T) {
 	}
 }
 
-// TestListPendingBackgroundCompletionsAsItems_RespectsRetentionCutoff
-// pins that synthetic completions age out on the same clock as the
-// persisted siblings: a stash row older than the cutoff must not
-// surface, so the launch (which `ListLiveBackgroundTasks` ages out by
-// its own retention rule) doesn't get a phantom completion.
-func TestListPendingBackgroundCompletionsAsItems_RespectsRetentionCutoff(t *testing.T) {
+// TestListPendingBackgroundCompletionsAsItems_NoRetentionFilter pins
+// that an old stash entry still surfaces a synthetic completion while
+// the launch is unresolved. The synth's lifetime is the lifetime of
+// the unpaired launch — not a 2-second fade — because the agent may
+// not observe the completion for many seconds when concurrent
+// foreground tools are in flight (which is the exact bug this code
+// path was added to fix). Old stash rows from prior app sessions are
+// drained by `Router.RecoverOrphanedBackgroundTasks` at boot, so at
+// runtime every stash row is genuinely current.
+func TestListPendingBackgroundCompletionsAsItems_NoRetentionFilter(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	seedBackgroundItem(t, s, "t", "fresh-launch", 0, 0, "running", "", 100)
-	seedBackgroundItem(t, s, "t", "stale-launch", 0, 1, "running", "", 100)
+	seedBackgroundItem(t, s, "t", "launch", 0, 0, "running", "", 100)
+	// Stash from 30 seconds ago — older than any tray retention
+	// window. Must still surface because the launch is unresolved.
 	if err := s.UpsertPendingBackgroundTerminal(PendingBackgroundTaskTerminal{
 		ThreadID:  "t",
-		TaskID:    "fresh",
-		ToolUseID: "fresh-launch",
-		Status:    "completed",
-		Source:    "task_updated",
-		CreatedAt: 5000,
-	}); err != nil {
-		t.Fatalf("upsert fresh: %v", err)
-	}
-	if err := s.UpsertPendingBackgroundTerminal(PendingBackgroundTaskTerminal{
-		ThreadID:  "t",
-		TaskID:    "stale",
-		ToolUseID: "stale-launch",
+		TaskID:    "task-x",
+		ToolUseID: "launch",
 		Status:    "completed",
 		Source:    "task_updated",
 		CreatedAt: 1000,
 	}); err != nil {
-		t.Fatalf("upsert stale: %v", err)
+		t.Fatalf("upsert stash: %v", err)
 	}
 
-	got, err := s.ListPendingBackgroundCompletionsAsItems("t", 4000)
+	got, err := s.ListPendingBackgroundCompletionsAsItems("t")
 	if err != nil {
 		t.Fatalf("list pending: %v", err)
 	}
-	if !equalStringSlice(collectIDs(got), []string{"complete:fresh-launch"}) {
-		t.Errorf("ids: got %v, want [complete:fresh-launch] (stale stash must be filtered)", collectIDs(got))
+	if !equalStringSlice(collectIDs(got), []string{"complete:launch"}) {
+		t.Errorf("ids: got %v, want [complete:launch] (synth must surface regardless of age)", collectIDs(got))
 	}
 }
 
@@ -1094,7 +1089,7 @@ func TestListPendingBackgroundCompletionsAsItems_ThreadIsolation(t *testing.T) {
 		t.Fatalf("upsert stash on ta: %v", err)
 	}
 
-	gotA, err := s.ListPendingBackgroundCompletionsAsItems("ta", 0)
+	gotA, err := s.ListPendingBackgroundCompletionsAsItems("ta")
 	if err != nil {
 		t.Fatalf("list ta: %v", err)
 	}
@@ -1102,7 +1097,7 @@ func TestListPendingBackgroundCompletionsAsItems_ThreadIsolation(t *testing.T) {
 		t.Errorf("ta ids: got %v, want [complete:launch]", collectIDs(gotA))
 	}
 
-	gotB, err := s.ListPendingBackgroundCompletionsAsItems("tb", 0)
+	gotB, err := s.ListPendingBackgroundCompletionsAsItems("tb")
 	if err != nil {
 		t.Fatalf("list tb: %v", err)
 	}
@@ -1135,7 +1130,7 @@ func TestListPendingBackgroundCompletionsAsItems_RequiresBackgroundLaunch(t *tes
 		t.Fatalf("upsert stash: %v", err)
 	}
 
-	got, err := s.ListPendingBackgroundCompletionsAsItems("t", 0)
+	got, err := s.ListPendingBackgroundCompletionsAsItems("t")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -1150,7 +1145,7 @@ func TestListPendingBackgroundCompletionsAsItems_RequiresBackgroundLaunch(t *tes
 // resolved). Matches the defensive guard at the top of the function.
 func TestListPendingBackgroundCompletionsAsItems_EmptyThreadID(t *testing.T) {
 	s := newTestStore(t)
-	got, err := s.ListPendingBackgroundCompletionsAsItems("", 0)
+	got, err := s.ListPendingBackgroundCompletionsAsItems("")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -1185,7 +1180,7 @@ func TestListPendingBackgroundCompletionsAsItems_SiblingScopedPerLaunch(t *testi
 		t.Fatalf("upsert stash: %v", err)
 	}
 
-	got, err := s.ListPendingBackgroundCompletionsAsItems("t", 0)
+	got, err := s.ListPendingBackgroundCompletionsAsItems("t")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -1229,7 +1224,7 @@ func TestListPendingBackgroundCompletionsAsItems_MultipleStashesOrderedByCreated
 		}
 	}
 
-	got, err := s.ListPendingBackgroundCompletionsAsItems("t", 0)
+	got, err := s.ListPendingBackgroundCompletionsAsItems("t")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -1263,7 +1258,7 @@ func TestListPendingBackgroundCompletionsAsItems_EmptyToolUseIDSkipped(t *testin
 		t.Fatalf("upsert stash: %v", err)
 	}
 
-	got, err := s.ListPendingBackgroundCompletionsAsItems("t", 0)
+	got, err := s.ListPendingBackgroundCompletionsAsItems("t")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
