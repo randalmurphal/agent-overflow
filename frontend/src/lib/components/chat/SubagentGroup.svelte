@@ -203,14 +203,12 @@
   );
 
   let entryCountLabel = $derived.by(() => {
-    if (group.descendantCount === 0) return '1 agent';
-    const entryLabel = `${group.descendantCount} ${group.descendantCount === 1 ? 'entry' : 'entries'}`;
-    return `1 agent · ${entryLabel}`;
+    if (group.descendantCount === 0) return '';
+    return `${group.descendantCount} ${group.descendantCount === 1 ? 'entry' : 'entries'}`;
   });
   let entryCountAriaLabel = $derived.by(() => {
-    if (group.descendantCount === 0) return '1 agent represented in this group';
-    const entryLabel = `${group.descendantCount} ${group.descendantCount === 1 ? 'timeline entry' : 'timeline entries'}`;
-    return `1 agent and ${entryLabel} inside this subagent group`;
+    if (group.descendantCount === 0) return '';
+    return `${group.descendantCount} ${group.descendantCount === 1 ? 'timeline entry' : 'timeline entries'} inside this subagent group`;
   });
 </script>
 
@@ -221,7 +219,7 @@
     data-testid="subagent-group-marker"
   >
     <span aria-hidden="true">↳</span>
-    <span>Spawned subagent… ({entryCountLabel})</span>
+    <span>Spawned subagent…{entryCountLabel ? ` (${entryCountLabel})` : ''}</span>
   </div>
 {:else}
   <div
@@ -258,13 +256,15 @@
         </span>
       </span>
       {#snippet actions()}
-        <span
-          class="shrink-0 text-[10px] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
-          data-testid="subagent-group-count"
-          aria-label={entryCountAriaLabel}
-        >
-          {entryCountLabel}
-        </span>
+        {#if entryCountLabel}
+          <span
+            class="shrink-0 text-[10px] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
+            data-testid="subagent-group-count"
+            aria-label={entryCountAriaLabel}
+          >
+            {entryCountLabel}
+          </span>
+        {/if}
         <ToolHeaderMeta
           statusSlotTestId="subagent-group-status-slot"
           duration={{ testId: 'subagent-group-duration', label: elapsedLabel }}

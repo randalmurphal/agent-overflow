@@ -136,7 +136,7 @@ describe('<SubagentGroup>', () => {
     expect(getByTestId('subagent-group-count').textContent).toContain('2 entries');
     expect(getByTestId('subagent-group-count')).toHaveAttribute(
       'aria-label',
-      '1 agent and 2 timeline entries inside this subagent group',
+      '2 timeline entries inside this subagent group',
     );
     expect(queryByTestId('leaf')).toBeNull();
   });
