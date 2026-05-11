@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -764,21 +765,22 @@ func TestListLiveBackgroundTasks_ErroredCompletionKeepsPairVisible(t *testing.T)
 	}
 }
 
-// TestListLiveBackgroundTasks_StashHidesLaunch is the Tray-A guard:
-// once Claude system/task_updated lands and triage stashes the
-// terminal in pending_background_task_terminals, the launch row must
-// drop out of the tray even though no completion sibling exists yet
-// (the agent has not observed). This is the core decoupling between
-// host-side process state (tray) and agent-observation state (chat).
-func TestListLiveBackgroundTasks_StashHidesLaunch(t *testing.T) {
+// TestListLiveBackgroundTasks_StashKeepsLaunchVisible pins the
+// Tray-A behavior post-fix: once Claude system/task_updated lands
+// and triage stashes the terminal in
+// `pending_background_task_terminals`, the launch row STAYS visible
+// so the tray can pair it with the synthetic completion item from
+// `ListPendingBackgroundCompletionsAsItems`. The previous design
+// hid the launch and left the tray with nothing to render between
+// process-exit and the agent observation event.
+func TestListLiveBackgroundTasks_StashKeepsLaunchVisible(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	// Two running background launches; only one has a stash entry
-	// (process exited but no observation yet). The launch with a stash
-	// must disappear; the other stays.
+	// Two running background launches; one has a stash entry (process
+	// exited, agent hasn't observed yet). Both must stay visible.
 	seedBackgroundItem(t, s, "t", "exited", 0, 0, "running", "", 100)
 	seedBackgroundItem(t, s, "t", "still-running", 0, 1, "running", "", 200)
 
@@ -797,12 +799,12 @@ func TestListLiveBackgroundTasks_StashHidesLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if !equalStringSlice(collectIDs(got), []string{"still-running"}) {
-		t.Errorf("ids: got %v, want [still-running] (exited launch hidden by stash)", collectIDs(got))
+	if !equalStringSlice(collectIDs(got), []string{"exited", "still-running"}) {
+		t.Errorf("ids: got %v, want [exited still-running] (stash must NOT hide launch)", collectIDs(got))
 	}
 
-	// Drain the stash: launch is still status=running with no
-	// completion sibling, so it surfaces again.
+	// Drain the stash: launch still surfaces because nothing changed
+	// about the launch itself — it stayed visible the whole time.
 	if _, _, err := s.TakePendingBackgroundTerminal("t", "task-x"); err != nil {
 		t.Fatalf("take stash: %v", err)
 	}
@@ -812,49 +814,6 @@ func TestListLiveBackgroundTasks_StashHidesLaunch(t *testing.T) {
 	}
 	if !equalStringSlice(collectIDs(got), []string{"exited", "still-running"}) {
 		t.Errorf("ids after drain: got %v, want [exited still-running]", collectIDs(got))
-	}
-}
-
-// TestListLiveBackgroundTasks_StashScopedByThread guards the
-// thread_id binding on the new NOT EXISTS subquery — a stash on
-// thread A must not hide a same-id launch on thread B.
-func TestListLiveBackgroundTasks_StashScopedByThread(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.CreateThread(makeThread("ta", "claude")); err != nil {
-		t.Fatalf("create thread ta: %v", err)
-	}
-	if err := s.CreateThread(makeThread("tb", "claude")); err != nil {
-		t.Fatalf("create thread tb: %v", err)
-	}
-
-	seedBackgroundItem(t, s, "ta", "launch", 0, 0, "running", "", 100)
-	seedBackgroundItem(t, s, "tb", "launch", 0, 0, "running", "", 100)
-
-	if err := s.UpsertPendingBackgroundTerminal(PendingBackgroundTaskTerminal{
-		ThreadID:  "ta",
-		TaskID:    "task-1",
-		ToolUseID: "launch",
-		Status:    "completed",
-		Source:    "task_updated",
-		CreatedAt: 500,
-	}); err != nil {
-		t.Fatalf("upsert stash: %v", err)
-	}
-
-	gotA, err := s.ListLiveBackgroundTasks("ta", 0)
-	if err != nil {
-		t.Fatalf("list ta: %v", err)
-	}
-	if len(gotA) != 0 {
-		t.Errorf("ta ids: got %v, want [] (launch hidden by stash)", collectIDs(gotA))
-	}
-
-	gotB, err := s.ListLiveBackgroundTasks("tb", 0)
-	if err != nil {
-		t.Fatalf("list tb: %v", err)
-	}
-	if !equalStringSlice(collectIDs(gotB), []string{"launch"}) {
-		t.Errorf("tb ids: got %v, want [launch] (stash on ta must not leak)", collectIDs(gotB))
 	}
 }
 
@@ -898,5 +857,475 @@ func TestListLiveBackgroundTasks_IncludesRunningFromAnyTurn(t *testing.T) {
 	}
 	if !equalStringSlice(collectIDs(got), []string{"ancient-run"}) {
 		t.Errorf("expected ancient-run regardless of turn depth, got %v", collectIDs(got))
+	}
+}
+
+// TestListPendingBackgroundCompletionsAsItems_SynthesizesFromStash pins
+// the happy path: stash row exists, no chat sibling has landed, and the
+// query synthesizes a tray-only tool_completion item shaped like the
+// real sibling that will eventually arrive.
+func TestListPendingBackgroundCompletionsAsItems_SynthesizesFromStash(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	seedBackgroundItem(t, s, "t", "launch", 0, 0, "running", "", 100)
+	if err := s.UpsertPendingBackgroundTerminal(PendingBackgroundTaskTerminal{
+		ThreadID:   "t",
+		TaskID:     "task-x",
+		ToolUseID:  "launch",
+		Status:     "completed",
+		OutputFile: "/tmp/out.txt",
+		Source:     "task_updated",
+		CreatedAt:  500,
+	}); err != nil {
+		t.Fatalf("upsert stash: %v", err)
+	}
+
+	got, err := s.ListPendingBackgroundCompletionsAsItems("t", 0)
+	if err != nil {
+		t.Fatalf("list pending: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d items, want 1: %+v", len(got), got)
+	}
+	item := got[0]
+	if item.ID != "complete:launch" {
+		t.Errorf("id = %q, want complete:launch", item.ID)
+	}
+	if item.Kind != "tool_completion" {
+		t.Errorf("kind = %q, want tool_completion", item.Kind)
+	}
+	if item.CompletionOf != "launch" {
+		t.Errorf("completion_of = %q, want launch", item.CompletionOf)
+	}
+	if !item.IsBackground {
+		t.Errorf("is_background = false, want true")
+	}
+	if item.Status != "completed" {
+		t.Errorf("status = %q, want completed", item.Status)
+	}
+	if item.Summary != "launch -> done" {
+		t.Errorf("summary = %q, want %q (mirrors triage's completed-with-no-exitcode outcome)", item.Summary, "launch -> done")
+	}
+	if item.CreatedAt != 500 {
+		t.Errorf("created_at = %d, want 500 (stash created_at)", item.CreatedAt)
+	}
+	for _, want := range []string{`"task_id":"task-x"`, `"tool_use_id":"launch"`, `"status":"completed"`, `"status_source":"task_updated"`, `"synthetic":true`, `"output_file":"/tmp/out.txt"`} {
+		if !strings.Contains(item.Meta, want) {
+			t.Errorf("meta missing %q: %s", want, item.Meta)
+		}
+	}
+}
+
+// TestListPendingBackgroundCompletionsAsItems_ExcludedWhenRealSiblingExists
+// guards the de-duplication invariant: once the chat-side completion has
+// been written, the synthetic must not also be returned — otherwise the
+// tray would render two completion rows for the same launch.
+func TestListPendingBackgroundCompletionsAsItems_ExcludedWhenRealSiblingExists(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	seedBackgroundItem(t, s, "t", "launch", 0, 0, "running", "", 100)
+	seedBackgroundItem(t, s, "t", "real-completion", 0, 1, "completed", "launch", 600)
+	// A late stash arrival paired with a launch that already has a
+	// sibling — this happens when the chat write races ahead of triage's
+	// drain on the next reconnect-replay.
+	if err := s.UpsertPendingBackgroundTerminal(PendingBackgroundTaskTerminal{
+		ThreadID:  "t",
+		TaskID:    "task-x",
+		ToolUseID: "launch",
+		Status:    "completed",
+		Source:    "task_updated",
+		CreatedAt: 500,
+	}); err != nil {
+		t.Fatalf("upsert stash: %v", err)
+	}
+
+	got, err := s.ListPendingBackgroundCompletionsAsItems("t", 0)
+	if err != nil {
+		t.Fatalf("list pending: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d items, want 0 (real sibling must suppress synth): %+v", len(got), got)
+	}
+}
+
+// TestListPendingBackgroundCompletionsAsItems_StatusMapping verifies the
+// wire-status → canonical-status translation matches
+// `triage.backgroundTerminalStatus`. The tray's `completionStatusFor`
+// keys on the canonical value, so a drift here renders failures as
+// "completed" and vice versa.
+//
+// Outcome suffixes mirror `triage.backgroundTerminalOutcome` exactly,
+// so the synthetic and real sibling produce the same "Bash -> done" /
+// "Bash -> exit 1" / "Bash -> killed" shape end-to-end. `stopped` and
+// any future unknown status default to no suffix because triage's
+// outcome switch doesn't enumerate them.
+func TestListPendingBackgroundCompletionsAsItems_StatusMapping(t *testing.T) {
+	exit0 := int64(0)
+	exit1 := int64(1)
+	cases := []struct {
+		name       string
+		wire       string
+		exitCode   *int64
+		wantStatus string
+		wantSumSfx string // expected suffix appended to launch summary ("" = no suffix)
+	}{
+		{"completed-exit-0", "completed", &exit0, "completed", " -> exit 0"},
+		{"completed-no-exit", "completed", nil, "completed", " -> done"},
+		{"completed-nonzero-exit", "completed", &exit1, "errored", " -> exit 1"},
+		{"failed", "failed", nil, "errored", " -> failed"},
+		{"interrupted", "interrupted", nil, "errored", " -> interrupted"},
+		{"killed", "killed", nil, "killed", " -> killed"},
+		{"stopped", "stopped", nil, "killed", ""},
+		{"errored-wire-status", "errored", nil, "errored", ""},
+		{"unknown-wire-status", "timeout", nil, "errored", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+				t.Fatalf("create thread: %v", err)
+			}
+			seedBackgroundItem(t, s, "t", "launch", 0, 0, "running", "", 100)
+			if err := s.UpsertPendingBackgroundTerminal(PendingBackgroundTaskTerminal{
+				ThreadID:  "t",
+				TaskID:    "task-x",
+				ToolUseID: "launch",
+				Status:    tc.wire,
+				ExitCode:  tc.exitCode,
+				Source:    "task_updated",
+				CreatedAt: 500,
+			}); err != nil {
+				t.Fatalf("upsert stash: %v", err)
+			}
+
+			got, err := s.ListPendingBackgroundCompletionsAsItems("t", 0)
+			if err != nil {
+				t.Fatalf("list pending: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("got %d items, want 1", len(got))
+			}
+			if got[0].Status != tc.wantStatus {
+				t.Errorf("status = %q, want %q", got[0].Status, tc.wantStatus)
+			}
+			wantSummary := "launch" + tc.wantSumSfx
+			if got[0].Summary != wantSummary {
+				t.Errorf("summary = %q, want %q", got[0].Summary, wantSummary)
+			}
+		})
+	}
+}
+
+// TestListPendingBackgroundCompletionsAsItems_RespectsRetentionCutoff
+// pins that synthetic completions age out on the same clock as the
+// persisted siblings: a stash row older than the cutoff must not
+// surface, so the launch (which `ListLiveBackgroundTasks` ages out by
+// its own retention rule) doesn't get a phantom completion.
+func TestListPendingBackgroundCompletionsAsItems_RespectsRetentionCutoff(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	seedBackgroundItem(t, s, "t", "fresh-launch", 0, 0, "running", "", 100)
+	seedBackgroundItem(t, s, "t", "stale-launch", 0, 1, "running", "", 100)
+	if err := s.UpsertPendingBackgroundTerminal(PendingBackgroundTaskTerminal{
+		ThreadID:  "t",
+		TaskID:    "fresh",
+		ToolUseID: "fresh-launch",
+		Status:    "completed",
+		Source:    "task_updated",
+		CreatedAt: 5000,
+	}); err != nil {
+		t.Fatalf("upsert fresh: %v", err)
+	}
+	if err := s.UpsertPendingBackgroundTerminal(PendingBackgroundTaskTerminal{
+		ThreadID:  "t",
+		TaskID:    "stale",
+		ToolUseID: "stale-launch",
+		Status:    "completed",
+		Source:    "task_updated",
+		CreatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("upsert stale: %v", err)
+	}
+
+	got, err := s.ListPendingBackgroundCompletionsAsItems("t", 4000)
+	if err != nil {
+		t.Fatalf("list pending: %v", err)
+	}
+	if !equalStringSlice(collectIDs(got), []string{"complete:fresh-launch"}) {
+		t.Errorf("ids: got %v, want [complete:fresh-launch] (stale stash must be filtered)", collectIDs(got))
+	}
+}
+
+// TestListPendingBackgroundCompletionsAsItems_ThreadIsolation guards
+// the thread_id scoping on the stash join — a stash row on thread A
+// must not synthesize a completion item on thread B even when both
+// threads have a launch row sharing the same id.
+func TestListPendingBackgroundCompletionsAsItems_ThreadIsolation(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("ta", "claude")); err != nil {
+		t.Fatalf("create thread ta: %v", err)
+	}
+	if err := s.CreateThread(makeThread("tb", "claude")); err != nil {
+		t.Fatalf("create thread tb: %v", err)
+	}
+
+	// Same launch id on both threads — a missing thread_id predicate on
+	// the items join would cross-match and surface tb's launch under
+	// ta's stash (or vice versa).
+	seedBackgroundItem(t, s, "ta", "launch", 0, 0, "running", "", 100)
+	seedBackgroundItem(t, s, "tb", "launch", 0, 0, "running", "", 100)
+	if err := s.UpsertPendingBackgroundTerminal(PendingBackgroundTaskTerminal{
+		ThreadID:  "ta",
+		TaskID:    "task-x",
+		ToolUseID: "launch",
+		Status:    "completed",
+		Source:    "task_updated",
+		CreatedAt: 500,
+	}); err != nil {
+		t.Fatalf("upsert stash on ta: %v", err)
+	}
+
+	gotA, err := s.ListPendingBackgroundCompletionsAsItems("ta", 0)
+	if err != nil {
+		t.Fatalf("list ta: %v", err)
+	}
+	if !equalStringSlice(collectIDs(gotA), []string{"complete:launch"}) {
+		t.Errorf("ta ids: got %v, want [complete:launch]", collectIDs(gotA))
+	}
+
+	gotB, err := s.ListPendingBackgroundCompletionsAsItems("tb", 0)
+	if err != nil {
+		t.Fatalf("list tb: %v", err)
+	}
+	if len(gotB) != 0 {
+		t.Errorf("tb ids: got %v, want [] (stash is on ta only)", collectIDs(gotB))
+	}
+}
+
+// TestListPendingBackgroundCompletionsAsItems_RequiresBackgroundLaunch
+// guards the `launch.is_background = 1` predicate. A foreground tool
+// has no business synthesizing a tray completion even if a stash entry
+// somehow points at it.
+func TestListPendingBackgroundCompletionsAsItems_RequiresBackgroundLaunch(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	// Foreground tool — IsBackground stays false because we use seedItem
+	// (assistant_text), but stash points at it anyway.
+	seedItem(t, s, "t", "fg", 0, 0, "")
+	if err := s.UpsertPendingBackgroundTerminal(PendingBackgroundTaskTerminal{
+		ThreadID:  "t",
+		TaskID:    "task-fg",
+		ToolUseID: "fg",
+		Status:    "completed",
+		Source:    "task_updated",
+		CreatedAt: 500,
+	}); err != nil {
+		t.Fatalf("upsert stash: %v", err)
+	}
+
+	got, err := s.ListPendingBackgroundCompletionsAsItems("t", 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d items, want 0 (foreground launch must not synthesize)", len(got))
+	}
+}
+
+// TestListPendingBackgroundCompletionsAsItems_EmptyThreadID returns
+// nil, nil — callers shouldn't crash if they hand in a missing thread
+// id (e.g. during early bootstrap before the active thread is
+// resolved). Matches the defensive guard at the top of the function.
+func TestListPendingBackgroundCompletionsAsItems_EmptyThreadID(t *testing.T) {
+	s := newTestStore(t)
+	got, err := s.ListPendingBackgroundCompletionsAsItems("", 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d items, want 0 for empty thread id", len(got))
+	}
+}
+
+// TestListPendingBackgroundCompletionsAsItems_SiblingScopedPerLaunch
+// pins that the `NOT EXISTS` suppression keys on `completion_of = launch.id`,
+// not just `thread_id`. A real sibling on launch B must not suppress
+// the synthetic for a different launch A on the same thread.
+func TestListPendingBackgroundCompletionsAsItems_SiblingScopedPerLaunch(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	// Launch A is stashed, no sibling yet — synth must surface.
+	// Launch B has a real sibling — irrelevant to A's synth.
+	seedBackgroundItem(t, s, "t", "launch-a", 0, 0, "running", "", 100)
+	seedBackgroundItem(t, s, "t", "launch-b", 0, 1, "running", "", 100)
+	seedBackgroundItem(t, s, "t", "sibling-b", 0, 2, "completed", "launch-b", 600)
+	if err := s.UpsertPendingBackgroundTerminal(PendingBackgroundTaskTerminal{
+		ThreadID:  "t",
+		TaskID:    "task-a",
+		ToolUseID: "launch-a",
+		Status:    "completed",
+		Source:    "task_updated",
+		CreatedAt: 500,
+	}); err != nil {
+		t.Fatalf("upsert stash: %v", err)
+	}
+
+	got, err := s.ListPendingBackgroundCompletionsAsItems("t", 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !equalStringSlice(collectIDs(got), []string{"complete:launch-a"}) {
+		t.Errorf("ids: got %v, want [complete:launch-a] (sibling on launch-b must not suppress synth for launch-a)", collectIDs(got))
+	}
+}
+
+// TestListPendingBackgroundCompletionsAsItems_MultipleStashesOrderedByCreatedAt
+// pins that multiple simultaneous stash entries surface in the order
+// they arrived, mirroring the ORDER BY p.created_at clause. The tray
+// renders rows in arrival order so a future LIMIT or accidental ordering
+// change would silently desync the visible list.
+func TestListPendingBackgroundCompletionsAsItems_MultipleStashesOrderedByCreatedAt(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	seedBackgroundItem(t, s, "t", "first", 0, 0, "running", "", 100)
+	seedBackgroundItem(t, s, "t", "second", 0, 1, "running", "", 100)
+	seedBackgroundItem(t, s, "t", "third", 0, 2, "running", "", 100)
+	for _, tc := range []struct {
+		taskID    string
+		toolUseID string
+		createdAt int64
+	}{
+		{"task-second", "second", 600},
+		{"task-first", "first", 400},
+		{"task-third", "third", 800},
+	} {
+		if err := s.UpsertPendingBackgroundTerminal(PendingBackgroundTaskTerminal{
+			ThreadID:  "t",
+			TaskID:    tc.taskID,
+			ToolUseID: tc.toolUseID,
+			Status:    "completed",
+			Source:    "task_updated",
+			CreatedAt: tc.createdAt,
+		}); err != nil {
+			t.Fatalf("upsert %s: %v", tc.taskID, err)
+		}
+	}
+
+	got, err := s.ListPendingBackgroundCompletionsAsItems("t", 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	want := []string{"complete:first", "complete:second", "complete:third"}
+	if !equalStringSlice(collectIDs(got), want) {
+		t.Errorf("ids: got %v, want %v (ordered by stash created_at)", collectIDs(got), want)
+	}
+}
+
+// TestListPendingBackgroundCompletionsAsItems_EmptyToolUseIDSkipped
+// pins that a stash row whose tool_use_id is empty (the rare
+// documented case where the parser map lost the correlation) doesn't
+// fabricate a synthetic against the wrong launch. The JOIN on
+// `launch.id = p.tool_use_id` makes empty tool_use_id un-joinable
+// because no real item carries id="".
+func TestListPendingBackgroundCompletionsAsItems_EmptyToolUseIDSkipped(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	seedBackgroundItem(t, s, "t", "launch", 0, 0, "running", "", 100)
+	if err := s.UpsertPendingBackgroundTerminal(PendingBackgroundTaskTerminal{
+		ThreadID:  "t",
+		TaskID:    "task-x",
+		ToolUseID: "", // unknown correlation
+		Status:    "completed",
+		Source:    "task_updated",
+		CreatedAt: 500,
+	}); err != nil {
+		t.Fatalf("upsert stash: %v", err)
+	}
+
+	got, err := s.ListPendingBackgroundCompletionsAsItems("t", 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d items, want 0 (empty tool_use_id must not synthesize): %+v", len(got), got)
+	}
+}
+
+// TestPendingTerminalStatusParityWithTriage is the contract test the
+// `mapPendingTerminalStatus` docstring promises. Triage's
+// `backgroundTerminalStatus` (re-implemented here in package-local
+// form because the canonical version takes a triage-internal struct)
+// is the authoritative mapping; this test feeds the same (wire,
+// exitCode) inputs through both and asserts equal output. A drift
+// here means the synth and the persisted sibling would disagree on
+// status, which renders as a green-vs-red badge flip when the real
+// sibling lands.
+func TestPendingTerminalStatusParityWithTriage(t *testing.T) {
+	// Local re-implementation of triage.backgroundTerminalStatus, kept
+	// in sync by hand because store cannot import triage. If this
+	// drifts, the cross-package status renderings drift too.
+	triageEquivalent := func(wire string, exit *int64, isError bool) string {
+		if wire == "killed" || wire == "stopped" {
+			return "killed"
+		}
+		if isError {
+			return "errored"
+		}
+		if exit != nil && *exit != 0 {
+			return "errored"
+		}
+		switch wire {
+		case "completed":
+			return "completed"
+		case "", "failed", "interrupted", "errored":
+			if wire == "" {
+				return "completed"
+			}
+			return "errored"
+		default:
+			return "errored"
+		}
+	}
+
+	exit0 := int64(0)
+	exit1 := int64(1)
+	wireStatuses := []string{"completed", "failed", "interrupted", "errored", "killed", "stopped", "timeout", ""}
+	exitCodes := []*int64{nil, &exit0, &exit1}
+	for _, wire := range wireStatuses {
+		for _, exit := range exitCodes {
+			got := mapPendingTerminalStatus(wire, exit)
+			// isError=false: triage's IsError is sourced from
+			// task_output meta, never present in a stash row,
+			// so the parity test fixes it false.
+			want := triageEquivalent(wire, exit, false)
+			if got != want {
+				exitDesc := "nil"
+				if exit != nil {
+					exitDesc = fmt.Sprintf("%d", *exit)
+				}
+				t.Errorf("mapPendingTerminalStatus(%q, %s) = %q, want %q (triage equivalent)", wire, exitDesc, got, want)
+			}
+		}
 	}
 }

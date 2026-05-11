@@ -508,10 +508,13 @@ func decodeBackgroundTaskTerminalMeta(raw json.RawMessage) backgroundTaskTermina
 //     signalled process exit but the agent has not observed yet.
 //     Triage stashes the terminal in
 //     pending_background_task_terminals (via
-//     stashBackgroundTaskTerminal) so the tray can hide the launch.
-//     Reconnect-replay is idempotent (PK is thread_id+task_id). The
-//     chat-side `tool_completion` sibling is NOT written here — it
-//     comes later via task_notification or TaskOutput drain.
+//     stashBackgroundTaskTerminal). The launch row stays visible in
+//     the tray; the stash drives `ListPendingBackgroundCompletionsAsItems`
+//     which synthesizes a tray-only `tool_completion` companion so the
+//     tray can render "completed" immediately. Reconnect-replay is
+//     idempotent (PK is thread_id+task_id). The chat-side
+//     `tool_completion` sibling is NOT written here — it comes later
+//     via task_notification or TaskOutput drain.
 //
 //   - source="task_updated", status="killed": Claude reports that the
 //     provider killed/stopped the background process. For visible

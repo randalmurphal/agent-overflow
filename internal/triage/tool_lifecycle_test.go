@@ -1504,13 +1504,17 @@ func TestHandleEventBackgroundTaskTerminal_InsertsSibling(t *testing.T) {
 
 // TestHandleEventBackgroundTaskTerminal_TaskUpdatedStashesNoSibling
 // pins the post-stash refactor invariant: source=task_updated is the
-// HOST process exit signal, NOT the agent observation. It must
-// stash a pending_background_task_terminals row (so the tray hides
-// the launch) but MUST NOT write the chat-side `tool_completion`
-// sibling — the agent has not yet seen the completion.
+// HOST process exit signal, NOT the agent observation. It must stash
+// a pending_background_task_terminals row but MUST NOT write the
+// chat-side `tool_completion` sibling — the agent has not yet seen
+// the completion.
 //
-// The chat row is only written later when the agent observes via
-// TaskOutput (source=task_output) or task_notification.
+// Tray behavior: the launch row stays visible after the stash, and
+// `ListPendingBackgroundCompletionsAsItems` synthesizes a tray-only
+// `tool_completion` companion so the frontend can render the
+// "completed" state immediately. The persisted chat row is only
+// written later when the agent observes via TaskOutput
+// (source=task_output) or task_notification.
 func TestHandleEventBackgroundTaskTerminal_TaskUpdatedStashesNoSibling(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -1572,15 +1576,37 @@ func TestHandleEventBackgroundTaskTerminal_TaskUpdatedStashesNoSibling(t *testin
 		t.Errorf("stash.ExitCode = %v, want 0", stash.ExitCode)
 	}
 
-	// Tray query must hide the launch (stash NOT EXISTS predicate).
+	// Launch stays visible — the stash no longer hides it. The tray
+	// renders "completed" by pairing this launch with the synthetic
+	// item from ListPendingBackgroundCompletionsAsItems.
 	live, err := st.ListLiveBackgroundTasks("t1", 0)
 	if err != nil {
 		t.Fatalf("list live: %v", err)
 	}
+	sawLaunch := false
 	for _, row := range live {
 		if row.ID == "bg-stash" {
-			t.Fatalf("tray still shows launch after task_updated stash: %+v", row)
+			sawLaunch = true
 		}
+	}
+	if !sawLaunch {
+		t.Fatalf("launch missing from tray after task_updated stash; want it visible so the synthetic completion can pair with it: %+v", live)
+	}
+
+	// Synthetic completion item must surface from the stash so the
+	// tray has something paired to the launch.
+	pending, err := st.ListPendingBackgroundCompletionsAsItems("t1", 0)
+	if err != nil {
+		t.Fatalf("list pending completions: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected one synthetic completion, got %d: %+v", len(pending), pending)
+	}
+	if pending[0].CompletionOf != "bg-stash" {
+		t.Errorf("synthetic completion_of = %q, want bg-stash", pending[0].CompletionOf)
+	}
+	if pending[0].Status != "completed" {
+		t.Errorf("synthetic status = %q, want completed", pending[0].Status)
 	}
 
 	// Frontend nudge: provider:background_task_state with state=exited.

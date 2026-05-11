@@ -100,14 +100,17 @@ func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, 
 // projection meta explicitly marks it inactive with
 // `live_background_active=false`.
 //
-// Tray decoupling (Tray-A): a launch row also drops out of the tray
-// the moment its host-side process exits, even before the agent has
-// observed the completion. Process exit is signalled by an entry in
-// `pending_background_task_terminals` (inserted on Claude
-// system/task_updated, deleted on the agent observation drain). The
-// NOT EXISTS check against that table hides exited-but-unobserved
-// launches; the existing completion-sibling check still handles old
-// data and observed completions.
+// Tray decoupling (Tray-A): the host-side process exit is signalled by
+// an entry in `pending_background_task_terminals` (inserted on Claude
+// system/task_updated, drained on the agent observation event). The
+// launch row stays visible during that stash window so the tray can
+// pair it with the synthetic completion item from
+// `ListPendingBackgroundCompletionsAsItems` (mirroring the Codex
+// tracker pattern at `triage.ListLiveCodexBackgroundTasks`). Without
+// this pairing the tray would have nothing to render between
+// process-exit and the agent-observation event that writes the real
+// chat sibling — the launch would either vanish or stay stuck on
+// "running" until the chat row landed.
 //
 // Thread-scoped. Live launches surface regardless of turn_index.
 // Ordering is (turn_index, item_index) so launches precede completions.
@@ -122,11 +125,6 @@ func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis i
 		        items.is_background = 1
 		        AND items.status = 'running'
 		        AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
-		        AND NOT EXISTS (
-		          SELECT 1 FROM pending_background_task_terminals p
-		           WHERE p.thread_id = items.thread_id
-		             AND p.tool_use_id = items.id
-		        )
 		        AND (
 		          NOT EXISTS (
 		            SELECT 1 FROM items c
