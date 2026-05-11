@@ -83,6 +83,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GitCheckout", ID: 1598126927}, // main.App.GitCheckout
 	{Name: "GitCommit", ID: 1971060042}, // main.App.GitCommit
 	{Name: "GitCreateBranch", ID: 2582897723}, // main.App.GitCreateBranch
+	{Name: "GitCreateBranchFrom", ID: 429779991}, // main.App.GitCreateBranchFrom
 	{Name: "GitCreatePR", ID: 4106667105}, // main.App.GitCreatePR
 	{Name: "GitCreateWorktree", ID: 3327650914}, // main.App.GitCreateWorktree
 	{Name: "GitListBranches", ID: 2693102179}, // main.App.GitListBranches
@@ -93,6 +94,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GitStageAll", ID: 548906954}, // main.App.GitStageAll
 	{Name: "GitStatusSubscribe", ID: 3282404643}, // main.App.GitStatusSubscribe
 	{Name: "GitStatusUnsubscribe", ID: 3263989430}, // main.App.GitStatusUnsubscribe
+	{Name: "GitWorktreeStatus", ID: 1333748060}, // main.App.GitWorktreeStatus
 	{Name: "IngestDiagnosticBatch", ID: 2606775930}, // main.App.IngestDiagnosticBatch
 	{Name: "InterruptTurn", ID: 850013031}, // main.App.InterruptTurn
 	{Name: "IsWSL", ID: 2789068977}, // main.App.IsWSL
@@ -135,6 +137,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ReconfigureObservability", ID: 225050321}, // main.App.ReconfigureObservability
 	{Name: "ReconnectSession", ID: 1420075138}, // main.App.ReconnectSession
 	{Name: "RegisterQueueItem", ID: 1034543696}, // main.App.RegisterQueueItem
+	{Name: "RemoveOtherWorktree", ID: 2899196344}, // main.App.RemoveOtherWorktree
 	{Name: "RenameProject", ID: 3728890856}, // main.App.RenameProject
 	{Name: "RenameThread", ID: 727416435}, // main.App.RenameThread
 	{Name: "ReplayManager", ID: 3320777729}, // main.App.ReplayManager

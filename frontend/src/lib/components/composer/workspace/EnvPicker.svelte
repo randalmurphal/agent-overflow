@@ -4,14 +4,25 @@
   // choose where the next provider turn runs without leaving the chat.
   //
   // Existing paths persist via UpdateThreadWorkspace. New worktree intent
-  // is staged locally and materialized by the next send.
+  // is staged locally and materialized by the next send. Worktree cleanup
+  // happens inline: a trash icon on each row morphs that row into a
+  // confirmation strip — no separate modal surface.
 
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { Thread } from '../../../types/models';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
+  import Folder from 'lucide-svelte/icons/folder';
+  import GitBranch from 'lucide-svelte/icons/git-branch';
+  import Trash2 from 'lucide-svelte/icons/trash-2';
   import Icon from '../../primitives/Icon.svelte';
   import { composerTriggerClasses } from '../triggerClasses';
-  import { GitListWorktrees, UpdateThreadWorkspace } from '../../../stores/bindings';
+  import {
+    GitListWorktrees,
+    GitWorktreeStatus,
+    RemoveOtherWorktree,
+    UpdateThreadWorkspace,
+    WorktreeStatus,
+  } from '../../../stores/bindings';
   import type { Worktree } from '../../../types/git';
   import { syncThread } from '../../../stores/panes.svelte';
   import { addToast } from '../../../stores/toast.svelte';
@@ -33,6 +44,16 @@
     workspaceLock: WorkspaceChangeLockState;
   }
 
+  interface ConfirmState {
+    path: string;
+    label: string;
+    branch: string;
+    status: WorktreeStatus | null;
+    loading: boolean;
+    pending: boolean;
+    error: string | null;
+  }
+
   let { pane, workspaceLock }: Props = $props();
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
@@ -40,14 +61,13 @@
   let worktrees: Worktree[] = $state([]);
   let loading = $state(false);
   let applying = $state(false);
+  let confirm: ConfirmState | null = $state(null);
 
   let projectPath = $derived(pane.thread?.projectPath ?? '');
   let currentWorkspace = $derived(pane.thread?.workspacePath ?? '');
   let isAtProjectRoot = $derived(sameNormalizedPath(currentWorkspace, projectPath));
   let intent = $derived(worktreeIntentForThread(pane.thread));
 
-  // Keep path details in menu descriptions. The trigger itself stays
-  // mode-shaped so it matches t3-code's "Current checkout/worktree" labels.
   function basename(path: string): string {
     if (!path) return '';
     const trimmed = path.replace(/\/$/, '');
@@ -55,19 +75,35 @@
     return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
   }
 
+  // Trigger reflects *where you are*, not the picker's mode. "Local"
+  // sits at the project root; the worktree's basename otherwise. Staged
+  // new-worktree intent overrides both so the user sees that the next
+  // send will run somewhere new.
   let triggerLabel = $derived.by(() => {
     if (intent.mode === 'new-worktree') return 'New Worktree';
-    if (isAtProjectRoot) return 'Current Checkout';
-    return 'Current Worktree';
+    if (isAtProjectRoot) return 'Local';
+    return basename(currentWorkspace) || 'Worktree';
   });
+  let triggerIcon = $derived.by(() => {
+    if (intent.mode === 'new-worktree') return GitBranch;
+    return isAtProjectRoot ? Folder : GitBranch;
+  });
+
   let disabledReason = $derived(workspaceLock.reason);
   let workspaceChangingDisabled = $derived(workspaceLock.locked);
 
   async function handleTrigger(): Promise<void> {
     open = !open;
-    if (!open) return;
+    if (!open) {
+      confirm = null;
+      return;
+    }
+    await refreshWorktreeList();
+  }
+
+  async function refreshWorktreeList(): Promise<void> {
     if (!pane.thread) return;
-    if (worktrees.length > 0 || loading) return;
+    if (loading) return;
     loading = true;
     try {
       const res = (await GitListWorktrees(pane.thread.id)) as Worktree[] | null;
@@ -82,6 +118,7 @@
 
   function closeMenu(): void {
     open = false;
+    confirm = null;
     triggerEl?.focus();
   }
 
@@ -118,6 +155,88 @@
     setThreadEnvMode(pane.thread, 'new-worktree');
     closeMenu();
   }
+
+  async function requestRemove(wt: Worktree): Promise<void> {
+    if (!pane.thread) return;
+    confirm = {
+      path: wt.path,
+      label: basename(wt.path) || wt.path,
+      branch: wt.branch ?? '',
+      status: null,
+      loading: true,
+      pending: false,
+      error: null,
+    };
+    try {
+      const status = (await GitWorktreeStatus(pane.thread.id, wt.path)) as WorktreeStatus;
+      // Guard against the user clicking Cancel and then opening a
+      // different row's confirmation between the request and the
+      // response — only apply the result if the active confirm is
+      // still for this path.
+      if (confirm && confirm.path === wt.path) {
+        confirm = { ...confirm, status, loading: false };
+      }
+    } catch (err) {
+      console.error('GitWorktreeStatus failed:', err);
+      if (confirm && confirm.path === wt.path) {
+        confirm = { ...confirm, loading: false, error: userFacingError(err) };
+      }
+    }
+  }
+
+  function cancelRemove(): void {
+    confirm = null;
+  }
+
+  // Mirrors the backend's RemoveOtherWorktree refusal gate. "No upstream"
+  // alone isn't a refusal — a freshly-created worktree off main rarely
+  // has one, and treating it as risky would force the destructive button
+  // path on a clean removal. Surface no-upstream as informational text in
+  // riskSummary instead.
+  function isRiskyStatus(s: WorktreeStatus | null): boolean {
+    if (!s) return false;
+    return s.dirty || s.unpushedCommits > 0;
+  }
+
+  function riskSummary(s: WorktreeStatus | null): string {
+    if (!s) return '';
+    const parts: string[] = [];
+    if (s.dirty) {
+      parts.push(`${s.uncommittedCount} uncommitted file${s.uncommittedCount === 1 ? '' : 's'}`);
+    }
+    if (s.unpushedCommits > 0) {
+      parts.push(`${s.unpushedCommits} unpushed commit${s.unpushedCommits === 1 ? '' : 's'}`);
+    }
+    if (!s.hasUpstream && s.branch) {
+      parts.push('no upstream');
+    }
+    if (s.attachedThreads > 0) {
+      parts.push(`${s.attachedThreads} thread${s.attachedThreads === 1 ? '' : 's'} attached`);
+    }
+    return parts.join(' · ');
+  }
+
+  async function performRemove(force: boolean): Promise<void> {
+    if (!pane.thread || !confirm) return;
+    const path = confirm.path;
+    const label = confirm.label;
+    confirm = { ...confirm, pending: true, error: null };
+    try {
+      await RemoveOtherWorktree(pane.thread.id, path, force);
+      addToast('info', `Removed worktree ${label}`);
+      // If we just removed the current workspace, the backend has flipped
+      // us to the project root and broadcast a thread upsert; the pane
+      // store handles that sync. Either way, refresh the list so the row
+      // disappears.
+      confirm = null;
+      await refreshWorktreeList();
+    } catch (err) {
+      console.error('RemoveOtherWorktree failed:', err);
+      if (confirm) {
+        confirm = { ...confirm, pending: false, error: userFacingError(err) };
+      }
+    }
+  }
 </script>
 
 <button
@@ -130,6 +249,7 @@
   data-testid="env-picker-trigger"
   class={composerTriggerClasses}
 >
+  <Icon icon={triggerIcon} size={12} strokeWidth={2} class="opacity-70" />
   <span class="truncate max-w-[160px] text-fg">{triggerLabel}</span>
   <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
 </button>
@@ -143,8 +263,7 @@
 >
   <Menu ariaLabel="Workspace" onClose={closeMenu}>
     <MenuItem
-      label="Current Checkout"
-      description={projectPath ? basename(projectPath) : undefined}
+      label={projectPath ? `Local · ${basename(projectPath)}` : 'Local'}
       checked={isAtProjectRoot && intent.mode !== 'new-worktree'}
       disabled={!projectPath || workspaceChangingDisabled}
       title={workspaceChangingDisabled ? disabledReason : undefined}
@@ -152,7 +271,6 @@
     />
     <MenuItem
       label="New Worktree"
-      description="Create before the next send"
       checked={intent.mode === 'new-worktree'}
       disabled={workspaceChangingDisabled}
       title={workspaceChangingDisabled ? disabledReason : undefined}
@@ -170,14 +288,81 @@
       <MenuDivider />
       {#each worktrees as wt (wt.path)}
         {#if !sameNormalizedPath(wt.path, projectPath)}
-          <MenuItem
-            label="Current Worktree"
-            description={wt.branch ? `${wt.branch} · ${basename(wt.path) || wt.path}` : basename(wt.path) || wt.path}
-            checked={sameNormalizedPath(currentWorkspace, wt.path) && intent.mode !== 'new-worktree'}
-            disabled={workspaceChangingDisabled}
-            title={workspaceChangingDisabled ? disabledReason : undefined}
-            onSelect={() => selectPath(wt.path)}
-          />
+          {#if confirm && confirm.path === wt.path}
+            <div
+              class="px-3 py-2 text-sm"
+              role="presentation"
+              data-testid="env-picker-confirm-row"
+            >
+              <div class="text-fg truncate">
+                Remove <span class="font-medium">{confirm.label}</span>
+                {#if confirm.branch}
+                  <span class="text-fg-hint">· {confirm.branch}</span>
+                {/if}?
+              </div>
+              {#if confirm.loading}
+                <div class="mt-1 text-[11px] text-fg-hint">Checking…</div>
+              {:else if confirm.error}
+                <div class="mt-1 text-[11px] text-error truncate">{confirm.error}</div>
+              {:else if confirm.status}
+                {#if isRiskyStatus(confirm.status)}
+                  <div class="mt-1 text-[11px] text-warning truncate">
+                    {riskSummary(confirm.status)}
+                  </div>
+                {:else if confirm.status.attachedThreads > 0}
+                  <div class="mt-1 text-[11px] text-fg-hint truncate">
+                    {riskSummary(confirm.status)} — will move to project root.
+                  </div>
+                {/if}
+              {/if}
+              <div class="mt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onclick={cancelRemove}
+                  disabled={confirm.pending}
+                  class="rounded-[var(--radius-field)] px-2 py-0.5 text-[11px] text-fg-hint hover:bg-surface-2/70 hover:text-fg disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                {#if confirm.status && isRiskyStatus(confirm.status)}
+                  <button
+                    type="button"
+                    onclick={() => performRemove(true)}
+                    disabled={confirm.pending || confirm.loading}
+                    data-testid="env-picker-confirm-force"
+                    class="rounded-[var(--radius-field)] bg-error/15 px-2 py-0.5 text-[11px] text-error hover:bg-error/25 disabled:opacity-50"
+                  >
+                    {confirm.pending ? 'Removing…' : 'Discard and remove'}
+                  </button>
+                {:else}
+                  <button
+                    type="button"
+                    onclick={() => performRemove(false)}
+                    disabled={confirm.pending || confirm.loading}
+                    data-testid="env-picker-confirm-remove"
+                    class="rounded-[var(--radius-field)] bg-surface-2/70 px-2 py-0.5 text-[11px] text-fg hover:bg-surface-2 disabled:opacity-50"
+                  >
+                    {confirm.pending ? 'Removing…' : 'Remove'}
+                  </button>
+                {/if}
+              </div>
+            </div>
+          {:else}
+            <MenuItem
+              label={wt.branch ? `${basename(wt.path) || wt.path} · ${wt.branch}` : basename(wt.path) || wt.path}
+              checked={sameNormalizedPath(currentWorkspace, wt.path) && intent.mode !== 'new-worktree'}
+              disabled={workspaceChangingDisabled}
+              title={workspaceChangingDisabled ? disabledReason : undefined}
+              onSelect={() => selectPath(wt.path)}
+              actionLabel={`Remove worktree ${basename(wt.path) || wt.path}`}
+              actionPosition="end"
+              onAction={() => requestRemove(wt)}
+            >
+              {#snippet action()}
+                <Icon icon={Trash2} size={12} strokeWidth={2} />
+              {/snippet}
+            </MenuItem>
+          {/if}
         {/if}
       {/each}
     {/if}

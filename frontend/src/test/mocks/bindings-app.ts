@@ -234,10 +234,34 @@ export const GitPush = dispatch('GitPush');
 export const GitPull = dispatch('GitPull');
 export const GitCheckout = dispatch('GitCheckout');
 export const GitCreateBranch = dispatch('GitCreateBranch');
+export const GitCreateBranchFrom = dispatch('GitCreateBranchFrom');
 export const GitCreatePR = dispatch('GitCreatePR');
 export const GitCreateWorktree = dispatch('GitCreateWorktree');
+export const GitWorktreeStatus = dispatch('GitWorktreeStatus');
 export const PrepareThreadWorktree = dispatch('PrepareThreadWorktree');
 export const GitRemoveWorktree = dispatch('GitRemoveWorktree');
+export const RemoveOtherWorktree = dispatch('RemoveOtherWorktree');
+// WorktreeStatus mirrors the generated class; tests stub the binding
+// to return plain object literals, so the class shape is only here so
+// `import type { WorktreeStatus }` resolves through the mock module.
+export class WorktreeStatus {
+  path: string;
+  branch: string;
+  dirty: boolean;
+  uncommittedCount: number;
+  unpushedCommits: number;
+  hasUpstream: boolean;
+  attachedThreads: number;
+  constructor(s: Partial<WorktreeStatus> = {}) {
+    this.path = s.path ?? '';
+    this.branch = s.branch ?? '';
+    this.dirty = s.dirty ?? false;
+    this.uncommittedCount = s.uncommittedCount ?? 0;
+    this.unpushedCommits = s.unpushedCommits ?? 0;
+    this.hasUpstream = s.hasUpstream ?? false;
+    this.attachedThreads = s.attachedThreads ?? 0;
+  }
+}
 
 export const ListDiscussions = dispatch('ListDiscussions');
 export const ListDiscussionsForThread = dispatch('ListDiscussionsForThread');

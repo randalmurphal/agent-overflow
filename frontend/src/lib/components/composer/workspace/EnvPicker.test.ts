@@ -54,18 +54,18 @@ describe('<EnvPicker>', () => {
     resetWorktreeIntent();
   });
 
-  it('shows the current checkout at the project root', async () => {
+  it('labels the trigger Local at the project root', async () => {
     const pane = await buildPane(makeThread({ workspacePath: '/repo' }));
     const { getByTestId } = render(EnvPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
-    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Current Checkout/);
+    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Local/);
   });
 
-  it('shows when the thread is on a worktree', async () => {
+  it('labels the trigger with the worktree basename when off-root', async () => {
     const pane = await buildPane(
       makeThread({ workspacePath: '/tmp/wt-feature', projectPath: '/repo' }),
     );
     const { getByTestId } = render(EnvPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
-    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Current Worktree/);
+    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/wt-feature/);
   });
 
   it('lists worktrees on open and switches via UpdateThreadWorkspace', async () => {
@@ -130,7 +130,7 @@ describe('<EnvPicker>', () => {
     await fireEvent.click(newWorktreeRow);
 
     expect(getBindingMock('UpdateThreadWorkspace')).not.toHaveBeenCalled();
-    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Current Checkout/);
+    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Local/);
   });
 
   it('disables workspace changes while background tasks are running', async () => {
@@ -163,6 +163,78 @@ describe('<EnvPicker>', () => {
     await fireEvent.click(newWorktreeRow);
 
     expect(getBindingMock('UpdateThreadWorkspace')).not.toHaveBeenCalled();
-    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Current Checkout/);
+    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Local/);
+  });
+
+  it('opens an inline confirm strip and removes a clean worktree', async () => {
+    const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
+    setBindingMock('GitListWorktrees', async () => [
+      { path: '/tmp/wt-feature', branch: 'feat', head: 'def' },
+    ]);
+    setBindingMock('GitWorktreeStatus', async () => ({
+      path: '/tmp/wt-feature',
+      branch: 'feat',
+      dirty: false,
+      uncommittedCount: 0,
+      unpushedCommits: 0,
+      hasUpstream: true,
+      attachedThreads: 0,
+    }));
+    setBindingMock('RemoveOtherWorktree', async () => undefined);
+
+    const { getByTestId, findByLabelText, findByTestId } = render(EnvPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+
+    const trash = await findByLabelText(/Remove worktree wt-feature/);
+    await fireEvent.click(trash);
+
+    const confirmRow = await findByTestId('env-picker-confirm-row');
+    expect(confirmRow.textContent ?? '').toMatch(/Remove\s*wt-feature/);
+
+    const removeBtn = await findByTestId('env-picker-confirm-remove');
+    await fireEvent.click(removeBtn);
+
+    await waitFor(() => {
+      const call = getBindingMock('RemoveOtherWorktree')?.mock.calls[0];
+      expect(call).toEqual(['thread-1', '/tmp/wt-feature', false]);
+    });
+  });
+
+  it('confirms with the Discard variant when the worktree is risky', async () => {
+    const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
+    setBindingMock('GitListWorktrees', async () => [
+      { path: '/tmp/wt-feature', branch: 'feat', head: 'def' },
+    ]);
+    setBindingMock('GitWorktreeStatus', async () => ({
+      path: '/tmp/wt-feature',
+      branch: 'feat',
+      dirty: true,
+      uncommittedCount: 3,
+      unpushedCommits: 0,
+      hasUpstream: true,
+      attachedThreads: 0,
+    }));
+    setBindingMock('RemoveOtherWorktree', async () => undefined);
+
+    const { getByTestId, findByLabelText, findByTestId, queryByTestId } = render(EnvPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+
+    const trash = await findByLabelText(/Remove worktree wt-feature/);
+    await fireEvent.click(trash);
+
+    const force = await findByTestId('env-picker-confirm-force');
+    expect(force.textContent ?? '').toMatch(/Discard and remove/);
+    expect(queryByTestId('env-picker-confirm-remove')).toBeNull();
+
+    await fireEvent.click(force);
+
+    await waitFor(() => {
+      const call = getBindingMock('RemoveOtherWorktree')?.mock.calls[0];
+      expect(call).toEqual(['thread-1', '/tmp/wt-feature', true]);
+    });
   });
 });

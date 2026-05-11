@@ -1,9 +1,15 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -215,6 +221,116 @@ func (a *App) GitCreateBranch(threadID, name string) error {
 	return a.gitCore().CreateBranch(project, name)
 }
 
+// GitCreateBranchFrom creates a new branch in the thread's current
+// workspace (project root or the worktree the thread occupies), pointed
+// at baseBranch, then checks it out.
+//
+// carryLocalChanges has three meaningful combinations with baseBranch:
+//   - base = current branch, carry = true: the "Local with changes" path —
+//     `git checkout -b <name>` from HEAD; uncommitted changes stay attached.
+//   - base = current branch, carry = false: same git command; carry is a
+//     no-op since there's no checkout that would clobber the working tree.
+//   - base != current branch, carry = false: the destructive path — stash
+//     the working tree, checkout the base, branch off it, drop the stash.
+//     The frontend gates this behind an explicit "discards uncommitted
+//     changes" confirmation; we trust the caller has confirmed.
+//   - base != current branch, carry = true: rejected. "Local with changes"
+//     only makes sense when both ends agree on the base.
+//
+// Returns the refreshed thread (Branch updated). Does not call
+// restartSessionIfAffected because the cwd is unchanged — the provider
+// session keeps running.
+func (a *App) GitCreateBranchFrom(threadID, name, baseBranch string, carryLocalChanges bool) (store.Thread, error) {
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	_, workspace, err := a.resolveGitPaths(thread)
+	if err != nil {
+		return store.Thread{}, err
+	}
+
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return store.Thread{}, fmt.Errorf("create branch: name is required")
+	}
+	sanitized := gitops.SanitizeBranchNamePreservingSlashes(name)
+	if sanitized == "" {
+		return store.Thread{}, fmt.Errorf("create branch: name %q is not a valid branch name", name)
+	}
+
+	core := a.gitCore()
+	currentBranch := strings.TrimSpace(thread.Branch)
+	if currentBranch == "" {
+		currentBranch = currentGitBranch(core, workspace)
+	}
+	resolvedBase := strings.TrimSpace(baseBranch)
+	if resolvedBase == "" {
+		resolvedBase = currentBranch
+	}
+	if resolvedBase == "" {
+		return store.Thread{}, fmt.Errorf("create branch: base branch is required")
+	}
+
+	baseIsCurrent := resolvedBase == currentBranch
+	if carryLocalChanges && !baseIsCurrent {
+		return store.Thread{}, fmt.Errorf("create branch: 'Local with changes' only applies when the base matches the current branch")
+	}
+
+	unlock := sendThreadMuRegistry.lockFor(threadID)
+	defer unlock()
+	if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
+		return store.Thread{}, err
+	}
+
+	if baseIsCurrent {
+		// Working tree (clean or dirty) stays attached to the new branch.
+		// CheckoutNewBranch validates the name through the package's
+		// branch-name gate so a flag-shaped string can't reach argv.
+		if err := core.CheckoutNewBranch(workspace, sanitized); err != nil {
+			return store.Thread{}, fmt.Errorf("create branch: %w", err)
+		}
+	} else {
+		// Destructive path: stash everything, checkout the base, branch
+		// off it, drop the stash. The frontend has surfaced the warning.
+		// Both checkout calls route through the package's typed wrappers
+		// (Checkout / CheckoutNewBranch) so flag injection in the base
+		// branch name is impossible regardless of the caller's input.
+		stashMessage := fmt.Sprintf("ao-discard-%s", shortStashID())
+		stashed, err := core.StashPushIncludeUntracked(workspace, stashMessage)
+		if err != nil {
+			return store.Thread{}, fmt.Errorf("create branch: stash before discard: %w", err)
+		}
+		if err := core.Checkout(workspace, resolvedBase); err != nil {
+			if stashed {
+				a.restoreStashOnError(workspace, stashMessage)
+			}
+			return store.Thread{}, fmt.Errorf("create branch: checkout base %s: %w", resolvedBase, err)
+		}
+		if err := core.CheckoutNewBranch(workspace, sanitized); err != nil {
+			if stashed {
+				a.restoreStashOnError(workspace, stashMessage)
+			}
+			return store.Thread{}, fmt.Errorf("create branch: %w", err)
+		}
+		if stashed {
+			if err := core.StashDropByMessage(workspace, stashMessage); err != nil {
+				log.Printf("create branch: drop discarded stash %q: %v", stashMessage, err)
+			}
+		}
+	}
+
+	if a.workspaceFiles != nil {
+		a.workspaceFiles.Invalidate(workspace)
+	}
+	thread.Branch = currentGitBranch(core, workspace)
+	thread.UpdatedAt = time.Now().UnixMilli()
+	if err := a.store.UpdateThread(thread); err != nil {
+		return store.Thread{}, err
+	}
+	return thread, nil
+}
+
 // GitCreatePR opens a pull request for the workspace's current branch. When
 // draft is true the PR is opened as a GitHub draft (gh pr create --draft).
 func (a *App) GitCreatePR(threadID, title, body string, draft bool) (gitops.GitActionResult, error) {
@@ -249,8 +365,9 @@ func (a *App) GitCreatePR(threadID, title, body string, draft bool) (gitops.GitA
 }
 
 // GitCreateWorktree creates a new worktree for the requested branch and returns its path.
+// Preserves legacy semantics — no carry-over of local changes.
 func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
-	updated, err := a.PrepareThreadWorktree(threadID, "", branch)
+	updated, err := a.PrepareThreadWorktree(threadID, "", branch, false)
 	if err != nil {
 		return "", err
 	}
@@ -260,7 +377,19 @@ func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 // PrepareThreadWorktree creates a new worktree from baseBranch, switches the
 // thread to it, and returns the updated thread. requestedBranch is optional:
 // blank means "create a temporary auto branch using the configured prefix".
-func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string) (store.Thread, error) {
+//
+// When carryLocalChanges is true, the source workspace's dirty tree (staged
+// + unstaged + untracked) is stashed under a per-call message, the worktree
+// is created, and the stash is applied in the new worktree before the entry
+// is dropped from the stash stack. carryLocalChanges only applies when the
+// new worktree's base branch matches the source thread's current branch — a
+// "Local with changes" semantic only makes sense when both ends agree on the
+// base. When base diverges from current, the request is rejected with a
+// clear error so the caller can surface it.
+//
+// On stash-apply failure the worktree is removed and the stash entry is
+// kept so the user can recover via `git stash list`.
+func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string, carryLocalChanges bool) (store.Thread, error) {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return store.Thread{}, err
@@ -282,25 +411,71 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 		return store.Thread{}, fmt.Errorf("create worktree: branch is required")
 	}
 
+	core := a.gitCore()
 	resolvedBase := strings.TrimSpace(baseBranch)
 	if resolvedBase == "" {
 		resolvedBase = strings.TrimSpace(thread.Branch)
 	}
 	if resolvedBase == "" {
-		resolvedBase = currentGitBranch(a.gitCore(), project)
+		resolvedBase = currentGitBranch(core, project)
 	}
 	if resolvedBase == "" {
 		return store.Thread{}, fmt.Errorf("create worktree: base branch is required")
 	}
 
+	// Carry-over only makes sense from the thread's current branch. The
+	// source workspace's dirty state is what we'd be moving — moving it
+	// onto an unrelated base is a different semantic (rebase-style) we
+	// deliberately don't support.
+	if carryLocalChanges && resolvedBase != strings.TrimSpace(thread.Branch) {
+		return store.Thread{}, fmt.Errorf("create worktree: 'Local with changes' only applies when the base matches the current branch")
+	}
+
+	sourceWorkspace := strings.TrimSpace(thread.WorkspacePath)
+	if sourceWorkspace == "" {
+		sourceWorkspace = project
+	}
+
+	stashMessage := ""
+	stashed := false
+	if carryLocalChanges {
+		stashMessage = fmt.Sprintf("ao-carry-%s", shortStashID())
+		created, err := core.StashPushIncludeUntracked(sourceWorkspace, stashMessage)
+		if err != nil {
+			return store.Thread{}, fmt.Errorf("create worktree: stash local changes: %w", err)
+		}
+		stashed = created
+	}
+
 	worktreePath, err := a.defaultWorktreePath(project, resolvedBranch)
 	if err != nil {
+		if stashed {
+			a.restoreStashOnError(sourceWorkspace, stashMessage)
+		}
 		return store.Thread{}, err
 	}
-	core := a.gitCore()
 	if err := core.CreateWorktreeFromBranch(project, worktreePath, resolvedBase, resolvedBranch); err != nil {
+		if stashed {
+			a.restoreStashOnError(sourceWorkspace, stashMessage)
+		}
 		return store.Thread{}, err
 	}
+
+	if stashed {
+		if err := core.StashApplyByMessage(worktreePath, stashMessage); err != nil {
+			// Apply failed in the new worktree. Tear the worktree down and
+			// keep the stash so the user can recover the changes manually.
+			_ = core.RemoveWorktreeForce(project, worktreePath, true)
+			return store.Thread{}, fmt.Errorf("create worktree: apply local changes in new worktree: %w (recover with: git stash list  →  git stash apply <ref> for entry %q)", err, stashMessage)
+		}
+		if err := core.StashDropByMessage(sourceWorkspace, stashMessage); err != nil {
+			// Apply succeeded but the source stash drop failed. The new
+			// worktree has the changes; leave the stash in place and log
+			// — the user-facing flow stays successful.
+			log.Printf("create worktree: drop carried stash %q: %v", stashMessage, err)
+		}
+	}
+
 	// ProjectID is already set on the thread; the project's Path is the
 	// git repo root. WorktreePath + WorkspacePath diverge at this point.
 	thread.WorktreePath = worktreePath
@@ -320,63 +495,266 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 	return refreshed, nil
 }
 
-// GitRemoveWorktree removes the worktree tracked by the thread.
-func (a *App) GitRemoveWorktree(threadID string) error {
-	return a.removeThreadWorktree(threadID, false)
+// restoreStashOnError best-effort applies the carry-over stash back into the
+// source workspace and drops it. Used when worktree creation fails before
+// the stash was consumed by the new worktree, so the user's working tree
+// isn't left empty. Failures here are logged; the original error is what
+// surfaces to the caller.
+func (a *App) restoreStashOnError(sourceWorkspace, stashMessage string) {
+	core := a.gitCore()
+	if err := core.StashApplyByMessage(sourceWorkspace, stashMessage); err != nil {
+		log.Printf("worktree: restore carried stash %q after error: %v", stashMessage, err)
+		return
+	}
+	if err := core.StashDropByMessage(sourceWorkspace, stashMessage); err != nil {
+		log.Printf("worktree: drop restored stash %q: %v", stashMessage, err)
+	}
 }
 
-func (a *App) removeThreadWorktree(threadID string, force bool) error {
+// shortStashID returns a short hex token for tagging stash messages so
+// concurrent carry-over operations on the same repo don't collide.
+func shortStashID() string {
+	var token [4]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(token[:])
+}
+
+// GitRemoveWorktree removes the worktree the thread is currently attached to.
+// Thin wrapper over RemoveOtherWorktree using the thread's own worktree path
+// so the auto-reattach behavior stays unified.
+func (a *App) GitRemoveWorktree(threadID string) error {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return err
 	}
-
-	project, _, err := a.resolveGitPaths(thread)
-	if err != nil {
-		return err
-	}
-
 	worktreePath := strings.TrimSpace(thread.WorktreePath)
 	if worktreePath == "" {
 		return fmt.Errorf("thread %s has no worktree path", threadID)
 	}
+	return a.RemoveOtherWorktree(threadID, worktreePath, false)
+}
+
+// RemoveOtherWorktree removes a worktree at an explicit path, optionally
+// forcing through dirty/unpushed safety. Threads attached to the worktree
+// (including the calling thread) are reset back to the project root and
+// their sessions restart so the workspace switch takes effect.
+//
+// Differs from GitRemoveWorktree in that the path is explicit (not derived
+// from the calling thread) and other threads referencing the worktree are
+// auto-reattached rather than blocking the call.
+func (a *App) RemoveOtherWorktree(threadID, worktreePath string, force bool) error {
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return err
+	}
+	project, _, err := a.resolveGitPaths(thread)
+	if err != nil {
+		return err
+	}
+	worktreePath = strings.TrimSpace(worktreePath)
+	if worktreePath == "" {
+		return fmt.Errorf("worktree path is required")
+	}
 	if gitops.SameFilesystemPath(project, worktreePath) {
 		return fmt.Errorf("refusing to remove project root as worktree")
 	}
-	if !force {
-		shared, err := a.worktreeReferencedByOtherThread(threadID, worktreePath)
-		if err != nil {
-			return err
-		}
-		if shared {
-			return fmt.Errorf("worktree %s is used by another thread", worktreePath)
-		}
-	}
-
-	unlock := sendThreadMuRegistry.lockFor(threadID)
-	defer unlock()
-	if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
-		return err
-	}
 
 	core := a.gitCore()
+	if !force {
+		// The gate refuses concrete loss-of-work signals: uncommitted
+		// changes in the tree, or commits the user made that haven't
+		// been pushed to the configured upstream. "No upstream" alone
+		// isn't a refusal — a freshly-created worktree off main
+		// rarely has one, and gating on it would make the legacy
+		// GitRemoveWorktree path unusable. The UI surfaces no-upstream
+		// as a visual warning and routes through force=true so this
+		// gate never sees it.
+		status, err := a.computeWorktreeStatus(project, worktreePath)
+		if err != nil {
+			return fmt.Errorf("worktree status: %w", err)
+		}
+		if status.Dirty || status.UnpushedCommits > 0 {
+			return fmt.Errorf("worktree %s has unsaved work (dirty=%v unpushed=%d); pass force to discard", worktreePath, status.Dirty, status.UnpushedCommits)
+		}
+	}
+
+	// Identify every thread that points at the worktree (the caller plus
+	// any sibling threads). Each of them needs to be unlocked from
+	// workspace mutations before we touch git, and each gets reattached
+	// to the project root in a single transaction-like sweep.
+	attached, err := a.threadsReferencingWorktree(worktreePath)
+	if err != nil {
+		return err
+	}
+	if !slices.Contains(attached, threadID) {
+		attached = append(attached, threadID)
+	}
+
+	unlocks := make([]func(), 0, len(attached))
+	defer func() {
+		// Release in reverse order to match LIFO mutex hygiene.
+		for i := len(unlocks) - 1; i >= 0; i-- {
+			unlocks[i]()
+		}
+	}()
+	for _, id := range attached {
+		unlocks = append(unlocks, sendThreadMuRegistry.lockFor(id))
+		if err := a.ensureWorkspaceChangeAllowed(id); err != nil {
+			return fmt.Errorf("worktree %s in use by thread %s: %w", worktreePath, id, err)
+		}
+	}
+
 	if err := core.RemoveWorktreeForce(project, worktreePath, force); err != nil {
 		return err
 	}
+	if a.workspaceFiles != nil {
+		// The path no longer exists; drop any cached file list before another
+		// thread's @-mention picker reaches for it.
+		a.workspaceFiles.Invalidate(worktreePath)
+	}
 
-	thread.WorktreePath = ""
-	if gitops.SameFilesystemPath(thread.WorkspacePath, worktreePath) {
-		thread.WorkspacePath = project
-		thread.Branch = currentGitBranch(core, project)
+	projectBranch := currentGitBranch(core, project)
+	now := time.Now().UnixMilli()
+	// Best-effort sweep: the worktree is already gone, so per-thread refresh
+	// failures should NOT bail mid-loop and leave siblings pointing at a
+	// deleted path. Accumulate errors and surface them together at the end —
+	// any successfully-mutated thread is broadcast immediately so its UI
+	// catches up regardless of what happens to its neighbours.
+	var sweepErrs []error
+	for _, id := range attached {
+		t, err := a.store.GetThread(id)
+		if err != nil {
+			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s not refreshed: %w", id, err))
+			continue
+		}
+		mutated := false
+		if gitops.SameFilesystemPath(t.WorktreePath, worktreePath) {
+			t.WorktreePath = ""
+			mutated = true
+		}
+		if gitops.SameFilesystemPath(t.WorkspacePath, worktreePath) {
+			t.WorkspacePath = project
+			t.Branch = projectBranch
+			mutated = true
+		}
+		if !mutated {
+			continue
+		}
+		t.UpdatedAt = now
+		if err := a.store.UpdateThread(t); err != nil {
+			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s update failed: %w", id, err))
+			continue
+		}
+		// Other panes only know to re-render when the thread:updated event
+		// fires — without it the sibling pane keeps showing the deleted
+		// worktree path until the user navigates. The caller's pane gets a
+		// redundant echo (the binding return already syncs it), which the
+		// pane store treats as idempotent.
+		a.emitEvent("thread:updated", t)
+		if _, err := a.restartSessionIfAffected(id, "workspace"); err != nil {
+			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s session refresh failed: %w", id, err))
+			continue
+		}
 	}
-	thread.UpdatedAt = time.Now().UnixMilli()
-	if err := a.store.UpdateThread(thread); err != nil {
-		return err
-	}
-	if _, err := a.restartSessionIfAffected(threadID, "workspace"); err != nil {
-		return fmt.Errorf("remove worktree: refresh thread after workspace switch: %w", err)
+	if len(sweepErrs) > 0 {
+		return fmt.Errorf("worktree removed but %d threads need attention: %w", len(sweepErrs), errors.Join(sweepErrs...))
 	}
 	return nil
+}
+
+// threadsReferencingWorktree returns every thread id whose workspace or
+// worktree path matches the supplied worktree path.
+func (a *App) threadsReferencingWorktree(worktreePath string) ([]string, error) {
+	refs, err := a.store.ListThreadWorkspaceRefs()
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, ref := range refs {
+		if gitops.SameFilesystemPath(ref.WorktreePath, worktreePath) ||
+			gitops.SameFilesystemPath(ref.WorkspacePath, worktreePath) {
+			ids = append(ids, ref.ID)
+		}
+	}
+	return ids, nil
+}
+
+
+// WorktreeStatus describes a worktree's safety classification for the cleanup
+// UI: whether the working tree has uncommitted changes, whether the branch
+// has unpushed commits, whether an upstream is configured, and how many
+// threads are currently attached to the worktree.
+type WorktreeStatus struct {
+	Path             string `json:"path"`
+	Branch           string `json:"branch"`
+	Dirty            bool   `json:"dirty"`
+	UncommittedCount int    `json:"uncommittedCount"`
+	UnpushedCommits  int    `json:"unpushedCommits"`
+	HasUpstream      bool   `json:"hasUpstream"`
+	AttachedThreads  int    `json:"attachedThreads"`
+}
+
+// GitWorktreeStatus classifies a worktree under the thread's project for the
+// cleanup UI. The thread parameter is just used to resolve the project root;
+// the path can be any worktree of that project.
+func (a *App) GitWorktreeStatus(threadID, worktreePath string) (WorktreeStatus, error) {
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return WorktreeStatus{}, err
+	}
+	project, _, err := a.resolveGitPaths(thread)
+	if err != nil {
+		return WorktreeStatus{}, err
+	}
+	return a.computeWorktreeStatus(project, worktreePath)
+}
+
+// computeWorktreeStatus is the engine behind GitWorktreeStatus. Split out so
+// RemoveOtherWorktree's safety gate can call it without going through a
+// thread fetch the caller already did.
+func (a *App) computeWorktreeStatus(project, worktreePath string) (WorktreeStatus, error) {
+	worktreePath = strings.TrimSpace(worktreePath)
+	if worktreePath == "" {
+		return WorktreeStatus{}, fmt.Errorf("worktree path is required")
+	}
+	core := a.gitCore()
+	worktree, ok, err := a.findWorktree(project, worktreePath)
+	if err != nil {
+		return WorktreeStatus{}, err
+	}
+	if !ok {
+		return WorktreeStatus{}, fmt.Errorf("%s is not a worktree for %s", worktreePath, project)
+	}
+
+	status := WorktreeStatus{
+		Path:   worktree.Path,
+		Branch: worktree.Branch,
+	}
+
+	count, err := core.CountWorkingTreeChanges(worktree.Path)
+	if err != nil {
+		return WorktreeStatus{}, fmt.Errorf("status: %w", err)
+	}
+	status.UncommittedCount = count
+	status.Dirty = count > 0
+
+	if status.Branch != "" {
+		unpushed, hasUpstream, err := core.CountUnpushedCommits(worktree.Path, status.Branch)
+		if err != nil {
+			return WorktreeStatus{}, fmt.Errorf("unpushed commits: %w", err)
+		}
+		status.UnpushedCommits = unpushed
+		status.HasUpstream = hasUpstream
+	}
+
+	attached, err := a.threadsReferencingWorktree(worktree.Path)
+	if err != nil {
+		return WorktreeStatus{}, err
+	}
+	status.AttachedThreads = len(attached)
+	return status, nil
 }
 
 // GitListWorktrees lists worktrees for the thread's repository.
@@ -586,23 +964,6 @@ func (a *App) findWorktree(project, path string) (gitops.Worktree, bool, error) 
 		}
 	}
 	return gitops.Worktree{}, false, nil
-}
-
-func (a *App) worktreeReferencedByOtherThread(threadID, path string) (bool, error) {
-	refs, err := a.store.ListThreadWorkspaceRefs()
-	if err != nil {
-		return false, err
-	}
-	for _, ref := range refs {
-		if ref.ID == threadID {
-			continue
-		}
-		if gitops.SameFilesystemPath(ref.WorktreePath, path) ||
-			gitops.SameFilesystemPath(ref.WorkspacePath, path) {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func gitBranchIsDefault(core *gitops.Core, project, branch string) bool {

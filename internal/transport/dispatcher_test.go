@@ -613,8 +613,11 @@ func (p *privilegedApp) GitStatusSubscribe() string             { return "ok" }
 func (p *privilegedApp) GitStatusUnsubscribe() string           { return "ok" }
 func (p *privilegedApp) GitCheckout() string                    { return "ok" }
 func (p *privilegedApp) GitCreateBranch() string                { return "ok" }
+func (p *privilegedApp) GitCreateBranchFrom() string            { return "ok" }
 func (p *privilegedApp) GitCreateWorktree() string              { return "ok" }
 func (p *privilegedApp) GitRemoveWorktree() string              { return "ok" }
+func (p *privilegedApp) GitWorktreeStatus() string              { return "ok" }
+func (p *privilegedApp) RemoveOtherWorktree() string            { return "ok" }
 func (p *privilegedApp) GitCommit() string                      { return "ok" }
 func (p *privilegedApp) GitPull() string                        { return "ok" }
 func (p *privilegedApp) GitStageAll() string                    { return "ok" }

@@ -1,18 +1,27 @@
 import type { Thread } from '../types/models';
 import { getSettings } from './settings.svelte';
+import { generateWorktreeBranchName } from '../utils/worktreeBranchName';
 
 export type WorktreeIntentMode = 'local' | 'new-worktree';
+
+// Sentinel `baseBranch` value meaning "branch off the current branch
+// AND carry the source workspace's uncommitted changes into the new
+// worktree". Distinct from picking the current branch by name (which
+// is a clean checkout from that branch's tip).
+export const LOCAL_BASE_SENTINEL = '__LOCAL__';
 
 export interface WorktreeIntent {
   mode: WorktreeIntentMode;
   baseBranch: string;
   branchName: string;
+  carryLocalChanges: boolean;
 }
 
 const LOCAL_INTENT: WorktreeIntent = {
   mode: 'local',
   baseBranch: '',
   branchName: '',
+  carryLocalChanges: false,
 };
 
 let intents: Map<string, WorktreeIntent> = $state(new Map());
@@ -32,7 +41,8 @@ export function seedDefaultWorktreeIntentForDraft(thread: Thread): void {
   intents = new Map(intents).set(thread.id, {
     mode: 'new-worktree',
     baseBranch: thread.branch ?? '',
-    branchName: '',
+    branchName: generateWorktreeBranchName(getSettings().worktreeBranchPrefix),
+    carryLocalChanges: false,
   });
 }
 
@@ -42,10 +52,17 @@ export function setThreadEnvMode(thread: Thread, mode: WorktreeIntentMode): void
     next.set(thread.id, LOCAL_INTENT);
   } else {
     const current = worktreeIntentForThread(thread);
+    // Regenerate the branch name on every fresh local→new-worktree
+    // transition. If the user toggled out and back, the previous
+    // generated value is stale.
+    const isFreshTransition = current.mode !== 'new-worktree' || !current.branchName;
     next.set(thread.id, {
       mode,
       baseBranch: current.baseBranch || thread.branch || '',
-      branchName: current.branchName,
+      branchName: isFreshTransition
+        ? generateWorktreeBranchName(getSettings().worktreeBranchPrefix)
+        : current.branchName,
+      carryLocalChanges: current.carryLocalChanges,
     });
   }
   intents = next;
@@ -53,10 +70,15 @@ export function setThreadEnvMode(thread: Thread, mode: WorktreeIntentMode): void
 
 export function setWorktreeBaseBranch(thread: Thread, baseBranch: string): void {
   const current = worktreeIntentForThread(thread);
+  const isLocalSentinel = baseBranch === LOCAL_BASE_SENTINEL;
   intents = new Map(intents).set(thread.id, {
     mode: 'new-worktree',
     baseBranch,
     branchName: current.branchName,
+    // Picking "Local (with changes)" sets carry; picking any real
+    // branch name clears it so the dirty-check surface knows the user
+    // wants a clean checkout.
+    carryLocalChanges: isLocalSentinel,
   });
 }
 
@@ -66,6 +88,17 @@ export function setWorktreeBranchName(thread: Thread, branchName: string): void 
     mode: 'new-worktree',
     baseBranch: current.baseBranch || thread.branch || '',
     branchName,
+    carryLocalChanges: current.carryLocalChanges,
+  });
+}
+
+export function setWorktreeCarryLocal(thread: Thread, carry: boolean): void {
+  const current = worktreeIntentForThread(thread);
+  intents = new Map(intents).set(thread.id, {
+    mode: 'new-worktree',
+    baseBranch: current.baseBranch || thread.branch || '',
+    branchName: current.branchName,
+    carryLocalChanges: carry,
   });
 }
 

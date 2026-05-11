@@ -1408,6 +1408,57 @@ export class WorkspaceFileSearchResult {
     }
 }
 
+/**
+ * WorktreeStatus describes a worktree's safety classification for the cleanup
+ * UI: whether the working tree has uncommitted changes, whether the branch
+ * has unpushed commits, whether an upstream is configured, and how many
+ * threads are currently attached to the worktree.
+ */
+export class WorktreeStatus {
+    "path": string;
+    "branch": string;
+    "dirty": boolean;
+    "uncommittedCount": number;
+    "unpushedCommits": number;
+    "hasUpstream": boolean;
+    "attachedThreads": number;
+
+    /** Creates a new WorktreeStatus instance. */
+    constructor($$source: Partial<WorktreeStatus> = {}) {
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("branch" in $$source)) {
+            this["branch"] = "";
+        }
+        if (!("dirty" in $$source)) {
+            this["dirty"] = false;
+        }
+        if (!("uncommittedCount" in $$source)) {
+            this["uncommittedCount"] = 0;
+        }
+        if (!("unpushedCommits" in $$source)) {
+            this["unpushedCommits"] = 0;
+        }
+        if (!("hasUpstream" in $$source)) {
+            this["hasUpstream"] = false;
+        }
+        if (!("attachedThreads" in $$source)) {
+            this["attachedThreads"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorktreeStatus instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorktreeStatus {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorktreeStatus($$parsedSource as Partial<WorktreeStatus>);
+    }
+}
+
 // Private type creation functions
 const $$createType0 = diffsummary$0.File.createFrom;
 const $$createType1 = $Create.Array($$createType0);

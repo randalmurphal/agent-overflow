@@ -106,10 +106,13 @@ export {
   GitPull,
   GitCheckout,
   GitCreateBranch,
+  GitCreateBranchFrom,
   GitCreatePR,
   GitCreateWorktree,
   GitRemoveWorktree,
+  GitWorktreeStatus,
   PrepareThreadWorktree,
+  RemoveOtherWorktree,
 
   // Terminal operations
   CloseTerminal,
@@ -244,6 +247,7 @@ export {
   NetworkSettings,
   RemoteEndpointSummary,
   TerminalOpenOptions,
+  WorktreeStatus,
 } from '../../../bindings/agent-overflow/models.js';
 export {
   Distro as WSLDistro,

@@ -94,10 +94,18 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
       opts.onWorktreePrepareStarted?.();
       let updated: Thread;
       try {
+        // When the user picked the "Local (with changes)" sentinel,
+        // the actual base is the thread's current branch and the
+        // backend stash-carry path applies. Otherwise the base is the
+        // chosen branch and the new worktree is a clean checkout.
+        const resolvedBase = worktreeIntent.carryLocalChanges
+          ? (threadForSend.branch ?? '')
+          : worktreeIntent.baseBranch;
         updated = (await PrepareThreadWorktree(
           opts.threadId,
-          worktreeIntent.baseBranch,
+          resolvedBase,
           worktreeIntent.branchName,
+          worktreeIntent.carryLocalChanges,
         )) as Thread;
       } finally {
         opts.onWorktreePrepareFinished?.();

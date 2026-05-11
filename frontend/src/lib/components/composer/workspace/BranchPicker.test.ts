@@ -204,6 +204,203 @@ describe('<BranchPicker>', () => {
     expect(getBindingMock('GitCheckout')).not.toHaveBeenCalled();
   });
 
+  it('exposes a New branch row that opens the inline create form', async () => {
+    const pane = await buildPane('main');
+    setBindingMock('GitListBranches', async () => [
+      { name: 'main', isRemote: false, isCurrent: true, isDefault: true },
+    ]);
+    setBindingMock('GetGitStatus', async () => ({
+      isRepo: true,
+      branch: 'main',
+      isDefaultBranch: true,
+      hasChanges: false,
+      insertions: 0,
+      deletions: 0,
+      fileCount: 0,
+      hasUpstream: true,
+      aheadCount: 0,
+      behindCount: 0,
+      hasOriginRemote: true,
+    }));
+
+    const { getByTestId, findByRole, queryByTestId } = render(BranchPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+
+    const newRow = await findByRole('menuitem', { name: /New branch/ });
+    await fireEvent.click(newRow);
+
+    await waitFor(() => {
+      expect(queryByTestId('branch-picker-create-form')).not.toBeNull();
+    });
+  });
+
+  it('creates a branch via GitCreateBranchFrom from a chosen base', async () => {
+    const pane = await buildPane('main');
+    setBindingMock('GitListBranches', async () => [
+      { name: 'main', isRemote: false, isCurrent: true, isDefault: true },
+      { name: 'release', isRemote: false, isCurrent: false, isDefault: false },
+    ]);
+    setBindingMock('GetGitStatus', async () => ({
+      isRepo: true,
+      branch: 'main',
+      isDefaultBranch: true,
+      hasChanges: false,
+      insertions: 0,
+      deletions: 0,
+      fileCount: 0,
+      hasUpstream: true,
+      aheadCount: 0,
+      behindCount: 0,
+      hasOriginRemote: true,
+    }));
+    setBindingMock('GitCreateBranchFrom', async () => makeThread('feat/new'));
+
+    const { getByTestId, findByRole, findByPlaceholderText, findByTestId } = render(BranchPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    const newRow = await findByRole('menuitem', { name: /New branch/ });
+    await fireEvent.click(newRow);
+
+    const nameInput = await findByPlaceholderText('New branch name');
+    await fireEvent.input(nameInput, { target: { value: 'feat/new' } });
+
+    const releaseRow = await findByRole('menuitem', { name: /release/ });
+    await fireEvent.click(releaseRow);
+
+    const submit = await findByTestId('branch-picker-create-submit');
+    await fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(getBindingMock('GitCreateBranchFrom')!.mock.calls[0]).toEqual([
+        'thread-1',
+        'feat/new',
+        'release',
+        false,
+      ]);
+    });
+  });
+
+  it('passes carryLocalChanges=true when Local (with changes) is the create base', async () => {
+    const pane = await buildPane('main');
+    setBindingMock('GitListBranches', async () => [
+      { name: 'main', isRemote: false, isCurrent: true, isDefault: true },
+    ]);
+    setBindingMock('GetGitStatus', async () => ({
+      isRepo: true,
+      branch: 'main',
+      isDefaultBranch: true,
+      hasChanges: true,
+      insertions: 1,
+      deletions: 0,
+      fileCount: 1,
+      hasUpstream: true,
+      aheadCount: 0,
+      behindCount: 0,
+      hasOriginRemote: true,
+    }));
+    setBindingMock('GitCreateBranchFrom', async () => makeThread('feat/dirty'));
+
+    const { getByTestId, findByRole, findByPlaceholderText, findByTestId } = render(BranchPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    const newRow = await findByRole('menuitem', { name: /New branch/ });
+    await fireEvent.click(newRow);
+
+    const nameInput = await findByPlaceholderText('New branch name');
+    await fireEvent.input(nameInput, { target: { value: 'feat/dirty' } });
+
+    const submit = await findByTestId('branch-picker-create-submit');
+    await fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(getBindingMock('GitCreateBranchFrom')!.mock.calls[0]).toEqual([
+        'thread-1',
+        'feat/dirty',
+        'main',
+        true,
+      ]);
+    });
+  });
+
+  it('warns and uses the danger button when create base differs from current on a dirty workspace', async () => {
+    const pane = await buildPane('main');
+    setBindingMock('GitListBranches', async () => [
+      { name: 'main', isRemote: false, isCurrent: true, isDefault: true },
+      { name: 'release', isRemote: false, isCurrent: false, isDefault: false },
+    ]);
+    setBindingMock('GetGitStatus', async () => ({
+      isRepo: true,
+      branch: 'main',
+      isDefaultBranch: true,
+      hasChanges: true,
+      insertions: 5,
+      deletions: 0,
+      fileCount: 2,
+      hasUpstream: true,
+      aheadCount: 0,
+      behindCount: 0,
+      hasOriginRemote: true,
+    }));
+
+    const { getByTestId, findByRole, findByPlaceholderText, findByTestId, queryByTestId } = render(
+      BranchPicker,
+      { props: { pane, workspaceLock: makeWorkspaceLock() } },
+    );
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    const newRow = await findByRole('menuitem', { name: /New branch/ });
+    await fireEvent.click(newRow);
+
+    const nameInput = await findByPlaceholderText('New branch name');
+    await fireEvent.input(nameInput, { target: { value: 'feat/destructive' } });
+
+    expect(queryByTestId('branch-picker-create-discards')).toBeNull();
+
+    const releaseRow = await findByRole('menuitem', { name: /release/ });
+    await fireEvent.click(releaseRow);
+
+    await waitFor(() => {
+      expect(queryByTestId('branch-picker-create-discards')).not.toBeNull();
+    });
+    const submit = await findByTestId('branch-picker-create-submit');
+    expect(submit.textContent ?? '').toMatch(/Discard and create/);
+  });
+
+  it('flips intent to Local sentinel when picking the Local row in worktree mode', async () => {
+    const pane = await buildPane('main');
+    if (!pane.thread) throw new Error('missing test thread');
+    setThreadEnvMode(pane.thread, 'new-worktree');
+    setBindingMock('GitListBranches', async () => [
+      { name: 'main', isRemote: false, isCurrent: true, isDefault: true },
+    ]);
+    setBindingMock('GetGitStatus', async () => ({
+      isRepo: true,
+      branch: 'main',
+      isDefaultBranch: true,
+      hasChanges: true,
+      insertions: 1,
+      deletions: 0,
+      fileCount: 1,
+      hasUpstream: true,
+      aheadCount: 0,
+      behindCount: 0,
+      hasOriginRemote: true,
+    }));
+
+    const { getByTestId, findByRole } = render(BranchPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    const localRow = await findByRole('menuitem', { name: /Local \(with changes\)/ });
+    await fireEvent.click(localRow);
+
+    expect(worktreeIntentForThread(pane.thread).baseBranch).toBe('__LOCAL__');
+    expect(worktreeIntentForThread(pane.thread).carryLocalChanges).toBe(true);
+  });
+
   it('disables branch checkout while background tasks are running', async () => {
     const pane = await buildPane('main');
     const workspaceLock = makeWorkspaceLock({

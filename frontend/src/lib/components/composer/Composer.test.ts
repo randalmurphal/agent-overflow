@@ -723,7 +723,7 @@ describe('<Composer>', () => {
     await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'work there' } });
     await fireEvent.click(getByTestId('composer-send'));
 
-    expect(prepare).toHaveBeenCalledWith('thread-1', 'release', 'feature/custom');
+    expect(prepare).toHaveBeenCalledWith('thread-1', 'release', 'feature/custom', false);
     expect(send).toHaveBeenCalledWith('thread-1', 'work there', {
       attachmentIds: [],
     });

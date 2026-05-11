@@ -39,5 +39,6 @@ export {
     TerminalOpenOptions,
     ThreadLiveState,
     ThreadRuntimeModeChangedEvent,
-    WorkspaceFileSearchResult
+    WorkspaceFileSearchResult,
+    WorktreeStatus
 } from "./models.js";
