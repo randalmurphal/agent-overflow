@@ -203,6 +203,10 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 		return store.Item{}, fmt.Errorf("steer message: load thread: %w", err)
 	}
 
+	// Stamp activity before stdin write so the idle reaper can't race
+	// a slow Steer-and-respawn against its own teardown. Mirrors the
+	// pre-Send stamp in sendToProvider.
+	sess.liveness.bumpActivity(time.Now())
 	steerErr := codexSess.Steer(context.Background(), content, provider.SendOptions{
 		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
 		Attachments:     providerAttachments,

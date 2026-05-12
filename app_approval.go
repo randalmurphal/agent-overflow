@@ -46,6 +46,12 @@ func (a *App) RespondToApproval(threadID string, response provider.ApprovalRespo
 		a.emitApprovalFailure(threadID, response.RequestID, err)
 		return err
 	}
+	// Approval responses write to provider stdin; stamp activity
+	// before the write so the idle reaper can't tear down a session
+	// the user just answered a permission prompt on. The follow-up
+	// EventApprovalResolved bumps again via sessionEventHandler — this
+	// guards the window before that lands.
+	sess.liveness.bumpActivity(time.Now())
 	if err := providerSess.RespondToApproval(context.Background(), response); err != nil {
 		a.emitApprovalFailure(threadID, response.RequestID, err)
 		return err
@@ -81,6 +87,9 @@ func (a *App) RespondToUserInput(threadID string, response provider.UserInputRes
 		a.emitUserInputFailure(threadID, response.RequestID, err)
 		return err
 	}
+	// Same rationale as RespondToApproval: bump before stdin write so
+	// the reaper doesn't kill a session mid-structured-input round-trip.
+	sess.liveness.bumpActivity(time.Now())
 	if err := providerSess.RespondToUserInput(context.Background(), response); err != nil {
 		a.emitUserInputFailure(threadID, response.RequestID, err)
 		return err

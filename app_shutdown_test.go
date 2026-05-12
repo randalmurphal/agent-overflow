@@ -257,6 +257,7 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		"drain flush dispatch",
 		"close replay manager",
 		"shutdown telemetry",
+		"stop idle session reaper",
 		"close provider sessions",
 		"close design reactor",
 		"close gitwatch manager",

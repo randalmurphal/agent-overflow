@@ -576,6 +576,11 @@ func sendToProvider(
 		log.Printf("send message: session for thread %s has no provider", threadID)
 		return fmt.Errorf("session has no provider")
 	}
+	// Stamp user-send activity before stdin write so the idle reaper
+	// can't race a slow send-and-respawn against its own teardown.
+	// The matching provider events that follow will bump again — the
+	// reaper only cares about the latest stamp.
+	sess.liveness.bumpActivity(time.Now())
 	return providerSess.Send(context.Background(), content, provider.SendOptions{
 		InteractionMode: mode,
 		Attachments:     attachments,

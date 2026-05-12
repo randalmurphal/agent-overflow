@@ -216,6 +216,12 @@ func (a *App) spawnProviderSession(
 	designCfg designSessionConfig,
 	onEvent func(provider.ProviderEvent),
 ) (session, error) {
+	// liveness is initialized once and attached to whichever provider
+	// branch fires. Keeping the construction out of the switch arms
+	// guarantees a future third provider can't forget the field and
+	// silently end up immune to the idle reaper.
+	liveness := newSessionLiveness(time.Now())
+
 	switch t.Provider {
 	case string(provider.Claude):
 		cfg := claude.ConfigFromOptions(opts)
@@ -230,6 +236,7 @@ func (a *App) spawnProviderSession(
 			provider: string(provider.Claude),
 			token:    sessionToken,
 			claude:   sess,
+			liveness: liveness,
 		}, nil
 
 	case string(provider.Codex):
@@ -245,6 +252,7 @@ func (a *App) spawnProviderSession(
 			provider: string(provider.Codex),
 			token:    sessionToken,
 			codex:    sess,
+			liveness: liveness,
 		}, nil
 
 	default:
@@ -346,15 +354,30 @@ func (a *App) StopSession(threadID string) error {
 		delete(a.sessions, threadID)
 	}
 	a.mu.Unlock()
+	// teardownAndCloseSession tolerates the zero-value session — when
+	// no entry was registered, closeProviderSession returns nil and
+	// only the design + triage state is reset.
+	return a.teardownAndCloseSession(threadID, sess)
+}
 
-	if !ok {
-		a.teardownDesignThread(threadID)
-		if a.triage != nil {
-			a.triage.CleanupThread(threadID)
-		}
-		return nil
-	}
-
+// teardownAndCloseSession runs the per-thread design + triage cleanup
+// and closes the provider subprocess. Shared by StopSession (user
+// action) and idleCloseSession (reaper) so the close sequence stays in
+// one place — a future change like "also clear threadSlashCommands on
+// stop" lands once and both paths inherit it.
+//
+// Callers must remove the session from a.sessions BEFORE invoking so
+// two concurrent closers can't both call Close on the same provider
+// session. A zero-value sess argument is intentionally tolerated:
+// closeProviderSession returns nil for it, which lets StopSession
+// reuse this helper to scrub design/triage state on a thread that
+// never had a session registered.
+//
+// Not shared with unregisterSession (readLoop disconnect): that path
+// runs after the provider subprocess has already exited, so calling
+// closeProviderSession would be redundant, and it deliberately leaves
+// triage state alone so the final wire frames have somewhere to land.
+func (a *App) teardownAndCloseSession(threadID string, sess session) error {
 	a.teardownDesignThread(threadID)
 	if a.triage != nil {
 		a.triage.CleanupThread(threadID)

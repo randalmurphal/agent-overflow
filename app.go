@@ -151,6 +151,12 @@ type App struct {
 	codexModelCatalogMu       sync.Mutex
 	codexModelCatalog         map[string]codexModelCatalogEntry
 	codexModelCatalogInflight map[string]*codexModelCatalogLoad
+	// idleReaperStop signals the idle-session reaper goroutine to exit.
+	// Set by startIdleSessionReaper during ServiceStartup; closed exactly
+	// once by Shutdown before the parallel session close so the reaper
+	// can't fire mid-teardown and race the session snapshot.
+	idleReaperStop chan struct{}
+	idleReaperWG   sync.WaitGroup
 	// Test-only injection points for binding helpers that need to observe start/stop.
 	startSessionFn        func(string) error
 	stopSessionFn         func(string) error
@@ -194,6 +200,9 @@ type App struct {
 	// nil and the probe uses the package-level singleton; tests assign
 	// a client pointing at a local httptest server.
 	rateLimitProbeClientOverride *http.Client
+	// idleReaperNowFn is a test-only clock injection for the reaper.
+	// Production leaves it nil and reaperNow reads time.Now directly.
+	idleReaperNowFn func() time.Time
 }
 
 // session wraps a provider session regardless of type. Exactly one of
@@ -207,6 +216,39 @@ type session struct {
 	// Exactly one of these is non-nil.
 	claude *claude.Session
 	codex  *codex.Session
+	// liveness is the heap-allocated sibling that carries activity-tracking
+	// atomics. Never nil for registered sessions — spawnProviderSession sets
+	// it on construction. Stored behind a pointer so the value-type session
+	// can still be copied through the a.sessions map without tripping vet's
+	// atomic-copy check.
+	liveness *sessionLiveness
+}
+
+// sessionLiveness tracks the inputs the idle-session reaper uses.
+// lastActivityUnixNano is bumped on every provider event and every user
+// send; activeTurns is incremented on EventTurnStart and decremented on
+// EventTurnComplete so the reaper can skip sessions mid-turn. Both
+// counters are atomic so the reaper's sweep can read them without
+// taking a.mu beyond the map walk itself.
+type sessionLiveness struct {
+	lastActivityUnixNano atomic.Int64
+	activeTurns          atomic.Int32
+}
+
+func newSessionLiveness(now time.Time) *sessionLiveness {
+	l := &sessionLiveness{}
+	l.lastActivityUnixNano.Store(now.UnixNano())
+	return l
+}
+
+// bumpActivity stamps the current time as the last activity timestamp.
+// Safe to call from any goroutine. now() is injected so tests can pin
+// the clock; production callers pass time.Now.
+func (l *sessionLiveness) bumpActivity(now time.Time) {
+	if l == nil {
+		return
+	}
+	l.lastActivityUnixNano.Store(now.UnixNano())
 }
 
 // providerSession returns the underlying provider-agnostic Session, or
@@ -303,6 +345,12 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	// a minimal Messages API call — see internal/provider/claude/
 	// ratelimits_probe.go for the rationale.
 	a.startClaudeRateLimitProbeLoop()
+
+	// Start the idle-session reaper. Walks a.sessions every
+	// IdleReapInterval and closes provider subprocesses that have been
+	// idle past IdleReapThreshold so leaked subprocesses can't pile up
+	// across long-running app sessions. See app_session_reaper.go.
+	a.startIdleSessionReaper()
 
 	return nil
 }
@@ -572,6 +620,16 @@ func (a *App) Shutdown(ctx context.Context) error {
 		record("shutdown telemetry", a.telemetry.Shutdown(otelCtx))
 		cancel()
 	}
+
+	// Step 3b: stop the idle-session reaper before snapshotting
+	// sessions for Step 4. Otherwise the reaper could fire between the
+	// snapshot and the close, see entries the snapshot already moved
+	// out, and either close nothing (harmless) or — if a fresh entry
+	// is racing in — close a session the Shutdown closer doesn't know
+	// about. stopIdleSessionReaper is idempotent and blocks until the
+	// goroutine returns.
+	a.stopIdleSessionReaper()
+	record("stop idle session reaper", nil)
 
 	// Step 4: stop provider sessions. Each session's Close tears down
 	// its own design-thread state as part of the same parallel closer,

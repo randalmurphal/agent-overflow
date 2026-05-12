@@ -564,6 +564,11 @@ func (a *App) nextSendTurnIndex(threadID string) (int, error) {
 //     (code %d)", ...)` rather than a typed wrapper. Upstream's
 //     error string is stable per codex-rs/core/src/session/mod.rs.
 func (a *App) dispatchFlushToProvider(sess session, content string, opts provider.SendOptions, mode triage.FlushDispatchMode) error {
+	// Every branch below writes to provider stdin, so stamp activity
+	// once up front. Matches the pre-Send bumps in sendToProvider /
+	// steerMessageWithOptions so the idle reaper can't reap a session
+	// in the middle of a flush dispatch.
+	sess.liveness.bumpActivity(time.Now())
 	if sess.codex != nil {
 		if mode == triage.FlushDispatchModeImmediate {
 			return sess.codex.Send(context.Background(), content, opts)
