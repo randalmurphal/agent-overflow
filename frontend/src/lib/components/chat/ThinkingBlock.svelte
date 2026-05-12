@@ -116,8 +116,7 @@
       ]}
     >{bodyText}</span>
     {#snippet actions()}
-      <div class="shrink-0 flex items-center gap-1.5 text-[10px] text-fg-hint/70 pt-[2px]">
-        <time class="tabular-nums" datetime={isoTime}>{timestamp}</time>
+      <div class="shrink-0 flex items-center gap-1.5 text-[10px] text-fg-hint pt-[2px]">
         {#if canCopy}
           <span class="opacity-0 transition-opacity duration-150 group-hover/thinking:opacity-100 focus-within:opacity-100">
             <CopyButton
@@ -127,6 +126,7 @@
             />
           </span>
         {/if}
+        <time class="tabular-nums" datetime={isoTime}>{timestamp}</time>
       </div>
     {/snippet}
   </TranscriptDisclosureHeader>
