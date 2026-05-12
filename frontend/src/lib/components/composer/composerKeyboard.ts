@@ -1,10 +1,10 @@
 // Pure keyboard dispatch helpers for the Composer textarea.
 //
 // The real keyboard handler lives in Composer.svelte because it needs to
-// call into the mention / slash / send flows, but the popover navigation
-// logic (ArrowUp / ArrowDown / Tab / Enter / Escape) is mechanical enough
-// that it can be expressed as a reducer-style helper. Keeping it here
-// means Composer.svelte stops carrying ~60 lines of branching.
+// call into the mention / send flows, but the popover navigation logic
+// (ArrowUp / ArrowDown / Tab / Enter / Escape) is mechanical enough that
+// it can be expressed as a reducer-style helper. Keeping it here means
+// Composer.svelte stops carrying ~60 lines of branching.
 //
 // Contract: each helper returns an action token the caller can dispatch,
 // plus next-state for the active index. The caller is responsible for
@@ -36,8 +36,8 @@ export interface PopoverNavArgs {
 
 /**
  * Decide what a single keydown should do in the context of an open
- * mention / slash popover. Returns 'none' for any key we don't care
- * about, so the caller can fall through to its default handling.
+ * mention popover. Returns 'none' for any key we don't care about, so
+ * the caller can fall through to its default handling.
  */
 export function popoverNav({ key, activeIndex, itemCount }: PopoverNavArgs): PopoverAction {
   if (itemCount === 0) {
@@ -62,10 +62,9 @@ export function popoverNav({ key, activeIndex, itemCount }: PopoverNavArgs): Pop
 }
 
 /**
- * Handle a keydown against an open mention or slash popover. Returns
- * `true` when the keystroke was consumed (caller must not fall through),
- * `false` when the caller should continue its own logic (e.g. Enter to
- * send).
+ * Handle a keydown against an open mention popover. Returns `true` when
+ * the keystroke was consumed (caller must not fall through), `false`
+ * when the caller should continue its own logic (e.g. Enter to send).
  */
 export function handleMentionPopoverKeydown(
   e: KeyboardEvent,
@@ -99,35 +98,6 @@ export function handleMentionPopoverKeydown(
     if (action.kind === 'close') {
       e.preventDefault();
       mentions.closeMention();
-      return true;
-    }
-  }
-
-  if (mentions.slashTrigger) {
-    // Mutually exclusive with the mention trigger — refreshTriggers keeps
-    // only one open at a time, so we only reach this branch when
-    // `mentionTrigger` is null.
-    const action = popoverNav({
-      key: e.key,
-      activeIndex: mentions.slashActiveIndex,
-      itemCount: mentions.slashFilteredCommands.length,
-    });
-    if (action.kind === 'move') {
-      e.preventDefault();
-      mentions.setSlashActiveIndex(action.nextIndex);
-      return true;
-    }
-    if (action.kind === 'insert') {
-      const cmd = mentions.slashFilteredCommands[mentions.slashActiveIndex];
-      if (cmd) {
-        e.preventDefault();
-        mentions.insertSlashCommand(cmd);
-        return true;
-      }
-    }
-    if (action.kind === 'close') {
-      e.preventDefault();
-      mentions.closeSlash();
       return true;
     }
   }

@@ -362,9 +362,9 @@ func (a *App) StopSession(threadID string) error {
 
 // teardownAndCloseSession runs the per-thread design + triage cleanup
 // and closes the provider subprocess. Shared by StopSession (user
-// action) and idleCloseSession (reaper) so the close sequence stays in
-// one place — a future change like "also clear threadSlashCommands on
-// stop" lands once and both paths inherit it.
+// action) and idleCloseSession (reaper) so the close sequence stays
+// in one place — future per-thread cleanup steps land once and both
+// paths inherit it.
 //
 // Callers must remove the session from a.sessions BEFORE invoking so
 // two concurrent closers can't both call Close on the same provider

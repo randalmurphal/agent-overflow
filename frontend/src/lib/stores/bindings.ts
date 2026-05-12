@@ -177,9 +177,6 @@ export {
   GetThreadRuntimeMode,
   SetThreadRuntimeMode,
 
-  // Slash commands (Claude-only)
-  GetThreadSlashCommands,
-
   // Dev-only UI render tracing
   AppendUIRenderTraceBatch,
   GetUIRenderTracePath,

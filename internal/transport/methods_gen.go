@@ -75,7 +75,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetThreadItem", ID: 1969869112}, // main.App.GetThreadItem
 	{Name: "GetThreadLiveState", ID: 70226550}, // main.App.GetThreadLiveState
 	{Name: "GetThreadRuntimeMode", ID: 2573491630}, // main.App.GetThreadRuntimeMode
-	{Name: "GetThreadSlashCommands", ID: 520969054}, // main.App.GetThreadSlashCommands
 	{Name: "GetUIRenderTracePath", ID: 1009213933}, // main.App.GetUIRenderTracePath
 	{Name: "GetWSLDistroPreference", ID: 294719565}, // main.App.GetWSLDistroPreference
 	{Name: "GetWorkingTreeDiff", ID: 1858968113}, // main.App.GetWorkingTreeDiff

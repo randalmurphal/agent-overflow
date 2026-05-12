@@ -46,7 +46,6 @@ function installDraftMocks() {
   setBindingMock('ListLiveBackgroundTasks', async () => []);
   setBindingMock('ListThreadProposedPlans', async () => []);
   setBindingMock('ListProposedPlanComments', async () => []);
-  setBindingMock('GetThreadSlashCommands', async () => []);
   setBindingMock('SearchWorkspaceFiles', async () => ({
     files: [],
     truncated: false,

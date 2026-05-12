@@ -133,10 +133,6 @@ async function buildPane(
   }));
   // BranchPicker calls GitListBranches on mount.
   setBindingMock('GitListBranches', async () => []);
-  // Composer fetches slash commands lazily when the user types `/` —
-  // not on mount — but the binding mock throws on unexpected calls, so
-  // stub it defensively.
-  setBindingMock('GetThreadSlashCommands', async () => []);
   mockDrafts(new Map([[thread.id, '']]));
   setBindingMock('SaveDraft', async () => {});
   setBindingMock('ListAttachments', async () => []);

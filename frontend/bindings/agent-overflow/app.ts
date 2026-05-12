@@ -650,22 +650,6 @@ export function GetThreadRuntimeMode(threadID: string): $CancellablePromise<stri
 }
 
 /**
- * GetThreadSlashCommands returns the last-seen Claude slash-command list for
- * a thread. Populated from the `slash_commands` field on Claude's system.init
- * payload (see internal/provider/claude/protocol.go). Codex has no analogue
- * and returns an empty slice.
- * 
- * The binding always returns a non-nil slice so the frontend popover doesn't
- * have to null-check; an empty result means "no commands available" and the
- * UI renders a quiet empty state.
- */
-export function GetThreadSlashCommands(threadID: string): $CancellablePromise<string[]> {
-    return $Call.ByID(520969054, threadID).then(($result: any) => {
-        return $$createType6($result);
-    });
-}
-
-/**
  * GetUIRenderTracePath returns the dev trace file path used by
  * AppendUIRenderTraceBatch. The frontend exposes it through the console trace
  * API so a debug run can be inspected after a visual glitch.

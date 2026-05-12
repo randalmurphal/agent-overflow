@@ -371,9 +371,6 @@ func extractSessionInfo(raw map[string]json.RawMessage) provider.SessionInfo {
 	if v, ok := raw["claude_code_version"]; ok {
 		json.Unmarshal(v, &info.Version)
 	}
-	if v, ok := raw["slash_commands"]; ok {
-		json.Unmarshal(v, &info.SlashCommands)
-	}
 
 	return info
 }

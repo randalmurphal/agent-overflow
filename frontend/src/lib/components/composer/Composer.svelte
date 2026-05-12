@@ -1,6 +1,6 @@
 <script lang="ts">
-  // Pure message entry. Coordinates between the draft store, the mention +
-  // slash popovers (composerMentions.svelte.ts), and the upload flow
+  // Pure message entry. Coordinates between the draft store, the mention
+  // popover (composerMentions.svelte.ts), and the upload flow
   // (composerUploads.svelte.ts). Everything else — model/provider picker,
   // effort + fast-mode, runtime mode, mode cycle, branch picker, env /
   // worktree picker — lives in the composer toolbar / below-composer bar.
@@ -10,7 +10,6 @@
   import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
   import ComposerAttachmentRow from './ComposerAttachmentRow.svelte';
   import ComposerMentionPopover from './ComposerMentionPopover.svelte';
-  import ComposerSlashPopover from './ComposerSlashPopover.svelte';
   import ComposerTerminalChip from './ComposerTerminalChip.svelte';
   import ComposerToolbar from './toolbar/ComposerToolbar.svelte';
   import ActivityRail from './ActivityRail.svelte';
@@ -268,12 +267,6 @@
     });
   });
 
-  // Reset slash cache when the pane's thread changes. Pane-scoped state lives
-  // inside the mentions module; this $effect is the single hook.
-  $effect(() => {
-    mentions.onThreadChanged(pane.thread?.id ?? null);
-  });
-
   async function send(includeReviewComments = true) {
     if (!pane.threadId || !canSend) return;
     if (latestPlanSource && !hasDraftContent && !hasDraftPlanComments && !hasDraftDiffReviewComments) {
@@ -438,16 +431,16 @@
     // Yield without preventDefault — the global handler bails on
     // `defaultPrevented`, so consuming the chord here would cancel
     // the dispatch; the global handler preventDefaults on successful
-    // dispatch to suppress the browser's focus-shift. The
-    // mention/slash guards skip this branch when a popover is open,
-    // but `handleMentionPopoverKeydown` below has its own Shift+Tab
+    // dispatch to suppress the browser's focus-shift. The mention
+    // guard skips this branch when the popover is open, but
+    // `handleMentionPopoverKeydown` below has its own Shift+Tab
     // bail-out so the chord still reaches the global dispatcher.
-    if (e.key === 'Tab' && e.shiftKey && !mentions.mentionTrigger && !mentions.slashTrigger) {
+    if (e.key === 'Tab' && e.shiftKey && !mentions.mentionTrigger) {
       return;
     }
 
-    // Popover dispatch (mention + slash) short-circuits when the keystroke
-    // was consumed; otherwise we fall through to the send guard below.
+    // Popover dispatch short-circuits when the keystroke was consumed;
+    // otherwise we fall through to the send guard below.
     if (handleMentionPopoverKeydown(e, mentions)) return;
 
     // UP-arrow retract: when the composer is empty and Zone 1 has
@@ -455,8 +448,8 @@
     // into one editable draft (Claude TUI's `popAllEditable`). The
     // predicate gates on no-modifiers / empty-composer / non-empty-queue
     // so legit cursor navigation isn't intercepted. Runs AFTER popover
-    // dispatch — an open mention/slash popover owns ArrowUp for its
-    // own active-index navigation.
+    // dispatch — an open mention popover owns ArrowUp for its own
+    // active-index navigation.
     if (
       pane.threadId
       && shouldRetractQueueOnUpArrow({
@@ -581,7 +574,6 @@
   onDestroy(() => {
     releasePlanEvents?.();
     mentions.closeMention();
-    mentions.closeSlash();
   });
 </script>
 
@@ -666,17 +658,6 @@
           onSelect={mentions.insertMention}
           onClose={mentions.closeMention}
           onHover={(idx) => mentions.setMentionActiveIndex(idx)}
-        />
-
-        <ComposerSlashPopover
-          anchor={textarea}
-          open={mentions.slashTrigger !== null}
-          query={mentions.slashTrigger?.text ?? ''}
-          commands={mentions.slashFilteredCommands}
-          activeIndex={mentions.slashActiveIndex}
-          onSelect={mentions.insertSlashCommand}
-          onClose={mentions.closeSlash}
-          onHover={(idx) => mentions.setSlashActiveIndex(idx)}
         />
 
         <textarea

@@ -1,6 +1,6 @@
-// popoverNav is the pure reducer behind mention + slash popover
-// keyboard navigation. The dispatcher (handleMentionPopoverKeydown)
-// is tested separately with a stubbed mentions handle.
+// popoverNav is the pure reducer behind mention popover keyboard
+// navigation. The dispatcher (handleMentionPopoverKeydown) is tested
+// separately with a stubbed mentions handle.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -93,9 +93,6 @@ function stubMentions(): ComposerMentionsHandle & {
   setMentionActiveIndex: ReturnType<typeof vi.fn>;
   insertMention: ReturnType<typeof vi.fn>;
   closeMention: ReturnType<typeof vi.fn>;
-  setSlashActiveIndex: ReturnType<typeof vi.fn>;
-  insertSlashCommand: ReturnType<typeof vi.fn>;
-  closeSlash: ReturnType<typeof vi.fn>;
 } {
   return {
     mentionTrigger: null,
@@ -106,13 +103,6 @@ function stubMentions(): ComposerMentionsHandle & {
     insertMention: vi.fn(),
     closeMention: vi.fn(),
     refreshTriggers: vi.fn(),
-    slashTrigger: null,
-    slashFilteredCommands: [],
-    slashActiveIndex: 0,
-    setSlashActiveIndex: vi.fn(),
-    insertSlashCommand: vi.fn(),
-    closeSlash: vi.fn(),
-    onThreadChanged: vi.fn(),
   } as unknown as ReturnType<typeof stubMentions>;
 }
 
@@ -169,37 +159,6 @@ describe('handleMentionPopoverKeydown', () => {
     expect(mentions.closeMention).toHaveBeenCalled();
   });
 
-  it('slash popover: Tab inserts the active command', () => {
-    const mentions = stubMentions();
-    (mentions as { slashTrigger: unknown }).slashTrigger = { text: 'h' };
-    (mentions as { slashFilteredCommands: string[] }).slashFilteredCommands = ['/help', '/hello'];
-    (mentions as { slashActiveIndex: number }).slashActiveIndex = 0;
-    const ev = kdown('Tab');
-    expect(handleMentionPopoverKeydown(ev, mentions)).toBe(true);
-    expect(mentions.insertSlashCommand).toHaveBeenCalledWith('/help');
-  });
-
-  it('slash popover: Escape closes', () => {
-    const mentions = stubMentions();
-    (mentions as { slashTrigger: unknown }).slashTrigger = { text: 'h' };
-    const ev = kdown('Escape');
-    expect(handleMentionPopoverKeydown(ev, mentions)).toBe(true);
-    expect(mentions.closeSlash).toHaveBeenCalled();
-  });
-
-  it('mention trigger takes precedence over slash trigger when both are somehow open', () => {
-    const mentions = stubMentions();
-    (mentions as { mentionTrigger: unknown }).mentionTrigger = { query: '' };
-    (mentions as { slashTrigger: unknown }).slashTrigger = { text: 'h' };
-    (mentions as { mentionResults: unknown[] }).mentionResults = [{ path: 'a' }];
-    (mentions as { slashFilteredCommands: string[] }).slashFilteredCommands = ['/help'];
-    const ev = kdown('Enter');
-    handleMentionPopoverKeydown(ev, mentions);
-    // Mention wins — slash insert was not called.
-    expect(mentions.insertMention).toHaveBeenCalled();
-    expect(mentions.insertSlashCommand).not.toHaveBeenCalled();
-  });
-
   it('mention popover: Shift+Tab is reserved for mode.cycle and falls through', () => {
     const mentions = stubMentions();
     (mentions as { mentionTrigger: unknown }).mentionTrigger = { query: '' };
@@ -213,21 +172,6 @@ describe('handleMentionPopoverKeydown', () => {
     expect(handleMentionPopoverKeydown(ev, mentions)).toBe(false);
     expect(ev.defaultPrevented).toBe(false);
     expect(mentions.insertMention).not.toHaveBeenCalled();
-  });
-
-  it('slash popover: Shift+Tab is reserved for mode.cycle and falls through', () => {
-    const mentions = stubMentions();
-    (mentions as { slashTrigger: unknown }).slashTrigger = { text: 'h' };
-    (mentions as { slashFilteredCommands: string[] }).slashFilteredCommands = ['/help'];
-    const ev = new KeyboardEvent('keydown', {
-      key: 'Tab',
-      shiftKey: true,
-      bubbles: true,
-      cancelable: true,
-    });
-    expect(handleMentionPopoverKeydown(ev, mentions)).toBe(false);
-    expect(ev.defaultPrevented).toBe(false);
-    expect(mentions.insertSlashCommand).not.toHaveBeenCalled();
   });
 });
 
