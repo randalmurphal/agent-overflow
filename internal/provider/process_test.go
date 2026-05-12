@@ -500,8 +500,8 @@ func TestCloseEscalatesToSignal(t *testing.T) {
 
 	start := time.Now()
 	err = p.Close()
-	if err == nil {
-		t.Fatal("expected non-nil exit error after terminating sleep")
+	if err != nil {
+		t.Fatalf("Close returned %v, want nil (signal-terminated subprocess is still a successful close)", err)
 	}
 	if elapsed := time.Since(start); elapsed > 6*time.Second {
 		t.Fatalf("Close took %v, want under 6s", elapsed)
@@ -511,6 +511,45 @@ func TestCloseEscalatesToSignal(t *testing.T) {
 	case <-p.Done():
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("Done channel should be closed after Close")
+	}
+
+	// Forensic exit details (signal name, exit code) must remain
+	// accessible on Err() — Close swallows the exit for return-value
+	// semantics, not for diagnostics.
+	if p.Err() == nil {
+		t.Fatal("Err() should still surface the signal-terminated exit for forensics")
+	}
+}
+
+// TestCloseSwallowsExitCodeOnIntentionalShutdown is the regression for
+// the interrupt-then-revert "Revert failed: Exit status 1" bug. When
+// callers (revert, thread delete, shutdown) intentionally tear down a
+// session whose subprocess exited non-zero, Close must treat "process
+// is gone" as success. The exit details stay on Err() for the
+// read-loop's unexpected-exit banner path, which gates on
+// `!closing.Load()` so it doesn't fire for intentional teardown.
+func TestCloseSwallowsExitCodeOnIntentionalShutdown(t *testing.T) {
+	ctx := context.Background()
+	// `false` exits with code 1 immediately. By the time Close runs
+	// the Wait goroutine has already captured the *exec.ExitError into
+	// p.err and closed p.done.
+	p, err := Spawn(ctx, SpawnConfig{Binary: "false"})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	// Ensure the Wait goroutine has run so Close hits the first
+	// `case <-p.done` arm with a non-nil p.err.
+	<-p.Done()
+
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close returned %v, want nil (subprocess exit is the close goal, not a failure)", err)
+	}
+
+	// The exit error must remain available for callers that want it
+	// (session-died banner, exit-meta marshaller).
+	if p.Err() == nil {
+		t.Fatal("Err() should still surface the non-zero exit for forensics")
 	}
 }
 

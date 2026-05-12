@@ -134,7 +134,15 @@ func TestServiceShutdownClosesSessionsWithoutDeadlock(t *testing.T) {
 	}
 }
 
-func TestServiceShutdownReturnsSessionCloseErrors(t *testing.T) {
+// TestServiceShutdownTreatsSubprocessExitAsCleanClose is the
+// counterpart to the interrupt-then-revert "Revert failed: Exit status
+// 1" fix in Process.Close — a session whose subprocess exited non-zero
+// (e.g. an interrupted Claude CLI) is not a shutdown failure. The
+// process is gone, which is what shutdown was asking for. Surfacing
+// the exit code at this level caused user-visible errors on flows
+// (shutdown, revert, replacement-session start) where the prior
+// session had already terminated abnormally.
+func TestServiceShutdownTreatsSubprocessExitAsCleanClose(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-shutdown-error")
 	thread.Provider = string(provider.Claude)
@@ -143,6 +151,10 @@ func TestServiceShutdownReturnsSessionCloseErrors(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
+	// `false` exits with code 1 immediately — by the time
+	// ServiceShutdown closes the session, cmd.Wait has captured an
+	// *exec.ExitError. Pre-fix this propagated up as
+	// "close claude session for thread <id>: exit status 1".
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
@@ -162,18 +174,28 @@ func TestServiceShutdownReturnsSessionCloseErrors(t *testing.T) {
 		claude:   sess,
 	}
 
-	err = app.ServiceShutdown()
-	if err == nil {
-		t.Fatal("ServiceShutdown() error = nil, want provider close error")
-	}
-	if !strings.Contains(err.Error(), "session for thread "+thread.ID) || !strings.Contains(err.Error(), "close claude") {
-		t.Fatalf("ServiceShutdown() error = %v, want thread-scoped close context with claude provider", err)
+	if err := app.ServiceShutdown(); err != nil {
+		t.Fatalf("ServiceShutdown() error = %v, want nil (subprocess exit is not a shutdown failure)", err)
 	}
 }
 
-func TestStartSessionReturnsExistingSessionCloseError(t *testing.T) {
+// TestStartSessionProceedsWhenPriorSubprocessExitsNonZero is the
+// counterpart to TestServiceShutdownTreatsSubprocessExitAsCleanClose
+// for the start-replacement path. Same root cause: a Claude CLI that
+// was interrupted then asked to close exits non-zero, and that exit
+// is the goal of stopExistingSessionLocked, not a failure of it.
+// Pre-fix, the exit error bubbled out of startSessionNow as "close
+// claude session for thread <id>: exit status 1" — visible as
+// "Revert failed: Exit status 1" when the same start-replacement
+// flow ran under RevertToMessageCheckpoint after an interrupt. The
+// replacement also never started, so the user had to retry. Post-fix,
+// the replacement starts on the first attempt and the previous
+// subprocess's non-zero exit is treated as the clean teardown it
+// actually was.
+func TestStartSessionProceedsWhenPriorSubprocessExitsNonZero(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
+	t.Cleanup(func() { _ = app.ServiceShutdown() })
 
 	thread := testThread("thread-start-replace-close-error")
 	thread.Provider = string(provider.Claude)
@@ -207,23 +229,38 @@ func TestStartSessionReturnsExistingSessionCloseError(t *testing.T) {
 		claude:   existing,
 	}
 
-	err = app.startSessionNow(thread.ID)
-	if err == nil {
-		t.Fatal("startSessionNow() error = nil, want existing session close failure")
-	}
-	if !strings.Contains(err.Error(), "close claude session for thread "+thread.ID) {
-		t.Fatalf("startSessionNow() error = %v, want existing-session close context", err)
+	if err := app.startSessionNow(thread.ID); err != nil {
+		t.Fatalf("startSessionNow() error = %v, want nil (prior subprocess exit is not a close failure)", err)
 	}
 
-	if _, statErr := os.Stat(startMarker); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("replacement session start marker error = %v, want not exist", statErr)
+	// The marker write happens inside the shell script before `cat`
+	// blocks on stdin; once Spawn returned to NewSession the file
+	// must exist. We poll briefly to absorb the cross-process
+	// scheduling lag rather than racing fs metadata.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, statErr := os.Stat(startMarker); statErr == nil {
+			break
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("stat replacement marker: %v", statErr)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("replacement session start marker %s not created within 2s", startMarker)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	app.mu.Lock()
-	_, ok := app.sessions[thread.ID]
+	got, ok := app.sessions[thread.ID]
 	app.mu.Unlock()
-	if ok {
-		t.Fatalf("sessions[%s] still present after failed replacement start", thread.ID)
+	if !ok {
+		t.Fatalf("sessions[%s] missing after replacement start", thread.ID)
+	}
+	if got.token == "replace-close-error-token" {
+		t.Fatal("sessions[thread] still holds the prior token, want replacement")
+	}
+	if got.claude == nil {
+		t.Fatal("sessions[thread].claude = nil, want replacement claude session")
 	}
 }
 

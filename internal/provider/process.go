@@ -267,13 +267,23 @@ func (p *Process) Err() error {
 // 3. SIGTERM the process group
 // 4. Wait killGrace
 // 5. SIGKILL the process group
+//
+// Returns nil when the process is gone, regardless of its exit code.
+// A subprocess exiting non-zero is the goal of Close, not a failure of
+// it — propagating `cmd.Wait`'s ExitError up the call chain caused
+// "Revert failed: Exit status 1" toasts when callers (e.g. revert,
+// thread delete) intentionally tore down a Claude session that had
+// just been interrupted. The exit status stays available via Err()
+// for callers that need it; the unexpected-exit banner is emitted by
+// the read loop only when closing.Load() is false, so genuine crashes
+// still surface.
 func (p *Process) Close() error {
 	// Close stdin to signal the process to exit.
 	p.stdin.Close()
 
 	select {
 	case <-p.done:
-		return p.err
+		return closeResult(p.err)
 	case <-time.After(shutdownGrace):
 	}
 
@@ -282,12 +292,12 @@ func (p *Process) Close() error {
 
 	select {
 	case <-p.done:
-		return p.err
+		return closeResult(p.err)
 	case <-time.After(killGrace):
 	}
 
 	// SIGKILL the process group.
-	return p.Kill()
+	return closeResult(p.Kill())
 }
 
 // Kill immediately kills the process group.
@@ -295,6 +305,23 @@ func (p *Process) Kill() error {
 	p.signalGroup(syscall.SIGKILL)
 	<-p.done
 	return p.err
+}
+
+// closeResult treats a subprocess exit (any code or signal) as a
+// successful close — the process is gone, which is what Close was
+// trying to make happen. We log abnormal exits so a misbehaving
+// provider CLI still leaves a trail in the dev log, but the caller
+// doesn't see it as a teardown failure. Any non-exit error (e.g. a
+// future genuine close-operation failure) propagates unchanged.
+func closeResult(err error) error {
+	if err == nil {
+		return nil
+	}
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		log.Printf("provider: subprocess exited %v during intentional close", exitErr)
+		return nil
+	}
+	return err
 }
 
 // signalGroup sends a signal to the process group. The actual syscall
