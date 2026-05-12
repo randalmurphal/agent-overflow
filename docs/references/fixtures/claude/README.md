@@ -30,6 +30,15 @@ behavior. These back parser replay tests and the reference docs in
 - `local_agent_plus_bg_bash.ndjson` — bg Bash + bg local_agent
   combined: confirms the result-delay is keyed on local_agent
   specifically, not on any backgrounded task.
+- `opus47_thinking_redacted.ndjson` /
+  `opus47_thinking_summarized.ndjson` — same prompt against
+  `claude-opus-4-7`, captured on 2.1.132. The redacted run uses the
+  app's current invocation flags; the summarized run adds the hidden
+  `--thinking-display summarized` flag and surfaces a Haiku-generated
+  summary of the reasoning via `thinking_delta` events. See
+  [`opus47_thinking_summary.json`](opus47_thinking_summary.json) for
+  the per-fixture stats and `claude-wire.md` §thinking-display for the
+  wire-level explanation.
 - `*_summary.json` — notes captured during the spike runs
 
 ## Refresh

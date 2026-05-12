@@ -722,7 +722,8 @@ verbatim.
 ### Delta types
 - `text_delta: {text}` — ✅ handled
 - `thinking_delta: {thinking}` — ✅ handled
-- `signature_delta: {signature}` — ❌ unhandled (thinking signature)
+- `signature_delta: {signature}` — ❌ unhandled (thinking signature; flows
+  even when the `thinking` text is redacted — see §Extended thinking)
 - `input_json_delta: {partial_json}` — ❌ unhandled (fine-grained tool streaming)
 
 ### `message_stop` vs `result`
@@ -768,6 +769,127 @@ adapter always sets that flag (see `parse_stream.go`).
 See [`docs/architecture/turn-lifecycle.md`](../architecture/turn-lifecycle.md)
 for how triage absorbs the soft signal and the trailing `result`
 envelope idempotently.
+
+---
+
+## Extended thinking — opting in via `--thinking-display`
+
+Captured against `claude --version` 2.1.132, OAuth-subscription auth.
+The investigation log lives in
+[`fixtures/claude/opus47_thinking_summary.json`](fixtures/claude/opus47_thinking_summary.json)
+and the two raw NDJSON fixtures
+[`opus47_thinking_redacted.ndjson`](fixtures/claude/opus47_thinking_redacted.ndjson)
+and
+[`opus47_thinking_summarized.ndjson`](fixtures/claude/opus47_thinking_summarized.ndjson).
+
+### Two independent knobs
+
+The Anthropic API treats these as **orthogonal**:
+
+- `thinking.type` — whether and how the model thinks
+  (`adaptive` / `enabled` / `disabled`). CLI flag: `--thinking`.
+- `thinking.display` — how the resulting thinking is surfaced on the
+  wire (`summarized` / `omitted`). CLI flag: `--thinking-display`.
+
+The CLI flags map 1:1 to those API fields. Both are **hidden from
+`claude --help`** but the binary validates the choice set. The
+display knob is the one that controls whether `thinking` text reaches
+the parser; the mode knob controls the underlying reasoning behavior.
+
+### Default behavior per model
+
+Same prompt, same flags as `session.go#buildArgs`, only the model differs:
+
+| Model | API default for `thinking.display` | `thinking` text on wire | `thinking_delta` events |
+|---|---|---|---|
+| `sonnet` / `claude-sonnet-4-6` | `summarized` | populated | yes |
+| `claude-opus-4-6` | `summarized` | populated | yes |
+| `claude-opus-4-7` (current Opus) | **`omitted`** | **empty** (signature only) | **none** |
+
+Opus 4.7 still emits a `thinking` content block — the block boundary
+and `signature` come through normally — but the `thinking` field is an
+empty string and no `thinking_delta` events fire. Anthropic documents
+this change explicitly on
+[the Opus 4.7 release notes](https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7#thinking-content-omitted-by-default):
+display defaults to `omitted` for Opus 4.7 and the caller must
+explicitly set `display: "summarized"` to restore text.
+
+### The opt-in flag
+
+Adding `--thinking-display summarized` to the existing invocation
+restores the thinking flow on Opus 4.7. It's a no-op for Sonnet 4.6
+and Opus 4.6 (those already default to `summarized`).
+
+With the flag set:
+
+- `assistant.message.content[].thinking` is populated.
+- `stream_event` emits `thinking_delta` deltas alongside the existing
+  `signature_delta` — already wired to `EventThinking` by
+  `parse_stream.go`.
+- The `signature` is identical regardless of display mode; it carries
+  the encrypted full thinking and is required for multi-turn
+  continuity. Switching `display` between turns is supported.
+
+What "summarized" means is intentionally fuzzy. The Anthropic public
+docs describe it as a *summary* of the model's full thinking, processed
+by a different model from the target, and note that for Claude 4 the
+raw chain of thought is not returned via the public API (sales-team
+contact required). Empirically though, the surfaced text reads as
+first-person reasoning with self-corrections, planning, and
+uncertainty — see Sonnet 4.6's thinking block in
+[`ndjson_bash.log`](fixtures/claude/ndjson_bash.log). Treat the
+output as legitimate thinking content for UX purposes; treat the
+"summary" framing as the documented API contract, not as evidence
+that the text is lossy. Anthropic notes that "the first few lines of
+thinking output are more verbose, providing detailed reasoning that's
+particularly helpful for prompt engineering purposes."
+
+Billing: you're charged for the FULL underlying thinking tokens, not
+the visible characters. `summarized` vs `omitted` only changes what
+the wire surfaces, not what you pay.
+
+`--thinking-display omitted` keeps the redacted shape. Setting
+`--thinking enabled|adaptive` without a display flag does NOT flip
+display; the display knob is the load-bearing one.
+
+### Empirical (same prompt, claude-opus-4-7)
+
+| Extra flags | `thinking` chars | `thinking_delta` events |
+|---|---|---|
+| none | 0 | 0 |
+| `--effort max` | 0 | 0 |
+| `--thinking adaptive` | 0 | 0 |
+| `--thinking-display omitted` | 0 | 0 |
+| `--thinking-display summarized` | 343 | 6 |
+| `--thinking adaptive --thinking-display summarized` | 233 | 5 |
+| `--thinking enabled --thinking-display summarized` | 326 | 4 |
+
+`--effort` (low / medium / high / xhigh / max) scales the thinking
+budget. On Opus 4.7 with display=summarized: low → ~650 chars,
+high/max → ~1180 chars on a "prove infinitude of primes" prompt.
+
+### Caveats
+
+- Both flags are **undocumented** in CLI help. They map cleanly to
+  the documented API fields, but the CLI surface isn't part of any
+  stability contract — they may change or disappear.
+- `--betas interleaved-thinking-2025-05-14` (and any other custom
+  beta) is rejected with `Custom betas are only available for API key
+  users. Ignoring provided betas.` under OAuth auth. The
+  `--thinking-display` flag is the only opt-in path on the
+  subscription tier.
+- This had a regression window: on CLI 2.1.128 the flag was no-op for
+  Opus 4.7 (anthropics/claude-code#56356). On 2.1.132 it works as
+  documented. Older binaries in the wild may still no-op.
+
+### Adapter implications
+
+Adding `--thinking-display summarized` to `buildArgs` is a one-line
+change that unlocks Opus 4.7 thinking while staying a no-op for
+Sonnet 4.6 and Opus 4.6 (already default). No parser changes are
+required — `parse_stream.go` already routes `thinking_delta` to
+`EventThinking`, and `parse_assistant.go` already extracts the
+`thinking` content block from the assistant envelope.
 
 ---
 

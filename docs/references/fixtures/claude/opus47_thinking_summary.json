@@ -1,0 +1,63 @@
+{
+  "claude_code_version": "2.1.132",
+  "captured_at": "2026-05-11T19:58Z",
+  "model": "claude-opus-4-7",
+  "auth": "OAuth subscription (Pro)",
+  "platform": "Linux WSL2, Node 24",
+  "scenario": "Probe whether Claude Code CLI surfaces extended-thinking content for Opus 4.7. The same prompt is sent twice, identical flags except for the hidden --thinking-display flag.",
+  "prompt": "What is 47*53? Think step by step before answering.",
+  "common_flags": [
+    "--print",
+    "--input-format", "stream-json",
+    "--output-format", "stream-json",
+    "--verbose",
+    "--permission-prompt-tool", "stdio",
+    "--include-partial-messages",
+    "--replay-user-messages",
+    "--permission-mode", "bypassPermissions",
+    "--model", "claude-opus-4-7",
+    "--effort", "max"
+  ],
+  "fixtures": {
+    "opus47_thinking_redacted.ndjson": {
+      "extra_flags": [],
+      "result": "redacted",
+      "assistant_thinking_block": {
+        "thinking_field_length": 0,
+        "signature_field_length": 580
+      },
+      "stream_event_delta_types_observed": ["signature_delta", "text_delta"],
+      "thinking_delta_count": 0,
+      "result_usage": { "input_tokens": 6, "output_tokens": 222, "cache_read_input_tokens": 17365, "duration_ms": 7413 },
+      "interpretation": "The API still emits a `thinking` content block (so the block boundary and signature exist for multi-turn replay), but the `thinking` text is suppressed. Equivalent to the API's `redacted_thinking` shape."
+    },
+    "opus47_thinking_summarized.ndjson": {
+      "extra_flags": ["--thinking-display", "summarized"],
+      "result": "thinking text flows",
+      "assistant_thinking_block": {
+        "thinking_field_length": 236,
+        "signature_field_length": 592,
+        "thinking_preview": " I can solve this with the difference of squares approach: treating it as (50-3)(50+3) gives me 50² - 3², which is 2500 - 9 = 2491. Let me verify by breaking it down another way: 47 × 50 is 2350, plus"
+      },
+      "stream_event_delta_types_observed": ["thinking_delta", "signature_delta", "text_delta"],
+      "thinking_delta_count": 5,
+      "result_usage": { "input_tokens": 6, "output_tokens": 239, "cache_read_input_tokens": 25600, "duration_ms": 4993 },
+      "interpretation": "Adding `--thinking-display summarized` flips the API's `thinking.display` from `omitted` (Opus 4.7 default) to `summarized`. `thinking_delta` events flow on the partial-message stream and the assistant envelope's `thinking` content block is populated; both are already handled by the existing parser (`parse_stream.go`, `parse_assistant.go`). Per Anthropic public docs, the text is described as a 'summary processed by a different model', but empirically the surfaced content reads as first-person reasoning with self-corrections and planning (consistent with the existing Sonnet 4.6 fixture in `ndjson_bash.log`)."
+    }
+  },
+  "key_observations": {
+    "two_independent_knobs": "`thinking.type` (mode: adaptive/enabled/disabled) controls *whether and how much* the model thinks. `thinking.display` (summarized/omitted) controls *whether thinking text is surfaced on the wire*. They are orthogonal — `display` is the one that matters for whether `thinking_delta` events flow.",
+    "default_behavior_for_opus_4_7": "Opus 4.7 defaults `thinking.display` to `omitted` (a silent change from Opus 4.6's `summarized` default). The thinking content block is still emitted with a populated signature for multi-turn continuity, but the `thinking` text field is empty.",
+    "minimum_opt_in_flag": "`--thinking-display summarized` (maps to API `thinking.display`). The mode flag (`--thinking`) is independent and not required to flip display.",
+    "flag_discoverability": "Both `--thinking <enabled|adaptive|disabled>` and `--thinking-display <summarized|omitted>` are accepted by `claude` and validate their choices, but neither appears in `claude --help` output on 2.1.132. They map to documented API fields (`thinking.type` and `thinking.display`), but the CLI surface is undocumented.",
+    "previous_versions": "On 2.1.128 the flag had no effect for Opus 4.7 (anthropics/claude-code#56356). On 2.1.132 (this capture) the flag works as documented.",
+    "sonnet_and_opus_4_6": "Both still emit thinking content WITHOUT the flag — their API default for `thinking.display` is `summarized`. Adding the flag is a no-op for these models.",
+    "summary_fidelity": "Anthropic public docs describe `summarized` thinking as a summary produced by a different model from the target, with full raw thinking gated behind sales-team contact. Empirically the surfaced text contains first-person reasoning, self-corrections, planning, and uncertainty — see Sonnet 4.6's thinking block in `ndjson_bash.log`. Treat as legitimate thinking content for UX purposes.",
+    "betas_not_an_option": "Passing the underlying API beta header via `--betas interleaved-thinking-2025-05-14` is rejected with `Custom betas are only available for API key users. Ignoring provided betas.` when authenticated via OAuth. The flag-based opt-in is the only OAuth-tier path."
+  },
+  "anthropic_docs_cited_by_upstream_issue": [
+    "https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7#thinking-content-omitted-by-default",
+    "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking#controlling-thinking-display"
+  ],
+  "upstream_issue": "https://github.com/anthropics/claude-code/issues/56356"
+}
