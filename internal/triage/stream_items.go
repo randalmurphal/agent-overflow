@@ -141,12 +141,17 @@ func scopeCounterKey(threadID string, turnIndex int, scope string) string {
 	return fmt.Sprintf("%s|%d|%s", threadID, turnIndex, scope)
 }
 
+// thinkingSummaryPreview returns a tail-truncated preview of the
+// thinking content. The frontend displays the END of the reasoning
+// (a sliding 3-line tail), so the persisted summary keeps the tail
+// too — reloaded threads then show the actual end of thinking
+// without paying for a full payload fetch on mount.
 func thinkingSummaryPreview(content string) string {
 	runes := []rune(content)
 	if len(runes) <= thinkingPreviewRunes {
 		return content
 	}
-	return string(runes[:thinkingPreviewRunes]) + "..."
+	return "..." + string(runes[len(runes)-thinkingPreviewRunes:])
 }
 
 func textItemID(turnIndex int, scope string, segmentIndex int) string {

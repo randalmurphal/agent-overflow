@@ -1,6 +1,7 @@
 package triage
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -339,6 +340,66 @@ func TestSettleStreamingThinkingNonStreamingRowStillDrainsQueue(t *testing.T) {
 	drained := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
 	if len(drained) != 1 {
 		t.Fatalf("drain-after-non-streaming: expected 1 drained background_done row, got %d", len(drained))
+	}
+}
+
+// TestSettleStreamingThinkingTailTruncatesPersistedSummary pins that
+// the settled `items.summary` for a thinking row reflects the TAIL of
+// the full payload — not the head-capped streaming-time approximation
+// that AppendItemSummaryPreview leaves behind. The frontend renders a
+// sliding 3-line tail by default, and reloaded threads read the
+// persisted summary; if this ever flips back to head-truncating,
+// reloaded thinking blocks would show a mid-content slice instead of
+// the actual conclusion.
+func TestSettleStreamingThinkingTailTruncatesPersistedSummary(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// 300-rune body: head [HEAD-padding...] tail [TAIL-marker...].
+	// thinkingPreviewRunes = 200, so the tail-truncated preview must
+	// start with "..." and contain the trailing marker but NOT the
+	// leading marker.
+	leadingMarker := "BEGIN-marker"
+	trailingMarker := "END-marker"
+	mid := strings.Repeat("x", 200-len(leadingMarker)-len(trailingMarker)+100)
+	full := leadingMarker + mid + trailingMarker
+	if len([]rune(full)) <= thinkingPreviewRunes {
+		t.Fatalf("test setup: full content (%d runes) must exceed thinkingPreviewRunes (%d)", len([]rune(full)), thinkingPreviewRunes)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventThinking,
+		ThreadID:  "t1",
+		Content:   full,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("thinking delta: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventContentBlockStop,
+		ThreadID:  "t1",
+		Meta:      json.RawMessage(`{"blockType":"thinking"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("content block stop: %v", err)
+	}
+	if err := router.Wait(context.Background()); err != nil {
+		t.Fatalf("wait flush: %v", err)
+	}
+
+	row := firstItemByKind(t, st, "t1", "thinking")
+	if !strings.HasPrefix(row.Summary, "...") {
+		t.Fatalf("summary should start with tail-truncation ellipsis, got %q", row.Summary)
+	}
+	if !strings.Contains(row.Summary, trailingMarker) {
+		t.Fatalf("summary should contain trailing marker %q, got %q", trailingMarker, row.Summary)
+	}
+	if strings.Contains(row.Summary, leadingMarker) {
+		t.Fatalf("summary should NOT contain leading marker %q (regression: head-truncate), got %q", leadingMarker, row.Summary)
+	}
+	runes := []rune(row.Summary)
+	if want := thinkingPreviewRunes + len("..."); len(runes) != want {
+		t.Fatalf("summary length = %d runes, want %d", len(runes), want)
 	}
 }
 

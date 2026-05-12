@@ -231,29 +231,29 @@ func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope s
 		return nil
 	}
 	item.Status = status
-	if status == statusErrored {
-		item.Summary = interruptedSummary(item.Summary)
-	}
 	item.UpdatedAt = time.Now().UnixMilli()
 
-	// Now that the block has closed, refresh the thinking-meta preview so
-	// the card reflects the final summary rather than the first-delta
-	// preview captured at block open. We only pay the rebuild once per
-	// block (not per delta). The preview rebuilds from the current
-	// summary but the signature field — set later by
-	// persistThinkingSignature when EventContentBlockStop carries one —
-	// must survive the refresh, so we reuse the existing payload meta
-	// JSON and only replace the summary-derived fields.
+	// Refresh the persisted summary from the full payload's tail. The
+	// streaming-time summary is head-capped by AppendItemSummaryPreview
+	// as deltas accumulate, but the UI shows the END of the thinking
+	// (a sliding tail), so the settled summary should match what
+	// reloaded threads will display without paying for a full payload
+	// fetch on mount. The signature field set later by
+	// persistThinkingSignature must survive the meta refresh, so we
+	// only replace the summary-derived fields and merge.
 	if item.PayloadID != "" && item.PayloadKind == "thinking" {
-		_, totalSize, _, err := r.store.GetPayloadPreview(item.PayloadID, 0)
+		data, err := r.store.GetPayloadData(item.PayloadID)
 		if err != nil {
 			return err
 		}
-		metaBase := buildThinkingPayloadMeta(item.Summary, totalSize, "")
+		item.Summary = thinkingSummaryPreview(string(data))
+		if status == statusErrored {
+			item.Summary = interruptedSummary(item.Summary)
+		}
+
+		metaBase := buildThinkingPayloadMeta(item.Summary, len(data), "")
 		merged := metaBase
 		if item.PayloadMeta != "" && item.PayloadMeta != "{}" {
-			// Preserve the signature field set by persistThinkingSignature
-			// — the only field we can't reconstruct from summary alone.
 			if sig := metaNestedString(json.RawMessage(item.PayloadMeta), "signature"); sig != "" {
 				var m map[string]any
 				if jerr := json.Unmarshal([]byte(metaBase), &m); jerr == nil {
@@ -267,6 +267,11 @@ func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope s
 		if err := r.store.UpdatePayloadMeta(item.PayloadID, merged); err != nil {
 			return err
 		}
+	} else if status == statusErrored {
+		// Defensive fallback: thinking items normally always have a
+		// payload, but apply the interruption marker for any row that
+		// somehow lacks one.
+		item.Summary = interruptedSummary(item.Summary)
 	}
 	return r.persistItem(item, nil)
 }
