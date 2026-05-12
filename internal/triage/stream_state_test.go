@@ -343,38 +343,73 @@ func TestSettleStreamingThinkingNonStreamingRowStillDrainsQueue(t *testing.T) {
 	}
 }
 
-// TestSettleStreamingThinkingTailTruncatesPersistedSummary pins that
-// the settled `items.summary` for a thinking row reflects the TAIL of
-// the full payload — not the head-capped streaming-time approximation
-// that AppendItemSummaryPreview leaves behind. The frontend renders a
-// sliding 3-line tail by default, and reloaded threads read the
-// persisted summary; if this ever flips back to head-truncating,
-// reloaded thinking blocks would show a mid-content slice instead of
-// the actual conclusion.
-func TestSettleStreamingThinkingTailTruncatesPersistedSummary(t *testing.T) {
+// TestThinkingPersistedSummaryReflectsTailAcrossStreamingAndSettle
+// pins two coupled invariants:
+//
+//  1. The persisted `items.summary` for a thinking row is bounded to
+//     `thinkingPreviewRunes` characters of the END of the content,
+//     not the head. The frontend's 3-line tail viewport relies on
+//     this — a head-capped summary would show the BEGINNING of
+//     reasoning instead of the conclusion on cold reload.
+//  2. The tail is produced by the streaming-flush path
+//     (`AppendItemSummaryTail`), so `settleStreamingThinking` does
+//     NOT re-read `payloads.data` on the hot event path. The prior
+//     settle-time payload read was perceptible as an
+//     end-of-thinking freeze that queued subsequent tool/text events
+//     behind one synchronous BLOB load + meta write.
+//
+// The thinking row is driven through TWO deltas to exercise the
+// streaming-flush append (not just the first-delta seed). The
+// pre-settle assertion makes invariant 2 explicit — the persisted
+// summary must already be the tail before the content_block_stop
+// fires.
+func TestThinkingPersistedSummaryReflectsTailAcrossStreamingAndSettle(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	// 300-rune body: head [HEAD-padding...] tail [TAIL-marker...].
-	// thinkingPreviewRunes = 200, so the tail-truncated preview must
-	// start with "..." and contain the trailing marker but NOT the
-	// leading marker.
 	leadingMarker := "BEGIN-marker"
 	trailingMarker := "END-marker"
-	mid := strings.Repeat("x", 200-len(leadingMarker)-len(trailingMarker)+100)
-	full := leadingMarker + mid + trailingMarker
-	if len([]rune(full)) <= thinkingPreviewRunes {
-		t.Fatalf("test setup: full content (%d runes) must exceed thinkingPreviewRunes (%d)", len([]rune(full)), thinkingPreviewRunes)
-	}
+	// Two deltas crossing the cap. Each is >= the cap on its own so
+	// the post-cap tail is sourced entirely from the LAST delta —
+	// guarantees we exercise tail truncation, not pre-cap concat.
+	firstDelta := leadingMarker + strings.Repeat("x", thinkingPreviewRunes*2)
+	secondDelta := strings.Repeat("y", thinkingPreviewRunes) + trailingMarker
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventThinking,
 		ThreadID:  "t1",
-		Content:   full,
+		Content:   firstDelta,
 		Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("thinking delta: %v", err)
+		t.Fatalf("first thinking delta: %v", err)
 	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventThinking,
+		ThreadID:  "t1",
+		Content:   secondDelta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("second thinking delta: %v", err)
+	}
+	if err := router.Wait(context.Background()); err != nil {
+		t.Fatalf("wait flush (pre-settle): %v", err)
+	}
+
+	row := firstItemByKind(t, st, "t1", "thinking")
+	if len([]rune(row.Summary)) != thinkingPreviewRunes {
+		t.Fatalf("pre-settle summary length = %d runes, want %d (tail-cap from streaming flush)",
+			len([]rune(row.Summary)), thinkingPreviewRunes)
+	}
+	if !strings.Contains(row.Summary, trailingMarker) {
+		t.Fatalf("pre-settle summary should contain trailing marker %q (tail-cap from streaming flush), got %q", trailingMarker, row.Summary)
+	}
+	if strings.Contains(row.Summary, leadingMarker) {
+		t.Fatalf("pre-settle summary should NOT contain leading marker %q (regression: head-cap leaked through), got %q", leadingMarker, row.Summary)
+	}
+	if strings.HasPrefix(row.Summary, "...") {
+		t.Fatalf("pre-settle summary should not carry a leading ellipsis marker (frontend tail-clips visually), got %q", row.Summary)
+	}
+
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventContentBlockStop,
 		ThreadID:  "t1",
@@ -384,22 +419,16 @@ func TestSettleStreamingThinkingTailTruncatesPersistedSummary(t *testing.T) {
 		t.Fatalf("content block stop: %v", err)
 	}
 	if err := router.Wait(context.Background()); err != nil {
-		t.Fatalf("wait flush: %v", err)
+		t.Fatalf("wait flush (post-settle): %v", err)
 	}
 
-	row := firstItemByKind(t, st, "t1", "thinking")
-	if !strings.HasPrefix(row.Summary, "...") {
-		t.Fatalf("summary should start with tail-truncation ellipsis, got %q", row.Summary)
+	settled := firstItemByKind(t, st, "t1", "thinking")
+	if settled.Status != statusCompleted {
+		t.Fatalf("status after settle = %q, want %q", settled.Status, statusCompleted)
 	}
-	if !strings.Contains(row.Summary, trailingMarker) {
-		t.Fatalf("summary should contain trailing marker %q, got %q", trailingMarker, row.Summary)
-	}
-	if strings.Contains(row.Summary, leadingMarker) {
-		t.Fatalf("summary should NOT contain leading marker %q (regression: head-truncate), got %q", leadingMarker, row.Summary)
-	}
-	runes := []rune(row.Summary)
-	if want := thinkingPreviewRunes + len("..."); len(runes) != want {
-		t.Fatalf("summary length = %d runes, want %d", len(runes), want)
+	if settled.Summary != row.Summary {
+		t.Fatalf("settle path must not rewrite items.summary (would force a payloads.data read on the hot event path); pre-settle = %q, post-settle = %q",
+			row.Summary, settled.Summary)
 	}
 }
 

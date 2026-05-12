@@ -1,7 +1,6 @@
 package triage
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -232,45 +231,14 @@ func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope s
 	}
 	item.Status = status
 	item.UpdatedAt = time.Now().UnixMilli()
-
-	// Refresh the persisted summary from the full payload's tail. The
-	// streaming-time summary is head-capped by AppendItemSummaryPreview
-	// as deltas accumulate, but the UI shows the END of the thinking
-	// (a sliding tail), so the settled summary should match what
-	// reloaded threads will display without paying for a full payload
-	// fetch on mount. The signature field set later by
-	// persistThinkingSignature must survive the meta refresh, so we
-	// only replace the summary-derived fields and merge.
-	if item.PayloadID != "" && item.PayloadKind == "thinking" {
-		data, err := r.store.GetPayloadData(item.PayloadID)
-		if err != nil {
-			return err
-		}
-		item.Summary = thinkingSummaryPreview(string(data))
-		if status == statusErrored {
-			item.Summary = interruptedSummary(item.Summary)
-		}
-
-		metaBase := buildThinkingPayloadMeta(item.Summary, len(data), "")
-		merged := metaBase
-		if item.PayloadMeta != "" && item.PayloadMeta != "{}" {
-			if sig := metaNestedString(json.RawMessage(item.PayloadMeta), "signature"); sig != "" {
-				var m map[string]any
-				if jerr := json.Unmarshal([]byte(metaBase), &m); jerr == nil {
-					m["signature"] = sig
-					if refreshed, merr := json.Marshal(m); merr == nil {
-						merged = string(refreshed)
-					}
-				}
-			}
-		}
-		if err := r.store.UpdatePayloadMeta(item.PayloadID, merged); err != nil {
-			return err
-		}
-	} else if status == statusErrored {
-		// Defensive fallback: thinking items normally always have a
-		// payload, but apply the interruption marker for any row that
-		// somehow lacks one.
+	// `item.Summary` already reflects the running tail. AppendItemSummaryTail
+	// keeps the last `thinkingPreviewRunes` characters in place on every
+	// streaming flush, and the live pane summary survives settle for
+	// thinking rows (`applyLiveStateForUpsert`) so the on-screen view
+	// doesn't shrink. No payload re-read on the hot path — that would
+	// block the next provider event (a tool_use or text_delta following
+	// thinking) and produce the perceived end-of-thinking freeze.
+	if status == statusErrored {
 		item.Summary = interruptedSummary(item.Summary)
 	}
 	return r.persistItem(item, nil)

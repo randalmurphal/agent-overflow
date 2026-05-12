@@ -1086,12 +1086,25 @@ export function createThreadPane() {
 
   function applyLiveStateForUpsert(item: Item, nextLive: Record<string, string>): boolean {
     if (item.status !== 'streaming') {
-      const hadLiveSummary = nextLive[item.id] !== undefined;
       const hadDeltaChunks = liveDeltaChunks.delete(item.id);
-      if (hadLiveSummary) {
+      const existingLive = nextLive[item.id];
+      if (existingLive === undefined) return hadDeltaChunks;
+      // Drop the live entry on settle ONLY when it is visually
+      // indistinguishable from the persisted summary. For assistant_text
+      // the persisted summary IS the full live string, so deleting is a
+      // no-op visually. For thinking rows the persisted summary is a
+      // tail-truncated 200-rune preview shorter than the full live
+      // string; keeping the live entry preserves the exact 3-line tail
+      // that was on screen across the streaming → settle boundary
+      // instead of having `resolveDisplayItem` swap in the shorter
+      // preview and visibly shrink the row. The map clears on
+      // switchThread, so retained entries stay bounded by the visible
+      // thread's lifetime.
+      if (existingLive === item.summary) {
         delete nextLive[item.id];
+        return true;
       }
-      return hadLiveSummary || hadDeltaChunks;
+      return hadDeltaChunks;
     }
 
     if (nextLive[item.id] !== undefined || !item.summary) {

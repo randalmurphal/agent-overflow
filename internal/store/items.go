@@ -239,40 +239,41 @@ func (s *Store) AppendItemSummary(threadID, id, delta string, updatedAt int64) (
 	return updated, nil
 }
 
-// AppendItemSummaryPreview appends delta to a streaming item's summary while
-// keeping the stored value bounded to maxRunes plus ellipsis. Use this for
-// timeline rows whose full content lives in payloads.data and whose summary is
-// only a collapsed-row preview.
-func (s *Store) AppendItemSummaryPreview(threadID, id, delta string, maxRunes int, ellipsis string, updatedAt int64) (Item, error) {
+// AppendItemSummaryTail appends delta to a streaming item's summary while
+// keeping only the LAST maxRunes characters of the accumulated text. Use
+// this for timeline rows whose full content lives in payloads.data and
+// whose collapsed-row preview should reflect the END of the content (the
+// frontend renders a sliding-tail viewport for thinking rows). Storing
+// the tail directly means triage's settle path doesn't need to re-read
+// payloads.data to derive the right preview.
+func (s *Store) AppendItemSummaryTail(threadID, id, delta string, maxRunes int, updatedAt int64) (Item, error) {
 	if maxRunes < 0 {
 		maxRunes = 0
 	}
-	cappedLength := maxRunes + len([]rune(ellipsis))
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return Item{}, fmt.Errorf("store: begin append item summary preview tx: %w", err)
+		return Item{}, fmt.Errorf("store: begin append item summary tail tx: %w", err)
 	}
 	defer tx.Rollback()
 
 	result, err := tx.Exec(
 		`UPDATE items
 		    SET summary = CASE
-		            WHEN length(summary) >= ? THEN summary
-		            WHEN length(summary || ?) > ? THEN substr(summary || ?, 1, ?) || ?
-		            ELSE summary || ?
+		            WHEN length(summary || ?) <= ? THEN summary || ?
+		            ELSE substr(summary || ?, length(summary || ?) - ? + 1)
 		        END,
 		        updated_at = ?
 		  WHERE thread_id = ? AND id = ? AND status = 'streaming'`,
-		cappedLength, delta, maxRunes, delta, maxRunes, ellipsis, delta,
+		delta, maxRunes, delta, delta, delta, maxRunes,
 		updatedAt, threadID, id,
 	)
 	if err != nil {
-		return Item{}, fmt.Errorf("store: append item summary preview %s/%s: %w", threadID, id, err)
+		return Item{}, fmt.Errorf("store: append item summary tail %s/%s: %w", threadID, id, err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return Item{}, fmt.Errorf("store: rows affected append item summary preview %s/%s: %w", threadID, id, err)
+		return Item{}, fmt.Errorf("store: rows affected append item summary tail %s/%s: %w", threadID, id, err)
 	}
 	if affected == 0 {
 		var status string
@@ -281,7 +282,7 @@ func (s *Store) AppendItemSummaryPreview(threadID, id, delta string, maxRunes in
 			return Item{}, sql.ErrNoRows
 		}
 		if probeErr != nil {
-			return Item{}, fmt.Errorf("store: probe status for append item summary preview %s/%s: %w", threadID, id, probeErr)
+			return Item{}, fmt.Errorf("store: probe status for append item summary tail %s/%s: %w", threadID, id, probeErr)
 		}
 		return Item{}, ErrItemSettled
 	}
@@ -295,10 +296,10 @@ func (s *Store) AppendItemSummaryPreview(threadID, id, delta string, maxRunes in
 	)
 	updated, err := scanItemRow(row)
 	if err != nil {
-		return Item{}, fmt.Errorf("store: re-read preview-appended item %s/%s: %w", threadID, id, err)
+		return Item{}, fmt.Errorf("store: re-read tail-appended item %s/%s: %w", threadID, id, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return Item{}, fmt.Errorf("store: commit append item summary preview tx: %w", err)
+		return Item{}, fmt.Errorf("store: commit append item summary tail tx: %w", err)
 	}
 	return updated, nil
 }

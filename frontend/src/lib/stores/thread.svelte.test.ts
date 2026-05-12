@@ -901,6 +901,43 @@ describe('createThreadPane', () => {
     expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe('hello world');
   });
 
+  it('keeps the live summary past settle when the persisted summary is a lossy preview', async () => {
+    // Regression guard for the thinking-row streaming → settle visual
+    // shrink: the live string holds the full streaming text, the
+    // persisted `item.summary` is a tail-truncated preview, and
+    // unconditionally deleting the live entry on settle made
+    // ThinkingBlock's 3-line tail viewport flip to the shorter preview
+    // and visibly drop to 2 lines. Equality with the persisted summary
+    // (the assistant_text path) still deletes — guarded above.
+    const pane = createThreadPane();
+    const fullThinking =
+      'line one of reasoning that wraps across the column\n' +
+      'line two carries on the same idea with more detail\n' +
+      'line three closes out the chain and lands the point\n' +
+      'line four adds another beat past the visible tail';
+    pane.upsertItem(makeItem({
+      id: 'think:0:0',
+      kind: 'thinking',
+      status: 'streaming',
+      summary: fullThinking,
+      payloadId: 'thinking-payload',
+    }));
+    await nextFrame();
+    expect(pane.liveItemSummaries['think:0:0']).toBe(fullThinking);
+
+    const tailPreview = '...' + fullThinking.slice(-20);
+    pane.upsertItem(makeItem({
+      id: 'think:0:0',
+      kind: 'thinking',
+      status: 'completed',
+      summary: tailPreview,
+      payloadId: 'thinking-payload',
+    }));
+
+    expect(pane.liveItemSummaries['think:0:0']).toBe(fullThinking);
+    expect(pane.items.find((item) => item.id === 'think:0:0')?.summary).toBe(tailPreview);
+  });
+
   it('ignores stale deltas for an item that already settled', async () => {
     const pane = createThreadPane();
     pane.upsertItem(makeItem({

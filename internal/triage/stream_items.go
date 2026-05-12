@@ -141,17 +141,20 @@ func scopeCounterKey(threadID string, turnIndex int, scope string) string {
 	return fmt.Sprintf("%s|%d|%s", threadID, turnIndex, scope)
 }
 
-// thinkingSummaryPreview returns a tail-truncated preview of the
-// thinking content. The frontend displays the END of the reasoning
-// (a sliding 3-line tail), so the persisted summary keeps the tail
-// too — reloaded threads then show the actual end of thinking
-// without paying for a full payload fetch on mount.
+// thinkingSummaryPreview seeds a new thinking row's items.summary with
+// the tail of the first delta. Subsequent deltas land via
+// `AppendItemSummaryTail`, which keeps the row tail-bounded at
+// `thinkingPreviewRunes` characters across the whole streaming run.
+// The frontend renders the END of the reasoning (a sliding 3-line tail
+// clipped via CSS); a raw character slice with no ellipsis prefix is
+// fine because the leading characters fall outside the visible window
+// regardless.
 func thinkingSummaryPreview(content string) string {
 	runes := []rune(content)
 	if len(runes) <= thinkingPreviewRunes {
 		return content
 	}
-	return "..." + string(runes[len(runes)-thinkingPreviewRunes:])
+	return string(runes[len(runes)-thinkingPreviewRunes:])
 }
 
 func textItemID(turnIndex int, scope string, segmentIndex int) string {

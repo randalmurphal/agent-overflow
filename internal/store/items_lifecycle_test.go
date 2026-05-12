@@ -825,7 +825,7 @@ func TestAppendItemSummaryErrorsOnMissingItem(t *testing.T) {
 	}
 }
 
-func TestAppendItemSummaryPreviewCapsSummary(t *testing.T) {
+func TestAppendItemSummaryTailKeepsLatestRunes(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(Thread{
 		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
@@ -841,20 +841,36 @@ func TestAppendItemSummaryPreviewCapsSummary(t *testing.T) {
 		t.Fatalf("insert item: %v", err)
 	}
 
-	got, err := s.AppendItemSummaryPreview("t", "think", "efgh", 6, "...", 3000)
+	// First append stays under the 6-rune cap → plain concat.
+	got, err := s.AppendItemSummaryTail("t", "think", "ef", 6, 3000)
 	if err != nil {
-		t.Fatalf("append preview: %v", err)
+		t.Fatalf("append tail: %v", err)
 	}
-	if got.Summary != "abcdef..." {
-		t.Fatalf("summary after cap = %q, want %q", got.Summary, "abcdef...")
+	if got.Summary != "abcdef" {
+		t.Fatalf("summary under cap = %q, want %q", got.Summary, "abcdef")
 	}
 
-	got, err = s.AppendItemSummaryPreview("t", "think", "ijkl", 6, "...", 4000)
+	// Second append crosses the cap → keeps the LAST 6 characters of
+	// (summary || delta). Old head-cap behaviour would have stayed at
+	// "abcdef" and silently dropped "ghij"; tail-cap is what makes the
+	// 3-line tail viewport correct after streaming settle.
+	got, err = s.AppendItemSummaryTail("t", "think", "ghij", 6, 4000)
 	if err != nil {
-		t.Fatalf("append preview after cap: %v", err)
+		t.Fatalf("append tail past cap: %v", err)
 	}
-	if got.Summary != "abcdef..." {
-		t.Fatalf("summary after capped append = %q, want unchanged", got.Summary)
+	if got.Summary != "efghij" {
+		t.Fatalf("summary after tail-cap = %q, want %q", got.Summary, "efghij")
+	}
+
+	// Third append: another tail slice — the cap should track the
+	// rolling end across multiple flushes, not freeze at the first
+	// capped value.
+	got, err = s.AppendItemSummaryTail("t", "think", "klmn", 6, 5000)
+	if err != nil {
+		t.Fatalf("append tail rolling: %v", err)
+	}
+	if got.Summary != "ijklmn" {
+		t.Fatalf("summary after second tail-cap = %q, want %q", got.Summary, "ijklmn")
 	}
 }
 

@@ -231,12 +231,11 @@ func (r *Router) flushStreamPersistence(flush pendingStreamFlush) error {
 		_, err := r.store.AppendItemSummary(flush.threadID, flush.itemID, flush.summaryDelta, flush.updatedAt)
 		return ignoreLateStreamPersistence(err)
 	case itemKindThinking:
-		updated, err := r.store.AppendItemSummaryPreview(
+		updated, err := r.store.AppendItemSummaryTail(
 			flush.threadID,
 			flush.itemID,
 			flush.summaryDelta,
 			thinkingPreviewRunes,
-			"...",
 			flush.updatedAt,
 		)
 		if isLateStreamPersistence(err) {
