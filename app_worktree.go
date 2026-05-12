@@ -254,12 +254,19 @@ func (a *App) RemoveOtherWorktree(threadID, worktreePath string, force bool) err
 	}
 
 	projectBranch := currentGitBranch(core, project)
-	now := time.Now().UnixMilli()
 	// Best-effort sweep: the worktree is already gone, so per-thread refresh
 	// failures should NOT bail mid-loop and leave siblings pointing at a
 	// deleted path. Accumulate errors and surface them together at the end —
 	// any successfully-mutated thread is broadcast immediately so its UI
 	// catches up regardless of what happens to its neighbours.
+	//
+	// We deliberately leave UpdatedAt untouched here. The sweep is a
+	// system-driven reattach, not a user-driven activity event — bumping
+	// the timestamp would jump every reattached thread to the top of the
+	// sidebar (which sorts by updated_at DESC), erasing the order the user
+	// had built up. The frontend's syncThreadRow does a max-merge on
+	// updatedAt, so the unchanged timestamp in the broadcast event is
+	// invariant-safe.
 	var sweepErrs []error
 	for _, id := range attached {
 		t, err := a.store.GetThread(id)
@@ -280,7 +287,6 @@ func (a *App) RemoveOtherWorktree(threadID, worktreePath string, force bool) err
 		if !mutated {
 			continue
 		}
-		t.UpdatedAt = now
 		if err := a.store.UpdateThread(t); err != nil {
 			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s update failed: %w", id, err))
 			continue

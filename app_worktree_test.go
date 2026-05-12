@@ -267,6 +267,81 @@ func TestGitRemoveWorktreeReattachesOtherThreadsToProjectRoot(t *testing.T) {
 	}
 }
 
+// The auto-reattach sweep is system-driven: it must NOT bump UpdatedAt,
+// because the sidebar sorts threads by updated_at DESC and a bump would
+// jerk every reattached thread to the top of the list, erasing the
+// position the user had built up. Set known-old timestamps before the
+// removal and assert they survive intact.
+func TestGitRemoveWorktreeDoesNotBumpReattachedThreadActivity(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	owner := testThread("thread-worktree-owner-activity")
+	owner.ProjectID = project.ID
+	owner.WorkspacePath = repo
+	if err := app.store.CreateThread(owner); err != nil {
+		t.Fatalf("CreateThread(owner) error = %v", err)
+	}
+	worktreePath, err := app.GitCreateWorktree(owner.ID, "feature/activity-stable")
+	if err != nil {
+		t.Fatalf("GitCreateWorktree() error = %v", err)
+	}
+
+	other := testThread("thread-worktree-user-activity")
+	other.ProjectID = project.ID
+	other.WorkspacePath = worktreePath
+	other.WorktreePath = worktreePath
+	other.Branch = "feature/activity-stable"
+	if err := app.store.CreateThread(other); err != nil {
+		t.Fatalf("CreateThread(other) error = %v", err)
+	}
+
+	// Pin both threads to known-old timestamps so a system-driven bump
+	// would be obvious. Owner is mutated separately because GitCreateWorktree
+	// already touched its row.
+	const ownerOldTs int64 = 1_700_000_000_000
+	const otherOldTs int64 = 1_700_000_001_000
+	persistedOwner, err := app.store.GetThread(owner.ID)
+	if err != nil {
+		t.Fatalf("GetThread(owner) error = %v", err)
+	}
+	persistedOwner.UpdatedAt = ownerOldTs
+	if err := app.store.UpdateThread(persistedOwner); err != nil {
+		t.Fatalf("UpdateThread(owner) error = %v", err)
+	}
+	persistedOther, err := app.store.GetThread(other.ID)
+	if err != nil {
+		t.Fatalf("GetThread(other) error = %v", err)
+	}
+	persistedOther.UpdatedAt = otherOldTs
+	if err := app.store.UpdateThread(persistedOther); err != nil {
+		t.Fatalf("UpdateThread(other) error = %v", err)
+	}
+
+	if err := app.GitRemoveWorktree(owner.ID); err != nil {
+		t.Fatalf("GitRemoveWorktree() error = %v", err)
+	}
+
+	refreshedOwner, err := app.store.GetThread(owner.ID)
+	if err != nil {
+		t.Fatalf("GetThread(owner) after remove: %v", err)
+	}
+	if refreshedOwner.UpdatedAt != ownerOldTs {
+		t.Errorf("owner.UpdatedAt = %d, want %d (sweep should not bump)", refreshedOwner.UpdatedAt, ownerOldTs)
+	}
+	refreshedOther, err := app.store.GetThread(other.ID)
+	if err != nil {
+		t.Fatalf("GetThread(other) after remove: %v", err)
+	}
+	if refreshedOther.UpdatedAt != otherOldTs {
+		t.Errorf("other.UpdatedAt = %d, want %d (sweep should not bump)", refreshedOther.UpdatedAt, otherOldTs)
+	}
+}
+
 func TestGitRemoveWorktreeReattachesArchivedThreads(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)
