@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import ThinkingBlock from './ThinkingBlock.svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
@@ -96,5 +97,102 @@ describe('<ThinkingBlock>', () => {
     const copyButton = await waitFor(() => getByLabelText('Copy thinking'));
     await fireEvent.click(copyButton);
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('loaded reasoning text'));
+  });
+
+  it('renders the body inline while the item is streaming', () => {
+    const { getByRole } = render(ThinkingBlock, {
+      props: {
+        item: makeItem({
+          kind: 'thinking',
+          status: 'streaming',
+          summary: 'live reasoning content',
+          payloadId: 'thinking-payload',
+        }),
+      },
+    });
+    const toggle = getByRole('button', { name: /toggle thinking block/i });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(getByRole('region', { name: 'Thinking Content' })).toBeInTheDocument();
+  });
+
+  it('uses the live item summary as the body content while streaming', () => {
+    const { container } = render(ThinkingBlock, {
+      props: {
+        item: makeItem({
+          kind: 'thinking',
+          status: 'streaming',
+          summary: 'live delta text',
+          payloadId: 'thinking-payload',
+        }),
+      },
+    });
+    const region = container.querySelector('[aria-label="Thinking Content"]');
+    expect(region?.textContent).toContain('live delta text');
+  });
+
+  it('auto-collapses on the streaming → settled boundary', async () => {
+    const baseItem = makeItem({
+      kind: 'thinking',
+      status: 'streaming',
+      summary: 'live delta text',
+      payloadId: 'thinking-payload',
+    });
+    const { getByRole, queryByRole, rerender } = render(ThinkingBlock, {
+      props: { item: baseItem },
+    });
+    expect(getByRole('region', { name: 'Thinking Content' })).toBeInTheDocument();
+
+    await rerender({ item: { ...baseItem, status: 'completed' } });
+    await tick();
+    await tick();
+
+    expect(queryByRole('region', { name: 'Thinking Content' })).toBeNull();
+  });
+
+  it('keeps the body open on settle if the user toggled during the stream', async () => {
+    setBindingMock('GetPayloadPreview', async () => ({
+      data: 'persisted thinking text',
+      totalSize: 23,
+      isComplete: true,
+    }));
+    const baseItem = makeItem({
+      kind: 'thinking',
+      status: 'streaming',
+      summary: 'live delta text',
+      payloadId: 'thinking-payload',
+    });
+    const { getByRole, queryByRole, rerender } = render(ThinkingBlock, {
+      props: { item: baseItem },
+    });
+
+    const toggle = getByRole('button', { name: /toggle thinking block/i });
+    // First click hides the body (user collapses during stream); second
+    // click re-expands and triggers the payload fetch so post-settle
+    // intent is "open".
+    await fireEvent.click(toggle);
+    await fireEvent.click(toggle);
+    await tick();
+
+    await rerender({ item: { ...baseItem, status: 'completed' } });
+    await tick();
+    await tick();
+
+    expect(queryByRole('region', { name: 'Thinking Content' })).toBeInTheDocument();
+  });
+
+  it('renders the collapsed preview with multi-line wrap, not a single-line truncate', () => {
+    const { container } = render(ThinkingBlock, {
+      props: {
+        item: makeItem({
+          kind: 'thinking',
+          status: 'completed',
+          summary: 'a long preview line that would otherwise overflow horizontally',
+          payloadId: 'thinking-payload',
+        }),
+      },
+    });
+    const previewSpan = container.querySelector('span.line-clamp-3');
+    expect(previewSpan).not.toBeNull();
+    expect(container.querySelector('span.truncate')).toBeNull();
   });
 });
