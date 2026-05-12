@@ -1,17 +1,35 @@
-// Sync-pin sticky-bottom controller, shared by chat MessageTimeline
-// and Discussion ChannelView.
+// Sticky-bottom controller, shared by chat MessageTimeline and
+// Discussion ChannelView.
 //
-// Port of stackblitz-labs/use-stick-to-bottom adapted to Svelte 5,
-// stripped of the upstream velocity-spring chase loop. Owns the user's
-// intent ("glued to bottom" or "free") and a single ResizeObserver on
-// the content element. Autonomous content growth pins synchronously
-// inside the RO callback: the same paint frame where contentEl grows
-// also lands scrollTop at the new target, so the user sees content
-// arriving at the bottom with no perceptible scroll motion. There's no
-// rAF gap between content arriving and the scroll position catching
-// up, and no parallel animation loop that could fight a programmatic
-// jump. User-initiated snaps (the scroll-to-bottom chip, send) go
-// through `forceStick()` which writes scrollTop directly.
+// Port of stackblitz-labs/use-stick-to-bottom adapted to Svelte 5. Owns
+// the user's intent ("glued to bottom" or "free") and a single
+// ResizeObserver on the content element. Two animation behaviors for
+// autonomous content growth, selected per-fire by the consumer via the
+// `animationMode` option:
+//
+//   - 'instant' (default): sync-pin. The same paint frame where
+//     contentEl grows also lands scrollTop at the new target, so the
+//     user sees content arriving at the bottom with no perceptible
+//     scroll motion. Used by Discussion's ChannelView and by chat
+//     whenever a turn is NOT actively streaming — late Streamdown
+//     typesetting on settled content, virtua row remeasurement on a
+//     freshly-mounted thread, etc.
+//
+//   - 'spring': velocity-spring chase. The viewport interpolates toward
+//     the moving bottom across rAF ticks so the user sees a smooth
+//     scroll-follow. Used by chat MessageTimeline while a turn is
+//     running (`getActiveTurn(threadId) != null`) so streaming chunks
+//     flow in with a smooth animation. Gated by a quiescence-based warm
+//     state: spring stays off until contentRO has been quiet for
+//     QUIET_MS or the FAILSAFE_MS deadline trips, whichever comes
+//     first. The warm gate defends against the original 80LoC-spring-
+//     delete regression (commit e00723f) where mount-time virtua
+//     remeasurement and async Streamdown typesetting would spring-
+//     chase a thread restore visibly.
+//
+// User-initiated snaps (the scroll-to-bottom chip, send, thread
+// restore) go through `forceStick()` which writes scrollTop directly
+// and resets the warm gate so post-snap settling stays silent.
 //
 // Unlike the previous controller, this owns the scroll element directly.
 // MessageTimeline pairs it with virtua's <Virtualizer scrollRef={scrollEl}>
@@ -61,6 +79,45 @@ const RE_STICK_OFFSET_PX = 5;
 const RESIZE_CLEAR_PADDING_MS = 1;
 const DEFAULT_PROGRAMMATIC_SCROLL_DURATION_MS = 420;
 const PROGRAMMATIC_SCROLL_DISTANCE_THRESHOLD_PX = 1;
+
+// ===== Spring chase tuning =====
+// Defaults match upstream stackblitz-labs/use-stick-to-bottom:
+// damping 0.7, stiffness 0.05, mass 1.25. These produce a smooth
+// scroll-follow that feels responsive without overshooting visibly.
+const DEFAULT_SPRING = { damping: 0.7, stiffness: 0.05, mass: 1.25 } as const;
+const SIXTY_FPS_INTERVAL_MS = 1000 / 60;
+// Keep chasing for this long after the last positive grow event. Without
+// this, the spring would consider itself "arrived" between streaming
+// chunks and stop, then have to spin up again on the next chunk —
+// visibly jittery at chunk boundaries.
+const RETAIN_ANIMATION_DURATION_MS = 350;
+// Spring arrival thresholds: distance ≤1px from target AND velocity
+// below 0.5 px-per-60fps-frame means we've effectively settled.
+const ARRIVAL_DISTANCE_PX = 1;
+const ARRIVAL_VELOCITY_THRESHOLD = 0.5;
+
+// ===== Warm-up (quiescence) gate =====
+// After attach() or forceStick(), the controller stays in sync-pin mode
+// until contentRO has been quiet for QUIET_MS or the FAILSAFE_MS
+// deadline trips. This defends against the mount-time spring-chase
+// regression: virtua's per-row ResizeObservers and svelte-streamdown's
+// async typesetting (shiki/KaTeX/mermaid) fire many positive deltas
+// while content is settling, and we don't want those to look like
+// "real" content arrival.
+//
+// QUIET_MS is shorter than a typical streaming chunk interval so we
+// adapt to "fast settle, then real streaming starts" — chunks arrive
+// after the quiet window closes, and spring engages.
+//
+// FAILSAFE_MS bounds the worst case: re-entering a thread that's
+// already mid-stream produces continuous contentRO fires, so the
+// quiet window never closes. Without the failsafe we'd be stuck in
+// sync-pin for the rest of the turn. 2500ms covers slow machines
+// where shiki/mermaid worker startup + virtua first-paint can
+// genuinely take >1s, while still letting the spring engage for the
+// bulk of a typical multi-second response.
+const QUIET_MS = 100;
+const FAILSAFE_MS = 2500;
 
 const UP_KEYS: ReadonlySet<string> = new Set(['PageUp', 'ArrowUp', 'Home']);
 // Down-keys (PageDown / ArrowDown / End) are deliberately NOT enumerated
@@ -121,6 +178,19 @@ export interface UseStickToBottomController {
   readonly isAtBottom: boolean;
   /** True when the user has explicitly scrolled away (wheel/key/touch/select). */
   readonly escapedFromLock: boolean;
+  /**
+   * True once the warm-up gate has cleared — either QUIET_MS of
+   * contentRO silence, or FAILSAFE_MS elapsed (whichever first). Use
+   * as a "virtua's measurement cascade has settled" signal: consumers
+   * can hide content during the cascade and reveal here to avoid
+   * showing the user a brief estimated-size paint before the
+   * measured-size correction lands. Reset to false on attach,
+   * forceStick, and explicit armWarmup() — the latter is the seam
+   * for "I'm about to render fundamentally different content (e.g.
+   * thread switch) and the DOM update will happen BEFORE my next
+   * forceStick / attach call, so reset the gate now."
+   */
+  readonly isWarm: boolean;
 
   /** Depth-counted lease that suspends auto-scroll until released. */
   pauseAutoScroll(): () => void;
@@ -156,9 +226,44 @@ export interface UseStickToBottomController {
   stopScroll(): void;
   /** Public so handleLoadOlder / scrollToItem can opt out of auto-restick. */
   setEscapedFromLock(next: boolean): void;
+  /**
+   * Re-arm the warm-up gate WITHOUT writing scrollTop or changing
+   * intent / escape flags. Sets `isWarm` to false and restarts the
+   * QUIET_MS / FAILSAFE_MS timers, exactly as `attach()` and
+   * `forceStick()` do.
+   *
+   * The use case is a consumer that needs `isWarm` to be false BEFORE
+   * the next DOM flush, where calling `forceStick()` would be wrong
+   * because it has unwanted side effects (writes scrollTop, clears
+   * escape). Chat's MessageTimeline calls this from `$effect.pre` on
+   * thread switch: contentEl and scrollEl don't change across switches
+   * (so `attach()` early-returns), and the restore-effect `forceStick()`
+   * runs in `$effect` which fires AFTER the DOM update — meaning the
+   * first paint of the new thread would otherwise inherit the previous
+   * thread's settled `isWarm=true`, defeating the cascade-hide gate.
+   */
+  armWarmup(): void;
 }
 
-export function createUseStickToBottomController(): UseStickToBottomController {
+export interface UseStickToBottomOptions {
+  /**
+   * Picks animation behavior for autonomous content growth (contentRO
+   * positive deltas). Called per-fire — return 'spring' to chase the
+   * new bottom with a velocity spring, 'instant' to sync-pin. Defaults
+   * to () => 'instant' (sync-pin everywhere) so existing callers behave
+   * identically to the pre-spring-restoration controller.
+   *
+   * Chat's MessageTimeline wires this to
+   * `() => getActiveTurn(pane.threadId) != null ? 'spring' : 'instant'`
+   * so streaming chunks animate; idle threads and Discussion's polled
+   * channel surface stay on sync-pin.
+   */
+  animationMode?: () => 'spring' | 'instant';
+}
+
+export function createUseStickToBottomController(
+  options: UseStickToBottomOptions = {},
+): UseStickToBottomController {
   installModuleSelectionListeners();
 
   // ===== Reactive state (consumed by templates / $derived) =====
@@ -195,6 +300,81 @@ export function createUseStickToBottomController(): UseStickToBottomController {
   let ignoreScrollToTop = -1;
   let previousHeight: number | undefined;
   let touchStartY: number | null = null;
+
+  // ===== Spring chase state =====
+  let velocity = 0;
+  let accumulated = 0;
+  let lastTickAt: number | null = null;
+  // Monotonic counter (cheaper than `Symbol('spring')` per start). 0 means
+  // no spring in flight; positive values identify the current spring run.
+  let springToken = 0;
+  let springGen = 0;
+  let springFrameHandle: number | null = null;
+  let lastGrewAt = 0;
+  let springStopRequested = false;
+
+  // ===== Warm-up (quiescence) state =====
+  // `warm` flips true once the controller observes a quiet period of
+  // QUIET_MS on contentRO, OR the FAILSAFE_MS deadline trips (whichever
+  // comes first). Reset to false on attach and forceStick. Backed by
+  // $state so consumers can subscribe to the transition — chat's
+  // MessageTimeline hides contentEl on uncached loads (no
+  // pane.cachedVirtuaCache) until warm fires, which is the canonical
+  // "virtua's measurement cascade has settled" signal. Without this,
+  // an uncached thread's first paint renders rows at virtua's
+  // ESTIMATED_ROW_SIZE × N offsets; the RO-correction pass then shifts
+  // every row by a fraction-of-a-page (the larger the thread, the
+  // bigger the shift) producing the visible "lands wrong, then jumps"
+  // regression.
+  let warm = $state(false);
+  let quietTimer: ReturnType<typeof setTimeout> | null = null;
+  let failsafeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearWarmupTimers(): void {
+    if (quietTimer) {
+      clearTimeout(quietTimer);
+      quietTimer = null;
+    }
+    if (failsafeTimer) {
+      clearTimeout(failsafeTimer);
+      failsafeTimer = null;
+    }
+  }
+
+  function markWarm(reason: 'quiet' | 'failsafe'): void {
+    if (warm) return;
+    warm = true;
+    clearWarmupTimers();
+    trace(`scroll.warmup.${reason}`, () => ({
+      isAtBottomState,
+      escapedFromLockState,
+      pauseDepth,
+    }));
+  }
+
+  function beginWarmup(): void {
+    clearWarmupTimers();
+    warm = false;
+    // ONLY arm the failsafe. The quiet timer is armed by `bumpQuietTimer`
+    // on the FIRST contentRO event — gating the "quiet" signal on actual
+    // RO evidence is what defends against the load-bearing case where
+    // contentEl is absent when the gate is armed: a thread switch where
+    // the slice fetch is in flight, MessageTimeline is rendering the
+    // loading-spinner / empty branch, and there is no contentEl for the
+    // RO to observe. If we armed quietTimer here, it would fire at
+    // QUIET_MS without any cascade evidence; once items finally arrived
+    // and contentEl mounted, the consumer's hide-gate (gated on isWarm)
+    // would be already open and the cascade would be visible. The
+    // failsafe still bounds the worst case (slow shiki / mermaid / KaTeX
+    // typesetting that keeps ROs continuously firing for > FAILSAFE_MS).
+    failsafeTimer = setTimeout(() => markWarm('failsafe'), FAILSAFE_MS);
+  }
+
+  function bumpQuietTimer(): void {
+    if (warm) return;
+    if (quietTimer) clearTimeout(quietTimer);
+    quietTimer = setTimeout(() => markWarm('quiet'), QUIET_MS);
+  }
   // Last user-driven (untagged) scrollTop seen by the scroll handler.
   // Used by the re-stick path to gate on direction: only DOWN-direction
   // scrolls (scrollTop INCREASING) can re-engage auto-follow. Without
@@ -288,10 +468,21 @@ export function createUseStickToBottomController(): UseStickToBottomController {
     }
   }
 
+  // Cached MediaQueryList — `matchMedia('(prefers-reduced-motion: reduce)')`
+  // is called inside both the contentRO positive-delta branch and the
+  // spring tick (which runs at 60Hz). Parsing the query and constructing
+  // a fresh `MediaQueryList` per call is wasted work; query the cached
+  // list's `matches` instead. Cached lazily so SSR / non-window contexts
+  // don't blow up.
+  let reducedMotionQuery: MediaQueryList | null | undefined;
   function prefersReducedMotion(): boolean {
-    return typeof window !== 'undefined'
-      && typeof window.matchMedia === 'function'
-      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reducedMotionQuery === undefined) {
+      reducedMotionQuery = typeof window !== 'undefined'
+        && typeof window.matchMedia === 'function'
+        ? window.matchMedia('(prefers-reduced-motion: reduce)')
+        : null;
+    }
+    return reducedMotionQuery?.matches ?? false;
   }
 
   function maxScrollTop(): number {
@@ -324,6 +515,106 @@ export function createUseStickToBottomController(): UseStickToBottomController {
     finishTargetAnimation('cancelled');
   }
 
+  // ===== Spring chase =====
+  function cancelSpring(): void {
+    if (springFrameHandle !== null) {
+      cancelFrame(springFrameHandle);
+      springFrameHandle = null;
+    }
+    springToken = 0;
+    velocity = 0;
+    accumulated = 0;
+    lastTickAt = null;
+    // Reset the grow timestamp so a stale value can't trick a fresh
+    // chase into thinking it's "stillChasing" right out of the gate
+    // (matches the historical 80LoC-spring cleanup semantics).
+    lastGrewAt = 0;
+  }
+
+  // Shared gate predicate. Used by both `startSpringIfNeeded` and the
+  // contentRO positive-delta branch so the two sites can't drift on
+  // which conditions allow the spring. The `warm` check is intentionally
+  // omitted here — startSpringIfNeeded is called from inside the
+  // already-warm branch of contentRO; warm-checking inside it would
+  // double-gate and confuse the read.
+  function springGateOpen(): boolean {
+    return !springStopRequested
+      && pauseDepth === 0
+      && isAtBottomState
+      && !escapedFromLockState
+      && !prefersReducedMotion()
+      && options.animationMode?.() === 'spring';
+  }
+
+  function startSpringIfNeeded(): void {
+    if (springToken !== 0) return;
+    if (!springGateOpen()) return;
+    const myToken = ++springGen;
+    springToken = myToken;
+    lastTickAt = null;
+
+    const tick = (now: number): void => {
+      springFrameHandle = null;
+      if (springToken !== myToken || !scrollEl) return;
+      // Bail conditions: lease acquired, escape set, or stop requested.
+      // All three are handled by `cancelSpring()` cleanup at exit.
+      if (springStopRequested || pauseDepth > 0 || !isAtBottomState || escapedFromLockState) {
+        cancelSpring();
+        return;
+      }
+      if (isSelectingInside(scrollEl)) {
+        // Selection drag should never fight the user — re-rAF without
+        // advancing scrollTop so the spring effectively pauses.
+        springFrameHandle = requestFrame(tick);
+        return;
+      }
+
+      const dt = lastTickAt === null ? 1 : (now - lastTickAt) / SIXTY_FPS_INTERVAL_MS;
+      lastTickAt = now;
+
+      // Cache per-tick. `targetScrollTop()` reads `scrollHeight` /
+      // `clientHeight` — both force layout. Compute once per frame.
+      const target = targetScrollTop();
+      const current = scrollEl.scrollTop;
+      const diff = target - current;
+
+      if (current < target) {
+        velocity = (DEFAULT_SPRING.damping * velocity + DEFAULT_SPRING.stiffness * diff) / DEFAULT_SPRING.mass;
+        accumulated += velocity * dt;
+        const next = current + accumulated;
+        // Pre-clamp in JS so we know the post-state without a second
+        // layout read just to check whether the browser clamped.
+        const clamped = next > target ? target : next;
+        writeCaller = next > target ? 'spring.overshoot' : 'spring.tick';
+        writeScrollTop(clamped);
+        if (scrollEl.scrollTop !== current) accumulated = 0;
+      }
+
+      // Arrival check uses the cached `target` for the position
+      // comparison; the time delta uses rAF's `now` (matches
+      // `nowMs()` in test environments because `performance.now` is
+      // mocked to read the same source rAF passes the callback).
+      // Mode flip mid-flight (turn ended) makes `stillChasing` false,
+      // so the spring lands on its next arrival check rather than
+      // chasing for another RETAIN_ANIMATION_DURATION_MS.
+      const wantsSpringNow = options.animationMode?.() === 'spring';
+      const stillChasing = wantsSpringNow && now - lastGrewAt < RETAIN_ANIMATION_DURATION_MS;
+      const arrived =
+        Math.abs(scrollEl.scrollTop - target) < ARRIVAL_DISTANCE_PX
+        && Math.abs(velocity) < ARRIVAL_VELOCITY_THRESHOLD;
+      if (arrived && !stillChasing) {
+        // Snap to the exact target on arrival so the final paint lands
+        // pixel-perfect rather than 0.5px above the bottom.
+        writeCaller = 'spring.arrive';
+        writeScrollTop(target);
+        cancelSpring();
+        return;
+      }
+      springFrameHandle = requestFrame(tick);
+    };
+    springFrameHandle = requestFrame(tick);
+  }
+
   // ===== Content RO =====
   function setupContentRO(): void {
     if (!contentEl) return;
@@ -334,6 +625,14 @@ export function createUseStickToBottomController(): UseStickToBottomController {
       const nextHeight = entry.contentRect.height;
       const prev = previousHeight;
       previousHeight = nextHeight;
+
+      // Every RO activity counts as "still settling" — reset the quiet
+      // timer regardless of delta direction. virtua's per-row
+      // remeasurement, Streamdown's typesetting backfill, and
+      // parseIncompleteMarkdown rebalance all fire multiple RO callbacks
+      // in close succession during mount; we want warm to fire only
+      // once they're done.
+      bumpQuietTimer();
 
       if (prev === undefined) {
         // First fire: snap to bottom synchronously so the initial paint
@@ -364,17 +663,19 @@ export function createUseStickToBottomController(): UseStickToBottomController {
       if (delta === 0) return;
       resizeDifference = delta;
 
+      // Refresh the geometric near-bottom flag BEFORE computing any
+      // pin predicate so the trace and the gate both see the same
+      // post-resize geometry. Without the lift, the negative branch
+      // had to mirror the geometric check via an IIFE to avoid the
+      // refresh side effect; with the lift, the trace and gate read
+      // the same `isNearBottomState` and the IIFE disappears.
+      refreshIsNearBottom();
       const overshoot = scrollEl.scrollTop > targetScrollTop();
       const positiveWillPin = delta > 0
         && isAtBottomState && !escapedFromLockState && pauseDepth === 0;
       const negativeWillPin = delta < 0
-        && (() => {
-          // Mirror the negative branch's near-bottom check WITHOUT
-          // mutating refreshIsNearBottom side effects in the trace.
-          const dist = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
-          return dist <= STICK_TO_BOTTOM_OFFSET_PX
-            && !escapedFromLockState && pauseDepth === 0;
-        })();
+        && (isAtBottomState || isNearBottomState)
+        && !escapedFromLockState && pauseDepth === 0;
       trace('scroll.contentRO', () => ({
         prev: Math.round(prev),
         next: Math.round(nextHeight),
@@ -400,23 +701,51 @@ export function createUseStickToBottomController(): UseStickToBottomController {
       }
 
       if (delta > 0) {
-        // Positive delta: re-pin to the new bottom synchronously, before
-        // paint. The browser only paints the final state per frame, so
-        // contentEl growing AND scrollTop catching up happen in the same
-        // visual frame — no perceptible scroll motion, just content
-        // arriving at the bottom. Works regardless of WHY the bottom is
-        // moving: streaming chunks, svelte-streamdown async typesetting
-        // (shiki/KaTeX/mermaid), virtua's per-row remeasurement after a
-        // cache-hit mount, parseIncompleteMarkdown rebalance.
-        if (isAtBottomState && !escapedFromLockState && pauseDepth === 0) {
-          writeCaller = 'contentRO.positiveDelta';
-          writeScrollTop(targetScrollTop());
+        // Positive delta: choose between sync-pin (default) and spring
+        // chase (when the consumer signals "real content streaming and
+        // the controller has warmed past mount settle").
+        //
+        // Sync-pin path: writes scrollTop in the same paint frame as
+        // contentEl growth — no perceptible scroll motion, just content
+        // arriving at the bottom. Used when animationMode is 'instant',
+        // when we haven't warmed yet (mount-time virtua remeasurement +
+        // Streamdown typesetting still settling), or when the user has
+        // requested reduced motion.
+        //
+        // Spring path: starts a velocity-spring chase that interpolates
+        // toward the moving bottom across rAF frames. The user sees the
+        // viewport smoothly follow streaming content. Each subsequent
+        // positive delta during the chase bumps `lastGrewAt` so the
+        // spring keeps chasing across chunk boundaries instead of
+        // arriving-then-restarting (visibly jittery).
+        if (positiveWillPin) {
+          if (warm && springGateOpen()) {
+            lastGrewAt = nowMs();
+            startSpringIfNeeded();
+          } else {
+            writeCaller = 'contentRO.positiveDelta';
+            writeScrollTop(targetScrollTop());
+          }
         }
       } else if (delta < 0) {
-        // Negative delta: re-stick if we're now near bottom and not
-        // explicitly escaped. Matches upstream's negative-resize branch.
-        refreshIsNearBottom();
-        if (isNearBottomState && !escapedFromLockState && pauseDepth === 0) {
+        // Negative delta: re-stick when the controller's intent is
+        // "stay at bottom" — EITHER the logical flag (isAtBottomState)
+        // OR the geometric near-bottom band (isNearBottomState) says
+        // so. The geometric branch matches upstream's negative-resize
+        // re-stick. The intent branch defends against virtua's jump
+        // correction during the layout-measurement cascade: when
+        // rows above the viewport remeasure, virtua may shift
+        // scrollTop hundreds of pixels off the bottom and flip
+        // isNearBottomState=false purely as a downstream effect of
+        // layout — not user intent. Without the isAtBottomState
+        // disjunct, the controller abandoned the pin in that case
+        // and left the viewport stuck mid-cascade until the next
+        // shrink happened to land scrollTop at the new bottom by
+        // coincidence. User-visible as a "half-screen jump to
+        // bottom" on heavy uncached threads — see frontend/AGENTS.md
+        // "Negative-delta re-pin honors logical intent, not just
+        // geometry" for the cascade pattern this defends.
+        if (negativeWillPin) {
           isAtBottomState = true;
           writeCaller = 'contentRO.negativeDelta';
           writeScrollTop(targetScrollTop());
@@ -572,6 +901,12 @@ export function createUseStickToBottomController(): UseStickToBottomController {
       if (willRestick) {
         escapedFromLockState = false;
         isAtBottomState = true;
+        // Re-arm the spring after user gestures back to the bottom —
+        // setEscapedFromLock(true) set springStopRequested on the
+        // escape that started this round, and the re-stick is the
+        // user's "I want to follow again" signal. Without this, future
+        // streaming chunks would sync-pin instead of spring-chase.
+        springStopRequested = false;
       }
     }, RESIZE_CLEAR_PADDING_MS);
   }
@@ -601,7 +936,15 @@ export function createUseStickToBottomController(): UseStickToBottomController {
 
   // ===== Public actions =====
   function setEscapedFromLock(next: boolean): void {
-    if (next) cancelTargetAnimation();
+    if (next) {
+      cancelTargetAnimation();
+      // User explicitly broke from auto-follow — bail any in-flight
+      // spring chase. The tick observes springStopRequested + new
+      // state and clears the token on the next frame, but we also
+      // null it here for the "no rAF before next attach" edge case.
+      springStopRequested = true;
+      cancelSpring();
+    }
     if (escapedFromLockState === next) return;
     const previousIsAtBottom = isAtBottomState;
     escapedFromLockState = next;
@@ -696,6 +1039,19 @@ export function createUseStickToBottomController(): UseStickToBottomController {
       target: scrollEl ? Math.round(targetScrollTop()) : null,
     }));
     setEscapedFromLock(false);
+    // forceStick is the regression-defense entry point for thread
+    // restore — the caller just landed us at the bottom and any
+    // subsequent contentRO fires for the next QUIET_MS/FAILSAFE_MS
+    // are virtua/Streamdown settling, not real content arrival.
+    // Re-arm the warm gate so those settle fires sync-pin.
+    cancelSpring();
+    // Reset the stop flag AFTER cancel — cancelSpring observes
+    // springStopRequested via the rAF tick guard, but the value at the
+    // current synchronous frame doesn't affect cancellation (the token
+    // mismatch on the next tick handles it). We clear it now so the
+    // next streaming chunk can re-engage the spring.
+    springStopRequested = false;
+    beginWarmup();
     if (!scrollEl) return;
     isAtBottomState = true;
     writeCaller = 'forceStick';
@@ -795,6 +1151,13 @@ export function createUseStickToBottomController(): UseStickToBottomController {
     detach();
     scrollEl = nextScrollEl;
     contentEl = nextContentEl;
+    // Start the warm gate at attach. The first contentRO callback
+    // fires for whatever content is already there, then virtua's per-
+    // row ROs and Streamdown's typesetting cascade — all of which
+    // should sync-pin (silent) regardless of animationMode until the
+    // controller observes contentRO quiet for QUIET_MS or the
+    // FAILSAFE_MS deadline trips.
+    beginWarmup();
     trace('scroll.attach', () => ({
       surface: nextScrollEl.dataset?.testid ?? '',
       scrollTop: Math.round(nextScrollEl.scrollTop),
@@ -844,6 +1207,11 @@ export function createUseStickToBottomController(): UseStickToBottomController {
       resizeClearTimer = null;
     }
     cancelTargetAnimation();
+    cancelSpring();
+    springStopRequested = false;
+    lastGrewAt = 0;
+    clearWarmupTimers();
+    warm = false;
     resizeDifference = 0;
     previousHeight = undefined;
     touchStartY = null;
@@ -864,6 +1232,9 @@ export function createUseStickToBottomController(): UseStickToBottomController {
     get escapedFromLock() {
       return escapedFromLockState;
     },
+    get isWarm() {
+      return warm;
+    },
     pauseAutoScroll,
     notifyContentMaybeGrew,
     attach,
@@ -873,5 +1244,6 @@ export function createUseStickToBottomController(): UseStickToBottomController {
     animateScrollTo,
     stopScroll,
     setEscapedFromLock,
+    armWarmup: beginWarmup,
   };
 }

@@ -27,10 +27,15 @@ shape. Operational rules for code in this directory:
   followed by a single rAF `notifyContentMaybeGrew()` settle pass.**
   The synchronous forceStick is the primary writer — running it inline
   (no `pauseAutoScroll` lease, no `await tick()`) keeps the
-  contentRO sync-pin enabled across the new-thread mount and avoids
+  contentRO pin enabled across the new-thread mount and avoids
   the microtask boundary that races with virtua's deferred scroller
   attach (`Virtualizer.svelte`'s `tick().then(observe)` defers
-  scrollEl observation by one tick). The trailing rAF
+  scrollEl observation by one tick). `forceStick` also re-arms the
+  controller's warm-up gate so any subsequent contentRO fires for
+  `QUIET_MS=100ms` (or up to `FAILSAFE_MS=2500ms`) sync-pin instead
+  of triggering the spring chase — this is the load-bearing guarantee
+  that a thread restore lands silently even while a turn is in flight
+  (`animationMode='spring'`). The trailing rAF
   `notifyContentMaybeGrew()` covers late layout settling: composer-
   height RO updating scrollEl's `padding-bottom` (padding-only growth
   doesn't refire contentRO), virtua's per-row ResizeObservers refining
@@ -44,18 +49,76 @@ shape. Operational rules for code in this directory:
   `<Virtualizer cache={pane.cachedVirtuaCache}>` inside
   `{#key pane.threadId}`) gives virtua the correct `totalSize` from
   frame 0, so the synchronous `forceStick` target is right at first
-  paint. Subsequent contentEl growth from streaming or further
-  typesetting gets handled invisibly by the controller's contentRO
-  sync-pin: each positive delta re-pins to the new bottom inside the
-  RO callback, before paint. **Don't pair `listRef.scrollToIndex(last,
-  'end')` with `stick.markAtBottom()` here** — virtua's measurement
-  loop would keep writing scrollTop on every ACTION_ITEM_RESIZE tick
-  for ~150ms while the controller's sync-pin (enabled by markAtBottom)
-  ALSO wrote scrollTop on every positive contentRO delta, targeting a
+  paint. Subsequent contentEl growth gets handled by the controller's
+  contentRO path: while warming, positive deltas sync-pin (mount
+  settling stays invisible); once warm and a turn is running, positive
+  deltas trigger the velocity-spring chase so streaming chunks animate.
+  **Don't pair `listRef.scrollToIndex(last, 'end')` with
+  `stick.markAtBottom()` here** — virtua's measurement loop would
+  keep writing scrollTop on every ACTION_ITEM_RESIZE tick for
+  ~150ms while the controller's pin (enabled by markAtBottom) ALSO
+  wrote scrollTop on every positive contentRO delta, targeting a
   slightly different value. They oscillate visibly around the middle
   of the viewport on every Streamdown async typesetting tick. Single
   synchronous writer (forceStick) plus a deferred escape-aware re-pin
   (notifyContentMaybeGrew) — never the two-loop fight.
+- **MessageTimeline wires `animationMode` to streaming state.**
+  `createUseStickToBottomController({ animationMode: () =>
+  getActiveTurn(pane.threadId) ? 'spring' : 'instant' })`. The getter
+  is called per-contentRO-fire, so transitions between idle and
+  running take effect on the next chunk without re-attaching. Late
+  Streamdown typesetting on settled content (`getActiveTurn` returns
+  null) sync-pins invisibly — no viewport motion while the user is
+  reading a finished response. Streaming chunks (`getActiveTurn`
+  returns the active turn) spring-chase the moving bottom. The
+  warm-up gate prevents thread-restore-while-streaming from
+  spring-chasing the post-mount measurement loop.
+- **contentEl hides during the uncached-load measurement cascade.**
+  When `pane.cachedVirtuaCache` is undefined (cache miss — new
+  thread, evicted LRU entry, or first visit), virtua starts with
+  `ESTIMATED_ROW_SIZE × N` for totalSize. The per-row RO measurement
+  cascade then corrects each row's actual height across the next
+  ~25ms, which shifts every row's Y-offset AND clamps scrollTop by a
+  fraction of a page (the larger the thread, the larger the clamp —
+  a 216-item thread sample produced a 461px shift). The controller's
+  sync-pin re-pins scrollTop correctly, but the user still sees the
+  row-content shift between two paints. MessageTimeline binds
+  `style:visibility={hideContentForWarmup ? 'hidden' : 'visible'}`
+  on contentEl, with `hideContentForWarmup = !stick.isWarm &&
+  pane.cachedVirtuaCache === undefined`. The warm gate fires
+  `QUIET_MS = 100ms` after the last contentRO event ONCE AT LEAST
+  ONE EVENT HAS FIRED (the quiet timer is gated on RO evidence,
+  not the wall clock alone — see `useStickToBottom.svelte.ts`
+  `beginWarmup` / `bumpQuietTimer` for the rationale), or the
+  `FAILSAFE_MS = 2500ms` ceiling, exactly the signal we want: "all
+  in-flight measurements have settled, and we know they actually
+  started." The composer overlay stays
+  visible throughout (it's a sibling, not a child of contentEl), so
+  the user sees a brief unpopulated scroll area with the live
+  composer above it, then the full timeline reveals with rows at
+  their measured offsets. Cached loads skip the gate — virtua has
+  correct totalSize from frame 0 and there's no cascade to hide.
+
+  **Critical timing: `armWarmup()` MUST be called from `$effect.pre`
+  on thread switch, not just from `forceStick()` in `$effect`.**
+  MessageTimeline isn't keyed on `pane.threadId` (the inner
+  Virtualizer is, via `{#key pane.threadId}`), so `scrollEl` and
+  `contentEl` are the SAME DOM nodes across switches. The `$effect`
+  that calls `stick.attach(scrollEl, contentEl)` therefore early-
+  returns on switch — its no-op path is hit and `beginWarmup()` is
+  NOT called from there. The restore `$effect` calls `forceStick()`
+  (which DOES call `beginWarmup`), but `$effect` fires AFTER the DOM
+  update — meaning the first paint of the new thread inherits the
+  outgoing thread's settled `isWarm=true`, the $derived
+  `hideContentForWarmup` evaluates to false, and the measurement
+  cascade is visible for the user. `$effect.pre` runs BEFORE the DOM
+  update flush, so calling `stick.armWarmup()` there flips
+  `isWarm=false` synchronously and the new thread's first paint
+  hides contentEl. Symptom of the missing call: the bug looks
+  "flaky" because warm-state coincidentally happened to be false on
+  some switches (e.g. rapid back-to-back switches where the prior
+  thread's QUIET_MS=100ms quiet window hadn't yet closed) and the
+  cascade was hidden by accident.
 - **`overflow-anchor: none` on `scrollEl` is load-bearing.** Browser
   default scroll anchoring adjusts `scrollTop` whenever an element above
   the viewport changes size, to keep the topmost-visible element fixed.
@@ -75,7 +138,23 @@ shape. Operational rules for code in this directory:
   positive delta and the sync-pin would short-circuit. ChatView's
   composer RO calls `notifyContentMaybeGrew()` to handle this seam
   explicitly — that call is the load-bearing pin for composer-height-
-  driven re-pinning on the chat surface; don't drop it.
+  driven re-pinning on the chat surface; don't drop it. The
+  composer-RO callback writes `--composer-height` directly on
+  chatColumn via `style.setProperty(...)` BEFORE calling
+  `notifyContentMaybeGrew()`. The direct write is what makes the
+  re-pin synchronous and correct: Svelte's reactive flush of
+  `composerHeight = next` runs in a microtask AFTER the RO callback
+  returns, so a synchronous `notifyContentMaybeGrew` without the
+  direct write would force layout against the OLD --composer-height
+  and pin to the pre-grow bottom (originally observed as a
+  "half-a-scroll-tick-from-the-bottom" miss on cached-thread restore,
+  preserved as a regression guard in the trace comment). With the
+  direct write, `targetScrollTop()` forces layout against the NEW
+  variable value, and scrollTop lands on the post-grow bottom — all
+  inside the RO callback, no rAF deferral, no visible 1-frame
+  "appears then settles" gap. The reactive `composerHeight` state is
+  still useful for any future template/derivation that reads it; the
+  microtask flush rewrites the same CSS-variable value, idempotently.
 - **`<Virtualizer>` is wrapped in `{#key pane.threadId}`** so its
   `cache` prop is re-read on thread switch. The cache itself comes
   from `pane.cachedVirtuaCache` (sourced from the LRU snapshot in
@@ -94,9 +173,10 @@ shape. Operational rules for code in this directory:
 - The auto-follow `$effect` is gone. Streaming flow is: text rewrites in
   the streaming row → row's height changes → virtua's per-row RO bumps
   `totalSize` → `contentEl.scrollHeight` changes → our content-RO fires
-  before paint → controller sync-pins scrollTop to the new target in
-  the same paint. Don't reintroduce a length-watching effect that
-  calls `scrollToIndex(last)`.
+  before paint → controller chases the new target (spring while a turn
+  is running and the warm-up gate has cleared; sync-pin otherwise).
+  Don't reintroduce a length-watching effect that calls
+  `scrollToIndex(last)`.
 - **Auto-load-older trigger.** Virtualizer's `onscroll` calls
   `maybeAutoLoadOlder(offset)` which fires `pane.loadOlder()` when the
   user scrolls within `AUTO_LOAD_OFFSET_PX=800` of the top AND the

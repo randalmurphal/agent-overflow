@@ -577,6 +577,159 @@ describe('scroll integration — composer height + layout invariance', () => {
     expect(styleAttr).toContain('--composer-height:');
   });
 
+  it('composer-height growth calls notifyContentMaybeGrew synchronously inside the RO callback', async () => {
+    // Regression guard for the "appears then settles" symptom on uncached
+    // loads. The previous composer-RO implementation deferred
+    // `notifyContentMaybeGrew` to the next animation frame because a
+    // synchronous read of `scrollEl.scrollHeight` would see stale padding
+    // (Svelte's reactive flush runs in a microtask AFTER the RO callback,
+    // so the style binding for `--composer-height` wouldn't have applied
+    // yet). The user-visible cost was a 1-frame gap where scrollTop
+    // pointed at the old bottom while padding-bottom had grown — for
+    // threads with a working/todo panel mounting late (after warm
+    // revealed contentEl) the gap was 200–400px, large enough to flicker
+    // the scroll-to-bottom chip on the way to settling.
+    //
+    // Fix: write `--composer-height` directly on chatColumn via
+    // `style.setProperty`, bypassing the Svelte microtask boundary for
+    // the layout-relevant change, then call `notifyContentMaybeGrew`
+    // synchronously inside the same RO callback. The forced layout
+    // inside `targetScrollTop()` applies the new CSS variable, so
+    // scrollHeight is post-grow when scrollTop is written.
+    //
+    // This test stubs ResizeObserver so we can drive the composer-RO
+    // callback with a specific height entry, then asserts that the
+    // controller's `notifyContentMaybeGrew` count incremented inside the
+    // synchronous callback (i.e. before any rAF could fire).
+    const callbacksByTarget = new Map<HTMLElement, ResizeObserverCallback>();
+    const originalRO = globalThis.ResizeObserver;
+    class StubResizeObserver {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+      observe(target: HTMLElement): void {
+        callbacksByTarget.set(target, this.callback);
+      }
+      unobserve(target: HTMLElement): void {
+        callbacksByTarget.delete(target);
+      }
+      disconnect(): void {
+        // Best-effort: drop all observations registered against this
+        // callback instance. The test only cares that the composer-RO
+        // callback survives until we trigger it.
+        for (const [target, cb] of callbacksByTarget) {
+          if (cb === this.callback) callbacksByTarget.delete(target);
+        }
+      }
+    }
+    globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+
+    try {
+      const pane = await buildPane(makeThread(), [
+        makeItem({ id: 'tail', summary: 'tail' }),
+      ]);
+
+      let notifySpy: ReturnType<typeof vi.spyOn> | null = null;
+      const origAttach = pane.attachScrollController.bind(pane);
+      pane.attachScrollController = (
+        ctrl: PaneScrollController & { notifyContentMaybeGrew(): void },
+      ) => {
+        notifySpy = vi.spyOn(ctrl, 'notifyContentMaybeGrew');
+        origAttach(ctrl);
+      };
+
+      const { getByTestId } = render(ChatView, { props: { pane } });
+      await tick();
+      // Flush the rAF that restoreToBottom queues for late layout
+      // settling so it doesn't pollute the baseline call count.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+      expect(notifySpy).not.toBeNull();
+      const callsBeforeFire = notifySpy!.mock.calls.length;
+
+      // Find the composer overlay and its registered callback. The
+      // composer-RO is the one that observes `composerOverlay` in
+      // ChatView's $effect — the only target with the
+      // `composer-overlay` testid.
+      const composerOverlay = getByTestId('composer-overlay');
+      const composerCallback = callbacksByTarget.get(composerOverlay);
+      expect(composerCallback).toBeDefined();
+      if (!composerCallback) return;
+
+      // Synthesize a composer-height change. Composer overlay grew from
+      // its initial height (120 default) to 200. The RO callback should
+      // detect the change, write the CSS variable directly, AND call
+      // notifyContentMaybeGrew synchronously.
+      const fakeEntry = {
+        contentRect: { height: 200 } as DOMRectReadOnly,
+      } as ResizeObserverEntry;
+      composerCallback([fakeEntry], {} as ResizeObserver);
+
+      // The synchronous notifyContentMaybeGrew call must have happened
+      // before this assertion runs (no rAF awaited). Previously the call
+      // was queued inside a `requestAnimationFrame` and the assertion
+      // would fail until a frame elapsed.
+      expect(notifySpy!.mock.calls.length).toBeGreaterThan(callsBeforeFire);
+    } finally {
+      globalThis.ResizeObserver = originalRO;
+    }
+  });
+
+  it('composer-height growth writes --composer-height directly on chatColumn so layout reads see the new value', async () => {
+    // Companion to the "synchronous notifyContentMaybeGrew" test. The
+    // direct CSS-variable write is what makes the synchronous re-pin
+    // correct — without it, `targetScrollTop()` would force layout with
+    // the old --composer-height and pin to the pre-grow bottom. This
+    // test asserts the inline style on chatColumn reflects the new
+    // height BEFORE any tick/microtask/frame is awaited.
+    const callbacksByTarget = new Map<HTMLElement, ResizeObserverCallback>();
+    const originalRO = globalThis.ResizeObserver;
+    class StubResizeObserver {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+      observe(target: HTMLElement): void {
+        callbacksByTarget.set(target, this.callback);
+      }
+      unobserve(target: HTMLElement): void {
+        callbacksByTarget.delete(target);
+      }
+      disconnect(): void {
+        for (const [target, cb] of callbacksByTarget) {
+          if (cb === this.callback) callbacksByTarget.delete(target);
+        }
+      }
+    }
+    globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+
+    try {
+      const pane = await buildPane(makeThread(), [
+        makeItem({ id: 'tail', summary: 'tail' }),
+      ]);
+
+      const { container, getByTestId } = render(ChatView, { props: { pane } });
+      await tick();
+
+      const chatColumn = container.querySelector('[data-ui-surface="chat"]')
+        ?.querySelector(':scope > div') as HTMLElement | null;
+      expect(chatColumn).not.toBeNull();
+      if (!chatColumn) return;
+
+      const composerOverlay = getByTestId('composer-overlay');
+      const composerCallback = callbacksByTarget.get(composerOverlay);
+      expect(composerCallback).toBeDefined();
+      if (!composerCallback) return;
+
+      const fakeEntry = {
+        contentRect: { height: 247 } as DOMRectReadOnly,
+      } as ResizeObserverEntry;
+      composerCallback([fakeEntry], {} as ResizeObserver);
+
+      // The direct setProperty must have written the new value before
+      // the RO callback returned — no tick / microtask / frame awaited
+      // between the callback and this assertion.
+      expect(chatColumn.style.getPropertyValue('--composer-height')).toBe('247px');
+    } finally {
+      globalThis.ResizeObserver = originalRO;
+    }
+  });
+
   it('renders the composer + below-bar inside the absolute overlay div', async () => {
     const pane = await buildPane(makeThread(), [
       makeItem({ id: 'tail', summary: 'tail' }),
@@ -1005,5 +1158,109 @@ describe('scroll integration — useStickToBottom wiring', () => {
     // write, this assertion fails.
     expect(ctrl.isSticky).toBe(true);
     expect(ctrl.escapedFromLock).toBe(false);
+  });
+
+  it('thread switch off a prior thread keeps contentEl hidden for the new thread (warm does not leak)', async () => {
+    // The flaky-fix bug: warm carries over from the previous thread on
+    // pane switch. MessageTimeline isn't keyed on threadId (the inner
+    // Virtualizer is), so scrollEl/contentEl stay the same DOM nodes
+    // across switches — attach()'s no-op early-return path is hit. The
+    // restore $effect calls forceStick() (which re-arms warmup) but
+    // runs AFTER DOM update, so without `armWarmup()` in `$effect.pre`,
+    // the first paint of the new thread inherits the prior thread's
+    // settled isWarm=true and the cascade is visible.
+    //
+    // We can't reliably observe `isWarm=true` mid-test (happy-dom's
+    // ResizeObserver behavior is environment-dependent), so this test
+    // pins the user-facing invariant: after a thread switch into an
+    // uncached thread, the contentEl wrapper is `visibility:hidden`
+    // until the warmup gate fires. If `armWarmup()` were dropped from
+    // `$effect.pre`, this assertion would race with the prior thread's
+    // settled state and become flaky.
+    const threadA = makeThread({ id: 'thread-a-cross' });
+    const pane = await buildPane(threadA, [
+      makeItem({ id: 'a1', threadId: 'thread-a-cross' }),
+      makeItem({ id: 'a2', threadId: 'thread-a-cross', itemIndex: 1 }),
+    ]);
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+
+    const ctrl = pane.scrollController as
+      | (PaneScrollController & { isWarm: boolean })
+      | null;
+    expect(ctrl).not.toBeNull();
+    if (!ctrl) return;
+
+    // Switch to a different uncached thread.
+    const threadB = makeThread({ id: 'thread-b-cross' });
+    setBindingMock('SwitchThread', async () => threadB);
+    setBindingMock('ListThreadSliceAround', async () => ({
+      items: [makeItem({ id: 'b1', threadId: 'thread-b-cross' })],
+      oldestTurnIndex: 0,
+      hasMore: false,
+    }));
+    setBindingMock('GetThreadLiveState', async () => ({
+      threadId: threadB.id,
+      activeTurn: null,
+      queueItems: [],
+      interactive: { approvals: [], userInputs: [] },
+      todo: null,
+    }));
+    setBindingMock('ListRecentTurns', async () => []);
+    setBindingMock('ListThreadCheckpoints', async () => []);
+
+    await pane.switchThread(threadB);
+    await tick();
+    await tick();
+
+    // Immediately after switch, isWarm must be false (armWarmup ran in
+    // $effect.pre) AND the new thread is uncached (cache miss).
+    expect(ctrl.isWarm).toBe(false);
+    expect(pane.cachedVirtuaCache).toBeUndefined();
+
+    // Therefore hideContentForWarmup is true, contentEl is hidden, and
+    // the new thread's measurement cascade lands behind the gate.
+    const contentEl = container.querySelector<HTMLElement>(
+      '[data-testid="message-timeline-scroll"] > div',
+    );
+    expect(contentEl?.style.visibility).toBe('hidden');
+  });
+
+  it('hides contentEl during the measurement cascade on uncached loads (cache miss)', async () => {
+    // Regression: on cache-miss thread loads, virtua's lazy mount-time
+    // measurement underestimates totalSize at ESTIMATED_ROW_SIZE × N.
+    // The per-row ResizeObserver cascade then shrinks totalSize across
+    // a few rAFs; for long threads this clamps scrollTop by a fraction
+    // of a page (216-item sample: 461px) AND shifts every row's
+    // Y-offset, producing a visible "lands wrong, jumps to correct"
+    // sequence between two paints.
+    //
+    // MessageTimeline gates contentEl visibility on the controller's
+    // warmup signal when pane.cachedVirtuaCache is missing. The cascade
+    // happens behind a hidden contentEl; the user only sees the first
+    // post-warmup frame, by which point measurements have settled and
+    // scrollTop is at the correct bottom.
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'a' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
+    ]);
+    // Cache miss: pane.cachedVirtuaCache stays undefined (no prior visit).
+    expect(pane.cachedVirtuaCache).toBeUndefined();
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    // Find the contentEl wrapper. It's the div directly inside scrollEl
+    // that has the inline style we added.
+    const contentEl = container.querySelector<HTMLElement>(
+      '[data-testid="message-timeline-scroll"] > div',
+    );
+    expect(contentEl).not.toBeNull();
+    // Pre-warmup: visibility:hidden so the user can't see the in-flight
+    // measurement cascade. (`style.visibility` reads the inline style we
+    // set; happy-dom honors `style:visibility` from Svelte.)
+    expect(contentEl?.style.visibility).toBe('hidden');
   });
 });

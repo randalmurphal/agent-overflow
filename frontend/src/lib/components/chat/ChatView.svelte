@@ -119,38 +119,40 @@
             delta: next - composerHeight,
           });
         }
-        // Write composerHeight (the reactive style update writes a new
-        // `padding-bottom` on scrollEl), then defer `notifyContentMaybeGrew`
-        // to the next animation frame.
+        // Re-pin synchronously, in the same RO phase as the composer
+        // growth, so the user never sees a frame where padding has
+        // grown but scrollTop is still pointing at the old bottom.
         //
-        // Why rAF, not synchronous: writing `composerHeight = next`
-        // schedules a Svelte reactive flush, but the new style value
-        // isn't applied to scrollEl's `padding-bottom` until that flush
-        // runs in a microtask. A synchronous `notifyContentMaybeGrew()`
-        // call here reads `scrollEl.scrollHeight` BEFORE the layout
-        // reflects the new padding, so it pins to the OLD target and
-        // strands the user one composer-delta above the eventual bottom
-        // — observed as a "half a scroll tick from the bottom" miss
-        // when bottom-restoring an already-cached thread (the trace
-        // showed forceStick lands at 1819 with scrollHeight 3047, then
-        // composer-RO fires +59px, then sync notify re-pins to 1819
-        // with stale scrollHeight, and final scrollHeight settles at
-        // 3106 leaving the user 59px above bottom).
+        // The naive synchronous read (writing `composerHeight = next`
+        // and calling `notifyContentMaybeGrew()`) reads stale
+        // `scrollEl.scrollHeight` because Svelte's reactive flush
+        // happens in a microtask AFTER this RO callback. The fix:
+        // write the CSS variable DIRECTLY on chatColumn, bypassing
+        // Svelte's microtask boundary for the layout-relevant change.
+        // When `notifyContentMaybeGrew()` reads scrollHeight, the
+        // browser forces layout, applies the new `--composer-height`,
+        // recomputes scrollEl's padding-bottom, and returns the
+        // post-grow scrollHeight. writeScrollTop then writes the
+        // correct target — all before the RO callback returns and
+        // therefore before the next paint.
         //
-        // Padding-only changes to scrollEl don't fire the controller's
-        // contentRO (W3C ResizeObserver observes content-box), so this
-        // notify is the only seam that re-pins after composer growth.
-        // The rAF runs after Svelte's reactive flush AND the browser's
-        // layout pass, so `targetScrollTop()` reads the post-flush
-        // scrollHeight. The rAF callback also re-checks the threadId
-        // so a thread switch between RO fire and the next frame can't
-        // run the re-pin against the new thread's controller.
-        const writeAtThreadId = pane.threadId;
+        // composerHeight is still written as Svelte state for the
+        // template's style binding; Svelte's microtask flush writes
+        // the same CSS variable value again (idempotent). Reading
+        // composerHeight before the assignment captures the previous
+        // value for the trace.
         composerHeight = next;
-        requestAnimationFrame(() => {
-          if (pane.threadId !== writeAtThreadId) return;
-          pane.scrollController?.notifyContentMaybeGrew();
-        });
+        if (chatColumn) {
+          chatColumn.style.setProperty('--composer-height', `${next}px`);
+        }
+        // notifyContentMaybeGrew is escape-aware (bails on
+        // escapedFromLockState / pauseDepth>0 / !isAtBottomState) so
+        // a user who scrolled up between thread switches isn't yanked
+        // back to the bottom by composer growth. The pane's controller
+        // is stable across threadId changes within the same pane, so
+        // no threadId guard is needed — the call always targets the
+        // currently-mounted controller's geometry.
+        pane.scrollController?.notifyContentMaybeGrew();
       }
     });
     obs.observe(observed);

@@ -39,6 +39,12 @@
   let scrollEl: HTMLDivElement | undefined = $state(undefined);
   let contentEl: HTMLDivElement | undefined = $state(undefined);
   let composerEl: HTMLDivElement | undefined = $state(undefined);
+  // No `animationMode` option — Discussion uses the default 'instant'
+  // (sync-pin) behavior. Channel messages arrive via the 1s poll in
+  // discrete batches, not streamed chunks, so there's no incremental
+  // height-growth to chase smoothly. Sync-pin lands the viewport at the
+  // new bottom inside the contentRO callback, identical to chat's
+  // pre-streaming-restoration UX.
   const stick = createUseStickToBottomController();
 
   let messages = $derived(pane.channelMessages);

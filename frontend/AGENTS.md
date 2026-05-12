@@ -144,14 +144,61 @@ content layout and scroll correction that was the flicker source. The
 frontend layers on top:
 
 - **`useStickToBottom.svelte.ts`** — Svelte-5 port of stackblitz-labs'
-  `use-stick-to-bottom`, stripped of the upstream velocity-spring chase
-  loop. Single owner of intent (`isAtBottom` flag) and the only writer
-  to `scrollTop` outside virtua's internals. Autonomous content growth
-  on a sticky session pins synchronously inside the contentRO callback:
-  the same paint frame where contentEl grows also lands scrollTop at
-  the new target, so the user sees content arriving at the bottom with
-  no perceptible scroll motion — and no parallel animation loop that
-  could fight a programmatic jump or overshoot the sync-pin target.
+  `use-stick-to-bottom`. Single owner of intent (`isAtBottom` flag) and
+  the only writer to `scrollTop` outside virtua's internals. Two
+  animation behaviors for autonomous content growth, selected per-fire
+  by the consumer via the `animationMode` option on
+  `createUseStickToBottomController({ animationMode })`:
+  - **`'instant'` (default)**: sync-pin. ContentRO callback writes
+    scrollTop synchronously in the same paint frame as contentEl
+    growth — no perceptible scroll motion, content just arrives at
+    the bottom. This is the default for Discussion's `ChannelView`
+    (polled batches, no streaming chunks to chase) and for chat
+    whenever a turn is NOT actively running.
+  - **`'spring'`**: velocity-spring chase. The viewport interpolates
+    toward the moving bottom across rAF ticks so the user sees a
+    smooth scroll-follow. Used by chat MessageTimeline while a turn
+    is in flight (`getActiveTurn(threadId) != null`) so streaming
+    chunks flow in with the familiar "viewport follows the text" UX.
+    Spring defaults to upstream's tuning (`damping: 0.7,
+    stiffness: 0.05, mass: 1.25`); override via `{ spring: {...} }`.
+  Both paths share a **warm-up gate** that defends against the
+  e00723f regression (mount-time virtua remeasurement + Streamdown
+  async typesetting would spring-chase a thread restore visibly).
+  After `attach()`, `forceStick()`, or `armWarmup()`, the controller
+  stays in sync-pin mode until either at least one contentRO event
+  has fired AND `QUIET_MS = 100ms` of contentRO silence has passed
+  (the common case — virtua's per-row ResizeObservers fire on row
+  measurement, then go quiet) OR `FAILSAFE_MS = 2500ms` elapses (the
+  worst case — joining a thread mid-stream where contentRO never
+  goes quiet). The quiet timer is INTENTIONALLY gated on contentRO
+  evidence — the original implementation armed it eagerly inside
+  `beginWarmup`, which firing at QUIET_MS regardless of whether any
+  cascade had started. On uncached re-entries to long threads, the
+  slice fetch could exceed QUIET_MS while MessageTimeline rendered
+  the loading-spinner branch (no contentEl, no RO); by the time
+  items arrived and contentEl mounted, warm had already flipped via
+  the empty quiet window, the hide-gate had reopened, and the
+  measurement cascade was visible — landing scrollTop at the
+  estimated bottom rather than the measured one (the user-visible
+  "lands half-screen high" symptom). After warm, the
+  selected `animationMode` takes effect. The warm state is exposed as
+  `controller.isWarm` (state-backed) so consumers can co-gate UI on
+  it; chat's MessageTimeline binds `visibility:hidden` to
+  `!stick.isWarm && pane.cachedVirtuaCache === undefined` on
+  contentEl, covering the uncached-load measurement cascade behind a
+  brief blank rather than a visible "lands wrong, jumps to correct"
+  sequence (the larger the thread, the larger the scrollTop clamp +
+  row-offset shift — a 216-item sample produced a 461px jump).
+  `armWarmup()` is the public re-arm hook for consumers that need
+  `isWarm=false` BEFORE their next DOM flush — chat's MessageTimeline
+  calls it from `$effect.pre` on thread switch because `forceStick()`
+  in the restore `$effect` fires AFTER the DOM update (the new
+  thread's first paint would otherwise inherit the prior thread's
+  settled `isWarm=true`). `attach()` does not re-arm when scrollEl/
+  contentEl are unchanged across a thread switch — MessageTimeline
+  isn't keyed on threadId so those refs are stable, and `attach()`'s
+  early-return path is hit on every switch.
   Programmatic scrolls go through `forceStick()` / `markAtBottom()` /
   `notifyContentMaybeGrew()` / `pauseAutoScroll()` / `stopScroll()` /
   `animateScrollTo()`; the one place virtua writes scrollTop is
@@ -159,6 +206,9 @@ frontend layers on top:
   `stick.stopScroll()` so the controller doesn't auto-restick mid-jump
   if virtua's measurement loop happens to land near the bottom. Never
   write `scrollTop` directly.
+  `prefers-reduced-motion: reduce` forces the sync-pin path
+  unconditionally — the spring is suppressed regardless of
+  `animationMode`.
   - `forceStick()` clears escape, sets sticky, and writes `scrollTop`
     to the current target. Used by the scroll-to-bottom chip, by
     Discussion's initial channel load, and by chat's bottom-snapshot
@@ -218,6 +268,27 @@ frontend layers on top:
   restoration lands above the eventual bottom — the controller would
   then absorb the gap through repeated sync re-pins as rows grew.
   ChannelView (no virtualizer) leaves the getter unregistered.
+- **Negative-delta re-pin honors logical intent, not just geometry.**
+  The controller's contentRO re-stick on a shrink fires when EITHER
+  `isAtBottomState` (logical intent) OR `isNearBottomState` (geometric
+  ≤70 px) is true — gated by `!escapedFromLockState && pauseDepth ===
+  0` in both cases. The geometric branch matches the upstream
+  use-stick-to-bottom semantics. The intent branch defends against
+  virtua's row-remeasurement cascade: when rows above the viewport
+  remeasure during the warm-up window (per-row ResizeObservers fire
+  after mount, Streamdown async typesetting growing math/code blocks
+  above the viewport), virtua's binary-searched `applyJump` shifts
+  `scrollTop` by the same delta to preserve the visible row. On
+  uncached loads that shift can be hundreds of pixels, flipping the
+  geometric near-bottom check to false purely as a downstream effect
+  of layout — not user intent. Without the disjunct, the controller
+  abandoned the pin and left the viewport stuck mid-cascade until
+  some later shrink happened to land scrollTop at the new bottom by
+  coincidence (user-visible "half-screen jump" on heavy uncached
+  threads). Regression coverage lives in
+  `useStickToBottom.svelte.test.ts` under "content ResizeObserver"
+  (the disjunction + the escape and pause guards that must still
+  override it).
 - **Layout decoupling** — `ChatView.svelte` positions the composer +
   live-turn UI + below-bar as an absolute overlay inside the timeline's
   relative container. A `--composer-height` CSS variable, written by a
@@ -230,8 +301,25 @@ frontend layers on top:
   callback nor change `entry.contentRect.height`, so a contentEl
   padding wouldn't re-pin via the contentRO seam. ChatView's composer
   RO calls `notifyContentMaybeGrew()` to stamp the resize and re-pin
-  scrollTop after the padding update flows through. ChannelView's
-  composer-section RO calls the same hook for an analogous reason: in
+  scrollTop after the padding update flows through. The re-pin runs
+  **synchronously inside the RO callback** — the callback writes
+  `--composer-height` directly on chatColumn via
+  `style.setProperty(...)` (bypassing Svelte's reactive flush
+  microtask, which would otherwise leave the layout-relevant change
+  un-applied until after the callback returned), then
+  `notifyContentMaybeGrew()` forces a layout read inside
+  `targetScrollTop()` so the post-grow scrollHeight is what
+  scrollTop is pinned against. The previous rAF-deferred path left a
+  1-frame gap between composer growth and re-pin — visible as content
+  "appearing then settling" on uncached loads where a working/todo or
+  approval panel mounts late, after the warm gate has already revealed
+  contentEl; the gap is `composerDelta` pixels, large enough on big-
+  composer threads (~200–400 px) to flicker the scroll-to-bottom chip
+  on the way to settling. The reactive `composerHeight` state binding
+  on chatColumn stays in place for any future consumer of the value;
+  Svelte's microtask flush writes the same CSS-variable value a second
+  time, which is idempotent. ChannelView's composer-section RO calls
+  the same `notifyContentMaybeGrew` hook for an analogous reason: in
   Discussion the composer sits OUTSIDE scrollEl (different layout —
   flex sibling, not absolute overlay), so composer growth there changes
   `scrollEl.clientHeight` rather than `scrollHeight`, and the contentRO
@@ -380,6 +468,76 @@ What NOT to add:
   rare-input-mode case (mouse-drag of scrollbar + concurrent post)
   with no recorded user impact in the chat surface; treat as an
   accepted simplification for the unification.
+
+## Diagnosing scroll regressions
+
+The scroll controller is the hardest surface in the frontend to
+reason about by reading code alone — three independent layers
+(controller flags, virtua's measurement loop, browser layout) write
+`scrollTop` near each other, and the user-visible symptom is usually
+the second-order effect of one layer's correction interacting with
+another's. The recurring class of bug looks like "viewport lands
+slightly off, then snaps to where it should be" or "half-screen jump
+on uncached load" — both produced by a controller decision made
+against state that another layer was about to change.
+
+The `uiRenderTrace.ts` surface exists for exactly these bugs. Enable
+it with `make dev DEBUG=1` (sets `VITE_AGENT_OVERFLOW_UI_TRACE=1`).
+Trace records are written to disk via `AppendUIRenderTraceBatch` and
+also exposed through `window.__agentOverflowUiTrace` in the dev
+console (`.dump()` / `.recent(50)` / `.filePath()`). The scroll
+controller records around every decision point: `scroll.contentRO`
+(every resize delta with `positiveWillPin` / `negativeWillPin` /
+`isAtBottomState` / `isNearBottomState` / `escapedFromLockState` /
+`pauseDepth` snapshot), `scroll.escape.set` (when escape flips),
+`scroll.refreshIsNearBottom` (when the geometric flag changes),
+plus `chat.state` / `chat.dom` snapshot traces from MessageTimeline.
+
+When a regression is reported, the diagnostic flow is:
+
+1. Reproduce with the trace enabled. Capture the dump immediately
+   after the symptom — `window.__agentOverflowUiTrace.dump()` or
+   the file path. Threads with multi-hundred items + heavy
+   Streamdown content (math, code, mermaid) are the most reliable
+   reproducers.
+2. Scan backward from the user-visible symptom for the LAST
+   `scroll.contentRO` record before the viewport landed wrong.
+   Read `positiveWillPin` / `negativeWillPin` directly. A pin that
+   should have fired but shows `false` means one of the gates
+   blocked it; cross-reference the surrounding flags.
+3. The recurring failure mode: `isAtBottomState=true,
+   isNearBottomState=false, negativeWillPin=false` — a geometric
+   flag flickered because of an upstream layout correction
+   (virtua's `applyJump`, browser scroll-anchor, composer-height
+   pad), the controller read the flicker, and abandoned the pin.
+   The fix in this codebase has always been to add the
+   intent-disjunct: gate on `(isAtBottomState ||
+   isNearBottomState)`, with `!escapedFromLockState &&
+   pauseDepth === 0` outside the disjunct. Pre-existing
+   regression tests for that pattern are in
+   `useStickToBottom.svelte.test.ts` under "content ResizeObserver".
+4. Reproduce in a unit test before touching controller code. Each
+   regression in this surface has corresponded to a specific
+   contentRO firing sequence — encode it in
+   `useStickToBottom.svelte.test.ts` so the assertion fails
+   without the fix and passes with it. The test file's
+   `MockResizeObserver` + `stubGeometry` helpers cover the
+   geometry combinations that matter.
+
+What NOT to do when chasing a scroll bug:
+
+- Don't add a defensive `requestAnimationFrame` to "let layout
+  settle." The whole point of the synchronous contentRO seam is to
+  pin scrollTop in the same paint frame as the height change;
+  deferring re-introduces the gap the architecture eliminated.
+- Don't add a second observer or `$effect` watching `pane.items`
+  / `scrollHeight` / `scrollTop`. The controller already owns
+  these decisions. A parallel watcher creates two writers that
+  race.
+- Don't relax the warm-gate or hide-gate without evidence that
+  the cascade-cover is unnecessary on the affected thread —
+  uncached loads of 200+-item threads with heavy Streamdown
+  content are the canonical stressor and the cascade is real.
 
 ## Raw-content rendering
 

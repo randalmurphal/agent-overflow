@@ -317,6 +317,84 @@ describe('createUseStickToBottomController', () => {
       expect(geom.scrollTop).toBe(200);
     });
 
+    it('negative delta with isAtBottomState=true but scrollTop bumped outside the near-bottom band still re-pins', async () => {
+      // Regression for the layout-measurement-cascade jump: virtua's
+      // applyJump can shift scrollTop hundreds of pixels away from
+      // bottom during row remeasurement, flipping the geometric
+      // near-bottom check to false. Before the fix, the negative-
+      // delta branch gated on isNearBottomState alone, so it bailed
+      // and left the viewport stuck mid-cascade. After the fix, the
+      // logical isAtBottomState intent is honored regardless of the
+      // geometric flicker — the pin always lands at the new bottom.
+      const ro = getRO();
+      ro.fire(contentEl, 800); // initial; isAtBottomState=true, scrollTop=400 (at bottom)
+      expect(controller.isAtBottom).toBe(true);
+
+      // Simulate virtua's jump correction moving scrollTop away from
+      // bottom AND the content shrinking at the same layout pass.
+      // distance = 900 - 200 - 600 = 100, outside the 70px band.
+      geom.scrollTop = 200;
+      geom.scrollHeight = 900;
+      geom.contentHeight = 700;
+      ro.fire(contentEl, 700);
+
+      // Pre-fix this would have stayed at 200 (negativeWillPin=false
+      // because dist=100 > 70). Post-fix scrollTop is at the new
+      // target = max(0, 900 - 600) = 300 because isAtBottomState=true
+      // is honored.
+      expect(geom.scrollTop).toBe(300);
+    });
+
+    it('negative delta does NOT re-pin when escapedFromLock=true (geometric disjunct does not bypass escape)', async () => {
+      // Companion to the isAtBottomState disjunct test above. The
+      // new gate is `(isAtBottomState || isNearBottomState) &&
+      // !escaped && pauseDepth === 0`. Verify the escape guard still
+      // wins when the geometric disjunct (isNearBottomState=true)
+      // would otherwise fire the pin. setEscapedFromLock flips
+      // isAtBottomState=false, so this isolates the isNearBottomState
+      // branch — without the !escaped guard, the pre-fix behavior
+      // (gate on isNearBottomState alone) would have written scrollTop
+      // to the new target.
+      //
+      // Geometry: scrollTop sits 60 px above target so the geometric
+      // near-bottom check is true, but new target stays above scrollTop
+      // so the overshoot guard (separate, unconditional) does not fire
+      // and pollute the assertion.
+      const ro = getRO();
+      ro.fire(contentEl, 800); // initial; scrollTop=400, target=400
+      geom.scrollTop = 340; // distance = 1000 - 340 - 600 = 60 (near-bottom)
+      controller.setEscapedFromLock(true);
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Shrink contentEl without changing scrollHeight: delta=-100,
+      // target unchanged at 400, scrollTop=340 < target so no overshoot.
+      geom.contentHeight = 700;
+      ro.fire(contentEl, 700);
+      await nextFrame();
+      expect(geom.scrollTop).toBe(340);
+    });
+
+    it('negative delta does NOT re-pin while pauseAutoScroll lease is held', async () => {
+      // Resizer / drawer drags acquire pauseAutoScroll to keep
+      // auto-follow from yanking the viewport mid-gesture. Verify
+      // the new (isAtBottomState || isNearBottomState) disjunct does
+      // not bypass the pauseDepth guard. Both disjuncts evaluate true
+      // here (isAtBottomState retained from initial fire,
+      // isNearBottomState=true from geometry), so the lease is the
+      // only thing blocking the write.
+      const ro = getRO();
+      ro.fire(contentEl, 800); // initial; scrollTop=400
+      geom.scrollTop = 340; // distance=60, isNearBottomState=true
+      const release = controller.pauseAutoScroll();
+
+      geom.contentHeight = 700;
+      ro.fire(contentEl, 700);
+      await nextFrame();
+      expect(geom.scrollTop).toBe(340);
+
+      release();
+    });
+
     it('overscroll guard clamps scrollTop > target', () => {
       const ro = getRO();
       ro.fire(contentEl, 800); // initial
@@ -922,6 +1000,659 @@ describe('createUseStickToBottomController', () => {
 
       expect(controller.escapedFromLock).toBe(false);
       expect(controller.isSticky).toBe(true);
+    });
+  });
+});
+
+// Spring chase + warm-up gate. These tests construct their own controller
+// with animationMode='spring' so they can exercise the path that the
+// default (no options) controller suppresses.
+describe('createUseStickToBottomController — spring chase', () => {
+  let scrollEl: HTMLDivElement;
+  let contentEl: HTMLDivElement;
+  let geom: Geometry;
+  let controller: UseStickToBottomController;
+  let originalRO: typeof ResizeObserver | undefined;
+  let mode: 'spring' | 'instant' = 'spring';
+
+  function getRO(): MockResizeObserver {
+    const ro = MockResizeObserver.instances.at(-1);
+    if (!ro) throw new Error('no ResizeObserver was created');
+    return ro;
+  }
+
+  // QUIET_MS is 100ms — past it (so warm fires on the quiet timer).
+  // FAILSAFE_MS is 2500ms — past it (so warm fires on the failsafe).
+  async function waitMs(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // Bounded "advance until" helper. Replaces the fixed `for (let i = 0;
+  // i < 100; i++) await nextFrame()` pattern with an early-exit loop:
+  // we stop as soon as the predicate holds (typical case — saves
+  // dozens of unneeded frames per test) and throw a useful error if
+  // the cap is hit (catches regressions where the spring never
+  // arrives). Frame cap matches the slowest historical case (multi-
+  // chunk spring); raise per-call if needed.
+  async function advanceUntil(predicate: () => boolean, maxFrames = 200): Promise<void> {
+    for (let i = 0; i < maxFrames; i++) {
+      if (predicate()) return;
+      await nextFrame();
+    }
+    throw new Error(`advanceUntil: predicate not satisfied within ${maxFrames} frames`);
+  }
+
+  beforeEach(() => {
+    resetUseStickToBottomModuleStateForTest();
+    MockResizeObserver.instances = [];
+    originalRO = globalThis.ResizeObserver;
+    (globalThis as unknown as { ResizeObserver: typeof MockResizeObserver }).ResizeObserver = MockResizeObserver;
+    mockNow = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => mockNow);
+
+    scrollEl = document.createElement('div');
+    contentEl = document.createElement('div');
+    scrollEl.appendChild(contentEl);
+    document.body.appendChild(scrollEl);
+
+    // Geometry: a viewport with room to grow. Initial scrollTop sits
+    // exactly at bottom so isAtBottomState stays true on attach.
+    geom = { scrollHeight: 1000, clientHeight: 600, scrollTop: 400, contentHeight: 800 };
+    stubGeometry(scrollEl, contentEl, geom);
+
+    mode = 'spring';
+    controller = createUseStickToBottomController({
+      animationMode: () => mode,
+    });
+    controller.attach(scrollEl, contentEl);
+  });
+
+  afterEach(() => {
+    controller.detach();
+    scrollEl.remove();
+    if (originalRO) {
+      (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = originalRO;
+    }
+    vi.restoreAllMocks();
+  });
+
+  describe('warm-up gate', () => {
+    it('sync-pins (no spring) during the warm-up window even when mode=spring', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800); // initial; warm is still false
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+      // Sync-pin: scrollTop already at the new target inside the RO callback.
+      expect(geom.scrollTop).toBe(600);
+      // No spring rAF was scheduled. Advance frames; scrollTop is stable.
+      for (let i = 0; i < 5; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(600);
+    });
+
+    it('exposes isWarm=false during warm-up, isWarm=true after quiet timer fires', async () => {
+      // Consumers (chat's MessageTimeline) read isWarm to hide
+      // contentEl during the measurement cascade on uncached loads.
+      // The signal must be false at attach and after forceStick, and
+      // must flip true exactly when the controller decides
+      // measurements have settled.
+      expect(controller.isWarm).toBe(false);
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      // Still warming — quiet timer not yet fired.
+      expect(controller.isWarm).toBe(false);
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+    });
+
+    it('forceStick resets isWarm back to false', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+
+      controller.forceStick();
+      // Warm gate re-armed; consumers should re-hide.
+      expect(controller.isWarm).toBe(false);
+
+      // The quiet timer is gated on contentRO evidence — without an RO
+      // fire, isWarm stays false. Fire a second RO to start the next
+      // cascade window, then wait past QUIET_MS for warm to flip back.
+      ro.fire(contentEl, 810);
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+    });
+
+    it('detach resets isWarm', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+
+      controller.detach();
+      expect(controller.isWarm).toBe(false);
+    });
+
+    it('armWarmup() flips isWarm back to false WITHOUT writing scrollTop or clearing escape', async () => {
+      // Public-API counterpart of attach()/forceStick()'s internal
+      // warm-gate re-arm. Used by MessageTimeline's $effect.pre on
+      // thread switch — by the time forceStick() runs in $effect, the
+      // DOM has already flushed with the OLD thread's settled
+      // isWarm=true, so the cascade-hide gate stays open during the
+      // new thread's first paint. armWarmup() closes the gate
+      // synchronously without touching scroll geometry or escape
+      // flags, so the next DOM flush sees isWarm=false.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+
+      // Set up a known geometry + escape state to confirm armWarmup
+      // doesn't touch them.
+      controller.setEscapedFromLock(true);
+      geom.scrollTop = 123;
+      expect(controller.escapedFromLock).toBe(true);
+
+      controller.armWarmup();
+
+      expect(controller.isWarm).toBe(false);
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(123);
+
+      // The quiet timer is gated on contentRO evidence — without an RO
+      // fire, isWarm stays false (only the FAILSAFE_MS=2500ms ceiling
+      // would trip it, which we don't wait for here).
+      await waitMs(150);
+      expect(controller.isWarm).toBe(false);
+
+      // Once an RO fires (cascade kicks off), the quiet timer arms;
+      // QUIET_MS later, warm flips true.
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+    });
+
+    it('armWarmup() called twice in close succession holds the gate closed; only a final RO + quiet window flips warm', async () => {
+      // beginWarmup no longer arms the quiet timer eagerly — repeated
+      // armWarmup() calls cannot, by themselves, ever flip warm true;
+      // only a contentRO event followed by QUIET_MS of silence can.
+      // This test pins that guarantee: across two armWarmup() bursts
+      // and 250ms of wall clock with no RO, warm stays false.
+      controller.armWarmup();
+      expect(controller.isWarm).toBe(false);
+      await waitMs(50);
+      controller.armWarmup();
+      expect(controller.isWarm).toBe(false);
+      await waitMs(200);
+      expect(controller.isWarm).toBe(false);
+
+      // RO fires; QUIET_MS=100ms later, warm flips.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+    });
+
+    it('beginWarmup with no contentRO activity keeps isWarm=false until FAILSAFE_MS', async () => {
+      // Regression: the original "half-screen-high" symptom on uncached
+      // long-thread re-entry. Sequence: $effect.pre armWarmup arms the
+      // gate; slice fetch is in flight, MessageTimeline renders the
+      // loading-spinner / empty branch so contentEl is not yet mounted
+      // and no RO can fire. Before the slice arrives, the old
+      // beginWarmup armed quietTimer eagerly — it would fire at t=100ms,
+      // warm=true, hideContentForWarmup=false. Once items finally
+      // arrived and contentEl mounted, the cascade was visible and
+      // scrollTop landed at the estimated bottom (not the measured
+      // bottom). The fix: beginWarmup only arms the failsafe; quietTimer
+      // is gated on actual RO evidence.
+      controller.armWarmup();
+      // 150ms with no RO — would have flipped warm under the old policy.
+      await waitMs(150);
+      expect(controller.isWarm).toBe(false);
+      // The failsafe is still in place; we don't wait the full 2.5s here,
+      // we just confirm the gate held through the original QUIET_MS window.
+    });
+
+    it('quiescence: warms after QUIET_MS of no contentRO fires', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      // Wait past the quiet window. Real timers — happy-dom runs them.
+      await waitMs(150);
+
+      // Next positive delta should kick the spring instead of sync-pinning.
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+
+      // Spring path: scrollTop didn't land instantly at the new target.
+      // It's interpolating across rAF ticks.
+      expect(geom.scrollTop).toBeLessThan(600);
+      expect(geom.scrollTop).toBeGreaterThanOrEqual(400);
+    });
+
+    it('failsafe: warms after FAILSAFE_MS of continuous contentRO fires', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+
+      // Fire small deltas continuously to keep the quiet timer reset.
+      // Each fire bumps the quiet timer; only the failsafe can rescue us.
+      for (let i = 1; i <= 30; i++) {
+        geom.scrollHeight = 1000 + i;
+        geom.contentHeight = 800 + i;
+        ro.fire(contentEl, 800 + i);
+        await waitMs(80); // < QUIET_MS, keeps the quiet timer alive
+      }
+      // After ~2.4s of fires, the failsafe (2.5s) is about to fire.
+      // Push past it.
+      await waitMs(250);
+
+      // Subsequent positive delta now goes through the spring path.
+      geom.scrollHeight = 1500;
+      geom.contentHeight = 1300;
+      ro.fire(contentEl, 1300);
+
+      expect(geom.scrollTop).toBeLessThan(900); // target - clientHeight = 900
+    }, 5000);
+
+    it('forceStick re-arms the warm gate so post-restore settle stays silent', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      // Cross the quiet window so we're warm.
+      await waitMs(150);
+
+      // Re-call forceStick — simulates thread restore. Warm should reset.
+      controller.forceStick();
+
+      // Mount-time settling immediately after restore: positive delta
+      // should sync-pin, NOT spring.
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+      // Sync-pin landed scrollTop at target in the same callback.
+      expect(geom.scrollTop).toBe(600);
+    });
+  });
+
+  describe('spring chase', () => {
+    it('engages on positive delta when warm AND mode=spring', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+
+      // First spring tick has not yet run; scrollTop unchanged.
+      expect(geom.scrollTop).toBe(400);
+
+      // Advance frames; spring should interpolate scrollTop toward 800
+      // (= 1400 - 600).
+      for (let i = 0; i < 3; i++) await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+      expect(geom.scrollTop).toBeLessThan(800);
+    });
+
+    it('lands at target eventually and stops ticking', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+
+      // Spring should arrive at 800 (= 1400 - 600).
+      await advanceUntil(() => geom.scrollTop === 800);
+
+      // After arrival, additional frames shouldn't change anything.
+      const after = geom.scrollTop;
+      for (let i = 0; i < 5; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(after);
+    });
+
+    it('keeps chasing across multiple positive deltas (no per-chunk restart)', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // First chunk.
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+
+      await nextFrame();
+      await nextFrame();
+      const midScrollTop = geom.scrollTop;
+      expect(midScrollTop).toBeGreaterThan(400);
+      expect(midScrollTop).toBeLessThan(800);
+
+      // Second chunk arrives mid-flight.
+      geom.scrollHeight = 1800;
+      geom.contentHeight = 1600;
+      ro.fire(contentEl, 1600);
+
+      // Spring continues from current position toward new target (1200).
+      for (let i = 0; i < 5; i++) await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(midScrollTop);
+
+      // Eventually arrives at the moving target.
+      await advanceUntil(() => geom.scrollTop === 1200);
+    });
+
+    it('escape (wheel-up) cancels in-flight spring', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+      const midScrollTop = geom.scrollTop;
+      expect(midScrollTop).toBeGreaterThan(400);
+      expect(midScrollTop).toBeLessThan(800);
+
+      // User wheel-ups.
+      fireWheel(scrollEl, -40, scrollEl);
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Spring stops; scrollTop should not advance further.
+      const afterEscape = geom.scrollTop;
+      for (let i = 0; i < 20; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(afterEscape);
+    });
+
+    it('stopScroll cancels in-flight spring', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+      const midScrollTop = geom.scrollTop;
+
+      controller.stopScroll();
+
+      const afterStop = geom.scrollTop;
+      for (let i = 0; i < 20; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(afterStop);
+      expect(geom.scrollTop).toBeLessThan(800); // didn't arrive after stop
+      // Suppress unused-var lint
+      expect(midScrollTop).toBeGreaterThanOrEqual(400);
+    });
+
+    it('detach cancels in-flight spring and clears warm state', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+
+      controller.detach();
+      const afterDetach = geom.scrollTop;
+      for (let i = 0; i < 20; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(afterDetach);
+    });
+
+    it('mode=instant takes the sync-pin path even when warm', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      mode = 'instant';
+
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+
+      // Sync-pin: scrollTop already at target.
+      expect(geom.scrollTop).toBe(600);
+      for (let i = 0; i < 5; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(600);
+    });
+
+    it('prefers-reduced-motion suppresses the spring', async () => {
+      vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+        matches: query === '(prefers-reduced-motion: reduce)',
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      } as unknown as MediaQueryList));
+
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+
+      // Sync-pin: scrollTop already at target, no spring.
+      expect(geom.scrollTop).toBe(800);
+      for (let i = 0; i < 5; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(800);
+    });
+
+    it('mode flipping from spring to instant mid-flight lets spring land cleanly', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+      const midScrollTop = geom.scrollTop;
+      expect(midScrollTop).toBeGreaterThan(400);
+      expect(midScrollTop).toBeLessThan(800);
+
+      // Turn ends mid-spring.
+      mode = 'instant';
+
+      // Spring should still land at target (no abrupt cancel).
+      await advanceUntil(() => geom.scrollTop === 800);
+    });
+
+    it('paused lease blocks spring from starting', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      const release = controller.pauseAutoScroll();
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+
+      // Lease active — no spring, no sync-pin write.
+      expect(geom.scrollTop).toBe(400);
+      for (let i = 0; i < 5; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(400);
+
+      // Release: re-pins via pauseAutoScroll.release path (sync write).
+      release();
+      expect(geom.scrollTop).toBe(800);
+    });
+  });
+
+  describe('edge cases', () => {
+    it('forceStick called twice during warmup keeps the gate closed', async () => {
+      // Idempotency: a second forceStick before warm fires must not
+      // accidentally satisfy the quiet timer (e.g. by clearing the
+      // failsafe and leaving the quiet timer dangling, or by leaving
+      // warm=true). Both calls should leave the controller in a clean
+      // sync-pin state with both timers re-armed.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+
+      controller.forceStick();
+      controller.forceStick();
+
+      // Still warming — positive delta sync-pins, doesn't spring.
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+      expect(geom.scrollTop).toBe(600); // sync-pin landed at target
+
+      // Confirm no spring rAF is in flight.
+      const after = geom.scrollTop;
+      for (let i = 0; i < 5; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(after);
+    });
+
+    it('detach + reattach resets warm state and re-arms the gate', async () => {
+      // Symmetric with the "detach cancels spring" test: detach should
+      // also reset warm, so a re-attach starts fresh in sync-pin mode
+      // even if the previous session warmed long ago.
+      const firstRo = getRO();
+      firstRo.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      controller.detach();
+
+      // Re-stub geometry on a fresh element pair so attach kicks a new
+      // contentRO. Use the same scrollEl — happy-dom doesn't care.
+      controller.attach(scrollEl, contentEl);
+      const secondRo = getRO();
+      expect(secondRo).not.toBe(firstRo);
+
+      // First post-attach positive delta must sync-pin (we're warming
+      // again from scratch), not spring.
+      secondRo.fire(contentEl, 800); // initial fire on the new RO
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      secondRo.fire(contentEl, 1000);
+      expect(geom.scrollTop).toBe(600);
+
+      // No spring rAF; confirm scrollTop stable.
+      const after = geom.scrollTop;
+      for (let i = 0; i < 5; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(after);
+    });
+
+    it('negative delta mid-spring lets the spring converge on the new (lower) target', async () => {
+      // Negative deltas (content shrinking — Streamdown removing a
+      // typesetting placeholder, a row collapsing) change the moving
+      // bottom without cancelling an in-flight spring. The spring
+      // reads targetScrollTop() each tick, so it should retarget and
+      // converge on the new bottom without overshooting or
+      // oscillating. The negative-delta re-pin path may also write
+      // (when the new geometry leaves us near-bottom); both writers
+      // must converge to the same target.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      // Kick a spring with a large positive delta so it'll be in
+      // flight for many frames.
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+      const midScrollTop = geom.scrollTop;
+      expect(midScrollTop).toBeGreaterThan(400);
+      expect(midScrollTop).toBeLessThan(800);
+
+      // Content shrinks below the spring's current scrollTop. New
+      // target = 800 - 600 = 200, which is BELOW where the spring is
+      // currently chasing. The spring must back off, not overshoot.
+      geom.scrollHeight = 800;
+      geom.contentHeight = 600;
+      ro.fire(contentEl, 600);
+
+      // Spring converges to the new (lower) target. Since
+      // targetScrollTop() = max(0, 800 - 600) = 200, the spring's
+      // current scrollTop (> 200) is above target — `current < target`
+      // is false, so the spring tick stops advancing and arrives.
+      // The sync-pin overshoot guard inside contentRO clamps any
+      // scrollTop > target down to target.
+      await advanceUntil(() => geom.scrollTop <= 200);
+      expect(geom.scrollTop).toBeLessThanOrEqual(200);
+    });
+
+    it('text selection mid-spring pauses scrollTop advancement', async () => {
+      // The spring tick checks isSelectingInside() and re-rAFs without
+      // advancing scrollTop when the user is dragging a selection
+      // across the scroll element. This is the spring counterpart to
+      // the scroll-handler escape-on-selection path: gestures the user
+      // takes mid-stream must not be fought.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame(); // let spring run one tick
+      const beforeSelect = geom.scrollTop;
+      expect(beforeSelect).toBeGreaterThan(400);
+      expect(beforeSelect).toBeLessThan(800);
+
+      // Begin a selection drag inside scrollEl.
+      document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      const fakeRange = { commonAncestorContainer: scrollEl } as unknown as Range;
+      vi.spyOn(window, 'getSelection').mockReturnValue({
+        rangeCount: 1,
+        getRangeAt: () => fakeRange,
+      } as unknown as Selection);
+
+      // Spring should be paused — additional frames don't advance scrollTop.
+      for (let i = 0; i < 10; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(beforeSelect);
+
+      // Release the selection: spring resumes and lands at target.
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      vi.spyOn(window, 'getSelection').mockReturnValue(null);
+      await advanceUntil(() => geom.scrollTop === 800);
+    });
+
+    it('re-stick after wheel-up escape re-arms the spring for subsequent streaming chunks', async () => {
+      // Regression for the springStopRequested re-arm bug. After
+      // setEscapedFromLock(true) the controller sets
+      // springStopRequested=true, which would permanently disable the
+      // spring even if the user later scrolls back to the bottom. The
+      // scroll-handler's re-stick path must reset it so the next
+      // streaming chunk engages the spring again.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      // User wheel-ups: spring stops, escape sets.
+      geom.scrollTop = 200;
+      fireWheel(scrollEl, -50, scrollEl);
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // User scrolls BACK to the bottom (re-stick path).
+      geom.scrollTop = 100; // intermediate
+      fireScroll(scrollEl);
+      await nextTimer();
+      geom.scrollTop = 400; // right at bottom; distance=0 ≤ RE_STICK_OFFSET_PX
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+
+      // Next streaming chunk arrives — spring should engage again.
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+
+      // Confirm spring is interpolating, not sync-pinning.
+      expect(geom.scrollTop).toBeLessThan(800);
+      expect(geom.scrollTop).toBeGreaterThanOrEqual(400);
+      await advanceUntil(() => geom.scrollTop === 800);
     });
   });
 });

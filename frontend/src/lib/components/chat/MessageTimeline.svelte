@@ -143,7 +143,40 @@
     finalAssistantTextIdsByTurn(groupedNodes, getActiveTurn(pane.threadId)?.turnIndex ?? null),
   );
 
-  const stick = createUseStickToBottomController();
+  // Animation mode is keyed on whether the thread has an in-flight
+  // turn. Streaming chunks come in fast enough that the contentRO
+  // sync-pin would land them invisibly; the spring chase gives the
+  // user the familiar "viewport follows the text as it streams in" UX.
+  // When the turn settles, mode flips back to 'instant' — late
+  // Streamdown typesetting on completed content doesn't move the
+  // viewport. The controller's warm gate (quiescence-based, with a
+  // 2.5s failsafe) defends against the e00723f regression where
+  // mount-time virtua remeasurement + Streamdown typesetting would
+  // spring-chase a thread restore visibly.
+  const stick = createUseStickToBottomController({
+    animationMode: () => (getActiveTurn(pane.threadId) ? 'spring' : 'instant'),
+  });
+
+  // Hide contentEl during the initial measurement cascade on UNCACHED
+  // loads. Without `pane.cachedVirtuaCache`, virtua starts with
+  // `ESTIMATED_ROW_SIZE × N` for totalSize; per-row ResizeObservers
+  // then correct each row's actual height across the next ~25ms, which
+  // shifts every row's Y-offset and clamps scrollTop by a fraction of
+  // a page (216-item thread sample: 461px clamp). The controller's
+  // sync-pin re-pins scrollTop correctly, but the user still sees the
+  // row-content shift between the two paints. Hiding contentEl until
+  // the controller's warmup gate fires (QUIET_MS=100ms of contentRO
+  // silence, or FAILSAFE_MS=2500ms ceiling — whichever first) covers
+  // the cascade with a brief blank-then-correct reveal instead of a
+  // visible "land wrong, jump to correct" sequence.
+  //
+  // Cached loads skip this — virtua has correct totalSize from frame 0
+  // and there's no measurement cascade to hide. The scroll controller
+  // and composer overlay stay visible in both branches; only the
+  // virtualizer's contentEl is hidden.
+  let hideContentForWarmup = $derived(
+    !stick.isWarm && pane.cachedVirtuaCache === undefined,
+  );
 
   // Publish the controller on the pane so external surfaces (sidebar
   // resizers, resizable drawers) can acquire a `pauseAutoScroll()` lease
@@ -518,6 +551,20 @@
       }
       autoLoadAttemptedAtFloor = null;
       stick.setEscapedFromLock(true);
+      // Re-arm the warm-up gate BEFORE the DOM update flushes. The
+      // restore $effect calls forceStick() (which also arms the gate),
+      // but that runs AFTER DOM update — so without this $effect.pre
+      // reset, the first paint of the new thread would inherit the
+      // outgoing thread's settled `isWarm=true`, making
+      // hideContentForWarmup=false during the new thread's measurement
+      // cascade. attach() can't carry this load: scrollEl/contentEl
+      // don't change across switches (MessageTimeline isn't keyed on
+      // threadId), so the attach $effect early-returns. This was the
+      // flaky-fix bug: cache-miss switches off a long-settled prior
+      // thread reproduced the visible "lands wrong, jumps to correct"
+      // sequence; cache-miss switches off an unsettled prior thread
+      // (warm=false coincidentally) hid the cascade and looked fine.
+      stick.armWarmup();
     }
     scrollSnapshotThreadId = nextThreadId;
   });
@@ -925,7 +972,10 @@
            a thread switch back would still render the old cache and
            virtua would underestimate `totalSize` until per-row
            ResizeObservers re-measured every visible row. -->
-      <div bind:this={contentEl}>
+      <div
+        bind:this={contentEl}
+        style:visibility={hideContentForWarmup ? 'hidden' : 'visible'}
+      >
         {#key pane.threadId}
         <Virtualizer
           bind:this={listRef}
