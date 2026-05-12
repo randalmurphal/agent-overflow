@@ -286,6 +286,15 @@ func buildArgs(cfg Config) []string {
 		// flag is purely additive — non-replay user envelopes (tool_result
 		// blocks) are unchanged.
 		"--replay-user-messages",
+		// Opt thinking text onto the wire for every model. Opus 4.7
+		// defaults the underlying API `thinking.display` to `omitted`,
+		// which silences `thinking_delta` events even though the
+		// thinking block is still emitted (with a populated signature
+		// for multi-turn replay). Older models default to `summarized`
+		// so this flag is a no-op there. Hidden from `claude --help`;
+		// see docs/references/claude-wire.md §"Extended thinking" for
+		// the full investigation.
+		"--thinking-display", "summarized",
 	}
 
 	if cfg.Model != "" {

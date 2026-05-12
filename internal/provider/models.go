@@ -1,8 +1,6 @@
 package provider
 
 const (
-	// ModelCapabilityThinking indicates a model supports an explicit thinking toggle.
-	ModelCapabilityThinking = "thinking"
 	// ModelCapabilityFastMode indicates a model supports fast-mode execution.
 	ModelCapabilityFastMode = "fast_mode"
 )
@@ -81,7 +79,6 @@ var ClaudeModels = []ModelInfo{
 		Slug:             "claude-haiku-4-5",
 		Name:             "Claude Haiku 4.5",
 		Provider:         "claude",
-		Capabilities:     []string{ModelCapabilityThinking},
 		ContextWindows:   claudeStandardContextOptions(),
 		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh),
 	},

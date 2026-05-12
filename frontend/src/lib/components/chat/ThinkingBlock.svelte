@@ -36,23 +36,23 @@
   const copyText = $derived(expansion.displayData ?? item.summary);
 </script>
 
-<div class="mb-1.5 rounded-[var(--radius-control)] border border-border-subtle bg-card/20 overflow-hidden">
+<div class="group/thinking mb-1.5 overflow-hidden">
   <TranscriptDisclosureHeader
     expanded={expansion.expanded}
     controls={`thinking-${item.id}`}
     ariaLabel="Toggle Thinking Block"
     testId="thinking-toggle"
-    class="px-2.5 py-1.5 hover:bg-surface-2/20"
+    class="rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
     onToggle={() => expansion.toggle()}
   >
-    <span class="text-[11px] text-fg-subtle font-medium uppercase tracking-[0.04em]">Thinking</span>
+    <span class="text-[11px] text-fg-muted font-medium uppercase tracking-[0.04em] shrink-0">Thinking</span>
     {#if !expansion.expanded}
       <span class="text-[12px] text-fg-muted/70 truncate flex-1 italic">{preview}</span>
     {/if}
   </TranscriptDisclosureHeader>
 
   {#if expansion.expanded}
-    <div class="border-t border-border-subtle bg-surface-0/50">
+    <div class="ml-5 border-l border-border-subtle bg-surface-0/35">
       <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
       <div id="thinking-{item.id}" class="px-3 py-2 max-h-80 overflow-y-auto" tabindex="0" role="region" aria-label="Thinking Content">
         {#if expansion.loading}
