@@ -398,7 +398,6 @@ describe('<BranchPicker>', () => {
     await fireEvent.click(localRow);
 
     expect(worktreeIntentForThread(pane.thread).baseBranch).toBe('__LOCAL__');
-    expect(worktreeIntentForThread(pane.thread).carryLocalChanges).toBe(true);
   });
 
   it('disables branch checkout while background tasks are running', async () => {

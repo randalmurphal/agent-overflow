@@ -8,20 +8,50 @@ export type WorktreeIntentMode = 'local' | 'new-worktree';
 // AND carry the source workspace's uncommitted changes into the new
 // worktree". Distinct from picking the current branch by name (which
 // is a clean checkout from that branch's tip).
+//
+// Prefer the `isLocalBase` / `resolveBaseForWire` helpers below over
+// raw string comparisons so the comparison and the wire mapping stay
+// centralized — drift is the failure mode this constant is most
+// vulnerable to.
 export const LOCAL_BASE_SENTINEL = '__LOCAL__';
 
+// Typed predicate for the sentinel. Exported so UI code stops
+// comparing against the raw string at every call site.
+export function isLocalBase(value: string | undefined | null): boolean {
+  return value === LOCAL_BASE_SENTINEL;
+}
+
+// Maps a UI base selection to the (baseBranch, carryLocalChanges) pair
+// the backend bindings expect. The sentinel resolves to the thread's
+// current branch with carry=true; anything else passes through with
+// carry=false. Shared by both the worktree-create flow (composerSend)
+// and the branch-create flow (BranchCreateForm) so the wire mapping
+// only lives in one place.
+export function resolveBaseForWire(
+  base: string,
+  currentBranch: string,
+): { baseBranch: string; carryLocalChanges: boolean } {
+  if (isLocalBase(base)) {
+    return { baseBranch: currentBranch, carryLocalChanges: true };
+  }
+  return { baseBranch: base, carryLocalChanges: false };
+}
+
+// `carryLocalChanges` is intentionally NOT a stored field. It is
+// always `isLocalBase(baseBranch)` — the wire mapping is computed at
+// the consumption site via `resolveBaseForWire`. Keeping it as
+// derived-only state means the (sentinel ↔ carry=true) invariant is
+// structurally impossible to drift.
 export interface WorktreeIntent {
   mode: WorktreeIntentMode;
   baseBranch: string;
   branchName: string;
-  carryLocalChanges: boolean;
 }
 
 const LOCAL_INTENT: WorktreeIntent = {
   mode: 'local',
   baseBranch: '',
   branchName: '',
-  carryLocalChanges: false,
 };
 
 let intents: Map<string, WorktreeIntent> = $state(new Map());
@@ -42,7 +72,6 @@ export function seedDefaultWorktreeIntentForDraft(thread: Thread): void {
     mode: 'new-worktree',
     baseBranch: thread.branch ?? '',
     branchName: generateWorktreeBranchName(getSettings().worktreeBranchPrefix),
-    carryLocalChanges: false,
   });
 }
 
@@ -62,7 +91,6 @@ export function setThreadEnvMode(thread: Thread, mode: WorktreeIntentMode): void
       branchName: isFreshTransition
         ? generateWorktreeBranchName(getSettings().worktreeBranchPrefix)
         : current.branchName,
-      carryLocalChanges: current.carryLocalChanges,
     });
   }
   intents = next;
@@ -70,15 +98,10 @@ export function setThreadEnvMode(thread: Thread, mode: WorktreeIntentMode): void
 
 export function setWorktreeBaseBranch(thread: Thread, baseBranch: string): void {
   const current = worktreeIntentForThread(thread);
-  const isLocalSentinel = baseBranch === LOCAL_BASE_SENTINEL;
   intents = new Map(intents).set(thread.id, {
     mode: 'new-worktree',
     baseBranch,
     branchName: current.branchName,
-    // Picking "Local (with changes)" sets carry; picking any real
-    // branch name clears it so the dirty-check surface knows the user
-    // wants a clean checkout.
-    carryLocalChanges: isLocalSentinel,
   });
 }
 
@@ -88,17 +111,6 @@ export function setWorktreeBranchName(thread: Thread, branchName: string): void 
     mode: 'new-worktree',
     baseBranch: current.baseBranch || thread.branch || '',
     branchName,
-    carryLocalChanges: current.carryLocalChanges,
-  });
-}
-
-export function setWorktreeCarryLocal(thread: Thread, carry: boolean): void {
-  const current = worktreeIntentForThread(thread);
-  intents = new Map(intents).set(thread.id, {
-    mode: 'new-worktree',
-    baseBranch: current.baseBranch || thread.branch || '',
-    branchName: current.branchName,
-    carryLocalChanges: carry,
   });
 }
 

@@ -494,3 +494,62 @@ func (c *Core) InvalidatePRCache(cwd string) {
 		}
 	}
 }
+
+// CountUnpushedCommits returns the number of commits on branch that have not
+// been pushed to its configured upstream. Returns hasUpstream=false when no
+// upstream is configured (in which case the count is meaningless and the
+// caller should treat the branch as "no remote"). Queries the symbolic
+// upstream so non-origin remotes work too.
+func (c *Core) CountUnpushedCommits(cwd, branch string) (count int, hasUpstream bool, err error) {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return 0, false, nil
+	}
+	upstream, ok := c.upstreamFor(cwd, branch)
+	if !ok {
+		return 0, false, nil
+	}
+	stdout, _, err := c.Execute(cwd, "rev-list", "--count", branch, "^"+upstream)
+	if err != nil {
+		return 0, true, err
+	}
+	value, parseErr := strconv.Atoi(strings.TrimSpace(stdout))
+	if parseErr != nil {
+		return 0, true, fmt.Errorf("parse rev-list count %q: %w", strings.TrimSpace(stdout), parseErr)
+	}
+	return value, true, nil
+}
+
+// upstreamFor resolves the upstream ref for branch (e.g. "origin/main").
+// Returns false when no upstream is configured.
+func (c *Core) upstreamFor(cwd, branch string) (string, bool) {
+	result, err := c.run(cwd, "rev-parse", "--abbrev-ref", "--symbolic-full-name", branch+"@{upstream}")
+	if err != nil {
+		return "", false
+	}
+	if result.exitCode != 0 {
+		return "", false
+	}
+	upstream := strings.TrimSpace(result.stdout)
+	if upstream == "" {
+		return "", false
+	}
+	return upstream, true
+}
+
+// CountWorkingTreeChanges returns the number of changed files (staged,
+// unstaged, untracked) in cwd via `git status --porcelain`. Cheaper than the
+// full Status aggregator when the caller only needs a dirty-or-not signal.
+func (c *Core) CountWorkingTreeChanges(cwd string) (int, error) {
+	stdout, _, err := c.Execute(cwd, "status", "--porcelain")
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for line := range strings.SplitSeq(stdout, "\n") {
+		if strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	return count, nil
+}

@@ -5,12 +5,13 @@ import { setBindingMock } from '../../test/mocks/bindings-app';
 import { loadSettings, updateSetting } from './settings.svelte';
 import {
   LOCAL_BASE_SENTINEL,
+  isLocalBase,
   resetForTest,
+  resolveBaseForWire,
   seedDefaultWorktreeIntentForDraft,
   setThreadEnvMode,
   setWorktreeBaseBranch,
   setWorktreeBranchName,
-  setWorktreeCarryLocal,
   worktreeIntentForThread,
 } from './worktreeIntent.svelte';
 import type { Settings } from '../types/settings';
@@ -82,7 +83,6 @@ describe('worktreeIntent store', () => {
     const intent = worktreeIntentForThread(thread);
     expect(intent.mode).toBe('new-worktree');
     expect(intent.baseBranch).toBe('main');
-    expect(intent.carryLocalChanges).toBe(false);
     expect(intent.branchName).toMatch(/^ao-[0-9a-f]{8}$/);
   });
 
@@ -102,7 +102,6 @@ describe('worktreeIntent store', () => {
     const intent = worktreeIntentForThread(thread);
     expect(intent.mode).toBe('new-worktree');
     expect(intent.branchName).toMatch(/^ao-[0-9a-f]{8}$/);
-    expect(intent.carryLocalChanges).toBe(false);
   });
 
   it('regenerates the branch name when the user toggles out and back into worktree mode', () => {
@@ -130,27 +129,47 @@ describe('worktreeIntent store', () => {
     expect(worktreeIntentForThread(thread).branchName).toBe('custom/feature');
   });
 
-  it('flips carryLocalChanges when the user picks the Local sentinel', () => {
+  it('records the Local sentinel as the stored baseBranch when the user picks it', () => {
+    // carryLocalChanges is no longer a stored field — derived at the
+    // wire boundary via resolveBaseForWire. The store's contract is
+    // that the sentinel survives round-trip; a follow-up
+    // resolveBaseForWire call recovers the carry flag.
     const thread = makeThread({ id: 'thread-local-base' });
     setThreadEnvMode(thread, 'new-worktree');
 
     setWorktreeBaseBranch(thread, LOCAL_BASE_SENTINEL);
-    expect(worktreeIntentForThread(thread).carryLocalChanges).toBe(true);
     expect(worktreeIntentForThread(thread).baseBranch).toBe(LOCAL_BASE_SENTINEL);
+    expect(
+      resolveBaseForWire(worktreeIntentForThread(thread).baseBranch, 'main').carryLocalChanges,
+    ).toBe(true);
 
     setWorktreeBaseBranch(thread, 'dev');
-    expect(worktreeIntentForThread(thread).carryLocalChanges).toBe(false);
     expect(worktreeIntentForThread(thread).baseBranch).toBe('dev');
+    expect(
+      resolveBaseForWire(worktreeIntentForThread(thread).baseBranch, 'main').carryLocalChanges,
+    ).toBe(false);
   });
 
-  it('lets callers explicitly set the carryLocalChanges flag', () => {
-    const thread = makeThread({ id: 'thread-carry-set' });
-    setThreadEnvMode(thread, 'new-worktree');
+  it('isLocalBase narrows the sentinel string without raw comparison', () => {
+    expect(isLocalBase(LOCAL_BASE_SENTINEL)).toBe(true);
+    expect(isLocalBase('main')).toBe(false);
+    expect(isLocalBase('')).toBe(false);
+    expect(isLocalBase(null)).toBe(false);
+    expect(isLocalBase(undefined)).toBe(false);
+  });
 
-    setWorktreeCarryLocal(thread, true);
-    expect(worktreeIntentForThread(thread).carryLocalChanges).toBe(true);
-
-    setWorktreeCarryLocal(thread, false);
-    expect(worktreeIntentForThread(thread).carryLocalChanges).toBe(false);
+  it('resolveBaseForWire maps sentinel to (currentBranch, carry=true) and otherwise passes through', () => {
+    expect(resolveBaseForWire(LOCAL_BASE_SENTINEL, 'main')).toEqual({
+      baseBranch: 'main',
+      carryLocalChanges: true,
+    });
+    expect(resolveBaseForWire('dev', 'main')).toEqual({
+      baseBranch: 'dev',
+      carryLocalChanges: false,
+    });
+    expect(resolveBaseForWire('', 'main')).toEqual({
+      baseBranch: '',
+      carryLocalChanges: false,
+    });
   });
 });

@@ -4,18 +4,17 @@
   //
   //   - Selection: pick a branch to checkout (idle thread) or to use as
   //     the base for staged new-worktree intent.
-  //   - Creation: top "+ New branch…" row toggles an inline form
-  //     [name] [From <base>] [Create] [Cancel]; the branch list below
-  //     becomes a base picker — selecting a row sets the base instead
-  //     of switching the workspace.
+  //   - Creation: top "+ New branch…" row toggles BranchCreateForm
+  //     above the branch list; the branch list below becomes a base
+  //     picker — selecting a row sets the form's base instead of
+  //     switching the workspace.
   //
   // When the workspace is dirty, both modes surface a "Local (with
   // changes)" entry at the top of the branch list. Picking it carries
   // the uncommitted changes; picking any real branch while dirty
   // performs a clean checkout (the destructive path is gated by an
-  // explicit confirmation chip elsewhere in the create flow).
+  // explicit confirmation chip in BranchCreateForm).
 
-  import { tick } from 'svelte';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import GitBranchIcon from 'lucide-svelte/icons/git-branch';
   import Plus from 'lucide-svelte/icons/plus';
@@ -28,7 +27,6 @@
     GetGitStatus,
     GetThread,
     GitCheckout,
-    GitCreateBranchFrom,
     GitListBranches,
     UpdateThreadWorkspace,
   } from '../../../stores/bindings';
@@ -37,6 +35,7 @@
   import { errString } from '../../../utils/errors';
   import { sameNormalizedPath } from '../../../utils/path';
   import {
+    isLocalBase,
     LOCAL_BASE_SENTINEL,
     setWorktreeBaseBranch,
     worktreeIntentForThread,
@@ -46,6 +45,7 @@
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import MenuDivider from '../../primitives/MenuDivider.svelte';
+  import BranchCreateForm from './BranchCreateForm.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -55,7 +55,6 @@
   let { pane, workspaceLock }: Props = $props();
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
-  let nameInputEl: HTMLInputElement | undefined = $state(undefined);
   let open = $state(false);
   let branches: GitBranch[] = $state([]);
   let query = $state('');
@@ -63,14 +62,11 @@
   let applying = $state(false);
   let workspaceDirty = $state(false);
 
-  // Inline branch-create form state. Lives alongside the picker so the
-  // user can flip between "pick a base from the list" and the form
-  // header without losing context.
+  // BranchCreateForm owns its name + pending + error state. The parent
+  // only tracks whether the form is mounted and what base the form is
+  // pointed at — branch-row clicks flow back into createBase via $bindable.
   let creating = $state(false);
-  let createName = $state('');
   let createBase = $state('');
-  let createPending = $state(false);
-  let createError: string | null = $state(null);
 
   let currentBranch = $derived(pane.thread?.branch ?? '');
   let currentWorkspace = $derived(pane.thread?.workspacePath ?? '');
@@ -83,7 +79,7 @@
   //   - Otherwise: the currently checked-out branch.
   let triggerLabel = $derived.by(() => {
     if (intent.mode !== 'new-worktree') return currentBranch || 'No branch';
-    if (intent.baseBranch === LOCAL_BASE_SENTINEL) return 'From Local (with changes)';
+    if (isLocalBase(intent.baseBranch)) return 'From Local (with changes)';
     const base = intent.baseBranch || currentBranch;
     return `From ${base || 'branch'}`;
   });
@@ -106,8 +102,8 @@
   // Highlight the Local row when the live worktree intent or the in-flight
   // create form is pointing at the sentinel. Both flows share the same row.
   let isLocalSelected = $derived.by(() => {
-    if (creating) return createBase === LOCAL_BASE_SENTINEL;
-    return intent.mode === 'new-worktree' && intent.baseBranch === LOCAL_BASE_SENTINEL;
+    if (creating) return isLocalBase(createBase);
+    return intent.mode === 'new-worktree' && isLocalBase(intent.baseBranch);
   });
 
   async function handleTrigger(): Promise<void> {
@@ -182,91 +178,31 @@
     event.stopPropagation();
   }
 
-  function handleCreateNameKeydown(event: KeyboardEvent): void {
-    event.stopPropagation();
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      void performCreate();
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      cancelCreate();
-    }
-  }
-
-  async function startCreate(): Promise<void> {
+  function startCreate(): void {
     if (!pane.thread || workspaceChangingDisabled) return;
-    creating = true;
-    createName = '';
     // Default base mirrors the worktree intent flow: dirty workspace
     // pre-selects "Local (with changes)" so the destructive clean-checkout
     // path is opt-in. Otherwise, branch off the current HEAD.
     createBase = workspaceDirty ? LOCAL_BASE_SENTINEL : currentBranch;
-    createError = null;
-    await tick();
-    nameInputEl?.focus();
+    creating = true;
   }
 
   function cancelCreate(): void {
     creating = false;
-    createName = '';
     createBase = '';
-    createError = null;
-    createPending = false;
   }
 
-  function pickCreateBase(name: string): void {
-    createBase = name;
-    createError = null;
-  }
-
-  // True when the user has picked a non-Local base while the workspace
-  // is dirty. The backend treats this as "checkout the base, dropping
-  // local changes" — surface a confirm chip rather than letting one
-  // click silently destroy work.
-  let createDiscardsChanges = $derived(
-    creating && workspaceDirty && createBase !== LOCAL_BASE_SENTINEL && createBase !== '',
-  );
-
-  async function performCreate(): Promise<void> {
-    if (!pane.thread || createPending) return;
-    const name = createName.trim();
-    if (!name) {
-      createError = 'Branch name required';
-      return;
-    }
-    if (!createBase) {
-      createError = 'Pick a base';
-      return;
-    }
-    createPending = true;
-    createError = null;
-    try {
-      // The LOCAL sentinel maps to (current branch, carryLocalChanges=true)
-      // on the wire. Anything else is a regular base; carry is false.
-      const isLocal = createBase === LOCAL_BASE_SENTINEL;
-      const baseForBackend = isLocal ? currentBranch : createBase;
-      const updated = (await GitCreateBranchFrom(
-        pane.thread.id,
-        name,
-        baseForBackend,
-        isLocal,
-      )) as Thread;
-      syncThread(updated);
-      addToast('info', `Created branch ${name}`);
-      cancelCreate();
-      closeMenu();
-    } catch (err) {
-      console.error('GitCreateBranchFrom failed:', err);
-      createError = errString(err);
-    } finally {
-      createPending = false;
-    }
+  function handleCreated(updated: Thread): void {
+    syncThread(updated);
+    addToast('info', 'Created branch');
+    cancelCreate();
+    closeMenu();
   }
 
   function selectLocalRow(): void {
     if (!pane.thread) return;
     if (creating) {
-      pickCreateBase(LOCAL_BASE_SENTINEL);
+      createBase = LOCAL_BASE_SENTINEL;
       return;
     }
     if (intent.mode === 'new-worktree' && !workspaceChangingDisabled) {
@@ -280,7 +216,7 @@
 
   async function selectBranch(branch: GitBranch): Promise<void> {
     if (creating) {
-      pickCreateBase(branch.name);
+      createBase = branch.name;
       return;
     }
     if (!pane.thread || applying) {
@@ -355,79 +291,22 @@
   role="none"
 >
   <Menu ariaLabel="Branches" onClose={closeMenu}>
-    {#if creating}
-      <div class="px-2 pb-1 pt-1 space-y-1.5" data-testid="branch-picker-create-form">
-        <input
-          bind:this={nameInputEl}
-          type="text"
-          value={createName}
-          placeholder="New branch name"
-          onkeydown={handleCreateNameKeydown}
-          oninput={(e) => (createName = (e.target as HTMLInputElement).value)}
-          class={[
-            'h-7 w-72 rounded border border-border-subtle bg-surface-0',
-            'px-2 text-xs text-text-primary placeholder:text-fg-hint',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-          ].join(' ')}
-        />
-        <div class="flex items-center gap-2 text-[11px] text-fg-hint">
-          <span>From:</span>
-          <span class="truncate text-fg">
-            {#if createBase === LOCAL_BASE_SENTINEL}
-              Local (with changes)
-            {:else if createBase}
-              {createBase}
-            {:else}
-              <span class="text-fg-hint">Pick a base below</span>
-            {/if}
-          </span>
-        </div>
-        {#if createDiscardsChanges}
-          <div class="text-[11px] text-warning" data-testid="branch-picker-create-discards">
-            Discards uncommitted changes.
-          </div>
-        {/if}
-        {#if createError}
-          <div class="text-[11px] text-error truncate">{createError}</div>
-        {/if}
-        <div class="flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onclick={cancelCreate}
-            disabled={createPending}
-            class="rounded-[var(--radius-field)] px-2 py-0.5 text-[11px] text-fg-hint hover:bg-surface-2/70 hover:text-fg disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onclick={performCreate}
-            disabled={createPending || !createName.trim() || !createBase}
-            data-testid="branch-picker-create-submit"
-            class={[
-              'rounded-[var(--radius-field)] px-2 py-0.5 text-[11px] disabled:opacity-50',
-              createDiscardsChanges
-                ? 'bg-error/15 text-error hover:bg-error/25'
-                : 'bg-surface-2/70 text-fg hover:bg-surface-2',
-            ].join(' ')}
-          >
-            {#if createPending}
-              Creating…
-            {:else if createDiscardsChanges}
-              Discard and create
-            {:else}
-              Create
-            {/if}
-          </button>
-        </div>
-      </div>
+    {#if creating && pane.thread}
+      <BranchCreateForm
+        {pane}
+        {workspaceDirty}
+        {currentBranch}
+        bind:base={createBase}
+        onCancel={cancelCreate}
+        onCreated={handleCreated}
+      />
       <MenuDivider />
     {:else}
       <MenuItem
         label="New branch…"
         disabled={workspaceChangingDisabled}
         title={workspaceChangingDisabled ? disabledReason : undefined}
-        onSelect={() => void startCreate()}
+        onSelect={startCreate}
       >
         {#snippet icon()}
           <Icon icon={Plus} size={12} strokeWidth={2} />

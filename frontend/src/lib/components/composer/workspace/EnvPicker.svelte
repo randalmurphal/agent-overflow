@@ -38,6 +38,7 @@
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import MenuDivider from '../../primitives/MenuDivider.svelte';
+  import Button from '../../primitives/Button.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -316,34 +317,34 @@
                 {/if}
               {/if}
               <div class="mt-2 flex items-center justify-end gap-2">
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
+                  size="xs"
                   onclick={cancelRemove}
                   disabled={confirm.pending}
-                  class="rounded-[var(--radius-field)] px-2 py-0.5 text-[11px] text-fg-hint hover:bg-surface-2/70 hover:text-fg disabled:opacity-50"
                 >
                   Cancel
-                </button>
+                </Button>
                 {#if confirm.status && isRiskyStatus(confirm.status)}
-                  <button
-                    type="button"
+                  <Button
+                    variant="danger"
+                    size="xs"
                     onclick={() => performRemove(true)}
                     disabled={confirm.pending || confirm.loading}
-                    data-testid="env-picker-confirm-force"
-                    class="rounded-[var(--radius-field)] bg-error/15 px-2 py-0.5 text-[11px] text-error hover:bg-error/25 disabled:opacity-50"
+                    testId="env-picker-confirm-force"
                   >
                     {confirm.pending ? 'Removing…' : 'Discard and remove'}
-                  </button>
+                  </Button>
                 {:else}
-                  <button
-                    type="button"
+                  <Button
+                    variant="secondary"
+                    size="xs"
                     onclick={() => performRemove(false)}
                     disabled={confirm.pending || confirm.loading}
-                    data-testid="env-picker-confirm-remove"
-                    class="rounded-[var(--radius-field)] bg-surface-2/70 px-2 py-0.5 text-[11px] text-fg hover:bg-surface-2 disabled:opacity-50"
+                    testId="env-picker-confirm-remove"
                   >
                     {confirm.pending ? 'Removing…' : 'Remove'}
-                  </button>
+                  </Button>
                 {/if}
               </div>
             </div>

@@ -9,9 +9,18 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
 - `core.go` — `Core` struct with `Execute` / `runBinary`, the shared
   command runner with timeouts and stdout/stderr size caps; PR cache
   and forge cache plumbing.
-- `actions.go` — staging, commits, resets, pushes.
+- `actions.go` — staging, commits, push/pull, branch create/checkout/
+  rename. Worktree CRUD (`CreateWorktree*`, `RemoveWorktree*`,
+  `ListWorktrees`) lives in `core.go` next to the `Worktree` struct
+  it returns.
+- `stash.go` — `git stash` helpers (push, apply-by-message,
+  drop-by-message) used by the worktree carry-over and branch-from
+  destructive flows in the app layer.
 - `status.go` — `GitStatus` shape + status aggregation (branch,
   ahead/behind, pending merge/rebase/bisect, open PR, detected forge).
+  Also hosts the smaller `CountWorkingTreeChanges`,
+  `CountUnpushedCommits`, and `upstreamFor` primitives used by the
+  worktree-cleanup safety classifier.
 - `branch_names.go` — branch-name sanitation.
 - `commit_context.go` — commit-message context gathering for model-
   assisted commits.

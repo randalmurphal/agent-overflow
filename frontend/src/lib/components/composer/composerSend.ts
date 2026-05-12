@@ -37,6 +37,7 @@ import {
 } from '../../stores/runtimeModeDraft.svelte';
 import {
   clearWorktreeIntent,
+  resolveBaseForWire,
   worktreeIntentForThread,
 } from '../../stores/worktreeIntent.svelte';
 import { buildSendOptions } from '../../utils/sendOptions';
@@ -94,18 +95,19 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
       opts.onWorktreePrepareStarted?.();
       let updated: Thread;
       try {
-        // When the user picked the "Local (with changes)" sentinel,
-        // the actual base is the thread's current branch and the
-        // backend stash-carry path applies. Otherwise the base is the
-        // chosen branch and the new worktree is a clean checkout.
-        const resolvedBase = worktreeIntent.carryLocalChanges
-          ? (threadForSend.branch ?? '')
-          : worktreeIntent.baseBranch;
+        // resolveBaseForWire centralizes the (sentinel → wire) mapping:
+        // the LOCAL sentinel resolves to the thread's current branch
+        // with carry=true (backend stash-carry path); a real branch
+        // name passes through with carry=false (clean checkout).
+        const wire = resolveBaseForWire(
+          worktreeIntent.baseBranch,
+          threadForSend.branch ?? '',
+        );
         updated = (await PrepareThreadWorktree(
           opts.threadId,
-          resolvedBase,
+          wire.baseBranch,
           worktreeIntent.branchName,
-          worktreeIntent.carryLocalChanges,
+          wire.carryLocalChanges,
         )) as Thread;
       } finally {
         opts.onWorktreePrepareFinished?.();

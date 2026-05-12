@@ -682,3 +682,104 @@ func TestPendingOperationNonRepoReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestCountWorkingTreeChangesCountsStagedUnstagedAndUntracked(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	if count, err := core.CountWorkingTreeChanges(repo); err != nil {
+		t.Fatalf("clean count returned err: %v", err)
+	} else if count != 0 {
+		t.Fatalf("clean tree count = %d, want 0", count)
+	}
+
+	// Tracked modification (unstaged), staged add, and untracked file.
+	if err := os.WriteFile(filepath.Join(repo, "README.txt"), []byte("modified\n"), 0o644); err != nil {
+		t.Fatalf("modify tracked: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "staged.txt"), []byte("staged\n"), 0o644); err != nil {
+		t.Fatalf("write staged: %v", err)
+	}
+	testutil.RunGit(t, repo, "add", "staged.txt")
+	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("untracked\n"), 0o644); err != nil {
+		t.Fatalf("write untracked: %v", err)
+	}
+
+	count, err := core.CountWorkingTreeChanges(repo)
+	if err != nil {
+		t.Fatalf("dirty count returned err: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("count = %d, want 3 (1 unstaged + 1 staged + 1 untracked)", count)
+	}
+}
+
+func TestCountUnpushedCommitsReportsNoUpstreamWhenUnconfigured(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	count, hasUpstream, err := core.CountUnpushedCommits(repo, "main")
+	if err != nil {
+		t.Fatalf("CountUnpushedCommits: %v", err)
+	}
+	if hasUpstream {
+		t.Errorf("hasUpstream = true on a brand-new repo with no remote; want false")
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0 when no upstream is configured", count)
+	}
+}
+
+func TestCountUnpushedCommitsCountsCommitsAhead(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	// Build a bare remote so the test doesn't need network. Configure
+	// origin and push main so it has a tracked upstream.
+	bare := t.TempDir()
+	testutil.RunGit(t, bare, "init", "--bare", "-b", "main")
+	testutil.RunGit(t, repo, "remote", "add", "origin", bare)
+	testutil.RunGit(t, repo, "push", "-u", "origin", "main")
+
+	// Establish baseline: 0 ahead.
+	count, hasUpstream, err := core.CountUnpushedCommits(repo, "main")
+	if err != nil {
+		t.Fatalf("baseline count: %v", err)
+	}
+	if !hasUpstream {
+		t.Fatal("expected hasUpstream=true after push -u")
+	}
+	if count != 0 {
+		t.Fatalf("baseline count = %d, want 0", count)
+	}
+
+	// Add two unpushed commits.
+	for i := range 2 {
+		path := filepath.Join(repo, fmt.Sprintf("ahead-%d.txt", i))
+		if err := os.WriteFile(path, []byte("ahead\n"), 0o644); err != nil {
+			t.Fatalf("write ahead file: %v", err)
+		}
+		testutil.RunGit(t, repo, "add", filepath.Base(path))
+		testutil.RunGit(t, repo, "commit", "-m", fmt.Sprintf("ahead %d", i))
+	}
+
+	count, hasUpstream, err = core.CountUnpushedCommits(repo, "main")
+	if err != nil {
+		t.Fatalf("ahead count: %v", err)
+	}
+	if !hasUpstream {
+		t.Fatal("expected hasUpstream=true with origin still configured")
+	}
+	if count != 2 {
+		t.Fatalf("count = %d, want 2 unpushed commits", count)
+	}
+}
+
+func TestUpstreamForReturnsFalseWhenNoUpstream(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	if _, ok := core.upstreamFor(repo, "main"); ok {
+		t.Fatal("expected upstreamFor to return ok=false on a repo with no remote")
+	}
+}
+

@@ -611,12 +611,15 @@ func (p *privilegedApp) WriteThreadWorkspaceFile() string       { return "ok" }
 func (p *privilegedApp) GitPush() string                        { return "ok" }
 func (p *privilegedApp) GitStatusSubscribe() string             { return "ok" }
 func (p *privilegedApp) GitStatusUnsubscribe() string           { return "ok" }
+func (p *privilegedApp) GetGitStatus() string                   { return "ok" }
 func (p *privilegedApp) GitCheckout() string                    { return "ok" }
 func (p *privilegedApp) GitCreateBranch() string                { return "ok" }
 func (p *privilegedApp) GitCreateBranchFrom() string            { return "ok" }
 func (p *privilegedApp) GitCreateWorktree() string              { return "ok" }
 func (p *privilegedApp) GitRemoveWorktree() string              { return "ok" }
 func (p *privilegedApp) GitWorktreeStatus() string              { return "ok" }
+func (p *privilegedApp) GitListBranches() string                { return "ok" }
+func (p *privilegedApp) GitListWorktrees() string               { return "ok" }
 func (p *privilegedApp) RemoveOtherWorktree() string            { return "ok" }
 func (p *privilegedApp) GitCommit() string                      { return "ok" }
 func (p *privilegedApp) GitPull() string                        { return "ok" }
@@ -659,6 +662,7 @@ func (p *privilegedApp) UpdateThreadFastMode() string           { return "ok" }
 func (p *privilegedApp) UpdateThreadContextWindow() string      { return "ok" }
 func (p *privilegedApp) UpdateThreadContextSettings() string    { return "ok" }
 func (p *privilegedApp) UpdateThreadRuntimeMode() string        { return "ok" }
+func (p *privilegedApp) UpdateThreadWorkspace() string          { return "ok" }
 func (p *privilegedApp) InterruptTurn() string                  { return "ok" }
 func (p *privilegedApp) ListPendingInteractiveRequests() string { return "ok" }
 func (p *privilegedApp) RespondToApproval() string              { return "ok" }
