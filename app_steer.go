@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -226,18 +225,3 @@ func (a *App) nextSteerUserItemID(threadID string, turnIndex int) (string, error
 	return a.nextSequencedUserItemID(threadID, turnIndex, "steer")
 }
 
-// errIsNoActiveTurn reports whether err signals the "active turn ended
-// before steer arrived" race. Provided so future call sites can fall
-// back to a fresh Send rather than surfacing the steer failure to the
-// user. The frontend handles the same check on the wire side via
-// substring matching against the JSON-RPC error string, which is the
-// only signal that survives the wire encoding.
-//
-// path inside Steer; kept exported-internally for future Go-side
-// fallback callers and as documentation that the typed sentinel is the
-// idiomatic check rather than substring matching.
-//
-//nolint:unused // currently exercised only via the codex.ErrNoActiveTurn
-func errIsNoActiveTurn(err error) bool {
-	return errors.Is(err, codex.ErrNoActiveTurn)
-}
