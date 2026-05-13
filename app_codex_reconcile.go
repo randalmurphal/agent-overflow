@@ -4,40 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
+	"agent-overflow/internal/codexghost"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
-
-// codexSessionEndedSuffix is appended to a ghost row's summary so the
-// timeline clearly labels why the launch landed in `errored`. Kept
-// package-private so the session-start flip and its tests share one
-// source of truth; idempotent via the HasSuffix guard in
-// codexGhostSummary — a re-start after a second crash doesn't
-// accumulate duplicate suffixes.
-const codexSessionEndedSuffix = " — session ended"
-
-// codexGhostSummary rewrites a backgrounded tool_call's summary for the
-// on-start ghost flip. Empty summaries fall back to "Session ended" as
-// the standalone label (the leading em-dash would look cosmetic and
-// weird without context); non-empty summaries get the suffix appended.
-// Idempotent: a repeat call leaves the string unchanged, so replay-
-// through-start (the session starts, we flip, Codex later replays
-// item/started which re-upserts the row back to running, then a second
-// subprocess crash triggers another flip) accumulates no noise.
-func codexGhostSummary(summary string) string {
-	summary = strings.TrimSpace(summary)
-	if summary == "" {
-		return "Session ended"
-	}
-	if strings.HasSuffix(summary, codexSessionEndedSuffix) {
-		return summary
-	}
-	return summary + codexSessionEndedSuffix
-}
 
 // flipCodexGhostBackgroundRowsOnStart runs unconditionally on every
 // Codex session start (new OR resume) to flip every persisted
@@ -83,7 +56,7 @@ func (a *App) flipCodexGhostBackgroundRowsOnStart(threadID string) {
 	if a.store == nil {
 		return
 	}
-	flipped, err := a.store.FlipGhostBackgroundRowsOnStart(threadID, codexGhostSummary, time.Now().UnixMilli())
+	flipped, err := a.store.FlipGhostBackgroundRowsOnStart(threadID, codexghost.GhostSummary, time.Now().UnixMilli())
 	if err != nil {
 		log.Printf("app: flip codex ghost rows for %s: %v", threadID, err)
 		return
@@ -207,7 +180,7 @@ func (a *App) flipRunningBgRowsAsSessionEnded(items []store.Item) (int, error) {
 	var flipped int
 	for _, item := range items {
 		item.Status = "errored"
-		item.Summary = codexGhostSummary(item.Summary)
+		item.Summary = codexghost.GhostSummary(item.Summary)
 		item.Decision = "lost"
 		item.UpdatedAt = now
 		if _, err := a.store.UpsertItem(item, nil); err != nil {
