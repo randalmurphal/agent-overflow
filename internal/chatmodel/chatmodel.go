@@ -9,6 +9,7 @@
 package chatmodel
 
 import (
+	"fmt"
 	"strings"
 
 	"agent-overflow/internal/provider"
@@ -111,6 +112,41 @@ func SanitizeProfile(profile store.ChatModelProfile) store.ChatModelProfile {
 	return profile
 }
 
+// SanitizeThread clamps the thread's model-related fields the same
+// way SanitizeProfile clamps a stored ChatModelProfile. Use it
+// before persisting a thread row written by older code, or before
+// comparing two threads with SameModelFields: if either side carries
+// a non-canonical value the comparison is meaningless.
+func SanitizeThread(thread store.Thread) store.Thread {
+	thread.Model = provider.NormalizeModelSlug(thread.Provider, thread.Model)
+	thread.ReasoningEffort = string(provider.CoerceReasoningEffortForModel(
+		thread.Provider,
+		thread.Model,
+		provider.NormalizeReasoningEffort(thread.ReasoningEffort),
+	))
+	thread.ContextWindow = SanitizeContextWindow(thread.Provider, thread.Model, thread.ContextWindow)
+	if !SupportsStoredFastMode(thread.Provider, thread.Model) {
+		thread.FastMode = false
+	}
+	return thread
+}
+
+// SameModelFields reports whether two Threads have identical
+// model-related fields (Model, ReasoningEffort, FastMode,
+// ContextWindow). Used by the persistence side to decide whether a
+// thread's stored row already matches the sanitized form — skipping
+// a redundant UPDATE saves a SQLite write per session start.
+//
+// Inputs should be sanitized first; otherwise non-canonical drift
+// (e.g. unnormalised model slugs) flags the rows as different when
+// they aren't.
+func SameModelFields(a, b store.Thread) bool {
+	return a.Model == b.Model &&
+		a.ReasoningEffort == b.ReasoningEffort &&
+		a.FastMode == b.FastMode &&
+		a.ContextWindow == b.ContextWindow
+}
+
 // SanitizeContextWindow returns the closest registry-supported window
 // for the (provider, model) pair. When the registry has no opinion,
 // the caller's tokens pass through if positive; otherwise the
@@ -158,6 +194,42 @@ func DefaultContextWindow(providerName, model string, fallback int) int {
 // non-positive value means "no opinion, fall back to the default."
 func IsValidContextWindow(tokens int) bool {
 	return tokens > 0
+}
+
+// ValidateContextUpdate runs the per-field bounds checks shared by
+// the global `UpdateContextSettingsProfile` and the per-thread
+// `UpdateThreadContextSettings` paths: trims and requires
+// provider/model, asserts that the (provider, model) pair is known
+// to the registry, asserts that contextWindow is one of the
+// registry-advertised options, and asserts that the two auto-compact
+// percent thresholds sit in the inclusive 0..90 range that
+// `IsValidAutoCompactPercent` accepts.
+//
+// Returns the trimmed provider + model strings on success so callers
+// don't re-trim. The int inputs are bounds-checked but never
+// rewritten — callers continue to use the raw int values they
+// passed in. Errors carry a "context settings:" prefix so the
+// caller's wrap matches the existing user-facing string.
+func ValidateContextUpdate(rawProvider, rawModel string, contextWindow, autoCompactStandardPercent, autoCompactExtendedPercent int) (provider, model string, err error) {
+	provider = strings.TrimSpace(rawProvider)
+	model = strings.TrimSpace(rawModel)
+	if provider == "" || model == "" {
+		return "", "", fmt.Errorf("context settings: provider and model are required")
+	}
+	options := ContextWindowOptions(provider, model)
+	if len(options) == 0 {
+		return "", "", fmt.Errorf("context settings: unknown provider/model %s/%s", provider, model)
+	}
+	if !ContextWindowSupported(options, contextWindow) {
+		return "", "", fmt.Errorf("context settings: unsupported context window %d for %s/%s", contextWindow, provider, model)
+	}
+	if autoCompactStandardPercent < 0 || autoCompactStandardPercent > 90 {
+		return "", "", fmt.Errorf("context settings: standard auto-compact percent must be between 0 and 90")
+	}
+	if autoCompactExtendedPercent < 0 || autoCompactExtendedPercent > 90 {
+		return "", "", fmt.Errorf("context settings: extended auto-compact percent must be between 0 and 90")
+	}
+	return provider, model, nil
 }
 
 // SupportsStoredFastMode reports whether a stored fast-mode flag

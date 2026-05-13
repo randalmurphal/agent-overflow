@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/chatmodel"
-	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
@@ -21,8 +20,8 @@ func (a *App) SwitchThread(threadID string) (store.Thread, error) {
 	if err != nil {
 		return store.Thread{}, err
 	}
-	sanitized := sanitizeThreadModelSettings(thread)
-	if !sameThreadModelSettings(thread, sanitized) {
+	sanitized := chatmodel.SanitizeThread(thread)
+	if !chatmodel.SameModelFields(thread, sanitized) {
 		sanitized.UpdatedAt = time.Now().UnixMilli()
 		if err := a.store.UpdateThread(sanitized); err != nil {
 			return store.Thread{}, err
@@ -51,27 +50,6 @@ func (a *App) SwitchThread(threadID string) (store.Thread, error) {
 	}
 
 	return thread, nil
-}
-
-func sanitizeThreadModelSettings(thread store.Thread) store.Thread {
-	thread.Model = provider.NormalizeModelSlug(thread.Provider, thread.Model)
-	thread.ReasoningEffort = string(provider.CoerceReasoningEffortForModel(
-		thread.Provider,
-		thread.Model,
-		provider.NormalizeReasoningEffort(thread.ReasoningEffort),
-	))
-	thread.ContextWindow = chatmodel.SanitizeContextWindow(thread.Provider, thread.Model, thread.ContextWindow)
-	if !chatmodel.SupportsStoredFastMode(thread.Provider, thread.Model) {
-		thread.FastMode = false
-	}
-	return thread
-}
-
-func sameThreadModelSettings(a, b store.Thread) bool {
-	return a.Model == b.Model &&
-		a.ReasoningEffort == b.ReasoningEffort &&
-		a.FastMode == b.FastMode &&
-		a.ContextWindow == b.ContextWindow
 }
 
 // ReconnectSession tears down the current session and starts a fresh one using

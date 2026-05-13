@@ -130,6 +130,116 @@ func TestSanitizeContextWindow_FallsBackToDefaultWhenZeroAndRegistryEmpty(t *tes
 	}
 }
 
+func TestSanitizeThreadClampsModelFields(t *testing.T) {
+	// Bogus stored thread: an obviously-wrong context window and a
+	// fast-mode flag on a non-fast-mode model.
+	in := store.Thread{
+		Provider:        string(provider.Claude),
+		Model:           "claude-haiku-4-5",
+		ContextWindow:   1, // registry will reject
+		FastMode:        true,
+		ReasoningEffort: "high",
+	}
+	got := SanitizeThread(in)
+	if got.ContextWindow == 1 {
+		t.Fatalf("SanitizeThread left bogus ContextWindow untouched: %+v", got)
+	}
+	if got.FastMode {
+		t.Fatalf("SanitizeThread did not clear FastMode on non-fast-mode model: %+v", got)
+	}
+}
+
+func TestSameModelFieldsMatchesAcrossUnrelatedFields(t *testing.T) {
+	a := store.Thread{
+		ID:              "a",
+		Title:           "thread A",
+		Model:           "claude-opus-4-7",
+		ContextWindow:   provider.ClaudeStandardContextWindow,
+		ReasoningEffort: "high",
+		FastMode:        false,
+	}
+	b := store.Thread{
+		ID:              "b",
+		Title:           "thread B",
+		Model:           "claude-opus-4-7",
+		ContextWindow:   provider.ClaudeStandardContextWindow,
+		ReasoningEffort: "high",
+		FastMode:        false,
+	}
+	if !SameModelFields(a, b) {
+		t.Fatal("SameModelFields = false, want true (unrelated fields differ)")
+	}
+}
+
+func TestSameModelFieldsRejectsModelFieldDifference(t *testing.T) {
+	base := store.Thread{
+		Model:           "claude-opus-4-7",
+		ContextWindow:   provider.ClaudeStandardContextWindow,
+		ReasoningEffort: "high",
+	}
+	flips := []store.Thread{
+		{Model: "claude-opus-4-6", ContextWindow: provider.ClaudeStandardContextWindow, ReasoningEffort: "high"},
+		{Model: "claude-opus-4-7", ContextWindow: provider.ClaudeExtendedContextWindow, ReasoningEffort: "high"},
+		{Model: "claude-opus-4-7", ContextWindow: provider.ClaudeStandardContextWindow, ReasoningEffort: "low"},
+		{Model: "claude-opus-4-7", ContextWindow: provider.ClaudeStandardContextWindow, ReasoningEffort: "high", FastMode: true},
+	}
+	for i, b := range flips {
+		if SameModelFields(base, b) {
+			t.Errorf("SameModelFields(case %d) = true, want false; b=%+v", i, b)
+		}
+	}
+}
+
+func TestValidateContextUpdate_AcceptsKnownPair(t *testing.T) {
+	provName, model, err := ValidateContextUpdate(
+		"  "+string(provider.Claude)+"  ",
+		"  claude-opus-4-7  ",
+		provider.ClaudeStandardContextWindow,
+		0, 0,
+	)
+	if err != nil {
+		t.Fatalf("ValidateContextUpdate err = %v", err)
+	}
+	if provName != string(provider.Claude) || model != "claude-opus-4-7" {
+		t.Fatalf("trimmed (%q, %q), want (claude, claude-opus-4-7)", provName, model)
+	}
+}
+
+func TestValidateContextUpdate_RejectsEmptyProviderOrModel(t *testing.T) {
+	if _, _, err := ValidateContextUpdate("", "model", 200000, 0, 0); err == nil {
+		t.Fatal("ValidateContextUpdate(empty provider) = nil, want error")
+	}
+	if _, _, err := ValidateContextUpdate("claude", "", 200000, 0, 0); err == nil {
+		t.Fatal("ValidateContextUpdate(empty model) = nil, want error")
+	}
+	if _, _, err := ValidateContextUpdate("   ", "   ", 200000, 0, 0); err == nil {
+		t.Fatal("ValidateContextUpdate(whitespace pair) = nil, want error")
+	}
+}
+
+func TestValidateContextUpdate_RejectsUnknownPair(t *testing.T) {
+	_, _, err := ValidateContextUpdate("bogus", "bogus", 200000, 0, 0)
+	if err == nil {
+		t.Fatal("ValidateContextUpdate(unknown pair) = nil, want error")
+	}
+}
+
+func TestValidateContextUpdate_RejectsUnsupportedContextWindow(t *testing.T) {
+	_, _, err := ValidateContextUpdate(string(provider.Claude), "claude-opus-4-7", 12345, 0, 0)
+	if err == nil {
+		t.Fatal("ValidateContextUpdate(unsupported window) = nil, want error")
+	}
+}
+
+func TestValidateContextUpdate_RejectsOutOfRangeAutoCompactPercent(t *testing.T) {
+	if _, _, err := ValidateContextUpdate(string(provider.Claude), "claude-opus-4-7", provider.ClaudeStandardContextWindow, -1, 0); err == nil {
+		t.Fatal("ValidateContextUpdate(negative standard) = nil, want error")
+	}
+	if _, _, err := ValidateContextUpdate(string(provider.Claude), "claude-opus-4-7", provider.ClaudeStandardContextWindow, 0, 91); err == nil {
+		t.Fatal("ValidateContextUpdate(extended > 90) = nil, want error")
+	}
+}
+
 func TestContextWindowSupported(t *testing.T) {
 	options := []provider.ContextWindowOption{
 		{Tokens: 100_000},

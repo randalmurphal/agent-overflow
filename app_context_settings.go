@@ -68,7 +68,7 @@ func (a *App) UpdateContextSettingsProfile(update ContextSettingsUpdate) (Contex
 	if a.store == nil {
 		return ContextSettingsProfile{}, fmt.Errorf("update context settings profile: store unavailable")
 	}
-	providerName, model, contextWindow, standardPercent, extendedPercent, err := validateContextSettingsUpdate(update)
+	providerName, model, err := chatmodel.ValidateContextUpdate(update.Provider, update.Model, update.ContextWindow, update.AutoCompactStandardPercent, update.AutoCompactExtendedPercent)
 	if err != nil {
 		return ContextSettingsProfile{}, err
 	}
@@ -80,9 +80,9 @@ func (a *App) UpdateContextSettingsProfile(update ContextSettingsUpdate) (Contex
 		}
 		profile = chatmodel.FallbackProfile(providerName, model)
 	}
-	profile.ContextWindow = contextWindow
-	profile.AutoCompactStandardPercent = standardPercent
-	profile.AutoCompactExtendedPercent = extendedPercent
+	profile.ContextWindow = update.ContextWindow
+	profile.AutoCompactStandardPercent = update.AutoCompactStandardPercent
+	profile.AutoCompactExtendedPercent = update.AutoCompactExtendedPercent
 	if err := a.store.UpsertChatModelProfile(profile); err != nil {
 		return ContextSettingsProfile{}, err
 	}
@@ -100,12 +100,11 @@ func (a *App) UpdateThreadContextSettings(threadID string, update ContextSetting
 
 	update.Provider = thread.Provider
 	update.Model = thread.Model
-	_, _, contextWindow, standardPercent, extendedPercent, err := validateContextSettingsUpdate(update)
-	if err != nil {
+	if _, _, err := chatmodel.ValidateContextUpdate(update.Provider, update.Model, update.ContextWindow, update.AutoCompactStandardPercent, update.AutoCompactExtendedPercent); err != nil {
 		return store.Thread{}, err
 	}
 
-	if err := a.store.UpdateContextSettings(threadID, contextWindow, standardPercent, extendedPercent); err != nil {
+	if err := a.store.UpdateContextSettings(threadID, update.ContextWindow, update.AutoCompactStandardPercent, update.AutoCompactExtendedPercent); err != nil {
 		return store.Thread{}, err
 	}
 	refreshed, err := a.restartSessionIfAffected(threadID, "contextSettings")
@@ -116,24 +115,3 @@ func (a *App) UpdateThreadContextSettings(threadID string, update ContextSetting
 	return refreshed, nil
 }
 
-func validateContextSettingsUpdate(update ContextSettingsUpdate) (string, string, int, int, int, error) {
-	providerName := strings.TrimSpace(update.Provider)
-	model := strings.TrimSpace(update.Model)
-	if providerName == "" || model == "" {
-		return "", "", 0, 0, 0, fmt.Errorf("context settings: provider and model are required")
-	}
-	options := chatmodel.ContextWindowOptions(providerName, model)
-	if len(options) == 0 {
-		return "", "", 0, 0, 0, fmt.Errorf("context settings: unknown provider/model %s/%s", providerName, model)
-	}
-	if !chatmodel.ContextWindowSupported(options, update.ContextWindow) {
-		return "", "", 0, 0, 0, fmt.Errorf("context settings: unsupported context window %d for %s/%s", update.ContextWindow, providerName, model)
-	}
-	if update.AutoCompactStandardPercent < 0 || update.AutoCompactStandardPercent > 90 {
-		return "", "", 0, 0, 0, fmt.Errorf("context settings: standard auto-compact percent must be between 0 and 90")
-	}
-	if update.AutoCompactExtendedPercent < 0 || update.AutoCompactExtendedPercent > 90 {
-		return "", "", 0, 0, 0, fmt.Errorf("context settings: extended auto-compact percent must be between 0 and 90")
-	}
-	return providerName, model, update.ContextWindow, update.AutoCompactStandardPercent, update.AutoCompactExtendedPercent, nil
-}
