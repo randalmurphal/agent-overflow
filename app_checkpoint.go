@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/checkpoint"
+	"agent-overflow/internal/composerdraft"
 	"agent-overflow/internal/diffsummary"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
@@ -300,7 +301,7 @@ func (a *App) RevertToMessageCheckpoint(threadID string, userItemID string, mode
 			userItem.TurnIndex,
 		)
 	}
-	promptDraft, err := composerDraftFromUserItem(threadID, userItem, time.Now().UnixMilli())
+	promptDraft, err := composerdraft.FromUserItem(threadID, userItem, time.Now().UnixMilli())
 	if err != nil {
 		return fmt.Errorf("revert checkpoint: build prompt draft: %w", err)
 	}

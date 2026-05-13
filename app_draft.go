@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/composerdraft"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
 )
@@ -118,21 +119,6 @@ func (a *App) ClearDraft(threadID string) error {
 	return a.store.DeleteThreadDraft(threadID)
 }
 
-func composerDraftFromUserItem(threadID string, userItem store.Item, updatedAt int64) (store.ThreadDraft, error) {
-	meta, err := usermessage.FromItem(userItem)
-	if err != nil {
-		return store.ThreadDraft{}, err
-	}
-	attachmentIDs := make([]string, 0, len(meta.Attachments))
-	for _, attachment := range meta.Attachments {
-		id := strings.TrimSpace(attachment.ID)
-		if id != "" {
-			attachmentIDs = append(attachmentIDs, id)
-		}
-	}
-	return composerDraftFromUserItemParts(threadID, userItem.Summary, attachmentIDs, meta.SourceProposedPlan, updatedAt)
-}
-
 func (a *App) composerDraftFromUserItemWithClonedAttachments(threadID string, userItem store.Item, updatedAt int64) (store.ThreadDraft, error) {
 	meta, err := usermessage.FromItem(userItem)
 	if err != nil {
@@ -142,33 +128,7 @@ func (a *App) composerDraftFromUserItemWithClonedAttachments(threadID string, us
 	if err != nil {
 		return store.ThreadDraft{}, err
 	}
-	return composerDraftFromUserItemParts(threadID, userItem.Summary, attachmentIDs, meta.SourceProposedPlan, updatedAt)
-}
-
-func composerDraftFromUserItemParts(
-	threadID string,
-	content string,
-	attachmentIDs []string,
-	sourceProposedPlan *SourceProposedPlan,
-	updatedAt int64,
-) (store.ThreadDraft, error) {
-	attachmentsJSON, err := json.Marshal(attachmentIDs)
-	if err != nil {
-		return store.ThreadDraft{}, fmt.Errorf("encode attachment ids: %w", err)
-	}
-	sourcePlanJSON, err := usermessage.EncodeDraftSource(sourceProposedPlan)
-	if err != nil {
-		return store.ThreadDraft{}, fmt.Errorf("encode source proposed plan: %w", err)
-	}
-
-	return store.ThreadDraft{
-		ThreadID:                  threadID,
-		Content:                   content,
-		Attachments:               string(attachmentsJSON),
-		TerminalChips:             "[]",
-		PendingPlanImplementation: sourcePlanJSON,
-		UpdatedAt:                 updatedAt,
-	}, nil
+	return composerdraft.FromParts(threadID, userItem.Summary, attachmentIDs, meta.SourceProposedPlan, updatedAt)
 }
 
 func (a *App) cloneUserMessageAttachmentsForDraft(
