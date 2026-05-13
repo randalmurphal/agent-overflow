@@ -29,6 +29,7 @@ one closest to what you're touching.
 | `stringsx/` | Tiny stdlib-only string helpers. |
 | `errorsx/` | Stdlib-only error helpers: `Append` (nil-filtering slice append) and `WrapLifecycle` (action-prefixed `%s: %w`). |
 | `closer/` | Close-orchestration helpers: `Task` + `RunParallel(tasks, timeout)` for goroutine-fan-out teardown, and `Stack` (LIFO cleanup list with reverse-order `Run`) for fork-and-revert undo chains. |
+| `eventscope/` | `ThreadIDFromEvent(payload)` — best-effort thread-id extraction from arbitrary event payloads (map / struct / JSON fallback) used by the observability fan-out to attribute emissions. |
 | `transport/` | HTTP+WebSocket wire protocol (RPC dispatch + event push) used by the embedded webview and any remote client. |
 | `clientmode/` | `--connect <url>` remote-client stub: tiny loopback HTTP server that injects `window.__AO_BOOTSTRAP__` into the embedded SPA so the desktop binary attaches to a remote backend instead of booting a local transport. |
 | `editor/` | Open-in-editor detection (catalog + WSL bridge) and detached-spawn helper. Backs the `OpenInEditor` and `ListAvailableEditors` bindings. |

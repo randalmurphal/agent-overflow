@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/closer"
+	"agent-overflow/internal/eventscope"
 	"agent-overflow/internal/observability/replay"
 )
 
@@ -55,7 +56,7 @@ func (a *App) emitWithReplay() func(string, any) {
 		if a.replay == nil || !a.replay.Enabled() {
 			return
 		}
-		threadID := threadIDFromEvent(data)
+		threadID := eventscope.ThreadIDFromEvent(data)
 		if threadID == "" {
 			return
 		}
