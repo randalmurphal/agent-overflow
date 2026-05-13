@@ -382,7 +382,7 @@ func (a *App) initStores() (string, *store.Store, error) {
 	a.git = gitops.NewCore()
 	a.gitWatch = gitwatch.NewManager(a.git.Status)
 	a.settings = settings.NewService(dbDir)
-	a.logger, err = newProviderEventLogger(dbDir)
+	a.logger, err = logging.NewProviderEventLogger(dbDir)
 	if err != nil {
 		closeErr := st.Close()
 		return "", nil, errors.Join(

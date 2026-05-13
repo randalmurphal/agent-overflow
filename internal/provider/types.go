@@ -393,30 +393,6 @@ type UsageEvent struct {
 	RateLimits            *RateLimitsSnapshot `json:"rateLimits,omitempty"`
 }
 
-// ProviderStatusEventKind enumerates the persistent provider-status banner
-// states defined by docs/architecture/chat-rewrite.md (Channels section).
-// The frontend banner dispatches on these values; anything outside the set
-// MUST be dropped by the emitter rather than silently rendered.
-type ProviderStatusEventKind string
-
-const (
-	ProviderStatusBinaryMissing       ProviderStatusEventKind = "binary_missing"
-	ProviderStatusUnauthenticated     ProviderStatusEventKind = "unauthenticated"
-	ProviderStatusVersionIncompatible ProviderStatusEventKind = "version_incompatible"
-)
-
-// ProviderStatusEvent is the frontend-facing channel payload for the
-// persistent provider banner. Emitted on `provider:status`. The spec keeps
-// this struct deliberately minimal (Kind + Message); Provider and ThreadID
-// are added so a multi-provider UI can scope the banner to the right pane
-// without round-tripping back to a binding.
-type ProviderStatusEvent struct {
-	Kind     ProviderStatusEventKind `json:"kind"`
-	Message  string                  `json:"message,omitempty"`
-	Provider string                  `json:"provider,omitempty"`
-	ThreadID string                  `json:"threadId,omitempty"`
-}
-
 // ElicitationRequest is the frontend-facing shape for an MCP elicitation
 // request, extracted from the raw provider payload. Only one of
 // (RequestedSchema) or (URL + ElicitationID) is populated depending on Mode.

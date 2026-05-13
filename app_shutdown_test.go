@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/design"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitwatch"
+	"agent-overflow/internal/logging"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/screenshot"
@@ -193,9 +194,9 @@ func newFullyWiredTestApp(t *testing.T) (*App, *shutdownRecorder) {
 	// gate makes it nil by default which would hide the "close logger"
 	// step from the ordering assertion.
 	t.Setenv("AGENT_OVERFLOW_DEBUG", "provider")
-	logger, err := newProviderEventLogger(t.TempDir())
+	logger, err := logging.NewProviderEventLogger(t.TempDir())
 	if err != nil {
-		t.Fatalf("newProviderEventLogger: %v", err)
+		t.Fatalf("logging.NewProviderEventLogger: %v", err)
 	}
 	app.logger = logger
 
