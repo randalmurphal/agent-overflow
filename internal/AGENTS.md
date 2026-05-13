@@ -27,6 +27,7 @@ one closest to what you're touching.
 | `workspacefiles/` | Workspace-scoped file search for @-mention completion. |
 | `testutil/` | Shared test helpers (mock provider scripts, git repo, project fixtures). |
 | `stringsx/` | Tiny stdlib-only string helpers. |
+| `errorsx/` | Stdlib-only error helpers: `Append` (nil-filtering slice append) and `WrapLifecycle` (action-prefixed `%s: %w`). |
 | `transport/` | HTTP+WebSocket wire protocol (RPC dispatch + event push) used by the embedded webview and any remote client. |
 | `clientmode/` | `--connect <url>` remote-client stub: tiny loopback HTTP server that injects `window.__AO_BOOTSTRAP__` into the embedded SPA so the desktop binary attaches to a remote backend instead of booting a local transport. |
 | `editor/` | Open-in-editor detection (catalog + WSL bridge) and detached-spawn helper. Backs the `OpenInEditor` and `ListAvailableEditors` bindings. |

@@ -1,26 +1,11 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"time"
 
 	"agent-overflow/internal/provider"
 )
-
-func appendError(errs []error, err error) []error {
-	if err == nil {
-		return errs
-	}
-	return append(errs, err)
-}
-
-func wrapLifecycleError(action string, err error) error {
-	if err == nil {
-		return nil
-	}
-	return fmt.Errorf("%s: %w", action, err)
-}
 
 // emitEvent sends an arbitrary event to the frontend. Prefer this over
 // reaching for the transport bus directly so tests can intercept

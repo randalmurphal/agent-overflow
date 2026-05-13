@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/observability/replay"
 )
 
@@ -148,11 +149,11 @@ func runParallelClosers(closers []threadCloser, timeout time.Duration) []error {
 			remaining--
 			delete(pending, r.label)
 			if r.err != nil {
-				errs = appendError(errs, wrapLifecycleError("close "+r.label, r.err))
+				errs = errorsx.Append(errs, errorsx.WrapLifecycle("close "+r.label, r.err))
 			}
 		case <-deadline:
 			for label := range pending {
-				errs = appendError(errs, fmt.Errorf("close %s: did not finish within %s", label, timeout))
+				errs = errorsx.Append(errs, fmt.Errorf("close %s: did not finish within %s", label, timeout))
 			}
 			return errs
 		}

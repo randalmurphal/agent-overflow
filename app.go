@@ -17,6 +17,7 @@ import (
 	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/design"
 	"agent-overflow/internal/discussion"
+	"agent-overflow/internal/errorsx"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitwatch"
 	"agent-overflow/internal/keybindings"
@@ -405,7 +406,7 @@ func (a *App) initStores() (string, *store.Store, error) {
 		closeErr := st.Close()
 		return "", nil, errors.Join(
 			fmt.Errorf("failed to initialize provider event logger: %w", err),
-			wrapLifecycleError("close store after logger initialization failure", closeErr),
+			errorsx.WrapLifecycle("close store after logger initialization failure", closeErr),
 		)
 	}
 	return dbDir, st, nil
@@ -508,7 +509,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 		closeErr := st.Close()
 		return errors.Join(
 			fmt.Errorf("failed to initialise attachment store: %w", err),
-			wrapLifecycleError("close store after attachment init failure", closeErr),
+			errorsx.WrapLifecycle("close store after attachment init failure", closeErr),
 		)
 	}
 	a.attachments = attachmentStore
@@ -601,7 +602,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 		if a.shutdownInjectErrFn != nil {
 			err = a.shutdownInjectErrFn(step, err)
 		}
-		errs = appendError(errs, wrapLifecycleError(step, err))
+		errs = errorsx.Append(errs, errorsx.WrapLifecycle(step, err))
 		if a.shutdownStepFn != nil {
 			a.shutdownStepFn(step, err)
 		}
