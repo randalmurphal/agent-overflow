@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/network"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/transport"
 )
@@ -76,7 +77,7 @@ func TestSetNetworkSettings_TogglesAndPersistsBindAll(t *testing.T) {
 	app, srv := newNetworkTestApp(t)
 	originalPort := portFromAddr(srv.Addr())
 
-	got, err := app.SetNetworkSettings(NetworkSettings{BindAll: true})
+	got, err := app.SetNetworkSettings(network.Settings{BindAll: true})
 	if err != nil {
 		t.Fatalf("SetNetworkSettings(true): %v", err)
 	}
@@ -103,7 +104,7 @@ func TestSetNetworkSettings_TogglesAndPersistsBindAll(t *testing.T) {
 	}
 
 	// Toggle back; verify rebind to loopback.
-	got, err = app.SetNetworkSettings(NetworkSettings{BindAll: false})
+	got, err = app.SetNetworkSettings(network.Settings{BindAll: false})
 	if err != nil {
 		t.Fatalf("SetNetworkSettings(false): %v", err)
 	}
@@ -124,10 +125,10 @@ func TestSetNetworkSettings_TogglesAndPersistsBindAll(t *testing.T) {
 
 // TestNetworkSettings_InsecureFlag pins the LAN-bind-plaintext
 // warning surface: when BindAll is on and the URL is http://, the
-// Insecure flag is true so the frontend can render a "use Tailscale /
-// SSH tunnel" warning before the user shares the URL on an untrusted
-// network. Loopback URLs are also http:// but never traverse a network
-// — they stay safe and are not flagged.
+// Insecure flag is true so the frontend can render a "use Tailscale
+// / SSH tunnel" warning before the user shares the URL on an
+// untrusted network. Loopback URLs are also http:// but never
+// traverse a network — they stay safe and are not flagged.
 func TestNetworkSettings_InsecureFlag(t *testing.T) {
 	app, _ := newNetworkTestApp(t)
 
@@ -141,10 +142,10 @@ func TestNetworkSettings_InsecureFlag(t *testing.T) {
 		t.Fatalf("loopback bind: Insecure = true, want false")
 	}
 
-	// Toggle to LAN bind: still http://, now Insecure. Skip the test if
-	// no LAN IP discoverable (CI sandbox); we only assert when the URL
-	// actually contains a non-loopback host.
-	got, err = app.SetNetworkSettings(NetworkSettings{BindAll: true})
+	// Toggle to LAN bind: still http://, now Insecure. Skip the
+	// test if no LAN IP discoverable (CI sandbox); we only assert
+	// when the URL actually contains a non-loopback host.
+	got, err = app.SetNetworkSettings(network.Settings{BindAll: true})
 	if err != nil {
 		t.Fatalf("SetNetworkSettings(true): %v", err)
 	}
@@ -156,7 +157,7 @@ func TestNetworkSettings_InsecureFlag(t *testing.T) {
 	}
 
 	// Toggle back: Insecure clears.
-	got, err = app.SetNetworkSettings(NetworkSettings{BindAll: false})
+	got, err = app.SetNetworkSettings(network.Settings{BindAll: false})
 	if err != nil {
 		t.Fatalf("SetNetworkSettings(false): %v", err)
 	}
@@ -166,14 +167,14 @@ func TestNetworkSettings_InsecureFlag(t *testing.T) {
 }
 
 // TestSetNetworkSettings_NoOpWhenUnchanged verifies the binding is
-// idempotent — calling SetNetworkSettings with the same flag twice in
-// a row doesn't churn the transport (which would interrupt in-flight
-// connections for no reason).
+// idempotent — calling SetNetworkSettings with the same flag twice
+// in a row doesn't churn the transport (which would interrupt
+// in-flight connections for no reason).
 func TestSetNetworkSettings_NoOpWhenUnchanged(t *testing.T) {
 	app, srv := newNetworkTestApp(t)
 	originalAddr := srv.Addr()
 
-	if _, err := app.SetNetworkSettings(NetworkSettings{BindAll: false}); err != nil {
+	if _, err := app.SetNetworkSettings(network.Settings{BindAll: false}); err != nil {
 		t.Fatalf("SetNetworkSettings(false) on default: %v", err)
 	}
 	if srv.Addr() != originalAddr {
@@ -187,42 +188,30 @@ func TestSetNetworkSettings_NoOpWhenUnchanged(t *testing.T) {
 // queried.
 func TestNetworkAppURL_LoopbackUsesAppURL(t *testing.T) {
 	_, srv := newNetworkTestApp(t)
-	got := networkAppURL(srv, false)
+	got := network.AppURL(srv, false)
 	if got != srv.AppURL() {
 		t.Fatalf("loopback URL = %q, want srv.AppURL() = %q", got, srv.AppURL())
 	}
 }
 
-// TestNetworkBindHost_BranchesOnFlag locks the bind-host mapping so a
-// future refactor doesn't accidentally widen the loopback bind to
-// 0.0.0.0 (or vice versa).
-func TestNetworkBindHost_BranchesOnFlag(t *testing.T) {
-	if got := networkBindHost(false); got != "127.0.0.1" {
-		t.Fatalf("networkBindHost(false) = %q, want 127.0.0.1", got)
-	}
-	if got := networkBindHost(true); got != "0.0.0.0" {
-		t.Fatalf("networkBindHost(true) = %q, want 0.0.0.0", got)
-	}
-}
-
 // intToPortString matches what SplitHostPort produces — base-10
-// integer with no leading zeros — so a string == string compare lines
-// up exactly.
+// integer with no leading zeros — so a string == string compare
+// lines up exactly.
 func intToPortString(p int) string {
 	return strconv.Itoa(p)
 }
 
-// TestSetNetworkSettings_TransportUnavailable proves the binding fails
-// fast when the transport server pointer is nil — the App was wired
-// without SetTransportServer (a startup ordering bug, or a partial
-// boot). The persisted settings must NOT change in that case;
-// otherwise the next boot would honor a flag the transport never
-// actually applied.
+// TestSetNetworkSettings_TransportUnavailable proves the binding
+// fails fast when the transport server pointer is nil — the App
+// was wired without SetTransportServer (a startup ordering bug, or
+// a partial boot). The persisted settings must NOT change in that
+// case; otherwise the next boot would honor a flag the transport
+// never actually applied.
 func TestSetNetworkSettings_TransportUnavailable(t *testing.T) {
 	app := &App{settings: settings.NewService(t.TempDir())}
 	prev := app.settings.Get().Network.BindAll
 
-	if _, err := app.SetNetworkSettings(NetworkSettings{BindAll: true}); err == nil {
+	if _, err := app.SetNetworkSettings(network.Settings{BindAll: true}); err == nil {
 		t.Fatalf("SetNetworkSettings without transport should error")
 	}
 
@@ -249,7 +238,7 @@ func TestSetNetworkSettings_BindAllTrueFalseTrueCycle(t *testing.T) {
 	}
 
 	for i, exp := range expectations {
-		got, err := app.SetNetworkSettings(NetworkSettings{BindAll: exp.bindAll})
+		got, err := app.SetNetworkSettings(network.Settings{BindAll: exp.bindAll})
 		if err != nil {
 			t.Fatalf("step %d SetNetworkSettings(%v): %v", i, exp.bindAll, err)
 		}
@@ -274,220 +263,38 @@ func TestSetNetworkSettings_BindAllTrueFalseTrueCycle(t *testing.T) {
 	}
 }
 
-// TestDiscoverLocalLANIP_DeterministicOrder pins the determinism
-// guarantee: a multi-homed host returns the same answer across runs.
-// We swap the iface enumeration hook with a fake that returns
-// interfaces in a non-Index order; discovery must sort them so two
-// calls land on the same IP.
-func TestDiscoverLocalLANIP_DeterministicOrder(t *testing.T) {
-	prevIfaces := netInterfaces
-	prevAddrs := netInterfaceAddrs
-	t.Cleanup(func() {
-		netInterfaces = prevIfaces
-		netInterfaceAddrs = prevAddrs
-	})
-
-	// Two RFC1918 interfaces, presented to discovery in reverse-Index
-	// order. Without sorting, the result would be 10.0.0.5 (the first
-	// one we saw); with sorting it must be 192.168.1.10 (Index 1).
-	addrsByIndex := map[int][]net.Addr{
-		1: {&net.IPNet{IP: net.IPv4(192, 168, 1, 10), Mask: net.CIDRMask(24, 32)}},
-		2: {&net.IPNet{IP: net.IPv4(10, 0, 0, 5), Mask: net.CIDRMask(8, 32)}},
-	}
-	netInterfaces = func() ([]net.Interface, error) {
-		// Reverse order on purpose. A sort by Index ascending must
-		// override this so the result is stable.
-		return []net.Interface{
-			{Index: 2, Name: "eth1", Flags: net.FlagUp},
-			{Index: 1, Name: "eth0", Flags: net.FlagUp},
-		}, nil
-	}
-	netInterfaceAddrs = func(iface net.Interface) ([]net.Addr, error) {
-		return addrsByIndex[iface.Index], nil
-	}
-
-	first := discoverLocalLANIP()
-	second := discoverLocalLANIP()
-	if first != second {
-		t.Fatalf("non-deterministic discovery: first=%q second=%q", first, second)
-	}
-	if first != "192.168.1.10" {
-		t.Fatalf("Index sort not applied: got %q, want lowest-Index iface IP 192.168.1.10", first)
-	}
-}
-
-// TestDiscoverLocalLANIP_TailscalePreference proves that on a host
-// where the ONLY non-loopback IPv4 is a Tailscale CGNAT address, the
-// discovery still returns it (rather than empty). Tailscale is the
-// user's typical "remote access" path; not surfacing the URL would
-// strand a Tailscale-only host with no usable bind-all UX.
-func TestDiscoverLocalLANIP_TailscalePreference(t *testing.T) {
-	prevIfaces := netInterfaces
-	prevAddrs := netInterfaceAddrs
-	t.Cleanup(func() {
-		netInterfaces = prevIfaces
-		netInterfaceAddrs = prevAddrs
-	})
-
-	netInterfaces = func() ([]net.Interface, error) {
-		return []net.Interface{
-			{Index: 1, Name: "tailscale0", Flags: net.FlagUp},
-		}, nil
-	}
-	netInterfaceAddrs = func(iface net.Interface) ([]net.Addr, error) {
-		// 100.96.5.42 is inside the 100.64.0.0/10 CGNAT range Tailscale
-		// uses for its mesh.
-		return []net.Addr{
-			&net.IPNet{IP: net.IPv4(100, 96, 5, 42), Mask: net.CIDRMask(10, 32)},
-		}, nil
-	}
-
-	if got := discoverLocalLANIP(); got != "100.96.5.42" {
-		t.Fatalf("Tailscale CGNAT not picked: got %q, want 100.96.5.42", got)
-	}
-}
-
-// TestDiscoverLocalLANIP_RFC1918BeatsTailscale verifies the
-// preference order. When both an RFC1918 and a Tailscale CGNAT
-// address are present, the LAN address wins — a user on a normal
-// home network shouldn't see a Tailscale URL when their phone is
-// already on the same Wi-Fi.
-func TestDiscoverLocalLANIP_RFC1918BeatsTailscale(t *testing.T) {
-	prevIfaces := netInterfaces
-	prevAddrs := netInterfaceAddrs
-	t.Cleanup(func() {
-		netInterfaces = prevIfaces
-		netInterfaceAddrs = prevAddrs
-	})
-
-	netInterfaces = func() ([]net.Interface, error) {
-		return []net.Interface{
-			// Tailscale on the lower index — without a preference
-			// scan we'd return it first. With preference, the
-			// 192.168 address must win even though it's on a higher-
-			// index iface.
-			{Index: 1, Name: "tailscale0", Flags: net.FlagUp},
-			{Index: 2, Name: "en0", Flags: net.FlagUp},
-		}, nil
-	}
-	netInterfaceAddrs = func(iface net.Interface) ([]net.Addr, error) {
-		switch iface.Index {
-		case 1:
-			return []net.Addr{&net.IPNet{IP: net.IPv4(100, 96, 5, 42), Mask: net.CIDRMask(10, 32)}}, nil
-		case 2:
-			return []net.Addr{&net.IPNet{IP: net.IPv4(192, 168, 1, 10), Mask: net.CIDRMask(24, 32)}}, nil
-		}
-		return nil, nil
-	}
-
-	if got := discoverLocalLANIP(); got != "192.168.1.10" {
-		t.Fatalf("RFC1918 preference broken: got %q, want 192.168.1.10", got)
-	}
-}
-
-// TestDiscoverLocalLANIP_SkipsLoopbackAndDown locks the iface filter:
-// loopback and down interfaces never contribute to the LAN URL.
-func TestDiscoverLocalLANIP_SkipsLoopbackAndDown(t *testing.T) {
-	prevIfaces := netInterfaces
-	prevAddrs := netInterfaceAddrs
-	t.Cleanup(func() {
-		netInterfaces = prevIfaces
-		netInterfaceAddrs = prevAddrs
-	})
-
-	netInterfaces = func() ([]net.Interface, error) {
-		return []net.Interface{
-			{Index: 1, Name: "lo", Flags: net.FlagUp | net.FlagLoopback},
-			{Index: 2, Name: "down0", Flags: 0}, // not up
-		}, nil
-	}
-	netInterfaceAddrs = func(iface net.Interface) ([]net.Addr, error) {
-		return []net.Addr{
-			&net.IPNet{IP: net.IPv4(127, 0, 0, 1), Mask: net.CIDRMask(8, 32)},
-		}, nil
-	}
-
-	if got := discoverLocalLANIP(); got != "" {
-		t.Fatalf("loopback/down iface should yield empty result, got %q", got)
-	}
-}
-
-// TestNetworkOriginPatterns_LoopbackIsNil documents the InsecureSkipVerify
-// case: on loopback, the upgrader sees nil and waives the origin check.
-// LAN bind tightens this to an explicit allow-list so a stray browser
-// tab can't WebSocket-hijack a leaked token.
-func TestNetworkOriginPatterns_LoopbackIsNil(t *testing.T) {
-	if got := networkOriginPatterns(false, ""); got != nil {
-		t.Fatalf("loopback patterns should be nil, got %v", got)
-	}
-}
-
-// TestNetworkOriginPatterns_BindAllIncludesLAN pins the LAN allow-list
-// shape: loopback variants plus the discovered LAN IP. Without the
-// LAN entry, a browser on the LAN would fail the origin check and
-// the toggle would be useless. Without the loopback entries, opening
-// the URL on this same machine would also fail.
-func TestNetworkOriginPatterns_BindAllIncludesLAN(t *testing.T) {
-	patterns := networkOriginPatterns(true, "192.168.1.10")
-	want := []string{"http://127.0.0.1:*", "http://localhost:*", "http://192.168.1.10:*"}
-	if len(patterns) != len(want) {
-		t.Fatalf("bind-all patterns = %v, want %v", patterns, want)
-	}
-	for i, p := range patterns {
-		if p != want[i] {
-			t.Fatalf("bind-all patterns[%d] = %q, want %q", i, p, want[i])
-		}
-	}
-}
-
-// TestNetworkOriginPatterns_BindAllNoLAN proves the LAN-IP-missing
-// case still produces a usable allow-list. The user's browser may
-// not be reachable in this branch (the URL falls back to loopback
-// upstream) but at least the loopback origins still work.
-func TestNetworkOriginPatterns_BindAllNoLAN(t *testing.T) {
-	patterns := networkOriginPatterns(true, "")
-	want := []string{"http://127.0.0.1:*", "http://localhost:*"}
-	if len(patterns) != len(want) {
-		t.Fatalf("bind-all patterns (no LAN) = %v, want %v", patterns, want)
-	}
-	for i, p := range patterns {
-		if p != want[i] {
-			t.Fatalf("bind-all patterns[%d] = %q, want %q", i, p, want[i])
-		}
-	}
-}
-
 // TestSetNetworkSettings_RebindFailureRollsBack drives the failure
 // path: a Rebind that can't bind (someone else holds the address)
-// must leave the settings file at its previous value, AND must leave
-// the transport state untouched (Rebind's state-intact contract).
+// must leave the settings file at its previous value, AND must
+// leave the transport state untouched (Rebind's state-intact
+// contract).
 //
-// We engineer the failure by holding a foreign listener on the exact
-// 0.0.0.0:<live-port> the toggle will ask for. The kernel refuses
-// the duplicate bind, Rebind fails before mutating anything, and
-// SetNetworkSettings rolls the persisted flag back.
+// We engineer the failure by holding a foreign listener on the
+// exact 0.0.0.0:<live-port> the toggle will ask for. The kernel
+// refuses the duplicate bind, Rebind fails before mutating
+// anything, and SetNetworkSettings rolls the persisted flag back.
 func TestSetNetworkSettings_RebindFailureRollsBack(t *testing.T) {
 	app, srv := newNetworkTestApp(t)
 
 	preAddr := srv.Addr()
 	preBindAll := app.settings.Get().Network.BindAll
 
-	// SetNetworkSettings preserves the port across the toggle, so the
-	// rebind addr will be 0.0.0.0:<currentPort>. Grab that addr first
-	// to force the rebind to fail — the kernel won't let us bind
-	// 0.0.0.0:N while another listener already holds it.
+	// SetNetworkSettings preserves the port across the toggle, so
+	// the rebind addr will be 0.0.0.0:<currentPort>. Grab that addr
+	// first to force the rebind to fail — the kernel won't let us
+	// bind 0.0.0.0:N while another listener already holds it.
 	livePort := portFromAddr(preAddr)
 	blocker, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", livePort))
 	if err != nil {
-		// Some hosts won't allow this dual-bind because 127.0.0.1:livePort
-		// is already held by the live server. Skip rather than fail —
-		// the state-intact contract is also covered directly by the
-		// transport-package test.
+		// Some hosts won't allow this dual-bind because
+		// 127.0.0.1:livePort is already held by the live server.
+		// Skip rather than fail — the state-intact contract is
+		// also covered directly by the transport-package test.
 		t.Skipf("could not stage blocker on 0.0.0.0:%d: %v", livePort, err)
 	}
 	defer blocker.Close()
 
-	if _, err := app.SetNetworkSettings(NetworkSettings{BindAll: true}); err == nil {
+	if _, err := app.SetNetworkSettings(network.Settings{BindAll: true}); err == nil {
 		t.Fatalf("SetNetworkSettings expected to fail when target addr is held")
 	}
 

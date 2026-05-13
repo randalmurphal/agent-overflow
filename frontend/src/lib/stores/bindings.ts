@@ -240,7 +240,6 @@ export {
   EditorInfo,
   GeneratedCommitMessage,
   GitStatusSubscriptionResult,
-  NetworkSettings,
   RemoteEndpointSummary,
   TerminalOpenOptions,
   WorktreeStatus,
@@ -248,6 +247,9 @@ export {
 export {
   Keybinding,
 } from '../../../bindings/agent-overflow/internal/keybindings/models.js';
+export {
+  Settings as NetworkSettings,
+} from '../../../bindings/agent-overflow/internal/network/models.js';
 export {
   Distro as WSLDistro,
 } from '../../../bindings/agent-overflow/internal/wsllauncher/models.js';

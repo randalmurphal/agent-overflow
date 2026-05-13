@@ -24,6 +24,9 @@ import * as git$0 from "./internal/git/models.js";
 import * as keybindings$0 from "./internal/keybindings/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as network$0 from "./internal/network/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as otel$0 from "./internal/observability/otel/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -483,12 +486,12 @@ export function GetModelsForProvider(providerName: string): $CancellablePromise<
 }
 
 /**
- * GetNetworkSettings returns the current persisted bind-all preference
- * plus the server-derived URL and token. The URL and token are
- * recomputed on every call so a rebind (e.g. via SetNetworkSettings)
- * reflects immediately on the next read.
+ * GetNetworkSettings returns the current persisted bind-all
+ * preference plus the server-derived URL and token. The URL and
+ * token are recomputed on every call so a rebind (e.g. via
+ * SetNetworkSettings) reflects immediately on the next read.
  */
-export function GetNetworkSettings(): $CancellablePromise<$models.NetworkSettings> {
+export function GetNetworkSettings(): $CancellablePromise<network$0.Settings> {
     return $Call.ByID(1026796858).then(($result: any) => {
         return $$createType21($result);
     });
@@ -1573,25 +1576,26 @@ export function SetEditorSettings(s: settings$0.EditorSettings): $CancellablePro
 }
 
 /**
- * SetNetworkSettings persists the new bind-all preference and rebinds
- * the transport server. Going false → true rebinds to 0.0.0.0:<port>
- * so LAN clients can reach the app; true → false rebinds back to
- * 127.0.0.1:<port>. The port is reused so a previously-shared URL
- * stays valid (only the host changes).
+ * SetNetworkSettings persists the new bind-all preference and
+ * rebinds the transport server. Going false → true rebinds to
+ * 0.0.0.0:<port> so LAN clients can reach the app; true → false
+ * rebinds back to 127.0.0.1:<port>. The port is reused so a
+ * previously-shared URL stays valid (only the host changes).
  * 
  * On rebind failure the transport state is unchanged (Rebind is
- * state-intact on error) and the persisted setting is rolled back so
- * a subsequent GetNetworkSettings returns the actual transport state.
- * Returns the post-rebind NetworkSettings so the UI can update the URL
- * display in one round trip.
+ * state-intact on error) and the persisted setting is rolled back
+ * so a subsequent GetNetworkSettings returns the actual transport
+ * state. Returns the post-rebind Settings so the UI can update the
+ * URL display in one round trip.
  * 
- * Origin allow-list: a LAN bind requires an explicit allow-list so a
- * stray browser tab on the LAN can't WebSocket-hijack a leaked token
- * (CSWSH). On bind-all=true the list contains loopback variants plus
- * the discovered LAN IP; on bind-all=false the list is empty (loopback
- * has no browser-origin to validate, and InsecureSkipVerify is fine).
+ * Origin allow-list: a LAN bind requires an explicit allow-list so
+ * a stray browser tab on the LAN can't WebSocket-hijack a leaked
+ * token (CSWSH). On bind-all=true the list contains loopback
+ * variants plus the discovered LAN IP; on bind-all=false the list
+ * is empty (loopback has no browser-origin to validate, and
+ * InsecureSkipVerify is fine).
  */
-export function SetNetworkSettings(s: $models.NetworkSettings): $CancellablePromise<$models.NetworkSettings> {
+export function SetNetworkSettings(s: network$0.Settings): $CancellablePromise<network$0.Settings> {
     return $Call.ByID(3915514446, s).then(($result: any) => {
         return $$createType21($result);
     });
@@ -2035,7 +2039,7 @@ const $$createType17 = keybindings$0.Keybinding.createFrom;
 const $$createType18 = $Create.Array($$createType17);
 const $$createType19 = provider$0.ModelInfo.createFrom;
 const $$createType20 = $Create.Array($$createType19);
-const $$createType21 = $models.NetworkSettings.createFrom;
+const $$createType21 = network$0.Settings.createFrom;
 const $$createType22 = $models.PayloadChunk.createFrom;
 const $$createType23 = $models.PayloadContent.createFrom;
 const $$createType24 = $models.PayloadPreview.createFrom;
