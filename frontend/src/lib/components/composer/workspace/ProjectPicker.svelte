@@ -14,8 +14,8 @@
   //
   // Switch flow mirrors `ProjectsSection.handleNewThread`: look up an
   // existing draft for (projectId, mode); switch to it if present;
-  // otherwise CreateThread a fresh draft, seed its worktree intent
-  // default, and switch. The previous project's draft (if any) is left
+  // otherwise create a fresh hidden backend draft, seed its worktree
+  // intent default, and switch. The previous project's draft (if any) is left
   // in the draftThreads cache — same behavior as the user clicking
   // pencil on multiple projects in succession.
 
@@ -31,9 +31,12 @@
   import {
     findDraftEntry,
     getProjectDraft,
+    setProjectDraft,
     type DraftMode,
   } from '../../../stores/draftThreads.svelte';
+  import { CreateThread } from '../../../stores/bindings';
   import { openThreadInPane } from '../../../stores/panes.svelte';
+  import { seedDefaultWorktreeIntentForDraft } from '../../../stores/worktreeIntent.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
 
@@ -92,7 +95,13 @@
       }
       const project = getProject(projectId)?.project;
       if (!project) throw new Error('Project not found');
-      pane.startDraftPlaceholder(project, draftMode === 'design' ? 'design' : 'chat');
+      const created = await CreateThread({
+        projectId,
+        mode: draftMode === 'design' ? 'design' : 'chat',
+      });
+      setProjectDraft(projectId, draftMode, created);
+      seedDefaultWorktreeIntentForDraft(created);
+      await openThreadInPane(created, pane);
     } catch (err) {
       console.error('Failed to switch draft project:', err);
       addToast('error', userFacingError(err));

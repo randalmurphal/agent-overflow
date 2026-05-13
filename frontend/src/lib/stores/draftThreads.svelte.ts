@@ -1,9 +1,9 @@
 // Tracks materialized draft threads per (project, mode) pair. Clicking
-// "+ New" starts as a local pane placeholder; the backend row is created
-// only after the user adds state worth preserving (text, attachments,
-// terminal chips, or seeded plan context). Once materialized, this store
-// lets "+ New" return to that draft so the composerDraft cache (persisted
-// backend-side by threadId) repopulates the composer.
+// "+ New" creates a backend draft row immediately so the normal chat-bar
+// controls can use the same thread-scoped bindings as an ordinary chat,
+// but empty drafts stay out of the sidebar until the user adds composer
+// state. This store lets "+ New" return to that hidden draft so the
+// composerDraft cache repopulates the composer.
 //
 // Mode keying: + New is mode-contextual — clicking + with the Design tab
 // active creates a design thread; with the Chat tab active it creates a

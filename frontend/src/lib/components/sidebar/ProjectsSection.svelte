@@ -21,13 +21,15 @@
   } from '../../stores/sidebar.svelte';
   import { getThreadFilterQuery } from '../../stores/threadFilter.svelte';
   import { getThreads } from '../../stores/threads.svelte';
-  import { UpdateProjectSortPositions } from '../../stores/bindings';
+  import { CreateThread, UpdateProjectSortPositions } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import {
     getProjectDraft,
+    setProjectDraft,
   } from '../../stores/draftThreads.svelte';
   import { openThreadInPane } from '../../stores/panes.svelte';
+  import { seedDefaultWorktreeIntentForDraft } from '../../stores/worktreeIntent.svelte';
   import Plus from 'lucide-svelte/icons/plus';
   import IconButton from '../primitives/IconButton.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -174,7 +176,18 @@
       addToast('error', userFacingError(new Error('Project not found')));
       return;
     }
-    pane.startDraftPlaceholder(project, draftMode === 'design' ? 'design' : 'chat');
+    try {
+      const created = await CreateThread({
+        projectId,
+        mode: draftMode === 'design' ? 'design' : 'chat',
+      });
+      setProjectDraft(projectId, draftMode, created);
+      seedDefaultWorktreeIntentForDraft(created);
+      await openThreadInPane(created, pane);
+    } catch (err) {
+      console.error('Failed to create draft thread:', err);
+      addToast('error', userFacingError(err));
+    }
   }
 
   /**
