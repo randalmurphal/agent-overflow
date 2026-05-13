@@ -439,7 +439,7 @@ func preserveCodexWaitLaunchReceiverTargets(launchMeta string, completeMeta json
 	if err != nil {
 		return completeMeta
 	}
-	input["receiverThreadIds"] = encodedReceivers
+	input["requestedReceiverThreadIds"] = encodedReceivers
 	encodedInput, err := json.Marshal(input)
 	if err != nil {
 		return completeMeta

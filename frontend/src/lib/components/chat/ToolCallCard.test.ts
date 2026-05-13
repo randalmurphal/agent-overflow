@@ -918,8 +918,16 @@ describe("<ToolCallCard> header dispatcher", () => {
       meta: JSON.stringify({
         input: {
           tool: "wait_agent",
-          receiverThreadIds: ["child-1", "child-2", "child-3"],
+          receiverThreadIds: ["child-1"],
+          requestedReceiverThreadIds: ["child-1", "child-2", "child-3"],
           receiverAgents: [
+            {
+              threadId: "child-1",
+              agentNickname: "Hypatia",
+              agentRole: "default",
+            },
+          ],
+          requestedReceiverAgents: [
             {
               threadId: "child-1",
               agentNickname: "Hypatia",

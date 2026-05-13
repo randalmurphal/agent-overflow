@@ -1349,7 +1349,7 @@ func TestCodexSubagentNotificationRehydratesPersistedLaunch(t *testing.T) {
 	}
 }
 
-func TestCodexSubagentWaitMergesPriorChildLifecycleStatus(t *testing.T) {
+func TestCodexSubagentWaitDoesNotMergePriorChildLifecycleStatus(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -1405,22 +1405,8 @@ func TestCodexSubagentWaitMergesPriorChildLifecycleStatus(t *testing.T) {
 	}
 
 	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-mixed"))
-	if err != nil || !found {
-		t.Fatalf("mixed lifecycle/wait sibling missing: found=%v err=%v", found, err)
-	}
-	if completion.CompletionOf != "spawn-mixed" {
-		t.Fatalf("completion_of = %q, want spawn-mixed", completion.CompletionOf)
-	}
-	meta := decodeItemMetaMap(t, completion.Meta)
-	if meta["wait_carrier_id"] != "wait-mixed" {
-		t.Fatalf("wait_carrier_id = %v, want wait-mixed", meta["wait_carrier_id"])
-	}
-	data, err := st.GetPayloadData(completion.PayloadID)
-	if err != nil {
-		t.Fatalf("payload data: %v", err)
-	}
-	if !strings.Contains(string(data), "B done after wait") {
-		t.Fatalf("payload = %q, want waited child output", string(data))
+	if err != nil || found {
+		t.Fatalf("lifecycle status must not complete wait sibling: found=%v item=%+v err=%v", found, completion, err)
 	}
 }
 
@@ -1490,6 +1476,69 @@ func TestCodexSubagentPriorLifecycleStatusDoesNotAttachToUnrelatedLaterWait(t *t
 
 	if completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-franklin")); err != nil || found {
 		t.Fatalf("franklin completion = %+v found=%v err=%v, want no unrelated wait attachment", completion, found, err)
+	}
+}
+
+func TestCodexSubagentNotificationAfterLifecycleStatusCarriesFinalOutput(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMeta(t, "child-franklin", "running")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-franklin",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-franklin",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+
+	statusMeta, _ := json.Marshal(map[string]any{
+		"agent_path": "child-franklin",
+		"status":     "completed",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-franklin",
+		Meta: statusMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("subagent status: %v", err)
+	}
+	if completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-franklin")); err != nil || found {
+		t.Fatalf("lifecycle status completion = %+v found=%v err=%v, want none", completion, found, err)
+	}
+
+	notifyMeta, _ := json.Marshal(map[string]any{
+		"agent_path": "child-franklin",
+		"status":     "completed",
+		"message":    "Franklin final answer",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentNotification, ThreadID: "t1", ItemID: "spawn-franklin",
+		Meta: notifyMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("subagent notification: %v", err)
+	}
+
+	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-franklin"))
+	if err != nil || !found {
+		t.Fatalf("notification completion missing: found=%v err=%v", found, err)
+	}
+	if completion.PayloadKind != payloadKindToolCallResult {
+		t.Fatalf("payload kind = %q, want %s", completion.PayloadKind, payloadKindToolCallResult)
+	}
+	data, err := st.GetPayloadData(completion.PayloadID)
+	if err != nil {
+		t.Fatalf("payload data: %v", err)
+	}
+	if string(data) != "Franklin final answer" {
+		t.Fatalf("payload = %q, want notification output", string(data))
 	}
 }
 

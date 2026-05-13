@@ -901,7 +901,7 @@ func TestToolCompletionMergesCodexWaitAgentMeta(t *testing.T) {
 	}
 }
 
-func TestToolCompletionPreservesCodexWaitStartReceiversOnReplay(t *testing.T) {
+func TestToolCompletionPreservesCodexWaitStartReceiversSeparatelyOnReplay(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	if err := st.UpdateProvider("t1", "codex"); err != nil {
@@ -950,8 +950,12 @@ func TestToolCompletionPreservesCodexWaitStartReceiversOnReplay(t *testing.T) {
 		t.Fatalf("input missing: %#v", meta)
 	}
 	receivers, ok := input["receiverThreadIds"].([]any)
-	if !ok || len(receivers) != 3 {
-		t.Fatalf("receiverThreadIds = %#v, want three start ids", input["receiverThreadIds"])
+	if !ok || len(receivers) != 1 || receivers[0] != "child-1" {
+		t.Fatalf("receiverThreadIds = %#v, want completion ids", input["receiverThreadIds"])
+	}
+	requestedReceivers, ok := input["requestedReceiverThreadIds"].([]any)
+	if !ok || len(requestedReceivers) != 3 {
+		t.Fatalf("requestedReceiverThreadIds = %#v, want three start ids", input["requestedReceiverThreadIds"])
 	}
 	agentsStates, ok := input["agentsStates"].(map[string]any)
 	if !ok || len(agentsStates) != 1 {

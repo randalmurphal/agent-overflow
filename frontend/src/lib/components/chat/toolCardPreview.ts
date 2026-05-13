@@ -1,5 +1,6 @@
 import type { Item } from '../../types/models';
 import { findPathRanges } from '../../utils/pathLinkify';
+import { waitAgentDisplayReceiverIds } from '../../utils/waitAgentDisplay';
 import type { ToolKindVisual } from './toolCardHeader';
 
 /**
@@ -64,6 +65,5 @@ function waitAgentPreview(item: Item, meta: Record<string, unknown> | null): str
 function receiverThreadCount(meta: Record<string, unknown> | null): number {
   const input = meta?.input;
   if (!input || typeof input !== 'object') return 0;
-  const receiverThreadIds = (input as Record<string, unknown>).receiverThreadIds;
-  return Array.isArray(receiverThreadIds) ? receiverThreadIds.length : 0;
+  return waitAgentDisplayReceiverIds(input as Record<string, unknown>).length;
 }

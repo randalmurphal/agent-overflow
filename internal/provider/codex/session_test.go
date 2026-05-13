@@ -1446,7 +1446,7 @@ func TestReadChildThreadMetadataRequestsNoTurns(t *testing.T) {
 	}
 }
 
-func TestDispatchLineRawWaitCallPreservesReceiversOnTimeoutCompletion(t *testing.T) {
+func TestDispatchLineRawWaitCallPreservesRequestedReceiversOnTimeoutCompletion(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID:         "parent-thread",
@@ -1476,19 +1476,29 @@ func TestDispatchLineRawWaitCallPreservesReceiversOnTimeoutCompletion(t *testing
 	}
 	var meta struct {
 		Input struct {
-			ReceiverThreadIDs []string             `json:"receiverThreadIds"`
-			ReceiverAgents    []collabReceiverMeta `json:"receiverAgents"`
+			ReceiverThreadIDs          []string             `json:"receiverThreadIds"`
+			RequestedReceiverThreadIDs []string             `json:"requestedReceiverThreadIds"`
+			RequestedReceiverAgents    []collabReceiverMeta `json:"requestedReceiverAgents"`
 		} `json:"input"`
 	}
 	if err := json.Unmarshal(waitEvent.Meta, &meta); err != nil {
 		t.Fatalf("meta unmarshal: %v", err)
 	}
-	if len(meta.Input.ReceiverThreadIDs) != 1 || meta.Input.ReceiverThreadIDs[0] != "child-provider-1" {
-		t.Fatalf("receiverThreadIds = %+v, want raw target preserved", meta.Input.ReceiverThreadIDs)
+	if len(meta.Input.ReceiverThreadIDs) != 0 {
+		t.Fatalf("receiverThreadIds = %+v, want no timeout completions", meta.Input.ReceiverThreadIDs)
+	}
+	if want := []string{"child-provider-1"}; !reflect.DeepEqual(meta.Input.RequestedReceiverThreadIDs, want) {
+		t.Fatalf("requestedReceiverThreadIds = %+v, want raw target preserved", meta.Input.RequestedReceiverThreadIDs)
+	}
+	wantAgents := []collabReceiverMeta{
+		{ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
+	}
+	if !reflect.DeepEqual(meta.Input.RequestedReceiverAgents, wantAgents) {
+		t.Fatalf("requestedReceiverAgents = %+v, want %+v", meta.Input.RequestedReceiverAgents, wantAgents)
 	}
 }
 
-func TestDispatchLineTypedWaitCompletionKeepsStartedReceiverTargets(t *testing.T) {
+func TestDispatchLineTypedWaitCompletionPreservesStartedReceiverTargetsSeparately(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
@@ -1517,9 +1527,11 @@ func TestDispatchLineTypedWaitCompletionKeepsStartedReceiverTargets(t *testing.T
 	}
 	var meta struct {
 		Input struct {
-			ReceiverThreadIDs []string             `json:"receiverThreadIds"`
-			ReceiverAgents    []collabReceiverMeta `json:"receiverAgents"`
-			AgentsStates      map[string]struct {
+			ReceiverThreadIDs          []string             `json:"receiverThreadIds"`
+			RequestedReceiverThreadIDs []string             `json:"requestedReceiverThreadIds"`
+			ReceiverAgents             []collabReceiverMeta `json:"receiverAgents"`
+			RequestedReceiverAgents    []collabReceiverMeta `json:"requestedReceiverAgents"`
+			AgentsStates               map[string]struct {
 				Status  string `json:"status"`
 				Message string `json:"message"`
 			} `json:"agentsStates"`
@@ -1528,24 +1540,33 @@ func TestDispatchLineTypedWaitCompletionKeepsStartedReceiverTargets(t *testing.T
 	if err := json.Unmarshal(waitEvent.Meta, &meta); err != nil {
 		t.Fatalf("meta unmarshal: %v", err)
 	}
-	want := []string{"child-provider-1", "child-provider-2", "child-provider-3"}
-	if !reflect.DeepEqual(meta.Input.ReceiverThreadIDs, want) {
-		t.Fatalf("receiverThreadIds = %+v, want wait-start targets %+v", meta.Input.ReceiverThreadIDs, want)
+	if want := []string{"child-provider-1"}; !reflect.DeepEqual(meta.Input.ReceiverThreadIDs, want) {
+		t.Fatalf("receiverThreadIds = %+v, want completion statuses %+v", meta.Input.ReceiverThreadIDs, want)
+	}
+	wantRequested := []string{"child-provider-1", "child-provider-2", "child-provider-3"}
+	if !reflect.DeepEqual(meta.Input.RequestedReceiverThreadIDs, wantRequested) {
+		t.Fatalf("requestedReceiverThreadIds = %+v, want wait-start targets %+v", meta.Input.RequestedReceiverThreadIDs, wantRequested)
 	}
 	wantAgents := []collabReceiverMeta{
+		{ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
+	}
+	if !reflect.DeepEqual(meta.Input.ReceiverAgents, wantAgents) {
+		t.Fatalf("receiverAgents = %+v, want %+v", meta.Input.ReceiverAgents, wantAgents)
+	}
+	wantRequestedAgents := []collabReceiverMeta{
 		{ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
 		{ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
 		{ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
 	}
-	if !reflect.DeepEqual(meta.Input.ReceiverAgents, wantAgents) {
-		t.Fatalf("receiverAgents = %+v, want %+v", meta.Input.ReceiverAgents, wantAgents)
+	if !reflect.DeepEqual(meta.Input.RequestedReceiverAgents, wantRequestedAgents) {
+		t.Fatalf("requestedReceiverAgents = %+v, want %+v", meta.Input.RequestedReceiverAgents, wantRequestedAgents)
 	}
 	if len(meta.Input.AgentsStates) != 1 || meta.Input.AgentsStates["child-provider-1"].Status != "completed" {
 		t.Fatalf("agentsStates = %+v, want only completed child state", meta.Input.AgentsStates)
 	}
 }
 
-func TestDispatchLineRawWaitCallPreservesAllReceiversOnPartialCompletion(t *testing.T) {
+func TestDispatchLineRawWaitCallPreservesAllReceiversSeparatelyOnPartialCompletion(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID:         "parent-thread",
@@ -1575,24 +1596,35 @@ func TestDispatchLineRawWaitCallPreservesAllReceiversOnPartialCompletion(t *test
 	}
 	var meta struct {
 		Input struct {
-			ReceiverThreadIDs []string             `json:"receiverThreadIds"`
-			ReceiverAgents    []collabReceiverMeta `json:"receiverAgents"`
+			ReceiverThreadIDs          []string             `json:"receiverThreadIds"`
+			RequestedReceiverThreadIDs []string             `json:"requestedReceiverThreadIds"`
+			ReceiverAgents             []collabReceiverMeta `json:"receiverAgents"`
+			RequestedReceiverAgents    []collabReceiverMeta `json:"requestedReceiverAgents"`
 		} `json:"input"`
 	}
 	if err := json.Unmarshal(waitEvent.Meta, &meta); err != nil {
 		t.Fatalf("meta unmarshal: %v", err)
 	}
-	want := []string{"child-provider-1", "child-provider-2", "child-provider-3"}
-	if !reflect.DeepEqual(meta.Input.ReceiverThreadIDs, want) {
-		t.Fatalf("receiverThreadIds = %+v, want raw wait targets %+v", meta.Input.ReceiverThreadIDs, want)
+	if want := []string{"child-provider-1"}; !reflect.DeepEqual(meta.Input.ReceiverThreadIDs, want) {
+		t.Fatalf("receiverThreadIds = %+v, want completion statuses %+v", meta.Input.ReceiverThreadIDs, want)
+	}
+	wantRequested := []string{"child-provider-1", "child-provider-2", "child-provider-3"}
+	if !reflect.DeepEqual(meta.Input.RequestedReceiverThreadIDs, wantRequested) {
+		t.Fatalf("requestedReceiverThreadIds = %+v, want raw wait targets %+v", meta.Input.RequestedReceiverThreadIDs, wantRequested)
 	}
 	wantAgents := []collabReceiverMeta{
+		{ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
+	}
+	if !reflect.DeepEqual(meta.Input.ReceiverAgents, wantAgents) {
+		t.Fatalf("receiverAgents = %+v, want %+v", meta.Input.ReceiverAgents, wantAgents)
+	}
+	wantRequestedAgents := []collabReceiverMeta{
 		{ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
 		{ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
 		{ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
 	}
-	if !reflect.DeepEqual(meta.Input.ReceiverAgents, wantAgents) {
-		t.Fatalf("receiverAgents = %+v, want %+v", meta.Input.ReceiverAgents, wantAgents)
+	if !reflect.DeepEqual(meta.Input.RequestedReceiverAgents, wantRequestedAgents) {
+		t.Fatalf("requestedReceiverAgents = %+v, want %+v", meta.Input.RequestedReceiverAgents, wantRequestedAgents)
 	}
 }
 

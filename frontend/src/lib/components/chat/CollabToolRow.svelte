@@ -30,6 +30,11 @@
     keepExpandedPayloadFresh,
   } from './payloadExpansion.svelte';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
+  import {
+    stringArrayValue,
+    waitAgentDisplayReceiverIds,
+    waitAgentRequestedReceiverIds,
+  } from '../../utils/waitAgentDisplay';
 
   let {
     pane,
@@ -80,8 +85,7 @@
   }
 
   function stringArray(obj: Record<string, unknown>, key: string): string[] {
-    const value = obj[key];
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+    return stringArrayValue(obj, key);
   }
 
   function previewText(raw: string, maxLength = 160): string {
@@ -114,10 +118,12 @@
     return { threadId, label };
   }
 
-  function receiverAgentLabels(obj: Record<string, unknown>): ReceiverAgentLabel[] {
-    const raw = obj.receiverAgents ?? obj.agentStatuses;
-    if (!Array.isArray(raw)) return [];
-    return raw
+  function receiverAgentLabels(obj: Record<string, unknown>, keys: string[]): ReceiverAgentLabel[] {
+    const rawEntries = keys.flatMap((key) => {
+      const raw = obj[key];
+      return Array.isArray(raw) ? raw : [];
+    });
+    return rawEntries
       .filter((entry): entry is Record<string, unknown> =>
         Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
       .map(labelForAgentRecord)
@@ -129,11 +135,23 @@
     return isCodexSubagentLaunchItem(item) ? codexSubagentLaunchInfo(item) : null;
   });
   let tool = $derived(spawnInfo ? (spawnInfo.tool || 'spawn_agent') : rawTool);
-  let receivers = $derived(spawnInfo?.receiverThreadIds ?? stringArray(input, 'receiverThreadIds'));
-  let receiverLabels = $derived(receiverAgentLabels(input));
+  let receivers = $derived.by(() => {
+    if (spawnInfo) return spawnInfo.receiverThreadIds;
+    if (tool === 'wait_agent') return waitAgentDisplayReceiverIds(input);
+    return stringArray(input, 'receiverThreadIds');
+  });
+  let usesRequestedWaitReceivers = $derived(tool === 'wait_agent' && waitAgentRequestedReceiverIds(input).length > 0);
+  let receiverLabels = $derived(receiverAgentLabels(input, ['receiverAgents', 'agentStatuses']));
+  let requestedReceiverLabels = $derived(receiverAgentLabels(input, ['requestedReceiverAgents']));
   let labelByReceiver = $derived.by(() => {
     const labels = new Map<string, string>();
-    for (const agent of receiverLabels) {
+    const primaryLabels = usesRequestedWaitReceivers ? requestedReceiverLabels : receiverLabels;
+    const fallbackLabels = usesRequestedWaitReceivers ? receiverLabels : requestedReceiverLabels;
+    for (const agent of primaryLabels) {
+      labels.set(agent.threadId, agent.label);
+    }
+    for (const agent of fallbackLabels) {
+      if (labels.has(agent.threadId)) continue;
       labels.set(agent.threadId, agent.label);
     }
     return labels;

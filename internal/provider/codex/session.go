@@ -1846,18 +1846,27 @@ func (s *Session) enrichCollabReceiverMetadata(evt *provider.ProviderEvent) {
 	}
 	mutateEventMetaInput(evt, false, func(input map[string]json.RawMessage) {
 		receiverThreadIDs := readRawStringArray(input, "receiverThreadIds")
-		if len(receiverThreadIDs) == 0 {
+		requestedReceiverThreadIDs := readRawStringArray(input, "requestedReceiverThreadIds")
+		if len(receiverThreadIDs) == 0 && len(requestedReceiverThreadIDs) == 0 {
 			return
 		}
-		receiverAgents := s.collabReceiverMetadataForThreads(receiverThreadIDs)
-		if len(receiverAgents) == 0 {
-			return
-		}
-		encodedReceiverAgents, err := json.Marshal(receiverAgents)
-		if err == nil {
-			input["receiverAgents"] = encodedReceiverAgents
-		}
+		s.setCollabReceiverMetadata(input, "receiverAgents", receiverThreadIDs)
+		s.setCollabReceiverMetadata(input, "requestedReceiverAgents", requestedReceiverThreadIDs)
 	})
+}
+
+func (s *Session) setCollabReceiverMetadata(input map[string]json.RawMessage, key string, receiverThreadIDs []string) {
+	if len(receiverThreadIDs) == 0 {
+		return
+	}
+	receiverAgents := s.collabReceiverMetadataForThreads(receiverThreadIDs)
+	if len(receiverAgents) == 0 {
+		return
+	}
+	encodedReceiverAgents, err := json.Marshal(receiverAgents)
+	if err == nil {
+		input[key] = encodedReceiverAgents
+	}
 }
 
 func (s *Session) enrichRawToolCallMetadata(evt *provider.ProviderEvent) {
@@ -1888,7 +1897,7 @@ func (s *Session) enrichRawToolCallMetadata(evt *provider.ProviderEvent) {
 			setRawStringIfMissing(input, "newAgentRole", call.AgentType)
 		case "wait_agent":
 			setRawStringIfMissing(input, "tool", "wait_agent")
-			setRawStringArray(input, "receiverThreadIds", call.Targets)
+			setRawStringArray(input, "requestedReceiverThreadIds", call.Targets)
 		}
 	})
 }
@@ -1922,7 +1931,7 @@ func (s *Session) preserveWaitAgentReceiverTargets(evt *provider.ProviderEvent) 
 			return
 		}
 		mutateEventMetaInput(evt, true, func(input map[string]json.RawMessage) {
-			setRawStringArray(input, "receiverThreadIds", receiverThreadIDs)
+			setRawStringArray(input, "requestedReceiverThreadIds", receiverThreadIDs)
 		})
 	}
 }

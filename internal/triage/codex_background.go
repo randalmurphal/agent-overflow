@@ -1281,14 +1281,15 @@ func (r *Router) observeCodexToolComplete(evt provider.ProviderEvent) error {
 	return nil
 }
 
-// resolveSubagentsForWait handles a wait_agent item/completed. The
-// wait's Meta carries receiverThreadIds plus agentsStates entries
-// (child thread id -> {status, message?}). For each incomplete spawn_agent
-// launch whose children are now terminal, synthesize a sibling completion row
-// and use any final message as that sibling's expandable payload.
+// resolveSubagentsForWait handles a wait_agent item/completed. Codex's
+// completion envelope owns the terminal evidence: agentsStates carries the
+// children that produced final statuses for this wait, while receiverThreadIds
+// is the same completion-side set on the app-server wire. The original wait
+// targets may be preserved separately for display, but they must not be used
+// as completion evidence.
 func (r *Router) resolveSubagentsForWait(evt provider.ProviderEvent) error {
 	meta := decodeCodexItemMeta(evt.Meta)
-	if len(meta.AgentsStates) == 0 && len(meta.ReceiverThreadIDs) == 0 {
+	if len(meta.AgentsStates) == 0 {
 		return nil
 	}
 	waitCarrierID := strings.TrimSpace(evt.ItemID)
@@ -1428,42 +1429,11 @@ func (r *Router) persistedSubagentWaitEmits(
 		if _, ok := already[launch.item.ID]; ok {
 			continue
 		}
-		if !launchHasCurrentWaitTerminal(launch.meta.ReceiverThreadIDs, terminalChildren) {
-			continue
-		}
-		mergedTerminalChildren := mergeStoredCodexSubagentTerminals(launch.item, terminalChildren)
-		if pending, ok := pendingSubagentWaitEmit(launch.item.ID, launch.meta.ReceiverThreadIDs, mergedTerminalChildren, waitCarrierID); ok {
+		if pending, ok := pendingSubagentWaitEmit(launch.item.ID, launch.meta.ReceiverThreadIDs, terminalChildren, waitCarrierID); ok {
 			out = append(out, pending)
 		}
 	}
 	return out, nil
-}
-
-func launchHasCurrentWaitTerminal(receiverThreadIDs []string, waitTerminalChildren map[string]agentTerminalResult) bool {
-	for _, childID := range receiverThreadIDs {
-		if _, ok := waitTerminalChildren[strings.TrimSpace(childID)]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-func mergeStoredCodexSubagentTerminals(launch store.Item, waitTerminalChildren map[string]agentTerminalResult) map[string]agentTerminalResult {
-	storedStatuses := decodeCodexChildTerminalStatuses(json.RawMessage(launch.Meta))
-	if len(storedStatuses) == 0 {
-		return waitTerminalChildren
-	}
-	merged := make(map[string]agentTerminalResult, len(storedStatuses)+len(waitTerminalChildren))
-	for childID, status := range storedStatuses {
-		switch strings.TrimSpace(status) {
-		case "completed", "errored", "interrupted", "notFound", "shutdown":
-			merged[childID] = agentTerminalResult{childID: childID, status: status}
-		}
-	}
-	for childID, terminal := range waitTerminalChildren {
-		merged[childID] = terminal
-	}
-	return merged
 }
 
 // subagentStatusToItemStatusMeta translates a CollabAgentStatus value
