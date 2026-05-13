@@ -14,8 +14,6 @@ export {
     CreateThreadOptions,
     DesignOptionSet,
     DesignWorkdirInfo,
-    DirectoryEntry,
-    DirectoryListing,
     Draft,
     EditorInfo,
     GeneratedCommitMessage,

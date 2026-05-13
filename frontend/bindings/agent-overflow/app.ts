@@ -15,6 +15,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as design$0 from "./internal/design/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as dirbrowse$0 from "./internal/dirbrowse/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as git$0 from "./internal/git/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -63,8 +66,8 @@ export function AddRemoteEndpoint(name: string, url: string, token: string): $Ca
 
 /**
  * AppendUIRenderTraceBatch appends compact dev-only UI render trace records.
- * The frontend batches calls so rendering never waits on disk. This binding
- * still validates each line because it writes directly into the user's config
+ * The frontend batches calls so rendering never waits on disk. The binding
+ * validates each line because it writes directly into the user's config
  * directory.
  */
 export function AppendUIRenderTraceBatch(lines: string[]): $CancellablePromise<string> {
@@ -86,29 +89,11 @@ export function ArchiveThread(id: string): $CancellablePromise<void> {
 }
 
 /**
- * BrowseDirectory lists the contents of path for the project-picker UI.
- * 
- * Normalization rules (keep the modal forgiving about input shape):
- *   - "" and "~" resolve to the user's home directory.
- *   - "~/sub" resolves to $HOME/sub.
- *   - relative paths resolve against the process CWD via filepath.Abs.
- *   - the final path is cleaned with filepath.Clean before stat.
- * 
- * Symlinks are reported via stat (target-following), NOT lstat — a
- * symlink pointing at a directory shows up as IsDir=true so the
- * frontend can descend into it like any other directory.
- * 
- * Hidden entries (leading ".") are included and flagged so the frontend
- * can style or filter them.
- * 
- * Ordering is compound: directories first (alphabetical), then files
- * (alphabetical). This matches the AddProject modal's keyboard-nav
- * expectation that arrow-down moves through folders before files.
- * 
- * Results cap at directoryEntryLimit entries; Truncated=true signals
- * the cap was hit so the UI can prompt the user to narrow the path.
+ * BrowseDirectory lists the contents of path for the project-picker
+ * UI. The full contract (path normalisation, ordering, .git-marker
+ * detection, EntryLimit truncation) lives in internal/dirbrowse.
  */
-export function BrowseDirectory(path: string): $CancellablePromise<$models.DirectoryListing> {
+export function BrowseDirectory(path: string): $CancellablePromise<dirbrowse$0.Listing> {
     return $Call.ByID(320967638, path).then(($result: any) => {
         return $$createType1($result);
     });
@@ -1313,6 +1298,12 @@ export function ProbeClaudeAccount(): $CancellablePromise<provider$0.AccountInfo
  * the rate-limit ring popover's plan label hydrates from the same code
  * path that the startup hook uses. Cache hits do NOT re-emit — the
  * frontend store already has the value from the original miss.
+ * 
+ * Unlike Claude, Codex deliberately omits the unauthenticated-banner
+ * hook: an empty planType is ambiguous (backend latency can produce it
+ * for an authenticated user) so surfacing a banner here would create
+ * false positives. See drift D3 in
+ * `docs/architecture/refactor-phase-1/duplication.md`.
  */
 export function ProbeCodexAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(2614227175).then(($result: any) => {
@@ -2022,7 +2013,7 @@ export function WriteThreadWorkspaceFile(threadID: string, relativePath: string,
 
 // Private type creation functions
 const $$createType0 = $models.RemoteEndpointSummary.createFrom;
-const $$createType1 = $models.DirectoryListing.createFrom;
+const $$createType1 = dirbrowse$0.Listing.createFrom;
 const $$createType2 = store$0.DiffReviewComment.createFrom;
 const $$createType3 = store$0.Project.createFrom;
 const $$createType4 = store$0.ProposedPlanComment.createFrom;

@@ -363,137 +363,6 @@ export class DesignWorkdirInfo {
 }
 
 /**
- * DirectoryEntry is one row inside a DirectoryListing.
- * IsRepo is only populated for directory entries; files always report
- * IsRepo=false regardless of name.
- */
-export class DirectoryEntry {
-    /**
-     * basename, no trailing separator
-     */
-    "name": string;
-
-    /**
-     * resolved via stat (symlinks reflect target type)
-     */
-    "isDir": boolean;
-
-    /**
-     * name begins with "."
-     */
-    "hidden": boolean;
-
-    /**
-     * directory contains ".git" (dir OR file); false for non-dirs
-     */
-    "isRepo": boolean;
-
-    /** Creates a new DirectoryEntry instance. */
-    constructor($$source: Partial<DirectoryEntry> = {}) {
-        if (!("name" in $$source)) {
-            this["name"] = "";
-        }
-        if (!("isDir" in $$source)) {
-            this["isDir"] = false;
-        }
-        if (!("hidden" in $$source)) {
-            this["hidden"] = false;
-        }
-        if (!("isRepo" in $$source)) {
-            this["isRepo"] = false;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new DirectoryEntry instance from a string or object.
-     */
-    static createFrom($$source: any = {}): DirectoryEntry {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new DirectoryEntry($$parsedSource as Partial<DirectoryEntry>);
-    }
-}
-
-/**
- * DirectoryListing is the structured result of a BrowseDirectory call.
- * The frontend uses Parent for back-navigation, Separator to render paths
- * for display, and Truncated to surface a "refine path" hint when a dir
- * is larger than directoryEntryLimit.
- * 
- * Exists = false is used for two overlapping "nothing to list" cases the
- * UI treats the same: the path doesn't exist on disk, or it points at a
- * file rather than a directory. Those cases don't get an error — the
- * AddProject modal calls this binding on every keystroke of a typed
- * path, and logging each in-progress keystroke as a server error
- * produces a flood of spurious ERR lines. True failures (permission
- * denied, I/O errors, bad home-dir lookup) still return an error.
- */
-export class DirectoryListing {
-    /**
-     * cleaned absolute path of the listed directory
-     */
-    "path": string;
-
-    /**
-     * parent dir, or "" when at the filesystem root
-     */
-    "parent": string;
-
-    /**
-     * "/" on unix, "\\" on windows
-     */
-    "separator": string;
-    "entries": DirectoryEntry[];
-
-    /**
-     * true when entry count exceeded directoryEntryLimit
-     */
-    "truncated": boolean;
-
-    /**
-     * false = path missing OR not a directory (empty Entries)
-     */
-    "exists": boolean;
-
-    /** Creates a new DirectoryListing instance. */
-    constructor($$source: Partial<DirectoryListing> = {}) {
-        if (!("path" in $$source)) {
-            this["path"] = "";
-        }
-        if (!("parent" in $$source)) {
-            this["parent"] = "";
-        }
-        if (!("separator" in $$source)) {
-            this["separator"] = "";
-        }
-        if (!("entries" in $$source)) {
-            this["entries"] = [];
-        }
-        if (!("truncated" in $$source)) {
-            this["truncated"] = false;
-        }
-        if (!("exists" in $$source)) {
-            this["exists"] = false;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new DirectoryListing instance from a string or object.
-     */
-    static createFrom($$source: any = {}): DirectoryListing {
-        const $$createField3_0 = $$createType6;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("entries" in $$parsedSource) {
-            $$parsedSource["entries"] = $$createField3_0($$parsedSource["entries"]);
-        }
-        return new DirectoryListing($$parsedSource as Partial<DirectoryListing>);
-    }
-}
-
-/**
  * Draft is the composer draft state. AttachmentIDs reference rows inserted
  * by UploadAttachment; terminal chips are snippets captured from the
  * terminal drawer. SourceProposedPlan, when non-nil, links the draft to a
@@ -535,8 +404,8 @@ export class Draft {
      */
     static createFrom($$source: any = {}): Draft {
         const $$createField2_0 = $$createType4;
-        const $$createField3_0 = $$createType8;
-        const $$createField4_0 = $$createType10;
+        const $$createField3_0 = $$createType6;
+        const $$createField4_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
             $$parsedSource["attachmentIds"] = $$createField2_0($$parsedSource["attachmentIds"]);
@@ -645,7 +514,7 @@ export class GitStatusSubscriptionResult {
      * Creates a new GitStatusSubscriptionResult instance from a string or object.
      */
     static createFrom($$source: any = {}): GitStatusSubscriptionResult {
-        const $$createField1_0 = $$createType11;
+        const $$createField1_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("status" in $$parsedSource) {
             $$parsedSource["status"] = $$createField1_0($$parsedSource["status"]);
@@ -749,7 +618,7 @@ export class LiveStateTodo {
      * Creates a new LiveStateTodo instance from a string or object.
      */
     static createFrom($$source: any = {}): LiveStateTodo {
-        const $$createField1_0 = $$createType13;
+        const $$createField1_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("steps" in $$parsedSource) {
             $$parsedSource["steps"] = $$createField1_0($$parsedSource["steps"]);
@@ -1031,10 +900,10 @@ export class QueuedItem {
      */
     static createFrom($$source: any = {}): QueuedItem {
         const $$createField3_0 = $$createType4;
-        const $$createField4_0 = $$createType10;
-        const $$createField5_0 = $$createType10;
+        const $$createField4_0 = $$createType8;
+        const $$createField5_0 = $$createType8;
         const $$createField6_0 = $$createType4;
-        const $$createField7_0 = $$createType15;
+        const $$createField7_0 = $$createType13;
         const $$createField8_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
@@ -1126,10 +995,10 @@ export class SendMessageOptions {
      */
     static createFrom($$source: any = {}): SendMessageOptions {
         const $$createField0_0 = $$createType4;
-        const $$createField2_0 = $$createType10;
-        const $$createField3_0 = $$createType10;
+        const $$createField2_0 = $$createType8;
+        const $$createField3_0 = $$createType8;
         const $$createField4_0 = $$createType4;
-        const $$createField5_0 = $$createType15;
+        const $$createField5_0 = $$createType13;
         const $$createField6_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
@@ -1238,7 +1107,7 @@ export class TerminalHandle {
      * Creates a new TerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): TerminalHandle {
-        const $$createField2_0 = $$createType16;
+        const $$createField2_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -1312,11 +1181,11 @@ export class ThreadLiveState {
      * Creates a new ThreadLiveState instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadLiveState {
-        const $$createField1_0 = $$createType18;
-        const $$createField2_0 = $$createType20;
-        const $$createField3_0 = $$createType22;
-        const $$createField4_0 = $$createType23;
-        const $$createField5_0 = $$createType25;
+        const $$createField1_0 = $$createType16;
+        const $$createField2_0 = $$createType18;
+        const $$createField3_0 = $$createType20;
+        const $$createField4_0 = $$createType21;
+        const $$createField5_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("activeTurn" in $$parsedSource) {
             $$parsedSource["activeTurn"] = $$createField1_0($$parsedSource["activeTurn"]);
@@ -1399,7 +1268,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType27;
+        const $$createField0_0 = $$createType25;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -1465,26 +1334,24 @@ const $$createType1 = $Create.Array($$createType0);
 const $$createType2 = provider$0.ContextWindowOption.createFrom;
 const $$createType3 = $Create.Array($$createType2);
 const $$createType4 = $Create.Array($Create.Any);
-const $$createType5 = DirectoryEntry.createFrom;
+const $$createType5 = TerminalChip.createFrom;
 const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = TerminalChip.createFrom;
-const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = store$0.ProposedPlanSourceRef.createFrom;
-const $$createType10 = $Create.Nullable($$createType9);
-const $$createType11 = git$0.GitStatus.createFrom;
-const $$createType12 = LiveStateTodoStep.createFrom;
-const $$createType13 = $Create.Array($$createType12);
-const $$createType14 = store$0.DiffReviewSourceRef.createFrom;
-const $$createType15 = $Create.Nullable($$createType14);
-const $$createType16 = terminal$0.SessionSummary.createFrom;
-const $$createType17 = LiveStateActiveTurn.createFrom;
-const $$createType18 = $Create.Nullable($$createType17);
-const $$createType19 = QueuedItem.createFrom;
+const $$createType7 = store$0.ProposedPlanSourceRef.createFrom;
+const $$createType8 = $Create.Nullable($$createType7);
+const $$createType9 = git$0.GitStatus.createFrom;
+const $$createType10 = LiveStateTodoStep.createFrom;
+const $$createType11 = $Create.Array($$createType10);
+const $$createType12 = store$0.DiffReviewSourceRef.createFrom;
+const $$createType13 = $Create.Nullable($$createType12);
+const $$createType14 = terminal$0.SessionSummary.createFrom;
+const $$createType15 = LiveStateActiveTurn.createFrom;
+const $$createType16 = $Create.Nullable($$createType15);
+const $$createType17 = QueuedItem.createFrom;
+const $$createType18 = $Create.Array($$createType17);
+const $$createType19 = QueueFlushedItem.createFrom;
 const $$createType20 = $Create.Array($$createType19);
-const $$createType21 = QueueFlushedItem.createFrom;
-const $$createType22 = $Create.Array($$createType21);
-const $$createType23 = provider$0.PendingInteractiveRequests.createFrom;
-const $$createType24 = LiveStateTodo.createFrom;
-const $$createType25 = $Create.Nullable($$createType24);
-const $$createType26 = workspacefiles$0.WorkspaceFile.createFrom;
-const $$createType27 = $Create.Array($$createType26);
+const $$createType21 = provider$0.PendingInteractiveRequests.createFrom;
+const $$createType22 = LiveStateTodo.createFrom;
+const $$createType23 = $Create.Nullable($$createType22);
+const $$createType24 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType25 = $Create.Array($$createType24);

@@ -1,4 +1,4 @@
-package main
+package dirbrowse
 
 import (
 	"fmt"
@@ -8,9 +8,10 @@ import (
 	"testing"
 )
 
-// seedEntry describes one filesystem artefact for seedDir. It deliberately
-// covers only what the BrowseDirectory tests need: plain dirs, plain files,
-// and symlinks. name is always a basename (no path separators).
+// seedEntry describes one filesystem artefact for seedDir. It
+// deliberately covers only what the Browse tests need: plain dirs,
+// plain files, and symlinks. name is always a basename (no path
+// separators).
 type seedEntry struct {
 	name      string
 	isDir     bool
@@ -50,9 +51,10 @@ func seedDir(t *testing.T, root string, entries []seedEntry) {
 	}
 }
 
-// findEntry returns a pointer to the first entry matching name, or nil.
-// Tests use it as `if got := findEntry(listing.Entries, "x"); got == nil {...}`.
-func findEntry(entries []DirectoryEntry, name string) *DirectoryEntry {
+// findEntry returns a pointer to the first entry matching name, or
+// nil. Tests use it as `if got := findEntry(listing.Entries, "x");
+// got == nil {...}`.
+func findEntry(entries []Entry, name string) *Entry {
 	for i := range entries {
 		if entries[i].Name == name {
 			return &entries[i]
@@ -61,8 +63,7 @@ func findEntry(entries []DirectoryEntry, name string) *DirectoryEntry {
 	return nil
 }
 
-func TestBrowseDirectoryHappyPath(t *testing.T) {
-	app := &App{}
+func TestBrowseHappyPath(t *testing.T) {
 	root := t.TempDir()
 	seedDir(t, root, []seedEntry{
 		{name: "zeta", isDir: true},
@@ -71,9 +72,9 @@ func TestBrowseDirectoryHappyPath(t *testing.T) {
 		{name: ".hiddenfile", content: "secret"},
 	})
 
-	listing, err := app.BrowseDirectory(root)
+	listing, err := Browse(root)
 	if err != nil {
-		t.Fatalf("BrowseDirectory() error = %v, want nil", err)
+		t.Fatalf("Browse() error = %v, want nil", err)
 	}
 
 	if listing.Path != filepath.Clean(root) {
@@ -111,13 +112,12 @@ func TestBrowseDirectoryHappyPath(t *testing.T) {
 	}
 }
 
-func TestBrowseDirectoryEmptyDirectory(t *testing.T) {
-	app := &App{}
+func TestBrowseEmptyDirectory(t *testing.T) {
 	root := t.TempDir()
 
-	listing, err := app.BrowseDirectory(root)
+	listing, err := Browse(root)
 	if err != nil {
-		t.Fatalf("BrowseDirectory() error = %v, want nil", err)
+		t.Fatalf("Browse() error = %v, want nil", err)
 	}
 	if len(listing.Entries) != 0 {
 		t.Errorf("len(Entries) = %d, want 0", len(listing.Entries))
@@ -127,17 +127,16 @@ func TestBrowseDirectoryEmptyDirectory(t *testing.T) {
 	}
 }
 
-func TestBrowseDirectoryNonExistentPath(t *testing.T) {
+func TestBrowseNonExistentPath(t *testing.T) {
 	// A typed-but-not-yet-valid path is an expected UI state (the modal
-	// calls BrowseDirectory on every keystroke). It must return a zero
-	// listing with Exists=false and no error — logging a server ERR for
-	// every incomplete keystroke would flood the logs.
-	app := &App{}
+	// calls Browse on every keystroke). It must return a zero listing
+	// with Exists=false and no error — logging a server ERR for every
+	// incomplete keystroke would flood the logs.
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 
-	listing, err := app.BrowseDirectory(missing)
+	listing, err := Browse(missing)
 	if err != nil {
-		t.Fatalf("BrowseDirectory(missing) error = %v, want nil", err)
+		t.Fatalf("Browse(missing) error = %v, want nil", err)
 	}
 	if listing.Exists {
 		t.Errorf("Exists = true, want false for a missing path")
@@ -150,19 +149,18 @@ func TestBrowseDirectoryNonExistentPath(t *testing.T) {
 	}
 }
 
-func TestBrowseDirectoryPathIsFile(t *testing.T) {
+func TestBrowsePathIsFile(t *testing.T) {
 	// Same contract as missing-path: the UI treats "path points at a
 	// file" as an empty-listing state, not a hard error.
-	app := &App{}
 	root := t.TempDir()
 	file := filepath.Join(root, "a.txt")
 	if err := os.WriteFile(file, []byte("hi"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	listing, err := app.BrowseDirectory(file)
+	listing, err := Browse(file)
 	if err != nil {
-		t.Fatalf("BrowseDirectory(file) error = %v, want nil", err)
+		t.Fatalf("Browse(file) error = %v, want nil", err)
 	}
 	if listing.Exists {
 		t.Errorf("Exists = true, want false for a file path")
@@ -172,8 +170,7 @@ func TestBrowseDirectoryPathIsFile(t *testing.T) {
 	}
 }
 
-func TestBrowseDirectoryDetectsRepo(t *testing.T) {
-	app := &App{}
+func TestBrowseDetectsRepo(t *testing.T) {
 	root := t.TempDir()
 	// Repo with `.git` as a directory (normal checkout).
 	repoDir := filepath.Join(root, "repo-dir")
@@ -197,9 +194,9 @@ func TestBrowseDirectoryDetectsRepo(t *testing.T) {
 		t.Fatalf("write notes.txt: %v", err)
 	}
 
-	listing, err := app.BrowseDirectory(root)
+	listing, err := Browse(root)
 	if err != nil {
-		t.Fatalf("BrowseDirectory() error = %v", err)
+		t.Fatalf("Browse() error = %v", err)
 	}
 
 	for _, name := range []string{"repo-dir", "repo-file"} {
@@ -219,10 +216,9 @@ func TestBrowseDirectoryDetectsRepo(t *testing.T) {
 	}
 }
 
-func TestBrowseDirectoryTruncation(t *testing.T) {
-	app := &App{}
+func TestBrowseTruncation(t *testing.T) {
 	root := t.TempDir()
-	total := directoryEntryLimit + 1 // 501 — enough to trigger the cap.
+	total := EntryLimit + 1 // 501 — enough to trigger the cap.
 	for i := 0; i < total; i++ {
 		// Zero-pad so ReadDir's alphabetical scan ordering is stable
 		// and the test doesn't depend on iteration order.
@@ -232,20 +228,19 @@ func TestBrowseDirectoryTruncation(t *testing.T) {
 		}
 	}
 
-	listing, err := app.BrowseDirectory(root)
+	listing, err := Browse(root)
 	if err != nil {
-		t.Fatalf("BrowseDirectory() error = %v", err)
+		t.Fatalf("Browse() error = %v", err)
 	}
-	if len(listing.Entries) != directoryEntryLimit {
-		t.Errorf("len(Entries) = %d, want %d", len(listing.Entries), directoryEntryLimit)
+	if len(listing.Entries) != EntryLimit {
+		t.Errorf("len(Entries) = %d, want %d", len(listing.Entries), EntryLimit)
 	}
 	if !listing.Truncated {
 		t.Errorf("Truncated = false, want true")
 	}
 }
 
-func TestBrowseDirectoryHomeExpansion(t *testing.T) {
-	app := &App{}
+func TestBrowseHomeExpansion(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatalf("os.UserHomeDir: %v", err)
@@ -254,9 +249,9 @@ func TestBrowseDirectoryHomeExpansion(t *testing.T) {
 
 	for _, input := range []string{"", "~", "~/"} {
 		t.Run("input="+input, func(t *testing.T) {
-			listing, err := app.BrowseDirectory(input)
+			listing, err := Browse(input)
 			if err != nil {
-				t.Fatalf("BrowseDirectory(%q) error = %v", input, err)
+				t.Fatalf("Browse(%q) error = %v", input, err)
 			}
 			if listing.Path != wantPath {
 				t.Errorf("Path = %q, want %q", listing.Path, wantPath)
@@ -265,43 +260,41 @@ func TestBrowseDirectoryHomeExpansion(t *testing.T) {
 	}
 }
 
-func TestBrowseDirectoryParentComputation(t *testing.T) {
-	app := &App{}
+func TestBrowseParentComputation(t *testing.T) {
 	root := t.TempDir()
 	sub := filepath.Join(root, "sub")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatalf("mkdir sub: %v", err)
 	}
 
-	listing, err := app.BrowseDirectory(sub)
+	listing, err := Browse(sub)
 	if err != nil {
-		t.Fatalf("BrowseDirectory(sub) error = %v", err)
+		t.Fatalf("Browse(sub) error = %v", err)
 	}
 	wantParent := filepath.Clean(root)
 	if listing.Parent != wantParent {
 		t.Errorf("Parent = %q, want %q", listing.Parent, wantParent)
 	}
 
-	// Filesystem-root check. On unix this is `/`; on Windows we'd need to
-	// find a drive root, which varies across CI setups — skip there.
+	// Filesystem-root check. On unix this is `/`; on Windows we'd need
+	// to find a drive root, which varies across CI setups — skip there.
 	if runtime.GOOS == "windows" {
 		t.Skip("filesystem-root parent check skipped on windows (drive root varies)")
 	}
-	rootListing, err := app.BrowseDirectory("/")
+	rootListing, err := Browse("/")
 	if err != nil {
-		t.Fatalf("BrowseDirectory(/) error = %v", err)
+		t.Fatalf("Browse(/) error = %v", err)
 	}
 	if rootListing.Parent != "" {
 		t.Errorf("Parent at / = %q, want \"\"", rootListing.Parent)
 	}
 }
 
-func TestBrowseDirectorySeparator(t *testing.T) {
-	app := &App{}
+func TestBrowseSeparator(t *testing.T) {
 	root := t.TempDir()
-	listing, err := app.BrowseDirectory(root)
+	listing, err := Browse(root)
 	if err != nil {
-		t.Fatalf("BrowseDirectory() error = %v", err)
+		t.Fatalf("Browse() error = %v", err)
 	}
 	want := string(os.PathSeparator)
 	if listing.Separator != want {
@@ -309,23 +302,22 @@ func TestBrowseDirectorySeparator(t *testing.T) {
 	}
 }
 
-func TestBrowseDirectorySymlinkIsDir(t *testing.T) {
+func TestBrowseSymlinkIsDir(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		// Creating symlinks on Windows without elevated privilege fails
 		// on most shells; symlink semantics are already covered on
 		// unix and the non-symlink paths stay exercised on Windows CI.
 		t.Skip("symlink creation requires elevated shell on windows")
 	}
-	app := &App{}
 	root := t.TempDir()
 	seedDir(t, root, []seedEntry{
 		{name: "real", isDir: true},
 		{name: "link", isSymlink: true, target: "real"},
 	})
 
-	listing, err := app.BrowseDirectory(root)
+	listing, err := Browse(root)
 	if err != nil {
-		t.Fatalf("BrowseDirectory() error = %v", err)
+		t.Fatalf("Browse() error = %v", err)
 	}
 	got := findEntry(listing.Entries, "link")
 	if got == nil {
