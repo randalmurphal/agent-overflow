@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -37,7 +38,7 @@ func (a *App) GetContextSettings(providerName, model string) (ContextSettingsPro
 		return ContextSettingsProfile{}, fmt.Errorf("context settings: provider and model are required")
 	}
 
-	options := contextWindowOptionsForProviderModel(providerName, model)
+	options := chatmodel.ContextWindowOptions(providerName, model)
 	if len(options) == 0 {
 		return ContextSettingsProfile{}, fmt.Errorf("context settings: unknown provider/model %s/%s", providerName, model)
 	}
@@ -47,10 +48,10 @@ func (a *App) GetContextSettings(providerName, model string) (ContextSettingsPro
 		if !errors.Is(err, sql.ErrNoRows) {
 			return ContextSettingsProfile{}, fmt.Errorf("context settings: load profile: %w", err)
 		}
-		profile = fallbackChatModelProfile(providerName, model)
+		profile = chatmodel.FallbackProfile(providerName, model)
 	}
-	if !contextWindowSupported(options, profile.ContextWindow) {
-		profile.ContextWindow = defaultContextWindowForProviderModel(providerName, model, options[0].Tokens)
+	if !chatmodel.ContextWindowSupported(options, profile.ContextWindow) {
+		profile.ContextWindow = chatmodel.DefaultContextWindow(providerName, model, options[0].Tokens)
 	}
 
 	return ContextSettingsProfile{
@@ -77,7 +78,7 @@ func (a *App) UpdateContextSettingsProfile(update ContextSettingsUpdate) (Contex
 		if !errors.Is(err, sql.ErrNoRows) {
 			return ContextSettingsProfile{}, fmt.Errorf("update context settings profile: load profile: %w", err)
 		}
-		profile = fallbackChatModelProfile(providerName, model)
+		profile = chatmodel.FallbackProfile(providerName, model)
 	}
 	profile.ContextWindow = contextWindow
 	profile.AutoCompactStandardPercent = standardPercent
@@ -121,11 +122,11 @@ func validateContextSettingsUpdate(update ContextSettingsUpdate) (string, string
 	if providerName == "" || model == "" {
 		return "", "", 0, 0, 0, fmt.Errorf("context settings: provider and model are required")
 	}
-	options := contextWindowOptionsForProviderModel(providerName, model)
+	options := chatmodel.ContextWindowOptions(providerName, model)
 	if len(options) == 0 {
 		return "", "", 0, 0, 0, fmt.Errorf("context settings: unknown provider/model %s/%s", providerName, model)
 	}
-	if !contextWindowSupported(options, update.ContextWindow) {
+	if !chatmodel.ContextWindowSupported(options, update.ContextWindow) {
 		return "", "", 0, 0, 0, fmt.Errorf("context settings: unsupported context window %d for %s/%s", update.ContextWindow, providerName, model)
 	}
 	if update.AutoCompactStandardPercent < 0 || update.AutoCompactStandardPercent > 90 {
@@ -135,17 +136,4 @@ func validateContextSettingsUpdate(update ContextSettingsUpdate) (string, string
 		return "", "", 0, 0, 0, fmt.Errorf("context settings: extended auto-compact percent must be between 0 and 90")
 	}
 	return providerName, model, update.ContextWindow, update.AutoCompactStandardPercent, update.AutoCompactExtendedPercent, nil
-}
-
-func contextWindowOptionsForProviderModel(providerName, model string) []provider.ContextWindowOption {
-	return provider.ContextWindowOptionsForModel(providerName, model)
-}
-
-func contextWindowSupported(options []provider.ContextWindowOption, tokens int) bool {
-	for _, option := range options {
-		if option.Tokens == tokens {
-			return true
-		}
-	}
-	return false
 }

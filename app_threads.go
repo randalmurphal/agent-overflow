@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/chatmodel"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -129,11 +130,11 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		}
 		fastMode = false
 	}
-	options := contextWindowOptionsForProviderModel(providerName, model)
-	if opts.ContextWindow != 0 && len(options) > 0 && !contextWindowSupported(options, contextWindow) {
+	options := chatmodel.ContextWindowOptions(providerName, model)
+	if opts.ContextWindow != 0 && len(options) > 0 && !chatmodel.ContextWindowSupported(options, contextWindow) {
 		return store.Thread{}, fmt.Errorf("create thread: unsupported context window %d for %s/%s", contextWindow, providerName, model)
 	}
-	if len(options) > 0 && !contextWindowSupported(options, contextWindow) {
+	if len(options) > 0 && !chatmodel.ContextWindowSupported(options, contextWindow) {
 		contextWindow = provider.DefaultContextWindowForModel(providerName, model, options[0].Tokens)
 	}
 	if !isValidAutoCompactPercent(autoCompactStandardPercent) {
@@ -250,19 +251,11 @@ func (a *App) createWorktreeForNewThread(projectPath, branch string) (string, st
 func (a *App) defaultContextWindowForModel(providerName, model string) int {
 	if a.store != nil {
 		profile, err := a.store.GetChatModelProfile(providerName, strings.TrimSpace(model))
-		if err == nil && isValidContextWindow(profile.ContextWindow) {
-			return sanitizeChatModelProfile(profile).ContextWindow
+		if err == nil && chatmodel.IsValidContextWindow(profile.ContextWindow) {
+			return chatmodel.SanitizeProfile(profile).ContextWindow
 		}
 	}
-	return defaultContextWindowForProviderModel(providerName, model, 0)
-}
-
-func defaultContextWindowForProviderModel(providerName, model string, fallback int) int {
-	return provider.DefaultContextWindowForModel(providerName, strings.TrimSpace(model), fallback)
-}
-
-func isValidContextWindow(tokens int) bool {
-	return tokens > 0
+	return chatmodel.DefaultContextWindow(providerName, model, 0)
 }
 
 func isValidAutoCompactPercent(percent int) bool {
@@ -505,19 +498,19 @@ func (a *App) supportsFastModeForModel(providerName, model string) bool {
 	providerName = strings.TrimSpace(providerName)
 	model = provider.NormalizeModelSlug(providerName, strings.TrimSpace(model))
 	if candidate, found := provider.FindModel(providerName, model); found {
-		return modelHasCapability(candidate, provider.ModelCapabilityFastMode)
+		return chatmodel.HasCapability(candidate, provider.ModelCapabilityFastMode)
 	}
 	if providerName == string(provider.Codex) {
 		models, err := a.GetModelsForProvider(providerName)
 		if err == nil {
 			for _, candidate := range models {
 				if candidate.Slug == model {
-					return modelHasCapability(candidate, provider.ModelCapabilityFastMode)
+					return chatmodel.HasCapability(candidate, provider.ModelCapabilityFastMode)
 				}
 			}
 		}
 	}
-	return supportsStoredFastMode(providerName, model)
+	return chatmodel.SupportsStoredFastMode(providerName, model)
 }
 
 // UpdateThreadContextWindow persists the context window size and

@@ -7,62 +7,16 @@ import (
 	"log"
 	"strings"
 
+	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
-func fallbackChatProvider() string {
-	return string(provider.Claude)
-}
-
-func fallbackChatModelForProvider(providerName string) string {
-	models := provider.ModelsForProvider(providerName)
-	if len(models) == 0 {
-		return ""
-	}
-	return models[0].Slug
-}
-
-func fallbackChatModelProfile(providerName, model string) store.ChatModelProfile {
-	providerName = strings.TrimSpace(providerName)
-	if providerName == "" {
-		providerName = fallbackChatProvider()
-	}
-	model = strings.TrimSpace(model)
-	if model == "" {
-		model = fallbackChatModelForProvider(providerName)
-	}
-	return store.ChatModelProfile{
-		Provider:                   providerName,
-		Model:                      model,
-		ReasoningEffort:            string(provider.DefaultReasoningEffortForModel(providerName, model, provider.DefaultReasoningEffort)),
-		FastMode:                   false,
-		ContextWindow:              defaultContextWindowForProviderModel(providerName, model, 0),
-		AutoCompactStandardPercent: 0,
-		AutoCompactExtendedPercent: 0,
-		RuntimeMode:                string(provider.DefaultRuntimeMode),
-	}
-}
-
-func chatModelProfileFromThread(thread store.Thread) store.ChatModelProfile {
-	effort := provider.CoerceReasoningEffortForModel(
-		thread.Provider,
-		thread.Model,
-		provider.NormalizeReasoningEffort(thread.ReasoningEffort),
-	)
-	fastMode := thread.FastMode && supportsStoredFastMode(thread.Provider, thread.Model)
-	return store.ChatModelProfile{
-		Provider:                   thread.Provider,
-		Model:                      thread.Model,
-		ReasoningEffort:            string(effort),
-		FastMode:                   fastMode,
-		ContextWindow:              thread.ContextWindow,
-		AutoCompactStandardPercent: thread.AutoCompactStandardPercent,
-		AutoCompactExtendedPercent: thread.AutoCompactExtendedPercent,
-		RuntimeMode:                string(provider.NormalizeRuntimeMode(thread.RuntimeMode)),
-	}
-}
-
+// rememberChatModelProfile persists the thread's chat-model setup as
+// the "last used" profile so the chat bar can rehydrate without
+// rebuilding from scratch. No-ops on discussion threads (the
+// deliberation runtime picks its own provider/model per participant)
+// and when the thread carries no usable provider/model pair.
 func (a *App) rememberChatModelProfile(thread store.Thread) {
 	if a.store == nil || thread.Mode == "discussion" {
 		return
@@ -70,9 +24,9 @@ func (a *App) rememberChatModelProfile(thread store.Thread) {
 	if strings.TrimSpace(thread.Provider) == "" || strings.TrimSpace(thread.Model) == "" {
 		return
 	}
-	profile := chatModelProfileFromThread(thread)
+	profile := chatmodel.ProfileFromThread(thread)
 	if latest, err := a.store.LatestChatModelProfile(); err == nil {
-		if sameChatModelProfile(latest, profile) {
+		if chatmodel.SameProfile(latest, profile) {
 			return
 		}
 	} else if !errors.Is(err, sql.ErrNoRows) {
@@ -83,17 +37,15 @@ func (a *App) rememberChatModelProfile(thread store.Thread) {
 	}
 }
 
-func sameChatModelProfile(a, b store.ChatModelProfile) bool {
-	return a.Provider == b.Provider &&
-		a.Model == b.Model &&
-		a.ReasoningEffort == b.ReasoningEffort &&
-		a.FastMode == b.FastMode &&
-		a.ContextWindow == b.ContextWindow &&
-		a.AutoCompactStandardPercent == b.AutoCompactStandardPercent &&
-		a.AutoCompactExtendedPercent == b.AutoCompactExtendedPercent &&
-		provider.NormalizeRuntimeMode(a.RuntimeMode) == provider.NormalizeRuntimeMode(b.RuntimeMode)
-}
-
+// seedChatModelProfile picks the best stored chat-model profile for the
+// given (provider, model) inputs and falls back to the registry default
+// when nothing is remembered.
+//
+// Resolution order:
+//   - both blank → most recent profile across providers, else fallback
+//   - provider only → most recent profile for that provider, else fallback
+//   - model only → infer provider, then look up the (provider, model) row
+//   - both set → look up the (provider, model) row, else fallback
 func (a *App) seedChatModelProfile(providerName, model string) store.ChatModelProfile {
 	providerName = strings.TrimSpace(providerName)
 	model = strings.TrimSpace(model)
@@ -103,85 +55,39 @@ func (a *App) seedChatModelProfile(providerName, model string) store.ChatModelPr
 		if a.store != nil {
 			profile, err := a.store.LatestChatModelProfile()
 			if err == nil {
-				return sanitizeChatModelProfile(profile)
+				return chatmodel.SanitizeProfile(profile)
 			}
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				log.Printf("chat profile: load latest: %v", err)
 			}
 		}
-		return fallbackChatModelProfile("", "")
+		return chatmodel.FallbackProfile("", "")
 	case providerName != "" && model == "":
 		if a.store != nil {
 			profile, err := a.store.LatestChatModelProfileForProvider(providerName)
 			if err == nil {
-				return sanitizeChatModelProfile(profile)
+				return chatmodel.SanitizeProfile(profile)
 			}
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				log.Printf("chat profile: load latest for provider %s: %v", providerName, err)
 			}
 		}
-		return fallbackChatModelProfile(providerName, "")
+		return chatmodel.FallbackProfile(providerName, "")
 	case providerName == "" && model != "":
-		providerName = fallbackChatProvider()
+		providerName = chatmodel.FallbackProvider()
 	}
 	model = provider.NormalizeModelSlug(providerName, model)
 
 	if a.store != nil {
 		profile, err := a.store.GetChatModelProfile(providerName, model)
 		if err == nil {
-			return sanitizeChatModelProfile(profile)
+			return chatmodel.SanitizeProfile(profile)
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			log.Printf("chat profile: load %s/%s: %v", providerName, model, err)
 		}
 	}
-	return fallbackChatModelProfile(providerName, model)
-}
-
-func sanitizeChatModelProfile(profile store.ChatModelProfile) store.ChatModelProfile {
-	profile.Model = provider.NormalizeModelSlug(profile.Provider, profile.Model)
-	profile.ReasoningEffort = string(provider.CoerceReasoningEffortForModel(
-		profile.Provider,
-		profile.Model,
-		provider.NormalizeReasoningEffort(profile.ReasoningEffort),
-	))
-	profile.ContextWindow = sanitizeContextWindowForProviderModel(profile.Provider, profile.Model, profile.ContextWindow)
-	if !supportsStoredFastMode(profile.Provider, profile.Model) {
-		profile.FastMode = false
-	}
-	return profile
-}
-
-func sanitizeContextWindowForProviderModel(providerName, model string, tokens int) int {
-	options := provider.ContextWindowOptionsForModel(providerName, model)
-	if len(options) == 0 {
-		if tokens > 0 {
-			return tokens
-		}
-		return provider.DefaultContextWindowForModel(providerName, model, 0)
-	}
-	if contextWindowSupported(options, tokens) {
-		return tokens
-	}
-	return provider.DefaultContextWindowForModel(providerName, model, options[0].Tokens)
-}
-
-func supportsStoredFastMode(providerName, model string) bool {
-	model = provider.NormalizeModelSlug(providerName, model)
-	candidate, found := provider.FindModel(providerName, model)
-	if !found {
-		return providerName == string(provider.Codex) && strings.TrimSpace(model) != ""
-	}
-	return modelHasCapability(candidate, provider.ModelCapabilityFastMode)
-}
-
-func modelHasCapability(model provider.ModelInfo, capability string) bool {
-	for _, existing := range model.Capabilities {
-		if existing == capability {
-			return true
-		}
-	}
-	return false
+	return chatmodel.FallbackProfile(providerName, model)
 }
 
 func (a *App) ListChatBarFavorites() ([]store.ChatBarFavorite, error) {

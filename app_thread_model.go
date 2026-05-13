@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -36,7 +37,7 @@ func (a *App) UpdateThreadModel(threadID string, model string) (threadResult sto
 	previous := thread
 	thread.Model = normalizedModel
 	if profile, profileErr := a.store.GetChatModelProfile(thread.Provider, normalizedModel); profileErr == nil {
-		profile = sanitizeChatModelProfile(profile)
+		profile = chatmodel.SanitizeProfile(profile)
 		thread.ReasoningEffort = profile.ReasoningEffort
 		thread.FastMode = profile.FastMode
 		thread.ContextWindow = profile.ContextWindow
@@ -51,11 +52,11 @@ func (a *App) UpdateThreadModel(threadID string, model string) (threadResult sto
 			normalizedModel,
 			provider.NormalizeReasoningEffort(thread.ReasoningEffort),
 		))
-		if thread.Provider != "claude" && !isValidContextWindow(thread.ContextWindow) {
+		if thread.Provider != "claude" && !chatmodel.IsValidContextWindow(thread.ContextWindow) {
 			thread.ContextWindow = provider.CodexStandardContextWindow
 		}
 	}
-	if !supportsStoredFastMode(thread.Provider, normalizedModel) {
+	if !chatmodel.SupportsStoredFastMode(thread.Provider, normalizedModel) {
 		thread.FastMode = false
 	}
 	// Switching models clears any per-thread compact override so the new

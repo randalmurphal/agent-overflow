@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/textgen"
@@ -159,7 +160,7 @@ func (a *App) applyGeneratedThreadTitle(threadID, title string) error {
 }
 
 func (a *App) defaultModelForProvider(providerName string) string {
-	return fallbackChatModelForProvider(providerName)
+	return chatmodel.FallbackModelForProvider(providerName)
 }
 
 const threadTitleCodexSchemaJSON = `{"type":"object","properties":{"title":{"type":"string","maxLength":50}},"required":["title"],"additionalProperties":false}`

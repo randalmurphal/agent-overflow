@@ -1,0 +1,212 @@
+package chatmodel
+
+import (
+	"testing"
+
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
+)
+
+func TestFallbackProvider(t *testing.T) {
+	if got := FallbackProvider(); got != string(provider.Claude) {
+		t.Fatalf("FallbackProvider = %q, want %q", got, provider.Claude)
+	}
+}
+
+func TestFallbackModelForProvider(t *testing.T) {
+	if got := FallbackModelForProvider(string(provider.Claude)); got == "" {
+		t.Fatalf("expected non-empty Claude model")
+	}
+	if got := FallbackModelForProvider(string(provider.Codex)); got == "" {
+		t.Fatalf("expected non-empty Codex model")
+	}
+	if got := FallbackModelForProvider("bogus-provider"); got != "" {
+		t.Fatalf("FallbackModelForProvider(bogus) = %q, want empty", got)
+	}
+}
+
+func TestFallbackProfile_FillsWhenInputsEmpty(t *testing.T) {
+	got := FallbackProfile("", "")
+	if got.Provider == "" {
+		t.Fatalf("Provider not filled: %#v", got)
+	}
+	if got.Model == "" {
+		t.Fatalf("Model not filled: %#v", got)
+	}
+	if got.RuntimeMode != string(provider.DefaultRuntimeMode) {
+		t.Fatalf("RuntimeMode = %q, want default", got.RuntimeMode)
+	}
+	if got.FastMode {
+		t.Fatalf("FastMode should default to false")
+	}
+}
+
+func TestFallbackProfile_PreservesExplicitInputs(t *testing.T) {
+	got := FallbackProfile(string(provider.Claude), "claude-haiku-4-5")
+	if got.Provider != string(provider.Claude) {
+		t.Fatalf("Provider = %q", got.Provider)
+	}
+	if got.Model != "claude-haiku-4-5" {
+		t.Fatalf("Model = %q", got.Model)
+	}
+}
+
+func TestProfileFromThread_DropsFastModeWhenUnsupported(t *testing.T) {
+	thread := store.Thread{
+		Provider: string(provider.Claude),
+		Model:    "claude-haiku-4-5",
+		FastMode: true,
+	}
+	got := ProfileFromThread(thread)
+	if got.FastMode {
+		t.Fatalf("Haiku doesn't advertise fast-mode; expected FastMode=false, got true")
+	}
+}
+
+func TestProfileFromThread_KeepsFastModeWhenSupported(t *testing.T) {
+	thread := store.Thread{
+		Provider: string(provider.Claude),
+		Model:    "claude-opus-4-7",
+		FastMode: true,
+	}
+	got := ProfileFromThread(thread)
+	if !got.FastMode {
+		t.Fatalf("Opus 4.7 advertises fast-mode; expected FastMode=true")
+	}
+}
+
+func TestSameProfile_NormalizesRuntimeMode(t *testing.T) {
+	a := store.ChatModelProfile{Provider: "claude", Model: "x", RuntimeMode: "  approval_required  "}
+	b := store.ChatModelProfile{Provider: "claude", Model: "x", RuntimeMode: "approval_required"}
+	if !SameProfile(a, b) {
+		t.Fatalf("expected equal under runtime-mode normalization (a=%q b=%q)", a.RuntimeMode, b.RuntimeMode)
+	}
+}
+
+func TestSameProfile_RejectsContextWindowMismatch(t *testing.T) {
+	a := store.ChatModelProfile{ContextWindow: 100_000}
+	b := store.ChatModelProfile{ContextWindow: 200_000}
+	if SameProfile(a, b) {
+		t.Fatalf("differing ContextWindow should make profiles unequal")
+	}
+}
+
+func TestSanitizeProfile_DropsUnsupportedFastMode(t *testing.T) {
+	in := store.ChatModelProfile{
+		Provider: string(provider.Claude),
+		Model:    "claude-haiku-4-5",
+		FastMode: true,
+	}
+	got := SanitizeProfile(in)
+	if got.FastMode {
+		t.Fatalf("SanitizeProfile should clear FastMode for non-fast-mode model")
+	}
+}
+
+func TestSanitizeProfile_ClampsContextWindow(t *testing.T) {
+	in := store.ChatModelProfile{
+		Provider:      string(provider.Claude),
+		Model:         "claude-opus-4-7",
+		ContextWindow: 1, // nonsense — registry will reject
+	}
+	got := SanitizeProfile(in)
+	if got.ContextWindow == 1 {
+		t.Fatalf("SanitizeProfile left bogus ContextWindow untouched")
+	}
+}
+
+func TestSanitizeContextWindow_PassesThroughWhenRegistryEmpty(t *testing.T) {
+	// Unknown provider/model — registry has nothing; positive tokens pass.
+	if got := SanitizeContextWindow("bogus", "bogus", 50_000); got != 50_000 {
+		t.Fatalf("SanitizeContextWindow on unknown registry returned %d, want pass-through", got)
+	}
+}
+
+func TestSanitizeContextWindow_FallsBackToDefaultWhenZeroAndRegistryEmpty(t *testing.T) {
+	// Zero tokens, unknown registry — falls through to provider.DefaultContextWindowForModel
+	// which lands on ClaudeStandardContextWindow for unknown providers.
+	if got := SanitizeContextWindow("bogus", "bogus", 0); got <= 0 {
+		t.Fatalf("SanitizeContextWindow on unknown registry/zero returned non-positive %d", got)
+	}
+}
+
+func TestContextWindowSupported(t *testing.T) {
+	options := []provider.ContextWindowOption{
+		{Tokens: 100_000},
+		{Tokens: 200_000},
+	}
+	if !ContextWindowSupported(options, 100_000) {
+		t.Fatalf("expected 100_000 to be supported")
+	}
+	if ContextWindowSupported(options, 150_000) {
+		t.Fatalf("150_000 should not be supported (registry mismatch)")
+	}
+	if ContextWindowSupported(nil, 100_000) {
+		t.Fatalf("nil options should reject everything")
+	}
+}
+
+func TestIsValidContextWindow(t *testing.T) {
+	if !IsValidContextWindow(1) {
+		t.Fatalf("positive should be valid")
+	}
+	if IsValidContextWindow(0) {
+		t.Fatalf("zero should be invalid")
+	}
+	if IsValidContextWindow(-100) {
+		t.Fatalf("negative should be invalid")
+	}
+}
+
+func TestSupportsStoredFastMode_RegistryHit(t *testing.T) {
+	if !SupportsStoredFastMode(string(provider.Claude), "claude-opus-4-7") {
+		t.Fatalf("Opus 4.7 advertises fast-mode")
+	}
+	if SupportsStoredFastMode(string(provider.Claude), "claude-haiku-4-5") {
+		t.Fatalf("Haiku 4.5 does not advertise fast-mode")
+	}
+}
+
+func TestSupportsStoredFastMode_CodexUnknownModelPermissive(t *testing.T) {
+	// Codex's live model catalog (not the static registry) is the source
+	// of truth for Codex fast-mode. An unknown Codex model returns true
+	// so a remembered-favorite slug isn't silently dropped on startup
+	// before the live catalog has loaded.
+	if !SupportsStoredFastMode(string(provider.Codex), "gpt-future-model") {
+		t.Fatalf("unknown Codex model should be permissive")
+	}
+}
+
+func TestSupportsStoredFastMode_CodexEmptyModelRejected(t *testing.T) {
+	if SupportsStoredFastMode(string(provider.Codex), "  ") {
+		t.Fatalf("empty Codex model should not be permissive")
+	}
+}
+
+func TestSupportsStoredFastMode_UnknownProviderRejected(t *testing.T) {
+	if SupportsStoredFastMode("bogus", "something") {
+		t.Fatalf("unknown provider should be rejected")
+	}
+}
+
+func TestHasCapability(t *testing.T) {
+	m := provider.ModelInfo{Capabilities: []string{"a", "b"}}
+	if !HasCapability(m, "a") {
+		t.Fatalf("a should be present")
+	}
+	if HasCapability(m, "c") {
+		t.Fatalf("c should be absent")
+	}
+	if HasCapability(provider.ModelInfo{}, "x") {
+		t.Fatalf("empty model has no capabilities")
+	}
+}
+
+func TestDefaultContextWindow(t *testing.T) {
+	if got := DefaultContextWindow(string(provider.Claude), "claude-opus-4-7", 0); got <= 0 {
+		t.Fatalf("expected positive default for known model, got %d", got)
+	}
+	if got := DefaultContextWindow("bogus", "bogus", 12345); got != 12345 {
+		t.Fatalf("unknown model should return fallback (12345), got %d", got)
+	}
+}

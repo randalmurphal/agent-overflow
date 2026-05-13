@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -59,8 +60,8 @@ func sanitizeThreadModelSettings(thread store.Thread) store.Thread {
 		thread.Model,
 		provider.NormalizeReasoningEffort(thread.ReasoningEffort),
 	))
-	thread.ContextWindow = sanitizeContextWindowForProviderModel(thread.Provider, thread.Model, thread.ContextWindow)
-	if !supportsStoredFastMode(thread.Provider, thread.Model) {
+	thread.ContextWindow = chatmodel.SanitizeContextWindow(thread.Provider, thread.Model, thread.ContextWindow)
+	if !chatmodel.SupportsStoredFastMode(thread.Provider, thread.Model) {
 		thread.FastMode = false
 	}
 	return thread
