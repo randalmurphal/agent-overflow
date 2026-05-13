@@ -7,17 +7,12 @@ import (
 	"log"
 	"os"
 	"strings"
-	"time"
 
 	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/textgen"
-)
-
-const (
-	defaultGeneratedThreadTitle = "New Thread"
-	threadTitleTimeout          = 3 * time.Minute
+	"agent-overflow/internal/threadtitle"
 )
 
 func (a *App) maybeGenerateThreadTitle(thread store.Thread, content string, hasPriorItems bool) {
@@ -28,7 +23,7 @@ func (a *App) maybeGenerateThreadTitleWithAttachments(thread store.Thread, conte
 	if hasPriorItems {
 		return
 	}
-	if strings.TrimSpace(thread.Title) != defaultGeneratedThreadTitle {
+	if strings.TrimSpace(thread.Title) != threadtitle.Default {
 		return
 	}
 	if strings.TrimSpace(content) == "" {
@@ -39,10 +34,10 @@ func (a *App) maybeGenerateThreadTitleWithAttachments(thread store.Thread, conte
 	go func() {
 		title, err := a.generatedThreadTitle(thread, titleMessage, attachments)
 		if err != nil {
-			log.Printf("send message: generate thread title: %s", redactTitleGenerationError(err))
+			log.Printf("send message: generate thread title: %s", threadtitle.RedactError(err))
 			return
 		}
-		if title == "" || title == defaultGeneratedThreadTitle {
+		if title == "" || title == threadtitle.Default {
 			return
 		}
 		if err := a.applyGeneratedThreadTitle(thread.ID, title); err != nil {
@@ -57,7 +52,7 @@ func (a *App) generatedThreadTitle(thread store.Thread, message string, attachme
 		if err != nil {
 			return "", err
 		}
-		return sanitizeGeneratedThreadTitle(raw), nil
+		return threadtitle.Sanitize(raw), nil
 	}
 
 	cfg := a.resolveTextGenerationConfig()
@@ -77,7 +72,7 @@ func (a *App) generateCodexThreadTitle(
 	attachments []store.Attachment,
 	cfg textgen.Config,
 ) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), threadTitleTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), threadtitle.Timeout)
 	defer cancel()
 
 	_, workspace, err := a.resolveGitPaths(thread)
@@ -96,8 +91,8 @@ func (a *App) generateCodexThreadTitle(
 	}
 
 	raw, err := textgen.RunCodex(
-		ctx, cfg, workspace, threadTitleCodexSchemaJSON,
-		extra, buildThreadTitlePrompt(message, attachments), threadTitleTimeout,
+		ctx, cfg, workspace, threadtitle.CodexSchemaJSON,
+		extra, threadtitle.BuildPrompt(message, attachments), threadtitle.Timeout,
 	)
 	if err != nil {
 		return "", err
@@ -109,7 +104,7 @@ func (a *App) generateCodexThreadTitle(
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return "", fmt.Errorf("codex: decode structured output: %w", err)
 	}
-	return sanitizeGeneratedThreadTitle(parsed.Title), nil
+	return threadtitle.Sanitize(parsed.Title), nil
 }
 
 func (a *App) generateClaudeThreadTitle(
@@ -118,7 +113,7 @@ func (a *App) generateClaudeThreadTitle(
 	attachments []store.Attachment,
 	cfg textgen.Config,
 ) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), threadTitleTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), threadtitle.Timeout)
 	defer cancel()
 
 	_, workspace, err := a.resolveGitPaths(thread)
@@ -127,22 +122,22 @@ func (a *App) generateClaudeThreadTitle(
 	}
 
 	stdout, err := textgen.RunClaude(
-		ctx, cfg, workspace, threadTitleClaudeSchemaJSON,
-		nil, buildThreadTitlePrompt(message, attachments), threadTitleTimeout,
+		ctx, cfg, workspace, threadtitle.ClaudeSchemaJSON,
+		nil, threadtitle.BuildPrompt(message, attachments), threadtitle.Timeout,
 	)
 	if err != nil {
 		return "", err
 	}
 
-	title, err := decodeClaudeThreadTitle(stdout)
+	title, err := threadtitle.DecodeClaude(stdout)
 	if err != nil {
 		return "", err
 	}
-	return sanitizeGeneratedThreadTitle(title), nil
+	return threadtitle.Sanitize(title), nil
 }
 
 func (a *App) applyGeneratedThreadTitle(threadID, title string) error {
-	updated, err := a.store.UpdateTitleIfCurrent(threadID, defaultGeneratedThreadTitle, title)
+	updated, err := a.store.UpdateTitleIfCurrent(threadID, threadtitle.Default, title)
 	if err != nil {
 		return err
 	}
@@ -161,39 +156,6 @@ func (a *App) applyGeneratedThreadTitle(threadID, title string) error {
 
 func (a *App) defaultModelForProvider(providerName string) string {
 	return chatmodel.FallbackModelForProvider(providerName)
-}
-
-const threadTitleCodexSchemaJSON = `{"type":"object","properties":{"title":{"type":"string","maxLength":50}},"required":["title"],"additionalProperties":false}`
-
-const threadTitleClaudeSchemaJSON = `{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}`
-
-func buildThreadTitlePrompt(message string, attachments []store.Attachment) string {
-	prompt := []string{
-		"You write concise thread titles for coding conversations.",
-		"Return a JSON object with key: title.",
-		"Rules:",
-		"- Title should summarize the user's request, not restate it verbatim.",
-		"- Keep it short and specific (3-8 words).",
-		"- Avoid quotes, filler, prefixes, and trailing punctuation.",
-		"- If images are attached, use them as primary context for visual/UI issues.",
-		"",
-		"User message:",
-		textgen.LimitPromptSection(message, 8_000),
-	}
-
-	if len(attachments) > 0 {
-		prompt = append(prompt, "", "Attachment metadata:", textgen.LimitPromptSection(formatThreadTitleAttachments(attachments), 4_000))
-	}
-
-	return strings.Join(prompt, "\n")
-}
-
-func formatThreadTitleAttachments(attachments []store.Attachment) string {
-	lines := make([]string, 0, len(attachments))
-	for _, attachment := range attachments {
-		lines = append(lines, fmt.Sprintf("- %s (%s, %d bytes)", attachment.Filename, attachment.MimeType, attachment.Size))
-	}
-	return strings.Join(lines, "\n")
 }
 
 func (a *App) threadTitleImagePaths(threadID string, attachments []store.Attachment) ([]string, error) {
@@ -219,30 +181,4 @@ func (a *App) threadTitleImagePaths(threadID string, attachments []store.Attachm
 		paths = append(paths, path)
 	}
 	return paths, nil
-}
-
-func redactTitleGenerationError(err error) string {
-	message := err.Error()
-	if strings.Contains(message, "CLI failed") {
-		return "provider CLI failed"
-	}
-	return message
-}
-
-func decodeClaudeThreadTitle(stdout []byte) (string, error) {
-	payload, err := textgen.DecodeClaudeStructuredLastLine[struct {
-		Title string `json:"title"`
-	}](stdout)
-	if err != nil {
-		return "", err
-	}
-	return payload.Title, nil
-}
-
-func sanitizeGeneratedThreadTitle(raw string) string {
-	out := textgen.NormalizeStructuredOutputLine(raw)
-	if out == "" {
-		return defaultGeneratedThreadTitle
-	}
-	return textgen.CapRunesWithEllipsis(out, 50)
 }

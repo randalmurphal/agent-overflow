@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/textgen"
+	"agent-overflow/internal/threadtitle"
 )
 
 // TestMaybeGenerateThreadTitleAppliesGeneratedTitleAndEmits covers the happy
@@ -26,7 +27,7 @@ func TestMaybeGenerateThreadTitleAppliesGeneratedTitleAndEmits(t *testing.T) {
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-title-happy")
-	thread.Title = defaultGeneratedThreadTitle
+	thread.Title = threadtitle.Default
 	thread.Provider = string(provider.Claude)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -84,7 +85,7 @@ func TestMaybeGenerateThreadTitleRunsForCodexThread(t *testing.T) {
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-title-codex")
-	thread.Title = defaultGeneratedThreadTitle
+	thread.Title = threadtitle.Default
 	thread.Provider = string(provider.Codex)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -135,7 +136,7 @@ func TestMaybeGenerateThreadTitleSkipsWhenPriorItemsExist(t *testing.T) {
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-title-prior")
-	thread.Title = defaultGeneratedThreadTitle
+	thread.Title = threadtitle.Default
 	thread.Provider = string(provider.Claude)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -190,7 +191,7 @@ func TestMaybeGenerateThreadTitleSkipsOnBlankContent(t *testing.T) {
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-title-blank")
-	thread.Title = defaultGeneratedThreadTitle
+	thread.Title = threadtitle.Default
 	thread.Provider = string(provider.Claude)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -218,7 +219,7 @@ func TestMaybeGenerateThreadTitleSwallowsSubprocessError(t *testing.T) {
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-title-error")
-	thread.Title = defaultGeneratedThreadTitle
+	thread.Title = threadtitle.Default
 	thread.Provider = string(provider.Claude)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -255,7 +256,7 @@ func TestMaybeGenerateThreadTitleSwallowsSubprocessError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.Title != defaultGeneratedThreadTitle {
+	if stored.Title != threadtitle.Default {
 		t.Fatalf("stored title = %q, want unchanged", stored.Title)
 	}
 }
@@ -268,7 +269,7 @@ func TestMaybeGenerateThreadTitleIgnoresEmptyResponse(t *testing.T) {
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-title-empty-response")
-	thread.Title = defaultGeneratedThreadTitle
+	thread.Title = threadtitle.Default
 	thread.Provider = string(provider.Claude)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -305,7 +306,7 @@ func TestMaybeGenerateThreadTitleIgnoresEmptyResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.Title != defaultGeneratedThreadTitle {
+	if stored.Title != threadtitle.Default {
 		t.Fatalf("stored title = %q, want unchanged default", stored.Title)
 	}
 }
@@ -496,72 +497,3 @@ func TestApplyGeneratedThreadTitleCompareAndSwapSkipsWhenTitleChanged(t *testing
 	}
 }
 
-func TestSanitizeGeneratedThreadTitle(t *testing.T) {
-	tests := []struct {
-		name string
-		raw  string
-		want string
-	}{
-		{name: "plain", raw: "Fix the bug", want: "Fix the bug"},
-		{name: "trims whitespace", raw: "  Trimmed  ", want: "Trimmed"},
-		{name: "strips quotes", raw: `"quoted title"`, want: "quoted title"},
-		{name: "collapses whitespace", raw: "lots   of\tspaces", want: "lots of spaces"},
-		{name: "keeps first line only", raw: "First line\nSecond", want: "First line"},
-		{name: "empty falls back to default", raw: "   ", want: defaultGeneratedThreadTitle},
-		{
-			name: "truncates when over 50 runes",
-			raw:  "This is a very long title that exceeds fifty runes for sure indeed",
-			want: "This is a very long title that exceeds fifty ru...",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := sanitizeGeneratedThreadTitle(tt.raw)
-			if got != tt.want {
-				t.Fatalf("sanitizeGeneratedThreadTitle(%q) = %q, want %q", tt.raw, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestBuildThreadTitlePromptIncludesMessage(t *testing.T) {
-	got := buildThreadTitlePrompt("fix the login bug", nil)
-	if !strings.Contains(got, "fix the login bug") {
-		t.Fatalf("prompt missing user message: %q", got)
-	}
-	if !strings.Contains(got, "Return a JSON object") {
-		t.Fatalf("prompt missing JSON object directive: %q", got)
-	}
-}
-
-func TestDecodeClaudeThreadTitleExtractsFromStructuredOutput(t *testing.T) {
-	payload := []byte(`
-{"some":"preamble"}
-{"structured_output":{"title":"Refactor worktree rename"}}
-`)
-	got, err := decodeClaudeThreadTitle(payload)
-	if err != nil {
-		t.Fatalf("decodeClaudeThreadTitle() error = %v", err)
-	}
-	if got != "Refactor worktree rename" {
-		t.Fatalf("title = %q", got)
-	}
-}
-
-func TestDecodeClaudeThreadTitleErrorsOnEmptyOutput(t *testing.T) {
-	_, err := decodeClaudeThreadTitle([]byte("   \n\t"))
-	if err == nil {
-		t.Fatal("decodeClaudeThreadTitle(blank) error = nil, want empty-output error")
-	}
-}
-
-func TestDecodeClaudeThreadTitleErrorsOnMalformedJSON(t *testing.T) {
-	_, err := decodeClaudeThreadTitle([]byte("not-json"))
-	if err == nil {
-		t.Fatal("decodeClaudeThreadTitle(garbage) error = nil, want decode error")
-	}
-	if !strings.Contains(err.Error(), "decode claude structured output") {
-		t.Fatalf("decodeClaudeThreadTitle() error = %v, want decode context", err)
-	}
-}
