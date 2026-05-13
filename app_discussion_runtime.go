@@ -41,7 +41,7 @@ func (a *App) syncDiscussionTurn(threadID string) error {
 		ChannelID: thread.DiscussionID,
 		FromType:  "agent",
 		FromID:    thread.ID,
-		FromRole:  discussionRoleFromThread(thread),
+		FromRole:  discussion.RoleFromThreadTitle(thread.Title),
 		Content:   item.Summary,
 	}); err != nil {
 		return err
@@ -90,19 +90,3 @@ func (a *App) deliberation(channelID string) (*discussion.Deliberation, bool) {
 	return deliberation, ok
 }
 
-func discussionRoleFromThread(thread store.Thread) string {
-	title := strings.TrimSpace(thread.Title)
-	if title == "" {
-		return ""
-	}
-
-	idx := strings.LastIndex(title, " - ")
-	if idx < 0 {
-		return title
-	}
-	role := strings.TrimSpace(title[idx+3:])
-	if role == "" {
-		return title
-	}
-	return role
-}

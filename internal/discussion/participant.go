@@ -77,6 +77,31 @@ func BuildParticipantPrompt(role, rawSystem string) string {
 	)
 }
 
+// RoleFromThreadTitle reverses BuildParticipantPlans's title
+// formatting ("<parent title> - <FormattedRole>") to recover the
+// formatted role string. The deliberation runtime uses it when
+// composing the `<from>:<role>` prefix on assistant channel posts so
+// the speaker label stays consistent with the child thread title.
+//
+// Returns "" for an empty / whitespace-only title; returns the entire
+// trimmed title when no " - " separator is present (e.g. legacy or
+// renamed threads).
+func RoleFromThreadTitle(title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return ""
+	}
+	idx := strings.LastIndex(title, " - ")
+	if idx < 0 {
+		return title
+	}
+	role := strings.TrimSpace(title[idx+3:])
+	if role == "" {
+		return title
+	}
+	return role
+}
+
 // FormatRole title-cases a discussion role identifier, splitting on
 // `-` / `_` / space and rejoining with spaces. Empty / whitespace
 // inputs render as "Participant" so the discussion thread title still

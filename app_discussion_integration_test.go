@@ -385,7 +385,7 @@ func TestDisc_ParticipantRoutingRespected(t *testing.T) {
 	}
 	childA := children[0]
 	// Expected role comes from the " - <Role>" suffix of the child title.
-	expectedRole := discussionRoleFromThread(childA)
+	expectedRole := discussion.RoleFromThreadTitle(childA.Title)
 
 	// Simulate a turn from childA.
 	now := time.Now().UnixMilli()

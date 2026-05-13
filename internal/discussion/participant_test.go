@@ -130,3 +130,30 @@ func TestFormatRoleVariants(t *testing.T) {
 		}
 	}
 }
+
+func TestRoleFromThreadTitle(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		// Standard BuildParticipantPlans output.
+		{"Design - Advocate", "Advocate"},
+		{"Design - Devil Advocate", "Devil Advocate"},
+		// Multiple " - " segments: take the trailing component only.
+		{"Project - Phase 1 - Advocate", "Advocate"},
+		// Trailing whitespace on the role.
+		{"Design -   Advocate   ", "Advocate"},
+		// Whitespace-only role falls back to the full title.
+		{"Design - ", "Design -"},
+		// Legacy threads with no separator.
+		{"Renamed Thread", "Renamed Thread"},
+		// Empty / whitespace-only titles.
+		{"", ""},
+		{"   ", ""},
+	}
+	for _, tc := range cases {
+		if got := RoleFromThreadTitle(tc.in); got != tc.want {
+			t.Errorf("RoleFromThreadTitle(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
