@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 )
 
 // TerminalChip is the frontend-owned shape of a "terminal context" snippet
@@ -49,7 +50,7 @@ func (a *App) SaveDraft(threadID string, content string, attachmentIDs []string,
 	if err != nil {
 		return fmt.Errorf("save draft: encode terminal chips: %w", err)
 	}
-	sourcePlanJSON, err := encodeDraftSourceProposedPlan(sourceProposedPlan)
+	sourcePlanJSON, err := usermessage.EncodeDraftSource(sourceProposedPlan)
 	if err != nil {
 		return fmt.Errorf("save draft: encode source proposed plan: %w", err)
 	}
@@ -118,7 +119,7 @@ func (a *App) ClearDraft(threadID string) error {
 }
 
 func composerDraftFromUserItem(threadID string, userItem store.Item, updatedAt int64) (store.ThreadDraft, error) {
-	meta, err := userMessageMetaFromItem(userItem)
+	meta, err := usermessage.FromItem(userItem)
 	if err != nil {
 		return store.ThreadDraft{}, err
 	}
@@ -133,7 +134,7 @@ func composerDraftFromUserItem(threadID string, userItem store.Item, updatedAt i
 }
 
 func (a *App) composerDraftFromUserItemWithClonedAttachments(threadID string, userItem store.Item, updatedAt int64) (store.ThreadDraft, error) {
-	meta, err := userMessageMetaFromItem(userItem)
+	meta, err := usermessage.FromItem(userItem)
 	if err != nil {
 		return store.ThreadDraft{}, err
 	}
@@ -142,17 +143,6 @@ func (a *App) composerDraftFromUserItemWithClonedAttachments(threadID string, us
 		return store.ThreadDraft{}, err
 	}
 	return composerDraftFromUserItemParts(threadID, userItem.Summary, attachmentIDs, meta.SourceProposedPlan, updatedAt)
-}
-
-func userMessageMetaFromItem(userItem store.Item) (userMessageMeta, error) {
-	var meta userMessageMeta
-	if strings.TrimSpace(userItem.Meta) == "" {
-		return meta, nil
-	}
-	if err := json.Unmarshal([]byte(userItem.Meta), &meta); err != nil {
-		return userMessageMeta{}, fmt.Errorf("decode user message meta: %w", err)
-	}
-	return meta, nil
 }
 
 func composerDraftFromUserItemParts(
@@ -166,7 +156,7 @@ func composerDraftFromUserItemParts(
 	if err != nil {
 		return store.ThreadDraft{}, fmt.Errorf("encode attachment ids: %w", err)
 	}
-	sourcePlanJSON, err := encodeDraftSourceProposedPlan(sourceProposedPlan)
+	sourcePlanJSON, err := usermessage.EncodeDraftSource(sourceProposedPlan)
 	if err != nil {
 		return store.ThreadDraft{}, fmt.Errorf("encode source proposed plan: %w", err)
 	}
@@ -239,16 +229,3 @@ func normalizeTerminalChips(chips []TerminalChip) []TerminalChip {
 	return chips
 }
 
-// encodeDraftSourceProposedPlan returns "" for a nil ref so UpsertThreadDraft
-// stores SQL NULL (and the partial index in v31 stays selective). A
-// zero-itemId ref is treated as nil — no item to link to.
-func encodeDraftSourceProposedPlan(ref *SourceProposedPlan) (string, error) {
-	if ref == nil || ref.ItemID == "" {
-		return "", nil
-	}
-	b, err := json.Marshal(ref)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
-}

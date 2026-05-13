@@ -15,7 +15,12 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/usermessage"
 )
+
+// Local aliases so the rest of main can keep using the short names.
+type userMessageMeta = usermessage.Meta
+type userMessageAttachmentMeta = usermessage.AttachmentMeta
 
 // sendThreadMuRegistry owns a mutex per thread so the "compute turn index
 // / persist user item / call provider" sequence can't interleave for the
@@ -26,23 +31,6 @@ import (
 // max(turn_index) instead of the turn that actually spoke.
 var sendThreadMuRegistry = &threadMutexRegistry{
 	mus: make(map[string]*sync.Mutex),
-}
-
-type userMessageMeta struct {
-	Attachments                  []userMessageAttachmentMeta `json:"attachments,omitempty"`
-	SourceProposedPlan           *SourceProposedPlan         `json:"sourceProposedPlan,omitempty"`
-	RevisionSourceProposedPlan   *SourceProposedPlan         `json:"revisionSourceProposedPlan,omitempty"`
-	RevisionSourceCommentIDs     []string                    `json:"revisionSourceCommentIds,omitempty"`
-	RevisionSourceDiffReview     *SourceDiffReview           `json:"revisionSourceDiffReview,omitempty"`
-	RevisionSourceDiffCommentIDs []string                    `json:"revisionSourceDiffCommentIds,omitempty"`
-}
-
-type userMessageAttachmentMeta struct {
-	ID       string `json:"id"`
-	ThreadID string `json:"threadId"`
-	Filename string `json:"filename"`
-	MimeType string `json:"mimeType"`
-	Size     int64  `json:"size"`
 }
 
 // SourceProposedPlan records that a user follow-up is acting on a specific
@@ -184,7 +172,7 @@ func (a *App) resolveUserMessageEnvelope(
 		revisionDiffCommentIDs = commentIDs
 	}
 
-	userMeta, err := marshalUserMessageMeta(
+	userMeta, err := usermessage.Marshal(
 		persistedAttachments,
 		sourcePlan,
 		revisionSourcePlan,
@@ -493,45 +481,6 @@ func (a *App) nextSequencedUserItemID(threadID string, turnIndex int, scope stri
 	return fmt.Sprintf("user:%d:%s:%d", turnIndex, scope, seq), nil
 }
 
-func marshalUserMessageMeta(
-	attachments []store.Attachment,
-	sourcePlan, revisionSourcePlan *SourceProposedPlan,
-	revisionCommentIDs []string,
-	revisionSourceDiff *SourceDiffReview,
-	revisionDiffCommentIDs []string,
-) (string, error) {
-	if len(attachments) == 0 &&
-		sourcePlan == nil &&
-		revisionSourcePlan == nil &&
-		len(revisionCommentIDs) == 0 &&
-		revisionSourceDiff == nil &&
-		len(revisionDiffCommentIDs) == 0 {
-		return "", nil
-	}
-	metaAttachments := make([]userMessageAttachmentMeta, 0, len(attachments))
-	for _, attachment := range attachments {
-		metaAttachments = append(metaAttachments, userMessageAttachmentMeta{
-			ID:       attachment.ID,
-			ThreadID: attachment.ThreadID,
-			Filename: attachment.Filename,
-			MimeType: attachment.MimeType,
-			Size:     attachment.Size,
-		})
-	}
-	meta := userMessageMeta{
-		Attachments:                  metaAttachments,
-		SourceProposedPlan:           sourcePlan,
-		RevisionSourceProposedPlan:   revisionSourcePlan,
-		RevisionSourceCommentIDs:     revisionCommentIDs,
-		RevisionSourceDiffReview:     revisionSourceDiff,
-		RevisionSourceDiffCommentIDs: revisionDiffCommentIDs,
-	}
-	data, err := json.Marshal(meta)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}
 
 func (a *App) resolveSourceDiffReview(threadID string, source *SourceDiffReview) (*SourceDiffReview, error) {
 	if source == nil || strings.TrimSpace(source.Scope) == "" {

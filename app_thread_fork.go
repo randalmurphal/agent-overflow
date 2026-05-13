@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 
 	"github.com/google/uuid"
 )
@@ -148,7 +149,7 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 	}
 
 	fork := buildForkedThread(source)
-	if _, err := userMessageMetaFromItem(item); err != nil {
+	if _, err := usermessage.FromItem(item); err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread from message: build prompt draft: %w", err)
 	}
 	promptDraftUpdatedAt := time.Now().UnixMilli()
