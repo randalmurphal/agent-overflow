@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/textgen"
 )
 
 // commitMessageTimeout bounds how long we'll wait for a provider CLI to
@@ -15,16 +16,6 @@ import (
 // a small, structured JSON request; anything slower than three minutes
 // is a misconfiguration the user should see as an error, not a hang.
 const commitMessageTimeout = 180 * time.Second
-
-// Default model per provider for short text generation. Lifted
-// verbatim from t3-code's RoutingTextGeneration. These values are
-// intentionally not exposed through settings.DefaultSettings because
-// they're provider-bound — the right default depends on which CLI the
-// user selected, and a single shared default is the wrong abstraction.
-const (
-	defaultTextGenerationCodexModel  = "gpt-5.4-mini"
-	defaultTextGenerationClaudeModel = "claude-haiku-4-5"
-)
 
 // Per-section caps applied at the prompt-construction layer. Mirrors
 // t3-code's Prompts.ts (6k for the summary, 40k for the patch). The
@@ -130,7 +121,7 @@ func (a *App) gatherStagedDiffForCommit(thread store.Thread) (summary, patch, br
 // from the output file.
 func (a *App) generateCodexCommitMessage(
 	ctx context.Context,
-	cfg textGenerationConfig,
+	cfg textgen.Config,
 	thread store.Thread,
 	prompt string,
 ) (GeneratedCommitMessage, error) {
@@ -139,7 +130,7 @@ func (a *App) generateCodexCommitMessage(
 		return GeneratedCommitMessage{}, err
 	}
 
-	raw, err := a.runCodexTextGeneration(ctx, cfg, workspace, commitCodexSchemaJSON, nil, prompt, commitMessageTimeout)
+	raw, err := textgen.RunCodex(ctx, cfg, workspace, commitCodexSchemaJSON, nil, prompt, commitMessageTimeout)
 	if err != nil {
 		return GeneratedCommitMessage{}, err
 	}
@@ -166,7 +157,7 @@ func (a *App) generateCodexCommitMessage(
 // back on stdout inside a `structured_output` envelope.
 func (a *App) generateClaudeCommitMessage(
 	ctx context.Context,
-	cfg textGenerationConfig,
+	cfg textgen.Config,
 	thread store.Thread,
 	prompt string,
 ) (GeneratedCommitMessage, error) {
@@ -180,7 +171,7 @@ func (a *App) generateClaudeCommitMessage(
 		extra = append(extra, "--effort", cfg.Effort)
 	}
 
-	stdout, err := a.runClaudeTextGeneration(ctx, cfg, workspace, commitClaudeSchemaJSON, extra, prompt, commitMessageTimeout)
+	stdout, err := textgen.RunClaude(ctx, cfg, workspace, commitClaudeSchemaJSON, extra, prompt, commitMessageTimeout)
 	if err != nil {
 		return GeneratedCommitMessage{}, err
 	}
@@ -254,7 +245,7 @@ func limitPromptSection(s string, maxChars int) string {
 // JSON response. Wraps the generic last-line decoder with the commit
 // envelope shape and the subject-required validation.
 func decodeClaudeCommitMessage(stdout []byte) (string, string, error) {
-	payload, err := decodeClaudeStructuredLastLine[struct {
+	payload, err := textgen.DecodeClaudeStructuredLastLine[struct {
 		Subject string `json:"subject"`
 		Body    string `json:"body"`
 	}](stdout)
@@ -273,11 +264,11 @@ func decodeClaudeCommitMessage(stdout []byte) (string, string, error) {
 // nothing usable so the dialog never opens with a blank subject — the
 // user can overwrite it.
 func sanitizeCommitSubject(raw string) string {
-	out := strings.TrimSuffix(normalizeStructuredOutputLine(raw), ".")
+	out := strings.TrimSuffix(textgen.NormalizeStructuredOutputLine(raw), ".")
 	if out == "" {
 		return ""
 	}
-	return capRunesWithEllipsis(out, 72)
+	return textgen.CapRunesWithEllipsis(out, 72)
 }
 
 // sanitizeCommitBody trims the model's body output without imposing a

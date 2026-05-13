@@ -11,6 +11,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/textgen"
 )
 
 const (
@@ -73,7 +74,7 @@ func (a *App) generateCodexThreadTitle(
 	thread store.Thread,
 	message string,
 	attachments []store.Attachment,
-	cfg textGenerationConfig,
+	cfg textgen.Config,
 ) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), threadTitleTimeout)
 	defer cancel()
@@ -93,7 +94,7 @@ func (a *App) generateCodexThreadTitle(
 		extra = append(extra, "--image", imagePath)
 	}
 
-	raw, err := a.runCodexTextGeneration(
+	raw, err := textgen.RunCodex(
 		ctx, cfg, workspace, threadTitleCodexSchemaJSON,
 		extra, buildThreadTitlePrompt(message, attachments), threadTitleTimeout,
 	)
@@ -114,7 +115,7 @@ func (a *App) generateClaudeThreadTitle(
 	thread store.Thread,
 	message string,
 	attachments []store.Attachment,
-	cfg textGenerationConfig,
+	cfg textgen.Config,
 ) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), threadTitleTimeout)
 	defer cancel()
@@ -124,7 +125,7 @@ func (a *App) generateClaudeThreadTitle(
 		return "", err
 	}
 
-	stdout, err := a.runClaudeTextGeneration(
+	stdout, err := textgen.RunClaude(
 		ctx, cfg, workspace, threadTitleClaudeSchemaJSON,
 		nil, buildThreadTitlePrompt(message, attachments), threadTitleTimeout,
 	)
@@ -228,7 +229,7 @@ func redactTitleGenerationError(err error) string {
 }
 
 func decodeClaudeThreadTitle(stdout []byte) (string, error) {
-	payload, err := decodeClaudeStructuredLastLine[struct {
+	payload, err := textgen.DecodeClaudeStructuredLastLine[struct {
 		Title string `json:"title"`
 	}](stdout)
 	if err != nil {
@@ -238,9 +239,9 @@ func decodeClaudeThreadTitle(stdout []byte) (string, error) {
 }
 
 func sanitizeGeneratedThreadTitle(raw string) string {
-	out := normalizeStructuredOutputLine(raw)
+	out := textgen.NormalizeStructuredOutputLine(raw)
 	if out == "" {
 		return defaultGeneratedThreadTitle
 	}
-	return capRunesWithEllipsis(out, 50)
+	return textgen.CapRunesWithEllipsis(out, 50)
 }

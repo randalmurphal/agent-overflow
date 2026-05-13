@@ -29,6 +29,7 @@ import (
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
+	"agent-overflow/internal/textgen"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/uitrace"
@@ -175,10 +176,10 @@ type App struct {
 	generateThreadTitleFn func(store.Thread, string, []store.Attachment) (string, error)
 	// textGenerationExecutor stubs the provider-CLI invocation used by short
 	// text-generation helpers. Production leaves it nil — call sites use
-	// execTextGenerationCLI directly. Tests install a fake that returns a
+	// textgen.ExecCLI directly. Tests install a fake that returns a
 	// canned stdout/stderr/exitCode triple so the test suite runs without
 	// `codex` / `claude` binaries on PATH.
-	textGenerationExecutor textGenerationCLIExecutor
+	textGenerationExecutor textgen.CLIExecutor
 	emitEventFn            func(eventName string, data any)
 	// shutdownStepFn is a test-only hook fired after every step of
 	// Shutdown. Production leaves this nil. Order tests install it to

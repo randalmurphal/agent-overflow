@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/textgen"
 )
 
 // TestMaybeGenerateThreadTitleAppliesGeneratedTitleAndEmits covers the happy
@@ -333,17 +334,17 @@ func TestGeneratedThreadTitle_CodexPathHappy(t *testing.T) {
 		t.Fatalf("Upload() error = %v", err)
 	}
 
-	var gotSpec textGenerationCLISpec
-	app.textGenerationExecutor = func(_ context.Context, spec textGenerationCLISpec) (textGenerationCLIResult, error) {
+	var gotSpec textgen.CLISpec
+	app.textGenerationExecutor = func(_ context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
 		gotSpec = spec
 		outputPath := extractCodexOutputPath(spec.Args)
 		if outputPath == "" {
 			t.Fatalf("codex title args missing --output-last-message: %v", spec.Args)
 		}
 		if err := os.WriteFile(outputPath, []byte(`{"title":"  \"Reconnect title generation\"  "}`), 0o600); err != nil {
-			return textGenerationCLIResult{}, err
+			return textgen.CLIResult{}, err
 		}
-		return textGenerationCLIResult{ExitCode: 0}, nil
+		return textgen.CLIResult{ExitCode: 0}, nil
 	}
 
 	got, err := app.generatedThreadTitle(thread, "Fix title generation for Codex threads.", []store.Attachment{record})
@@ -356,8 +357,8 @@ func TestGeneratedThreadTitle_CodexPathHappy(t *testing.T) {
 	if !argsContain(gotSpec.Args, "exec") || !argsContain(gotSpec.Args, "--ephemeral") {
 		t.Fatalf("codex args missing exec --ephemeral: %v", gotSpec.Args)
 	}
-	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != defaultTextGenerationCodexModel {
-		t.Fatalf("codex model = %q, want %q", modelArg, defaultTextGenerationCodexModel)
+	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != textgen.DefaultCodexModel {
+		t.Fatalf("codex model = %q, want %q", modelArg, textgen.DefaultCodexModel)
 	}
 	imagePath := nextArgAfter(gotSpec.Args, "--image")
 	if imagePath == "" {
@@ -428,10 +429,10 @@ func TestGeneratedThreadTitle_RoutesToClaudeWhenConfigured(t *testing.T) {
 	thread := testThread("thread-title-claude-cli")
 	thread.WorkspacePath = t.TempDir()
 
-	var gotSpec textGenerationCLISpec
-	app.textGenerationExecutor = func(_ context.Context, spec textGenerationCLISpec) (textGenerationCLIResult, error) {
+	var gotSpec textgen.CLISpec
+	app.textGenerationExecutor = func(_ context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
 		gotSpec = spec
-		return textGenerationCLIResult{
+		return textgen.CLIResult{
 			Stdout:   `{"structured_output":{"title":"Claude generated title"}}`,
 			ExitCode: 0,
 		}, nil
@@ -450,8 +451,8 @@ func TestGeneratedThreadTitle_RoutesToClaudeWhenConfigured(t *testing.T) {
 	if argsContain(gotSpec.Args, "--dangerously-skip-permissions") {
 		t.Fatalf("claude title args must not bypass permissions: %v", gotSpec.Args)
 	}
-	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != defaultTextGenerationClaudeModel {
-		t.Fatalf("claude model = %q, want %q", modelArg, defaultTextGenerationClaudeModel)
+	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != textgen.DefaultClaudeModel {
+		t.Fatalf("claude model = %q, want %q", modelArg, textgen.DefaultClaudeModel)
 	}
 }
 
