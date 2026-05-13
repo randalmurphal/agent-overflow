@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
 )
 
@@ -76,7 +77,7 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	unlock := sendThreadMuRegistry.lockFor(threadID)
 	defer unlock()
 
-	runtimeMode, hasRuntimeMode, err := parseOptionalRuntimeMode(opts.RuntimeMode)
+	runtimeMode, hasRuntimeMode, err := threadmode.ParseOptionalRuntime(opts.RuntimeMode)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("steer message: %w", err)
 	}

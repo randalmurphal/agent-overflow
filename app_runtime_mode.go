@@ -3,9 +3,9 @@ package main
 import (
 	"fmt"
 	"log"
-	"strings"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/threadmode"
 )
 
 // runtimeModeLockAttemptedForTest lets the lock-order regression test observe
@@ -45,7 +45,7 @@ func (a *App) SetThreadRuntimeMode(threadID, mode string) (ThreadRuntimeModeChan
 	if err != nil {
 		return ThreadRuntimeModeChangedEvent{}, fmt.Errorf("set runtime mode: %w", err)
 	}
-	normalized, err := parseRuntimeMode(mode)
+	normalized, err := threadmode.ParseRuntime(mode)
 	if err != nil {
 		return ThreadRuntimeModeChangedEvent{}, fmt.Errorf("set runtime mode: %w", err)
 	}
@@ -74,27 +74,6 @@ func (a *App) emitRuntimeModeChanged(threadID string, mode provider.RuntimeMode)
 		RuntimeMode:    string(mode),
 		NeedsReconnect: false,
 	})
-}
-
-func parseOptionalRuntimeMode(mode string) (provider.RuntimeMode, bool, error) {
-	if strings.TrimSpace(mode) == "" {
-		return "", false, nil
-	}
-	normalized, err := parseRuntimeMode(mode)
-	if err != nil {
-		return "", false, err
-	}
-	return normalized, true, nil
-}
-
-func parseRuntimeMode(mode string) (provider.RuntimeMode, error) {
-	normalized := provider.RuntimeMode(strings.TrimSpace(mode))
-	switch normalized {
-	case provider.RuntimeApprovalRequired, provider.RuntimeAutoAcceptEdits, provider.RuntimeFullAccess:
-		return normalized, nil
-	default:
-		return "", fmt.Errorf("invalid runtime mode %q", mode)
-	}
 }
 
 func (a *App) applyRuntimeMode(threadID string, mode provider.RuntimeMode) error {

@@ -12,6 +12,7 @@ import (
 	attachmentstore "agent-overflow/internal/attachment"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
 )
 
@@ -220,7 +221,7 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		return store.Item{}, a.sendMessageFn(threadID, content, opts.AttachmentIDs)
 	}
 
-	runtimeMode, hasRuntimeMode, err := parseOptionalRuntimeMode(opts.RuntimeMode)
+	runtimeMode, hasRuntimeMode, err := threadmode.ParseOptionalRuntime(opts.RuntimeMode)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}

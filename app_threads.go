@@ -10,6 +10,7 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadmode"
 
 	"github.com/google/uuid"
 )
@@ -65,7 +66,7 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		return store.Thread{}, fmt.Errorf("create thread: resolve project %s: %w", projectID, err)
 	}
 
-	mode, err := validateCreateThreadMode(opts.Mode)
+	mode, err := threadmode.ValidateCreate(opts.Mode)
 	if err != nil {
 		return store.Thread{}, err
 	}
@@ -107,7 +108,7 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		autoCompactExtendedPercent = *opts.AutoCompactExtendedPercent
 	}
 	if trimmed := strings.TrimSpace(opts.RuntimeMode); trimmed != "" {
-		parsedRuntimeMode, err := parseRuntimeMode(trimmed)
+		parsedRuntimeMode, err := threadmode.ParseRuntime(trimmed)
 		if err != nil {
 			return store.Thread{}, fmt.Errorf("create thread: %w", err)
 		}
@@ -539,7 +540,7 @@ func (a *App) UpdateThreadRuntimeMode(id, mode string) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update runtime mode: store unavailable")
 	}
-	normalized, err := parseRuntimeMode(mode)
+	normalized, err := threadmode.ParseRuntime(mode)
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("update runtime mode: %w", err)
 	}
