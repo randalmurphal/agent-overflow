@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -81,7 +80,7 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 		resolvedBase = strings.TrimSpace(thread.Branch)
 	}
 	if resolvedBase == "" {
-		resolvedBase = currentGitBranch(core, project)
+		resolvedBase = core.CurrentBranch(project)
 	}
 	if resolvedBase == "" {
 		return store.Thread{}, fmt.Errorf("create worktree: base branch is required")
@@ -103,7 +102,7 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 	stashMessage := ""
 	stashed := false
 	if carryLocalChanges {
-		stashMessage = fmt.Sprintf("ao-carry-%s", shortStashID())
+		stashMessage = fmt.Sprintf("ao-carry-%s", gitops.RandomStashSuffix())
 		created, err := core.StashPushIncludeUntracked(sourceWorkspace, stashMessage)
 		if err != nil {
 			return store.Thread{}, fmt.Errorf("create worktree: stash local changes: %w", err)
@@ -253,7 +252,7 @@ func (a *App) RemoveOtherWorktree(threadID, worktreePath string, force bool) err
 		a.workspaceFiles.Invalidate(worktreePath)
 	}
 
-	projectBranch := currentGitBranch(core, project)
+	projectBranch := core.CurrentBranch(project)
 	// Best-effort sweep: the worktree is already gone, so per-thread refresh
 	// failures should NOT bail mid-loop and leave siblings pointing at a
 	// deleted path. Accumulate errors and surface them together at the end —
@@ -429,7 +428,7 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 	case gitops.SameFilesystemPath(target, project):
 		thread.WorkspacePath = project
 		thread.WorktreePath = ""
-		thread.Branch = currentGitBranch(core, project)
+		thread.Branch = core.CurrentBranch(project)
 	default:
 		worktree, ok, err := a.findWorktree(project, target)
 		if err != nil {
@@ -442,7 +441,7 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 		thread.WorktreePath = worktree.Path
 		thread.Branch = worktree.Branch
 		if thread.Branch == "" {
-			thread.Branch = currentGitBranch(core, worktree.Path)
+			thread.Branch = core.CurrentBranch(worktree.Path)
 		}
 	}
 	thread.UpdatedAt = time.Now().UnixMilli()
@@ -472,52 +471,11 @@ func (a *App) findWorktree(project, path string) (gitops.Worktree, bool, error) 
 }
 
 func (a *App) defaultWorktreePath(projectPath, branch string) (string, error) {
-	base := defaultWorktreesBaseDir(projectPath)
+	base := gitops.DefaultWorktreesBaseDir(projectPath)
 	if strings.TrimSpace(a.configDir) != "" {
 		base = filepath.Join(a.configDir, "worktrees", filepath.Base(projectPath))
 	}
-	return uniquePath(filepath.Join(base, sanitizeWorktreeBranch(branch)))
-}
-
-func defaultWorktreesBaseDir(projectPath string) string {
-	repoName := filepath.Base(projectPath)
-	return filepath.Join(
-		filepath.Dir(projectPath),
-		repoName+"-worktrees",
-	)
-}
-
-func sanitizeWorktreeBranch(branch string) string {
-	replacer := strings.NewReplacer(
-		"/", "-",
-		"\\", "-",
-		" ", "-",
-		"\t", "-",
-	)
-	sanitized := strings.Trim(replacer.Replace(strings.TrimSpace(branch)), ".-")
-	if sanitized == "" {
-		return "worktree"
-	}
-	return sanitized
-}
-
-func uniquePath(path string) (string, error) {
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			return path, nil
-		}
-		return "", fmt.Errorf("check worktree path %s: %w", path, err)
-	}
-	for suffix := 1; suffix < 100; suffix++ {
-		candidate := fmt.Sprintf("%s-%d", path, suffix)
-		if _, err := os.Stat(candidate); err != nil {
-			if os.IsNotExist(err) {
-				return candidate, nil
-			}
-			return "", fmt.Errorf("check worktree path %s: %w", candidate, err)
-		}
-	}
-	return fmt.Sprintf("%s-%d", path, time.Now().UnixMilli()), nil
+	return gitops.UniqueWorktreePath(filepath.Join(base, gitops.SanitizeWorktreePathSegment(branch)))
 }
 
 func (a *App) worktreeBranchPrefix() string {

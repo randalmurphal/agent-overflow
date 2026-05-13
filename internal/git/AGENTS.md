@@ -15,12 +15,20 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   it returns.
 - `stash.go` — `git stash` helpers (push, apply-by-message,
   drop-by-message) used by the worktree carry-over and branch-from
-  destructive flows in the app layer.
+  destructive flows in the app layer. Also `RandomStashSuffix()` —
+  short hex token for collision-free stash-message tagging.
 - `status.go` — `GitStatus` shape + status aggregation (branch,
   ahead/behind, pending merge/rebase/bisect, open PR, detected forge).
   Also hosts the smaller `CountWorkingTreeChanges`,
   `CountUnpushedCommits`, and `upstreamFor` primitives used by the
-  worktree-cleanup safety classifier.
+  worktree-cleanup safety classifier. `Core.CurrentBranch(cwd)` and
+  `Core.BranchIsDefault(cwd, branch)` are the error-eating lookup
+  helpers used by every app-side workspace-change site.
+- `worktree_paths.go` — pure path helpers backing the app layer's
+  worktree creation: `SanitizeWorktreePathSegment` (branch → fs-safe
+  directory name), `DefaultWorktreesBaseDir` (the `<repo>-worktrees`
+  sibling convention), and `UniqueWorktreePath` (collision-free
+  `-N` suffixing with a unix-millis fallback).
 - `branch_names.go` — branch-name sanitation.
 - `commit_context.go` — commit-message context gathering for model-
   assisted commits.

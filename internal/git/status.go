@@ -201,6 +201,34 @@ func (c *Core) WorkingTreeDiff(cwd string) (string, error) {
 	return combineDiffs(headDiff.stdout, cachedDiff.stdout), nil
 }
 
+// CurrentBranch returns the branch name reported by Status, or "" when
+// the call fails (detached HEAD, non-repo path, transient git error).
+// Callers treat "" as "unknown" — distinct from a deliberate empty
+// branch — so the helper never propagates the underlying error.
+func (c *Core) CurrentBranch(cwd string) string {
+	status, err := c.Status(cwd)
+	if err != nil {
+		return ""
+	}
+	return status.Branch
+}
+
+// BranchIsDefault reports whether branch is the repo's default (e.g.
+// `main`/`master`). Returns false when ListBranches fails or when the
+// branch isn't present in the listing.
+func (c *Core) BranchIsDefault(cwd, branch string) bool {
+	branches, err := c.ListBranches(cwd)
+	if err != nil {
+		return false
+	}
+	for _, candidate := range branches {
+		if candidate.Name == branch {
+			return candidate.IsDefault
+		}
+	}
+	return false
+}
+
 // ListBranches returns local and remote branches from git branch output.
 func (c *Core) ListBranches(cwd string) ([]GitBranch, error) {
 	result, err := c.run(cwd, "branch", "-a", "--format=%(refname:short)|%(HEAD)|%(worktreepath)")

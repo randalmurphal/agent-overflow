@@ -184,3 +184,20 @@ func TestStashApplyByMessageReportsMissingEntry(t *testing.T) {
 		t.Fatalf("error %v should mention 'not found' for diagnostic clarity", err)
 	}
 }
+
+func TestRandomStashSuffixUnique(t *testing.T) {
+	// The suffix is uniqueness, not unpredictability — but two consecutive
+	// calls must never collide on the hex token, otherwise concurrent
+	// carry-overs in the same repo lose their stash-list lookup.
+	seen := map[string]struct{}{}
+	for range 100 {
+		s := RandomStashSuffix()
+		if len(s) < 8 {
+			t.Fatalf("RandomStashSuffix returned %q, want >=8 hex chars", s)
+		}
+		if _, dup := seen[s]; dup {
+			t.Fatalf("RandomStashSuffix collision on %q within 100 calls", s)
+		}
+		seen[s] = struct{}{}
+	}
+}

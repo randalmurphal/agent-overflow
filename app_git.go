@@ -1,11 +1,8 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 	"time"
 
@@ -83,7 +80,7 @@ func (a *App) GitCommit(threadID, subject, body string) (gitops.GitActionResult,
 
 	return gitops.GitActionResult{
 		Action:  "commit",
-		Branch:  currentGitBranch(core, workspace),
+		Branch:  core.CurrentBranch(workspace),
 		Commit:  sha,
 		Message: "Committed changes",
 	}, nil
@@ -124,7 +121,7 @@ func (a *App) GitPush(threadID string) (gitops.GitActionResult, error) {
 
 	return gitops.GitActionResult{
 		Action:  "push",
-		Branch:  currentGitBranch(core, workspace),
+		Branch:  core.CurrentBranch(workspace),
 		Message: "Pushed branch",
 	}, nil
 }
@@ -154,7 +151,7 @@ func (a *App) GitPull(threadID string) (gitops.GitActionResult, error) {
 
 	return gitops.GitActionResult{
 		Action:  "pull",
-		Branch:  currentGitBranch(core, workspace),
+		Branch:  core.CurrentBranch(workspace),
 		Message: "Pulled latest changes",
 	}, nil
 }
@@ -182,7 +179,7 @@ func (a *App) GitCheckout(threadID, branch string) error {
 	}
 
 	core := a.gitCore()
-	if !gitops.SameFilesystemPath(workspace, project) && gitBranchIsDefault(core, project, branch) {
+	if !gitops.SameFilesystemPath(workspace, project) && core.BranchIsDefault(project, branch) {
 		workspace = project
 		thread.WorkspacePath = project
 		thread.WorktreePath = ""
@@ -197,7 +194,7 @@ func (a *App) GitCheckout(threadID, branch string) error {
 		a.workspaceFiles.Invalidate(workspace)
 	}
 
-	thread.Branch = currentGitBranch(core, workspace)
+	thread.Branch = core.CurrentBranch(workspace)
 	thread.UpdatedAt = time.Now().UnixMilli()
 	return a.store.UpdateThread(thread)
 }
@@ -258,7 +255,7 @@ func (a *App) GitCreateBranchFrom(threadID, name, baseBranch string, carryLocalC
 	core := a.gitCore()
 	currentBranch := strings.TrimSpace(thread.Branch)
 	if currentBranch == "" {
-		currentBranch = currentGitBranch(core, workspace)
+		currentBranch = core.CurrentBranch(workspace)
 	}
 	resolvedBase := strings.TrimSpace(baseBranch)
 	if resolvedBase == "" {
@@ -292,7 +289,7 @@ func (a *App) GitCreateBranchFrom(threadID, name, baseBranch string, carryLocalC
 		// Both checkout calls route through the package's typed wrappers
 		// (Checkout / CheckoutNewBranch) so flag injection in the base
 		// branch name is impossible regardless of the caller's input.
-		stashMessage := fmt.Sprintf("ao-discard-%s", shortStashID())
+		stashMessage := fmt.Sprintf("ao-discard-%s", gitops.RandomStashSuffix())
 		stashed, err := core.StashPushIncludeUntracked(workspace, stashMessage)
 		if err != nil {
 			return store.Thread{}, fmt.Errorf("create branch: stash before discard: %w", err)
@@ -319,7 +316,7 @@ func (a *App) GitCreateBranchFrom(threadID, name, baseBranch string, carryLocalC
 	if a.workspaceFiles != nil {
 		a.workspaceFiles.Invalidate(workspace)
 	}
-	thread.Branch = currentGitBranch(core, workspace)
+	thread.Branch = core.CurrentBranch(workspace)
 	thread.UpdatedAt = time.Now().UnixMilli()
 	if err := a.store.UpdateThread(thread); err != nil {
 		return store.Thread{}, err
@@ -354,7 +351,7 @@ func (a *App) GitCreatePR(threadID, title, body string, draft bool) (gitops.GitA
 
 	return gitops.GitActionResult{
 		Action:  "pr",
-		Branch:  currentGitBranch(core, workspace),
+		Branch:  core.CurrentBranch(workspace),
 		PRURL:   url,
 		Message: "Created pull request",
 	}, nil
@@ -377,16 +374,6 @@ func (a *App) restoreStashOnError(sourceWorkspace, stashMessage string) {
 	if err := core.StashDropByMessage(sourceWorkspace, stashMessage); err != nil {
 		log.Printf("git stash: drop restored %q: %v", stashMessage, err)
 	}
-}
-
-// shortStashID returns a short hex token for tagging stash messages so
-// concurrent carry-over operations on the same repo don't collide.
-func shortStashID() string {
-	var token [4]byte
-	if _, err := rand.Read(token[:]); err != nil {
-		return strconv.FormatInt(time.Now().UnixNano(), 16)
-	}
-	return hex.EncodeToString(token[:])
 }
 
 // resolveGitPaths resolves the (projectPath, workspacePath) pair for a
@@ -423,14 +410,6 @@ func (a *App) gitCore() *gitops.Core {
 	return gitops.NewCore()
 }
 
-func currentGitBranch(core *gitops.Core, cwd string) string {
-	status, err := core.Status(cwd)
-	if err != nil {
-		return ""
-	}
-	return status.Branch
-}
-
 // ensureWorkspaceChangeAllowed refuses to mutate a thread's workspace while a
 // turn or background tool call is still in flight — the provider session is
 // bound to the cwd and changing it mid-turn would orphan output.
@@ -450,15 +429,3 @@ func (a *App) ensureWorkspaceChangeAllowed(threadID string) error {
 	return nil
 }
 
-func gitBranchIsDefault(core *gitops.Core, project, branch string) bool {
-	branches, err := core.ListBranches(project)
-	if err != nil {
-		return false
-	}
-	for _, candidate := range branches {
-		if candidate.Name == branch {
-			return candidate.IsDefault
-		}
-	}
-	return false
-}

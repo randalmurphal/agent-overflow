@@ -1,9 +1,26 @@
 package git
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 )
+
+// RandomStashSuffix returns a short hex token suitable for tagging
+// `git stash push -m <prefix>-<suffix>` messages so concurrent
+// carry-over operations on the same repo never collide on the
+// stash-list lookup. Falls back to a unix-nano hex if the system RNG
+// is unavailable — the goal is uniqueness, not unpredictability.
+func RandomStashSuffix() string {
+	var token [4]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(token[:])
+}
 
 // StashPushIncludeUntracked stashes the working tree (staged + unstaged +
 // untracked) under message. Returns created=false when git reports nothing

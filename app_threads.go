@@ -194,7 +194,7 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		}
 	}
 	if branch == "" {
-		branch = currentGitBranch(a.gitCore(), workspace)
+		branch = a.gitCore().CurrentBranch(workspace)
 	}
 
 	title := strings.TrimSpace(opts.Title)
@@ -242,7 +242,7 @@ func (a *App) createWorktreeForNewThread(projectPath, branch string) (string, st
 	if err != nil {
 		return "", "", err
 	}
-	baseBranch := currentGitBranch(a.gitCore(), projectPath)
+	baseBranch := a.gitCore().CurrentBranch(projectPath)
 	if err := a.gitCore().CreateWorktreeFromBranch(projectPath, worktreePath, baseBranch, resolvedBranch); err != nil {
 		return "", "", err
 	}

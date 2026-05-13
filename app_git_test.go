@@ -201,7 +201,7 @@ func TestGitCheckoutDefaultBranchFromWorktreeReturnsToProjectRoot(t *testing.T) 
 		t.Fatalf("GitCheckout(main) error = %v", err)
 	}
 
-	if got := currentGitBranch(app.gitCore(), repo); got != "main" {
+	if got := app.gitCore().CurrentBranch(repo); got != "main" {
 		t.Fatalf("project root branch = %q, want main", got)
 	}
 	stored, err := app.store.GetThread(thread.ID)
