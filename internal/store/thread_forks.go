@@ -2,9 +2,45 @@ package store
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 )
+
+// BuildForkedThread returns a Thread row populated from source plus the
+// fork-only fields: a fresh UUID, a "(fork)"-suffixed title, the
+// `ForkedFromThreadID` linkage, and a `created_at` / `updated_at` pair
+// at the current millisecond. The session-state fields
+// (`SessionRef`, `PendingForkRef`) are left empty — the app-side fork
+// saga sets them once the provider-specific resume reference is known.
+// AutoCompactStandard/Extended Percent are intentionally NOT copied —
+// a fork starts with zero overrides so it picks up the live Settings
+// value on the first session start (the same default-resolution path a
+// brand-new thread follows).
+//
+// Pure: this only builds the row. The caller persists it (CreateThread)
+// and pairs it with the side-effecting clone steps.
+func BuildForkedThread(source Thread) Thread {
+	now := time.Now().UnixMilli()
+	return Thread{
+		ID:                 uuid.NewString(),
+		ProjectID:          source.ProjectID,
+		Title:              source.Title + " (fork)",
+		Provider:           source.Provider,
+		WorkspacePath:      source.WorkspacePath,
+		Model:              source.Model,
+		WorktreePath:       source.WorktreePath,
+		Branch:             source.Branch,
+		Mode:               source.Mode,
+		ReasoningEffort:    source.ReasoningEffort,
+		FastMode:           source.FastMode,
+		ContextWindow:      source.ContextWindow,
+		RuntimeMode:        source.RuntimeMode,
+		ForkedFromThreadID: source.ID,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	}
+}
 
 // CloneThreadItems copies the visible timeline items from sourceThreadID into
 // targetThreadID, preserving turn ordering while assigning new item IDs. The

@@ -69,7 +69,7 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 		return store.Thread{}, fmt.Errorf("fork thread: cannot fork while a turn is in progress; interrupt or wait first")
 	}
 
-	fork := buildForkedThread(source)
+	fork := store.BuildForkedThread(source)
 
 	var cleanups closer.Stack
 
@@ -149,7 +149,7 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 		return store.Thread{}, fmt.Errorf("fork thread from message: no checkpoint for user message %q", userItemID)
 	}
 
-	fork := buildForkedThread(source)
+	fork := store.BuildForkedThread(source)
 	if _, err := usermessage.FromItem(item); err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread from message: build prompt draft: %w", err)
 	}
@@ -313,27 +313,6 @@ func (a *App) ensureThreadCanFork(source store.Thread, atTurnIndex *int) error {
 	return nil
 }
 
-func buildForkedThread(source store.Thread) store.Thread {
-	now := time.Now().UnixMilli()
-	return store.Thread{
-		ID:                 uuid.NewString(),
-		ProjectID:          source.ProjectID,
-		Title:              source.Title + " (fork)",
-		Provider:           source.Provider,
-		WorkspacePath:      source.WorkspacePath,
-		Model:              source.Model,
-		WorktreePath:       source.WorktreePath,
-		Branch:             source.Branch,
-		Mode:               source.Mode,
-		ReasoningEffort:    source.ReasoningEffort,
-		FastMode:           source.FastMode,
-		ContextWindow:      source.ContextWindow,
-		RuntimeMode:        source.RuntimeMode,
-		ForkedFromThreadID: source.ID,
-		CreatedAt:          now,
-		UpdatedAt:          now,
-	}
-}
 
 // resolveForkResumeState wires the provider-specific resume reference for
 // the new fork and returns an optional cleanup callback. The cleanup runs

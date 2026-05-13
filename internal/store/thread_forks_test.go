@@ -286,3 +286,78 @@ func TestCloneThreadItemsPreservesInputPayloadID(t *testing.T) {
 		t.Errorf("forked thread lookup returned id=%q found=%v, want cloned id=%q", got.ID, found, cloned.ID)
 	}
 }
+
+// TestBuildForkedThreadCopiesEverythingButSessionState pins the
+// fork-row builder contract: every model/runtime field carries over so
+// the fork starts with the same provider posture, the lineage column
+// is set, IDs/timestamps are fresh, and the session-state fields are
+// left empty for the app-side saga to populate.
+func TestBuildForkedThreadCopiesEverythingButSessionState(t *testing.T) {
+	source := Thread{
+		ID:                         "source-id",
+		ProjectID:                  "p-1",
+		Title:                      "Build feature",
+		Provider:                   "claude",
+		WorkspacePath:              "/tmp/workspace",
+		Model:                      "claude-opus-4-7",
+		WorktreePath:               "/tmp/wt",
+		Branch:                     "feature/login",
+		Mode:                       "plan",
+		ReasoningEffort:            "xhigh",
+		FastMode:                   true,
+		ContextWindow:              1000000,
+		AutoCompactStandardPercent: 80,
+		AutoCompactExtendedPercent: 70,
+		RuntimeMode:                "full-access",
+		SessionRef:                 "live-session",
+		PendingForkRef:             "pending-fork",
+		ForkedFromThreadID:         "previous-fork",
+		CreatedAt:                  1,
+		UpdatedAt:                  2,
+	}
+
+	fork := BuildForkedThread(source)
+
+	if fork.ID == "" || fork.ID == source.ID {
+		t.Errorf("fork.ID = %q, want fresh non-empty value", fork.ID)
+	}
+	if fork.Title != "Build feature (fork)" {
+		t.Errorf("fork.Title = %q, want %q", fork.Title, "Build feature (fork)")
+	}
+	if fork.ForkedFromThreadID != source.ID {
+		t.Errorf("ForkedFromThreadID = %q, want %q", fork.ForkedFromThreadID, source.ID)
+	}
+	if fork.ProjectID != source.ProjectID {
+		t.Errorf("ProjectID = %q, want %q", fork.ProjectID, source.ProjectID)
+	}
+	if fork.Provider != source.Provider || fork.Model != source.Model {
+		t.Errorf("provider/model not copied: %+v", fork)
+	}
+	if fork.WorkspacePath != source.WorkspacePath || fork.WorktreePath != source.WorktreePath || fork.Branch != source.Branch {
+		t.Errorf("workspace fields not copied: %+v", fork)
+	}
+	if fork.Mode != source.Mode || fork.RuntimeMode != source.RuntimeMode {
+		t.Errorf("mode fields not copied: %+v", fork)
+	}
+	if fork.ReasoningEffort != source.ReasoningEffort || fork.FastMode != source.FastMode || fork.ContextWindow != source.ContextWindow {
+		t.Errorf("model-config fields not copied: %+v", fork)
+	}
+	// Session-state fields MUST be empty — the fork hasn't run yet, so
+	// it has no resume reference. The app-side saga sets these once
+	// the provider-specific resume is resolved.
+	if fork.SessionRef != "" {
+		t.Errorf("SessionRef = %q, want empty (fork has not run)", fork.SessionRef)
+	}
+	if fork.PendingForkRef != "" {
+		t.Errorf("PendingForkRef = %q, want empty (fork has not run)", fork.PendingForkRef)
+	}
+	// AutoCompact percent fields are intentionally NOT copied so the
+	// fork picks up the live Settings default on first spawn.
+	if fork.AutoCompactStandardPercent != 0 || fork.AutoCompactExtendedPercent != 0 {
+		t.Errorf("AutoCompact percents leaked: std=%d ext=%d, want 0 0",
+			fork.AutoCompactStandardPercent, fork.AutoCompactExtendedPercent)
+	}
+	if fork.CreatedAt == 0 || fork.CreatedAt != fork.UpdatedAt {
+		t.Errorf("CreatedAt/UpdatedAt = (%d, %d), want non-zero and equal", fork.CreatedAt, fork.UpdatedAt)
+	}
+}
