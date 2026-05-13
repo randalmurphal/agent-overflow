@@ -74,6 +74,45 @@ func BuildGeneratedWorktreeBranchNameWithPrefix(raw, prefix string) string {
 	return prefix + SanitizeBranchFragment(normalized)
 }
 
+// BranchFragmentFromUserMessage extracts a branch-fragment-ready short
+// title from the first user message of a worktree thread. The returned
+// string is the raw input to `BuildGeneratedWorktreeBranchName*` — it
+// has been line-clipped to the first line, sentence-clipped to the
+// first sentence-ending punctuation, whitespace-collapsed, and falls
+// back to `autoBranchFallback` ("update") on empty input. Further
+// sanitation (lowercase, forbidden chars, length cap, prefix wrap) is
+// the caller's job via `BuildGeneratedWorktreeBranchName*`.
+func BranchFragmentFromUserMessage(content string) string {
+	title := strings.TrimSpace(content)
+	if title == "" {
+		return autoBranchFallback
+	}
+	if line, _, ok := strings.Cut(title, "\n"); ok {
+		title = line
+	}
+	title = firstSentenceFromMessage(title)
+	title = strings.Join(strings.Fields(title), " ")
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return autoBranchFallback
+	}
+	return title
+}
+
+// firstSentenceFromMessage returns the prefix of content up to and
+// including the first `.`, `!`, or `?`. With no terminator, the full
+// content is returned unchanged. Used by BranchFragmentFromUserMessage
+// to keep branch fragments short even when the user message rambles.
+func firstSentenceFromMessage(content string) string {
+	for i, r := range content {
+		if r != '.' && r != '!' && r != '?' {
+			continue
+		}
+		return strings.TrimSpace(content[:i+1])
+	}
+	return content
+}
+
 // SanitizeBranchFragment collapses arbitrary user-facing text into a safe
 // lowercase git branch fragment.
 func SanitizeBranchFragment(raw string) string {

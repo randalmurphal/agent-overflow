@@ -17,7 +17,7 @@ func (a *App) generatedWorktreeBranchName(thread store.Thread, message string) (
 		}
 		return gitops.BuildGeneratedWorktreeBranchNameWithPrefix(raw, a.worktreeBranchPrefix()), nil
 	}
-	return gitops.BuildGeneratedWorktreeBranchNameWithPrefix(branchNameFromUserMessage(message), a.worktreeBranchPrefix()), nil
+	return gitops.BuildGeneratedWorktreeBranchNameWithPrefix(gitops.BranchFragmentFromUserMessage(message), a.worktreeBranchPrefix()), nil
 }
 
 func (a *App) maybeRenameTemporaryWorktreeBranch(threadID, message string) {
@@ -56,31 +56,4 @@ func (a *App) maybeRenameTemporaryWorktreeBranch(threadID, message string) {
 	if err := a.store.UpdateThread(thread); err != nil {
 		log.Printf("send message: persist renamed worktree branch: %v", err)
 	}
-}
-
-func branchNameFromUserMessage(content string) string {
-	title := strings.TrimSpace(content)
-	if title == "" {
-		return "update"
-	}
-	if line, _, ok := strings.Cut(title, "\n"); ok {
-		title = line
-	}
-	title = firstSentenceFromMessage(title)
-	title = strings.Join(strings.Fields(title), " ")
-	title = strings.TrimSpace(title)
-	if title == "" {
-		return "update"
-	}
-	return title
-}
-
-func firstSentenceFromMessage(content string) string {
-	for i, r := range content {
-		if r != '.' && r != '!' && r != '?' {
-			continue
-		}
-		return strings.TrimSpace(content[:i+1])
-	}
-	return content
 }

@@ -270,48 +270,8 @@ func TestMaybeRenameTemporaryWorktreeBranchIsIdempotentWhenSkipped(t *testing.T)
 	}
 }
 
-// Unit-level coverage for the helpers used to derive branch names from user
-// messages. These run without hitting git.
-func TestBranchNameFromUserMessage(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{name: "plain sentence", in: "Fix the reconnect bug", want: "Fix the reconnect bug"},
-		{name: "keeps first line only", in: "First line\nsecond", want: "First line"},
-		{name: "collapses whitespace", in: "too    many\tspaces", want: "too many spaces"},
-		{name: "stops at first sentence", in: "First sentence. Second sentence.", want: "First sentence."},
-		{name: "empty falls back", in: "   \t\n", want: "update"},
-		{name: "question mark ends sentence", in: "Can you fix it? And then some", want: "Can you fix it?"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := branchNameFromUserMessage(tt.in)
-			if got != tt.want {
-				t.Fatalf("branchNameFromUserMessage(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestFirstSentenceFromMessage(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{name: "period boundary", in: "alpha. beta", want: "alpha."},
-		{name: "exclamation boundary", in: "wow! more", want: "wow!"},
-		{name: "question boundary", in: "huh? later", want: "huh?"},
-		{name: "no terminator returns all", in: "no terminator here", want: "no terminator here"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := firstSentenceFromMessage(tt.in)
-			if got != tt.want {
-				t.Fatalf("firstSentenceFromMessage(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
-	}
-}
+// Unit-level coverage for the helpers used to derive branch names from
+// user messages now lives in internal/git/branch_names_test.go alongside
+// the lifted BranchFragmentFromUserMessage / firstSentenceFromMessage.
+// This file retains the integration tests (worktree creation, rename,
+// idempotency) that exercise the full saga.
