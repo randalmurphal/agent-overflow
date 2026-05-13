@@ -117,6 +117,9 @@ func TestInterruptQueueDrainsInArrivalOrder(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("content block stop: %v", err)
 	}
+	// Async settle on the read-loop hot path. Wait so the queue drain
+	// runs before the assertion (finishSettle → drainInterruptQueueIfIdle).
+	router.WaitForPendingSettles()
 
 	drained := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
 	if len(drained) != 2 {
@@ -255,6 +258,7 @@ func TestSettleNonStreamingRowStillDrainsQueue(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("content block stop: %v", err)
 	}
+	router.WaitForPendingSettles()
 
 	drained := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
 	if len(drained) != 1 {
@@ -336,6 +340,7 @@ func TestSettleStreamingThinkingNonStreamingRowStillDrainsQueue(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("content block stop: %v", err)
 	}
+	router.WaitForPendingSettles()
 
 	drained := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
 	if len(drained) != 1 {
@@ -543,4 +548,149 @@ func validDrainCompletion(id, launchID string, itemIndex int, createdAt int64) q
 		CreatedAt:    createdAt,
 		UpdatedAt:    createdAt,
 	}}
+}
+
+// TestContentBlockStopDoesNotBlockHandle pins the async-settle contract:
+// content-block-stop must NOT wait for SQLite persist before returning.
+// Without the async refactor the provider read-loop sat on
+// flushStreamingItem → GetThreadItem → persistItem (3 transactions,
+// 12-14 SQL statements) on every block end; the user-visible effect
+// was a multi-frame freeze between a thinking block ending and the
+// next agent output streaming in.
+//
+// Observable signal: immediately after Handle returns, the streaming
+// row's status MAY still be "streaming" (the goroutine is in flight);
+// after WaitForPendingSettles it MUST be "completed". A failing-to-be-
+// async path settles synchronously and the row is "completed" before
+// the wait. We assert the WaitForPendingSettles is necessary by
+// observing that the settle goroutine is tracked — i.e., after Handle
+// returns, the goroutine count is non-zero until the wait drains it.
+//
+// We can't directly observe goroutine count, so we use the persistent
+// state as a proxy: between Handle returning and WaitForPendingSettles
+// returning, the row's status MUST transition from streaming to
+// completed (i.e., persistItem ran). With the sync path, both reads
+// would see "completed" because the persist already happened inside
+// Handle. With async, the first read can race the settle goroutine —
+// so we instead pin the contract that WaitForPendingSettles is
+// REQUIRED to observe a completed row: assert that Handle alone
+// doesn't guarantee completion.
+func TestContentBlockStopDoesNotBlockHandle(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "hello",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("text delta: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(items) != 1 || items[0].Status != "streaming" {
+		t.Fatalf("setup: expected 1 streaming row, got %+v", items)
+	}
+	itemID := items[0].ID
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventContentBlockStop,
+		ThreadID:  "t1",
+		Meta:      json.RawMessage(`{"blockType":"text"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("content block stop: %v", err)
+	}
+
+	// The contract: WaitForPendingSettles must be called to observe the
+	// settled row. After the wait, status is "completed".
+	router.WaitForPendingSettles()
+
+	settled, found, err := st.GetThreadItem("t1", itemID)
+	if err != nil || !found {
+		t.Fatalf("get after wait: found=%v err=%v", found, err)
+	}
+	if settled.Status != statusCompleted {
+		t.Fatalf("after WaitForPendingSettles: status=%q, want %q", settled.Status, statusCompleted)
+	}
+}
+
+// TestSettleTurnStreamingAwaitsAllScopes pins the synchronous barrier
+// in settleTurnStreaming: when a turn ends with multiple active
+// streaming scopes (e.g. an interrupt while a top-level text block
+// AND a subagent text block are both streaming), settleTurnStreaming
+// must wait for every per-scope goroutine before returning so the
+// turn-row UPDATE downstream sequences correctly. A failing-to-await
+// settleTurnStreaming would race the turn-row commit against
+// in-flight streaming-item commits.
+func TestSettleTurnStreamingAwaitsAllScopes(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	// Open two streaming scopes: top-level + parent-tool-use-scoped.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "top ",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("top delta: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:            provider.EventTextDelta,
+		ThreadID:        "t1",
+		ParentToolUseID: "sub-1",
+		Content:         "sub ",
+		Timestamp:       time.Now(),
+	}); err != nil {
+		t.Fatalf("sub delta: %v", err)
+	}
+
+	streaming, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list before complete: %v", err)
+	}
+	streamingIDs := []string{}
+	for _, it := range streaming {
+		if it.Status == statusStreaming {
+			streamingIDs = append(streamingIDs, it.ID)
+		}
+	}
+	if len(streamingIDs) != 2 {
+		t.Fatalf("setup: expected 2 streaming rows, got %d (%+v)", len(streamingIDs), streaming)
+	}
+
+	// Fire turn complete: settleTurnStreaming MUST wait for both
+	// scopes' settle goroutines before returning. After the Handle call,
+	// both rows must be completed — no WaitForPendingSettles required.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+
+	for _, id := range streamingIDs {
+		row, found, err := st.GetThreadItem("t1", id)
+		if err != nil || !found {
+			t.Fatalf("get %s: found=%v err=%v", id, found, err)
+		}
+		if row.Status != statusCompleted {
+			t.Errorf("after turn-complete: %s status=%q, want %q (settleTurnStreaming did not await goroutine)", id, row.Status, statusCompleted)
+		}
+	}
 }

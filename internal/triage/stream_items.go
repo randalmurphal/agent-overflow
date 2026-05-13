@@ -8,6 +8,12 @@ import (
 	"agent-overflow/internal/store"
 )
 
+// thinkingPreviewRunes caps the persisted summary on thinking rows to
+// the trailing N code points. The frontend mirrors this constant in
+// `frontend/src/lib/stores/thread.svelte.ts` (`THINKING_TAIL_RUNES`)
+// so the in-memory pane summary matches what the server writes at
+// settle time — a divergence would cause the row to visibly shrink at
+// the streaming → completed transition. Keep the two in sync.
 const thinkingPreviewRunes = 200
 
 func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
@@ -191,16 +197,19 @@ func (r *Router) blockIndex(threadID string, turnIndex int, scope string) int {
 	return value
 }
 
+// settleStreamingScope is the per-scope settle hook used by
+// settleStreamingBeforeTimelineBoundary when a parent_tool_use_id
+// scopes the in-flight blocks (Claude subagent / nested tool path).
+// The actual SQLite write moves to async goroutines so the next
+// provider event on the read-loop can flow without waiting on the
+// settle's persist. Returns nil always; errors surface via the
+// settle goroutine's log line.
 func (r *Router) settleStreamingScope(threadID, scope string) error {
 	turnIndex, err := r.currentTurnIndex(threadID)
 	if err != nil {
 		return err
 	}
-	if err := r.settleStreamingText(threadID, turnIndex, scope, statusCompleted); err != nil {
-		return err
-	}
-	if err := r.settleStreamingThinking(threadID, turnIndex, scope, statusCompleted); err != nil {
-		return err
-	}
+	r.settleStreamingTextAsync(threadID, turnIndex, scope, statusCompleted)
+	r.settleStreamingThinkingAsync(threadID, turnIndex, scope, statusCompleted)
 	return nil
 }

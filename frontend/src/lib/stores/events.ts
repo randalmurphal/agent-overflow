@@ -684,7 +684,6 @@ function flushItemEventQueue(): void {
   const pendingUpserts: Item[] = [];
   const notifiedUpserts: Item[] = [];
   const pendingDeltas = new Map<string, ItemDeltaEvent & { chunks: string[] }>();
-  const deltaThreadIds = new Set<string>();
 
   const flushPendingUpserts = () => {
     if (pendingUpserts.length === 0) return;
@@ -715,7 +714,6 @@ function flushItemEventQueue(): void {
         updatedAt: delta.updatedAt,
       };
       applyItemDelta(coalesced);
-      deltaThreadIds.add(coalesced.threadId);
     }
     pendingDeltas.clear();
   };
@@ -736,14 +734,6 @@ function flushItemEventQueue(): void {
 
   flushPendingDeltas();
   flushPendingUpserts();
-  if (deltaThreadIds.size > 0) {
-    for (const pane of getAllPanes().values()) {
-      const threadId = pane.threadId;
-      if (threadId && deltaThreadIds.has(threadId)) {
-        pane.flushLiveDeltas();
-      }
-    }
-  }
   // Sidebar activity is bumped only at meaningful interaction
   // boundaries: user_text upsert (handled in applyItemUpserts),
   // provider:turn_completed (applyTurnCompleted), and approval /

@@ -2196,6 +2196,19 @@ func configureDatabase(db *sql.DB) error {
 	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
 		return fmt.Errorf("set busy timeout: %w", err)
 	}
+	// synchronous=NORMAL is the WAL-recommended desktop config. With WAL
+	// the journal file is always fsync'd before commit; synchronous=NORMAL
+	// drops the redundant fsync of the main database file at checkpoint
+	// time. Power-loss can lose the last few committed transactions, but
+	// the database cannot corrupt — and per root/CLAUDE.md principle 2
+	// the provider session files are the authoritative history, so a
+	// re-stream covers any lost SQLite-side writes. synchronous=FULL (the
+	// SQLite default) is needed only when the database is the sole record
+	// of truth; that's not us. NORMAL meaningfully shortens fsync stalls
+	// during stream-bursts, which is the per-block-stop freeze hot path.
+	if _, err := db.Exec("PRAGMA synchronous=NORMAL"); err != nil {
+		return fmt.Errorf("set synchronous=NORMAL: %w", err)
+	}
 	return nil
 }
 

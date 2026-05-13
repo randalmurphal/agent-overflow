@@ -172,6 +172,17 @@ type Router struct {
 	// the top of Handle and decremented via defer so a panic still
 	// releases the wait.
 	inflight sync.WaitGroup
+	// settleWG tracks every fire-and-forget streaming-settle goroutine in
+	// flight. Block-stop and stream-item settle hot paths spawn settle
+	// work on its own goroutine so the provider read-loop doesn't pay
+	// the SQLite-write latency mid-turn (the freeze hot path between a
+	// thinking block ending and the next agent output streaming in).
+	// settleTurnStreaming uses a per-turn local WaitGroup AND this one,
+	// so the turn-row commit still sequences after every streaming-item
+	// commit on the same logical turn. The router blocks shutdown on
+	// this counter (see WaitForPendingSettles) so SQLite isn't closed
+	// underneath an in-flight settle.
+	settleWG sync.WaitGroup
 	// pendingByThread is the FIFO of AO-initiated user sends awaiting
 	// wire confirmation, keyed by threadID. Triage's send path appends
 	// an entry when it dispatches a user message; the matching wire

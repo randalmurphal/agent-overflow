@@ -122,6 +122,34 @@ const SLICE_AROUND_ITEM_COUNT = 50;
  */
 const SPINNER_THRESHOLD_MS = 100;
 
+/**
+ * Maximum runes the frontend keeps in `items[i].summary` for a streaming
+ * thinking row. Mirrors `thinkingPreviewRunes` in
+ * `internal/triage/stream_items.go` — the server-side tail cap on the
+ * persisted thinking summary. Matching the cap means the completion
+ * upsert (which carries the same 200-rune tail) does not visibly shrink
+ * the row at settle. Full thinking content stays on-demand via the
+ * payload table, fetched when the user expands the row.
+ */
+const THINKING_TAIL_RUNES = 200;
+
+/**
+ * Returns the tail of `text` containing at most `maxRunes` Unicode code
+ * points. Surrogate-pair safe — walks code points from the end and slices
+ * once. Cheap on the common case where `text.length <= maxRunes`.
+ */
+function trimToTailRunes(text: string, maxRunes: number): string {
+  if (text.length <= maxRunes) return text;
+  let runes = 0;
+  for (let i = text.length; i > 0; ) {
+    const cp = text.codePointAt(i - 1)!;
+    i -= cp > 0xffff ? 2 : 1;
+    runes += 1;
+    if (runes >= maxRunes) return text.slice(i);
+  }
+  return text;
+}
+
 function sameRhsPanel(left: RhsPanel | null, right: RhsPanel | null): boolean {
   if (left === null || right === null) return left === right;
   if (left.kind !== right.kind) return false;
@@ -478,12 +506,6 @@ export function createThreadPane() {
   let thread: Thread | null = $state(null);
   let items: Item[] = $state([]);
   let timelineRevision = $state(0);
-  let liveItemSummaries: Record<string, string> = $state({});
-  // Bumps once per coalesced delta flush. Auto-follow consumers depend
-  // on this so a streaming row that grows in viewport (no new items, no
-  // timelineRevision tick) still re-pins to bottom while sticky.
-  let liveDeltaRevision = $state(0);
-  const liveDeltaChunks: Map<string, string[]> = new Map();
   // Per-itemId expansion state. Survives row remount (virtua's overscan
   // eviction would otherwise reset toggle + drop loaded chunks, forcing
   // a re-fetch from Go on every back-scroll). Cleared on thread switch.
@@ -500,9 +522,7 @@ export function createThreadPane() {
   const attachmentBlobs: Map<string, Map<string, ImagePreviewItem>> = new Map();
   const itemStatusById: Map<string, Item['status']> = new Map();
   const itemIndexById: Map<string, number> = new Map();
-  const itemSummaryById: Map<string, string> = new Map();
   const itemIdsByTurn: Map<number, string[]> = new Map();
-  let liveSummaryFrame: number | null = null;
   let pendingApprovals: ApprovalRequest[] = $state([]);
   let pendingUserInputs: UserInputRequest[] = $state([]);
   const resolvedApprovalIds = new Set<string>();
@@ -835,48 +855,6 @@ export function createThreadPane() {
    */
   let cachedVirtuaCache: CacheSnapshot | undefined = undefined;
 
-  function requestFrame(callback: () => void): number {
-    if (typeof requestAnimationFrame === 'function') {
-      return requestAnimationFrame(callback);
-    }
-    return window.setTimeout(callback, 0);
-  }
-
-  function cancelFrame(handle: number): void {
-    if (typeof cancelAnimationFrame === 'function') {
-      cancelAnimationFrame(handle);
-    } else {
-      window.clearTimeout(handle);
-    }
-  }
-
-  function flushLiveDeltaChunks(): void {
-    liveSummaryFrame = null;
-    if (liveDeltaChunks.size === 0) return;
-    const next = { ...liveItemSummaries };
-    for (const [itemID, chunks] of liveDeltaChunks) {
-      const persisted = itemSummaryById.get(itemID) ?? '';
-      next[itemID] = (next[itemID] ?? persisted) + chunks.join('');
-    }
-    liveDeltaChunks.clear();
-    liveItemSummaries = next;
-    liveDeltaRevision++;
-  }
-
-  function scheduleLiveDeltaFlush(): void {
-    if (liveSummaryFrame !== null) return;
-    liveSummaryFrame = requestFrame(flushLiveDeltaChunks);
-  }
-
-  function resetLiveBuffers(): void {
-    if (liveSummaryFrame !== null) {
-      cancelFrame(liveSummaryFrame);
-      liveSummaryFrame = null;
-    }
-    liveDeltaChunks.clear();
-    liveItemSummaries = {};
-  }
-
   // ---- Per-row UI state registries ----------------------------------
   //
   // virtua's overscan eviction unmounts row components when they scroll
@@ -1038,13 +1016,11 @@ export function createThreadPane() {
   function rebuildItemIndexes(nextItems: Item[]): void {
     itemStatusById.clear();
     itemIndexById.clear();
-    itemSummaryById.clear();
     itemIdsByTurn.clear();
     for (let index = 0; index < nextItems.length; index += 1) {
       const item = nextItems[index];
       itemStatusById.set(item.id, item.status);
       itemIndexById.set(item.id, index);
-      itemSummaryById.set(item.id, item.summary);
       appendItemIdToTurn(item.turnIndex, item.id);
     }
   }
@@ -1082,39 +1058,6 @@ export function createThreadPane() {
     if (a.turnIndex !== b.turnIndex) return a.turnIndex - b.turnIndex;
     if (a.itemIndex !== b.itemIndex) return a.itemIndex - b.itemIndex;
     return 0;
-  }
-
-  function applyLiveStateForUpsert(item: Item, nextLive: Record<string, string>): boolean {
-    if (item.status !== 'streaming') {
-      const hadDeltaChunks = liveDeltaChunks.delete(item.id);
-      const existingLive = nextLive[item.id];
-      if (existingLive === undefined) return hadDeltaChunks;
-      // Drop the live entry on settle ONLY when it is visually
-      // indistinguishable from the persisted summary. For assistant_text
-      // the persisted summary IS the full live string, so deleting is a
-      // no-op visually. For thinking rows the persisted summary is a
-      // tail-truncated 200-rune preview shorter than the full live
-      // string; keeping the live entry preserves the exact 3-line tail
-      // that was on screen across the streaming → settle boundary
-      // instead of having `resolveDisplayItem` swap in the shorter
-      // preview and visibly shrink the row. The map clears on
-      // switchThread, so retained entries stay bounded by the visible
-      // thread's lifetime.
-      if (existingLive === item.summary) {
-        delete nextLive[item.id];
-        return true;
-      }
-      return hadDeltaChunks;
-    }
-
-    if (nextLive[item.id] !== undefined || !item.summary) {
-      return false;
-    }
-
-    const pending = liveDeltaChunks.get(item.id)?.join('') ?? '';
-    liveDeltaChunks.delete(item.id);
-    nextLive[item.id] = item.summary + pending;
-    return true;
   }
 
   function itemsForThread(nextItems: Item[] | null | undefined, threadId: string): Item[] {
@@ -1268,9 +1211,7 @@ export function createThreadPane() {
     const currentThreadId = thread?.id ?? null;
     const next = items.slice();
 
-    const nextLive = { ...liveItemSummaries };
     let changed = false;
-    let liveChanged = false;
     let needsSort = false;
 
     for (const item of incoming) {
@@ -1278,11 +1219,9 @@ export function createThreadPane() {
 
       const existingIndex = itemIndexById.get(item.id);
       if (existingIndex !== undefined) {
-        liveChanged = applyLiveStateForUpsert(item, nextLive) || liveChanged;
         const previous = next[existingIndex];
         next[existingIndex] = item;
         itemStatusById.set(item.id, item.status);
-        itemSummaryById.set(item.id, item.summary);
         if (previous.turnIndex !== item.turnIndex) {
           removeItemIdFromTurn(previous.turnIndex, item.id);
           addUniqueItemIdToTurn(item.turnIndex, item.id);
@@ -1301,7 +1240,6 @@ export function createThreadPane() {
         continue;
       }
 
-      liveChanged = applyLiveStateForUpsert(item, nextLive) || liveChanged;
       const previousTail = next.at(-1);
       if (previousTail && compareItemsByTimelinePosition(previousTail, item) > 0) {
         needsSort = true;
@@ -1309,14 +1247,10 @@ export function createThreadPane() {
       itemIndexById.set(item.id, next.length);
       next.push(item);
       itemStatusById.set(item.id, item.status);
-      itemSummaryById.set(item.id, item.summary);
       appendItemIdToTurn(item.turnIndex, item.id);
       changed = true;
     }
 
-    if (liveChanged) {
-      liveItemSummaries = nextLive;
-    }
     if (!changed) return;
 
     if (needsSort) {
@@ -1687,7 +1621,6 @@ export function createThreadPane() {
       hasMoreHistory = false;
       cachedVirtuaCache = undefined;
     }
-    resetLiveBuffers();
     rebuildItemIndexes(items);
     clearRowUiState();
     loadingOlder = false;
@@ -1873,14 +1806,6 @@ export function createThreadPane() {
      */
     get isLocked() { return items.length > 0; },
     get timelineRevision() { return timelineRevision; },
-    get liveItemSummaries() { return liveItemSummaries; },
-    /**
-     * Bumps once per coalesced live-delta flush (~rAF cadence). Auto-follow
-     * effects watch this so a streaming row that grows in viewport while
-     * sticky still re-pins to the new bottom — `timelineRevision` only
-     * ticks on item-array changes, which deltas don't trigger.
-     */
-    get liveDeltaRevision() { return liveDeltaRevision; },
     get pendingApprovals() { return pendingApprovals; },
     get pendingUserInputs() { return pendingUserInputs; },
     get contextWindow() { return contextWindow; },
@@ -2078,7 +2003,6 @@ export function createThreadPane() {
     clear(): void {
       thread = null;
       items = [];
-      resetLiveBuffers();
       rebuildItemIndexes(items);
       pendingApprovals = [];
       pendingUserInputs = [];
@@ -2438,23 +2362,34 @@ export function createThreadPane() {
     applyItemDelta(evt: ItemDeltaEvent): void {
       if (!evt.itemId || !evt.delta) return;
       if (thread && evt.threadId !== thread.id) return;
-      const status = itemStatusById.get(evt.itemId);
-      if (status && status !== 'streaming') return;
-      const chunks = liveDeltaChunks.get(evt.itemId);
-      if (chunks) {
-        chunks.push(evt.delta);
-      } else {
-        liveDeltaChunks.set(evt.itemId, [evt.delta]);
+      const index = itemIndexById.get(evt.itemId);
+      if (index === undefined) {
+        // The wire contract from triage is: the upsert that creates a
+        // streaming row ALWAYS precedes any delta for that row
+        // (handleTextDelta in internal/triage/stream_items.go inserts
+        // on first delta + emits the upsert before the delta event).
+        // Hitting this branch means a transport gap, a replay race, or
+        // a missed init left us with a delta whose row doesn't exist
+        // yet. Log so the regression isn't silent — under the old
+        // parallel-slice architecture this case was masked by
+        // `liveDeltaChunks` buffering, which we no longer have.
+        console.warn('[thread] applyItemDelta: no row for itemId', evt.itemId);
+        return;
       }
-      scheduleLiveDeltaFlush();
-    },
+      const current = items[index];
+      if (current.status !== 'streaming') return;
 
-    flushLiveDeltas(): void {
-      if (liveSummaryFrame !== null) {
-        cancelFrame(liveSummaryFrame);
-        liveSummaryFrame = null;
+      let nextSummary = current.summary + evt.delta;
+      if (current.kind === 'thinking') {
+        nextSummary = trimToTailRunes(nextSummary, THINKING_TAIL_RUNES);
       }
-      flushLiveDeltaChunks();
+      // Replace the entry rather than mutating in place: threadItemCache
+      // snapshots items by reference and the chat surface depends on
+      // reference equality for virtua's per-row ResizeObserver to stay
+      // quiet on unchanged rows. The streaming row is genuinely growing,
+      // so a fresh reference for the row whose content changed is the
+      // correct signal.
+      items[index] = { ...current, summary: nextSummary };
     },
 
     // ---- Per-row UI state (survives virtua remount) ----

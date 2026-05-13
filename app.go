@@ -750,6 +750,30 @@ func (a *App) Shutdown(ctx context.Context) error {
 		record("close logger", a.logger.Close())
 	}
 
+	// Step 8b: final settle-goroutine drain. Provider session close at
+	// Step 4 may have emitted session_died / EventTurnComplete events
+	// that ran through triage AFTER Step 2's drainTriage barrier. Those
+	// post-drain Handle calls can spawn async settle goroutines
+	// (settleStreamingTextAsync / settleStreamingThinkingAsync) that
+	// would otherwise call into SQLite after Step 9 closes it. The
+	// 5-second cap matches the busy_timeout PRAGMA: if a settle is
+	// genuinely stuck behind a SQL lock, no amount of extra waiting will
+	// help and shutdown should proceed.
+	if a.triage != nil {
+		settleCtx, settleCancel := contextWithTimeout(ctx, 5*time.Second)
+		drained := make(chan struct{})
+		go func() {
+			a.triage.WaitForPendingSettles()
+			close(drained)
+		}()
+		select {
+		case <-drained:
+		case <-settleCtx.Done():
+			log.Printf("app: drain settles timed out after 5s — proceeding with close")
+		}
+		settleCancel()
+	}
+
 	// Step 9: close SQLite last. Triage, replay, provider sessions,
 	// and the logger have all flushed by this point; anyone calling
 	// into the store after this will see a closed-db error rather

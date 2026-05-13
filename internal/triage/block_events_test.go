@@ -50,6 +50,10 @@ func TestContentBlockStopSettlesStreamingItem(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("content block stop: %v", err)
 	}
+	// content-block-stop now spawns the settle on a goroutine so the
+	// provider read-loop isn't blocked by SQLite (see stream_state.go).
+	// Wait for it before asserting persisted state.
+	router.WaitForPendingSettles()
 
 	settled, found, err := st.GetThreadItem("t1", openingItem.ID)
 	if err != nil {
@@ -75,6 +79,7 @@ func TestContentBlockStopSettlesStreamingItem(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("second content block stop: %v", err)
 	}
+	router.WaitForPendingSettles()
 	after, _, _ := st.GetThreadItem("t1", openingItem.ID)
 	if after.Status != statusCompleted {
 		t.Errorf("status flipped on repeat stop: got %q", after.Status)
@@ -120,6 +125,7 @@ func TestThinkingSignatureRoundTripsThroughMeta(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("content block stop: %v", err)
 	}
+	router.WaitForPendingSettles()
 
 	settled, found, err := st.GetThreadItem("t1", itemID)
 	if err != nil || !found {

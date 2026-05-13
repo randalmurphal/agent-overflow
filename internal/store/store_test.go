@@ -67,6 +67,26 @@ func TestNewCreatesTablesSuccessfully(t *testing.T) {
 	}
 }
 
+func TestPassiveCheckpoint(t *testing.T) {
+	s := newTestStore(t)
+
+	// Empty WAL — should still succeed.
+	if err := s.PassiveCheckpoint(); err != nil {
+		t.Fatalf("passive checkpoint on empty wal: %v", err)
+	}
+
+	// Generate WAL activity, then checkpoint. The call must succeed
+	// regardless of how many pages it actually reclaims (PASSIVE bails
+	// on reader contention by design).
+	thr := makeThread("t-checkpoint", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := s.PassiveCheckpoint(); err != nil {
+		t.Fatalf("passive checkpoint after write: %v", err)
+	}
+}
+
 func TestLatestAssistantTextSummaryForParent(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t1", "codex")); err != nil {

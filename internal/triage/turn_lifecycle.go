@@ -429,6 +429,28 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 
 	r.clearOpenTurn(evt.ThreadID)
 	r.closeTurnSpan(evt.ThreadID, persistErr)
+
+	// Opportunistic WAL passive checkpoint at the idle boundary. PASSIVE
+	// is non-blocking: it reclaims whatever pages the WAL can free
+	// without stalling readers, and skips the rest. We only fire it
+	// when this thread has no remaining streaming items — the counter
+	// is the freshest signal that "the stream burst just ended" — and
+	// we run the actual PRAGMA on a goroutine so we never block the
+	// provider read-loop on its syscall. The autocheckpoint at 1000
+	// pages is still the steady-state mechanism; this is an extra
+	// nudge at the natural quiet point.
+	r.mu.Lock()
+	thisThreadIdle := r.streamingItemCounts[evt.ThreadID] == 0
+	r.mu.Unlock()
+	if thisThreadIdle {
+		threadID := evt.ThreadID
+		go func() {
+			if cpErr := r.store.PassiveCheckpoint(); cpErr != nil {
+				log.Printf("triage: passive checkpoint after turn complete (%s): %v", threadID, cpErr)
+			}
+		}()
+	}
+
 	return persistErr
 }
 
@@ -970,11 +992,13 @@ func (r *Router) MarkUserInterrupt(threadID string) (string, error) {
 	return errID, nil
 }
 
-// Wait blocks until every in-flight Handle call has returned, or until
-// ctx is cancelled. Shutdown uses this to drain the router before
-// flushing observability writers; a completed Wait means the store and
-// event emit have seen the last event. Callers that pass a deadlined
-// ctx get a context.DeadlineExceeded when the drain runs long.
+// Wait blocks until every in-flight Handle call has returned and every
+// fire-and-forget settle goroutine has completed, or until ctx is
+// cancelled. Shutdown uses this to drain the router before flushing
+// observability writers and closing the store; a completed Wait means
+// the SQLite write boundary has caught up to every event the router
+// classified. Callers that pass a deadlined ctx get a
+// context.DeadlineExceeded when the drain runs long.
 func (r *Router) Wait(ctx context.Context) error {
 	if r == nil {
 		return nil
@@ -982,6 +1006,11 @@ func (r *Router) Wait(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {
 		r.inflight.Wait()
+		// Settle goroutines outlive their spawning Handle call (the
+		// caller has already returned), so wait for them too before
+		// flushing stream persistence — flushAllStreamPersistence
+		// writes to SQLite and must not race a settle's persistItem.
+		r.settleWG.Wait()
 		close(done)
 	}()
 	select {
@@ -990,6 +1019,20 @@ func (r *Router) Wait(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// WaitForPendingSettles blocks until every fire-and-forget settle
+// goroutine spawned by settleStreamingTextAsync /
+// settleStreamingThinkingAsync (and the per-scope goroutines inside
+// settleTurnStreaming) has completed. Used by app shutdown so SQLite
+// isn't closed underneath an in-flight settle. Unlike Wait, this does
+// NOT drain in-flight Handle calls — call Wait for the full shutdown
+// drain.
+func (r *Router) WaitForPendingSettles() {
+	if r == nil {
+		return
+	}
+	r.settleWG.Wait()
 }
 
 // CleanupThread removes all accumulator state for a thread. Call this when a

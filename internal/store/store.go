@@ -36,6 +36,26 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// PassiveCheckpoint triggers a non-blocking WAL checkpoint. PASSIVE
+// returns immediately without waiting for readers; any pages it can't
+// reclaim stay in the WAL and the next call catches up. Safe to call
+// from any goroutine. Returns the underlying error from SQLite —
+// callers typically log and continue (the checkpoint is opportunistic;
+// the autocheckpoint and the next idle-boundary call will retry).
+//
+// Why we need this on top of wal_autocheckpoint: the default autocheckpoint
+// fires when the WAL crosses ~1000 pages (~4MB), but it runs synchronously
+// on the next write transaction and bails when any reader transaction is
+// open. In a streaming workload the writer is continuously busy and
+// readers (the dashboard + active thread paging) overlap with bursts —
+// the autocheckpoint window rarely opens. Calling PassiveCheckpoint
+// from turn-completion (when streaming is known to be idle for the
+// thread) gives the WAL a deterministic opportunity to recycle.
+func (s *Store) PassiveCheckpoint() error {
+	_, err := s.db.Exec("PRAGMA wal_checkpoint(PASSIVE)")
+	return err
+}
+
 // runMigrations is defined in migrate.go.
 
 // Thread represents a conversation thread.

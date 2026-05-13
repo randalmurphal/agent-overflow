@@ -240,8 +240,8 @@ describe('setupEventListeners', () => {
     });
     await nextFrame();
 
-    expect(paneA.liveItemSummaries['text:0:0']).toBe('hello world');
-    expect(paneB.liveItemSummaries['text:0:0']).toBe('hello');
+    expect(paneA.items.find((it) => it.id === 'text:0:0')?.summary).toBe('hello world');
+    expect(paneB.items.find((it) => it.id === 'text:0:0')?.summary).toBe('hello');
   });
 
   it('adds and resolves pending approvals through provider:approval', async () => {
@@ -551,7 +551,7 @@ describe('setupEventListeners', () => {
       updatedAt: 2,
     });
     await nextFrame();
-    expect(pane.liveItemSummaries['text-1']).toBe('yield timeouts');
+    expect(pane.items.find((item) => item.id === 'text-1')?.summary).toBe('yield timeouts');
 
     emitWailsEvent('provider:item_event', {
       action: 'upsert',
@@ -574,7 +574,6 @@ describe('setupEventListeners', () => {
     await nextFrame();
 
     expect(pane.items.find((item) => item.id === 'text-1')?.summary).toBe('yield timeouts');
-    expect(pane.liveItemSummaries['text-1']).toBeUndefined();
   });
 
   it('coalesces contiguous deltas without crossing upsert boundaries', async () => {
@@ -617,7 +616,16 @@ describe('setupEventListeners', () => {
     });
     await nextFrame();
 
-    expect(pane.liveItemSummaries['text-1']).toBe('base pre post stream');
+    // The events.ts batch flushes pending deltas around every upsert
+    // boundary (`flushPendingDeltas()` at the upsert, then
+    // `flushPendingUpserts()` before the next delta queues). Under the
+    // collapsed architecture the upsert REPLACES `items[i]` with its
+    // canonical summary — the upsert is authoritative and supersedes
+    // any unflushed deltas before it. Deltas after the upsert append
+    // to the upsert's summary. The "doesn't cross" contract is: the
+    // post-upsert delta group sees the upsert's base, not the
+    // pre-upsert delta state.
+    expect(pane.items.find((item) => item.id === 'text-1')?.summary).toBe('base post stream');
   });
 
   it('drops item_event payloads with unknown actions', async () => {
@@ -640,7 +648,7 @@ describe('setupEventListeners', () => {
     });
     await nextFrame();
 
-    expect(pane.liveItemSummaries['text-1']).toBe('stable');
+    expect(pane.items.find((item) => item.id === 'text-1')?.summary).toBe('stable');
   });
 
   it('updates cached thread rows from thread:updated', async () => {

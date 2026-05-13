@@ -11,7 +11,6 @@
   import ToolCallCard from './ToolCallCard.svelte';
   import UserMessage from './UserMessage.svelte';
   import { parseJsonObject } from '../../utils/parseJsonObject';
-  import { resolveDisplayItem } from '../../utils/resolveDisplayItem';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import type { UserMessageActions } from './userMessageActions';
 
@@ -35,7 +34,10 @@
     targetFlashNonce?: number;
   } = $props();
 
-  const displayItem = $derived(resolveDisplayItem(item, pane.liveItemSummaries[item.id]));
+  // Single source of truth: `pane.items[i]` carries streaming deltas
+  // (applied in-place via `applyItemDelta`) and the completion summary.
+  // No overlay; no `$derived` reconciliation needed.
+  const displayItem = $derived(item);
 
   // Notification kind is encoded on meta.kind for sub-discrimination —
   // session-died notifications carry their own renderer (the historical

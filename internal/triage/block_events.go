@@ -19,14 +19,22 @@ func (r *Router) handleContentBlockStop(evt provider.ProviderEvent) error {
 		return err
 	}
 	scope := evt.ParentToolUseID
+	// content_block_stop is the freeze hot path: a thinking block ending
+	// or a text block ending fires SQLite-write-heavy settle work that
+	// would otherwise stall the provider read-loop. Async dispatch lets
+	// the next provider event flow immediately; settleTurnStreaming at
+	// turn boundary still waits on every in-flight scope before the
+	// turns row commits.
 	switch r.blockTypeForStop(evt.ThreadID, turnIndex, scope, evt.Meta) {
 	case "thinking":
 		if signature := blockSignature(evt.Meta); signature != "" {
 			_ = r.persistThinkingSignature(evt.ThreadID, turnIndex, scope, signature)
 		}
-		return r.settleStreamingThinking(evt.ThreadID, turnIndex, scope, statusCompleted)
+		r.settleStreamingThinkingAsync(evt.ThreadID, turnIndex, scope, statusCompleted)
+		return nil
 	case "text":
-		return r.settleStreamingText(evt.ThreadID, turnIndex, scope, statusCompleted)
+		r.settleStreamingTextAsync(evt.ThreadID, turnIndex, scope, statusCompleted)
+		return nil
 	default:
 		return nil
 	}

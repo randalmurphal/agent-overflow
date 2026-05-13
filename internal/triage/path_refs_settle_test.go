@@ -60,7 +60,8 @@ func TestSettleStreamingTextEnrichesPathRefs(t *testing.T) {
 	}
 
 	// Close the block: settleStreamingText fires, enrichPathRefs runs,
-	// persistItem writes the enriched meta.
+	// persistItem writes the enriched meta. The settle is async on the
+	// content-block-stop hot path, so wait before reading the row.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventContentBlockStop,
 		ThreadID:  "t1",
@@ -69,6 +70,7 @@ func TestSettleStreamingTextEnrichesPathRefs(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("content block stop: %v", err)
 	}
+	router.WaitForPendingSettles()
 
 	row := firstItemByKind(t, st, "t1", itemKindAssistantText)
 	if row.Meta == "" {

@@ -328,6 +328,23 @@ The one deliberate exception is the interrupt queue, which can span a
 turn boundary because its contract is "persist queued events once the
 interrupt lifts."
 
+⚠ **Async settle bookkeeping**: `settleStreamingTextAsync` /
+`settleStreamingThinkingAsync` move the heavy SQLite work off the
+provider read-loop (content-block-stop is the freeze hot path). The
+sync prelude (`takeActiveTextBlock` / `takeActiveThinkingBlock`) still
+runs under `r.mu` to flip `activeTextBlocks` / `activeThinkingBlocks`
+before returning, so duplicate settle attempts no-op even while the
+goroutine is in flight. The `streamingItemCounts` decrement and
+`drainInterruptQueueIfIdle` call BOTH live inside the goroutine
+(`finishSettle`) so the count's `0 → drain` transition is durable —
+incoming non-streaming rows queue correctly until the settle's persist
+commits. `r.settleWG` tracks every fire-and-forget settle goroutine for
+shutdown drain; `app.Close` blocks on `WaitForPendingSettles` with a
+5s timeout so SQLite isn't torn down underneath an in-flight write.
+`settleTurnStreaming` uses a per-turn `WaitGroup` to fan out per-scope
+settles in parallel while still blocking on its caller (so the turns
+row UPDATE sequences after all per-scope item writes).
+
 ## Raw chat content
 
 Triage persists raw item summaries and raw payload data only. It must not

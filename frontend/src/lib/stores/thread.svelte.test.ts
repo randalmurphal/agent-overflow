@@ -786,7 +786,7 @@ describe('createThreadPane', () => {
     ]);
   });
 
-  it('keeps streaming deltas out of the timeline item array', async () => {
+  it('applies streaming deltas in place via replace-pattern', async () => {
     const pane = createThreadPane();
     pane.upsertItem(makeItem({
       id: 'text:0:0',
@@ -796,6 +796,7 @@ describe('createThreadPane', () => {
     }));
     const initialItems = pane.items;
     const initialRevision = pane.timelineRevision;
+    const initialLength = initialItems.length;
 
     pane.applyItemDelta({
       threadId: 'thread-1',
@@ -813,67 +814,46 @@ describe('createThreadPane', () => {
     });
     await nextFrame();
 
+    // Replace-pattern semantics: deltas write `items[index] = { ...current, summary }`,
+    // so the array proxy reference is stable, length is stable, and
+    // timelineRevision does NOT bump (no insertions or sort). The summary
+    // at the streaming row's slot reflects the accumulated deltas.
     expect(pane.items).toBe(initialItems);
+    expect(pane.items.length).toBe(initialLength);
     expect(pane.timelineRevision).toBe(initialRevision);
-    expect(pane.liveItemSummaries['text:0:0']).toBe('hello world!');
+    expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe('hello world!');
   });
 
-  it('bumps liveDeltaRevision once per coalesced delta flush so auto-follow re-fires while streaming', async () => {
-    // Why: auto-follow (`MessageTimeline.svelte`) tracks length /
-    // timelineRevision / activeTurn. None of those tick during a pure
-    // streaming row growing in place — only `liveItemSummaries` does.
-    // Without `liveDeltaRevision`, the controller never re-pins to the
-    // new bottom and the user drifts off-screen until the row settles.
+  it('thinking-row deltas trim to the 200-rune tail in place', async () => {
+    // The frontend mirrors the server-side `thinkingPreviewRunes = 200`
+    // cap so the completion upsert (which carries the same 200-rune
+    // tail) does not visibly shrink the row at settle. Full thinking
+    // content stays on-demand via the expansion handle.
     const pane = createThreadPane();
     pane.upsertItem(makeItem({
-      id: 'text:0:0',
-      kind: 'assistant_text',
+      id: 'think:0:0',
+      kind: 'thinking',
       status: 'streaming',
-      summary: 'hello',
+      summary: 'seed',
+      payloadId: 'thinking-payload',
     }));
-    const initialDeltaRevision = pane.liveDeltaRevision;
 
-    // Two deltas in the same frame coalesce into one flush → one bump.
+    // Send a 500-rune block; only the last 200 should survive.
+    const bigChunk = 'a'.repeat(500);
     pane.applyItemDelta({
       threadId: 'thread-1',
-      itemId: 'text:0:0',
-      kind: 'assistant_text',
-      delta: ' world',
-      updatedAt: 123,
+      itemId: 'think:0:0',
+      kind: 'thinking',
+      delta: bigChunk,
+      updatedAt: 100,
     });
-    pane.applyItemDelta({
-      threadId: 'thread-1',
-      itemId: 'text:0:0',
-      kind: 'assistant_text',
-      delta: '!',
-      updatedAt: 124,
-    });
-    await nextFrame();
 
-    expect(pane.liveDeltaRevision).toBe(initialDeltaRevision + 1);
-
-    // A second flush in a later frame bumps again.
-    pane.applyItemDelta({
-      threadId: 'thread-1',
-      itemId: 'text:0:0',
-      kind: 'assistant_text',
-      delta: ' more',
-      updatedAt: 125,
-    });
-    await nextFrame();
-    expect(pane.liveDeltaRevision).toBe(initialDeltaRevision + 2);
+    const after = pane.items.find((item) => item.id === 'think:0:0')?.summary ?? '';
+    expect([...after].length).toBe(200);
+    expect(after.endsWith('a'.repeat(200))).toBe(true);
   });
 
-  it('does not bump liveDeltaRevision when no chunks are pending', async () => {
-    const pane = createThreadPane();
-    const initial = pane.liveDeltaRevision;
-    // flushLiveDeltaChunks short-circuits when liveDeltaChunks is empty;
-    // no bump should happen on a fresh pane that hasn't received deltas.
-    await nextFrame();
-    expect(pane.liveDeltaRevision).toBe(initial);
-  });
-
-  it('clears live summary buffers when a streaming item settles', async () => {
+  it('replaces the streaming row on completion upsert', async () => {
     const pane = createThreadPane();
     pane.upsertItem(makeItem({
       id: 'text:0:0',
@@ -888,7 +868,7 @@ describe('createThreadPane', () => {
       delta: ' world',
       updatedAt: 123,
     });
-    await nextFrame();
+    expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe('hello world');
 
     pane.upsertItem(makeItem({
       id: 'text:0:0',
@@ -897,45 +877,7 @@ describe('createThreadPane', () => {
       summary: 'hello world',
     }));
 
-    expect(pane.liveItemSummaries['text:0:0']).toBeUndefined();
     expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe('hello world');
-  });
-
-  it('keeps the live summary past settle when the persisted summary is a lossy preview', async () => {
-    // Regression guard for the thinking-row streaming → settle visual
-    // shrink: the live string holds the full streaming text, the
-    // persisted `item.summary` is a tail-truncated preview, and
-    // unconditionally deleting the live entry on settle made
-    // ThinkingBlock's 3-line tail viewport flip to the shorter preview
-    // and visibly drop to 2 lines. Equality with the persisted summary
-    // (the assistant_text path) still deletes — guarded above.
-    const pane = createThreadPane();
-    const fullThinking =
-      'line one of reasoning that wraps across the column\n' +
-      'line two carries on the same idea with more detail\n' +
-      'line three closes out the chain and lands the point\n' +
-      'line four adds another beat past the visible tail';
-    pane.upsertItem(makeItem({
-      id: 'think:0:0',
-      kind: 'thinking',
-      status: 'streaming',
-      summary: fullThinking,
-      payloadId: 'thinking-payload',
-    }));
-    await nextFrame();
-    expect(pane.liveItemSummaries['think:0:0']).toBe(fullThinking);
-
-    const tailPreview = '...' + fullThinking.slice(-20);
-    pane.upsertItem(makeItem({
-      id: 'think:0:0',
-      kind: 'thinking',
-      status: 'completed',
-      summary: tailPreview,
-      payloadId: 'thinking-payload',
-    }));
-
-    expect(pane.liveItemSummaries['think:0:0']).toBe(fullThinking);
-    expect(pane.items.find((item) => item.id === 'think:0:0')?.summary).toBe(tailPreview);
   });
 
   it('ignores stale deltas for an item that already settled', async () => {
@@ -954,9 +896,7 @@ describe('createThreadPane', () => {
       delta: 'outs',
       updatedAt: 124,
     });
-    await nextFrame();
 
-    expect(pane.liveItemSummaries['text:0:0']).toBeUndefined();
     expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe('yield timeouts');
   });
 
@@ -1056,7 +996,12 @@ describe('createThreadPane', () => {
     expect(pane.isSubagentGroupExpanded('parent-x')).toBe(false);
   });
 
-  it('merges deltas that arrive before the initial streaming row', async () => {
+  it('drops deltas that arrive before the row exists', async () => {
+    // With single-source-of-truth, deltas append in place to
+    // `pane.items[i].summary`. A delta whose itemId has no entry in
+    // `itemIndexById` is a no-op; events.ts batch ordering at
+    // `flushPendingUpserts()` before `queueDelta` ensures the upsert
+    // creates the row before any production delta touches the pane.
     const pane = createThreadPane();
 
     pane.applyItemDelta({
@@ -1066,15 +1011,8 @@ describe('createThreadPane', () => {
       delta: ' world',
       updatedAt: 123,
     });
-    pane.upsertItem(makeItem({
-      id: 'text:0:0',
-      kind: 'assistant_text',
-      status: 'streaming',
-      summary: 'hello',
-    }));
-    await nextFrame();
 
-    expect(pane.liveItemSummaries['text:0:0']).toBe('hello world');
+    expect(pane.items.find((item) => item.id === 'text:0:0')).toBeUndefined();
   });
 
   it('drops wrong-thread upserts for an active pane', async () => {
@@ -1440,7 +1378,7 @@ describe('createThreadPane', () => {
       expect(pane.items.find((it) => it.id === 'known')?.summary).toBe('new');
     });
 
-    it('upsertItem drops live buffers for new streaming rows below the floor', async () => {
+    it('upsertItem rejects new streaming rows below the floor', async () => {
       const pane = createThreadPane();
       setBindingMock('ListThreadSliceAround', async () => ({
         items: [makeItem({ id: 'at-floor', threadId: 't', turnIndex: 5, itemIndex: 0 })],
@@ -1458,8 +1396,10 @@ describe('createThreadPane', () => {
         summary: 'old output',
       }));
 
+      // Window-floor guard rejects the below-floor item; nothing
+      // lingers anywhere because the pane no longer carries a parallel
+      // streaming overlay.
       expect(pane.items.map((it) => it.id)).toEqual(['at-floor']);
-      expect(pane.liveItemSummaries['below-streaming']).toBeUndefined();
     });
 
     it('loadOlder prepends older items and updates the floor + hasMore', async () => {
