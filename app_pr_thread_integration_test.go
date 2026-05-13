@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/prthread"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 )
@@ -164,7 +165,7 @@ func TestPR_GhReturnsMalformedJSON(t *testing.T) {
 }
 
 func TestPR_LargeDiffTruncatedOrCapped(t *testing.T) {
-	largeDiff := buildLargeDiff(MaxInlinedPRDiffBytes * 2)
+	largeDiff := buildLargeDiff(prthread.MaxInlinedDiffBytes * 2)
 	installFakeGh(t, prIntegrationViewJSON, largeDiff)
 
 	app := newTestAppWithStore(t)
