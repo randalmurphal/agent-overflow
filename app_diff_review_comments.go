@@ -2,10 +2,10 @@ package main
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
+	"agent-overflow/internal/diffreview"
 	"agent-overflow/internal/store"
 
 	"github.com/google/uuid"
@@ -81,49 +81,6 @@ func (a *App) SendDiffReviewComments(threadID, scope, sourceKey string, commentI
 	return a.store.GetThread(threadID)
 }
 
-// buildDiffReviewPrompt renders draft diff-review comments into a
-// plain-text block the agent can read directly. Each comment becomes:
-//
-//	<file_path>[:<line>]:
-//	comment: <body>
-//
-// The line number is the new-side line when present, otherwise the
-// old-side line; file-level comments emit no line. Multiple comments
-// are separated by a blank line. The agent gets the diff itself in the
-// same turn, so we deliberately omit `side` and the `selectedText`
-// echo — the file:line anchor is enough to locate the comment.
-func buildDiffReviewPrompt(comments []store.DiffReviewComment) string {
-	var b strings.Builder
-	for _, comment := range comments {
-		body := strings.TrimSpace(comment.Body)
-		if body == "" {
-			continue
-		}
-		if b.Len() > 0 {
-			b.WriteString("\n\n")
-		}
-		b.WriteString(comment.FilePath)
-		b.WriteString(":")
-		if line := diffReviewCommentLine(comment); line > 0 {
-			b.WriteString(strconv.Itoa(line))
-			b.WriteString(":")
-		}
-		b.WriteString("\ncomment: ")
-		b.WriteString(body)
-	}
-	return b.String()
-}
-
-func diffReviewCommentLine(comment store.DiffReviewComment) int {
-	if comment.NewLine > 0 {
-		return comment.NewLine
-	}
-	if comment.OldLine > 0 {
-		return comment.OldLine
-	}
-	return 0
-}
-
 func (a *App) appendDiffReviewCommentsToContent(threadID, content, scope, sourceKey string, commentIDs []string) (string, []string, error) {
 	if len(store.UniqueNonEmptyStringsForApp(commentIDs)) > store.MaxDiffReviewCommentIDs {
 		return "", nil, fmt.Errorf("too many diff review comments selected")
@@ -135,21 +92,13 @@ func (a *App) appendDiffReviewCommentsToContent(threadID, content, scope, source
 	if len(comments) == 0 {
 		return "", nil, fmt.Errorf("no draft diff review comments selected")
 	}
-	prompt := buildDiffReviewPrompt(comments)
+	prompt := diffreview.BuildPrompt(comments)
 	if len(prompt) > store.MaxDiffReviewPromptBytes {
 		return "", nil, fmt.Errorf("diff review comments are too large")
 	}
-	ids := idsFromDiffReviewComments(comments)
+	ids := diffreview.IDsOf(comments)
 	if strings.TrimSpace(content) == "" {
 		return prompt, ids, nil
 	}
 	return strings.TrimSpace(content) + "\n\n" + prompt, ids, nil
-}
-
-func idsFromDiffReviewComments(comments []store.DiffReviewComment) []string {
-	ids := make([]string, 0, len(comments))
-	for _, comment := range comments {
-		ids = append(ids, comment.ID)
-	}
-	return ids
 }
