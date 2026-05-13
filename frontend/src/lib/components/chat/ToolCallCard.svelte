@@ -86,6 +86,13 @@
         }
       : null,
   );
+  let commandCollapsedPreview = $derived.by(() => {
+    if (item.kind !== 'tool_completion' || !item.completionOf) return '';
+    const meta = parseJsonObject(item.meta);
+    const carrierID = meta?.wait_carrier_id ?? meta?.waitCarrierID;
+    if (typeof carrierID !== 'string' || !carrierID.trim()) return '';
+    return commandMeta?.preview ?? '';
+  });
   let isCollabControlRow = $derived(
     pane.thread?.provider === 'codex' && isCodexCollabControlToolName(item.toolName),
   );
@@ -155,7 +162,7 @@
        a ToolResultMeta with detail/preview text only. -->
   <ToolResultCard {pane} {item} meta={toolResultMeta} {payloadId} />
 {:else if isCommandRow}
-  <CommandOutput {pane} {item} meta={commandMeta} {payloadId} />
+  <CommandOutput {pane} {item} meta={commandMeta} {payloadId} collapsedPreview={commandCollapsedPreview} />
 {:else}
   <GenericToolCallRow {pane} {item} />
 {/if}

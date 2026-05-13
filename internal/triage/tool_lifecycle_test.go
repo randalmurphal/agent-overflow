@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -735,6 +736,70 @@ func TestInlineBashCompletionStoresFailureMessage(t *testing.T) {
 	}
 	if meta.ErrorMessage != "cat: missing.txt: No such file or directory" {
 		t.Fatalf("errorMessage = %q", meta.ErrorMessage)
+	}
+}
+
+func TestToolCompletionPayloadStoresPreviewMetadata(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "custom_tool",
+		"input":    map[string]any{"query": "inspect"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "tool-preview",
+		ItemType: "custom_tool", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	content := "first line\nsecond line\n" + strings.Repeat("x", 260)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "tool-preview",
+		ItemType: "custom_tool", Content: content, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	item, found, err := st.GetItem("tool-preview")
+	if err != nil || !found {
+		t.Fatalf("item missing: found=%v err=%v", found, err)
+	}
+	if item.PayloadKind != payloadKindToolCallResult {
+		t.Fatalf("payloadKind = %q, want %s", item.PayloadKind, payloadKindToolCallResult)
+	}
+	var meta struct {
+		Preview string `json:"preview"`
+	}
+	if err := json.Unmarshal([]byte(item.PayloadMeta), &meta); err != nil {
+		t.Fatalf("payload meta: %v", err)
+	}
+	if !strings.HasPrefix(meta.Preview, "first line second line ") {
+		t.Fatalf("preview = %q", meta.Preview)
+	}
+	if utf8.RuneCountInString(meta.Preview) > 240 {
+		t.Fatalf("preview length = %d, want capped at 240", utf8.RuneCountInString(meta.Preview))
+	}
+	if !strings.HasSuffix(meta.Preview, "…") {
+		t.Fatalf("preview = %q, want ellipsis", meta.Preview)
+	}
+}
+
+func TestTruncatePreviewPreservesMultibyteBoundaryAndCapsRunes(t *testing.T) {
+	preview := truncatePreview("  "+strings.Repeat("é", 260), 240)
+
+	if !utf8.ValidString(preview) {
+		t.Fatalf("preview is not valid utf8: %q", preview)
+	}
+	if utf8.RuneCountInString(preview) != 240 {
+		t.Fatalf("preview rune count = %d, want 240", utf8.RuneCountInString(preview))
+	}
+	if !strings.HasSuffix(preview, "…") {
+		t.Fatalf("preview = %q, want ellipsis", preview)
+	}
+	if strings.ContainsRune(preview, utf8.RuneError) {
+		t.Fatalf("preview contains replacement rune: %q", preview)
 	}
 }
 

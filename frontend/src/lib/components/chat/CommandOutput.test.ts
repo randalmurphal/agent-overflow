@@ -184,6 +184,41 @@ describe('<CommandOutput>', () => {
     expect(getBindingMock('GetPayloadData')).not.toHaveBeenCalled();
   });
 
+  it('shows an explicit collapsed preview for wait-owned command completions', async () => {
+    const dataMock = setBindingMock('GetPayloadData', async () => ({ data: 'full output' }));
+    const { getByRole, getByTestId, queryByTestId } = render(CommandOutput, {
+      props: {
+        item: makeItem({ id: 'tool-cmd', kind: 'tool_completion', status: 'completed' }),
+        meta: commandMeta({ command: 'sleep 1; echo done', preview: 'done\n', lineCount: 1 }),
+        payloadId: 'cmd-payload',
+        collapsedPreview: 'done\n',
+      },
+    });
+
+    expect(getByTestId('command-output-preview').textContent).toContain('done');
+    expect(dataMock).not.toHaveBeenCalled();
+
+    await fireEvent.click(getByRole('button', { name: /Toggle command output/i }));
+    await waitFor(() => {
+      expect(queryByTestId('command-output-preview')).toBeNull();
+    });
+  });
+
+  it('truncates explicit collapsed command previews', () => {
+    const longPreview = `${'x'.repeat(190)} final text`;
+    const { getByTestId } = render(CommandOutput, {
+      props: {
+        item: makeItem({ id: 'tool-cmd', kind: 'tool_completion', status: 'completed' }),
+        meta: commandMeta({ command: 'printf long', preview: longPreview, lineCount: 1 }),
+        collapsedPreview: longPreview,
+      },
+    });
+
+    const preview = getByTestId('command-output-preview').textContent ?? '';
+    expect(preview).toContain('...');
+    expect(preview).not.toContain('final text');
+  });
+
   it('shows a compact red error line for failed commands without expanding output', () => {
     const dataMock = setBindingMock('GetPayloadData', async () => ({ data: 'full output' }));
     const { getByTestId } = render(CommandOutput, {

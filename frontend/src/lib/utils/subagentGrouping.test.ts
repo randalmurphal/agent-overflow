@@ -338,9 +338,10 @@ describe('groupItemsBySubagent', () => {
     const group = expectWaitGroup(nodes[0]);
     expect(group.parent.id).toBe('wait-1');
     expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual([
-      'complete-wait-1',
       'complete-spawn-1',
     ]);
+    expect(group.descendantCount).toBe(1);
+    expect(nodeContainsItem(group, 'complete-wait-1')).toBe(false);
     expect(nodeContainsItem(group, 'complete-spawn-1')).toBe(true);
   });
 
@@ -442,7 +443,7 @@ describe('groupItemsBySubagent', () => {
     expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-spawn-1']);
   });
 
-  it('nests a timeout wait completion under the neutral wait carrier', () => {
+  it('consumes a timeout wait completion under the neutral wait carrier', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'wait-child',
@@ -464,7 +465,9 @@ describe('groupItemsBySubagent', () => {
     expect(nodes).toHaveLength(1);
     const group = expectWaitGroup(nodes[0]);
     expect(group.parent.id).toBe('wait-child');
-    expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-wait-child']);
+    expect(group.children).toEqual([]);
+    expect(group.descendantCount).toBe(0);
+    expect(nodeContainsItem(group, 'complete-wait-child')).toBe(false);
   });
 
   it('keeps a non-Codex wait_agent-named tool flat', () => {

@@ -451,6 +451,107 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(getByTestId("collab-tool-row-output").textContent).toContain("0");
   });
 
+  it("shows Codex subagent completion output in the collapsed row", async () => {
+    const thread = makeThread({ provider: "codex" });
+    const launch = makeItem({
+      id: "spawn-preview",
+      kind: "tool_call",
+      status: "completed",
+      toolName: "collab_agent",
+      meta: JSON.stringify({
+        input: {
+          tool: "spawn_agent",
+          prompt: "Review the changed files",
+          receiverThreadIds: ["child-preview"],
+          newAgentNickname: "Ada",
+          newAgentRole: "default",
+        },
+      }),
+    });
+    const completion = makeItem({
+      id: "complete-preview",
+      kind: "tool_completion",
+      status: "completed",
+      toolName: "collab_agent",
+      summary: "collab_agent: Review the changed files -> done",
+      completionOf: "spawn-preview",
+      payloadId: "payload-preview",
+      payloadKind: "tool_call_result",
+      payloadMeta: JSON.stringify({
+        itemStatus: "completed",
+        preview: "Blocking | frontend/src/App.svelte:10 | issue found",
+      }),
+    });
+    const pane = await buildPane(thread, [launch, completion]);
+
+    const { getByTestId, queryByTestId } = render(ToolCallCard, {
+      props: { pane, item: completion },
+    });
+
+    expect(queryByTestId("collab-tool-row-output")).toBeNull();
+    expect(getByTestId("collab-tool-row-preview").textContent).toContain(
+      "Blocking | frontend/src/App.svelte:10 | issue found",
+    );
+
+    await fireEvent.click(getByTestId("collab-tool-row-toggle"));
+    await waitFor(() => {
+      expect(queryByTestId("collab-tool-row-preview")).toBeNull();
+    });
+  });
+
+  it("falls back to the wait carrier message for historical Codex subagent completions", async () => {
+    const thread = makeThread({ provider: "codex" });
+    const launch = makeItem({
+      id: "spawn-history",
+      kind: "tool_call",
+      status: "completed",
+      toolName: "collab_agent",
+      meta: JSON.stringify({
+        input: {
+          tool: "spawn_agent",
+          receiverThreadIds: ["child-history"],
+          newAgentNickname: "Grace",
+          newAgentRole: "default",
+        },
+      }),
+    });
+    const wait = makeItem({
+      id: "wait-history",
+      kind: "tool_call",
+      status: "completed",
+      toolName: "wait_agent",
+      meta: JSON.stringify({
+        input: {
+          tool: "wait_agent",
+          receiverThreadIds: ["child-history"],
+          agentsStates: {
+            "child-history": {
+              status: "completed",
+              message: "Recommended | frontend/src/lib/stores/thread.svelte.ts:1 | use a shared reset helper",
+            },
+          },
+        },
+      }),
+    });
+    const completion = makeItem({
+      id: "complete-history",
+      kind: "tool_completion",
+      status: "completed",
+      toolName: "collab_agent",
+      completionOf: "spawn-history",
+      meta: JSON.stringify({ wait_carrier_id: "wait-history" }),
+    });
+    const pane = await buildPane(thread, [launch, wait, completion]);
+
+    const { getByTestId } = render(ToolCallCard, {
+      props: { pane, item: completion },
+    });
+
+    expect(getByTestId("collab-tool-row-preview").textContent).toContain(
+      "use a shared reset helper",
+    );
+  });
+
   it("labels Codex subagent completion rows from the spawned agent metadata", async () => {
     const thread = makeThread({ provider: "codex" });
     const launch = makeItem({
@@ -678,7 +779,8 @@ describe("<ToolCallCard> header dispatcher", () => {
     const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
     const text = getByTestId("collab-tool-row").textContent ?? "";
 
-    expect(text).toContain("Finished waiting");
+    expect(text).toContain("Waited for 2 agents");
+    expect(text).not.toContain("Finished waiting");
     expect(text).toContain("Agent: completed - done");
     expect(text).toContain("Agent: failed - boom");
     expect(text).not.toContain("child-1");

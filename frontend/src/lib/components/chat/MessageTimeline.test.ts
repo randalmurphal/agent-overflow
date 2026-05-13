@@ -131,6 +131,14 @@ describe('<MessageTimeline>', () => {
       status: 'errored',
       summary: 'Command failed',
       meta: JSON.stringify({ process_id: 'pid-42', wait_carrier_id: wait.id }),
+      payloadKind: 'command_output',
+      payloadId: 'payload-cmd-1',
+      payloadMeta: JSON.stringify({
+        command: 'sleep 1; echo done',
+        exitCode: 1,
+        lineCount: 1,
+        preview: 'Command failed',
+      }),
     });
     const completedWait = makeItem({
       ...wait,
@@ -153,6 +161,61 @@ describe('<MessageTimeline>', () => {
       'Waited for background terminal',
     );
     expect(getByTestId('wait-group-children').textContent).toContain('Command failed');
+    expect(getByTestId('command-output-preview').textContent).toContain('Command failed');
+  });
+
+  it('hides redundant wait_agent completion children under Codex wait carriers', async () => {
+    const wait = makeItem({
+      id: 'wait-agents',
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'completed',
+      toolName: 'wait_agent',
+      summary: 'wait_agent',
+      meta: JSON.stringify({
+        input: {
+          tool: 'wait_agent',
+          receiverThreadIds: ['child-1'],
+          agentsStates: {
+            'child-1': { status: 'completed', message: 'Agent finished cleanly' },
+          },
+        },
+      }),
+    });
+    const waitCompletion = makeItem({
+      id: 'complete-wait-agents',
+      itemIndex: 1,
+      kind: 'tool_completion',
+      role: 'assistant',
+      status: 'completed',
+      toolName: 'wait_agent',
+      completionOf: 'wait-agents',
+      summary: 'wait_agent',
+      payloadId: 'payload-wait-agents',
+      payloadKind: 'tool_call_result',
+      payloadMeta: JSON.stringify({ itemStatus: 'completed', preview: 'Agent finished cleanly' }),
+      meta: wait.meta,
+    });
+    const agentCompletion = makeItem({
+      id: 'complete-spawn-agent',
+      itemIndex: 2,
+      kind: 'tool_completion',
+      role: 'assistant',
+      status: 'completed',
+      toolName: 'collab_agent',
+      completionOf: 'spawn-agent',
+      summary: 'collab_agent: review -> done',
+      payloadId: 'payload-wait-agents',
+      payloadKind: 'tool_call_result',
+      payloadMeta: JSON.stringify({ itemStatus: 'completed', preview: 'Agent finished cleanly' }),
+    });
+    const pane = await buildPane(makeThread({ provider: 'codex' }), [wait, waitCompletion, agentCompletion]);
+
+    const { getByTestId, queryByText } = render(MessageTimeline, { props: { pane } });
+
+    expect(getByTestId('wait-group').textContent).toContain('Waited for Agent');
+    expect(queryByText('Finished waiting')).toBeNull();
+    expect(getByTestId('wait-group-children').textContent).toContain('Agent finished cleanly');
   });
 
   it('renders notification rows without routing them through tool lifecycle cards', async () => {

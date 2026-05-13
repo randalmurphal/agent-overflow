@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"time"
+	"unicode"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -1290,12 +1291,54 @@ func commandFromInput(input json.RawMessage) string {
 }
 
 func truncatePreview(s string, max int) string {
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.TrimSpace(s)
-	if len(s) <= max {
-		return s
+	if max <= 0 {
+		return ""
 	}
-	return s[:max-1] + "…"
+
+	var b strings.Builder
+	b.Grow(min(len(s), max))
+	runeCount := 0
+	started := false
+	truncated := false
+
+	for _, r := range s {
+		if r == '\n' || r == '\r' {
+			r = ' '
+		}
+		if !started {
+			if unicode.IsSpace(r) {
+				continue
+			}
+			started = true
+		}
+		if runeCount >= max {
+			truncated = true
+			break
+		}
+		b.WriteRune(r)
+		runeCount++
+	}
+
+	preview := strings.TrimSpace(b.String())
+	if !truncated {
+		return preview
+	}
+	if max == 1 {
+		return "…"
+	}
+
+	var truncatedPreview strings.Builder
+	truncatedPreview.Grow(max)
+	written := 0
+	for _, r := range preview {
+		if written >= max-1 {
+			break
+		}
+		truncatedPreview.WriteRune(r)
+		written++
+	}
+	truncatedPreview.WriteString("…")
+	return truncatedPreview.String()
 }
 
 func completionPayloadForLaunch(launch store.Item, evt provider.ProviderEvent, meta toolCompleteMeta, now int64) *store.Payload {
@@ -1388,6 +1431,9 @@ func completionPayload(itemID string, evt provider.ProviderEvent, meta toolCompl
 	}
 	if meta.ItemStatus != "" {
 		header["itemStatus"] = meta.ItemStatus
+	}
+	if preview := truncatePreview(evt.Content, 240); preview != "" {
+		header["preview"] = preview
 	}
 	headerJSON, err := json.Marshal(header)
 	if err != nil {

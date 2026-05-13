@@ -34,6 +34,7 @@
     showCompletionBadge = true,
     displayItem,
     statusItem,
+    collapsedPreview = '',
     durationLabel = '',
     showTimestamp = true,
     trailingActions,
@@ -51,6 +52,8 @@
     displayItem?: Item;
     /** Item used for status/badge derivation. Useful for launch+completion pairs. */
     statusItem?: Item;
+    /** Short output preview shown under the collapsed header in scoped timeline surfaces. */
+    collapsedPreview?: string;
     /** Optional duration/elapsed label rendered in the metadata area. */
     durationLabel?: string;
     /** Tray surfaces show elapsed time instead of the absolute transcript timestamp. */
@@ -125,6 +128,11 @@
   let statusSlotHasContent = $derived(
     isBackgroundedLaunch || isForegroundRunning || (showCompletionBadge && completionStatus !== null),
   );
+  let compactCollapsedPreview = $derived.by(() => {
+    const normalized = collapsedPreview.replace(/\s+/g, ' ').trim();
+    if (normalized.length <= 160) return normalized;
+    return `${normalized.slice(0, 160).trimEnd()}...`;
+  });
 
   keepExpandedPayloadFresh(() => expansion, () => hasPayload);
 </script>
@@ -199,6 +207,11 @@
       <p class="text-[11px] leading-relaxed text-error" data-testid="command-output-error">
         {errorLine}
       </p>
+    </div>
+  {/if}
+  {#if compactCollapsedPreview && !expansion.expanded}
+    <div class="ml-5 truncate px-3 pb-1 text-[11px] text-fg-subtle" data-testid="command-output-preview">
+      └ {compactCollapsedPreview}
     </div>
   {/if}
 

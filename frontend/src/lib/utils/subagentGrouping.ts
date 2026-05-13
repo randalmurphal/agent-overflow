@@ -526,7 +526,10 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
       continue;
     }
     if (item.kind === 'tool_completion' && item.toolName === 'wait_agent' && item.completionOf) {
-      addWaitChild(item.completionOf, item);
+      const carrier = itemByID.get(item.completionOf);
+      if (carrier && isWaitCarrier(carrier)) {
+        waitChildIDs.add(item.id);
+      }
       if (item.payloadId) {
         waitCompletionPayloadCarrierByPayloadID.set(item.payloadId, item.completionOf);
       }

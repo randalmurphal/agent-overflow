@@ -180,6 +180,43 @@
     return `${label}: ${[status, message].filter(Boolean).join(' - ') || 'unknown'}`;
   }
 
+  function waitCarrierIDForCompletion(): string {
+    const carrierID = meta?.wait_carrier_id ?? meta?.waitCarrierID;
+    return typeof carrierID === 'string' ? carrierID.trim() : '';
+  }
+
+  let completionPreview = $derived.by(() => {
+    if (item.kind !== 'tool_completion' || item.toolName !== 'collab_agent') return '';
+
+    const payloadPreview = typeof payloadMeta?.preview === 'string'
+      ? payloadMeta.preview.trim()
+      : '';
+    if (payloadPreview) return previewText(payloadPreview);
+
+    const waitCarrierID = waitCarrierIDForCompletion();
+    const receiverThreadIds = completionLaunchInfo?.receiverThreadIds ?? [];
+    if (!pane || !waitCarrierID || receiverThreadIds.length === 0) return '';
+
+    const waitCarrier = pane.items.find((candidate) => candidate.id === waitCarrierID);
+    const waitMeta = parseJsonObject(waitCarrier?.meta);
+    const waitInput = waitMeta?.input;
+    if (!waitInput || typeof waitInput !== 'object' || Array.isArray(waitInput)) return '';
+
+    const waitStates = (waitInput as Record<string, unknown>).agentsStates;
+    if (!waitStates || typeof waitStates !== 'object' || Array.isArray(waitStates)) return '';
+
+    const parts = receiverThreadIds
+      .map((id) => {
+        const raw = (waitStates as Record<string, unknown>)[id];
+        if (typeof raw === 'string') return raw.trim();
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return '';
+        const message = (raw as Record<string, unknown>).message;
+        return typeof message === 'string' ? message.trim() : '';
+      })
+      .filter(Boolean);
+    return parts.length > 0 ? previewText(parts.join(' | ')) : '';
+  });
+
   let title = $derived.by(() => {
     if (item.kind === 'tool_completion' && item.toolName === 'collab_agent') {
       return completionLaunchInfo?.agentLabel || item.summary || 'Completed agent';
@@ -187,7 +224,6 @@
     if (spawnInfo) return spawnInfo.title;
     if (tool === 'send_input') return `Sent input to ${agentLabel || 'agent'}`;
     if (tool === 'wait_agent') {
-      if (item.kind === 'tool_completion') return 'Finished waiting';
       if (item.status === 'running' || item.status === 'streaming') return `Waiting for ${agentLabel || 'agents'}`;
       return `Waited for ${agentLabel || 'agents'}`;
     }
@@ -303,6 +339,11 @@
   {/if}
   {#if promptPreview}
     <div class="ml-5 mt-0.5 truncate text-[11px] text-fg-subtle">└ {promptPreview}</div>
+  {/if}
+  {#if completionPreview && !expansion?.expanded}
+    <div class="ml-5 mt-0.5 truncate text-[11px] text-fg-subtle" data-testid="collab-tool-row-preview">
+      └ {completionPreview}
+    </div>
   {/if}
   {#if tool === 'wait_agent' && receivers.length > 0 && (item.kind === 'tool_completion' || receiverDisplayLabels.length > 1)}
     <div class="ml-5 mt-0.5 space-y-0.5 text-[11px] text-fg-subtle">
