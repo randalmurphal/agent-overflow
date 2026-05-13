@@ -1,14 +1,13 @@
 package main
 
 import (
-	"database/sql"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"agent-overflow/internal/project"
 	"agent-overflow/internal/store"
 
 	"github.com/google/uuid"
@@ -121,59 +120,9 @@ func (a *App) DeleteProject(id string) ([]string, error) {
 	return ids, nil
 }
 
-// ensureProjectForWorkspace finds or creates a project row for the given
-// workspace path. Used by flows (CreateThreadFromPR, Wave 2+ auto-import)
-// that need a project implicitly before a Thread can be inserted.
-//
-// Lookup precedence:
-//  1. Project whose path exactly matches the resolved git repository root.
-//  2. Project whose path matches the workspace path verbatim.
-//  3. Create a new project at whichever path is a git root, or fall back
-//     to the workspace path.
-//
-// Returns an error if the workspace path is empty (the caller must
-// provide something to anchor the project on).
+// ensureProjectForWorkspace delegates to project.EnsureForWorkspace.
+// Kept as an *App method so existing callers (and tests in this package)
+// don't need to thread the store + git core through their call sites.
 func (a *App) ensureProjectForWorkspace(workspacePath string) (store.Project, error) {
-	if a.store == nil {
-		return store.Project{}, fmt.Errorf("resolve project: store unavailable")
-	}
-	trimmed := strings.TrimSpace(workspacePath)
-	if trimmed == "" {
-		return store.Project{}, fmt.Errorf("resolve project: workspace path is required")
-	}
-
-	// Prefer the git repo root when detectable — two threads in
-	// sibling checkouts should share the same project row.
-	candidatePath := trimmed
-	if root, err := a.gitCore().RepositoryRoot(trimmed); err == nil {
-		if r := strings.TrimSpace(root); r != "" {
-			candidatePath = r
-		}
-	}
-
-	if existing, err := a.store.GetProjectByPath(candidatePath); err == nil {
-		return existing, nil
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return store.Project{}, err
-	}
-	if candidatePath != trimmed {
-		if existing, err := a.store.GetProjectByPath(trimmed); err == nil {
-			return existing, nil
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			return store.Project{}, err
-		}
-	}
-
-	now := time.Now().UnixMilli()
-	p := store.Project{
-		ID:        uuid.NewString(),
-		Path:      candidatePath,
-		Name:      filepath.Base(candidatePath),
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := a.store.CreateProject(p); err != nil {
-		return store.Project{}, err
-	}
-	return p, nil
+	return project.EnsureForWorkspace(a.store, a.gitCore(), workspacePath)
 }

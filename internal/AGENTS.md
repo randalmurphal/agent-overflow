@@ -13,6 +13,7 @@ one closest to what you're touching.
 | `store/` | SQLite access, migrations, schema. |
 | `checkpoint/` | Message-keyed git-ref snapshots, diffs, and restore helpers. |
 | `git/` | Git and `gh` operations (branches, worktrees, commit, push, PR). |
+| `project/` | Project-row lifecycle helpers that bridge git repository roots and `store.Project`. |
 | `gitwatch/` | Live git status streams per workspace (recursive fs watch + polling fallback). |
 | `terminal/` | PTY session manager with ring-buffer replay. |
 | `discussion/` | Multi-agent deliberation coordination. |
