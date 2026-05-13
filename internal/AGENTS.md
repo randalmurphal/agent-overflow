@@ -37,6 +37,7 @@ one closest to what you're touching.
 | `uikeys/` | Browser-style WebviewWindow keybindings (Ctrl+/-/=/R/F11) shared by every window the app opens — desktop binary, `--connect` remote client, and the Windows WSL launcher. |
 | `uitrace/` | Dev-only JSONL render-trace appender backing the frontend debug console's `AppendUIRenderTraceBatch` binding. Validates each line, caps the batch, and rotates at `MaxFileBytes`. |
 | `dirbrowse/` | Project-picker directory listing. Backs the `BrowseDirectory` binding with path normalisation, `.git`-marker detection, EntryLimit truncation, and missing-path fallback. |
+| `keybindings/` | Persisted keybindings config + merge. Owns `Defaults`, atomic Get/Update/Reset Service, and the user-override `Merge` that backs the three Keybindings bindings. |
 
 ## Responsibility boundary
 

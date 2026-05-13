@@ -21,6 +21,9 @@ import * as dirbrowse$0 from "./internal/dirbrowse/models.js";
 import * as git$0 from "./internal/git/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as keybindings$0 from "./internal/keybindings/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as otel$0 from "./internal/observability/otel/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -454,11 +457,9 @@ export function GetGitStatus(threadID: string): $CancellablePromise<git$0.GitSta
 
 /**
  * GetKeybindings returns the effective keybindings: defaults with any
- * user overrides layered on top. Invalid entries in the user file are
- * dropped silently (the frontend surfaces parse errors on its own); a
- * completely malformed file falls back to defaults.
+ * user overrides layered on top.
  */
-export function GetKeybindings(): $CancellablePromise<$models.Keybinding[]> {
+export function GetKeybindings(): $CancellablePromise<keybindings$0.Keybinding[]> {
     return $Call.ByID(3015840904).then(($result: any) => {
         return $$createType18($result);
     });
@@ -1433,7 +1434,8 @@ export function ReplayManager(): $CancellablePromise<replay$0.Manager | null> {
 }
 
 /**
- * ResetKeybindings deletes the user file so GetKeybindings returns defaults.
+ * ResetKeybindings deletes the user file so GetKeybindings returns
+ * defaults.
  */
 export function ResetKeybindings(): $CancellablePromise<void> {
     return $Call.ByID(2775767393);
@@ -1805,11 +1807,11 @@ export function UpdateDiscussion(prevName: string, prevScope: string, def: store
 }
 
 /**
- * UpdateKeybindings replaces the user keybindings file with the caller's
- * config. The config is capped at maxKeybindingsCount entries; entries past
- * the cap are dropped from the tail.
+ * UpdateKeybindings replaces the user keybindings file with the
+ * caller's config. See keybindings.Service.Update for the validation
+ * + cap contract.
  */
-export function UpdateKeybindings(bindings: $models.Keybinding[]): $CancellablePromise<void> {
+export function UpdateKeybindings(bindings: keybindings$0.Keybinding[]): $CancellablePromise<void> {
     return $Call.ByID(3490094229, bindings);
 }
 
@@ -2029,7 +2031,7 @@ const $$createType13 = store$0.DiscussionDefinition.createFrom;
 const $$createType14 = $models.Draft.createFrom;
 const $$createType15 = settings$0.EditorSettings.createFrom;
 const $$createType16 = git$0.GitStatus.createFrom;
-const $$createType17 = $models.Keybinding.createFrom;
+const $$createType17 = keybindings$0.Keybinding.createFrom;
 const $$createType18 = $Create.Array($$createType17);
 const $$createType19 = provider$0.ModelInfo.createFrom;
 const $$createType20 = $Create.Array($$createType19);

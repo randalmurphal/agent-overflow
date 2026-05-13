@@ -18,7 +18,6 @@ export {
     EditorInfo,
     GeneratedCommitMessage,
     GitStatusSubscriptionResult,
-    Keybinding,
     LiveStateActiveTurn,
     LiveStateTodo,
     LiveStateTodoStep,

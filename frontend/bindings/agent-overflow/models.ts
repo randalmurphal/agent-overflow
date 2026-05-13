@@ -523,44 +523,6 @@ export class GitStatusSubscriptionResult {
     }
 }
 
-/**
- * Keybinding is the on-disk / over-the-wire shape of a single keybinding.
- * `When` is an optional VS Code-style context expression (e.g. "!terminalFocus"
- * or "terminalOpen && !approvalPending"). `DefaultID` identifies the shipped
- * default row that a user entry overrides, so multiple default chords can target
- * the same command under the same context and still be rebound independently.
- * `DefaultKey` is retained as a legacy fallback for configs written before
- * stable IDs existed. The frontend validates key and when syntax; the backend
- * persists the strings verbatim after checking required fields are present.
- */
-export class Keybinding {
-    "key": string;
-    "command": string;
-    "when"?: string;
-    "defaultId"?: string;
-    "defaultKey"?: string;
-
-    /** Creates a new Keybinding instance. */
-    constructor($$source: Partial<Keybinding> = {}) {
-        if (!("key" in $$source)) {
-            this["key"] = "";
-        }
-        if (!("command" in $$source)) {
-            this["command"] = "";
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new Keybinding instance from a string or object.
-     */
-    static createFrom($$source: any = {}): Keybinding {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new Keybinding($$parsedSource as Partial<Keybinding>);
-    }
-}
-
 export class LiveStateActiveTurn {
     "threadId": string;
     "turnId": string;

@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/discussion"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitwatch"
+	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/logging"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
@@ -99,6 +100,13 @@ type App struct {
 	uiTraceOnce sync.Once
 	uiTracer    *uitrace.Tracer
 	uiTraceErr  error
+	// keybindings is the lazy-init persisted-config service backing the
+	// three Keybindings bindings. Constructed from configDir on first
+	// use; falls back to ~/.agent-overflow when configDir is empty so
+	// early-boot RPCs still resolve to a writable path.
+	keybindingsOnce sync.Once
+	keybindings     *keybindings.Service
+	keybindingsErr  error
 	// eventBus is the Phase C transport that owns per-channel seq stamping
 	// and fan-out to connected webview / remote clients. main.go wires it
 	// in via SetEventBus; the atomic.Pointer means SetEventBus and
