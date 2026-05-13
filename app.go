@@ -14,6 +14,7 @@ import (
 
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/checkpoint"
+	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/design"
 	"agent-overflow/internal/discussion"
 	gitops "agent-overflow/internal/git"
@@ -158,10 +159,11 @@ type App struct {
 	// codexModelCatalog caches Codex's live app-server model/list response by
 	// binary path. The catalog is provider-owned state, but fetching it spawns
 	// a local CLI subprocess; cache and coalesce calls so settings/model menus
-	// do not create process fan-out during normal rendering.
-	codexModelCatalogMu       sync.Mutex
-	codexModelCatalog         map[string]codexModelCatalogEntry
-	codexModelCatalogInflight map[string]*codexModelCatalogLoad
+	// do not create process fan-out during normal rendering. See
+	// internal/codexmodels. Lazy-init through codexModels() so tests that
+	// build an *App via &App{...} don't have to pre-wire it.
+	codexModelCatalogOnce sync.Once
+	codexModelCatalog     *codexmodels.Cache
 	// idleReaperStop signals the idle-session reaper goroutine to exit.
 	// Set by startIdleSessionReaper during ServiceStartup; closed exactly
 	// once by Shutdown before the parallel session close so the reaper
@@ -279,13 +281,11 @@ func (s session) providerSession() provider.Session {
 
 func NewApp() *App {
 	return &App{
-		sessions:                  make(map[string]session),
-		startingSessions:          make(map[string]*sessionStart),
-		threadSystemPrompts:       make(map[string]string),
-		deliberations:             make(map[string]*discussion.Deliberation),
-		gitWatchPumps:             make(map[string]*gitWatchPump),
-		codexModelCatalog:         make(map[string]codexModelCatalogEntry),
-		codexModelCatalogInflight: make(map[string]*codexModelCatalogLoad),
+		sessions:            make(map[string]session),
+		startingSessions:    make(map[string]*sessionStart),
+		threadSystemPrompts: make(map[string]string),
+		deliberations:       make(map[string]*discussion.Deliberation),
+		gitWatchPumps:       make(map[string]*gitWatchPump),
 	}
 }
 

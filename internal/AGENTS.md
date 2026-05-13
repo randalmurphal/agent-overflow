@@ -40,6 +40,7 @@ one closest to what you're touching.
 | `keybindings/` | Persisted keybindings config + merge. Owns `Defaults`, atomic Get/Update/Reset Service, and the user-override `Merge` that backs the three Keybindings bindings. |
 | `network/` | LAN-bind toggle helpers: `Settings` wire shape, bind host / origin allow-list / share-URL formatters, and deterministic local-IP discovery. App orchestrates settings + transport rebind around it. |
 | `textgen/` | Short structured-output text generation through a provider CLI (Claude/Codex). Owns `Config`, `CLISpec`/`CLIResult`/`CLIExecutor`, scratch-file scaffolding, output capture, `RunCodex`/`RunClaude`, and the post-processing helpers (`DecodeClaudeStructuredLastLine`, `NormalizeStructuredOutputLine`, `CapRunesWithEllipsis`) backing the commit-message and thread-title flows. |
+| `codexmodels/` | Per-binary TTL cache + single-flight wrapper around Codex `model/list`. Backs `GetModelsForProvider("codex")` and `refreshCodexModelCatalog` so settings rendering doesn't fan out one Codex CLI subprocess per call. |
 
 ## Responsibility boundary
 
