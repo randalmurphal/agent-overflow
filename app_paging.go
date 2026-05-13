@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
 )
 
@@ -57,7 +58,8 @@ func (a *App) ListRecentThreadItems(threadID string, turnLimit int) (store.Paged
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list recent thread items: %w", err)
 	}
-	return normalizePagedItems(paged), nil
+	paged.Items = slicesx.OrEmpty(paged.Items)
+	return paged, nil
 }
 
 // ListThreadSliceAround loads a small slice of items around an anchor
@@ -85,7 +87,8 @@ func (a *App) ListThreadSliceAround(threadID, anchorItemID string, targetItemCou
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list thread slice around: %w", err)
 	}
-	return normalizePagedItems(paged), nil
+	paged.Items = slicesx.OrEmpty(paged.Items)
+	return paged, nil
 }
 
 // ListItemsBeforeTurn loads older turns on demand, strictly below
@@ -99,7 +102,8 @@ func (a *App) ListItemsBeforeTurn(threadID string, beforeTurnIndex, turnLimit in
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list items before turn: %w", err)
 	}
-	return normalizePagedItems(paged), nil
+	paged.Items = slicesx.OrEmpty(paged.Items)
+	return paged, nil
 }
 
 // ListThreadProposedPlans returns the current proposed-plan item for a thread,
@@ -155,12 +159,3 @@ func (a *App) GetThreadItem(threadID, itemID string) (store.Item, error) {
 	return item, nil
 }
 
-// normalizePagedItems forces a nil Items slice to an empty slice so the
-// JSON shape the frontend consumes is stable. Matches the nil→[]
-// normalization SearchThreadMessages does in app_search.go.
-func normalizePagedItems(p store.PagedItems) store.PagedItems {
-	if p.Items == nil {
-		p.Items = []store.Item{}
-	}
-	return p
-}

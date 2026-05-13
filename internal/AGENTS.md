@@ -27,6 +27,7 @@ one closest to what you're touching.
 | `workspacefiles/` | Workspace-scoped file search for @-mention completion. |
 | `testutil/` | Shared test helpers (mock provider scripts, git repo, project fixtures). |
 | `stringsx/` | Tiny stdlib-only string helpers. |
+| `slicesx/` | Tiny stdlib-only slice helpers. `OrEmpty[T](s)` coalesces nil to an allocated empty slice so JSON encoders emit `[]` instead of `null`. |
 | `errorsx/` | Stdlib-only error helpers: `Append` (nil-filtering slice append) and `WrapLifecycle` (action-prefixed `%s: %w`). |
 | `closer/` | Close-orchestration helpers: `Task` + `RunParallel(tasks, timeout)` for goroutine-fan-out teardown, and `Stack` (LIFO cleanup list with reverse-order `Run`) for fork-and-revert undo chains. |
 | `eventscope/` | `ThreadIDFromEvent(payload)` — best-effort thread-id extraction from arbitrary event payloads (map / struct / JSON fallback) used by the observability fan-out to attribute emissions. |

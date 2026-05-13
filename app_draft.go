@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/composerdraft"
+	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
 )
@@ -43,11 +44,11 @@ func (a *App) SaveDraft(threadID string, content string, attachmentIDs []string,
 	if a.store == nil {
 		return fmt.Errorf("draft store not initialized")
 	}
-	attachmentsJSON, err := json.Marshal(normalizeAttachmentIDs(attachmentIDs))
+	attachmentsJSON, err := json.Marshal(slicesx.OrEmpty(attachmentIDs))
 	if err != nil {
 		return fmt.Errorf("save draft: encode attachment ids: %w", err)
 	}
-	chipsJSON, err := json.Marshal(normalizeTerminalChips(terminalChips))
+	chipsJSON, err := json.Marshal(slicesx.OrEmpty(terminalChips))
 	if err != nil {
 		return fmt.Errorf("save draft: encode terminal chips: %w", err)
 	}
@@ -175,17 +176,4 @@ func (a *App) cloneUserMessageAttachmentsForDraft(
 	return clonedIDs, nil
 }
 
-func normalizeAttachmentIDs(ids []string) []string {
-	if ids == nil {
-		return []string{}
-	}
-	return ids
-}
-
-func normalizeTerminalChips(chips []TerminalChip) []TerminalChip {
-	if chips == nil {
-		return []TerminalChip{}
-	}
-	return chips
-}
 

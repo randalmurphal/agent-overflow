@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
 )
 
@@ -19,10 +20,5 @@ func (a *App) SearchThreadMessages(query string, limit int) ([]store.ThreadMessa
 	if err != nil {
 		return nil, fmt.Errorf("search thread messages: %w", err)
 	}
-	// Normalize nil → empty so the JSON-serialized response always carries
-	// the same shape — the frontend doesn't need to special-case null.
-	if hits == nil {
-		return []store.ThreadMessageHit{}, nil
-	}
-	return hits, nil
+	return slicesx.OrEmpty(hits), nil
 }
