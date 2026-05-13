@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/closer"
 	"agent-overflow/internal/observability/replay"
 )
 
@@ -81,29 +81,20 @@ func closeSessionsParallel(a *App, sessions map[string]session, timeout time.Dur
 	if len(sessions) == 0 {
 		return nil
 	}
-	closers := make([]threadCloser, 0, len(sessions))
+	tasks := make([]closer.Task, 0, len(sessions))
 	for threadID, s := range sessions {
-		closers = append(closers, sessionThreadCloser(a, threadID, s))
+		tasks = append(tasks, sessionCloseTask(a, threadID, s))
 	}
-	return runParallelClosers(closers, timeout)
+	return closer.RunParallel(tasks, timeout)
 }
 
-// threadCloser is a single Close operation that runParallelClosers fires
-// off in its own goroutine. The label is used to build a meaningful
-// error message if Close fails or times out.
-type threadCloser struct {
-	label string
-	close func() error
-}
-
-// sessionThreadCloser bundles the design teardown + provider Close for
-// a single thread into one threadCloser so both run under the same
+// sessionCloseTask bundles the design teardown + provider Close for a
+// single thread into one closer.Task so both run under the shutdown
 // parallel timeout.
-func sessionThreadCloser(a *App, threadID string, s session) threadCloser {
-	label := fmt.Sprintf("session for thread %s", threadID)
-	return threadCloser{
-		label: label,
-		close: func() error {
+func sessionCloseTask(a *App, threadID string, s session) closer.Task {
+	return closer.Task{
+		Label: fmt.Sprintf("session for thread %s", threadID),
+		Close: func() error {
 			a.teardownDesignThread(threadID)
 			providerSess := s.providerSession()
 			if providerSess == nil {
@@ -115,48 +106,4 @@ func sessionThreadCloser(a *App, threadID string, s session) threadCloser {
 			return nil
 		},
 	}
-}
-
-// runParallelClosers invokes every closer concurrently and collects their
-// errors, enforcing a single wall-clock timeout across the whole set.
-// Closers that do not finish in time are abandoned and reported as
-// timeout errors.
-func runParallelClosers(closers []threadCloser, timeout time.Duration) []error {
-	if len(closers) == 0 {
-		return nil
-	}
-	type result struct {
-		label string
-		err   error
-	}
-	results := make(chan result, len(closers))
-	for _, c := range closers {
-		go func(c threadCloser) {
-			results <- result{c.label, c.close()}
-		}(c)
-	}
-
-	var errs []error
-	remaining := len(closers)
-	deadline := time.After(timeout)
-	pending := make(map[string]struct{}, len(closers))
-	for _, c := range closers {
-		pending[c.label] = struct{}{}
-	}
-	for remaining > 0 {
-		select {
-		case r := <-results:
-			remaining--
-			delete(pending, r.label)
-			if r.err != nil {
-				errs = errorsx.Append(errs, errorsx.WrapLifecycle("close "+r.label, r.err))
-			}
-		case <-deadline:
-			for label := range pending {
-				errs = errorsx.Append(errs, fmt.Errorf("close %s: did not finish within %s", label, timeout))
-			}
-			return errs
-		}
-	}
-	return errs
 }

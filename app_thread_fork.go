@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/checkpoint"
+	"agent-overflow/internal/closer"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/provider/codex"
@@ -70,37 +71,37 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 
 	fork := buildForkedThread(source)
 
-	var cleanups forkCleanupStack
+	var cleanups closer.Stack
 
 	if err := a.store.CreateThread(fork); err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread: create fork thread: %w", err)
 	}
-	cleanups.add(func() error { return a.cleanupForkThread(fork.ID) })
+	cleanups.Add(func() error { return a.cleanupForkThread(fork.ID) })
 
 	clonedItemIDs, err := a.store.CloneThreadItems(source.ID, fork.ID, atTurnIndex)
 	if err != nil {
 		return store.Thread{}, errors.Join(
 			fmt.Errorf("fork thread: clone timeline: %w", err),
-			cleanups.run(),
+			cleanups.Run(),
 		)
 	}
 
 	sessionRef, pendingForkRef, providerCleanup, err := a.resolveForkResumeState(source, atTurnIndex)
 	if err != nil {
-		return store.Thread{}, errors.Join(err, cleanups.run())
+		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 	if providerCleanup != nil {
-		cleanups.add(providerCleanup)
+		cleanups.Add(providerCleanup)
 	}
 	fork.SessionRef = sessionRef
 	fork.PendingForkRef = pendingForkRef
 	fork.UpdatedAt = time.Now().UnixMilli()
 	copiedCheckpointRefs, err := a.copyForkCheckpoints(source, fork, clonedItemIDs, atTurnIndex)
 	if err != nil {
-		return store.Thread{}, errors.Join(err, cleanups.run())
+		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 	if len(copiedCheckpointRefs) > 0 {
-		cleanups.add(func() error {
+		cleanups.Add(func() error {
 			return a.deleteCheckpointRefs(context.Background(), fork.ID, "fork thread cleanup", copiedCheckpointRefs)
 		})
 	}
@@ -108,7 +109,7 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 	if err := a.store.UpdateThread(fork); err != nil {
 		return store.Thread{}, errors.Join(
 			fmt.Errorf("fork thread: persist fork state: %w", err),
-			cleanups.run(),
+			cleanups.Run(),
 		)
 	}
 
@@ -154,17 +155,17 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 	}
 	promptDraftUpdatedAt := time.Now().UnixMilli()
 
-	var cleanups forkCleanupStack
+	var cleanups closer.Stack
 
 	if err := a.store.CreateThread(fork); err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread from message: create fork thread: %w", err)
 	}
-	cleanups.add(func() error { return a.cleanupForkThread(fork.ID) })
+	cleanups.Add(func() error { return a.cleanupForkThread(fork.ID) })
 	promptDraft, err := a.composerDraftFromUserItemWithClonedAttachments(fork.ID, item, promptDraftUpdatedAt)
 	if err != nil {
 		return store.Thread{}, errors.Join(
 			fmt.Errorf("fork thread from message: build prompt draft: %w", err),
-			cleanups.run(),
+			cleanups.Run(),
 		)
 	}
 
@@ -177,27 +178,27 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 		if err != nil {
 			return store.Thread{}, errors.Join(
 				fmt.Errorf("fork thread from message: clone timeline: %w", err),
-				cleanups.run(),
+				cleanups.Run(),
 			)
 		}
 	}
 
 	sessionRef, pendingForkRef, providerCleanup, err := a.resolveMessageForkResumeState(source, checkpointRow)
 	if err != nil {
-		return store.Thread{}, errors.Join(err, cleanups.run())
+		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 	if providerCleanup != nil {
-		cleanups.add(providerCleanup)
+		cleanups.Add(providerCleanup)
 	}
 	fork.SessionRef = sessionRef
 	fork.PendingForkRef = pendingForkRef
 	fork.UpdatedAt = time.Now().UnixMilli()
 	copiedCheckpointRefs, err := a.copyForkCheckpoints(source, fork, clonedItemIDs, lastKeptTurnPtr)
 	if err != nil {
-		return store.Thread{}, errors.Join(err, cleanups.run())
+		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 	if len(copiedCheckpointRefs) > 0 {
-		cleanups.add(func() error {
+		cleanups.Add(func() error {
 			return a.deleteCheckpointRefs(context.Background(), fork.ID, "fork thread from message cleanup", copiedCheckpointRefs)
 		})
 	}
@@ -205,34 +206,16 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 	if err := a.store.UpdateThread(fork); err != nil {
 		return store.Thread{}, errors.Join(
 			fmt.Errorf("fork thread from message: persist fork state: %w", err),
-			cleanups.run(),
+			cleanups.Run(),
 		)
 	}
 	if err := a.store.UpsertThreadDraft(promptDraft); err != nil {
 		return store.Thread{}, errors.Join(
 			fmt.Errorf("fork thread from message: restore prompt draft: %w", err),
-			cleanups.run(),
+			cleanups.Run(),
 		)
 	}
 	return fork, nil
-}
-
-type forkCleanupStack []func() error
-
-func (s *forkCleanupStack) add(cleanup func() error) {
-	if cleanup != nil {
-		*s = append(*s, cleanup)
-	}
-}
-
-func (s forkCleanupStack) run() error {
-	var errs []error
-	for i := len(s) - 1; i >= 0; i-- {
-		if err := s[i](); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
 }
 
 // cleanupForkThread removes the fork row created by a failed fork. The

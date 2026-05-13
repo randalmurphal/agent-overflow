@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/closer"
 	"agent-overflow/internal/design"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitwatch"
@@ -32,13 +33,13 @@ func TestRunParallelClosersFinishesWithinTimeoutWhenAllSlow(t *testing.T) {
 		delay   = 1500 * time.Millisecond
 		timeout = 5 * time.Second
 	)
-	closers := make([]threadCloser, 0, count)
+	closers := make([]closer.Task, 0, count)
 	var completed atomic.Int32
 	for i := 0; i < count; i++ {
 		label := fmt.Sprintf("slow-%d", i)
-		closers = append(closers, threadCloser{
-			label: label,
-			close: func() error {
+		closers = append(closers, closer.Task{
+			Label: label,
+			Close: func() error {
 				time.Sleep(delay)
 				completed.Add(1)
 				return nil
@@ -47,7 +48,7 @@ func TestRunParallelClosersFinishesWithinTimeoutWhenAllSlow(t *testing.T) {
 	}
 
 	start := time.Now()
-	errs := runParallelClosers(closers, timeout)
+	errs := closer.RunParallel(closers, timeout)
 	elapsed := time.Since(start)
 
 	if len(errs) != 0 {
@@ -73,13 +74,13 @@ func TestRunParallelClosersTimesOutOnHangingCloser(t *testing.T) {
 	hungRelease := make(chan struct{})
 	defer close(hungRelease)
 
-	closers := []threadCloser{
-		{label: "fast-1", close: func() error { return nil }},
-		{label: "fast-2", close: func() error {
+	closers := []closer.Task{
+		{Label: "fast-1", Close: func() error { return nil }},
+		{Label: "fast-2", Close: func() error {
 			time.Sleep(100 * time.Millisecond)
 			return nil
 		}},
-		{label: "hanger", close: func() error {
+		{Label: "hanger", Close: func() error {
 			// Blocks until the test releases it at the end. A
 			// shutdown regression that Wait'd on this closer would
 			// block test teardown.
@@ -89,7 +90,7 @@ func TestRunParallelClosersTimesOutOnHangingCloser(t *testing.T) {
 	}
 
 	start := time.Now()
-	errs := runParallelClosers(closers, timeout)
+	errs := closer.RunParallel(closers, timeout)
 	elapsed := time.Since(start)
 
 	if elapsed > timeout+500*time.Millisecond {
@@ -118,15 +119,15 @@ func TestRunParallelClosersTimesOutOnHangingCloser(t *testing.T) {
 // TestRunParallelClosersSurfacesIndividualErrors checks that a failure in
 // one closer is surfaced without preventing the others from running.
 func TestRunParallelClosersSurfacesIndividualErrors(t *testing.T) {
-	closers := []threadCloser{
-		{label: "ok-1", close: func() error { return nil }},
-		{label: "bad-1", close: func() error {
+	closers := []closer.Task{
+		{Label: "ok-1", Close: func() error { return nil }},
+		{Label: "bad-1", Close: func() error {
 			return fmt.Errorf("intentional failure")
 		}},
-		{label: "ok-2", close: func() error { return nil }},
+		{Label: "ok-2", Close: func() error { return nil }},
 	}
 
-	errs := runParallelClosers(closers, 2*time.Second)
+	errs := closer.RunParallel(closers, 2*time.Second)
 	if len(errs) != 1 {
 		t.Fatalf("errs = %v, want exactly one", errs)
 	}
@@ -141,7 +142,7 @@ func TestRunParallelClosersSurfacesIndividualErrors(t *testing.T) {
 // TestRunParallelClosersEmpty is a defensive check — no closers means no
 // errors, no goroutine leaks, no deadline to hit.
 func TestRunParallelClosersEmpty(t *testing.T) {
-	errs := runParallelClosers(nil, time.Second)
+	errs := closer.RunParallel(nil, time.Second)
 	if len(errs) != 0 {
 		t.Fatalf("expected no errors, got %v", errs)
 	}
