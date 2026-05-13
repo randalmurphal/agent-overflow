@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -420,7 +419,7 @@ func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushIt
 
 	dispatchErr := a.dispatchFlushToProvider(sess, content, sendOpts, mode)
 	if dispatchErr != nil {
-		if isAmbiguousCodexSteerTimeout(dispatchErr) {
+		if codex.IsAmbiguousSteerTimeout(dispatchErr) {
 			log.Printf("flush dispatch: thread=%s item=%s: codex steer timed out after write; leaving pending confirmation for provider echo", threadID, item.ID)
 			return nil
 		}
@@ -538,7 +537,7 @@ func (a *App) dispatchFlushToProvider(sess session, content string, opts provide
 		if err == nil {
 			return nil
 		}
-		if isNoActiveTurnRace(err) {
+		if codex.IsNoActiveTurnRace(err) {
 			return sess.codex.Send(context.Background(), content, opts)
 		}
 		return err
@@ -548,24 +547,6 @@ func (a *App) dispatchFlushToProvider(sess session, content string, opts provide
 		return fmt.Errorf("session has no provider")
 	}
 	return providerSess.Send(context.Background(), content, opts)
-}
-
-// isNoActiveTurnRace reports whether err is one of the two
-// no-active-turn race shapes that warrant a Send fallback. See
-// dispatchFlushToProvider for the full taxonomy. Substring matching
-// against "NoActiveTurn" catches the wire-level case because the
-// codex package surfaces wire errors as opaque strings (not typed
-// wrappers); the substring is stable per upstream
-// codex-rs/core/src/session/mod.rs.
-func isNoActiveTurnRace(err error) bool {
-	if errors.Is(err, codex.ErrNoActiveTurn) {
-		return true
-	}
-	return strings.Contains(err.Error(), "NoActiveTurn")
-}
-
-func isAmbiguousCodexSteerTimeout(err error) bool {
-	return codex.IsRequestTimeout(err, "turn/steer")
 }
 
 // persistFlushDispatchError persists a system `error` row sibling to

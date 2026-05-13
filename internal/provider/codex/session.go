@@ -653,6 +653,41 @@ func IsRequestTimeout(err error, method string) bool {
 	return method == "" || timeoutErr.Method == method
 }
 
+// IsNoActiveTurnRace reports whether err is one of the two
+// no-active-turn race shapes the App's flush-dispatch path falls back
+// on. The two shapes:
+//
+//  1. ErrNoActiveTurn — the typed sentinel Steer returns when the
+//     in-process state says no turn is active.
+//  2. A wire-level "NoActiveTurn" carried by an opaque JSON-RPC error
+//     message. The substring is stable per upstream
+//     `codex-rs/core/src/session/mod.rs`; we don't introspect the
+//     typed JSON-RPC error code because the upstream code path emits
+//     a generic InvalidRequest with the discriminating substring in
+//     the message.
+//
+// Callers (App's flush-queue dispatch) react to a positive result by
+// retrying via Send instead of Steer.
+func IsNoActiveTurnRace(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrNoActiveTurn) {
+		return true
+	}
+	return strings.Contains(err.Error(), "NoActiveTurn")
+}
+
+// IsAmbiguousSteerTimeout reports whether err is the ambiguous
+// `turn/steer` JSON-RPC timeout where the App cannot decide between
+// "Codex never accepted the steer" and "Codex accepted but the
+// response never landed." Callers (App's flush-queue dispatch) react
+// by surfacing the queued message back to the composer rather than
+// double-sending.
+func IsAmbiguousSteerTimeout(err error) bool {
+	return IsRequestTimeout(err, "turn/steer")
+}
+
 // defaultRequestTimeout bounds how long sendRequest waits for a JSON-RPC
 // response. Overridable by tests via Session.requestTimeoutOverride.
 const defaultRequestTimeout = 30 * time.Second
