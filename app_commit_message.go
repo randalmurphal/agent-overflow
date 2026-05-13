@@ -139,38 +139,9 @@ func (a *App) generateCodexCommitMessage(
 		return GeneratedCommitMessage{}, err
 	}
 
-	schemaPath, outputPath, cleanup, err := createTextGenerationScratchFiles(commitCodexSchemaJSON)
+	raw, err := a.runCodexTextGeneration(ctx, cfg, workspace, commitCodexSchemaJSON, nil, prompt, commitMessageTimeout)
 	if err != nil {
-		return GeneratedCommitMessage{}, fmt.Errorf("codex: scratch files: %w", err)
-	}
-	defer cleanup()
-
-	result, err := cfg.Exec(ctx, textGenerationCLISpec{
-		Binary: cfg.Binary,
-		Args: []string{
-			"exec",
-			"--ephemeral",
-			"--skip-git-repo-check",
-			"-s", "read-only",
-			"--model", cfg.Model,
-			"--config", fmt.Sprintf("model_reasoning_effort=%q", cfg.Effort),
-			"--output-schema", schemaPath,
-			"--output-last-message", outputPath,
-			"-",
-		},
-		Cwd:   workspace,
-		Stdin: prompt,
-	})
-	if err != nil {
-		return GeneratedCommitMessage{}, translateCLINotFound("codex", commitMessageTimeout, err)
-	}
-	if result.ExitCode != 0 {
-		return GeneratedCommitMessage{}, fmt.Errorf("codex CLI failed: %s", firstNonEmptyMessage(result.Stderr, result.Stdout, "exit code "+fmt.Sprint(result.ExitCode)))
-	}
-
-	raw, readErr := readTextGenerationOutputFile(outputPath)
-	if readErr != nil {
-		return GeneratedCommitMessage{}, fmt.Errorf("codex: read output: %w", readErr)
+		return GeneratedCommitMessage{}, err
 	}
 
 	var parsed struct {
@@ -204,33 +175,17 @@ func (a *App) generateClaudeCommitMessage(
 		return GeneratedCommitMessage{}, err
 	}
 
-	args := []string{
-		"-p",
-		"--output-format", "json",
-		"--json-schema", commitClaudeSchemaJSON,
-		"--dangerously-skip-permissions",
-	}
-	if cfg.Model != "" {
-		args = append(args, "--model", cfg.Model)
-	}
+	extra := []string{"--dangerously-skip-permissions"}
 	if cfg.Effort != "" {
-		args = append(args, "--effort", cfg.Effort)
+		extra = append(extra, "--effort", cfg.Effort)
 	}
 
-	result, err := cfg.Exec(ctx, textGenerationCLISpec{
-		Binary: cfg.Binary,
-		Args:   args,
-		Cwd:    workspace,
-		Stdin:  prompt,
-	})
+	stdout, err := a.runClaudeTextGeneration(ctx, cfg, workspace, commitClaudeSchemaJSON, extra, prompt, commitMessageTimeout)
 	if err != nil {
-		return GeneratedCommitMessage{}, translateCLINotFound("claude", commitMessageTimeout, err)
-	}
-	if result.ExitCode != 0 {
-		return GeneratedCommitMessage{}, fmt.Errorf("claude CLI failed: %s", firstNonEmptyMessage(result.Stderr, result.Stdout, "exit code "+fmt.Sprint(result.ExitCode)))
+		return GeneratedCommitMessage{}, err
 	}
 
-	subject, body, err := decodeClaudeCommitMessage([]byte(result.Stdout))
+	subject, body, err := decodeClaudeCommitMessage(stdout)
 	if err != nil {
 		return GeneratedCommitMessage{}, err
 	}
@@ -296,69 +251,33 @@ func limitPromptSection(s string, maxChars int) string {
 }
 
 // decodeClaudeCommitMessage pulls the structured output out of a Claude
-// JSON response. Mirrors decodeClaudeThreadTitle's tail-line + envelope
-// shape — Claude's -p JSON mode emits the structured result as the last
-// line with a known envelope key.
+// JSON response. Wraps the generic last-line decoder with the commit
+// envelope shape and the subject-required validation.
 func decodeClaudeCommitMessage(stdout []byte) (string, string, error) {
-	line := strings.TrimSpace(string(stdout))
-	if line == "" {
-		return "", "", fmt.Errorf("claude returned empty output")
+	payload, err := decodeClaudeStructuredLastLine[struct {
+		Subject string `json:"subject"`
+		Body    string `json:"body"`
+	}](stdout)
+	if err != nil {
+		return "", "", err
 	}
-
-	lines := strings.Split(line, "\n")
-	last := ""
-	for i := len(lines) - 1; i >= 0; i-- {
-		candidate := strings.TrimSpace(lines[i])
-		if candidate != "" {
-			last = candidate
-			break
-		}
-	}
-	if last == "" {
-		return "", "", fmt.Errorf("claude returned no JSON output")
-	}
-
-	var envelope struct {
-		StructuredOutput struct {
-			Subject string `json:"subject"`
-			Body    string `json:"body"`
-		} `json:"structured_output"`
-	}
-	if err := json.Unmarshal([]byte(last), &envelope); err != nil {
-		return "", "", fmt.Errorf("decode claude structured output: %w", err)
-	}
-	if strings.TrimSpace(envelope.StructuredOutput.Subject) == "" {
+	if strings.TrimSpace(payload.Subject) == "" {
 		return "", "", fmt.Errorf("claude returned an empty subject")
 	}
-	return envelope.StructuredOutput.Subject, envelope.StructuredOutput.Body, nil
+	return payload.Subject, payload.Body, nil
 }
 
 // sanitizeCommitSubject trims the model's output into a well-formed
-// subject line: single line, stripped quotes, no trailing period,
-// falling back to t3-code's "Update project files" sentinel when the
-// model returns nothing usable, capped at 72 characters.
+// subject line: single line, stripped quotes, no trailing period, capped
+// at 72 characters. Returns an empty string when the model returns
+// nothing usable so the dialog never opens with a blank subject — the
+// user can overwrite it.
 func sanitizeCommitSubject(raw string) string {
-	out := raw
-	if line, _, ok := strings.Cut(out, "\n"); ok {
-		out = line
-	}
-	out = strings.TrimSpace(out)
-	out = strings.Trim(out, `'"`+"`")
-	out = strings.TrimSpace(out)
-	out = strings.TrimSuffix(out, ".")
-	out = strings.Join(strings.Fields(out), " ")
-
+	out := strings.TrimSuffix(normalizeStructuredOutputLine(raw), ".")
 	if out == "" {
-		// Match t3-code's sanitizeCommitSubject fallback so the dialog
-		// never opens with a blank subject — the user can overwrite it.
 		return ""
 	}
-
-	runes := []rune(out)
-	if len(runes) <= 72 {
-		return out
-	}
-	return strings.TrimSpace(string(runes[:69])) + "..."
+	return capRunesWithEllipsis(out, 72)
 }
 
 // sanitizeCommitBody trims the model's body output without imposing a

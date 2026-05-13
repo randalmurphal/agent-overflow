@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -229,4 +230,150 @@ func firstNonEmptyMessage(candidates ...string) string {
 		}
 	}
 	return ""
+}
+
+// runCodexTextGeneration drives `codex exec --ephemeral` with a JSON
+// schema scratch file and reads the structured response back from the
+// output file. Returns the raw output bytes for the caller to decode.
+//
+// extraArgs are inserted between the standard --output-* flags and the
+// trailing "-" stdin sentinel — use them for task-specific flags such as
+// repeated `--image PATH`.
+func (a *App) runCodexTextGeneration(
+	ctx context.Context,
+	cfg textGenerationConfig,
+	workspace string,
+	schemaJSON string,
+	extraArgs []string,
+	stdin string,
+	timeout time.Duration,
+) ([]byte, error) {
+	schemaPath, outputPath, cleanup, err := createTextGenerationScratchFiles(schemaJSON)
+	if err != nil {
+		return nil, fmt.Errorf("codex: scratch files: %w", err)
+	}
+	defer cleanup()
+
+	args := []string{
+		"exec",
+		"--ephemeral",
+		"--skip-git-repo-check",
+		"-s", "read-only",
+		"--model", cfg.Model,
+		"--config", fmt.Sprintf("model_reasoning_effort=%q", cfg.Effort),
+		"--output-schema", schemaPath,
+		"--output-last-message", outputPath,
+	}
+	args = append(args, extraArgs...)
+	args = append(args, "-")
+
+	result, err := cfg.Exec(ctx, textGenerationCLISpec{
+		Binary: cfg.Binary,
+		Args:   args,
+		Cwd:    workspace,
+		Stdin:  stdin,
+	})
+	if err != nil {
+		return nil, translateCLINotFound("codex", timeout, err)
+	}
+	if result.ExitCode != 0 {
+		return nil, fmt.Errorf("codex CLI failed: %s", firstNonEmptyMessage(result.Stderr, result.Stdout, "exit code "+fmt.Sprint(result.ExitCode)))
+	}
+	return readTextGenerationOutputFile(outputPath)
+}
+
+// runClaudeTextGeneration drives `claude -p` with a JSON schema. Returns
+// the raw stdout for the caller to decode via decodeClaudeStructuredLastLine.
+//
+// extraArgs are appended after the standard flags; use them for task-specific
+// flags like --effort or --dangerously-skip-permissions.
+func (a *App) runClaudeTextGeneration(
+	ctx context.Context,
+	cfg textGenerationConfig,
+	workspace string,
+	schemaJSON string,
+	extraArgs []string,
+	stdin string,
+	timeout time.Duration,
+) ([]byte, error) {
+	args := []string{
+		"-p",
+		"--output-format", "json",
+		"--json-schema", schemaJSON,
+	}
+	if cfg.Model != "" {
+		args = append(args, "--model", cfg.Model)
+	}
+	args = append(args, extraArgs...)
+
+	result, err := cfg.Exec(ctx, textGenerationCLISpec{
+		Binary: cfg.Binary,
+		Args:   args,
+		Cwd:    workspace,
+		Stdin:  stdin,
+	})
+	if err != nil {
+		return nil, translateCLINotFound("claude", timeout, err)
+	}
+	if result.ExitCode != 0 {
+		return nil, fmt.Errorf("claude CLI failed: %s", firstNonEmptyMessage(result.Stderr, result.Stdout, "exit code "+fmt.Sprint(result.ExitCode)))
+	}
+	return []byte(result.Stdout), nil
+}
+
+// decodeClaudeStructuredLastLine pulls the structured_output envelope from the
+// last non-empty line of Claude's `-p --output-format json` stdout. Claude
+// emits one JSON object per line; the structured payload lives on the last
+// line. Returns an error for empty input or malformed JSON.
+func decodeClaudeStructuredLastLine[T any](stdout []byte) (T, error) {
+	var zero T
+	trimmed := strings.TrimSpace(string(stdout))
+	if trimmed == "" {
+		return zero, fmt.Errorf("claude returned empty output")
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	last := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		candidate := strings.TrimSpace(lines[i])
+		if candidate != "" {
+			last = candidate
+			break
+		}
+	}
+	if last == "" {
+		return zero, fmt.Errorf("claude returned no JSON output")
+	}
+
+	var envelope struct {
+		StructuredOutput T `json:"structured_output"`
+	}
+	if err := json.Unmarshal([]byte(last), &envelope); err != nil {
+		return zero, fmt.Errorf("decode claude structured output: %w", err)
+	}
+	return envelope.StructuredOutput, nil
+}
+
+// normalizeStructuredOutputLine applies the trim/normalize logic shared by
+// commit subjects and thread titles: take the first line, strip surrounding
+// quotes and whitespace, collapse internal whitespace runs.
+func normalizeStructuredOutputLine(raw string) string {
+	out := raw
+	if line, _, ok := strings.Cut(out, "\n"); ok {
+		out = line
+	}
+	out = strings.TrimSpace(out)
+	out = strings.Trim(out, `'"`+"`")
+	out = strings.TrimSpace(out)
+	return strings.Join(strings.Fields(out), " ")
+}
+
+// capRunesWithEllipsis truncates a string at maxRunes runes, leaving room for
+// a 3-char "..." suffix in the t3-code style (72-char subject = 69 runes + "...").
+func capRunesWithEllipsis(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return strings.TrimSpace(string(runes[:maxRunes-3])) + "..."
 }

@@ -83,48 +83,22 @@ func (a *App) generateCodexThreadTitle(
 		return "", err
 	}
 
-	schemaPath, outputPath, cleanup, err := createTextGenerationScratchFiles(threadTitleCodexSchemaJSON)
-	if err != nil {
-		return "", fmt.Errorf("codex: scratch files: %w", err)
-	}
-	defer cleanup()
-
 	imagePaths, err := a.threadTitleImagePaths(thread.ID, attachments)
 	if err != nil {
 		return "", err
 	}
 
-	args := []string{
-		"exec",
-		"--ephemeral",
-		"--skip-git-repo-check",
-		"-s", "read-only",
-		"--model", cfg.Model,
-		"--config", fmt.Sprintf("model_reasoning_effort=%q", cfg.Effort),
-		"--output-schema", schemaPath,
-		"--output-last-message", outputPath,
-	}
+	var extra []string
 	for _, imagePath := range imagePaths {
-		args = append(args, "--image", imagePath)
-	}
-	args = append(args, "-")
-
-	result, err := cfg.Exec(ctx, textGenerationCLISpec{
-		Binary: cfg.Binary,
-		Args:   args,
-		Cwd:    workspace,
-		Stdin:  buildThreadTitlePrompt(message, attachments),
-	})
-	if err != nil {
-		return "", translateCLINotFound("codex", threadTitleTimeout, err)
-	}
-	if result.ExitCode != 0 {
-		return "", fmt.Errorf("codex CLI failed with exit code %d", result.ExitCode)
+		extra = append(extra, "--image", imagePath)
 	}
 
-	raw, err := readTextGenerationOutputFile(outputPath)
+	raw, err := a.runCodexTextGeneration(
+		ctx, cfg, workspace, threadTitleCodexSchemaJSON,
+		extra, buildThreadTitlePrompt(message, attachments), threadTitleTimeout,
+	)
 	if err != nil {
-		return "", fmt.Errorf("codex: read output: %w", err)
+		return "", err
 	}
 
 	var parsed struct {
@@ -150,29 +124,15 @@ func (a *App) generateClaudeThreadTitle(
 		return "", err
 	}
 
-	args := []string{
-		"-p",
-		"--output-format", "json",
-		"--json-schema", threadTitleClaudeSchemaJSON,
-	}
-	if cfg.Model != "" {
-		args = append(args, "--model", cfg.Model)
-	}
-
-	result, err := cfg.Exec(ctx, textGenerationCLISpec{
-		Binary: cfg.Binary,
-		Args:   args,
-		Cwd:    workspace,
-		Stdin:  buildThreadTitlePrompt(message, attachments),
-	})
+	stdout, err := a.runClaudeTextGeneration(
+		ctx, cfg, workspace, threadTitleClaudeSchemaJSON,
+		nil, buildThreadTitlePrompt(message, attachments), threadTitleTimeout,
+	)
 	if err != nil {
-		return "", translateCLINotFound("claude", threadTitleTimeout, err)
-	}
-	if result.ExitCode != 0 {
-		return "", fmt.Errorf("claude CLI failed with exit code %d", result.ExitCode)
+		return "", err
 	}
 
-	title, err := decodeClaudeThreadTitle([]byte(result.Stdout))
+	title, err := decodeClaudeThreadTitle(stdout)
 	if err != nil {
 		return "", err
 	}
@@ -268,51 +228,19 @@ func redactTitleGenerationError(err error) string {
 }
 
 func decodeClaudeThreadTitle(stdout []byte) (string, error) {
-	line := strings.TrimSpace(string(stdout))
-	if line == "" {
-		return "", fmt.Errorf("claude returned empty output")
+	payload, err := decodeClaudeStructuredLastLine[struct {
+		Title string `json:"title"`
+	}](stdout)
+	if err != nil {
+		return "", err
 	}
-
-	lines := strings.Split(line, "\n")
-	last := ""
-	for i := len(lines) - 1; i >= 0; i-- {
-		candidate := strings.TrimSpace(lines[i])
-		if candidate != "" {
-			last = candidate
-			break
-		}
-	}
-	if last == "" {
-		return "", fmt.Errorf("claude returned no JSON output")
-	}
-
-	var envelope struct {
-		StructuredOutput struct {
-			Title string `json:"title"`
-		} `json:"structured_output"`
-	}
-	if err := json.Unmarshal([]byte(last), &envelope); err != nil {
-		return "", fmt.Errorf("decode claude structured output: %w", err)
-	}
-	return envelope.StructuredOutput.Title, nil
+	return payload.Title, nil
 }
 
 func sanitizeGeneratedThreadTitle(raw string) string {
-	normalized := raw
-	if line, _, ok := strings.Cut(normalized, "\n"); ok {
-		normalized = line
-	}
-	normalized = strings.TrimSpace(normalized)
-	normalized = strings.Trim(normalized, `'"`+"`")
-	normalized = strings.TrimSpace(normalized)
-	normalized = strings.Join(strings.Fields(normalized), " ")
-	if normalized == "" {
+	out := normalizeStructuredOutputLine(raw)
+	if out == "" {
 		return defaultGeneratedThreadTitle
 	}
-
-	runes := []rune(normalized)
-	if len(runes) <= 50 {
-		return normalized
-	}
-	return strings.TrimSpace(string(runes[:47])) + "..."
+	return capRunesWithEllipsis(out, 50)
 }
