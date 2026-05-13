@@ -154,3 +154,24 @@ func TestNormalizeInteractionModeKnownValues(t *testing.T) {
 		}
 	}
 }
+
+func TestIsValidAutoCompactPercent(t *testing.T) {
+	cases := []struct {
+		name    string
+		percent int
+		want    bool
+	}{
+		{"zero is valid (default/inherit)", 0, true},
+		{"min boundary", 1, true},
+		{"mid range", 50, true},
+		{"max boundary", 90, true},
+		{"just past max", 91, false},
+		{"way past max", 100, false},
+		{"negative", -1, false},
+	}
+	for _, tc := range cases {
+		if got := IsValidAutoCompactPercent(tc.percent); got != tc.want {
+			t.Errorf("%s: IsValidAutoCompactPercent(%d) = %v, want %v", tc.name, tc.percent, got, tc.want)
+		}
+	}
+}

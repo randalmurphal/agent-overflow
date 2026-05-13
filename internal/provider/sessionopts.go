@@ -227,3 +227,10 @@ func normalizeAutoCompactPercent(percent int) int {
 		return percent
 	}
 }
+
+// IsValidAutoCompactPercent reports whether the value is in the [0, 90]
+// range the thread row's CHECK constraint enforces. Callers use it to
+// reject bad inputs before issuing a CreateThread.
+func IsValidAutoCompactPercent(percent int) bool {
+	return percent >= 0 && percent <= 90
+}

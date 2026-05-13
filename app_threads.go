@@ -138,10 +138,10 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 	if len(options) > 0 && !chatmodel.ContextWindowSupported(options, contextWindow) {
 		contextWindow = provider.DefaultContextWindowForModel(providerName, model, options[0].Tokens)
 	}
-	if !isValidAutoCompactPercent(autoCompactStandardPercent) {
+	if !provider.IsValidAutoCompactPercent(autoCompactStandardPercent) {
 		return store.Thread{}, fmt.Errorf("create thread: auto-compact standard percent must be between 0 and 90")
 	}
-	if !isValidAutoCompactPercent(autoCompactExtendedPercent) {
+	if !provider.IsValidAutoCompactPercent(autoCompactExtendedPercent) {
 		return store.Thread{}, fmt.Errorf("create thread: auto-compact extended percent must be between 0 and 90")
 	}
 
@@ -257,10 +257,6 @@ func (a *App) defaultContextWindowForModel(providerName, model string) int {
 		}
 	}
 	return chatmodel.DefaultContextWindow(providerName, model, 0)
-}
-
-func isValidAutoCompactPercent(percent int) bool {
-	return percent >= 0 && percent <= 90
 }
 
 // ListThreads backs the frontend sidebar. It deliberately excludes
