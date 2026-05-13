@@ -35,6 +35,7 @@ one closest to what you're touching.
 | `wsldistro/` | Cross-process schema for `%APPDATA%\agent-overflow\wsl.json` — atomic Load/Save and the WSL-side path resolver fed by the launcher's WSLENV-injected env var. Shared between `cmd/agent-overflow-windows` and the WSL backend. |
 | `shellenv/` | Probes the user's login shell for PATH at startup and merges it into `os.Environ()`. Lets `exec.LookPath("claude")` etc. find binaries installed via nvm/asdf/`~/.local/bin` when launched outside a terminal (WSL backend, Finder-launched `.app`). |
 | `uikeys/` | Browser-style WebviewWindow keybindings (Ctrl+/-/=/R/F11) shared by every window the app opens — desktop binary, `--connect` remote client, and the Windows WSL launcher. |
+| `uitrace/` | Dev-only JSONL render-trace appender backing the frontend debug console's `AppendUIRenderTraceBatch` binding. Validates each line, caps the batch, and rotates at `MaxFileBytes`. |
 
 ## Responsibility boundary
 

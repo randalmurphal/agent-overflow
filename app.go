@@ -30,6 +30,7 @@ import (
 	"agent-overflow/internal/terminal"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/uitrace"
 	"agent-overflow/internal/workspacefiles"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -89,7 +90,15 @@ type App struct {
 	telemetry        *obsotel.Provider
 	replay           *replay.Manager
 	configDir        string
-	uiTraceMu        sync.Mutex
+	// uiTracer is the dev-only JSONL render-trace appender. It's lazily
+	// constructed from configDir the first time AppendUIRenderTraceBatch
+	// runs so tests that build a bare App{configDir: t.TempDir()} stay
+	// cheap, and so production wiring doesn't need an explicit init step.
+	// uiTraceOnce serializes construction; uiTraceErr captures a failed
+	// New so subsequent calls fail loudly instead of silently no-op'ing.
+	uiTraceOnce sync.Once
+	uiTracer    *uitrace.Tracer
+	uiTraceErr  error
 	// eventBus is the Phase C transport that owns per-channel seq stamping
 	// and fan-out to connected webview / remote clients. main.go wires it
 	// in via SetEventBus; the atomic.Pointer means SetEventBus and
