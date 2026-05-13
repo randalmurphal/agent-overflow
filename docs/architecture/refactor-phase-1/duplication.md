@@ -657,6 +657,28 @@ lands so both reasons are visible from either site.
 
 ---
 
+## Status (2026-05)
+
+All Phase 1 duplication findings except F8 have been folded into the
+codebase. F8's "shared restart-if-active helper" turned out to be
+mismatched on closer reading — interaction-mode applies live via
+Claude's `set_permission_mode` and only flags `NeedsReconnect=true`
+when not applicable, while runtime-mode always restarts via
+`startSession`. There is no shared teardown step today, so the
+"agree on the teardown ordering" rationale doesn't fit. Skipping
+unless a future flow surfaces a real shared restart contract.
+
+| Finding | Status | Commit / note |
+|---|---|---|
+| F1 — textgen task helper | done | `17a6eba`, plus a further `f29cda5` lifting the runner into `internal/textgen` |
+| F2 — send/steer/flush prologue | done | `449e510` |
+| F3 — provider probe wrappers | done | `06998ba` |
+| F4 — dead `provider.ProviderStatusEvent` | done | `e25ea45` |
+| F5 — `ApprovalDeduper` | done | `62d054f` |
+| F6 — `emitCheckpointError` helper | done | `ae4c154` |
+| F7 — checkpoint diff context | done | `6d3a612` |
+| F8 — mode-restart helper | skipped — no real shared step | see note above |
+
 ## 5. Recommended consolidation order
 
 Each step is a discrete change; gate progress on `make go-build`,
