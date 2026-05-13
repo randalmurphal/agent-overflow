@@ -120,98 +120,117 @@ func (a *App) emitCheckpointError(threadID, userItemID string, turnIndex int, er
 }
 
 func (a *App) GetMessageCheckpointDiff(threadID string, userItemID string) (string, error) {
-	if _, err := a.store.GetThread(threadID); err != nil {
-		return "", fmt.Errorf("get message checkpoint diff: %w", err)
-	}
-	target, ok, err := a.store.GetCheckpointByUserItemID(threadID, userItemID)
+	const action = "get message checkpoint diff"
+	_, target, err := a.loadCheckpointForUserItem(action, threadID, userItemID)
 	if err != nil {
-		return "", fmt.Errorf("get message checkpoint diff: %w", err)
-	}
-	if !ok {
-		return "", fmt.Errorf("get message checkpoint diff: no checkpoint for thread %q user item %q", threadID, userItemID)
-	}
-	if err := validateCheckpointRecordForThread("get message checkpoint diff", threadID, target); err != nil {
 		return "", err
 	}
 	prev, ok, err := a.store.GetPreviousCheckpoint(threadID, target.TurnIndex)
 	if err != nil {
-		return "", fmt.Errorf("get message checkpoint diff: previous: %w", err)
+		return "", fmt.Errorf("%s: previous: %w", action, err)
 	}
 	if !ok {
 		return "", nil
 	}
-	if err := validateCheckpointRecordForThread("get message checkpoint diff", threadID, prev); err != nil {
+	if err := validateCheckpointRecordForThread(action, threadID, prev); err != nil {
 		return "", err
 	}
 	if prev.WorkspacePath != target.WorkspacePath {
-		return "", fmt.Errorf("get message checkpoint diff: checkpoint workspaces differ: %q != %q", prev.WorkspacePath, target.WorkspacePath)
+		return "", fmt.Errorf("%s: checkpoint workspaces differ: %q != %q", action, prev.WorkspacePath, target.WorkspacePath)
 	}
 	patch, err := a.checkpointStore().DiffRefToRef(context.Background(), prev.WorkspacePath, prev.RefName, target.RefName)
 	if err != nil {
-		return "", fmt.Errorf("get message checkpoint diff: %w", err)
+		return "", fmt.Errorf("%s: %w", action, err)
 	}
 	return string(patch), nil
 }
 
 func (a *App) GetMessageCheckpointRevertDiff(threadID string, userItemID string) (string, error) {
-	thread, err := a.store.GetThread(threadID)
+	const action = "get message checkpoint revert diff"
+	thread, target, err := a.loadCheckpointForUserItem(action, threadID, userItemID)
 	if err != nil {
-		return "", fmt.Errorf("get message checkpoint revert diff: %w", err)
-	}
-	target, ok, err := a.store.GetCheckpointByUserItemID(threadID, userItemID)
-	if err != nil {
-		return "", fmt.Errorf("get message checkpoint revert diff: %w", err)
-	}
-	if !ok {
-		return "", fmt.Errorf("get message checkpoint revert diff: no checkpoint for thread %q user item %q", threadID, userItemID)
-	}
-	if err := validateCheckpointRecordForThread("get message checkpoint revert diff", threadID, target); err != nil {
 		return "", err
 	}
-	workspace := checkpointWorkspaceForThread(thread)
-	if workspace == "" || workspace != target.WorkspacePath {
-		return "", fmt.Errorf("get message checkpoint revert diff: checkpoint workspace %q does not match thread workspace %q", target.WorkspacePath, workspace)
+	workspace, err := validateWorkspaceMatchesCheckpoint(action, thread, target)
+	if err != nil {
+		return "", err
 	}
 	paths, err := a.store.ListTrackedFilesFromTurn(threadID, target.TurnIndex)
 	if err != nil {
-		return "", fmt.Errorf("get message checkpoint revert diff: tracked files: %w", err)
+		return "", fmt.Errorf("%s: tracked files: %w", action, err)
 	}
 	patch, err := a.checkpointStore().DiffRefToWorktreeScoped(context.Background(), workspace, target.RefName, paths)
 	if err != nil {
-		return "", fmt.Errorf("get message checkpoint revert diff: %w", err)
+		return "", fmt.Errorf("%s: %w", action, err)
 	}
 	return string(patch), nil
 }
 
 func (a *App) GetSessionAgentDiff(threadID string) (string, error) {
+	const action = "get session agent diff"
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
-		return "", fmt.Errorf("get session agent diff: %w", err)
+		return "", fmt.Errorf("%s: %w", action, err)
 	}
 	checkpoints, err := a.store.ListCheckpoints(threadID)
 	if err != nil {
-		return "", fmt.Errorf("get session agent diff: %w", err)
+		return "", fmt.Errorf("%s: %w", action, err)
 	}
 	if len(checkpoints) == 0 {
 		return "", nil
 	}
 	first := checkpoints[0]
-	if err := validateCheckpointRecordForThread("get session agent diff", threadID, first); err != nil {
+	if err := validateCheckpointRecordForThread(action, threadID, first); err != nil {
 		return "", err
 	}
-	workspace := checkpointWorkspaceForThread(thread)
-	if workspace == "" || workspace != first.WorkspacePath {
-		return "", fmt.Errorf("get session agent diff: checkpoint workspace %q does not match thread workspace %q", first.WorkspacePath, workspace)
+	workspace, err := validateWorkspaceMatchesCheckpoint(action, thread, first)
+	if err != nil {
+		return "", err
 	}
 	paths, err := a.store.ListTrackedFiles(threadID)
 	if err != nil {
-		return "", fmt.Errorf("get session agent diff: tracked files: %w", err)
+		return "", fmt.Errorf("%s: tracked files: %w", action, err)
 	}
-	patch, err := a.checkpointStore().DiffRefToWorktreeScoped(context.Background(), first.WorkspacePath, first.RefName, paths)
+	patch, err := a.checkpointStore().DiffRefToWorktreeScoped(context.Background(), workspace, first.RefName, paths)
 	if err != nil {
-		return "", fmt.Errorf("get session agent diff: %w", err)
+		return "", fmt.Errorf("%s: %w", action, err)
 	}
 	return string(patch), nil
+}
+
+// loadCheckpointForUserItem fetches the thread + the per-user-item
+// checkpoint and runs the thread<->checkpoint validation shared by the
+// diff getters keyed on a user message. Returns a wrapped error with the
+// caller-supplied action prefix when the thread is missing, the
+// checkpoint row is absent, or the record fails validation.
+func (a *App) loadCheckpointForUserItem(action, threadID, userItemID string) (store.Thread, store.Checkpoint, error) {
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return store.Thread{}, store.Checkpoint{}, fmt.Errorf("%s: %w", action, err)
+	}
+	target, ok, err := a.store.GetCheckpointByUserItemID(threadID, userItemID)
+	if err != nil {
+		return store.Thread{}, store.Checkpoint{}, fmt.Errorf("%s: %w", action, err)
+	}
+	if !ok {
+		return store.Thread{}, store.Checkpoint{}, fmt.Errorf("%s: no checkpoint for thread %q user item %q", action, threadID, userItemID)
+	}
+	if err := validateCheckpointRecordForThread(action, threadID, target); err != nil {
+		return store.Thread{}, store.Checkpoint{}, err
+	}
+	return thread, target, nil
+}
+
+// validateWorkspaceMatchesCheckpoint resolves the thread's workspace
+// path and checks it against the checkpoint's recorded workspace.
+// Returns the resolved workspace on success, or a wrapped error when
+// the thread has no workspace or it disagrees with the checkpoint.
+func validateWorkspaceMatchesCheckpoint(action string, thread store.Thread, cp store.Checkpoint) (string, error) {
+	workspace := checkpointWorkspaceForThread(thread)
+	if workspace == "" || workspace != cp.WorkspacePath {
+		return "", fmt.Errorf("%s: checkpoint workspace %q does not match thread workspace %q", action, cp.WorkspacePath, workspace)
+	}
+	return workspace, nil
 }
 
 func (a *App) GetWorkspaceCurrentDiff(threadID string) (string, error) {
