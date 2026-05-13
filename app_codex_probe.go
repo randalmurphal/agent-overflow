@@ -52,27 +52,22 @@ func resetCodexProbeCacheForTest() {
 // the rate-limit ring popover's plan label hydrates from the same code
 // path that the startup hook uses. Cache hits do NOT re-emit — the
 // frontend store already has the value from the original miss.
+//
+// Unlike Claude, Codex deliberately omits the unauthenticated-banner
+// hook: an empty planType is ambiguous (backend latency can produce it
+// for an authenticated user) so surfacing a banner here would create
+// false positives. See drift D3 in
+// `docs/architecture/refactor-phase-1/duplication.md`.
 func (a *App) ProbeCodexAccount() (provider.AccountInfo, error) {
 	binary := a.providerBinaryPath(string(provider.Codex))
-
-	cache := codexAccountProbeCache()
-	if cached, hit := cache.Get(binary); hit {
-		return cached, nil
-	}
-
-	info, err := codex.ProbeAccount(context.Background(), codex.ProbeConfig{
-		Binary: binary,
+	return a.runAccountProbe(providerProbeRunner{
+		providerName: string(provider.Codex),
+		cache:        codexAccountProbeCache(),
+		binary:       binary,
+		probe: func(ctx context.Context) (provider.AccountInfo, error) {
+			return codex.ProbeAccount(ctx, codex.ProbeConfig{Binary: binary})
+		},
 	})
-	if err != nil {
-		return provider.AccountInfo{}, err
-	}
-
-	cache.Set(binary, info)
-	a.emit("provider:account", ProviderAccountEvent{
-		Provider: string(provider.Codex),
-		Account:  info,
-	})
-	return info, nil
 }
 
 // RecheckCodexAccount evicts the cached result for the configured

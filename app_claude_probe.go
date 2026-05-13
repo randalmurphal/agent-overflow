@@ -62,31 +62,16 @@ func resetClaudeProbeCacheForTest() {
 // already has the value from the original miss.
 func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
 	binary := a.providerBinaryPath(string(provider.Claude))
-
-	cache := claudeAccountProbeCache()
-	if cached, hit := cache.Get(binary); hit {
-		if claudeUnauthenticatedStatus(cached) {
-			a.emitClaudeUnauthenticatedStatus()
-		}
-		return cached, nil
-	}
-
-	info, err := claude.ProbeAccount(context.Background(), claude.ProbeConfig{
-		Binary: binary,
+	return a.runAccountProbe(providerProbeRunner{
+		providerName: string(provider.Claude),
+		cache:        claudeAccountProbeCache(),
+		binary:       binary,
+		probe: func(ctx context.Context) (provider.AccountInfo, error) {
+			return claude.ProbeAccount(ctx, claude.ProbeConfig{Binary: binary})
+		},
+		unauthenticated: claudeUnauthenticatedStatus,
+		emitUnauth:      a.emitClaudeUnauthenticatedStatus,
 	})
-	if err != nil {
-		return provider.AccountInfo{}, err
-	}
-
-	cache.Set(binary, info)
-	if claudeUnauthenticatedStatus(info) {
-		a.emitClaudeUnauthenticatedStatus()
-	}
-	a.emit("provider:account", ProviderAccountEvent{
-		Provider: string(provider.Claude),
-		Account:  info,
-	})
-	return info, nil
 }
 
 // RecheckClaudeAccount evicts the cached result for the configured
