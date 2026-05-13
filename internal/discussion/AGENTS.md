@@ -13,6 +13,12 @@ messaging, and in-memory deliberation turn tracking.
 - `deliberation.go` — `Deliberation` + `DeliberationState`. The only
   in-memory state in this package: current speaker, turn count,
   conclusion proposals. Coordinates one discussion at a time.
+- `participant.go` — `ParticipantPlan`, `BuildParticipantPlans`,
+  `BuildParticipantPrompt`, `FormatRole`. Pure derivation of the
+  per-participant child-thread blueprint from a parent thread +
+  `DiscussionDefinition`. The App in `app_discussion_start.go`
+  consumes a slice of `ParticipantPlan` and runs the orchestration
+  (CreateThread / startSession / channel link / cleanup) around it.
 
 ## Responsibility boundary
 

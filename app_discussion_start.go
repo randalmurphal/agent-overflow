@@ -3,20 +3,11 @@ package main
 import (
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"agent-overflow/internal/discussion"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/stringsx"
-
-	"github.com/google/uuid"
 )
-
-type discussionParticipantPlan struct {
-	thread       store.Thread
-	systemPrompt string
-}
 
 func (a *App) startDiscussion(threadID, discussionName string) error {
 	if a.store == nil || a.channels == nil {
@@ -40,7 +31,7 @@ func (a *App) startDiscussion(threadID, discussionName string) error {
 }
 
 func (a *App) startDiscussionWithDefinition(parent store.Thread, def store.DiscussionDefinition) error {
-	plans, err := buildDiscussionParticipantPlans(parent, def)
+	plans, err := discussion.BuildParticipantPlans(parent, def, time.Now().UnixMilli())
 	if err != nil {
 		return err
 	}
@@ -80,51 +71,9 @@ func (a *App) ensureDiscussionCanStart(parent store.Thread) error {
 	return nil
 }
 
-func buildDiscussionParticipantPlans(
-	parent store.Thread,
-	def store.DiscussionDefinition,
-) ([]discussionParticipantPlan, error) {
-	plans := make([]discussionParticipantPlan, 0, len(def.Participants))
-	now := time.Now().UnixMilli()
-
-	for _, participant := range def.Participants {
-		role := strings.TrimSpace(participant.Role)
-		providerName := firstNonEmpty(participant.Provider, parent.Provider)
-		model := firstNonEmpty(participant.Model, parent.Model)
-		if providerName == "" {
-			return nil, fmt.Errorf("discussion participant %q is missing a provider", role)
-		}
-		if model == "" {
-			return nil, fmt.Errorf("discussion participant %q is missing a model", role)
-		}
-
-		child := store.Thread{
-			ID:             uuid.NewString(),
-			ProjectID:      parent.ProjectID,
-			ProjectPath:    parent.ProjectPath,
-			Title:          fmt.Sprintf("%s - %s", parent.Title, formatDiscussionRole(role)),
-			Provider:       providerName,
-			WorkspacePath:  parent.WorkspacePath,
-			Model:          model,
-			WorktreePath:   parent.WorktreePath,
-			Branch:         parent.Branch,
-			Mode:           "discussion",
-			ParentThreadID: parent.ID,
-			CreatedAt:      now,
-			UpdatedAt:      now,
-		}
-		plans = append(plans, discussionParticipantPlan{
-			thread:       child,
-			systemPrompt: buildDiscussionParticipantPrompt(role, participant.System),
-		})
-	}
-
-	return plans, nil
-}
-
 func (a *App) createDiscussionRuntime(
 	parent store.Thread,
-	plans []discussionParticipantPlan,
+	plans []discussion.ParticipantPlan,
 	maxTurns int,
 ) (store.Channel, error) {
 	createdIDs, err := a.createDiscussionParticipantThreads(plans)
@@ -155,34 +104,34 @@ func (a *App) createDiscussionRuntime(
 	return channel, nil
 }
 
-func (a *App) createDiscussionParticipantThreads(plans []discussionParticipantPlan) ([]string, error) {
+func (a *App) createDiscussionParticipantThreads(plans []discussion.ParticipantPlan) ([]string, error) {
 	created := make([]string, 0, len(plans))
 	for _, plan := range plans {
-		if err := a.store.CreateThread(plan.thread); err != nil {
+		if err := a.store.CreateThread(plan.Thread); err != nil {
 			cleanupErr := a.cleanupDiscussionSetup("", nil, created, err)
 			return nil, cleanupErr
 		}
-		created = append(created, plan.thread.ID)
+		created = append(created, plan.Thread.ID)
 	}
 	return created, nil
 }
 
-func (a *App) startDiscussionParticipantSessions(plans []discussionParticipantPlan) ([]string, error) {
+func (a *App) startDiscussionParticipantSessions(plans []discussion.ParticipantPlan) ([]string, error) {
 	started := make([]string, 0, len(plans))
 	for _, plan := range plans {
-		a.setThreadSystemPrompt(plan.thread.ID, plan.systemPrompt)
-		if err := a.startSession(plan.thread.ID); err != nil {
-			a.clearThreadSystemPrompt(plan.thread.ID)
-			return started, fmt.Errorf("start discussion participant %s: %w", plan.thread.ID, err)
+		a.setThreadSystemPrompt(plan.Thread.ID, plan.SystemPrompt)
+		if err := a.startSession(plan.Thread.ID); err != nil {
+			a.clearThreadSystemPrompt(plan.Thread.ID)
+			return started, fmt.Errorf("start discussion participant %s: %w", plan.Thread.ID, err)
 		}
-		started = append(started, plan.thread.ID)
+		started = append(started, plan.Thread.ID)
 	}
 	return started, nil
 }
 
-func (a *App) linkDiscussionParticipants(channelID string, plans []discussionParticipantPlan) error {
+func (a *App) linkDiscussionParticipants(channelID string, plans []discussion.ParticipantPlan) error {
 	for _, plan := range plans {
-		child := plan.thread
+		child := plan.Thread
 		child.DiscussionID = channelID
 		child.UpdatedAt = max(child.UpdatedAt+1, time.Now().UnixMilli())
 		if err := a.store.UpdateThread(child); err != nil {
@@ -233,6 +182,7 @@ func (a *App) cleanupDiscussionSetup(
 	errs = append([]error{cause}, errs...)
 	return errors.Join(errs...)
 }
+
 func (a *App) installDeliberation(channelID string, maxTurns int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -243,32 +193,3 @@ func (a *App) installDeliberation(channelID string, maxTurns int) {
 	a.deliberations[channelID] = discussion.NewDeliberation(channelID, maxTurns)
 }
 
-func buildDiscussionParticipantPrompt(role, rawSystem string) string {
-	return joinSystemPrompts(
-		fmt.Sprintf("You are the %s participant in a discussion thread.", formatDiscussionRole(role)),
-		rawSystem,
-	)
-}
-
-func formatDiscussionRole(role string) string {
-	parts := strings.FieldsFunc(strings.TrimSpace(role), func(r rune) bool {
-		return r == '-' || r == '_' || r == ' '
-	})
-	for i, part := range parts {
-		if part == "" {
-			continue
-		}
-		parts[i] = strings.ToUpper(part[:1]) + part[1:]
-	}
-	if len(parts) == 0 {
-		return "Participant"
-	}
-	return strings.Join(parts, " ")
-}
-
-// firstNonEmpty returns the first input that is non-blank after TrimSpace,
-// with the whitespace stripped. Thin wrapper over stringsx.FirstNonEmptyTrimmed
-// so call sites in the main package stay concise.
-func firstNonEmpty(values ...string) string {
-	return stringsx.FirstNonEmptyTrimmed(values...)
-}
