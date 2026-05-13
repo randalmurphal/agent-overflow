@@ -137,7 +137,7 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread from message: load user item: %w", err)
 	}
-	if !found || item.Kind != "user_text" || item.Role != "user" || isWireOnlyUserItem(item) {
+	if !found || item.Kind != "user_text" || item.Role != "user" || checkpoint.IsWireOnlyUserItem(item) {
 		return store.Thread{}, fmt.Errorf("fork thread from message: %q is not a user message", userItemID)
 	}
 
@@ -265,7 +265,7 @@ func (a *App) copyForkCheckpoints(source, fork store.Thread, clonedItemIDs map[s
 		if !ok {
 			continue
 		}
-		if err := validateCheckpointRecordForThread("fork thread", source.ID, sourceCheckpoint); err != nil {
+		if err := checkpoint.ValidateRef("fork thread", source.ID, sourceCheckpoint.RefName, sourceCheckpoint.WorkspacePath); err != nil {
 			cleanupCopied()
 			return nil, err
 		}
@@ -501,7 +501,7 @@ func (a *App) forkClaudeThreadBeforeMessage(source store.Thread, checkpointRow s
 	if checkpointRow.TurnIndex == 0 {
 		return "", "", nil, nil
 	}
-	sourceSessionRef := claudeSourceSessionRef(source)
+	sourceSessionRef := source.ResolvedSessionRef()
 	if sourceSessionRef == "" {
 		return "", "", nil, fmt.Errorf("fork thread from message: source thread %q is missing a Claude session reference", source.ID)
 	}

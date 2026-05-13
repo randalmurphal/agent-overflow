@@ -50,3 +50,18 @@ func (t Thread) GetSessionRef() string { return t.SessionRef }
 // uses this when the next session start should branch off a prior
 // session without consuming it as the live resume target.
 func (t Thread) GetPendingForkRef() string { return t.PendingForkRef }
+
+// ResolvedSessionRef returns the resume reference Claude's fork path
+// should use: prefer the live SessionRef when present, otherwise the
+// PendingForkRef captured at fork time. Empty when neither is set
+// (brand-new thread).
+//
+// Codex's fork path doesn't use this — it resumes by thread id alone
+// — but the field semantics are general enough that the accessor
+// stays on Thread rather than in a Claude-specific helper.
+func (t Thread) ResolvedSessionRef() string {
+	if t.SessionRef != "" {
+		return t.SessionRef
+	}
+	return t.PendingForkRef
+}

@@ -178,7 +178,7 @@ func (a *App) cleanupThreadAttachmentFiles(threadID string) error {
 func (a *App) cleanupThreadCheckpoints(threadID string, thread store.Thread, threadFound bool) error {
 	var errs []error
 	if threadFound {
-		workspace := checkpointWorkspaceForThread(thread)
+		workspace := thread.WorkspacePath
 		if workspace != "" {
 			ctx := context.Background()
 			cp := a.checkpointStore()

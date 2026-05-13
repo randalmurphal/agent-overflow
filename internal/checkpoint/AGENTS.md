@@ -9,6 +9,20 @@ the UI can diff and roll back to message boundaries. Refs live under
 - `ref.go` — pure helpers for the ref namespace: `EncodeThreadID`,
   `ThreadRefPattern`, `ThreadRefPrefix`, `IsThreadRef`. Thread IDs are
   base64url-encoded so every character is path-safe.
+- `validate.go` — pure validators every checkpoint-row caller funnels
+  through: `ValidateRef(action, threadID, refName, workspacePath)`
+  rejects empty refs, refs outside the thread namespace, and empty
+  workspace paths; `ValidateWorkspaceMatch(action, threadWS, cpWS)`
+  guards the revert / preview flows against mismatched workspaces.
+  Takes primitive params so the package doesn't import `store`.
+- `view.go` — wire-shape `View` + `ViewFromStore(row store.Checkpoint)`
+  projector. Drops server-internal columns
+  (RefName / BaselineSHA / WorkspacePath / ProviderParentUUID); main
+  exposes `CheckpointView = checkpoint.View` for Wails bindings.
+- `wire_only.go` — `IsWireOnlyUserItem(item store.Item)` reads the
+  `wire_only: true` flag on a user_text row's Meta JSON. Triage
+  writes the flag (`internal/triage/handle_user_text.go`); fork /
+  revert / restore callers read it via this helper.
 - `store.go` — `Store` with `CaptureRef`, ref copy, restore, and diff
   helpers. Shells out to `git` via a temp
   `GIT_INDEX_FILE` so the user's index is never touched. Capture builds

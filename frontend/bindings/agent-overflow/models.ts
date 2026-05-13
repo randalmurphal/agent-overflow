@@ -7,7 +7,7 @@ import { Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as diffsummary$0 from "./internal/diffsummary/models.js";
+import * as checkpoint$0 from "./internal/checkpoint/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as flushqueue$0 from "./internal/flushqueue/models.js";
@@ -62,55 +62,23 @@ export class AttachmentThumbnail {
     }
 }
 
-export class CheckpointView {
-    "id": string;
-    "threadId": string;
-    "userItemId": string;
-    "turnIndex": number;
-    "providerUserMessageId"?: string;
-    "status": string;
-    "files": diffsummary$0.File[];
-    "capturedAt": number;
+/**
+ * CheckpointView is the wire shape returned by ListMessageCheckpoints
+ * and friends. Canonical declaration (plus the field-subset projection
+ * rule) lives in internal/checkpoint; main keeps the alias so the
+ * Wails binding generator still emits it under the agent-overflow
+ * namespace the frontend imports from.
+ */
+export const CheckpointView = checkpoint$0.View;
 
-    /** Creates a new CheckpointView instance. */
-    constructor($$source: Partial<CheckpointView> = {}) {
-        if (!("id" in $$source)) {
-            this["id"] = "";
-        }
-        if (!("threadId" in $$source)) {
-            this["threadId"] = "";
-        }
-        if (!("userItemId" in $$source)) {
-            this["userItemId"] = "";
-        }
-        if (!("turnIndex" in $$source)) {
-            this["turnIndex"] = 0;
-        }
-        if (!("status" in $$source)) {
-            this["status"] = "";
-        }
-        if (!("files" in $$source)) {
-            this["files"] = [];
-        }
-        if (!("capturedAt" in $$source)) {
-            this["capturedAt"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new CheckpointView instance from a string or object.
-     */
-    static createFrom($$source: any = {}): CheckpointView {
-        const $$createField6_0 = $$createType1;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("files" in $$parsedSource) {
-            $$parsedSource["files"] = $$createField6_0($$parsedSource["files"]);
-        }
-        return new CheckpointView($$parsedSource as Partial<CheckpointView>);
-    }
-}
+/**
+ * CheckpointView is the wire shape returned by ListMessageCheckpoints
+ * and friends. Canonical declaration (plus the field-subset projection
+ * rule) lives in internal/checkpoint; main keeps the alias so the
+ * Wails binding generator still emits it under the agent-overflow
+ * namespace the frontend imports from.
+ */
+export type CheckpointView = checkpoint$0.View;
 
 export class ContextSettingsProfile {
     "provider": string;
@@ -148,7 +116,7 @@ export class ContextSettingsProfile {
      * Creates a new ContextSettingsProfile instance from a string or object.
      */
     static createFrom($$source: any = {}): ContextSettingsProfile {
-        const $$createField2_0 = $$createType3;
+        const $$createField2_0 = $$createType1;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("contextWindows" in $$parsedSource) {
             $$parsedSource["contextWindows"] = $$createField2_0($$parsedSource["contextWindows"]);
@@ -323,7 +291,7 @@ export class DesignOptionSet {
      * Creates a new DesignOptionSet instance from a string or object.
      */
     static createFrom($$source: any = {}): DesignOptionSet {
-        const $$createField1_0 = $$createType4;
+        const $$createField1_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("optionIds" in $$parsedSource) {
             $$parsedSource["optionIds"] = $$createField1_0($$parsedSource["optionIds"]);
@@ -359,7 +327,7 @@ export class DesignWorkdirInfo {
      * Creates a new DesignWorkdirInfo instance from a string or object.
      */
     static createFrom($$source: any = {}): DesignWorkdirInfo {
-        const $$createField1_0 = $$createType4;
+        const $$createField1_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField1_0($$parsedSource["files"]);
@@ -409,9 +377,9 @@ export class Draft {
      * Creates a new Draft instance from a string or object.
      */
     static createFrom($$source: any = {}): Draft {
-        const $$createField2_0 = $$createType4;
-        const $$createField3_0 = $$createType6;
-        const $$createField4_0 = $$createType8;
+        const $$createField2_0 = $$createType2;
+        const $$createField3_0 = $$createType4;
+        const $$createField4_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
             $$parsedSource["attachmentIds"] = $$createField2_0($$parsedSource["attachmentIds"]);
@@ -520,7 +488,7 @@ export class GitStatusSubscriptionResult {
      * Creates a new GitStatusSubscriptionResult instance from a string or object.
      */
     static createFrom($$source: any = {}): GitStatusSubscriptionResult {
-        const $$createField1_0 = $$createType9;
+        const $$createField1_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("status" in $$parsedSource) {
             $$parsedSource["status"] = $$createField1_0($$parsedSource["status"]);
@@ -586,7 +554,7 @@ export class LiveStateTodo {
      * Creates a new LiveStateTodo instance from a string or object.
      */
     static createFrom($$source: any = {}): LiveStateTodo {
-        const $$createField1_0 = $$createType11;
+        const $$createField1_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("steps" in $$parsedSource) {
             $$parsedSource["steps"] = $$createField1_0($$parsedSource["steps"]);
@@ -812,12 +780,12 @@ export class SendMessageOptions {
      * Creates a new SendMessageOptions instance from a string or object.
      */
     static createFrom($$source: any = {}): SendMessageOptions {
-        const $$createField0_0 = $$createType4;
-        const $$createField2_0 = $$createType8;
-        const $$createField3_0 = $$createType8;
-        const $$createField4_0 = $$createType4;
-        const $$createField5_0 = $$createType13;
-        const $$createField6_0 = $$createType4;
+        const $$createField0_0 = $$createType2;
+        const $$createField2_0 = $$createType6;
+        const $$createField3_0 = $$createType6;
+        const $$createField4_0 = $$createType2;
+        const $$createField5_0 = $$createType11;
+        const $$createField6_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
             $$parsedSource["attachmentIds"] = $$createField0_0($$parsedSource["attachmentIds"]);
@@ -925,7 +893,7 @@ export class TerminalHandle {
      * Creates a new TerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): TerminalHandle {
-        const $$createField2_0 = $$createType14;
+        const $$createField2_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -999,11 +967,11 @@ export class ThreadLiveState {
      * Creates a new ThreadLiveState instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadLiveState {
-        const $$createField1_0 = $$createType16;
-        const $$createField2_0 = $$createType18;
-        const $$createField3_0 = $$createType20;
-        const $$createField4_0 = $$createType21;
-        const $$createField5_0 = $$createType23;
+        const $$createField1_0 = $$createType14;
+        const $$createField2_0 = $$createType16;
+        const $$createField3_0 = $$createType18;
+        const $$createField4_0 = $$createType19;
+        const $$createField5_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("activeTurn" in $$parsedSource) {
             $$parsedSource["activeTurn"] = $$createField1_0($$parsedSource["activeTurn"]);
@@ -1086,7 +1054,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType25;
+        const $$createField0_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -1147,29 +1115,27 @@ export class WorktreeStatus {
 }
 
 // Private type creation functions
-const $$createType0 = diffsummary$0.File.createFrom;
+const $$createType0 = provider$0.ContextWindowOption.createFrom;
 const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = provider$0.ContextWindowOption.createFrom;
-const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = $Create.Array($Create.Any);
-const $$createType5 = TerminalChip.createFrom;
-const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = store$0.ProposedPlanSourceRef.createFrom;
-const $$createType8 = $Create.Nullable($$createType7);
-const $$createType9 = git$0.GitStatus.createFrom;
-const $$createType10 = LiveStateTodoStep.createFrom;
-const $$createType11 = $Create.Array($$createType10);
-const $$createType12 = store$0.DiffReviewSourceRef.createFrom;
-const $$createType13 = $Create.Nullable($$createType12);
-const $$createType14 = terminal$0.SessionSummary.createFrom;
-const $$createType15 = LiveStateActiveTurn.createFrom;
-const $$createType16 = $Create.Nullable($$createType15);
-const $$createType17 = flushqueue$0.QueuedItem.createFrom;
+const $$createType2 = $Create.Array($Create.Any);
+const $$createType3 = TerminalChip.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = store$0.ProposedPlanSourceRef.createFrom;
+const $$createType6 = $Create.Nullable($$createType5);
+const $$createType7 = git$0.GitStatus.createFrom;
+const $$createType8 = LiveStateTodoStep.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = store$0.DiffReviewSourceRef.createFrom;
+const $$createType11 = $Create.Nullable($$createType10);
+const $$createType12 = terminal$0.SessionSummary.createFrom;
+const $$createType13 = LiveStateActiveTurn.createFrom;
+const $$createType14 = $Create.Nullable($$createType13);
+const $$createType15 = flushqueue$0.QueuedItem.createFrom;
+const $$createType16 = $Create.Array($$createType15);
+const $$createType17 = QueueFlushedItem.createFrom;
 const $$createType18 = $Create.Array($$createType17);
-const $$createType19 = QueueFlushedItem.createFrom;
-const $$createType20 = $Create.Array($$createType19);
-const $$createType21 = provider$0.PendingInteractiveRequests.createFrom;
-const $$createType22 = LiveStateTodo.createFrom;
-const $$createType23 = $Create.Nullable($$createType22);
-const $$createType24 = workspacefiles$0.WorkspaceFile.createFrom;
-const $$createType25 = $Create.Array($$createType24);
+const $$createType19 = provider$0.PendingInteractiveRequests.createFrom;
+const $$createType20 = LiveStateTodo.createFrom;
+const $$createType21 = $Create.Nullable($$createType20);
+const $$createType22 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType23 = $Create.Array($$createType22);

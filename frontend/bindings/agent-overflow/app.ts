@@ -12,6 +12,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as checkpoint$0 from "./internal/checkpoint/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as design$0 from "./internal/design/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -2083,7 +2086,7 @@ const $$createType58 = $Create.Array($$createType57);
 const $$createType59 = $Create.Array($$createType0);
 const $$createType60 = terminal$0.SessionSummary.createFrom;
 const $$createType61 = $Create.Array($$createType60);
-const $$createType62 = $models.CheckpointView.createFrom;
+const $$createType62 = checkpoint$0.View.createFrom;
 const $$createType63 = $Create.Array($$createType62);
 const $$createType64 = $Create.Array($$createType5);
 const $$createType65 = wsllauncher$0.Distro.createFrom;

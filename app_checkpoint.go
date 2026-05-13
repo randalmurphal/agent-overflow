@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -26,20 +25,16 @@ const (
 	RevertModeConversationOnly     = "conversation-only"
 )
 
-type CheckpointView struct {
-	ID                    string             `json:"id"`
-	ThreadID              string             `json:"threadId"`
-	UserItemID            string             `json:"userItemId"`
-	TurnIndex             int                `json:"turnIndex"`
-	ProviderUserMessageID string             `json:"providerUserMessageId,omitempty"`
-	Status                string             `json:"status"`
-	Files                 []diffsummary.File `json:"files"`
-	CapturedAt            int64              `json:"capturedAt"`
-}
+// CheckpointView is the wire shape returned by ListMessageCheckpoints
+// and friends. Canonical declaration (plus the field-subset projection
+// rule) lives in internal/checkpoint; main keeps the alias so the
+// Wails binding generator still emits it under the agent-overflow
+// namespace the frontend imports from.
+type CheckpointView = checkpoint.View
 
 func (a *App) captureMessageCheckpoint(thread store.Thread, userItem store.Item) {
 	cap := a.checkpointStore()
-	workspace := checkpointWorkspaceForThread(thread)
+	workspace := thread.WorkspacePath
 	if workspace == "" {
 		return
 	}
@@ -133,7 +128,7 @@ func (a *App) GetMessageCheckpointDiff(threadID string, userItemID string) (stri
 	if !ok {
 		return "", nil
 	}
-	if err := validateCheckpointRecordForThread(action, threadID, prev); err != nil {
+	if err := checkpoint.ValidateRef(action, threadID, prev.RefName, prev.WorkspacePath); err != nil {
 		return "", err
 	}
 	if prev.WorkspacePath != target.WorkspacePath {
@@ -152,7 +147,7 @@ func (a *App) GetMessageCheckpointRevertDiff(threadID string, userItemID string)
 	if err != nil {
 		return "", err
 	}
-	workspace, err := validateWorkspaceMatchesCheckpoint(action, thread, target)
+	workspace, err := checkpoint.ValidateWorkspaceMatch(action, thread.WorkspacePath, target.WorkspacePath)
 	if err != nil {
 		return "", err
 	}
@@ -181,10 +176,10 @@ func (a *App) GetSessionAgentDiff(threadID string) (string, error) {
 		return "", nil
 	}
 	first := checkpoints[0]
-	if err := validateCheckpointRecordForThread(action, threadID, first); err != nil {
+	if err := checkpoint.ValidateRef(action, threadID, first.RefName, first.WorkspacePath); err != nil {
 		return "", err
 	}
-	workspace, err := validateWorkspaceMatchesCheckpoint(action, thread, first)
+	workspace, err := checkpoint.ValidateWorkspaceMatch(action, thread.WorkspacePath, first.WorkspacePath)
 	if err != nil {
 		return "", err
 	}
@@ -216,22 +211,10 @@ func (a *App) loadCheckpointForUserItem(action, threadID, userItemID string) (st
 	if !ok {
 		return store.Thread{}, store.Checkpoint{}, fmt.Errorf("%s: no checkpoint for thread %q user item %q", action, threadID, userItemID)
 	}
-	if err := validateCheckpointRecordForThread(action, threadID, target); err != nil {
+	if err := checkpoint.ValidateRef(action, threadID, target.RefName, target.WorkspacePath); err != nil {
 		return store.Thread{}, store.Checkpoint{}, err
 	}
 	return thread, target, nil
-}
-
-// validateWorkspaceMatchesCheckpoint resolves the thread's workspace
-// path and checks it against the checkpoint's recorded workspace.
-// Returns the resolved workspace on success, or a wrapped error when
-// the thread has no workspace or it disagrees with the checkpoint.
-func validateWorkspaceMatchesCheckpoint(action string, thread store.Thread, cp store.Checkpoint) (string, error) {
-	workspace := checkpointWorkspaceForThread(thread)
-	if workspace == "" || workspace != cp.WorkspacePath {
-		return "", fmt.Errorf("%s: checkpoint workspace %q does not match thread workspace %q", action, cp.WorkspacePath, workspace)
-	}
-	return workspace, nil
 }
 
 func (a *App) GetWorkspaceCurrentDiff(threadID string) (string, error) {
@@ -239,7 +222,7 @@ func (a *App) GetWorkspaceCurrentDiff(threadID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("get workspace current diff: %w", err)
 	}
-	workspace := checkpointWorkspaceForThread(thread)
+	workspace := thread.WorkspacePath
 	if workspace == "" {
 		return "", errors.New("get workspace current diff: thread has no workspace path")
 	}
@@ -281,7 +264,7 @@ func (a *App) RevertToMessageCheckpoint(threadID string, userItemID string, mode
 	if !found || userItem.Kind != "user_text" || userItem.Role != "user" {
 		return fmt.Errorf("revert checkpoint: %q is not a revertable user message", userItemID)
 	}
-	if isWireOnlyUserItem(userItem) {
+	if checkpoint.IsWireOnlyUserItem(userItem) {
 		return fmt.Errorf("revert checkpoint: %q is provider-injected context, not a user message", userItemID)
 	}
 	record, ok, err := a.store.GetCheckpointByUserItemID(threadID, userItemID)
@@ -291,7 +274,7 @@ func (a *App) RevertToMessageCheckpoint(threadID string, userItemID string, mode
 	if !ok {
 		return fmt.Errorf("revert checkpoint: no checkpoint for thread %q user item %q", threadID, userItemID)
 	}
-	if err := validateCheckpointRecordForThread("revert checkpoint", threadID, record); err != nil {
+	if err := checkpoint.ValidateRef("revert checkpoint", threadID, record.RefName, record.WorkspacePath); err != nil {
 		return err
 	}
 	if record.TurnIndex != userItem.TurnIndex {
@@ -313,7 +296,7 @@ func (a *App) RevertToMessageCheckpoint(threadID string, userItemID string, mode
 		return fmt.Errorf("revert checkpoint: %w", err)
 	}
 
-	workspace := checkpointWorkspaceForThread(thread)
+	workspace := thread.WorkspacePath
 	if mode == RevertModeConversationAndFiles {
 		if workspace == "" {
 			return errors.New("revert checkpoint: thread has no workspace path")
@@ -382,7 +365,7 @@ func (a *App) revertClaudeThreadToMessage(thread store.Thread, checkpoint store.
 		thread.UpdatedAt = time.Now().UnixMilli()
 		return a.store.UpdateThread(thread)
 	}
-	sourceSessionRef := claudeSourceSessionRef(thread)
+	sourceSessionRef := thread.ResolvedSessionRef()
 	if sourceSessionRef == "" {
 		return fmt.Errorf("claude rollback: checkpoint for turn %d requires Claude session reference", checkpoint.TurnIndex)
 	}
@@ -404,50 +387,14 @@ func (a *App) revertClaudeThreadToMessage(thread store.Thread, checkpoint store.
 	return nil
 }
 
-func claudeSourceSessionRef(thread store.Thread) string {
-	if thread.SessionRef != "" {
-		return thread.SessionRef
-	}
-	return thread.PendingForkRef
-}
-
-func isWireOnlyUserItem(item store.Item) bool {
-	var meta map[string]any
-	if json.Unmarshal([]byte(item.Meta), &meta) != nil {
-		return false
-	}
-	wireOnly, _ := meta["wire_only"].(bool)
-	return wireOnly
-}
-
 func (a *App) deleteCheckpointRefs(ctx context.Context, threadID, action string, refs []store.CheckpointRef) error {
 	for _, ref := range refs {
-		if err := validateCheckpointRefForThread(action, threadID, ref); err != nil {
+		if err := checkpoint.ValidateRef(action, threadID, ref.RefName, ref.WorkspacePath); err != nil {
 			return err
 		}
 		if err := a.checkpointStore().DeleteRef(ctx, ref.WorkspacePath, ref.RefName); err != nil {
 			return fmt.Errorf("%s: delete stale ref %s: %w", action, ref.RefName, err)
 		}
-	}
-	return nil
-}
-
-func validateCheckpointRecordForThread(action, threadID string, record store.Checkpoint) error {
-	return validateCheckpointRefForThread(action, threadID, store.CheckpointRef{
-		RefName:       record.RefName,
-		WorkspacePath: record.WorkspacePath,
-	})
-}
-
-func validateCheckpointRefForThread(action, threadID string, ref store.CheckpointRef) error {
-	if strings.TrimSpace(ref.RefName) == "" {
-		return fmt.Errorf("%s: checkpoint ref is empty", action)
-	}
-	if !checkpoint.IsThreadRef(ref.RefName, threadID) {
-		return fmt.Errorf("%s: checkpoint ref %q is outside thread %q namespace", action, ref.RefName, threadID)
-	}
-	if strings.TrimSpace(ref.WorkspacePath) == "" {
-		return fmt.Errorf("%s: checkpoint workspace is empty for ref %q", action, ref.RefName)
 	}
 	return nil
 }
@@ -480,22 +427,9 @@ func (a *App) ListThreadCheckpoints(threadID string) ([]CheckpointView, error) {
 	}
 	out := make([]CheckpointView, 0, len(list))
 	for _, row := range list {
-		out = append(out, checkpointViewFromStore(row))
+		out = append(out, checkpoint.ViewFromStore(row))
 	}
 	return out, nil
-}
-
-func checkpointViewFromStore(row store.Checkpoint) CheckpointView {
-	return CheckpointView{
-		ID:                    row.ID,
-		ThreadID:              row.ThreadID,
-		UserItemID:            row.UserItemID,
-		TurnIndex:             row.TurnIndex,
-		ProviderUserMessageID: row.ProviderUserMessageID,
-		Status:                row.Status,
-		Files:                 row.Files,
-		CapturedAt:            row.CapturedAt,
-	}
 }
 
 func (a *App) checkpointStore() *checkpoint.Store {
@@ -525,6 +459,3 @@ func (a *App) cleanupLegacyCheckpointRefs(st *store.Store) {
 	}
 }
 
-func checkpointWorkspaceForThread(t store.Thread) string {
-	return t.WorkspacePath
-}
