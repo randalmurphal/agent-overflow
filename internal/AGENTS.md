@@ -47,6 +47,7 @@ one closest to what you're touching.
 | `threadtitle/` | Pure prompt builder, schema constants, decoder, sanitiser, and CLI-error redactor behind the auto-generated thread-title flow. Workspace resolution, image-attachment plumbing, and the compare-and-swap into `store.UpdateTitleIfCurrent` stay in the main package. |
 | `diffreview/` | Pure helpers behind the diff-review comment flow: prompt builder, line-anchor picker, and comment-slice → ID projector. App-bound CRUD, the `SendDiffReviewComments` saga, and the content composer stay in the main package. |
 | `prthread/` | Pure formatting helpers behind `CreateThreadFromPR`: title formatter, first-user-message composer, backtick-aware fence picker, and rune-boundary diff/title truncators (Bug C4/C6 regression guards). Forge CLI invocation, local-clone resolution, and store reads/writes stay in the main package. |
+| `planrevision/` | Pure helpers behind the proposed-plan inline-comment revision flow: prompt builder + comment-slice → ID projector. App-bound CRUD, the `SendPlanRevisionComments` saga, and the content composer stay in the main package. |
 
 ## Responsibility boundary
 

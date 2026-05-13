@@ -10,6 +10,7 @@ import (
 	"time"
 
 	attachmentstore "agent-overflow/internal/attachment"
+	"agent-overflow/internal/planrevision"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
@@ -602,11 +603,12 @@ func (a *App) appendPlanRevisionCommentsToContent(threadID, content, planItemID 
 	if len(comments) == 0 {
 		return "", nil, fmt.Errorf("no draft comments selected")
 	}
-	prompt := buildPlanRevisionPrompt(comments)
+	prompt := planrevision.BuildPrompt(comments)
+	ids := planrevision.IDsOf(comments)
 	if strings.TrimSpace(content) == "" {
-		return prompt, idsFromProposedPlanComments(comments), nil
+		return prompt, ids, nil
 	}
-	return strings.TrimSpace(content) + "\n\n" + prompt, idsFromProposedPlanComments(comments), nil
+	return strings.TrimSpace(content) + "\n\n" + prompt, ids, nil
 }
 
 // beginImplementModeSwitch loads the current thread row and, when

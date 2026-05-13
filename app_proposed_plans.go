@@ -126,14 +126,6 @@ func (a *App) SendPlanRevisionComments(threadID, planItemID string, commentIDs [
 	return a.store.GetThread(threadID)
 }
 
-func idsFromProposedPlanComments(comments []store.ProposedPlanComment) []string {
-	ids := make([]string, 0, len(comments))
-	for _, comment := range comments {
-		ids = append(ids, comment.ID)
-	}
-	return ids
-}
-
 func (a *App) validateProposedPlanItem(threadID, planItemID string) (store.Item, error) {
 	item, found, err := a.store.GetThreadItem(threadID, planItemID)
 	if err != nil {
@@ -182,23 +174,3 @@ func (a *App) emitProposedPlanUpsert(threadID, planItemID string) error {
 	return fmt.Errorf("proposed plan %s not found on thread %s", planItemID, threadID)
 }
 
-func buildPlanRevisionPrompt(comments []store.ProposedPlanComment) string {
-	var b strings.Builder
-	for _, comment := range comments {
-		selectedText := strings.TrimSpace(comment.SelectedText)
-		body := strings.TrimSpace(comment.Body)
-		if selectedText == "" && body == "" {
-			continue
-		}
-		if b.Len() > 0 {
-			b.WriteString("\n\n")
-		}
-		if selectedText != "" {
-			b.WriteString(selectedText)
-			b.WriteString("\n")
-		}
-		b.WriteString("comment: ")
-		b.WriteString(body)
-	}
-	return b.String()
-}
