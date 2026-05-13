@@ -55,6 +55,7 @@ one closest to what you're touching.
 | `planrevision/` | Pure helpers behind the proposed-plan inline-comment revision flow: prompt builder + comment-slice → ID projector. App-bound CRUD, the `SendPlanRevisionComments` saga, and the content composer stay in the main package. |
 | `providerstatus/` | Wire shape (`Event`) + pure mapping helpers for the `provider:status` event channel: `ActionURL` URL table, `EventFromDetect` pull→push shape converter, `ClaudeUnauthenticated` heuristic. App-bound emitters (`emitProviderStatus*`, `emitClaudeUnauthenticatedStatus`, `emitProviderStatusOnSessionStartError`, `probeStartupProviderStatuses`) stay in `app_provider_status.go`. |
 | `usermessage/` | JSON wire shape persisted in `store.Item.Meta` for user_text rows (`Meta` + `AttachmentMeta`) plus the `Marshal` / `FromItem` / `EncodeDraftSource` helpers every entry point (send, steer, flush-queue dispatch, fork-and-revert, composer-restore) routes through. App-bound sagas in `app_send.go` / `app_draft.go` / `app_flush_queue.go` / `app_steer.go` build inputs and call these to cross the serialisation boundary. |
+| `flushqueue/` | Pure projectors behind the per-thread flush queue: wire shape (`QueuedItem`), inner JSON shape (`Payload`), `triage.QueuedFlushItem → QueuedItem` decoder, and the `queue:<uuid>` id allocator. App-bound register/dispatch/undo sagas stay in `app_flush_queue.go`. |
 
 ## Responsibility boundary
 

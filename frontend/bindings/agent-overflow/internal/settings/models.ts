@@ -126,6 +126,49 @@ export class RemoteEndpoint {
 }
 
 /**
+ * RemoteEndpointSummary is the token-redacted wire shape returned by
+ * the bound `ListRemoteEndpoints` / `AddRemoteEndpoint` /
+ * `UpdateRemoteEndpoint` App methods. The Token field is structurally
+ * absent so a LAN-attached token-holder cannot harvest credentials for
+ * other backends through the bulk list path — token retrieval goes
+ * through the dedicated server-logged GetRemoteEndpointToken method.
+ * 
+ * Keeping the projection here (rather than at the App boundary) makes
+ * it impossible for a future field on RemoteEndpoint that needs
+ * special handling to slip onto the wire without going through this
+ * type.
+ */
+export class RemoteEndpointSummary {
+    "id": string;
+    "name": string;
+    "url": string;
+    "lastUsedAt"?: number;
+
+    /** Creates a new RemoteEndpointSummary instance. */
+    constructor($$source: Partial<RemoteEndpointSummary> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("url" in $$source)) {
+            this["url"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RemoteEndpointSummary instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RemoteEndpointSummary {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RemoteEndpointSummary($$parsedSource as Partial<RemoteEndpointSummary>);
+    }
+}
+
+/**
  * Settings holds all user-configurable preferences.
  */
 export class Settings {

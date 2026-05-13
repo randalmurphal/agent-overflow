@@ -9,38 +9,19 @@ import (
 	"time"
 
 	attachmentstore "agent-overflow/internal/attachment"
+	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
-
-	"github.com/google/uuid"
 )
 
-// QueuedItem is the wire-side projection of a triage QueuedFlushItem,
-// used by the frontend to mirror the backend's per-thread queue. The
-// wire shape mirrors SendMessageOptions's data fields plus the
-// frontend-allocated id and stamped enqueuedAt — together they're
-// enough for both the queue overlay rendering and the UP-arrow
-// retract path that re-hydrates the composer draft.
-//
-// AttachmentIDs (not full Attachment records) ride the wire because
-// the frontend already has the full records in its attachment store
-// keyed by id; cross-wire transmission would duplicate bytes for no
-// gain. Plan refs are passed by value because they're tiny and
-// already used as plain JSON across the existing send path.
-type QueuedItem struct {
-	ID                           string              `json:"id"`
-	ThreadID                     string              `json:"threadId"`
-	Message                      string              `json:"message"`
-	AttachmentIDs                []string            `json:"attachmentIds,omitempty"`
-	SourceProposedPlan           *SourceProposedPlan `json:"sourceProposedPlan,omitempty"`
-	RevisionSourceProposedPlan   *SourceProposedPlan `json:"revisionSourceProposedPlan,omitempty"`
-	RevisionSourceCommentIDs     []string            `json:"revisionSourceCommentIds,omitempty"`
-	RevisionSourceDiffReview     *SourceDiffReview   `json:"revisionSourceDiffReview,omitempty"`
-	RevisionSourceDiffCommentIDs []string            `json:"revisionSourceDiffCommentIds,omitempty"`
-	EnqueuedAt                   int64               `json:"enqueuedAt"`
-}
+// QueuedItem is the wire-side projection of a triage QueuedFlushItem.
+// The canonical declaration (plus the JSON tag set) lives in
+// internal/flushqueue alongside the projection logic; main keeps the
+// alias so the Wails binding generator still emits it under the
+// agent-overflow namespace the frontend imports from.
+type QueuedItem = flushqueue.QueuedItem
 
 // QueueStateChangedEvent is the payload of `provider:queue_state_changed`,
 // emitted whenever the per-thread queue mutates (register / undo /
@@ -197,20 +178,11 @@ func (a *App) drainFlushDispatch(ctx context.Context, timeout time.Duration) err
 	}
 }
 
-// flushQueuePayload is the wire shape of QueuedFlushItem.Payload.
-// The frontend serialises it via RegisterQueueItem; the dispatcher
-// decodes it here. Mirrors the data fields on sendMessageOptions
-// except RuntimeMode — by the time the flush trigger fires, the
-// round's runtime mode is already established and a mid-round flip
-// would defeat the whole point of in-flight queueing.
-type flushQueuePayload struct {
-	AttachmentIDs                []string            `json:"attachmentIds,omitempty"`
-	SourceProposedPlan           *SourceProposedPlan `json:"sourceProposedPlan,omitempty"`
-	RevisionSourceProposedPlan   *SourceProposedPlan `json:"revisionSourceProposedPlan,omitempty"`
-	RevisionSourceCommentIDs     []string            `json:"revisionSourceCommentIds,omitempty"`
-	RevisionSourceDiffReview     *SourceDiffReview   `json:"revisionSourceDiffReview,omitempty"`
-	RevisionSourceDiffCommentIDs []string            `json:"revisionSourceDiffCommentIds,omitempty"`
-}
+// flushQueuePayload is the local-scope alias for flushqueue.Payload.
+// Kept as a local name so the compile-time drift guard in
+// app_flush_queue_test.go and the in-place reads/writes from
+// dispatchFlush + RegisterQueueItem don't need cosmetic churn.
+type flushQueuePayload = flushqueue.Payload
 
 // dispatchFlush is the triage.FlushDispatcher implementation: when
 // triage observes a safe provider boundary, it hands queued user
@@ -634,7 +606,7 @@ func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessag
 		return QueuedItem{}, fmt.Errorf("register queue item: queue full (max %d items per thread)", maxQueueLength())
 	}
 
-	id := newQueueItemID()
+	id := flushqueue.NewItemID()
 	payload := flushQueuePayload{
 		AttachmentIDs:                opts.AttachmentIDs,
 		SourceProposedPlan:           opts.SourceProposedPlan,
@@ -698,7 +670,7 @@ func (a *App) UndoQueuedItems(threadID string) ([]QueuedItem, error) {
 
 	out := make([]QueuedItem, 0, len(dropped))
 	for _, item := range dropped {
-		out = append(out, queuedItemFromTriage(threadID, item))
+		out = append(out, flushqueue.ItemFromTriage(threadID, item))
 	}
 	a.emitQueueStateChanged(threadID)
 	return out, nil
@@ -728,7 +700,7 @@ func (a *App) GetQueueState(threadID string) ([]QueuedItem, error) {
 	}
 	out := make([]QueuedItem, 0, len(items))
 	for _, item := range items {
-		out = append(out, queuedItemFromTriage(threadID, item))
+		out = append(out, flushqueue.ItemFromTriage(threadID, item))
 	}
 	return out, nil
 }
@@ -748,7 +720,7 @@ func (a *App) emitQueueStateChangedWithReason(threadID string, reason string) {
 		current := a.triage.QueuedFlushItems(threadID)
 		items = make([]QueuedItem, 0, len(current))
 		for _, item := range current {
-			items = append(items, queuedItemFromTriage(threadID, item))
+			items = append(items, flushqueue.ItemFromTriage(threadID, item))
 		}
 	}
 	a.emit("provider:queue_state_changed", QueueStateChangedEvent{
@@ -758,44 +730,6 @@ func (a *App) emitQueueStateChangedWithReason(threadID string, reason string) {
 	})
 }
 
-// queuedItemFromTriage decodes a triage QueuedFlushItem back into the
-// wire-side QueuedItem. The Payload is opaque app-layer JSON; on
-// decode failure we still return a partially-populated wire item so
-// the frontend can render the message text and offer retract — losing
-// attachment refs on a corrupt payload is preferable to the wire
-// dropping the item entirely.
-func queuedItemFromTriage(threadID string, item triage.QueuedFlushItem) QueuedItem {
-	out := QueuedItem{
-		ID:         item.ID,
-		ThreadID:   threadID,
-		Message:    item.Message,
-		EnqueuedAt: item.EnqueuedAt,
-	}
-	if len(item.Payload) == 0 {
-		return out
-	}
-	var payload flushQueuePayload
-	if err := json.Unmarshal(item.Payload, &payload); err != nil {
-		log.Printf("decode queued item payload thread=%s item=%s: %v", threadID, item.ID, err)
-		return out
-	}
-	out.AttachmentIDs = payload.AttachmentIDs
-	out.SourceProposedPlan = payload.SourceProposedPlan
-	out.RevisionSourceProposedPlan = payload.RevisionSourceProposedPlan
-	out.RevisionSourceCommentIDs = payload.RevisionSourceCommentIDs
-	out.RevisionSourceDiffReview = payload.RevisionSourceDiffReview
-	out.RevisionSourceDiffCommentIDs = payload.RevisionSourceDiffCommentIDs
-	return out
-}
-
-// newQueueItemID allocates a new opaque queue-item id. The
-// `queue:` prefix matches the frontend's draft-id convention so the
-// id is recognisable in logs / traces. The uuid suffix carries the
-// uniqueness — collision against another concurrent register on the
-// same thread is statistically impossible.
-func newQueueItemID() string {
-	return "queue:" + uuid.NewString()
-}
 
 // maxQueueAttachmentCount caps the per-item attachment count at the
 // same limit the live send path enforces (attachmentstore.DefaultMaxCount).

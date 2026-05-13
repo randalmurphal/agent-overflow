@@ -10,10 +10,16 @@ import { Create as $Create } from "@wailsio/runtime";
 import * as diffsummary$0 from "./internal/diffsummary/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as flushqueue$0 from "./internal/flushqueue/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as git$0 from "./internal/git/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as provider$0 from "./internal/provider/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as settings$0 from "./internal/settings/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as store$0 from "./internal/store/models.js";
@@ -746,120 +752,38 @@ export class QueueFlushedItem {
 }
 
 /**
- * QueuedItem is the wire-side projection of a triage QueuedFlushItem,
- * used by the frontend to mirror the backend's per-thread queue. The
- * wire shape mirrors SendMessageOptions's data fields plus the
- * frontend-allocated id and stamped enqueuedAt — together they're
- * enough for both the queue overlay rendering and the UP-arrow
- * retract path that re-hydrates the composer draft.
- * 
- * AttachmentIDs (not full Attachment records) ride the wire because
- * the frontend already has the full records in its attachment store
- * keyed by id; cross-wire transmission would duplicate bytes for no
- * gain. Plan refs are passed by value because they're tiny and
- * already used as plain JSON across the existing send path.
+ * QueuedItem is the wire-side projection of a triage QueuedFlushItem.
+ * The canonical declaration (plus the JSON tag set) lives in
+ * internal/flushqueue alongside the projection logic; main keeps the
+ * alias so the Wails binding generator still emits it under the
+ * agent-overflow namespace the frontend imports from.
  */
-export class QueuedItem {
-    "id": string;
-    "threadId": string;
-    "message": string;
-    "attachmentIds"?: string[];
-    "sourceProposedPlan"?: SourceProposedPlan | null;
-    "revisionSourceProposedPlan"?: SourceProposedPlan | null;
-    "revisionSourceCommentIds"?: string[];
-    "revisionSourceDiffReview"?: SourceDiffReview | null;
-    "revisionSourceDiffCommentIds"?: string[];
-    "enqueuedAt": number;
+export const QueuedItem = flushqueue$0.QueuedItem;
 
-    /** Creates a new QueuedItem instance. */
-    constructor($$source: Partial<QueuedItem> = {}) {
-        if (!("id" in $$source)) {
-            this["id"] = "";
-        }
-        if (!("threadId" in $$source)) {
-            this["threadId"] = "";
-        }
-        if (!("message" in $$source)) {
-            this["message"] = "";
-        }
-        if (!("enqueuedAt" in $$source)) {
-            this["enqueuedAt"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new QueuedItem instance from a string or object.
-     */
-    static createFrom($$source: any = {}): QueuedItem {
-        const $$createField3_0 = $$createType4;
-        const $$createField4_0 = $$createType8;
-        const $$createField5_0 = $$createType8;
-        const $$createField6_0 = $$createType4;
-        const $$createField7_0 = $$createType13;
-        const $$createField8_0 = $$createType4;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("attachmentIds" in $$parsedSource) {
-            $$parsedSource["attachmentIds"] = $$createField3_0($$parsedSource["attachmentIds"]);
-        }
-        if ("sourceProposedPlan" in $$parsedSource) {
-            $$parsedSource["sourceProposedPlan"] = $$createField4_0($$parsedSource["sourceProposedPlan"]);
-        }
-        if ("revisionSourceProposedPlan" in $$parsedSource) {
-            $$parsedSource["revisionSourceProposedPlan"] = $$createField5_0($$parsedSource["revisionSourceProposedPlan"]);
-        }
-        if ("revisionSourceCommentIds" in $$parsedSource) {
-            $$parsedSource["revisionSourceCommentIds"] = $$createField6_0($$parsedSource["revisionSourceCommentIds"]);
-        }
-        if ("revisionSourceDiffReview" in $$parsedSource) {
-            $$parsedSource["revisionSourceDiffReview"] = $$createField7_0($$parsedSource["revisionSourceDiffReview"]);
-        }
-        if ("revisionSourceDiffCommentIds" in $$parsedSource) {
-            $$parsedSource["revisionSourceDiffCommentIds"] = $$createField8_0($$parsedSource["revisionSourceDiffCommentIds"]);
-        }
-        return new QueuedItem($$parsedSource as Partial<QueuedItem>);
-    }
-}
+/**
+ * QueuedItem is the wire-side projection of a triage QueuedFlushItem.
+ * The canonical declaration (plus the JSON tag set) lives in
+ * internal/flushqueue alongside the projection logic; main keeps the
+ * alias so the Wails binding generator still emits it under the
+ * agent-overflow namespace the frontend imports from.
+ */
+export type QueuedItem = flushqueue$0.QueuedItem;
 
 /**
  * RemoteEndpointSummary is the wire shape returned by
- * ListRemoteEndpoints. It mirrors settings.RemoteEndpoint with the
- * Token deliberately omitted: a LAN-attached token-holder calling
- * ListRemoteEndpoints must not be able to harvest credentials for
- * other backends. Callers that need the token (the "Copy launch
- * command" affordance) fetch it explicitly through
- * GetRemoteEndpointToken, which is logged server-side.
+ * ListRemoteEndpoints. Aliased to the canonical settings type so the
+ * projection (and its token-redaction guarantee) lives next to the
+ * stored RemoteEndpoint shape — see settings.RemoteEndpoint.Summary.
  */
-export class RemoteEndpointSummary {
-    "id": string;
-    "name": string;
-    "url": string;
-    "lastUsedAt"?: number;
+export const RemoteEndpointSummary = settings$0.RemoteEndpointSummary;
 
-    /** Creates a new RemoteEndpointSummary instance. */
-    constructor($$source: Partial<RemoteEndpointSummary> = {}) {
-        if (!("id" in $$source)) {
-            this["id"] = "";
-        }
-        if (!("name" in $$source)) {
-            this["name"] = "";
-        }
-        if (!("url" in $$source)) {
-            this["url"] = "";
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new RemoteEndpointSummary instance from a string or object.
-     */
-    static createFrom($$source: any = {}): RemoteEndpointSummary {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new RemoteEndpointSummary($$parsedSource as Partial<RemoteEndpointSummary>);
-    }
-}
+/**
+ * RemoteEndpointSummary is the wire shape returned by
+ * ListRemoteEndpoints. Aliased to the canonical settings type so the
+ * projection (and its token-redaction guarantee) lives next to the
+ * stored RemoteEndpoint shape — see settings.RemoteEndpoint.Summary.
+ */
+export type RemoteEndpointSummary = settings$0.RemoteEndpointSummary;
 
 /**
  * SendMessageOptions carries send-time composer settings. AttachmentIDs is the
@@ -1240,7 +1164,7 @@ const $$createType13 = $Create.Nullable($$createType12);
 const $$createType14 = terminal$0.SessionSummary.createFrom;
 const $$createType15 = LiveStateActiveTurn.createFrom;
 const $$createType16 = $Create.Nullable($$createType15);
-const $$createType17 = QueuedItem.createFrom;
+const $$createType17 = flushqueue$0.QueuedItem.createFrom;
 const $$createType18 = $Create.Array($$createType17);
 const $$createType19 = QueueFlushedItem.createFrom;
 const $$createType20 = $Create.Array($$createType19);

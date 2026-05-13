@@ -7,18 +7,10 @@ import (
 )
 
 // RemoteEndpointSummary is the wire shape returned by
-// ListRemoteEndpoints. It mirrors settings.RemoteEndpoint with the
-// Token deliberately omitted: a LAN-attached token-holder calling
-// ListRemoteEndpoints must not be able to harvest credentials for
-// other backends. Callers that need the token (the "Copy launch
-// command" affordance) fetch it explicitly through
-// GetRemoteEndpointToken, which is logged server-side.
-type RemoteEndpointSummary struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	URL        string `json:"url"`
-	LastUsedAt int64  `json:"lastUsedAt,omitempty"`
-}
+// ListRemoteEndpoints. Aliased to the canonical settings type so the
+// projection (and its token-redaction guarantee) lives next to the
+// stored RemoteEndpoint shape — see settings.RemoteEndpoint.Summary.
+type RemoteEndpointSummary = settings.RemoteEndpointSummary
 
 // ListRemoteEndpoints returns every saved `--connect` target with the
 // Token field stripped. The local UI fetches a token on-demand via
@@ -37,12 +29,7 @@ func (a *App) ListRemoteEndpoints() ([]RemoteEndpointSummary, error) {
 	// caller to add a defensive coalesce.
 	out := make([]RemoteEndpointSummary, 0, len(cfg.RemoteEndpoints))
 	for _, ep := range cfg.RemoteEndpoints {
-		out = append(out, RemoteEndpointSummary{
-			ID:         ep.ID,
-			Name:       ep.Name,
-			URL:        ep.URL,
-			LastUsedAt: ep.LastUsedAt,
-		})
+		out = append(out, ep.Summary())
 	}
 	return out, nil
 }
@@ -85,7 +72,7 @@ func (a *App) AddRemoteEndpoint(name, url, token string) (RemoteEndpointSummary,
 	if err != nil {
 		return RemoteEndpointSummary{}, err
 	}
-	return summaryFromRemoteEndpoint(stored), nil
+	return stored.Summary(), nil
 }
 
 // UpdateRemoteEndpoint mutates the named-by-ID record. Empty fields
@@ -104,20 +91,7 @@ func (a *App) UpdateRemoteEndpoint(id, name, url, token string) (RemoteEndpointS
 	if err != nil {
 		return RemoteEndpointSummary{}, err
 	}
-	return summaryFromRemoteEndpoint(stored), nil
-}
-
-// summaryFromRemoteEndpoint projects the stored shape onto the
-// token-redacted wire shape. Centralised so Add and Update can't drift
-// — a future field on RemoteEndpoint that needs special token handling
-// gets handled in one place.
-func summaryFromRemoteEndpoint(ep settings.RemoteEndpoint) RemoteEndpointSummary {
-	return RemoteEndpointSummary{
-		ID:         ep.ID,
-		Name:       ep.Name,
-		URL:        ep.URL,
-		LastUsedAt: ep.LastUsedAt,
-	}
+	return stored.Summary(), nil
 }
 
 // DeleteRemoteEndpoint removes the named-by-ID record. Returns an

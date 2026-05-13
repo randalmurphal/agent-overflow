@@ -38,6 +38,37 @@ type RemoteEndpoint struct {
 	LastUsedAt int64  `json:"lastUsedAt,omitempty"`
 }
 
+// RemoteEndpointSummary is the token-redacted wire shape returned by
+// the bound `ListRemoteEndpoints` / `AddRemoteEndpoint` /
+// `UpdateRemoteEndpoint` App methods. The Token field is structurally
+// absent so a LAN-attached token-holder cannot harvest credentials for
+// other backends through the bulk list path — token retrieval goes
+// through the dedicated server-logged GetRemoteEndpointToken method.
+//
+// Keeping the projection here (rather than at the App boundary) makes
+// it impossible for a future field on RemoteEndpoint that needs
+// special handling to slip onto the wire without going through this
+// type.
+type RemoteEndpointSummary struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	URL        string `json:"url"`
+	LastUsedAt int64  `json:"lastUsedAt,omitempty"`
+}
+
+// Summary projects a stored RemoteEndpoint onto its token-redacted
+// wire shape. Centralised so every wire-bound caller goes through the
+// same projection — a future RemoteEndpoint field that needs redaction
+// gets handled in one place.
+func (ep RemoteEndpoint) Summary() RemoteEndpointSummary {
+	return RemoteEndpointSummary{
+		ID:         ep.ID,
+		Name:       ep.Name,
+		URL:        ep.URL,
+		LastUsedAt: ep.LastUsedAt,
+	}
+}
+
 // remoteEndpointIDByteLen sizes the random ID for a stored endpoint.
 // 8 bytes -> 64 bits is enough to make collisions effectively
 // impossible for any sane number of saved endpoints, while keeping

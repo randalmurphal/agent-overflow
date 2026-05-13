@@ -18,6 +18,9 @@ import * as design$0 from "./internal/design/models.js";
 import * as dirbrowse$0 from "./internal/dirbrowse/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as flushqueue$0 from "./internal/flushqueue/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as git$0 from "./internal/git/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -2018,7 +2021,7 @@ export function WriteThreadWorkspaceFile(threadID: string, relativePath: string,
 }
 
 // Private type creation functions
-const $$createType0 = $models.RemoteEndpointSummary.createFrom;
+const $$createType0 = settings$0.RemoteEndpointSummary.createFrom;
 const $$createType1 = dirbrowse$0.Listing.createFrom;
 const $$createType2 = store$0.DiffReviewComment.createFrom;
 const $$createType3 = store$0.Project.createFrom;
@@ -2045,7 +2048,7 @@ const $$createType23 = $models.PayloadContent.createFrom;
 const $$createType24 = $models.PayloadPreview.createFrom;
 const $$createType25 = provider$0.ProviderStatus.createFrom;
 const $$createType26 = $Create.Array($$createType25);
-const $$createType27 = $models.QueuedItem.createFrom;
+const $$createType27 = flushqueue$0.QueuedItem.createFrom;
 const $$createType28 = $Create.Array($$createType27);
 const $$createType29 = settings$0.Settings.createFrom;
 const $$createType30 = store$0.Item.createFrom;

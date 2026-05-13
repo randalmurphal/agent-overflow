@@ -251,3 +251,27 @@ func TestRemoteEndpointsSparseWhenEmpty(t *testing.T) {
 		t.Fatalf("settings file leaks remoteEndpoints when empty: %s", string(data))
 	}
 }
+
+func TestRemoteEndpointSummaryRedactsToken(t *testing.T) {
+	ep := RemoteEndpoint{
+		ID:         "id-1",
+		Name:       "primary",
+		URL:        "wss://host/",
+		Token:      "secret-token",
+		LastUsedAt: 12345,
+	}
+	got := ep.Summary()
+	if got.ID != ep.ID || got.Name != ep.Name || got.URL != ep.URL || got.LastUsedAt != ep.LastUsedAt {
+		t.Fatalf("Summary copied wrong field values: %+v", got)
+	}
+	// Round-trip through JSON to guarantee no `token` field is present
+	// on the wire — a future field addition that re-introduces the
+	// token would break this assertion.
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), "secret-token") || strings.Contains(string(encoded), `"token"`) {
+		t.Fatalf("Summary JSON leaks token: %s", encoded)
+	}
+}

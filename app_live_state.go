@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/provider"
 )
 
@@ -91,7 +92,7 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	}
 	state.Interactive = live.Interactive
 	for _, item := range live.QueueItems {
-		state.QueueItems = append(state.QueueItems, queuedItemFromTriage(threadID, item))
+		state.QueueItems = append(state.QueueItems, flushqueue.ItemFromTriage(threadID, item))
 	}
 	for _, item := range live.FlushedItems {
 		state.FlushedItems = append(state.FlushedItems, QueueFlushedItem{
