@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"agent-overflow/internal/workspacepath"
 )
 
 // WriteThreadWorkspaceFile writes content to a path relative to the thread's
@@ -18,7 +19,7 @@ func (a *App) WriteThreadWorkspaceFile(threadID, relativePath, content string) (
 		return "", fmt.Errorf("thread %s does not have a workspace path", threadID)
 	}
 
-	normalizedPath, err := normalizeWorkspaceRelativePath(relativePath)
+	normalizedPath, err := workspacepath.NormalizeRelative(relativePath)
 	if err != nil {
 		return "", err
 	}
@@ -37,21 +38,4 @@ func (a *App) WriteThreadWorkspaceFile(threadID, relativePath, content string) (
 		return "", fmt.Errorf("write workspace file: %w", err)
 	}
 	return normalizedPath, nil
-}
-
-func normalizeWorkspaceRelativePath(relativePath string) (string, error) {
-	trimmed := strings.TrimSpace(relativePath)
-	if trimmed == "" {
-		return "", fmt.Errorf("workspace path is required")
-	}
-	if filepath.IsAbs(trimmed) {
-		return "", fmt.Errorf("workspace path must be relative")
-	}
-
-	normalized := filepath.Clean(trimmed)
-	parentPrefix := ".." + string(filepath.Separator)
-	if normalized == "." || normalized == ".." || strings.HasPrefix(normalized, parentPrefix) {
-		return "", fmt.Errorf("workspace path must stay within the workspace root")
-	}
-	return normalized, nil
 }
