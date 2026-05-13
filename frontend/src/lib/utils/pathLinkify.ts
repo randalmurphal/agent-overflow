@@ -1,5 +1,20 @@
 // Pure utility: extract file-path references from a free-text string.
 //
+// This is the **fallback** matcher. The canonical path-link pipeline
+// runs in Go: `internal/pathlinks.ExtractAndValidate` produces a
+// workspace-validated allowlist on assistant_text settle, and
+// `markdownEnhance.ts` wraps only those tokens (allowlist mode). This
+// file's `findPathRanges` is used in two narrow places:
+//   1. Non-assistant surfaces that don't carry a Go-validated allowlist
+//      (ChannelView, ProposedPlan, AskUserQuestion,
+//      ComposerPendingUserInputPanel). `enhancePathLinks` falls back
+//      here when `pathRefs` is undefined.
+//   2. `toolCardPreview.ts` — trusted-source leading-path detection
+//      in tool card headers, where no fs check is needed.
+// Both consumers tolerate false positives because they're either
+// already in trusted contexts (#2) or surface-limited (#1) — but new
+// callers should prefer the Go-validated allowlist whenever possible.
+//
 // The shapes we want to match are:
 //   path/to/file.ext
 //   path/to/file.ext:42
@@ -27,6 +42,35 @@
 // `start` so consumers can stitch together "between-match" plain text
 // in a single pass.
 
+import type { PathRef } from '../types/models';
+import { parseJsonObject } from './parseJsonObject';
+
+/**
+ * Read the Go-validated `pathRefs` allowlist out of an item's meta
+ * JSON. Returns `undefined` when the meta has no `pathRefs` key (the
+ * common case for pre-pathlinks history rows, and for non-assistant
+ * kinds that don't get enriched). Returns a defensively-filtered
+ * `PathRef[]` otherwise — entries with missing `path` strings drop
+ * silently so a malformed meta can't crash the linkifier.
+ */
+export function getPathRefsFromMeta(meta: string | undefined | null): PathRef[] | undefined {
+  const parsed = parseJsonObject(meta ?? undefined);
+  if (!parsed) return undefined;
+  const raw = parsed.pathRefs;
+  if (!Array.isArray(raw)) return undefined;
+  const out: PathRef[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+    if (typeof e.path !== 'string' || e.path === '') continue;
+    const ref: PathRef = { path: e.path };
+    if (typeof e.line === 'number' && e.line > 0) ref.line = e.line;
+    if (typeof e.col === 'number' && e.col > 0) ref.col = e.col;
+    out.push(ref);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 /**
  * One linkified path range.
  */
@@ -52,7 +96,15 @@ export interface PathRange {
 // surrounding a path. The negative lookbehind cases (`/`, `@`, `:`,
 // alphanumeric) are absent from this set, which prevents matching the
 // tail of `https://example.com/foo` (the `e` before `x` is alphanumeric)
-// and `@scope/pkg` (the `@` is the immediately-preceding char).
+// and `@scope/pkg` (the `@` is the immediately-preceding char). The
+// rejection of `@`-prefixed tokens is intentional here: this regex is
+// the **local** matcher used by `toolCardPreview.ts` and by
+// `enhancePathLinks` fallback for non-enriched surfaces — neither
+// path has fs validation, so an `@scope/pkg.something` shape can't
+// be told apart from `@workspace/file.ts` without one. Allowlist
+// mode in `enhancePathLinks` builds its own matcher that DOES
+// include `@`-prefix widening, because each path in the allowlist
+// has already been validated by Go against the workspace fs.
 const PATH_PATTERN =
   /(?:^|(?<=[\s(\[{,;'"`<>=]))((?:\.{0,2}\/|\/)?[\w.\-~]+(?:\/[\w.\-~]+)+)(?::(\d+)(?::(\d+))?)?/g;
 
@@ -75,6 +127,11 @@ function looksLikeFilePath(token: string): boolean {
   const lastSlash = token.lastIndexOf('/');
   const finalSegment = lastSlash === -1 ? token : token.slice(lastSlash + 1);
   if (!finalSegment.includes('.')) return false;
+  // Reject trailing-dot tokens like `something/else.` — common in
+  // prose ("see something/else.") and never a real filename. This
+  // mirrors the same rejection on the Go side
+  // (`internal/pathlinks/pathlinks.go`).
+  if (finalSegment.endsWith('.')) return false;
   // Reject pure version strings that get past the boundary check, e.g.
   // a stray `1.2.3` accidentally adjacent to a slash. These appear in
   // changelogs but aren't files.
@@ -96,17 +153,14 @@ export function findPathRanges(text: string): PathRange[] {
   PATH_PATTERN.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = PATH_PATTERN.exec(text)) !== null) {
+    // Groups: 1 = path body, 2 = line, 3 = col. The leading boundary
+    // is non-capturing (zero-width lookbehind).
     const [, pathToken, lineRaw, colRaw] = match;
     if (!looksLikeFilePath(pathToken)) continue;
-    const fullMatch = match[0];
-    const suffixLength =
-      (lineRaw ? 1 + lineRaw.length : 0) + (colRaw ? 1 + colRaw.length : 0);
-    // The leading boundary may be input-start (length 0) or a single
-    // safe character consumed via lookbehind. Anchor the path-start
-    // by subtracting the path body + optional :line:col suffix from
-    // the end of the full match.
-    const matchStart = match.index + fullMatch.length - pathToken.length - suffixLength;
-    const matchEnd = matchStart + pathToken.length + suffixLength;
+    // `match.index` points to the first character of the path body.
+    // `match[0]` is the path body plus optional `:line:col` suffix.
+    const matchStart = match.index;
+    const matchEnd = match.index + match[0].length;
     out.push({
       start: matchStart,
       end: matchEnd,

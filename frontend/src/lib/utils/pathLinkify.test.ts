@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { findPathRanges } from './pathLinkify';
+import { findPathRanges, getPathRefsFromMeta } from './pathLinkify';
+import { __resetParseJsonObjectCacheForTest } from './parseJsonObject';
 
 describe('findPathRanges', () => {
   it('returns an empty list for an empty string', () => {
@@ -64,6 +65,14 @@ describe('findPathRanges', () => {
     expect(findPathRanges('look in path/to/dir')).toEqual([]);
   });
 
+  it('does not match trailing-dot tokens like something/else.', () => {
+    // Regression: the old heuristic only required ANY dot in the
+    // final segment, so `something/else.` linkified — see the chat
+    // surface bug that motivated this refactor. The Go-side rule
+    // mirrors this exclusion (`internal/pathlinks/pathlinks.go`).
+    expect(findPathRanges('look in something/else. please')).toEqual([]);
+  });
+
   it('does not match version strings', () => {
     expect(findPathRanges('upgrade lib/1.2.3')).toEqual([]);
   });
@@ -112,6 +121,15 @@ describe('findPathRanges', () => {
     expect(ranges[0].path).toBe('./src/foo.ts');
   });
 
+  it('does not match @-prefixed paths in local mode (scoped-npm collision)', () => {
+    // The local matcher cannot distinguish `@scope/pkg.foo` (scoped
+    // npm) from `@workspace/file.ts` (real path) without fs validation,
+    // so it rejects everything `@`-prefixed. The widened @-span lives
+    // only in `enhancePathLinks` allowlist mode where Go has already
+    // confirmed the file exists.
+    expect(findPathRanges('see @src/foo.ts here')).toEqual([]);
+  });
+
   it('matches a leading `../` path', () => {
     const ranges = findPathRanges('relative ../sibling/x.ts:1');
     expect(ranges.length).toBe(1);
@@ -143,5 +161,62 @@ describe('findPathRanges', () => {
     const ranges = findPathRanges('see <src/lib/foo.ts> for context');
     expect(ranges.length).toBe(1);
     expect(ranges[0].path).toBe('src/lib/foo.ts');
+  });
+});
+
+describe('getPathRefsFromMeta', () => {
+  it('returns undefined for empty/missing meta', () => {
+    __resetParseJsonObjectCacheForTest();
+    expect(getPathRefsFromMeta(undefined)).toBeUndefined();
+    expect(getPathRefsFromMeta('')).toBeUndefined();
+    expect(getPathRefsFromMeta(null)).toBeUndefined();
+  });
+
+  it('returns undefined when meta has no pathRefs key', () => {
+    __resetParseJsonObjectCacheForTest();
+    // Pre-pathlinks history rows: meta exists (e.g. carries task_id)
+    // but no pathRefs. Caller should fall through to "render plain"
+    // rather than treating absent-pathRefs as empty-pathRefs.
+    expect(getPathRefsFromMeta('{"task_id":"abc"}')).toBeUndefined();
+  });
+
+  it('returns undefined for non-array pathRefs', () => {
+    __resetParseJsonObjectCacheForTest();
+    expect(getPathRefsFromMeta('{"pathRefs":"not-an-array"}')).toBeUndefined();
+  });
+
+  it('parses valid pathRefs into PathRef[]', () => {
+    __resetParseJsonObjectCacheForTest();
+    const meta = JSON.stringify({
+      pathRefs: [
+        { path: 'src/a.ts' },
+        { path: 'src/b.ts', line: 12 },
+        { path: 'src/c.ts', line: 1, col: 4 },
+      ],
+    });
+    const refs = getPathRefsFromMeta(meta);
+    expect(refs).toEqual([
+      { path: 'src/a.ts' },
+      { path: 'src/b.ts', line: 12 },
+      { path: 'src/c.ts', line: 1, col: 4 },
+    ]);
+  });
+
+  it('drops malformed entries silently', () => {
+    __resetParseJsonObjectCacheForTest();
+    const meta = JSON.stringify({
+      pathRefs: [
+        { path: 'src/a.ts' },
+        { path: '' }, // empty path
+        { line: 5 }, // missing path
+        'not-an-object',
+        { path: 'src/b.ts', line: 0 }, // line=0 stays unset
+      ],
+    });
+    const refs = getPathRefsFromMeta(meta);
+    expect(refs).toEqual([
+      { path: 'src/a.ts' },
+      { path: 'src/b.ts' },
+    ]);
   });
 });

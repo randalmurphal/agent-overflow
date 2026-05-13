@@ -1,11 +1,13 @@
 package triage
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
+	"agent-overflow/internal/pathlinks"
 	"agent-overflow/internal/store"
 )
 
@@ -193,7 +195,119 @@ func (r *Router) settleStreamingText(threadID string, turnIndex int, scope strin
 		item.Summary = interruptedSummary(item.Summary)
 	}
 	item.UpdatedAt = time.Now().UnixMilli()
+	// Stamp the Go-validated path allowlist onto item.Meta before
+	// persisting (see enrichPathRefs).
+	r.enrichPathRefs(threadID, &item)
 	return r.persistItem(item, nil)
+}
+
+// enrichPathRefs is the settle-time hook that validates path-shaped
+// tokens in the item's summary against the workspace filesystem and
+// stores the resulting allowlist on item.Meta. Only assistant_text
+// rows are enriched today; user_text and thinking rows render
+// through plain-text components and don't consume the allowlist.
+//
+// Failures are non-fatal: a missing thread record or a malformed
+// existing meta JSON falls back to skipping enrichment so the
+// settle path stays robust under partial state. The cost (Go regex
+// + os.Stat × unique paths) is sub-frame for realistic messages —
+// see internal/pathlinks/AGENTS.md for measured ranges.
+func (r *Router) enrichPathRefs(threadID string, item *store.Item) {
+	if item.Kind != itemKindAssistantText {
+		return
+	}
+	if item.Summary == "" {
+		return
+	}
+	workspacePath := r.workspacePathFor(threadID)
+	if workspacePath == "" {
+		return
+	}
+	refs := pathlinks.ExtractAndValidate(workspacePath, item.Summary)
+	if len(refs) == 0 {
+		return
+	}
+	merged, err := mergePathRefsIntoMeta(item.Meta, refs)
+	if err != nil {
+		log.Printf("triage: pathlinks merge meta for %s: %v", item.ID, err)
+		return
+	}
+	item.Meta = merged
+}
+
+// workspacePathFor returns the WorkspacePath for threadID, using a
+// per-router cache so repeat callers in a single turn (e.g. several
+// assistant_text settles back-to-back) don't each pay a SQLite read
+// for the same effectively-immutable value. Misses log and return
+// empty so the caller skips enrichment cleanly. Eviction is tied to
+// CleanupThread (the only point at which the workspace association
+// goes away from the router's perspective).
+func (r *Router) workspacePathFor(threadID string) string {
+	r.mu.Lock()
+	cached, ok := r.workspacePathByThread[threadID]
+	r.mu.Unlock()
+	if ok {
+		return cached
+	}
+	thread, err := r.store.GetThread(threadID)
+	if err != nil {
+		log.Printf("triage: pathlinks lookup thread %s: %v", threadID, err)
+		return ""
+	}
+	r.mu.Lock()
+	r.workspacePathByThread[threadID] = thread.WorkspacePath
+	r.mu.Unlock()
+	return thread.WorkspacePath
+}
+
+// mergePathRefsIntoMeta returns the item.Meta JSON string with a
+// `pathRefs` key set to the supplied slice, preserving any other
+// existing top-level keys (e.g. `task_id` — its partial index in
+// migration v17 must keep working). An empty / whitespace-only input
+// is treated as `{}`. Existing values that aren't JSON objects are
+// replaced — that's a corruption state the store shouldn't produce,
+// but the helper degrades cleanly rather than refusing to persist.
+//
+// A separate helper exists (rather than reusing the deep-merge
+// `mergeItemMetaJSON` patterns in tool_lifecycle.go) because the
+// `pathRefs` key needs whole-value overwrite on every settle —
+// re-enriching must replace, not append. Deep merge would append.
+func mergePathRefsIntoMeta(meta string, refs []pathlinks.PathRef) (string, error) {
+	// Fast path: empty / whitespace / `{}` meta. The hot case at
+	// settle time — pre-pathlinks items rarely carry sibling meta —
+	// skips both the unmarshal and the map allocation.
+	trimmed := strings.TrimSpace(meta)
+	if trimmed == "" || trimmed == "{}" {
+		return marshalPathRefsOnly(refs)
+	}
+	obj := map[string]json.RawMessage{}
+	// json.Unmarshal into the map preserves the raw bytes of
+	// non-conflicting siblings so they round-trip untouched.
+	if err := json.Unmarshal([]byte(trimmed), &obj); err != nil {
+		// Not a JSON object — overwrite. Log so corruption is visible.
+		log.Printf("triage: pathlinks merge skipped corrupt meta: %v", err)
+		return marshalPathRefsOnly(refs)
+	}
+	encoded, err := json.Marshal(refs)
+	if err != nil {
+		return "", err
+	}
+	obj["pathRefs"] = encoded
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func marshalPathRefsOnly(refs []pathlinks.PathRef) (string, error) {
+	out, err := json.Marshal(struct {
+		PathRefs []pathlinks.PathRef `json:"pathRefs"`
+	}{PathRefs: refs})
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope string, status string) error {

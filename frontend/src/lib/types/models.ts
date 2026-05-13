@@ -115,6 +115,22 @@ export type ItemKind =
   | "api_retry"
   | "api_error";
 
+/**
+ * One validated file-path reference for the chat surface's auto
+ * linkifier. Produced by `internal/pathlinks` Go-side at message
+ * settle time and shipped on `Item.meta` (key: `pathRefs`). The
+ * frontend trusts each entry as a confirmed file path and wraps the
+ * matching prose token in an `<a class="editor-link">`. An `@`
+ * preceding the occurrence is widened into the wrapped span by the
+ * frontend at find-and-wrap time; `path` here always carries the
+ * real file path without any `@` prefix.
+ */
+export interface PathRef {
+  path: string;
+  line?: number;
+  col?: number;
+}
+
 export interface Item {
   id: string;
   threadId: string;
@@ -139,6 +155,13 @@ export interface Item {
   completionOf?: string;
   toolName?: string;
   decision?: "" | "approved" | "declined" | "amended" | "lost";
+  /**
+   * JSON-shaped metadata blob. Existing top-level keys include
+   * `task_id` (used for background-task pairing, indexed by
+   * migration v17) and `pathRefs` (`PathRef[]`, written by the
+   * pathlinks settle hook on assistant_text rows). Always parse
+   * defensively — pre-pathlinks items predate the `pathRefs` key.
+   */
   meta?: string;
   createdAt: number;
   updatedAt: number;

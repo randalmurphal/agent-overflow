@@ -1029,6 +1029,7 @@ func (r *Router) CleanupThread(threadID string) {
 	delete(r.openTurns, threadID)
 	delete(r.interruptQueue, threadID)
 	delete(r.streamingItemCounts, threadID)
+	delete(r.workspacePathByThread, threadID)
 	for key, pending := range r.pendingCommandDiffs {
 		if pending.ThreadID == threadID {
 			delete(r.pendingCommandDiffs, key)

@@ -105,6 +105,119 @@ describe('enhancePathLinks', () => {
     expect(after2).toBe(after1);
     expect(container.querySelectorAll('a.editor-link')).toHaveLength(1);
   });
+
+  describe('allowlist mode (pathRefs from Go validation)', () => {
+    it('wraps only paths the allowlist contains', () => {
+      // `src/foo.ts` shows up in pathRefs (Go validated). `bogus/x.bad`
+      // shape-matches the local regex but is not in the allowlist —
+      // it must NOT linkify in allowlist mode.
+      const container = document.createElement('div');
+      container.innerHTML = '<p>real src/foo.ts and bogus/x.bad nope</p>';
+      enhancePathLinks(container, '', [{ path: 'src/foo.ts' }]);
+      const links = container.querySelectorAll('a.editor-link');
+      expect(links).toHaveLength(1);
+      expect(links[0].getAttribute('data-path')).toBe('src/foo.ts');
+    });
+
+    it('empty allowlist short-circuits — nothing wraps', () => {
+      // The "Go saw nothing real" case: even path-shaped tokens that
+      // would have passed the local regex stay plain text.
+      const container = document.createElement('div');
+      container.innerHTML = '<p>see src/lib/foo.ts and src/lib/bar.ts</p>';
+      enhancePathLinks(container, '', []);
+      expect(container.querySelectorAll('a.editor-link')).toHaveLength(0);
+    });
+
+    it('emits one anchor per occurrence when the same path appears multiple times', () => {
+      // The Go side stat's once, the wire carries one PathRef per
+      // occurrence — but the frontend doesn't actually consume the
+      // per-occurrence metadata; it derives a unique-path Set and
+      // wraps every textual occurrence. Either way the user sees all
+      // instances linkified.
+      const container = document.createElement('div');
+      container.innerHTML = '<p>we edited src/foo.ts, but src/foo.ts still has the bug</p>';
+      enhancePathLinks(container, '', [{ path: 'src/foo.ts' }]);
+      const links = container.querySelectorAll('a.editor-link');
+      expect(links).toHaveLength(2);
+      for (const link of Array.from(links)) {
+        expect(link.getAttribute('data-path')).toBe('src/foo.ts');
+        expect(link.textContent).toBe('src/foo.ts');
+      }
+    });
+
+    it('captures :line:col suffix from text even though allowlist entry has none', () => {
+      // The path string `src/foo.ts` is allowlisted; the text adds a
+      // line:col suffix. The wrapped span includes the suffix and
+      // data-line/data-col are populated from the text — not from
+      // the PathRef.
+      const container = document.createElement('div');
+      container.innerHTML = '<p>see src/foo.ts:42:7 for the bug</p>';
+      enhancePathLinks(container, '', [{ path: 'src/foo.ts' }]);
+      const link = container.querySelector('a.editor-link');
+      expect(link).not.toBeNull();
+      expect(link?.getAttribute('data-path')).toBe('src/foo.ts');
+      expect(link?.getAttribute('data-line')).toBe('42');
+      expect(link?.getAttribute('data-col')).toBe('7');
+      expect(link?.textContent).toBe('src/foo.ts:42:7');
+    });
+
+    it('@-prefix widens the wrapped span but data-path stays bare', () => {
+      // Visual fix: today's regex's lookbehind excluded `@`, so
+      // `@src/foo.ts` rendered as `@<link>src/foo.ts</link>` with a
+      // floating `@`. The allowlist matcher includes the `@` in the
+      // wrapped span when the boundary check on the char before `@`
+      // passes — and the click handler still navigates by the bare
+      // file path stored on data-path.
+      const container = document.createElement('div');
+      container.innerHTML = '<p>see @src/foo.ts for context</p>';
+      enhancePathLinks(container, '', [{ path: 'src/foo.ts' }]);
+      const link = container.querySelector('a.editor-link');
+      expect(link).not.toBeNull();
+      expect(link?.textContent).toBe('@src/foo.ts');
+      expect(link?.getAttribute('data-path')).toBe('src/foo.ts');
+    });
+
+    it('rejects email-tail paths even when the path body is allowlisted', () => {
+      // `host/path.ts` happens to be in the allowlist (some unrelated
+      // workspace file with that name), but the text mentions it
+      // inside the email `name@host/path.ts`. The lookbehind on the
+      // char before the `@` is `e` (alphanumeric) so the boundary
+      // check fails and nothing wraps.
+      const container = document.createElement('div');
+      container.innerHTML = '<p>contact name@host/path.ts please</p>';
+      enhancePathLinks(container, '', [{ path: 'host/path.ts' }]);
+      expect(container.querySelectorAll('a.editor-link')).toHaveLength(0);
+    });
+
+    it('longest-first sort prevents nested overlap when paths are siblings', () => {
+      // Both `src/foo.ts` and `elsewhere/src/foo.ts` are in the
+      // allowlist (separate validated files). In a single text where
+      // only the longer path appears, the shorter one would naively
+      // match inside it — overlap avoidance must prevent a double
+      // wrap.
+      const container = document.createElement('div');
+      container.innerHTML = '<p>see elsewhere/src/foo.ts for the bug</p>';
+      enhancePathLinks(container, '', [
+        { path: 'src/foo.ts' },
+        { path: 'elsewhere/src/foo.ts' },
+      ]);
+      const links = container.querySelectorAll('a.editor-link');
+      expect(links).toHaveLength(1);
+      expect(links[0].getAttribute('data-path')).toBe('elsewhere/src/foo.ts');
+    });
+
+    it('falls back to local regex when pathRefs is undefined', () => {
+      // Non-assistant surfaces (ChannelView, ProposedPlan, etc.) leave
+      // pathRefs unset. The local regex still produces today's behavior
+      // — including matching `src/lib/foo.ts` without fs validation.
+      const container = document.createElement('div');
+      container.innerHTML = '<p>see src/lib/foo.ts for context</p>';
+      enhancePathLinks(container, '', undefined);
+      const link = container.querySelector('a.editor-link');
+      expect(link).not.toBeNull();
+      expect(link?.getAttribute('data-path')).toBe('src/lib/foo.ts');
+    });
+  });
 });
 
 describe('markdown-aware copy delegate', () => {

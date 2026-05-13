@@ -34,11 +34,13 @@
   import StreamdownMathHost from './markdown/StreamdownMathHost.svelte';
   import { chatMarkdownTheme, extraShikiLanguages } from './markdown/streamdownTheme';
   import { enhancePathLinks, ensureMarkdownCopyDelegate } from '../../utils/markdownEnhance';
+  import type { PathRef } from '../../types/models';
 
   let {
     source,
     streaming = false,
     workspacePath = '',
+    pathRefs,
     class: className = '',
   }: {
     source: string;
@@ -49,6 +51,15 @@
      *  notebook cells) leave empty and accept that relative-path click-
      *  to-open will surface a clear "requires workspacePath" error. */
     workspacePath?: string;
+    /** Server-validated allowlist of file paths to linkify in prose.
+     *  Pass the parsed `pathRefs` from `Item.meta` for assistant_text
+     *  rows; non-enriched surfaces leave undefined and `enhancePathLinks`
+     *  falls back to the local regex (today's behavior). An empty
+     *  array means "Go saw nothing real, render plain text" — pre-
+     *  pathlinks history rows pass `[]` rather than `undefined` so
+     *  they don't fall back to the regex and re-acquire false
+     *  positives that were never validated. */
+    pathRefs?: PathRef[];
     class?: string;
   } = $props();
 
@@ -69,9 +80,10 @@
   // re-run the walker; the linkifier skips already-converted anchors.
   $effect(() => {
     void source;
+    void pathRefs;
     if (streaming) return;
     if (!root) return;
-    enhancePathLinks(root, workspacePath);
+    enhancePathLinks(root, workspacePath, pathRefs);
   });
 </script>
 

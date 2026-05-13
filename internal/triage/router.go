@@ -202,6 +202,15 @@ type Router struct {
 	// echo. Used for side effects that require the row to exist, such
 	// as message checkpoint capture.
 	deferredUserTextConfirmed func(threadID string, item store.Item)
+	// workspacePathByThread is a small read-through cache for the
+	// thread row's WorkspacePath, populated lazily by enrichPathRefs
+	// (the only hot caller). A thread's workspace is set at create
+	// time and effectively immutable, so the cache is safe without
+	// invalidation beyond CleanupThread. Without it, every
+	// assistant_text settle ran a SQLite GetThread JUST to read a
+	// stable string — fine on its own, but adds up across the
+	// 10-30 text blocks per heavy turn. Keyed by threadID.
+	workspacePathByThread map[string]string
 }
 
 // NewRouter creates a triage router. Telemetry is off by default; wire a
@@ -253,6 +262,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		pendingByThread:            make(map[string][]pendingSend),
 		wireOnlyUserTextSeen:       make(map[string]map[string]struct{}),
 		queuedFlushItems:           make(map[string][]QueuedFlushItem),
+		workspacePathByThread:      make(map[string]string),
 	}
 }
 

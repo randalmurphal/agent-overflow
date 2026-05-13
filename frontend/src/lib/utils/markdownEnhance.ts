@@ -12,7 +12,8 @@
 // passes that work on any DOM tree, regardless of how it was
 // constructed.
 
-import { findPathRanges } from './pathLinkify';
+import { findPathRanges, type PathRange } from './pathLinkify';
+import type { PathRef } from '../types/models';
 import { OpenInEditor } from '../stores/bindings';
 import { addToast } from '../stores/toast.svelte';
 import { errString } from './errors';
@@ -89,8 +90,45 @@ async function invokePathLink(
   }
 }
 
-export function enhancePathLinks(container: HTMLElement, workspacePath: string): void {
+/**
+ * Wrap path-shaped tokens in `container` with editor-open anchors.
+ *
+ * Two modes:
+ * - **Allowlist mode** (`pathRefs` is an array, possibly empty): use
+ *   only the paths Go validated against the workspace. Empty array =
+ *   "Go saw nothing real," so nothing wraps. This is the
+ *   bug-free path the assistant_text surface takes; pre-pathlinks
+ *   history rows that have no `pathRefs` key in their meta still pass
+ *   `[]` here so they render as plain text.
+ * - **Local-regex mode** (`pathRefs` is `undefined`): fall back to the
+ *   client-side `findPathRanges` heuristic. Non-assistant surfaces
+ *   (Discussion `ChannelView`, ProposedPlan, AskUserQuestion,
+ *   ComposerPendingUserInputPanel) pass `undefined` so they keep
+ *   today's behavior — which CAN produce false positives, but no worse
+ *   than before this refactor. Future work can wire those surfaces to
+ *   their own validation pipelines.
+ *
+ * Either way the wrapping engine is identical: longest-first scan over
+ * candidates with overlap avoidance, optional `:line:col` suffix
+ * capture, and an `@`-prefix that widens the wrapped span when one is
+ * present in the surrounding text and the boundary check passes.
+ */
+export function enhancePathLinks(
+  container: HTMLElement,
+  workspacePath: string,
+  pathRefs?: PathRef[],
+): void {
   ensurePathLinkDelegate();
+  // Empty allowlist short-circuits: Go has positively asserted there
+  // are no real paths in this prose, so the DOM walk is pure waste.
+  if (pathRefs !== undefined && pathRefs.length === 0) return;
+  // Build the per-path regex set once per call. Without this, every
+  // candidate text node re-compiled N regex objects — pathological
+  // when an allowlist of N paths crosses M qualifying text nodes
+  // (N*M compiles). Sort longest-first so a path nested inside a
+  // longer one defers to the outer match.
+  const allowlistRegexes = pathRefs ? buildAllowlistRegexes(pathRefs) : undefined;
+
   // Collect candidate text nodes first so the in-place replacement
   // doesn't disturb the iterator (replaceWith mutates the parent's
   // child list).
@@ -114,8 +152,89 @@ export function enhancePathLinks(container: HTMLElement, workspacePath: string):
     current = walker.nextNode();
   }
   for (const text of textNodes) {
-    linkifyTextNode(text, workspacePath);
+    linkifyTextNode(text, workspacePath, allowlistRegexes);
   }
+}
+
+interface AllowlistRegex {
+  path: string;
+  re: RegExp;
+}
+
+function buildAllowlistRegexes(refs: PathRef[]): AllowlistRegex[] {
+  const seen = new Set<string>();
+  const out: AllowlistRegex[] = [];
+  for (const ref of refs) {
+    if (!ref.path || seen.has(ref.path)) continue;
+    seen.add(ref.path);
+    // Mirror PATH_PATTERN's lookbehind + optional `@` + suffix shape,
+    // anchored on the literal path string. `g` flag is required —
+    // RegExp.exec relies on `lastIndex` advancing per match.
+    const escaped = escapeRegex(ref.path);
+    const re = new RegExp(
+      `(?:^|(?<=[\\s(\\[{,;'"\`<>=]))(@)?${escaped}(?::(\\d+)(?::(\\d+))?)?`,
+      'g',
+    );
+    out.push({ path: ref.path, re });
+  }
+  // Longest-first so `elsewhere/src/foo.ts` wraps before `src/foo.ts`
+  // when both are in the allowlist; the inner overlap check then
+  // skips the shorter nested match.
+  out.sort((a, b) => b.path.length - a.path.length);
+  return out;
+}
+
+/**
+ * Find every occurrence of every allowlisted path in `value`. Each
+ * occurrence's span widens to include an `@` prefix when one is
+ * present with a safe boundary preceding it (`@src/foo.ts` after a
+ * space wraps as `<a>@src/foo.ts</a>`; `name@host/path.ts` does
+ * not wrap at all because the email's `@` fails the boundary check).
+ * Longest-first ordering plus per-text-node overlap tracking means a
+ * shorter path nested inside a longer one is wrapped only at the
+ * outer match — no double-wrap.
+ */
+function findRangesFromAllowlist(value: string, regexes: AllowlistRegex[]): PathRange[] {
+  if (regexes.length === 0) return [];
+  const wrapped: Array<{ start: number; end: number }> = [];
+  const out: PathRange[] = [];
+  for (const { path, re } of regexes) {
+    // Reset stateful global regex; the same compiled instance is
+    // reused across text nodes, so a previous text node's final
+    // `lastIndex` would otherwise skip prefix matches here.
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(value)) !== null) {
+      const start = m.index;
+      const end = m.index + m[0].length;
+      if (intersectsAny(start, end, wrapped)) continue;
+      out.push({
+        start,
+        end,
+        path,
+        line: m[2] ? Number(m[2]) : undefined,
+        col: m[3] ? Number(m[3]) : undefined,
+      });
+      wrapped.push({ start, end });
+    }
+  }
+  out.sort((a, b) => a.start - b.start);
+  return out;
+}
+
+function intersectsAny(
+  start: number,
+  end: number,
+  ranges: Array<{ start: number; end: number }>,
+): boolean {
+  for (const r of ranges) {
+    if (start < r.end && end > r.start) return true;
+  }
+  return false;
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function hasPathSeparator(text: string): boolean {
@@ -144,9 +263,15 @@ function insideEditorLink(node: Node): boolean {
   return false;
 }
 
-function linkifyTextNode(text: Text, workspacePath: string): void {
+function linkifyTextNode(
+  text: Text,
+  workspacePath: string,
+  allowlistRegexes: AllowlistRegex[] | undefined,
+): void {
   const value = text.nodeValue ?? '';
-  const ranges = findPathRanges(value);
+  const ranges = allowlistRegexes !== undefined
+    ? findRangesFromAllowlist(value, allowlistRegexes)
+    : findPathRanges(value);
   if (ranges.length === 0) return;
   const parent = text.parentNode;
   if (!parent) return;
