@@ -289,6 +289,39 @@ frontend layers on top:
   `useStickToBottom.svelte.test.ts` under "content ResizeObserver"
   (the disjunction + the escape and pause guards that must still
   override it).
+
+  **Spring carve-out: the negative-delta sync-pin is gated on
+  `springToken === 0`.** When `animationMode='spring'` is in flight,
+  virtua's estimate→measured row-append cycle fires contentRO twice
+  within ~5ms — first at `ESTIMATED_ROW_SIZE` (e.g., +90 for chat),
+  then a negative correction (e.g., -56). The +90 starts a spring;
+  without the gate, the -56's negative-delta sync-pin would write
+  scrollTop to the corrected target before the spring's first paint,
+  leaving the spring to tick against `current==target` with no
+  perceptible motion (user-visible "tool-call rows snap, only
+  assistant text animates"). The carve-out suppresses the
+  negative-delta synchronous write while a spring is chasing — the
+  spring reads `targetScrollTop()` each tick and absorbs the
+  corrected target on its next frame. Note: the carve-out is
+  scoped to the negative-delta branch only. The overshoot guard
+  above it (`if (scrollEl.scrollTop > targetScrollTop())`) remains
+  unconditional and CAN write mid-spring; that's by design — it's
+  what lets the existing "negative delta mid-spring lets the spring
+  converge" test clamp scrollTop when a sufficiently large shrink
+  leaves the spring's current position past the new (lower) target.
+  For the +ESTIMATE / -CORRECTION virtua pair the spring has barely
+  moved by the time the correction arrives, so overshoot is false
+  and the negative-delta gate is the only path that needed
+  suppression. The cascade defense above (Bug A) is preserved by
+  **warm-gate ordering**: the row-remeasurement cascade fires while
+  `!warm`, but `springGateOpen` requires `warm`, so the spring
+  never starts during the cascade window and `springToken === 0`
+  lets the sync-pin run exactly when the cascade defense needs it.
+  Regression coverage in `useStickToBottom.svelte.test.ts`:
+  "negative delta while !warm sync-pins via negative-delta branch"
+  (Bug A defense — geometry chosen so overshoot is bypassed,
+  isolating the negative-delta path) + "estimate-correct pair
+  during spring leaves spring as single writer" (Bug B fix).
 - **Layout decoupling** — `ChatView.svelte` positions the composer +
   live-turn UI + below-bar as an absolute overlay inside the timeline's
   relative container. A `--composer-height` CSS variable, written by a

@@ -1271,6 +1271,41 @@ describe('createUseStickToBottomController — spring chase', () => {
       // Sync-pin landed scrollTop at target in the same callback.
       expect(geom.scrollTop).toBe(600);
     });
+
+    it('negative delta while !warm sync-pins via negative-delta branch (Bug A defense)', async () => {
+      // Bug A's cascade defense relies on the negative-delta sync-pin
+      // running synchronously when virtua's row-remeasurement shifts
+      // scrollTop off the bottom. The spring carve-out (suppress
+      // writeScrollTop while springToken !== 0) must NOT weaken this
+      // defense. Warm-gate-ordering invariant: cascade fires while
+      // `!warm`, springGateOpen requires `warm`, so the spring never
+      // starts during the cascade and springToken stays 0 — the
+      // negative-pin sync write runs as it always did.
+      //
+      // Geometry is chosen so the overshoot guard (lines 698-700) does
+      // NOT fire, isolating the negative-delta sync-pin as the only
+      // possible writer of the asserted scrollTop change: scrollTop
+      // must be BELOW the new target after the shrink, so
+      // `scrollTop > target` is false and overshoot is bypassed.
+      const ro = getRO();
+      ro.fire(contentEl, 800); // initial; warm is still false. isAtBottomState=true from attach.
+
+      // Simulate virtua's applyJump shifting scrollTop off the bottom
+      // (the cascade pattern: a row above the viewport remeasured
+      // larger, virtua scrolled the visible row's offset down to
+      // preserve it). No scroll event fires — isAtBottomState stays
+      // true even though we're now 100 px above the geometric bottom.
+      geom.scrollTop = 300;
+
+      // Content shrinks: scrollHeight 1000 -> 940. New target = 340.
+      // scrollTop (300) is BELOW the new target (340), so overshoot
+      // is false. The only path that can land scrollTop at 340 in
+      // this tick is the negative-delta sync-pin.
+      geom.scrollHeight = 940;
+      geom.contentHeight = 740;
+      ro.fire(contentEl, 740);
+      expect(geom.scrollTop).toBe(340);
+    });
   });
 
   describe('spring chase', () => {
@@ -1578,6 +1613,57 @@ describe('createUseStickToBottomController — spring chase', () => {
       // scrollTop > target down to target.
       await advanceUntil(() => geom.scrollTop <= 200);
       expect(geom.scrollTop).toBeLessThanOrEqual(200);
+    });
+
+    it('estimate-correct pair during spring leaves spring as single writer (no sync-pin race)', async () => {
+      // Bug B: virtua's row-append cycle fires contentRO twice within
+      // ~5ms — first at ESTIMATED_ROW_SIZE (e.g., +90 for chat's
+      // estimate), then at the measured size (correction, e.g., -56).
+      // Pre-fix, the +90 started a spring and the -56 ran the
+      // negative-delta sync-pin synchronously, landing scrollTop at
+      // the corrected target before the spring's first paint — the
+      // spring then ticked against current==target with no visible
+      // motion. New gate: negative-delta sync-pin is suppressed when
+      // springToken !== 0, leaving the spring as the single writer.
+      // It reads targetScrollTop() each tick and absorbs the corrected
+      // target on its next frame.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      // +90 estimate-grow (mimics virtua provisionally rendering a new
+      // row at ESTIMATED_ROW_SIZE). Spring engages.
+      geom.scrollHeight = 1090;
+      geom.contentHeight = 890;
+      ro.fire(contentEl, 890);
+      // Spring not yet ticked — scrollTop unchanged inside the RO call.
+      expect(geom.scrollTop).toBe(400);
+
+      // Advance one frame so the spring runs its first tick and
+      // scrollTop walks part of the way toward the estimate-target (490).
+      await nextFrame();
+      const midScrollTop = geom.scrollTop;
+      expect(midScrollTop).toBeGreaterThan(400);
+      expect(midScrollTop).toBeLessThan(490);
+
+      // -56 correction within the same RO burst (virtua measured the
+      // actual row size, totalSize -= 56). negativeWillPin would be
+      // true; the spring carve-out must SUPPRESS the sync write.
+      // Corrected target = 1034 - 600 = 434.
+      geom.scrollHeight = 1034;
+      geom.contentHeight = 834;
+      ro.fire(contentEl, 834);
+
+      // Critical assertion: scrollTop did NOT jump to the corrected
+      // target inside the RO callback. The spring is the single
+      // writer; its position is unchanged from the mid-chase value.
+      expect(geom.scrollTop).toBe(midScrollTop);
+
+      // Subsequent frames: the spring reads the new targetScrollTop()
+      // (434) and walks scrollTop there over multiple ticks — visible
+      // motion, not an instantaneous snap.
+      await advanceUntil(() => geom.scrollTop === 434);
+      expect(geom.scrollTop).toBe(434);
     });
 
     it('text selection mid-spring pauses scrollTop advancement', async () => {

@@ -747,8 +747,33 @@ export function createUseStickToBottomController(
         // geometry" for the cascade pattern this defends.
         if (negativeWillPin) {
           isAtBottomState = true;
-          writeCaller = 'contentRO.negativeDelta';
-          writeScrollTop(targetScrollTop());
+          // Spring carve-out: suppress this sync write while a spring
+          // is chasing (springToken !== 0) so virtua's +ESTIMATE /
+          // -CORRECTION pair on row-append (e.g. +90 then -56 within
+          // ~5ms) doesn't race the spring. Without it, the negative
+          // write lands scrollTop at the corrected target before the
+          // spring's first paint and the spring ticks against
+          // current==target with no perceptible motion. The spring
+          // reads targetScrollTop() each tick and absorbs the
+          // corrected target naturally. Note: the overshoot guard at
+          // lines 698-700 above is also synchronous and CAN fire
+          // mid-spring when the spring has chased past the new
+          // (lower) target — by design (the existing "negative delta
+          // mid-spring lets the spring converge" test relies on it
+          // to clamp `scrollTop > target` once the spring would
+          // otherwise stop). The carve-out only addresses the case
+          // where overshoot=false (the virtua estimate→measured
+          // pair, since the +90 spring barely moves before -56
+          // arrives). Bug A defense (sync-pin running during the
+          // !warm cascade) is preserved by warm-gate ordering: the
+          // cascade fires while `!warm`, springGateOpen requires
+          // `warm`, so springToken stays 0 during the cascade and
+          // the sync-pin runs as before. See frontend/AGENTS.md
+          // "Negative-delta re-pin honors logical intent".
+          if (springToken === 0) {
+            writeCaller = 'contentRO.negativeDelta';
+            writeScrollTop(targetScrollTop());
+          }
         }
       }
 
