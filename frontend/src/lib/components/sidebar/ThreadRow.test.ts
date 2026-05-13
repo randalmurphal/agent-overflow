@@ -3,6 +3,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadRow from './ThreadRow.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
+import { resetPanesForTest } from '../../stores/panes.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { refreshThreads, getThreads } from '../../stores/threads.svelte';
 import {
@@ -52,6 +53,7 @@ function nextFrame(): Promise<void> {
 
 describe('<ThreadRow> unarchive', () => {
   beforeEach(async () => {
+    resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await refreshThreads();
@@ -134,6 +136,7 @@ describe('<ThreadRow> unarchive', () => {
 
 describe('<ThreadRow> fork lineage affordance', () => {
   beforeEach(async () => {
+    resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await refreshThreads();
@@ -244,6 +247,7 @@ describe('<ThreadRow> fork lineage affordance', () => {
 
 describe('<ThreadRow> live status dot', () => {
   beforeEach(async () => {
+    resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await refreshThreads();
@@ -579,6 +583,7 @@ describe('<ThreadRow> live status dot', () => {
 
 describe('<ThreadRow> nested row chrome', () => {
   beforeEach(async () => {
+    resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await refreshThreads();

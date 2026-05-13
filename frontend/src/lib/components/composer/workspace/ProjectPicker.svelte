@@ -24,7 +24,6 @@
   import Icon from '../../primitives/Icon.svelte';
   import { composerTriggerClasses } from '../triggerClasses';
   import type { ThreadPane } from '../../../stores/thread.svelte';
-  import type { Thread } from '../../../types/models';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
@@ -32,11 +31,9 @@
   import {
     findDraftEntry,
     getProjectDraft,
-    setProjectDraft,
     type DraftMode,
   } from '../../../stores/draftThreads.svelte';
-  import { seedDefaultWorktreeIntentForDraft } from '../../../stores/worktreeIntent.svelte';
-  import { CreateThread } from '../../../stores/bindings';
+  import { openThreadInPane } from '../../../stores/panes.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
 
@@ -60,8 +57,8 @@
   // (i.e. it's no longer in the draft cache). Project re-targeting on a
   // populated thread is not supported; the user can spin a new thread in
   // the other project via the sidebar pencil if they want to "move".
-  let draftEntry = $derived(pane.thread ? findDraftEntry(pane.thread.id) : undefined);
-  let isLocked = $derived(!pane.thread || !draftEntry);
+  let draftEntry = $derived(pane.threadId ? findDraftEntry(pane.threadId) : undefined);
+  let isLocked = $derived(!pane.thread || (!pane.hasDraftPlaceholder && !draftEntry));
 
   let activeProjectId = $derived(pane.thread?.projectId ?? null);
   let activeProjectName = $derived.by(() => {
@@ -90,16 +87,12 @@
     try {
       const existing = getProjectDraft(projectId, draftMode);
       if (existing) {
-        await pane.switchThread(existing);
+        await openThreadInPane(existing, pane);
         return;
       }
-      const thread = (await CreateThread({
-        projectId,
-        mode: draftMode === 'design' ? 'design' : 'chat',
-      })) as Thread;
-      seedDefaultWorktreeIntentForDraft(thread);
-      setProjectDraft(projectId, draftMode, thread);
-      await pane.switchThread(thread);
+      const project = getProject(projectId)?.project;
+      if (!project) throw new Error('Project not found');
+      pane.startDraftPlaceholder(project, draftMode === 'design' ? 'design' : 'chat');
     } catch (err) {
       console.error('Failed to switch draft project:', err);
       addToast('error', userFacingError(err));

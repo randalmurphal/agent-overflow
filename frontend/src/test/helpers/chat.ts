@@ -1,4 +1,4 @@
-import { getAllPanes } from '../../lib/stores/panes.svelte';
+import { registerPaneForTest } from '../../lib/stores/panes.svelte';
 import { upsertProposedPlanForTests } from '../../lib/stores/proposedPlans.svelte';
 import { getQueueForThread } from '../../lib/stores/sendQueue.svelte';
 import { createThreadPane, type ThreadPane } from '../../lib/stores/thread.svelte';
@@ -126,6 +126,6 @@ export async function buildPane(
   // reach this pane. Production code goes through getMainPane() which
   // already registers; tests instantiating createThreadPane directly
   // need this explicit step.
-  getAllPanes().set('main', pane);
+  registerPaneForTest('main', pane);
   return pane;
 }

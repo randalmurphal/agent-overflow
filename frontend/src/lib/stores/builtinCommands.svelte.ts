@@ -15,7 +15,7 @@ import { closePalette, openPalette } from './palette.svelte';
 import { closeThreadPicker, openThreadPicker } from './threadPicker.svelte';
 import { addToast } from './toast.svelte';
 import { getActiveTurn } from './threadStatuses.svelte';
-import { syncThread } from './panes.svelte';
+import { openThreadInPane, syncThread } from './panes.svelte';
 import { removeThread } from './threads.svelte';
 import { forkThreadAction } from '../components/sidebar/threadRowActions';
 import { userFacingError } from '../utils/userFacingError';
@@ -262,7 +262,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           thread: t,
           isActive: pane.threadId === t.id,
           clearPane: () => pane.clear(),
-          switchPane: (next) => pane.switchThread(next),
+          switchPane: async (next) => { await openThreadInPane(next, pane); },
           reportError: (msg) => pane.setGeneralError(msg),
         });
       }),

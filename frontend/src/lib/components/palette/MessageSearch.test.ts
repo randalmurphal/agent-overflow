@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import MessageSearch from './MessageSearch.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
+import { resetPanesForTest } from '../../stores/panes.svelte';
 import { refreshThreads } from '../../stores/threads.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { installAnimateShim } from '../../../test/integration/_helpers';
@@ -10,6 +11,7 @@ import type { Thread } from '../../types/models';
 beforeAll(installAnimateShim);
 
 beforeEach(async () => {
+  resetPanesForTest();
   setBindingMock('ListThreads', async () => []);
   await refreshThreads();
   setBindingMock('SwitchThread', async () => {});

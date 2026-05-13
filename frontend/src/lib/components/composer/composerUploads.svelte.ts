@@ -35,6 +35,8 @@ export interface ComposerUploadsOptions {
    * so uploads race-safe against a thread switch mid-upload.
    */
   getThreadId: () => string | null;
+  /** Creates/loads a backend thread when the composer is on a local placeholder. */
+  ensureThreadId?: () => Promise<string | null>;
   /** Fired when a freshly-uploaded Attachment should be added to the draft. */
   addAttachment: (attachment: Attachment, insertion: UploadInsertionPoint | null) => void;
   /** Fired after a successful DeleteAttachment call so the draft drops it. */
@@ -103,7 +105,7 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
     files: FileList | File[],
     insertion: UploadInsertionPoint | null,
   ): Promise<void> {
-    const threadId = opts.getThreadId();
+    const threadId = opts.getThreadId() ?? await opts.ensureThreadId?.() ?? null;
     if (!threadId) return;
     const existingCount = opts.getAttachmentCount?.() ?? 0;
     const availableSlots = Math.max(0, maxAttachments - existingCount);

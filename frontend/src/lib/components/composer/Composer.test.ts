@@ -30,6 +30,12 @@ import {
   setWorktreeBaseBranch,
   setWorktreeBranchName,
 } from '../../stores/worktreeIntent.svelte';
+import {
+  getProjectDraft,
+  resetForTest as resetDraftThreadsForTest,
+} from '../../stores/draftThreads.svelte';
+import { getThreadById, removeThread } from '../../stores/threads.svelte';
+import type { Project } from '../../types/models';
 
 function installDraftMocks() {
   setBindingMock('GetDraft', async (threadId: string) => ({
@@ -85,6 +91,29 @@ function makeClipboardPaste(files: File[]): ClipboardEvent {
   return event;
 }
 
+function makeProject(overrides: Partial<Project> = {}): Project {
+  return {
+    id: 'project-placeholder',
+    path: '/tmp/placeholder',
+    name: 'Placeholder Project',
+    sortPosition: 0,
+    createdAt: 0,
+    updatedAt: 0,
+    archived: false,
+    ...overrides,
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('<Composer>', () => {
   beforeEach(() => {
     resetBindingMocks();
@@ -94,6 +123,7 @@ describe('<Composer>', () => {
     resetWorktreeIntent();
     resetSendQueueForTest();
     resetThreadStatuses();
+    resetDraftThreadsForTest();
     installDraftMocks();
     setBindingMock('SendMessageWithOptions', async () => makeTestThread({ runtimeMode: 'full-access' }));
     setBindingMock('InterruptTurn', async () => {});
@@ -159,6 +189,134 @@ describe('<Composer>', () => {
 
     expect((getByLabelText('Message Input') as HTMLTextAreaElement).disabled).toBe(true);
     expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('materializes a placeholder and sends through the same draft store', async () => {
+    const pane = createThreadPane({ paneId: 'placeholder-send' });
+    pane.startDraftPlaceholder(makeProject(), 'chat');
+    const draft = await buildDraft(null);
+    const created = makeTestThread({
+      id: 'materialized-send',
+      projectId: 'project-placeholder',
+      workspacePath: '/tmp/placeholder',
+      projectPath: '/tmp/placeholder',
+    });
+    const create = setBindingMock('CreateThread', async () => created);
+    const save = setBindingMock('SaveDraft', async () => {});
+    const clear = setBindingMock('ClearDraft', async () => {});
+    const send = setBindingMock('SendMessageWithOptions', async () => created);
+
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, { target: { value: 'first send' } });
+    await fireEvent.click(getByTestId('composer-send'));
+
+    await waitFor(() => expect(send).toHaveBeenCalledWith('materialized-send', 'first send', {
+      attachmentIds: [],
+    }));
+    expect(create).toHaveBeenCalledWith({ projectId: 'project-placeholder', mode: 'chat' });
+    expect(save).toHaveBeenCalledWith('materialized-send', 'first send', [], [], null);
+    expect(clear).toHaveBeenCalledWith('materialized-send');
+    expect(draft.threadId).toBe('materialized-send');
+    expect(draft.content).toBe('');
+  });
+
+  it('uploads pasted images after materializing a placeholder', async () => {
+    const pane = createThreadPane({ paneId: 'placeholder-upload' });
+    pane.startDraftPlaceholder(makeProject(), 'chat');
+    const draft = await buildDraft(null);
+    const created = makeTestThread({
+      id: 'materialized-upload',
+      projectId: 'project-placeholder',
+      workspacePath: '/tmp/placeholder',
+      projectPath: '/tmp/placeholder',
+    });
+    setBindingMock('CreateThread', async () => created);
+    const upload = setBindingMock('UploadAttachment', async (
+      threadId: string,
+      filename: string,
+      mimeType: string,
+    ) => ({
+      ...makeAttachment('uploaded', filename),
+      threadId,
+      mimeType,
+    }));
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+    const file = new File(['png'], 'first.png', { type: 'image/png' });
+
+    await fireEvent(textarea, makeClipboardPaste([file]));
+
+    await waitFor(() => expect(upload).toHaveBeenCalledWith(
+      'materialized-upload',
+      'first.png',
+      'image/png',
+      expect.any(String),
+    ));
+    expect(draft.threadId).toBe('materialized-upload');
+    expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['uploaded']);
+  });
+
+  it('does not commit stale placeholder materialization after the pane changes drafts', async () => {
+    const pane = createThreadPane({ paneId: 'placeholder-race' });
+    const firstProject = makeProject({ id: 'project-first', path: '/tmp/first', name: 'First' });
+    const secondProject = makeProject({ id: 'project-second', path: '/tmp/second', name: 'Second' });
+    pane.startDraftPlaceholder(firstProject, 'chat');
+    const draft = await buildDraft(null);
+    const created = makeTestThread({
+      id: 'materialized-stale',
+      projectId: firstProject.id,
+      workspacePath: firstProject.path,
+      projectPath: firstProject.path,
+    });
+    const createGate = deferred<typeof created>();
+    setBindingMock('CreateThread', () => createGate.promise);
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: 'start first' } });
+    pane.startDraftPlaceholder(secondProject, 'design');
+    createGate.resolve(created);
+
+    await tick();
+    await tick();
+
+    expect(pane.draftPlaceholder?.projectId).toBe(secondProject.id);
+    expect(pane.threadId).toBeNull();
+    expect(pane.thread?.id).not.toBe('materialized-stale');
+    expect(getProjectDraft(firstProject.id, 'chat')).toBeUndefined();
+  });
+
+  it('hides an emptied materialized draft and re-shows the same draft when text returns', async () => {
+    const pane = createThreadPane({ paneId: 'placeholder-retype' });
+    const project = makeProject({ id: 'project-retype' });
+    pane.startDraftPlaceholder(project, 'chat');
+    const draft = await buildDraft(null);
+    const created = makeTestThread({
+      id: 'materialized-retype',
+      projectId: project.id,
+      workspacePath: project.path,
+      projectPath: project.path,
+    });
+    removeThread(created.id);
+    setBindingMock('CreateThread', async () => created);
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, { target: { value: 'draft text' } });
+    await waitFor(() => expect(getProjectDraft(project.id, 'chat')?.id).toBe(created.id));
+    expect(getThreadById(created.id)?.id).toBe(created.id);
+
+    await fireEvent.input(textarea, { target: { value: '' } });
+    await waitFor(() => expect(getThreadById(created.id)).toBeUndefined());
+    expect(getProjectDraft(project.id, 'chat')?.id).toBe(created.id);
+
+    await fireEvent.input(textarea, { target: { value: 'draft text again' } });
+    await waitFor(() => expect(getThreadById(created.id)?.id).toBe(created.id));
+    expect(getProjectDraft(project.id, 'chat')?.id).toBe(created.id);
   });
 
   it('sends the draft and clears it on success', async () => {

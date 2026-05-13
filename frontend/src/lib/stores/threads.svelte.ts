@@ -25,7 +25,7 @@ export async function refreshThreads(): Promise<void> {
 }
 
 export function prependThread(thread: Thread): void {
-  threads = [thread, ...threads];
+  threads = [thread, ...threads.filter((t) => t.id !== thread.id)];
 }
 
 export function removeThread(id: string): void {

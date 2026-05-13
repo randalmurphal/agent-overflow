@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getAllPanes, getMainPane, syncThread } from './panes.svelte';
+import {
+  createPane,
+  focusPane,
+  getAllPanes,
+  getFocusedPane,
+  getFocusedPaneId,
+  getMainPane,
+  openThreadInPane,
+  registerPaneForTest,
+  resetPanesForTest,
+  syncThread,
+} from './panes.svelte';
 import { createThreadPane } from './thread.svelte';
 import {
   getThreads,
@@ -28,7 +39,11 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 describe('panes store', () => {
   beforeEach(() => {
     // Module state is shared across tests; drain between cases.
-    getAllPanes().clear();
+    resetPanesForTest();
+  });
+
+  afterEach(() => {
+    resetBindingMocks();
   });
 
   describe('getMainPane()', () => {
@@ -55,14 +70,71 @@ describe('panes store', () => {
     });
   });
 
-  describe('syncThread()', () => {
-    afterEach(() => {
-      resetBindingMocks();
+  describe('pane routing', () => {
+    it('tracks focused pane separately from the main pane singleton', () => {
+      const main = getMainPane();
+      const secondary = createPane('secondary');
+
+      expect(getFocusedPane()).toBe(main);
+      focusPane('secondary');
+
+      expect(getFocusedPane()).toBe(secondary);
+      expect(getFocusedPaneId()).toBe('secondary');
     });
 
+    it('opens a thread in the requested pane when it is not already visible', async () => {
+      const thread = makeThread({ id: 'target' });
+      const pane = createThreadPane({ paneId: 'external' });
+      setBindingMock('SwitchThread', async () => thread);
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [], oldestTurnIndex: -1, hasMore: false,
+      }));
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [], oldestTurnIndex: -1, hasMore: false,
+      }));
+      setBindingMock('ListRecentTurns', async () => []);
+      setBindingMock('ListThreadCheckpoints', async () => []);
+      setBindingMock('GetThreadLiveState', async () => null);
+      setBindingMock('ListPendingInteractiveRequests', async () => null);
+
+      await openThreadInPane(thread, pane);
+
+      expect(pane.threadId).toBe('target');
+      expect(getFocusedPaneId()).toBe('external');
+    });
+
+    it('focuses the existing pane instead of duplicating a visible thread', async () => {
+      const thread = makeThread({ id: 'visible' });
+      setBindingMock('SwitchThread', async () => thread);
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [], oldestTurnIndex: -1, hasMore: false,
+      }));
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [], oldestTurnIndex: -1, hasMore: false,
+      }));
+      setBindingMock('ListRecentTurns', async () => []);
+      setBindingMock('ListThreadCheckpoints', async () => []);
+      setBindingMock('GetThreadLiveState', async () => null);
+      setBindingMock('ListPendingInteractiveRequests', async () => null);
+      const left = createPane('left');
+      const right = createPane('right');
+      await left.switchThread(thread);
+
+      const focused = await openThreadInPane(thread, right);
+
+      expect(focused).toBe(left);
+      expect(right.threadId).toBeNull();
+      expect(getFocusedPaneId()).toBe('left');
+    });
+  });
+
+  describe('syncThread()', () => {
     async function buildPaneWithThread(thread: Thread) {
       setBindingMock('SwitchThread', async () => thread);
       setBindingMock('ListRecentThreadItems', async () => ({
+        items: [], oldestTurnIndex: -1, hasMore: false,
+      }));
+      setBindingMock('ListThreadSliceAround', async () => ({
         items: [], oldestTurnIndex: -1, hasMore: false,
       }));
       setBindingMock('ListItems', async () => []);
@@ -72,7 +144,7 @@ describe('panes store', () => {
       setBindingMock('MarkThreadUnread', async () => {});
       const pane = createThreadPane();
       await pane.switchThread(thread);
-      getAllPanes().set('main', pane);
+      registerPaneForTest('main', pane);
       return pane;
     }
 

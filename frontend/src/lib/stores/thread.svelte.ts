@@ -1,5 +1,5 @@
 import type { CacheSnapshot } from 'virtua';
-import type { Item, Thread } from '../types/models';
+import type { Item, Project, Thread } from '../types/models';
 import type { Checkpoint } from '../types/checkpoint';
 import type {
   ApprovalRequest,
@@ -27,6 +27,7 @@ import type {
   SliderControl,
 } from '../types/design';
 import {
+  CreateThread,
   GetThreadItem,
   GetThreadLiveState,
   LatestDesignOptionSet,
@@ -496,14 +497,31 @@ export function paneWorkspacePath(pane: ThreadPane | undefined): string {
   return pane?.thread?.workspacePath ?? '';
 }
 
+export type DraftPlaceholderMode = 'chat' | 'design';
+
+export interface DraftThreadPlaceholder {
+  id: string;
+  projectId: string;
+  projectName: string;
+  projectPath: string;
+  mode: DraftPlaceholderMode;
+  createdAt: number;
+}
+
+interface ThreadPaneOptions {
+  paneId?: string;
+}
+
 /**
  * Creates a self-contained thread pane state instance.
  * Each pane tracks its own thread, unified timeline items, approvals,
  * context/banner state, and mode-specific UI. Components receive a
  * ThreadPane as a prop.
  */
-export function createThreadPane() {
+export function createThreadPane(options: ThreadPaneOptions = {}) {
+  const paneId = options.paneId ?? 'pane';
   let thread: Thread | null = $state(null);
+  let draftPlaceholder: DraftThreadPlaceholder | null = $state(null);
   let items: Item[] = $state([]);
   let timelineRevision = $state(0);
   // Per-itemId expansion state. Survives row remount (virtua's overscan
@@ -1655,6 +1673,7 @@ export function createThreadPane() {
    * panel was a diff-checkpoint.
    */
   function commitIncomingThread(newThread: Thread): void {
+    draftPlaceholder = null;
     thread = newThread;
     if (newThread.mode === 'design') {
       activeTab = 'design';
@@ -1793,8 +1812,12 @@ export function createThreadPane() {
 
   return {
     // --- Getters (reactive reads) ---
+    get paneId() { return paneId; },
     get thread() { return thread; },
-    get threadId() { return thread?.id ?? null; },
+    get threadId() { return draftPlaceholder ? null : thread?.id ?? null; },
+    get draftPlaceholder() { return draftPlaceholder; },
+    get hasDraftPlaceholder() { return draftPlaceholder !== null; },
+    get canCompose() { return Boolean(thread || draftPlaceholder); },
     get items() { return items; },
     /**
      * "Locked in" — the user has sent at least one message, so the
@@ -1912,6 +1935,7 @@ export function createThreadPane() {
       // below and by the outer finally to decide whether the spinner
       // can be cleared (a concurrent switch keeps it up).
       const gen = ++switchGeneration;
+      draftPlaceholder = null;
       // Live-state hydration token. The live-state leg always consumes
       // it through `hydrateThreadLiveState`'s own finally; the outer
       // finally below only finishes it as defense-in-depth against a
@@ -2002,6 +2026,7 @@ export function createThreadPane() {
 
     clear(): void {
       thread = null;
+      draftPlaceholder = null;
       items = [];
       rebuildItemIndexes(items);
       pendingApprovals = [];
@@ -2061,6 +2086,58 @@ export function createThreadPane() {
       diffPanel.clearForThread();
       // Invalidate any in-flight switchThread so its late resolutions can't
       // repopulate the pane we just cleared.
+      switchGeneration++;
+    },
+
+    startDraftPlaceholder(project: Project, mode: DraftPlaceholderMode = 'chat'): void {
+      this.clear();
+      const now = Date.now();
+      const placeholder: DraftThreadPlaceholder = {
+        id: `draft:${paneId}:${project.id}:${mode}:${now}`,
+        projectId: project.id,
+        projectName: project.name,
+        projectPath: project.path,
+        mode,
+        createdAt: now,
+      };
+      draftPlaceholder = placeholder;
+      thread = {
+        id: placeholder.id,
+        title: 'New Thread',
+        provider: 'codex',
+        workspacePath: project.path,
+        projectPath: project.path,
+        projectId: project.id,
+        mode,
+        model: '',
+        createdAt: now,
+        updatedAt: now,
+        archived: false,
+      };
+      activeTab = mode === 'design' ? 'design' : 'chat';
+      switchGeneration++;
+    },
+
+    async materializeDraftPlaceholder(): Promise<Thread | null> {
+      const placeholder = draftPlaceholder;
+      if (!placeholder) return thread;
+      const created = (await CreateThread({
+        projectId: placeholder.projectId,
+        mode: placeholder.mode,
+      })) as Thread;
+      return created;
+    },
+
+    adoptMaterializedDraftThread(materializedThread: Thread): void {
+      if (!draftPlaceholder) return;
+      draftPlaceholder = null;
+      thread = materializedThread;
+      contextWindow = seedContextWindow(materializedThread);
+      if (materializedThread.mode === 'design') {
+        activeTab = 'design';
+      } else if (materializedThread.mode === 'chat' || materializedThread.mode === 'plan') {
+        activeTab = 'chat';
+      }
       switchGeneration++;
     },
 

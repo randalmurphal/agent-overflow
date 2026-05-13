@@ -70,7 +70,7 @@
   });
 
   function startRename(): void {
-    if (!pane.thread) return;
+    if (!pane.thread || !pane.threadId) return;
     draftTitle = pane.thread.title;
     editing = true;
     void tick().then(() => {
@@ -85,7 +85,7 @@
   }
 
   async function commitRename(): Promise<void> {
-    if (!pane.thread) return;
+    if (!pane.thread || !pane.threadId) return;
     const next = draftTitle.trim();
     // Empty submits and no-op submits both bail out quietly. The user
     // already sees their current title — no need to toast a no-op.
@@ -93,7 +93,7 @@
       cancelRename();
       return;
     }
-    const threadId = pane.thread.id;
+    const threadId = pane.threadId;
     renamePending = true;
     try {
       await RenameThread(threadId, next);
@@ -164,6 +164,7 @@
 
     <!-- Right cluster: wraps, doesn't disappear, at narrow widths. -->
     <div class="ml-auto flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+      {#if pane.threadId}
       {#if projectBadge}
         <Button
           variant="secondary"
@@ -212,6 +213,7 @@
           <Icon icon={Diff} size={12} strokeWidth={2} class="opacity-90" />
         {/snippet}
       </Button>
+      {/if}
     </div>
   </div>
 {/if}

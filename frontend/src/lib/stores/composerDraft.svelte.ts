@@ -305,6 +305,26 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     }
   }
 
+  async function adoptThread(id: string): Promise<void> {
+    if (threadId === id) return;
+    clearDebounce();
+    pendingSaveGeneration++;
+    switchGeneration++;
+    threadId = id;
+    hydrating = false;
+    error = null;
+    hasPendingSave = true;
+    const snapshot = buildSnapshot();
+    rememberDraftSnapshot(id, snapshot);
+    try {
+      await saveSnapshot(id, snapshot, 'Failed to save draft');
+      hasPendingSave = false;
+    } catch {
+      // saveSnapshot already recorded the user-facing error and retained
+      // the local snapshot for this newly-materialized thread.
+    }
+  }
+
   async function reloadFromBackend(id: string | null = threadId): Promise<void> {
     if (!id || threadId !== id) return;
     clearDebounce();
@@ -342,6 +362,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
 
     // ---- thread lifecycle ----
     setThread,
+    adoptThread,
     reloadFromBackend,
     prepareForExternalDraftReplace,
     flush,

@@ -6,6 +6,7 @@
   import { forgeLabels } from '../../utils/forgeLabels';
   import { addToast } from '../../stores/toast.svelte';
   import { prependThread } from '../../stores/threads.svelte';
+  import { openThreadInPane } from '../../stores/panes.svelte';
   import type { Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
 
@@ -92,7 +93,7 @@
         return;
       }
       prependThread(thread);
-      await pane.switchThread(thread);
+      await openThreadInPane(thread, pane);
       addToast('success', `Thread created from ${refSigil}${prNumber}`);
       onClose();
     } catch (err) {

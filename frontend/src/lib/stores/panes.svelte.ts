@@ -3,20 +3,74 @@ import { createThreadPane, type ThreadPane } from './thread.svelte';
 import { touchProjectActivity } from './projects.svelte';
 import { replaceThread as replaceThreadInRegistry } from './threads.svelte';
 
-// Active panes, keyed by pane ID. v1 has exactly one pane ("main").
+// Active panes, keyed by pane ID. The current UI mounts only "main", but
+// command routing and sidebar actions already go through this registry so
+// adding visible panes does not require re-defining ownership later.
 let panes: Map<string, ThreadPane> = $state(new Map());
+let focusedPaneId: string = $state('main');
 
 export function getMainPane(): ThreadPane {
   let main = panes.get('main');
   if (!main) {
-    main = createThreadPane();
+    main = createThreadPane({ paneId: 'main' });
     panes = new Map(panes).set('main', main);
   }
   return main;
 }
 
+export function createPane(id: string): ThreadPane {
+  const existing = panes.get(id);
+  if (existing) return existing;
+  const pane = createThreadPane({ paneId: id });
+  panes = new Map(panes).set(id, pane);
+  return pane;
+}
+
+export function registerPaneForTest(id: string, pane: ThreadPane): void {
+  panes = new Map(panes).set(id, pane);
+}
+
+export function getFocusedPane(): ThreadPane {
+  return panes.get(focusedPaneId) ?? getMainPane();
+}
+
+export function focusPane(id: string): void {
+  if (!panes.has(id)) return;
+  focusedPaneId = id;
+}
+
+export function getFocusedPaneId(): string {
+  return focusedPaneId;
+}
+
 export function getAllPanes(): Map<string, ThreadPane> {
   return panes;
+}
+
+export function resetPanesForTest(): void {
+  for (const pane of panes.values()) pane.clear();
+  panes = new Map();
+  focusedPaneId = 'main';
+}
+
+export async function openThreadInPane(
+  thread: Thread,
+  targetPane: string | ThreadPane = focusedPaneId,
+): Promise<ThreadPane> {
+  for (const [id, pane] of panes) {
+    if (pane.threadId !== thread.id) continue;
+    focusedPaneId = id;
+    return pane;
+  }
+  const target = typeof targetPane === 'string'
+    ? panes.get(targetPane) ?? getMainPane()
+    : targetPane;
+  if (!panes.has(target.paneId)) {
+    panes = new Map(panes).set(target.paneId, target);
+  }
+  focusedPaneId = target.paneId;
+  await target.switchThread(thread);
+  return target;
 }
 
 /**

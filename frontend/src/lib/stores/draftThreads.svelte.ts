@@ -1,10 +1,9 @@
-// Tracks the in-flight "draft" thread per (project, mode) pair. When the
-// user clicks "+ New" on a project we create the thread row on the
-// backend (for provider defaults + stable id) but keep it out of the
-// sidebar and keep its provider process unspawned until the first
-// SendMessage. Clicking "+ New" again for the same project + mode
-// returns the same draft so the composerDraft cache (persisted backend-
-// side by threadId) repopulates the composer.
+// Tracks materialized draft threads per (project, mode) pair. Clicking
+// "+ New" starts as a local pane placeholder; the backend row is created
+// only after the user adds state worth preserving (text, attachments,
+// terminal chips, or seeded plan context). Once materialized, this store
+// lets "+ New" return to that draft so the composerDraft cache (persisted
+// backend-side by threadId) repopulates the composer.
 //
 // Mode keying: + New is mode-contextual — clicking + with the Design tab
 // active creates a design thread; with the Chat tab active it creates a
@@ -17,10 +16,8 @@
 // sub-mode of chat that emerges only after creation; drafts created via
 // + always start as 'chat' or 'design'.
 //
-// Persistence: none. A crash / reload loses the draft pointer; the
-// underlying thread row still lives in the DB but is hidden by
-// ListThreadsWithItems. Acceptable for now — orphan empty rows can be
-// GC'd in a follow-up if they accumulate.
+// Persistence: none. A crash / reload loses the pointer; non-empty draft
+// rows still live in SQLite and are returned by ListThreadsWithItems.
 
 import type { Thread } from '../types/models';
 

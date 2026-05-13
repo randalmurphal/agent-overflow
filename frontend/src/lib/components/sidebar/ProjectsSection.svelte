@@ -9,6 +9,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     getProjects,
+    getProject,
     refreshProjects,
     updateProjectLocal,
   } from '../../stores/projects.svelte';
@@ -20,14 +21,13 @@
   } from '../../stores/sidebar.svelte';
   import { getThreadFilterQuery } from '../../stores/threadFilter.svelte';
   import { getThreads } from '../../stores/threads.svelte';
-  import { CreateThread, UpdateProjectSortPositions } from '../../stores/bindings';
+  import { UpdateProjectSortPositions } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import {
     getProjectDraft,
-    setProjectDraft,
   } from '../../stores/draftThreads.svelte';
-  import { seedDefaultWorktreeIntentForDraft } from '../../stores/worktreeIntent.svelte';
+  import { openThreadInPane } from '../../stores/panes.svelte';
   import Plus from 'lucide-svelte/icons/plus';
   import IconButton from '../primitives/IconButton.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -166,29 +166,15 @@
     const draftMode = pane.activeTab;
     const existing = getProjectDraft(projectId, draftMode);
     if (existing) {
-      await pane.switchThread(existing);
+      await openThreadInPane(existing, pane);
       return;
     }
-    try {
-      // CreateThread takes a struct; we forward the active tab as the
-      // mode so design-tab + creates a design thread directly. Other
-      // defaults (provider, model) come from settings. We persist the
-      // row so the thread has a stable id for draft saves, but we
-      // deliberately do NOT prepend it to the sidebar or spawn a
-      // provider session — the thread stays a draft until the first
-      // SendMessage promotes it (lazy session start in app_send.go;
-      // sidebar prepend in Composer.send()).
-      const thread = (await CreateThread({
-        projectId,
-        mode: draftMode === 'design' ? 'design' : 'chat',
-      })) as Thread;
-      seedDefaultWorktreeIntentForDraft(thread);
-      setProjectDraft(projectId, draftMode, thread);
-      await pane.switchThread(thread);
-    } catch (err) {
-      console.error('Failed to create thread:', err);
-      addToast('error', userFacingError(err));
+    const project = getProject(projectId)?.project;
+    if (!project) {
+      addToast('error', userFacingError(new Error('Project not found')));
+      return;
     }
+    pane.startDraftPlaceholder(project, draftMode === 'design' ? 'design' : 'chat');
   }
 
   /**

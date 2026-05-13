@@ -35,6 +35,7 @@
     isThreadSelected,
   } from '../../stores/threadFilter.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
+  import { openThreadInPane } from '../../stores/panes.svelte';
 
   interface Props {
     thread: Thread;
@@ -68,7 +69,7 @@
       thread,
       isActive,
       clearPane: () => pane.clear(),
-      switchPane: (t) => pane.switchThread(t),
+      switchPane: async (t) => { await openThreadInPane(t, pane); },
       reportError: (msg) => pane.setGeneralError(msg),
     };
   }
@@ -127,7 +128,7 @@
           thread: t,
           isActive: pane.threadId === t.id,
           clearPane: () => pane.clear(),
-          switchPane: (next) => pane.switchThread(next),
+          switchPane: async (next) => { await openThreadInPane(next, pane); },
           reportError: (msg) => {
             lastError = msg;
           },

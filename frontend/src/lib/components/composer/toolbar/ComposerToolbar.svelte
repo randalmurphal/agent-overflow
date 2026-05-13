@@ -81,21 +81,24 @@
   // for that account (5h/7d limits don't reset on thread switch or
   // turn completion).
   let showLimitRings = $derived(pane.isLocked && !!pane.thread?.provider);
+  let hasPersistedThread = $derived(Boolean(pane.threadId));
 </script>
 
 <div
   class="@container flex items-center gap-0.5 px-2.5 pb-2 pt-1"
   data-testid="composer-toolbar"
 >
-  <ModelProviderMenu {pane} />
-  <EffortMenu {pane} />
-  {#if isDesignThread}
-    <DesignLockPill />
-  {:else if !isDiscussionThread}
-    <AgentModeToggle {pane} />
+  {#if hasPersistedThread}
+    <ModelProviderMenu {pane} />
+    <EffortMenu {pane} />
+    {#if isDesignThread}
+      <DesignLockPill />
+    {:else if !isDiscussionThread}
+      <AgentModeToggle {pane} />
+    {/if}
+    <AccessToggle {pane} />
+    <PlanSidebarToggleButton {pane} {hasCurrentPlan} />
   {/if}
-  <AccessToggle {pane} />
-  <PlanSidebarToggleButton {pane} {hasCurrentPlan} />
   <div class="ml-auto flex items-center gap-1.5">
     {#if showLimitRings}
       <div class="shrink-0 flex items-center" data-testid="composer-rate-limit-5h">

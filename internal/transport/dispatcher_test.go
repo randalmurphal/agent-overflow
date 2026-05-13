@@ -652,6 +652,9 @@ func (p *privilegedApp) RegisterQueueItem() string              { return "ok" }
 func (p *privilegedApp) UndoQueuedItems() string                { return "ok" }
 func (p *privilegedApp) GetQueueState() string                  { return "ok" }
 func (p *privilegedApp) GetThreadLiveState() string             { return "ok" }
+func (p *privilegedApp) SaveDraft() string                      { return "ok" }
+func (p *privilegedApp) GetDraft() string                       { return "ok" }
+func (p *privilegedApp) ClearDraft() string                     { return "ok" }
 func (p *privilegedApp) StartDiscussion() string                { return "ok" }
 func (p *privilegedApp) StartDiscussionByID() string            { return "ok" }
 func (p *privilegedApp) UpdateThreadMode() string               { return "ok" }

@@ -3,6 +3,7 @@
   import { SearchThreadMessages, type ThreadMessageHit } from '../../stores/bindings';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
+  import { openThreadInPane } from '../../stores/panes.svelte';
   import { computeHighlightSegments } from '../../utils/highlight';
 
   interface Props {
@@ -89,7 +90,7 @@
       archived: false,
     });
     onClose();
-    await pane.switchThread(thread);
+    await openThreadInPane(thread, pane);
     // Scroll the timeline to the hit — pane.requestScrollToItem publishes
     // a nonce the live MessageTimeline observes and handles via
     // loadUntilItem + scrollIntoView. Title-match hits have no itemId;

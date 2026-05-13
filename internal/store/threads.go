@@ -235,30 +235,25 @@ func (s *Store) ListThreads() ([]Thread, error) {
 }
 
 // ListThreadsWithItems returns every non-archived thread that has at least
-// one persisted item. "Draft" threads (created by the user clicking "New
-// Thread" but never sent) deliberately don't appear here — they only
-// surface in the sidebar once the first message lands. Discussion threads
-// are still included even before their first user turn because
-// StartDiscussion inserts the assistant's opening plan as an item, so the
-// EXISTS probe already considers them non-empty.
-//
-// One carve-out: drafts created by "Implement plan in new thread" carry a
-// non-null thread_drafts.pending_plan_implementation and should appear in
-// the sidebar immediately so the user can find them, pick settings, and
-// send. The carve-out uses a non-correlated `IN (SELECT ... WHERE ... IS
-// NOT NULL)` rather than a correlated EXISTS so SQLite picks the partial
-// index `idx_thread_drafts_pending_plan_impl` (v31) — the index covers
-// exactly the "drafts that are plan implementations" subset, so the
-// lookup is O(plan-impl drafts) rather than O(threads).
+// one persisted item. Local placeholder panes do not create backend rows; once
+// a draft has real persisted content (typed text, attachments, terminal chips,
+// or a pending plan implementation) it is visible so the sidebar reflects work
+// the user would otherwise lose track of.
 func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 	rows, err := s.db.Query(
 		`SELECT ` + threadColumns + ` FROM threads
 		 WHERE archived = 0
 		   AND (
 		       EXISTS (SELECT 1 FROM items WHERE items.thread_id = threads.id)
-		    OR threads.id IN (
-		         SELECT thread_id FROM thread_drafts
-		          WHERE pending_plan_implementation IS NOT NULL
+		    OR EXISTS (
+		         SELECT 1 FROM thread_drafts
+		          WHERE thread_drafts.thread_id = threads.id
+		            AND (
+		              TRIM(thread_drafts.content) <> ''
+		              OR COALESCE(thread_drafts.attachments, '[]') NOT IN ('', '[]', 'null')
+		              OR COALESCE(thread_drafts.terminal_chips, '[]') NOT IN ('', '[]', 'null')
+		              OR thread_drafts.pending_plan_implementation IS NOT NULL
+		            )
 		       )
 		   )
 		 ORDER BY updated_at DESC`,

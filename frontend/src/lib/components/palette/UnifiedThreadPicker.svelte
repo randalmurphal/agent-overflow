@@ -3,6 +3,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Thread } from '../../types/models';
   import { getThreads } from '../../stores/threads.svelte';
+  import { openThreadInPane } from '../../stores/panes.svelte';
   import {
     getEffectiveThreadStatus,
   } from '../../stores/threadStatuses.svelte';
@@ -75,7 +76,7 @@
 
   async function openHit(thread: Thread): Promise<void> {
     onClose();
-    await pane.switchThread(thread);
+    await openThreadInPane(thread, pane);
   }
 
   function projectBasename(path: string): string {

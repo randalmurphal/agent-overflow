@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { getMainPane } from './lib/stores/panes.svelte';
+  import { getFocusedPane, getMainPane, openThreadInPane } from './lib/stores/panes.svelte';
   import { setupEventListeners } from './lib/stores/events';
   import { getThreads, refreshThreads } from './lib/stores/threads.svelte';
   import { loadSettings, getSettings } from './lib/stores/settings.svelte';
@@ -82,7 +82,7 @@
   }
 
   let paletteContext = $derived(
-    makeCommandContext(pane, {
+    makeCommandContext(getFocusedPane(), {
       paletteOpen: isPaletteOpen(),
       cheatSheetOpen: isCheatSheetOpen(),
       messageSearchOpen: isMessageSearchOpen(),
@@ -150,7 +150,7 @@
     const targetId = ids[index - 1];
     if (!targetId) return;
     const thread = getThreads().find((t) => t.id === targetId);
-    if (thread) void pane.switchThread(thread);
+    if (thread) void openThreadInPane(thread, pane);
   }
 
   function requestThreadStep(delta: number): void {
@@ -162,7 +162,7 @@
       ? (delta > 0 ? 0 : ids.length - 1)
       : (currentIndex + delta + ids.length) % ids.length;
     const thread = getThreads().find((t) => t.id === ids[nextIndex]);
-    if (thread) void pane.switchThread(thread);
+    if (thread) void openThreadInPane(thread, pane);
   }
 
   $effect(() => {
@@ -255,9 +255,7 @@
           onClose={() => showSettings = false}
         />
       {:else}
-        {#key pane.threadId}
-          <ChatView {pane} />
-        {/key}
+        <ChatView {pane} />
       {/if}
     </div>
   </div>

@@ -780,10 +780,10 @@ func TestListThreadsWithItemsHidesEmptyDrafts(t *testing.T) {
 	}
 }
 
-func TestListThreadsWithItemsSurfacesPlanImplementationDrafts(t *testing.T) {
-	// "Implement plan in new thread" creates a thread with no items, but
-	// its draft carries source_proposed_plan. ListThreadsWithItems must
-	// surface it so the user can find their seeded composer in the sidebar.
+func TestListThreadsWithItemsSurfacesNonEmptyDrafts(t *testing.T) {
+	// Drafts can carry user-authored text or source-plan context before
+	// the first item exists. ListThreadsWithItems must surface them so the
+	// user can find their seeded composer in the sidebar.
 	s := newTestStore(t)
 	proj := newTestProject(t, s, "proj-impl-draft", "/tmp/i")
 
@@ -826,8 +826,8 @@ func TestListThreadsWithItemsSurfacesPlanImplementationDrafts(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertThreadDraft(implDraft): %v", err)
 	}
-	// emptyDraft gets a content-only draft with no source-plan link — it
-	// must remain hidden.
+// emptyDraft gets a content-only draft with no source-plan link. That is
+// still user-authored state, so it should now surface in the sidebar.
 	if err := s.UpsertThreadDraft(ThreadDraft{
 		ThreadID:      emptyDraft.ID,
 		Content:       "typed but never sent",
@@ -842,12 +842,19 @@ func TestListThreadsWithItemsSurfacesPlanImplementationDrafts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListThreadsWithItems: %v", err)
 	}
-	if len(got) != 1 || got[0].ID != implDraft.ID {
+	if len(got) != 2 {
 		ids := make([]string, len(got))
 		for i, th := range got {
 			ids[i] = th.ID
 		}
-		t.Fatalf("got %v, want only [%s] (impl draft visible, plain draft hidden)", ids, implDraft.ID)
+		t.Fatalf("got %v, want impl and content drafts visible", ids)
+	}
+	ids := map[string]bool{}
+	for _, th := range got {
+		ids[th.ID] = true
+	}
+	if !ids[implDraft.ID] || !ids[emptyDraft.ID] {
+		t.Fatalf("got %#v, want %s and %s", ids, implDraft.ID, emptyDraft.ID)
 	}
 }
 

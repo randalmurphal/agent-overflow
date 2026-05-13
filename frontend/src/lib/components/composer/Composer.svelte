@@ -41,6 +41,7 @@
   } from '../../stores/diffReviewComments.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { hasRetractableQueueItems, registerQueueItem } from '../../stores/sendQueue.svelte';
+  import { getThreadById, prependThread, removeThread } from '../../stores/threads.svelte';
   import {
     hasRuntimeModeDraft,
     runtimeModeForThread,
@@ -50,6 +51,8 @@
   import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
   import { sourceFromProposedPlanItem } from '../../utils/proposedPlan';
   import type { DiffReviewComment, ProposedPlanComment, SourceDiffReview, SourceProposedPlan } from '../../types/models';
+  import { findDraftEntry, setProjectDraft } from '../../stores/draftThreads.svelte';
+  import { seedDefaultWorktreeIntentForDraft } from '../../stores/worktreeIntent.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -65,6 +68,7 @@
   let lastAutosizedTextarea: HTMLTextAreaElement | undefined;
   let lastAutosizedValue = '';
   let focusInitialized = false;
+  let focusThreadId: string | null = null;
 
   const mentions = createComposerMentions({
     getTextarea: () => textarea,
@@ -73,6 +77,7 @@
 
   const uploads = createComposerUploads({
     getThreadId: () => pane.threadId,
+    ensureThreadId: ensureMaterializedThread,
     getAttachmentCount: () => draft.attachments.length,
     addAttachment: (a, insertion) => imagePlaceholders.addUploadedAttachment(a, insertion),
     removeAttachment: (id) => draft.removeAttachment(id),
@@ -91,7 +96,7 @@
     hasUserInputPrompt: () => hasUserInputPrompt,
   });
 
-  let isDisabled = $derived(!pane.threadId);
+  let isDisabled = $derived(!pane.canCompose);
   // Mid-round signal: a wire round is currently in flight (the model
   // is streaming text/tool work). The composer stays typeable during
   // a round and Send routes through the backend-owned per-thread
@@ -220,15 +225,64 @@
 
   $effect(() => {
     pane.threadId;
+    pane.hasDraftPlaceholder;
     locallyImplementedPlanIds = new Set();
   });
 
-  // Initial focus per thread entry. App.svelte wraps ChatView in
-  // `{#key pane.threadId}`, so this effect runs fresh per thread switch
-  // with `focusInitialized = false`. The reactive guards wait until
-  // the draft store has aligned with the active thread AND hydration
-  // has finished — otherwise focusing during hydration parks the
-  // caret at 0 and the loaded snapshot pops in under it.
+  $effect(() => {
+    const threadId = pane.threadId;
+    if (!threadId || draft.threadId !== threadId || draft.hydrating) return;
+    if (sending || pane.sendInFlight || isTurnActive) return;
+    const entry = findDraftEntry(threadId);
+    if (!entry) return;
+    if (pane.items.length > 0) return;
+    const draftHasContent = hasDraftContent;
+    untrack(() => {
+      if (draftHasContent) {
+        if (pane.thread && !getThreadById(threadId)) {
+          prependThread(pane.thread);
+        }
+        return;
+      }
+      removeThread(threadId);
+    });
+  });
+
+  let materializingThread: Promise<string | null> | null = null;
+
+  async function ensureMaterializedThread(): Promise<string | null> {
+    if (pane.threadId) return pane.threadId;
+    const placeholder = pane.draftPlaceholder;
+    if (!placeholder) return null;
+    if (materializingThread) return materializingThread;
+    const placeholderId = placeholder.id;
+    materializingThread = (async () => {
+      try {
+        const created = await pane.materializeDraftPlaceholder();
+        if (!created) return null;
+        if (pane.draftPlaceholder?.id !== placeholderId) return null;
+        if (pane.draftPlaceholder?.id !== placeholderId) return null;
+        seedDefaultWorktreeIntentForDraft(created);
+        setProjectDraft(placeholder.projectId, placeholder.mode, created);
+        prependThread(created);
+        pane.adoptMaterializedDraftThread(created);
+        await draft.adoptThread(created.id);
+        return created.id;
+      } catch (err) {
+        console.error('Failed to create draft thread:', err);
+        pane.setGeneralError(`Failed to create thread: ${String(err)}`);
+        return null;
+      } finally {
+        materializingThread = null;
+      }
+    })();
+    return materializingThread;
+  }
+
+  // Initial focus per thread entry. ChatView stays mounted across
+  // placeholder materialization so the same draft store can finish the
+  // user's first send/upload; reset focus initialization explicitly when
+  // the active backend thread changes.
   // `focusTextareaAtEnd` reads off the live DOM so the same code
   // covers the regular composer (bound to draft.content) and the
   // user-input-prompt case (bound to userInputCustomAnswer).
@@ -237,6 +291,10 @@
     const hydrating = draft.hydrating;
     const draftThreadId = draft.threadId;
     const expectedThreadId = pane.threadId;
+    if (focusThreadId !== expectedThreadId) {
+      focusThreadId = expectedThreadId;
+      focusInitialized = false;
+    }
     if (focusInitialized) return;
     if (!node) return;
     if (draftThreadId !== expectedThreadId) return;
@@ -268,7 +326,11 @@
   });
 
   async function send(includeReviewComments = true) {
-    if (!pane.threadId || !canSend) return;
+    if (!canSend) return;
+    if (!pane.threadId) {
+      const materializedId = await ensureMaterializedThread();
+      if (!materializedId) return;
+    }
     if (latestPlanSource && !hasDraftContent && !hasDraftPlanComments && !hasDraftDiffReviewComments) {
       sending = true;
       try {
@@ -320,6 +382,7 @@
         ? diffReviewCommentsForSend.map((comment) => comment.id)
         : undefined;
       const midTurnThreadId = pane.threadId;
+      if (!midTurnThreadId) return;
 
       try {
         await registerQueueItem(midTurnThreadId, message, {
@@ -340,11 +403,11 @@
       return;
     }
 
+    const threadId = pane.threadId;
+    if (!threadId) return;
+    const thread = pane.thread;
     sending = true;
     pane.setSendInFlight(true);
-
-    const threadId = pane.threadId;
-    const thread = pane.thread;
     // Capture the pre-send draft contents bound to THIS thread. If the user
     // switches threads before SendMessage resolves and the send rejects, we
     // must not bleed the snapshot into the new pane's local composer.
@@ -493,6 +556,9 @@
     } else {
       if (!imagePlaceholders.reconcileContent(value)) {
         draft.setContent(value);
+      }
+      if (pane.hasDraftPlaceholder && value.trim().length > 0) {
+        void ensureMaterializedThread();
       }
     }
     autosizeTextarea();

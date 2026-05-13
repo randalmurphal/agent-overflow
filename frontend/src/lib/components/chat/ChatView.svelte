@@ -32,6 +32,7 @@
     RevertToMessageCheckpoint,
   } from '../../stores/bindings';
   import { prependThread, updateThreadReadState } from '../../stores/threads.svelte';
+  import { focusPane, getFocusedPane, openThreadInPane } from '../../stores/panes.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { getActiveTurn, getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
@@ -168,7 +169,7 @@
   const READ_PERSIST_DEBOUNCE_MS = 100;
 
   $effect(() => {
-    const current = pane.thread?.id ?? null;
+    const current = pane.threadId;
     if (current === lastHydratedThreadId) return;
     lastHydratedThreadId = current;
     void draft.setThread(current);
@@ -231,7 +232,7 @@
   // this effect and loop forever (read → write → re-run).
   $effect(() => {
     const thread = pane.thread;
-    if (!thread) return;
+    if (!thread || !pane.threadId) return;
     const marker = [
       thread.id,
       thread.latestTurnCompletedAt ?? '',
@@ -261,7 +262,7 @@
         pane.replaceThread({ ...thread, ...readPatch });
       }
     });
-    schedulePersistThreadRead(thread.id);
+    schedulePersistThreadRead(pane.threadId);
   });
 
   // Error pills are attention state, like Completed. Once the user is
@@ -368,7 +369,8 @@
   function handleKeydown(e: KeyboardEvent) {
     const isToggleShortcut = (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'j';
     if (!isToggleShortcut) return;
-    if (!pane.thread) return;
+    if (getFocusedPane() !== pane) return;
+    if (!pane.threadId) return;
     e.preventDefault();
     pane.toggleTerminal();
   }
@@ -468,8 +470,7 @@
       if (pane.thread?.id !== thread.id) return;
       prependThread(forked);
       if (forked.projectId) expandProject(forked.projectId);
-      await pane.switchThread(forked);
-      await draft.setThread(forked.id);
+      await openThreadInPane(forked, pane);
       addToast('info', 'Forked from this message into a new thread.');
     } catch (err) {
       addToast('error', `Fork failed: ${userFacingError(err)}`);
@@ -513,8 +514,11 @@
 </script>
 
 {#snippet chatColumnBody()}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={chatColumn}
+    onpointerdown={() => focusPane(pane.paneId)}
+    onfocusin={() => focusPane(pane.paneId)}
     class="relative flex flex-col min-h-0 flex-1 min-w-0"
     style="--composer-height: {composerHeight}px;"
   >
@@ -560,8 +564,8 @@
         </div>
       </div>
     </div>
-    {#if pane.showTerminal && pane.thread}
-      {#key pane.thread.id}
+    {#if pane.showTerminal && pane.threadId}
+      {#key pane.threadId}
         <LazyThreadTerminalDrawer {pane} onSendToComposer={addTerminalChipToDraft} />
       {/key}
     {/if}
