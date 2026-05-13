@@ -10,6 +10,12 @@ package can depend on it without introducing a cycle.
   already-normalized inputs (JSON fields); use the second for user- or
   provider-sourced strings where leading/trailing whitespace counts as
   empty.
+- `clip.go` — `Clip(s, max)` truncates by bytes for hard UI-field
+  ceilings (diagnostics payloads, log redaction). Returns `""` for
+  non-positive `max`.
+- `joinnonempty.go` — `JoinNonEmpty(sep, parts...)` trims each part and
+  joins the non-blank survivors with `sep`. Used for composing system
+  prompts where any section may be empty.
 
 ## Responsibility boundary
 

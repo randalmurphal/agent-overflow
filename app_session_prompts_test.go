@@ -78,24 +78,3 @@ func TestClearThreadSystemPromptIgnoresBlankID(t *testing.T) {
 		t.Fatalf("unrelated prompt wiped: %q", got)
 	}
 }
-
-func TestJoinSystemPromptsDropsEmptyAndTrims(t *testing.T) {
-	tests := []struct {
-		name  string
-		parts []string
-		want  string
-	}{
-		{name: "all empty", parts: []string{"", "  ", "\t"}, want: ""},
-		{name: "single value", parts: []string{"Just this"}, want: "Just this"},
-		{name: "multiple joined", parts: []string{"First", "Second"}, want: "First\n\nSecond"},
-		{name: "trims parts", parts: []string{"  first  ", "", "second "}, want: "first\n\nsecond"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := joinSystemPrompts(tt.parts...); got != tt.want {
-				t.Fatalf("joinSystemPrompts(%v) = %q, want %q", tt.parts, got, tt.want)
-			}
-		})
-	}
-}

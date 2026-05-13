@@ -10,6 +10,7 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/stringsx"
 
 	"github.com/google/uuid"
 )
@@ -58,7 +59,7 @@ func (a *App) startSessionNow(threadID string) error {
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
-	systemPrompt := joinSystemPrompts(designCfg.Prompt, a.threadSystemPrompt(threadID))
+	systemPrompt := stringsx.JoinNonEmpty("\n\n", designCfg.Prompt, a.threadSystemPrompt(threadID))
 
 	// Pending-fork intent is a one-shot. SessionOptionsFromThread reads
 	// either PendingForkRef or SessionRef into opts.Resume based on this

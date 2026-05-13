@@ -39,14 +39,3 @@ func (a *App) clearThreadSystemPrompt(threadID string) {
 
 	delete(a.threadSystemPrompts, threadID)
 }
-
-func joinSystemPrompts(parts ...string) string {
-	joined := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part != "" {
-			joined = append(joined, part)
-		}
-	}
-	return strings.Join(joined, "\n\n")
-}

@@ -9,6 +9,7 @@ import (
 	"agent-overflow/internal/design"
 	"agent-overflow/internal/screenshot"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/stringsx"
 )
 
 // designCapturerFunc adapts a closure to the design.Capturer
@@ -360,10 +361,10 @@ func (a *App) IngestDiagnosticBatch(batch design.DiagnosticBatch) error {
 	// frontend's isBoundedString defaults plus headroom for real
 	// stack traces.
 	for i := range batch.Diagnostics {
-		batch.Diagnostics[i].Message = clipString(batch.Diagnostics[i].Message, maxDiagnosticFieldChars)
-		batch.Diagnostics[i].Source = clipString(batch.Diagnostics[i].Source, maxDiagnosticFieldChars)
-		batch.Diagnostics[i].URL = clipString(batch.Diagnostics[i].URL, maxDiagnosticFieldChars)
-		batch.Diagnostics[i].Stack = clipString(batch.Diagnostics[i].Stack, maxDiagnosticStackChars)
+		batch.Diagnostics[i].Message = stringsx.Clip(batch.Diagnostics[i].Message, maxDiagnosticFieldChars)
+		batch.Diagnostics[i].Source = stringsx.Clip(batch.Diagnostics[i].Source, maxDiagnosticFieldChars)
+		batch.Diagnostics[i].URL = stringsx.Clip(batch.Diagnostics[i].URL, maxDiagnosticFieldChars)
+		batch.Diagnostics[i].Stack = stringsx.Clip(batch.Diagnostics[i].Stack, maxDiagnosticStackChars)
 	}
 	a.designDiagnostics.AppendBatch(batch.ThreadID, batch.Diagnostics)
 	return nil
@@ -374,11 +375,4 @@ const (
 	maxDiagnosticFieldChars   = 8 * 1024
 	maxDiagnosticStackChars   = 32 * 1024
 )
-
-func clipString(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max]
-}
 
