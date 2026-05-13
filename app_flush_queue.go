@@ -354,61 +354,22 @@ func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushIt
 		}
 	}
 
-	providerAttachments, persistedAttachments, err := a.resolveSendMessageAttachments(threadID, payload.AttachmentIDs)
+	resolved, err := a.resolveUserMessageEnvelope(threadID, item.Message, userMessageInputs{
+		attachmentIDs:                payload.AttachmentIDs,
+		sourceProposedPlan:           payload.SourceProposedPlan,
+		revisionSourceProposedPlan:   payload.RevisionSourceProposedPlan,
+		revisionSourceCommentIDs:     payload.RevisionSourceCommentIDs,
+		revisionSourceDiffReview:     payload.RevisionSourceDiffReview,
+		revisionSourceDiffCommentIDs: payload.RevisionSourceDiffCommentIDs,
+	})
 	if err != nil {
-		return fmt.Errorf("attachments: %w", err)
+		return err
 	}
-
-	sourcePlan, err := a.resolveSourceProposedPlan(threadID, payload.SourceProposedPlan, true)
-	if err != nil {
-		return fmt.Errorf("source proposed plan: %w", err)
-	}
-	revisionSourcePlan, err := a.resolveSourceProposedPlan(threadID, payload.RevisionSourceProposedPlan, false)
-	if err != nil {
-		return fmt.Errorf("revision source proposed plan: %w", err)
-	}
-	if revisionSourcePlan == nil && len(payload.RevisionSourceCommentIDs) > 0 {
-		return fmt.Errorf("revision comments require a source proposed plan")
-	}
-	revisionSourceDiff, err := a.resolveSourceDiffReview(threadID, payload.RevisionSourceDiffReview)
-	if err != nil {
-		return fmt.Errorf("revision source diff review: %w", err)
-	}
-	if revisionSourceDiff == nil && len(payload.RevisionSourceDiffCommentIDs) > 0 {
-		return fmt.Errorf("diff review comments require a source diff review")
-	}
-
-	content := item.Message
-	revisionCommentIDs := payload.RevisionSourceCommentIDs
-	if revisionSourcePlan != nil && len(revisionCommentIDs) > 0 {
-		nextContent, commentIDs, err := a.appendPlanRevisionCommentsToContent(threadID, content, revisionSourcePlan.ItemID, revisionCommentIDs)
-		if err != nil {
-			return fmt.Errorf("revision comments: %w", err)
-		}
-		content = nextContent
-		revisionCommentIDs = commentIDs
-	}
-	revisionDiffCommentIDs := payload.RevisionSourceDiffCommentIDs
-	if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
-		nextContent, commentIDs, err := a.appendDiffReviewCommentsToContent(threadID, content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs)
-		if err != nil {
-			return fmt.Errorf("diff review comments: %w", err)
-		}
-		content = nextContent
-		revisionDiffCommentIDs = commentIDs
-	}
-
-	userMeta, err := marshalUserMessageMeta(
-		persistedAttachments,
-		sourcePlan,
-		revisionSourcePlan,
-		revisionCommentIDs,
-		revisionSourceDiff,
-		revisionDiffCommentIDs,
-	)
-	if err != nil {
-		return fmt.Errorf("user meta: %w", err)
-	}
+	content := resolved.content
+	providerAttachments := resolved.providerAttachments
+	revisionSourceDiff := resolved.revisionSourceDiff
+	revisionDiffCommentIDs := resolved.revisionDiffCommentIDs
+	userMeta := resolved.userMessageMeta
 
 	a.mu.Lock()
 	sess, ok := a.sessions[threadID]

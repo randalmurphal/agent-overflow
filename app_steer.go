@@ -70,11 +70,6 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 		return store.Item{}, fmt.Errorf("steer message: empty thread id")
 	}
 
-	providerAttachments, persistedAttachments, err := a.resolveSendMessageAttachments(threadID, opts.AttachmentIDs)
-	if err != nil {
-		return store.Item{}, fmt.Errorf("steer message: attachments: %w", err)
-	}
-
 	// Per-thread critical section: matches the send-side lock so a
 	// concurrent Send and Steer on the same thread can't interleave
 	// pending-send registration / wire dispatch ordering.
@@ -93,52 +88,22 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 
 	// Resolve plan refs the same way send does so traceability metadata
 	// stays accurate when a steer carries plan-revision context.
-	sourcePlan, err := a.resolveSourceProposedPlan(threadID, opts.SourceProposedPlan, true)
+	resolved, err := a.resolveUserMessageEnvelope(threadID, content, userMessageInputs{
+		attachmentIDs:                opts.AttachmentIDs,
+		sourceProposedPlan:           opts.SourceProposedPlan,
+		revisionSourceProposedPlan:   opts.RevisionSourceProposedPlan,
+		revisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
+		revisionSourceDiffReview:     opts.RevisionSourceDiffReview,
+		revisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
+	})
 	if err != nil {
-		return store.Item{}, fmt.Errorf("steer message: source proposed plan: %w", err)
+		return store.Item{}, fmt.Errorf("steer message: %w", err)
 	}
-	revisionSourcePlan, err := a.resolveSourceProposedPlan(threadID, opts.RevisionSourceProposedPlan, false)
-	if err != nil {
-		return store.Item{}, fmt.Errorf("steer message: revision source proposed plan: %w", err)
-	}
-	if revisionSourcePlan == nil && len(opts.RevisionSourceCommentIDs) > 0 {
-		return store.Item{}, fmt.Errorf("steer message: revision comments require a source proposed plan")
-	}
-	if revisionSourcePlan != nil && len(opts.RevisionSourceCommentIDs) > 0 {
-		nextContent, commentIDs, err := a.appendPlanRevisionCommentsToContent(threadID, content, revisionSourcePlan.ItemID, opts.RevisionSourceCommentIDs)
-		if err != nil {
-			return store.Item{}, fmt.Errorf("steer message: revision comments: %w", err)
-		}
-		content = nextContent
-		opts.RevisionSourceCommentIDs = commentIDs
-	}
-	revisionSourceDiff, err := a.resolveSourceDiffReview(threadID, opts.RevisionSourceDiffReview)
-	if err != nil {
-		return store.Item{}, fmt.Errorf("steer message: revision source diff review: %w", err)
-	}
-	if revisionSourceDiff == nil && len(opts.RevisionSourceDiffCommentIDs) > 0 {
-		return store.Item{}, fmt.Errorf("steer message: diff review comments require a source diff review")
-	}
-	if revisionSourceDiff != nil && len(opts.RevisionSourceDiffCommentIDs) > 0 {
-		nextContent, commentIDs, err := a.appendDiffReviewCommentsToContent(threadID, content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, opts.RevisionSourceDiffCommentIDs)
-		if err != nil {
-			return store.Item{}, fmt.Errorf("steer message: diff review comments: %w", err)
-		}
-		content = nextContent
-		opts.RevisionSourceDiffCommentIDs = commentIDs
-	}
-
-	userMeta, err := marshalUserMessageMeta(
-		persistedAttachments,
-		sourcePlan,
-		revisionSourcePlan,
-		opts.RevisionSourceCommentIDs,
-		revisionSourceDiff,
-		opts.RevisionSourceDiffCommentIDs,
-	)
-	if err != nil {
-		return store.Item{}, fmt.Errorf("steer message: user meta: %w", err)
-	}
+	content = resolved.content
+	providerAttachments := resolved.providerAttachments
+	revisionSourceDiff := resolved.revisionSourceDiff
+	revisionDiffCommentIDs := resolved.revisionDiffCommentIDs
+	userMeta := resolved.userMessageMeta
 
 	a.mu.Lock()
 	sess, ok := a.sessions[threadID]
@@ -243,8 +208,8 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 		return store.Item{}, steerErr
 	}
 
-	if revisionSourceDiff != nil && len(opts.RevisionSourceDiffCommentIDs) > 0 {
-		if err := a.store.MarkDiffReviewCommentsSent(threadID, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, opts.RevisionSourceDiffCommentIDs, time.Now().UnixMilli(), userItem.ID); err != nil {
+	if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
+		if err := a.store.MarkDiffReviewCommentsSent(threadID, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, time.Now().UnixMilli(), userItem.ID); err != nil {
 			log.Printf("steer message: mark diff review comments sent: %v", err)
 		}
 	}

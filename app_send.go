@@ -95,6 +95,118 @@ type sendMessageOptions struct {
 	RevisionSourceDiffCommentIDs []string
 }
 
+// userMessageInputs is the projection of fields shared by every
+// user-message entry point (send, steer, flush). The shape is
+// sendMessageOptions minus RuntimeMode and matches flushQueuePayload's
+// data fields — by the time the flush trigger fires, the round's
+// runtime mode is already established so it never carries one.
+type userMessageInputs struct {
+	attachmentIDs                []string
+	sourceProposedPlan           *SourceProposedPlan
+	revisionSourceProposedPlan   *SourceProposedPlan
+	revisionSourceCommentIDs     []string
+	revisionSourceDiffReview     *SourceDiffReview
+	revisionSourceDiffCommentIDs []string
+}
+
+// resolvedUserMessage bundles everything resolveUserMessageEnvelope
+// produces: the (possibly comment-appended) content, the loaded
+// attachments in both provider and store shape, the validated
+// plan/diff references and their comment id lists, and the marshaled
+// userMessageMeta the caller writes into store.Item.Meta.
+type resolvedUserMessage struct {
+	content                string
+	providerAttachments    []provider.ImageAttachment
+	persistedAttachments   []store.Attachment
+	sourcePlan             *SourceProposedPlan
+	revisionSourcePlan     *SourceProposedPlan
+	revisionPlanCommentIDs []string
+	revisionSourceDiff     *SourceDiffReview
+	revisionDiffCommentIDs []string
+	userMessageMeta        string
+}
+
+// resolveUserMessageEnvelope runs the shared prologue that every
+// user-message entry point performs before persisting the optimistic
+// user_text row: load attachments, resolve the source/revision plan
+// references, append revision comments into the content, resolve any
+// diff-review revision, and marshal the userMessageMeta.
+//
+// The returned errors are step-prefixed but unscoped — callers wrap
+// them with their entry-point prefix ("send message:", "steer message:")
+// or pass them through verbatim (flush queue dispatch).
+func (a *App) resolveUserMessageEnvelope(
+	threadID, content string,
+	inputs userMessageInputs,
+) (resolvedUserMessage, error) {
+	providerAttachments, persistedAttachments, err := a.resolveSendMessageAttachments(threadID, inputs.attachmentIDs)
+	if err != nil {
+		return resolvedUserMessage{}, fmt.Errorf("attachments: %w", err)
+	}
+
+	sourcePlan, err := a.resolveSourceProposedPlan(threadID, inputs.sourceProposedPlan, true)
+	if err != nil {
+		return resolvedUserMessage{}, fmt.Errorf("source proposed plan: %w", err)
+	}
+	revisionSourcePlan, err := a.resolveSourceProposedPlan(threadID, inputs.revisionSourceProposedPlan, false)
+	if err != nil {
+		return resolvedUserMessage{}, fmt.Errorf("revision source proposed plan: %w", err)
+	}
+	if revisionSourcePlan == nil && len(inputs.revisionSourceCommentIDs) > 0 {
+		return resolvedUserMessage{}, fmt.Errorf("revision comments require a source proposed plan")
+	}
+	revisionSourceDiff, err := a.resolveSourceDiffReview(threadID, inputs.revisionSourceDiffReview)
+	if err != nil {
+		return resolvedUserMessage{}, fmt.Errorf("revision source diff review: %w", err)
+	}
+	if revisionSourceDiff == nil && len(inputs.revisionSourceDiffCommentIDs) > 0 {
+		return resolvedUserMessage{}, fmt.Errorf("diff review comments require a source diff review")
+	}
+
+	revisionCommentIDs := inputs.revisionSourceCommentIDs
+	if revisionSourcePlan != nil && len(revisionCommentIDs) > 0 {
+		nextContent, commentIDs, err := a.appendPlanRevisionCommentsToContent(threadID, content, revisionSourcePlan.ItemID, revisionCommentIDs)
+		if err != nil {
+			return resolvedUserMessage{}, fmt.Errorf("revision comments: %w", err)
+		}
+		content = nextContent
+		revisionCommentIDs = commentIDs
+	}
+	revisionDiffCommentIDs := inputs.revisionSourceDiffCommentIDs
+	if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
+		nextContent, commentIDs, err := a.appendDiffReviewCommentsToContent(threadID, content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs)
+		if err != nil {
+			return resolvedUserMessage{}, fmt.Errorf("diff review comments: %w", err)
+		}
+		content = nextContent
+		revisionDiffCommentIDs = commentIDs
+	}
+
+	userMeta, err := marshalUserMessageMeta(
+		persistedAttachments,
+		sourcePlan,
+		revisionSourcePlan,
+		revisionCommentIDs,
+		revisionSourceDiff,
+		revisionDiffCommentIDs,
+	)
+	if err != nil {
+		return resolvedUserMessage{}, fmt.Errorf("user meta: %w", err)
+	}
+
+	return resolvedUserMessage{
+		content:                content,
+		providerAttachments:    providerAttachments,
+		persistedAttachments:   persistedAttachments,
+		sourcePlan:             sourcePlan,
+		revisionSourcePlan:     revisionSourcePlan,
+		revisionPlanCommentIDs: revisionCommentIDs,
+		revisionSourceDiff:     revisionSourceDiff,
+		revisionDiffCommentIDs: revisionDiffCommentIDs,
+		userMessageMeta:        userMeta,
+	}, nil
+}
+
 func (a *App) sendMessage(threadID string, content string, attachmentIDs []string) error {
 	_, err := a.sendMessageWithOptions(threadID, content, sendMessageOptions{AttachmentIDs: attachmentIDs})
 	return err
@@ -113,11 +225,6 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
 
-	providerAttachments, persistedAttachments, err := a.resolveSendMessageAttachments(threadID, opts.AttachmentIDs)
-	if err != nil {
-		return store.Item{}, fmt.Errorf("send message: attachments: %w", err)
-	}
-
 	// Per-thread critical section: only one Send per thread at a time.
 	// This keeps the runtime-mode update, turn-index read, optimistic
 	// user-item persist, lazy session start, pending-send registration, and
@@ -132,55 +239,27 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		}
 	}
 
-	sourcePlan, err := a.resolveSourceProposedPlan(threadID, opts.SourceProposedPlan, true)
-	if err != nil {
-		return store.Item{}, fmt.Errorf("send message: source proposed plan: %w", err)
-	}
 	// implemented_at is durable UI/history state, not a send-time lock.
 	// An explicit source-plan send is still valid after the plan is marked
 	// accepted, including restored drafts after a conversation revert.
-	revisionSourcePlan, err := a.resolveSourceProposedPlan(threadID, opts.RevisionSourceProposedPlan, false)
+	resolved, err := a.resolveUserMessageEnvelope(threadID, content, userMessageInputs{
+		attachmentIDs:                opts.AttachmentIDs,
+		sourceProposedPlan:           opts.SourceProposedPlan,
+		revisionSourceProposedPlan:   opts.RevisionSourceProposedPlan,
+		revisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
+		revisionSourceDiffReview:     opts.RevisionSourceDiffReview,
+		revisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
+	})
 	if err != nil {
-		return store.Item{}, fmt.Errorf("send message: revision source proposed plan: %w", err)
+		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
-	if revisionSourcePlan == nil && len(opts.RevisionSourceCommentIDs) > 0 {
-		return store.Item{}, fmt.Errorf("send message: revision comments require a source proposed plan")
-	}
-	if revisionSourcePlan != nil && len(opts.RevisionSourceCommentIDs) > 0 {
-		nextContent, commentIDs, err := a.appendPlanRevisionCommentsToContent(threadID, content, revisionSourcePlan.ItemID, opts.RevisionSourceCommentIDs)
-		if err != nil {
-			return store.Item{}, fmt.Errorf("send message: revision comments: %w", err)
-		}
-		content = nextContent
-		opts.RevisionSourceCommentIDs = commentIDs
-	}
-	revisionSourceDiff, err := a.resolveSourceDiffReview(threadID, opts.RevisionSourceDiffReview)
-	if err != nil {
-		return store.Item{}, fmt.Errorf("send message: revision source diff review: %w", err)
-	}
-	if revisionSourceDiff == nil && len(opts.RevisionSourceDiffCommentIDs) > 0 {
-		return store.Item{}, fmt.Errorf("send message: diff review comments require a source diff review")
-	}
-	if revisionSourceDiff != nil && len(opts.RevisionSourceDiffCommentIDs) > 0 {
-		nextContent, commentIDs, err := a.appendDiffReviewCommentsToContent(threadID, content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, opts.RevisionSourceDiffCommentIDs)
-		if err != nil {
-			return store.Item{}, fmt.Errorf("send message: diff review comments: %w", err)
-		}
-		content = nextContent
-		opts.RevisionSourceDiffCommentIDs = commentIDs
-	}
-
-	userMeta, err := marshalUserMessageMeta(
-		persistedAttachments,
-		sourcePlan,
-		revisionSourcePlan,
-		opts.RevisionSourceCommentIDs,
-		revisionSourceDiff,
-		opts.RevisionSourceDiffCommentIDs,
-	)
-	if err != nil {
-		return store.Item{}, fmt.Errorf("send message: user meta: %w", err)
-	}
+	content = resolved.content
+	providerAttachments := resolved.providerAttachments
+	persistedAttachments := resolved.persistedAttachments
+	sourcePlan := resolved.sourcePlan
+	revisionSourceDiff := resolved.revisionSourceDiff
+	revisionDiffCommentIDs := resolved.revisionDiffCommentIDs
+	userMeta := resolved.userMessageMeta
 
 	thread, restoreImplementMode, err := a.beginImplementModeSwitch(threadID, sourcePlan)
 	if err != nil {
@@ -292,8 +371,8 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	// emission here.
 
 	a.maybeGenerateThreadTitleWithAttachments(thread, content, hasPriorItems, persistedAttachments)
-	if revisionSourceDiff != nil && len(opts.RevisionSourceDiffCommentIDs) > 0 {
-		if err := a.store.MarkDiffReviewCommentsSent(threadID, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, opts.RevisionSourceDiffCommentIDs, time.Now().UnixMilli(), userItem.ID); err != nil {
+	if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
+		if err := a.store.MarkDiffReviewCommentsSent(threadID, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, time.Now().UnixMilli(), userItem.ID); err != nil {
 			log.Printf("send message: mark diff review comments sent: %v", err)
 		}
 	}
