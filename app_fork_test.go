@@ -137,6 +137,9 @@ func TestSwitchThreadAutoResumesPendingFork(t *testing.T) {
 	if _, err := app.SwitchThread(thread.ID); err != nil {
 		t.Fatalf("SwitchThread() error = %v", err)
 	}
+	if err := app.AutoResumeThread(thread.ID); err != nil {
+		t.Fatalf("AutoResumeThread() error = %v", err)
+	}
 
 	select {
 	case threadID := <-started:

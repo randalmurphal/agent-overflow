@@ -347,8 +347,8 @@ describe('thread.interrupt command', () => {
 // and that the close variant is gated on `messageSearchOpen`.
 
 function registerFixtureCommands(pane: ReturnType<typeof createThreadPane>): void {
+  void pane;
   registerBuiltinCommands({
-    pane,
     openSettings: () => {},
     openThreadForm: () => {},
     openThreadFromPR: () => {},
@@ -549,7 +549,6 @@ describe('sidebar.focus-search command', () => {
     let focusCount = 0;
     const pane = readyPane();
     registerBuiltinCommands({
-      pane,
       openSettings: () => {},
       openThreadForm: () => {},
       openThreadFromPR: () => {},

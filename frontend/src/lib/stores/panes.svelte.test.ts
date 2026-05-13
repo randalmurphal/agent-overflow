@@ -6,6 +6,8 @@ import {
   getFocusedPane,
   getFocusedPaneId,
   getMainPane,
+  getPaneActivation,
+  openThreadFromNavigation,
   openThreadInPane,
   registerPaneForTest,
   resetPanesForTest,
@@ -40,6 +42,7 @@ describe('panes store', () => {
   beforeEach(() => {
     // Module state is shared across tests; drain between cases.
     resetPanesForTest();
+    setBindingMock('AutoResumeThread', async () => {});
   });
 
   afterEach(() => {
@@ -125,6 +128,32 @@ describe('panes store', () => {
       expect(focused).toBe(left);
       expect(right.threadId).toBeNull();
       expect(getFocusedPaneId()).toBe('left');
+    });
+
+    it('promotes an existing preview pane when opened through the committed path', async () => {
+      const thread = makeThread({ id: 'previewed' });
+      setBindingMock('SwitchThread', async () => thread);
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [], oldestTurnIndex: -1, hasMore: false,
+      }));
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [], oldestTurnIndex: -1, hasMore: false,
+      }));
+      setBindingMock('ListRecentTurns', async () => []);
+      setBindingMock('ListThreadCheckpoints', async () => []);
+      setBindingMock('GetThreadLiveState', async () => null);
+      setBindingMock('ListPendingInteractiveRequests', async () => null);
+      const left = createPane('left');
+      const right = createPane('right');
+
+      const preview = await openThreadFromNavigation(thread, left);
+      expect(preview).toBe(left);
+      expect(getPaneActivation('left')).toBe('preview');
+
+      const committed = await openThreadInPane(thread, right);
+      expect(committed).toBe(left);
+      expect(right.threadId).toBeNull();
+      expect(getPaneActivation('left')).toBe('committed');
     });
   });
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy, untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { fade } from 'svelte/transition';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import MessageTimeline from './MessageTimeline.svelte';
@@ -32,7 +32,7 @@
     RevertToMessageCheckpoint,
   } from '../../stores/bindings';
   import { prependThread, updateThreadReadState } from '../../stores/threads.svelte';
-  import { focusPane, getFocusedPane, openThreadInPane } from '../../stores/panes.svelte';
+  import { focusPane, openThreadInPane } from '../../stores/panes.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { getActiveTurn, getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
@@ -338,7 +338,7 @@
   let designContainerWidth = $state(0);
   let chatPaneWidth = $derived(
     designContainerWidth > 0
-      ? computeChatWidth(designContainerWidth)
+      ? computeChatWidth(designContainerWidth, pane.paneId)
       : Math.round((typeof window !== 'undefined' ? window.innerWidth : 1200) * DESIGN_CHAT_DEFAULT_FRACTION),
   );
 
@@ -364,15 +364,6 @@
     createdAt: number;
   }) {
     draft.addTerminalChip(chip);
-  }
-
-  function handleKeydown(e: KeyboardEvent) {
-    const isToggleShortcut = (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'j';
-    if (!isToggleShortcut) return;
-    if (getFocusedPane() !== pane) return;
-    if (!pane.threadId) return;
-    e.preventDefault();
-    pane.toggleTerminal();
   }
 
   function openImagePreview(preview: ExpandedImagePreview): void {
@@ -494,13 +485,8 @@
     }
   });
 
-  onMount(() => {
-    window.addEventListener('keydown', handleKeydown);
-  });
-
   onDestroy(() => {
     void draft.flushPending();
-    window.removeEventListener('keydown', handleKeydown);
     if (queuedReadTimer !== null) {
       clearTimeout(queuedReadTimer);
       queuedReadTimer = null;

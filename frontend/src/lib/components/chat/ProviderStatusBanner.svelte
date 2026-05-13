@@ -25,7 +25,9 @@
   // can seed immediately from the last seen event for that provider.
   let providerStatus = $derived.by((): ProviderStatusEvent | null => {
     if (!pane.thread) return null;
-    const evt = pane.providerBanner ?? getProviderStatus(pane.thread.provider);
+    const evt = pane.providerBanner !== undefined
+      ? pane.providerBanner
+      : getProviderStatus(pane.thread.provider);
     if (!evt) return null;
     // Ready events are clear-banner signals — render nothing.
     return evt.status === 'ready' ? null : evt;

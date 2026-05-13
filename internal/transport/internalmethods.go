@@ -82,6 +82,8 @@ var InternalServiceMethods = map[string]bool{
 var LocalOnlyMethods = map[string]bool{
 	// 1. RCE-equivalent (FS / process touching).
 	"OpenTerminal":             true,
+	"ListTerminals":            true,
+	"GetTerminalReplay":        true,
 	"WriteTerminal":            true,
 	"RestartTerminal":          true,
 	"CloseTerminal":            true,
@@ -147,9 +149,12 @@ var LocalOnlyMethods = map[string]bool{
 	// subprocess. It looks like a catalog read, but the local process
 	// execution makes it loopback-only.
 	"GetModelsForProvider": true,
+	"CreateProject":        true,
+	"ListAvailableEditors": true,
 
 	// 2. Session control (provider subprocess spawn / steer).
 	"StartSession":             true,
+	"AutoResumeThread":         true,
 	"StopSession":              true,
 	"ReconnectSession":         true,
 	"SendMessage":              true,
@@ -195,6 +200,11 @@ var LocalOnlyMethods = map[string]bool{
 	// Background-task control terminates host subprocesses.
 	"StopClaudeTask":                true,
 	"CleanCodexBackgroundTerminals": true,
+	"GetProviderStatuses":           true,
+	"ProbeClaudeAccount":            true,
+	"ProbeCodexAccount":             true,
+	"RecheckClaudeAccount":          true,
+	"RecheckCodexAccount":           true,
 
 	// 3. Settings mutation. A LAN-attached token-holder must not be
 	// able to reconfigure the server they're attached to.

@@ -9,7 +9,7 @@
     ResizeTerminal,
     GetTerminalReplay,
   } from '../../stores/bindings';
-  import { decodeTerminalOutput, encodeTerminalInput } from '../../types/terminal';
+  import { decodeTerminalOutput, encodeTerminalInput, normalizeTerminalReplay } from '../../types/terminal';
   import {
     notifyTerminalFocus,
     type ThreadTerminalStateHandle,
@@ -80,10 +80,11 @@
 
     // Load replay buffer before draining pending output so order is correct.
     try {
-      const replayB64 = await GetTerminalReplay(terminalID);
-      if (!destroyed && replayB64) {
-        term.write(decodeTerminalOutput(replayB64));
+      const replay = normalizeTerminalReplay(await GetTerminalReplay(terminalID) as unknown);
+      if (!destroyed && replay.data) {
+        term.write(decodeTerminalOutput(replay.data));
       }
+      handle.markReplayed(terminalID, replay.fromSequence, replay.throughSequence);
     } catch (err) {
       console.error('terminal: GetTerminalReplay failed', err);
     }

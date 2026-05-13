@@ -31,6 +31,7 @@ export {
 
   // Session management
   StartSession,
+  AutoResumeThread,
   StopSession,
   ReconnectSession,
   SendMessage,

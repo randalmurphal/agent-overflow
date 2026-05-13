@@ -599,6 +599,8 @@ func (p *privilegedApp) PublicEcho() string { return "ok" }
 
 // 1. RCE-equivalent.
 func (p *privilegedApp) OpenTerminal() string                   { return "ok" }
+func (p *privilegedApp) ListTerminals() string                  { return "ok" }
+func (p *privilegedApp) GetTerminalReplay() string              { return "ok" }
 func (p *privilegedApp) WriteTerminal() string                  { return "ok" }
 func (p *privilegedApp) RestartTerminal() string                { return "ok" }
 func (p *privilegedApp) CloseTerminal() string                  { return "ok" }
@@ -639,9 +641,12 @@ func (p *privilegedApp) UpdateDiffReviewComment() string        { return "ok" }
 func (p *privilegedApp) DeleteDiffReviewComment() string        { return "ok" }
 func (p *privilegedApp) SendDiffReviewComments() string         { return "ok" }
 func (p *privilegedApp) GetModelsForProvider() string           { return "ok" }
+func (p *privilegedApp) CreateProject() string                  { return "ok" }
+func (p *privilegedApp) ListAvailableEditors() string           { return "ok" }
 
 // 2. Session control.
 func (p *privilegedApp) StartSession() string                   { return "ok" }
+func (p *privilegedApp) AutoResumeThread() string               { return "ok" }
 func (p *privilegedApp) StopSession() string                    { return "ok" }
 func (p *privilegedApp) ReconnectSession() string               { return "ok" }
 func (p *privilegedApp) SendMessage() string                    { return "ok" }
@@ -676,6 +681,11 @@ func (p *privilegedApp) ForkThread() string                     { return "ok" }
 func (p *privilegedApp) ForkThreadFromMessage() string          { return "ok" }
 func (p *privilegedApp) StopClaudeTask() string                 { return "ok" }
 func (p *privilegedApp) CleanCodexBackgroundTerminals() string  { return "ok" }
+func (p *privilegedApp) GetProviderStatuses() string            { return "ok" }
+func (p *privilegedApp) ProbeClaudeAccount() string             { return "ok" }
+func (p *privilegedApp) ProbeCodexAccount() string              { return "ok" }
+func (p *privilegedApp) RecheckClaudeAccount() string           { return "ok" }
+func (p *privilegedApp) RecheckCodexAccount() string            { return "ok" }
 
 // 3. Settings mutation.
 func (p *privilegedApp) UpdateSettings() string               { return "ok" }

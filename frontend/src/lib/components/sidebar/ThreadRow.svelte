@@ -7,7 +7,7 @@
   import { getSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
-  import { openThreadInPane } from '../../stores/panes.svelte';
+  import { openThreadFromNavigation, openThreadInPane } from '../../stores/panes.svelte';
   import {
     getEffectiveThreadStatus,
     type ThreadLiveStatus,
@@ -99,7 +99,7 @@
   async function handleJumpToParent(e: MouseEvent): Promise<void> {
     e.stopPropagation();
     if (!forkParent) return;
-    await openThreadInPane(forkParent, pane);
+    await openThreadFromNavigation(forkParent, pane);
   }
 
   // Inline rename state (owned by the row so the <input> replaces the
@@ -135,7 +135,7 @@
         if (handled) return;
       }
     }
-    void openThreadInPane(thread, pane);
+    void openThreadFromNavigation(thread, pane);
   }
 
   function startRename() {

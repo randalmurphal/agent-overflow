@@ -46,12 +46,20 @@ function openedHandle(terminalID: string): TerminalHandle {
   return { terminalID, threadID: 'thread-1', summary: summary(terminalID) };
 }
 
-// Dispatch Cmd+J directly on window. fireEvent.keyDown routes through the
-// element's event API rather than window listeners, so use a raw
-// KeyboardEvent dispatch to match the real app's path.
-function pressCmdJ() {
+async function loadTerminalToggleKeybinding() {
+  setBindingMock('GetKeybindings', async () => [
+    { key: 'mod+j', command: 'terminal.toggle', when: 'hasActiveThread' },
+  ]);
+  const mod = await import('../../lib/stores/keybindings.svelte');
+  await mod.loadKeybindings();
+}
+
+// Dispatch Mod+J directly on window. fireEvent.keyDown routes through the
+// element's event API rather than window listeners, so use a raw KeyboardEvent
+// dispatch to match the real app's global handler path.
+function pressModJ() {
   window.dispatchEvent(
-    new KeyboardEvent('keydown', { key: 'j', metaKey: true, bubbles: true }),
+    new KeyboardEvent('keydown', { key: 'j', ctrlKey: true, bubbles: true }),
   );
 }
 
@@ -76,6 +84,7 @@ async function mountWithActiveThread(thread: Thread = makeThread({ title: 'Termi
   const rows = rendered.getAllByText(thread.title);
   await fireEvent.click(rows[0]);
   await flush(15);
+  await loadTerminalToggleKeybinding();
   return rendered;
 }
 
@@ -89,10 +98,10 @@ describe('App integration — terminal drawer', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
-  it('Cmd+J toggles the terminal drawer open', async () => {
+  it('Mod+J toggles the terminal drawer open', async () => {
     const rendered = await mountWithActiveThread();
     expect(rendered.queryByTestId('terminal-drawer')).toBeNull();
-    pressCmdJ();
+    pressModJ();
     await flush(10);
     await waitFor(() => {
       expect(rendered.getByTestId('terminal-drawer')).toBeInTheDocument();
@@ -109,7 +118,7 @@ describe('App integration — terminal drawer', () => {
       nextId += 1;
       return openedHandle(`click-terminal-${nextId}`);
     });
-    pressCmdJ();
+    pressModJ();
     await flush(10);
     // Drawer mount auto-opens a first terminal when the list is empty, so
     // the default ListTerminals => [] path triggers OpenTerminal once.
@@ -128,7 +137,7 @@ describe('App integration — terminal drawer', () => {
     const rendered = await mountWithActiveThread();
     setBindingMock('ListTerminals', async () => [summary('tab-a')]);
     const closeMock = setBindingMock('CloseTerminal', async () => {});
-    pressCmdJ();
+    pressModJ();
     // Drawer's onMount calls ListTerminals async — let all microtasks
     // settle before asserting.
     await flush(30);
@@ -150,7 +159,7 @@ describe('App integration — terminal drawer', () => {
   it('selecting a different tab makes it active', async () => {
     const rendered = await mountWithActiveThread();
     setBindingMock('ListTerminals', async () => [summary('tab-a'), summary('tab-b')]);
-    pressCmdJ();
+    pressModJ();
     await flush(10);
 
     await waitFor(() => {
@@ -170,7 +179,7 @@ describe('App integration — terminal drawer', () => {
   it('collapse button hides the drawer', async () => {
     const rendered = await mountWithActiveThread();
     setBindingMock('ListTerminals', async () => [summary('tab-a')]);
-    pressCmdJ();
+    pressModJ();
     await flush(10);
 
     await waitFor(() => {

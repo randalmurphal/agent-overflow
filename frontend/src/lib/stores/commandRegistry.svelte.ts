@@ -13,8 +13,9 @@
 
 import type { WhenNode } from './keybindingParser';
 import { evaluateWhen, tryParseWhen } from './keybindingParser';
+import type { ThreadPane } from './thread.svelte';
 
-export interface CommandContext {
+export interface CommandFlags {
   /** True while the command palette is open. */
   paletteOpen: boolean;
   /** True while the active pane has the terminal drawer open. */
@@ -48,6 +49,27 @@ export interface CommandContext {
   canStartDiscussion: boolean;
   /** Extra identifiers callers want to expose to `when` expressions. */
   [key: string]: boolean;
+}
+
+export interface CommandContext {
+  /** Pane the command should mutate. Keep execution target explicit. */
+  pane: ThreadPane;
+  paneId: string;
+  /** Boolean-only projection used by `when` expressions. */
+  flags: CommandFlags;
+  /** Mirrored flags for legacy call sites/tests; `when` reads `flags`. */
+  paletteOpen: boolean;
+  terminalOpen: boolean;
+  terminalFocus: boolean;
+  approvalPending: boolean;
+  anyModalOpen: boolean;
+  hasActiveThread: boolean;
+  turnActive: boolean;
+  sendInFlight: boolean;
+  hasPendingPrompt: boolean;
+  canForkActiveThread: boolean;
+  canStartDiscussion: boolean;
+  [key: string]: unknown;
 }
 
 export interface Command {
@@ -90,12 +112,13 @@ export function getCommand(id: string): Command | undefined {
  */
 export function enabledCommands(ctx: CommandContext): Command[] {
   const out: Command[] = [];
+  const flags = (ctx.flags ?? ctx) as CommandFlags;
   for (const cmd of commands.values()) {
     if (!cmd.whenAst) {
       out.push(cmd);
       continue;
     }
-    if (evaluateWhen(cmd.whenAst, ctx)) out.push(cmd);
+    if (evaluateWhen(cmd.whenAst, flags)) out.push(cmd);
   }
   return out;
 }
@@ -104,7 +127,7 @@ export function isCommandEnabled(id: string, ctx: CommandContext): boolean {
   const cmd = commands.get(id);
   if (!cmd) return false;
   if (!cmd.whenAst) return true;
-  return evaluateWhen(cmd.whenAst, ctx);
+  return evaluateWhen(cmd.whenAst, (ctx.flags ?? ctx) as CommandFlags);
 }
 
 /**
@@ -115,7 +138,7 @@ export function isCommandEnabled(id: string, ctx: CommandContext): boolean {
 export function runCommand(id: string, ctx: CommandContext): boolean {
   const cmd = commands.get(id);
   if (!cmd) return false;
-  if (cmd.whenAst && !evaluateWhen(cmd.whenAst, ctx)) return false;
+  if (cmd.whenAst && !evaluateWhen(cmd.whenAst, (ctx.flags ?? ctx) as CommandFlags)) return false;
   void cmd.run(ctx);
   return true;
 }

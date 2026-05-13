@@ -15,6 +15,11 @@ import type {
 } from '../types/events';
 import type { Item, Thread } from '../types/models';
 import type {
+  TerminalExitEventPayload,
+  TerminalOutputEventPayload,
+} from '../types/terminal';
+import { decodeTerminalOutput } from '../types/terminal';
+import type {
   CheckpointCapturedEvent,
   CheckpointErrorEvent,
   CheckpointRevertedEvent,
@@ -49,6 +54,9 @@ import {
 } from './threadStatuses.svelte';
 import { parseTokenUsage } from './thread.svelte';
 import { threadItemCache } from './threadItemCache';
+import {
+  getThreadTerminalState,
+} from '../components/terminal/terminalStore.svelte';
 
 /**
  * Min interval between consecutive `design:reload-main` cache-bust
@@ -786,12 +794,12 @@ function applyProviderStatus(evt: ProviderStatusEvent): void {
 
   const normalized: ProviderStatusEvent = { ...evt, status: effectiveStatus };
 
-  // Single source of truth: update the app-wide per-provider map first
-  // so any consumer reading via getProviderStatus sees the latest
-  // snapshot regardless of whether the event arrived with a `status`
-  // (legacy) or a `kind` (chat-rewrite). The map is mutated with the
-  // normalized event so legacy banner consumers stay untouched.
-  recordProviderStatus(normalized);
+  // Thread-scoped status belongs to matching panes only. Writing it into
+  // the provider-global cache leaks one pane's auth/session failure into
+  // every other pane using the same provider.
+  if (!evt.threadId) {
+    recordProviderStatus(normalized);
+  }
 
   const banner = effectiveStatus === 'ready' ? null : normalized;
   for (const pane of getAllPanes().values()) {
@@ -801,7 +809,7 @@ function applyProviderStatus(evt: ProviderStatusEvent): void {
     // is provider-global (legacy behavior) and fans out to every matching
     // pane as before.
     if (evt.threadId && pane.threadId !== evt.threadId) continue;
-    pane.setProviderBanner(banner);
+    pane.setProviderBanner(evt.threadId ? banner : undefined);
   }
 }
 
@@ -938,6 +946,22 @@ function applyTodoUpdate(evt: TodoUpdateEvent): void {
   }
 }
 
+function applyTerminalOutput(payload: TerminalOutputEventPayload): void {
+  if (!payload?.threadID || !payload.terminalID) return;
+  const decoded = decodeTerminalOutput(payload.data);
+  getThreadTerminalState(payload.threadID).appendOutput(
+    payload.terminalID,
+    decoded,
+    payload.sequence,
+  );
+}
+
+function applyTerminalExit(payload: TerminalExitEventPayload): void {
+  if (!payload?.threadID || !payload.terminalID) return;
+  const handle = getThreadTerminalState(payload.threadID);
+  handle.removeTab(payload.terminalID);
+}
+
 /**
  * Set up the app's Wails event listeners.
  * Returns a cleanup function that removes all listeners.
@@ -995,6 +1019,14 @@ export function setupEventListeners(): () => void {
   const cancelTodoUpdate = wailsEventOn<TodoUpdateEvent>(
     'provider:todo_update',
     applyTodoUpdate,
+  );
+  const cancelTerminalOutput = wailsEventOn<TerminalOutputEventPayload>(
+    'terminal:output',
+    applyTerminalOutput,
+  );
+  const cancelTerminalExit = wailsEventOn<TerminalExitEventPayload>(
+    'terminal:exit',
+    applyTerminalExit,
   );
 
   // provider:queue_state_changed — backend per-thread queue snapshot.
@@ -1205,6 +1237,8 @@ export function setupEventListeners(): () => void {
     cancelSessionDied();
     cancelSubagentNotification();
     cancelTodoUpdate();
+    cancelTerminalOutput();
+    cancelTerminalExit();
     cancelQueueStateChanged();
     cancelQueueFlushed();
     cancelCheckpointCaptured();

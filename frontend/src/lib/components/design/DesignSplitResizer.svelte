@@ -61,7 +61,7 @@
       startWidth + (e.clientX - startPointer),
       lockedContainer,
     );
-    if (next !== width) setChatPx(next);
+    if (next !== width) setChatPx(next, pane.paneId);
   }
 
   function endDrag(e: PointerEvent): void {
@@ -71,7 +71,7 @@
     restoreBodyStyles();
     releasePause?.();
     releasePause = null;
-    persistChatPx();
+    persistChatPx(pane.paneId);
   }
 
   onDestroy(() => {

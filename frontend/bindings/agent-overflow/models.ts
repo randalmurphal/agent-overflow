@@ -932,6 +932,39 @@ export class TerminalOpenOptions {
 }
 
 /**
+ * TerminalReplay is the base64-encoded replay buffer plus the last output
+ * sequence included in that replay snapshot.
+ */
+export class TerminalReplay {
+    "data": string;
+    "fromSequence": number;
+    "throughSequence": number;
+
+    /** Creates a new TerminalReplay instance. */
+    constructor($$source: Partial<TerminalReplay> = {}) {
+        if (!("data" in $$source)) {
+            this["data"] = "";
+        }
+        if (!("fromSequence" in $$source)) {
+            this["fromSequence"] = 0;
+        }
+        if (!("throughSequence" in $$source)) {
+            this["throughSequence"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TerminalReplay instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TerminalReplay {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TerminalReplay($$parsedSource as Partial<TerminalReplay>);
+    }
+}
+
+/**
  * ThreadLiveState is the backend-owned live projection a freshly loaded
  * frontend needs after refresh/reconnect. SQLite remains the history cache;
  * this shape carries only in-memory session state that should mirror what

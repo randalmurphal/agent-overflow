@@ -37,6 +37,7 @@ import {
   ListRecentTurns,
   ListThreadCheckpoints,
   SwitchThread,
+  AutoResumeThread,
 } from './bindings';
 import {
   controlsKey,
@@ -552,7 +553,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // windowMins)` directly. Keeping them out of per-pane state means
   // they survive thread switches, turn completions, and metadata
   // updates with no defensive logic on the pane side.
-  let providerBanner: ProviderStatusEvent | null = $state(null);
+  let providerBanner: ProviderStatusEvent | null | undefined = $state(undefined);
   // generalError is the grab-bag pane-level error slot surfaced by
   // ProviderStatusBanner for non-wire failures: thread load failures,
   // composer send failures, git action failures, reconnect failures.
@@ -1565,7 +1566,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     resolvedApprovalIds.clear();
     resolvedUserInputIds.clear();
     contextWindow = seedContextWindow(newThread);
-    providerBanner = null;
+    providerBanner = undefined;
     generalError = null;
     sendInFlight = false;
     channelMessages = [];
@@ -1715,9 +1716,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     let liveStateHydrationConsumed = false;
     const switchPromise = (async () => {
       try {
-        const switched = (await SwitchThread(newThread.id)) as Thread;
+        const switched = (await SwitchThread(newThread.id)) as Thread | undefined;
         if (gen !== switchGeneration) return;
-        if (switched.id === newThread.id) {
+        if (switched?.id === newThread.id) {
           const currentContextWindow = contextWindow;
           thread = switched;
           contextWindow = currentContextWindow
@@ -1727,6 +1728,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       } catch (err) {
         console.error('Failed to notify backend of thread switch:', err);
         addToast('warning', 'Backend was not notified of thread switch');
+      }
+    })();
+
+    const autoResumePromise = (async () => {
+      try {
+        await AutoResumeThread(newThread.id);
+      } catch (err) {
+        console.debug('Thread auto-resume skipped or failed:', err);
       }
     })();
 
@@ -1806,6 +1815,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       loadItemsPromise,
       recentTurnsPromise,
       checkpointsPromise,
+      autoResumePromise,
     ]);
     return { liveStateHydrationConsumed };
   }
@@ -2034,7 +2044,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       resolvedApprovalIds.clear();
       resolvedUserInputIds.clear();
       contextWindow = null;
-      providerBanner = null;
+      providerBanner = undefined;
       generalError = null;
       loading = false;
       sendInFlight = false;
@@ -2496,7 +2506,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       contextWindow = null;
     },
 
-    setProviderBanner(status: ProviderStatusEvent | null): void {
+    setProviderBanner(status: ProviderStatusEvent | null | undefined): void {
       providerBanner = status;
     },
 

@@ -82,6 +82,7 @@ export const RestartTerminal = dispatch('RestartTerminal');
 export const WriteTerminal = dispatch('WriteTerminal');
 
 export const StartSession = dispatch('StartSession');
+export const AutoResumeThread = dispatch('AutoResumeThread');
 export const StopSession = dispatch('StopSession');
 export const ReconnectSession = dispatch('ReconnectSession');
 export const SendMessage = dispatch('SendMessage');

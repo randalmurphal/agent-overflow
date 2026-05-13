@@ -99,6 +99,23 @@ describe('ThreadTerminalState', () => {
     expect(s.tabs).toEqual([]);
     expect(s.activeTerminalID).toBeNull();
   });
+
+  it('only drops pending output proven to be covered by replay', () => {
+    const s = createThreadTerminalState();
+    s.addTab(makeSummary({ terminalID: 'a' }));
+    s.appendOutput('a', 'outside-replay', 8);
+    s.appendOutput('a', 'first-covered-maybe-partial', 9);
+    s.appendOutput('a', 'covered', 10);
+    s.appendOutput('a', 'future', 11);
+
+    s.markReplayed('a', 9, 10);
+
+    expect(s.tabs[0]!.pendingOutput).toEqual([
+      'outside-replay',
+      'first-covered-maybe-partial',
+      'future',
+    ]);
+  });
 });
 
 // --- Bug D5 regression: terminalFocus registry ---

@@ -55,11 +55,7 @@ var Defaults = []Keybinding{
 	// it works from the composer, the diff panel, the terminal, etc.
 	{Key: "mod+shift+k", Command: "palette.open", DefaultID: "palette.open"},
 	{Key: "mod+k", Command: "sidebar.focus-search", DefaultID: "sidebar.focus-search"},
-	// NOTE: mod+j for terminal.toggle is owned by ChatView's existing
-	// listener (Wave 2C). The command is still registered and reachable
-	// from the palette / user remappings, but the default binding is
-	// intentionally omitted here to avoid double-firing until the
-	// ChatView handler can be migrated into this keybindings system.
+	{Key: "mod+j", Command: "terminal.toggle", DefaultID: "terminal.toggle"},
 	{Key: "mod+n", Command: "terminal.new", When: "terminalFocus", DefaultID: "terminal.new"},
 	{Key: "mod+w", Command: "terminal.close", When: "terminalFocus", DefaultID: "terminal.close"},
 	{Key: "mod+n", Command: "thread.new", When: "!terminalFocus", DefaultID: "thread.new.primary"},

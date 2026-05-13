@@ -89,7 +89,9 @@
   // held is stale.
   let transportConnected = $derived(getTransportStatus().status === 'connected');
 
-  function handleOpenShip(): void {
+  function handleOpenShip(event: Event): void {
+    const detail = (event as CustomEvent<{ paneId?: string }>).detail;
+    if (detail?.paneId && detail.paneId !== pane.paneId) return;
     if (pane.threadId) showShip = true;
   }
 

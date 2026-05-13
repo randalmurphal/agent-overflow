@@ -25,6 +25,12 @@ export interface TerminalHandle {
   summary: TerminalSessionSummary;
 }
 
+export interface TerminalReplay {
+  data: string;
+  fromSequence: number;
+  throughSequence: number;
+}
+
 export interface TerminalOpenOptions {
   cwd: string;
   shell?: string;
@@ -48,6 +54,18 @@ export interface TerminalExitEventPayload {
   threadID: string;
   code: number;
   reason: string;
+}
+
+export function normalizeTerminalReplay(value: unknown): TerminalReplay {
+  if (!value) return { data: '', fromSequence: 0, throughSequence: 0 };
+  if (typeof value === 'string') return { data: value, fromSequence: 0, throughSequence: 0 };
+  if (typeof value !== 'object') return { data: '', fromSequence: 0, throughSequence: 0 };
+  const replay = value as Partial<TerminalReplay>;
+  return {
+    data: replay.data ?? '',
+    fromSequence: Number.isFinite(replay.fromSequence) ? replay.fromSequence ?? 0 : 0,
+    throughSequence: Number.isFinite(replay.throughSequence) ? replay.throughSequence ?? 0 : 0,
+  };
 }
 
 /**

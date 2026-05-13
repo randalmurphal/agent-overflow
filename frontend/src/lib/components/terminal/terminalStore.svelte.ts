@@ -27,6 +27,7 @@ const MAX_DRAWER_HEIGHT = 1200;
  * multi-byte characters is acceptable.
  */
 const PENDING_OUTPUT_CHAR_CAP = 1_000_000;
+const TERMINAL_STATE_CACHE_LIMIT = 32;
 
 export const PENDING_OUTPUT_LIMITS = {
   chars: PENDING_OUTPUT_CHAR_CAP,
@@ -39,44 +40,78 @@ export const PENDING_OUTPUT_LIMITS = {
  * as a pure helper so the logic is unit-testable without a Svelte state
  * wrapper.
  */
-export function trimPendingOutput(existing: string[], chunk: string): string[] {
-  if (chunk.length === 0) return existing;
+function trimPendingOutputEntries(
+  existing: string[],
+  chunk: string,
+  existingSequences: number[] | null = null,
+  sequence = 0,
+): { output: string[]; sequences: number[] | null } {
+  if (chunk.length === 0) {
+    return { output: existing, sequences: existingSequences };
+  }
   if (chunk.length >= PENDING_OUTPUT_CHAR_CAP) {
     // A single jumbo chunk exceeds the cap — keep just the tail of it.
-    return [chunk.slice(chunk.length - PENDING_OUTPUT_CHAR_CAP)];
+    return {
+      output: [chunk.slice(chunk.length - PENDING_OUTPUT_CHAR_CAP)],
+      sequences: existingSequences ? [sequence] : null,
+    };
   }
   let totalChars = chunk.length;
   for (const s of existing) totalChars += s.length;
   if (totalChars <= PENDING_OUTPUT_CHAR_CAP) {
-    return [...existing, chunk];
+    return {
+      output: [...existing, chunk],
+      sequences: existingSequences ? [...existingSequences, sequence] : null,
+    };
   }
   // Evict oldest whole chunks first, then slice into the next chunk if we
   // still overflow. The resulting queue is always <= the cap.
   const next = existing.slice();
+  const nextSequences = existingSequences?.slice() ?? null;
   let size = totalChars;
   while (next.length > 0 && size > PENDING_OUTPUT_CHAR_CAP) {
     const first = next[0]!;
     size -= first.length;
     next.shift();
+    nextSequences?.shift();
   }
   if (size > PENDING_OUTPUT_CHAR_CAP && next.length > 0) {
     // Shouldn't happen with the loop above but keeps the invariant obvious.
     next.length = 0;
+    if (nextSequences) nextSequences.length = 0;
     size = 0;
   }
   next.push(chunk);
-  return next;
+  nextSequences?.push(sequence);
+  return { output: next, sequences: nextSequences };
+}
+
+export function trimPendingOutput(existing: string[], chunk: string): string[] {
+  return trimPendingOutputEntries(existing, chunk).output;
+}
+
+function trimPendingOutputWithSequences(
+  existing: string[],
+  existingSequences: number[],
+  chunk: string,
+  sequence: number,
+): { output: string[]; sequences: number[] } {
+  const trimmed = trimPendingOutputEntries(existing, chunk, existingSequences, sequence);
+  return { output: trimmed.output, sequences: trimmed.sequences ?? [] };
 }
 
 /**
- * Creates a reactive state container for a thread's terminal drawer. Each
- * thread owns one of these; the drawer component reads/mutates through the
- * returned handle.
+ * Creates a reactive state container for a thread's terminal surface. The
+ * mounted drawer is currently the only renderer, but the state is deliberately
+ * independent of that renderer so a future dock/overlay can attach to the same
+ * thread-owned terminal model.
  */
 export function createThreadTerminalState(): ThreadTerminalStateHandle {
   let tabs: TerminalTabState[] = $state([]);
   let activeTerminalID: string | null = $state(null);
   let drawerHeight: number = $state(DEFAULT_DRAWER_HEIGHT);
+  const pendingSequencesByTerminal = new Map<string, number[]>();
+  const replayWatermarkByTerminal = new Map<string, number>();
 
   return {
     get tabs() { return tabs; },
@@ -84,6 +119,14 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
     get drawerHeight() { return drawerHeight; },
 
     addTab(summary: TerminalSessionSummary): void {
+      const existing = tabs.find((t) => t.terminalID === summary.terminalID);
+      if (existing) {
+        tabs = tabs.map((t) =>
+          t.terminalID === summary.terminalID ? { ...t, summary } : t,
+        );
+        activeTerminalID = summary.terminalID;
+        return;
+      }
       tabs = [
         ...tabs,
         {
@@ -92,12 +135,16 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
           pendingOutput: [],
         },
       ];
+      pendingSequencesByTerminal.set(summary.terminalID, []);
+      replayWatermarkByTerminal.set(summary.terminalID, 0);
       activeTerminalID = summary.terminalID;
     },
 
     removeTab(terminalID: string): void {
       const nextTabs = tabs.filter((t) => t.terminalID !== terminalID);
       tabs = nextTabs;
+      pendingSequencesByTerminal.delete(terminalID);
+      replayWatermarkByTerminal.delete(terminalID);
       if (activeTerminalID === terminalID) {
         activeTerminalID = nextTabs.length > 0 ? nextTabs[nextTabs.length - 1]!.terminalID : null;
       }
@@ -110,10 +157,19 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
       }
     },
 
-    appendOutput(terminalID: string, data: string): void {
+    appendOutput(terminalID: string, data: string, sequence = 0): void {
+      const watermark = replayWatermarkByTerminal.get(terminalID) ?? 0;
+      if (sequence > 0 && sequence <= watermark) return;
       tabs = tabs.map((t) => {
         if (t.terminalID !== terminalID) return t;
-        return { ...t, pendingOutput: trimPendingOutput(t.pendingOutput, data) };
+        const next = trimPendingOutputWithSequences(
+          t.pendingOutput,
+          pendingSequencesByTerminal.get(terminalID) ?? [],
+          data,
+          sequence,
+        );
+        pendingSequencesByTerminal.set(terminalID, next.sequences);
+        return { ...t, pendingOutput: next.output };
       });
     },
 
@@ -121,10 +177,35 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
       const match = tabs.find((t) => t.terminalID === terminalID);
       if (!match || match.pendingOutput.length === 0) return [];
       const drained = match.pendingOutput;
+      pendingSequencesByTerminal.set(terminalID, []);
       tabs = tabs.map((t) =>
         t.terminalID === terminalID ? { ...t, pendingOutput: [] } : t,
       );
       return drained;
+    },
+
+    markReplayed(terminalID: string, fromSequence: number, throughSequence: number): void {
+      const previous = replayWatermarkByTerminal.get(terminalID) ?? 0;
+      const nextWatermark = Math.max(previous, throughSequence);
+      replayWatermarkByTerminal.set(terminalID, nextWatermark);
+      if (fromSequence <= 0 || nextWatermark <= 0) return;
+
+      const sequences = pendingSequencesByTerminal.get(terminalID) ?? [];
+      const match = tabs.find((t) => t.terminalID === terminalID);
+      if (!match || match.pendingOutput.length === 0 || sequences.length === 0) return;
+
+      const nextOutput: string[] = [];
+      const nextSequences: number[] = [];
+      for (let i = 0; i < match.pendingOutput.length; i += 1) {
+        const sequence = sequences[i] ?? 0;
+        if (sequence > fromSequence && sequence <= nextWatermark) continue;
+        nextOutput.push(match.pendingOutput[i]!);
+        nextSequences.push(sequence);
+      }
+      pendingSequencesByTerminal.set(terminalID, nextSequences);
+      tabs = tabs.map((t) =>
+        t.terminalID === terminalID ? { ...t, pendingOutput: nextOutput } : t,
+      );
     },
 
     updateSummary(summary: TerminalSessionSummary): void {
@@ -140,6 +221,8 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
     clear(): void {
       tabs = [];
       activeTerminalID = null;
+      pendingSequencesByTerminal.clear();
+      replayWatermarkByTerminal.clear();
     },
   };
 }
@@ -151,8 +234,9 @@ export interface ThreadTerminalStateHandle {
   addTab(summary: TerminalSessionSummary): void;
   removeTab(terminalID: string): void;
   setActive(terminalID: string): void;
-  appendOutput(terminalID: string, data: string): void;
+  appendOutput(terminalID: string, data: string, sequence?: number): void;
   drainOutput(terminalID: string): string[];
+  markReplayed(terminalID: string, fromSequence: number, throughSequence: number): void;
   updateSummary(summary: TerminalSessionSummary): void;
   setDrawerHeight(height: number): void;
   clear(): void;
@@ -163,6 +247,35 @@ export const TERMINAL_DRAWER_LIMITS = {
   max: MAX_DRAWER_HEIGHT,
   default: DEFAULT_DRAWER_HEIGHT,
 };
+
+const terminalStatesByThread = new Map<string, ThreadTerminalStateHandle>();
+
+export function getThreadTerminalState(threadID: string): ThreadTerminalStateHandle {
+  const key = threadID || '__unbound__';
+  const existing = terminalStatesByThread.get(key);
+  if (existing) return existing;
+  const handle = createThreadTerminalState();
+  terminalStatesByThread.set(key, handle);
+  evictEmptyTerminalStates();
+  return handle;
+}
+
+export function releaseThreadTerminalState(threadID: string): void {
+  terminalStatesByThread.delete(threadID || '__unbound__');
+}
+
+export function resetThreadTerminalStatesForTest(): void {
+  terminalStatesByThread.clear();
+}
+
+function evictEmptyTerminalStates(): void {
+  if (terminalStatesByThread.size <= TERMINAL_STATE_CACHE_LIMIT) return;
+  for (const [threadID, handle] of terminalStatesByThread) {
+    if (terminalStatesByThread.size <= TERMINAL_STATE_CACHE_LIMIT) return;
+    if (handle.tabs.length > 0) continue;
+    terminalStatesByThread.delete(threadID);
+  }
+}
 
 // Module-level terminal-focus registry. The keybindings dispatcher reads
 // `getTerminalFocused()` via makeCommandContext to gate `terminalFocus`-scoped

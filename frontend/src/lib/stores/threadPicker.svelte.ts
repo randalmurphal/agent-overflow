@@ -2,19 +2,27 @@
 // messageSearch — any component can flip the picker from anywhere.
 
 let open = $state(false);
+let targetPaneId: string | null = $state(null);
 
 export function isThreadPickerOpen(): boolean {
   return open;
 }
 
-export function openThreadPicker(): void {
+export function getThreadPickerTargetPaneId(): string | null {
+  return targetPaneId;
+}
+
+export function openThreadPicker(paneId: string | null = null): void {
+  targetPaneId = paneId;
   open = true;
 }
 
 export function closeThreadPicker(): void {
   open = false;
+  targetPaneId = null;
 }
 
-export function toggleThreadPicker(): void {
-  open = !open;
+export function toggleThreadPicker(paneId: string | null = null): void {
+  if (open) closeThreadPicker();
+  else openThreadPicker(paneId);
 }

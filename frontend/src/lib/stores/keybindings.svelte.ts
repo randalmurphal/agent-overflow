@@ -215,9 +215,10 @@ export function eventMatchesKeybindingCommand(
 }
 
 function evaluateRuleWhen(node: WhenNode, ctx: CommandContext): boolean {
+  const flags = ctx.flags ?? ctx;
   switch (node.type) {
     case 'identifier':
-      return ctx[node.name] === true;
+      return flags[node.name] === true;
     case 'not':
       return !evaluateRuleWhen(node.node, ctx);
     case 'and':

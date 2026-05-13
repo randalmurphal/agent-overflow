@@ -8,12 +8,20 @@ import { replaceThread as replaceThreadInRegistry } from './threads.svelte';
 // adding visible panes does not require re-defining ownership later.
 let panes: Map<string, ThreadPane> = $state(new Map());
 let focusedPaneId: string = $state('main');
+export type PaneActivation = 'preview' | 'committed';
+let paneActivationById: Map<string, PaneActivation> = $state(new Map());
+
+function registerPane(id: string, pane: ThreadPane, activation: PaneActivation = 'committed'): ThreadPane {
+  panes = new Map(panes).set(id, pane);
+  paneActivationById = new Map(paneActivationById).set(id, activation);
+  return pane;
+}
 
 export function getMainPane(): ThreadPane {
   let main = panes.get('main');
   if (!main) {
     main = createThreadPane({ paneId: 'main' });
-    panes = new Map(panes).set('main', main);
+    registerPane('main', main, 'committed');
   }
   return main;
 }
@@ -22,12 +30,11 @@ export function createPane(id: string): ThreadPane {
   const existing = panes.get(id);
   if (existing) return existing;
   const pane = createThreadPane({ paneId: id });
-  panes = new Map(panes).set(id, pane);
-  return pane;
+  return registerPane(id, pane, 'committed');
 }
 
 export function registerPaneForTest(id: string, pane: ThreadPane): void {
-  panes = new Map(panes).set(id, pane);
+  registerPane(id, pane, 'committed');
 }
 
 export function getFocusedPane(): ThreadPane {
@@ -47,30 +54,75 @@ export function getAllPanes(): Map<string, ThreadPane> {
   return panes;
 }
 
+export function getPaneActivation(id: string): PaneActivation {
+  return paneActivationById.get(id) ?? 'committed';
+}
+
+export function commitPanePreview(id: string): void {
+  if (!panes.has(id)) return;
+  if (paneActivationById.get(id) === 'committed') return;
+  paneActivationById = new Map(paneActivationById).set(id, 'committed');
+}
+
 export function resetPanesForTest(): void {
   for (const pane of panes.values()) pane.clear();
   panes = new Map();
+  paneActivationById = new Map();
   focusedPaneId = 'main';
+}
+
+export function findPaneShowingThread(threadId: string): ThreadPane | null {
+  for (const pane of panes.values()) {
+    if (pane.threadId !== threadId) continue;
+    return pane;
+  }
+  return null;
+}
+
+export async function replaceThreadInPane(
+  thread: Thread,
+  targetPane: string | ThreadPane = focusedPaneId,
+  activation: PaneActivation = 'committed',
+): Promise<ThreadPane> {
+  const target = typeof targetPane === 'string'
+    ? panes.get(targetPane) ?? getMainPane()
+    : targetPane;
+  if (!panes.has(target.paneId)) {
+    registerPane(target.paneId, target, activation);
+  } else {
+    paneActivationById = new Map(paneActivationById).set(target.paneId, activation);
+  }
+  focusedPaneId = target.paneId;
+  await target.switchThread(thread);
+  return target;
+}
+
+export async function revealThreadIfOpen(thread: Thread): Promise<ThreadPane | null> {
+  const pane = findPaneShowingThread(thread.id);
+  if (!pane) return null;
+  focusedPaneId = pane.paneId;
+  return pane;
 }
 
 export async function openThreadInPane(
   thread: Thread,
   targetPane: string | ThreadPane = focusedPaneId,
 ): Promise<ThreadPane> {
-  for (const [id, pane] of panes) {
-    if (pane.threadId !== thread.id) continue;
-    focusedPaneId = id;
-    return pane;
+  const existing = await revealThreadIfOpen(thread);
+  if (existing) {
+    commitPanePreview(existing.paneId);
+    return existing;
   }
-  const target = typeof targetPane === 'string'
-    ? panes.get(targetPane) ?? getMainPane()
-    : targetPane;
-  if (!panes.has(target.paneId)) {
-    panes = new Map(panes).set(target.paneId, target);
-  }
-  focusedPaneId = target.paneId;
-  await target.switchThread(thread);
-  return target;
+  return replaceThreadInPane(thread, targetPane, 'committed');
+}
+
+export async function openThreadFromNavigation(
+  thread: Thread,
+  targetPane: string | ThreadPane = focusedPaneId,
+): Promise<ThreadPane> {
+  const existing = await revealThreadIfOpen(thread);
+  if (existing) return existing;
+  return replaceThreadInPane(thread, targetPane, 'preview');
 }
 
 /**

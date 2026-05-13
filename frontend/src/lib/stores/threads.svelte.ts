@@ -6,6 +6,7 @@ import { dropActivityRailUiPrefs, dropLiveTodoUiPrefs } from './thread.svelte';
 import { threadItemCache } from './threadItemCache';
 import { clearThreadStatus } from './threadStatuses.svelte';
 import { addToast } from './toast.svelte';
+import { releaseThreadTerminalState } from '../components/terminal/terminalStore.svelte';
 
 type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTurn'>>;
 
@@ -43,6 +44,7 @@ export function removeThread(id: string): void {
   threadItemCache.evict(id);
   clearTokensForThread(id);
   clearPayloadCacheForThread(id);
+  releaseThreadTerminalState(id);
 }
 
 export function updateThreadTitle(id: string, title: string): void {

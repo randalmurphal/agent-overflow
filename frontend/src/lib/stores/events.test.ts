@@ -19,6 +19,10 @@ import {
   getProviderRateLimit,
   resetForTest as resetRateLimitsInfo,
 } from './rateLimitsInfo.svelte';
+import {
+  getProviderStatus,
+  resetForTest as resetProviderStatuses,
+} from './providerStatus.svelte';
 import { transportGapChannel } from '../transport/wsClient';
 import { emitWailsEvent, resetWailsMocks, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
@@ -68,6 +72,8 @@ describe('setupEventListeners', () => {
     resetSendQueue();
     resetProjectsForTest();
     resetRateLimitsInfo();
+    resetProviderStatuses();
+    setBindingMock('AutoResumeThread', async () => {});
     getAllPanes().clear();
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
@@ -1007,7 +1013,7 @@ describe('setupEventListeners', () => {
     expect(getThreads()[0]?.lastReadAt).toBe(0);
   });
 
-  it('updates pane providerBanner from provider:status', async () => {
+  it('updates global provider status from app-wide provider:status', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude' }));
     getAllPanes().set('main', pane);
 
@@ -1016,10 +1022,12 @@ describe('setupEventListeners', () => {
       message: 'Claude not authenticated',
     }));
 
-    expect(pane.providerBanner?.status).toBe('unauthenticated');
+    expect(pane.providerBanner).toBeUndefined();
+    expect(getProviderStatus('claude')?.status).toBe('unauthenticated');
 
     emitWailsEvent('provider:status', providerStatusEvent({ status: 'ready', actionable: false }));
-    expect(pane.providerBanner).toBeNull();
+    expect(pane.providerBanner).toBeUndefined();
+    expect(getProviderStatus('claude')?.status).toBe('ready');
   });
 
   it('hydrates accountInfo store from provider:account', async () => {

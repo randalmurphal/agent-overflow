@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import { wailsEventOn } from '../../stores/events';
+  import { onMount } from 'svelte';
   import {
     OpenTerminal,
     CloseTerminal,
@@ -8,16 +7,13 @@
     TerminalOpenOptions,
   } from '../../stores/bindings';
   import type {
-    TerminalExitEventPayload,
-    TerminalOutputEventPayload,
     TerminalHandle,
     TerminalSessionSummary,
   } from '../../types/terminal';
-  import { decodeTerminalOutput } from '../../types/terminal';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import {
-    createThreadTerminalState,
+    getThreadTerminalState,
     type ThreadTerminalStateHandle,
   } from './terminalStore.svelte';
   import Drawer from '../primitives/Drawer.svelte';
@@ -27,9 +23,13 @@
 
   let { pane, manual = false, onSendToComposer }: ThreadTerminalDrawerProps = $props();
 
-  // One state container per drawer instance. The drawer is keyed on the
-  // thread ID in the parent, so switching threads remounts the drawer.
-  const handle: ThreadTerminalStateHandle = createThreadTerminalState();
+  function initialTerminalStateKey(): string {
+    return pane.thread?.id ?? pane.paneId;
+  }
+
+  // Thread-owned state lets this renderer unmount/remount without losing tabs
+  // and keeps the model ready for a future app-level terminal dock.
+  const handle: ThreadTerminalStateHandle = getThreadTerminalState(initialTerminalStateKey());
 
   // Drawer primitive owns the pointer-capture resize math; we just
   // push new heights into the persisted handle so remounts read back
@@ -77,32 +77,28 @@
     pane.setShowTerminal(false);
   }
 
-  // Output and exit events are routed directly here: only the active pane's
-  // drawer is mounted, so a single subscription per drawer is sufficient.
-  let cancelOutput: (() => void) | null = null;
-  let cancelExit: (() => void) | null = null;
+  let previousTabCount = handle.tabs.length;
+
+  $effect(() => {
+    const count = handle.tabs.length;
+    if (previousTabCount > 0 && count === 0) {
+      collapseDrawer();
+    }
+    previousTabCount = count;
+  });
 
   onMount(async () => {
-    cancelOutput = wailsEventOn<TerminalOutputEventPayload>('terminal:output', (payload) => {
-      if (pane.thread && payload.threadID !== pane.thread.id) return;
-      const decoded = decodeTerminalOutput(payload.data);
-      handle.appendOutput(payload.terminalID, decoded);
-    });
-    cancelExit = wailsEventOn<TerminalExitEventPayload>('terminal:exit', (payload) => {
-      if (pane.thread && payload.threadID !== pane.thread.id) return;
-      // PTY-initiated exit (Ctrl+D, exit, kill, process death). The
-      // backend has already cleaned up its session, so we just drop the
-      // tab. Collapse the drawer if that was the last one — same shape
-      // as the manual close path above.
-      handle.removeTab(payload.terminalID);
-      if (handle.tabs.length === 0) collapseDrawer();
-    });
-
     if (manual || !pane.thread) return;
 
     try {
       const list = (await ListTerminals(pane.thread.id)) as TerminalSessionSummary[] | null;
       if (list) {
+        const listedIDs = new Set(list.map((s) => s.terminalID));
+        for (const tab of handle.tabs) {
+          if (!listedIDs.has(tab.terminalID)) {
+            handle.removeTab(tab.terminalID);
+          }
+        }
         for (const s of list) {
           handle.addTab(s);
         }
@@ -114,11 +110,6 @@
     if (handle.tabs.length === 0) {
       await openTerminal();
     }
-  });
-
-  onDestroy(() => {
-    cancelOutput?.();
-    cancelExit?.();
   });
 </script>
 

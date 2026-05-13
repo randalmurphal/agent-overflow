@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadTerminalDrawer from './ThreadTerminalDrawer.svelte';
+import { resetThreadTerminalStatesForTest } from './terminalStore.svelte';
+import { setupEventListeners } from '../../stores/events';
 
 // --- Mock layer --- //
 // We control the Wails bindings and event bus so drawer logic can be exercised
@@ -9,6 +11,7 @@ import ThreadTerminalDrawer from './ThreadTerminalDrawer.svelte';
 
 const callLog: Array<{ fn: string; args: unknown[] }> = [];
 const eventListeners: Record<string, ((ev: { data: unknown }) => void)[]> = {};
+let cleanupEvents: (() => void) | null = null;
 
 vi.mock('../../stores/bindings', () => ({
   OpenTerminal: vi.fn(async (threadID: string, opts: unknown) => {
@@ -127,7 +130,9 @@ async function defaultOpenTerminalImpl(threadID: string, opts: unknown) {
 
 beforeEach(async () => {
   callLog.length = 0;
+  resetThreadTerminalStatesForTest();
   for (const key of Object.keys(eventListeners)) delete eventListeners[key];
+  cleanupEvents = setupEventListeners();
   const bindings = await import('../../stores/bindings');
   (bindings.OpenTerminal as unknown as { mockImplementation: (fn: unknown) => void }).mockImplementation(
     defaultOpenTerminalImpl,
@@ -135,11 +140,13 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  cleanupEvents?.();
+  cleanupEvents = null;
   cleanup();
 });
 
 describe('ThreadTerminalDrawer', () => {
-  it('renders and subscribes to terminal events', async () => {
+  it('renders while global terminal event routing is installed', async () => {
     const pane = makePane();
     render(ThreadTerminalDrawer, { pane: pane as never, manual: true });
     // Next microtask: onMount async.

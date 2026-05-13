@@ -33,6 +33,7 @@ export {
     TerminalChip,
     TerminalHandle,
     TerminalOpenOptions,
+    TerminalReplay,
     ThreadLiveState,
     ThreadRuntimeModeChangedEvent,
     WorkspaceFileSearchResult,

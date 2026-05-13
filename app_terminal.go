@@ -43,6 +43,14 @@ type TerminalExitEvent struct {
 	Reason     string `json:"reason"`
 }
 
+// TerminalReplay is the base64-encoded replay buffer plus the last output
+// sequence included in that replay snapshot.
+type TerminalReplay struct {
+	Data            string `json:"data"`
+	FromSequence    uint64 `json:"fromSequence"`
+	ThroughSequence uint64 `json:"throughSequence"`
+}
+
 // OpenTerminal starts a new PTY-backed terminal session bound to the given
 // thread.
 func (a *App) OpenTerminal(threadID string, opts TerminalOpenOptions) (TerminalHandle, error) {
@@ -121,17 +129,22 @@ func (a *App) RestartTerminal(terminalID string) (TerminalHandle, error) {
 	}, nil
 }
 
-// GetTerminalReplay returns the base64-encoded replay buffer. base64 keeps
-// binary safety for non-UTF-8 bytes emitted by the shell.
-func (a *App) GetTerminalReplay(terminalID string) (string, error) {
+// GetTerminalReplay returns the base64-encoded replay buffer plus a sequence
+// watermark. base64 keeps binary safety for non-UTF-8 bytes emitted by the
+// shell.
+func (a *App) GetTerminalReplay(terminalID string) (TerminalReplay, error) {
 	if a.terminals == nil {
-		return "", fmt.Errorf("terminal manager not initialized")
+		return TerminalReplay{}, fmt.Errorf("terminal manager not initialized")
 	}
-	raw, err := a.terminals.Replay(terminalID)
+	snapshot, err := a.terminals.ReplaySnapshot(terminalID)
 	if err != nil {
-		return "", err
+		return TerminalReplay{}, err
 	}
-	return base64.StdEncoding.EncodeToString(raw), nil
+	return TerminalReplay{
+		Data:            base64.StdEncoding.EncodeToString(snapshot.Data),
+		FromSequence:    snapshot.FromSequence,
+		ThroughSequence: snapshot.ThroughSequence,
+	}, nil
 }
 
 // terminalOutputCallback emits a `terminal:output` event to the frontend.

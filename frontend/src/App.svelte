@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { getFocusedPane, getMainPane, openThreadInPane } from './lib/stores/panes.svelte';
+  import { getAllPanes, getFocusedPane, getMainPane, openThreadFromNavigation } from './lib/stores/panes.svelte';
   import { setupEventListeners } from './lib/stores/events';
   import { getThreads, refreshThreads } from './lib/stores/threads.svelte';
   import { loadSettings, getSettings } from './lib/stores/settings.svelte';
@@ -19,8 +19,8 @@
   import type { Thread } from './lib/types/models';
   import { isPaletteOpen } from './lib/stores/palette.svelte';
   import { closeCheatSheet, isCheatSheetOpen } from './lib/stores/cheatSheet.svelte';
-  import { closeMessageSearch, isMessageSearchOpen } from './lib/stores/messageSearch.svelte';
-  import { closeThreadPicker, isThreadPickerOpen } from './lib/stores/threadPicker.svelte';
+  import { closeMessageSearch, getMessageSearchTargetPaneId, isMessageSearchOpen } from './lib/stores/messageSearch.svelte';
+  import { closeThreadPicker, getThreadPickerTargetPaneId, isThreadPickerOpen } from './lib/stores/threadPicker.svelte';
   import {
     dispatchKey,
     eventMatchesKeybindingCommand,
@@ -31,6 +31,7 @@
   import { installUiRenderTraceApi } from './lib/utils/uiRenderTrace';
   import { dispatchTextEditing } from './lib/utils/textEditingKeymap';
   import { installExternalLinkDelegate } from './lib/utils/externalLinks';
+  import { getVisibleSidebarThreadIds } from './lib/stores/sidebarThreadOrder';
   import DiagramInteractionHost from './lib/components/chat/DiagramInteractionHost.svelte';
 
   type SettingsSection = 'general' | 'providers' | 'editor' | 'network' | 'discussions' | 'keybindings' | 'observability' | 'archived';
@@ -95,6 +96,12 @@
         isThreadPickerOpen(),
     }),
   );
+  let messageSearchPane = $derived(
+    getAllPanes().get(getMessageSearchTargetPaneId() ?? '') ?? getFocusedPane(),
+  );
+  let threadPickerPane = $derived(
+    getAllPanes().get(getThreadPickerTargetPaneId() ?? '') ?? getFocusedPane(),
+  );
 
   function handleGlobalKeydown(ev: KeyboardEvent): void {
     if (ev.defaultPrevented) return;
@@ -127,42 +134,25 @@
     window.dispatchEvent(new CustomEvent('agent-overflow:rename-thread', { detail: thread }));
   }
 
-  /**
-   * Visible-thread order in the sidebar. We read it from the DOM rather
-   * than reconstructing the same sort + truncation + tree-flatten that
-   * ProjectThreadList runs — it's authoritative, includes the active-
-   * thread inline pin under collapsed projects, and skips truncated-out
-   * rows automatically.
-   */
-  function visibleSidebarThreadIds(): string[] {
-    if (typeof document === 'undefined') return [];
-    // Sidebar-only attribute. ChatView's root carries `data-thread-id`
-    // for the active pane; we deliberately diverge so the DOM scan can
-    // distinguish "sidebar row" from "chat surface" without scoping by
-    // ancestor.
-    return Array.from(document.querySelectorAll<HTMLElement>('[data-sidebar-thread-id]'))
-      .map((el) => el.dataset.sidebarThreadId)
-      .filter((id): id is string => !!id);
-  }
-
   function requestThreadJump(index: number): void {
-    const ids = visibleSidebarThreadIds();
+    const ids = getVisibleSidebarThreadIds();
     const targetId = ids[index - 1];
     if (!targetId) return;
     const thread = getThreads().find((t) => t.id === targetId);
-    if (thread) void openThreadInPane(thread, pane);
+    if (thread) void openThreadFromNavigation(thread, getFocusedPane());
   }
 
   function requestThreadStep(delta: number): void {
-    const ids = visibleSidebarThreadIds();
+    const ids = getVisibleSidebarThreadIds();
     if (ids.length === 0) return;
-    const currentId = pane.threadId;
+    const targetPane = getFocusedPane();
+    const currentId = targetPane.threadId;
     const currentIndex = currentId ? ids.indexOf(currentId) : -1;
     const nextIndex = currentIndex === -1
       ? (delta > 0 ? 0 : ids.length - 1)
       : (currentIndex + delta + ids.length) % ids.length;
     const thread = getThreads().find((t) => t.id === ids[nextIndex]);
-    if (thread) void openThreadInPane(thread, pane);
+    if (thread) void openThreadFromNavigation(thread, targetPane);
   }
 
   $effect(() => {
@@ -185,7 +175,6 @@
     // so commands see the live pane state each time they run.
     clearCommandRegistry();
     registerBuiltinCommands({
-      pane,
       openSettings: () => openSettings('general'),
       openThreadForm: () => {
         // The sidebar's "+ New Thread" button owns the form today. Firing a
@@ -203,7 +192,9 @@
         // The Ship Changes drawer lives inside GitActionsControl (deep in
         // the chat tree). A CustomEvent keeps App.svelte from owning a
         // reference to a component it never renders.
-        window.dispatchEvent(new CustomEvent('agent-overflow:open-ship-changes'));
+        window.dispatchEvent(new CustomEvent('agent-overflow:open-ship-changes', {
+          detail: { paneId: getFocusedPane().paneId },
+        }));
       },
       requestRename: requestRenameForThread,
       requestDiscussion: handleStartDiscussion,
@@ -268,7 +259,7 @@
 />
 <CommandPalette context={paletteContext} />
 <KeybindingsCheatSheet open={isCheatSheetOpen()} onClose={closeCheatSheet} />
-<MessageSearch open={isMessageSearchOpen()} {pane} onClose={closeMessageSearch} />
-<UnifiedThreadPicker open={isThreadPickerOpen()} {pane} onClose={closeThreadPicker} />
+<MessageSearch open={isMessageSearchOpen()} pane={messageSearchPane} onClose={closeMessageSearch} />
+<UnifiedThreadPicker open={isThreadPickerOpen()} pane={threadPickerPane} onClose={closeThreadPicker} />
 <Toast />
 <DiagramInteractionHost />

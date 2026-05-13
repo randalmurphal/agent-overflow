@@ -30,6 +30,7 @@ import {
   resetForTest as resetSendQueueForTest,
 } from '../../lib/stores/sendQueue.svelte';
 import { getThreads } from '../../lib/stores/threads.svelte';
+import { resetThreadTerminalStatesForTest } from '../../lib/components/terminal/terminalStore.svelte';
 
 // Drain microtasks + Svelte reactions so $effects and async mounts settle.
 // `n` should be generous for integration tests that depend on $effects
@@ -61,6 +62,7 @@ export function resetAppState(): void {
   // so a stale queued item from a prior case doesn't drain into the
   // next test's first SendMessage call.
   resetSendQueueForTest();
+  resetThreadTerminalStatesForTest();
 }
 
 // Every binding that App (or anything App mounts during bootstrap) calls on
@@ -122,6 +124,7 @@ export function installThreadViewDefaults(): void {
   // do not care about read-state do not need their own mock.
   setBindingMock('MarkThreadRead', async () => {});
   setBindingMock('MarkThreadUnread', async () => {});
+  setBindingMock('AutoResumeThread', async () => {});
   setBindingMock('ListRecentThreadItems', async () => ({
     items: [],
     oldestTurnIndex: -1,
@@ -168,6 +171,7 @@ export function installThreadViewDefaults(): void {
   setBindingMock('ListProposedPlanComments', async () => []);
   setBindingMock('GetPayloadData', async () => ({ data: '# Plan\n\nBody' }));
   setBindingMock('ListLiveBackgroundTasks', async () => []);
+  setBindingMock('AppendUIRenderTraceBatch', async () => '/tmp/ui-render.jsonl');
   // Design-thread mounts spin DesignPreviewPanel's $effect which
   // immediately calls EnsureDesignWorkdir + LatestDesignOptionSet on
   // any thread the test happens to put into design mode. Default

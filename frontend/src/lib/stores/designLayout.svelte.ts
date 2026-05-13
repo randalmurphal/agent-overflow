@@ -6,6 +6,7 @@
 // becomes per-pane state.
 
 const STORAGE_KEY = 'agent-overflow:designLayout:chatPx';
+const STORAGE_KEY_PREFIX = 'agent-overflow:designLayout:chatPx:';
 
 // Min sizes are spec-defined: chat ≥ 320px, preview ≥ 400px. The default
 // fraction (chat = 45% of container) is applied in computeChatWidth() the
@@ -16,10 +17,14 @@ export const DESIGN_CHAT_MIN_PX = 320;
 export const DESIGN_PREVIEW_MIN_PX = 400;
 export const DESIGN_CHAT_DEFAULT_FRACTION = 0.45;
 
-function readPersistedPx(): number | null {
+function storageKeyForPane(paneId = 'main'): string {
+  return paneId === 'main' ? STORAGE_KEY : `${STORAGE_KEY_PREFIX}${paneId}`;
+}
+
+function readPersistedPx(paneId = 'main'): number | null {
   if (typeof localStorage === 'undefined') return null;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKeyForPane(paneId));
     if (!raw) return null;
     const value = Number(raw);
     if (!Number.isFinite(value) || value <= 0) return null;
@@ -29,25 +34,37 @@ function readPersistedPx(): number | null {
   }
 }
 
-function writePersistedPx(value: number): void {
+function writePersistedPx(value: number, paneId = 'main'): void {
   if (typeof localStorage === 'undefined') return;
   try {
-    localStorage.setItem(STORAGE_KEY, String(Math.round(value)));
+    localStorage.setItem(storageKeyForPane(paneId), String(Math.round(value)));
   } catch {
     // ignore — storage may be disabled (private mode) or quota-full.
   }
 }
 
-let chatPx: number | null = $state(readPersistedPx());
+let chatPxByPane: Map<string, number | null> = $state(new Map([['main', readPersistedPx('main')]]));
+
+function getPaneChatPx(paneId = 'main'): number | null {
+  if (chatPxByPane.has(paneId)) return chatPxByPane.get(paneId) ?? null;
+  const value = readPersistedPx(paneId);
+  chatPxByPane = new Map(chatPxByPane).set(paneId, value);
+  return value;
+}
+
+function peekPaneChatPx(paneId = 'main'): number | null {
+  if (chatPxByPane.has(paneId)) return chatPxByPane.get(paneId) ?? null;
+  return readPersistedPx(paneId);
+}
 
 /**
  * Resolve the chat column's width in pixels for a given container width.
  * Falls back to DESIGN_CHAT_DEFAULT_FRACTION when no persisted value
  * exists. Clamps so neither pane drops below its minimum size.
  */
-export function computeChatWidth(containerPx: number): number {
+export function computeChatWidth(containerPx: number, paneId = 'main'): number {
   const fallback = Math.round(containerPx * DESIGN_CHAT_DEFAULT_FRACTION);
-  const candidate = chatPx ?? fallback;
+  const candidate = peekPaneChatPx(paneId) ?? fallback;
   return clampChatWidth(candidate, containerPx);
 }
 
@@ -70,14 +87,15 @@ export function clampChatWidth(candidate: number, containerPx: number): number {
   return candidate;
 }
 
-export function getChatPx(): number | null {
-  return chatPx;
+export function getChatPx(paneId = 'main'): number | null {
+  return getPaneChatPx(paneId);
 }
 
-export function setChatPx(next: number): void {
-  chatPx = next;
+export function setChatPx(next: number, paneId = 'main'): void {
+  chatPxByPane = new Map(chatPxByPane).set(paneId, next);
 }
 
-export function persistChatPx(): void {
-  if (chatPx !== null) writePersistedPx(chatPx);
+export function persistChatPx(paneId = 'main'): void {
+  const chatPx = getPaneChatPx(paneId);
+  if (chatPx !== null) writePersistedPx(chatPx, paneId);
 }

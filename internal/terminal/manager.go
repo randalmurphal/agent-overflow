@@ -3,6 +3,7 @@ package terminal
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/google/uuid"
@@ -110,6 +111,12 @@ func (m *Manager) List(threadID string) []SessionSummary {
 		}
 	}
 	m.mu.Unlock()
+	sort.Slice(summaries, func(i, j int) bool {
+		if summaries[i].StartedAt == summaries[j].StartedAt {
+			return summaries[i].TerminalID < summaries[j].TerminalID
+		}
+		return summaries[i].StartedAt < summaries[j].StartedAt
+	})
 	return summaries
 }
 
@@ -120,6 +127,16 @@ func (m *Manager) Replay(terminalID string) ([]byte, error) {
 		return nil, err
 	}
 	return sess.Replay(), nil
+}
+
+// ReplaySnapshot returns replay bytes plus the output sequence watermark for
+// the given terminal.
+func (m *Manager) ReplaySnapshot(terminalID string) (ReplaySnapshot, error) {
+	sess, err := m.get(terminalID)
+	if err != nil {
+		return ReplaySnapshot{}, err
+	}
+	return sess.ReplaySnapshot(), nil
 }
 
 // Restart closes the current session and starts a fresh one with the same

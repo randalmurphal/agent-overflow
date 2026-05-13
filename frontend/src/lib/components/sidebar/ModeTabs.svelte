@@ -15,7 +15,7 @@
 
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreads } from '../../stores/threads.svelte';
-  import { openThreadInPane } from '../../stores/panes.svelte';
+  import { openThreadFromNavigation } from '../../stores/panes.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -69,7 +69,7 @@
     );
     const found = candidates[0];
     if (found) {
-      await openThreadInPane(found, pane);
+      await openThreadFromNavigation(found, pane);
     }
   }
 

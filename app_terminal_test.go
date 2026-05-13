@@ -163,15 +163,18 @@ func TestGetTerminalReplayReturnsBase64(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		replayB64, err := app.GetTerminalReplay(handle.TerminalID)
+		replay, err := app.GetTerminalReplay(handle.TerminalID)
 		if err != nil {
 			t.Fatalf("GetTerminalReplay: %v", err)
 		}
-		raw, decodeErr := base64.StdEncoding.DecodeString(replayB64)
+		raw, decodeErr := base64.StdEncoding.DecodeString(replay.Data)
 		if decodeErr != nil {
 			t.Fatalf("bad base64 from GetTerminalReplay: %v", decodeErr)
 		}
 		if strings.Contains(string(raw), "HELLO") {
+			if replay.ThroughSequence == 0 {
+				t.Fatalf("expected replay sequence watermark to advance")
+			}
 			return
 		}
 		time.Sleep(25 * time.Millisecond)

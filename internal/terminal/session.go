@@ -36,6 +36,20 @@ type SessionSummary struct {
 	ExitReason string `json:"exitReason"`
 }
 
+// ReplaySnapshot is the replay buffer plus the last output sequence included
+// in that snapshot. Clients use ThroughSequence to discard live output events
+// that arrived before replay hydration completed.
+type ReplaySnapshot struct {
+	Data            []byte
+	FromSequence    uint64
+	ThroughSequence uint64
+}
+
+type replayChunkRange struct {
+	sequence uint64
+	bytes    int
+}
+
 // outputEmitter is invoked for each PTY output chunk. sequence monotonically
 // increases across a session so clients can re-order if needed.
 type outputEmitter func(terminalID string, sequence uint64, data []byte)
@@ -61,6 +75,8 @@ type Session struct {
 
 	ring     *ringBuffer
 	sequence atomic.Uint64
+	ranges   []replayChunkRange
+	ringSize int
 
 	mu       sync.Mutex
 	exit     ExitStatus
@@ -143,6 +159,21 @@ func (s *Session) Replay() []byte {
 	return s.ring.snapshot()
 }
 
+// ReplaySnapshot returns replay bytes and a sequence watermark atomically.
+func (s *Session) ReplaySnapshot() ReplaySnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var fromSequence uint64
+	if len(s.ranges) > 0 {
+		fromSequence = s.ranges[0].sequence
+	}
+	return ReplaySnapshot{
+		Data:            s.ring.snapshot(),
+		FromSequence:    fromSequence,
+		ThroughSequence: s.sequence.Load(),
+	}
+}
+
 // Summary returns a flat description of the session.
 func (s *Session) Summary() SessionSummary {
 	s.mu.Lock()
@@ -183,8 +214,11 @@ func (s *Session) Done() <-chan struct{} {
 // the ring buffer and invoking the emitters.
 func (s *Session) pump() {
 	for chunk := range s.proc.Output() {
-		s.ring.append(chunk)
+		s.mu.Lock()
 		seq := s.sequence.Add(1)
+		s.ring.append(chunk)
+		s.rememberReplayRange(seq, len(chunk))
+		s.mu.Unlock()
 		if s.onOutput != nil {
 			s.onOutput(s.id, seq, chunk)
 		}
@@ -198,5 +232,24 @@ func (s *Session) pump() {
 	s.mu.Unlock()
 	if s.onExit != nil {
 		s.onExit(s.id, status)
+	}
+}
+
+func (s *Session) rememberReplayRange(sequence uint64, byteCount int) {
+	if byteCount <= 0 {
+		return
+	}
+	s.ranges = append(s.ranges, replayChunkRange{sequence: sequence, bytes: byteCount})
+	s.ringSize += byteCount
+	for s.ringSize > maxReplayBytes && len(s.ranges) > 0 {
+		overflow := s.ringSize - maxReplayBytes
+		first := &s.ranges[0]
+		if overflow < first.bytes {
+			first.bytes -= overflow
+			s.ringSize = maxReplayBytes
+			return
+		}
+		s.ringSize -= first.bytes
+		s.ranges = s.ranges[1:]
 	}
 }
