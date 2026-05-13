@@ -6,6 +6,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/providerstatus"
 )
 
 // claudeProbeCache is a package-level cache shared across App instances
@@ -69,7 +70,7 @@ func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
 		probe: func(ctx context.Context) (provider.AccountInfo, error) {
 			return claude.ProbeAccount(ctx, claude.ProbeConfig{Binary: binary})
 		},
-		unauthenticated: claudeUnauthenticatedStatus,
+		unauthenticated: providerstatus.ClaudeUnauthenticated,
 		emitUnauth:      a.emitClaudeUnauthenticatedStatus,
 	})
 }

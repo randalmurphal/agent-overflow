@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/providerstatus"
 	"agent-overflow/internal/settings"
 )
 
@@ -11,13 +12,13 @@ import (
 // returns a slice that captures every `provider:status` emission. The
 // returned slice is populated in-place as new events come in, so callers
 // read it after driving the code under test.
-func collectProviderStatusEmissions(a *App) *[]ProviderStatusEvent {
-	events := &[]ProviderStatusEvent{}
+func collectProviderStatusEmissions(a *App) *[]providerstatus.Event {
+	events := &[]providerstatus.Event{}
 	a.testEmitHook = func(name string, data any) {
 		if name != "provider:status" {
 			return
 		}
-		evt, ok := data.(ProviderStatusEvent)
+		evt, ok := data.(providerstatus.Event)
 		if !ok {
 			return
 		}
@@ -56,7 +57,7 @@ func TestGetProviderStatusesEmitsNotFoundForMissingBinary(t *testing.T) {
 		t.Fatalf("want 2 provider:status emissions, got %d", len(*events))
 	}
 
-	var claudeEvent *ProviderStatusEvent
+	var claudeEvent *providerstatus.Event
 	for i, ev := range *events {
 		if ev.Provider == string(provider.Claude) {
 			claudeEvent = &(*events)[i]
@@ -102,65 +103,6 @@ func TestGetProviderStatusesDoesNotEmitForReadyProvider(t *testing.T) {
 	}
 	if len(*events) != 0 {
 		t.Fatalf("want 0 emissions for ready providers, got %d: %+v", len(*events), *events)
-	}
-}
-
-// TestProviderStatusEventFromDetectMapsVersionTooOld covers the Codex
-// case: when DetectProvider returns Status="version_too_old" we pass
-// through the message (which comes from formatCodexCLIUpgradeMessage)
-// and mark the event actionable. Kept as a unit test on the mapping
-// helper so the test doesn't depend on spawning a binary that emits a
-// stale version.
-func TestProviderStatusEventFromDetectMapsVersionTooOld(t *testing.T) {
-	in := provider.ProviderStatus{
-		Provider:   string(provider.Codex),
-		Installed:  true,
-		Version:    "codex 0.36.0",
-		BinaryPath: "/usr/local/bin/codex",
-		Status:     "version_too_old",
-		Message:    "Codex CLI v0.36.0 is too old for Agent Overflow. Upgrade to v0.37.0 or newer and restart the app.",
-	}
-	got := providerStatusEventFromDetect(in)
-	if got.Status != "version_too_old" {
-		t.Fatalf("Status = %q, want version_too_old", got.Status)
-	}
-	if got.Message != in.Message {
-		t.Fatalf("Message = %q, want %q (passthrough)", got.Message, in.Message)
-	}
-	if got.Version != in.Version {
-		t.Fatalf("Version = %q, want %q", got.Version, in.Version)
-	}
-	if !got.Actionable {
-		t.Fatal("version_too_old must be actionable")
-	}
-	// version_too_old does NOT carry an ActionURL — the remediation is
-	// "run your package manager + restart the app", which isn't a link.
-	if got.ActionURL != "" {
-		t.Fatalf("ActionURL = %q, want empty for version_too_old", got.ActionURL)
-	}
-}
-
-// TestProviderStatusEventFromDetectSkipsActionForReady covers the
-// "ready -> no banner" branch explicitly so a future refactor can't
-// accidentally start populating Actionable/Message on the happy path.
-func TestProviderStatusEventFromDetectSkipsActionForReady(t *testing.T) {
-	in := provider.ProviderStatus{
-		Provider: string(provider.Claude),
-		Status:   "ready",
-		Version:  "claude-code 2.0.0",
-	}
-	got := providerStatusEventFromDetect(in)
-	if got.Status != "ready" {
-		t.Fatalf("Status = %q, want ready", got.Status)
-	}
-	if got.Actionable {
-		t.Fatal("ready must not be actionable — banner should be empty")
-	}
-	if got.Message != "" {
-		t.Fatalf("Message = %q, want empty for ready", got.Message)
-	}
-	if got.ActionURL != "" {
-		t.Fatalf("ActionURL = %q, want empty for ready", got.ActionURL)
 	}
 }
 
@@ -224,57 +166,5 @@ func TestEmitClaudeUnauthenticatedStatusShape(t *testing.T) {
 	}
 	if !evt.Actionable {
 		t.Fatal("unauthenticated must be actionable")
-	}
-}
-
-// TestClaudeUnauthenticatedStatusDetection sanity-checks the helper
-// that decides whether an AccountInfo counts as unauthenticated. The
-// rule mirrors forge's subscription-probe path: empty subscription
-// AND empty token source is treated as "logged out".
-func TestClaudeUnauthenticatedStatusDetection(t *testing.T) {
-	cases := []struct {
-		name string
-		info provider.AccountInfo
-		want bool
-	}{
-		{"empty account", provider.AccountInfo{}, true},
-		{"has subscription", provider.AccountInfo{SubscriptionType: "pro"}, false},
-		{"has token source", provider.AccountInfo{TokenSource: "oauth"}, false},
-		{"has both", provider.AccountInfo{SubscriptionType: "max", TokenSource: "oauth"}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := claudeUnauthenticatedStatus(tc.info); got != tc.want {
-				t.Fatalf("claudeUnauthenticatedStatus(%+v) = %v, want %v", tc.info, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestProviderActionURLTable guards the Go-owned URL table against
-// the frontend accidentally inventing its own. The table is small —
-// when a new status is added here, the component switch needs to
-// pick it up, and vice versa.
-func TestProviderActionURLTable(t *testing.T) {
-	cases := []struct {
-		provider string
-		status   string
-		wantSet  bool
-	}{
-		{string(provider.Claude), "not_found", true},
-		{string(provider.Claude), "unauthenticated", true},
-		{string(provider.Codex), "not_found", true},
-		{string(provider.Codex), "version_too_old", false}, // "upgrade + restart", no single URL
-		{string(provider.Claude), "ready", false},
-		{string(provider.Claude), "error", false},
-	}
-	for _, tc := range cases {
-		got := providerActionURL(tc.provider, tc.status)
-		if tc.wantSet && got == "" {
-			t.Fatalf("providerActionURL(%q, %q) = empty, want a URL", tc.provider, tc.status)
-		}
-		if !tc.wantSet && got != "" {
-			t.Fatalf("providerActionURL(%q, %q) = %q, want empty", tc.provider, tc.status, got)
-		}
 	}
 }

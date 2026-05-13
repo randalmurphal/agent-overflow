@@ -104,8 +104,8 @@ func TestProbeAccountSkipsHookNoiseBeforeResponse(t *testing.T) {
 func TestProbeAccountMissingAccountReturnsZero(t *testing.T) {
 	// Unauthenticated / older CLI: the response succeeds but the inner
 	// payload has no `account` field. Probe must return zero-value
-	// AccountInfo, not error — `claudeUnauthenticatedStatus` keys off
-	// the empty-fields signal.
+	// AccountInfo, not error — `providerstatus.ClaudeUnauthenticated`
+	// keys off the empty-fields signal.
 	binary := writeMockClaudeInitScript(t, t.TempDir(), "", "success", "")
 
 	info, err := ProbeAccount(context.Background(), ProbeConfig{Binary: binary})

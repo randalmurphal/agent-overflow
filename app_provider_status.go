@@ -1,95 +1,16 @@
 package main
 
-import "agent-overflow/internal/provider"
-
-// ProviderStatusEvent is the payload for the `provider:status` Wails
-// event. It surfaces provider-level health (install / version / auth)
-// to the frontend so ProviderStatusBanner can render actionable
-// guidance. This is a separate channel from the triage router's
-// per-turn `provider:item_event` stream — those describe timeline
-// content; these describe the binary itself.
-type ProviderStatusEvent struct {
-	// Provider is "claude" or "codex".
-	Provider string `json:"provider"`
-
-	// Status mirrors ProviderStatus.Status values:
-	//   "ready", "not_found", "version_too_old", "unauthenticated", "error".
-	Status string `json:"status"`
-
-	// Message is the human-friendly explanation. Always populated for
-	// non-ready statuses; callers should treat it as the text the UI
-	// will show if it has no status-specific branch.
-	Message string `json:"message,omitempty"`
-
-	// Version is the raw version string (e.g. "codex 0.36.0"). Empty
-	// when unknown or irrelevant to the status.
-	Version string `json:"version,omitempty"`
-
-	// Actionable means the UI should render a primary action button
-	// (e.g. "Install Claude CLI", "Authenticate with Claude"). When
-	// false the banner stays informational.
-	Actionable bool `json:"actionable"`
-
-	// ActionURL is a deep-link / external URL the UI can open from
-	// the primary action button. Empty when no URL makes sense (for
-	// version_too_old the guidance is "upgrade + restart the app",
-	// which doesn't map to a single URL).
-	ActionURL string `json:"actionUrl,omitempty"`
-}
-
-// providerActionURL returns the canonical docs / login URL for a
-// given provider + status pair. Keeping the list here means the
-// frontend can't invent its own URLs — every banner's primary action
-// comes from this table.
-func providerActionURL(providerName, status string) string {
-	switch providerName {
-	case string(provider.Claude):
-		switch status {
-		case "not_found":
-			return "https://docs.claude.com/en/docs/claude-code/setup"
-		case "unauthenticated":
-			// `claude login` is a shell instruction, not a URL; the
-			// installation docs cover sign-in too, so point there.
-			return "https://docs.claude.com/en/docs/claude-code/setup"
-		}
-	case string(provider.Codex):
-		switch status {
-		case "not_found":
-			return "https://github.com/openai/codex#installation"
-		}
-	}
-	return ""
-}
+import (
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/providerstatus"
+)
 
 // emitProviderStatus pushes a `provider:status` event through the
 // shared a.emit helper so the transport bus stamps the same per-channel
 // seq it stamps on every other wire emission. Safe to call even when
 // the status is "ready" — the UI treats ready as a clear-banner signal.
-func (a *App) emitProviderStatus(evt ProviderStatusEvent) {
+func (a *App) emitProviderStatus(evt providerstatus.Event) {
 	a.emit("provider:status", evt)
-}
-
-// providerStatusEventFromDetect converts the pull-only ProviderStatus
-// returned by DetectProvider into the push-shape used on the wire.
-// The "ready" case short-circuits to an all-default event because the
-// UI treats any status=="ready" payload as "clear the banner, no
-// action needed".
-func providerStatusEventFromDetect(ps provider.ProviderStatus) ProviderStatusEvent {
-	if ps.Status == "ready" {
-		return ProviderStatusEvent{
-			Provider: ps.Provider,
-			Status:   "ready",
-			Version:  ps.Version,
-		}
-	}
-	return ProviderStatusEvent{
-		Provider:   ps.Provider,
-		Status:     ps.Status,
-		Message:    ps.Message,
-		Version:    ps.Version,
-		Actionable: true,
-		ActionURL:  providerActionURL(ps.Provider, ps.Status),
-	}
 }
 
 // emitProviderStatusesFromDetect emits a provider:status event per
@@ -102,7 +23,7 @@ func (a *App) emitProviderStatusesFromDetect(statuses []provider.ProviderStatus)
 		if ps.Status == "ready" {
 			continue
 		}
-		a.emitProviderStatus(providerStatusEventFromDetect(ps))
+		a.emitProviderStatus(providerstatus.EventFromDetect(ps))
 	}
 }
 
@@ -122,26 +43,18 @@ func (a *App) probeStartupProviderStatuses() {
 	_, _ = a.GetProviderStatuses()
 }
 
-// claudeUnauthenticatedStatus reports whether a ProbeAccount result
-// indicates the user isn't logged in. forge uses the same signal
-// (empty subscription + empty token source) to route users to
-// `claude login`.
-func claudeUnauthenticatedStatus(info provider.AccountInfo) bool {
-	return info.SubscriptionType == "" && info.TokenSource == ""
-}
-
 // emitClaudeUnauthenticatedStatus emits a `provider:status` event for
 // Claude's unauthenticated case. Used by ProbeClaudeAccount when it
 // succeeds with a zero-value AccountInfo — the binary is fine, the
 // user just hasn't logged in yet.
 func (a *App) emitClaudeUnauthenticatedStatus() {
 	const message = "Claude is not authenticated. Run `claude login` to sign in."
-	a.emitProviderStatus(ProviderStatusEvent{
+	a.emitProviderStatus(providerstatus.Event{
 		Provider:   string(provider.Claude),
 		Status:     "unauthenticated",
 		Message:    message,
 		Actionable: true,
-		ActionURL:  providerActionURL(string(provider.Claude), "unauthenticated"),
+		ActionURL:  providerstatus.ActionURL(string(provider.Claude), "unauthenticated"),
 	})
 }
 
@@ -162,5 +75,5 @@ func (a *App) emitProviderStatusOnSessionStartError(providerName string) {
 		// reason (transport, workspace, timeout). No banner.
 		return
 	}
-	a.emitProviderStatus(providerStatusEventFromDetect(status))
+	a.emitProviderStatus(providerstatus.EventFromDetect(status))
 }

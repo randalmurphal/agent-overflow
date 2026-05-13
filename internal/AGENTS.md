@@ -48,6 +48,7 @@ one closest to what you're touching.
 | `diffreview/` | Pure helpers behind the diff-review comment flow: prompt builder, line-anchor picker, and comment-slice → ID projector. App-bound CRUD, the `SendDiffReviewComments` saga, and the content composer stay in the main package. |
 | `prthread/` | Pure formatting helpers behind `CreateThreadFromPR`: title formatter, first-user-message composer, backtick-aware fence picker, and rune-boundary diff/title truncators (Bug C4/C6 regression guards). Forge CLI invocation, local-clone resolution, and store reads/writes stay in the main package. |
 | `planrevision/` | Pure helpers behind the proposed-plan inline-comment revision flow: prompt builder + comment-slice → ID projector. App-bound CRUD, the `SendPlanRevisionComments` saga, and the content composer stay in the main package. |
+| `providerstatus/` | Wire shape (`Event`) + pure mapping helpers for the `provider:status` event channel: `ActionURL` URL table, `EventFromDetect` pull→push shape converter, `ClaudeUnauthenticated` heuristic. App-bound emitters (`emitProviderStatus*`, `emitClaudeUnauthenticatedStatus`, `emitProviderStatusOnSessionStartError`, `probeStartupProviderStatuses`) stay in `app_provider_status.go`. |
 
 ## Responsibility boundary
 
