@@ -1424,6 +1424,75 @@ func TestCodexSubagentWaitMergesPriorChildLifecycleStatus(t *testing.T) {
 	}
 }
 
+func TestCodexSubagentPriorLifecycleStatusDoesNotAttachToUnrelatedLaterWait(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMeta(t, "child-franklin", "running")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-franklin",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-franklin",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+
+	timeoutWaitMeta := buildWaitAgentMetaWithMessage(t, "child-franklin", "running", "")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "wait-timeout",
+		ItemType: "wait_agent", TurnID: "turn-0", Meta: timeoutWaitMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("timeout wait start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "wait-timeout",
+		ItemType: "wait_agent", TurnID: "turn-0", Meta: timeoutWaitMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("timeout wait complete: %v", err)
+	}
+
+	statusMeta, _ := json.Marshal(map[string]any{
+		"agent_path": "child-franklin",
+		"status":     "completed",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-franklin",
+		Meta: statusMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("subagent status: %v", err)
+	}
+
+	unrelatedWaitMeta := buildWaitAgentMetaWithMessage(t, "child-arendt", "completed", "Arendt done")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "wait-arendt",
+		ItemType: "wait_agent", TurnID: "turn-0", Meta: unrelatedWaitMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("unrelated wait start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "wait-arendt",
+		ItemType: "wait_agent", TurnID: "turn-0", Meta: unrelatedWaitMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("unrelated wait complete: %v", err)
+	}
+
+	if completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-franklin")); err != nil || found {
+		t.Fatalf("franklin completion = %+v found=%v err=%v, want no unrelated wait attachment", completion, found, err)
+	}
+}
+
 func TestCodexSubagentNotificationAfterWaitTimeoutDoesNotAttachToWaitCarrier(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")

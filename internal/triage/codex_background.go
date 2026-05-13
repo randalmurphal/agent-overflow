@@ -1428,12 +1428,24 @@ func (r *Router) persistedSubagentWaitEmits(
 		if _, ok := already[launch.item.ID]; ok {
 			continue
 		}
+		if !launchHasCurrentWaitTerminal(launch.meta.ReceiverThreadIDs, terminalChildren) {
+			continue
+		}
 		mergedTerminalChildren := mergeStoredCodexSubagentTerminals(launch.item, terminalChildren)
 		if pending, ok := pendingSubagentWaitEmit(launch.item.ID, launch.meta.ReceiverThreadIDs, mergedTerminalChildren, waitCarrierID); ok {
 			out = append(out, pending)
 		}
 	}
 	return out, nil
+}
+
+func launchHasCurrentWaitTerminal(receiverThreadIDs []string, waitTerminalChildren map[string]agentTerminalResult) bool {
+	for _, childID := range receiverThreadIDs {
+		if _, ok := waitTerminalChildren[strings.TrimSpace(childID)]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func mergeStoredCodexSubagentTerminals(launch store.Item, waitTerminalChildren map[string]agentTerminalResult) map[string]agentTerminalResult {
