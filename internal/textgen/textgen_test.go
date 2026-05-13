@@ -11,6 +11,24 @@ import (
 	"time"
 )
 
+func TestLimitPromptSection_NoopBelowBudget(t *testing.T) {
+	in := "short diff"
+	if got := LimitPromptSection(in, 1000); got != in {
+		t.Errorf("expected no truncation, got %q", got)
+	}
+}
+
+func TestLimitPromptSection_AppendsTruncatedMarker(t *testing.T) {
+	in := strings.Repeat("x", 10_000)
+	got := LimitPromptSection(in, 100)
+	if !strings.HasSuffix(got, "[truncated]") {
+		t.Errorf("expected [truncated] marker, got %q", got[len(got)-40:])
+	}
+	if !strings.HasPrefix(got, strings.Repeat("x", 100)) {
+		t.Error("expected first maxChars bytes preserved")
+	}
+}
+
 func TestExecCLI_StreamsExitCodeWithoutError(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")

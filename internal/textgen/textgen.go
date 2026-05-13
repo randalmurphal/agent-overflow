@@ -357,3 +357,14 @@ func CapRunesWithEllipsis(s string, maxRunes int) string {
 	}
 	return strings.TrimSpace(string(runes[:maxRunes-3])) + "..."
 }
+
+// LimitPromptSection applies a prompt-layer byte cap with a
+// `\n\n[truncated]` marker. Shared by every prompt builder that
+// composes context for a structured-output CLI run, so the marker
+// stays identical across commit-message, thread-title, etc.
+func LimitPromptSection(s string, maxChars int) string {
+	if len(s) <= maxChars {
+		return s
+	}
+	return s[:maxChars] + "\n\n[truncated]"
+}

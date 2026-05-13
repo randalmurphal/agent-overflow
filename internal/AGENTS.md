@@ -43,6 +43,7 @@ one closest to what you're touching.
 | `codexmodels/` | Per-binary TTL cache + single-flight wrapper around Codex `model/list`. Backs `GetModelsForProvider("codex")` and `refreshCodexModelCatalog` so settings rendering doesn't fan out one Codex CLI subprocess per call. |
 | `chatmodel/` | Pure helpers for chat-thread model profiles: `FallbackProfile`, `ProfileFromThread`, `SanitizeProfile`, `SanitizeContextWindow`, `SupportsStoredFastMode`, `HasCapability`, context-window queries. The App's persistence-coupled helpers (`rememberChatModelProfile`, `seedChatModelProfile`) compose this package's pieces with store reads/writes. |
 | `threadmode/` | Pure validators and parsers for the thread interaction-mode (chat/plan/design) and runtime-mode (approval-required / auto-accept-edits / full-access) axes. Owns `ValidateCreate`, `ValidateSet`, `IsPostCreationMode`, `ParseRuntime`, `ParseOptionalRuntime`. Persistence and session-restart orchestration that consume the validators stay in the main package. |
+| `commitmsg/` | Pure prompt builder, schema constants, structured-output decoder, and subject/body sanitisers behind `GenerateCommitMessage`. Workspace resolution, settings routing, and CLI invocation stay in the main package. |
 
 ## Responsibility boundary
 

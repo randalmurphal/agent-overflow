@@ -5,25 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
+	"agent-overflow/internal/commitmsg"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/textgen"
-)
-
-// commitMessageTimeout bounds how long we'll wait for a provider CLI to
-// draft a message. Matches t3-code's 180s — commit-message generation is
-// a small, structured JSON request; anything slower than three minutes
-// is a misconfiguration the user should see as an error, not a hang.
-const commitMessageTimeout = 180 * time.Second
-
-// Per-section caps applied at the prompt-construction layer. Mirrors
-// t3-code's Prompts.ts (6k for the summary, 40k for the patch). The
-// gather layer in internal/git applies larger caps first, so these can
-// trim further without re-reading the repo.
-const (
-	promptStagedSummaryLimit = 6_000
-	promptStagedPatchLimit   = 40_000
 )
 
 // GeneratedCommitMessage is the structured output the frontend fills
@@ -54,7 +39,7 @@ func (a *App) GenerateCommitMessage(threadID string) (GeneratedCommitMessage, er
 		return GeneratedCommitMessage{}, fmt.Errorf("generate commit message: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), commitMessageTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), commitmsg.Timeout)
 	defer cancel()
 
 	summary, patch, branch, err := a.gatherStagedDiffForCommit(thread)
@@ -65,7 +50,7 @@ func (a *App) GenerateCommitMessage(threadID string) (GeneratedCommitMessage, er
 		return GeneratedCommitMessage{}, fmt.Errorf("generate commit message: no uncommitted changes to describe")
 	}
 
-	prompt := buildCommitMessagePrompt(summary, patch, branch)
+	prompt := commitmsg.BuildPrompt(summary, patch, branch)
 	cfg := a.resolveTextGenerationConfig()
 
 	switch cfg.Provider {
@@ -130,7 +115,7 @@ func (a *App) generateCodexCommitMessage(
 		return GeneratedCommitMessage{}, err
 	}
 
-	raw, err := textgen.RunCodex(ctx, cfg, workspace, commitCodexSchemaJSON, nil, prompt, commitMessageTimeout)
+	raw, err := textgen.RunCodex(ctx, cfg, workspace, commitmsg.CodexSchemaJSON, nil, prompt, commitmsg.Timeout)
 	if err != nil {
 		return GeneratedCommitMessage{}, err
 	}
@@ -147,8 +132,8 @@ func (a *App) generateCodexCommitMessage(
 	}
 
 	return GeneratedCommitMessage{
-		Subject: sanitizeCommitSubject(parsed.Subject),
-		Body:    sanitizeCommitBody(parsed.Body),
+		Subject: commitmsg.SanitizeSubject(parsed.Subject),
+		Body:    commitmsg.SanitizeBody(parsed.Body),
 	}, nil
 }
 
@@ -171,117 +156,17 @@ func (a *App) generateClaudeCommitMessage(
 		extra = append(extra, "--effort", cfg.Effort)
 	}
 
-	stdout, err := textgen.RunClaude(ctx, cfg, workspace, commitClaudeSchemaJSON, extra, prompt, commitMessageTimeout)
+	stdout, err := textgen.RunClaude(ctx, cfg, workspace, commitmsg.ClaudeSchemaJSON, extra, prompt, commitmsg.Timeout)
 	if err != nil {
 		return GeneratedCommitMessage{}, err
 	}
 
-	subject, body, err := decodeClaudeCommitMessage(stdout)
+	subject, body, err := commitmsg.DecodeClaude(stdout)
 	if err != nil {
 		return GeneratedCommitMessage{}, err
 	}
 	return GeneratedCommitMessage{
-		Subject: sanitizeCommitSubject(subject),
-		Body:    sanitizeCommitBody(body),
+		Subject: commitmsg.SanitizeSubject(subject),
+		Body:    commitmsg.SanitizeBody(body),
 	}, nil
-}
-
-// commitCodexSchemaJSON is the JSON schema passed to `codex exec
-// --output-schema`. Matches t3-code's buildCommitMessagePrompt output
-// schema: required subject+body, no extra keys.
-const commitCodexSchemaJSON = `{` +
-	`"type":"object",` +
-	`"properties":{` +
-	`"subject":{"type":"string"},` +
-	`"body":{"type":"string"}` +
-	`},` +
-	`"required":["subject","body"],` +
-	`"additionalProperties":false` +
-	`}`
-
-// commitClaudeSchemaJSON mirrors the Codex schema but is inlined
-// separately because the Claude CLI escapes the schema slightly
-// differently on the command line. Keeping them as distinct constants
-// means a future divergence (e.g. adding a `branch` key for the
-// branch-name flow) won't require re-parsing the one shared string.
-const commitClaudeSchemaJSON = `{"type":"object","properties":{"subject":{"type":"string"},"body":{"type":"string"}},"required":["subject"]}`
-
-// buildCommitMessagePrompt assembles the natural-language instruction
-// sent to the provider CLI. Matches t3-code's Prompts.ts line-for-line
-// so the two apps produce identical output shape for identical input.
-func buildCommitMessagePrompt(summary, patch, branch string) string {
-	if strings.TrimSpace(branch) == "" {
-		branch = "(detached)"
-	}
-	return strings.Join([]string{
-		"You write concise git commit messages.",
-		"Return a JSON object with keys: subject, body.",
-		"Rules:",
-		"- subject must be imperative, <= 72 chars, and no trailing period",
-		"- body can be empty string or short bullet points",
-		"- capture the primary user-visible or developer-visible change",
-		"",
-		"Branch: " + branch,
-		"",
-		"Staged files:",
-		limitPromptSection(summary, promptStagedSummaryLimit),
-		"",
-		"Staged patch:",
-		limitPromptSection(patch, promptStagedPatchLimit),
-	}, "\n")
-}
-
-// limitPromptSection applies the prompt-layer cap with the same
-// `[truncated]` marker the gather layer uses. Kept separate from the
-// gather-layer cap in internal/git so the two can evolve independently.
-func limitPromptSection(s string, maxChars int) string {
-	if len(s) <= maxChars {
-		return s
-	}
-	return s[:maxChars] + "\n\n[truncated]"
-}
-
-// decodeClaudeCommitMessage pulls the structured output out of a Claude
-// JSON response. Wraps the generic last-line decoder with the commit
-// envelope shape and the subject-required validation.
-func decodeClaudeCommitMessage(stdout []byte) (string, string, error) {
-	payload, err := textgen.DecodeClaudeStructuredLastLine[struct {
-		Subject string `json:"subject"`
-		Body    string `json:"body"`
-	}](stdout)
-	if err != nil {
-		return "", "", err
-	}
-	if strings.TrimSpace(payload.Subject) == "" {
-		return "", "", fmt.Errorf("claude returned an empty subject")
-	}
-	return payload.Subject, payload.Body, nil
-}
-
-// sanitizeCommitSubject trims the model's output into a well-formed
-// subject line: single line, stripped quotes, no trailing period, capped
-// at 72 characters. Returns an empty string when the model returns
-// nothing usable so the dialog never opens with a blank subject — the
-// user can overwrite it.
-func sanitizeCommitSubject(raw string) string {
-	out := strings.TrimSuffix(textgen.NormalizeStructuredOutputLine(raw), ".")
-	if out == "" {
-		return ""
-	}
-	return textgen.CapRunesWithEllipsis(out, 72)
-}
-
-// sanitizeCommitBody trims the model's body output without imposing a
-// character limit — git has no body length limit and the user can
-// always edit. We normalize whitespace: collapse runs of 3+ newlines
-// down to 2, strip leading/trailing whitespace.
-func sanitizeCommitBody(raw string) string {
-	out := strings.TrimSpace(raw)
-	if out == "" {
-		return ""
-	}
-	for strings.Contains(out, "\n\n\n") {
-		out = strings.ReplaceAll(out, "\n\n\n", "\n\n")
-	}
-	return out
 }

@@ -22,7 +22,7 @@ The App-coupled config resolver (`app_text_generation.go`'s
   `TranslateCLINotFound`, `FirstNonEmptyMessage`, `RunCodex`,
   `RunClaude`, and the post-processing helpers
   (`DecodeClaudeStructuredLastLine`, `NormalizeStructuredOutputLine`,
-  `CapRunesWithEllipsis`).
+  `CapRunesWithEllipsis`, `LimitPromptSection`).
 
 ## Responsibility boundary
 

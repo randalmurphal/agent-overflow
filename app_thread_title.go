@@ -34,7 +34,7 @@ func (a *App) maybeGenerateThreadTitleWithAttachments(thread store.Thread, conte
 	if strings.TrimSpace(content) == "" {
 		return
 	}
-	titleMessage := limitPromptSection(content, 8_000)
+	titleMessage := textgen.LimitPromptSection(content, 8_000)
 
 	go func() {
 		title, err := a.generatedThreadTitle(thread, titleMessage, attachments)
@@ -178,11 +178,11 @@ func buildThreadTitlePrompt(message string, attachments []store.Attachment) stri
 		"- If images are attached, use them as primary context for visual/UI issues.",
 		"",
 		"User message:",
-		limitPromptSection(message, 8_000),
+		textgen.LimitPromptSection(message, 8_000),
 	}
 
 	if len(attachments) > 0 {
-		prompt = append(prompt, "", "Attachment metadata:", limitPromptSection(formatThreadTitleAttachments(attachments), 4_000))
+		prompt = append(prompt, "", "Attachment metadata:", textgen.LimitPromptSection(formatThreadTitleAttachments(attachments), 4_000))
 	}
 
 	return strings.Join(prompt, "\n")
