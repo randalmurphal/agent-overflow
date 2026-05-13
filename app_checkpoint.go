@@ -53,36 +53,21 @@ func (a *App) captureMessageCheckpoint(thread store.Thread, userItem store.Item)
 
 	ref := checkpoint.ThreadRefPrefix(thread.ID) + "message/" + uuid.NewString()
 	if err := cap.CaptureRef(ctx, workspace, ref); err != nil {
-		a.emit("checkpoint:error", map[string]any{
-			"threadId":   thread.ID,
-			"userItemId": userItem.ID,
-			"turnIndex":  userItem.TurnIndex,
-			"error":      err.Error(),
-		})
+		a.emitCheckpointError(thread.ID, userItem.ID, userItem.TurnIndex, err)
 		return
 	}
 
 	var files []diffsummary.File
 	if prev, ok, err := a.store.GetPreviousCheckpoint(thread.ID, userItem.TurnIndex); err != nil {
 		log.Printf("checkpoint: previous checkpoint lookup failed thread=%s user_item=%s: %v", thread.ID, userItem.ID, err)
-		a.emit("checkpoint:error", map[string]any{
-			"threadId":   thread.ID,
-			"userItemId": userItem.ID,
-			"turnIndex":  userItem.TurnIndex,
-			"error":      err.Error(),
-		})
+		a.emitCheckpointError(thread.ID, userItem.ID, userItem.TurnIndex, err)
 	} else if ok {
 		if prev.WorkspacePath == workspace {
 			var diffErr error
 			files, diffErr = cap.DiffRefToRefSummary(ctx, workspace, prev.RefName, ref)
 			if diffErr != nil {
 				log.Printf("checkpoint: diff summary failed thread=%s user_item=%s: %v", thread.ID, userItem.ID, diffErr)
-				a.emit("checkpoint:error", map[string]any{
-					"threadId":   thread.ID,
-					"userItemId": userItem.ID,
-					"turnIndex":  userItem.TurnIndex,
-					"error":      diffErr.Error(),
-				})
+				a.emitCheckpointError(thread.ID, userItem.ID, userItem.TurnIndex, diffErr)
 				files = nil
 			}
 		}
@@ -103,23 +88,13 @@ func (a *App) captureMessageCheckpoint(thread store.Thread, userItem store.Item)
 	stale, err := a.store.ReplaceCheckpointByUserItemID(record)
 	if err != nil {
 		_ = cap.DeleteRef(ctx, workspace, ref)
-		a.emit("checkpoint:error", map[string]any{
-			"threadId":   thread.ID,
-			"userItemId": userItem.ID,
-			"turnIndex":  userItem.TurnIndex,
-			"error":      err.Error(),
-		})
+		a.emitCheckpointError(thread.ID, userItem.ID, userItem.TurnIndex, err)
 		return
 	}
 	if stale.RefName != "" {
 		if err := cap.DeleteRef(ctx, stale.WorkspacePath, stale.RefName); err != nil {
 			log.Printf("checkpoint: delete stale ref failed thread=%s ref=%s: %v", thread.ID, stale.RefName, err)
-			a.emit("checkpoint:error", map[string]any{
-				"threadId":   thread.ID,
-				"userItemId": userItem.ID,
-				"turnIndex":  userItem.TurnIndex,
-				"error":      err.Error(),
-			})
+			a.emitCheckpointError(thread.ID, userItem.ID, userItem.TurnIndex, err)
 		}
 	}
 
@@ -128,6 +103,19 @@ func (a *App) captureMessageCheckpoint(thread store.Thread, userItem store.Item)
 		"userItemId": userItem.ID,
 		"turnIndex":  userItem.TurnIndex,
 		"capturedAt": now,
+	})
+}
+
+// emitCheckpointError publishes a `checkpoint:error` event with the
+// canonical {threadId, userItemId, turnIndex, error} payload the
+// frontend's checkpoint banner consumes. Centralises the field names
+// so a future schema tweak touches one site, not five.
+func (a *App) emitCheckpointError(threadID, userItemID string, turnIndex int, err error) {
+	a.emit("checkpoint:error", map[string]any{
+		"threadId":   threadID,
+		"userItemId": userItemID,
+		"turnIndex":  turnIndex,
+		"error":      err.Error(),
 	})
 }
 
