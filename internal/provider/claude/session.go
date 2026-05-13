@@ -90,10 +90,10 @@ type Session struct {
 	// pendingApprovals maps approval request IDs to the in-flight request
 	// metadata needed to resolve, cancel, or drain it.
 	pendingApprovals map[string]*pendingApproval
-	// resolvedApprovals remembers request IDs that have already been
-	// answered so duplicate responses return ErrApprovalAlreadyResolved
-	// (Bug B9) instead of writing a second control_response to the CLI.
-	resolvedApprovals map[string]struct{}
+	// approvalDedup tracks request IDs already answered so duplicate
+	// responses return ErrApprovalAlreadyResolved (Bug B9) instead of
+	// writing a second control_response to the CLI. Guarded by approvalsMu.
+	approvalDedup provider.ApprovalDeduper
 	// approvalsClosed is set when Close has resolved all pending requests
 	// so late-arriving approvals do not register new ones.
 	approvalsClosed bool
@@ -815,7 +815,7 @@ func (s *Session) trackPendingApprovalWithQuestions(requestID string, resolveKin
 	}
 	// Starting a new pending request re-opens the ID in case the provider
 	// re-sent the request after a response.
-	delete(s.resolvedApprovals, requestID)
+	s.approvalDedup.Forget(requestID)
 	s.approvalsMu.Unlock()
 }
 
@@ -834,42 +834,29 @@ func (s *Session) pendingUserInputQuestions(requestID string) []provider.UserInp
 // dedup) or the session is closing.
 func (s *Session) claimApproval(requestID string, expectedKind provider.EventKind) bool {
 	s.approvalsMu.Lock()
-	if _, already := s.resolvedApprovals[requestID]; already {
-		s.approvalsMu.Unlock()
+	defer s.approvalsMu.Unlock()
+	if s.approvalDedup.IsResolved(requestID) {
 		return false
 	}
 	pending, hadPending := s.pendingApprovals[requestID]
 	if !hadPending || pending.resolveKind != expectedKind {
-		s.approvalsMu.Unlock()
 		return false
 	}
 	delete(s.pendingApprovals, requestID)
-	if s.resolvedApprovals == nil {
-		s.resolvedApprovals = make(map[string]struct{})
-	}
-	// Soft-cap the dedup set so long-running sessions don't accumulate
-	// one entry per answered approval for the life of the process. The
-	// hot window is small; dropping older IDs may admit a duplicate
-	// response for an ancient request at worst, which the provider
-	// discards.
-	if len(s.resolvedApprovals) >= resolvedApprovalsSoftCap {
-		s.resolvedApprovals = make(map[string]struct{})
-	}
-	s.resolvedApprovals[requestID] = struct{}{}
-	s.approvalsMu.Unlock()
+	s.approvalDedup.MarkResolved(requestID)
 	return true
 }
 
 // clearPendingApprovals resolves every outstanding interactive request
-// with a "lost" decision. It also drops the resolvedApprovals dedup set:
-// once Close has been called, no duplicate response can land at the
-// provider, so the memory cost of keeping the IDs around is pure overhead.
+// with a "lost" decision. It also drops the dedup set: once Close has
+// been called, no duplicate response can land at the provider, so the
+// memory cost of keeping the IDs around is pure overhead.
 func (s *Session) clearPendingApprovals() {
 	s.approvalsMu.Lock()
 	s.approvalsClosed = true
 	pending := s.pendingApprovals
 	s.pendingApprovals = nil
-	s.resolvedApprovals = nil
+	s.approvalDedup.Reset()
 	s.approvalsMu.Unlock()
 	for requestID, p := range pending {
 		// Decision "lost" signals session-ended-mid-prompt to triage
@@ -898,16 +885,6 @@ func (s *Session) clearPendingApprovals() {
 		})
 	}
 }
-
-// resolvedApprovalsSoftCap bounds the per-session dedup set. Duplicate
-// responses for the same requestID can only arrive while a provider is
-// still mid-turn; once the session has accumulated this many answered
-// approvals the oldest entries are dropped so memory stays flat on
-// very long-running sessions. Exceeding the cap is not a correctness
-// issue — a duplicate for a flushed entry would write one extra
-// control_response, which the provider discards, so the cap is a
-// pragmatic ceiling rather than a hard requirement.
-const resolvedApprovalsSoftCap = 1000
 
 // SessionID returns the provider's session identifier.
 // Only valid after the init event has been received.
@@ -1262,7 +1239,7 @@ func (s *Session) handleControlCancelRequestLine(line []byte) {
 // unknown, the call is a no-op.
 func (s *Session) cancelPendingApproval(requestID string) {
 	s.approvalsMu.Lock()
-	if _, already := s.resolvedApprovals[requestID]; already {
+	if s.approvalDedup.IsResolved(requestID) {
 		s.approvalsMu.Unlock()
 		return
 	}
@@ -1272,13 +1249,7 @@ func (s *Session) cancelPendingApproval(requestID string) {
 		return
 	}
 	delete(s.pendingApprovals, requestID)
-	if s.resolvedApprovals == nil {
-		s.resolvedApprovals = make(map[string]struct{})
-	}
-	if len(s.resolvedApprovals) >= resolvedApprovalsSoftCap {
-		s.resolvedApprovals = make(map[string]struct{})
-	}
-	s.resolvedApprovals[requestID] = struct{}{}
+	s.approvalDedup.MarkResolved(requestID)
 	resolveKind := pending.resolveKind
 	s.approvalsMu.Unlock()
 

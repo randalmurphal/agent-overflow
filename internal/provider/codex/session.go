@@ -73,11 +73,11 @@ type Session struct {
 	// RequestID field of ApprovalResponse) to the in-flight request
 	// metadata needed to resolve, cancel, or drain it.
 	pendingApprovals map[string]*pendingApproval
-	// resolvedApprovals remembers request IDs that have already been
-	// answered so a second RespondToApproval returns
-	// ErrApprovalAlreadyResolved (Bug B9) rather than silently writing
-	// another response to the provider.
-	resolvedApprovals map[string]struct{}
+	// approvalDedup tracks request IDs already answered so a second
+	// RespondToApproval returns ErrApprovalAlreadyResolved (Bug B9)
+	// rather than silently writing another response to the provider.
+	// Guarded by approvalsMu.
+	approvalDedup provider.ApprovalDeduper
 	// approvalsClosed is set by Close so late-arriving approvals don't
 	// register new pending requests after teardown.
 	approvalsClosed bool
@@ -2241,7 +2241,7 @@ func (s *Session) trackPendingApproval(rpcID int64, resolveKind provider.EventKi
 	// Starting a new pending request re-opens the ID: e.g. if we previously
 	// resolved it and the provider re-sent the request (unusual, but
 	// cheap to support).
-	delete(s.resolvedApprovals, requestID)
+	s.approvalDedup.Forget(requestID)
 	s.approvalsMu.Unlock()
 }
 
@@ -2250,29 +2250,16 @@ func (s *Session) trackPendingApproval(rpcID int64, resolveKind provider.EventKi
 // dedup) or the session is closing.
 func (s *Session) claimApproval(requestID string, expectedKind provider.EventKind) bool {
 	s.approvalsMu.Lock()
-	if _, already := s.resolvedApprovals[requestID]; already {
-		s.approvalsMu.Unlock()
+	defer s.approvalsMu.Unlock()
+	if s.approvalDedup.IsResolved(requestID) {
 		return false
 	}
 	pending, hadPending := s.pendingApprovals[requestID]
 	if !hadPending || pending.resolveKind != expectedKind {
-		s.approvalsMu.Unlock()
 		return false
 	}
 	delete(s.pendingApprovals, requestID)
-	if s.resolvedApprovals == nil {
-		s.resolvedApprovals = make(map[string]struct{})
-	}
-	// Soft-cap the dedup set so long-running sessions don't accumulate
-	// one entry per answered approval for the life of the process. The
-	// hot window is small; dropping older IDs may admit a duplicate
-	// response for an ancient request at worst, which the provider
-	// discards.
-	if len(s.resolvedApprovals) >= resolvedApprovalsSoftCap {
-		s.resolvedApprovals = make(map[string]struct{})
-	}
-	s.resolvedApprovals[requestID] = struct{}{}
-	s.approvalsMu.Unlock()
+	s.approvalDedup.MarkResolved(requestID)
 	return true
 }
 
@@ -2310,7 +2297,7 @@ func (s *Session) drainPendingApprovals(decisionWord string, closeSession bool, 
 	pending := s.pendingApprovals
 	s.pendingApprovals = nil
 	if closeSession {
-		s.resolvedApprovals = nil
+		s.approvalDedup.Reset()
 	}
 	s.approvalsMu.Unlock()
 
@@ -2361,11 +2348,6 @@ func (s *Session) writeDrainResponse(requestID string, p *pendingApproval, decis
 		log.Printf("codex: drain response for %s (kind=%v): %v", requestID, p.resolveKind, err)
 	}
 }
-
-// resolvedApprovalsSoftCap bounds the per-session dedup set on long
-// sessions. See the Claude session's constant of the same name for
-// rationale.
-const resolvedApprovalsSoftCap = 1000
 
 // -- helpers --
 
