@@ -24,6 +24,7 @@
   } from './composerKeyboard';
   import { createComposerImagePlaceholders } from './composerImagePlaceholders';
   import { createComposerMentions } from './composerMentions.svelte';
+  import { deriveComposerSendState } from './composerSendState';
   import { createComposerUploads } from './composerUploads.svelte';
   import { dispatchInterrupt, dispatchSend, dispatchSteer } from './composerSend';
   import { RespondToApproval, RespondToUserInput, type ApprovalResponse, type UserInputResponse } from '../../stores/bindings';
@@ -161,40 +162,27 @@
       : [],
   );
   let hasDraftDiffReviewComments = $derived(Boolean(activeDiffReviewSource) && activeDiffReviewDraftComments.length > 0);
-  let hasPlanImplementAction = $derived(Boolean(latestPlanSource) && !hasDraftContent && !hasDraftPlanComments);
-  let hasPlanCommentAction = $derived(Boolean(latestPlanSource) && hasDraftPlanComments);
-  let hasDiffReviewCommentAction = $derived(Boolean(activeDiffReviewSource) && hasDraftDiffReviewComments);
   // Drop `!isTurnActive` for hasDraftContent and plan-comment paths —
   // those are queueable mid-round. Implement-only (no draft, no
   // comments) still requires an idle turn because it kicks off the
   // implementProposedPlan helper which does work beyond a single
   // SendMessage RPC; queueing it is a future enhancement.
-  let canSend = $derived(
-    !isDisabled &&
-      !sending &&
-      !hasBlockingPrompt &&
-      !hasUserInputPrompt &&
-      (
-        hasDraftContent
-        || hasPlanCommentAction
-        || hasDiffReviewCommentAction
-        || (!isTurnActive && hasPlanImplementAction)
-      ),
-  );
-  let sendLabel = $derived.by(() => {
-    if (hasDraftDiffReviewComments) return 'Send comments';
-    if (!latestPlanSource || isTurnActive) return undefined;
-    if (hasDraftPlanComments) return 'Send comments';
-    if (!hasDraftContent) return 'Implement';
-    return 'Refine';
-  });
-  let sendAction = $derived.by<'send' | 'implement' | 'refine' | 'send-comments'>(() => {
-    if (hasDraftDiffReviewComments) return 'send-comments';
-    if (!latestPlanSource || isTurnActive) return 'send';
-    if (hasDraftPlanComments) return 'send-comments';
-    if (!hasDraftContent) return 'implement';
-    return 'refine';
-  });
+  let sendState = $derived(deriveComposerSendState({
+    isDisabled,
+    sending,
+    hasBlockingPrompt,
+    hasUserInputPrompt,
+    hasDraftContent,
+    hasPlanSource: Boolean(latestPlanSource),
+    hasDraftPlanComments,
+    hasDiffReviewSource: Boolean(activeDiffReviewSource),
+    hasDraftDiffReviewComments,
+    isTurnActive,
+  }));
+  let canSend = $derived(sendState.canSend);
+  let sendLabel = $derived(sendState.label);
+  let sendAction = $derived(sendState.action);
+  let hasPlanImplementAction = $derived(sendState.hasPlanImplementAction);
   let inputDisabled = $derived(isDisabled || hasBlockingPrompt);
   let inputValue = $derived(hasUserInputPrompt ? userInputCustomAnswer : draft.content);
   let placeholder = $derived.by(() => {
