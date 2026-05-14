@@ -16,6 +16,19 @@ export interface TimelineGeometry {
   getItemOffset(index: number): number;
 }
 
+export interface TimelineAutoLoadOlderState {
+  offset: number;
+  firstVisibleIndex: number;
+  hasMoreHistory: boolean;
+  loadingOlder: boolean;
+  oldestLoadedTurnIndex: number | null;
+  restoredThreadId: string | null;
+  threadId: string | null;
+  attemptedAtFloor: number | null;
+  offsetThreshold: number;
+  indexThreshold: number;
+}
+
 export function resolveVisibleTimelineNodeIndex(
   nodes: TimelineNode[],
   items: readonly Item[],
@@ -57,4 +70,14 @@ export function captureTimelineAnchor(
     itemId: timelineNodeItemId(node),
     offsetTop: geometry.getItemOffset(idx) - offset,
   };
+}
+
+export function shouldAutoLoadOlder(state: TimelineAutoLoadOlderState): boolean {
+  if (!state.hasMoreHistory) return false;
+  if (state.loadingOlder) return false;
+  if (state.oldestLoadedTurnIndex === null) return false;
+  if (state.restoredThreadId !== state.threadId) return false;
+  if (state.offset >= state.offsetThreshold) return false;
+  if (state.firstVisibleIndex > state.indexThreshold) return false;
+  return state.attemptedAtFloor !== state.oldestLoadedTurnIndex;
 }

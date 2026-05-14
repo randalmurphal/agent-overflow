@@ -43,6 +43,7 @@
     captureTimelineAnchor,
     centeredScrollTop,
     resolveVisibleTimelineNodeIndex,
+    shouldAutoLoadOlder,
     timelineRowElementForIndex,
   } from './timelineScroll';
   import { createTimelineTargetFlash } from './timelineTargetFlash.svelte';
@@ -308,34 +309,19 @@
   // bypassed (no progress, fast-skip past the threshold, etc.).
   function maybeAutoLoadOlder(offset: number): void {
     if (!listRef) return;
-    if (!pane.hasMoreHistory) return;
-    if (pane.loadingOlder) return;
-    // Defensive null-floor exit. `pane.loadOlder()` already noops when
-    // `oldestLoadedTurnIndex === null`, but leaving the guard at
-    // `null === null` would let every scroll tick re-fire the auto-load
-    // (the `!== null` precondition on the progress guard means the
-    // identity comparison below never engages for null floors). The
-    // combination only arises with a malformed backend response
-    // (`hasMore=true` alongside no items), but the cost of pinning it
-    // here is one comparison per scroll tick.
-    if (pane.oldestLoadedTurnIndex === null) return;
-    // Restoration must finish first — auto-loading mid-restore would
-    // race the anchor capture in handleLoadOlder against an unstable
-    // scrollTop.
-    if (restoredThreadId !== pane.threadId) return;
-    if (offset >= AUTO_LOAD_OFFSET_PX) return;
     const firstIdx = listRef.findItemIndex(offset);
-    if (firstIdx > AUTO_LOAD_INDEX_THRESHOLD) return;
-    // Progress guard. A previous auto-load attempt that resolved
-    // without advancing the floor (no older items returned, stale
-    // generation, error path, or backend signaled hasMore=true without
-    // actually shifting the floor) sets this so we don't hammer the
-    // same query while the user lingers near the top. Cleared
-    // implicitly when loadOlder advances the floor (the identity
-    // comparison becomes false again) or explicitly on thread switch
-    // in the $effect.pre reset block.
-    if (autoLoadAttemptedAtFloor !== null
-        && autoLoadAttemptedAtFloor === pane.oldestLoadedTurnIndex) return;
+    if (!shouldAutoLoadOlder({
+      offset,
+      firstVisibleIndex: firstIdx,
+      hasMoreHistory: pane.hasMoreHistory,
+      loadingOlder: pane.loadingOlder,
+      oldestLoadedTurnIndex: pane.oldestLoadedTurnIndex,
+      restoredThreadId,
+      threadId: pane.threadId,
+      attemptedAtFloor: autoLoadAttemptedAtFloor,
+      offsetThreshold: AUTO_LOAD_OFFSET_PX,
+      indexThreshold: AUTO_LOAD_INDEX_THRESHOLD,
+    })) return;
     autoLoadAttemptedAtFloor = pane.oldestLoadedTurnIndex;
     void handleLoadOlder();
   }

@@ -5,6 +5,7 @@ import {
   captureTimelineAnchor,
   centeredScrollTop,
   resolveVisibleTimelineNodeIndex,
+  shouldAutoLoadOlder,
   timelineRowElementForIndex,
   type TimelineGeometry,
 } from './timelineScroll';
@@ -86,5 +87,45 @@ describe('timelineScroll', () => {
     const nodes = groupItemsBySubagent([makeItem({ id: 'a', summary: 'first' })]);
 
     expect(captureTimelineAnchor(nodes, geometry(-1, 0), 200)).toBeNull();
+  });
+
+  it('auto-loads older items when restored near the top of the loaded window', () => {
+    expect(shouldAutoLoadOlder({
+      offset: 799,
+      firstVisibleIndex: 5,
+      hasMoreHistory: true,
+      loadingOlder: false,
+      oldestLoadedTurnIndex: 10,
+      restoredThreadId: 'thread-1',
+      threadId: 'thread-1',
+      attemptedAtFloor: null,
+      offsetThreshold: 800,
+      indexThreshold: 5,
+    })).toBe(true);
+  });
+
+  it.each([
+    ['missing history', { hasMoreHistory: false }],
+    ['active load', { loadingOlder: true }],
+    ['null floor', { oldestLoadedTurnIndex: null }],
+    ['unrestored thread', { restoredThreadId: null }],
+    ['wrong restored thread', { restoredThreadId: 'thread-2' }],
+    ['past offset threshold', { offset: 800 }],
+    ['past index threshold', { firstVisibleIndex: 6 }],
+    ['already attempted same floor', { attemptedAtFloor: 10 }],
+  ])('does not auto-load older items for %s', (_, overrides) => {
+    expect(shouldAutoLoadOlder({
+      offset: 799,
+      firstVisibleIndex: 5,
+      hasMoreHistory: true,
+      loadingOlder: false,
+      oldestLoadedTurnIndex: 10,
+      restoredThreadId: 'thread-1',
+      threadId: 'thread-1',
+      attemptedAtFloor: null,
+      offsetThreshold: 800,
+      indexThreshold: 5,
+      ...overrides,
+    })).toBe(false);
   });
 });
