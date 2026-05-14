@@ -23,6 +23,7 @@
     shouldRetractQueueOnUpArrow,
   } from './composerKeyboard';
   import { createComposerImagePlaceholders } from './composerImagePlaceholders';
+  import { deriveComposerInputState } from './composerInputState';
   import { createComposerMentions } from './composerMentions.svelte';
   import { deriveComposerSendState } from './composerSendState';
   import { createComposerUploads } from './composerUploads.svelte';
@@ -183,17 +184,20 @@
   let sendLabel = $derived(sendState.label);
   let sendAction = $derived(sendState.action);
   let hasPlanImplementAction = $derived(sendState.hasPlanImplementAction);
-  let inputDisabled = $derived(isDisabled || hasBlockingPrompt);
-  let inputValue = $derived(hasUserInputPrompt ? userInputCustomAnswer : draft.content);
-  let placeholder = $derived.by(() => {
-    if (isDisabled) return 'Select or create a thread to start';
-    if (hasBlockingPrompt) return 'Respond to the approval request to continue';
-    if (hasUserInputPrompt) return 'Type a custom answer, or choose an option above';
-    if (activeDiffReviewSource && hasDraftDiffReviewComments) return 'Add optional notes, or send the diff comments';
-    if (latestPlanSource && hasDraftPlanComments) return 'Add optional notes, or send the plan comments';
-    if (latestPlanSource) return 'Add feedback to refine the plan, or leave blank to implement it';
-    return 'Send a message… (Shift+Enter for newline, @ to mention a file)';
-  });
+  let inputState = $derived(deriveComposerInputState({
+    isDisabled,
+    hasBlockingPrompt,
+    hasUserInputPrompt,
+    userInputCustomAnswer,
+    draftContent: draft.content,
+    hasDiffReviewSource: Boolean(activeDiffReviewSource),
+    hasDraftDiffReviewComments,
+    hasPlanSource: Boolean(latestPlanSource),
+    hasDraftPlanComments,
+  }));
+  let inputDisabled = $derived(inputState.disabled);
+  let inputValue = $derived(inputState.value);
+  let placeholder = $derived(inputState.placeholder);
   $effect(() => {
     activeUserInput?.requestId;
     userInputCustomAnswer = '';
