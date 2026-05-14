@@ -45,6 +45,7 @@
     resolveVisibleTimelineNodeIndex,
     timelineRowElementForIndex,
   } from './timelineScroll';
+  import { createTimelineTargetFlash } from './timelineTargetFlash.svelte';
 
   // Initial item-size estimate for virtua. Real sizes come from the
   // per-item ResizeObserver virtua wraps each row in; this constant only
@@ -132,9 +133,7 @@
   // passive scroll-event callback) and reset in `$effect.pre` — no
   // template or `$derived` consumers.
   let autoLoadAttemptedAtFloor: number | null = null;
-  let flashingItemId: string | null = $state(null);
-  let targetFlashNonce = $state(0);
-  let flashTimer: ReturnType<typeof setTimeout> | null = null;
+  const targetFlash = createTimelineTargetFlash(TARGET_FLASH_MS);
 
   let groupedNodes = $derived<TimelineNode[]>(
     groupItemsBySubagent(filterRedundantNotifications(pane.items)),
@@ -273,24 +272,6 @@
 
   function isToolTextBoundary(index: number): boolean {
     return isToolTextBoundaryAt(groupedNodes, index);
-  }
-
-  function clearTargetFlash(): void {
-    if (flashTimer) {
-      clearTimeout(flashTimer);
-      flashTimer = null;
-    }
-    flashingItemId = null;
-  }
-
-  function flashTargetItem(itemId: string): void {
-    clearTargetFlash();
-    targetFlashNonce += 1;
-    flashingItemId = itemId;
-    flashTimer = setTimeout(() => {
-      if (flashingItemId === itemId) flashingItemId = null;
-      flashTimer = null;
-    }, TARGET_FLASH_MS);
   }
 
   function rowElementForIndex(index: number): HTMLElement | null {
@@ -756,7 +737,7 @@
       stick.setEscapedFromLock(true);
       listRef.scrollToIndex(idx, { align: 'center' });
     }
-    if (options.flash) flashTargetItem(targetItemId);
+    if (options.flash) targetFlash.flash(targetItemId);
   }
 
   let lastHandledScrollNonce = 0;
@@ -773,7 +754,7 @@
 
   onDestroy(() => {
     if (restoredThreadId) saveScrollSnapshotForThread(restoredThreadId);
-    clearTargetFlash();
+    targetFlash.clear();
     stick.detach();
   });
 </script>
@@ -841,8 +822,8 @@
             {onImageExpand}
             {userMessageActions}
             codexSubagentReceiverLabels={codexReceiverLabels}
-            targetFlash={flashingItemId === node.item.id}
-            targetFlashNonce={flashingItemId === node.item.id ? targetFlashNonce : 0}
+            targetFlash={targetFlash.itemId === node.item.id}
+            targetFlashNonce={targetFlash.itemId === node.item.id ? targetFlash.nonce : 0}
           />
         {:else if node.kind === 'group'}
           <SubagentGroup {pane} group={node} {depth} {renderNode} />
