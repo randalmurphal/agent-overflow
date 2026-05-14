@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { makeItem } from '../../test/helpers/chat';
 import {
+  applyItemUpsertsToWindow,
   compareItemsByTimelinePosition,
   itemsForThread,
   mergeItemsById,
@@ -73,5 +74,73 @@ describe('threadItems', () => {
     expect(merged.map((item) => item.id)).toEqual(['load', 'streamed']);
     expect(merged[1]).toBe(streamed);
     expect(merged[1].summary).toBe('live');
+  });
+
+  it('applies in-thread upserts and keeps the timeline sorted', () => {
+    const current = [
+      makeItem({ id: 'first', threadId: 'thread-1', turnIndex: 2 }),
+      makeItem({ id: 'last', threadId: 'thread-1', turnIndex: 4 }),
+    ];
+    const replacement = makeItem({
+      id: 'last',
+      threadId: 'thread-1',
+      turnIndex: 1,
+      summary: 'moved earlier',
+    });
+
+    const next = applyItemUpsertsToWindow({
+      current,
+      incoming: [
+        makeItem({ id: 'foreign', threadId: 'thread-2', turnIndex: 0 }),
+        replacement,
+        makeItem({ id: 'middle', threadId: 'thread-1', turnIndex: 3 }),
+      ],
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: 2,
+    });
+
+    expect(next.map((item) => item.id)).toEqual(['last', 'first', 'middle']);
+    expect(next[0]).toBe(replacement);
+  });
+
+  it('drops new rows below the loaded floor but still accepts existing-row corrections', () => {
+    const current = [
+      makeItem({ id: 'existing', threadId: 'thread-1', turnIndex: 3, summary: 'old' }),
+    ];
+    const corrected = makeItem({
+      id: 'existing',
+      threadId: 'thread-1',
+      turnIndex: 1,
+      summary: 'corrected below floor',
+    });
+
+    const next = applyItemUpsertsToWindow({
+      current,
+      incoming: [
+        makeItem({ id: 'too-old', threadId: 'thread-1', turnIndex: 1 }),
+        corrected,
+      ],
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: 3,
+    });
+
+    expect(next.map((item) => item.id)).toEqual(['existing']);
+    expect(next[0]).toBe(corrected);
+  });
+
+  it('returns the current reference when every incoming upsert is ignored', () => {
+    const current = [
+      makeItem({ id: 'existing', threadId: 'thread-1', turnIndex: 3 }),
+    ];
+
+    expect(applyItemUpsertsToWindow({
+      current,
+      incoming: [
+        makeItem({ id: 'foreign', threadId: 'thread-2', turnIndex: 3 }),
+        makeItem({ id: 'too-old', threadId: 'thread-1', turnIndex: 1 }),
+      ],
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: 2,
+    })).toBe(current);
   });
 });

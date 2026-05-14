@@ -73,6 +73,7 @@ import {
   type ThreadItemSnapshot,
 } from './threadItemCache';
 import {
+  applyItemUpsertsToWindow,
   compareItemsByTimelinePosition,
   itemsForThread,
   mergeItemsById,
@@ -546,9 +547,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // (which would otherwise revoke them in UserMessage's onDestroy and force
   // a re-fetch+re-allocate on the next back-scroll). Revoked on thread switch.
   const attachmentBlobs: Map<string, Map<string, ImagePreviewItem>> = new Map();
-  const itemStatusById: Map<string, Item['status']> = new Map();
   const itemIndexById: Map<string, number> = new Map();
-  const itemIdsByTurn: Map<number, string[]> = new Map();
   let pendingApprovals: ApprovalRequest[] = $state([]);
   let pendingUserInputs: UserInputRequest[] = $state([]);
   const resolvedApprovalIds = new Set<string>();
@@ -1040,43 +1039,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   }
 
   function rebuildItemIndexes(nextItems: Item[]): void {
-    itemStatusById.clear();
     itemIndexById.clear();
-    itemIdsByTurn.clear();
     for (let index = 0; index < nextItems.length; index += 1) {
       const item = nextItems[index];
-      itemStatusById.set(item.id, item.status);
       itemIndexById.set(item.id, index);
-      appendItemIdToTurn(item.turnIndex, item.id);
-    }
-  }
-
-  function appendItemIdToTurn(turnIndex: number, itemId: string): void {
-    const ids = itemIdsByTurn.get(turnIndex);
-    if (ids) {
-      ids.push(itemId);
-      return;
-    }
-    itemIdsByTurn.set(turnIndex, [itemId]);
-  }
-
-  function addUniqueItemIdToTurn(turnIndex: number, itemId: string): void {
-    const ids = itemIdsByTurn.get(turnIndex);
-    if (ids) {
-      if (!ids.includes(itemId)) ids.push(itemId);
-      return;
-    }
-    itemIdsByTurn.set(turnIndex, [itemId]);
-  }
-
-  function removeItemIdFromTurn(turnIndex: number, itemId: string): void {
-    const ids = itemIdsByTurn.get(turnIndex);
-    if (!ids) return;
-    const next = ids.filter((id) => id !== itemId);
-    if (next.length > 0) {
-      itemIdsByTurn.set(turnIndex, next);
-    } else {
-      itemIdsByTurn.delete(turnIndex);
     }
   }
 
@@ -1145,56 +1111,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   function upsertItemsBatch(incoming: Item[]): void {
     if (incoming.length === 0) return;
 
-    const currentThreadId = thread?.id ?? null;
-    const next = items.slice();
-
-    let changed = false;
-    let needsSort = false;
-
-    for (const item of incoming) {
-      if (currentThreadId !== null && item.threadId !== currentThreadId) continue;
-
-      const existingIndex = itemIndexById.get(item.id);
-      if (existingIndex !== undefined) {
-        const previous = next[existingIndex];
-        next[existingIndex] = item;
-        itemStatusById.set(item.id, item.status);
-        if (previous.turnIndex !== item.turnIndex) {
-          removeItemIdFromTurn(previous.turnIndex, item.id);
-          addUniqueItemIdToTurn(item.turnIndex, item.id);
-        }
-        if (compareItemsByTimelinePosition(previous, item) !== 0) {
-          needsSort = true;
-        }
-        changed = true;
-        continue;
-      }
-
-      // Window-floor guard for NEW items. Existing-id replacements above
-      // already bypass this because an in-window row can legitimately be
-      // corrected below the floor.
-      if (oldestLoadedTurnIndex !== null && item.turnIndex < oldestLoadedTurnIndex) {
-        continue;
-      }
-
-      const previousTail = next.at(-1);
-      if (previousTail && compareItemsByTimelinePosition(previousTail, item) > 0) {
-        needsSort = true;
-      }
-      itemIndexById.set(item.id, next.length);
-      next.push(item);
-      itemStatusById.set(item.id, item.status);
-      appendItemIdToTurn(item.turnIndex, item.id);
-      changed = true;
-    }
-
-    if (!changed) return;
-
-    if (needsSort) {
-      next.sort(compareItemsByTimelinePosition);
-      rebuildItemIndexes(next);
-    }
+    const next = applyItemUpsertsToWindow({
+      current: items,
+      incoming,
+      currentThreadId: thread?.id ?? null,
+      oldestLoadedTurnIndex,
+    });
+    if (next === items) return;
     items = next;
+    rebuildItemIndexes(items);
     timelineRevision++;
 
     // Design-mode side-channel: scan assistant text for structured
