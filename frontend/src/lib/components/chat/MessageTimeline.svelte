@@ -18,14 +18,11 @@
   } from '../../utils/threadScrollSnapshots';
   import {
     finalAssistantTextIdsByTurn,
-    findTimelineNodeIndex as findNodeIndexInList,
     groupItemsBySubagent,
     isToolTextBoundary as isToolTextBoundaryAt,
     nodeRole,
-    timelineNodeItemId,
     timelineNodeKey,
     timelineNodeTurnIndex,
-    visibleTimelineItemIdForItem,
     type TimelineNode,
   } from '../../utils/subagentGrouping';
   import { codexSubagentReceiverLabels } from '../../utils/subagentLaunch';
@@ -39,9 +36,15 @@
   import TimelineLeaf from './TimelineLeaf.svelte';
   import WaitGroup from './WaitGroup.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
-  import { recordTimelineRenderTrace } from './messageTimelineTrace';
+  import { recordTimelineRenderTrace, startTimelineRowResizeTrace } from './messageTimelineTrace';
   import { isUiRenderTraceEnabled, recordUiTrace } from '../../utils/uiRenderTrace';
   import type { UserMessageActions } from './userMessageActions';
+  import {
+    captureTimelineAnchor,
+    centeredScrollTop,
+    resolveVisibleTimelineNodeIndex,
+    timelineRowElementForIndex,
+  } from './timelineScroll';
 
   // Initial item-size estimate for virtua. Real sizes come from the
   // per-item ResizeObserver virtua wraps each row in; this constant only
@@ -253,113 +256,7 @@
   // is responsible for an unexpected ±N px oscillation on thread re-entry.
   $effect(() => {
     if (!isUiRenderTraceEnabled() || !contentEl) return;
-    const root = contentEl;
-    const ROW_SELECTOR = '[data-row-index]';
-    const tracked = new Map<Element, { rowIndex: string; height: number }>();
-
-    const fingerprintRow = (el: Element): string => {
-      const tags: string[] = [];
-      if (el.querySelector('pre.shiki, pre[class*="shiki"]')) tags.push('shiki');
-      if (el.querySelector('[class*="skeleton"], [class*="animate-pulse"]')) tags.push('skeleton');
-      if (el.querySelector('[data-mermaid-source], svg.mermaid, .mermaid svg')) tags.push('mermaid');
-      if (el.querySelector('.katex, [class*="katex"]')) tags.push('katex');
-      if (el.querySelector('[data-streamdown-code]')) tags.push('sd-code');
-      if (el.querySelector('img')) tags.push('img');
-      if (el.querySelector('[data-testid="approval-card"]')) tags.push('approval');
-      if (el.querySelector('[data-testid="todo-list"]')) tags.push('todo');
-      if (el.querySelector('[data-testid*="working"]')) tags.push('working');
-      return tags.join(',');
-    };
-
-    const inspectDescendants = (el: Element): Record<string, unknown> => {
-      const out: Record<string, unknown> = {};
-      const pre = el.querySelector('pre');
-      if (pre) {
-        out.preClass = (pre.className?.toString() ?? '').slice(0, 120);
-        out.preChildCount = pre.children.length;
-        out.preTextLen = (pre.textContent ?? '').length;
-      }
-      const sdCode = el.querySelector('[data-streamdown-code]');
-      if (sdCode) out.sdCodeId = sdCode.getAttribute('data-streamdown-code') ?? '';
-      const mermaid = el.querySelector('[data-mermaid-source]');
-      if (mermaid) {
-        out.mermaidHasSvg = mermaid.querySelector('svg') !== null;
-        out.mermaidChildCount = mermaid.children.length;
-      }
-      const katex = el.querySelector('.katex, [class*="katex"]');
-      if (katex) out.katexRendered = katex.querySelector('.katex-mathml') !== null;
-      const img = el.querySelector('img');
-      if (img) {
-        out.imgComplete = (img as HTMLImageElement).complete;
-        out.imgNaturalH = (img as HTMLImageElement).naturalHeight;
-      }
-      return out;
-    };
-
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const t = tracked.get(entry.target);
-        if (!t) continue;
-        const newHeight = Math.round(entry.contentRect.height);
-        if (newHeight === t.height) continue;
-        const prevHeight = t.height;
-        t.height = newHeight;
-        // Skip the initial 0/-1 → N first measurement (no real "change").
-        if (prevHeight < 0) continue;
-        const targetEl = entry.target as HTMLElement;
-        const itemId = targetEl.querySelector<HTMLElement>('[data-item-id]')?.dataset.itemId ?? '';
-        const textPreview = (targetEl.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 100);
-        recordUiTrace('timeline.row.resize', {
-          rowIndex: t.rowIndex,
-          itemId,
-          prevHeight,
-          newHeight,
-          delta: newHeight - prevHeight,
-          contentTags: fingerprintRow(targetEl),
-          outerHTMLLen: targetEl.outerHTML.length,
-          childCount: targetEl.querySelectorAll('*').length,
-          descendants: inspectDescendants(targetEl),
-          textPreview,
-        });
-      }
-    });
-
-    const trackElement = (el: Element) => {
-      if (tracked.has(el)) return;
-      tracked.set(el, {
-        rowIndex: (el as HTMLElement).dataset.rowIndex ?? '',
-        height: -1,
-      });
-      ro.observe(el);
-    };
-    const untrackElement = (el: Element) => {
-      if (!tracked.delete(el)) return;
-      ro.unobserve(el);
-    };
-
-    root.querySelectorAll(ROW_SELECTOR).forEach(trackElement);
-
-    const mo = new MutationObserver((mutations) => {
-      for (const m of mutations) {
-        m.addedNodes.forEach((n) => {
-          if (!(n instanceof Element)) return;
-          if (n.matches(ROW_SELECTOR)) trackElement(n);
-          n.querySelectorAll?.(ROW_SELECTOR).forEach(trackElement);
-        });
-        m.removedNodes.forEach((n) => {
-          if (!(n instanceof Element)) return;
-          if (n.matches(ROW_SELECTOR)) untrackElement(n);
-          n.querySelectorAll?.(ROW_SELECTOR).forEach(untrackElement);
-        });
-      }
-    });
-    mo.observe(root, { childList: true, subtree: true });
-
-    return () => {
-      mo.disconnect();
-      ro.disconnect();
-      tracked.clear();
-    };
+    return startTimelineRowResizeTrace(contentEl);
   });
 
   // ============================================================
@@ -371,10 +268,7 @@
   // `groupedNodes` into every call site.
 
   function findTimelineNodeIndex(itemId: string): number {
-    const direct = findNodeIndexInList(groupedNodes, itemId);
-    if (direct >= 0) return direct;
-    const visibleItemId = visibleTimelineItemIdForItem(pane.items, itemId);
-    return visibleItemId === itemId ? -1 : findNodeIndexInList(groupedNodes, visibleItemId);
+    return resolveVisibleTimelineNodeIndex(groupedNodes, pane.items, itemId);
   }
 
   function isToolTextBoundary(index: number): boolean {
@@ -400,14 +294,14 @@
   }
 
   function rowElementForIndex(index: number): HTMLElement | null {
-    return contentEl?.querySelector(`[data-row-index="${index}"]`) ?? null;
+    return timelineRowElementForIndex(contentEl, index);
   }
 
   function centeredScrollTopForIndex(index: number): number {
     if (!scrollEl || !listRef) return 0;
     const rowTop = listRef.getItemOffset(index);
     const rowHeight = rowElementForIndex(index)?.getBoundingClientRect().height ?? ESTIMATED_ROW_SIZE;
-    return rowTop - Math.max(0, (scrollEl.clientHeight - rowHeight) / 2);
+    return centeredScrollTop(rowTop, rowHeight, scrollEl.clientHeight);
   }
 
   // ============================================================
@@ -497,17 +391,12 @@
         return;
       }
       const offset = listRef.getScrollOffset();
-      const rawIdx = listRef.findItemIndex(offset);
-      if (rawIdx < 0) return;
-      const idx = Math.min(rawIdx, groupedNodes.length - 1);
-      const node = groupedNodes[idx];
-      if (!node) return;
-      const itemId = timelineNodeItemId(node);
       // Negative when the anchor row's top has scrolled above the viewport
       // top by `-offsetTop` pixels. Restoration recreates exactly this
       // relationship via scrollToIndex({ align:'start', offset: -offsetTop }).
-      const offsetTop = listRef.getItemOffset(idx) - offset;
-      setThreadScrollSnapshot(threadId, { kind: 'anchor', itemId, offsetTop });
+      const anchor = captureTimelineAnchor(groupedNodes, listRef, offset, { clampIndex: true });
+      if (!anchor) return;
+      setThreadScrollSnapshot(threadId, { kind: 'anchor', ...anchor });
     } catch (err) {
       if (err instanceof TypeError) {
         // Expected during teardown when virtua's inner ref is nulled
@@ -804,10 +693,9 @@
   async function handleLoadOlder(): Promise<void> {
     if (!listRef) return;
     const offsetBefore = listRef.getScrollOffset();
-    const firstIdxBefore = listRef.findItemIndex(offsetBefore);
-    const node = groupedNodes[firstIdxBefore];
-    const anchorId = node ? timelineNodeItemId(node) : null;
-    const anchorOffsetTop = node ? listRef.getItemOffset(firstIdxBefore) - offsetBefore : 0;
+    const anchor = captureTimelineAnchor(groupedNodes, listRef, offsetBefore);
+    const anchorId = anchor?.itemId ?? null;
+    const anchorOffsetTop = anchor?.offsetTop ?? 0;
 
     const release = stick.pauseAutoScroll();
     // The user is reading older — must not auto-restick from the

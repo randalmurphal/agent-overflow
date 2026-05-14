@@ -261,7 +261,6 @@
         const created = await pane.materializeDraftPlaceholder();
         if (!created) return null;
         if (pane.draftPlaceholder?.id !== placeholderId) return null;
-        if (pane.draftPlaceholder?.id !== placeholderId) return null;
         seedDefaultWorktreeIntentForDraft(created);
         setProjectDraft(placeholder.projectId, placeholder.mode, created);
         prependThread(created);

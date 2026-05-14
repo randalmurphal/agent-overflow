@@ -83,3 +83,115 @@ export function recordTimelineRenderTrace(
     viewportSize: listRef ? Math.round(listRef.getViewportSize()) : 0,
   }));
 }
+
+export function startTimelineRowResizeTrace(root: Element): () => void {
+  if (!isUiRenderTraceEnabled()) return () => {};
+
+  const ROW_SELECTOR = '[data-row-index]';
+  const tracked = new Map<Element, { rowIndex: string; height: number }>();
+
+  const ro = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      const t = tracked.get(entry.target);
+      if (!t) continue;
+      const newHeight = Math.round(entry.contentRect.height);
+      if (newHeight === t.height) continue;
+      const prevHeight = t.height;
+      t.height = newHeight;
+      // Skip the initial 0/-1 -> N first measurement (no real "change").
+      if (prevHeight < 0) continue;
+      const targetEl = entry.target as HTMLElement;
+      const itemId = targetEl.querySelector<HTMLElement>('[data-item-id]')?.dataset.itemId ?? '';
+      const textPreview = (targetEl.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 100);
+      recordUiTrace('timeline.row.resize', {
+        rowIndex: t.rowIndex,
+        itemId,
+        prevHeight,
+        newHeight,
+        delta: newHeight - prevHeight,
+        contentTags: fingerprintTimelineRow(targetEl),
+        outerHTMLLen: targetEl.outerHTML.length,
+        childCount: targetEl.querySelectorAll('*').length,
+        descendants: inspectTimelineRowDescendants(targetEl),
+        textPreview,
+      });
+    }
+  });
+
+  const trackElement = (el: Element) => {
+    if (tracked.has(el)) return;
+    tracked.set(el, {
+      rowIndex: (el as HTMLElement).dataset.rowIndex ?? '',
+      height: -1,
+    });
+    ro.observe(el);
+  };
+
+  const untrackElement = (el: Element) => {
+    if (!tracked.delete(el)) return;
+    ro.unobserve(el);
+  };
+
+  root.querySelectorAll(ROW_SELECTOR).forEach(trackElement);
+
+  const mo = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      m.addedNodes.forEach((n) => {
+        if (!(n instanceof Element)) return;
+        if (n.matches(ROW_SELECTOR)) trackElement(n);
+        n.querySelectorAll?.(ROW_SELECTOR).forEach(trackElement);
+      });
+      m.removedNodes.forEach((n) => {
+        if (!(n instanceof Element)) return;
+        if (n.matches(ROW_SELECTOR)) untrackElement(n);
+        n.querySelectorAll?.(ROW_SELECTOR).forEach(untrackElement);
+      });
+    }
+  });
+  mo.observe(root, { childList: true, subtree: true });
+
+  return () => {
+    mo.disconnect();
+    ro.disconnect();
+    tracked.clear();
+  };
+}
+
+function fingerprintTimelineRow(el: Element): string {
+  const tags: string[] = [];
+  if (el.querySelector('pre.shiki, pre[class*="shiki"]')) tags.push('shiki');
+  if (el.querySelector('[class*="skeleton"], [class*="animate-pulse"]')) tags.push('skeleton');
+  if (el.querySelector('[data-mermaid-source], svg.mermaid, .mermaid svg')) tags.push('mermaid');
+  if (el.querySelector('.katex, [class*="katex"]')) tags.push('katex');
+  if (el.querySelector('[data-streamdown-code]')) tags.push('sd-code');
+  if (el.querySelector('img')) tags.push('img');
+  if (el.querySelector('[data-testid="approval-card"]')) tags.push('approval');
+  if (el.querySelector('[data-testid="todo-list"]')) tags.push('todo');
+  if (el.querySelector('[data-testid*="working"]')) tags.push('working');
+  return tags.join(',');
+}
+
+function inspectTimelineRowDescendants(el: Element): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const pre = el.querySelector('pre');
+  if (pre) {
+    out.preClass = (pre.className?.toString() ?? '').slice(0, 120);
+    out.preChildCount = pre.children.length;
+    out.preTextLen = (pre.textContent ?? '').length;
+  }
+  const sdCode = el.querySelector('[data-streamdown-code]');
+  if (sdCode) out.sdCodeId = sdCode.getAttribute('data-streamdown-code') ?? '';
+  const mermaid = el.querySelector('[data-mermaid-source]');
+  if (mermaid) {
+    out.mermaidHasSvg = mermaid.querySelector('svg') !== null;
+    out.mermaidChildCount = mermaid.children.length;
+  }
+  const katex = el.querySelector('.katex, [class*="katex"]');
+  if (katex) out.katexRendered = katex.querySelector('.katex-mathml') !== null;
+  const img = el.querySelector('img');
+  if (img) {
+    out.imgComplete = (img as HTMLImageElement).complete;
+    out.imgNaturalH = (img as HTMLImageElement).naturalHeight;
+  }
+  return out;
+}
