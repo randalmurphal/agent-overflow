@@ -426,7 +426,7 @@ func TestMode_SetModeDuringActiveSession(t *testing.T) {
 
 	// Simulate an active session by parking a fake session struct; no real
 	// provider is started. This is enough to exercise the code path where
-	// UpdateThreadMode runs while a.sessions[threadID] is populated.
+	// UpdateThreadMode runs while an active session is populated.
 	app.sessions[thread.ID] = session{
 		provider: string(provider.Claude),
 		token:    "active-session-token",

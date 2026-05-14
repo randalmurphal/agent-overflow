@@ -172,7 +172,7 @@ func (a *App) GitCheckout(threadID, branch string) error {
 		return fmt.Errorf("git checkout branch is required")
 	}
 
-	unlock := sendThreadMuRegistry.lockFor(threadID)
+	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
 	if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
 		return err
@@ -270,7 +270,7 @@ func (a *App) GitCreateBranchFrom(threadID, name, baseBranch string, carryLocalC
 		return store.Thread{}, fmt.Errorf("create branch: 'Local with changes' only applies when the base matches the current branch")
 	}
 
-	unlock := sendThreadMuRegistry.lockFor(threadID)
+	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
 	if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
 		return store.Thread{}, err
@@ -428,4 +428,3 @@ func (a *App) ensureWorkspaceChangeAllowed(threadID string) error {
 	}
 	return nil
 }
-

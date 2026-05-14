@@ -124,9 +124,7 @@ func (a *App) startSessionNow(threadID string) error {
 		return fmt.Errorf("start session: %w", err)
 	}
 
-	a.mu.Lock()
-	a.sessions[threadID] = newSess
-	a.mu.Unlock()
+	a.sessionManager().put(threadID, newSess)
 
 	// Best-effort Codex reconcile for the on-reopen case. If the prior
 	// app-server forgot the thread across a restart we want to flip any
@@ -173,9 +171,7 @@ func (a *App) reconcileCodexAfterStart(threadID string) {
 	// send on a stale thread id. Best-effort — if the session has gone
 	// away in the meantime Resume will error and we log it; no new work
 	// was in flight anyway.
-	a.mu.Lock()
-	sess, ok := a.sessions[threadID]
-	a.mu.Unlock()
+	sess, ok := a.sessionManager().get(threadID)
 	if !ok || sess.codex == nil {
 		return
 	}
@@ -188,12 +184,7 @@ func (a *App) reconcileCodexAfterStart(threadID string) {
 // before we start a replacement. Separated from startSessionNow so the
 // caller reads top-down as "stop, compute options, spawn, register".
 func (a *App) stopExistingSessionLocked(threadID string) error {
-	a.mu.Lock()
-	existing, ok := a.sessions[threadID]
-	if ok {
-		delete(a.sessions, threadID)
-	}
-	a.mu.Unlock()
+	existing, ok := a.sessionManager().take(threadID)
 
 	if !ok {
 		return nil
@@ -285,7 +276,7 @@ func (a *App) SendMessage(threadID string, content string, attachmentIDs []strin
 
 // SendMessageWithOptions applies send-time composer settings and dispatches the
 // user turn. RuntimeMode is staged in the composer and persisted here, under
-// the same per-thread send lock as provider session start/send.
+// the same per-thread action lock as provider session start/send.
 func (a *App) SendMessageWithOptions(threadID string, content string, opts SendMessageOptions) (store.Thread, error) {
 	if a.shuttingDown.Load() {
 		return store.Thread{}, ErrShuttingDown
@@ -322,9 +313,7 @@ func (a *App) InterruptTurn(threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
-	a.mu.Lock()
-	sess, ok := a.sessions[threadID]
-	a.mu.Unlock()
+	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
 		return fmt.Errorf("no active session for thread %s", threadID)
 	}
@@ -349,12 +338,7 @@ func (a *App) InterruptTurn(threadID string) error {
 // thread with no active session still runs the design teardown +
 // triage cleanup so stale per-thread state doesn't leak.
 func (a *App) StopSession(threadID string) error {
-	a.mu.Lock()
-	sess, ok := a.sessions[threadID]
-	if ok {
-		delete(a.sessions, threadID)
-	}
-	a.mu.Unlock()
+	sess, _ := a.sessionManager().take(threadID)
 	// teardownAndCloseSession tolerates the zero-value session — when
 	// no entry was registered, closeProviderSession returns nil and
 	// only the design + triage state is reset.

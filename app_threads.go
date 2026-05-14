@@ -276,7 +276,9 @@ func (a *App) GetThread(id string) (store.Thread, error) {
 // DeleteThread tears down the thread and any child threads. The recursive
 // cascade logic lives in app_thread_delete.go.
 func (a *App) DeleteThread(id string) error {
-	return a.deleteThreadTree(id)
+	unlock := a.threadLocks().Lock(id)
+	defer unlock()
+	return a.deleteThreadTreeLocked(id)
 }
 
 // ArchiveThread flips archived to true so the thread leaves the active sidebar.

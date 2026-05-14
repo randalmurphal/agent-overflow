@@ -50,9 +50,7 @@ func (a *App) UpdateThreadMode(threadID string, mode string) (store.Thread, erro
 	}
 
 	needsReconnect := false
-	a.mu.Lock()
-	sess, sessionActive := a.sessions[threadID]
-	a.mu.Unlock()
+	sess, sessionActive := a.sessionManager().get(threadID)
 	if sessionActive {
 		needsReconnect = a.applyActiveModeChange(threadID, sess, provider.NormalizeInteractionMode(normalized))
 	}

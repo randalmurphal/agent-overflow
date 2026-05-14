@@ -53,9 +53,7 @@ func (a *App) loadThreadForFocus(threadID string) (store.Thread, error) {
 }
 
 func (a *App) resumeThreadAfterFocus(thread store.Thread) {
-	a.mu.Lock()
-	_, hasSession := a.sessions[thread.ID]
-	a.mu.Unlock()
+	_, hasSession := a.sessionManager().get(thread.ID)
 
 	if !hasSession && (thread.SessionRef != "" || thread.PendingForkRef != "") {
 		// Auto-resume runs in a single goroutine without a wrapping timeout.

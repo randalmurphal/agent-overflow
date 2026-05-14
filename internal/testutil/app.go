@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -24,7 +25,6 @@ import (
 // Returns the absolute path of the generated script.
 func WriteMockClaudeInit(t *testing.T, dir string, accountJSON string) string {
 	t.Helper()
-	path := filepath.Join(dir, "mock-claude-init.sh")
 	initLine := `{"type":"system","subtype":"init","session_id":"probe-s1","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"2.0.0"`
 	if strings.TrimSpace(accountJSON) != "" {
 		initLine += `,"account":` + accountJSON
@@ -35,10 +35,7 @@ func WriteMockClaudeInit(t *testing.T, dir string, accountJSON string) string {
 		"printf '%s\\n' '" + initLine + "'\n" +
 		"read -r _ || true\n" +
 		"exit 0\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("WriteMockClaudeInit: %v", err)
-	}
-	return path
+	return writeMockShellScript(t, dir, "mock-claude-init.sh", script)
 }
 
 // WriteMockClaudeSession writes a shell script that behaves like the Claude
@@ -52,8 +49,6 @@ func WriteMockClaudeInit(t *testing.T, dir string, accountJSON string) string {
 // Returns the absolute path of the generated script.
 func WriteMockClaudeSession(t *testing.T, dir string, events []string) string {
 	t.Helper()
-	path := filepath.Join(dir, "mock-claude-session.sh")
-
 	var b strings.Builder
 	b.WriteString("#!/bin/bash\n")
 	// Consume the initial user message.
@@ -67,10 +62,7 @@ func WriteMockClaudeSession(t *testing.T, dir string, events []string) string {
 	b.WriteString("while read -r _; do :; done\n")
 	b.WriteString("exit 0\n")
 
-	if err := os.WriteFile(path, []byte(b.String()), 0o755); err != nil {
-		t.Fatalf("WriteMockClaudeSession: %v", err)
-	}
-	return path
+	return writeMockShellScript(t, dir, "mock-claude-session.sh", b.String())
 }
 
 // MockClaudeStreamedText returns the NDJSON lines a real Claude CLI
@@ -125,8 +117,6 @@ func MockClaudeStreamedThinking(msgID, thinking string) []string {
 // aligned to user-message turns rather than every stdin line.
 func WriteMockClaudeScript(t *testing.T, dir string, responses [][]string) string {
 	t.Helper()
-	path := filepath.Join(dir, "mock-claude-script.sh")
-
 	var b strings.Builder
 	b.WriteString("#!/bin/bash\n")
 	b.WriteString("idx=0\n")
@@ -157,10 +147,7 @@ func WriteMockClaudeScript(t *testing.T, dir string, responses [][]string) strin
 	b.WriteString("done\n")
 	b.WriteString("exit 0\n")
 
-	if err := os.WriteFile(path, []byte(b.String()), 0o755); err != nil {
-		t.Fatalf("WriteMockClaudeScript: %v", err)
-	}
-	return path
+	return writeMockShellScript(t, dir, "mock-claude-script.sh", b.String())
 }
 
 // WriteMockCodexSession writes a shell script that behaves like `codex
@@ -176,8 +163,6 @@ func WriteMockClaudeScript(t *testing.T, dir string, responses [][]string) strin
 // The script exits when stdin closes.
 func WriteMockCodexSession(t *testing.T, dir string, responses map[string]string) string {
 	t.Helper()
-	path := filepath.Join(dir, "mock-codex-session.sh")
-
 	// Generate a stable ordering: user-specified "" fallback goes last.
 	var keys []string
 	var fallback string
@@ -209,10 +194,7 @@ func WriteMockCodexSession(t *testing.T, dir string, responses map[string]string
 	b.WriteString("done\n")
 	b.WriteString("exit 0\n")
 
-	if err := os.WriteFile(path, []byte(b.String()), 0o755); err != nil {
-		t.Fatalf("WriteMockCodexSession: %v", err)
-	}
-	return path
+	return writeMockShellScript(t, dir, "mock-codex-session.sh", b.String())
 }
 
 // WriteMockGhCLI writes a script that mimics `gh` by matching its arguments
@@ -223,8 +205,6 @@ func WriteMockCodexSession(t *testing.T, dir string, responses map[string]string
 // so test failures are loud.
 func WriteMockGhCLI(t *testing.T, dir string, responses map[string]string) string {
 	t.Helper()
-	path := filepath.Join(dir, "mock-gh.sh")
-
 	var b strings.Builder
 	b.WriteString("#!/bin/bash\n")
 	b.WriteString("cmd=\"$*\"\n")
@@ -248,10 +228,36 @@ func WriteMockGhCLI(t *testing.T, dir string, responses map[string]string) strin
 	b.WriteString("echo \"mock-gh: unsupported invocation: $cmd\" 1>&2\n")
 	b.WriteString("exit 1\n")
 
-	if err := os.WriteFile(path, []byte(b.String()), 0o755); err != nil {
-		t.Fatalf("WriteMockGhCLI: %v", err)
+	return writeMockShellScript(t, dir, "mock-gh.sh", b.String())
+}
+
+func writeMockShellScript(t *testing.T, dir, name, script string) string {
+	t.Helper()
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create mock script dir: %v", err)
+	}
+	path := filepath.Join(dir, name)
+	payloadPath := path + ".payload.sh"
+	if err := os.WriteFile(payloadPath, []byte(script), 0o644); err != nil {
+		t.Fatalf("write mock script payload: %v", err)
+	}
+
+	wrapperPath := mockShellWrapperPath(t)
+	if err := os.Symlink(wrapperPath, path); err != nil {
+		t.Fatalf("link mock script wrapper: %v", err)
 	}
 	return path
+}
+
+func mockShellWrapperPath(t *testing.T) string {
+	t.Helper()
+
+	_, sourcePath, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve mock shell wrapper: runtime.Caller failed")
+	}
+	return filepath.Join(filepath.Dir(sourcePath), "testdata", "mock-shell-wrapper.sh")
 }
 
 // CommitSpec describes a single commit in InitGitRepoWithCommits.
@@ -295,7 +301,7 @@ func InitGitRepoWithCommits(t *testing.T, commits []CommitSpec) string {
 }
 
 // shellSingleQuote wraps s in single quotes suitable for `bash`, escaping any
-// embedded single quotes as `'\''`. The returned value already includes the
+// embedded single quotes as `'\”`. The returned value already includes the
 // outer quotes.
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"

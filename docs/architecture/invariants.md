@@ -76,7 +76,7 @@ would either group unrelated items into one turn (rollback drift) or
 split one turn into two (orphan items, orphan message checkpoint).
 
 **Enforcement.** `App.SendMessage` in `app_send.go` holds the
-per-thread mutex (`sendThreadMuRegistry.lockFor(threadID)`) while
+per-thread action lock (`a.threadLocks().Lock(threadID)`) while
 `HasItems` / `LastTurnIndex` → compute → insert happens. Combined with
 the store's `SetMaxOpenConns(1)` in `internal/store/store.go`, this
 means no two events race on turn_index assignment.
@@ -178,10 +178,10 @@ the `persistItem` tests in `internal/triage/router_test.go`.
 
 ## 8. One writer per thread, one item stream per thread
 
-**Rule.** The per-thread mutex (`sendThreadMuRegistry` in
-`app_send.go`) serializes send flow; `SetMaxOpenConns(1)` serializes
-SQLite writes. Together these mean no two events for the same thread
-race on `item_index` assignment.
+**Rule.** The per-thread action lock (`threadActionLocks` in
+`app_thread_locks.go`) serializes send/steer/flush/revert/fork flow;
+`SetMaxOpenConns(1)` serializes SQLite writes. Together these mean no
+two events for the same thread race on `item_index` assignment.
 
 **Rationale.** If two goroutines could concurrently assign
 `item_index`, one of them would lose the `UNIQUE` index race at
@@ -189,8 +189,8 @@ commit time — by which point the first row might already be visible
 to the frontend. Serializing up-front keeps `item_index` contiguous
 and eliminates the retry path.
 
-**Enforcement.** `sendThreadMuRegistry.lockFor(threadID)` in
-`app_send.go` + `db.SetMaxOpenConns(1)` in
+**Enforcement.** `a.threadLocks().Lock(threadID)` in
+`app_thread_locks.go` + `db.SetMaxOpenConns(1)` in
 `internal/store/store.go`.
 
 **Test.** `app_concurrent_test.go` drives concurrent sends;

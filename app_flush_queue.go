@@ -240,7 +240,7 @@ func (a *App) dispatchFlush(threadID string, items []triage.QueuedFlushItem, mod
 		return
 	}
 
-	unlock := sendThreadMuRegistry.lockFor(threadID)
+	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
 
 	turnIndex, err := a.resolveFlushTurnIndex(threadID, mode)
@@ -342,9 +342,7 @@ func (a *App) dispatchFlushItemWithID(threadID string, item triage.QueuedFlushIt
 	revisionDiffCommentIDs := resolved.revisionDiffCommentIDs
 	userMeta := resolved.userMessageMeta
 
-	a.mu.Lock()
-	sess, ok := a.sessions[threadID]
-	a.mu.Unlock()
+	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
 		return fmt.Errorf("no active session for thread %s", threadID)
 	}
@@ -729,7 +727,6 @@ func (a *App) emitQueueStateChangedWithReason(threadID string, reason string) {
 		Reason:   reason,
 	})
 }
-
 
 // maxQueueAttachmentCount caps the per-item attachment count at the
 // same limit the live send path enforces (attachmentstore.DefaultMaxCount).

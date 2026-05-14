@@ -70,10 +70,10 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 		return store.Item{}, fmt.Errorf("steer message: empty thread id")
 	}
 
-	// Per-thread critical section: matches the send-side lock so a
+	// Per-thread critical section: matches the send-side action lock so a
 	// concurrent Send and Steer on the same thread can't interleave
 	// pending-send registration / wire dispatch ordering.
-	unlock := sendThreadMuRegistry.lockFor(threadID)
+	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
 
 	runtimeMode, hasRuntimeMode, err := threadmode.ParseOptionalRuntime(opts.RuntimeMode)
@@ -105,9 +105,7 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	revisionDiffCommentIDs := resolved.revisionDiffCommentIDs
 	userMeta := resolved.userMessageMeta
 
-	a.mu.Lock()
-	sess, ok := a.sessions[threadID]
-	a.mu.Unlock()
+	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
 		return store.Item{}, fmt.Errorf("steer message: no active session for thread %s", threadID)
 	}
@@ -224,4 +222,3 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 func (a *App) nextSteerUserItemID(threadID string, turnIndex int) (string, error) {
 	return a.nextSequencedUserItemID(threadID, turnIndex, "steer")
 }
-

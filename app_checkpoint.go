@@ -244,7 +244,7 @@ func (a *App) RevertToMessageCheckpoint(threadID string, userItemID string, mode
 		return fmt.Errorf("revert checkpoint: unknown mode %q", mode)
 	}
 
-	unlock := sendThreadMuRegistry.lockFor(threadID)
+	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
 
 	if _, active, err := a.store.GetActiveTurn(threadID); err != nil {
@@ -458,4 +458,3 @@ func (a *App) cleanupLegacyCheckpointRefs(st *store.Store) {
 		}
 	}
 }
-

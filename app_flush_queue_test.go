@@ -632,7 +632,7 @@ func TestConfiguredFlushDispatcher_DoesNotBlockProviderEventHandler(t *testing.T
 		t.Fatalf("EventToolStart: %v", err)
 	}
 
-	unlock := sendThreadMuRegistry.lockFor(thread.ID)
+	unlock := app.threadLocks().Lock(thread.ID)
 
 	done := make(chan error, 1)
 	go func() {
@@ -685,7 +685,7 @@ func TestEnqueueFlushDispatch_SerializesBatchesForOneThread(t *testing.T) {
 		codex:    sess,
 	}
 
-	unlock := sendThreadMuRegistry.lockFor(thread.ID)
+	unlock := app.threadLocks().Lock(thread.ID)
 	app.enqueueFlushDispatch(thread.ID, []triage.QueuedFlushItem{{ID: "queue:0", Message: "first"}}, triage.FlushDispatchModeBoundary)
 	app.enqueueFlushDispatch(thread.ID, []triage.QueuedFlushItem{{ID: "queue:1", Message: "second"}}, triage.FlushDispatchModeBoundary)
 	if got := app.flushDispatchItemCount(thread.ID); got != 2 {
@@ -694,7 +694,7 @@ func TestEnqueueFlushDispatch_SerializesBatchesForOneThread(t *testing.T) {
 	}
 	if flushed := emittedQueueFlushed(rec); len(flushed) != 0 {
 		unlock()
-		t.Fatalf("flush should be blocked by send lock, got events %+v", flushed)
+		t.Fatalf("flush should be blocked by thread action lock, got events %+v", flushed)
 	}
 	unlock()
 

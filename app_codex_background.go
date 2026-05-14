@@ -42,9 +42,7 @@ func (a *App) CleanCodexBackgroundTerminals(threadID string) error {
 		return ErrShuttingDown
 	}
 
-	a.mu.Lock()
-	sess, ok := a.sessions[threadID]
-	a.mu.Unlock()
+	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
 		return fmt.Errorf("app: clean codex background terminals: no active session for thread %s", threadID)
 	}

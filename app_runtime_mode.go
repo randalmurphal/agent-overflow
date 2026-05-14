@@ -9,7 +9,7 @@ import (
 )
 
 // runtimeModeLockAttemptedForTest lets the lock-order regression test observe
-// that a direct runtime-mode update reached the per-thread send lock without
+// that a direct runtime-mode update reached the per-thread action lock without
 // relying on sleeps. Production leaves it nil.
 var runtimeModeLockAttemptedForTest func(threadID string)
 
@@ -80,7 +80,7 @@ func (a *App) applyRuntimeMode(threadID string, mode provider.RuntimeMode) error
 	if runtimeModeLockAttemptedForTest != nil {
 		runtimeModeLockAttemptedForTest(threadID)
 	}
-	unlock := sendThreadMuRegistry.lockFor(threadID)
+	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
 	return a.applyRuntimeModeLocked(threadID, mode)
 }
@@ -130,9 +130,7 @@ func (a *App) rollbackRuntimeModeAfterRestartFailure(
 }
 
 func (a *App) waitForStartingSession(threadID string) (bool, error) {
-	a.mu.Lock()
-	startState := a.startingSessions[threadID]
-	a.mu.Unlock()
+	startState, _ := a.sessionManager().startState(threadID)
 	if startState == nil {
 		return false, nil
 	}

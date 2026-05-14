@@ -42,11 +42,11 @@ import (
 // `cleanups` slice; on later failure the chain runs in reverse order
 // and any cleanup errors are joined with the primary error.
 func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread, error) {
-	// Hold the source thread's send mutex for the duration of the fork so
+	// Hold the source thread's action lock for the duration of the fork so
 	// concurrent SendMessage / RevertToMessageCheckpoint / etc. can't write to
 	// items mid-clone (would produce a torn snapshot in the new fork).
-	// Mirrors RevertToMessageCheckpoint's lockFor pattern.
-	unlock := sendThreadMuRegistry.lockFor(sourceThreadID)
+	// Mirrors RevertToMessageCheckpoint's thread action lock.
+	unlock := a.threadLocks().Lock(sourceThreadID)
 	defer unlock()
 
 	source, err := a.store.GetThread(sourceThreadID)
@@ -120,7 +120,7 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 // selected user message. This is the message-keyed counterpart to revert: the
 // selected prompt is not copied into the fork.
 func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (store.Thread, error) {
-	unlock := sendThreadMuRegistry.lockFor(sourceThreadID)
+	unlock := a.threadLocks().Lock(sourceThreadID)
 	defer unlock()
 
 	source, err := a.store.GetThread(sourceThreadID)
@@ -312,7 +312,6 @@ func (a *App) ensureThreadCanFork(source store.Thread, atTurnIndex *int) error {
 	}
 	return nil
 }
-
 
 // resolveForkResumeState wires the provider-specific resume reference for
 // the new fork and returns an optional cleanup callback. The cleanup runs
@@ -523,10 +522,7 @@ func (a *App) forkClaudeThreadBeforeMessage(source store.Thread, checkpointRow s
 }
 
 func (a *App) activeCodexSession(threadID string) (*codex.Session, bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	sess, ok := a.sessions[threadID]
+	sess, ok := a.sessionManager().get(threadID)
 	if !ok || sess.codex == nil {
 		return nil, false
 	}

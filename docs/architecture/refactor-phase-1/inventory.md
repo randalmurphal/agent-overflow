@@ -40,7 +40,7 @@ Complete classification of 66 non-test `app_*.go` files at `/home/rmurphy/repos/
 | `app_discussion.go` (4 446) | B | `ListThreadDiscussion`, `SetThreadDiscussionConfig`, `GetThreadDiscussionConfig`, `SaveDiscussionTurn` | `a.discussion`, `a.store` | uses `a.discussion.*` | `internal/discussion` (extend) | Mostly delegation. |
 | `app_discussion_runtime.go` (2 345) | B | (helper only) | `a.discussion`, `a.sessions` | provides `syncDiscussionTurn` (consumed by `sessionEventHandler`) | `internal/discussion` (extend) | Moves with provider_events seam. |
 | `app_draft.go` (8 279) | B | `LoadDraft`, `SaveDraft`, `DeleteDraft`, `CloneDraftAttachments` | `a.store`, `a.attachments` | none | `internal/draft` (new) or fold into store | Tied to attachments for clone. |
-| `app_git.go` (14 617) | B | many `Git*` methods (status, branches, commit, push, PR helpers) | `a.git`, `a.store` | provides `resolveGitPaths`, `gitCore` (consumed by 9 files); one `sendThreadMuRegistry` path | `internal/git` (extend) | Local-only. **Lift the two private helpers into `internal/git` exports first** so other migrations consume the package, not App. |
+| `app_git.go` (14 617) | B | many `Git*` methods (status, branches, commit, push, PR helpers) | `a.git`, `a.store` | provides `resolveGitPaths`, `gitCore` (consumed by 9 files); one `threadActionLocks` path | `internal/git` (extend) | Local-only. **Lift the two private helpers into `internal/git` exports first** so other migrations consume the package, not App. |
 | `app_gitwatch.go` (6 113) | B | `SubscribeWorkspaceGitStatus`, `UnsubscribeWorkspaceGitStatus` | `a.gitwatch`, `a.transportServer` | transport `ConnState` cleanup hook | `internal/gitwatch` (extend) | Cleanup hook becomes registered callback. |
 | `app_keybindings.go` (12 536) | B | `ListKeybindings`, `UpdateKeybinding`, `ResetKeybindings`, `ImportKeybindings`, `ExportKeybindings` | `a.settings` | none | `internal/keybindings` (new) | Self-contained. Early migration. |
 | `app_live_state.go` (3 419) | B | `LiveState`, `LiveSessionForThread` | `a.triage`, `a.sessions`, `a.mu` | none | `internal/triage` (extend) or `internal/livestate` | Pure read-only projection. |
@@ -68,22 +68,22 @@ Complete classification of 66 non-test `app_*.go` files at `/home/rmurphy/repos/
 | `app_codex_reconcile.go` (9 560) | C | `ReconcileCodexBackgroundTerminals` | `a.sessions`, `a.mu`, `a.store` | uses Codex backend + store | `internal/provider/codex` | Local-only. Needs session seam. |
 | `app_emit.go` (5 119) | C | (central plumbing) | `a.transportServer`, `a.eventBus` | provides `emit`, `emitToThread`, `emitErrorToThread`, `closeSessionsParallel` (consumed by ~14 callers) | **Stays in `package main`; introduce `Emitter` interface** | Phase-0 cornerstone — do not move the impl. |
 | `app_errors.go` (1 608) | C | (none) | none | provides `emitErrorToThread`, `emitError`, `emitErrorEvent` | Emit seam | Lifts with emit seam. |
-| `app_flush_queue.go` (34 674) | C | `LoadFlushQueue`, `FlushQueuedMessage`, `RemoveQueuedMessage`, `ReorderFlushQueue` | `a.flushQueues`, `a.mu`, `a.store`, `a.sessions` | consumes `sendThreadMuRegistry`, `sendMessageWithOptions`, `captureMessageCheckpoint`, `emit` | Send seam | Largest file. Cannot move independently of send. |
+| `app_flush_queue.go` (34 674) | C | `LoadFlushQueue`, `FlushQueuedMessage`, `RemoveQueuedMessage`, `ReorderFlushQueue` | `a.flushQueues`, `a.mu`, `a.store`, `a.sessions` | consumes `threadActionLocks`, `sendMessageWithOptions`, `captureMessageCheckpoint`, `emit` | Send seam | Largest file. Cannot move independently of send. |
 | `app_provider_events.go` (4 733) | C | (handler) | `a.sessions`, `a.mu`, `a.triage`, `a.discussion` | provides `sessionEventHandler`, `recordSessionActivity` | Session+triage seam | Central event plumbing. |
 | `app_runtime_mode.go` (5 377) | C | (helper) | `a.startingSessions`, `a.sessions`, `a.mu`, `a.threads` | provides `applyRuntimeMode` (consumed by send, steer) | Send seam | Mode-switch on first message. |
-| `app_send.go` (22 907) | C | `SendMessage` (+ variants) | `a.sendThreadMuRegistry`, `a.sessions`, `a.flushQueues`, `a.triage`, `a.store`, `a.checkpoints`, `a.mu` | provides `sendThreadMuRegistry`, `sendMessageWithOptions`, `sendToProvider`, `userMessageMeta`, `recordSendFailureAndCompleteTurn` | Send seam (`internal/send`) | Local-only. **Cornerstone of bucket C.** |
+| `app_send.go` (22 907) | C | `SendMessage` (+ variants) | `threadActionLocks`, `a.sessions`, `a.flushQueues`, `a.triage`, `a.store`, `a.checkpoints`, `a.mu` | provides `sendMessageWithOptions`, `sendToProvider`, `userMessageMeta`, `recordSendFailureAndCompleteTurn` | Send seam (`internal/send`) | Local-only. **Cornerstone of bucket C.** |
 | `app_session.go` (14 891) | C | `EnsureSession`, `StartSession`, `StopSession`, `CloseSession`, `RestartSession` | `a.sessions`, `a.startingSessions`, `a.mu`, `a.systemPrompts`, `a.design` | provides `startSession`, `stopSession`, `closeSession`, `restartSession`, `teardownDesignThread` | Session seam | Local-only. Core lifecycle. |
 | `app_session_bindings.go` (3 213) | C | `SwitchThread`, `ReconnectSession` | `a.sessions`, `a.mu` | consumes `startSession`, `stopSession` | Session seam | Moves with `app_session.go`. |
 | `app_session_reaper.go` (6 903) | C | (bg loop) | `a.sessions`, `a.mu`, `a.store` | consumes `closeSession`, `recordSessionActivity` | Session seam | Idle reaper. |
 | `app_settings.go` (7 238) | C | `LoadSettings`, `SaveSettings`, `ProviderBinaryPath`, codex catalog bindings | `a.settings` + package-level catalog cache (sync.Mutex + singleflight) | provides `providerBinaryPath`, `currentSettings` | **Split**: `internal/settings` (adapter) + `internal/provider/codex` (catalog) | Local-only. Two responsibilities, share no state. |
-| `app_steer.go` (11 544) | C | `SteerMessage`, `CompleteImplementModeSwitch` | `a.sendThreadMuRegistry`, `a.sessions`, `a.triage`, `a.mu` | consumes `sendThreadMuRegistry`, `applyRuntimeMode`, `sendMessageWithOptions`, `recordSendFailureAndCompleteTurn` | Send seam | Local-only. Mirror of `app_send.go`. |
+| `app_steer.go` (11 544) | C | `SteerMessage`, `CompleteImplementModeSwitch` | `threadActionLocks`, `a.sessions`, `a.triage`, `a.mu` | consumes `threadActionLocks`, `applyRuntimeMode`, `sendMessageWithOptions`, `recordSendFailureAndCompleteTurn` | Send seam | Local-only. Mirror of `app_send.go`. |
 | `app_discussion_start.go` (8 042) | C | `StartDiscussion`, `StopDiscussion` | `a.discussion`, `a.sessions`, `a.systemPrompts`, `a.mu` | consumes session helpers | Discussion + session seam | Coordinates child-thread creation. |
-| `app_thread_delete.go` (8 364) | C | `DeleteThread` | `a.sessions`, `a.terminals`, `a.checkpoints`, `a.attachments`, `a.design`, `a.gitwatch`, `a.mu`, `a.store`, `a.flushQueues` | consumes `sendThreadMuRegistry`, `closeSession`, `teardownDesignThread`, `closeFlushQueue` | Threads pkg | Local-only. Cascading delete; migrate last in C. |
-| `app_thread_fork.go` (21 118) | C | `ForkThread` (+ variants) | `a.sessions`, `a.checkpoints`, `a.store`, `a.mu` | consumes `sendThreadMuRegistry`, `captureMessageCheckpoint`, `revertProviderConversationToMessage`, `rollbackCodexThread`, `claudeSourceSessionRef` | Threads + checkpoint | Local-only. Migrate paired with checkpoint. |
+| `app_thread_delete.go` (8 364) | C | `DeleteThread` | `a.sessions`, `a.terminals`, `a.checkpoints`, `a.attachments`, `a.design`, `a.gitwatch`, `a.mu`, `a.store`, `a.flushQueues` | consumes `threadActionLocks`, `closeSession`, `teardownDesignThread`, `closeFlushQueue` | Threads pkg | Local-only. Cascading delete; migrate last in C. |
+| `app_thread_fork.go` (21 118) | C | `ForkThread` (+ variants) | `a.sessions`, `a.checkpoints`, `a.store`, `a.mu` | consumes `threadActionLocks`, `captureMessageCheckpoint`, `revertProviderConversationToMessage`, `rollbackCodexThread`, `claudeSourceSessionRef` | Threads + checkpoint | Local-only. Migrate paired with checkpoint. |
 | `app_thread_interaction_mode.go` (5 271) | C | `SetThreadInteractionMode` | `a.sessions`, `a.threads`, `a.mu` | consumes `sendMessageWithOptions`, Claude `SetInteractionMode` | Threads pkg | Send seam dependent. |
 | `app_thread_model.go` (3 521) | C | `SetThreadModel`, `SetThreadEffort`, `SetThreadFastMode` | `a.threads`, `a.store`, `a.sessions` | consumes `restartSessionIfAffected`, `rememberChatModelProfile` | Threads pkg | Thin once helpers lift. |
 | `app_threads.go` (23 144) | C | `ListThreads`, `CreateThread`, `RenameThread`, many `SetThread*`, `ResolveWorkspace` | `a.store`, `a.threads`, `a.sessions`, `a.mu` | provides `restartSessionIfAffected`, `sessionAffectingFields`; consumes `seedChatModelProfile`, `closeSession`, `startSession` | Threads pkg | Local-only. The `restartSessionIfAffected` infrastructure is the real coupling, not the CRUD. |
-| `app_worktree.go` (18 710) | C | `CreateWorktree`, `DeleteWorktree`, `SwitchThreadWorkspace`, multi-thread restart helpers | `a.git`, `a.store`, `a.sessions`, `a.threads`, `a.mu` | consumes `sendThreadMuRegistry`, `restartSessionIfAffected`, `ensureProjectForWorkspace`, `closeSession`, `startSession` | Worktree (or extend `internal/git`) + threads | Local-only. Heavy fan-out. |
+| `app_worktree.go` (18 710) | C | `CreateWorktree`, `DeleteWorktree`, `SwitchThreadWorkspace`, multi-thread restart helpers | `a.git`, `a.store`, `a.sessions`, `a.threads`, `a.mu` | consumes `threadActionLocks`, `restartSessionIfAffected`, `ensureProjectForWorkspace`, `closeSession`, `startSession` | Worktree (or extend `internal/git`) + threads | Local-only. Heavy fan-out. |
 | `app_terminal.go` (5 021) | C | `OpenTerminal`, `WriteTerminal`, `ResizeTerminal`, `CloseTerminal` | `a.terminals` | provides callbacks that emit | Terminal pkg + emit seam | Local-only. |
 
 ## 3. Detailed per-file notes (buckets B and C)
@@ -136,7 +136,7 @@ Complete classification of 66 non-test `app_*.go` files at `/home/rmurphy/repos/
 - **`app_flush_queue.go`** → Send seam (`internal/send`): largest file. Per-thread worker pool drains queue via send seam. Cannot move independently of `app_send.go`.
 - **`app_provider_events.go`** → Session+triage seam: `sessionEventHandler` and `recordSessionActivity` are the chokepoint every event-driven helper consumes.
 - **`app_runtime_mode.go`** → Send seam: `applyRuntimeMode` consumed only by send + steer.
-- **`app_send.go`** → Send seam (`internal/send`): owns `sendThreadMuRegistry`, `sendMessageWithOptions`, `sendToProvider`, `userMessageMeta`, `recordSendFailureAndCompleteTurn`. **First migration within bucket C.** Local-only.
+- **`app_send.go`** → Send seam (`internal/send`): owns `sendMessageWithOptions`, `sendToProvider`, `userMessageMeta`, `recordSendFailureAndCompleteTurn`, and consumes `threadActionLocks`. **First migration within bucket C.** Local-only.
 - **`app_session.go`** → Session seam (`internal/session`): core lifecycle + design wiring + token rotation. Defines `SessionManager` collaborator. Local-only.
 - **`app_session_bindings.go`** → Session seam: moves with `app_session.go`.
 - **`app_session_reaper.go`** → Session seam: idle reaper.
@@ -177,7 +177,7 @@ Arrows point **from consumer to provider**. Files at the bottom of each column b
        │ └──────── app_discussion_start.go
        └────────── app_session_bindings.go
 
-  app_send.go (sendThreadMuRegistry, sendMessageWithOptions,
+  app_send.go (threadActionLocks, sendMessageWithOptions,
        ▲ ▲ ▲ ▲ ▲   sendToProvider, userMessageMeta,
        │ │ │ │ │   recordSendFailureAndCompleteTurn)
        │ │ │ │ └── app_steer.go
@@ -299,7 +299,7 @@ Chokepoints (most incoming arrows): `app_emit.go`, `app_session.go`, `app_send.g
 ## 6. Bucket C — why these need design first
 
 ### Send seam (`internal/send`) — `app_send.go`, `app_steer.go`, `app_flush_queue.go`, `app_runtime_mode.go`
-Owns `sendThreadMuRegistry` (per-thread mutex serializing send/steer/flush/revert/fork) and `userMessageMeta` (user-item-id sequencing). Every caller mutating session state during a send takes the same mutex. Design: `Sender` with `WithThreadLock(threadID, fn)` + `Send(...)`. Until that exists, none of the four can move.
+Consumes `threadActionLocks` (per-thread action lock serializing send/steer/flush/revert/fork) and owns `userMessageMeta` (user-item-id sequencing). Every caller mutating session state during a send takes the same lock. Design: `Sender` with `WithThreadLock(threadID, fn)` + `Send(...)`. Until that exists, none of the four can move.
 
 ### Session seam (`internal/session`) — `app_session.go`, `app_session_bindings.go`, `app_session_reaper.go`, `app_session_prompts.go` (B), `app_session_start.go` (B), `app_approval.go`, `app_claude_stop.go` (B), `app_codex_background.go` (B), `app_codex_reconcile.go`, `app_claude_ratelimits.go`
 Sessions map + starting-sessions guard are App's most cross-cutting state. `SessionManager` with `Live(threadID)`, `Start/Stop/Close`, `RestartIfAffected(threadID, fields)`, `ForEach(...)`. Reaper, approval, ratelimits, codex reconcile all become consumers.
@@ -332,7 +332,7 @@ Mostly delegation, but callbacks emit. Move once emit seam exists; callback beco
 
 1. **Bucket counts: A=9, B=33, C=24.** About half the surface is straightforward (A + early B). The other half is tangled by ~7 cross-cutting seams; each seam unblocks a cluster of 3–7 files.
 
-2. **The send pipeline is one 67 KB unit.** `app_send.go` (22.9 KB) + `app_steer.go` (11.5 KB) + `app_flush_queue.go` (34.7 KB) share `sendThreadMuRegistry` and `sendMessageWithOptions`. They cannot be migrated independently. Any plan that ships them as three PRs hits a wall at the mutex registry.
+2. **The send pipeline is one 67 KB unit.** `app_send.go` (22.9 KB) + `app_steer.go` (11.5 KB) + `app_flush_queue.go` (34.7 KB) share `threadActionLocks` and `sendMessageWithOptions`. They cannot be migrated independently. Any plan that ships them as three PRs hits a wall at the lock registry.
 
 3. **`app_threads.go` is heavier than it looks.** 23 KB of mostly thin CRUD, but the `restartSessionIfAffected` infrastructure inside it is the connective tissue that turns model/effort/fastMode/contextWindow/workspace mutations into session restarts. Until that lifts into a SessionManager method, four other files can't move cleanly.
 

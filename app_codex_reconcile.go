@@ -87,8 +87,8 @@ func (a *App) flipCodexGhostBackgroundRowsOnStart(threadID string) {
 //   - unknown kind    → log and fall back to systemError behaviour so a
 //     new enum value doesn't silently mask lost work.
 //
-// The Codex adapter must already be connected (i.e., Session is in
-// `a.sessions[threadID]`). An error only surfaces transport/database
+// The Codex adapter must already be connected in the session manager.
+// An error only surfaces transport/database
 // failures — a `systemError` verdict is a successful probe.
 //
 // `//wails:ignore` keeps this off the auto-generated TS bindings: the
@@ -102,9 +102,7 @@ func (a *App) ReconcileCodexOnReopen(ctx context.Context, threadID string) (Reco
 		return ReconcileResult{}, ErrShuttingDown
 	}
 
-	a.mu.Lock()
-	sess, ok := a.sessions[threadID]
-	a.mu.Unlock()
+	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
 		return ReconcileResult{}, fmt.Errorf("app: reconcile codex: no active session for thread %s", threadID)
 	}

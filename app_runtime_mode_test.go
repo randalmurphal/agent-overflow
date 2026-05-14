@@ -275,7 +275,7 @@ func TestUpdateThreadRuntimeModeWaitsForThreadSendLock(t *testing.T) {
 		runtimeModeLockAttemptedForTest = nil
 	})
 
-	unlock := sendThreadMuRegistry.lockFor(id)
+	unlock := app.threadLocks().Lock(id)
 	done := make(chan error, 1)
 	go func() {
 		_, err := app.UpdateThreadRuntimeMode(id, string(provider.RuntimeFullAccess))
@@ -289,7 +289,7 @@ func TestUpdateThreadRuntimeModeWaitsForThreadSendLock(t *testing.T) {
 	}
 	select {
 	case err := <-done:
-		t.Fatalf("UpdateThreadRuntimeMode returned while send lock was held: %v", err)
+		t.Fatalf("UpdateThreadRuntimeMode returned while thread action lock was held: %v", err)
 	default:
 	}
 	stored, err := app.store.GetThread(id)
@@ -297,7 +297,7 @@ func TestUpdateThreadRuntimeModeWaitsForThreadSendLock(t *testing.T) {
 		t.Fatalf("GetThread while locked: %v", err)
 	}
 	if stored.RuntimeMode != string(provider.RuntimeApprovalRequired) {
-		t.Fatalf("runtime mode changed while send lock was held: %q", stored.RuntimeMode)
+		t.Fatalf("runtime mode changed while thread action lock was held: %q", stored.RuntimeMode)
 	}
 
 	unlock()

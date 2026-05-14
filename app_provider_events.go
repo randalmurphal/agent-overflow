@@ -77,25 +77,7 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 // reaper would then refuse to reap that thread even if a new session
 // took its place with no active turn.
 func (a *App) recordSessionActivity(threadID, sessionToken string, kind provider.EventKind, content string) {
-	a.mu.Lock()
-	current, ok := a.sessions[threadID]
-	a.mu.Unlock()
-	if !ok || current.token != sessionToken || current.liveness == nil {
-		return
-	}
-	current.liveness.bumpActivity(time.Now())
-	switch kind {
-	case provider.EventTurnStart:
-		current.liveness.activeTurns.Add(1)
-	case provider.EventTurnComplete:
-		// Clamp to 0 so an unmatched TurnComplete (e.g. from a replayed
-		// envelope) can't drive the counter negative.
-		decrementActiveTurnsClamped(&current.liveness.activeTurns)
-	case provider.EventSessionStatus:
-		if content == "disconnected" {
-			current.liveness.activeTurns.Store(0)
-		}
-	}
+	a.sessionManager().recordActivity(threadID, sessionToken, kind, content, time.Now())
 }
 
 // decrementActiveTurnsClamped does activeTurns.Add(-1) with a clamp
@@ -115,14 +97,9 @@ func decrementActiveTurnsClamped(turns *atomic.Int32) {
 }
 
 func (a *App) unregisterSession(threadID, sessionToken string) {
-	a.mu.Lock()
-	current, ok := a.sessions[threadID]
-	if !ok || current.token != sessionToken {
-		a.mu.Unlock()
+	if !a.sessionManager().unregister(threadID, sessionToken) {
 		return
 	}
-	delete(a.sessions, threadID)
-	a.mu.Unlock()
 
 	a.teardownDesignThread(threadID)
 }

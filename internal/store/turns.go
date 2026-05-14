@@ -55,7 +55,7 @@ func scanTurnRow(scanner interface{ Scan(...any) error }) (Turn, error) {
 }
 
 // InsertTurn creates a new turn row with completed_at=NULL. The caller
-// passes turn_index (triage computes it under the send mutex); the store
+// passes turn_index (triage computes it under the per-thread action lock); the store
 // does not auto-assign it. A duplicate (thread_id, turn_index) or
 // duplicate turn_id returns a UNIQUE-constraint error — callers should
 // treat it as a bug, not a recoverable collision.
@@ -459,7 +459,7 @@ func (s *Store) activeTurnFloor(threadID string) (int, bool, error) {
 // interrupted turn is still visible to the UI.
 //
 // In normal operation at most one turn per thread is in-flight at a
-// time (triage serialises turn-start via the send mutex), but the
+// time (triage serialises turn-start via the per-thread action lock), but the
 // ORDER BY defends against stale rows left over from prior crashes:
 // we want the latest surviving in-flight turn, not the earliest.
 //

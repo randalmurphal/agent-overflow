@@ -99,9 +99,7 @@ func (a *App) UpdateThreadModel(threadID string, model string) (threadResult sto
 }
 
 func (a *App) hasActiveSession(threadID string) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	_, ok := a.sessions[threadID]
+	_, ok := a.sessionManager().get(threadID)
 	return ok
 }
 

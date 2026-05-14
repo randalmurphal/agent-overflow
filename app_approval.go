@@ -31,9 +31,7 @@ func (a *App) ListPendingInteractiveRequests(threadID string) (provider.PendingI
 
 // RespondToApproval forwards an interactive response to the active provider session.
 func (a *App) RespondToApproval(threadID string, response provider.ApprovalResponse) error {
-	a.mu.Lock()
-	sess, ok := a.sessions[threadID]
-	a.mu.Unlock()
+	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
 		err := fmt.Errorf("no active session for thread %s", threadID)
 		a.emitApprovalFailure(threadID, response.RequestID, err)
@@ -72,9 +70,7 @@ func (a *App) RespondToApproval(threadID string, response provider.ApprovalRespo
 
 // RespondToUserInput forwards structured answers to the active provider session.
 func (a *App) RespondToUserInput(threadID string, response provider.UserInputResponse) error {
-	a.mu.Lock()
-	sess, ok := a.sessions[threadID]
-	a.mu.Unlock()
+	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
 		err := fmt.Errorf("no active session for thread %s", threadID)
 		a.emitUserInputFailure(threadID, response.RequestID, err)

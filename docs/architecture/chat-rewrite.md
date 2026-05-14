@@ -185,7 +185,7 @@ don't get re-derived (or accidentally violated) in implementation.
    it flips to completed. No ID rewrite at state transitions.
 3. **`turn_index` is monotonic per thread.** Empty threads start at
    `0`; later sends use `LastTurnIndex(threadID) + 1` under the
-   per-thread send mutex.
+   per-thread action lock.
 4. **FIFO drain for the interrupt queue.** Parallel tool completions
    that queued during one streaming cycle must flush in arrival order
    so a `_End` never renders before its `_Begin` partner.
@@ -200,7 +200,7 @@ don't get re-derived (or accidentally violated) in implementation.
    parents (subagent containers, MCP tools with nested tool_calls).
    Not assistant_text, not thinking, not user_text.
 8. **One item stream per thread, one writer per thread.** The
-   per-thread mutex (`sendThreadMuRegistry`) serializes send flow;
+   per-thread action lock (`threadActionLocks`) serializes send flow;
    `SetMaxOpenConns(1)` serializes SQLite writes. Together these mean
    no two events for the same thread race on item_index assignment.
 9. **`segmentIndexByScope` / `blockIndexByScope` keyed by
@@ -1217,7 +1217,7 @@ provider's turn id is the wire unit.
 the `turn/started` wire notification after the user item has been
 persisted:
 
-1. Acquire the per-thread mutex (existing `sendThreadMuRegistry`).
+1. Acquire the per-thread action lock (`threadActionLocks`).
 2. If the thread has no prior items, `turnIndex = 0`; otherwise
    `turnIndex = store.LastTurnIndex(threadID) + 1`.
 3. Register the pending-send marker before writing to provider stdin.

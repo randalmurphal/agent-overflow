@@ -31,7 +31,7 @@ import (
 // refs are deleted, which pushes user-visible latency well into the
 // hundreds of ms. The idempotent-retry model gives us atomicity at the
 // resource-ownership level without that cost.
-func (a *App) deleteThreadTree(threadID string) error {
+func (a *App) deleteThreadTreeLocked(threadID string) error {
 	thread, threadErr := a.store.GetThread(threadID)
 	if threadErr != nil && !errors.Is(threadErr, sql.ErrNoRows) {
 		return fmt.Errorf("delete thread %s: lookup: %w", threadID, threadErr)
@@ -48,7 +48,10 @@ func (a *App) deleteThreadTree(threadID string) error {
 		return fmt.Errorf("delete thread %s: list children: %w", threadID, err)
 	}
 	for _, child := range children {
-		if err := a.deleteThreadTree(child.ID); err != nil {
+		unlockChild := a.threadLocks().Lock(child.ID)
+		err := a.deleteThreadTreeLocked(child.ID)
+		unlockChild()
+		if err != nil {
 			errs = append(errs, fmt.Errorf("delete child %s: %w", child.ID, err))
 		}
 	}
@@ -121,21 +124,22 @@ func (a *App) deleteThreadTree(threadID string) error {
 	// and per-thread resources have been cleaned up above; there is
 	// nothing left to delete from the store.
 	if !threadFound {
+		a.threadLocks().Forget(threadID)
 		return nil
 	}
 
 	if err := a.store.DeleteThread(threadID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// Raced with another DeleteThread; treat as success.
+			a.threadLocks().Forget(threadID)
 			return nil
 		}
 		return fmt.Errorf("delete thread %s: drop row: %w", threadID, err)
 	}
-	// Drop the per-thread sendMessage mutex so a long-lived process
-	// doesn't accumulate dead mutexes for deleted threads. Safe after
-	// the DB row is gone — no new sendMessage can arrive for this
-	// thread.
-	sendThreadMuRegistry.ForgetThread(threadID)
+	// Drop the per-thread action lock so a long-lived process
+	// doesn't accumulate dead mutexes for deleted threads. The registry keeps
+	// the entry alive until this delete flow and any stale waiters unlock.
+	a.threadLocks().Forget(threadID)
 	return nil
 }
 

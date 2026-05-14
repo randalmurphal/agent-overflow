@@ -40,9 +40,7 @@ func (a *App) StopClaudeTask(threadID, taskID string) error {
 		return ErrShuttingDown
 	}
 
-	a.mu.Lock()
-	sess, ok := a.sessions[threadID]
-	a.mu.Unlock()
+	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
 		return fmt.Errorf("app: stop claude task: no active session for thread %s", threadID)
 	}

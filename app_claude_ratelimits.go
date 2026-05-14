@@ -104,12 +104,5 @@ func (a *App) startClaudeRateLimitProbeLoop() {
 // doesn't burn probes against the Messages API. Snapshot under the
 // session lock so a concurrent start/stop can't race the iteration.
 func (a *App) hasActiveClaudeSession() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for _, sess := range a.sessions {
-		if sess.provider == string(provider.Claude) {
-			return true
-		}
-	}
-	return false
+	return a.sessionManager().hasProvider(string(provider.Claude))
 }

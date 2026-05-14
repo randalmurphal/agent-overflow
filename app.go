@@ -131,6 +131,10 @@ type App struct {
 	shuttingDown atomic.Bool
 	mu           sync.Mutex
 	sessions     map[string]session // threadID → active session
+	// threadActionLocks serializes per-thread workflows that must observe a
+	// stable thread timeline or workspace while they run.
+	threadActionLocksOnce sync.Once
+	threadActionLocks     *threadActionLockRegistry
 	// flushDispatchQueues serializes queued-message flush batches per
 	// thread. Triage decides whether the drain is boundary or immediate;
 	// App owns the asynchronous provider writes so sequence allocation and
@@ -283,6 +287,7 @@ func (s session) providerSession() provider.Session {
 func NewApp() *App {
 	return &App{
 		sessions:            make(map[string]session),
+		threadActionLocks:   newThreadActionLocks(),
 		startingSessions:    make(map[string]*sessionStart),
 		threadSystemPrompts: make(map[string]string),
 		deliberations:       make(map[string]*discussion.Deliberation),
@@ -648,13 +653,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// session close. Session closers aggregate their own errors via
 	// closeSessionsParallel — we surface them under a single
 	// "close provider sessions" step so the order spy sees one entry.
-	a.mu.Lock()
-	sessions := make(map[string]session, len(a.sessions))
-	for threadID, sess := range a.sessions {
-		sessions[threadID] = sess
-	}
-	a.sessions = make(map[string]session)
-	a.mu.Unlock()
+	sessions := a.sessionManager().snapshotAndClear()
 	sessionErrs := closeSessionsParallel(a, sessions, sessionShutdownTimeout)
 	record("close provider sessions", errors.Join(sessionErrs...))
 

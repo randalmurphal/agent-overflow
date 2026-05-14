@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"sync"
 	"time"
 
 	attachmentstore "agent-overflow/internal/attachment"
@@ -22,58 +21,10 @@ import (
 type userMessageMeta = usermessage.Meta
 type userMessageAttachmentMeta = usermessage.AttachmentMeta
 
-// sendThreadMuRegistry owns a mutex per thread so the "compute turn index
-// / persist user item / call provider" sequence can't interleave for the
-// same thread (Bug B11). Concurrent sends on DIFFERENT threads proceed
-// in parallel — that's the whole point of splitting the lock from a
-// global sendMu. Also avoids the audit #52 misattribution where two
-// in-flight sends on one thread both attributed assistant replies to
-// max(turn_index) instead of the turn that actually spoke.
-var sendThreadMuRegistry = &threadMutexRegistry{
-	mus: make(map[string]*sync.Mutex),
-}
-
 // SourceProposedPlan records that a user follow-up is acting on a specific
 // immutable proposed-plan item. It is traceability metadata, not prompt text.
 type SourceProposedPlan = store.ProposedPlanSourceRef
 type SourceDiffReview = store.DiffReviewSourceRef
-
-type threadMutexRegistry struct {
-	mu  sync.Mutex
-	mus map[string]*sync.Mutex
-}
-
-// lockFor returns an unlock function that must be called once the
-// per-thread critical section completes. The registry caches one mutex
-// per thread; ForgetThread should be called when the thread is deleted
-// so a very long-lived process doesn't accumulate one dead mutex per
-// deleted thread indefinitely. (Each struct is tiny, but bounded
-// cleanup is still the right posture.)
-func (r *threadMutexRegistry) lockFor(threadID string) func() {
-	r.mu.Lock()
-	m, ok := r.mus[threadID]
-	if !ok {
-		m = &sync.Mutex{}
-		r.mus[threadID] = m
-	}
-	r.mu.Unlock()
-	m.Lock()
-	return m.Unlock
-}
-
-// ForgetThread drops the per-thread mutex entry. Called from the thread
-// deletion path so the registry doesn't keep dead mutexes forever.
-// Safe to call for an unknown threadID. No-op if there's no entry.
-//
-// Callers must ensure no goroutine is holding the mutex for this
-// thread; by the time deletion runs, the per-thread session has already
-// been stopped (see deleteThreadTree) and no new sendMessage call can
-// arrive because the frontend only sends for live threads.
-func (r *threadMutexRegistry) ForgetThread(threadID string) {
-	r.mu.Lock()
-	delete(r.mus, threadID)
-	r.mu.Unlock()
-}
 
 type sendMessageOptions struct {
 	AttachmentIDs                []string
@@ -220,7 +171,7 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	// user-item persist, lazy session start, pending-send registration, and
 	// provider dispatch sequence atomic for a single thread while letting
 	// different threads proceed in parallel.
-	unlock := sendThreadMuRegistry.lockFor(threadID)
+	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
 
 	if hasRuntimeMode {
@@ -306,18 +257,14 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	// the visible transcript looking idle while the app is already trying to
 	// send. runSessionStart dedupes with any in-flight start kicked off by
 	// SwitchThread auto-resume.
-	a.mu.Lock()
-	sess, ok := a.sessions[threadID]
-	a.mu.Unlock()
+	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
 		if startErr := a.startSession(threadID); startErr != nil {
 			err = fmt.Errorf("start session: %w", startErr)
 			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
 			return store.Item{}, fmt.Errorf("send message: %w", err)
 		}
-		a.mu.Lock()
-		sess, ok = a.sessions[threadID]
-		a.mu.Unlock()
+		sess, ok = a.sessionManager().get(threadID)
 		if !ok {
 			err = fmt.Errorf("session unavailable after start for thread %s", threadID)
 			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
@@ -480,7 +427,6 @@ func (a *App) nextSequencedUserItemID(threadID string, turnIndex int, scope stri
 	}
 	return fmt.Sprintf("user:%d:%s:%d", turnIndex, scope, seq), nil
 }
-
 
 func (a *App) resolveSourceDiffReview(threadID string, source *SourceDiffReview) (*SourceDiffReview, error) {
 	if source == nil || strings.TrimSpace(source.Scope) == "" {

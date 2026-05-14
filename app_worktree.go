@@ -63,7 +63,7 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 		return store.Thread{}, err
 	}
 
-	unlock := sendThreadMuRegistry.lockFor(threadID)
+	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
 	if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
 		return store.Thread{}, err
@@ -228,6 +228,8 @@ func (a *App) RemoveOtherWorktree(threadID, worktreePath string, force bool) err
 	if !slices.Contains(attached, threadID) {
 		attached = append(attached, threadID)
 	}
+	slices.Sort(attached)
+	attached = slices.Compact(attached)
 
 	unlocks := make([]func(), 0, len(attached))
 	defer func() {
@@ -237,7 +239,7 @@ func (a *App) RemoveOtherWorktree(threadID, worktreePath string, force bool) err
 		}
 	}()
 	for _, id := range attached {
-		unlocks = append(unlocks, sendThreadMuRegistry.lockFor(id))
+		unlocks = append(unlocks, a.threadLocks().Lock(id))
 		if err := a.ensureWorkspaceChangeAllowed(id); err != nil {
 			return fmt.Errorf("worktree %s in use by thread %s: %w", worktreePath, id, err)
 		}
@@ -417,7 +419,7 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 		return store.Thread{}, fmt.Errorf("switch workspace: path is required")
 	}
 
-	unlock := sendThreadMuRegistry.lockFor(threadID)
+	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
 	if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
 		return store.Thread{}, err

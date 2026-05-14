@@ -122,23 +122,7 @@ func (a *App) reaperNow() time.Time {
 func (a *App) reapIdleSessions(now time.Time) {
 	cutoffNano := now.Add(-idleReapThreshold).UnixNano()
 
-	a.mu.Lock()
-	candidates := make([]string, 0, len(a.sessions))
-	for tid, sess := range a.sessions {
-		if sess.liveness == nil {
-			continue
-		}
-		if sess.liveness.activeTurns.Load() > 0 {
-			continue
-		}
-		if sess.liveness.lastActivityUnixNano.Load() > cutoffNano {
-			continue
-		}
-		candidates = append(candidates, tid)
-	}
-	a.mu.Unlock()
-
-	for _, threadID := range candidates {
+	for _, threadID := range a.sessionManager().idleCandidates(cutoffNano) {
 		if a.shuttingDown.Load() {
 			return
 		}
@@ -174,24 +158,10 @@ func (a *App) reapIdleSessions(now time.Time) {
 // sweep that selected this candidate, not a fresh "now" that could
 // have advanced under load.
 func (a *App) idleCloseSession(threadID string, cutoffNano int64) error {
-	a.mu.Lock()
-	sess, ok := a.sessions[threadID]
+	sess, ok := a.sessionManager().takeIdle(threadID, cutoffNano)
 	if !ok {
-		a.mu.Unlock()
 		return nil
 	}
-	if sess.liveness != nil {
-		if sess.liveness.activeTurns.Load() > 0 {
-			a.mu.Unlock()
-			return nil
-		}
-		if sess.liveness.lastActivityUnixNano.Load() > cutoffNano {
-			a.mu.Unlock()
-			return nil
-		}
-	}
-	delete(a.sessions, threadID)
-	a.mu.Unlock()
 
 	return a.teardownAndCloseSession(threadID, sess)
 }
