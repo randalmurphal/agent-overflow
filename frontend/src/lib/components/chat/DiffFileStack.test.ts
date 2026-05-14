@@ -1,14 +1,19 @@
 // DiffFileStack covers the multi-file Codex apply_patch + Claude
-// Edit/Write/MultiEdit/NotebookEdit dispatch path. Lazy-fetches the
-// payload preview through a local expansion handle, parses with
-// parsePatchFiles, then renders one DiffFileBlock per file in
+// Edit/Write/MultiEdit/NotebookEdit dispatch path. Modern rows render
+// per-file previewPatch metadata directly; legacy rows lazy-fetch the
+// payload preview through a local expansion handle, parse with
+// parsePatchFiles, then render one DiffFileBlock per file in
 // meta.inlineDiff.files.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { tick } from 'svelte';
-import { render } from '@testing-library/svelte';
+import { render, waitFor } from '@testing-library/svelte';
 import DiffFileStack from './DiffFileStack.svelte';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import {
+  getBindingMock,
+  resetBindingMocks,
+  setBindingMock,
+} from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem } from '../../../test/helpers/chat';
 import type { ToolResultMeta } from '../../types/models';
 import { INLINE_DIFF_PAYLOAD_PREVIEW_BYTES } from '../../utils/inlineThreshold';
@@ -39,9 +44,92 @@ const meta: ToolResultMeta = {
   },
 };
 
+const twoFilePreviewMeta: ToolResultMeta = {
+  itemType: 'file_change',
+  title: 'Edited 2 files (+202 -0)',
+  inlineDiff: {
+    availability: 'exact_patch',
+    insertions: 202,
+    deletions: 0,
+    files: [
+      {
+        path: 'src/first.py',
+        kind: 'added',
+        insertions: 1,
+        deletions: 0,
+        previewPatch: [
+          'diff --git a/src/first.py b/src/first.py',
+          'new file mode 100644',
+          '--- /dev/null',
+          '+++ b/src/first.py',
+          '@@ -0,0 +1 @@',
+          '+first file line',
+        ].join('\n'),
+      },
+      {
+        path: 'src/second.py',
+        kind: 'added',
+        insertions: 201,
+        deletions: 0,
+        previewTruncated: true,
+        previewPatch: [
+          'diff --git a/src/second.py b/src/second.py',
+          'new file mode 100644',
+          '--- /dev/null',
+          '+++ b/src/second.py',
+          '@@ -0,0 +1,201 @@',
+          '+second file line 1',
+          '+second file line 2',
+        ].join('\n'),
+      },
+    ],
+  },
+};
+
 describe('<DiffFileStack>', () => {
   beforeEach(() => {
     resetBindingMocks();
+  });
+
+  it('renders separate file rows from per-file preview metadata without fetching a byte prefix', async () => {
+    const previewFetch = setBindingMock('GetPayloadPreview', async () => {
+      throw new Error(
+        'preview fetch should not be needed for per-file previews',
+      );
+    });
+
+    const item = makeItem({
+      id: 'tu_multifile_preview',
+      kind: 'tool_completion',
+      status: 'completed',
+      toolName: 'fileChange',
+      payloadId: 'tool-result:tu_multifile_preview',
+      payloadKind: 'tool_result',
+    });
+    const pane = await buildPane(undefined, [item]);
+
+    const { findAllByTestId } = render(DiffFileStack, {
+      props: {
+        pane,
+        item,
+        meta: twoFilePreviewMeta,
+        payloadId: 'tool-result:tu_multifile_preview',
+      },
+    });
+
+    const blocks = await findAllByTestId('diff-file-block');
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toHaveAttribute('data-file-path', 'src/first.py');
+    expect(blocks[1]).toHaveAttribute('data-file-path', 'src/second.py');
+
+    const bodies = await findAllByTestId('diff-file-body');
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0].textContent).toContain('first file line');
+    expect(bodies[1].textContent).toContain('second file line 1');
+    expect(
+      blocks[1].querySelector('[data-testid="diff-file-counts"]')?.textContent,
+    ).toContain('+201');
+    expect(previewFetch).not.toHaveBeenCalled();
   });
 
   it('lazy-fetches payload data and renders the diff body for each file', async () => {
@@ -83,6 +171,88 @@ describe('<DiffFileStack>', () => {
       'tool-result:tu_edit_e2e',
       INLINE_DIFF_PAYLOAD_PREVIEW_BYTES,
     );
+  });
+
+  it('loads more legacy payload data when a later metadata file is past the initial preview', async () => {
+    const firstFilePatch = [
+      'diff --git a/src/first.py b/src/first.py',
+      '--- a/src/first.py',
+      '+++ b/src/first.py',
+      '@@ -1 +1 @@',
+      '-first old',
+      '+first new',
+    ].join('\n');
+    const secondFilePatch = [
+      '\n',
+      'diff --git a/src/second.py b/src/second.py',
+      '--- a/src/second.py',
+      '+++ b/src/second.py',
+      '@@ -1 +1 @@',
+      '-second old',
+      '+second new',
+    ].join('\n');
+    setBindingMock('GetPayloadPreview', async () => ({
+      data: firstFilePatch,
+      nextOffset: firstFilePatch.length,
+      totalSize: firstFilePatch.length + secondFilePatch.length,
+      isComplete: false,
+    }));
+    const chunkFetch = setBindingMock('GetPayloadChunk', async () => ({
+      data: secondFilePatch,
+      nextOffset: firstFilePatch.length + secondFilePatch.length,
+      totalSize: firstFilePatch.length + secondFilePatch.length,
+      isComplete: true,
+    }));
+
+    const legacyMeta: ToolResultMeta = {
+      itemType: 'file_change',
+      title: 'Edited 2 files (+2 -2)',
+      inlineDiff: {
+        availability: 'exact_patch',
+        insertions: 2,
+        deletions: 2,
+        files: [
+          {
+            path: 'src/first.py',
+            kind: 'modified',
+            insertions: 1,
+            deletions: 1,
+          },
+          {
+            path: 'src/second.py',
+            kind: 'modified',
+            insertions: 1,
+            deletions: 1,
+          },
+        ],
+      },
+    };
+    const item = makeItem({
+      id: 'tu_legacy_multifile',
+      kind: 'tool_completion',
+      status: 'completed',
+      toolName: 'fileChange',
+      payloadId: 'tool-result:tu_legacy_multifile',
+      payloadKind: 'tool_result',
+    });
+    const pane = await buildPane(undefined, [item]);
+
+    const { getAllByTestId } = render(DiffFileStack, {
+      props: {
+        pane,
+        item,
+        meta: legacyMeta,
+        payloadId: 'tool-result:tu_legacy_multifile',
+      },
+    });
+
+    await waitFor(() => {
+      expect(getAllByTestId('diff-file-body')).toHaveLength(2);
+    });
+    const bodies = getAllByTestId('diff-file-body');
+    expect(bodies[0].textContent).toContain('first new');
+    expect(bodies[1].textContent).toContain('second new');
+    expect(chunkFetch).toHaveBeenCalled();
   });
 
   it('renders a header-only placeholder when the payload data has not landed yet', async () => {
@@ -136,7 +306,12 @@ describe('<DiffFileStack>', () => {
     const pane = await buildPane(undefined, [item]);
 
     const { findByTestId } = render(DiffFileStack, {
-      props: { pane, item, meta, payloadId: 'tool-result:tu_incomplete_preview' },
+      props: {
+        pane,
+        item,
+        meta,
+        payloadId: 'tool-result:tu_incomplete_preview',
+      },
     });
 
     await tick();

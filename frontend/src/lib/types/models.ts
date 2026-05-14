@@ -207,6 +207,9 @@ export interface ToolInlineDiffFile {
   kind?: DiffMeta["changeKind"];
   insertions?: number;
   deletions?: number;
+  previewPatch?: string;
+  previewLineCount?: number;
+  previewTruncated?: boolean;
 }
 
 export interface ToolInlineDiffMeta {

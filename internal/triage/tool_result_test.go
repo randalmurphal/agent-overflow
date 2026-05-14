@@ -2,6 +2,7 @@ package triage
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -299,6 +300,14 @@ func TestExtractFileChangeToolResultReadsCurrentCodexFileChangeShape(t *testing.
 	if len(meta.InlineDiff.Files) != 2 {
 		t.Fatalf("files = %+v, want 2", meta.InlineDiff.Files)
 	}
+	for _, file := range meta.InlineDiff.Files {
+		if file.PreviewPatch == "" {
+			t.Fatalf("preview patch missing for %+v", file)
+		}
+		if file.PreviewLineCount == 0 {
+			t.Fatalf("preview line count missing for %+v", file)
+		}
+	}
 	renamed := meta.InlineDiff.Files[1]
 	if renamed.Path != "src/new.ts" || renamed.PreviousPath != "src/old.ts" || renamed.Kind != "renamed" {
 		t.Fatalf("rename metadata = %+v", renamed)
@@ -306,6 +315,82 @@ func TestExtractFileChangeToolResultReadsCurrentCodexFileChangeShape(t *testing.
 	diff := string(diffData)
 	if !strings.Contains(diff, "rename from src/old.ts") || !strings.Contains(diff, "rename to src/new.ts") {
 		t.Fatalf("expected rename headers in exact patch, got %q", diff)
+	}
+}
+
+func TestBuildInlineDiffFromChangesStoresLineBoundedFilePreviews(t *testing.T) {
+	var largeContent strings.Builder
+	for i := 1; i <= 35; i++ {
+		if i > 1 {
+			largeContent.WriteByte('\n')
+		}
+		largeContent.WriteString(fmt.Sprintf("line-%02d", i))
+	}
+
+	inlineDiff, combinedDiff := buildInlineDiffFromChanges([]fileChange{
+		{Path: "src/large.txt", Kind: "added", Diff: largeContent.String()},
+		{Path: "src/small.txt", Kind: "added", Diff: "small"},
+	})
+	if inlineDiff == nil || len(inlineDiff.Files) != 2 {
+		t.Fatalf("inline diff = %+v, want two files", inlineDiff)
+	}
+	if combinedDiff == "" {
+		t.Fatal("combined diff missing")
+	}
+
+	large := inlineDiff.Files[0]
+	if large.PreviewLineCount != inlineDiffPreviewLineCount {
+		t.Fatalf("large preview line count = %d, want %d", large.PreviewLineCount, inlineDiffPreviewLineCount)
+	}
+	if !large.PreviewTruncated {
+		t.Fatalf("large preview truncated = false, want true")
+	}
+	if !strings.Contains(large.PreviewPatch, "+line-30") {
+		t.Fatalf("large preview missing capped final line: %q", large.PreviewPatch)
+	}
+	if strings.Contains(large.PreviewPatch, "+line-31") {
+		t.Fatalf("large preview includes line beyond cap: %q", large.PreviewPatch)
+	}
+
+	small := inlineDiff.Files[1]
+	if small.PreviewPatch == "" || !strings.Contains(small.PreviewPatch, "+small") {
+		t.Fatalf("small preview patch = %q, want exact per-file preview", small.PreviewPatch)
+	}
+	if small.PreviewTruncated {
+		t.Fatalf("small preview truncated = true, want false")
+	}
+}
+
+func TestLineBoundedDiffPreviewCountsPatchLikeBodyLines(t *testing.T) {
+	var content strings.Builder
+	for i := 1; i <= 35; i++ {
+		if i > 1 {
+			content.WriteByte('\n')
+		}
+		content.WriteString(fmt.Sprintf("++patch-looking-line-%02d", i))
+	}
+
+	inlineDiff, _ := buildInlineDiffFromChanges([]fileChange{{
+		Path: "src/patch-looking.txt",
+		Kind: "added",
+		Diff: content.String(),
+	}})
+	if inlineDiff == nil || len(inlineDiff.Files) != 1 {
+		t.Fatalf("inline diff = %+v, want one file", inlineDiff)
+	}
+
+	file := inlineDiff.Files[0]
+	if file.PreviewLineCount != inlineDiffPreviewLineCount {
+		t.Fatalf("preview line count = %d, want %d", file.PreviewLineCount, inlineDiffPreviewLineCount)
+	}
+	if !file.PreviewTruncated {
+		t.Fatal("preview truncated = false, want true")
+	}
+	if !strings.Contains(file.PreviewPatch, "+++patch-looking-line-30") {
+		t.Fatalf("preview missing capped hunk body line: %q", file.PreviewPatch)
+	}
+	if strings.Contains(file.PreviewPatch, "+++patch-looking-line-31") {
+		t.Fatalf("preview includes body line beyond cap: %q", file.PreviewPatch)
 	}
 }
 
@@ -328,6 +413,9 @@ func TestBuildExactInlineDiffPreservesRenamePreviousPath(t *testing.T) {
 	file := inlineDiff.Files[0]
 	if file.Path != "src/new.ts" || file.PreviousPath != "src/old.ts" || file.Kind != "renamed" {
 		t.Fatalf("rename metadata = %+v", file)
+	}
+	if file.PreviewPatch == "" || !strings.Contains(file.PreviewPatch, "rename from src/old.ts") {
+		t.Fatalf("preview patch = %q, want rename section", file.PreviewPatch)
 	}
 }
 

@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	toolResultPayloadKind = "tool_result"
-	toolResultItemKind    = "tool_result"
+	toolResultPayloadKind      = "tool_result"
+	toolResultItemKind         = "tool_result"
+	inlineDiffPreviewLineCount = 30
 )
 
 type ToolResultMeta struct {
@@ -29,11 +30,14 @@ type ToolInlineDiff struct {
 }
 
 type ToolInlineDiffFile struct {
-	Path         string `json:"path"`
-	PreviousPath string `json:"previousPath,omitempty"`
-	Kind         string `json:"kind,omitempty"`
-	Insertions   int    `json:"insertions,omitempty"`
-	Deletions    int    `json:"deletions,omitempty"`
+	Path             string `json:"path"`
+	PreviousPath     string `json:"previousPath,omitempty"`
+	Kind             string `json:"kind,omitempty"`
+	Insertions       int    `json:"insertions,omitempty"`
+	Deletions        int    `json:"deletions,omitempty"`
+	PreviewPatch     string `json:"previewPatch,omitempty"`
+	PreviewLineCount int    `json:"previewLineCount,omitempty"`
+	PreviewTruncated bool   `json:"previewTruncated,omitempty"`
 }
 
 func (r *Router) persistFileChangeToolResult(evt provider.ProviderEvent) error {
@@ -237,6 +241,7 @@ func buildInlineDiffFromChanges(changes []fileChange) (*ToolInlineDiff, string) 
 			}
 			file.Insertions = patch.Insertions
 			file.Deletions = patch.Deletions
+			applyInlineDiffPreview(&file, patch.Content)
 			totalInsertions += patch.Insertions
 			totalDeletions += patch.Deletions
 			if patchBuilder.Len() > 0 {
@@ -268,6 +273,110 @@ func buildInlineDiffFromChanges(changes []fileChange) (*ToolInlineDiff, string) 
 			Deletions:    totalDeletions,
 		},
 		patchBuilder.String()
+}
+
+func applyInlineDiffPreview(file *ToolInlineDiffFile, patch string) {
+	preview, lineCount, truncated := lineBoundedDiffPreview(patch, inlineDiffPreviewLineCount)
+	file.PreviewPatch = preview
+	file.PreviewLineCount = lineCount
+	file.PreviewTruncated = truncated
+}
+
+func lineBoundedDiffPreview(patch string, maxBodyLines int) (string, int, bool) {
+	if strings.TrimSpace(patch) == "" {
+		return "", 0, false
+	}
+
+	var preview strings.Builder
+	writePreviewLine := func(line string) {
+		if preview.Len() > 0 {
+			preview.WriteByte('\n')
+		}
+		preview.WriteString(line)
+	}
+
+	remaining := strings.TrimSuffix(patch, "\n")
+	bodyLines := 0
+	truncated := false
+	inHunk := false
+
+	for remaining != "" {
+		line, rest, found := strings.Cut(remaining, "\n")
+		if !found {
+			rest = ""
+		}
+
+		if isInlineDiffPreviewMetaLine(line, inHunk) {
+			writePreviewLine(line)
+			inHunk = nextInlineDiffPreviewHunkState(line, inHunk)
+			remaining = rest
+			continue
+		}
+
+		if bodyLines >= maxBodyLines {
+			truncated = true
+			break
+		}
+		writePreviewLine(line)
+		bodyLines++
+
+		if bodyLines >= maxBodyLines && hasInlineDiffPreviewBodyLine(rest, inHunk) {
+			truncated = true
+			break
+		}
+		remaining = rest
+	}
+
+	return preview.String(), bodyLines, truncated
+}
+
+func hasInlineDiffPreviewBodyLine(patch string, inHunk bool) bool {
+	remaining := strings.TrimSuffix(patch, "\n")
+	for remaining != "" {
+		line, rest, found := strings.Cut(remaining, "\n")
+		if !found {
+			rest = ""
+		}
+		if !isInlineDiffPreviewMetaLine(line, inHunk) {
+			return true
+		}
+		inHunk = nextInlineDiffPreviewHunkState(line, inHunk)
+		remaining = rest
+	}
+	return false
+}
+
+func isInlineDiffPreviewMetaLine(line string, inHunk bool) bool {
+	if strings.HasPrefix(line, "@@") {
+		return true
+	}
+	if inHunk {
+		return false
+	}
+	return strings.HasPrefix(line, "diff ") ||
+		strings.HasPrefix(line, "---") ||
+		strings.HasPrefix(line, "+++") ||
+		strings.HasPrefix(line, "index ") ||
+		strings.HasPrefix(line, "new file mode ") ||
+		strings.HasPrefix(line, "deleted file mode ") ||
+		strings.HasPrefix(line, "old mode ") ||
+		strings.HasPrefix(line, "new mode ") ||
+		strings.HasPrefix(line, "similarity index ") ||
+		strings.HasPrefix(line, "dissimilarity index ") ||
+		strings.HasPrefix(line, "rename from ") ||
+		strings.HasPrefix(line, "rename to ") ||
+		strings.HasPrefix(line, "copy from ") ||
+		strings.HasPrefix(line, "copy to ")
+}
+
+func nextInlineDiffPreviewHunkState(line string, current bool) bool {
+	if strings.HasPrefix(line, "diff ") {
+		return false
+	}
+	if strings.HasPrefix(line, "@@") {
+		return true
+	}
+	return current
 }
 
 func buildUnifiedPatch(change fileChange) (fileChangePatch, bool) {

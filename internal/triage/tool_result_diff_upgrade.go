@@ -140,13 +140,15 @@ func buildExactInlineDiff(diff string) *ToolInlineDiff {
 		if path == "" {
 			continue
 		}
-		files = append(files, ToolInlineDiffFile{
+		file := ToolInlineDiffFile{
 			Path:         path,
 			PreviousPath: diffSectionPreviousPath(section),
 			Kind:         meta.ChangeKind,
 			Insertions:   meta.Insertions,
 			Deletions:    meta.Deletions,
-		})
+		}
+		applyInlineDiffPreview(&file, section)
+		files = append(files, file)
 		insertions += meta.Insertions
 		deletions += meta.Deletions
 	}

@@ -5,24 +5,17 @@
    * with N files). Stacks one DiffFileBlock per file inside, no outer
    * wrapper card — each block is a self-contained tool-call-style row.
    *
-   * Lazy-fetches the payload preview on mount via a LOCAL
-   * createPayloadExpansion handle. We deliberately don't reach into
-   * the pane's expansion-state registry here: the registry's
-   * payloadId lookup goes through `getCurrentItem()` against
-   * pane.items, which can be slightly behind the prop the parent
-   * already has. Reading payloadId directly from the prop makes the
-   * fetch fire reliably the moment we mount.
+   * Modern tool_result metadata carries a line-bounded preview patch
+   * per file, so multi-file tool calls can render one independent
+   * chat row per file without byte-slicing a combined payload. The
+   * combined payload still backs the sidebar.
    *
-   * The preview fetch is intentionally small because DiffFileBlock
-   * caps chat rendering to the inline diff preview limit. The sidebar
-   * owns full-payload loading.
-   *
-   * Each file's slice is computed via `parsePatchFiles(payloadData)`
-   * + match by path. Files in `meta.inlineDiff.files` without a
-   * matching parsed entry (summary-only path: NotebookEdit pre-
-   * upgrade, Codex pre-upgrade) render a header-only placeholder
-   * PatchFile so the row still appears with its metadata.
-   */
+   * Legacy rows without per-file previews keep the old lazy-fetch
+   * path: fetch a small payload prefix, parse it, and match by path.
+   * Files without a matching parsed entry render a header-only
+   * placeholder so the row still appears with its metadata.
+  */
+  import { untrack } from 'svelte';
   import type { Item, ToolInlineDiffFile, ToolResultMeta } from '../../types/models';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { parsePatchFiles, type PatchFile, type PatchLine } from '../../utils/patchFiles';
@@ -47,7 +40,7 @@
   // owns one fetch and there's no expand/collapse interaction sharing
   // state across mounts.
   //
-  // `loadOnMount: true` does two things on every mount:
+  // Legacy rows still auto-load on mount. That does two things:
   //   1. Synchronously hydrates from the module-level payload cache
   //      when (threadId, payloadId, updatedAt) hits — so re-entering
   //      a thread we've already loaded paints with full diff content
@@ -56,7 +49,7 @@
   //   2. Drives `expand()` itself so we don't carry a per-component
   //      $effect just to trigger the fetch.
   const expansion = createPayloadExpansion(
-    () => payloadId,
+    () => legacyPayloadId(),
     () => item.threadId,
     {
       previewBytes: INLINE_DIFF_PAYLOAD_PREVIEW_BYTES,
@@ -85,15 +78,55 @@
     const files = meta.inlineDiff?.files ?? [];
     const lastParsedFilePath = parsedFiles.at(-1)?.path ?? null;
     return files.map((metaFile) => {
-      const parsedFile = parsedByPath.get(metaFile.path);
+      const parsedFile = previewFileFromMeta(metaFile) ?? parsedByPath.get(metaFile.path);
       return {
         path: metaFile.path,
-        file: parsedFile ?? fallbackFromMeta(metaFile),
+        file: applyMetaToPatchFile(parsedFile, metaFile),
         hasMoreDiffContent:
-          payloadPreviewIncomplete && (parsedFile === undefined || metaFile.path === lastParsedFilePath),
+          metaFile.previewTruncated === true ||
+          (payloadPreviewIncomplete && (parsedFile === undefined || metaFile.path === lastParsedFilePath)),
       };
     });
   });
+
+  let legacyFilesNeedMorePayload = $derived.by(() => {
+    if (!expansion.hasMore) return false;
+    const files = meta.inlineDiff?.files ?? [];
+    return files.some((metaFile) => !metaFile.previewPatch && !parsedByPath.get(metaFile.path));
+  });
+
+  $effect(() => {
+    const needsMore = legacyFilesNeedMorePayload;
+    const loading = expansion.loading;
+    if (!needsMore || loading) return;
+    untrack(() => {
+      void expansion.showFull();
+    });
+  });
+
+  function previewFileFromMeta(metaFile: ToolInlineDiffFile): PatchFile | undefined {
+    if (!metaFile.previewPatch) return undefined;
+    return parsePatchFiles(metaFile.previewPatch)[0];
+  }
+
+  function legacyPayloadId(): string | undefined {
+    const files = meta.inlineDiff?.files ?? [];
+    if (files.every((file) => file.previewPatch)) return undefined;
+    return payloadId;
+  }
+
+  function applyMetaToPatchFile(
+    parsedFile: PatchFile | undefined,
+    metaFile: ToolInlineDiffFile,
+  ): PatchFile {
+    const file = parsedFile ?? fallbackFromMeta(metaFile);
+    return {
+      ...file,
+      kind: metaFile.kind ?? file.kind,
+      additions: metaFile.insertions ?? file.additions,
+      deletions: metaFile.deletions ?? file.deletions,
+    };
+  }
 
   function fallbackFromMeta(metaFile: ToolInlineDiffFile): PatchFile {
     return {

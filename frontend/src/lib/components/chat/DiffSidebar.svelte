@@ -30,6 +30,7 @@
 
   let payloadId = $derived(pane.activeDiffPayload?.payloadId ?? '');
   let focusFilePath = $derived(pane.activeDiffPayload?.filePath);
+  let focusKey = $derived(diffSidebarFocusKey(payloadId, focusFilePath));
 
   // Reactive expansion handle. The thread id and payload id are read
   // through getters so the handle re-targets when the user opens a
@@ -68,9 +69,9 @@
   let wordWrap = $state(false);
   let expandedFiles: string[] = $state([]);
   let scrollTop = $state(0);
-  // Per-payload guard for the default-expand heuristic. Tracks the
-  // payloadId we've already applied defaults for (or whose state
-  // came from a restore). Resets when payloadId changes, blocking
+  // Per-target guard for the default-expand heuristic. Tracks the
+  // payload/file target we've already applied defaults for (or whose
+  // state came from a restore). Resets when the target changes, blocking
   // re-fires on `parsedFiles` ticks (which churn while patch chunks
   // stream in) from clobbering the user's manual collapse/expand
   // edits or the just-restored snapshot.
@@ -120,9 +121,9 @@
     // Done once per mount; subsequent changes flow via the $effect
     // below that records UI state back to the pane.
     //
-    // Mark `defaultsAppliedFor = payloadId` even though `parsedFiles`
+    // Mark `defaultsAppliedFor = focusKey` even though `parsedFiles`
     // is still empty (patch fetch is in flight). The default-expand
-    // effect compares against the same payloadId once data lands and
+    // effect compares against the same target once data lands and
     // bails — preserving the restored expandedFiles/scrollTop.
     const restored = pane.consumeDiffSidebarRestoreState();
     if (restored) {
@@ -130,7 +131,7 @@
       wordWrap = restored.wordWrap;
       expandedFiles = restored.expandedFiles;
       scrollTop = restored.scrollTop;
-      defaultsAppliedFor = payloadId;
+      defaultsAppliedFor = focusKey;
     }
   });
 
@@ -140,14 +141,17 @@
   });
 
   // Default-expand heuristic: when a fresh payload lands and the
-  // user hasn't restored from snapshot, expand all files when the
-  // count is small, otherwise just the focus file. Keyed on
-  // payloadId only — `parsedFiles` may stream in over multiple
-  // chunks but the heuristic still runs at most once per payload.
+  // user hasn't restored from snapshot, expand the requested focus
+  // file when present. Without a focus, expand all files when the
+  // count is small. Keyed on the payload/file target — `parsedFiles`
+  // may stream in over multiple chunks but the heuristic still runs
+  // at most once per requested target.
   $effect(() => {
     const files = parsedFiles;
     const focus = focusFilePath;
-    const id = payloadId;
+    const id = focusKey;
+    const hasMore = expansion.hasMore;
+    const loading = expansion.loading;
     if (defaultsAppliedFor === id) return;
     if (files.length === 0) return;
     untrack(() => {
@@ -157,8 +161,15 @@
         const file = files[index];
         if (!file) continue;
         const rowId = patchFileRowId(file, index);
-        if (small) next.push(rowId);
-        else if (focus && file.path === focus) next.push(rowId);
+        if (focus) {
+          if (file.path === focus) next.push(rowId);
+        } else if (small) {
+          next.push(rowId);
+        }
+      }
+      if (focus && next.length === 0 && hasMore) {
+        if (!loading) void expansion.showFull();
+        return;
       }
       if (next.length === 0 && files[0]) next.push(patchFileRowId(files[0], 0));
       expandedFiles = next;
@@ -166,16 +177,16 @@
     });
   });
 
-  // Reset bookkeeping + scroll when the payload *changes* (not on
+  // Reset bookkeeping + scroll when the focus target *changes* (not on
   // initial mount — the onMount block above may have just applied
   // a restore, and this effect runs after mount in Svelte 5; without
-  // the lastPayloadId guard we'd zero the restored scrollTop here
+  // the lastFocusKey guard we'd zero the restored scrollTop here
   // before the body has a chance to apply it).
-  let lastPayloadId: string | null = null;
+  let lastFocusKey: string | null = null;
   $effect(() => {
-    const id = payloadId;
-    const wasTransition = lastPayloadId !== null && lastPayloadId !== id;
-    lastPayloadId = id;
+    const id = focusKey;
+    const wasTransition = lastFocusKey !== null && lastFocusKey !== id;
+    lastFocusKey = id;
     if (!wasTransition) return;
     untrack(() => {
       defaultsAppliedFor = null;
@@ -215,6 +226,10 @@
 
   function recordScroll(top: number): void {
     scrollTop = top;
+  }
+
+  function diffSidebarFocusKey(id: string, focus: string | undefined): string {
+    return `${id}\u0000${focus ?? ''}`;
   }
 </script>
 
@@ -256,7 +271,7 @@
       No diff content available for this tool call.
     </p>
   {:else}
-    {#key payloadId}
+    {#key focusKey}
       <DiffSidebarBody
         files={parsedFiles}
         {focusFilePath}
