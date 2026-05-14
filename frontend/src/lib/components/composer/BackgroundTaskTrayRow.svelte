@@ -5,18 +5,13 @@
   import CommandOutput from '../chat/CommandOutput.svelte';
   import CollabToolRow from '../chat/CollabToolRow.svelte';
   import GenericToolCallRow from '../chat/GenericToolCallRow.svelte';
-  import { commandTextForItem, isCommandToolName } from '../chat/commandDisplay';
+  import { resolveToolPresentation } from '../chat/toolPresentation';
   import {
     formatElapsed,
     type TrayTask,
   } from '../../utils/backgroundTray';
-  import type { CommandOutputMeta, Item } from '../../types/models';
-  import {
-    PROVIDER_DEFINITIONS,
-    type ProviderID,
-  } from '../../providers/catalog';
-  import { parseJsonObject } from '../../utils/parseJsonObject';
-  import { isCodexCollabControlToolName } from '../chat/codexCollabControls';
+  import type { Item } from '../../types/models';
+  import type { ProviderID } from '../../providers/catalog';
 
   interface Props {
     task: TrayTask;
@@ -44,29 +39,15 @@
     if (task.launch?.payloadKind === 'command_output') return task.launch;
     return renderItem;
   });
-  let parsedOutputMeta = $derived<Partial<CommandOutputMeta> | null>(
-    outputItem.payloadKind === 'command_output'
-      ? (parseJsonObject(outputItem.payloadMeta) as Partial<CommandOutputMeta> | null)
-      : null,
-  );
-  let commandMeta = $derived<CommandOutputMeta | null>({
-    command: commandTextForItem(displayItem, parsedOutputMeta as CommandOutputMeta | null),
-    exitCode: typeof parsedOutputMeta?.exitCode === 'number' ? parsedOutputMeta.exitCode : 0,
-    lineCount: typeof parsedOutputMeta?.lineCount === 'number' ? parsedOutputMeta.lineCount : 0,
-    preview: typeof parsedOutputMeta?.preview === 'string' ? parsedOutputMeta.preview : undefined,
-    errorMessage:
-      typeof parsedOutputMeta?.errorMessage === 'string' ? parsedOutputMeta.errorMessage : undefined,
-  });
-  let toolName = $derived((displayItem.toolName ?? '').trim());
-  let summaryToolName = $derived(displayItem.summary?.split(':', 1)[0]);
-  let isCommandRow = $derived(
-    outputItem.payloadKind === 'command_output' ||
-      isCommandToolName(toolName) ||
-      isCommandToolName(summaryToolName),
-  );
-  let isCollabRow = $derived(
-    provider === PROVIDER_DEFINITIONS.codex.id
-      && (toolName === 'collab_agent' || isCodexCollabControlToolName(toolName)),
+  let presentation = $derived(
+    resolveToolPresentation({
+      item: renderItem,
+      provider,
+      surface: 'tray',
+      displayItem,
+      statusItem,
+      outputItem,
+    }),
   );
   let durationLabel = $derived(task.elapsedMs === null ? '' : formatElapsed(task.elapsedMs));
 
@@ -95,30 +76,30 @@
   {/snippet}
 
   <div data-testid="background-task-tray-row-status" data-status={task.status} class="contents">
-    {#if isCommandRow}
+    {#if presentation.kind === 'command'}
       <CommandOutput
-        item={outputItem}
-        displayItem={displayItem}
-        statusItem={statusItem}
-        meta={commandMeta}
-        payloadId={outputItem.payloadId}
+        item={presentation.item}
+        displayItem={presentation.displayItem}
+        statusItem={presentation.statusItem}
+        meta={presentation.meta}
+        payloadId={presentation.payloadId}
         {durationLabel}
         showTimestamp={false}
         trailingActions={hasStopAction ? stopAction : undefined}
       />
-    {:else if isCollabRow}
+    {:else if presentation.kind === 'collab'}
       <CollabToolRow
-        item={displayItem}
-        statusItem={statusItem}
+        item={presentation.item}
+        statusItem={presentation.statusItem}
         {durationLabel}
         showSpawnStatus
         trailingActions={hasStopAction ? stopAction : undefined}
       />
     {:else}
       <GenericToolCallRow
-        item={outputItem}
-        displayItem={displayItem}
-        statusItem={statusItem}
+        item={presentation.item}
+        displayItem={presentation.displayItem}
+        statusItem={presentation.statusItem}
         {durationLabel}
         showTimestamp={false}
         trailingActions={hasStopAction ? stopAction : undefined}

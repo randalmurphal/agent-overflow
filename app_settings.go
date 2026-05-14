@@ -98,7 +98,7 @@ func (a *App) UpdateSettings(patch map[string]any) (settings.Settings, error) {
 
 // GetModelsForProvider returns the known model registry for the given provider.
 func (a *App) GetModelsForProvider(providerName string) ([]provider.ModelInfo, error) {
-	if providerName == string(provider.Codex) {
+	if provider.CapabilitiesForProvider(providerName).ModelCatalog == provider.CodexLiveModelCatalog {
 		return a.codexModelsForBinary(context.Background(), a.providerBinaryPath(providerName))
 	}
 	return provider.ModelsForProvider(providerName), nil

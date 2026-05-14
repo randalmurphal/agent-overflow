@@ -76,7 +76,8 @@ func (a *App) deleteThreadTreeLocked(threadID string) error {
 	// primitive. Deleting a Claude thread drops its subprocess via
 	// stopSession; the kernel reaps any remaining child processes the
 	// CLI spawned.
-	if threadFound && thread.Provider == string(provider.Codex) {
+	if threadFound &&
+		provider.CapabilitiesForProvider(thread.Provider).BackgroundTerminalCleaner == provider.CodexBackgroundTerminalCleaner {
 		if _, hasSession := a.activeCodexSession(threadID); hasSession {
 			if err := a.CleanCodexBackgroundTerminals(threadID); err != nil {
 				// Not added to errs: the delete intent is terminal, and
