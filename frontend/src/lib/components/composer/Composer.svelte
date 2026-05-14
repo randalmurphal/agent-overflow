@@ -163,11 +163,6 @@
       : [],
   );
   let hasDraftDiffReviewComments = $derived(Boolean(activeDiffReviewSource) && activeDiffReviewDraftComments.length > 0);
-  // Drop `!isTurnActive` for hasDraftContent and plan-comment paths —
-  // those are queueable mid-round. Implement-only (no draft, no
-  // comments) still requires an idle turn because it kicks off the
-  // implementProposedPlan helper which does work beyond a single
-  // SendMessage RPC; queueing it is a future enhancement.
   let sendState = $derived(deriveComposerSendState({
     isDisabled,
     sending,

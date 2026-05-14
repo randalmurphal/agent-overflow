@@ -16,9 +16,8 @@ export interface TimelineGeometry {
   getItemOffset(index: number): number;
 }
 
-export interface TimelineAutoLoadOlderState {
+export interface TimelineAutoLoadOlderPrecheckState {
   offset: number;
-  firstVisibleIndex: number;
   hasMoreHistory: boolean;
   loadingOlder: boolean;
   oldestLoadedTurnIndex: number | null;
@@ -26,6 +25,10 @@ export interface TimelineAutoLoadOlderState {
   threadId: string | null;
   attemptedAtFloor: number | null;
   offsetThreshold: number;
+}
+
+export interface TimelineAutoLoadOlderState extends TimelineAutoLoadOlderPrecheckState {
+  firstVisibleIndex: number;
   indexThreshold: number;
 }
 
@@ -72,12 +75,34 @@ export function captureTimelineAnchor(
   };
 }
 
-export function shouldAutoLoadOlder(state: TimelineAutoLoadOlderState): boolean {
+export function shouldInspectAutoLoadOlderIndex(state: TimelineAutoLoadOlderPrecheckState): boolean {
   if (!state.hasMoreHistory) return false;
   if (state.loadingOlder) return false;
+
+  // `pane.loadOlder()` already noops on a null floor, but the progress
+  // guard below only works when there is a concrete floor to compare.
+  // Without this, malformed backend state (`hasMore=true` with no loaded
+  // items) can re-fire the load on every scroll tick.
   if (state.oldestLoadedTurnIndex === null) return false;
+
+  // Restoration must finish first. Loading older rows mid-restore races
+  // the anchor capture against an unstable scrollTop.
   if (state.restoredThreadId !== state.threadId) return false;
   if (state.offset >= state.offsetThreshold) return false;
-  if (state.firstVisibleIndex > state.indexThreshold) return false;
+
+  // Progress guard: if a previous attempt did not advance the floor, do
+  // not hammer the same query while the user lingers near the top.
   return state.attemptedAtFloor !== state.oldestLoadedTurnIndex;
+}
+
+export function isAutoLoadOlderIndexEligible(
+  firstVisibleIndex: number,
+  indexThreshold: number,
+): boolean {
+  return firstVisibleIndex <= indexThreshold;
+}
+
+export function shouldAutoLoadOlder(state: TimelineAutoLoadOlderState): boolean {
+  return shouldInspectAutoLoadOlderIndex(state)
+    && isAutoLoadOlderIndexEligible(state.firstVisibleIndex, state.indexThreshold);
 }

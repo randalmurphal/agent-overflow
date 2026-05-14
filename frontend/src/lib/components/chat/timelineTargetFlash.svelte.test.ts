@@ -40,6 +40,24 @@ describe('createTimelineTargetFlash', () => {
     expect(flash.itemId).toBeNull();
   });
 
+  it('bumps the nonce and restarts the clear timer when reflashing the same item', () => {
+    vi.useFakeTimers();
+    const flash = createTimelineTargetFlash(900);
+
+    flash.flash('item-1');
+    vi.advanceTimersByTime(400);
+    flash.flash('item-1');
+
+    expect(flash.itemId).toBe('item-1');
+    expect(flash.nonce).toBe(2);
+
+    vi.advanceTimersByTime(500);
+    expect(flash.itemId).toBe('item-1');
+
+    vi.advanceTimersByTime(400);
+    expect(flash.itemId).toBeNull();
+  });
+
   it('clears the active item and pending timer', () => {
     vi.useFakeTimers();
     const flash = createTimelineTargetFlash(900);

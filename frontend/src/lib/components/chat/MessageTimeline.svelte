@@ -42,8 +42,9 @@
   import {
     captureTimelineAnchor,
     centeredScrollTop,
+    isAutoLoadOlderIndexEligible,
     resolveVisibleTimelineNodeIndex,
-    shouldAutoLoadOlder,
+    shouldInspectAutoLoadOlderIndex,
     timelineRowElementForIndex,
   } from './timelineScroll';
   import { createTimelineTargetFlash } from './timelineTargetFlash.svelte';
@@ -309,10 +310,8 @@
   // bypassed (no progress, fast-skip past the threshold, etc.).
   function maybeAutoLoadOlder(offset: number): void {
     if (!listRef) return;
-    const firstIdx = listRef.findItemIndex(offset);
-    if (!shouldAutoLoadOlder({
+    if (!shouldInspectAutoLoadOlderIndex({
       offset,
-      firstVisibleIndex: firstIdx,
       hasMoreHistory: pane.hasMoreHistory,
       loadingOlder: pane.loadingOlder,
       oldestLoadedTurnIndex: pane.oldestLoadedTurnIndex,
@@ -320,8 +319,9 @@
       threadId: pane.threadId,
       attemptedAtFloor: autoLoadAttemptedAtFloor,
       offsetThreshold: AUTO_LOAD_OFFSET_PX,
-      indexThreshold: AUTO_LOAD_INDEX_THRESHOLD,
     })) return;
+    const firstIdx = listRef.findItemIndex(offset);
+    if (!isAutoLoadOlderIndexEligible(firstIdx, AUTO_LOAD_INDEX_THRESHOLD)) return;
     autoLoadAttemptedAtFloor = pane.oldestLoadedTurnIndex;
     void handleLoadOlder();
   }

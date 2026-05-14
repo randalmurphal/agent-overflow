@@ -26,8 +26,15 @@ export function deriveComposerSendState(input: ComposerSendStateInput): Composer
   const hasPlanImplementAction = input.hasPlanSource
     && !input.hasDraftContent
     && !input.hasDraftPlanComments;
+  const action = sendAction(input, {
+    hasPlanCommentAction,
+    hasDiffReviewCommentAction,
+  });
 
   return {
+    // Drafts and comment sends are queueable mid-round. Implement-only
+    // still requires an idle turn because it runs the plan implementation
+    // helper, not just a SendMessage RPC.
     canSend: !input.isDisabled
       && !input.sending
       && !input.hasBlockingPrompt
@@ -38,24 +45,29 @@ export function deriveComposerSendState(input: ComposerSendStateInput): Composer
         || hasDiffReviewCommentAction
         || (!input.isTurnActive && hasPlanImplementAction)
       ),
-    action: sendAction(input),
-    label: sendLabel(input),
+    action,
+    label: sendLabel(action),
     hasPlanImplementAction,
   };
 }
 
-function sendLabel(input: ComposerSendStateInput): string | undefined {
-  if (input.hasDraftDiffReviewComments) return 'Send comments';
-  if (!input.hasPlanSource || input.isTurnActive) return undefined;
-  if (input.hasDraftPlanComments) return 'Send comments';
-  if (!input.hasDraftContent) return 'Implement';
-  return 'Refine';
+function sendLabel(action: SendButtonAction): string | undefined {
+  if (action === 'send-comments') return 'Send comments';
+  if (action === 'implement') return 'Implement';
+  if (action === 'refine') return 'Refine';
+  return undefined;
 }
 
-function sendAction(input: ComposerSendStateInput): SendButtonAction {
-  if (input.hasDraftDiffReviewComments) return 'send-comments';
+function sendAction(
+  input: ComposerSendStateInput,
+  normalized: {
+    hasPlanCommentAction: boolean;
+    hasDiffReviewCommentAction: boolean;
+  },
+): SendButtonAction {
+  if (normalized.hasDiffReviewCommentAction) return 'send-comments';
   if (!input.hasPlanSource || input.isTurnActive) return 'send';
-  if (input.hasDraftPlanComments) return 'send-comments';
+  if (normalized.hasPlanCommentAction) return 'send-comments';
   if (!input.hasDraftContent) return 'implement';
   return 'refine';
 }

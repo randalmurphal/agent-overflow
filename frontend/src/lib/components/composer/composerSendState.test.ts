@@ -106,4 +106,15 @@ describe('deriveComposerSendState', () => {
       hasPlanImplementAction: true,
     });
   });
+
+  it('does not render diff-review comment state without an active diff-review source', () => {
+    expect(deriveComposerSendState(input({
+      hasDraftDiffReviewComments: true,
+    }))).toEqual({
+      canSend: false,
+      action: 'send',
+      label: undefined,
+      hasPlanImplementAction: false,
+    });
+  });
 });

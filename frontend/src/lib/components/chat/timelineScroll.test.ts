@@ -4,8 +4,10 @@ import { groupItemsBySubagent } from '../../utils/subagentGrouping';
 import {
   captureTimelineAnchor,
   centeredScrollTop,
+  isAutoLoadOlderIndexEligible,
   resolveVisibleTimelineNodeIndex,
   shouldAutoLoadOlder,
+  shouldInspectAutoLoadOlderIndex,
   timelineRowElementForIndex,
   type TimelineGeometry,
 } from './timelineScroll';
@@ -104,6 +106,21 @@ describe('timelineScroll', () => {
     })).toBe(true);
   });
 
+  it('auto-loads older items again after the loaded floor advances', () => {
+    expect(shouldAutoLoadOlder({
+      offset: 799,
+      firstVisibleIndex: 5,
+      hasMoreHistory: true,
+      loadingOlder: false,
+      oldestLoadedTurnIndex: 8,
+      restoredThreadId: 'thread-1',
+      threadId: 'thread-1',
+      attemptedAtFloor: 10,
+      offsetThreshold: 800,
+      indexThreshold: 5,
+    })).toBe(true);
+  });
+
   it.each([
     ['missing history', { hasMoreHistory: false }],
     ['active load', { loadingOlder: true }],
@@ -127,5 +144,34 @@ describe('timelineScroll', () => {
       indexThreshold: 5,
       ...overrides,
     })).toBe(false);
+  });
+
+  it('keeps the virtualizer index lookup behind the cheap auto-load gates', () => {
+    expect(shouldInspectAutoLoadOlderIndex({
+      offset: 799,
+      hasMoreHistory: true,
+      loadingOlder: false,
+      oldestLoadedTurnIndex: 10,
+      restoredThreadId: 'thread-1',
+      threadId: 'thread-1',
+      attemptedAtFloor: null,
+      offsetThreshold: 800,
+    })).toBe(true);
+
+    expect(shouldInspectAutoLoadOlderIndex({
+      offset: 800,
+      hasMoreHistory: true,
+      loadingOlder: false,
+      oldestLoadedTurnIndex: 10,
+      restoredThreadId: 'thread-1',
+      threadId: 'thread-1',
+      attemptedAtFloor: null,
+      offsetThreshold: 800,
+    })).toBe(false);
+  });
+
+  it('checks first visible row eligibility separately from cheap auto-load gates', () => {
+    expect(isAutoLoadOlderIndexEligible(5, 5)).toBe(true);
+    expect(isAutoLoadOlderIndexEligible(6, 5)).toBe(false);
   });
 });
