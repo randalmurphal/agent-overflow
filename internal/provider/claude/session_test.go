@@ -2208,16 +2208,13 @@ func TestExitPlanModeWriteFailureClosesSession(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Print the plan request, then deterministically close stdin (the read
-	// end of our write pipe) while keeping the subprocess alive briefly.
-	// Closing the read end guarantees the handler's WriteLine returns
-	// EPIPE — an earlier version of this test had the subprocess exit
-	// outright, which raced the kernel: sometimes the write landed in
-	// the pipe buffer before the kernel marked the write end broken,
-	// letting the write succeed and the EventError never fire.
+	// Close stdin (the read end of our write pipe), then print the plan
+	// request while keeping the subprocess alive briefly. The ordering is
+	// load-bearing: if the request is printed first, readLoop can race ahead
+	// and write the denial before the shell has actually closed fd 0.
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
 		Binary: "sh",
-		Args:   []string{"-c", `printf '{"type":"control_request","request_id":"plan-1","request":{"subtype":"can_use_tool","tool_name":"ExitPlanMode","input":{"plan":"# plan"}}}\n'; exec 0<&-; sleep 0.5`},
+		Args:   []string{"-c", `exec 0<&-; printf '{"type":"control_request","request_id":"plan-1","request":{"subtype":"can_use_tool","tool_name":"ExitPlanMode","input":{"plan":"# plan"}}}\n'; sleep 0.05`},
 	})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)

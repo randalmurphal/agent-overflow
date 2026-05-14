@@ -9,6 +9,7 @@ import {
   resetBindingMocks,
   setBindingMock,
 } from "../../../../test/mocks/bindings-app";
+import { invalidateProviderModels } from "../../../stores/providerModels.svelte";
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -240,5 +241,41 @@ describe("<EffortMenu>", () => {
     await fireEvent.click(getByTestId("composer-effort-trigger"));
 
     expect(queryByText("Context")).toBeNull();
+  });
+
+  it("refreshes context rows after same-provider model catalog invalidation", async () => {
+    const pane = await buildPane(
+      makeThread({
+        provider: "codex",
+        model: "gpt-5.5",
+        contextWindow: 272000,
+      }),
+    );
+    let contextWindows = [
+      { tokens: 272000, label: "272k", tier: "standard" },
+    ];
+    setBindingMock("GetModelsForProvider", async () => [
+      {
+        slug: "gpt-5.5",
+        name: "GPT-5.5",
+        provider: "codex",
+        capabilities: [],
+        contextWindows,
+      },
+    ]);
+    const { getByTestId, queryByRole, findByRole } = render(EffortMenu, { props: { pane } });
+
+    await fireEvent.click(getByTestId("composer-effort-trigger"));
+    expect(queryByRole("menuitem", { name: /^1m$/ })).toBeNull();
+
+    await fireEvent.click(getByTestId("composer-effort-trigger"));
+    contextWindows = [
+      { tokens: 272000, label: "272k", tier: "standard" },
+      { tokens: 1000000, label: "1m", tier: "extended" },
+    ];
+    invalidateProviderModels("codex");
+    await fireEvent.click(getByTestId("composer-effort-trigger"));
+
+    expect(await findByRole("menuitem", { name: /^1m$/ })).toBeInTheDocument();
   });
 });

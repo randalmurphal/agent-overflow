@@ -23,18 +23,20 @@
 // either provider lands cleanly through the same merge path.
 
 import type { RateLimitEntry, RateLimitsSnapshot } from '../types/events';
+import {
+  asProviderID,
+  type ProviderID,
+} from '../types/providers';
 
-type Provider = 'claude' | 'codex';
-
-let limitsByProvider: Map<Provider, Map<number, RateLimitEntry>> = $state(new Map());
+let limitsByProvider: Map<ProviderID, Map<number, RateLimitEntry>> = $state(new Map());
 
 export function setProviderRateLimits(snapshot: RateLimitsSnapshot): void {
   // Empty snapshots arrive on edge-case wires (no entries known yet).
   // Treat as a no-op rather than wiping — the global store's contract
   // is "last-known good value persists until a non-empty update."
   if (!snapshot?.limits?.length) return;
-  if (snapshot.provider !== 'claude' && snapshot.provider !== 'codex') return;
-  const provider = snapshot.provider as Provider;
+  const provider = asProviderID(snapshot.provider);
+  if (!provider) return;
 
   const existing = limitsByProvider.get(provider) ?? new Map<number, RateLimitEntry>();
   const merged = new Map(existing);
@@ -79,7 +81,7 @@ export function setProviderRateLimits(snapshot: RateLimitsSnapshot): void {
 }
 
 export function getProviderRateLimit(
-  provider: Provider | undefined,
+  provider: ProviderID | undefined,
   windowMins: number,
 ): RateLimitEntry | null {
   if (!provider) return null;

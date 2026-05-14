@@ -12,6 +12,11 @@
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import {
+    getProviderDefinition,
+    type ProviderBackgroundStop,
+    type ProviderID,
+  } from '../../providers/catalog';
+  import {
     extractClaudeTaskID,
     isCodexStoppableTask,
     type TrayTask,
@@ -21,16 +26,19 @@
 
   interface Props {
     tasks: TrayTask[];
-    provider: 'claude' | 'codex' | null;
+    provider: ProviderID | null;
     threadId: string | null;
     runningCount: number;
     anyRunning: boolean;
   }
 
   let { tasks, provider, threadId, runningCount, anyRunning }: Props = $props();
+  let backgroundStop = $derived<ProviderBackgroundStop>(
+    provider ? getProviderDefinition(provider).backgroundStop : 'none',
+  );
 
   let claudeStoppableTaskIDs = $derived.by<string[]>(() => {
-    if (provider !== 'claude') return [];
+    if (backgroundStop !== 'claude-task') return [];
     const ids: string[] = [];
     for (const t of tasks) {
       if (t.status !== 'running' || t.launch === null) continue;
@@ -40,7 +48,7 @@
     return ids;
   });
   let hasCodexStoppable = $derived(
-    provider === 'codex'
+    backgroundStop === 'codex-background-terminals'
       && tasks.some((t) => t.status === 'running' && isCodexStoppableTask(t)),
   );
   let canStopAll = $derived(claudeStoppableTaskIDs.length > 0 || hasCodexStoppable);
@@ -71,7 +79,7 @@
     if (!threadId) return;
     stopAllInFlight = true;
     try {
-      if (provider === 'claude') {
+      if (backgroundStop === 'claude-task') {
         const results = await Promise.allSettled(
           claudeStoppableTaskIDs.map((id) => StopClaudeTask(threadId!, id)),
         );
@@ -80,7 +88,7 @@
             addToast('error', `Failed to stop task: ${errString(r.reason)}`);
           }
         }
-      } else if (provider === 'codex') {
+      } else if (backgroundStop === 'codex-background-terminals') {
         await CleanCodexBackgroundTerminals(threadId);
       }
     } catch (err) {
@@ -91,7 +99,7 @@
   }
 
   function rowStopTarget(task: TrayTask): string | null {
-    if (provider !== 'claude') return null;
+    if (backgroundStop !== 'claude-task') return null;
     if (task.status !== 'running' || !task.launch) return null;
     return extractClaudeTaskID(task.launch);
   }

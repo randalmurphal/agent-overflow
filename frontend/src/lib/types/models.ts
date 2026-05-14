@@ -1,3 +1,5 @@
+import type { ProviderID } from './providers';
+
 export type RuntimeMode =
   | "approval-required"
   | "auto-accept-edits"
@@ -6,7 +8,7 @@ export type RuntimeMode =
 export interface Thread {
   id: string;
   title: string;
-  provider: "claude" | "codex";
+  provider: ProviderID;
   sessionRef?: string;
   pendingForkRef?: string;
   workspacePath: string;

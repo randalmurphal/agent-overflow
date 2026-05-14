@@ -1,15 +1,13 @@
 <script lang="ts">
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import Icon from '../../primitives/Icon.svelte';
-  import ClaudeIcon from '../../primitives/brand/ClaudeIcon.svelte';
-  import OpenAIIcon from '../../primitives/brand/OpenAIIcon.svelte';
   import { composerTriggerClasses } from '../triggerClasses';
+  import ProviderIcon from '../../shared/ProviderIcon.svelte';
 
   interface Props {
     buttonEl: HTMLButtonElement | undefined;
     open: boolean;
     disabled: boolean;
-    isCodex: boolean;
     provider: string;
     modelLabel: string;
     onClick: () => void;
@@ -19,7 +17,6 @@
     buttonEl = $bindable(),
     open,
     disabled,
-    isCodex,
     provider,
     modelLabel,
     onClick,
@@ -37,11 +34,7 @@
   data-testid="composer-model-menu-trigger"
   class={composerTriggerClasses}
 >
-  {#if isCodex}
-    <OpenAIIcon size={13} class="opacity-95" />
-  {:else}
-    <ClaudeIcon size={13} class="text-[#d97757] opacity-95" />
-  {/if}
+  <ProviderIcon {provider} size={13} />
   <span class="truncate max-w-[200px] text-fg">{modelLabel}</span>
   <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
 </button>

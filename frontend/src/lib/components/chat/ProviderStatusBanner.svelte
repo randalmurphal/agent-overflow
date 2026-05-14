@@ -3,15 +3,23 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     GetProviderStatuses,
-    RecheckClaudeAccount,
     ReconnectSession,
   } from '../../stores/bindings';
   import { userFacingError } from '../../utils/userFacingError';
   import {
     getProviderStatus,
+    recordProviderStatus,
     type ProviderStatusEvent,
   } from '../../stores/providerStatus.svelte';
   import { handleExternalURL } from '../../utils/externalLinks';
+  import {
+    recheckProviderAccount,
+    recheckResultClearsAuthBanner,
+  } from '../../providers/actions';
+  import {
+    getProviderDefinition,
+    providerCliLabel,
+  } from '../../providers/catalog';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -67,7 +75,7 @@
         // Message from Go already names the binary path; the UI decorates
         // with a provider-specific CTA. Fall back to a generic copy when
         // the backend somehow ships an empty message.
-        const label = providerStatus.provider === 'claude' ? 'Claude CLI' : 'Codex CLI';
+        const label = providerCliLabel(providerStatus.provider);
         return providerStatus.message
           || `${label} not found at the configured path.`;
       }
@@ -89,7 +97,7 @@
         // this button would be a silent no-op — hide the affordance
         // entirely rather than lie to the user.
         if (!providerStatus.actionUrl) return '';
-        return providerStatus.provider === 'claude' ? 'Install Claude CLI' : 'Install Codex CLI';
+        return getProviderDefinition(providerStatus.provider)?.installActionLabel ?? '';
       case 'unauthenticated':
         return 'Recheck';
       default:
@@ -112,18 +120,26 @@
   }
 
   async function handleRecheckAuth() {
-    if (rechecking) return;
+    const status = providerStatus;
+    if (!status || rechecking) return;
     rechecking = true;
     try {
-      // RecheckClaudeAccount evicts the per-process probe cache before
+      // RecheckProviderAccount evicts the per-process probe cache before
       // re-running the probe — the cached pre-login zero-value would
-      // otherwise mask the new auth state for up to 5 minutes. The
-      // refreshed auth state lands on the store via `provider:status`
-      // (banner) and `provider:account` (popover plan label), both
-      // emitted from inside the probe's cache-miss path.
-      await RecheckClaudeAccount();
+      // otherwise mask the new auth state for up to 5 minutes.
+      const account = await recheckProviderAccount(status.provider);
+      if (recheckResultClearsAuthBanner(status.provider, account)) {
+        const readyStatus: ProviderStatusEvent = {
+          provider: status.provider,
+          status: 'ready',
+          message: '',
+          actionable: false,
+        };
+        recordProviderStatus(readyStatus);
+        pane.setProviderBanner(status.threadId ? null : undefined);
+      }
     } catch (err) {
-      console.error('Failed to recheck Claude account:', err);
+      console.error('Failed to recheck provider account:', err);
     } finally {
       rechecking = false;
     }

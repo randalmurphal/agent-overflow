@@ -8,6 +8,7 @@
     getEffectiveThreadStatus,
   } from '../../stores/threadStatuses.svelte';
   import { computeHighlightSegments } from '../../utils/highlight';
+  import { getProviderDefinition } from '../../providers/catalog';
   import { resolveThreadStatusPill } from '../sidebar/threadStatusPill';
 
   interface Props {
@@ -141,6 +142,7 @@
             {@const status = getEffectiveThreadStatus(hit.thread)}
             {@const statusPill = resolveThreadStatusPill(hit.thread, status)}
             {@const basename = projectBasename(hit.thread.projectPath)}
+            {@const providerDefinition = getProviderDefinition(hit.thread.provider)}
             <li>
               <button
                 type="button"
@@ -153,8 +155,8 @@
                 ].join(' ')}
               >
                 <span class="text-[9px] font-semibold px-1 py-0.5 rounded-[4px] shrink-0 tracking-wide
-                    {hit.thread.provider === 'claude' ? 'bg-accent/10 text-accent' : 'bg-provider-codex/10 text-provider-codex'}" aria-hidden="true">
-                  {hit.thread.provider === 'claude' ? 'C' : 'X'}
+                    {providerDefinition?.badgeClass ?? 'bg-surface-2 text-fg-muted'}" aria-hidden="true">
+                  {providerDefinition?.shortLabel ?? '?'}
                 </span>
                 {#if !statusPill}
                   <span class="w-2 h-2 shrink-0" aria-hidden="true"></span>

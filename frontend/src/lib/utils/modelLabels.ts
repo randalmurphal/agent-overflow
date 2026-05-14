@@ -1,7 +1,10 @@
-export type ModelProvider = 'claude' | 'codex' | string;
+import { PROVIDER_DEFINITIONS } from '../providers/catalog';
+import type { ProviderID } from '../types/providers';
+
+export type ModelProvider = ProviderID | string;
 
 export function displayModelLabel(provider: ModelProvider, slug: string, name?: string): string {
-  if (provider === 'claude') {
+  if (provider === PROVIDER_DEFINITIONS.claude.id) {
     return displayClaudeModelLabel(slug, name);
   }
   return name?.trim() || slug;

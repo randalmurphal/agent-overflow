@@ -7,6 +7,7 @@
 
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { ModelInfo } from '../../../types/settings';
+  import type { ProviderID } from '../../../types/providers';
   import { displayModelLabel } from '../../../utils/modelLabels';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import Icon from '../../primitives/Icon.svelte';
@@ -14,18 +15,16 @@
 
   interface Props {
     pane: ThreadPane;
-    provider: 'claude' | 'codex';
+    provider: ProviderID;
     /**
-     * Resolver returns the cached model list for the provider; the
-     * parent reads from the same module-level cache and tracks a
-     * version for invalidation.
+     * Resolver returns the shared cached model list for the provider.
      */
-    getModels: (provider: 'claude' | 'codex') => ModelInfo[];
+    getModels: (provider: ProviderID) => ModelInfo[];
     /** Fetches + caches if the cache is cold. */
-    ensureModels: (provider: 'claude' | 'codex') => Promise<void>;
+    ensureModels: (provider: ProviderID) => Promise<void>;
     /** Called with the slug the user selected. */
     onSelect: (slug: string) => void;
-    isFavorite?: (provider: 'claude' | 'codex', slug: string) => boolean;
+    isFavorite?: (provider: ProviderID, slug: string) => boolean;
     onToggleFavorite?: (model: ModelInfo) => void;
   }
 

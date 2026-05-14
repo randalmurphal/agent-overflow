@@ -11,6 +11,7 @@ import {
 } from '../lib/stores/thread.svelte';
 import { __resetPayloadCacheForTest } from '../lib/utils/payloadDataCache';
 import { clearThreadItemCacheForTest } from '../lib/stores/threadItemCache';
+import { resetProviderModelsForTest } from '../lib/stores/providerModels.svelte';
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class StubResizeObserver {
@@ -197,6 +198,10 @@ afterEach(() => {
   // test's snapshot for thread-1 would otherwise let the next test's
   // pane skip its mocked load entirely.
   clearThreadItemCacheForTest();
+  // Shared provider model metadata is a real app cache. Tests mock the
+  // catalog per case, so stale model capabilities from another suite make
+  // menus lie about context windows and fast-mode support.
+  resetProviderModelsForTest();
   // Wipe the in-memory localStorage between tests so persistence-aware
   // stores don't leak state across suites.
   try {

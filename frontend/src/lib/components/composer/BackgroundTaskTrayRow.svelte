@@ -11,6 +11,10 @@
     type TrayTask,
   } from '../../utils/backgroundTray';
   import type { CommandOutputMeta, Item } from '../../types/models';
+  import {
+    PROVIDER_DEFINITIONS,
+    type ProviderID,
+  } from '../../providers/catalog';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { isCodexCollabControlToolName } from '../chat/codexCollabControls';
 
@@ -26,7 +30,7 @@
      * this row — disables the button so a second click can't double-
      * fire the same stop. */
     isStopping: boolean;
-    provider: 'claude' | 'codex' | null;
+    provider: ProviderID | null;
     onStop: (rowID: string, taskID: string) => void;
   }
 
@@ -61,7 +65,8 @@
       isCommandToolName(summaryToolName),
   );
   let isCollabRow = $derived(
-    provider === 'codex' && (toolName === 'collab_agent' || isCodexCollabControlToolName(toolName)),
+    provider === PROVIDER_DEFINITIONS.codex.id
+      && (toolName === 'collab_agent' || isCodexCollabControlToolName(toolName)),
   );
   let durationLabel = $derived(task.elapsedMs === null ? '' : formatElapsed(task.elapsedMs));
 

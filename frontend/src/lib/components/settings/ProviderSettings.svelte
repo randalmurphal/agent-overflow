@@ -6,14 +6,24 @@
   // models. The text-generation routing controls live below as a
   // separate section since they apply across providers.
 
-  import { GetProviderStatuses, GetModelsForProvider } from '../../stores/bindings';
+  import { GetProviderStatuses } from '../../stores/bindings';
   import {
     getSettings,
     updateSetting,
     updateSettingsPatch,
   } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import type { ModelInfo, ProviderStatus, ReasoningEffort } from '../../types/settings';
+  import type { ProviderStatus, ReasoningEffort } from '../../types/settings';
+  import {
+    getProviderDefinition,
+    PROVIDER_SETTINGS_ORDER,
+    type ProviderDefinition,
+    type ProviderID,
+  } from '../../providers/catalog';
+  import {
+    getProviderModels,
+    refreshProviderModels,
+  } from '../../stores/providerModels.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import ProviderContextSettings from './ProviderContextSettings.svelte';
   import SettingsField from './SettingsField.svelte';
@@ -30,37 +40,15 @@
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let { contextTarget: _ = null }: { contextTarget?: unknown } = $props();
 
-  // Mirror of internal/settings text-generation defaults so the model-input
-  // placeholder tracks the per-provider recommendation without a round-trip.
-  const TEXTGEN_DEFAULT_MODEL: Record<'claude' | 'codex', string> = {
-    claude: 'claude-haiku-4-5',
-    codex: 'gpt-5.4-mini',
-  };
-  const CODEX_TEXTGEN_EFFORT_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
-    { value: 'none', label: 'None' },
-    { value: 'minimal', label: 'Minimal' },
-    { value: 'low', label: 'Low' },
-    { value: 'medium', label: 'Medium' },
-    { value: 'high', label: 'High' },
-    { value: 'xhigh', label: 'Extra High' },
-  ];
-  const CLAUDE_TEXTGEN_EFFORT_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
-    { value: 'low', label: 'Low' },
-    { value: 'medium', label: 'Medium' },
-    { value: 'high', label: 'High' },
-    { value: 'xhigh', label: 'Extra High' },
-    { value: 'max', label: 'Max' },
-  ];
+  const PROVIDERS: ProviderDefinition[] = PROVIDER_SETTINGS_ORDER.map(
+    (provider) => getProviderDefinition(provider),
+  );
 
   let settings = $derived(getSettings());
   let textGenerationEffortOptions = $derived(
-    settings.textGenerationProvider === 'claude'
-      ? CLAUDE_TEXTGEN_EFFORT_OPTIONS
-      : CODEX_TEXTGEN_EFFORT_OPTIONS,
+    getProviderDefinition(settings.textGenerationProvider).textGenerationEffortOptions,
   );
   let statuses = $state<ProviderStatus[]>([]);
-  let claudeModels = $state<ModelInfo[]>([]);
-  let codexModels = $state<ModelInfo[]>([]);
   let loadGeneration = 0;
 
   $effect(() => {
@@ -69,10 +57,9 @@
 
     const generation = ++loadGeneration;
     void (async () => {
-      const [statusResult, claudeResult, codexResult] = await Promise.allSettled([
+      const [statusResult, ...modelResults] = await Promise.allSettled([
         GetProviderStatuses(),
-        GetModelsForProvider('claude'),
-        GetModelsForProvider('codex'),
+        ...PROVIDER_SETTINGS_ORDER.map((provider) => refreshProviderModels(provider)),
       ]);
       if (generation !== loadGeneration) return;
 
@@ -82,17 +69,13 @@
         console.error('Failed to load provider statuses:', statusResult.reason);
         addToast('error', 'Failed to load provider statuses.');
       }
-      if (claudeResult.status === 'fulfilled') {
-        claudeModels = (claudeResult.value ?? []) as ModelInfo[];
-      } else {
-        console.error('Failed to load Claude models:', claudeResult.reason);
-        addToast('error', 'Failed to load Claude models.');
-      }
-      if (codexResult.status === 'fulfilled') {
-        codexModels = (codexResult.value ?? []) as ModelInfo[];
-      } else {
-        console.error('Failed to load Codex models:', codexResult.reason);
-        addToast('error', 'Failed to load Codex models.');
+
+      for (const [index, result] of modelResults.entries()) {
+        if (result.status === 'fulfilled') continue;
+        const provider = PROVIDER_SETTINGS_ORDER[index];
+        const label = getProviderDefinition(provider).label;
+        console.error(`Failed to load ${label} models:`, result.reason);
+        addToast('error', `Failed to load ${label} models.`);
       }
     })();
   });
@@ -102,19 +85,17 @@
   }
 
   function isTextGenerationEffortAllowed(
-    provider: 'claude' | 'codex',
+    provider: ProviderID,
     effort: ReasoningEffort,
   ): boolean {
-    const options =
-      provider === 'claude'
-        ? CLAUDE_TEXTGEN_EFFORT_OPTIONS
-        : CODEX_TEXTGEN_EFFORT_OPTIONS;
-    return options.some((option) => option.value === effort);
+    return getProviderDefinition(provider).textGenerationEffortOptions.some(
+      (option) => option.value === effort,
+    );
   }
 
-  function updateTextGenerationProvider(provider: 'claude' | 'codex') {
+  function updateTextGenerationProvider(provider: ProviderID) {
     const patch: {
-      textGenerationProvider: 'claude' | 'codex';
+      textGenerationProvider: ProviderID;
       textGenerationReasoningEffort?: ReasoningEffort;
     } = { textGenerationProvider: provider };
     if (!isTextGenerationEffortAllowed(provider, settings.textGenerationReasoningEffort)) {
@@ -138,26 +119,15 @@
     }
   }
 
-  const PROVIDERS = [
-    {
-      id: 'claude' as const,
-      label: 'Claude',
-      enabledKey: 'claudeEnabled' as const,
-      pathKey: 'claudeBinaryPath' as const,
-    },
-    {
-      id: 'codex' as const,
-      label: 'Codex',
-      enabledKey: 'codexEnabled' as const,
-      pathKey: 'codexBinaryPath' as const,
-    },
-  ];
+  let textGenerationDefaultModel = $derived(
+    getProviderDefinition(settings.textGenerationProvider).textGenerationDefaultModel,
+  );
 </script>
 
 <div class="flex flex-col gap-10">
   {#each PROVIDERS as provider (provider.id)}
     {@const status = getStatus(provider.id)}
-    {@const models = provider.id === 'claude' ? claudeModels : codexModels}
+    {@const models = getProviderModels(provider.id)}
     <section
       class="rounded-[var(--radius-card)] border border-border-subtle bg-surface-1/30 p-5"
       data-testid="settings-provider-{provider.id}"
@@ -200,9 +170,9 @@
           hint="Allow new threads to use this provider."
         >
           <ToggleSwitch
-            checked={settings[provider.enabledKey]}
+            checked={settings[provider.settings.enabledKey]}
             ariaLabel={`Toggle ${provider.label}`}
-            onToggle={(value) => updateSetting(provider.enabledKey, value)}
+            onToggle={(value) => updateSetting(provider.settings.enabledKey, value)}
           />
         </SettingsField>
 
@@ -214,9 +184,9 @@
           <input
             id="{provider.id}-path"
             type="text"
-            value={settings[provider.pathKey]}
+            value={settings[provider.settings.pathKey]}
             onchange={(e) =>
-              updateSetting(provider.pathKey, (e.target as HTMLInputElement).value)}
+              updateSetting(provider.settings.pathKey, (e.target as HTMLInputElement).value)}
             placeholder="Auto-detect"
             class="{INPUT_CLASS} max-w-[16rem]"
           />
@@ -272,12 +242,13 @@
           value={settings.textGenerationProvider}
           onchange={(e) =>
             updateTextGenerationProvider(
-              (e.target as HTMLSelectElement).value as 'claude' | 'codex',
+              (e.target as HTMLSelectElement).value as ProviderID,
             )}
           class={SELECT_CLASS}
         >
-          <option value="codex">Codex</option>
-          <option value="claude">Claude</option>
+          {#each PROVIDERS as provider (provider.id)}
+            <option value={provider.id}>{provider.label}</option>
+          {/each}
         </select>
       </SettingsField>
 
@@ -296,7 +267,7 @@
               'textGenerationModel',
               (e.target as HTMLInputElement).value,
             )}
-          placeholder={`Default: ${TEXTGEN_DEFAULT_MODEL[settings.textGenerationProvider]}`}
+          placeholder={`Default: ${textGenerationDefaultModel}`}
           class="{INPUT_CLASS} max-w-[16rem]"
         />
       </SettingsField>

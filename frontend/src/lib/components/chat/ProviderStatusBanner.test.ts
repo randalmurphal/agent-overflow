@@ -1,12 +1,12 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import ProviderStatusBanner from './ProviderStatusBanner.svelte';
 import {
   resetForTest as resetProviderStatuses,
   type ProviderStatusEvent,
 } from '../../stores/providerStatus.svelte';
 import { setupEventListeners } from '../../stores/events';
-import { buildPane } from '../../../test/helpers/chat';
+import { buildPane, makeThread } from '../../../test/helpers/chat';
 import { emitWailsEvent, resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { installAnimateShim } from '../../../test/integration/_helpers';
@@ -93,5 +93,50 @@ describe('<ProviderStatusBanner>', () => {
 
     const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
     expect(getByTestId('provider-status-action').textContent).toMatch(/Install Claude CLI/);
+  });
+
+  it('rechecks the matching provider account from unauthenticated banners', async () => {
+    const pane = await buildPane(makeThread({ provider: 'codex', model: 'gpt-5.4-mini' }));
+    const recheckClaude = setBindingMock('RecheckClaudeAccount', async () => {});
+    const recheckCodex = setBindingMock('RecheckCodexAccount', async () => {});
+    emitWailsEvent(
+      'provider:status',
+      statusEvent({
+        provider: 'codex',
+        status: 'unauthenticated',
+        message: 'Codex authentication expired',
+        actionUrl: '',
+      }),
+    );
+
+    const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+    await fireEvent.click(getByTestId('provider-status-action'));
+
+    expect(recheckCodex).toHaveBeenCalledOnce();
+    expect(recheckClaude).not.toHaveBeenCalled();
+  });
+
+  it('clears the unauthenticated banner after a successful provider recheck', async () => {
+    const pane = await buildPane(makeThread({ provider: 'codex', model: 'gpt-5.4-mini' }));
+    setBindingMock('RecheckCodexAccount', async () => ({
+      subscriptionType: 'pro',
+      tokenSource: 'login',
+    }));
+    emitWailsEvent(
+      'provider:status',
+      statusEvent({
+        provider: 'codex',
+        status: 'unauthenticated',
+        message: 'Codex authentication expired',
+        actionUrl: '',
+      }),
+    );
+
+    const { getByTestId, queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
+    await fireEvent.click(getByTestId('provider-status-action'));
+
+    await waitFor(() => {
+      expect(queryByTestId('provider-status-banner')).toBeNull();
+    });
   });
 });

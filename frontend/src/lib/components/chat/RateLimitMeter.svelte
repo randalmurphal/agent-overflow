@@ -3,6 +3,7 @@
   import { formatResetCountdown } from '../../utils/format';
   import { getProviderAccount } from '../../stores/accountInfo.svelte';
   import { getProviderRateLimit } from '../../stores/rateLimitsInfo.svelte';
+  import type { ProviderID } from '../../types/providers';
   import Popover from '../primitives/Popover.svelte';
 
   // The ring face shows a static window label ("5h"/"7d"); the
@@ -20,7 +21,7 @@
     provider,
   }: {
     windowMins: number;
-    provider?: 'claude' | 'codex';
+    provider?: ProviderID;
   } = $props();
 
   // Re-runs whenever the global store's Map identity flips on

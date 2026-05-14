@@ -4,6 +4,8 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
   import { openThreadFromNavigation } from '../../stores/panes.svelte';
+  import { getProviderDefinition } from '../../providers/catalog';
+  import { asProviderID, type ProviderID } from '../../types/providers';
   import { computeHighlightSegments } from '../../utils/highlight';
 
   interface Props {
@@ -74,13 +76,11 @@
 
   async function openHit(hit: ThreadMessageHit): Promise<void> {
     // The sidebar may not have the full thread row loaded (e.g. archived);
-    // fall back to a minimal shape so switchThread still navigates. The
-    // provider string is opaque from the store's perspective, so we cast
-    // to the Thread union here — switchThread only reads the fields we fill.
+    // fall back to a minimal shape so switchThread still navigates.
     const thread = getThreadById(hit.threadId) ?? ({
       id: hit.threadId,
       title: hit.threadTitle,
-      provider: hit.provider as 'claude' | 'codex',
+      provider: (asProviderID(hit.provider) ?? hit.provider) as ProviderID,
       workspacePath: '',
       projectPath: '',
       mode: 'chat' as const,
@@ -160,6 +160,7 @@
       {:else}
         <ul class="py-1 -mx-1" data-testid="message-search-results">
           {#each hits as hit, i (hit.threadId + ':' + (hit.itemId || 'title'))}
+            {@const providerDefinition = getProviderDefinition(hit.provider)}
             <li>
               <button
                 type="button"
@@ -173,8 +174,8 @@
               >
                 <div class="flex items-center gap-2">
                   <span class="text-[9px] font-semibold px-1 py-0.5 rounded-[4px] shrink-0 tracking-wide
-                    {hit.provider === 'claude' ? 'bg-accent/10 text-accent' : 'bg-provider-codex/10 text-provider-codex'}" aria-hidden="true">
-                    {hit.provider === 'claude' ? 'C' : 'X'}
+                    {providerDefinition?.badgeClass ?? 'bg-surface-2 text-fg-muted'}" aria-hidden="true">
+                    {providerDefinition?.shortLabel ?? '?'}
                   </span>
                   <span class="text-[13px] truncate text-fg">
                     {#each computeHighlightSegments(hit.threadTitle || 'Untitled', query) as seg}

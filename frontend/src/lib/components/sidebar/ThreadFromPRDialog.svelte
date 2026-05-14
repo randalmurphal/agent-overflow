@@ -7,6 +7,11 @@
   import { addToast } from '../../stores/toast.svelte';
   import { prependThread } from '../../stores/threads.svelte';
   import { openThreadInPane } from '../../stores/panes.svelte';
+  import {
+    getProviderDefinition,
+    PROVIDER_SETTINGS_ORDER,
+    type ProviderID,
+  } from '../../providers/catalog';
   import type { Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
 
@@ -17,7 +22,7 @@
   } = $props();
 
   let url = $state('');
-  let provider = $state<'claude' | 'codex'>('claude');
+  let provider = $state<ProviderID>('claude');
   let model = $state('');
   let submitting = $state(false);
   let error = $state<string | null>(null);
@@ -159,7 +164,8 @@
       <div class="space-y-2">
         <span class="text-[12px] text-fg-muted block font-medium">Provider</span>
         <div class="flex gap-1" role="radiogroup" aria-label="Provider">
-          {#each (['claude', 'codex'] as const) as choice}
+          {#each PROVIDER_SETTINGS_ORDER as choice}
+            {@const providerDefinition = getProviderDefinition(choice)}
             <button
               type="button"
               role="radio"
@@ -173,7 +179,7 @@
                   : 'bg-surface-2/40 text-fg-muted hover:text-fg hover:bg-surface-2/60',
               ].join(' ')}
             >
-              {choice === 'claude' ? 'Claude' : 'Codex'}
+              {providerDefinition.label}
             </button>
           {/each}
         </div>

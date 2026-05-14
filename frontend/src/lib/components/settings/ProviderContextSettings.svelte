@@ -12,18 +12,18 @@
   // button, no profile concept, no per-thread mode.
 
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
+  import {
+    getProviderDefinition,
+    type ProviderID,
+  } from '../../providers/catalog';
   import type { Settings } from '../../types/settings';
 
-  let { provider }: { provider: 'claude' | 'codex' } = $props();
+  let { provider }: { provider: ProviderID } = $props();
 
   let settings = $derived(getSettings());
-
-  let standardKey = $derived(
-    `${provider}AutoCompactStandardPercent` as const,
-  ) as 'claudeAutoCompactStandardPercent' | 'codexAutoCompactStandardPercent';
-  let extendedKey = $derived(
-    `${provider}AutoCompactExtendedPercent` as const,
-  ) as 'claudeAutoCompactExtendedPercent' | 'codexAutoCompactExtendedPercent';
+  let providerDefinition = $derived(getProviderDefinition(provider));
+  let standardKey = $derived(providerDefinition.settings.standardCompactKey);
+  let extendedKey = $derived(providerDefinition.settings.extendedCompactKey);
 
   // Local state lets the slider thumb track smoothly under the cursor
   // without round-tripping every input event through updateSetting.
@@ -63,7 +63,7 @@
       <div class="flex items-baseline justify-between gap-3">
         <p class="text-[13px] font-medium text-fg">Standard window</p>
         <span class="text-[11.5px] tabular-nums text-fg-muted">
-          {provider === 'codex' ? '272k' : '200k'}
+          {providerDefinition.contextLabels.standard}
         </span>
       </div>
       <div class="mt-2 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
@@ -89,7 +89,9 @@
     <div>
       <div class="flex items-baseline justify-between gap-3">
         <p class="text-[13px] font-medium text-fg">Extended window</p>
-        <span class="text-[11.5px] tabular-nums text-fg-muted">1m</span>
+        <span class="text-[11.5px] tabular-nums text-fg-muted">
+          {providerDefinition.contextLabels.extended}
+        </span>
       </div>
       <div class="mt-2 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
         <input

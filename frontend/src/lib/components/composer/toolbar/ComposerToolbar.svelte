@@ -21,6 +21,7 @@
   import ContextWindowMeter from '../../chat/ContextWindowMeter.svelte';
   import RateLimitMeter from '../../chat/RateLimitMeter.svelte';
   import type { SendButtonAction } from './sendButtonTypes';
+  import { asProviderID } from '../../../types/providers';
 
   interface Props {
     pane: ThreadPane;
@@ -81,6 +82,7 @@
   // for that account (5h/7d limits don't reset on thread switch or
   // turn completion).
   let showLimitRings = $derived(pane.isLocked && !!pane.thread?.provider);
+  let providerID = $derived(asProviderID(pane.thread?.provider));
   let hasPersistedThread = $derived(Boolean(pane.threadId));
 </script>
 
@@ -104,13 +106,13 @@
       <div class="shrink-0 flex items-center" data-testid="composer-rate-limit-5h">
         <RateLimitMeter
           windowMins={300}
-          provider={pane.thread?.provider as 'claude' | 'codex' | undefined}
+          provider={providerID ?? undefined}
         />
       </div>
       <div class="shrink-0 flex items-center" data-testid="composer-rate-limit-7d">
         <RateLimitMeter
           windowMins={10080}
-          provider={pane.thread?.provider as 'claude' | 'codex' | undefined}
+          provider={providerID ?? undefined}
         />
       </div>
     {/if}

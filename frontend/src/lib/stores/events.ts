@@ -26,6 +26,8 @@ import type {
   CheckpointUnavailableEvent,
 } from '../types/checkpoint';
 import { setProviderAccount } from './accountInfo.svelte';
+import { asProviderID } from '../types/providers';
+import { invalidateProviderModels } from './providerModels.svelte';
 import { transportGapChannel } from '../transport/wsClient';
 import {
   confirmFlushedByUserItemId,
@@ -790,9 +792,14 @@ function applyProviderStatus(evt: ProviderStatusEvent): void {
     effectiveStatus = mapped;
   }
 
-  if (!evt.provider || !effectiveStatus) return;
+  const provider = asProviderID(evt.provider);
+  if (!provider || !effectiveStatus) return;
 
-  const normalized: ProviderStatusEvent = { ...evt, status: effectiveStatus };
+  if (!evt.threadId) {
+    invalidateProviderModels(provider);
+  }
+
+  const normalized: ProviderStatusEvent = { ...evt, provider, status: effectiveStatus };
 
   // Thread-scoped status belongs to matching panes only. Writing it into
   // the provider-global cache leaks one pane's auth/session failure into
@@ -803,7 +810,7 @@ function applyProviderStatus(evt: ProviderStatusEvent): void {
 
   const banner = effectiveStatus === 'ready' ? null : normalized;
   for (const pane of getAllPanes().values()) {
-    if (pane.thread?.provider !== evt.provider) continue;
+    if (pane.thread?.provider !== provider) continue;
     // Kind-bearing events can carry a threadId for per-pane scoping; when
     // present, only update the matching pane. Without a threadId the event
     // is provider-global (legacy behavior) and fans out to every matching
@@ -983,8 +990,9 @@ export function setupEventListeners(): () => void {
     'provider:account',
     (evt) => {
       if (!evt || typeof evt.account !== 'object' || evt.account === null) return;
-      if (evt.provider !== 'claude' && evt.provider !== 'codex') return;
-      setProviderAccount(evt.provider, evt.account);
+      const provider = asProviderID(evt.provider);
+      if (!provider) return;
+      setProviderAccount(provider, evt.account);
     },
   );
 

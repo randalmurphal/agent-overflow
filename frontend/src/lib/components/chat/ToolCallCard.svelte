@@ -12,6 +12,7 @@
   } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { paneWorkspacePath } from '../../stores/thread.svelte';
+  import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { parsePatchFiles, type PatchFile, type PatchLine } from '../../utils/patchFiles';
   import AskUserQuestionCard from './AskUserQuestionCard.svelte';
@@ -94,7 +95,8 @@
     return commandMeta?.preview ?? '';
   });
   let isCollabControlRow = $derived(
-    pane.thread?.provider === 'codex' && isCodexCollabControlToolName(item.toolName),
+    pane.thread?.provider === PROVIDER_DEFINITIONS.codex.id
+      && isCodexCollabControlToolName(item.toolName),
   );
   let isUserInputRow = $derived(
     item.toolName === 'AskUserQuestion' || item.toolName === 'request_user_input',

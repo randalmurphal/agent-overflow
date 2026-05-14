@@ -4,7 +4,6 @@
   import type { ModelInfo } from '../../../types/settings';
   import type { ChatBarFavorite } from '../../../stores/bindings';
   import {
-    GetModelsForProvider,
     ListChatBarFavorites,
     SetChatBarFavorite,
     StartDiscussionByID,
@@ -12,7 +11,17 @@
     UpdateThreadModel,
     UpdateThreadProvider,
   } from '../../../stores/bindings';
-  import { wailsEventOn } from '../../../stores/events';
+  import {
+    asProviderID,
+    getProviderDefinition,
+    PROVIDER_MODEL_MENU_ORDER,
+    type ProviderID,
+  } from '../../../providers/catalog';
+  import {
+    ensureProviderModels,
+    getProviderModels,
+  } from '../../../stores/providerModels.svelte';
+  import ProviderIcon from '../../shared/ProviderIcon.svelte';
   import { syncThread } from '../../../stores/panes.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
@@ -23,8 +32,6 @@
   import MenuDivider from '../../primitives/MenuDivider.svelte';
   import MenuSubmenuItem from '../../primitives/MenuSubmenuItem.svelte';
   import Icon from '../../primitives/Icon.svelte';
-  import ClaudeIcon from '../../primitives/brand/ClaudeIcon.svelte';
-  import OpenAIIcon from '../../primitives/brand/OpenAIIcon.svelte';
   import ChatBarFavoritesSection from './ChatBarFavoritesSection.svelte';
   import ModelProviderTrigger from './ModelProviderTrigger.svelte';
   import ProviderModelsSubmenu from './ProviderModelsSubmenu.svelte';
@@ -36,37 +43,19 @@
 
   let { pane }: Props = $props();
 
-  const MODEL_CACHE: Map<string, ModelInfo[]> = new Map();
-  let cacheVersion = $state(0);
-
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
   let applying = $state(false);
   let favorites: ChatBarFavorite[] = $state([]);
   let favoritesLoaded = $state(false);
 
-  $effect(() => {
-    const cleanup = wailsEventOn<{ provider?: string }>('provider:status', (evt) => {
-      const p = evt?.provider;
-      if (!p) return;
-      MODEL_CACHE.delete(p);
-      cacheVersion += 1;
-    });
-    return cleanup;
-  });
-
-  async function ensureModels(provider: 'claude' | 'codex'): Promise<void> {
-    if (MODEL_CACHE.has(provider)) return;
+  async function ensureModels(provider: ProviderID): Promise<void> {
     try {
-      const res = (await GetModelsForProvider(provider)) as ModelInfo[] | null;
-      const list = Array.isArray(res) ? res : [];
-      MODEL_CACHE.set(provider, list);
-      cacheVersion += 1;
+      await ensureProviderModels(provider);
     } catch (err) {
+      const label = getProviderDefinition(provider).label;
       console.error('GetModelsForProvider failed:', err);
-      addToast('error', `Failed to load ${provider} models`);
-      MODEL_CACHE.set(provider, []);
-      cacheVersion += 1;
+      addToast('error', `Failed to load ${label} models`);
     }
   }
 
@@ -84,16 +73,15 @@
     }
   }
 
-  function getModels(provider: 'claude' | 'codex'): ModelInfo[] {
-    void cacheVersion;
-    return MODEL_CACHE.get(provider) ?? [];
+  function getModels(provider: ProviderID): ModelInfo[] {
+    return getProviderModels(provider);
   }
 
   function handleTrigger(): void {
     open = !open;
     if (open) {
-      const p = pane.thread?.provider;
-      if (p === 'claude' || p === 'codex') void ensureModels(p);
+      const provider = asProviderID(pane.thread?.provider);
+      if (provider) void ensureModels(provider);
       void ensureFavorites();
     }
   }
@@ -104,7 +92,7 @@
   }
 
   async function handleSelectModel(
-    provider: 'claude' | 'codex',
+    provider: ProviderID,
     slug: string,
   ): Promise<void> {
     if (!pane.thread || applying) return;
@@ -133,7 +121,7 @@
     }
   }
 
-  function isModelFavorite(provider: 'claude' | 'codex', slug: string): boolean {
+  function isModelFavorite(provider: ProviderID, slug: string): boolean {
     return favorites.some((fav) => fav.kind === 'model' && fav.provider === provider && fav.value === slug);
   }
 
@@ -152,7 +140,7 @@
     }
   }
 
-  function toggleModelFavorite(provider: 'claude' | 'codex', model: ModelInfo): void {
+  function toggleModelFavorite(provider: ProviderID, model: ModelInfo): void {
     const starred = !isModelFavorite(provider, model.slug);
     void setFavorite({
       kind: 'model',
@@ -193,27 +181,28 @@
     }
   }
 
-  let isCodex = $derived(pane.thread?.provider === 'codex');
   let modelLabel = $derived(displayModelLabel(pane.thread?.provider ?? '', pane.thread?.model ?? 'No model'));
 
   let isLocked = $derived(pane.isLocked);
   let isDiscussion = $derived(pane.thread?.mode === 'discussion');
-  let activeProvider = $derived(pane.thread?.provider ?? null);
-  let showCodexSubmenu = $derived(!isDiscussion && (!isLocked || activeProvider === 'codex'));
-  let showClaudeSubmenu = $derived(!isDiscussion && (!isLocked || activeProvider === 'claude'));
+  let activeProvider = $derived(asProviderID(pane.thread?.provider));
   let showDiscussions = $derived(!isDiscussion && !isLocked);
   let visibleFavorites = $derived(favorites.filter((fav) => {
     if (fav.kind === 'discussion') return showDiscussions;
-    if (fav.provider !== 'claude' && fav.provider !== 'codex') return false;
-    return !isDiscussion && (!isLocked || activeProvider === fav.provider);
+    const provider = asProviderID(fav.provider);
+    if (!provider) return false;
+    return !isDiscussion && (!isLocked || activeProvider === provider);
   }));
+
+  function showProviderSubmenu(provider: ProviderID): boolean {
+    return !isDiscussion && (!isLocked || activeProvider === provider);
+  }
 </script>
 
 <ModelProviderTrigger
   bind:buttonEl={triggerEl}
   {open}
   disabled={!pane.thread || applying}
-  {isCodex}
   provider={pane.thread?.provider ?? ''}
   {modelLabel}
   onClick={handleTrigger}
@@ -235,43 +224,27 @@
       onSelectDiscussion={(favorite) => void startFavoriteDiscussion(favorite)}
     />
 
-    {#if showCodexSubmenu}
-      <MenuSubmenuItem label="Codex">
-        {#snippet icon()}
-          <OpenAIIcon size={13} class="opacity-95" />
-        {/snippet}
-        {#snippet children()}
-          <ProviderModelsSubmenu
-            {pane}
-            provider="codex"
-            {getModels}
-            {ensureModels}
-            onSelect={(slug) => handleSelectModel('codex', slug)}
-            isFavorite={isModelFavorite}
-            onToggleFavorite={(model) => toggleModelFavorite('codex', model)}
-          />
-        {/snippet}
-      </MenuSubmenuItem>
-    {/if}
-
-    {#if showClaudeSubmenu}
-      <MenuSubmenuItem label="Claude">
-        {#snippet icon()}
-          <ClaudeIcon size={13} class="text-[#d97757] opacity-95" />
-        {/snippet}
-        {#snippet children()}
-          <ProviderModelsSubmenu
-            {pane}
-            provider="claude"
-            {getModels}
-            {ensureModels}
-            onSelect={(slug) => handleSelectModel('claude', slug)}
-            isFavorite={isModelFavorite}
-            onToggleFavorite={(model) => toggleModelFavorite('claude', model)}
-          />
-        {/snippet}
-      </MenuSubmenuItem>
-    {/if}
+    {#each PROVIDER_MODEL_MENU_ORDER as provider (provider)}
+      {@const definition = getProviderDefinition(provider)}
+      {#if showProviderSubmenu(provider)}
+        <MenuSubmenuItem label={definition.label}>
+          {#snippet icon()}
+            <ProviderIcon {provider} size={13} />
+          {/snippet}
+          {#snippet children()}
+            <ProviderModelsSubmenu
+              {pane}
+              {provider}
+              {getModels}
+              {ensureModels}
+              onSelect={(slug) => handleSelectModel(provider, slug)}
+              isFavorite={isModelFavorite}
+              onToggleFavorite={(model) => toggleModelFavorite(provider, model)}
+            />
+          {/snippet}
+        </MenuSubmenuItem>
+      {/if}
+    {/each}
 
     {#if showDiscussions}
       <MenuDivider />

@@ -20,6 +20,7 @@ import type {
   BackgroundTasksChangedEvent,
 } from '../../types/events';
 import type { Item } from '../../types/models';
+import { asProviderID, type ProviderID } from '../../types/providers';
 import { deriveTrayTasks, type TrayTask } from '../../utils/backgroundTray';
 import { debounce } from '../../utils/debounce';
 
@@ -36,7 +37,7 @@ export interface BackgroundController {
   readonly anyRunning: boolean;
   readonly hasPendingCompletion: boolean;
   readonly threadId: string | null;
-  readonly provider: 'claude' | 'codex' | null;
+  readonly provider: ProviderID | null;
   /** Subscribe to events; returns a disposer. Call once from onMount. */
   mount(): () => void;
 }
@@ -48,7 +49,7 @@ export function createBackgroundController(
   let backgroundItems: Item[] = $state([]);
 
   const threadId = $derived(getPane().thread?.id ?? null);
-  const provider = $derived(getPane().thread?.provider ?? null);
+  const provider = $derived(asProviderID(getPane().thread?.provider));
 
   let fetchSeq = 0;
   async function refreshItems(): Promise<void> {

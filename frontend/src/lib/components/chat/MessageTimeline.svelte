@@ -29,6 +29,7 @@
     type TimelineNode,
   } from '../../utils/subagentGrouping';
   import { codexSubagentReceiverLabels } from '../../utils/subagentLaunch';
+  import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
   import { filterRedundantNotifications } from '../../utils/notificationFilter';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import Button from '../primitives/Button.svelte';
@@ -136,7 +137,9 @@
     groupItemsBySubagent(filterRedundantNotifications(pane.items)),
   );
   let codexReceiverLabels = $derived(
-    pane.thread?.provider === 'codex' ? codexSubagentReceiverLabels(pane.items) : new Map<string, string>(),
+    pane.thread?.provider === PROVIDER_DEFINITIONS.codex.id
+      ? codexSubagentReceiverLabels(pane.items)
+      : new Map<string, string>(),
   );
 
   let finalAssistantTextIds = $derived(

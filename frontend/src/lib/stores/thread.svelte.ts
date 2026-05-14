@@ -26,6 +26,7 @@ import type {
   FeedbackBatch,
   SliderControl,
 } from '../types/design';
+import { getProviderDefinition } from '../providers/catalog';
 import {
   CreateThread,
   GetThreadItem,
@@ -1213,14 +1214,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       : nextThread.autoCompactStandardPercent ?? 0;
     if (override > 0) return override;
     const settings = getSettings();
-    const providerSetting =
-      nextThread.provider === 'codex'
-        ? isExtended
-          ? settings.codexAutoCompactExtendedPercent
-          : settings.codexAutoCompactStandardPercent
-        : isExtended
-          ? settings.claudeAutoCompactExtendedPercent
-          : settings.claudeAutoCompactStandardPercent;
+    const providerSettings = getProviderDefinition(nextThread.provider).settings;
+    const providerSetting = isExtended
+      ? settings[providerSettings.extendedCompactKey]
+      : settings[providerSettings.standardCompactKey];
     return providerSetting > 0 ? providerSetting : 90;
   }
 

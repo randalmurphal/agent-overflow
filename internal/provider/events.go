@@ -1,0 +1,207 @@
+package provider
+
+import (
+	"encoding/json"
+	"time"
+)
+
+// EventKind classifies provider events for triage routing.
+type EventKind string
+
+const (
+	// Inline events — forwarded directly to frontend via EventsEmit.
+	EventInit              EventKind = "init"
+	EventTextDelta         EventKind = "text_delta"
+	EventToolStart         EventKind = "tool_start"
+	EventToolComplete      EventKind = "tool_complete"
+	EventTurnStart         EventKind = "turn_start"
+	EventTurnComplete      EventKind = "turn_complete"
+	EventApprovalRequest   EventKind = "approval_request"
+	EventApprovalResolved  EventKind = "approval_resolved"
+	EventUserInputRequest  EventKind = "user_input_request"
+	EventUserInputResolved EventKind = "user_input_resolved"
+	EventSessionStatus     EventKind = "session_status"
+	EventTokenUsage        EventKind = "token_usage"
+	EventError             EventKind = "error"
+	EventTodoUpdate        EventKind = "todo_update"
+	EventNotification      EventKind = "notification"
+
+	// EventAPIRetry surfaces transient-retry envelopes from both providers
+	// (Claude `system.api_retry` and Codex `error+willRetry:true`). Triage
+	// renders them as inline timeline rows (kind `api_retry`) hiding the
+	// first three attempts to mirror Claude Code's interactive UI; the row
+	// flips to completed on the next forward-progress event for the thread.
+	// There is no resolution-counterpart wire event from either SDK; the
+	// row is the historical record of the retry attempt itself, not a
+	// banner needing later clearing.
+	EventAPIRetry EventKind = "api_retry"
+
+	// Inline/system events that do not render as timeline rows.
+	EventCompactBoundary   EventKind = "compact_boundary"
+	EventRateLimits        EventKind = "rate_limits"
+	EventModelRerouted     EventKind = "model_rerouted"
+	EventThreadRenamed     EventKind = "thread_renamed"
+	EventContentBlockStart EventKind = "content_block_start"
+	EventContentBlockStop  EventKind = "content_block_stop"
+
+	// EventBackgroundTaskTerminal is the additive Claude-only task-lifecycle
+	// terminal signal, emitted when `system/task_updated` lands with a
+	// terminal `patch.status` OR when a TaskOutput `tool_use_result.task`
+	// carries a terminal status. It NEVER replaces the tool-lifecycle
+	// `EventToolComplete` for the original backgrounded tool_use_id —
+	// it layers a richer sibling `tool_completion` row on top. See
+	// docs/architecture/turn-lifecycle.md §Task lifecycle and
+	// docs/architecture/invariants.md invariant 20.
+	EventBackgroundTaskTerminal EventKind = "background_task_terminal"
+
+	// EventBackgroundTaskNotification surfaces Claude `system/task_notification`
+	// as a non-lifecycle notification row. It may carry a durable output_file
+	// path that triage reads into SQLite for later expansion, but it must never
+	// mark a task complete or failed by itself.
+	EventBackgroundTaskNotification EventKind = "background_task_notification"
+
+	// EventSubagentNotification surfaces Codex's `<subagent_notification>`
+	// tag detections (session.go parser → triage handler →
+	// provider:subagent_notification on the frontend event bus). Emitted
+	// when a detached spawned child has produced a terminal state and
+	// Codex injected the notification into the parent's next user turn.
+	EventSubagentNotification EventKind = "subagent_notification"
+
+	// EventSubagentStatus is an internal Codex child-thread lifecycle signal.
+	// It marks spawned child work inactive for live background-task projection.
+	// Parent transcript completion is owned by wait_agent completions or
+	// Codex's injected <subagent_notification> fragments.
+	EventSubagentStatus EventKind = "subagent_status"
+
+	// EventTerminalInteraction surfaces Codex's
+	// `TerminalInteractionNotification` — the wire signal when the model
+	// calls `write_stdin` against a backgrounded unified-exec PTY. An
+	// empty `Stdin` is the "polling" variant (agent asked to wait
+	// without sending input); a non-empty value carries the keystrokes
+	// Codex forwarded. Triage persists a lightweight
+	// `terminal_interaction` row for the empty case so the timeline can
+	// render the explicit wait as chat history; Codex's own TUI keeps this
+	// as status text unless output is returned by the wait. The non-empty
+	// case persists an "Interacted with background terminal" marker while
+	// redacting the stdin bytes from durable item metadata.
+	EventTerminalInteraction EventKind = "terminal_interaction"
+
+	// EventUserText is the wire-confirmation envelope for an AO-initiated
+	// user message. Provider parsers and triage use it to correlate the
+	// wire-side echo of a user prompt back to the in-memory pending-send
+	// registered by the send path.
+	EventUserText EventKind = "user_text"
+
+	// Heavy events — persisted to SQLite, meta emitted to frontend.
+	EventDiff          EventKind = "diff"
+	EventCommandOutput EventKind = "command_output"
+	EventThinking      EventKind = "thinking"
+	EventProposedPlan  EventKind = "proposed_plan"
+)
+
+const (
+	TerminalWaitResultRunning = "running"
+	TerminalWaitResultExited  = "exited"
+)
+
+// AllEventKinds is the canonical list of EventKind values. Triage and the
+// frontend router MUST handle every entry here; the exhaustiveness tests
+// enforce this. Keep in sync with the const block above — a new kind that is
+// not listed here (or any listed kind without a handler case) is the kind of
+// silent drop this slice exists to prevent.
+var AllEventKinds = []EventKind{
+	EventInit,
+	EventTextDelta,
+	EventToolStart,
+	EventToolComplete,
+	EventTurnStart,
+	EventTurnComplete,
+	EventApprovalRequest,
+	EventApprovalResolved,
+	EventUserInputRequest,
+	EventUserInputResolved,
+	EventSessionStatus,
+	EventTokenUsage,
+	EventError,
+	EventTodoUpdate,
+	EventNotification,
+	EventAPIRetry,
+	EventCompactBoundary,
+	EventRateLimits,
+	EventModelRerouted,
+	EventThreadRenamed,
+	EventContentBlockStart,
+	EventContentBlockStop,
+	EventBackgroundTaskTerminal,
+	EventBackgroundTaskNotification,
+	EventSubagentNotification,
+	EventSubagentStatus,
+	EventTerminalInteraction,
+	EventUserText,
+	EventDiff,
+	EventCommandOutput,
+	EventThinking,
+	EventProposedPlan,
+}
+
+// ProviderEvent is the normalized event emitted by both provider protocols.
+// The triage layer classifies these and routes them.
+type ProviderEvent struct {
+	Kind      EventKind       `json:"kind"`
+	ThreadID  string          `json:"threadId"`
+	TurnID    string          `json:"turnId,omitempty"`
+	TurnIndex int             `json:"turnIndex,omitempty"`
+	ItemID    string          `json:"itemId,omitempty"`
+	ItemType  string          `json:"itemType,omitempty"`
+	Content   string          `json:"content,omitempty"`
+	Role      string          `json:"role,omitempty"`
+	Meta      json.RawMessage `json:"meta,omitempty"`
+	Timestamp time.Time       `json:"timestamp"`
+	Replace   bool            `json:"replace,omitempty"` // when true, triage upserts instead of inserting
+	// ParentToolUseID links a subagent-emitted event to its parent Task-tool
+	// use. Claude surfaces this on assistant messages when the message is
+	// produced inside a Task (Agent) tool call. Empty for top-level events.
+	ParentToolUseID string           `json:"parentToolUseId,omitempty"`
+	Raw             json.RawMessage  `json:"-"`
+	TurnComplete    TurnCompleteMeta `json:"-"`
+}
+
+// TurnCompleteMeta is the typed payload for EventTurnComplete. Turn
+// completion has several semantic sources (provider wire result, soft
+// round-close, synthetic truncation); keeping those as distinct Go types
+// prevents new producers from smuggling another ad hoc JSON shape through
+// ProviderEvent.Meta.
+type TurnCompleteMeta interface {
+	isTurnCompleteMeta()
+}
+
+// WireTurnCompleteMeta represents a provider-reported turn boundary. It
+// carries the durable payload triage may persist or forward to the frontend.
+type WireTurnCompleteMeta struct {
+	StopReason         string
+	AssistantMessageID string
+	Usage              *TokenUsage
+	Aborted            bool
+	ErrorMessage       string
+}
+
+func (*WireTurnCompleteMeta) isTurnCompleteMeta() {}
+
+// SoftRoundCloseMeta represents Claude's message_delta stop_reason path:
+// the parent model has stopped emitting for this wire round, but the trailing
+// result envelope may still arrive later with cumulative usage.
+type SoftRoundCloseMeta struct {
+	StopReason         string
+	AssistantMessageID string
+}
+
+func (*SoftRoundCloseMeta) isTurnCompleteMeta() {}
+
+// TruncatedTurnCompleteMeta represents an app/triage-synthesized close when
+// the provider did not produce a clean wire turn boundary.
+type TruncatedTurnCompleteMeta struct {
+	ErrorMessage string
+	Synthetic    bool
+}
+
+func (*TruncatedTurnCompleteMeta) isTurnCompleteMeta() {}

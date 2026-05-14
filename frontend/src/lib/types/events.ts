@@ -1,4 +1,5 @@
 import type { Item } from './models';
+import type { ProviderID } from './providers';
 
 export type ApprovalKind =
   | 'command'
@@ -204,7 +205,7 @@ export interface ProviderStatusEvent {
    * and `status` are the fields the existing ProviderStatusBanner renders;
    * both are required for the banner to scope + dispatch correctly.
    */
-  provider: 'claude' | 'codex';
+  provider: ProviderID;
   status: 'ready' | 'not_found' | 'version_too_old' | 'unauthenticated' | 'error';
   message?: string;
   version?: string;
@@ -234,7 +235,7 @@ export interface ProviderStatusEvent {
  * branches on that to keep its layout stable.
  */
 export interface ProviderAccountEvent {
-  provider: 'claude' | 'codex';
+  provider: ProviderID;
   account: {
     subscriptionType?: string;
     tokenSource?: string;

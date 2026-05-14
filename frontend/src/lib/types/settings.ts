@@ -1,3 +1,5 @@
+import type { ProviderID } from './providers';
+
 /**
  * ReasoningEffort mirrors provider.ReasoningEffort. The active model's
  * metadata controls which subset is selectable.
@@ -66,7 +68,7 @@ export interface Settings {
    * thread titles. Independent of the chat provider so a user on Claude
    * can still use Codex for commit messages.
    */
-  textGenerationProvider: "claude" | "codex";
+  textGenerationProvider: ProviderID;
   /**
    * Text generation model id. Empty string = "use the per-provider
    * default" (codex → gpt-5.4-mini, claude → claude-haiku-4-5).

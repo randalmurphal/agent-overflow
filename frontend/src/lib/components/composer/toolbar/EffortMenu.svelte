@@ -4,13 +4,17 @@
 
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { Thread } from '../../../types/models';
-  import type { ContextWindowOption, ModelInfo, ReasoningEffortOption } from '../../../types/settings';
+  import type { ContextWindowOption, ReasoningEffortOption } from '../../../types/settings';
   import {
-    GetModelsForProvider,
     UpdateThreadFastMode,
     UpdateThreadContextWindow,
     UpdateThreadReasoningEffort,
   } from '../../../stores/bindings';
+  import { asProviderID } from '../../../types/providers';
+  import {
+    ensureProviderModels,
+    getProviderModels,
+  } from '../../../stores/providerModels.svelte';
   import { syncThread } from '../../../stores/panes.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
@@ -35,7 +39,6 @@
   let contextOptions = $state<ContextWindowOption[]>([]);
   let reasoningOptions = $state<ReasoningEffortOption[]>([]);
   let fastModeSupported = $state(false);
-  let loadedContextKey = '';
 
   type Effort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
@@ -80,31 +83,26 @@
   );
 
   async function ensureContextOptions(): Promise<void> {
-    const p = pane.thread?.provider;
+    const provider = asProviderID(pane.thread?.provider);
     const model = pane.thread?.model;
-    if ((p !== 'claude' && p !== 'codex') || !model) {
+    if (!provider || !model) {
       contextOptions = [];
       reasoningOptions = [];
       fastModeSupported = false;
-      loadedContextKey = '';
       return;
     }
-    const key = `${p}:${model}`;
-    if (loadedContextKey === key) return;
     try {
-      const models = (await GetModelsForProvider(p)) as ModelInfo[] | null;
-      const current = (Array.isArray(models) ? models : []).find((candidate) => candidate.slug === model);
+      await ensureProviderModels(provider);
+      const current = getProviderModels(provider).find((candidate) => candidate.slug === model);
       contextOptions = current?.contextWindows ?? [];
       reasoningOptions = current?.reasoningEfforts ?? [];
       fastModeSupported = current?.capabilities?.includes('fast_mode') ?? false;
-      loadedContextKey = key;
     } catch (err) {
       console.error('GetModelsForProvider failed:', err);
       addToast('error', `Failed to load context windows: ${errString(err)}`);
       contextOptions = [];
       reasoningOptions = [];
       fastModeSupported = false;
-      loadedContextKey = key;
     }
   }
 
