@@ -72,6 +72,12 @@ import {
   threadItemCache,
   type ThreadItemSnapshot,
 } from './threadItemCache';
+import {
+  compareItemsByTimelinePosition,
+  itemsForThread,
+  mergeItemsById,
+  mergeMissingItemsById,
+} from './threadItems';
 import { getThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
 import { ListThreadSliceAround } from './bindings';
 import {
@@ -1072,91 +1078,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     } else {
       itemIdsByTurn.delete(turnIndex);
     }
-  }
-
-  function compareItemsByTimelinePosition(a: Item, b: Item): number {
-    if (a.turnIndex !== b.turnIndex) return a.turnIndex - b.turnIndex;
-    if (a.itemIndex !== b.itemIndex) return a.itemIndex - b.itemIndex;
-    return 0;
-  }
-
-  function itemsForThread(nextItems: Item[] | null | undefined, threadId: string): Item[] {
-    return (nextItems ?? []).filter((item) => item.threadId === threadId);
-  }
-
-  /**
-   * Merge `incoming` into `current` by id, returning a fresh array
-   * sorted by (turnIndex, itemIndex). Used by `loadOlder` /
-   * `loadUntilItem` where the backend can legitimately re-return an
-   * ancestor row that is already in the window (pulled in by the
-   * initial load via the ancestor CTE). A naive prepend would either
-   * duplicate the row or — if we filter dupes and still prepend —
-   * reorder the timeline (a dropped ancestor that already sat above
-   * the tail would leave the freshly prepended mid-turn row at
-   * position 0). The sorted-merge keeps both invariants: no
-   * duplicates, and stable (turnIndex, itemIndex) ordering.
-   *
-   * Returns the original `current` reference when `incoming` is
-   * empty OR every incoming row is already present, so callers can
-   * skip the reactive write and associated turn-diff rebuild.
-   */
-  function mergeItemsById(incoming: Item[], current: Item[]): Item[] {
-    if (incoming.length === 0) return current;
-    const byId = new Map<string, Item>();
-    for (const it of current) byId.set(it.id, it);
-    let changed = false;
-    for (const it of incoming) {
-      const existing = byId.get(it.id);
-      if (existing !== it) {
-        byId.set(it.id, it);
-        changed = true;
-      }
-    }
-    if (!changed) return current;
-    const merged = Array.from(byId.values());
-    merged.sort(compareItemsByTimelinePosition);
-    return merged;
-  }
-
-  /**
-   * Like `mergeItemsById` but only ADDS items not already present —
-   * existing rows keep their current reference, and the merged result
-   * is RE-SORTED by `(turnIndex, itemIndex)` so additions slot into
-   * the right transcript position. Used by `switchThread`'s initial
-   * slice load and by `loadOlder` so a streamed event that landed
-   * mid-load is not clobbered by the slightly-older row coming back
-   * from SQLite. Reference equality on unchanged rows keeps virtua's
-   * per-row ResizeObserver from firing spuriously.
-   *
-   * Triage's contract is "persist then emit", so any in-flight stream
-   * event has already been baked into SQLite by the time the SQL runs.
-   * The fetched row therefore equals (or is older than) the row already
-   * in `current`; preferring `current` is the correct choice in either
-   * case.
-   *
-   * Returns the original `current` reference when every incoming row is
-   * already present, so callers can skip the reactive write and the
-   * timeline-revision bump.
-   */
-  function mergeMissingItemsById(incoming: Item[], current: Item[]): Item[] {
-    if (incoming.length === 0) return current;
-    if (current.length === 0) {
-      const sorted = incoming.slice();
-      sorted.sort(compareItemsByTimelinePosition);
-      return sorted;
-    }
-    const presentIds = new Set<string>();
-    for (const it of current) presentIds.add(it.id);
-    const additions: Item[] = [];
-    for (const it of incoming) {
-      if (!presentIds.has(it.id)) {
-        additions.push(it);
-      }
-    }
-    if (additions.length === 0) return current;
-    const merged = current.concat(additions);
-    merged.sort(compareItemsByTimelinePosition);
-    return merged;
   }
 
   function seedContextWindow(nextThread: Thread | null): ContextWindow | null {
