@@ -76,8 +76,8 @@ export const chatMarkdownTheme: ThemeOverride = {
   // atomic, but cap long inline code at the message width.
   codespan: {
     base: [
-      'inline-block max-w-full overflow-x-auto whitespace-nowrap align-[-0.15em]',
-      'rounded px-1.5 py-0.5 font-mono text-[0.9em] bg-transparent',
+      'inline-block max-w-full overflow-x-auto whitespace-nowrap align-baseline',
+      'rounded px-1.5 py-0.5 font-mono text-[0.9em] leading-[1.35] bg-transparent',
     ].join(' '),
   },
   table: {

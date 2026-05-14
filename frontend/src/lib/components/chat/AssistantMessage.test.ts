@@ -145,7 +145,14 @@ describe('<AssistantMessage>', () => {
       const code = body.querySelector('code[data-streamdown-codespan]');
       expect(code).not.toBeNull();
       expect(code?.textContent).toBe('--validate');
-      expect(code).toHaveClass('inline-block', 'max-w-full', 'overflow-x-auto', 'whitespace-nowrap');
+      expect(code).toHaveClass(
+        'inline-block',
+        'max-w-full',
+        'overflow-x-auto',
+        'whitespace-nowrap',
+        'align-baseline',
+        'leading-[1.35]',
+      );
     });
   });
 
