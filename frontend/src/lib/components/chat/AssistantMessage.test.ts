@@ -130,6 +130,25 @@ describe('<AssistantMessage>', () => {
     });
   });
 
+  it('keeps inline command flags visually atomic', async () => {
+    const { getByTestId } = render(AssistantMessage, {
+      props: {
+        item: makeItem({
+          status: 'completed',
+          summary: 'run `--validate` after bootstrap',
+        }),
+      },
+    });
+
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const code = body.querySelector('code[data-streamdown-codespan]');
+      expect(code).not.toBeNull();
+      expect(code?.textContent).toBe('--validate');
+      expect(code).toHaveClass('inline-block', 'max-w-full', 'overflow-x-auto', 'whitespace-nowrap');
+    });
+  });
+
   it('renders blank-line markdown as adjacent paragraph elements', async () => {
     const { getByTestId } = render(AssistantMessage, {
       props: {

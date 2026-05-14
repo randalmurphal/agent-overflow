@@ -5,21 +5,49 @@ over stdio.
 
 ## Layout
 
-- `session.go` — process lifecycle, the JSON-RPC read loop, and the
-  top-level dispatch for requests and notifications.
-- `session_helpers.go` — sync/async request helpers, ID generation,
-  per-session correlation (pending calls map, ThreadItem cache).
+- `session.go` — process lifecycle, constructor, send/steer/interrupt,
+  close, dynamic-tool handler registration, and the shared `Session`
+  state struct.
+- `jsonrpc.go` — JSON-RPC request/response/notification writes,
+  pending response correlation, read loop, and raw line dispatch.
+- `session_notifications.go` — notification pre-processing, child
+  routing, classifier invocation, event enrichment, turn-state tracking,
+  and final event emission.
+- `server_requests.go` — server-initiated request dispatch:
+  approvals, MCP elicitation, structured user input, and dynamic tools.
+- `turn_input.go` — outbound `message/send` / `turn/steer` user-input
+  payload shaping.
+- `interactive_requests.go` — pending approval/user-input tracking,
+  dedupe, response claiming, interrupt/close drain, and lost-prompt
+  resolution events.
+- `plan_buffer.go` — proposed-plan delta buffering and fallback
+  completion content.
+- `raw_tool_calls.go` — raw `rawResponseItem` function-call tracking,
+  `write_stdin`/`wait_agent`/`spawn_agent` enrichment, and event-log
+  redaction for stdin payloads.
+- `collab_agents.go` — spawned child-thread parent mapping, agent path
+  mapping, receiver metadata enrichment, wait-target preservation, and
+  child metadata refresh.
+- `session_helpers.go` — thread start/resume params, sandbox policy,
+  approval/user-input metadata builders, and route-field parsing.
 - `session_probe.go` — `thread/read` liveness probe used on reopen to
   reconcile stale running rows. `session_probe_testhelpers.go` hosts
   the fake probe reply harness.
 - `session_fork.go` / `session_rollback.go` — the `thread/fork` and
   `thread/rollback` RPC call wrappers.
-- `protocol.go` — JSON-RPC frame shapes, turn/tool ThreadItem variants,
-  v2 status enum, marshal/unmarshal.
+- `protocol.go` — top-level notification dispatch plus small shared
+  notification helpers.
+- `protocol_item.go` — `item/*` lifecycle, tool completion, item type
+  normalization, and tool-result content extraction.
+- `protocol_turn.go` / `protocol_thread.go` — turn lifecycle,
+  thread/account/model notifications, and token usage normalization.
+- `protocol_meta.go` — item meta enrichment for triage/rendering.
+- `protocol_json.go` — JSON navigation, compact/pretty JSON, retry-count,
+  and flexible wire-shape helpers.
 - `protocol_rate_limits.go` — rate-limit event normalizer.
 - `approval.go` — sandbox approval-method translation into the shared
   `ApprovalRequest` Kind. MCP elicitation lands here too as
-  `Kind: "mcp-elicitation"`; the dispatch lives in `session.go`'s
+  `Kind: "mcp-elicitation"`; the dispatch lives in `server_requests.go`'s
   server-request handler.
 - `subagent_notifications.go` — `<subagent_notification>` XML-tag parser
   for detached-child-agent terminal signals injected into the next
@@ -132,9 +160,12 @@ emitting, track it with the user-input resolve kind, and answer through
 
 ## Extension points
 
-- To add a new JSON-RPC method/notification: add the frame shape in
-  `protocol.go`, dispatch in `session.go`, unit test the round-trip,
-  then normalize into a `provider.Event` kind.
+- To add a new provider notification: add it to the matching
+  `protocol_*.go` classifier, update `session_notifications.go` only if
+  it needs session state/routing, then unit test the normalized
+  `provider.Event` output.
+- To add a new server request: dispatch it in `server_requests.go`, add
+  or reuse the metadata builder, and test the JSON-RPC response path.
 - To add a new sandbox approval method: extend `approval.go`'s kind
   table and the shared `provider.ApprovalRequest`. Spike against
   `codex app-server` if the method shape isn't obvious from

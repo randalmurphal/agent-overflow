@@ -71,9 +71,14 @@ export const chatMarkdownTheme: ThemeOverride = {
   },
   // Inline code. `app.css` already styles `.markdown-body code` via
   // `--code-inline-bg`, so we just clear Streamdown's hardcoded gray
-  // bg and let the cascade win.
+  // bg and let the cascade win. Layout stays here because it is
+  // specific to Streamdown codespans: keep flags like `--validate`
+  // atomic, but cap long inline code at the message width.
   codespan: {
-    base: 'rounded px-1.5 py-0.5 font-mono text-[0.9em] bg-transparent',
+    base: [
+      'inline-block max-w-full overflow-x-auto whitespace-nowrap align-[-0.15em]',
+      'rounded px-1.5 py-0.5 font-mono text-[0.9em] bg-transparent',
+    ].join(' '),
   },
   table: {
     // No outer border / rounded shell — definition comes from the

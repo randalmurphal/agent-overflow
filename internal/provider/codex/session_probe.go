@@ -12,7 +12,8 @@ import (
 // `(*App).ReconcileCodexOnReopen` for the consumer.
 //
 // Source of truth:
-//   codex-rs/app-server-protocol/schema/typescript/v2/ThreadStatus.ts
+//
+//	codex-rs/app-server-protocol/schema/typescript/v2/ThreadStatus.ts
 type ThreadStatusKind string
 
 const (
