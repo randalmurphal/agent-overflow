@@ -5,16 +5,19 @@ import (
 	"fmt"
 )
 
-func (s *Store) InsertPayload(p Payload) error {
-	_, err := s.db.Exec(
+func insertPayloadTx(exec sqlExecutor, payload Payload, label string) error {
+	if _, err := exec.Exec(
 		`INSERT INTO payloads (id, kind, meta, data, created_at)
 		 VALUES (?, ?, ?, ?, ?)`,
-		p.ID, p.Kind, p.Meta, p.Data, p.CreatedAt,
-	)
-	if err != nil {
-		return fmt.Errorf("store: insert payload: %w", err)
+		payload.ID, payload.Kind, payload.Meta, payload.Data, payload.CreatedAt,
+	); err != nil {
+		return fmt.Errorf("%s: %w", label, err)
 	}
 	return nil
+}
+
+func (s *Store) InsertPayload(p Payload) error {
+	return insertPayloadTx(s.db, p, "store: insert payload")
 }
 
 // InsertItemWithPayload persists a payload + its matching item atomically
@@ -31,25 +34,12 @@ func (s *Store) InsertItemWithPayload(item Item, payload Payload) error {
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.Exec(
-		`INSERT INTO payloads (id, kind, meta, data, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		payload.ID, payload.Kind, payload.Meta, payload.Data, payload.CreatedAt,
-	); err != nil {
-		return fmt.Errorf("store: insert payload: %w", err)
+	if err := insertPayloadTx(tx, payload, "store: insert payload"); err != nil {
+		return err
 	}
 
-	if _, err := tx.Exec(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
-		    payload_id, input_payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
-		    created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
-		nilIfEmpty(item.PayloadID), nilIfEmpty(item.InputPayloadID), item.ParentID,
-		boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
-		item.CreatedAt, item.UpdatedAt,
-	); err != nil {
-		return fmt.Errorf("store: insert item: %w", err)
+	if err := insertItemTx(tx, item, "store: insert item"); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -72,38 +62,18 @@ func (s *Store) AppendItemWithPayload(item Item, payload Payload) (int, error) {
 	}
 	defer tx.Rollback()
 
-	var maxIndex sql.NullInt64
-	if err := tx.QueryRow(
-		`SELECT MAX(item_index) FROM items WHERE thread_id = ? AND turn_index = ?`,
-		item.ThreadID, item.TurnIndex,
-	).Scan(&maxIndex); err != nil {
-		return 0, fmt.Errorf("store: append item+payload next index: %w", err)
-	}
-	next := 0
-	if maxIndex.Valid {
-		next = int(maxIndex.Int64) + 1
+	next, err := nextItemIndexTx(tx, item.ThreadID, item.TurnIndex, "store: append item+payload next index")
+	if err != nil {
+		return 0, err
 	}
 	item.ItemIndex = next
 
-	if _, err := tx.Exec(
-		`INSERT INTO payloads (id, kind, meta, data, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		payload.ID, payload.Kind, payload.Meta, payload.Data, payload.CreatedAt,
-	); err != nil {
-		return 0, fmt.Errorf("store: append item+payload insert payload: %w", err)
+	if err := insertPayloadTx(tx, payload, "store: append item+payload insert payload"); err != nil {
+		return 0, err
 	}
 
-	if _, err := tx.Exec(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
-		    payload_id, input_payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
-		    created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
-		nilIfEmpty(item.PayloadID), nilIfEmpty(item.InputPayloadID), item.ParentID,
-		boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
-		item.CreatedAt, item.UpdatedAt,
-	); err != nil {
-		return 0, fmt.Errorf("store: append item+payload insert item: %w", err)
+	if err := insertItemTx(tx, item, "store: append item+payload insert item"); err != nil {
+		return 0, err
 	}
 
 	if err := tx.Commit(); err != nil {
