@@ -825,6 +825,69 @@ func TestAppendItemSummaryErrorsOnMissingItem(t *testing.T) {
 	}
 }
 
+func TestAppendItemSummaryZeroRowSemantics(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		append func(s *Store, threadID string, itemID string) (Item, error)
+	}{
+		{
+			name: "plain",
+			append: func(s *Store, threadID string, itemID string) (Item, error) {
+				return s.AppendItemSummary(threadID, itemID, "late", 3000)
+			},
+		},
+		{
+			name: "tail",
+			append: func(s *Store, threadID string, itemID string) (Item, error) {
+				return s.AppendItemSummaryTail(threadID, itemID, "late", 6, 3000)
+			},
+		},
+	} {
+		t.Run(tc.name+"/missing row", func(t *testing.T) {
+			s := newTestStore(t)
+			_, err := tc.append(s, "t", "missing")
+			if !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("err = %v, want sql.ErrNoRows", err)
+			}
+		})
+
+		t.Run(tc.name+"/settled row", func(t *testing.T) {
+			s := newTestStore(t)
+			if err := s.CreateThread(Thread{
+				ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+				CreatedAt: 1000, UpdatedAt: 1000,
+			}); err != nil {
+				t.Fatalf("create thread: %v", err)
+			}
+			if err := s.InsertItem(Item{
+				ID: "settled", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
+				Kind: "assistant_text", Role: "assistant", Status: "completed",
+				Summary: "final", CreatedAt: 2000, UpdatedAt: 2000,
+			}); err != nil {
+				t.Fatalf("insert settled item: %v", err)
+			}
+
+			_, err := tc.append(s, "t", "settled")
+			if !errors.Is(err, ErrItemSettled) {
+				t.Fatalf("err = %v, want ErrItemSettled", err)
+			}
+			got, ok, err := s.GetThreadItem("t", "settled")
+			if err != nil {
+				t.Fatalf("get settled item: %v", err)
+			}
+			if !ok {
+				t.Fatal("settled item missing")
+			}
+			if got.Summary != "final" {
+				t.Fatalf("settled summary mutated to %q, want final", got.Summary)
+			}
+			if got.UpdatedAt != 2000 {
+				t.Fatalf("settled UpdatedAt mutated to %d, want 2000", got.UpdatedAt)
+			}
+		})
+	}
+}
+
 func TestAppendItemSummaryTailKeepsLatestRunes(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(Thread{

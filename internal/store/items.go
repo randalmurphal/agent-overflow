@@ -128,6 +128,72 @@ func insertItemWithIDTx(exec sqlExecutor, item Item, label string) error {
 	return nil
 }
 
+func (s *Store) appendStreamingItemSummary(
+	threadID string,
+	id string,
+	operation string,
+	rereadOperation string,
+	runUpdate func(tx *sql.Tx) (sql.Result, error),
+) (Item, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Item{}, fmt.Errorf("store: begin %s tx: %w", operation, err)
+	}
+	defer tx.Rollback()
+
+	result, err := runUpdate(tx)
+	if err != nil {
+		return Item{}, fmt.Errorf("store: %s %s/%s: %w", operation, threadID, id, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Item{}, fmt.Errorf("store: rows affected %s %s/%s: %w", operation, threadID, id, err)
+	}
+	if affected == 0 {
+		if err := classifyStreamingUpdateMissTx(tx, threadID, id, operation); err != nil {
+			return Item{}, err
+		}
+	}
+
+	updated, err := readBackItemTx(tx, threadID, id)
+	if err != nil {
+		return Item{}, fmt.Errorf("store: %s %s/%s: %w", rereadOperation, threadID, id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Item{}, fmt.Errorf("store: commit %s tx: %w", operation, err)
+	}
+	return updated, nil
+}
+
+func classifyStreamingUpdateMissTx(tx *sql.Tx, threadID string, id string, operation string) error {
+	// The UPDATE matched no rows. Because the UPDATE already required
+	// status='streaming', any existing row is settled; only absence means
+	// callers should fall back to creating the row.
+	var exists int
+	probeErr := tx.QueryRow(
+		`SELECT 1 FROM items WHERE thread_id = ? AND id = ?`,
+		threadID, id,
+	).Scan(&exists)
+	if errors.Is(probeErr, sql.ErrNoRows) {
+		return sql.ErrNoRows
+	}
+	if probeErr != nil {
+		return fmt.Errorf("store: probe item existence for %s %s/%s: %w", operation, threadID, id, probeErr)
+	}
+	return ErrItemSettled
+}
+
+func readBackItemTx(tx *sql.Tx, threadID string, id string) (Item, error) {
+	row := tx.QueryRow(
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.thread_id = ? AND items.id = ?`,
+		threadID, id,
+	)
+	return scanItemRow(row)
+}
+
 func (s *Store) InsertItem(item Item) error {
 	applyItemDefaults(&item)
 	tx, err := s.db.Begin()
@@ -211,55 +277,18 @@ func (s *Store) AppendItem(item Item) (int, error) {
 // interaction points (user_text persist, turn settle, approval/user-input
 // requests) via Store.MarkThreadActivity.
 func (s *Store) AppendItemSummary(threadID, id, delta string, updatedAt int64) (Item, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return Item{}, fmt.Errorf("store: begin append item summary tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	result, err := tx.Exec(
-		`UPDATE items SET summary = summary || ?, updated_at = ? WHERE thread_id = ? AND id = ? AND status = 'streaming'`,
-		delta, updatedAt, threadID, id,
+	return s.appendStreamingItemSummary(
+		threadID,
+		id,
+		"append item summary",
+		"re-read appended item",
+		func(tx *sql.Tx) (sql.Result, error) {
+			return tx.Exec(
+				`UPDATE items SET summary = summary || ?, updated_at = ? WHERE thread_id = ? AND id = ? AND status = 'streaming'`,
+				delta, updatedAt, threadID, id,
+			)
+		},
 	)
-	if err != nil {
-		return Item{}, fmt.Errorf("store: append item summary %s/%s: %w", threadID, id, err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return Item{}, fmt.Errorf("store: rows affected append item summary %s/%s: %w", threadID, id, err)
-	}
-	if affected == 0 {
-		// The UPDATE matched no rows — either the row is missing or it is
-		// no longer streaming. Distinguish so callers can (a) fall back to
-		// an UpsertItem create for genuinely-missing rows and (b) silently
-		// drop late deltas that arrive after an interrupt/settle has
-		// already committed a terminal status.
-		var status string
-		probeErr := tx.QueryRow(`SELECT status FROM items WHERE thread_id = ? AND id = ?`, threadID, id).Scan(&status)
-		if errors.Is(probeErr, sql.ErrNoRows) {
-			return Item{}, sql.ErrNoRows
-		}
-		if probeErr != nil {
-			return Item{}, fmt.Errorf("store: probe status for append item summary %s/%s: %w", threadID, id, probeErr)
-		}
-		return Item{}, ErrItemSettled
-	}
-
-	row := tx.QueryRow(
-		`SELECT `+itemColumns+`
-		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
-		  WHERE items.thread_id = ? AND items.id = ?`,
-		threadID, id,
-	)
-	updated, err := scanItemRow(row)
-	if err != nil {
-		return Item{}, fmt.Errorf("store: re-read appended item %s/%s: %w", threadID, id, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return Item{}, fmt.Errorf("store: commit append item summary tx: %w", err)
-	}
-	return updated, nil
 }
 
 // AppendItemSummaryTail appends delta to a streaming item's summary while
@@ -274,57 +303,25 @@ func (s *Store) AppendItemSummaryTail(threadID, id, delta string, maxRunes int, 
 		maxRunes = 0
 	}
 
-	tx, err := s.db.Begin()
-	if err != nil {
-		return Item{}, fmt.Errorf("store: begin append item summary tail tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	result, err := tx.Exec(
-		`UPDATE items
-		    SET summary = CASE
-		            WHEN length(summary || ?) <= ? THEN summary || ?
-		            ELSE substr(summary || ?, length(summary || ?) - ? + 1)
-		        END,
-		        updated_at = ?
-		  WHERE thread_id = ? AND id = ? AND status = 'streaming'`,
-		delta, maxRunes, delta, delta, delta, maxRunes,
-		updatedAt, threadID, id,
+	return s.appendStreamingItemSummary(
+		threadID,
+		id,
+		"append item summary tail",
+		"re-read tail-appended item",
+		func(tx *sql.Tx) (sql.Result, error) {
+			return tx.Exec(
+				`UPDATE items
+				    SET summary = CASE
+				            WHEN length(summary || ?) <= ? THEN summary || ?
+				            ELSE substr(summary || ?, length(summary || ?) - ? + 1)
+				        END,
+				        updated_at = ?
+				  WHERE thread_id = ? AND id = ? AND status = 'streaming'`,
+				delta, maxRunes, delta, delta, delta, maxRunes,
+				updatedAt, threadID, id,
+			)
+		},
 	)
-	if err != nil {
-		return Item{}, fmt.Errorf("store: append item summary tail %s/%s: %w", threadID, id, err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return Item{}, fmt.Errorf("store: rows affected append item summary tail %s/%s: %w", threadID, id, err)
-	}
-	if affected == 0 {
-		var status string
-		probeErr := tx.QueryRow(`SELECT status FROM items WHERE thread_id = ? AND id = ?`, threadID, id).Scan(&status)
-		if errors.Is(probeErr, sql.ErrNoRows) {
-			return Item{}, sql.ErrNoRows
-		}
-		if probeErr != nil {
-			return Item{}, fmt.Errorf("store: probe status for append item summary tail %s/%s: %w", threadID, id, probeErr)
-		}
-		return Item{}, ErrItemSettled
-	}
-
-	row := tx.QueryRow(
-		`SELECT `+itemColumns+`
-		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
-		  WHERE items.thread_id = ? AND items.id = ?`,
-		threadID, id,
-	)
-	updated, err := scanItemRow(row)
-	if err != nil {
-		return Item{}, fmt.Errorf("store: re-read tail-appended item %s/%s: %w", threadID, id, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return Item{}, fmt.Errorf("store: commit append item summary tail tx: %w", err)
-	}
-	return updated, nil
 }
 
 // UpsertItem persists `item` (inserting or updating depending on whether a
@@ -500,14 +497,7 @@ func insertNewItem(tx *sql.Tx, item *Item) error {
 // payload kind/meta. This lives inside the upsert transaction so
 // callers observe their own write even with WAL-reader snapshots in play.
 func readBackUpsertedItem(tx *sql.Tx, threadID, id string) (Item, error) {
-	row := tx.QueryRow(
-		`SELECT `+itemColumns+`
-		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
-		  WHERE items.thread_id = ? AND items.id = ?`,
-		threadID, id,
-	)
-	persisted, err := scanItemRow(row)
+	persisted, err := readBackItemTx(tx, threadID, id)
 	if err != nil {
 		return Item{}, fmt.Errorf("store: re-read upserted item %s: %w", id, err)
 	}
