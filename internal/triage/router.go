@@ -222,6 +222,13 @@ type Router struct {
 	// stable string — fine on its own, but adds up across the
 	// 10-30 text blocks per heavy turn. Keyed by threadID.
 	workspacePathByThread map[string]string
+	// revertedTurns marks threads whose next provider:turn_completed
+	// emission should carry RevertedUserMessage=true. Set by the App
+	// layer's revert-on-interrupt path BEFORE it tears down the
+	// session; consumed (read-and-clear) inside buildRoundCompletedEvent.
+	// Defensively swept by clearOpenTurn and CleanupThread so a stale
+	// flag never leaks into a future turn. See revert_marker.go.
+	revertedTurns map[string]struct{}
 }
 
 // NewRouter creates a triage router. Telemetry is off by default; wire a
@@ -274,6 +281,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		wireOnlyUserTextSeen:       make(map[string]map[string]struct{}),
 		queuedFlushItems:           make(map[string][]QueuedFlushItem),
 		workspacePathByThread:      make(map[string]string),
+		revertedTurns:              make(map[string]struct{}),
 	}
 }
 

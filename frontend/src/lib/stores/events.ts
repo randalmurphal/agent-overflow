@@ -24,6 +24,7 @@ import type {
   CheckpointErrorEvent,
   CheckpointRevertedEvent,
   CheckpointUnavailableEvent,
+  UserMessageRevertedEvent,
 } from '../types/checkpoint';
 import { setProviderAccount } from './accountInfo.svelte';
 import { asProviderID } from '../types/providers';
@@ -54,6 +55,7 @@ import {
 } from './threadStatuses.svelte';
 import { parseTokenUsage } from './thread.svelte';
 import { threadItemCache } from './threadItemCache';
+import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import {
   getThreadTerminalState,
 } from '../components/terminal/terminalStore.svelte';
@@ -888,10 +890,13 @@ function applyTurnCompleted(evt: TurnCompletedEvent): void {
     errorMessage: evt.errorMessage ?? '',
   };
   // Clear the turn from the sidebar projection. Errored turns flip the
-  // pill to Failed; clean aborts flip it to Interrupted.
+  // pill to Failed; clean aborts flip it to Interrupted UNLESS the
+  // backend marked this as a revert-on-interrupt, in which case the
+  // pill stays clean (nothing happened, so don't paint it like it did).
   projectTurnCompleted(evt.threadId, evt.turnId, {
     aborted: settled.aborted,
     errorMessage: settled.errorMessage,
+    revertedUserMessage: Boolean(evt.revertedUserMessage),
   });
   patchThreadDurableStatus(evt.threadId, { hasIncompleteTurn: false });
   for (const pane of iterPanes()) {
@@ -1100,6 +1105,29 @@ export function setupEventListeners(): () => void {
       }
     },
   );
+  // `user_message:reverted` fires after InterruptAndRevertIfClean rolls
+  // back the most-recent user message. The optimistic frontend path
+  // already removed the row (and was confirmed by the backend), so this
+  // handler is responsible for: (1) idempotently confirming the row
+  // removal in any pane viewing the thread (defends against a stale
+  // optimistic miss / cross-pane reflection); (2) refreshing the
+  // composer draft from disk so the user's typed text reappears in the
+  // input. `reloadFromBackend` is a no-op when the draft store is not
+  // pointed at this thread, so we just fire it for every active draft.
+  const cancelUserMessageReverted = wailsEventOn<UserMessageRevertedEvent | null>(
+    'user_message:reverted',
+    (payload) => {
+      if (!payload?.threadId || !payload.userItemId) return;
+      for (const pane of iterPanes()) {
+        if (pane.threadId !== payload.threadId) continue;
+        pane.removeItemById(payload.userItemId);
+        const draft = getComposerDraftForPane(pane.paneId);
+        if (draft) {
+          void draft.reloadFromBackend(payload.threadId);
+        }
+      }
+    },
+  );
 
   const cancelThreadUpdated = wailsEventOn<Thread>('thread:updated', applyThreadUpdated);
 
@@ -1270,6 +1298,7 @@ export function setupEventListeners(): () => void {
     cancelCheckpointUnavailable();
     cancelCheckpointError();
     cancelCheckpointReverted();
+    cancelUserMessageReverted();
     cancelThreadUpdated();
     cancelDefaultSwapped();
     cancelTransportGap();

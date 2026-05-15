@@ -310,6 +310,14 @@ export interface TurnCompletedEvent {
   aborted?: boolean;
   /** False for nested subagent/internal turns that should not reorder the sidebar. */
   countsAsActivity?: boolean;
+  /**
+   * True when this turn ended because the user message was reverted
+   * via InterruptAndRevertIfClean (Stop-before-response). The sidebar
+   * pill MUST NOT flip to "Interrupted" — nothing happened, so don't
+   * paint it like something did. Set by the backend Router after
+   * `MarkTurnReverted` consumes its one-shot flag.
+   */
+  revertedUserMessage?: boolean;
 }
 
 /**

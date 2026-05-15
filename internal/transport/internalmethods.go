@@ -190,6 +190,7 @@ var LocalOnlyMethods = map[string]bool{
 	"UpdateThreadRuntimeMode":        true,
 	"UpdateThreadWorkspace":          true,
 	"InterruptTurn":                  true,
+	"InterruptAndRevertIfClean":      true,
 	"ListPendingInteractiveRequests": true,
 	"RespondToApproval":              true,
 	"RespondToUserInput":             true,

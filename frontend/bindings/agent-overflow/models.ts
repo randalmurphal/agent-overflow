@@ -497,6 +497,57 @@ export class GitStatusSubscriptionResult {
     }
 }
 
+/**
+ * InterruptAndRevertResult is returned by InterruptAndRevertIfClean.
+ * The frontend uses Reverted to decide whether to commit or roll back
+ * its optimistic UI (timeline row removal + composer rehydrate).
+ */
+export class InterruptAndRevertResult {
+    /**
+     * Reverted is true when the predicate matched and the user message
+     * was successfully reverted. false means we fell back to a plain
+     * interrupt (predicate failed under the lock or no session exists)
+     * and the caller should restore any optimistic UI changes.
+     */
+    "reverted": boolean;
+
+    /**
+     * UserItemID identifies the row that was reverted. Empty when
+     * Reverted is false.
+     */
+    "userItemId"?: string;
+
+    /**
+     * TurnIndex is the turn the reverted user message belonged to.
+     * Zero-valued when Reverted is false.
+     */
+    "turnIndex"?: number;
+
+    /**
+     * Reason is a short tag describing why a revert was declined.
+     * Populated only when Reverted is false; useful for telemetry and
+     * frontend debugging without exposing internals to the user.
+     */
+    "reason"?: string;
+
+    /** Creates a new InterruptAndRevertResult instance. */
+    constructor($$source: Partial<InterruptAndRevertResult> = {}) {
+        if (!("reverted" in $$source)) {
+            this["reverted"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new InterruptAndRevertResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): InterruptAndRevertResult {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new InterruptAndRevertResult($$parsedSource as Partial<InterruptAndRevertResult>);
+    }
+}
+
 export class LiveStateActiveTurn {
     "threadId": string;
     "turnId": string;

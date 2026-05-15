@@ -451,7 +451,7 @@ export function projectTurnStarted(
 export function projectTurnCompleted(
   threadId: string,
   turnId: string,
-  opts: { aborted?: boolean; errorMessage?: string } = {},
+  opts: { aborted?: boolean; errorMessage?: string; revertedUserMessage?: boolean } = {},
 ): void {
   if (!threadId || !turnId) return;
   markCompletedTurnID(threadId, turnId);
@@ -463,8 +463,17 @@ export function projectTurnCompleted(
     errorThreads.add(threadId);
     interruptedThreads.delete(threadId);
   } else if (opts.aborted) {
-    interruptedThreads.add(threadId);
-    errorThreads.delete(threadId);
+    // Suppress the Interrupted pill when the turn ended via revert-on-
+    // interrupt. The user message was undone and put back into the
+    // composer; nothing happened, so the sidebar must not paint a
+    // "user interrupted" status on this thread.
+    if (opts.revertedUserMessage) {
+      interruptedThreads.delete(threadId);
+      errorThreads.delete(threadId);
+    } else {
+      interruptedThreads.add(threadId);
+      errorThreads.delete(threadId);
+    }
   }
   recalculateThreadStatus(threadId);
 }

@@ -36,8 +36,9 @@ import {
   UpdateThreadMode,
   UserInputResponse,
 } from './bindings';
-import { errString } from '../utils/errors';
 import { cycleMode } from '../utils/modeCycle';
+import { runInterruptOrRevert } from './revertOnInterrupt.svelte';
+import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 
 export interface BuiltinCommandHooks {
   openSettings: () => void;
@@ -51,42 +52,7 @@ export interface BuiltinCommandHooks {
   requestThreadStep: (delta: number) => void;
 }
 
-/**
- * Errors we treat as no-ops on the interrupt path. Two cases:
- *
- *  1. "no active turn" — fired during the optimistic dispatch window
- *     (sendInFlight=true, but backend hasn't seen `turn/started` yet)
- *     when the user presses Esc.
- *  2. "already resolved" — race between our explicit cancel and the
- *     CLI's own `control_cancel_request`. The backend short-circuits
- *     the duplicate via ErrApprovalAlreadyResolved (which wraps
- *     provider.ErrStaleInteractiveRequest); the wire string we see
- *     here ends with "stale interactive request" or includes
- *     "already resolved".
- *
- * Anything else surfaces as a banner so a real failure doesn't get
- * swallowed.
- */
-function isBenignInterruptError(err: unknown): boolean {
-  const message = errString(err).toLowerCase();
-  return (
-    message.includes('no active turn') ||
-    message.includes('already resolved') ||
-    message.includes('stale interactive request')
-  );
-}
-
-/**
- * Standard `.catch` for the fire-and-forget interrupt RPCs. Benign
- * races (no-active-turn, already-resolved) are dropped silently;
- * everything else surfaces on the pane banner so a real provider
- * crash doesn't get swallowed by the optimistic UI path.
- */
-function reportNonBenignInterruptError(pane: ThreadPane, err: unknown): void {
-  if (isBenignInterruptError(err)) return;
-  console.error('Failed to interrupt turn:', err);
-  pane.setGeneralError(userFacingError(err));
-}
+import { reportNonBenignInterruptError } from './interruptErrors';
 
 function withActiveThread(
   ctx: CommandContext,
@@ -310,17 +276,29 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           decision: 'decline',
           answers: {},
         })).catch((err) => reportNonBenignInterruptError(pane, err));
+        // Approval / user-input cancels are mid-turn responses, not the
+        // "stop before the agent answered" affordance — fall through to
+        // a plain InterruptTurn rather than the revert path.
+        void InterruptTurn(threadID).catch((err) =>
+          reportNonBenignInterruptError(pane, err),
+        );
       } else if (approval) {
         pane.removeApproval(approval.requestId);
         void RespondToApproval(threadID, new ApprovalResponse({
           requestId: approval.requestId,
           decision: 'cancel',
         })).catch((err) => reportNonBenignInterruptError(pane, err));
+        void InterruptTurn(threadID).catch((err) =>
+          reportNonBenignInterruptError(pane, err),
+        );
+      } else {
+        const draft = getComposerDraftForPane(pane.paneId);
+        runInterruptOrRevert(pane, {
+          content: draft?.content ?? '',
+          attachments: draft?.attachments ?? [],
+          terminalChips: draft?.terminalChips ?? [],
+        });
       }
-
-      void InterruptTurn(threadID).catch((err) =>
-        reportNonBenignInterruptError(pane, err),
-      );
 
       // Optimistic clear — spinner / Stop button / mid-turn input
       // gate all flip in this render tick. The real

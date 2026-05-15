@@ -1632,6 +1632,26 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       upsertItemsBatch(incoming);
     },
 
+    /**
+     * Remove a single item from the pane's timeline by id. Returns the
+     * removed Item so optimistic callers (revert-on-interrupt) can
+     * re-insert it on rollback. Idempotent: returns null when the row
+     * is already gone, so a late `user_message:reverted` event after
+     * the optimistic remove is a no-op.
+     */
+    removeItemById(itemId: string): Item | null {
+      const idx = itemIndexById.get(itemId);
+      if (idx === undefined) return null;
+      const removed = items[idx];
+      items = items.filter((it) => it.id !== itemId);
+      rebuildItemIndexes(items);
+      if (thread) {
+        threadItemCache.evict(thread.id);
+      }
+      timelineRevision++;
+      return removed;
+    },
+
     applyItemDelta(evt: ItemDeltaEvent): void {
       if (!evt.itemId || !evt.delta) return;
       if (thread && evt.threadId !== thread.id) return;

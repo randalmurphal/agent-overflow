@@ -608,17 +608,18 @@ func (r *Router) buildRoundCompletedEvent(
 		startedAt = existing.StartedAt
 	}
 	return TurnCompletedEvent{
-		ThreadID:           evt.ThreadID,
-		TurnID:             roundID,
-		TurnIndex:          turnIndex,
-		StartedAt:          startedAt,
-		CompletedAt:        now,
-		StopReason:         fields.stopReason,
-		AssistantMessageID: fields.assistantMessageID,
-		TokenUsage:         meta.Usage,
-		ErrorMessage:       fields.errorMessage,
-		Aborted:            meta.Aborted || meta.Truncated,
-		CountsAsActivity:   turnCountsAsThreadActivity(evt),
+		ThreadID:            evt.ThreadID,
+		TurnID:              roundID,
+		TurnIndex:           turnIndex,
+		StartedAt:           startedAt,
+		CompletedAt:         now,
+		StopReason:          fields.stopReason,
+		AssistantMessageID:  fields.assistantMessageID,
+		TokenUsage:          meta.Usage,
+		ErrorMessage:        fields.errorMessage,
+		Aborted:             meta.Aborted || meta.Truncated,
+		RevertedUserMessage: r.consumeRevertedTurn(evt.ThreadID),
+		CountsAsActivity:    turnCountsAsThreadActivity(evt),
 	}
 }
 
@@ -890,6 +891,12 @@ func (r *Router) clearOpenTurn(threadID string) {
 	// already or the turn closed without forward progress; either way
 	// the next turn starts with a clean flag.
 	delete(r.openAPIRetryRows, threadID)
+	// revertedTurns is normally read-and-cleared inside
+	// buildRoundCompletedEvent. Defensive sweep here covers the case
+	// where MarkTurnReverted was set but no turn-completed actually
+	// fires (rare — e.g. the thread had no open turn so no
+	// synthesizeTruncatedTurnComplete ran).
+	delete(r.revertedTurns, threadID)
 	r.mu.Unlock()
 }
 
@@ -1141,6 +1148,11 @@ func (r *Router) CleanupThread(threadID string) {
 	// session that re-attaches to the same threadID, and a stale fired
 	// marker must not block the next session's first-round trigger.
 	r.clearFlushQueueLocked(threadID)
+	// Safety net for the revert-on-interrupt marker. Normally consumed
+	// by buildRoundCompletedEvent during the synthesized truncated
+	// turn-complete that fires above; this catches the case where the
+	// flag was set but no emission happened (e.g. predicate raced).
+	delete(r.revertedTurns, threadID)
 	r.mu.Unlock()
 
 	if orphanSpan != nil {

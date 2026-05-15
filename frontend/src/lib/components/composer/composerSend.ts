@@ -7,7 +7,6 @@
 // path easy to trace from the click handler all the way to SendMessage.
 
 import {
-  InterruptTurn,
   PrepareThreadWorktree,
   SendMessageWithOptions,
 } from '../../stores/bindings';
@@ -180,18 +179,3 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
   }
 }
 
-/**
- * Fire InterruptTurn for the current thread. Errors are surfaced via the
- * supplied reporter so the composer can paint them in its error row.
- */
-export async function dispatchInterrupt(
-  threadId: string,
-  reportError: (message: string) => void,
-): Promise<void> {
-  try {
-    await InterruptTurn(threadId);
-  } catch (err) {
-    console.error('Failed to interrupt turn:', err);
-    reportError(`Failed to interrupt: ${errString(err)}`);
-  }
-}

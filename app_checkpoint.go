@@ -289,53 +289,120 @@ func (a *App) RevertToMessageCheckpoint(threadID string, userItemID string, mode
 		return fmt.Errorf("revert checkpoint: build prompt draft: %w", err)
 	}
 
-	if err := a.stopSession(threadID); err != nil {
-		return fmt.Errorf("revert checkpoint: stop session: %w", err)
-	}
-	if err := a.revertProviderConversationToMessage(thread, record); err != nil {
-		return fmt.Errorf("revert checkpoint: %w", err)
-	}
-
-	workspace := thread.WorkspacePath
-	if mode == RevertModeConversationAndFiles {
-		if workspace == "" {
-			return errors.New("revert checkpoint: thread has no workspace path")
-		}
-		if record.WorkspacePath != workspace {
-			return fmt.Errorf("revert checkpoint: checkpoint workspace %q does not match thread workspace %q", record.WorkspacePath, workspace)
-		}
-		paths, err := a.store.ListTrackedFilesFromTurn(threadID, userItem.TurnIndex)
-		if err != nil {
-			return fmt.Errorf("revert checkpoint: tracked files: %w", err)
-		}
-		if err := a.checkpointStore().RestoreWorktreePaths(context.Background(), workspace, record.RefName, paths); err != nil {
-			return fmt.Errorf("revert checkpoint: restore paths: %w", err)
-		}
-		if a.workspaceFiles != nil {
-			a.workspaceFiles.Invalidate(workspace)
-		}
-	}
-
-	refs, err := a.store.DeleteCheckpointsFromTurn(threadID, userItem.TurnIndex)
-	if err != nil {
-		return fmt.Errorf("revert checkpoint: truncate checkpoints: %w", err)
-	}
-	if _, err := a.store.DeleteConversationFromTurn(threadID, userItem.TurnIndex); err != nil {
-		return fmt.Errorf("revert checkpoint: truncate conversation: %w", err)
-	}
-	if err := a.deleteCheckpointRefs(context.Background(), threadID, "revert checkpoint", refs); err != nil {
+	if err := a.revertConversationLocked(revertConversationLockedArgs{
+		thread:       thread,
+		userItem:     userItem,
+		record:       record,
+		mode:         mode,
+		promptDraft:  promptDraft,
+		errorPrefix:  "revert checkpoint",
+		markReverted: false,
+	}); err != nil {
 		return err
 	}
-	if err := a.store.UpsertThreadDraft(promptDraft); err != nil {
-		return fmt.Errorf("revert checkpoint: restore prompt draft: %w", err)
-	}
-
 	a.emit("checkpoint:reverted", map[string]any{
 		"threadId":   threadID,
 		"userItemId": userItemID,
 		"turnIndex":  userItem.TurnIndex,
 		"mode":       mode,
 	})
+	return nil
+}
+
+// revertConversationLockedArgs bundles the parameters for the shared
+// revert tail. Callers prepare the thread, user item, checkpoint, and
+// composer draft, then hand off to revertConversationLocked which owns
+// the destructive sequence (stop session → provider rollback → SQLite
+// truncate → draft upsert). Event emission stays with the caller so
+// each surface (explicit revert vs revert-on-interrupt) can pick its
+// own payload shape.
+type revertConversationLockedArgs struct {
+	thread      store.Thread
+	userItem    store.Item
+	record      store.Checkpoint
+	mode        string
+	promptDraft store.ThreadDraft
+	// errorPrefix scopes wrapped errors so the calling surface (revert
+	// vs revert-on-interrupt) is identifiable in logs and toasts.
+	errorPrefix string
+	// markReverted asks the triage router to flag the next
+	// turn-completed emission as a revert (so the frontend can
+	// suppress the Interrupted pill). Used only by the
+	// revert-on-interrupt path, which interrupts a live turn — the
+	// explicit revert path requires no active turn, so there is no
+	// in-flight turn-complete to flag.
+	markReverted bool
+}
+
+// revertConversationLocked is the destructive tail of any conversation
+// revert. The caller is responsible for the per-thread action lock,
+// loading the user item + checkpoint, projecting the composer draft
+// via composerdraft.FromUserItem, AND emitting whatever post-revert
+// event its surface needs once this returns nil.
+//
+// Sequence (in order — partial failures leave a clear cleanup point):
+//
+//  1. Optionally mark the triage router so the synthesized truncated
+//     turn-complete fired by CleanupThread (during stopSession)
+//     carries RevertedUserMessage=true. Skip when no active turn is
+//     in flight (markReverted=false).
+//  2. stopSession — closes the provider subprocess and runs
+//     triage.CleanupThread which drains pending-send FIFO, wire-only
+//     dedup, flush queue, and synthesizes a truncated turn-complete
+//     for any open turn.
+//  3. revertProviderConversationToMessage — Claude JSONL fork or
+//     Codex thread/rollback. For Claude this REQUIRES the session
+//     to be stopped (file rewrite).
+//  4. Conversation-and-files mode only: ListTrackedFilesFromTurn +
+//     RestoreWorktreePaths + workspaceFiles.Invalidate.
+//  5. DeleteCheckpointsFromTurn + DeleteConversationFromTurn truncate
+//     SQLite at the user-item's turnIndex (inclusive).
+//  6. deleteCheckpointRefs removes the matching git refs.
+//  7. UpsertThreadDraft restores the composer draft.
+func (a *App) revertConversationLocked(args revertConversationLockedArgs) error {
+	if args.markReverted && a.triage != nil {
+		a.triage.MarkTurnReverted(args.thread.ID)
+	}
+	if err := a.stopSession(args.thread.ID); err != nil {
+		return fmt.Errorf("%s: stop session: %w", args.errorPrefix, err)
+	}
+	if err := a.revertProviderConversationToMessage(args.thread, args.record); err != nil {
+		return fmt.Errorf("%s: %w", args.errorPrefix, err)
+	}
+
+	workspace := args.thread.WorkspacePath
+	if args.mode == RevertModeConversationAndFiles {
+		if workspace == "" {
+			return fmt.Errorf("%s: thread has no workspace path", args.errorPrefix)
+		}
+		if args.record.WorkspacePath != workspace {
+			return fmt.Errorf("%s: checkpoint workspace %q does not match thread workspace %q", args.errorPrefix, args.record.WorkspacePath, workspace)
+		}
+		paths, err := a.store.ListTrackedFilesFromTurn(args.thread.ID, args.userItem.TurnIndex)
+		if err != nil {
+			return fmt.Errorf("%s: tracked files: %w", args.errorPrefix, err)
+		}
+		if err := a.checkpointStore().RestoreWorktreePaths(context.Background(), workspace, args.record.RefName, paths); err != nil {
+			return fmt.Errorf("%s: restore paths: %w", args.errorPrefix, err)
+		}
+		if a.workspaceFiles != nil {
+			a.workspaceFiles.Invalidate(workspace)
+		}
+	}
+
+	refs, err := a.store.DeleteCheckpointsFromTurn(args.thread.ID, args.userItem.TurnIndex)
+	if err != nil {
+		return fmt.Errorf("%s: truncate checkpoints: %w", args.errorPrefix, err)
+	}
+	if _, err := a.store.DeleteConversationFromTurn(args.thread.ID, args.userItem.TurnIndex); err != nil {
+		return fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
+	}
+	if err := a.deleteCheckpointRefs(context.Background(), args.thread.ID, args.errorPrefix, refs); err != nil {
+		return err
+	}
+	if err := a.store.UpsertThreadDraft(args.promptDraft); err != nil {
+		return fmt.Errorf("%s: restore prompt draft: %w", args.errorPrefix, err)
+	}
 	return nil
 }
 

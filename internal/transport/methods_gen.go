@@ -99,6 +99,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GitSyncBranch", ID: 1057032236}, // main.App.GitSyncBranch
 	{Name: "GitWorktreeStatus", ID: 1333748060}, // main.App.GitWorktreeStatus
 	{Name: "IngestDiagnosticBatch", ID: 2606775930}, // main.App.IngestDiagnosticBatch
+	{Name: "InterruptAndRevertIfClean", ID: 753394581}, // main.App.InterruptAndRevertIfClean
 	{Name: "InterruptTurn", ID: 850013031}, // main.App.InterruptTurn
 	{Name: "IsWSL", ID: 2789068977}, // main.App.IsWSL
 	{Name: "LatestDesignOptionSet", ID: 4252906991}, // main.App.LatestDesignOptionSet

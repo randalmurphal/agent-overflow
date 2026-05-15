@@ -674,6 +674,7 @@ func (p *privilegedApp) UpdateThreadContextSettings() string    { return "ok" }
 func (p *privilegedApp) UpdateThreadRuntimeMode() string        { return "ok" }
 func (p *privilegedApp) UpdateThreadWorkspace() string          { return "ok" }
 func (p *privilegedApp) InterruptTurn() string                  { return "ok" }
+func (p *privilegedApp) InterruptAndRevertIfClean() string       { return "ok" }
 func (p *privilegedApp) ListPendingInteractiveRequests() string { return "ok" }
 func (p *privilegedApp) RespondToApproval() string              { return "ok" }
 func (p *privilegedApp) RespondToUserInput() string             { return "ok" }

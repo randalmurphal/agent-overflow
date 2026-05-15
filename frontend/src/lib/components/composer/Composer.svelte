@@ -25,7 +25,8 @@
   import { createComposerMentions } from './composerMentions.svelte';
   import { deriveComposerSendState } from './composerSendState';
   import { createComposerUploads } from './composerUploads.svelte';
-  import { dispatchInterrupt, dispatchSend } from './composerSend';
+  import { dispatchSend } from './composerSend';
+  import { runInterruptOrRevert } from '../../stores/revertOnInterrupt.svelte';
   import { RespondToApproval, RespondToUserInput, type ApprovalResponse, type UserInputResponse } from '../../stores/bindings';
   import {
     getPlanComments,
@@ -442,9 +443,15 @@
     }
   }
 
-  async function interrupt() {
+  function interrupt() {
     if (!pane.threadId) return;
-    await dispatchInterrupt(pane.threadId, (msg) => pane.setGeneralError(msg));
+    runInterruptOrRevert(pane, draft);
+    // Match the thread.interrupt builtin's optimistic clear so the
+    // spinner / Stop button / mid-turn input gate all flip in this
+    // render tick. The backend's `provider:turn_completed` arrives
+    // shortly and is idempotent on null activeTurn.
+    pane.clearActiveTurn();
+    pane.setSendInFlight(false);
   }
 
   function resetTextareaHeight() {
