@@ -243,7 +243,7 @@
   role="button"
   tabindex={0}
   aria-pressed={selected}
-  class="group/thread-row relative flex items-center gap-1.5 h-7 pr-1 rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
+  class="group/thread-row relative flex items-center gap-1.5 h-6 pr-1 rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
     {selected ? 'bg-accent/15 text-fg' : isActive ? 'bg-accent/10 text-fg' : 'text-fg-muted hover:bg-surface-2/30 hover:text-fg'}
     {pill?.glowClass ?? ''}"
   style="padding-left: {indentPx}px"
@@ -361,19 +361,19 @@
 
 {#if showWorktreeMeta}
   <div
-    class="relative -mt-1 flex h-4 items-center pr-1 text-[10.5px] leading-none text-fg-hint"
+    class="relative -mt-1.5 flex h-3.5 items-center pr-1 text-[10px] leading-none text-fg-hint"
     style="padding-left: {worktreeIndentPx}px"
     title="Worktree: {thread.worktreePath}"
     aria-label="Worktree {worktreeName}"
     data-testid="thread-row-worktree"
   >
     <span
-      class="absolute top-0 h-2.5 w-2.5 rounded-bl-[3px] border-l border-b border-border-subtle/70"
+      class="absolute top-0 h-2 w-2 rounded-bl-[3px] border-l border-b border-border-subtle/70"
       style="left: {worktreeConnectorLeftPx}px"
       aria-hidden="true"
     ></span>
     <span
-      class="min-w-0 max-w-full truncate px-1 py-[2px] font-mono text-[10px] text-fg-hint"
+      class="min-w-0 max-w-full truncate px-1 py-0 font-mono text-[10px] text-fg-hint"
       data-testid="thread-row-worktree-name"
     >
       {worktreeName}
