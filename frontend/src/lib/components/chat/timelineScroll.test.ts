@@ -5,10 +5,7 @@ import {
   captureTimelineAnchor,
   centeredScrollTop,
   createAutoLoadOlderGate,
-  isAutoLoadOlderIndexEligible,
   resolveVisibleTimelineNodeIndex,
-  shouldAutoLoadOlder,
-  shouldInspectAutoLoadOlderIndex,
   timelineRowElementForIndex,
   type TimelineGeometry,
 } from './timelineScroll';
@@ -92,96 +89,15 @@ describe('timelineScroll', () => {
     expect(captureTimelineAnchor(nodes, geometry(-1, 0), 200)).toBeNull();
   });
 
-  it('auto-loads older items when restored near the top of the loaded window', () => {
-    expect(shouldAutoLoadOlder({
-      offset: 799,
-      firstVisibleIndex: 5,
-      hasMoreHistory: true,
-      loadingOlder: false,
-      oldestLoadedTurnIndex: 10,
-      restoredThreadId: 'thread-1',
-      threadId: 'thread-1',
-      attemptedAtFloor: null,
-      offsetThreshold: 800,
-      indexThreshold: 5,
-    })).toBe(true);
-  });
-
-  it('auto-loads older items again after the loaded floor advances', () => {
-    expect(shouldAutoLoadOlder({
-      offset: 799,
-      firstVisibleIndex: 5,
-      hasMoreHistory: true,
-      loadingOlder: false,
-      oldestLoadedTurnIndex: 8,
-      restoredThreadId: 'thread-1',
-      threadId: 'thread-1',
-      attemptedAtFloor: 10,
-      offsetThreshold: 800,
-      indexThreshold: 5,
-    })).toBe(true);
-  });
-
-  it.each([
-    ['missing history', { hasMoreHistory: false }],
-    ['active load', { loadingOlder: true }],
-    ['null floor', { oldestLoadedTurnIndex: null }],
-    ['unrestored thread', { restoredThreadId: null }],
-    ['wrong restored thread', { restoredThreadId: 'thread-2' }],
-    ['past offset threshold', { offset: 800 }],
-    ['past index threshold', { firstVisibleIndex: 6 }],
-    ['already attempted same floor', { attemptedAtFloor: 10 }],
-  ])('does not auto-load older items for %s', (_, overrides) => {
-    expect(shouldAutoLoadOlder({
-      offset: 799,
-      firstVisibleIndex: 5,
-      hasMoreHistory: true,
-      loadingOlder: false,
-      oldestLoadedTurnIndex: 10,
-      restoredThreadId: 'thread-1',
-      threadId: 'thread-1',
-      attemptedAtFloor: null,
-      offsetThreshold: 800,
-      indexThreshold: 5,
-      ...overrides,
-    })).toBe(false);
-  });
-
-  it('keeps the virtualizer index lookup behind the cheap auto-load gates', () => {
-    expect(shouldInspectAutoLoadOlderIndex({
-      offset: 799,
-      hasMoreHistory: true,
-      loadingOlder: false,
-      oldestLoadedTurnIndex: 10,
-      restoredThreadId: 'thread-1',
-      threadId: 'thread-1',
-      attemptedAtFloor: null,
-      offsetThreshold: 800,
-    })).toBe(true);
-
-    expect(shouldInspectAutoLoadOlderIndex({
-      offset: 800,
-      hasMoreHistory: true,
-      loadingOlder: false,
-      oldestLoadedTurnIndex: 10,
-      restoredThreadId: 'thread-1',
-      threadId: 'thread-1',
-      attemptedAtFloor: null,
-      offsetThreshold: 800,
-    })).toBe(false);
-  });
-
-  it('checks first visible row eligibility separately from cheap auto-load gates', () => {
-    expect(isAutoLoadOlderIndexEligible(5, 5)).toBe(true);
-    expect(isAutoLoadOlderIndexEligible(6, 5)).toBe(false);
-  });
-
   it('tracks auto-load attempts by floor and resets explicitly', () => {
     const gate = createAutoLoadOlderGate({
       offsetThreshold: 800,
       indexThreshold: 5,
     });
-    const findFirstVisibleIndex = vi.fn(() => 5);
+    const findFirstVisibleIndex = vi.fn((offset: number) => {
+      expect(offset).toBe(799);
+      return 5;
+    });
     const base = {
       offset: 799,
       hasMoreHistory: true,
@@ -216,12 +132,57 @@ describe('timelineScroll', () => {
     })).toBe(true);
   });
 
+  it.each([
+    ['missing history', { hasMoreHistory: false }],
+    ['active load', { loadingOlder: true }],
+    ['null floor', { oldestLoadedTurnIndex: null }],
+    ['unrestored thread', { restoredThreadId: null }],
+    ['wrong restored thread', { restoredThreadId: 'thread-2' }],
+    ['past offset threshold', { offset: 800 }],
+  ])('does not auto-load older items for %s before index lookup', (_, overrides) => {
+    const gate = createAutoLoadOlderGate({
+      offsetThreshold: 800,
+      indexThreshold: 5,
+    });
+    const findFirstVisibleIndex = vi.fn((_offset: number) => 5);
+
+    expect(gate.shouldLoad({
+      offset: 799,
+      hasMoreHistory: true,
+      loadingOlder: false,
+      oldestLoadedTurnIndex: 10,
+      restoredThreadId: 'thread-1',
+      threadId: 'thread-1',
+      findFirstVisibleIndex,
+      ...overrides,
+    })).toBe(false);
+    expect(findFirstVisibleIndex).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-load older items past the first visible index threshold', () => {
+    const gate = createAutoLoadOlderGate({
+      offsetThreshold: 800,
+      indexThreshold: 5,
+    });
+
+    expect(gate.shouldLoad({
+      offset: 799,
+      hasMoreHistory: true,
+      loadingOlder: false,
+      oldestLoadedTurnIndex: 10,
+      restoredThreadId: 'thread-1',
+      threadId: 'thread-1',
+      findFirstVisibleIndex: vi.fn((_offset: number) => 6),
+    })).toBe(false);
+    expect(gate.attemptedAtFloor).toBeNull();
+  });
+
   it('defers virtualizer index lookup until cheap auto-load gates pass', () => {
     const gate = createAutoLoadOlderGate({
       offsetThreshold: 800,
       indexThreshold: 5,
     });
-    const findFirstVisibleIndex = vi.fn(() => 5);
+    const findFirstVisibleIndex = vi.fn((_offset: number) => 5);
 
     expect(gate.shouldLoad({
       offset: 800,

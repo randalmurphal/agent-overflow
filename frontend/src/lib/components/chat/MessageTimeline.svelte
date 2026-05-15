@@ -18,10 +18,10 @@
   } from '../../utils/threadScrollSnapshots';
   import {
     groupItemsBySubagent,
-    timelineRowDecorations,
     timelineNodeKey,
     type TimelineNode,
   } from '../../utils/subagentGrouping';
+  import { timelineRowDecorations } from './timelineRows';
   import { codexSubagentReceiverLabels } from '../../utils/subagentLaunch';
   import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
   import { filterRedundantNotifications } from '../../utils/notificationFilter';
@@ -292,7 +292,7 @@
       oldestLoadedTurnIndex: pane.oldestLoadedTurnIndex,
       restoredThreadId,
       threadId: pane.threadId,
-      findFirstVisibleIndex: () => listRef!.findItemIndex(offset),
+      findFirstVisibleIndex: (top) => listRef!.findItemIndex(top),
     })) return;
     void handleLoadOlder();
   }
@@ -823,7 +823,7 @@
                  only TimelineLeaf owns that attribute on its root. Structural
                  rows stay unanchored, and tests rely on the divider rendering
                  BEFORE the [data-item-id] node, not containing it. -->
-            <div data-row-index={index} class:mt-4={rowDecorations[index]?.toolTextBoundary}>
+            <div data-row-index={index} class:mt-4={rowDecorations.toolTextBoundaryIndexes.has(index)}>
               {#if index === 0}
                 <!-- Top of timeline. Load-older button (when applicable) and
                      a small top breathing-room spacer ride inside the first
@@ -851,8 +851,8 @@
               {/if}
 
               <div class="mx-auto w-full max-w-[62rem] px-6">
-                {#if rowDecorations[index]?.responseDivider}
-                  {@const showResponsePill = rowDecorations[index]?.finalResponse === true}
+                {#if rowDecorations.responseDividerIndexes.has(index)}
+                  {@const showResponsePill = rowDecorations.responsePillIndexes.has(index)}
                   <!-- Two visual modes share a fixed wrapper height
                        (`h-[1.625rem]` = 26px = pill chrome: text-[10px]
                        × leading-tight ≈ 12px + py-1 8px + 2× 1px border).

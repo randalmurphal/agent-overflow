@@ -1114,12 +1114,20 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     const next = applyItemUpsertsToWindow({
       current: items,
       incoming,
+      itemIndexById,
       currentThreadId: thread?.id ?? null,
       oldestLoadedTurnIndex,
     });
-    if (next === items) return;
-    items = next;
-    rebuildItemIndexes(items);
+    if (!next) return;
+    items = next.items;
+    if (next.indexesNeedRebuild) {
+      rebuildItemIndexes(items);
+    } else {
+      const firstAppendIndex = items.length - next.appendedItems.length;
+      for (let index = 0; index < next.appendedItems.length; index += 1) {
+        itemIndexById.set(next.appendedItems[index].id, firstAppendIndex + index);
+      }
+    }
     timelineRevision++;
 
     // Design-mode side-channel: scan assistant text for structured

@@ -76,6 +76,15 @@ describe('threadItems', () => {
     expect(merged[1].summary).toBe('live');
   });
 
+  it('adds only the first missing row for a duplicated incoming id', () => {
+    const first = makeItem({ id: 'duplicate', turnIndex: 1, summary: 'first' });
+    const second = makeItem({ id: 'duplicate', turnIndex: 1, summary: 'second' });
+
+    const merged = mergeMissingItemsById([first, second], []);
+
+    expect(merged).toEqual([first]);
+  });
+
   it('applies in-thread upserts and keeps the timeline sorted', () => {
     const current = [
       makeItem({ id: 'first', threadId: 'thread-1', turnIndex: 2 }),
@@ -95,12 +104,14 @@ describe('threadItems', () => {
         replacement,
         makeItem({ id: 'middle', threadId: 'thread-1', turnIndex: 3 }),
       ],
+      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
       currentThreadId: 'thread-1',
       oldestLoadedTurnIndex: 2,
     });
 
-    expect(next.map((item) => item.id)).toEqual(['last', 'first', 'middle']);
-    expect(next[0]).toBe(replacement);
+    expect(next?.items.map((item) => item.id)).toEqual(['last', 'first', 'middle']);
+    expect(next?.items[0]).toBe(replacement);
+    expect(next?.indexesNeedRebuild).toBe(true);
   });
 
   it('drops new rows below the loaded floor but still accepts existing-row corrections', () => {
@@ -120,12 +131,13 @@ describe('threadItems', () => {
         makeItem({ id: 'too-old', threadId: 'thread-1', turnIndex: 1 }),
         corrected,
       ],
+      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
       currentThreadId: 'thread-1',
       oldestLoadedTurnIndex: 3,
     });
 
-    expect(next.map((item) => item.id)).toEqual(['existing']);
-    expect(next[0]).toBe(corrected);
+    expect(next?.items.map((item) => item.id)).toEqual(['existing']);
+    expect(next?.items[0]).toBe(corrected);
   });
 
   it('returns the current reference when every incoming upsert is ignored', () => {
@@ -139,8 +151,9 @@ describe('threadItems', () => {
         makeItem({ id: 'foreign', threadId: 'thread-2', turnIndex: 3 }),
         makeItem({ id: 'too-old', threadId: 'thread-1', turnIndex: 1 }),
       ],
+      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
       currentThreadId: 'thread-1',
       oldestLoadedTurnIndex: 2,
-    })).toBe(current);
+    })).toBeNull();
   });
 });

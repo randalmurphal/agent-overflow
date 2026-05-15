@@ -405,40 +405,6 @@ export function finalAssistantTextIdsByTurn(
   return new Set(lastByTurn.values());
 }
 
-export interface TimelineRowDecoration {
-  toolTextBoundary: boolean;
-  responseDivider: boolean;
-  finalResponse: boolean;
-}
-
-function shouldRenderResponseDividerBefore(nodes: readonly TimelineNode[], index: number): boolean {
-  const node = nodes[index];
-  if (!node || node.kind !== 'leaf' || node.item.kind !== 'assistant_text') return false;
-  for (let i = index - 1; i >= 0; i -= 1) {
-    const previous = nodes[i];
-    if (!previous) return false;
-    if (timelineNodeTurnIndex(previous) !== node.item.turnIndex) return false;
-    const previousRole = nodeRole(previous);
-    if (previousRole === 'tool') return true;
-    if (previousRole === 'text') return false;
-  }
-  return false;
-}
-
-export function timelineRowDecorations(
-  nodes: readonly TimelineNode[],
-  activeTurnIndex: number | null,
-): TimelineRowDecoration[] {
-  const finalAssistantTextIds = finalAssistantTextIdsByTurn(nodes, activeTurnIndex);
-  return nodes.map((node, index) => ({
-    toolTextBoundary: isToolTextBoundary(nodes, index),
-    responseDivider: shouldRenderResponseDividerBefore(nodes, index),
-    finalResponse: node.kind === 'leaf'
-      && node.item.kind === 'assistant_text'
-      && finalAssistantTextIds.has(node.item.id),
-  }));
-}
-
 /**
  * Recursive containment check: does `node` (or any descendant of a group
  * node) carry an item with this id?

@@ -112,7 +112,7 @@ export function hasRetractableQueueItems(threadId: string | null | undefined): b
   return !!q && q.length > 0;
 }
 
-/** Monotonic Zone 1 revision for stale-hydration guards. */
+/** Monotonic revision for combined queued/flushed state stale-hydration guards. */
 export function getQueueRevisionForThread(threadId: string | null | undefined): number {
   if (!threadId) return 0;
   return queueRevisionByThread.get(threadId) ?? 0;

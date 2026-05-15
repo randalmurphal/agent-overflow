@@ -16,7 +16,7 @@ export interface TimelineGeometry {
   getItemOffset(index: number): number;
 }
 
-export interface TimelineAutoLoadOlderPrecheckState {
+interface TimelineAutoLoadOlderPrecheckState {
   offset: number;
   hasMoreHistory: boolean;
   loadingOlder: boolean;
@@ -25,11 +25,6 @@ export interface TimelineAutoLoadOlderPrecheckState {
   threadId: string | null;
   attemptedAtFloor: number | null;
   offsetThreshold: number;
-}
-
-export interface TimelineAutoLoadOlderState extends TimelineAutoLoadOlderPrecheckState {
-  firstVisibleIndex: number;
-  indexThreshold: number;
 }
 
 export interface AutoLoadOlderGateOptions {
@@ -44,7 +39,7 @@ export interface AutoLoadOlderGateState {
   oldestLoadedTurnIndex: number | null;
   restoredThreadId: string | null;
   threadId: string | null;
-  findFirstVisibleIndex: () => number;
+  findFirstVisibleIndex: (offset: number) => number;
 }
 
 export interface AutoLoadOlderGate {
@@ -96,7 +91,7 @@ export function captureTimelineAnchor(
   };
 }
 
-export function shouldInspectAutoLoadOlderIndex(state: TimelineAutoLoadOlderPrecheckState): boolean {
+function shouldInspectAutoLoadOlderIndex(state: TimelineAutoLoadOlderPrecheckState): boolean {
   if (!state.hasMoreHistory) return false;
   if (state.loadingOlder) return false;
 
@@ -116,16 +111,11 @@ export function shouldInspectAutoLoadOlderIndex(state: TimelineAutoLoadOlderPrec
   return state.attemptedAtFloor !== state.oldestLoadedTurnIndex;
 }
 
-export function isAutoLoadOlderIndexEligible(
+function isAutoLoadOlderIndexEligible(
   firstVisibleIndex: number,
   indexThreshold: number,
 ): boolean {
   return firstVisibleIndex <= indexThreshold;
-}
-
-export function shouldAutoLoadOlder(state: TimelineAutoLoadOlderState): boolean {
-  return shouldInspectAutoLoadOlderIndex(state)
-    && isAutoLoadOlderIndexEligible(state.firstVisibleIndex, state.indexThreshold);
 }
 
 export function createAutoLoadOlderGate({
@@ -150,7 +140,7 @@ export function createAutoLoadOlderGate({
         offsetThreshold,
       })) return false;
 
-      const firstVisibleIndex = state.findFirstVisibleIndex();
+      const firstVisibleIndex = state.findFirstVisibleIndex(state.offset);
       if (!isAutoLoadOlderIndexEligible(firstVisibleIndex, indexThreshold)) return false;
 
       attemptedAtFloor = state.oldestLoadedTurnIndex;

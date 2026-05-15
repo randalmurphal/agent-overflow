@@ -5,7 +5,6 @@ import {
   groupItemsBySubagent,
   isToolTextBoundary,
   nodeContainsItem,
-  timelineRowDecorations,
   timelineNodeItemId,
   timelineNodeKey,
   visibleTimelineItemIdForItem,
@@ -679,56 +678,5 @@ describe('finalAssistantTextIdsByTurn', () => {
     ]);
 
     expect(finalAssistantTextIdsByTurn(nodes, null).size).toBe(0);
-  });
-});
-
-describe('timelineRowDecorations', () => {
-  it('marks tool-to-assistant response dividers and final response labels', () => {
-    const nodes = groupItemsBySubagent([
-      mkItem({ id: 'tool', kind: 'tool_call', toolName: 'Bash', summary: 'ls' }),
-      mkItem({ id: 'answer', itemIndex: 1, kind: 'assistant_text', summary: 'done' }),
-    ]);
-
-    expect(timelineRowDecorations(nodes, null)).toMatchObject([
-      { toolTextBoundary: false, responseDivider: false, finalResponse: false },
-      { toolTextBoundary: true, responseDivider: true, finalResponse: true },
-    ]);
-  });
-
-  it('does not render a response divider for direct user-to-assistant text', () => {
-    const nodes = groupItemsBySubagent([
-      mkItem({ id: 'user', kind: 'user_text', role: 'user' }),
-      mkItem({ id: 'answer', itemIndex: 1, kind: 'assistant_text', summary: 'reply' }),
-    ]);
-
-    expect(timelineRowDecorations(nodes, null)[1]).toMatchObject({
-      toolTextBoundary: false,
-      responseDivider: false,
-      finalResponse: true,
-    });
-  });
-
-  it('renders only the first assistant response divider after tool activity', () => {
-    const nodes = groupItemsBySubagent([
-      mkItem({ id: 'tool', kind: 'tool_call', toolName: 'Bash', summary: 'ls' }),
-      mkItem({ id: 'mid', itemIndex: 1, kind: 'assistant_text', summary: 'first' }),
-      mkItem({ id: 'final', itemIndex: 2, kind: 'assistant_text', summary: 'second' }),
-    ]);
-
-    const decorations = timelineRowDecorations(nodes, null);
-    expect(decorations.map((row) => row.responseDivider)).toEqual([false, true, false]);
-    expect(decorations.map((row) => row.finalResponse)).toEqual([false, false, true]);
-  });
-
-  it('keeps active-turn response dividers unlabeled until the turn settles', () => {
-    const nodes = groupItemsBySubagent([
-      mkItem({ id: 'tool', turnIndex: 1, kind: 'tool_call', toolName: 'Bash', summary: 'ls' }),
-      mkItem({ id: 'answer', turnIndex: 1, itemIndex: 1, kind: 'assistant_text', summary: 'streaming' }),
-    ]);
-
-    expect(timelineRowDecorations(nodes, 1)[1]).toMatchObject({
-      responseDivider: true,
-      finalResponse: false,
-    });
   });
 });
