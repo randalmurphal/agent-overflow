@@ -159,6 +159,129 @@ func TestProbeAccountBuildsAppServerArgs(t *testing.T) {
 	}
 }
 
+func TestProbeAccountInvokesOnSnapshotCallback(t *testing.T) {
+	// The probe must hand the rate-limit snapshot back to the caller via
+	// OnSnapshot so app_codex_probe.go can emit it onto provider:usage —
+	// otherwise the 5h/7d rings stay empty until the user runs a turn.
+	binary := writeMockCodexAppServerScript(t, t.TempDir(),
+		`{"rateLimits":{"limitId":"codex","planType":"pro","primary":{"usedPercent":91,"windowDurationMins":300,"resetsAt":1775803864},"secondary":{"usedPercent":7,"windowDurationMins":10080,"resetsAt":1776372636}}}`,
+		"")
+
+	var got []provider.RateLimitsSnapshot
+	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		Binary: binary,
+		OnSnapshot: func(snap provider.RateLimitsSnapshot) {
+			got = append(got, snap)
+		},
+	})
+	if err != nil {
+		t.Fatalf("ProbeAccount: %v", err)
+	}
+	if info.SubscriptionType != "pro" {
+		t.Errorf("SubscriptionType: got %q, want pro", info.SubscriptionType)
+	}
+	if len(got) != 1 {
+		t.Fatalf("OnSnapshot fired %d times, want 1", len(got))
+	}
+	snap := got[0]
+	if snap.Provider != string(provider.Codex) {
+		t.Errorf("Provider: got %q, want %q", snap.Provider, provider.Codex)
+	}
+	if len(snap.Limits) != 2 {
+		t.Fatalf("Limits len: got %d, want 2 (codex primary + secondary)", len(snap.Limits))
+	}
+	if snap.Limits[0].WindowMins != 300 || snap.Limits[0].UsedPercent != 91 {
+		t.Errorf("Limits[0]: got %+v, want {WindowMins:300, UsedPercent:91}", snap.Limits[0])
+	}
+	if snap.Limits[1].WindowMins != 10080 || snap.Limits[1].UsedPercent != 7 {
+		t.Errorf("Limits[1]: got %+v, want {WindowMins:10080, UsedPercent:7}", snap.Limits[1])
+	}
+}
+
+// Realistic probe response wire shape: both `rateLimits` and
+// `rateLimitsByLimitId` populated, with multiple buckets and distinct
+// values across them. Mirrors the bug user's scenario (codex at 100%,
+// spark at 46%); proves the probe path applies the same canonical-
+// bucket filter the notification path does.
+func TestProbeAccountInvokesOnSnapshotCallbackWithMultiBucket(t *testing.T) {
+	// Mock binary's printf is line-oriented — keep the fixture on one
+	// line so the NDJSON frame doesn't span multiple ReadLine calls.
+	binary := writeMockCodexAppServerScript(t, t.TempDir(),
+		`{"rateLimits":{"limitId":"codex","planType":"pro","primary":{"usedPercent":1,"windowDurationMins":300,"resetsAt":1775803864},"secondary":{"usedPercent":2,"windowDurationMins":10080,"resetsAt":1776372636}},"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1775803864},"secondary":{"usedPercent":91,"windowDurationMins":10080,"resetsAt":1776372636}},"spark":{"limitId":"spark","primary":{"usedPercent":46,"windowDurationMins":300,"resetsAt":1775809666},"secondary":{"usedPercent":22,"windowDurationMins":10080,"resetsAt":1776396466}}}}`,
+		"")
+
+	var got []provider.RateLimitsSnapshot
+	if _, err := ProbeAccount(context.Background(), ProbeConfig{
+		Binary: binary,
+		OnSnapshot: func(snap provider.RateLimitsSnapshot) {
+			got = append(got, snap)
+		},
+	}); err != nil {
+		t.Fatalf("ProbeAccount: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("OnSnapshot fired %d times, want 1", len(got))
+	}
+	snap := got[0]
+	if len(snap.Limits) != 2 {
+		t.Fatalf("Limits len: got %d, want 2 (codex bucket only)", len(snap.Limits))
+	}
+	if snap.Limits[0].UsedPercent != 100 {
+		t.Errorf("Limits[0].UsedPercent: got %v, want 100 (codex bucket from rateLimitsByLimitId, NOT spark's 46 nor top-level's 1)", snap.Limits[0].UsedPercent)
+	}
+	if snap.Limits[1].UsedPercent != 91 {
+		t.Errorf("Limits[1].UsedPercent: got %v, want 91", snap.Limits[1].UsedPercent)
+	}
+}
+
+func TestProbeAccountSkipsOnSnapshotCallbackForEmptyResponse(t *testing.T) {
+	// Authenticated but no rate-limit data (e.g. fresh account, backend
+	// hasn't yet seen activity). AccountInfo still succeeds; OnSnapshot
+	// must NOT fire — emitting an empty snapshot would clobber any
+	// fresher value the rate-limit store already has from an active
+	// session.
+	binary := writeMockCodexAppServerScript(t, t.TempDir(),
+		`{"rateLimits":{"limitId":"codex","planType":"pro"}}`,
+		"")
+
+	var fired bool
+	if _, err := ProbeAccount(context.Background(), ProbeConfig{
+		Binary: binary,
+		OnSnapshot: func(provider.RateLimitsSnapshot) {
+			fired = true
+		},
+	}); err != nil {
+		t.Fatalf("ProbeAccount: %v", err)
+	}
+	if fired {
+		t.Fatal("OnSnapshot fired for a response with no rate-limit windows")
+	}
+}
+
+func TestProbeAccountSkipsOnSnapshotCallbackForNonCodexBucket(t *testing.T) {
+	// If the only bucket in the response is non-canonical (e.g. spark
+	// alone), the canonical-bucket filter drops every entry —
+	// buildRateLimitsSnapshot returns ok=false and OnSnapshot must NOT
+	// fire. Otherwise we'd publish a spark-only snapshot that pollutes
+	// the (provider, windowMins)-keyed store.
+	binary := writeMockCodexAppServerScript(t, t.TempDir(),
+		`{"rateLimits":{"limitId":"spark","primary":{"usedPercent":46,"windowDurationMins":300,"resetsAt":1775809666},"secondary":{"usedPercent":22,"windowDurationMins":10080,"resetsAt":1776396466}}}`,
+		"")
+
+	var fired bool
+	if _, err := ProbeAccount(context.Background(), ProbeConfig{
+		Binary: binary,
+		OnSnapshot: func(provider.RateLimitsSnapshot) {
+			fired = true
+		},
+	}); err != nil {
+		t.Fatalf("ProbeAccount: %v", err)
+	}
+	if fired {
+		t.Fatal("OnSnapshot fired for a snapshot whose only bucket is non-canonical (spark)")
+	}
+}
+
 func TestProbeAccountReturnsErrorOnSpawnFailure(t *testing.T) {
 	info, err := ProbeAccount(context.Background(), ProbeConfig{Binary: "/nonexistent/path/to/codex-12345"})
 	if err == nil {

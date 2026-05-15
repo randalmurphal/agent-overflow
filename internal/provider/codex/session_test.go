@@ -550,26 +550,39 @@ func TestClassifyThreadNameUpdatedFallback(t *testing.T) {
 	}
 }
 
+// Regression guard for the original bug: the user's screenshot showed
+// "5-HOUR LIMIT 46% used" while Codex TUI showed "5h limit: 0% left"
+// (100% used) for the same account. The values are wired into the
+// fixture below — codex carries 100/91 and spark carries 46/22. The
+// frontend store keys by (provider, windowMins) only, so without the
+// canonical-bucket filter spark would overwrite codex at the 300 and
+// 10080 slots and produce exactly the reported symptom.
+//
+// The test also distinguishes the two branches of
+// extractCodexRateLimitEntries by giving the top-level `rateLimits`
+// (1/2 — fallback-only data) different values than
+// `rateLimitsByLimitId.codex` (100/91 — preferred path), so a
+// regression that flips the precedence shows up immediately.
 func TestClassifyRateLimitsUpdated(t *testing.T) {
 	params := json.RawMessage(`{
 		"rateLimits": {
 			"limitId": "codex",
 			"limitName": "Codex",
-			"primary": {"usedPercent": 5, "windowDurationMins": 300, "resetsAt": 1775803864},
-			"secondary": {"usedPercent": 3, "windowDurationMins": 10080, "resetsAt": 1776372636}
+			"primary": {"usedPercent": 1, "windowDurationMins": 300, "resetsAt": 1775803864},
+			"secondary": {"usedPercent": 2, "windowDurationMins": 10080, "resetsAt": 1776372636}
 		},
 		"rateLimitsByLimitId": {
 			"codex": {
 				"limitId": "codex",
 				"limitName": "Codex",
-				"primary": {"usedPercent": 5, "windowDurationMins": 300, "resetsAt": 1775803864},
-				"secondary": {"usedPercent": 3, "windowDurationMins": 10080, "resetsAt": 1776372636}
+				"primary": {"usedPercent": 100, "windowDurationMins": 300, "resetsAt": 1775803864},
+				"secondary": {"usedPercent": 91, "windowDurationMins": 10080, "resetsAt": 1776372636}
 			},
 			"spark": {
 				"limitId": "spark",
 				"limitName": "GPT-5.3-Codex-Spark",
-				"primary": {"usedPercent": 0, "windowDurationMins": 300, "resetsAt": 1775809666},
-				"secondary": {"usedPercent": 0, "windowDurationMins": 10080, "resetsAt": 1776396466}
+				"primary": {"usedPercent": 46, "windowDurationMins": 300, "resetsAt": 1775809666},
+				"secondary": {"usedPercent": 22, "windowDurationMins": 10080, "resetsAt": 1776396466}
 			}
 		}
 	}`)
@@ -595,20 +608,120 @@ func TestClassifyRateLimitsUpdated(t *testing.T) {
 	if snapshot.UpdatedAt == 0 {
 		t.Fatal("expected UpdatedAt to be populated")
 	}
-	if len(snapshot.Limits) != 4 {
-		t.Fatalf("limits len: got %d, want 4", len(snapshot.Limits))
+	if len(snapshot.Limits) != 2 {
+		t.Fatalf("limits len: got %d, want 2 (codex primary + secondary; spark dropped, top-level fallback skipped)", len(snapshot.Limits))
 	}
 	if snapshot.Limits[0].LimitID != "codex" || snapshot.Limits[0].WindowMins != 300 {
 		t.Errorf("limits[0]: got %+v", snapshot.Limits[0])
 	}
+	if snapshot.Limits[0].UsedPercent != 100 {
+		t.Errorf("limits[0].UsedPercent: got %v, want 100 (codex bucket value, NOT spark's 46 nor top-level's 1)", snapshot.Limits[0].UsedPercent)
+	}
 	if snapshot.Limits[1].LimitID != "codex" || snapshot.Limits[1].WindowMins != 10080 {
 		t.Errorf("limits[1]: got %+v", snapshot.Limits[1])
 	}
-	if snapshot.Limits[2].LimitID != "spark" || snapshot.Limits[2].WindowMins != 300 {
-		t.Errorf("limits[2]: got %+v", snapshot.Limits[2])
+	if snapshot.Limits[1].UsedPercent != 91 {
+		t.Errorf("limits[1].UsedPercent: got %v, want 91 (codex bucket value, NOT spark's 22 nor top-level's 2)", snapshot.Limits[1].UsedPercent)
 	}
-	if snapshot.Limits[3].LimitID != "spark" || snapshot.Limits[3].WindowMins != 10080 {
-		t.Errorf("limits[3]: got %+v", snapshot.Limits[3])
+}
+
+// When `rateLimitsByLimitId` is absent (the notification path), the
+// parser must fall back to the top-level `rateLimits` snapshot. Pinned
+// here so a future refactor of extractCodexRateLimitEntries can't
+// silently drop the fallback path.
+func TestClassifyRateLimitsUsesTopLevelWhenByLimitIdAbsent(t *testing.T) {
+	params := json.RawMessage(`{
+		"rateLimits": {
+			"limitId": "codex",
+			"primary": {"usedPercent": 73, "windowDurationMins": 300, "resetsAt": 1775803864},
+			"secondary": {"usedPercent": 12, "windowDurationMins": 10080, "resetsAt": 1776372636}
+		}
+	}`)
+	events := ClassifyNotification(testThread, "account/rateLimits/updated", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	var snapshot provider.RateLimitsSnapshot
+	if err := json.Unmarshal(events[0].Meta, &snapshot); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if len(snapshot.Limits) != 2 || snapshot.Limits[0].UsedPercent != 73 || snapshot.Limits[1].UsedPercent != 12 {
+		t.Errorf("snapshot: got %+v, want [{73, 300}, {12, 10080}]", snapshot.Limits)
+	}
+}
+
+// Codex's wire `limit_id` is Option<String> without
+// `skip_serializing_if`, so the default-bucket case arrives as
+// `"limitId": null`. The TUI defaults this to `"codex"`
+// (chatwidget.rs:2891); without the same default we silently drop the
+// entire snapshot and the 5h/7d rings stay stale forever.
+func TestClassifyRateLimitsDefaultsMissingLimitId(t *testing.T) {
+	cases := map[string]json.RawMessage{
+		"null": json.RawMessage(`{
+			"rateLimits": {
+				"limitId": null,
+				"primary": {"usedPercent": 91, "windowDurationMins": 300, "resetsAt": 1775803864},
+				"secondary": {"usedPercent": 7, "windowDurationMins": 10080, "resetsAt": 1776372636}
+			}
+		}`),
+		"absent": json.RawMessage(`{
+			"rateLimits": {
+				"primary": {"usedPercent": 91, "windowDurationMins": 300, "resetsAt": 1775803864},
+				"secondary": {"usedPercent": 7, "windowDurationMins": 10080, "resetsAt": 1776372636}
+			}
+		}`),
+	}
+	for name, params := range cases {
+		t.Run(name, func(t *testing.T) {
+			events := ClassifyNotification(testThread, "account/rateLimits/updated", params)
+			if len(events) != 1 {
+				t.Fatalf("expected 1 event, got %d", len(events))
+			}
+			var snapshot provider.RateLimitsSnapshot
+			if err := json.Unmarshal(events[0].Meta, &snapshot); err != nil {
+				t.Fatalf("unmarshal meta: %v", err)
+			}
+			if len(snapshot.Limits) != 2 {
+				t.Fatalf("limits len: got %d, want 2 (missing limitId must default to codex)", len(snapshot.Limits))
+			}
+			for i, want := range []int{300, 10080} {
+				if snapshot.Limits[i].LimitID != "codex" {
+					t.Errorf("limits[%d].LimitID: got %q, want codex", i, snapshot.Limits[i].LimitID)
+				}
+				if snapshot.Limits[i].WindowMins != want {
+					t.Errorf("limits[%d].WindowMins: got %d, want %d", i, snapshot.Limits[i].WindowMins, want)
+				}
+			}
+		})
+	}
+}
+
+// A standalone notification for a non-canonical bucket (e.g. `spark`)
+// must not leak into the rate-limit snapshot. The frontend store keys
+// by (provider, windowMins) only and would let spark overwrite codex
+// at the same window slot.
+func TestClassifyRateLimitsFiltersNonCodexBucket(t *testing.T) {
+	params := json.RawMessage(`{
+		"rateLimits": {
+			"limitId": "spark",
+			"limitName": "GPT-5.3-Codex-Spark",
+			"primary": {"usedPercent": 46, "windowDurationMins": 300, "resetsAt": 1775809666},
+			"secondary": {"usedPercent": 22, "windowDurationMins": 10080, "resetsAt": 1776396466}
+		}
+	}`)
+	events := ClassifyNotification(testThread, "account/rateLimits/updated", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	// extractCodexRateLimitEntries returns empty, so
+	// buildRateLimitsSnapshot reports ok=false and normalizeRateLimitsMeta
+	// falls back to the raw params (no normalized snapshot). The event
+	// still fires, but the Meta must NOT decode to a populated
+	// RateLimitsSnapshot — otherwise the triage router would emit it
+	// onto provider:usage and poison the store.
+	var snapshot provider.RateLimitsSnapshot
+	if err := json.Unmarshal(events[0].Meta, &snapshot); err == nil && len(snapshot.Limits) > 0 {
+		t.Fatalf("non-canonical bucket leaked into snapshot: %+v", snapshot)
 	}
 }
 

@@ -3,8 +3,10 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 )
 
@@ -114,6 +116,116 @@ func TestProbeCodexAccountSurfacesSpawnErrors(t *testing.T) {
 	_, err := app.ProbeCodexAccount()
 	if err == nil {
 		t.Fatal("expected error on missing binary")
+	}
+}
+
+// ProbeCodexAccount must emit a `provider:usage` event with the
+// rate-limit snapshot pulled from the same `account/rateLimits/read`
+// response that yields AccountInfo. Without this the 5h/7d rings stay
+// empty until the user runs a turn — and stale if the user exhausted
+// the limit in another Codex surface (TUI, CLI) before the app boot.
+func TestProbeCodexAccountEmitsRateLimitsOnCacheMiss(t *testing.T) {
+	resetCodexProbeCacheForTest()
+
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+
+	var (
+		mu       sync.Mutex
+		captured []provider.UsageEvent
+	)
+	app.testEmitHook = func(name string, data any) {
+		if name != "provider:usage" {
+			return
+		}
+		evt, ok := data.(provider.UsageEvent)
+		if !ok {
+			return
+		}
+		mu.Lock()
+		captured = append(captured, evt)
+		mu.Unlock()
+	}
+
+	binary := writeCodexProbeMockBinary(t,
+		`{"rateLimits":{"limitId":"codex","planType":"pro","primary":{"usedPercent":91,"windowDurationMins":300,"resetsAt":1775803864},"secondary":{"usedPercent":7,"windowDurationMins":10080,"resetsAt":1776372636}}}`)
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+
+	if _, err := app.ProbeCodexAccount(); err != nil {
+		t.Fatalf("ProbeCodexAccount: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(captured) != 1 {
+		t.Fatalf("provider:usage emissions: got %d, want 1", len(captured))
+	}
+	evt := captured[0]
+	if evt.Action != "rate_limits" {
+		t.Errorf("Action: got %q, want rate_limits", evt.Action)
+	}
+	if evt.RateLimits == nil {
+		t.Fatal("RateLimits: got nil, want non-nil snapshot")
+	}
+	if evt.RateLimits.Provider != string(provider.Codex) {
+		t.Errorf("RateLimits.Provider: got %q, want %q", evt.RateLimits.Provider, provider.Codex)
+	}
+	if len(evt.RateLimits.Limits) != 2 {
+		t.Fatalf("RateLimits.Limits len: got %d, want 2", len(evt.RateLimits.Limits))
+	}
+	if evt.RateLimits.Limits[0].WindowMins != 300 || evt.RateLimits.Limits[0].UsedPercent != 91 {
+		t.Errorf("Limits[0]: got %+v, want {WindowMins:300, UsedPercent:91}", evt.RateLimits.Limits[0])
+	}
+	if evt.RateLimits.Limits[1].WindowMins != 10080 || evt.RateLimits.Limits[1].UsedPercent != 7 {
+		t.Errorf("Limits[1]: got %+v, want {WindowMins:10080, UsedPercent:7}", evt.RateLimits.Limits[1])
+	}
+}
+
+// Cache hits must NOT re-emit. The frontend store already has the
+// snapshot from the original cache-miss emission, and a stale re-emit
+// (the cached probe is up to ProbeCache.TTL old) could overwrite a
+// fresher value pushed by an active session via the
+// account/rateLimits/updated notification path.
+func TestProbeCodexAccountSkipsRateLimitsEmitOnCacheHit(t *testing.T) {
+	resetCodexProbeCacheForTest()
+
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+
+	var (
+		mu       sync.Mutex
+		captured []provider.UsageEvent
+	)
+	app.testEmitHook = func(name string, data any) {
+		if name != "provider:usage" {
+			return
+		}
+		if evt, ok := data.(provider.UsageEvent); ok {
+			mu.Lock()
+			captured = append(captured, evt)
+			mu.Unlock()
+		}
+	}
+
+	binary := writeCodexProbeMockBinary(t,
+		`{"rateLimits":{"limitId":"codex","planType":"pro","primary":{"usedPercent":42,"windowDurationMins":300,"resetsAt":1775803864},"secondary":{"usedPercent":13,"windowDurationMins":10080,"resetsAt":1776372636}}}`)
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+
+	if _, err := app.ProbeCodexAccount(); err != nil {
+		t.Fatalf("first probe: %v", err)
+	}
+	if _, err := app.ProbeCodexAccount(); err != nil {
+		t.Fatalf("second (cached) probe: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(captured) != 1 {
+		t.Fatalf("provider:usage emissions: got %d, want 1 (cache-miss emits, cache-hit does not)", len(captured))
 	}
 }
 

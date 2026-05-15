@@ -47,10 +47,7 @@ func (a *App) probeClaudeRateLimits(ctx context.Context) {
 		log.Printf("claude: rate-limit probe: %v", err)
 		return
 	}
-	a.emit("provider:usage", provider.UsageEvent{
-		Action:     "rate_limits",
-		RateLimits: &snap,
-	})
+	a.emitRateLimitsSnapshot(snap)
 }
 
 // rateLimitProbeClient returns the HTTP client used by the probe.

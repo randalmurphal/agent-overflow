@@ -35,6 +35,18 @@ type ProbeConfig struct {
 	Binary  string // default: "codex"
 	WorkDir string
 	Timeout time.Duration // default: 8s, mirroring the Claude probe.
+
+	// OnSnapshot, when non-nil, fires once with the rate-limit snapshot
+	// extracted from the same `account/rateLimits/read` response that
+	// produces AccountInfo. Lets `app_codex_probe.go` surface the
+	// snapshot onto `provider:usage` so the 5h/7d rings hydrate at
+	// startup — Codex TUI does the same proactive read in
+	// `tui/src/app/background_requests.rs::fetch_account_rate_limits`.
+	// nil = legacy behavior (snapshot discarded). The callback fires
+	// only when `buildRateLimitsSnapshot` returns ok=true after the
+	// canonical-bucket filter — empty / non-codex / malformed snapshots
+	// produce no call.
+	OnSnapshot func(provider.RateLimitsSnapshot)
 }
 
 const (
@@ -122,7 +134,7 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 		return provider.AccountInfo{}, fmt.Errorf("codex: probe write rateLimits/read: %w", err)
 	}
 
-	return readRateLimitsResponse(probeCtx, proc)
+	return readRateLimitsResponse(probeCtx, proc, cfg.OnSnapshot)
 }
 
 // buildProbeArgs returns the codex CLI flags for app-server mode.
@@ -145,7 +157,12 @@ func writeJSONRPC(proc *provider.Process, v any) error {
 // doesn't match the rateLimits request, and returns the parsed
 // account info from the first matching response. Errors on
 // JSON-RPC error replies, EOF, ctx cancellation.
-func readRateLimitsResponse(ctx context.Context, proc *provider.Process) (provider.AccountInfo, error) {
+//
+// onSnapshot, when non-nil, fires once with the rate-limit snapshot
+// extracted from the same response — only on a successful match and
+// only when `buildRateLimitsSnapshot` reports ok=true (canonical
+// codex bucket present and well-formed).
+func readRateLimitsResponse(ctx context.Context, proc *provider.Process, onSnapshot func(provider.RateLimitsSnapshot)) (provider.AccountInfo, error) {
 	type readResult struct {
 		line []byte
 		err  error
@@ -180,12 +197,17 @@ func readRateLimitsResponse(ctx context.Context, proc *provider.Process) (provid
 			if len(r.line) == 0 {
 				continue
 			}
-			info, matched, err := tryParseRateLimitsResponse(r.line)
+			info, raw, matched, err := tryParseRateLimitsResponse(r.line)
 			if err != nil {
 				return provider.AccountInfo{}, err
 			}
 			if !matched {
 				continue
+			}
+			if onSnapshot != nil {
+				if snap, ok := buildRateLimitsSnapshot(raw, time.Now().UnixMilli()); ok {
+					onSnapshot(snap)
+				}
 			}
 			return info, nil
 		}
@@ -193,10 +215,10 @@ func readRateLimitsResponse(ctx context.Context, proc *provider.Process) (provid
 }
 
 // tryParseRateLimitsResponse classifies one NDJSON frame.
-// (info, true, nil)   → matching successful response
-// (zero, true, err)   → matching error response (auth failure, etc)
-// (zero, false, nil)  → some other frame (notification, init reply, …) — keep reading
-func tryParseRateLimitsResponse(line []byte) (provider.AccountInfo, bool, error) {
+// (info, raw, true, nil)  → matching successful response (raw is envelope.Result)
+// (zero, nil, true, err)  → matching error response (auth failure, etc)
+// (zero, nil, false, nil) → some other frame (notification, init reply, …) — keep reading
+func tryParseRateLimitsResponse(line []byte) (provider.AccountInfo, json.RawMessage, bool, error) {
 	var envelope struct {
 		ID     *json.Number    `json:"id,omitempty"`
 		Result json.RawMessage `json:"result,omitempty"`
@@ -209,19 +231,19 @@ func tryParseRateLimitsResponse(line []byte) (provider.AccountInfo, bool, error)
 	dec.UseNumber()
 	if err := dec.Decode(&envelope); err != nil {
 		// Non-JSON or unrelated — skip.
-		return provider.AccountInfo{}, false, nil
+		return provider.AccountInfo{}, nil, false, nil
 	}
 	if envelope.ID == nil {
-		return provider.AccountInfo{}, false, nil
+		return provider.AccountInfo{}, nil, false, nil
 	}
 	id, err := envelope.ID.Int64()
 	if err != nil || id != probeRateLimitsID {
-		return provider.AccountInfo{}, false, nil
+		return provider.AccountInfo{}, nil, false, nil
 	}
 	if envelope.Error != nil {
-		return provider.AccountInfo{}, true, fmt.Errorf("codex: probe rateLimits/read error %d: %s", envelope.Error.Code, envelope.Error.Message)
+		return provider.AccountInfo{}, nil, true, fmt.Errorf("codex: probe rateLimits/read error %d: %s", envelope.Error.Code, envelope.Error.Message)
 	}
-	return extractAccountInfoFromRateLimits(envelope.Result), true, nil
+	return extractAccountInfoFromRateLimits(envelope.Result), envelope.Result, true, nil
 }
 
 // extractAccountInfoFromRateLimits decodes the `rateLimits.planType`

@@ -9,6 +9,7 @@ import (
 	"agent-overflow/internal/closer"
 	"agent-overflow/internal/eventscope"
 	"agent-overflow/internal/observability/replay"
+	"agent-overflow/internal/provider"
 )
 
 // emit publishes an event onto the transport's event bus. The bus
@@ -39,6 +40,29 @@ func (a *App) emit(name string, data any) {
 	if a.testEmitHook != nil {
 		a.testEmitHook(name, data)
 	}
+}
+
+// emitRateLimitsSnapshot publishes an account-scoped rate-limit
+// snapshot onto the `provider:usage` channel, matching the wire shape
+// `triage.Router.handleRateLimits` produces for notification-driven
+// updates. Both the Claude periodic probe loop and the Codex startup
+// probe route through this helper so the two providers stay in lock-
+// step on the action string ("rate_limits") and ThreadID convention
+// (empty — rate limits are account-scoped and the frontend store
+// keys by (provider, windowMins) only).
+//
+// The shutting-down guard mirrors the Claude periodic-probe pattern
+// — `a.emit` itself is a silent no-op once the bus is torn down, but
+// returning early here also skips JSON marshalling and the test-hook
+// fan-out for an emission that has nowhere to land.
+func (a *App) emitRateLimitsSnapshot(snap provider.RateLimitsSnapshot) {
+	if a.shuttingDown.Load() {
+		return
+	}
+	a.emit("provider:usage", provider.UsageEvent{
+		Action:     "rate_limits",
+		RateLimits: &snap,
+	})
 }
 
 // emitWithReplay returns an event emitter that both publishes to the
