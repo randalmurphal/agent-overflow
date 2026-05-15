@@ -78,10 +78,11 @@ const (
 	// calls `write_stdin` against a backgrounded unified-exec PTY. An
 	// empty `Stdin` is the "polling" variant (agent asked to wait
 	// without sending input); a non-empty value carries the keystrokes
-	// Codex forwarded. Triage persists a lightweight
-	// `terminal_interaction` row for the empty case so the timeline can
-	// render the explicit wait as chat history when Codex's own TUI would
-	// flush its wait streak. The non-empty case persists an "Interacted
+	// Codex forwarded. Triage persists/reuses a lightweight
+	// `terminal_interaction` row for the empty case so the timeline can show
+	// the live wait and later flip it to the same "waited" history marker
+	// Codex's own TUI flushes from its wait streak. The non-empty case first
+	// flushes any active wait for that process, then persists an "Interacted
 	// with background terminal" marker while redacting the stdin bytes from
 	// durable item metadata.
 	EventTerminalInteraction EventKind = "terminal_interaction"

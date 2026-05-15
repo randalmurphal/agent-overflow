@@ -338,8 +338,8 @@ func TestCodexTerminalInteractionAttachesCompletedOutputAndClearsTray(t *testing
 		t.Fatalf("command completion missing: found=%v err=%v", found, err)
 	}
 	completionMeta := decodeItemMetaMap(t, completion.Meta)
-	if completionMeta["wait_carrier_id"] != waits[0].ID {
-		t.Fatalf("completion wait_carrier_id = %v, want %s", completionMeta["wait_carrier_id"], waits[0].ID)
+	if _, ok := completionMeta["wait_carrier_id"]; ok {
+		t.Fatalf("completion wait_carrier_id = %v, want command completion as a sibling row", completionMeta["wait_carrier_id"])
 	}
 	if completion.PayloadKind != "command_output" {
 		t.Fatalf("completion payload kind = %q, want command_output", completion.PayloadKind)
@@ -414,8 +414,8 @@ func TestCodexTerminalInteractionWhileRunningAttachesCompletionBeforeNextText(t 
 		t.Fatalf("command completion missing: found=%v err=%v", found, err)
 	}
 	completionMeta := decodeItemMetaMap(t, completion.Meta)
-	if completionMeta["wait_carrier_id"] != waits[0].ID {
-		t.Fatalf("completion wait_carrier_id = %v, want %s", completionMeta["wait_carrier_id"], waits[0].ID)
+	if _, ok := completionMeta["wait_carrier_id"]; ok {
+		t.Fatalf("completion wait_carrier_id = %v, want command completion as a sibling row", completionMeta["wait_carrier_id"])
 	}
 	if completion.PayloadKind != "command_output" {
 		t.Fatalf("completion payload kind = %q, want command_output", completion.PayloadKind)
@@ -546,7 +546,7 @@ func TestCodexTerminalInteractionTurnCompleteSettlesPendingWait(t *testing.T) {
 	}
 }
 
-func TestCodexTerminalInteractionDoesNotAttachAfterLaterToolStart(t *testing.T) {
+func TestCodexTerminalInteractionKeepsWaitOpenAcrossLaterToolStart(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -608,29 +608,10 @@ func TestCodexTerminalInteractionDoesNotAttachAfterLaterToolStart(t *testing.T) 
 		t.Fatalf("wait rows = %d, want 1", len(waits))
 	}
 	if waits[0].PayloadID != "" {
-		t.Fatalf("stale wait row was mutated with payload %q", waits[0].PayloadID)
+		t.Fatalf("wait row should stay a marker; got payload %q", waits[0].PayloadID)
 	}
 	if waits[0].Status != statusCompleted {
-		t.Fatalf("stale wait status = %q, want completed", waits[0].Status)
-	}
-	live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
-	if len(live) != 2 || live[1].CompletionOf != "cmd-bg" || live[1].Status != statusErrored {
-		t.Fatalf("completed background output should stay in tray until next wait, got %+v", live)
-	}
-
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventTerminalInteraction, ThreadID: "t1",
-		Meta:      json.RawMessage(`{"process_id":"pid-bg","stdin":""}`),
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("second terminal interaction: %v", err)
-	}
-	waits = findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
-	if len(waits) != 2 {
-		t.Fatalf("wait rows after second poll = %d, want stale marker + completion carrier", len(waits))
-	}
-	if waits[0].PayloadID != "" || waits[1].PayloadID != "" {
-		t.Fatalf("wait rows should stay markers, got %+v", waits)
+		t.Fatalf("wait status = %q, want completed", waits[0].Status)
 	}
 	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("cmd-bg"))
 	if err != nil || !found {
@@ -640,8 +621,8 @@ func TestCodexTerminalInteractionDoesNotAttachAfterLaterToolStart(t *testing.T) 
 		t.Fatalf("completion payload kind = %q, want command_output", completion.PayloadKind)
 	}
 	completionMeta := decodeItemMetaMap(t, completion.Meta)
-	if completionMeta["wait_carrier_id"] != waits[1].ID {
-		t.Fatalf("completion wait_carrier_id = %v, want %s", completionMeta["wait_carrier_id"], waits[1].ID)
+	if _, ok := completionMeta["wait_carrier_id"]; ok {
+		t.Fatalf("completion wait_carrier_id = %v, want command completion as a sibling row", completionMeta["wait_carrier_id"])
 	}
 	data, err := st.GetPayloadData(completion.PayloadID)
 	if err != nil {
@@ -649,6 +630,10 @@ func TestCodexTerminalInteractionDoesNotAttachAfterLaterToolStart(t *testing.T) 
 	}
 	if string(data) != "late failure\n" {
 		t.Fatalf("completion payload = %q, want late failure newline", string(data))
+	}
+	live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
+	if len(live) != 0 {
+		t.Fatalf("tray should clear when matching wait is flushed by completion, got %+v", live)
 	}
 }
 

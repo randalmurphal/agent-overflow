@@ -38,7 +38,7 @@ describe("<WaitGroup>", () => {
     });
 
     expect(getByTestId("wait-group")).toBeInTheDocument();
-    expect(getByText(/Waited for agents/)).toBeInTheDocument();
+    expect(getByText(/Waiting for agents/)).toBeInTheDocument();
     expect(getByText(/Spawned Galileo -> done/)).toBeInTheDocument();
   });
 

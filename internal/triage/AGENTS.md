@@ -92,7 +92,7 @@ none fits.
 | Context-window usage | Frontend context meter + `threads.last_token_usage`. |
 | Background task terminal (Claude) | `tool_completion` sibling row upsert (idempotent). See `turn-lifecycle.md`. |
 | Codex unifiedExec / spawn_agent | unifiedExec starts are transient running-tray state; quick completions persist as normal command rows; yielded/background output persists as a command `tool_completion` row after an explicit wait/poll. Spawn-agent starts are pending-only; terminal spawn completions persist the visible row and use sibling `tool_completion` rows. See `codex_background.go` + invariant 25. |
-| Codex terminal interaction | Empty stdin persists/reuses a visible `terminal_interaction` wait carrier on the current open turn; completed command output is linked underneath with `wait_carrier_id`. Non-empty stdin persists an interaction marker without storing stdin bytes. See `terminal_interaction.go`. |
+| Codex terminal interaction | Empty stdin persists/reuses one visible `terminal_interaction` wait carrier on the current open turn; command completions render as sibling rows after the wait flushes. Non-empty stdin first flushes any active wait for that process, then persists an interaction marker without storing stdin bytes. See `terminal_interaction.go`. |
 | Turn start/complete | Write `turns` row; emit `provider:turn_*` to frontend; force-close orphan tool_calls on complete. |
 | Error | Distinct event kind; frontend renders as status/alert. |
 | Unknown | Log with full context, do not drop silently. |

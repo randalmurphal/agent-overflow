@@ -27,6 +27,21 @@ func terminalInteractionMetaBlob(t *testing.T, processID, stdin string) json.Raw
 	return encoded
 }
 
+func seedTerminalInteractionBackgroundExec(t *testing.T, router *Router, threadID, processID, launchID, command string) {
+	t.Helper()
+	router.mu.Lock()
+	state := router.codexBackgroundForThread(threadID)
+	state.unifiedExecByProcess[processID] = launchID
+	state.unifiedExec[launchID] = &unifiedExecTracker{
+		launchID:     launchID,
+		processID:    processID,
+		command:      command,
+		summary:      command,
+		backgrounded: true,
+	}
+	router.mu.Unlock()
+}
+
 // TestTerminalInteraction_EmptyStdinPersistsRow drives the primary
 // Phase 6 contract: an EventTerminalInteraction with empty stdin must
 // persist a `terminal_interaction` row on the current open turn with a
@@ -119,17 +134,7 @@ func TestTerminalInteraction_StoresCommandMetadataWhenTrackerKnown(t *testing.T)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 2)
 
-	router.mu.Lock()
-	state := router.codexBackgroundForThread("t1")
-	state.unifiedExecByProcess["pid-42"] = "cmd-1"
-	state.unifiedExec["cmd-1"] = &unifiedExecTracker{
-		launchID:     "cmd-1",
-		processID:    "pid-42",
-		command:      "sleep 1; echo done",
-		summary:      "sleep 1; echo done",
-		backgrounded: true,
-	}
-	router.mu.Unlock()
+	seedTerminalInteractionBackgroundExec(t, router, "t1", "pid-42", "cmd-1", "sleep 1; echo done")
 
 	evt := provider.ProviderEvent{
 		Kind:      provider.EventTerminalInteraction,
@@ -245,11 +250,11 @@ func TestTerminalInteraction_CommandCompletionSettlesVisibleWaitCarrier(t *testi
 		t.Fatalf("command completion missing: found=%v err=%v", found, err)
 	}
 	completionMeta := decodeItemMetaMap(t, completion.Meta)
-	if completionMeta["wait_carrier_id"] != waitID {
-		t.Fatalf("completion wait_carrier_id = %v, want %s", completionMeta["wait_carrier_id"], waitID)
+	if _, ok := completionMeta["wait_carrier_id"]; ok {
+		t.Fatalf("completion wait_carrier_id = %v, want command completion as a sibling row", completionMeta["wait_carrier_id"])
 	}
 
-	seenCompletionBeforeWaitUpdate := false
+	seenWaitUpdateBeforeCompletion := false
 	for i, emission := range *emissions {
 		if emission.eventName != "provider:item_event" {
 			continue
@@ -258,18 +263,18 @@ func TestTerminalInteraction_CommandCompletionSettlesVisibleWaitCarrier(t *testi
 		if !ok || stream.Action != "upsert" || stream.Item == nil {
 			continue
 		}
-		if stream.Item.ID == completion.ID {
+		if stream.Item.ID == waitID && stream.Item.Status == statusCompleted {
 			for _, later := range (*emissions)[i+1:] {
 				laterStream, ok := later.data.(ItemStreamEvent)
-				if later.eventName == "provider:item_event" && ok && laterStream.Action == "upsert" && laterStream.Item != nil && laterStream.Item.ID == waitID && laterStream.Item.Status == statusCompleted {
-					seenCompletionBeforeWaitUpdate = true
+				if later.eventName == "provider:item_event" && ok && laterStream.Action == "upsert" && laterStream.Item != nil && laterStream.Item.ID == completion.ID {
+					seenWaitUpdateBeforeCompletion = true
 					break
 				}
 			}
 		}
 	}
-	if !seenCompletionBeforeWaitUpdate {
-		t.Fatalf("expected command completion upsert followed by completed wait upsert; emissions=%+v", *emissions)
+	if !seenWaitUpdateBeforeCompletion {
+		t.Fatalf("expected completed wait upsert followed by command completion upsert; emissions=%+v", *emissions)
 	}
 }
 
@@ -340,8 +345,8 @@ func TestTerminalInteraction_TypedPollMarksUnifiedExecBackgroundedBeforeCompleti
 		t.Fatalf("background command completion missing: found=%v err=%v", found, err)
 	}
 	completionMeta := decodeItemMetaMap(t, completion.Meta)
-	if completionMeta["wait_carrier_id"] != waitID {
-		t.Fatalf("completion wait_carrier_id = %v, want %s", completionMeta["wait_carrier_id"], waitID)
+	if _, ok := completionMeta["wait_carrier_id"]; ok {
+		t.Fatalf("completion wait_carrier_id = %v, want command completion as a sibling row", completionMeta["wait_carrier_id"])
 	}
 }
 
@@ -414,8 +419,8 @@ func TestTerminalInteraction_TypedPollAfterCompletedBackgroundCommandAttachesOut
 		t.Fatalf("background completions after typed poll = %d, want 1: %+v", len(completions), completions)
 	}
 	completionMeta := decodeItemMetaMap(t, completions[0].Meta)
-	if completionMeta["wait_carrier_id"] != waits[0].ID {
-		t.Fatalf("completion wait_carrier_id = %v, want %s", completionMeta["wait_carrier_id"], waits[0].ID)
+	if _, ok := completionMeta["wait_carrier_id"]; ok {
+		t.Fatalf("completion wait_carrier_id = %v, want command completion as a sibling row", completionMeta["wait_carrier_id"])
 	}
 }
 
@@ -564,6 +569,294 @@ func TestTerminalInteraction_NonEmptyStdinPersistsInteractedRow(t *testing.T) {
 	meta := decodeItemMetaMap(t, items[0].Meta)
 	if meta["has_stdin"] != true {
 		t.Fatalf("meta has_stdin = %v, want true", meta["has_stdin"])
+	}
+}
+
+func TestTerminalInteraction_NonEmptyStdinFlushesActiveWait(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	seedTerminalInteractionBackgroundExec(t, router, "t1", "pid-42", "cmd-1", "sleep 10")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTerminalInteraction,
+		ThreadID:  "t1",
+		TurnID:    "turn-0",
+		ItemID:    "cmd-1",
+		Content:   "",
+		Meta:      terminalInteractionMetaBlob(t, "pid-42", ""),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle wait poll: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTerminalInteraction,
+		ThreadID:  "t1",
+		TurnID:    "turn-0",
+		ItemID:    "cmd-1",
+		Content:   "q",
+		Meta:      terminalInteractionMetaBlob(t, "pid-42", "q"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle stdin interaction: %v", err)
+	}
+
+	items, err := st.ListTurnItems("t1", 0)
+	if err != nil {
+		t.Fatalf("list turn items: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %d, want wait then interaction: %+v", len(items), items)
+	}
+	if items[0].ID != "waited:pid-42:0:0" || items[0].Status != statusCompleted {
+		t.Fatalf("first item = (%s, %s), want completed wait", items[0].ID, items[0].Status)
+	}
+	if items[1].ID != "interacted:pid-42:0:1" || !strings.Contains(items[1].Summary, "Interacted with background terminal") {
+		t.Fatalf("second item = (%s, %q), want interacted row", items[1].ID, items[1].Summary)
+	}
+}
+
+func TestTerminalInteraction_DifferentProcessWaitFlushesPriorWait(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	seedTerminalInteractionBackgroundExec(t, router, "t1", "pid-a", "cmd-a", "sleep 10")
+	seedTerminalInteractionBackgroundExec(t, router, "t1", "pid-b", "cmd-b", "make test")
+
+	for _, processID := range []string{"pid-a", "pid-b"} {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventTerminalInteraction,
+			ThreadID:  "t1",
+			TurnID:    "turn-0",
+			ItemID:    "cmd-" + processID,
+			Content:   "",
+			Meta:      terminalInteractionMetaBlob(t, processID, ""),
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("handle wait poll %s: %v", processID, err)
+		}
+	}
+
+	items, err := st.ListTurnItems("t1", 0)
+	if err != nil {
+		t.Fatalf("list turn items: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %d, want two wait rows: %+v", len(items), items)
+	}
+	if items[0].ID != "waited:pid-a:0:0" || items[0].Status != statusCompleted {
+		t.Fatalf("first wait = (%s, %s), want completed pid-a wait", items[0].ID, items[0].Status)
+	}
+	if items[1].ID != "waited:pid-b:0:0" || items[1].Status != statusRunning {
+		t.Fatalf("second wait = (%s, %s), want running pid-b wait", items[1].ID, items[1].Status)
+	}
+
+	completeMetaA := buildUnifiedExecCompleteMeta(t, "completed", "pid-a", "sleep 10", 0)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-a",
+		ItemType: "commandExecution", TurnID: "turn-0", Content: "done\n",
+		Meta: completeMetaA, Replace: true, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle pid-a output: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "cmd-a",
+		ItemType: "commandExecution", TurnID: "turn-0", Meta: completeMetaA,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle pid-a completion: %v", err)
+	}
+	if _, found, err := st.GetThreadItem("t1", nextToolCompletionID("cmd-a")); err != nil || found {
+		t.Fatalf("stale pid-a completion should wait for an explicit pid-a poll: found=%v err=%v", found, err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTerminalInteraction,
+		ThreadID:  "t1",
+		TurnID:    "turn-0",
+		ItemID:    "cmd-a",
+		Content:   "",
+		Meta:      terminalInteractionMetaBlob(t, "pid-a", ""),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle late pid-a wait poll: %v", err)
+	}
+
+	items, err = st.ListTurnItems("t1", 0)
+	if err != nil {
+		t.Fatalf("list turn items after late pid-a poll: %v", err)
+	}
+	if len(items) != 4 {
+		t.Fatalf("items after late pid-a poll = %d, want pid-a wait, pid-b wait, new pid-a wait, pid-a completion: %+v", len(items), items)
+	}
+	if items[1].ID != "waited:pid-b:0:0" || items[1].Status != statusCompleted {
+		t.Fatalf("pid-b wait after late pid-a poll = (%s, %s), want completed", items[1].ID, items[1].Status)
+	}
+	if items[2].ID != "waited:pid-a:0:1" || items[2].Status != statusCompleted {
+		t.Fatalf("new pid-a wait = (%s, %s), want completed stale carrier", items[2].ID, items[2].Status)
+	}
+	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("cmd-a"))
+	if err != nil || !found {
+		t.Fatalf("pid-a completion missing after explicit late poll: found=%v err=%v", found, err)
+	}
+	completionMeta := decodeItemMetaMap(t, completion.Meta)
+	if _, ok := completionMeta["wait_carrier_id"]; ok {
+		t.Fatalf("pid-a completion wait_carrier_id = %v, want sibling row", completionMeta["wait_carrier_id"])
+	}
+}
+
+func TestTerminalInteraction_ReasoningDoesNotFlushActiveWait(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	seedTerminalInteractionBackgroundExec(t, router, "t1", "pid-42", "cmd-1", "sleep 10")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTerminalInteraction,
+		ThreadID:  "t1",
+		TurnID:    "turn-0",
+		ItemID:    "cmd-1",
+		Content:   "",
+		Meta:      terminalInteractionMetaBlob(t, "pid-42", ""),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle wait poll: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventThinking,
+		ThreadID:  "t1",
+		TurnID:    "turn-0",
+		Content:   "still thinking",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle thinking: %v", err)
+	}
+
+	wait, found, err := st.GetThreadItem("t1", "waited:pid-42:0:0")
+	if err != nil || !found {
+		t.Fatalf("wait row missing: found=%v err=%v", found, err)
+	}
+	if wait.Status != statusRunning {
+		t.Fatalf("wait status after reasoning = %q, want running", wait.Status)
+	}
+
+	completeMeta := buildUnifiedExecCompleteMeta(t, "completed", "pid-42", "sleep 10", 0)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-1",
+		ItemType: "commandExecution", TurnID: "turn-0", Content: "done\n",
+		Meta: completeMeta, Replace: true, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle command output: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "cmd-1",
+		ItemType: "commandExecution", TurnID: "turn-0", Meta: completeMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle command completion: %v", err)
+	}
+
+	wait, found, err = st.GetThreadItem("t1", "waited:pid-42:0:0")
+	if err != nil || !found {
+		t.Fatalf("wait row missing after completion: found=%v err=%v", found, err)
+	}
+	if wait.Status != statusCompleted {
+		t.Fatalf("wait status after completion = %q, want completed", wait.Status)
+	}
+	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("cmd-1"))
+	if err != nil || !found {
+		t.Fatalf("command completion missing after reasoning-preserved wait: found=%v err=%v", found, err)
+	}
+	completionMeta := decodeItemMetaMap(t, completion.Meta)
+	if _, ok := completionMeta["wait_carrier_id"]; ok {
+		t.Fatalf("completion wait_carrier_id = %v, want sibling row", completionMeta["wait_carrier_id"])
+	}
+
+	seenWaitUpdateBeforeCompletion := false
+	for i, emission := range *emissions {
+		if emission.eventName != "provider:item_event" {
+			continue
+		}
+		stream, ok := emission.data.(ItemStreamEvent)
+		if !ok || stream.Action != "upsert" || stream.Item == nil || stream.Item.ID != wait.ID || stream.Item.Status != statusCompleted {
+			continue
+		}
+		for _, later := range (*emissions)[i+1:] {
+			laterStream, ok := later.data.(ItemStreamEvent)
+			if later.eventName == "provider:item_event" && ok && laterStream.Action == "upsert" && laterStream.Item != nil && laterStream.Item.ID == completion.ID {
+				seenWaitUpdateBeforeCompletion = true
+				break
+			}
+		}
+	}
+	if !seenWaitUpdateBeforeCompletion {
+		t.Fatalf("expected wait completion upsert before command completion upsert; emissions=%+v", *emissions)
+	}
+}
+
+func TestTerminalInteraction_ProposedPlanFlushesActiveWait(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	seedTerminalInteractionBackgroundExec(t, router, "t1", "pid-42", "cmd-1", "sleep 10")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTerminalInteraction,
+		ThreadID:  "t1",
+		TurnID:    "turn-0",
+		ItemID:    "cmd-1",
+		Content:   "",
+		Meta:      terminalInteractionMetaBlob(t, "pid-42", ""),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle wait poll: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventProposedPlan,
+		ThreadID:  "t1",
+		TurnID:    "turn-0",
+		ItemID:    "plan-1",
+		Content:   "- [ ] Inspect the command output",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle proposed plan: %v", err)
+	}
+
+	items, err := st.ListTurnItems("t1", 0)
+	if err != nil {
+		t.Fatalf("list turn items after plan: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items after plan = %d, want wait then plan: %+v", len(items), items)
+	}
+	if items[0].ID != "waited:pid-42:0:0" || items[0].Status != statusCompleted {
+		t.Fatalf("first item after plan = (%s, %s), want completed wait", items[0].ID, items[0].Status)
+	}
+	if items[1].ID != "plan-1" || items[1].ToolName != "plan" {
+		t.Fatalf("second item after plan = (%s, %s), want proposed plan", items[1].ID, items[1].ToolName)
+	}
+
+	completeMeta := buildUnifiedExecCompleteMeta(t, "completed", "pid-42", "sleep 10", 0)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-1",
+		ItemType: "commandExecution", TurnID: "turn-0", Content: "done\n",
+		Meta: completeMeta, Replace: true, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle command output: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "cmd-1",
+		ItemType: "commandExecution", TurnID: "turn-0", Meta: completeMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle command completion: %v", err)
+	}
+	if _, found, err := st.GetThreadItem("t1", nextToolCompletionID("cmd-1")); err != nil || found {
+		t.Fatalf("completion after stale plan-flushed wait should not persist without a new poll: found=%v err=%v", found, err)
 	}
 }
 

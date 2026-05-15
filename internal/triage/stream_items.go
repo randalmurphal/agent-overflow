@@ -25,7 +25,7 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 	// items for the thread get stamped is_background=true before the
 	// delta persists. Safe to call before the block-start check — the
 	// projector no-ops when there are no trackers. See invariant 25.
-	r.observeCodexModelYield(evt.ThreadID)
+	r.observeCodexModelContent(evt.ThreadID)
 
 	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
 	if err != nil {
@@ -78,9 +78,9 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 		return nil
 	}
 	// Reasoning deltas count as a yield for the Codex background-terminal
-	// projector — the model has moved on while any inProgress unifiedExec
-	// command is still running. Mirrors the handleTextDelta yield hook.
-	r.observeCodexModelYield(evt.ThreadID)
+	// projector, but Codex TUI keeps any active terminal wait status visible
+	// while reasoning streams.
+	r.observeCodexModelReasoning(evt.ThreadID)
 
 	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
 	if err != nil {

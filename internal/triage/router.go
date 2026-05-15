@@ -456,7 +456,10 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 		return r.persistToolCallLaunch(evt)
 	}
 	r.settleStreamingBeforeTimelineBoundary(evt, "tool start")
-	r.observeCodexTopLevelToolBoundary(evt)
+	// Codex TUI does not flush a unified-exec wait streak just because an
+	// unrelated top-level tool starts. Wait streaks flush on assistant
+	// content, turn boundaries, terminal interactions, or matching command
+	// completion.
 	if r.observeCodexToolStart(evt) {
 		r.stageToolPaths(evt)
 		return r.emitInline(evt)

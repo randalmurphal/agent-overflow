@@ -22,11 +22,10 @@
   });
 
   /**
-   * The Codex app-server emits one `TerminalInteractionNotification`
-   * per poll of a backgrounded PTY. Each one becomes a single row —
-   * matching Codex's TUI which renders "Waited for background
-   * terminal" on every empty-stdin `write_stdin`. No collapse /
-   * grouping here; that's a separate UX decision.
+   * The Codex app-server emits `TerminalInteractionNotification` when
+   * write_stdin targets a backgrounded PTY. Empty polls reuse one live
+   * wait row until the backend flushes it; non-empty input renders as a
+   * separate redacted interaction marker.
    */
 </script>
 

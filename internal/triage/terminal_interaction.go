@@ -27,10 +27,9 @@ import (
 //     stdin bytes because interactive input can contain secrets.
 //
 // Empty polls always leave a visible wait carrier. Command item/completed owns
-// final output/status; if it arrives while a carrier is pending, the command
-// completion row is linked back with `wait_carrier_id` so the frontend can
-// indent the completion under the wait. Interactive markers can still carry
-// completed output payloads for legacy/non-poll signals.
+// final output/status and is persisted as the next sibling when the carrier is
+// flushed. Interactive markers can still carry completed output payloads for
+// legacy/non-poll signals.
 
 // terminalInteractionMeta is the Meta shape populated by
 // buildTerminalInteractionMeta in the Codex parser. Only the fields we
@@ -52,7 +51,7 @@ func decodeTerminalInteractionMeta(raw json.RawMessage) terminalInteractionMeta 
 // handleTerminalInteraction routes Codex's `TerminalInteractionNotification`
 // events. Polling variants persist timeline rows while the command is still
 // running; when a poll observes completed output, the wait carrier is settled
-// and the command completion row is persisted under it. The interactive
+// and the command completion row is persisted as the next sibling. The interactive
 // variant records only `has_stdin` and never stores stdin text.
 //
 // Correlation rules:
@@ -90,8 +89,15 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	now := eventTimestampMillis(evt)
 	itemID := ""
 	if isPoll {
+		if strings.TrimSpace(meta.ProcessID) != "" {
+			r.settleCodexTerminalWaitsExcept(evt.ThreadID, meta.ProcessID)
+		}
 		r.markCodexUnifiedExecProcessBackgrounded(evt.ThreadID, meta.ProcessID)
 		itemID = r.codexTerminalWaitItemIDForProcess(evt.ThreadID, meta.ProcessID, turnIndex)
+	} else {
+		if err := r.settleCodexTerminalWaitForProcess(evt.ThreadID, meta.ProcessID); err != nil {
+			return fmt.Errorf("terminal_interaction settle active wait %s: %w", meta.ProcessID, err)
+		}
 	}
 	if itemID == "" {
 		seq := r.nextTerminalInteractionSequence(evt.ThreadID, turnIndex, meta.ProcessID)
@@ -164,9 +170,10 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 			if err := r.persistItem(item, nil); err != nil {
 				return err
 			}
-			if err := r.persistCodexUnifiedExecCompletion(evt, tracker, turnIndex, item.ID); err != nil {
+			if err := r.persistCodexUnifiedExecCompletion(evt, tracker, turnIndex); err != nil {
 				return err
 			}
+			r.clearCodexTerminalWaitCarrierIfMatches(evt.ThreadID, meta.ProcessID, item.ID)
 			r.clearCodexCompletedOutputTracker(evt.ThreadID, meta.ProcessID)
 			return nil
 		}

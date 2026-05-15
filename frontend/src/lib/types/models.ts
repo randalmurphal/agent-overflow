@@ -98,9 +98,8 @@ export interface Thread {
  * Values mirror the CHECK enum on items.kind in the Go store (see
  * internal/store/migrate.go — v15, v23).
  *
- * - `terminal_interaction` is the Codex-only "Waited for background
- *   terminal" marker persisted when the model polls a backgrounded PTY
- *   via `write_stdin` with empty input.
+ * - `terminal_interaction` is the Codex-only background-terminal wait or
+ *   interaction marker persisted from typed `write_stdin` notifications.
  * - `notification` is a provider notification row that must not mutate
  *   tool/task lifecycle state.
  */

@@ -24,9 +24,9 @@
 //   - Adjacent inline agents from the same Claude assistant message share a
 //     structural wrapper row keyed by that assistant message. The real agent
 //     cards remain peers inside the wrapper.
-//   - Wait carriers use a stable structural wrapper from first render; target
-//     completions render beneath them when linked by `wait_carrier_id` or
-//     legacy process/payload correlation.
+//   - Wait carriers use a stable structural wrapper from first render; Codex
+//     subagent target completions render beneath them when linked by
+//     `wait_carrier_id` or shared wait payload correlation.
 //   - parentId children are nested only when their parent is one of those
 //     subagent launch rows. Children of non-agent parents stay flat.
 //   - Nesting is capped at MAX_DEPTH (3, matching forge). Descendants
@@ -109,7 +109,10 @@ export interface WaitGroupNode {
   parent: Item;
   /** Stable structural key for virtualization. */
   groupKey: string;
-  /** Target completion rows observed by this wait. */
+  /**
+   * Codex subagent target completion rows observed by this wait. Terminal
+   * command completions intentionally render as sibling rows.
+   */
   children: TimelineLeaf[];
   /** Total child count. */
   descendantCount: number;
@@ -192,12 +195,6 @@ function isClaudeInlineAgentLaunch(item: Item): boolean {
 
 function isGroupedSubagentLaunch(item: Item): boolean {
   return isClaudeInlineAgentLaunch(item);
-}
-
-function itemProcessID(item: Item): string {
-  const meta = parseJsonObject(item.meta);
-  const processID = meta?.process_id ?? meta?.processId;
-  return typeof processID === 'string' ? processID.trim() : '';
 }
 
 function itemWaitCarrierID(item: Item): string {
@@ -492,13 +489,13 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
   const itemByID = new Map<string, Item>();
   const codexSpawnIDs = new Set<string>();
   const waitCompletionPayloadCarrierByPayloadID = new Map<string, string>();
-  const latestTerminalWaitByProcessID = new Map<string, string>();
   const waitChildrenByCarrierID = new Map<string, Item[]>();
   const waitChildIDs = new Set<string>();
 
   function addWaitChild(carrierID: string, child: Item): void {
     const carrier = itemByID.get(carrierID);
     if (!carrier || !isWaitCarrier(carrier)) return;
+    if (isTerminalWaitCarrier(carrier) && child.toolName === 'command_execution') return;
     if (waitChildIDs.has(child.id)) return;
     const bucket = waitChildrenByCarrierID.get(carrierID);
     if (bucket) {
@@ -521,15 +518,9 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
       continue;
     }
     if (isTerminalWaitCarrier(item)) {
-      const processID = itemProcessID(item);
-      if (processID) latestTerminalWaitByProcessID.set(processID, item.id);
       continue;
     }
     if (item.kind === 'tool_completion' && item.toolName === 'wait_agent' && item.completionOf) {
-      const carrier = itemByID.get(item.completionOf);
-      if (carrier && isWaitCarrier(carrier)) {
-        waitChildIDs.add(item.id);
-      }
       if (item.payloadId) {
         waitCompletionPayloadCarrierByPayloadID.set(item.payloadId, item.completionOf);
       }
@@ -541,12 +532,6 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
     const explicitCarrierID = itemWaitCarrierID(item);
     if (explicitCarrierID) {
       addWaitChild(explicitCarrierID, item);
-      continue;
-    }
-    if (item.toolName === 'command_execution') {
-      const processID = itemProcessID(item);
-      const carrierID = processID ? latestTerminalWaitByProcessID.get(processID) : '';
-      if (carrierID) addWaitChild(carrierID, item);
       continue;
     }
     if (item.payloadId) {

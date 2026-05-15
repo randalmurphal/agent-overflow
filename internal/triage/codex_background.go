@@ -154,10 +154,11 @@ type codexBackgroundState struct {
 	// pendingWaitByProcess maps process_id → latest empty-stdin
 	// terminal_interaction row waiting on a still-running backgrounded
 	// unifiedExec. If the command completes before the next model yield,
-	// a command completion row is written at that wait position. Any
-	// later text/thinking/tool-start settles the wait as a neutral completed
-	// carrier and detaches it so old wait rows do not receive ghost
-	// completions.
+	// the wait carrier is flushed before the command completion sibling.
+	// Later assistant text/plan content, turn completion, a
+	// different-process wait, or non-empty stdin settles the wait as a
+	// neutral completed carrier and detaches it so old wait rows do not
+	// receive ghost completions. Reasoning deltas do not flush a wait streak.
 	pendingWaitByProcess map[string]pendingTerminalWait
 	// waitCarrierByProcess maps process_id → latest empty-stdin wait
 	// carrier in the current turn. It outlives pendingWaitByProcess so
@@ -579,42 +580,61 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 	return isSpawnAgentCandidate && meta.Tool == "spawn_agent"
 }
 
-func (r *Router) settleCodexPendingTerminalWaits(threadID string) {
+func (r *Router) settleCodexTerminalWaits(threadID string) {
+	r.settleCodexTerminalWaitsExcept(threadID, "")
+}
+
+func (r *Router) settleCodexTerminalWaitsExcept(threadID, keepProcessID string) {
+	keepProcessID = strings.TrimSpace(keepProcessID)
 	type pendingProcessWait struct {
 		processID string
 		wait      pendingTerminalWait
 	}
 	var waits []pendingProcessWait
-	seenItemIDs := make(map[string]struct{})
+	var seenItemIDs map[string]struct{}
 	r.mu.Lock()
 	state := r.codexBackground[threadID]
-	if state != nil {
-		waits = make([]pendingProcessWait, 0, len(state.pendingWaitByProcess)+len(state.waitCarrierByProcess))
-		for processID, wait := range state.pendingWaitByProcess {
-			itemID := strings.TrimSpace(wait.itemID)
-			if itemID == "" {
-				continue
-			}
-			seenItemIDs[itemID] = struct{}{}
-			waits = append(waits, pendingProcessWait{
-				processID: processID,
-				wait:      wait,
-			})
+	if state == nil || (len(state.pendingWaitByProcess) == 0 && len(state.waitCarrierByProcess) == 0) {
+		r.mu.Unlock()
+		return
+	}
+	waits = make([]pendingProcessWait, 0, len(state.pendingWaitByProcess)+len(state.waitCarrierByProcess))
+	for processID, wait := range state.pendingWaitByProcess {
+		if keepProcessID != "" && processID == keepProcessID {
+			continue
 		}
-		for processID, wait := range state.waitCarrierByProcess {
-			itemID := strings.TrimSpace(wait.itemID)
-			if itemID == "" {
-				continue
-			}
-			if _, seen := seenItemIDs[itemID]; seen {
-				continue
-			}
-			seenItemIDs[itemID] = struct{}{}
-			waits = append(waits, pendingProcessWait{
-				processID: processID,
-				wait:      wait,
-			})
+		itemID := strings.TrimSpace(wait.itemID)
+		if itemID == "" {
+			continue
 		}
+		if seenItemIDs == nil {
+			seenItemIDs = make(map[string]struct{})
+		}
+		seenItemIDs[itemID] = struct{}{}
+		waits = append(waits, pendingProcessWait{
+			processID: processID,
+			wait:      wait,
+		})
+	}
+	for processID, wait := range state.waitCarrierByProcess {
+		if keepProcessID != "" && processID == keepProcessID {
+			continue
+		}
+		itemID := strings.TrimSpace(wait.itemID)
+		if itemID == "" {
+			continue
+		}
+		if _, seen := seenItemIDs[itemID]; seen {
+			continue
+		}
+		if seenItemIDs == nil {
+			seenItemIDs = make(map[string]struct{})
+		}
+		seenItemIDs[itemID] = struct{}{}
+		waits = append(waits, pendingProcessWait{
+			processID: processID,
+			wait:      wait,
+		})
 	}
 	r.mu.Unlock()
 	for _, wait := range waits {
@@ -625,6 +645,33 @@ func (r *Router) settleCodexPendingTerminalWaits(threadID string) {
 		r.clearCodexPendingTerminalWaitState(threadID, wait.processID, wait.wait.itemID)
 		r.clearCodexTerminalWaitCarrierIfMatches(threadID, wait.processID, wait.wait.itemID)
 	}
+}
+
+func (r *Router) settleCodexTerminalWaitForProcess(threadID, processID string) error {
+	processID = strings.TrimSpace(processID)
+	if processID == "" {
+		return nil
+	}
+	var wait pendingTerminalWait
+	r.mu.Lock()
+	state := r.codexBackground[threadID]
+	if state != nil {
+		if pending := state.pendingWaitByProcess[processID]; strings.TrimSpace(pending.itemID) != "" {
+			wait = pending
+		} else if carrier := state.waitCarrierByProcess[processID]; strings.TrimSpace(carrier.itemID) != "" {
+			wait = carrier
+		}
+	}
+	r.mu.Unlock()
+	if strings.TrimSpace(wait.itemID) == "" {
+		return nil
+	}
+	if err := r.settleCodexTerminalWaitCarrier(threadID, wait.itemID); err != nil {
+		return err
+	}
+	r.clearCodexPendingTerminalWaitState(threadID, processID, wait.itemID)
+	r.clearCodexTerminalWaitCarrierIfMatches(threadID, processID, wait.itemID)
+	return nil
 }
 
 func (r *Router) trackCodexPendingTerminalWait(threadID, processID, itemID string, turnIndex int, createdAt int64) bool {
@@ -864,17 +911,6 @@ func (r *Router) observeCodexCommandOutput(evt provider.ProviderEvent) bool {
 	return true
 }
 
-func (r *Router) observeCodexTopLevelToolBoundary(evt provider.ProviderEvent) {
-	if strings.TrimSpace(evt.ParentToolUseID) != "" {
-		return
-	}
-	// A top-level tool after a terminal poll means the model moved on from
-	// that poll. If the background PTY completes later, keep it in the tray
-	// until the model explicitly polls again instead of mutating the stale
-	// "waited" row.
-	r.settleCodexPendingTerminalWaits(evt.ThreadID)
-}
-
 // observeCodexUnifiedExecComplete owns item/completed for tracked
 // unified exec startups. Quick commands that completed before the model
 // moved on become normal command rows. Commands that yielded stay
@@ -949,13 +985,14 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 	}
 	if backgrounded {
 		if hasPendingWait {
-			if err := r.persistCodexUnifiedExecCompletion(evt, tracker, pendingWait.turnIndex, pendingWait.itemID); err != nil {
-				return true, err
-			}
 			if err := r.settleCodexTerminalWaitCarrier(evt.ThreadID, pendingWait.itemID); err != nil {
 				return true, err
 			}
+			if err := r.persistCodexUnifiedExecCompletion(evt, tracker, pendingWait.turnIndex); err != nil {
+				return true, err
+			}
 			r.clearCodexPendingTerminalWaitState(evt.ThreadID, tracker.processID, pendingWait.itemID)
+			r.clearCodexTerminalWaitCarrierIfMatches(evt.ThreadID, tracker.processID, pendingWait.itemID)
 			r.clearCodexCompletedOutputTracker(evt.ThreadID, tracker.processID)
 			return true, nil
 		}
@@ -1034,10 +1071,9 @@ func codexCompletedOutputPayloadFromTracker(snapshot unifiedExecTracker, itemID 
 	return payload, summary
 }
 
-func (r *Router) persistCodexUnifiedExecCompletion(evt provider.ProviderEvent, tracker unifiedExecTracker, turnIndex int, waitCarrierID string) error {
+func (r *Router) persistCodexUnifiedExecCompletion(evt provider.ProviderEvent, tracker unifiedExecTracker, turnIndex int) error {
 	now := eventTimestampMillis(evt)
 	mergedMeta := mergeRawJSONObject(tracker.meta, evt.Meta)
-	mergedMeta = addCodexWaitCarrierMeta(mergedMeta, waitCarrierID)
 	meta := validJSONObjectString(mergedMeta)
 	completionID := nextToolCompletionID(tracker.launchID)
 	completion := store.Item{
@@ -1132,6 +1168,7 @@ func (r *Router) clearCodexCompletedOutputTracker(threadID, processID string) {
 		if tracker != nil && tracker.completed && tracker.backgrounded {
 			delete(state.unifiedExecByProcess, processID)
 			delete(state.pendingWaitByProcess, processID)
+			delete(state.waitCarrierByProcess, processID)
 			delete(state.unifiedExec, launchID)
 			cleared = true
 		}
@@ -1453,20 +1490,24 @@ func subagentStatusToItemStatusMeta(agentStatus string) json.RawMessage {
 	}
 }
 
-// observeCodexModelYield is called on every EventTextDelta and
-// EventThinking. Any tracked unifiedExec items, plus spawn_agent items
-// with running children, that haven't already been stamped get flipped
-// to is_background=true and re-emitted so the tray and timeline reflect
-// the new state.
+// observeCodexModelContent is called before assistant-visible content that
+// ends a terminal wait streak in the Codex TUI. Any tracked unifiedExec items,
+// plus spawn_agent items with running children, that haven't already been
+// stamped get flipped to is_background=true and re-emitted so the tray and
+// timeline reflect the new state.
 //
 // The distinction between "tool-call batch" (multiple tools dispatched
 // in one response) and "tool → yield" is what keeps this precise: a
-// text/reasoning delta is unambiguous evidence that the model moved on
-// while the command / child agent is still running. EventToolStart
-// explicitly does NOT participate in yield detection — sibling tool starts
-// in a parallel batch fire before any model text.
-func (r *Router) observeCodexModelYield(threadID string) {
-	r.settleCodexPendingTerminalWaits(threadID)
+// text/plan delta is unambiguous evidence that the model moved on while the
+// command / child agent is still running. EventToolStart explicitly does NOT
+// participate in yield detection — sibling tool starts in a parallel batch
+// fire before any model text.
+func (r *Router) observeCodexModelContent(threadID string) {
+	r.settleCodexTerminalWaits(threadID)
+	r.markCodexUnifiedExecBackgrounded(threadID, "")
+}
+
+func (r *Router) observeCodexModelReasoning(threadID string) {
 	r.markCodexUnifiedExecBackgrounded(threadID, "")
 }
 
@@ -1474,7 +1515,7 @@ func (r *Router) observeCodexModelYield(threadID string) {
 // command stayed inProgress through the turn boundary, Codex has yielded
 // while the PTY is still running, so the command becomes live tray state.
 func (r *Router) observeCodexTurnComplete(threadID string) {
-	r.settleCodexPendingTerminalWaits(threadID)
+	r.settleCodexTerminalWaits(threadID)
 	r.mu.Lock()
 	state := r.codexBackground[threadID]
 	if state == nil {

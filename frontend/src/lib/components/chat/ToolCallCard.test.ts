@@ -715,12 +715,12 @@ describe("<ToolCallCard> header dispatcher", () => {
       {
         status: "completed" as const,
         meta: JSON.stringify({ input: { receiverThreadIds: ["child-1"] } }),
-        expected: "Waited for Agent",
+        expected: "Waiting for Agent",
       },
       {
         status: "completed" as const,
         meta: "",
-        expected: "Waited for agents",
+        expected: "Waiting for agents",
       },
       {
         status: "running" as const,
@@ -779,8 +779,8 @@ describe("<ToolCallCard> header dispatcher", () => {
     const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
     const text = getByTestId("collab-tool-row").textContent ?? "";
 
-    expect(text).toContain("Waited for 2 agents");
-    expect(text).not.toContain("Finished waiting");
+    expect(text).toContain("Finished waiting");
+    expect(text).not.toContain("Waited for 2 agents");
     expect(text).toContain("Agent: completed - done");
     expect(text).toContain("Agent: failed - boom");
     expect(text).not.toContain("child-1");
@@ -950,11 +950,11 @@ describe("<ToolCallCard> header dispatcher", () => {
     const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
     const text = getByTestId("collab-tool-row").textContent ?? "";
 
-    expect(text).toContain("Waited for 3 agents");
+    expect(text).toContain("Waiting for 3 agents");
     expect(text).toContain("Hypatia [default]");
     expect(text).toContain("Parfit [default]");
     expect(text).toContain("Ada [default]");
-    expect(text).not.toContain("Waited for Hypatia");
+    expect(text).not.toContain("Waiting for Hypatia");
   });
 
   it("renders wait_agent receiver nicknames and keeps completed carriers neutral", async () => {
@@ -984,7 +984,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     });
     const text = getByTestId("collab-tool-row").textContent ?? "";
 
-    expect(text).toContain("Waited for Galileo [explorer]");
+    expect(text).toContain("Waiting for Galileo [explorer]");
     expect(text).not.toContain("└ Galileo [explorer]");
     expect(queryByTestId("completion-badge")).toBeNull();
   });

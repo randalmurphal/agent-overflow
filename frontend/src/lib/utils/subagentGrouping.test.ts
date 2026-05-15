@@ -334,7 +334,7 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(nodes).toHaveLength(1);
+    expect(nodes).toHaveLength(2);
     const group = expectWaitGroup(nodes[0]);
     expect(group.parent.id).toBe('wait-1');
     expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual([
@@ -343,9 +343,10 @@ describe('groupItemsBySubagent', () => {
     expect(group.descendantCount).toBe(1);
     expect(nodeContainsItem(group, 'complete-wait-1')).toBe(false);
     expect(nodeContainsItem(group, 'complete-spawn-1')).toBe(true);
+    expect(expectLeaf(nodes[1]).item.id).toBe('complete-wait-1');
   });
 
-  it('nests terminal command completions under the terminal wait carrier for the same process', () => {
+  it('keeps terminal command completions as siblings after the terminal wait carrier', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'waited-pid-1',
@@ -363,13 +364,14 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(nodes).toHaveLength(1);
+    expect(nodes).toHaveLength(2);
     const group = expectWaitGroup(nodes[0]);
     expect(group.parent.id).toBe('waited-pid-1');
-    expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-cmd-1']);
+    expect(group.children).toEqual([]);
+    expect(expectLeaf(nodes[1]).item.id).toBe('complete-cmd-1');
   });
 
-  it('nests legacy camelCase terminal command completions by process', () => {
+  it('keeps legacy camelCase terminal command completions flat by process', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'waited-pid-1',
@@ -387,10 +389,11 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(nodes).toHaveLength(1);
+    expect(nodes).toHaveLength(2);
     const group = expectWaitGroup(nodes[0]);
     expect(group.parent.id).toBe('waited-pid-1');
-    expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-cmd-1']);
+    expect(group.children).toEqual([]);
+    expect(expectLeaf(nodes[1]).item.id).toBe('complete-cmd-1');
   });
 
   it('nests target completions under an explicit wait_carrier_id', () => {
@@ -443,7 +446,7 @@ describe('groupItemsBySubagent', () => {
     expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-spawn-1']);
   });
 
-  it('consumes a timeout wait completion under the neutral wait carrier', () => {
+  it('keeps a timeout wait completion visible after the neutral wait carrier', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'wait-child',
@@ -462,12 +465,13 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(nodes).toHaveLength(1);
+    expect(nodes).toHaveLength(2);
     const group = expectWaitGroup(nodes[0]);
     expect(group.parent.id).toBe('wait-child');
     expect(group.children).toEqual([]);
     expect(group.descendantCount).toBe(0);
     expect(nodeContainsItem(group, 'complete-wait-child')).toBe(false);
+    expect(expectLeaf(nodes[1]).item.id).toBe('complete-wait-child');
   });
 
   it('keeps a non-Codex wait_agent-named tool flat', () => {

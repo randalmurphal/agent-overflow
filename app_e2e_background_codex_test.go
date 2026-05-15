@@ -31,9 +31,9 @@ func decodeE2EItemMeta(t *testing.T, raw string) map[string]any {
 // appears in the running tray immediately, then becomes a background
 // task only after the model yields. When the command completes after
 // that yield, the completion remains tray-only until Codex explicitly
-// polls the background PTY with
-// TerminalInteractionNotification. That wait row is where completed
-// command output becomes chat history.
+// polls the background PTY with TerminalInteractionNotification. That
+// wait signal is where completed command output becomes the next chat
+// history sibling.
 //
 // The Codex wire path is driven by direct triage.Handle calls because
 // the fake app-server harness only responds to requests — it can't
@@ -198,8 +198,8 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 		t.Fatalf("command completion missing: found=%v err=%v", found, err)
 	}
 	completionMeta := decodeE2EItemMeta(t, completion.Meta)
-	if completionMeta["wait_carrier_id"] != waits[0].ID {
-		t.Fatalf("completion wait_carrier_id = %v, want %s", completionMeta["wait_carrier_id"], waits[0].ID)
+	if _, ok := completionMeta["wait_carrier_id"]; ok {
+		t.Fatalf("completion wait_carrier_id = %v, want command completion as a sibling row", completionMeta["wait_carrier_id"])
 	}
 	if completion.PayloadKind != "command_output" {
 		t.Fatalf("completion payload kind = %q, want command_output", completion.PayloadKind)

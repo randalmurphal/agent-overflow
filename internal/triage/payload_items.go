@@ -131,6 +131,8 @@ func (r *Router) handleCommandOutput(evt provider.ProviderEvent) error {
 }
 
 func (r *Router) handleProposedPlan(evt provider.ProviderEvent) error {
+	r.observeCodexModelContent(evt.ThreadID)
+
 	now := eventTimestampMillis(evt)
 	metaJSON := buildPayloadMeta("proposed_plan", evt)
 	summary := buildSummary("proposed_plan", metaJSON)

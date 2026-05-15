@@ -242,8 +242,8 @@
     if (spawnInfo) return spawnInfo.title;
     if (tool === 'send_input') return `Sent input to ${agentLabel || 'agent'}`;
     if (tool === 'wait_agent') {
-      if (item.status === 'running' || item.status === 'streaming') return `Waiting for ${agentLabel || 'agents'}`;
-      return `Waited for ${agentLabel || 'agents'}`;
+      if (item.kind === 'tool_completion') return 'Finished waiting';
+      return `Waiting for ${agentLabel || 'agents'}`;
     }
     if (tool === 'close_agent') return `Closed ${agentLabel || 'agent'}`;
     if (tool === 'resume_agent') {

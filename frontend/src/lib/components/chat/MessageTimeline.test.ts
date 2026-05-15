@@ -131,7 +131,7 @@ describe('<MessageTimeline>', () => {
       completionOf: 'cmd-1',
       status: 'errored',
       summary: 'Command failed',
-      meta: JSON.stringify({ process_id: 'pid-42', wait_carrier_id: wait.id }),
+      meta: JSON.stringify({ process_id: 'pid-42' }),
       payloadKind: 'command_output',
       payloadId: 'payload-cmd-1',
       payloadMeta: JSON.stringify({
@@ -161,11 +161,12 @@ describe('<MessageTimeline>', () => {
     expect(getByTestId('terminal-interaction-row').textContent?.trim()).toBe(
       'Waited for background terminal',
     );
-    expect(getByTestId('wait-group-children').textContent).toContain('Command failed');
-    expect(getByTestId('command-output-preview').textContent).toContain('Command failed');
+    expect(queryByTestId('wait-group-children')).toBeNull();
+    expect(getByTestId('command-output-row').textContent).toContain('sleep 1; echo done');
+    expect(getByTestId('command-output-row').textContent).toContain('error code 1');
   });
 
-  it('hides redundant wait_agent completion children under Codex wait carriers', async () => {
+  it('renders Codex wait_agent completion signals separately from wait carriers', async () => {
     const wait = makeItem({
       id: 'wait-agents',
       kind: 'tool_call',
@@ -214,8 +215,8 @@ describe('<MessageTimeline>', () => {
 
     const { getByTestId, queryByText } = render(MessageTimeline, { props: { pane } });
 
-    expect(getByTestId('wait-group').textContent).toContain('Waited for Agent');
-    expect(queryByText('Finished waiting')).toBeNull();
+    expect(getByTestId('wait-group').textContent).toContain('Waiting for Agent');
+    expect(queryByText('Finished waiting')).toBeInTheDocument();
     expect(getByTestId('wait-group-children').textContent).toContain('Agent finished cleanly');
   });
 
