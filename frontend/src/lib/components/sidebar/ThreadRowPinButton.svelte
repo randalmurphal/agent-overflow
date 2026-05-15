@@ -1,9 +1,7 @@
 <script lang="ts">
-  // Per-row pin/unpin affordance. Lives left-of-chevron in the row's
-  // leading slot. Visible-when-pinned (filled icon, always shown) so
-  // pin state reads at a glance; hover-revealed when unpinned (outline
-  // icon) so the action is discoverable without cluttering the row at
-  // rest. Click toggles the persisted pin via threadRowActions.
+  // Per-row pin/unpin affordance. Lives in the row's right-side hover
+  // action cluster next to archive/unarchive so the leading title column
+  // stays aligned.
   //
   // Render-time guard: top-level rows only (indent ≤ 1). Discussion
   // children don't pin individually — the parent thread is the pin
@@ -44,15 +42,14 @@
   aria-pressed={isPinned}
   title={isPinned ? 'Unpin Thread' : 'Pin Thread'}
   class={
-    'flex items-center justify-center w-4 h-4 rounded text-fg-subtle hover:text-fg hover:bg-surface-2/30 shrink-0 cursor-pointer transition-opacity focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 ' +
-    (isPinned
-      ? 'opacity-100 text-accent'
-      : 'opacity-0 group-hover/thread-row:opacity-100 focus-visible:opacity-100')
+    'flex items-center justify-center h-5 w-5 rounded-[var(--radius-field)] shrink-0 cursor-pointer ' +
+    'text-fg-subtle hover:text-fg hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 ' +
+    (isPinned ? 'text-accent' : '')
   }
 >
   <Icon
     icon={Pin}
-    size={11}
+    size={12}
     strokeWidth={2}
     class={isPinned ? 'opacity-100 fill-current' : 'opacity-90'}
   />

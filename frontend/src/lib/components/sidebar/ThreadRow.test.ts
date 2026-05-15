@@ -269,6 +269,18 @@ describe('<ThreadRow> worktree metadata', () => {
     expect(getByTestId('thread-row-worktree-name').textContent?.trim()).toBe('feature-demo');
   });
 
+  it('uses the same color token as the updated-at timestamp', () => {
+    const thread = makeThread({
+      id: 'worktree-thread',
+      worktreePath: '/tmp/worktrees/feature-demo',
+    });
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+
+    expect(getByTestId('thread-row-worktree-name').classList.contains('text-fg-hint')).toBe(true);
+    expect(getByTestId('thread-row-worktree-name').classList.contains('text-fg-muted')).toBe(false);
+  });
+
   it('uses the final path segment with trailing slashes ignored', () => {
     const thread = makeThread({
       id: 'worktree-thread',
@@ -327,6 +339,51 @@ describe('<ThreadRow> worktree metadata', () => {
 
     expect(rowSelectCalled).toBe(0);
     expect(pane.threadId).toBeNull();
+  });
+});
+
+describe('<ThreadRow> pin affordance placement', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+  });
+
+  it('renders the title before the pin action so the leading title column stays aligned', () => {
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ pinnedAt: 1 }), pane },
+    });
+    const title = getByTestId('thread-row-title');
+    const pin = getByTestId('thread-row-pin');
+
+    expect(title.compareDocumentPosition(pin) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  });
+
+  it('keeps pinned state visible at rest in the right-side slot', () => {
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ pinnedAt: 1 }), pane },
+    });
+    const pin = getByTestId('thread-row-pin');
+    const time = getByTestId('thread-row-time');
+
+    expect(pin.getAttribute('aria-label')).toBe('Unpin Thread');
+    expect(pin.compareDocumentPosition(time) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  });
+
+  it('keeps the pin action out of nested discussion participant rows', () => {
+    const pane = createThreadPane();
+    const { queryByTestId } = render(ThreadRow, {
+      props: {
+        thread: makeThread({ parentThreadId: 'parent' }),
+        pane,
+        indent: 2,
+      },
+    });
+
+    expect(queryByTestId('thread-row-pin')).toBeNull();
   });
 });
 

@@ -229,8 +229,8 @@
 
   let worktreeName = $derived(pathBasename(thread.worktreePath));
   let showWorktreeMeta = $derived(!editing && Boolean(thread.worktreePath && worktreeName));
-  let worktreeIndentPx = $derived(indentPx + 18);
-  let worktreeConnectorLeftPx = $derived(worktreeIndentPx - 10);
+  let worktreeIndentPx = $derived(indentPx + 10);
+  let worktreeConnectorLeftPx = $derived(worktreeIndentPx - 8);
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -252,9 +252,6 @@
   data-live-status={liveStatus}
   data-effective-status={effectiveStatus}
 >
-  {#if showPinAffordance}
-    <ThreadRowPinButton {isPinned} buildCtx={ctx} />
-  {/if}
   {#if hasChildren}
     <button
       type="button"
@@ -322,6 +319,9 @@
       the time without pushing layout.
     -->
     <div class="ml-auto relative shrink-0 flex items-center justify-end min-w-12">
+      {#if showPinAffordance && isPinned}
+        <ThreadRowPinButton {isPinned} buildCtx={ctx} />
+      {/if}
       {#if jumpShortcut}
         <!--
           Modifier-held jump-hint pill. Fades in on the right side,
@@ -350,6 +350,9 @@
           {thread}
           onArchive={handleArchive}
           onUnarchive={handleUnarchive}
+          showPin={showPinAffordance && !isPinned}
+          {isPinned}
+          buildCtx={ctx}
         />
       </div>
     </div>
@@ -358,19 +361,19 @@
 
 {#if showWorktreeMeta}
   <div
-    class="relative flex h-5 items-center pr-1 text-[10.5px] leading-none text-fg-hint"
+    class="relative -mt-1 flex h-4 items-center pr-1 text-[10.5px] leading-none text-fg-hint"
     style="padding-left: {worktreeIndentPx}px"
     title="Worktree: {thread.worktreePath}"
     aria-label="Worktree {worktreeName}"
     data-testid="thread-row-worktree"
   >
     <span
-      class="absolute top-0 h-3 w-3 rounded-bl-[3px] border-l border-b border-border-subtle/70"
+      class="absolute top-0 h-2.5 w-2.5 rounded-bl-[3px] border-l border-b border-border-subtle/70"
       style="left: {worktreeConnectorLeftPx}px"
       aria-hidden="true"
     ></span>
     <span
-      class="min-w-0 max-w-full truncate rounded-[var(--radius-field)] bg-surface-1/35 px-1.5 py-[3px] font-mono text-[10px] text-fg-muted"
+      class="min-w-0 max-w-full truncate px-1 py-[2px] font-mono text-[10px] text-fg-hint"
       data-testid="thread-row-worktree-name"
     >
       {worktreeName}
