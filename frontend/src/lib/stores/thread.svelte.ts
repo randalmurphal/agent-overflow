@@ -29,7 +29,6 @@ import {
   CreateThread,
   GetThreadItem,
   GetThreadLiveState,
-  LatestDesignOptionSet,
   ListPendingInteractiveRequests,
   ListItemsBeforeTurn,
   ListRecentThreadItems,
@@ -38,10 +37,6 @@ import {
   SwitchThread,
   AutoResumeThread,
 } from './bindings';
-import {
-  controlsKey,
-  parseDesignAssistantPayloads,
-} from '../utils/designAssistantPayload';
 import { replaceThread } from './threads.svelte';
 import { leaseDuringSettle } from '../utils/scrollLeaseDuringTransition';
 
@@ -99,6 +94,7 @@ import {
   normalizeContextWindowForThread,
   seedContextWindow,
 } from './threadContextWindow';
+import { createThreadDesignState } from './threadDesignState.svelte';
 import type { ThreadLiveState } from '../../../bindings/agent-overflow/models';
 import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
 
@@ -388,31 +384,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   let channelMessages: ChannelMessage[] = $state([]);
   let channelStatus: 'open' | 'concluded' | 'closed' | null = $state(null);
 
-  // Design-mode state (only populated when thread.mode === 'design').
-  //
-  // Layout:
-  //   - pendingClarification: non-null when the agent has emitted a
-  //     ClarificationRequest payload and is waiting for the user to pick
-  //     answers before continuing.
-  //   - exposedControls: agent-published slider knobs the user can tweak
-  //     after a design iteration lands. Replaces the previous control set
-  //     wholesale on each ExposeControls signal.
-  //   - activeOptionSet: when non-null, render the small N-up options grid
-  //     instead of (or beside) the main preview iframe.
-  //   - designViewport: width toggle for the main preview iframe.
-  let pendingClarification: ClarificationRequest | null = $state(null);
-  let exposedControls: SliderControl[] = $state([]);
-  let activeOptionSet: ActiveOptionSet | null = $state(null);
-  let designViewport: DesignViewport = $state('desktop');
-
-  // Dedup keys for the assistant-payload parser. The design agent emits
-  // structured `aoflow-design` blocks inside its assistant text;
-  // upsertItemsBatch re-applies the same item summary on every streaming
-  // delta and on retroactive replays, so we track which payload we've
-  // already mapped onto pane state and skip re-fires. Keys reset in
-  // clearDesign() / switchThread() so a new thread starts fresh.
-  let lastClarificationRequestId: string | null = null;
-  let lastExposedControlsKey: string | null = null;
+  const designState = createThreadDesignState();
 
   // Top-level mode tab (Chat | Design). Drives the segmented control in
   // ChatHeader and the layout decision in ChatView when no thread is loaded
@@ -618,39 +590,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // Design-mode side-channel: scan assistant text for structured
     // `aoflow-design` payloads and project them onto pane state. Cheap
     // when no payload is present (the parser short-circuits on the
-    // missing fence prefix); dedup keys above prevent re-fires across
-    // streaming deltas.
+    // missing fence prefix); designState owns dedupe across streaming
+    // deltas and resets it on thread switch.
     if (thread?.mode === 'design') {
       for (const item of incoming) {
-        applyDesignAssistantPayloadsForItem(item);
-      }
-    }
-  }
-
-  // applyDesignAssistantPayloadsForItem is the parser-to-state shim. It
-  // runs once per upserted item in a design thread; the parser short-
-  // circuits on text without an `aoflow-design` fence so non-design
-  // assistant messages (or design messages without structured blocks)
-  // pay essentially zero cost.
-  function applyDesignAssistantPayloadsForItem(item: Item): void {
-    if (item.kind !== 'assistant_text') return;
-    if (!item.summary) return;
-    if (!thread || item.threadId !== thread.id) return;
-
-    const payloads = parseDesignAssistantPayloads(item.summary);
-    if (payloads.length === 0) return;
-    for (const p of payloads) {
-      if (p.kind === 'clarification_request') {
-        const next = p.payload;
-        if (lastClarificationRequestId === next.requestId) continue;
-        if (!next.threadId) next.threadId = thread.id;
-        pendingClarification = next;
-        lastClarificationRequestId = next.requestId;
-      } else if (p.kind === 'expose_controls') {
-        const key = controlsKey(p.payload.controls);
-        if (lastExposedControlsKey === key) continue;
-        exposedControls = [...p.payload.controls];
-        lastExposedControlsKey = key;
+        designState.applyAssistantPayloadsForItem(item, thread);
       }
     }
   }
@@ -904,10 +848,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     sendInFlight = false;
     channelMessages = [];
     channelStatus = null;
-    pendingClarification = null;
-    exposedControls = [];
-    activeOptionSet = null;
-    designViewport = 'desktop';
+    designState.reset();
     // Bottom-drawer state is pane-scoped: opening the terminal on thread
     // A should not spill into thread B. The RHS sidebar is different:
     // its active panel + width are snapshotted per thread by
@@ -1237,10 +1178,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get scrollToItemRequest() { return scrollToItemRequest; },
     get channelMessages() { return channelMessages; },
     get channelStatus() { return channelStatus; },
-    get pendingClarification() { return pendingClarification; },
-    get exposedControls() { return exposedControls; },
-    get activeOptionSet() { return activeOptionSet; },
-    get designViewport() { return designViewport; },
+    get pendingClarification() { return designState.pendingClarification; },
+    get exposedControls() { return designState.exposedControls; },
+    get activeOptionSet() { return designState.activeOptionSet; },
+    get designViewport() { return designState.designViewport; },
     get activeTab() { return activeTab; },
     get activeRhsPanel() { return rhsPanelSlot.activePanel; },
     get rhsSidebarWidth() { return rhsPanelSlot.width; },
@@ -1372,10 +1313,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       rhsPanelSlot.reset();
       channelMessages = [];
       channelStatus = null;
-      pendingClarification = null;
-      exposedControls = [];
-      activeOptionSet = null;
-      designViewport = 'desktop';
+      designState.reset();
       // activeTurn lives in the global registry (threadStatuses) and is
       // cleared by projectTurnCompleted; clearing it from a pane.clear()
       // would race with an in-flight turn on the same thread that
@@ -2099,7 +2037,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * message; it then clears local state by calling this with null).
      */
     setPendingClarification(request: ClarificationRequest | null): void {
-      pendingClarification = request;
+      designState.setPendingClarification(request);
     },
 
     /**
@@ -2107,7 +2045,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * `ExposeControls` event replaces the previous set wholesale.
      */
     setExposedControls(controls: SliderControl[]): void {
-      exposedControls = [...controls];
+      designState.setExposedControls(controls);
     },
 
     /**
@@ -2115,11 +2053,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * the pane to the main preview.
      */
     setActiveOptionSet(set: ActiveOptionSet | null): void {
-      activeOptionSet = set;
+      designState.setActiveOptionSet(set);
     },
 
     setDesignViewport(viewport: DesignViewport): void {
-      designViewport = viewport;
+      designState.setDesignViewport(viewport);
     },
 
     /**
@@ -2134,12 +2072,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
 
     clearDesign(): void {
-      pendingClarification = null;
-      exposedControls = [];
-      activeOptionSet = null;
-      designViewport = 'desktop';
-      lastClarificationRequestId = null;
-      lastExposedControlsKey = null;
+      designState.reset();
     },
 
     /**
@@ -2165,26 +2098,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * watcher.
      */
     async applyDesignOptionsUpdate(threadId: string, _setId: string): Promise<void> {
-      if (!thread || thread.id !== threadId) return;
-      try {
-        const latest = (await LatestDesignOptionSet(threadId)) as
-          | { setId: string; optionIds: string[] }
-          | null;
-        if (!thread || thread.id !== threadId) return;
-        if (!latest || !latest.setId || !latest.optionIds || latest.optionIds.length === 0) {
-          // No active set on disk. Clear any stale panel state — this
-          // is what handles the post-pick dismissal sequence (the
-          // .picked marker write fires the watcher → we re-query →
-          // backend returns null → panel collapses).
-          activeOptionSet = null;
-          return;
-        }
-        const optionPaths = latest.optionIds.map((id) => `options/${latest.setId}/${id}`);
-        activeOptionSet = { setId: latest.setId, optionPaths };
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn('design: LatestDesignOptionSet failed:', err);
-      }
+      await designState.applyDesignOptionsUpdate(() => thread, threadId);
     },
   };
 }
