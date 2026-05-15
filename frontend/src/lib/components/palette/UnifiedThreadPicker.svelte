@@ -8,6 +8,7 @@
     getEffectiveThreadStatus,
   } from '../../stores/threadStatuses.svelte';
   import { computeHighlightSegments } from '../../utils/highlight';
+  import { pathBasename } from '../../utils/pathDisplay';
   import { getProviderDefinition } from '../../providers/catalog';
   import { resolveThreadStatusPill } from '../sidebar/threadStatusPill';
 
@@ -80,14 +81,6 @@
     await openThreadFromNavigation(thread, pane);
   }
 
-  function projectBasename(path: string): string {
-    if (!path) return '';
-    // Strip trailing slash so a path like "/foo/bar/" doesn't split into an
-    // empty final segment.
-    const parts = path.replace(/\/+$/, '').split('/');
-    return parts[parts.length - 1] ?? '';
-  }
-
   // Escape is handled by Modal. Enter / Arrow keys are caught at the
   // body level so the search input keeps getting keystrokes it cares
   // about (letters) while navigation / activation are intercepted.
@@ -141,7 +134,7 @@
           {#each hits as hit, i (hit.thread.id)}
             {@const status = getEffectiveThreadStatus(hit.thread)}
             {@const statusPill = resolveThreadStatusPill(hit.thread, status)}
-            {@const basename = projectBasename(hit.thread.projectPath)}
+                {@const basename = pathBasename(hit.thread.projectPath)}
             {@const providerDefinition = getProviderDefinition(hit.thread.provider)}
             <li>
               <button

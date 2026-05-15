@@ -28,6 +28,7 @@
   import { addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
   import { sameNormalizedPath } from '../../../utils/path';
+  import { pathBasename } from '../../../utils/pathDisplay';
   import {
     clearWorktreeIntent,
     setThreadEnvMode,
@@ -69,13 +70,6 @@
   let isAtProjectRoot = $derived(sameNormalizedPath(currentWorkspace, projectPath));
   let intent = $derived(worktreeIntentForThread(pane.thread));
 
-  function basename(path: string): string {
-    if (!path) return '';
-    const trimmed = path.replace(/\/$/, '');
-    const idx = trimmed.lastIndexOf('/');
-    return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
-  }
-
   // Trigger reflects *where you are*, not the picker's mode. "Local"
   // sits at the project root; the worktree's basename otherwise. Staged
   // new-worktree intent overrides both so the user sees that the next
@@ -83,7 +77,7 @@
   let triggerLabel = $derived.by(() => {
     if (intent.mode === 'new-worktree') return 'New Worktree';
     if (isAtProjectRoot) return 'Local';
-    return basename(currentWorkspace) || 'Worktree';
+    return pathBasename(currentWorkspace) || 'Worktree';
   });
   let triggerIcon = $derived.by(() => {
     if (intent.mode === 'new-worktree') return GitBranch;
@@ -140,7 +134,7 @@
     try {
       const updated = (await UpdateThreadWorkspace(threadId, path)) as Thread;
       syncThread(updated);
-      addToast('info', `Workspace switched to ${basename(path) || path}`);
+        addToast('info', `Workspace switched to ${pathBasename(path) || path}`);
     } catch (err) {
       console.error('UpdateThreadWorkspace failed:', err);
       addToast('error', userFacingError(err));
@@ -161,7 +155,7 @@
     if (!pane.thread) return;
     confirm = {
       path: wt.path,
-      label: basename(wt.path) || wt.path,
+      label: pathBasename(wt.path) || wt.path,
       branch: wt.branch ?? '',
       status: null,
       loading: true,
@@ -264,7 +258,7 @@
 >
   <Menu ariaLabel="Workspace" onClose={closeMenu}>
     <MenuItem
-      label={projectPath ? `Local · ${basename(projectPath)}` : 'Local'}
+      label={projectPath ? `Local · ${pathBasename(projectPath)}` : 'Local'}
       checked={isAtProjectRoot && intent.mode !== 'new-worktree'}
       disabled={!projectPath || workspaceChangingDisabled}
       title={workspaceChangingDisabled ? disabledReason : undefined}
@@ -350,12 +344,12 @@
             </div>
           {:else}
             <MenuItem
-              label={wt.branch ? `${basename(wt.path) || wt.path} · ${wt.branch}` : basename(wt.path) || wt.path}
+              label={wt.branch ? `${pathBasename(wt.path) || wt.path} · ${wt.branch}` : pathBasename(wt.path) || wt.path}
               checked={sameNormalizedPath(currentWorkspace, wt.path) && intent.mode !== 'new-worktree'}
               disabled={workspaceChangingDisabled}
               title={workspaceChangingDisabled ? disabledReason : undefined}
               onSelect={() => selectPath(wt.path)}
-              actionLabel={`Remove worktree ${basename(wt.path) || wt.path}`}
+              actionLabel={`Remove worktree ${pathBasename(wt.path) || wt.path}`}
               actionPosition="end"
               onAction={() => requestRemove(wt)}
             >

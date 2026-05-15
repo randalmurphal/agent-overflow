@@ -245,6 +245,91 @@ describe('<ThreadRow> fork lineage affordance', () => {
   });
 });
 
+describe('<ThreadRow> worktree metadata', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+  });
+
+  it('renders the worktree basename under the row instead of the WT badge', () => {
+    const thread = makeThread({
+      id: 'worktree-thread',
+      title: 'Worktree Thread',
+      worktreePath: '/tmp/agent-overflow-worktrees/feature-demo',
+    });
+    const pane = createThreadPane();
+    const { container, getByTestId, queryByText } = render(ThreadRow, {
+      props: { thread, pane },
+    });
+
+    expect(queryByText('WT')).toBeNull();
+    expect(container.textContent).not.toContain('WT');
+    expect(getByTestId('thread-row-worktree-name').textContent?.trim()).toBe('feature-demo');
+  });
+
+  it('uses the final path segment with trailing slashes ignored', () => {
+    const thread = makeThread({
+      id: 'worktree-thread',
+      worktreePath: '/tmp/worktrees/feature-demo/',
+    });
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+
+    expect(getByTestId('thread-row-worktree-name').textContent?.trim()).toBe('feature-demo');
+  });
+
+  it('handles Windows-style path separators', () => {
+    const thread = makeThread({
+      id: 'worktree-thread',
+      worktreePath: 'C:\\worktrees\\feature-demo',
+    });
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+
+    expect(getByTestId('thread-row-worktree-name').textContent?.trim()).toBe('feature-demo');
+  });
+
+  it('does not render metadata when the thread has no worktree path', () => {
+    const pane = createThreadPane();
+    const { queryByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ worktreePath: undefined }), pane },
+    });
+
+    expect(queryByTestId('thread-row-worktree')).toBeNull();
+  });
+
+  it('exposes the full worktree path without making the metadata row interactive', async () => {
+    const thread = makeThread({
+      id: 'worktree-thread',
+      worktreePath: '/tmp/agent-overflow-worktrees/feature-demo',
+    });
+    let rowSelectCalled = 0;
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: {
+        thread,
+        pane,
+        onSelectClick: () => {
+          rowSelectCalled += 1;
+          return true;
+        },
+      },
+    });
+
+    const worktreeMeta = getByTestId('thread-row-worktree');
+    expect(worktreeMeta.getAttribute('title')).toBe('Worktree: /tmp/agent-overflow-worktrees/feature-demo');
+    expect(worktreeMeta.getAttribute('aria-label')).toBe('Worktree feature-demo');
+
+    await fireEvent.click(worktreeMeta);
+    await Promise.resolve();
+
+    expect(rowSelectCalled).toBe(0);
+    expect(pane.threadId).toBeNull();
+  });
+});
+
 describe('<ThreadRow> live status dot', () => {
   beforeEach(async () => {
     resetPanesForTest();
