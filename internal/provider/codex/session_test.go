@@ -1785,6 +1785,48 @@ func TestDispatchLineRawToolCallsAreBoundedAndCleared(t *testing.T) {
 	}
 }
 
+func TestDispatchLineRawExecCommandOutputEmitsModelResult(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:         "parent-thread",
+		pending:          make(map[int64]chan json.RawMessage),
+		rawToolCallsByID: make(map[string]rawToolCall),
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"exec_command","call_id":"cmd-1","arguments":"{\"cmd\":\"sleep 10\"}"}}}`))
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call_output","call_id":"cmd-1","output":"Chunk ID: abc\nWall time: 1.0000 seconds\nProcess running with session ID 17313\nOutput:\n"}}}`))
+
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1: %+v", len(events), events)
+	}
+	evt := events[0]
+	if evt.Kind != provider.EventCodexExecResult {
+		t.Fatalf("event kind = %q, want %q", evt.Kind, provider.EventCodexExecResult)
+	}
+	if evt.ThreadID != "parent-thread" || evt.TurnID != "turn-1" || evt.ItemID != "cmd-1" {
+		t.Fatalf("event routing = thread %q turn %q item %q", evt.ThreadID, evt.TurnID, evt.ItemID)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["result"] != terminalWaitResultRunning {
+		t.Fatalf("meta.result = %v, want %q", meta["result"], terminalWaitResultRunning)
+	}
+	if meta["process_id"] != "17313" {
+		t.Fatalf("meta.process_id = %v, want 17313", meta["process_id"])
+	}
+	if meta["command"] != "sleep 10" {
+		t.Fatalf("meta.command = %v, want sleep 10", meta["command"])
+	}
+	if len(s.rawToolCallsByID) != 0 {
+		t.Fatalf("raw exec call not cleared after output: %+v", s.rawToolCallsByID)
+	}
+}
+
 func TestCodexProviderEventLogRedactorRedactsWriteStdinEvents(t *testing.T) {
 	redact := newCodexProviderEventLogRedactor()
 

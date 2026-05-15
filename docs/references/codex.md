@@ -41,8 +41,10 @@ Codex has no `run_in_background` flag, but it does background work via
 `exec_command`. The shape to remember:
 
 - `CommandExecution.source == "unifiedExecStartup"` is the wire-typed
-  signal for a command that may yield back to the model while its PTY
-  keeps running.
+  signal for a unified exec command. The raw `exec_command` result tells
+  whether this instance actually yielded: `Process running with session ID
+  ...` means the model saw a resumable background PTY; `Process exited with
+  code ...` means the command completed during the initial wait.
 - `yield_time_ms` (default 10s, `core/src/tools/handlers/unified_exec.rs`)
   governs how long the tool blocks before returning partial output.
 - After yield, the PTY is tracked by `UnifiedExecProcessManager`;

@@ -654,12 +654,12 @@ and [`turn-lifecycle.md §Codex background projection`](turn-lifecycle.md#codex-
 ## 25. Codex backgrounding uses wire-typed signals, never heuristics
 
 **Rule.** `is_background=true` may only be set on a Codex item when a
-**wire-typed** source field authorizes it. Two sanctioned authorization
-signals today:
+**wire-typed** signal authorizes it. Two sanctioned authorization signals
+today:
 
-1. `CommandExecution.source == "unifiedExecStartup"` — the classifier
-   for backgrounded shell commands. See
-   [`codex-wire.md`](../references/codex-wire.md).
+1. A raw `exec_command` result for a `unifiedExecStartup` item reports
+   `Process running with session ID ...`, proving the model saw a resumable
+   background PTY. See [`codex-wire.md`](../references/codex-wire.md).
 2. `collabAgentToolCall` with `tool == "spawnAgent"` whose
    `agentsStates` map reports a non-terminal child at the parent's
    `turn/completed` boundary. The spawn row itself completes on the
@@ -670,14 +670,11 @@ Heuristic classifiers ("assistant text after tool start", "turn still
 open while tool running", etc.) are forbidden as the AUTHORIZATION for
 setting `is_background`. That rule is what protects against the
 ghost-row problem the former `BackgroundClassifier` had. The TRIGGER
-for stamping an already-authorized row is not a classifier; it's the
-observable moment at which the wire-typed commitment becomes visible.
-Valid triggers are a model-produced yield (text/reasoning delta), the
-turn boundary catchall, or the canonical typed
+for stamping an already-authorized row is not a classifier; it's the observable
+moment at which the wire-typed commitment becomes visible. The canonical typed
 `item/commandExecution/terminalInteraction` notification for an empty
-`write_stdin` poll against that unified-exec process. The terminal
-interaction trigger is process-scoped and only applies after
-`unifiedExecStartup` has already authorized the tracker. See
+`write_stdin` poll can also stamp the matching process, because that poll is
+itself model-visible evidence that the PTY is a background terminal. See
 `internal/triage/codex_background.go`.
 
 **Rationale.** Codex has no `run_in_background` flag on ThreadItems, but
@@ -686,9 +683,11 @@ after `yield_time_ms` (10s default) while the PTY keeps running in
 `UnifiedExecProcessManager`. The tool call item stays `inProgress` until
 `spawn_exit_watcher` eventually fires `ExecCommandEnd` — potentially
 across turns, up to `background_terminal_max_timeout` (1h default).
-`source: "unifiedExecStartup"` is the unambiguous wire signal for "this
-item is a background-terminal candidate"; treating such items as
-backgrounded is not the ghost-row problem the old classifier had.
+`source: "unifiedExecStartup"` is the unambiguous wire signal for "this item is
+a unified exec candidate"; the raw tool result is the unambiguous signal for
+"this candidate yielded to the model as a background terminal." Treating only
+that yielded subset as backgrounded is not the ghost-row problem the old
+classifier had.
 
 `spawn_agent` child threads live on their own `thread_id` and the
 parent's `spawn_agent` tool_call completes on the wire immediately. The
@@ -708,14 +707,14 @@ The former `BackgroundClassifier` at
 `is_background=true`.
 
 **Test.** Codex projector unit tests:
-- `TestCodexBackgroundProjector_TextDeltaAfterYieldStampsBackground` —
-  yield stamps a unifiedExec row.
-- `TestCodexBackgroundProjector_ItemCompletedBeforeYieldLeavesNormal` —
-  synchronous command (no yield) never gets flagged.
-- `TestCodexBackgroundProjector_ParallelSiblingsDontTriggerYield` —
-  sibling tool-starts don't imply a yield.
-- `TestCodexBackgroundProjector_TurnCompletedStampsBackgroundOnRemaining`
-  — turn-close catchall.
+- `TestCodexUnifiedExecStartWaitsForRawYieldResult` — text,
+  reasoning, and turn-complete events do not background unified exec without
+  the raw running result; the raw result does.
+- `TestCodexUnifiedExecQuickCompletionPersistsNormalCommand` —
+  synchronous command result persists as a normal command row.
+- `TestCodexUnifiedExecCompletionBeforeYieldResultDoesNotPersistQuickCommand`
+  — process-exit completion waits for the model-visible raw result before
+  choosing background vs foreground transcript history.
 - `TestCodexSubagentRunningPastTurnEnd_Backgrounded` — spawn_agent
   with running child stamps background at parent turn close.
 - `TestCodexSubagentCompletion_WaitResolvesBackgroundedSpawn` and

@@ -26,10 +26,10 @@ import (
 //     "Interacted with background terminal" marker, but never persist
 //     stdin bytes because interactive input can contain secrets.
 //
-// Empty polls always leave a visible wait carrier. Command item/completed owns
-// final output/status and is persisted as the next sibling when the carrier is
-// flushed. Interactive markers can still carry completed output payloads for
-// legacy/non-poll signals.
+// Empty polls leave a visible wait carrier only when they can be correlated to
+// a tracked unified-exec PTY. Command item/completed owns final output/status
+// and is persisted as the next sibling when the carrier is flushed. Interactive
+// markers can still carry completed output payloads for legacy/non-poll signals.
 
 // terminalInteractionMeta is the Meta shape populated by
 // buildTerminalInteractionMeta in the Codex parser. Only the fields we
@@ -65,6 +65,10 @@ func decodeTerminalInteractionMeta(raw json.RawMessage) terminalInteractionMeta 
 //     fall back to store.LastTurnIndex: attaching a live
 //     terminal_interaction to a CLOSED turn would make the completion
 //     divider appear below a row that happened AFTER it.
+//   - Empty polls require a tracked Codex unified-exec PTY after applying
+//     the poll's own background signal. Untracked polls are stale or missing
+//     context, so persisting them would create detached "waited" rows that
+//     Codex TUI never fabricates from process completion alone.
 //   - Stable ids use `waited:<processID>:<turn_index>:<seq>` for wait
 //     carriers and `interacted:<processID>:<turn_index>:<seq>` for forwarded
 //     stdin. Empty polls for the same process can reuse their prior id so
@@ -80,12 +84,6 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		return nil
 	}
 
-	// A terminal interaction is a timeline boundary even though Codex does
-	// not emit a normal tool-start event for it. Close the current assistant
-	// text/thinking block first so any post-wait assistant text starts a new
-	// row instead of appending onto the pre-wait sentence.
-	r.settleStreamingBeforeTimelineBoundary(evt, "terminal interaction")
-
 	now := eventTimestampMillis(evt)
 	itemID := ""
 	if isPoll {
@@ -93,12 +91,22 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 			r.settleCodexTerminalWaitsExcept(evt.ThreadID, meta.ProcessID)
 		}
 		r.markCodexUnifiedExecProcessBackgrounded(evt.ThreadID, meta.ProcessID)
+		if !r.hasCodexBackgroundTerminalForProcess(evt.ThreadID, meta.ProcessID) {
+			log.Printf("triage: terminal_interaction poll on %s for untracked process %q; dropping", evt.ThreadID, meta.ProcessID)
+			return nil
+		}
 		itemID = r.codexTerminalWaitItemIDForProcess(evt.ThreadID, meta.ProcessID, turnIndex)
 	} else {
 		if err := r.settleCodexTerminalWaitForProcess(evt.ThreadID, meta.ProcessID); err != nil {
 			return fmt.Errorf("terminal_interaction settle active wait %s: %w", meta.ProcessID, err)
 		}
 	}
+	// A valid terminal interaction is a timeline boundary even though Codex does
+	// not emit a normal tool-start event for it. Close the current assistant
+	// text/thinking block first so any post-wait assistant text starts a new row
+	// instead of appending onto the pre-wait sentence.
+	r.settleStreamingBeforeTimelineBoundary(evt, "terminal interaction")
+
 	if itemID == "" {
 		seq := r.nextTerminalInteractionSequence(evt.ThreadID, turnIndex, meta.ProcessID)
 		itemID = terminalInteractionID(meta.ProcessID, turnIndex, seq, isPoll)

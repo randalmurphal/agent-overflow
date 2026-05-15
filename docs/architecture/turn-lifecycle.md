@@ -69,8 +69,9 @@ Codex has no `run_in_background` flag, but it still has backgrounded
 work. Triage may stamp `is_background=true` only from wire-typed
 signals:
 
-- `CommandExecution.source == "unifiedExecStartup"` for a yielded
-  `exec_command` whose PTY keeps running after the model moves on.
+- The raw `exec_command` result for a `unifiedExecStartup` command reports
+  `Process running with session ID ...`, proving the model saw a resumable
+  background PTY instead of an initial-wait completion.
 - `collabAgentToolCall` `spawn_agent` whose `agentsStates` still
   reports a non-terminal child when the parent yields or reaches
   `turn/completed`.
@@ -87,11 +88,11 @@ Codex `unifiedExecStartup` command executions are the exception to the
 persisted-launch-row shape. Their starts are tracked as transient
 running-tray state so the user can see the command immediately, but
 they are not written into transcript history at start time. If the
-command completes before a yield, triage persists one normal command
-row with its output. If Codex yields while the command is still
-running, the transient tray item flips to `is_background=true`; its
-output becomes chat history only when Codex explicitly polls the
-terminal.
+command completes before the model-visible raw result says it yielded, triage
+waits for that raw result before deciding whether to persist one normal command
+row. If Codex yields while the command is still running, the transient tray item
+flips to `is_background=true`; its output becomes chat history only when Codex
+explicitly polls the terminal.
 
 The retired `BackgroundClassifier` heuristic must not come back.
 Background authorization comes from the wire fields above; model

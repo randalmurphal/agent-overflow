@@ -400,6 +400,8 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		return r.handleSubagentNotification(evt)
 	case provider.EventSubagentStatus:
 		return r.handleSubagentStatus(evt)
+	case provider.EventCodexExecResult:
+		return r.handleCodexExecResult(evt)
 	case provider.EventTerminalInteraction:
 		return r.handleTerminalInteraction(evt)
 	case provider.EventUserText:

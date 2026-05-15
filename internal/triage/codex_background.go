@@ -18,8 +18,9 @@ import (
 // wire-typed signal, never from event-ordering heuristics. The sanctioned
 // authorization signals today:
 //
-//   1. CommandExecution.source == "unifiedExecStartup" — a command that
-//      the model yielded on while its PTY kept running.
+//   1. The raw exec_command result reported "Process running with session ID",
+//      or a typed empty write_stdin poll targeted the process. These are the
+//      model-visible yield/wait signals for unified exec.
 //   2. A collabAgentToolCall spawn_agent whose agentsStates map still
 //      reports at least one child thread in a non-terminal state when
 //      the parent yields or its turn closes.
@@ -28,16 +29,16 @@ import (
 // It tracks per-thread inProgress unifiedExec items in transient state
 // and spawn_agent starts in transient state. A unifiedExec is shown in
 // the running-task tray immediately, but it only becomes a background
-// task when a typed trigger proves Codex moved on while the PTY kept
-// running: model output, a turn boundary, or an explicit empty
-// write_stdin wait against that process. Completed background output
-// becomes transcript history only after an explicit terminal wait/poll,
-// as a command completion row. A spawn_agent start becomes transcript
-// history only when Codex emits the terminal spawn completion.
+// task when a typed trigger proves the model saw a resumable process or
+// explicitly waited on it. Completed background output becomes transcript
+// history only after an explicit terminal wait/poll, as a command completion
+// row. A spawn_agent start becomes transcript history only when Codex emits the
+// terminal spawn completion.
 //
-// The correlation is bounded: quick unifiedExec entries are dropped on
-// item/completed, completed backgrounded unifiedExec entries are
-// retained only long enough for tray visibility / wait-row enrichment,
+// The correlation is bounded: quick unifiedExec entries are dropped after the
+// raw exec_command result confirms initial completion, completed backgrounded
+// unifiedExec entries are retained only long enough for tray visibility /
+// wait-row enrichment,
 // pending spawn_agent starts are dropped at the turn boundary if no
 // terminal spawn completion arrived, completed spawn_agent entries are
 // dropped on wait/subagent notification, and all thread state clears on
@@ -65,6 +66,9 @@ const (
 type unifiedExecTracker struct {
 	backgrounded bool
 	completed    bool
+	pending      bool
+	pruneQueued  bool
+	modelResult  string
 	launchID     string
 	processID    string
 	command      string
@@ -133,6 +137,17 @@ type codexBackgroundCompletionOptions struct {
 	waitCarrierID   string
 }
 
+const (
+	codexExecResultRunning = "running"
+	codexExecResultExited  = "exited"
+)
+
+type codexExecResultMeta struct {
+	ProcessID string `json:"process_id"`
+	Result    string `json:"result"`
+	Command   string `json:"command"`
+}
+
 // codexBackgroundState holds the per-thread correlation state for
 // Codex's background projection. All access is synchronized via
 // Router.mu — the per-observer functions each take the lock around
@@ -147,9 +162,8 @@ type codexBackgroundState struct {
 	// TerminalInteraction events can persist the completed command row
 	// without scanning every tracker in the hot path.
 	unifiedExecByProcess map[string]string
-	// pendingUnifiedExec counts trackers that have not yet been marked
-	// backgrounded. Text/thinking deltas are hot-path events, so this
-	// prevents repeated scans once every live command has already yielded.
+	// pendingUnifiedExec counts trackers whose initial exec_command raw result
+	// has not yet decided foreground completion vs background yield.
 	pendingUnifiedExec int
 	// pendingWaitByProcess maps process_id → latest empty-stdin
 	// terminal_interaction row waiting on a still-running backgrounded
@@ -386,40 +400,32 @@ func (r *Router) scheduleCodexCompletedTrackerPrune(threadID, launchID string) {
 	})
 }
 
-func (r *Router) markCodexUnifiedExecBackgrounded(threadID, excludeItemID string) {
-	changed := false
-	r.mu.Lock()
-	state := r.codexBackground[threadID]
-	if state != nil {
-		if state.pendingUnifiedExec == 0 {
-			r.mu.Unlock()
-			return
-		}
-		for id, tracker := range state.unifiedExec {
-			if id == excludeItemID || tracker.backgrounded || tracker.completed {
-				continue
-			}
-			if markCodexUnifiedExecTrackerBackgroundedLocked(state, tracker, time.Now().UnixMilli()) {
-				changed = true
-			}
-		}
+func queueCodexCompletedTrackerPruneLocked(tracker *unifiedExecTracker) bool {
+	if tracker == nil || !tracker.completed || tracker.pruneQueued {
+		return false
 	}
-	r.mu.Unlock()
-	if changed {
-		r.emitCodexBackgroundTasksChanged(threadID)
-	}
+	tracker.pruneQueued = true
+	return true
 }
 
-func markCodexUnifiedExecTrackerBackgroundedLocked(state *codexBackgroundState, tracker *unifiedExecTracker, now int64) bool {
-	if state == nil || tracker == nil || tracker.backgrounded || tracker.completed {
+func markCodexUnifiedExecTrackerYieldedLocked(state *codexBackgroundState, tracker *unifiedExecTracker, now int64) bool {
+	if state == nil || tracker == nil || tracker.backgrounded {
 		return false
 	}
 	tracker.backgrounded = true
 	tracker.updatedAt = now
+	clearCodexUnifiedExecPendingLocked(state, tracker)
+	return true
+}
+
+func clearCodexUnifiedExecPendingLocked(state *codexBackgroundState, tracker *unifiedExecTracker) {
+	if state == nil || tracker == nil || !tracker.pending {
+		return
+	}
+	tracker.pending = false
 	if state.pendingUnifiedExec > 0 {
 		state.pendingUnifiedExec--
 	}
-	return true
 }
 
 func (r *Router) markCodexUnifiedExecProcessBackgrounded(threadID, processID string) {
@@ -438,7 +444,7 @@ func (r *Router) markCodexUnifiedExecProcessBackgrounded(threadID, processID str
 				rebindCodexUnifiedExecProcessLocked(state, tracker, processID)
 			}
 		}
-		if markCodexUnifiedExecTrackerBackgroundedLocked(state, tracker, time.Now().UnixMilli()) {
+		if markCodexUnifiedExecTrackerYieldedLocked(state, tracker, time.Now().UnixMilli()) {
 			changed = true
 		}
 	}
@@ -541,6 +547,7 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 		state.unifiedExec[itemID] = &unifiedExecTracker{
 			launchID:  itemID,
 			processID: meta.ProcessID,
+			pending:   true,
 			command:   codexCommandFromMeta(evt.Meta),
 			summary:   summary,
 			parentID:  eventParentID(evt),
@@ -795,6 +802,21 @@ func (r *Router) codexTerminalWaitItemIDForProcess(threadID, processID string, t
 	return ""
 }
 
+func (r *Router) hasCodexBackgroundTerminalForProcess(threadID, processID string) bool {
+	processID = strings.TrimSpace(processID)
+	if processID == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.codexBackground[threadID]
+	if state == nil {
+		return false
+	}
+	tracker := codexUnifiedExecTrackerByProcessLocked(state, processID)
+	return tracker != nil && tracker.backgrounded
+}
+
 func (r *Router) settleCodexTerminalWaitCarrier(threadID, itemID string) error {
 	itemID = strings.TrimSpace(itemID)
 	if itemID == "" {
@@ -867,6 +889,99 @@ func rebindCodexUnifiedExecProcessLocked(state *codexBackgroundState, tracker *u
 	state.unifiedExecByProcess[processID] = tracker.launchID
 }
 
+func decodeCodexExecResultMeta(raw json.RawMessage) codexExecResultMeta {
+	var decoded codexExecResultMeta
+	if len(raw) == 0 {
+		return decoded
+	}
+	_ = json.Unmarshal(raw, &decoded)
+	decoded.ProcessID = strings.TrimSpace(decoded.ProcessID)
+	decoded.Result = strings.TrimSpace(decoded.Result)
+	decoded.Command = strings.TrimSpace(decoded.Command)
+	return decoded
+}
+
+// handleCodexExecResult records the model-visible result of the original
+// exec_command call. A "running" result is the explicit yield signal; command
+// completion for that PTY stays out of the transcript until write_stdin polls
+// it. An "exited" result releases any already-completed tracker as a normal
+// quick command.
+func (r *Router) handleCodexExecResult(evt provider.ProviderEvent) error {
+	meta := decodeCodexExecResultMeta(evt.Meta)
+	itemID := strings.TrimSpace(evt.ItemID)
+	if itemID == "" || meta.Result == "" {
+		return nil
+	}
+
+	var quick unifiedExecTracker
+	persistQuick := false
+	changed := false
+	schedulePrune := false
+	r.mu.Lock()
+	state := r.codexBackground[evt.ThreadID]
+	if state != nil {
+		tracker := state.unifiedExec[itemID]
+		if tracker == nil && meta.ProcessID != "" {
+			tracker = codexUnifiedExecTrackerByProcessLocked(state, meta.ProcessID)
+		}
+		if tracker != nil {
+			rebindCodexUnifiedExecProcessLocked(state, tracker, meta.ProcessID)
+			tracker.modelResult = meta.Result
+			if meta.Command != "" {
+				tracker.command = meta.Command
+			}
+			tracker.meta = mergeRawJSONObject(tracker.meta, evt.Meta)
+			tracker.updatedAt = eventTimestampMillis(evt)
+			switch meta.Result {
+			case codexExecResultRunning:
+				if markCodexUnifiedExecTrackerYieldedLocked(state, tracker, eventTimestampMillis(evt)) {
+					changed = true
+				}
+				if queueCodexCompletedTrackerPruneLocked(tracker) {
+					schedulePrune = true
+				}
+			case codexExecResultExited:
+				if tracker.completed && !tracker.backgrounded {
+					quick = *tracker
+					removeCodexUnifiedExecTrackerLocked(state, tracker)
+					persistQuick = true
+					changed = true
+				}
+			}
+		}
+	}
+	r.mu.Unlock()
+	if schedulePrune {
+		r.scheduleCodexCompletedTrackerPrune(evt.ThreadID, itemID)
+	}
+	if changed {
+		r.emitCodexBackgroundTasksChanged(evt.ThreadID)
+	}
+	if !persistQuick {
+		return nil
+	}
+	quickEvt := evt
+	quickEvt.ItemID = quick.launchID
+	quickEvt.ItemType = "commandExecution"
+	quickEvt.Meta = quick.meta
+	quickEvt.Content = quick.output.String()
+	quickEvt.Replace = true
+	return r.persistQuickCodexCommand(quickEvt, quick)
+}
+
+func removeCodexUnifiedExecTrackerLocked(state *codexBackgroundState, tracker *unifiedExecTracker) {
+	if state == nil || tracker == nil {
+		return
+	}
+	if tracker.processID != "" {
+		delete(state.unifiedExecByProcess, tracker.processID)
+		delete(state.pendingWaitByProcess, tracker.processID)
+		delete(state.waitCarrierByProcess, tracker.processID)
+	}
+	clearCodexUnifiedExecPendingLocked(state, tracker)
+	delete(state.unifiedExec, tracker.launchID)
+}
+
 // observeCodexCommandOutput buffers output for live Codex unified exec
 // commands and prevents the generic command-output path from creating
 // ghost timeline rows for background PTYs.
@@ -931,6 +1046,8 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 	handled := false
 	backgrounded := false
 	hasPendingWait := false
+	waitingForModelResult := false
+	schedulePrune := false
 	r.mu.Lock()
 	state := r.codexBackground[evt.ThreadID]
 	now := eventTimestampMillis(evt)
@@ -941,7 +1058,6 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 	if state != nil && state.unifiedExec[itemID] != nil {
 		live := state.unifiedExec[itemID]
 		handled = true
-		backgrounded = live.backgrounded
 		live.completed = true
 		live.status = status
 		live.exitCode = exitCode
@@ -955,17 +1071,21 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 		if evt.Content != "" {
 			live.output.Replace(evt.Content)
 		}
+		if live.modelResult == codexExecResultRunning && !live.backgrounded {
+			markCodexUnifiedExecTrackerYieldedLocked(state, live, now)
+		}
+		backgrounded = live.backgrounded
 		tracker = *live
 		if !live.backgrounded {
-			if live.processID != "" {
-				delete(state.unifiedExecByProcess, live.processID)
-				delete(state.pendingWaitByProcess, live.processID)
-				delete(state.waitCarrierByProcess, live.processID)
+			if live.modelResult == "" {
+				waitingForModelResult = true
+				clearCodexUnifiedExecPendingLocked(state, live)
+				if queueCodexCompletedTrackerPruneLocked(live) {
+					schedulePrune = true
+				}
+			} else {
+				removeCodexUnifiedExecTrackerLocked(state, live)
 			}
-			if state.pendingUnifiedExec > 0 {
-				state.pendingUnifiedExec--
-			}
-			delete(state.unifiedExec, itemID)
 		} else {
 			if live.processID != "" {
 				if wait, ok := state.pendingWaitByProcess[live.processID]; ok {
@@ -973,10 +1093,15 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 					hasPendingWait = true
 				}
 			}
-			r.scheduleCodexCompletedTrackerPrune(evt.ThreadID, itemID)
+			if queueCodexCompletedTrackerPruneLocked(live) {
+				schedulePrune = true
+			}
 		}
 	}
 	r.mu.Unlock()
+	if schedulePrune {
+		r.scheduleCodexCompletedTrackerPrune(evt.ThreadID, itemID)
+	}
 	if !handled {
 		if pruned {
 			r.emitCodexBackgroundTasksChanged(evt.ThreadID)
@@ -996,6 +1121,10 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 			r.clearCodexCompletedOutputTracker(evt.ThreadID, tracker.processID)
 			return true, nil
 		}
+		r.emitCodexBackgroundTasksChanged(evt.ThreadID)
+		return true, nil
+	}
+	if waitingForModelResult {
 		r.emitCodexBackgroundTasksChanged(evt.ThreadID)
 		return true, nil
 	}
@@ -1193,6 +1322,9 @@ func (r *Router) ListLiveCodexBackgroundTasks(threadID string, nowMillis, retent
 	trackers := make([]unifiedExecTracker, 0, len(state.unifiedExec))
 	for _, tracker := range state.unifiedExec {
 		if tracker == nil {
+			continue
+		}
+		if tracker.completed && !tracker.backgrounded {
 			continue
 		}
 		if tracker.completed && tracker.completedAt < nowMillis-codexCompletedOutputRetentionMillis {
@@ -1491,29 +1623,22 @@ func subagentStatusToItemStatusMeta(agentStatus string) json.RawMessage {
 }
 
 // observeCodexModelContent is called before assistant-visible content that
-// ends a terminal wait streak in the Codex TUI. Any tracked unifiedExec items,
-// plus spawn_agent items with running children, that haven't already been
-// stamped get flipped to is_background=true and re-emitted so the tray and
-// timeline reflect the new state.
-//
-// The distinction between "tool-call batch" (multiple tools dispatched
-// in one response) and "tool → yield" is what keeps this precise: a
-// text/plan delta is unambiguous evidence that the model moved on while the
-// command / child agent is still running. EventToolStart explicitly does NOT
-// participate in yield detection — sibling tool starts in a parallel batch
-// fire before any model text.
+// ends a terminal wait streak in the Codex TUI. It settles active wait carriers
+// only; unified exec backgrounding is owned by the model-visible raw
+// exec_command result or by a tracked empty write_stdin poll.
 func (r *Router) observeCodexModelContent(threadID string) {
 	r.settleCodexTerminalWaits(threadID)
-	r.markCodexUnifiedExecBackgrounded(threadID, "")
 }
 
 func (r *Router) observeCodexModelReasoning(threadID string) {
-	r.markCodexUnifiedExecBackgrounded(threadID, "")
+	// Reasoning does not flush terminal wait streaks in Codex TUI and is not a
+	// backgrounding signal for unified exec.
 }
 
-// observeCodexTurnComplete is the unifiedExec catchall. If a tracked
-// command stayed inProgress through the turn boundary, Codex has yielded
-// while the PTY is still running, so the command becomes live tray state.
+// observeCodexTurnComplete closes active wait carriers and clears pending
+// spawn-agent starts. Unified exec trackers remain undecided until the raw
+// exec_command result arrives; using turn completion as a yield heuristic
+// reorders command completions ahead of what the model actually observed.
 func (r *Router) observeCodexTurnComplete(threadID string) {
 	r.settleCodexTerminalWaits(threadID)
 	r.mu.Lock()
@@ -1523,24 +1648,8 @@ func (r *Router) observeCodexTurnComplete(threadID string) {
 		return
 	}
 	spawnChanged := clearPendingCodexSpawnTrackersLocked(state)
-	if state.pendingUnifiedExec == 0 {
-		r.mu.Unlock()
-		if spawnChanged {
-			r.emitCodexBackgroundTasksChanged(threadID)
-		}
-		return
-	}
-	unifiedChanged := false
-	for _, tracker := range state.unifiedExec {
-		if tracker.backgrounded || tracker.completed {
-			continue
-		}
-		if markCodexUnifiedExecTrackerBackgroundedLocked(state, tracker, time.Now().UnixMilli()) {
-			unifiedChanged = true
-		}
-	}
 	r.mu.Unlock()
-	if unifiedChanged || spawnChanged {
+	if spawnChanged {
 		r.emitCodexBackgroundTasksChanged(threadID)
 	}
 }

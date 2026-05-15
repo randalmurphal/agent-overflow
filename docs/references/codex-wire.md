@@ -59,13 +59,14 @@ The item stays `status: inProgress` until `spawn_exit_watcher` fires
 `codex-rs/core/src/unified_exec/async_watcher.rs`.
 
 **Implication for agent-overflow**:
-`source: "unifiedExecStartup"` is the wire-typed signal that an item
-may become a background terminal. Per
+`source: "unifiedExecStartup"` is the wire-typed signal that an item may
+become a background terminal. The model-visible raw `exec_command` result is
+the yield discriminator: `Process running with session ID ...` authorizes the
+background projection, while `Process exited with code ...` authorizes a
+normal foreground command row. Per
 [invariant 25](../architecture/invariants.md#25-codex-backgrounding-uses-wire-typed-signals-never-heuristics),
-setting `is_background=true` on such items when they yield is the
-sanctioned path — heuristic classifiers (event-ordering, etc.) are
-forbidden because that's what produced ghost rows in the former
-`BackgroundClassifier` (previously at
+heuristic classifiers (event-ordering, etc.) are forbidden because that's
+what produced ghost rows in the former `BackgroundClassifier` (previously at
 `internal/provider/codex/background.go`, retired).
 
 On the wire, Codex items close via `item/completed` using the same

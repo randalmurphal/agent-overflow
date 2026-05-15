@@ -73,6 +73,13 @@ const (
 	// Codex's injected <subagent_notification> fragments.
 	EventSubagentStatus EventKind = "subagent_status"
 
+	// EventCodexExecResult is a Codex-only internal signal derived from the
+	// raw `exec_command` function-call output. It records whether the model
+	// was told the process exited during the initial wait or yielded with a
+	// resumable session id. Triage uses it to decide whether a unified exec
+	// completion is a normal command row or delayed background output.
+	EventCodexExecResult EventKind = "codex_exec_result"
+
 	// EventTerminalInteraction surfaces Codex's
 	// `TerminalInteractionNotification` — the wire signal when the model
 	// calls `write_stdin` against a backgrounded unified-exec PTY. An
@@ -132,6 +139,7 @@ var AllEventKinds = []EventKind{
 	EventBackgroundTaskNotification,
 	EventSubagentNotification,
 	EventSubagentStatus,
+	EventCodexExecResult,
 	EventTerminalInteraction,
 	EventUserText,
 	EventDiff,

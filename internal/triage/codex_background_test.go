@@ -60,6 +60,27 @@ func buildUnifiedExecCompleteMeta(t *testing.T, status, processID, command strin
 	return encoded
 }
 
+func buildCodexExecResultMeta(t *testing.T, result, processID, command string) json.RawMessage {
+	t.Helper()
+	meta := map[string]any{
+		"result": result,
+	}
+	if processID != "" {
+		meta["process_id"] = processID
+	}
+	if command != "" {
+		meta["command"] = command
+		meta["input"] = map[string]any{
+			"command": command,
+		}
+	}
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("marshal codex exec result meta: %v", err)
+	}
+	return encoded
+}
+
 func seedOpenTurn(t *testing.T, router *Router, st *store.Store, threadID string, turnIndex int) {
 	t.Helper()
 	router.setOpenTurn(threadID, turnIndex)
@@ -73,7 +94,19 @@ func seedOpenTurn(t *testing.T, router *Router, st *store.Store, threadID string
 	}
 }
 
-func TestCodexUnifiedExecStartIsVisibleBeforeYield(t *testing.T) {
+func markCodexExecRunning(t *testing.T, router *Router, threadID, turnID, itemID, processID, command string) {
+	t.Helper()
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventCodexExecResult, ThreadID: threadID, ItemID: itemID,
+		ItemType: "commandExecution", TurnID: turnID,
+		Meta:      buildCodexExecResultMeta(t, codexExecResultRunning, processID, command),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("codex exec running result: %v", err)
+	}
+}
+
+func TestCodexUnifiedExecStartWaitsForRawYieldResult(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -107,8 +140,34 @@ func TestCodexUnifiedExecStartIsVisibleBeforeYield(t *testing.T) {
 	if len(live) != 1 {
 		t.Fatalf("live tray item count = %d, want 1", len(live))
 	}
-	if live[0].ID != "cmd-live" || !live[0].IsBackground || live[0].Status != statusRunning {
-		t.Fatalf("unexpected live item: %+v", live[0])
+	if live[0].ID != "cmd-live" || live[0].IsBackground || live[0].Status != statusRunning {
+		t.Fatalf("text delta should not background unified exec without raw running result: %+v", live[0])
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventThinking, ThreadID: "t1", Content: "thinking",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("thinking: %v", err)
+	}
+	live = router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
+	if len(live) != 1 || live[0].IsBackground {
+		t.Fatalf("reasoning should not background unified exec without raw running result: %+v", live)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1", TurnID: "turn-0",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+	live = router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
+	if len(live) != 1 || live[0].IsBackground {
+		t.Fatalf("turn complete should not background unified exec without raw running result: %+v", live)
+	}
+	markCodexExecRunning(t, router, "t1", "turn-0", "cmd-live", "pid-live", "sleep 15")
+	live = router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
+	if len(live) != 1 || live[0].ID != "cmd-live" || !live[0].IsBackground || live[0].Status != statusRunning {
+		t.Fatalf("raw running result should background unified exec: %+v", live)
 	}
 	if countEvents(*emissions, "provider:background_tasks_changed") == 0 {
 		t.Fatal("start did not emit provider:background_tasks_changed")
@@ -147,6 +206,17 @@ func TestCodexUnifiedExecQuickCompletionPersistsNormalCommand(t *testing.T) {
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("tool complete: %v", err)
+	}
+	if _, found, err := st.GetThreadItem("t1", "cmd-quick"); err != nil || found {
+		t.Fatalf("quick command should wait for model-visible exec result before persisting: found=%v err=%v", found, err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventCodexExecResult, ThreadID: "t1", ItemID: "cmd-quick",
+		ItemType: "commandExecution", TurnID: "turn-0",
+		Meta:      buildCodexExecResultMeta(t, codexExecResultExited, "", "echo ok"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("codex exec result: %v", err)
 	}
 
 	row, found, err := st.GetThreadItem("t1", "cmd-quick")
@@ -251,6 +321,7 @@ func TestCodexUnifiedExecBackgroundCompletionStaysOutOfTimeline(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("text delta: %v", err)
 	}
+	markCodexExecRunning(t, router, "t1", "turn-0", "cmd-bg", "pid-bg", "sleep 15")
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-bg",
 		ItemType: "commandExecution", TurnID: "turn-0", Content: "done\n",
@@ -280,6 +351,114 @@ func TestCodexUnifiedExecBackgroundCompletionStaysOutOfTimeline(t *testing.T) {
 	}
 	if live[1].CompletionOf != "cmd-bg" || live[1].Status != statusCompleted {
 		t.Fatalf("unexpected completion tray item: %+v", live[1])
+	}
+}
+
+func TestCodexUnifiedExecYieldResultBackgroundsBeforeCompletion(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-bg",
+		ItemType: "commandExecution", TurnID: "turn-0",
+		Meta:      buildUnifiedExecStartMeta(t, "pid-bg", "sleep 1; echo done"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventCodexExecResult, ThreadID: "t1", ItemID: "cmd-bg",
+		ItemType: "commandExecution", TurnID: "turn-0",
+		Meta:      buildCodexExecResultMeta(t, codexExecResultRunning, "pid-bg", "sleep 1; echo done"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("codex exec result: %v", err)
+	}
+
+	completeMeta := buildUnifiedExecCompleteMeta(t, "completed", "pid-bg", "sleep 1; echo done", 0)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-bg",
+		ItemType: "commandExecution", TurnID: "turn-0", Content: "done\n",
+		Meta: completeMeta, Replace: true, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("command output: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "cmd-bg",
+		ItemType: "commandExecution", TurnID: "turn-0", Meta: completeMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool complete: %v", err)
+	}
+
+	if _, found, err := st.GetThreadItem("t1", "cmd-bg"); err != nil || found {
+		t.Fatalf("yielded command should not persist quick row: found=%v err=%v", found, err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTerminalInteraction, ThreadID: "t1",
+		Meta:      terminalInteractionMetaBlob(t, "pid-bg", ""),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("terminal interaction: %v", err)
+	}
+	if _, found, err := st.GetThreadItem("t1", nextToolCompletionID("cmd-bg")); err != nil || !found {
+		t.Fatalf("background completion missing after wait: found=%v err=%v", found, err)
+	}
+}
+
+func TestCodexUnifiedExecCompletionBeforeYieldResultDoesNotPersistQuickCommand(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-bg",
+		ItemType: "commandExecution", TurnID: "turn-0",
+		Meta:      buildUnifiedExecStartMeta(t, "pid-bg", "sleep 1; echo done"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool start: %v", err)
+	}
+	completeMeta := buildUnifiedExecCompleteMeta(t, "completed", "pid-bg", "sleep 1; echo done", 0)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-bg",
+		ItemType: "commandExecution", TurnID: "turn-0", Content: "done\n",
+		Meta: completeMeta, Replace: true, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("command output: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "cmd-bg",
+		ItemType: "commandExecution", TurnID: "turn-0", Meta: completeMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool complete: %v", err)
+	}
+
+	if _, found, err := st.GetThreadItem("t1", "cmd-bg"); err != nil || found {
+		t.Fatalf("completion should wait for raw exec result before quick-persisting: found=%v err=%v", found, err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventCodexExecResult, ThreadID: "t1", ItemID: "cmd-bg",
+		ItemType: "commandExecution", TurnID: "turn-0",
+		Meta:      buildCodexExecResultMeta(t, codexExecResultRunning, "pid-bg", "sleep 1; echo done"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("codex exec result: %v", err)
+	}
+	if _, found, err := st.GetThreadItem("t1", "cmd-bg"); err != nil || found {
+		t.Fatalf("yielded command created quick row after late result: found=%v err=%v", found, err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTerminalInteraction, ThreadID: "t1",
+		Meta:      terminalInteractionMetaBlob(t, "pid-bg", ""),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("terminal interaction: %v", err)
+	}
+	if _, found, err := st.GetThreadItem("t1", nextToolCompletionID("cmd-bg")); err != nil || !found {
+		t.Fatalf("background completion missing after late-yield wait: found=%v err=%v", found, err)
 	}
 }
 
@@ -1997,17 +2176,7 @@ func TestCodexSubagentNotificationWaitsForAllChildren(t *testing.T) {
 	}
 }
 
-// TestCodexUnifiedExecBackgroundedOnUserInterrupt pins the truncation
-// branch of observeCodexTurnComplete. A pre-yield unifiedExec PTY survives
-// `Op::Interrupt` on the Codex side (`core/src/tasks/mod.rs:632-637` —
-// `close_unified_exec_processes` is a separate Op `abort_all_tasks`
-// doesn't invoke). Our triage must mirror that truth: stamp the tracker
-// `backgrounded=true` so the tray's Stop-All button enables and the user
-// can fire `thread/backgroundTerminals/clean` against it. Without the
-// stamp the tracker stays `backgrounded=false`, the row renders as
-// non-stoppable in the tray, and the user has no UI path to kill a
-// process Codex says is still running.
-func TestCodexUnifiedExecBackgroundedOnUserInterrupt(t *testing.T) {
+func TestCodexUnifiedExecTurnCompleteDoesNotBackgroundWithoutRawResult(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -2023,8 +2192,6 @@ func TestCodexUnifiedExecBackgroundedOnUserInterrupt(t *testing.T) {
 		t.Fatalf("tool start: %v", err)
 	}
 
-	// Pre-fix: Stop-All would be disabled because no tasks are
-	// `IsBackground=true` yet.
 	beforeInterrupt := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
 	if len(beforeInterrupt) != 1 {
 		t.Fatalf("live tray = %d, want 1 launch row before interrupt", len(beforeInterrupt))
@@ -2033,8 +2200,6 @@ func TestCodexUnifiedExecBackgroundedOnUserInterrupt(t *testing.T) {
 		t.Fatalf("pre-yield tracker should be IsBackground=false before turn-close (no yield signal yet)")
 	}
 
-	// User-Esc → backend emits EventTurnComplete normalized from Codex's
-	// status=interrupted wire shape.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:         provider.EventTurnComplete,
 		ThreadID:     "t1",
@@ -2045,17 +2210,15 @@ func TestCodexUnifiedExecBackgroundedOnUserInterrupt(t *testing.T) {
 		t.Fatalf("turn complete truncated: %v", err)
 	}
 
-	// Post-fix: the catchall ran on the truncated path, stamping the
-	// pre-yield tracker `backgrounded=true`.
 	afterInterrupt := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
 	if len(afterInterrupt) != 1 {
 		t.Fatalf("live tray = %d, want 1 launch row after interrupt", len(afterInterrupt))
 	}
-	if !afterInterrupt[0].IsBackground {
-		t.Fatalf("user-Esc on pre-yield unifiedExec must stamp IsBackground=true (Codex PTY survives Op::Interrupt; tray needs it stoppable). Got: %+v", afterInterrupt[0])
+	if afterInterrupt[0].IsBackground {
+		t.Fatalf("turn complete without raw running result must not background unifiedExec: %+v", afterInterrupt[0])
 	}
 	if afterInterrupt[0].Status != statusRunning {
-		t.Errorf("backgrounded launch status = %q, want running (invariant 24)", afterInterrupt[0].Status)
+		t.Errorf("launch status = %q, want running", afterInterrupt[0].Status)
 	}
 }
 

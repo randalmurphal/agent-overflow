@@ -20,6 +20,7 @@ type rawToolCall struct {
 	CallID    string
 	Name      string
 	ProcessID string
+	Command   string
 	AgentType string
 	Prompt    string
 	Targets   []string
@@ -51,6 +52,11 @@ func (s *Session) rememberRawToolCall(item map[string]json.RawMessage) {
 		Name:   name,
 	}
 	switch name {
+	case "exec_command":
+		call.Command = readFlexibleString(args, "cmd")
+		if call.Command == "" {
+			call.Command = readFlexibleString(args, "command")
+		}
 	case "write_stdin":
 		call.ProcessID = readFlexibleString(args, "session_id")
 	case "spawn_agent":
@@ -82,7 +88,10 @@ func (s *Session) enrichRawToolCallOutput(params json.RawMessage, item map[strin
 		return params
 	}
 	defer s.deleteRawToolCall(callID)
-	if call.Name == "spawn_agent" {
+	switch call.Name {
+	case "exec_command":
+		s.handleRawExecCommandOutput(call, params, item)
+	case "spawn_agent":
 		s.handleRawSpawnAgentOutput(call, item)
 	}
 	extras := map[string]any{
@@ -97,6 +106,46 @@ func (s *Session) enrichRawToolCallOutput(params json.RawMessage, item map[strin
 		}
 	}
 	return mergeRawResponseItemExtras(params, extras)
+}
+
+func (s *Session) handleRawExecCommandOutput(call rawToolCall, params json.RawMessage, item map[string]json.RawMessage) {
+	if s.onEvent == nil {
+		return
+	}
+	result, processID := rawExecCommandResult(readRawString(item, "output"))
+	if result == "" {
+		return
+	}
+	if processID == "" {
+		processID = strings.TrimSpace(call.ProcessID)
+	}
+	meta := map[string]any{
+		"result": result,
+	}
+	if processID != "" {
+		meta["process_id"] = processID
+	}
+	if call.Command != "" {
+		meta["command"] = call.Command
+		meta["input"] = map[string]any{"command": call.Command}
+	}
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		encoded = []byte("{}")
+	}
+	threadID := readTopLevelString(params, "threadId")
+	if threadID == "" {
+		threadID = s.threadID
+	}
+	s.onEvent(provider.ProviderEvent{
+		Kind:      provider.EventCodexExecResult,
+		ThreadID:  threadID,
+		TurnID:    readTopLevelString(params, "turnId"),
+		ItemID:    call.CallID,
+		ItemType:  "commandExecution",
+		Meta:      encoded,
+		Timestamp: time.Now(),
+	})
 }
 
 func (s *Session) enrichRawToolCallMetadata(evt *provider.ProviderEvent) {
@@ -222,6 +271,11 @@ func rawSpawnAgentPrompt(args map[string]json.RawMessage) string {
 }
 
 func rawWriteStdinWaitResult(output string) string {
+	result, _ := rawExecCommandResult(output)
+	return result
+}
+
+func rawExecCommandResult(output string) (string, string) {
 	header := output
 	if idx := strings.Index(output, "\nOutput:"); idx >= 0 {
 		header = output[:idx]
@@ -229,13 +283,14 @@ func rawWriteStdinWaitResult(output string) string {
 	for _, line := range strings.Split(header, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "Process running with session ID ") {
-			return terminalWaitResultRunning
+			processID := strings.TrimSpace(strings.TrimPrefix(line, "Process running with session ID "))
+			return terminalWaitResultRunning, processID
 		}
 		if strings.HasPrefix(line, "Process exited with code ") {
-			return terminalWaitResultExited
+			return terminalWaitResultExited, ""
 		}
 	}
-	return ""
+	return "", ""
 }
 
 func classifyRawResponseNotification(_ string, method string, _ json.RawMessage, _ time.Time) ([]provider.ProviderEvent, bool) {

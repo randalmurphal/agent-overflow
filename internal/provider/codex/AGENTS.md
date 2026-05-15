@@ -100,16 +100,15 @@ Summary:
   include a final assistant message id on this envelope.
 - **Background terminals.** Codex has no `run_in_background` flag, but
   `exec_command` can yield back to the model while its PTY keeps
-  running. `CommandExecution.source == "unifiedExecStartup"` is the
-  wire-typed authorizing signal (per
+  running. The raw `exec_command` tool result distinguishes foreground
+  completion from background yield: `Process exited with code ...` means
+  the model saw a completed command, while `Process running with session ID
+  ...` is the model-visible background yield signal (per
   [invariant 25](../../../docs/architecture/invariants.md#25-codex-backgrounding-uses-wire-typed-signals-never-heuristics)).
-  This package surfaces `source`, `item_status`, `process_id`,
-  `agentsStates`, and `receiverThreadIds` on the event Meta via
-  `enrichItemMeta`; the projector in
-  `internal/triage/codex_background.go` stamps `is_background=true` on
-  the first model-produced yield (text/reasoning delta) or at
-  `turn/completed` as the catchall, and synthesizes the sibling
-  `tool_completion` row at completion time via `maybeDeferOrPersist`.
+  This package surfaces item lifecycle fields via `enrichItemMeta` and emits
+  an internal `EventCodexExecResult` from raw `exec_command` output so the
+  projector in `internal/triage/codex_background.go` can avoid guessing from
+  later event order.
   Heuristic event-ordering classifiers are still forbidden as the
   authorization — the yield moment is just the observable trigger for
   an already wire-authorized commitment. Per-row stop for backgrounded

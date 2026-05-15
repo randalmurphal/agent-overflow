@@ -29,17 +29,15 @@ func terminalInteractionMetaBlob(t *testing.T, processID, stdin string) json.Raw
 
 func seedTerminalInteractionBackgroundExec(t *testing.T, router *Router, threadID, processID, launchID, command string) {
 	t.Helper()
-	router.mu.Lock()
-	state := router.codexBackgroundForThread(threadID)
-	state.unifiedExecByProcess[processID] = launchID
-	state.unifiedExec[launchID] = &unifiedExecTracker{
-		launchID:     launchID,
-		processID:    processID,
-		command:      command,
-		summary:      command,
-		backgrounded: true,
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: threadID, ItemID: launchID,
+		ItemType: "commandExecution", TurnID: "turn-0",
+		Meta:      buildUnifiedExecStartMeta(t, processID, command),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed unified exec start: %v", err)
 	}
-	router.mu.Unlock()
+	markCodexExecRunning(t, router, threadID, "turn-0", launchID, processID, command)
 }
 
 // TestTerminalInteraction_EmptyStdinPersistsRow drives the primary
@@ -50,6 +48,7 @@ func TestTerminalInteraction_EmptyStdinPersistsRow(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 2)
+	seedTerminalInteractionBackgroundExec(t, router, "t1", "pid-42", "cmd-1", "sleep 10")
 
 	evt := provider.ProviderEvent{
 		Kind:      provider.EventTerminalInteraction,
@@ -78,11 +77,11 @@ func TestTerminalInteraction_EmptyStdinPersistsRow(t *testing.T) {
 	if matched == nil {
 		t.Fatalf("expected a terminal_interaction row on turn 2, got %d items", len(items))
 	}
-	if matched.Summary != "Waited for background terminal" {
-		t.Errorf("summary = %q, want %q", matched.Summary, "Waited for background terminal")
+	if matched.Summary != "Waited for background terminal: Bash: sleep 10" {
+		t.Errorf("summary = %q, want %q", matched.Summary, "Waited for background terminal: Bash: sleep 10")
 	}
-	if matched.Status != statusCompleted {
-		t.Errorf("status = %q, want %q", matched.Status, statusCompleted)
+	if matched.Status != statusRunning {
+		t.Errorf("status = %q, want %q", matched.Status, statusRunning)
 	}
 	if matched.TurnIndex != 2 {
 		t.Errorf("turn_index = %d, want 2 (current open turn)", matched.TurnIndex)
@@ -121,11 +120,8 @@ func TestTerminalInteraction_UntrackedPollDoesNotStayRunningAfterTurnComplete(t 
 	}
 
 	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
-	if len(waits) != 1 {
-		t.Fatalf("wait rows = %d, want 1", len(waits))
-	}
-	if waits[0].Status != statusCompleted {
-		t.Fatalf("untracked wait status = %q, want completed", waits[0].Status)
+	if len(waits) != 0 {
+		t.Fatalf("untracked wait rows = %d, want 0: %+v", len(waits), waits)
 	}
 }
 
@@ -163,7 +159,7 @@ func TestTerminalInteraction_StoresCommandMetadataWhenTrackerKnown(t *testing.T)
 	if matched == nil {
 		t.Fatalf("expected terminal_interaction row, got %d items", len(items))
 	}
-	if matched.Summary != "Waited for background terminal: sleep 1; echo done" {
+	if matched.Summary != "Waited for background terminal: Bash: sleep 1; echo done" {
 		t.Fatalf("summary = %q", matched.Summary)
 	}
 	if matched.Status != statusRunning {
@@ -455,18 +451,8 @@ func TestTerminalInteraction_StaleCarrierWithoutLiveTrackerClearsAtBoundary(t *t
 	}
 
 	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
-	if len(waits) != 2 {
-		t.Fatalf("wait rows after stale-carrier boundary = %d, want 2: %+v", len(waits), waits)
-	}
-	seen := make(map[string]struct{}, len(waits))
-	for _, wait := range waits {
-		seen[wait.ID] = struct{}{}
-	}
-	if _, ok := seen["waited:pid-42:2:0"]; !ok {
-		t.Fatalf("missing original wait carrier: %+v", waits)
-	}
-	if _, ok := seen["waited:pid-42:2:1"]; !ok {
-		t.Fatalf("missing fresh wait carrier after boundary: %+v", waits)
+	if len(waits) != 0 {
+		t.Fatalf("untracked stale-carrier waits = %d, want 0: %+v", len(waits), waits)
 	}
 }
 
@@ -475,6 +461,7 @@ func TestTerminalInteraction_SplitsScopedAssistantTextAroundWait(t *testing.T) {
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 	const parentToolUseID = "task-tool-1"
+	seedTerminalInteractionBackgroundExec(t, router, "t1", "pid-42", "cmd-1", "sleep 10")
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:            provider.EventTextDelta,
@@ -900,6 +887,7 @@ func TestTerminalInteraction_StableIDIdempotenceForLiteralReplay(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
+	seedTerminalInteractionBackgroundExec(t, router, "t1", "pid-42", "cmd-1", "sleep 10")
 
 	evt := provider.ProviderEvent{
 		Kind:      provider.EventTerminalInteraction,
@@ -1019,14 +1007,7 @@ func TestTerminalInteraction_DoubledResultPreservesInteractedSeq(t *testing.T) {
 	}
 }
 
-// TestTerminalInteraction_EmptyProcessIDSubstitutesDash pins the
-// fallback in terminalInteractionID: when the wire omits processId
-// (older Codex builds or partial frames), the id substitutes "-" so
-// it stays well-formed. Multiple polls in the same turn with empty
-// processIDs still differentiate by seq, so this test also verifies
-// two empty-processID events land as two distinct rows rather than
-// one overwriting the other.
-func TestTerminalInteraction_EmptyProcessIDSubstitutesDash(t *testing.T) {
+func TestTerminalInteraction_EmptyProcessIDPollIsDropped(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -1050,21 +1031,10 @@ func TestTerminalInteraction_EmptyProcessIDSubstitutesDash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list turn items: %v", err)
 	}
-	seenIDs := make(map[string]struct{})
 	for _, it := range items {
-		if it.Kind != string(provider.ItemTerminalInteraction) {
-			continue
+		if it.Kind == string(provider.ItemTerminalInteraction) {
+			t.Fatalf("empty-process poll persisted terminal interaction: %+v", it)
 		}
-		seenIDs[it.ID] = struct{}{}
-		// Every persisted row must carry the dash fallback in its id
-		// so a listing that filters by id prefix / shape stays sane
-		// even when processId was missing on the wire.
-		if !strings.HasPrefix(it.ID, "waited:-:") {
-			t.Errorf("row id %q missing 'waited:-:' prefix — empty processID fallback broke", it.ID)
-		}
-	}
-	if len(seenIDs) != 2 {
-		t.Errorf("expected 2 distinct rows for two empty-processID polls, got %d (seq counter may not advance when processID is empty)", len(seenIDs))
 	}
 }
 
@@ -1076,6 +1046,7 @@ func TestTerminalInteraction_MultiplePollsCoalesceByProcess(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
+	seedTerminalInteractionBackgroundExec(t, router, "t1", "pid-42", "cmd-1", "sleep 10")
 
 	for i := 0; i < 5; i++ {
 		evt := provider.ProviderEvent{

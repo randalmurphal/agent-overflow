@@ -23,13 +23,27 @@ func decodeE2EItemMeta(t *testing.T, raw string) map[string]any {
 	return meta
 }
 
+func codexE2EExecResultMeta(t *testing.T, result, processID, command string) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"result":     result,
+		"process_id": processID,
+		"command":    command,
+	})
+	if err != nil {
+		t.Fatalf("marshal codex exec result meta: %v", err)
+	}
+	return raw
+}
+
 // --- Codex scenario 3: yielding command projects as backgrounded ---
 
 // TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded covers the
 // wire-typed Codex projection: an item/started for a unifiedExecStartup
 // command is tracked transiently without creating a transcript row. It
 // appears in the running tray immediately, then becomes a background
-// task only after the model yields. When the command completes after
+// task only after the raw exec_command result says Codex yielded the
+// running process back to the model. When the command completes after
 // that yield, the completion remains tray-only until Codex explicitly
 // polls the background PTY with TerminalInteractionNotification. That
 // wait signal is where completed command output becomes the next chat
@@ -102,9 +116,19 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 		t.Fatalf("unexpected pre-yield tray state: %+v", liveBefore)
 	}
 
-	// Model yield: the first text delta authorizes the projector to
-	// classify the running PTY as backgrounded internally. This still
-	// does not create a transcript row.
+	// Model-visible yield: Codex returns "Process running with session ID"
+	// to the model from the original exec_command call. Text/reasoning
+	// deltas are not enough to classify the PTY as backgrounded because a
+	// foreground command may also be followed by model output.
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventCodexExecResult, ThreadID: thread.ID, ItemID: "cmd-e2e",
+		TurnID:    "turn-0",
+		Meta:      codexE2EExecResultMeta(t, "running", "pid-777", "pnpm run server"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("exec running result: %v", err)
+	}
+
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind: provider.EventTextDelta, ThreadID: thread.ID,
 		Content:   "letting the server keep running...",
@@ -238,21 +262,23 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 	}
 
 	// Seed two backgrounded unifiedExec launches through the projector
-	// (start + yield), mirroring what the real wire path produces.
+	// (start + raw exec yield result), mirroring what the real wire path
+	// produces.
 	for _, id := range []string{"cmd-stop-1", "cmd-stop-2"} {
+		command := "server for " + id
 		startMeta, _ := json.Marshal(map[string]any{
 			"source":      "unifiedExecStartup",
 			"item_status": "inProgress",
 			"process_id":  "pid-" + id,
 			"toolName":    "command_execution",
-			"input":       map[string]any{"command": "server for " + id},
+			"input":       map[string]any{"command": command},
 			"item": map[string]any{
 				"id":        id,
 				"type":      "commandExecution",
 				"source":    "unifiedExecStartup",
 				"status":    "inProgress",
 				"processId": "pid-" + id,
-				"command":   "server for " + id,
+				"command":   command,
 			},
 		})
 		if err := app.triage.Handle(provider.ProviderEvent{
@@ -261,6 +287,14 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 			Timestamp: time.Now(),
 		}); err != nil {
 			t.Fatalf("tool start %s: %v", id, err)
+		}
+		if err := app.triage.Handle(provider.ProviderEvent{
+			Kind: provider.EventCodexExecResult, ThreadID: thread.ID, ItemID: id,
+			TurnID:    "turn-0",
+			Meta:      codexE2EExecResultMeta(t, "running", "pid-"+id, command),
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("exec running result %s: %v", id, err)
 		}
 	}
 	if err := app.triage.Handle(provider.ProviderEvent{
