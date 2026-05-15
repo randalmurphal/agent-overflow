@@ -25,6 +25,13 @@ export interface ActiveTurn {
   startedAt: number;
 }
 
+export function sameActiveTurn(left: ActiveTurn | null, right: ActiveTurn | null): boolean {
+  if (left === null || right === null) return left === right;
+  return left.turnId === right.turnId
+    && left.turnIndex === right.turnIndex
+    && left.startedAt === right.startedAt;
+}
+
 // Global per-thread live-status projection for the sidebar. Chat state is
 // authoritative in the unified item stream; this store keeps the minimal
 // derived signal the thread list needs for off-pane rows (running, pending

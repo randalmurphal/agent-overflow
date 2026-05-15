@@ -1,10 +1,6 @@
 import type { CacheSnapshot } from 'virtua';
 import type { Item } from '../types/models';
-// Type-only import: SettledTurn lives next to ThreadPane in
-// thread.svelte.ts. A value-level import would cycle through the
-// pane's runtime; `import type` compiles to nothing at runtime so the
-// cycle is purely structural.
-import type { SettledTurn } from './thread.svelte';
+import type { SettledTurn } from './threadTurnProjection';
 
 /**
  * Snapshot of a thread's hydrated timeline state captured at the moment

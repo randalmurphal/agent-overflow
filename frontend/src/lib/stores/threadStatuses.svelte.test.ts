@@ -18,6 +18,7 @@ import {
   projectUserInputRequest,
   projectUserInputResolution,
   resetForTest,
+  sameActiveTurn,
 } from './threadStatuses.svelte';
 import {
   getQueueForThread,
@@ -51,6 +52,19 @@ describe('threadStatuses store', () => {
   beforeEach(() => {
     resetForTest();
     resetSendQueueForTest();
+  });
+
+  it('compares active turns by identity fields', () => {
+    expect(sameActiveTurn(null, null)).toBe(true);
+    expect(sameActiveTurn(null, { turnId: 't', turnIndex: 1, startedAt: 1 })).toBe(false);
+    expect(sameActiveTurn(
+      { turnId: 't', turnIndex: 1, startedAt: 1 },
+      { turnId: 't', turnIndex: 1, startedAt: 1 },
+    )).toBe(true);
+    expect(sameActiveTurn(
+      { turnId: 't', turnIndex: 1, startedAt: 1 },
+      { turnId: 't', turnIndex: 2, startedAt: 1 },
+    )).toBe(false);
   });
 
   it('tracks multiple active items before returning to idle', () => {
