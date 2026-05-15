@@ -139,6 +139,154 @@ func TestGitCheckoutUpdatesStoredBranch(t *testing.T) {
 	}
 }
 
+// initRepoWithUpstreamFeature sets up a bare repo with main and a
+// feature branch that's behind by one commit on the working clone.
+// Returns (workingRepo, barePath). The working clone is checked out
+// on main; its local `feature` ref is set up to track origin/feature.
+func initRepoWithUpstreamFeature(t *testing.T) (string, string) {
+	t.Helper()
+	bare := t.TempDir()
+	if err := testutil.RunGitAllowError(bare, "init", "--bare", "-b", "main"); err != nil {
+		testutil.RunGit(t, bare, "init", "--bare")
+	}
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "remote", "add", "origin", bare)
+	testutil.RunGit(t, repo, "push", "-u", "origin", "main")
+
+	// Sibling clone pushes a feature branch + one extra commit so the
+	// working repo's local feature is one commit behind upstream.
+	sibling := t.TempDir()
+	testutil.RunGit(t, sibling, "clone", bare, ".")
+	testutil.RunGit(t, sibling, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(sibling, "feature.txt"), []byte("v1"), 0o644); err != nil {
+		t.Fatalf("write feature.txt: %v", err)
+	}
+	testutil.RunGit(t, sibling, "add", "feature.txt")
+	testutil.RunGit(t, sibling, "-c", "user.email=sib@example.com", "-c", "user.name=Sib",
+		"commit", "-m", "feature v1")
+	testutil.RunGit(t, sibling, "push", "-u", "origin", "feature")
+
+	// Working repo learns about origin/feature and creates a tracking
+	// local feature ref pointed at the current upstream tip.
+	testutil.RunGit(t, repo, "fetch", "origin")
+	testutil.RunGit(t, repo, "branch", "--track", "feature", "origin/feature")
+
+	// Sibling advances feature once more — now working repo's feature
+	// ref is behind by one commit.
+	if err := os.WriteFile(filepath.Join(sibling, "feature2.txt"), []byte("v2"), 0o644); err != nil {
+		t.Fatalf("write feature2.txt: %v", err)
+	}
+	testutil.RunGit(t, sibling, "add", "feature2.txt")
+	testutil.RunGit(t, sibling, "-c", "user.email=sib@example.com", "-c", "user.name=Sib",
+		"commit", "-m", "feature v2")
+	testutil.RunGit(t, sibling, "push", "origin", "feature")
+	return repo, bare
+}
+
+func TestGitSyncBranchCurrentBranchRejectsActiveTurn(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo, _ := initRepoWithUpstreamFeature(t)
+
+	// Sibling pushes a commit on main so main is behind by 1.
+	mainSibling := t.TempDir()
+	bare, _, err := app.gitCore().Execute(repo, "config", "--get", "remote.origin.url")
+	if err != nil {
+		t.Fatalf("read origin url: %v", err)
+	}
+	testutil.RunGit(t, mainSibling, "clone", strings.TrimSpace(bare), ".")
+	if err := os.WriteFile(filepath.Join(mainSibling, "main-update.txt"), []byte("u"), 0o644); err != nil {
+		t.Fatalf("write main-update.txt: %v", err)
+	}
+	testutil.RunGit(t, mainSibling, "add", "main-update.txt")
+	testutil.RunGit(t, mainSibling, "-c", "user.email=ms@example.com", "-c", "user.name=MS",
+		"commit", "-m", "main update")
+	testutil.RunGit(t, mainSibling, "push", "origin", "main")
+	testutil.RunGit(t, repo, "fetch", "origin")
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-sync-current-active-turn")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	thread.Branch = "main"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-sync-current",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertTurn() error = %v", err)
+	}
+
+	_, err = app.GitSyncBranch(thread.ID, "main")
+	if err == nil || !strings.Contains(err.Error(), "cannot switch workspace while turn 0 is active") {
+		t.Fatalf("GitSyncBranch(main) error = %v, want active-turn rejection", err)
+	}
+}
+
+func TestGitSyncBranchNonCurrentBranchAllowedWithActiveTurn(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo, _ := initRepoWithUpstreamFeature(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-sync-noncurrent-active-turn")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	thread.Branch = "main"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-sync-noncurrent",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertTurn() error = %v", err)
+	}
+
+	// Read the working repo's feature tip before sync so we can prove
+	// it advanced.
+	beforeTip, _, err := app.gitCore().Execute(repo, "rev-parse", "feature")
+	if err != nil {
+		t.Fatalf("rev-parse feature pre-sync: %v", err)
+	}
+
+	branches, err := app.GitSyncBranch(thread.ID, "feature")
+	if err != nil {
+		t.Fatalf("GitSyncBranch(feature) error = %v (should be allowed with active turn for non-current branch)", err)
+	}
+	if len(branches) == 0 {
+		t.Fatal("expected refreshed branch list, got empty")
+	}
+
+	afterTip, _, err := app.gitCore().Execute(repo, "rev-parse", "feature")
+	if err != nil {
+		t.Fatalf("rev-parse feature post-sync: %v", err)
+	}
+	if strings.TrimSpace(afterTip) == strings.TrimSpace(beforeTip) {
+		t.Fatal("expected feature ref to advance after sync")
+	}
+
+	// HEAD must still be on main — non-current sync should never touch
+	// the working tree.
+	head, _, err := app.gitCore().Execute(repo, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+	if strings.TrimSpace(head) != "main" {
+		t.Fatalf("expected HEAD to stay on main, got %q", strings.TrimSpace(head))
+	}
+}
+
 func TestGitCheckoutRejectsActiveTurn(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)

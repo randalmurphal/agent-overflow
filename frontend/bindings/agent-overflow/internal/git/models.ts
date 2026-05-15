@@ -35,22 +35,29 @@ export class GitActionResult {
 }
 
 /**
- * GitBranch represents a local or remote branch entry.
+ * GitBranch is a branch the picker can offer for checkout. Remote-only
+ * branches are projected to their short name (e.g. "feature" rather than
+ * "origin/feature") so the UI presents a unified list — `git checkout
+ * <name>` against a name that exists only on a remote auto-creates the
+ * local tracking branch.
+ * 
+ * AheadCount and BehindCount are populated from %(upstream:track) when
+ * the branch has a configured upstream. Remote-only projected entries
+ * (those without a local checkout) have no upstream relationship, so
+ * both counts stay 0.
  */
 export class GitBranch {
     "name": string;
-    "isRemote": boolean;
     "isCurrent": boolean;
     "isDefault": boolean;
     "worktreePath"?: string;
+    "aheadCount"?: number;
+    "behindCount"?: number;
 
     /** Creates a new GitBranch instance. */
     constructor($$source: Partial<GitBranch> = {}) {
         if (!("name" in $$source)) {
             this["name"] = "";
-        }
-        if (!("isRemote" in $$source)) {
-            this["isRemote"] = false;
         }
         if (!("isCurrent" in $$source)) {
             this["isCurrent"] = false;

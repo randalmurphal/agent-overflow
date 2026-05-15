@@ -776,6 +776,36 @@ export function GitListWorktrees(threadID: string): $CancellablePromise<git$0.Wo
 }
 
 /**
+ * GitMaybeFetchRemotes runs `git fetch --all` in the background if the
+ * last successful fetch for this repo is older than the stale window.
+ * Returns true when a fetch actually ran, false when the cache was
+ * fresh. Callers re-list branches after a true return to surface any
+ * new ahead/behind counts.
+ * 
+ * No threadLocks().Lock or ensureWorkspaceChangeAllowed — `git fetch`
+ * only touches `refs/remotes/*` and never HEAD/index/working tree, so
+ * running it concurrently with an active turn is safe.
+ */
+export function GitMaybeFetchRemotes(threadID: string): $CancellablePromise<boolean> {
+    return $Call.ByID(2000020570, threadID);
+}
+
+/**
+ * GitPruneRemotes runs `git fetch --all --prune` to drop stale
+ * remote-tracking refs (branches deleted on the remote since the last
+ * fetch). Returns the refreshed branch list so the picker can update
+ * in one round trip.
+ * 
+ * Same locking rationale as GitMaybeFetchRemotes — refs/remotes/* only,
+ * no working-tree mutation, safe alongside an active turn.
+ */
+export function GitPruneRemotes(threadID: string): $CancellablePromise<git$0.GitBranch[]> {
+    return $Call.ByID(4131378132, threadID).then(($result: any) => {
+        return $$createType35($result);
+    });
+}
+
+/**
  * GitPull fast-forwards the workspace's current branch.
  */
 export function GitPull(threadID: string): $CancellablePromise<git$0.GitActionResult> {
@@ -840,6 +870,27 @@ export function GitStatusSubscribe(threadID: string): $CancellablePromise<$model
  */
 export function GitStatusUnsubscribe(subscriptionID: string): $CancellablePromise<void> {
     return $Call.ByID(3263989430, subscriptionID);
+}
+
+/**
+ * GitSyncBranch fast-forwards branch from its configured upstream.
+ * FF-only at the git layer — diverged branches surface git's
+ * "non-fast-forward" error to the caller, which the frontend toasts.
+ * 
+ * Locking diverges by case: syncing the workspace's current branch
+ * mutates HEAD/index/working tree (via `git pull --ff-only`), so it
+ * goes through the same gate as GitCheckout. Syncing any other branch
+ * only updates refs/heads/<branch> via a fetch refspec, so it runs
+ * without the workspace-change gate — same rationale as
+ * GitMaybeFetchRemotes.
+ * 
+ * Returns the refreshed branch list so the picker can re-paint
+ * ahead/behind in one round trip.
+ */
+export function GitSyncBranch(threadID: string, branch: string): $CancellablePromise<git$0.GitBranch[]> {
+    return $Call.ByID(1057032236, threadID, branch).then(($result: any) => {
+        return $$createType35($result);
+    });
 }
 
 /**
@@ -1321,6 +1372,16 @@ export function ProbeClaudeAccount(): $CancellablePromise<provider$0.AccountInfo
  * the rate-limit ring popover's plan label hydrates from the same code
  * path that the startup hook uses. Cache hits do NOT re-emit — the
  * frontend store already has the value from the original miss.
+ * 
+ * On the same cache-miss success we ALSO emit a `provider:usage` event
+ * carrying the rate-limit snapshot the probe pulled from the same
+ * `account/rateLimits/read` response. Without this, the 5h/7d rings
+ * stay empty until the user runs a turn — and stale if the user
+ * exhausted the limit in another Codex surface (TUI, CLI) before the
+ * app started. Cache hits skip the emit by design: the value is at
+ * most ProbeCache.TTL old AND the store already has it from the
+ * original miss; re-emitting could overwrite a fresher snapshot
+ * pushed by an active session via account/rateLimits/updated.
  * 
  * Unlike Claude, Codex deliberately omits the unauthenticated-banner
  * hook: an empty planType is ambiguous (backend latency can produce it

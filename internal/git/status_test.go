@@ -48,29 +48,130 @@ func TestParseStatusOutput(t *testing.T) {
 }
 
 func TestParseBranchList(t *testing.T) {
+	// Inputs cover every behavior the parser is responsible for:
+	//   - "main"            local, current, default, ahead 3 behind 2
+	//   - "feature/demo"    local with no remote counterpart
+	//   - "origin"          bare remote name (origin/HEAD symref collapsed
+	//                       by refname:short); MUST be dropped
+	//   - "origin/main"     remote shadow of a local branch; MUST be dropped
+	//   - "origin/feature/demo"  remote shadow of a local branch; MUST be dropped
+	//   - "origin/orphan"   remote-only branch; MUST appear as "orphan"
+	//   - "origin/HEAD"     standard symref form (some git versions); MUST be dropped
 	branches := parseBranchList(
-		"main|*|/tmp/repo\nfeature/demo| |\norigin/main| |\norigin/feature/demo| |\norigin/HEAD| |\n",
+		"main|*|/tmp/repo|ahead 3, behind 2\n"+
+			"feature/demo| ||\n"+
+			"origin| ||\n"+
+			"origin/main| ||\n"+
+			"origin/feature/demo| ||\n"+
+			"origin/orphan| ||\n"+
+			"origin/HEAD| ||\n",
 		"main",
 		[]string{"origin"},
 	)
 
-	if len(branches) != 4 {
-		t.Fatalf("len(branches) = %d, want 4", len(branches))
+	var names []string
+	byName := make(map[string]GitBranch)
+	for _, b := range branches {
+		names = append(names, b.Name)
+		byName[b.Name] = b
 	}
-	if !branches[0].IsCurrent {
-		t.Fatal("expected first branch to be current")
+
+	want := []string{"main", "feature/demo", "orphan"}
+	if len(names) != len(want) {
+		t.Fatalf("branches = %v, want %v", names, want)
 	}
-	if !branches[0].IsDefault {
+	for i, n := range want {
+		if names[i] != n {
+			t.Fatalf("branches[%d] = %q, want %q (full list: %v)", i, names[i], n, names)
+		}
+	}
+
+	if !byName["main"].IsCurrent {
+		t.Fatal("expected main to be current")
+	}
+	if !byName["main"].IsDefault {
 		t.Fatal("expected main to be default")
 	}
-	if !branches[2].IsRemote {
-		t.Fatal("expected origin/main to be remote")
+	if byName["main"].AheadCount != 3 || byName["main"].BehindCount != 2 {
+		t.Fatalf("main ahead/behind = %d/%d, want 3/2", byName["main"].AheadCount, byName["main"].BehindCount)
 	}
-	if !branches[2].IsDefault {
-		t.Fatal("expected origin/main to be default")
+	if byName["feature/demo"].IsDefault {
+		t.Fatal("expected feature/demo not to be default")
 	}
-	if branches[1].IsRemote {
-		t.Fatal("expected feature/demo to remain a local branch")
+	if byName["feature/demo"].IsCurrent {
+		t.Fatal("expected feature/demo not to be current")
+	}
+	if byName["feature/demo"].AheadCount != 0 || byName["feature/demo"].BehindCount != 0 {
+		t.Fatalf("feature/demo ahead/behind = %d/%d, want 0/0 (no upstream configured)", byName["feature/demo"].AheadCount, byName["feature/demo"].BehindCount)
+	}
+	if byName["orphan"].IsDefault {
+		t.Fatal("expected orphan not to be default")
+	}
+	if byName["orphan"].AheadCount != 0 || byName["orphan"].BehindCount != 0 {
+		t.Fatalf("orphan ahead/behind = %d/%d, want 0/0", byName["orphan"].AheadCount, byName["orphan"].BehindCount)
+	}
+}
+
+func TestParseBranchListPreservesLocalNamedLikeBranch(t *testing.T) {
+	// A local branch literally named "feature/HEAD" should pass through
+	// (only remote-namespaced HEAD symrefs are dropped).
+	branches := parseBranchList("feature/HEAD| ||\nfeature/regular| ||\n", "main", []string{"origin"})
+	if len(branches) != 2 {
+		t.Fatalf("expected 2 branches, got %d: %+v", len(branches), branches)
+	}
+}
+
+func TestParseUpstreamTrack(t *testing.T) {
+	tests := []struct {
+		in     string
+		ahead  int
+		behind int
+	}{
+		{"", 0, 0},
+		{"gone", 0, 0},
+		{"ahead 3", 3, 0},
+		{"behind 2", 0, 2},
+		{"ahead 3, behind 2", 3, 2},
+		{"behind 2, ahead 3", 3, 2},
+		{"  ahead 7  ", 7, 0},
+		{"ahead notanumber", 0, 0},
+		// Defensive — truncated / extended output forms must not panic
+		// or produce garbage counts.
+		{"ahead", 0, 0},
+		{"ahead 3 extra", 0, 0},
+		{",", 0, 0},
+	}
+	for _, tt := range tests {
+		ahead, behind := parseUpstreamTrack(tt.in)
+		if ahead != tt.ahead || behind != tt.behind {
+			t.Errorf("parseUpstreamTrack(%q) = %d/%d, want %d/%d", tt.in, ahead, behind, tt.ahead, tt.behind)
+		}
+	}
+}
+
+func TestParseBranchListProjectsRemoteOnlyDefault(t *testing.T) {
+	// When the default branch only exists on the remote (fresh clone with
+	// no local checkout yet of main), the projected "main" entry must
+	// still be flagged as default so the picker keeps the badge.
+	branches := parseBranchList(
+		"feature| ||\norigin/main| ||\n",
+		"main",
+		[]string{"origin"},
+	)
+	if len(branches) != 2 {
+		t.Fatalf("len(branches) = %d, want 2", len(branches))
+	}
+	var main GitBranch
+	for _, b := range branches {
+		if b.Name == "main" {
+			main = b
+		}
+	}
+	if main.Name != "main" {
+		t.Fatalf("expected projected main branch, got names: %+v", branches)
+	}
+	if !main.IsDefault {
+		t.Fatal("expected projected main to be default")
 	}
 }
 
@@ -99,6 +200,360 @@ func TestListBranchesOnRepository(t *testing.T) {
 	}
 	if branches[0].Name == "" {
 		t.Fatal("expected branch name to be populated")
+	}
+}
+
+// repoWithOrigin creates a bare repo + a working clone with that bare
+// repo set as origin and an initial main push, returning (workingRepo,
+// barePath).
+func repoWithOrigin(t *testing.T) (string, string) {
+	t.Helper()
+	bare := t.TempDir()
+	if err := testutil.RunGitAllowError(bare, "init", "--bare", "-b", "main"); err != nil {
+		testutil.RunGit(t, bare, "init", "--bare")
+	}
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "remote", "add", "origin", bare)
+	testutil.RunGit(t, repo, "push", "-u", "origin", "main")
+	return repo, bare
+}
+
+func TestMaybeFetchRemotesRespectsStaleWindow(t *testing.T) {
+	repo, _ := repoWithOrigin(t)
+
+	core := NewCore()
+	start := time.Unix(10_000, 0)
+	now := start
+	core.nowFn = func() time.Time { return now }
+
+	fetched, err := core.MaybeFetchRemotes(repo)
+	if err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	if !fetched {
+		t.Fatal("first call should fetch (no cached timestamp)")
+	}
+
+	// Cached at `start`; staleness gate is now.Sub(last) < FetchStaleWindow.
+	// Just under the window — still fresh, skip.
+	now = start.Add(FetchStaleWindow - time.Nanosecond)
+	fetched, err = core.MaybeFetchRemotes(repo)
+	if err != nil {
+		t.Fatalf("just-under-window fetch: %v", err)
+	}
+	if fetched {
+		t.Fatal("expected cache to skip just under the stale window")
+	}
+
+	// Exactly at the window — Sub == FetchStaleWindow, not less than,
+	// so we must refetch. Boundary regression guard.
+	now = start.Add(FetchStaleWindow)
+	fetched, err = core.MaybeFetchRemotes(repo)
+	if err != nil {
+		t.Fatalf("at-window fetch: %v", err)
+	}
+	if !fetched {
+		t.Fatal("expected cache to expire AT the boundary (Sub == FetchStaleWindow is not < FetchStaleWindow)")
+	}
+}
+
+func TestPruneRemotesUpdatesFetchCache(t *testing.T) {
+	repo, _ := repoWithOrigin(t)
+
+	core := NewCore()
+	now := time.Unix(50_000, 0)
+	core.nowFn = func() time.Time { return now }
+
+	if err := core.PruneRemotes(repo); err != nil {
+		t.Fatalf("PruneRemotes: %v", err)
+	}
+
+	// Prune must refresh the cache clock so the picker's next
+	// background fetch sees a fresh window and skips.
+	fetched, err := core.MaybeFetchRemotes(repo)
+	if err != nil {
+		t.Fatalf("MaybeFetchRemotes after prune: %v", err)
+	}
+	if fetched {
+		t.Fatal("expected prune to reset the stale window")
+	}
+}
+
+func TestPruneRemotesErrorLeavesCacheUntouched(t *testing.T) {
+	// A non-git directory fails at RepositoryRoot — the early error
+	// path must NOT stamp the fetch cache, otherwise a subsequent open
+	// against a real repo would inherit the stale entry.
+	notARepo := t.TempDir()
+
+	core := NewCore()
+	now := time.Unix(70_000, 0)
+	core.nowFn = func() time.Time { return now }
+
+	if err := core.PruneRemotes(notARepo); err == nil {
+		t.Fatal("expected PruneRemotes on a non-git dir to error")
+	}
+
+	core.fetchCacheMu.RLock()
+	defer core.fetchCacheMu.RUnlock()
+	if len(core.fetchCache) != 0 {
+		t.Fatalf("expected empty fetch cache after failed prune, got %d entries", len(core.fetchCache))
+	}
+}
+
+func TestInvalidateFetchCacheForcesRefetch(t *testing.T) {
+	repo, _ := repoWithOrigin(t)
+
+	core := NewCore()
+	now := time.Unix(80_000, 0)
+	core.nowFn = func() time.Time { return now }
+
+	if _, err := core.MaybeFetchRemotes(repo); err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+
+	core.InvalidateFetchCache(repo)
+	fetched, err := core.MaybeFetchRemotes(repo)
+	if err != nil {
+		t.Fatalf("MaybeFetchRemotes after invalidate: %v", err)
+	}
+	if !fetched {
+		t.Fatal("expected invalidation to force a refetch")
+	}
+}
+
+// advanceOriginMain pushes a new commit to the bare repo's main branch
+// via a transient sibling clone, simulating an external collaborator.
+// Returns once the bare has the new tip.
+func advanceOriginMain(t *testing.T, bare string) {
+	t.Helper()
+	sibling := t.TempDir()
+	testutil.RunGit(t, sibling, "clone", bare, ".")
+	if err := os.WriteFile(filepath.Join(sibling, "outside.txt"), []byte("upstream"), 0o644); err != nil {
+		t.Fatalf("write outside.txt: %v", err)
+	}
+	testutil.RunGit(t, sibling, "add", "outside.txt")
+	testutil.RunGit(t, sibling, "-c", "user.email=outside@example.com", "-c", "user.name=Outside",
+		"commit", "-m", "upstream commit")
+	testutil.RunGit(t, sibling, "push", "origin", "main")
+}
+
+func TestSyncBranchPullsCurrentBranch(t *testing.T) {
+	repo, bare := repoWithOrigin(t)
+	advanceOriginMain(t, bare)
+
+	core := NewCore()
+	// Update remote-tracking refs so the FF check has something to chase.
+	if _, _, err := core.Execute(repo, "fetch", "origin"); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+
+	// Behind > 0 before sync.
+	beforeBranches, err := core.ListBranches(repo)
+	if err != nil {
+		t.Fatalf("ListBranches before: %v", err)
+	}
+	var beforeBehind int
+	for _, b := range beforeBranches {
+		if b.Name == "main" {
+			beforeBehind = b.BehindCount
+		}
+	}
+	if beforeBehind == 0 {
+		t.Fatal("expected main to be behind upstream before sync")
+	}
+
+	if err := core.SyncBranch(repo, "main"); err != nil {
+		t.Fatalf("SyncBranch: %v", err)
+	}
+
+	afterBranches, err := core.ListBranches(repo)
+	if err != nil {
+		t.Fatalf("ListBranches after: %v", err)
+	}
+	for _, b := range afterBranches {
+		if b.Name == "main" && b.BehindCount != 0 {
+			t.Fatalf("expected main to be in sync after SyncBranch, behind=%d", b.BehindCount)
+		}
+	}
+
+	// Working tree picked up the file pushed by advanceOriginMain.
+	if _, err := os.Stat(filepath.Join(repo, "outside.txt")); err != nil {
+		t.Fatalf("expected outside.txt to be checked out after pull-style sync: %v", err)
+	}
+}
+
+func TestSyncBranchUpdatesNonCurrentBranchViaFetchRefspec(t *testing.T) {
+	repo, bare := repoWithOrigin(t)
+
+	core := NewCore()
+
+	// Create a `feature` branch on the bare via a sibling, with a unique
+	// commit so we can verify the working repo's local `feature` advances.
+	sibling := t.TempDir()
+	testutil.RunGit(t, sibling, "clone", bare, ".")
+	testutil.RunGit(t, sibling, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(sibling, "feature.txt"), []byte("feat"), 0o644); err != nil {
+		t.Fatalf("write feature.txt: %v", err)
+	}
+	testutil.RunGit(t, sibling, "add", "feature.txt")
+	testutil.RunGit(t, sibling, "-c", "user.email=sib@example.com", "-c", "user.name=Sibling",
+		"commit", "-m", "feature commit")
+	testutil.RunGit(t, sibling, "push", "-u", "origin", "feature")
+
+	// Working repo now learns about origin/feature and creates a tracking
+	// local branch — but stays on main, so feature is non-current.
+	if _, _, err := core.Execute(repo, "fetch", "origin"); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if _, _, err := core.Execute(repo, "branch", "--track", "feature", "origin/feature"); err != nil {
+		t.Fatalf("create tracking feature: %v", err)
+	}
+
+	// Get the sibling's feature tip — that's what the working repo's
+	// feature ref should match after sync.
+	wantTip, _, err := core.Execute(sibling, "rev-parse", "feature")
+	if err != nil {
+		t.Fatalf("rev-parse sibling feature: %v", err)
+	}
+	wantTip = strings.TrimSpace(wantTip)
+
+	// Push another commit so the working repo's feature is behind.
+	if err := os.WriteFile(filepath.Join(sibling, "feature2.txt"), []byte("feat2"), 0o644); err != nil {
+		t.Fatalf("write feature2.txt: %v", err)
+	}
+	testutil.RunGit(t, sibling, "add", "feature2.txt")
+	testutil.RunGit(t, sibling, "-c", "user.email=sib@example.com", "-c", "user.name=Sibling",
+		"commit", "-m", "feature commit 2")
+	testutil.RunGit(t, sibling, "push", "origin", "feature")
+
+	newTip, _, err := core.Execute(sibling, "rev-parse", "feature")
+	if err != nil {
+		t.Fatalf("rev-parse sibling feature 2: %v", err)
+	}
+	newTip = strings.TrimSpace(newTip)
+	if newTip == wantTip {
+		t.Fatal("setup: sibling feature did not advance")
+	}
+
+	// Pre-condition: working repo's feature is still at the old tip.
+	got, _, err := core.Execute(repo, "rev-parse", "feature")
+	if err != nil {
+		t.Fatalf("rev-parse working feature: %v", err)
+	}
+	if strings.TrimSpace(got) != wantTip {
+		t.Fatalf("setup: expected working feature at %s, got %s", wantTip, strings.TrimSpace(got))
+	}
+
+	// Sync the non-current branch — must update refs/heads/feature
+	// without touching the working tree (which is still on main).
+	if err := core.SyncBranch(repo, "feature"); err != nil {
+		t.Fatalf("SyncBranch feature: %v", err)
+	}
+
+	got, _, err = core.Execute(repo, "rev-parse", "feature")
+	if err != nil {
+		t.Fatalf("rev-parse working feature after sync: %v", err)
+	}
+	if strings.TrimSpace(got) != newTip {
+		t.Fatalf("expected feature to advance to %s after sync, got %s", newTip, strings.TrimSpace(got))
+	}
+
+	// Working tree still on main — feature.txt would only exist if we'd
+	// accidentally checked out feature.
+	headBranch, _, err := core.Execute(repo, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+	if strings.TrimSpace(headBranch) != "main" {
+		t.Fatalf("expected HEAD to stay on main, got %s", strings.TrimSpace(headBranch))
+	}
+}
+
+func TestSyncBranchRefusesDiverged(t *testing.T) {
+	repo, bare := repoWithOrigin(t)
+	advanceOriginMain(t, bare)
+
+	core := NewCore()
+	if _, _, err := core.Execute(repo, "fetch", "origin"); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+
+	// Add a local commit on main so it diverges from origin/main.
+	if err := os.WriteFile(filepath.Join(repo, "local.txt"), []byte("local"), 0o644); err != nil {
+		t.Fatalf("write local.txt: %v", err)
+	}
+	testutil.RunGit(t, repo, "add", "local.txt")
+	testutil.RunGit(t, repo, "-c", "user.email=local@example.com", "-c", "user.name=Local",
+		"commit", "-m", "local commit")
+
+	// Now main is ahead 1, behind 1 → FF-only pull must fail.
+	if err := core.SyncBranch(repo, "main"); err == nil {
+		t.Fatal("expected SyncBranch to fail on diverged main")
+	}
+}
+
+func TestSyncBranchRequiresUpstream(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	if _, _, err := core.Execute(repo, "checkout", "-b", "no-upstream"); err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+
+	err := core.SyncBranch(repo, "no-upstream")
+	if err == nil {
+		t.Fatal("expected SyncBranch on branch without upstream to fail")
+	}
+	if !strings.Contains(err.Error(), "no upstream") {
+		t.Fatalf("expected error to mention missing upstream, got: %v", err)
+	}
+}
+
+func TestSyncBranchValidatesName(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	err := core.SyncBranch(repo, "")
+	if err == nil || !strings.Contains(err.Error(), "branch name is required") {
+		t.Fatalf("expected empty branch to fail validation, got: %v", err)
+	}
+	err = core.SyncBranch(repo, "-flag")
+	if err == nil || !strings.Contains(err.Error(), "must not start with -") {
+		t.Fatalf("expected flag-shaped branch to fail validation, got: %v", err)
+	}
+}
+
+func TestSplitUpstreamRef(t *testing.T) {
+	remotes := []string{"origin"}
+
+	remote, branch, ok := splitUpstreamRef("origin/main", remotes)
+	if !ok || remote != "origin" || branch != "main" {
+		t.Fatalf("expected ('origin', 'main', true), got (%q, %q, %v)", remote, branch, ok)
+	}
+
+	// Multi-segment branch under origin.
+	remote, branch, ok = splitUpstreamRef("origin/feature/foo", remotes)
+	if !ok || remote != "origin" || branch != "feature/foo" {
+		t.Fatalf("expected ('origin', 'feature/foo', true), got (%q, %q, %v)", remote, branch, ok)
+	}
+
+	// Unknown remote prefix.
+	if _, _, ok := splitUpstreamRef("other/main", remotes); ok {
+		t.Fatal("expected unknown-remote ref to fail")
+	}
+
+	// Bare remote name (no branch) — invalid.
+	if _, _, ok := splitUpstreamRef("origin/", remotes); ok {
+		t.Fatal("expected origin/ to fail (empty branch part)")
+	}
+
+	// Slash-in-remote-name tie-break: first match in listRemoteNames
+	// order wins. Document the chosen behavior so future config-shape
+	// changes don't quietly drift it.
+	overlapping := []string{"origin", "origin/sub"}
+	remote, branch, ok = splitUpstreamRef("origin/sub/main", overlapping)
+	if !ok || remote != "origin" || branch != "sub/main" {
+		t.Fatalf("expected first-match win ('origin', 'sub/main', true), got (%q, %q, %v)", remote, branch, ok)
 	}
 }
 

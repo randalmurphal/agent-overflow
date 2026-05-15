@@ -58,13 +58,23 @@ func (s GitStatus) Equal(other GitStatus) bool {
 		s.PendingOperation == other.PendingOperation
 }
 
-// GitBranch represents a local or remote branch entry.
+// GitBranch is a branch the picker can offer for checkout. Remote-only
+// branches are projected to their short name (e.g. "feature" rather than
+// "origin/feature") so the UI presents a unified list — `git checkout
+// <name>` against a name that exists only on a remote auto-creates the
+// local tracking branch.
+//
+// AheadCount and BehindCount are populated from %(upstream:track) when
+// the branch has a configured upstream. Remote-only projected entries
+// (those without a local checkout) have no upstream relationship, so
+// both counts stay 0.
 type GitBranch struct {
 	Name         string `json:"name"`
-	IsRemote     bool   `json:"isRemote"`
 	IsCurrent    bool   `json:"isCurrent"`
 	IsDefault    bool   `json:"isDefault"`
 	WorktreePath string `json:"worktreePath,omitempty"`
+	AheadCount   int    `json:"aheadCount,omitempty"`
+	BehindCount  int    `json:"behindCount,omitempty"`
 }
 
 // Status reads repository status using porcelain v2 output.
@@ -231,7 +241,8 @@ func (c *Core) BranchIsDefault(cwd, branch string) bool {
 
 // ListBranches returns local and remote branches from git branch output.
 func (c *Core) ListBranches(cwd string) ([]GitBranch, error) {
-	result, err := c.run(cwd, "branch", "-a", "--format=%(refname:short)|%(HEAD)|%(worktreepath)")
+	result, err := c.run(cwd, "branch", "-a",
+		"--format=%(refname:short)|%(HEAD)|%(worktreepath)|%(upstream:track,nobracket)")
 	if err != nil {
 		return nil, err
 	}
@@ -380,31 +391,124 @@ func combineDiffs(headDiff, cachedDiff string) string {
 }
 
 func parseBranchList(stdout, defaultBranch string, remoteNames []string) []GitBranch {
-	var branches []GitBranch
+	type rawEntry struct {
+		name         string
+		isCurrent    bool
+		worktreePath string
+		ahead        int
+		behind       int
+		isRemote     bool
+	}
+
+	remoteSet := make(map[string]struct{}, len(remoteNames))
+	for _, r := range remoteNames {
+		remoteSet[r] = struct{}{}
+	}
+
+	var raws []rawEntry
+	localSet := make(map[string]struct{})
 	for _, line := range strings.Split(stdout, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-
-		parts := strings.SplitN(line, "|", 3)
-		if len(parts) != 3 {
+		parts := strings.SplitN(line, "|", 4)
+		if len(parts) != 4 {
 			continue
 		}
 		name := strings.TrimSpace(parts[0])
-		if name == "" || strings.HasSuffix(name, "/HEAD") {
+		if name == "" {
 			continue
 		}
+		// Drop remote symrefs. Two forms appear in the wild:
+		//   - `refs/remotes/<r>/HEAD` → "<r>/HEAD" (standard refname:short)
+		//   - same ref but git collapses to the bare "<r>" on some
+		//     versions (observed locally on git 2.45+).
+		// Both must go; a local branch literally named "<r>/HEAD" or
+		// "<r>" would be filtered too, but those are degenerate names
+		// nobody picks intentionally.
+		if _, isBareRemote := remoteSet[name]; isBareRemote {
+			continue
+		}
+		isRemote := isRemoteBranchName(name, remoteNames)
+		if isRemote && strings.HasSuffix(name, "/HEAD") {
+			continue
+		}
+		ahead, behind := parseUpstreamTrack(parts[3])
+		raws = append(raws, rawEntry{
+			name:         name,
+			isCurrent:    strings.TrimSpace(parts[1]) == "*",
+			worktreePath: strings.TrimSpace(parts[2]),
+			ahead:        ahead,
+			behind:       behind,
+			isRemote:     isRemote,
+		})
+		if !isRemote {
+			localSet[name] = struct{}{}
+		}
+	}
 
+	seenRemoteBase := make(map[string]struct{})
+	var branches []GitBranch
+	for _, e := range raws {
+		name := e.name
+		if e.isRemote {
+			base := stripRemotePrefix(name, remoteNames)
+			if _, hasLocal := localSet[base]; hasLocal {
+				continue
+			}
+			if _, seen := seenRemoteBase[base]; seen {
+				continue
+			}
+			seenRemoteBase[base] = struct{}{}
+			name = base
+		}
 		branches = append(branches, GitBranch{
 			Name:         name,
-			IsRemote:     isRemoteBranchName(name, remoteNames),
-			IsCurrent:    strings.TrimSpace(parts[1]) == "*",
+			IsCurrent:    e.isCurrent,
 			IsDefault:    isDefaultBranchName(name, defaultBranch),
-			WorktreePath: strings.TrimSpace(parts[2]),
+			WorktreePath: e.worktreePath,
+			AheadCount:   e.ahead,
+			BehindCount:  e.behind,
 		})
 	}
 	return branches
+}
+
+// parseUpstreamTrack reads the output of `--format=%(upstream:track,nobracket)`.
+// Examples: "" (no upstream or in sync), "gone" (upstream deleted), "ahead 3",
+// "behind 2", "ahead 3, behind 2". Unknown words contribute 0.
+func parseUpstreamTrack(raw string) (ahead, behind int) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "gone" {
+		return 0, 0
+	}
+	for _, part := range strings.Split(raw, ",") {
+		fields := strings.Fields(part)
+		if len(fields) != 2 {
+			continue
+		}
+		n, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+		switch fields[0] {
+		case "ahead":
+			ahead = n
+		case "behind":
+			behind = n
+		}
+	}
+	return ahead, behind
+}
+
+func stripRemotePrefix(name string, remoteNames []string) string {
+	for _, r := range remoteNames {
+		if strings.HasPrefix(name, r+"/") {
+			return strings.TrimPrefix(name, r+"/")
+		}
+	}
+	return name
 }
 
 func isDefaultBranchName(branchName, defaultBranch string) bool {

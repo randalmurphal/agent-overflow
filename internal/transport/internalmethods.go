@@ -109,6 +109,9 @@ var LocalOnlyMethods = map[string]bool{
 	"GitCommit":                true,
 	"GitPull":                  true,
 	"GitStageAll":              true,
+	"GitMaybeFetchRemotes":     true,
+	"GitPruneRemotes":          true,
+	"GitSyncBranch":            true,
 	// GitCreatePR shells out to `gh` — same RCE-equivalent class as
 	// the rest of the git/external-CLI surface.
 	"GitCreatePR": true,

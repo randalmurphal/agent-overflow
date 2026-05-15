@@ -88,12 +88,15 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GitCreateWorktree", ID: 3327650914}, // main.App.GitCreateWorktree
 	{Name: "GitListBranches", ID: 2693102179}, // main.App.GitListBranches
 	{Name: "GitListWorktrees", ID: 3232495403}, // main.App.GitListWorktrees
+	{Name: "GitMaybeFetchRemotes", ID: 2000020570}, // main.App.GitMaybeFetchRemotes
+	{Name: "GitPruneRemotes", ID: 4131378132}, // main.App.GitPruneRemotes
 	{Name: "GitPull", ID: 3933172764}, // main.App.GitPull
 	{Name: "GitPush", ID: 4036251239}, // main.App.GitPush
 	{Name: "GitRemoveWorktree", ID: 4002429606}, // main.App.GitRemoveWorktree
 	{Name: "GitStageAll", ID: 548906954}, // main.App.GitStageAll
 	{Name: "GitStatusSubscribe", ID: 3282404643}, // main.App.GitStatusSubscribe
 	{Name: "GitStatusUnsubscribe", ID: 3263989430}, // main.App.GitStatusUnsubscribe
+	{Name: "GitSyncBranch", ID: 1057032236}, // main.App.GitSyncBranch
 	{Name: "GitWorktreeStatus", ID: 1333748060}, // main.App.GitWorktreeStatus
 	{Name: "IngestDiagnosticBatch", ID: 2606775930}, // main.App.IngestDiagnosticBatch
 	{Name: "InterruptTurn", ID: 850013031}, // main.App.InterruptTurn

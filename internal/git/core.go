@@ -23,6 +23,13 @@ const (
 	// network round-trip per branch per 30s; explicit invalidation
 	// after CreatePR keeps the freshly-opened PR visible immediately.
 	prLookupTTL = 30 * time.Second
+
+	// FetchStaleWindow is how long after a successful `git fetch` the
+	// app considers remote-tracking refs fresh enough to skip another
+	// background fetch. The branch picker calls MaybeFetchRemotes on
+	// open; staleness shorter than this returns quickly without
+	// spawning git.
+	FetchStaleWindow = 5 * time.Minute
 )
 
 type commandResult struct {
@@ -67,6 +74,14 @@ type Core struct {
 	// construction so reads are lock-free.
 	forges map[string]Forge
 
+	// fetchCache records the last time MaybeFetchRemotes successfully
+	// ran `git fetch` against a given canonical repo root. Keyed by the
+	// repository top-level path so worktrees of the same repo share
+	// freshness state (the refs are shared on disk). RWMutex matches
+	// the other caches above.
+	fetchCacheMu sync.RWMutex
+	fetchCache   map[string]time.Time
+
 	// nowFn returns the current time. Production uses time.Now; tests
 	// override to drive TTL expiry deterministically.
 	nowFn func() time.Time
@@ -89,6 +104,7 @@ func NewCore() *Core {
 		maxOutputBytes: defaultMaxOutputBytes,
 		prCache:        make(map[string]prCacheEntry),
 		forgeCache:     make(map[string]forgeCacheEntry),
+		fetchCache:     make(map[string]time.Time),
 		nowFn:          time.Now,
 	}
 	core.forges = map[string]Forge{

@@ -18,6 +18,8 @@
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import GitBranchIcon from 'lucide-svelte/icons/git-branch';
   import Plus from 'lucide-svelte/icons/plus';
+  import RefreshCw from 'lucide-svelte/icons/refresh-cw';
+  import Trash2 from 'lucide-svelte/icons/trash-2';
   import Icon from '../../primitives/Icon.svelte';
   import { composerTriggerClasses } from '../triggerClasses';
   import type { ThreadPane } from '../../../stores/thread.svelte';
@@ -28,6 +30,9 @@
     GetThread,
     GitCheckout,
     GitListBranches,
+    GitMaybeFetchRemotes,
+    GitPruneRemotes,
+    GitSyncBranch,
     UpdateThreadWorkspace,
   } from '../../../stores/bindings';
   import { syncThread } from '../../../stores/panes.svelte';
@@ -61,6 +66,8 @@
   let loading = $state(false);
   let applying = $state(false);
   let workspaceDirty = $state(false);
+  let pruning = $state(false);
+  let syncingBranch: string | null = $state(null);
 
   // BranchCreateForm owns its name + pending + error state. The parent
   // only tracks whether the form is mounted and what base the form is
@@ -138,10 +145,85 @@
         workspaceDirty = false;
       }
     })();
+    // Stale-window fetch: backend returns immediately when fresh, runs
+    // `git fetch --all` and returns true otherwise. Fires alongside the
+    // initial list so the picker paints from cached refs instantly;
+    // when the fetch lands we re-list to surface any new ahead/behind
+    // counts or remote-only branches. Failures are silent — the
+    // picker stays usable on stale data.
+    void (async () => {
+      try {
+        const fetched = await GitMaybeFetchRemotes(threadId);
+        if (!fetched) return;
+        if (pane.thread?.id !== threadId || !open) return;
+        const refreshed = (await GitListBranches(threadId)) as GitBranch[] | null;
+        if (pane.thread?.id !== threadId || !open) return;
+        if (Array.isArray(refreshed)) branches = refreshed;
+      } catch (err) {
+        console.error('background fetch failed:', err);
+      }
+    })();
     try {
       await Promise.all([fetchBranches, fetchStatus]);
     } finally {
       loading = false;
+    }
+  }
+
+  // Sync surfaces on rows where local is behind upstream. The hard rule
+  // is FF-only: diverged rows (ahead > 0 AND behind > 0) render the
+  // icon disabled with a tooltip explaining why. The backend enforces
+  // the same constraint via git's native refusal of non-FF refspecs,
+  // so even a bypassed UI gate can't produce a non-FF update.
+  function canSync(branch: GitBranch): boolean {
+    return (branch.behindCount ?? 0) > 0 && (branch.aheadCount ?? 0) === 0;
+  }
+
+  function isDiverged(branch: GitBranch): boolean {
+    return (branch.behindCount ?? 0) > 0 && (branch.aheadCount ?? 0) > 0;
+  }
+
+  function showsSyncAction(branch: GitBranch): boolean {
+    return canSync(branch) || isDiverged(branch);
+  }
+
+  function syncDisabledTitle(branch: GitBranch): string | undefined {
+    if (!isDiverged(branch)) return undefined;
+    return `Branch has diverged from upstream (${branch.aheadCount} ahead, ${branch.behindCount} behind). Push or rebase first.`;
+  }
+
+  async function handleSync(branch: GitBranch): Promise<void> {
+    if (!pane.thread || !canSync(branch)) return;
+    if (syncingBranch) return;
+    const threadId = pane.thread.id;
+    syncingBranch = branch.name;
+    try {
+      const res = (await GitSyncBranch(threadId, branch.name)) as GitBranch[] | null;
+      if (pane.thread?.id === threadId && Array.isArray(res)) {
+        branches = res;
+      }
+      addToast('info', `Synced ${branch.name}`);
+    } catch (err) {
+      addToast('error', `Sync failed: ${errString(err)}`);
+    } finally {
+      syncingBranch = null;
+    }
+  }
+
+  async function handlePrune(): Promise<void> {
+    if (!pane.thread || pruning) return;
+    const threadId = pane.thread.id;
+    pruning = true;
+    try {
+      const res = (await GitPruneRemotes(threadId)) as GitBranch[] | null;
+      if (pane.thread?.id === threadId && Array.isArray(res)) {
+        branches = res;
+      }
+      addToast('info', 'Pruned stale remote branches');
+    } catch (err) {
+      addToast('error', `Prune failed: ${errString(err)}`);
+    } finally {
+      pruning = false;
     }
   }
 
@@ -152,11 +234,23 @@
     triggerEl?.focus();
   }
 
+  // The suffix slot on a branch row carries (1) ahead/behind hints
+  // versus upstream and (2) the branch tag (worktree / default).
+  // When both are present they're joined with a thin separator so the
+  // arrows read as one group and the tag as another.
   function branchBadge(branch: GitBranch): string | undefined {
-    if (branch.worktreePath && !sameNormalizedPath(branch.worktreePath, currentWorkspace)) return 'worktree';
-    if (branch.isDefault) return 'default';
-    if (branch.isRemote) return 'remote';
-    return undefined;
+    const counts: string[] = [];
+    if ((branch.aheadCount ?? 0) > 0) counts.push(`↑${branch.aheadCount}`);
+    if ((branch.behindCount ?? 0) > 0) counts.push(`↓${branch.behindCount}`);
+    let tag: string | undefined;
+    if (branch.worktreePath && !sameNormalizedPath(branch.worktreePath, currentWorkspace)) {
+      tag = 'worktree';
+    } else if (branch.isDefault) {
+      tag = 'default';
+    }
+    if (counts.length === 0) return tag;
+    const arrows = counts.join(' ');
+    return tag ? `${arrows} · ${tag}` : arrows;
   }
 
   function isSelectedBranch(branch: GitBranch): boolean {
@@ -268,6 +362,10 @@
   }
 </script>
 
+{#snippet syncIcon()}
+  <Icon icon={RefreshCw} size={12} strokeWidth={2} />
+{/snippet}
+
 <button
   bind:this={triggerEl}
   type="button"
@@ -310,6 +408,15 @@
       >
         {#snippet icon()}
           <Icon icon={Plus} size={12} strokeWidth={2} />
+        {/snippet}
+      </MenuItem>
+      <MenuItem
+        label={pruning ? 'Pruning…' : 'Prune stale branches'}
+        disabled={pruning}
+        onSelect={handlePrune}
+      >
+        {#snippet icon()}
+          <Icon icon={Trash2} size={12} strokeWidth={2} />
         {/snippet}
       </MenuItem>
       <MenuDivider />
@@ -366,6 +473,13 @@
               disabled={!creating && workspaceChangingDisabled}
               title={!creating && workspaceChangingDisabled ? disabledReason : undefined}
               onSelect={() => selectBranch(branch)}
+              action={showsSyncAction(branch) ? syncIcon : undefined}
+              actionLabel={syncingBranch === branch.name
+                ? `Syncing ${branch.name}`
+                : `Sync ${branch.name} from upstream`}
+              actionDisabled={!canSync(branch) || syncingBranch !== null}
+              actionTitle={syncDisabledTitle(branch)}
+              onAction={() => handleSync(branch)}
             />
           {/each}
         </div>

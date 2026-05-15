@@ -64,6 +64,147 @@ func (c *Core) Pull(cwd string) error {
 	return err
 }
 
+// SyncBranch enforces FF-only sync from upstream. Current branch goes
+// through `git pull --ff-only` (touches HEAD/index/working tree);
+// other branches go through `git fetch <remote> <remoteBranch>:<branch>`,
+// which git natively refuses unless the update is fast-forward (the
+// refspec has no leading `+`).
+func (c *Core) SyncBranch(cwd, branch string) error {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return fmt.Errorf("git sync branch name is required")
+	}
+	if err := validateBranchName(branch); err != nil {
+		return err
+	}
+
+	upstream, ok := c.upstreamFor(cwd, branch)
+	if !ok {
+		return fmt.Errorf("branch %q has no upstream configured", branch)
+	}
+
+	if current, err := c.currentBranch(cwd); err == nil && current == branch {
+		return c.Pull(cwd)
+	}
+
+	remote, remoteBranch, ok := splitUpstreamRef(upstream, c.listRemoteNames(cwd))
+	if !ok {
+		return fmt.Errorf("cannot parse upstream ref %q for branch %q", upstream, branch)
+	}
+	// Re-validate remoteBranch even though it came from upstream config:
+	// the trust boundary stays uniform with the caller's `branch` input,
+	// and a malformed `.git/config` produces a clean error instead of
+	// reaching argv.
+	if err := validateBranchName(remoteBranch); err != nil {
+		return fmt.Errorf("invalid upstream branch in %q: %w", upstream, err)
+	}
+
+	refspec := fmt.Sprintf("%s:%s", remoteBranch, branch)
+	_, _, err := c.Execute(cwd, "fetch", remote, refspec)
+	return err
+}
+
+// splitUpstreamRef splits "<remote>/<branch>" using the repo's known
+// remote names, since remote names can legally contain slashes.
+// Returns false when none of the configured remotes prefixes the ref
+// or when the trailing branch part is empty.
+func splitUpstreamRef(ref string, remoteNames []string) (string, string, bool) {
+	for _, r := range remoteNames {
+		prefix := r + "/"
+		if strings.HasPrefix(ref, prefix) {
+			remoteBranch := strings.TrimPrefix(ref, prefix)
+			if remoteBranch == "" {
+				return "", "", false
+			}
+			return r, remoteBranch, true
+		}
+	}
+	return "", "", false
+}
+
+// MaybeFetchRemotes runs `git fetch --all` against cwd's repository iff
+// the last successful fetch (cached per canonical repo root) is older
+// than FetchStaleWindow. Returns (true, nil) when a fetch actually ran,
+// (false, nil) when the cache was fresh and skipped. A fetch failure
+// is returned but does not update the staleness clock, so the next
+// call will retry.
+//
+// The cache is keyed by canonical repo root so worktrees of the same
+// repository share freshness — `git fetch` mutates `refs/remotes/*`
+// which lives in the shared `.git` directory.
+func (c *Core) MaybeFetchRemotes(cwd string) (bool, error) {
+	root, err := c.RepositoryRoot(cwd)
+	if err != nil {
+		return false, err
+	}
+	root = CanonicalPath(root)
+
+	c.fetchCacheMu.RLock()
+	if last, ok := c.fetchCache[root]; ok && c.nowFn().Sub(last) < FetchStaleWindow {
+		c.fetchCacheMu.RUnlock()
+		return false, nil
+	}
+	c.fetchCacheMu.RUnlock()
+
+	if _, _, err := c.Execute(cwd, "fetch", "--all"); err != nil {
+		return false, err
+	}
+
+	c.stampFetchCache(root)
+	return true, nil
+}
+
+// PruneRemotes runs `git fetch --all --prune` and refreshes the
+// staleness clock so the subsequent picker open doesn't double-fetch.
+// Surfaces fetch errors to the caller for toast display.
+func (c *Core) PruneRemotes(cwd string) error {
+	root, err := c.RepositoryRoot(cwd)
+	if err != nil {
+		return err
+	}
+	root = CanonicalPath(root)
+
+	if _, _, err := c.Execute(cwd, "fetch", "--all", "--prune"); err != nil {
+		return err
+	}
+
+	c.stampFetchCache(root)
+	return nil
+}
+
+// stampFetchCache records the current time as the last successful fetch
+// for root, sweeping any entries older than 2× FetchStaleWindow so the
+// map stays bounded by recently-active repos rather than the lifetime
+// total. The 2× floor keeps a freshly-stamped sibling repo from being
+// dropped mid-window.
+func (c *Core) stampFetchCache(root string) {
+	now := c.nowFn()
+	c.fetchCacheMu.Lock()
+	c.fetchCache[root] = now
+	floor := now.Add(-2 * FetchStaleWindow)
+	for k, last := range c.fetchCache {
+		if last.Before(floor) {
+			delete(c.fetchCache, k)
+		}
+	}
+	c.fetchCacheMu.Unlock()
+}
+
+// InvalidateFetchCache drops the staleness clock for cwd's repo so the
+// next MaybeFetchRemotes call refetches. Callers that mutate
+// remote-tracking refs out of band should use this to keep the picker
+// honest. Mirrors InvalidatePRCache / InvalidateForgeCache.
+func (c *Core) InvalidateFetchCache(cwd string) {
+	root, err := c.RepositoryRoot(cwd)
+	if err != nil {
+		return
+	}
+	root = CanonicalPath(root)
+	c.fetchCacheMu.Lock()
+	delete(c.fetchCache, root)
+	c.fetchCacheMu.Unlock()
+}
+
 // Checkout switches to an existing branch.
 func (c *Core) Checkout(cwd, branch string) error {
 	branch = strings.TrimSpace(branch)

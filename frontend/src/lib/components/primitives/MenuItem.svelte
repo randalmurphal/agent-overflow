@@ -26,6 +26,8 @@
     actionLabel?: string;
     actionPressed?: boolean;
     actionPosition?: 'start' | 'end';
+    actionDisabled?: boolean;
+    actionTitle?: string;
     onAction?: () => void;
     variant?: 'default' | 'danger';
   }
@@ -44,6 +46,8 @@
     actionLabel,
     actionPressed,
     actionPosition = 'end',
+    actionDisabled = false,
+    actionTitle,
     onAction,
     variant = 'default',
   }: Props = $props();
@@ -70,7 +74,7 @@
   function handleActionClick(e: MouseEvent): void {
     e.preventDefault();
     e.stopPropagation();
-    if (disabled) return;
+    if (disabled || actionDisabled) return;
     onAction?.();
   }
 
@@ -119,12 +123,17 @@
       type="button"
       aria-label={actionLabel}
       aria-pressed={actionPressed}
+      aria-disabled={actionDisabled ? 'true' : undefined}
+      disabled={actionDisabled}
+      title={actionTitle}
       tabindex={-1}
       onclick={handleActionClick}
       class={[
         'inline-flex h-5 w-5 items-center justify-center rounded-[var(--radius-field)]',
         'text-fg-hint transition-colors',
-        'hover:bg-surface-2/70 hover:text-fg',
+        actionDisabled
+          ? 'opacity-50 cursor-not-allowed'
+          : 'hover:bg-surface-2/70 hover:text-fg',
         actionPressed ? 'text-warning' : '',
       ].join(' ')}
     >
@@ -163,12 +172,17 @@
       type="button"
       aria-label={actionLabel}
       aria-pressed={actionPressed}
+      aria-disabled={actionDisabled ? 'true' : undefined}
+      disabled={actionDisabled}
+      title={actionTitle}
       tabindex={-1}
       onclick={handleActionClick}
       class={[
         'ml-1 inline-flex h-5 w-5 items-center justify-center rounded-[var(--radius-field)]',
         'text-fg-hint transition-colors',
-        'hover:bg-surface-2/70 hover:text-fg',
+        actionDisabled
+          ? 'opacity-50 cursor-not-allowed'
+          : 'hover:bg-surface-2/70 hover:text-fg',
         actionPressed ? 'text-warning' : '',
       ].join(' ')}
     >

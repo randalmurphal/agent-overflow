@@ -54,6 +54,96 @@ func (a *App) GitListBranches(threadID string) ([]gitops.GitBranch, error) {
 	return a.gitCore().ListBranches(project)
 }
 
+// GitMaybeFetchRemotes runs `git fetch --all` in the background if the
+// last successful fetch for this repo is older than the stale window.
+// Returns true when a fetch actually ran, false when the cache was
+// fresh. Callers re-list branches after a true return to surface any
+// new ahead/behind counts.
+//
+// No threadLocks().Lock or ensureWorkspaceChangeAllowed — `git fetch`
+// only touches `refs/remotes/*` and never HEAD/index/working tree, so
+// running it concurrently with an active turn is safe.
+func (a *App) GitMaybeFetchRemotes(threadID string) (bool, error) {
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return false, err
+	}
+	project, _, err := a.resolveGitPaths(thread)
+	if err != nil {
+		return false, err
+	}
+	return a.gitCore().MaybeFetchRemotes(project)
+}
+
+// GitPruneRemotes runs `git fetch --all --prune` to drop stale
+// remote-tracking refs (branches deleted on the remote since the last
+// fetch). Returns the refreshed branch list so the picker can update
+// in one round trip.
+//
+// Same locking rationale as GitMaybeFetchRemotes — refs/remotes/* only,
+// no working-tree mutation, safe alongside an active turn.
+func (a *App) GitPruneRemotes(threadID string) ([]gitops.GitBranch, error) {
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return nil, err
+	}
+	project, _, err := a.resolveGitPaths(thread)
+	if err != nil {
+		return nil, err
+	}
+	core := a.gitCore()
+	if err := core.PruneRemotes(project); err != nil {
+		return nil, err
+	}
+	return core.ListBranches(project)
+}
+
+// GitSyncBranch fast-forwards branch from its configured upstream.
+// Asymmetric lock by case: syncing the workspace's current branch
+// mutates HEAD/index/working tree (via `git pull --ff-only`) and needs
+// the workspace-change gate; syncing any other branch only updates
+// refs/heads/<branch> via a fetch refspec, same threat shape as
+// GitMaybeFetchRemotes. The thread lock is held across the
+// isCurrent read so a concurrent checkout can't flip the path
+// between the check and the operation.
+func (a *App) GitSyncBranch(threadID string, branch string) ([]gitops.GitBranch, error) {
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return nil, err
+	}
+	project, workspace, err := a.resolveGitPaths(thread)
+	if err != nil {
+		return nil, err
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return nil, fmt.Errorf("git sync branch is required")
+	}
+
+	core := a.gitCore()
+
+	unlock := a.threadLocks().Lock(threadID)
+	defer unlock()
+
+	if core.CurrentBranch(workspace) == branch {
+		if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
+			return nil, err
+		}
+		if err := core.SyncBranch(workspace, branch); err != nil {
+			return nil, err
+		}
+		if a.workspaceFiles != nil {
+			a.workspaceFiles.Invalidate(workspace)
+		}
+	} else {
+		if err := core.SyncBranch(project, branch); err != nil {
+			return nil, err
+		}
+	}
+
+	return core.ListBranches(project)
+}
+
 // GitCommit stages all changes and commits workspace changes.
 // WARNING: This stages everything (git add -A) before committing, including
 // untracked files. Use GitStageAll + a direct Commit call for more control.

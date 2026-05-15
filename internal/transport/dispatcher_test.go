@@ -622,6 +622,9 @@ func (p *privilegedApp) GitRemoveWorktree() string              { return "ok" }
 func (p *privilegedApp) GitWorktreeStatus() string              { return "ok" }
 func (p *privilegedApp) GitListBranches() string                { return "ok" }
 func (p *privilegedApp) GitListWorktrees() string               { return "ok" }
+func (p *privilegedApp) GitMaybeFetchRemotes() string           { return "ok" }
+func (p *privilegedApp) GitPruneRemotes() string                { return "ok" }
+func (p *privilegedApp) GitSyncBranch() string                  { return "ok" }
 func (p *privilegedApp) RemoveOtherWorktree() string            { return "ok" }
 func (p *privilegedApp) GitCommit() string                      { return "ok" }
 func (p *privilegedApp) GitPull() string                        { return "ok" }

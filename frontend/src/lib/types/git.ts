@@ -28,10 +28,11 @@ export interface GitStatus {
 
 export interface GitBranch {
   name: string;
-  isRemote: boolean;
   isCurrent: boolean;
   isDefault: boolean;
   worktreePath?: string;
+  aheadCount?: number;
+  behindCount?: number;
 }
 
 export interface Worktree {
