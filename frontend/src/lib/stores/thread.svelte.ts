@@ -99,6 +99,7 @@ import {
   type FlushedItem,
   type QueueItem as SendQueueItem,
 } from './sendQueue.svelte';
+import { createLiveTodoState } from './liveTodoState.svelte';
 import type { ThreadLiveState } from '../../../bindings/agent-overflow/models';
 import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
 
@@ -222,103 +223,14 @@ export interface SettledTurn {
   errorMessage: string;
 }
 
-/**
- * LiveTodo is the snapshot the activity rail's Todos segment renders.
- * Populated from `provider:todo_update` events (Claude TodoWrite reroute
- * + Codex update_plan, both normalised in the parser). Survives turn
- * boundaries by design: the segment keeps showing while items remain
- * incomplete and auto-hides on a timer when every step is `completed`.
- */
-export interface LiveTodo {
-  steps: TodoStep[];
-}
-
-/**
- * LIVE_TODO_AUTOHIDE_MS is how long the snapshot lingers after every
- * step is `completed` before the auto-hide timer clears it. Long
- * enough for the user to see the satisfying all-done state, short
- * enough that the segment doesn't squat on the rail indefinitely.
- */
-export const LIVE_TODO_AUTOHIDE_MS = 5_000;
-
-/**
- * Per-thread live-todo dropdown UI preferences (show-all reveal).
- * Module-scoped so a thread switch can save the outgoing thread's
- * state and restore the incoming thread's. Lives in process memory by
- * design — survives thread switches within a session, dies on app
- * restart, no SQLite roundtrip.
- */
-interface LiveTodoUiPrefs {
-  showAll: boolean;
-}
-const liveTodoUiPrefs = new Map<string, LiveTodoUiPrefs>();
-
-function readLiveTodoUiPrefs(threadID: string | null): LiveTodoUiPrefs {
-  if (!threadID) return { showAll: false };
-  return liveTodoUiPrefs.get(threadID) ?? { showAll: false };
-}
-
-function writeLiveTodoUiPrefs(threadID: string | null, prefs: LiveTodoUiPrefs): void {
-  if (!threadID) return;
-  liveTodoUiPrefs.set(threadID, prefs);
-}
-
-/**
- * Drop a thread's live-todo UI prefs. Called from the thread-removal
- * path so a deleted thread doesn't leave a permanent entry in the
- * module-scoped prefs map. Bounded growth would otherwise be tied to
- * the count of distinct threads ever toggled in a session, which is
- * fine in practice but accumulates across long-running sessions.
- */
-export function dropLiveTodoUiPrefs(threadID: string | null): void {
-  if (!threadID) return;
-  liveTodoUiPrefs.delete(threadID);
-}
-
-/**
- * Test-only reset for the live-todo UI prefs map. The map is
- * intentionally module-scoped so per-thread open/closed state survives
- * thread switches in production; tests need to clear it between cases
- * so cross-test pollution doesn't flip a fresh pane's defaults.
- * Production code never calls this — same pattern as the markdown
- * enhancement caches in `markdownEnhance.ts`.
- */
-export function __resetLiveTodoUiPrefsForTest(): void {
-  liveTodoUiPrefs.clear();
-}
-
-/**
- * Per-thread Activity Rail expansion state. The rail itself appears
- * only when there's active work (turn / todos / background tasks);
- * these flags govern whether the Todos and Background section bodies
- * below the rail are open. Independent toggles — both can be open at
- * once. Same shape and lifecycle rules as `liveTodoUiPrefs`: lives in
- * process memory, survives thread switches, dies on app restart.
- */
-interface ActivityRailUiPrefs {
-  todosOpen: boolean;
-  backgroundOpen: boolean;
-}
-const activityRailUiPrefs = new Map<string, ActivityRailUiPrefs>();
-
-function readActivityRailUiPrefs(threadID: string | null): ActivityRailUiPrefs {
-  if (!threadID) return { todosOpen: false, backgroundOpen: false };
-  return activityRailUiPrefs.get(threadID) ?? { todosOpen: false, backgroundOpen: false };
-}
-
-function writeActivityRailUiPrefs(threadID: string | null, prefs: ActivityRailUiPrefs): void {
-  if (!threadID) return;
-  activityRailUiPrefs.set(threadID, prefs);
-}
-
-export function dropActivityRailUiPrefs(threadID: string | null): void {
-  if (!threadID) return;
-  activityRailUiPrefs.delete(threadID);
-}
-
-export function __resetActivityRailUiPrefsForTest(): void {
-  activityRailUiPrefs.clear();
-}
+export {
+  __resetActivityRailUiPrefsForTest,
+  __resetLiveTodoUiPrefsForTest,
+  dropActivityRailUiPrefs,
+  dropLiveTodoUiPrefs,
+  LIVE_TODO_AUTOHIDE_MS,
+} from './liveTodoState.svelte';
+export type { LiveTodo } from './liveTodoState.svelte';
 
 // Diff-sidebar UI types are owned by stores/rhsPanelSlot.svelte.ts.
 // Re-exported here so callers that import from this module
@@ -418,8 +330,6 @@ interface TurnRow {
   tokenUsageJson?: string;
   errorMessage?: string;
 }
-
-type LiveTodoSnapshot = NonNullable<ThreadLiveState['todo']>;
 
 interface LiveStateHydrationGuard {
   activeTurnAtRequest: ActiveTurn | null;
@@ -687,32 +597,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // and trace/debug consumers; on thread switch we rehydrate it from the
   // most recent `ListRecentTurns` row whose `completedAt` is non-null.
   let latestSettledTurn: SettledTurn | null = $state(null);
-  // Live-todo panel state. Independent of activeTurn — the panel
-  // persists past turn-end if items remain incomplete and only
-  // disappears when the agent marks every step completed (auto-hide
-  // timer below) or the user switches threads. Sourced from
-  // `provider:todo_update` events; both Claude TodoWrite and Codex
-  // update_plan funnel through that channel after parser
-  // normalisation. Lost on app restart by design.
-  let liveTodo: LiveTodo | null = $state(null);
-  let liveTodoShowAll = $state(false);
-  let liveTodoAutoHideTimer: ReturnType<typeof setTimeout> | null = null;
-  // Activity rail per-section open flags. The rail itself derives
-  // visibility from the union of working / todos / background state;
-  // these flags govern only whether each accordion BODY is open.
-  // Restored from `activityRailUiPrefs` on switchThread; default false.
-  let activityRailTodosOpen = $state(false);
-  let activityRailBackgroundOpen = $state(false);
-  // Step texts that were on-screen when the previous all-completed todo list
-  // auto-hid. The agent re-emits the FULL todo list on each update, so
-  // without this set the next update would re-show the prior completed
-  // items in the new panel. We subtract them from incoming snapshots so
-  // each "logical todo cycle" cycle starts fresh from the user's viewpoint.
-  // Bounded to keep long sessions with many cycles from leaking
-  // memory; oldest entries drop first.
-  let liveTodoCleared = new Set<string>();
-  const liveTodoClearedCap = 1_000;
-  let liveTodoRevision = 0;
+  const liveTodoState = createLiveTodoState();
   // Subagent notification log. The backend emits
   // `provider:subagent_notification` as a pass-through; no UI consumes it
   // today, but keeping a bounded in-pane log lets future surfaces (tray,
@@ -721,60 +606,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // session that generates many notifications.
   let subagentNotifications: SubagentNotificationEvent[] = $state([]);
   const subagentNotificationLimit = 32;
-
-  function clearLiveTodoState(): void {
-    liveTodoRevision += 1;
-    if (liveTodoAutoHideTimer !== null) {
-      clearTimeout(liveTodoAutoHideTimer);
-      liveTodoAutoHideTimer = null;
-    }
-    liveTodo = null;
-    liveTodoCleared = new Set();
-  }
-
-  function shouldHydrateLiveTodoSnapshot(snapshot: LiveTodoSnapshot): boolean {
-    if (!Array.isArray(snapshot.steps) || snapshot.steps.length === 0) {
-      return false;
-    }
-    const allCompleted = snapshot.steps.every((step) => step.status === 'completed');
-    if (!allCompleted) return true;
-    const age = Date.now() - snapshot.updatedAt;
-    return age >= 0 && age <= LIVE_TODO_AUTOHIDE_MS;
-  }
-
-  function setLiveTodoState(steps: TodoStep[]): void {
-    liveTodoRevision += 1;
-    if (liveTodoAutoHideTimer !== null) {
-      clearTimeout(liveTodoAutoHideTimer);
-      liveTodoAutoHideTimer = null;
-    }
-    const filtered = liveTodoCleared.size === 0
-      ? steps
-      : steps.filter(
-          (s) => !(s.status === 'completed' && liveTodoCleared.has(s.step)),
-        );
-    if (filtered.length === 0) {
-      liveTodo = null;
-      return;
-    }
-    liveTodo = { steps: filtered };
-    const allComplete = filtered.every((s) => s.status === 'completed');
-    if (allComplete) {
-      liveTodoAutoHideTimer = setTimeout(() => {
-        if (liveTodo) {
-          for (const s of liveTodo.steps) {
-            liveTodoCleared.add(s.step);
-          }
-          if (liveTodoCleared.size > liveTodoClearedCap) {
-            const arr = Array.from(liveTodoCleared);
-            liveTodoCleared = new Set(arr.slice(arr.length - liveTodoClearedCap));
-          }
-        }
-        liveTodo = null;
-        liveTodoAutoHideTimer = null;
-      }, LIVE_TODO_AUTOHIDE_MS);
-    }
-  }
 
   function sameActiveTurn(left: ActiveTurn | null, right: ActiveTurn | null): boolean {
     if (left === null || right === null) return left === right;
@@ -1252,14 +1083,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     applyPendingInteractiveSnapshot(threadID, snapshot.interactive as PendingInteractiveRequests);
 
-    if (liveTodoRevision === guard.liveTodoRevisionAtRequest) {
-      const todo = snapshot.todo;
-      if (todo && todo.threadId === threadID && shouldHydrateLiveTodoSnapshot(todo)) {
-        setLiveTodoState(todo.steps as TodoStep[]);
-      } else {
-        clearLiveTodoState();
-      }
-    }
+    liveTodoState.hydrateSnapshotIfUnchanged(
+      snapshot.todo,
+      threadID,
+      guard.liveTodoRevisionAtRequest,
+    );
   }
 
   async function hydrateThreadLiveState(
@@ -1271,7 +1099,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     const guard: LiveStateHydrationGuard = {
       activeTurnAtRequest: getActiveTurn(threadID),
       queueRevisionAtRequest: getQueueRevisionForThread(threadID),
-      liveTodoRevisionAtRequest: liveTodoRevision,
+      liveTodoRevisionAtRequest: liveTodoState.revision,
     };
     try {
       let snapshot: ThreadLiveState;
@@ -1442,21 +1270,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     latestSettledTurn = null;
     subagentNotifications = [];
 
-    // Live-todo reset. The auto-hide timer is cancelled to avoid a stale
-    // clear firing against the wrong pane. Show-all survives per-thread
-    // via liveTodoUiPrefs; the rail's open/closed state lives in
-    // activityRailUiPrefs.
-    if (liveTodoAutoHideTimer !== null) {
-      clearTimeout(liveTodoAutoHideTimer);
-      liveTodoAutoHideTimer = null;
-    }
-    liveTodo = null;
-    liveTodoCleared = new Set();
-    const incomingPrefs = readLiveTodoUiPrefs(newThread.id);
-    liveTodoShowAll = incomingPrefs.showAll;
-    const incomingRailPrefs = readActivityRailUiPrefs(newThread.id);
-    activityRailTodosOpen = incomingRailPrefs.todosOpen;
-    activityRailBackgroundOpen = incomingRailPrefs.backgroundOpen;
+    liveTodoState.resetForThread(newThread.id);
     diffPanel.clearForThread();
   }
 
@@ -1914,14 +1728,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // returning a value once thread is null below.
       latestSettledTurn = null;
       subagentNotifications = [];
-      // Mirror the live-todo reset block in switchThread: clearing the
-      // pane while a todo list is mounted otherwise leaves a stale panel
-      // with a dangling auto-hide timer that can fire against an
-      // unrelated subsequent thread.
-      if (liveTodoAutoHideTimer !== null) {
-        clearTimeout(liveTodoAutoHideTimer);
-        liveTodoAutoHideTimer = null;
-      }
+      liveTodoState.resetForEmptyPane();
       // Same shape: a switchThread that ran clear() mid-flight could
       // otherwise leave the spinner-threshold timer pending. When it
       // fires it would flip pastSpinnerThreshold true against an empty
@@ -1933,11 +1740,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         spinnerThresholdTimer = null;
       }
       pastSpinnerThreshold = false;
-      liveTodo = null;
-      liveTodoCleared = new Set();
-      liveTodoShowAll = false;
-      activityRailTodosOpen = false;
-      activityRailBackgroundOpen = false;
       oldestLoadedTurnIndex = null;
       hasMoreHistory = false;
       loadingOlder = false;
@@ -2437,8 +2239,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     // --- Live todo (activity rail Todos segment) ---
 
-    get liveTodo() { return liveTodo; },
-    get liveTodoShowAll() { return liveTodoShowAll; },
+    get liveTodo() { return liveTodoState.liveTodo; },
+    get liveTodoShowAll() { return liveTodoState.liveTodoShowAll; },
 
     /**
      * Replace the live-todo snapshot. Called from the
@@ -2460,7 +2262,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // Subtract steps that the previous all-completed cycle already
       // cleared so the agent's full-list re-emission doesn't repaint
       // those rows under a new logical todo cycle.
-      setLiveTodoState(steps);
+      liveTodoState.setLiveTodo(steps);
     },
 
     /**
@@ -2475,38 +2277,27 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * a prior auto-hide cycle.
      */
     clearLiveTodo(): void {
-      clearLiveTodoState();
+      liveTodoState.clearLiveTodo();
     },
 
     /** Toggle the "Show X more…" reveal under the truncated list. */
     toggleLiveTodoShowAll(): void {
-      liveTodoShowAll = !liveTodoShowAll;
-      writeLiveTodoUiPrefs(thread?.id ?? null, {
-        showAll: liveTodoShowAll,
-      });
+      liveTodoState.toggleLiveTodoShowAll(thread?.id ?? null);
     },
 
     // --- Activity rail (consolidated working/todos/background) ---
 
-    get activityRailTodosOpen() { return activityRailTodosOpen; },
-    get activityRailBackgroundOpen() { return activityRailBackgroundOpen; },
+    get activityRailTodosOpen() { return liveTodoState.activityRailTodosOpen; },
+    get activityRailBackgroundOpen() { return liveTodoState.activityRailBackgroundOpen; },
 
     /** Toggle the Todos accordion body inside the activity rail. */
     toggleActivityRailTodos(): void {
-      activityRailTodosOpen = !activityRailTodosOpen;
-      writeActivityRailUiPrefs(thread?.id ?? null, {
-        todosOpen: activityRailTodosOpen,
-        backgroundOpen: activityRailBackgroundOpen,
-      });
+      liveTodoState.toggleActivityRailTodos(thread?.id ?? null);
     },
 
     /** Toggle the Background accordion body inside the activity rail. */
     toggleActivityRailBackground(): void {
-      activityRailBackgroundOpen = !activityRailBackgroundOpen;
-      writeActivityRailUiPrefs(thread?.id ?? null, {
-        todosOpen: activityRailTodosOpen,
-        backgroundOpen: activityRailBackgroundOpen,
-      });
+      liveTodoState.toggleActivityRailBackground(thread?.id ?? null);
     },
 
     /**
