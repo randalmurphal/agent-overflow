@@ -1676,6 +1676,9 @@ func TestUpdateThread(t *testing.T) {
 	if got.Model != "new-model" {
 		t.Errorf("Model: got %q, want %q", got.Model, "new-model")
 	}
+	if got.UpdatedAt != thr.CreatedAt {
+		t.Errorf("UpdatedAt after UpdateThread: got %d, want original %d", got.UpdatedAt, thr.CreatedAt)
+	}
 }
 
 // TestDeleteThreadCascadesPayloadGC verifies that deleting a thread also

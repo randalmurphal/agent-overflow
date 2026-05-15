@@ -794,6 +794,93 @@ describe('setupEventListeners', () => {
     expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(10_000);
   });
 
+  it('does NOT bump cached project activity from wire-only user_text upserts', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({
+        id: 'thread-stale',
+        projectId: 'project-stale',
+        updatedAt: 100,
+        latestTurnCompletedAt: 100,
+      }),
+    ]);
+    setBindingMock('ListProjects', async () => [
+      projectWithCounts('project-stale', 100),
+    ]);
+    await refreshThreads();
+    await refreshProjects();
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-stale',
+      item: makeItem({
+        id: 'user:wire:child_prompt_1',
+        threadId: 'thread-stale',
+        kind: 'user_text',
+        meta: '{"wire_only":true}',
+        updatedAt: 10_000,
+      }),
+    });
+    await nextFrame();
+
+	expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(100);
+	expect(getThreads().find((thread) => thread.id === 'thread-stale')?.latestTurnCompletedAt).toBe(100);
+	expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(100);
+  });
+
+  it('does NOT bump cached project activity when an item upsert is explicitly non-activity', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 100 }),
+    ]);
+    setBindingMock('ListProjects', async () => [
+      projectWithCounts('project-stale', 100),
+    ]);
+    await refreshThreads();
+    await refreshProjects();
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-stale',
+      countsAsActivity: false,
+      item: makeItem({
+        id: 'user:0',
+        threadId: 'thread-stale',
+        kind: 'user_text',
+        updatedAt: 10_000,
+      }),
+    });
+    await nextFrame();
+
+    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(100);
+    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(100);
+  });
+
+  it('does NOT bump cached project activity from parented user_text upserts', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 100 }),
+    ]);
+    setBindingMock('ListProjects', async () => [
+      projectWithCounts('project-stale', 100),
+    ]);
+    await refreshThreads();
+    await refreshProjects();
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-stale',
+      item: makeItem({
+        id: 'user:wire:child_prompt_2',
+        threadId: 'thread-stale',
+        kind: 'user_text',
+        parentId: 'spawn-1',
+        updatedAt: 10_000,
+      }),
+    });
+    await nextFrame();
+
+    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(100);
+    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(100);
+  });
+
   it('bumps cached project activity on provider:turn_completed', async () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 100 }),
@@ -820,6 +907,41 @@ describe('setupEventListeners', () => {
 
     expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(12_000);
     expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(12_000);
+  });
+
+  it('does NOT bump cached project activity when provider:turn_completed is internal', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({
+        id: 'thread-stale',
+        projectId: 'project-stale',
+        updatedAt: 100,
+        latestTurnCompletedAt: 100,
+      }),
+    ]);
+    setBindingMock('ListProjects', async () => [
+      projectWithCounts('project-stale', 100),
+    ]);
+    await refreshThreads();
+    await refreshProjects();
+
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-stale',
+      turnId: 'turn-1',
+      turnIndex: 0,
+      startedAt: 100,
+      completedAt: 12_000,
+      stopReason: 'end_turn',
+      assistantMessageId: '',
+      tokenUsage: '',
+      aborted: false,
+      errorMessage: '',
+      countsAsActivity: false,
+    });
+    await nextFrame();
+
+    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(100);
+    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.latestTurnCompletedAt).toBe(100);
+    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(100);
   });
 
   it('bumps cached project activity on provider:approval request', async () => {

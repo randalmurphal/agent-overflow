@@ -300,27 +300,16 @@ func TestGitRemoveWorktreeDoesNotBumpReattachedThreadActivity(t *testing.T) {
 		t.Fatalf("CreateThread(other) error = %v", err)
 	}
 
-	// Pin both threads to known-old timestamps so a system-driven bump
-	// would be obvious. Owner is mutated separately because GitCreateWorktree
-	// already touched its row.
-	const ownerOldTs int64 = 1_700_000_000_000
-	const otherOldTs int64 = 1_700_000_001_000
 	persistedOwner, err := app.store.GetThread(owner.ID)
 	if err != nil {
 		t.Fatalf("GetThread(owner) error = %v", err)
 	}
-	persistedOwner.UpdatedAt = ownerOldTs
-	if err := app.store.UpdateThread(persistedOwner); err != nil {
-		t.Fatalf("UpdateThread(owner) error = %v", err)
-	}
+	ownerBefore := persistedOwner.UpdatedAt
 	persistedOther, err := app.store.GetThread(other.ID)
 	if err != nil {
 		t.Fatalf("GetThread(other) error = %v", err)
 	}
-	persistedOther.UpdatedAt = otherOldTs
-	if err := app.store.UpdateThread(persistedOther); err != nil {
-		t.Fatalf("UpdateThread(other) error = %v", err)
-	}
+	otherBefore := persistedOther.UpdatedAt
 
 	if err := app.GitRemoveWorktree(owner.ID); err != nil {
 		t.Fatalf("GitRemoveWorktree() error = %v", err)
@@ -330,15 +319,15 @@ func TestGitRemoveWorktreeDoesNotBumpReattachedThreadActivity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread(owner) after remove: %v", err)
 	}
-	if refreshedOwner.UpdatedAt != ownerOldTs {
-		t.Errorf("owner.UpdatedAt = %d, want %d (sweep should not bump)", refreshedOwner.UpdatedAt, ownerOldTs)
+	if refreshedOwner.UpdatedAt != ownerBefore {
+		t.Errorf("owner.UpdatedAt = %d, want %d (sweep should not bump)", refreshedOwner.UpdatedAt, ownerBefore)
 	}
 	refreshedOther, err := app.store.GetThread(other.ID)
 	if err != nil {
 		t.Fatalf("GetThread(other) after remove: %v", err)
 	}
-	if refreshedOther.UpdatedAt != otherOldTs {
-		t.Errorf("other.UpdatedAt = %d, want %d (sweep should not bump)", refreshedOther.UpdatedAt, otherOldTs)
+	if refreshedOther.UpdatedAt != otherBefore {
+		t.Errorf("other.UpdatedAt = %d, want %d (sweep should not bump)", refreshedOther.UpdatedAt, otherBefore)
 	}
 }
 
@@ -407,6 +396,7 @@ func TestPrepareThreadWorktreeBranchesFromSelectedBase(t *testing.T) {
 	thread.ProjectID = project.ID
 	thread.WorkspacePath = repo
 	thread.Branch = "main"
+	thread.UpdatedAt = 1_700_000_000_000
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -417,6 +407,9 @@ func TestPrepareThreadWorktreeBranchesFromSelectedBase(t *testing.T) {
 	}
 	if updated.Branch != "feature/base" {
 		t.Fatalf("Branch = %q, want feature/base", updated.Branch)
+	}
+	if updated.UpdatedAt != thread.UpdatedAt {
+		t.Fatalf("UpdatedAt = %d, want %d", updated.UpdatedAt, thread.UpdatedAt)
 	}
 	if _, err := os.Stat(filepath.Join(updated.WorktreePath, "BASE.txt")); err != nil {
 		t.Fatalf("expected worktree to branch from release: %v", err)

@@ -8,20 +8,26 @@ const (
 )
 
 type ItemStreamEvent struct {
-	Action    string      `json:"action"`
-	ThreadID  string      `json:"threadId"`
-	Item      *store.Item `json:"item,omitempty"`
-	ItemID    string      `json:"itemId,omitempty"`
-	Kind      string      `json:"kind,omitempty"`
-	Delta     string      `json:"delta,omitempty"`
-	UpdatedAt int64       `json:"updatedAt,omitempty"`
+	Action           string      `json:"action"`
+	ThreadID         string      `json:"threadId"`
+	Item             *store.Item `json:"item,omitempty"`
+	CountsAsActivity *bool       `json:"countsAsActivity,omitempty"`
+	ItemID           string      `json:"itemId,omitempty"`
+	Kind             string      `json:"kind,omitempty"`
+	Delta            string      `json:"delta,omitempty"`
+	UpdatedAt        int64       `json:"updatedAt,omitempty"`
 }
 
 func NewItemStreamUpsert(item store.Item) ItemStreamEvent {
+	return NewItemStreamUpsertWithActivity(item, nil)
+}
+
+func NewItemStreamUpsertWithActivity(item store.Item, countsAsActivity *bool) ItemStreamEvent {
 	return ItemStreamEvent{
-		Action:   itemStreamActionUpsert,
-		ThreadID: item.ThreadID,
-		Item:     &item,
+		Action:           itemStreamActionUpsert,
+		ThreadID:         item.ThreadID,
+		Item:             &item,
+		CountsAsActivity: countsAsActivity,
 	}
 }
 

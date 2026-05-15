@@ -118,6 +118,7 @@ func TestGitCheckoutUpdatesStoredBranch(t *testing.T) {
 	thread.ProjectID = project.ID
 	thread.WorkspacePath = repo
 	thread.Branch = "main"
+	thread.UpdatedAt = 1_700_000_000_000
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -132,6 +133,9 @@ func TestGitCheckoutUpdatesStoredBranch(t *testing.T) {
 	}
 	if stored.Branch != "feature/checkout" {
 		t.Fatalf("stored Branch = %q, want feature/checkout", stored.Branch)
+	}
+	if stored.UpdatedAt != thread.UpdatedAt {
+		t.Fatalf("stored UpdatedAt = %d, want %d", stored.UpdatedAt, thread.UpdatedAt)
 	}
 }
 
@@ -149,6 +153,7 @@ func TestGitCheckoutRejectsActiveTurn(t *testing.T) {
 	thread.ProjectID = project.ID
 	thread.WorkspacePath = repo
 	thread.Branch = "main"
+	thread.UpdatedAt = 1_700_000_000_000
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -246,6 +251,9 @@ func TestGitCreateBranchFromCurrentBaseKeepsDirtyTree(t *testing.T) {
 	if updated.Branch != "feature/keep" {
 		t.Fatalf("Branch = %q, want feature/keep", updated.Branch)
 	}
+	if updated.UpdatedAt != thread.UpdatedAt {
+		t.Fatalf("UpdatedAt = %d, want %d", updated.UpdatedAt, thread.UpdatedAt)
+	}
 	contents, err := os.ReadFile(filepath.Join(repo, "README.txt"))
 	if err != nil {
 		t.Fatalf("read repo file: %v", err)
@@ -275,6 +283,7 @@ func TestGitCreateBranchFromOtherBaseDiscardsDirtyTree(t *testing.T) {
 	thread.ProjectID = project.ID
 	thread.WorkspacePath = repo
 	thread.Branch = "main"
+	thread.UpdatedAt = 1_700_000_000_000
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -289,6 +298,9 @@ func TestGitCreateBranchFromOtherBaseDiscardsDirtyTree(t *testing.T) {
 	}
 	if updated.Branch != "feature/discard" {
 		t.Fatalf("Branch = %q, want feature/discard", updated.Branch)
+	}
+	if updated.UpdatedAt != thread.UpdatedAt {
+		t.Fatalf("UpdatedAt = %d, want %d", updated.UpdatedAt, thread.UpdatedAt)
 	}
 
 	// README should be back to the release-base content. RELEASE.txt

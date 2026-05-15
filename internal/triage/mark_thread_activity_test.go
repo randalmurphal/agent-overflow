@@ -100,6 +100,104 @@ func TestNonUserTextPersistDoesNotBumpThreadActivity(t *testing.T) {
 	}
 }
 
+func TestWireOnlyUserTextDoesNotBumpThreadActivity(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	before := readThreadUpdatedAt(t, st, "t1")
+
+	now := before + 5_000
+	if err := router.PersistItem(store.Item{
+		ID:        "user:wire:child_prompt_1",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "subagent prompt",
+		Meta:      `{"provider_item_id":"child_prompt_1","wire_only":true}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("persist wire-only user_text: %v", err)
+	}
+
+	after := readThreadUpdatedAt(t, st, "t1")
+	if after != before {
+		t.Fatalf("threads.updated_at moved across wire-only user_text: before=%d after=%d", before, after)
+	}
+}
+
+func TestParentedUserTextDoesNotBumpThreadActivity(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	before := readThreadUpdatedAt(t, st, "t1")
+
+	now := before + 5_000
+	if err := router.PersistItem(store.Item{
+		ID:        "spawn-1",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "running",
+		Summary:   "Spawn subagent",
+		CreatedAt: now - 1,
+		UpdatedAt: now - 1,
+	}, nil); err != nil {
+		t.Fatalf("persist parent tool_call: %v", err)
+	}
+	if err := router.PersistItem(store.Item{
+		ID:        "user:wire:child_prompt_2",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "subagent prompt",
+		ParentID:  "spawn-1",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("persist parented user_text: %v", err)
+	}
+
+	after := readThreadUpdatedAt(t, st, "t1")
+	if after != before {
+		t.Fatalf("threads.updated_at moved across parented user_text: before=%d after=%d", before, after)
+	}
+}
+
+func TestInvalidParentedUserTextDoesNotBumpThreadActivity(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	before := readThreadUpdatedAt(t, st, "t1")
+
+	now := before + 5_000
+	if err := router.PersistItem(store.Item{
+		ID:        "user:wire:child_prompt_3",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "subagent prompt with missing parent",
+		ParentID:  "missing-spawn",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("persist invalid-parent user_text: %v", err)
+	}
+
+	after := readThreadUpdatedAt(t, st, "t1")
+	if after != before {
+		t.Fatalf("threads.updated_at moved across invalid-parent user_text: before=%d after=%d", before, after)
+	}
+}
+
 // TestTurnCompleteBumpsThreadActivity covers the second sidebar-bump
 // boundary: a settled turn (clean or errored) advances activity. The
 // router's settleTurnRow path is the one production caller of
@@ -143,6 +241,82 @@ func TestTurnCompleteBumpsThreadActivity(t *testing.T) {
 	after := readThreadUpdatedAt(t, st, "t1")
 	if after != completeAt {
 		t.Fatalf("threads.updated_at after turn complete = %d, want %d", after, completeAt)
+	}
+}
+
+func TestNestedTurnCompleteDoesNotBumpThreadActivity(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	before := readThreadUpdatedAt(t, st, "t1")
+
+	if err := st.InsertTurn(store.Turn{
+		TurnID:    "turn-1",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		StartedAt: before,
+	}); err != nil {
+		t.Fatalf("insert turn: %v", err)
+	}
+
+	completeAt := before + 10_000
+	completeEvt := provider.ProviderEvent{
+		Kind:            provider.EventTurnComplete,
+		ThreadID:        "t1",
+		TurnID:          "turn-1",
+		ParentToolUseID: "spawn-1",
+		TurnComplete:    normalTurnCompleteMeta(),
+		Timestamp:       time.Unix(0, completeAt*int64(time.Millisecond)),
+	}
+	if err := router.Handle(completeEvt); err != nil {
+		t.Fatalf("handle nested turn complete: %v", err)
+	}
+
+	after := readThreadUpdatedAt(t, st, "t1")
+	if after != before {
+		t.Fatalf("threads.updated_at moved across nested turn complete: before=%d after=%d", before, after)
+	}
+}
+
+func TestWhitespaceParentTurnCompleteBumpsThreadActivity(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	before := readThreadUpdatedAt(t, st, "t1")
+
+	if err := st.InsertTurn(store.Turn{
+		TurnID:    "turn-1",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		StartedAt: before,
+	}); err != nil {
+		t.Fatalf("insert turn: %v", err)
+	}
+
+	startEvt := provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  "t1",
+		TurnID:    "turn-1",
+		Timestamp: time.Unix(0, before*int64(time.Millisecond)),
+	}
+	if err := router.Handle(startEvt); err != nil {
+		t.Fatalf("handle turn start: %v", err)
+	}
+
+	completeAt := before + 10_000
+	completeEvt := provider.ProviderEvent{
+		Kind:            provider.EventTurnComplete,
+		ThreadID:        "t1",
+		TurnID:          "turn-1",
+		ParentToolUseID: "   ",
+		TurnComplete:    normalTurnCompleteMeta(),
+		Timestamp:       time.Unix(0, completeAt*int64(time.Millisecond)),
+	}
+	if err := router.Handle(completeEvt); err != nil {
+		t.Fatalf("handle whitespace-parent turn complete: %v", err)
+	}
+
+	after := readThreadUpdatedAt(t, st, "t1")
+	if after != completeAt {
+		t.Fatalf("threads.updated_at after whitespace-parent turn complete = %d, want %d", after, completeAt)
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"time"
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
@@ -195,7 +194,6 @@ func (a *App) GitCheckout(threadID, branch string) error {
 	}
 
 	thread.Branch = core.CurrentBranch(workspace)
-	thread.UpdatedAt = time.Now().UnixMilli()
 	return a.store.UpdateThread(thread)
 }
 
@@ -317,7 +315,6 @@ func (a *App) GitCreateBranchFrom(threadID, name, baseBranch string, carryLocalC
 		a.workspaceFiles.Invalidate(workspace)
 	}
 	thread.Branch = core.CurrentBranch(workspace)
-	thread.UpdatedAt = time.Now().UnixMilli()
 	if err := a.store.UpdateThread(thread); err != nil {
 		return store.Thread{}, err
 	}

@@ -1259,6 +1259,7 @@ func TestE2E_RenameThreadUpdatesTitle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
+	before := thread.UpdatedAt
 
 	if err := app.RenameThread(thread.ID, "Refactored Flow"); err != nil {
 		t.Fatalf("RenameThread: %v", err)
@@ -1269,6 +1270,9 @@ func TestE2E_RenameThreadUpdatesTitle(t *testing.T) {
 	}
 	if got.Title != "Refactored Flow" {
 		t.Fatalf("Title = %q, want %q", got.Title, "Refactored Flow")
+	}
+	if got.UpdatedAt != before {
+		t.Fatalf("UpdatedAt = %d, want %d", got.UpdatedAt, before)
 	}
 }
 

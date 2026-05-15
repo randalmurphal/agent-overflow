@@ -47,6 +47,7 @@ type TurnCompletedEvent struct {
 	TokenUsage         json.RawMessage `json:"tokenUsage,omitempty"`
 	ErrorMessage       string          `json:"errorMessage,omitempty"`
 	Aborted            bool            `json:"aborted,omitempty"`
+	CountsAsActivity   bool            `json:"countsAsActivity"`
 }
 
 // SessionDiedEvent is the frontend-facing payload for

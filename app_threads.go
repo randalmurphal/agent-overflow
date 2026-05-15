@@ -301,13 +301,7 @@ func (a *App) UnarchiveThread(id string) (store.Thread, error) {
 // remote viewers) re-renders with the new title without a follow-up
 // poll. Mirrors the emit shape used by applyGeneratedThreadTitle.
 func (a *App) RenameThread(id string, title string) error {
-	t, err := a.store.GetThread(id)
-	if err != nil {
-		return err
-	}
-	t.Title = title
-	t.UpdatedAt = time.Now().UnixMilli()
-	if err := a.store.UpdateThread(t); err != nil {
+	if err := a.store.UpdateTitle(id, title); err != nil {
 		return err
 	}
 	if updated, gerr := a.store.GetThread(id); gerr == nil {

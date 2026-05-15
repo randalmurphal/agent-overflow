@@ -182,6 +182,7 @@ func TestHandleUserText_NoPending_PersistsWireOnlyRow(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 2)
+	before := readThreadUpdatedAt(t, st, "t1")
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventUserText,
@@ -222,6 +223,9 @@ func TestHandleUserText_NoPending_PersistsWireOnlyRow(t *testing.T) {
 	if wireOnly, _ := meta["wire_only"].(bool); !wireOnly {
 		t.Fatalf("meta.wire_only = %v, want true", meta["wire_only"])
 	}
+	if after := readThreadUpdatedAt(t, st, "t1"); after != before {
+		t.Fatalf("threads.updated_at moved across wire-only EventUserText: before=%d after=%d", before, after)
+	}
 
 	upserts := itemUpsertEmissionsForID(*emissions, "t1", "user:wire:codex_item_42")
 	if len(upserts) != 1 {
@@ -233,6 +237,7 @@ func TestHandleUserText_NoPending_SubagentPromptPersistsUnderParent(t *testing.T
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 2)
+	before := readThreadUpdatedAt(t, st, "t1")
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:            provider.EventUserText,
@@ -251,6 +256,9 @@ func TestHandleUserText_NoPending_SubagentPromptPersistsUnderParent(t *testing.T
 	}
 	if persisted.ParentID != "spawn-1" {
 		t.Fatalf("ParentID = %q, want spawn-1", persisted.ParentID)
+	}
+	if after := readThreadUpdatedAt(t, st, "t1"); after != before {
+		t.Fatalf("threads.updated_at moved across subagent EventUserText: before=%d after=%d", before, after)
 	}
 }
 

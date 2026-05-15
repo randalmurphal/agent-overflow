@@ -176,6 +176,11 @@ let itemEventQueueStart = 0;
 let itemEventFlushFrame: number | null = null;
 let itemEventFlushTimeout: number | null = null;
 
+interface PendingItemUpsert {
+  item: Item;
+  countsAsActivity?: boolean;
+}
+
 function requestFrame(callback: () => void): number {
   if (typeof requestAnimationFrame === 'function') {
     return requestAnimationFrame(callback);
@@ -372,6 +377,14 @@ function syncThreadActivity(threadId: string, updatedAt: number): void {
   }
 
   touchProjectActivity(projectId, latestUpdatedAt);
+}
+
+function userTextCountsAsActivity(item: Item): boolean {
+  if (item.kind !== 'user_text') return false;
+  if (item.parentId) return false;
+  const meta = parseJsonObject(item.meta);
+  if (meta?.wire_only === true) return false;
+  return true;
 }
 
 function refreshSidebarProjections(): void {
@@ -579,11 +592,17 @@ function applyUsageEvent(evt: UsageEvent): void {
   );
 }
 
-function applyItemUpserts(items: Item[]): void {
-  if (items.length === 0) return;
+function itemUpsertCountsAsActivity(upsert: PendingItemUpsert): boolean {
+  if (upsert.countsAsActivity !== undefined) return upsert.countsAsActivity;
+  return userTextCountsAsActivity(upsert.item);
+}
+
+function applyItemUpserts(upserts: PendingItemUpsert[]): void {
+  if (upserts.length === 0) return;
   const itemsByThread = new Map<string, Item[]>();
   const userTextActivityByThread = new Map<string, number>();
-  for (const item of items) {
+  for (const upsert of upserts) {
+    const { item } = upsert;
     const list = itemsByThread.get(item.threadId);
     if (list) {
       list.push(item);
@@ -601,7 +620,7 @@ function applyItemUpserts(items: Item[]): void {
     // alongside provider:turn_completed and approval / user-input
     // request creation. assistant_text / thinking / tool_call / etc.
     // upserts deliberately do NOT advance the sidebar timestamp.
-    if (item.kind === 'user_text' && Number.isFinite(item.updatedAt)) {
+    if (itemUpsertCountsAsActivity(upsert) && Number.isFinite(item.updatedAt)) {
       const existing = userTextActivityByThread.get(item.threadId) ?? Number.NEGATIVE_INFINITY;
       if (item.updatedAt > existing) {
         userTextActivityByThread.set(item.threadId, item.updatedAt);
@@ -689,14 +708,14 @@ function flushItemEventQueue(): void {
       itemEventQueueStart = 0;
     }
   }
-  const pendingUpserts: Item[] = [];
+  const pendingUpserts: PendingItemUpsert[] = [];
   const notifiedUpserts: Item[] = [];
   const pendingDeltas = new Map<string, ItemDeltaEvent & { chunks: string[] }>();
 
   const flushPendingUpserts = () => {
     if (pendingUpserts.length === 0) return;
     applyItemUpserts(pendingUpserts);
-    notifiedUpserts.push(...pendingUpserts);
+    notifiedUpserts.push(...pendingUpserts.map((upsert) => upsert.item));
     pendingUpserts.length = 0;
   };
 
@@ -731,7 +750,7 @@ function flushItemEventQueue(): void {
     if (evt.action === 'upsert') {
       flushPendingDeltas();
       if (!isValidItemForThread(evt.item, evt.threadId)) continue;
-      pendingUpserts.push(evt.item);
+      pendingUpserts.push({ item: evt.item, countsAsActivity: evt.countsAsActivity });
       continue;
     }
     if (evt.action !== 'delta') continue;
@@ -879,12 +898,12 @@ function applyTurnCompleted(evt: TurnCompletedEvent): void {
     if (pane.threadId !== evt.threadId) continue;
     pane.settleTurn(settled);
   }
-  syncLatestTurnCompleted(evt);
-  // Turn complete (clean, errored, or synthesized for session_died) is
-  // a sidebar-bump boundary. Use the wire-reported completedAt so
-  // multi-pane / cold-restart ordering matches the backend's persisted
-  // timestamp written by Store.MarkThreadActivity in settleTurnRow.
-  if (Number.isFinite(evt.completedAt)) {
+  // Top-level turn complete (clean, errored, or synthesized for
+  // session_died) is a sidebar-bump boundary. The backend marks
+  // nested/internal completions with countsAsActivity=false so subagent
+  // turns update live turn state without changing read/sidebar state.
+  if (evt.countsAsActivity !== false && Number.isFinite(evt.completedAt)) {
+    syncLatestTurnCompleted(evt);
     syncThreadActivity(evt.threadId, evt.completedAt);
   }
   // Send-queue drain is owned by the backend. Triage flushes queued

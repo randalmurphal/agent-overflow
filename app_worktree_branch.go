@@ -3,7 +3,6 @@ package main
 import (
 	"log"
 	"strings"
-	"time"
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
@@ -52,7 +51,6 @@ func (a *App) maybeRenameTemporaryWorktreeBranch(threadID, message string) {
 	}
 
 	thread.Branch = renamed
-	thread.UpdatedAt = time.Now().UnixMilli()
 	if err := a.store.UpdateThread(thread); err != nil {
 		log.Printf("send message: persist renamed worktree branch: %v", err)
 	}

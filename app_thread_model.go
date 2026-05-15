@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/provider"
@@ -65,7 +64,6 @@ func (a *App) UpdateThreadModel(threadID string, model string) (threadResult sto
 	thread.AutoCompactStandardPercent = 0
 	thread.AutoCompactExtendedPercent = 0
 
-	thread.UpdatedAt = time.Now().UnixMilli()
 	if err := a.store.UpdateThread(thread); err != nil {
 		return store.Thread{}, err
 	}

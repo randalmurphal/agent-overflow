@@ -1108,6 +1108,10 @@ func (r *Router) emitItemUpsert(item store.Item) {
 	r.emit("provider:item_event", NewItemStreamUpsert(item))
 }
 
+func (r *Router) emitItemUpsertWithActivity(item store.Item, countsAsActivity bool) {
+	r.emit("provider:item_event", NewItemStreamUpsertWithActivity(item, &countsAsActivity))
+}
+
 func decodeToolStartMeta(raw json.RawMessage) toolStartMeta {
 	if len(raw) == 0 {
 		return toolStartMeta{}

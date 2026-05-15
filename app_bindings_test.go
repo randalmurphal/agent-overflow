@@ -614,6 +614,7 @@ func TestReconnectSessionStopsThenStarts(t *testing.T) {
 func TestUpdateThreadModelUpdatesStoredModelWithoutRestartWhenSessionInactive(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-model-inactive")
+	thread.UpdatedAt = 1_700_000_000_000
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -641,6 +642,9 @@ func TestUpdateThreadModelUpdatesStoredModelWithoutRestartWhenSessionInactive(t 
 	}
 	if stored.Model != "gpt-5.4-mini" {
 		t.Fatalf("stored model = %q, want %q", stored.Model, "gpt-5.4-mini")
+	}
+	if stored.UpdatedAt != thread.UpdatedAt {
+		t.Fatalf("stored UpdatedAt = %d, want %d", stored.UpdatedAt, thread.UpdatedAt)
 	}
 }
 
@@ -720,6 +724,7 @@ func TestSwitchThreadSanitizesStaleSparkContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createTestThread: %v", err)
 	}
+	before := thread.UpdatedAt
 	thread.ContextWindow = provider.CodexStandardContextWindow
 	if err := app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("UpdateThread stale context: %v", err)
@@ -731,6 +736,9 @@ func TestSwitchThreadSanitizesStaleSparkContext(t *testing.T) {
 	}
 	if switched.ContextWindow != provider.CodexSparkContextWindow {
 		t.Fatalf("ContextWindow = %d, want spark %d", switched.ContextWindow, provider.CodexSparkContextWindow)
+	}
+	if switched.UpdatedAt != before {
+		t.Fatalf("UpdatedAt = %d, want %d", switched.UpdatedAt, before)
 	}
 }
 
@@ -818,6 +826,7 @@ func TestSwitchThreadDoesNotChangeRememberedContext(t *testing.T) {
 func TestUpdateThreadModelRestartsActiveSession(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-model-active")
+	thread.UpdatedAt = 1_700_000_000_000
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -839,6 +848,9 @@ func TestUpdateThreadModelRestartsActiveSession(t *testing.T) {
 	}
 	if updated.Model != "gpt-5.4-mini" {
 		t.Fatalf("returned model = %q, want %q", updated.Model, "gpt-5.4-mini")
+	}
+	if updated.UpdatedAt != thread.UpdatedAt {
+		t.Fatalf("returned UpdatedAt = %d, want %d", updated.UpdatedAt, thread.UpdatedAt)
 	}
 }
 

@@ -133,12 +133,13 @@ export interface ItemDeltaEvent {
 }
 
 export type ItemStreamEvent =
-  | {
-      action: 'upsert';
-      threadId: string;
-      item: Item;
-    }
-  | ({ action: 'delta' } & ItemDeltaEvent);
+	  | {
+	      action: 'upsert';
+	      threadId: string;
+	      item: Item;
+	      countsAsActivity?: boolean;
+	    }
+	  | ({ action: 'delta' } & ItemDeltaEvent);
 
 /**
  * RateLimitsSnapshot mirrors the Go `provider.RateLimitsSnapshot` payload.
@@ -307,6 +308,8 @@ export interface TurnCompletedEvent {
   errorMessage?: string;
   /** True when the turn ended via interruption / truncation / abort. */
   aborted?: boolean;
+  /** False for nested subagent/internal turns that should not reorder the sidebar. */
+  countsAsActivity?: boolean;
 }
 
 /**

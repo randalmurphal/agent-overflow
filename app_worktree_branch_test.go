@@ -26,6 +26,7 @@ func TestMaybeRenameTemporaryWorktreeBranchRenamesOnFirstMessage(t *testing.T) {
 	}
 	thread.ProjectID = project.ID
 	thread.WorkspacePath = repo
+	thread.UpdatedAt = 1_700_000_000_000
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -56,6 +57,9 @@ func TestMaybeRenameTemporaryWorktreeBranchRenamesOnFirstMessage(t *testing.T) {
 	}
 	if stored.Branch != "ao-describe-the-work" {
 		t.Fatalf("stored Branch = %q, want ao-describe-the-work", stored.Branch)
+	}
+	if stored.UpdatedAt != thread.UpdatedAt {
+		t.Fatalf("stored UpdatedAt = %d, want %d", stored.UpdatedAt, thread.UpdatedAt)
 	}
 
 	// The actual worktree head should agree.

@@ -1228,10 +1228,7 @@ func TestEventInitUpdatesSessionRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get thread fixture: %v", err)
 	}
-	thread.UpdatedAt = 1000
-	if err := st.UpdateThread(thread); err != nil {
-		t.Fatalf("update thread fixture: %v", err)
-	}
+	before := thread.UpdatedAt
 
 	info := provider.SessionInfo{SessionID: "session-abc", Model: "opus"}
 	meta, _ := json.Marshal(info)
@@ -1261,8 +1258,8 @@ func TestEventInitUpdatesSessionRef(t *testing.T) {
 	if thr.SessionRef != "session-abc" {
 		t.Errorf("session ref: got %q, want %q", thr.SessionRef, "session-abc")
 	}
-	if thr.UpdatedAt != 1000 {
-		t.Errorf("updated_at: got %d, want 1000", thr.UpdatedAt)
+	if thr.UpdatedAt != before {
+		t.Errorf("updated_at: got %d, want %d", thr.UpdatedAt, before)
 	}
 }
 

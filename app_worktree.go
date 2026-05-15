@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
@@ -144,7 +143,6 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 	thread.WorktreePath = worktreePath
 	thread.WorkspacePath = worktreePath
 	thread.Branch = resolvedBranch
-	thread.UpdatedAt = time.Now().UnixMilli()
 	if err := a.store.UpdateThread(thread); err != nil {
 		// Worktree was created on disk but the store update failed. Clean up
 		// so we don't leak a worktree directory.
@@ -446,7 +444,6 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 			thread.Branch = core.CurrentBranch(worktree.Path)
 		}
 	}
-	thread.UpdatedAt = time.Now().UnixMilli()
 	if err := a.store.UpdateThread(thread); err != nil {
 		return store.Thread{}, err
 	}

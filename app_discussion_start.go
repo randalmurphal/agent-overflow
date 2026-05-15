@@ -133,7 +133,6 @@ func (a *App) linkDiscussionParticipants(channelID string, plans []discussion.Pa
 	for _, plan := range plans {
 		child := plan.Thread
 		child.DiscussionID = channelID
-		child.UpdatedAt = max(child.UpdatedAt+1, time.Now().UnixMilli())
 		if err := a.store.UpdateThread(child); err != nil {
 			return err
 		}
@@ -144,7 +143,6 @@ func (a *App) linkDiscussionParticipants(channelID string, plans []discussion.Pa
 func (a *App) persistDiscussionParent(parent store.Thread, channel store.Channel) error {
 	parent.Mode = "discussion"
 	parent.DiscussionID = channel.ID
-	parent.UpdatedAt = max(parent.UpdatedAt+1, channel.CreatedAt)
 	return a.store.UpdateThread(parent)
 }
 
@@ -192,4 +190,3 @@ func (a *App) installDeliberation(channelID string, maxTurns int) {
 	}
 	a.deliberations[channelID] = discussion.NewDeliberation(channelID, maxTurns)
 }
-

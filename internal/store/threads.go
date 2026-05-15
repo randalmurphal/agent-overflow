@@ -381,7 +381,7 @@ func (s *Store) UpdateThread(t Thread) error {
 		    mode=?, reasoning_effort=?, fast_mode=?, context_window=?,
 		    auto_compact_standard_percent=?, auto_compact_extended_percent=?, runtime_mode=?,
 		    discussion_id=?, parent_thread_id=?, forked_from_thread_id=?, last_token_usage=?,
-		    updated_at=?, archived=?
+		    archived=?
 		 WHERE id=?`,
 		t.ProjectID, t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
@@ -389,7 +389,7 @@ func (s *Store) UpdateThread(t Thread) error {
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
-		t.UpdatedAt, boolToInt(t.Archived), t.ID,
+		boolToInt(t.Archived), t.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update thread %s: %w", t.ID, err)

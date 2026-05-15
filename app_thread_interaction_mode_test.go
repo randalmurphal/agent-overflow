@@ -10,6 +10,7 @@ import (
 func TestUpdateThreadModePersistsValidMode(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-mode-set")
+	thread.UpdatedAt = 1_700_000_000_000
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -24,12 +25,18 @@ func TestUpdateThreadModePersistsValidMode(t *testing.T) {
 		if got.Mode != mode {
 			t.Fatalf("returned Mode = %q, want %q", got.Mode, mode)
 		}
+		if got.UpdatedAt != thread.UpdatedAt {
+			t.Fatalf("returned UpdatedAt = %d, want %d", got.UpdatedAt, thread.UpdatedAt)
+		}
 		stored, err := app.store.GetThread(thread.ID)
 		if err != nil {
 			t.Fatalf("GetThread() error = %v", err)
 		}
 		if stored.Mode != mode {
 			t.Fatalf("stored Mode = %q, want %q", stored.Mode, mode)
+		}
+		if stored.UpdatedAt != thread.UpdatedAt {
+			t.Fatalf("stored UpdatedAt = %d, want %d", stored.UpdatedAt, thread.UpdatedAt)
 		}
 	}
 }

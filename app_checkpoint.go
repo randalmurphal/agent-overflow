@@ -362,7 +362,6 @@ func (a *App) revertClaudeThreadToMessage(thread store.Thread, checkpoint store.
 	if checkpoint.TurnIndex == 0 {
 		thread.SessionRef = ""
 		thread.PendingForkRef = ""
-		thread.UpdatedAt = time.Now().UnixMilli()
 		return a.store.UpdateThread(thread)
 	}
 	sourceSessionRef := thread.ResolvedSessionRef()
@@ -379,7 +378,6 @@ func (a *App) revertClaudeThreadToMessage(thread store.Thread, checkpoint store.
 	}
 	thread.SessionRef = newID
 	thread.PendingForkRef = ""
-	thread.UpdatedAt = time.Now().UnixMilli()
 	if err := a.store.UpdateThread(thread); err != nil {
 		_ = os.Remove(newPath)
 		return fmt.Errorf("persist reverted claude state: %w", err)

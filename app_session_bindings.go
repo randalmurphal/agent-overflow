@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"time"
 
 	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/store"
@@ -45,7 +44,6 @@ func (a *App) loadThreadForFocus(threadID string) (store.Thread, error) {
 	if chatmodel.SameModelFields(thread, sanitized) {
 		return thread, nil
 	}
-	sanitized.UpdatedAt = time.Now().UnixMilli()
 	if err := a.store.UpdateThread(sanitized); err != nil {
 		return store.Thread{}, err
 	}

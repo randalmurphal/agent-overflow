@@ -945,6 +945,26 @@ func (r *Router) bumpThreadActivity(threadID string, at int64, reason string) {
 	}
 }
 
+func userTextCountsAsThreadActivity(item store.Item) bool {
+	if item.Kind != itemKindUserText {
+		return false
+	}
+	if item.ParentID != "" {
+		return false
+	}
+	if strings.TrimSpace(item.Meta) == "" {
+		return true
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(item.Meta), &meta); err != nil {
+		return true
+	}
+	if wireOnly, ok := meta["wire_only"].(bool); ok && wireOnly {
+		return false
+	}
+	return true
+}
+
 func (r *Router) persistItem(item store.Item, payload *store.Payload) error {
 	return r.persistItemWithEmit(item, payload, nil, true)
 }
@@ -964,11 +984,11 @@ func (r *Router) persistItemAtIndex(item store.Item, itemIndex int) error {
 	if len(affected) == 0 {
 		return nil
 	}
-	if item.Kind == itemKindUserText {
+	if userTextCountsAsThreadActivity(item) {
 		r.bumpThreadActivity(item.ThreadID, item.UpdatedAt, "user_text persist")
 	}
 	for _, persisted := range affected {
-		r.emitItemUpsert(persisted)
+		r.emitItemUpsertWithActivity(persisted, userTextCountsAsThreadActivity(persisted))
 	}
 	r.metrics.ItemsPersisted.Add(context.Background(), 1,
 		metric.WithAttributes(attribute.String("kind", item.Kind)))
@@ -988,6 +1008,8 @@ func (r *Router) persistItemWithInputPayload(item store.Item, resultPayload, inp
 }
 
 func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, inputPayload *store.Payload, emit bool) error {
+	countsAsActivity := userTextCountsAsThreadActivity(item)
+
 	// parent_id invariant (spec invariant 7): items.parent_id must point
 	// to an existing tool_call row. Drop invalid / cyclic refs here rather
 	// than rejecting the whole persistence — a dangling parent would only
@@ -1003,19 +1025,15 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 	if err != nil {
 		return err
 	}
-	// Bump sidebar activity on user_text persist. This covers all three
-	// user-message sources that funnel through PersistItem: direct
-	// sends (app_send), queued flushes (app_flush_queue), and steer
-	// (app_steer); plus the wire-only cascade-injected path inside
-	// handleUserText. Other kinds — assistant_text deltas, tool_call
-	// rows, thinking, etc. — must not bump activity, otherwise the
-	// sidebar reshuffles on every streaming chunk (the bug this fix
-	// addresses).
-	if persisted.Kind == itemKindUserText {
+	// Bump sidebar activity only for user-authored user_text rows.
+	// Provider-injected wire-only context and subagent-internal prompts
+	// are timeline history, not activity that should reshuffle the
+	// sidebar.
+	if countsAsActivity {
 		r.bumpThreadActivity(persisted.ThreadID, persisted.UpdatedAt, "user_text persist")
 	}
 	if emit {
-		r.emitItemUpsert(persisted)
+		r.emitItemUpsertWithActivity(persisted, countsAsActivity)
 	}
 	r.metrics.ItemsPersisted.Add(context.Background(), 1,
 		metric.WithAttributes(attribute.String("kind", persisted.Kind)))

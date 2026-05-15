@@ -300,6 +300,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	//      subprocess kept streaming. takeOpenRound returns "" on the
 	//      second, so the wire-round emit is suppressed.
 	//
+	countsAsActivity := turnCountsAsThreadActivity(evt)
 	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
 	meta, metaErr := turnCompleteMetaFromEvent(evt)
 	if metaErr != nil {
@@ -317,6 +318,10 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	round, hasRound := r.takeOpenRound(evt.ThreadID)
 	if hasRound && err == nil {
 		r.emit("provider:turn_completed", r.buildRoundCompletedEvent(evt, round.TurnID, turnIndex, now, meta))
+	}
+
+	if err == nil && !countsAsActivity {
+		return nil
 	}
 
 	if err == nil {
@@ -545,11 +550,11 @@ func decodeTurnCompleteFields(evt provider.ProviderEvent, turnIndex int, meta tu
 // time this runs (see handleTurnComplete: takeOpenRound + emit at the
 // top, then claimTurnSettlement gate, then this).
 //
-// Bumps thread activity through Store.MarkThreadActivity. Turn settle
-// — including synthesized session-died / abort flavors that flow
-// through this same path — is one of the three sidebar-bump
-// boundaries; the other two are user_text persist and approval /
-// user-input request creation.
+// Top-level turn settle bumps thread activity through
+// Store.MarkThreadActivity. Nested/internal turns only update turn state,
+// so subagent completions do not reorder the sidebar. Synthesized
+// session-died / abort flavors flow through this same path when they
+// belong to the top-level turn.
 func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now int64, meta turnCompleteMeta, persistErr error) {
 	fields := decodeTurnCompleteFields(evt, turnIndex, meta, persistErr)
 
@@ -561,7 +566,13 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 	if err := r.store.UpdateTurnCompleted(fields.logicalTurnID, now, fields.stopReason, fields.assistantMessageID, usageJSON, fields.errorMessage); err != nil {
 		log.Printf("triage: update turn %s: %v", fields.logicalTurnID, err)
 	}
-	r.bumpThreadActivity(evt.ThreadID, now, "turn settle")
+	if turnCountsAsThreadActivity(evt) {
+		r.bumpThreadActivity(evt.ThreadID, now, "turn settle")
+	}
+}
+
+func turnCountsAsThreadActivity(evt provider.ProviderEvent) bool {
+	return strings.TrimSpace(evt.ParentToolUseID) == ""
 }
 
 // buildRoundCompletedEvent builds the frontend-facing
@@ -607,6 +618,7 @@ func (r *Router) buildRoundCompletedEvent(
 		TokenUsage:         meta.Usage,
 		ErrorMessage:       fields.errorMessage,
 		Aborted:            meta.Aborted || meta.Truncated,
+		CountsAsActivity:   turnCountsAsThreadActivity(evt),
 	}
 }
 

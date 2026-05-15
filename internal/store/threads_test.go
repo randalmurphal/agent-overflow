@@ -241,6 +241,14 @@ func TestUpdateThreadNewFields(t *testing.T) {
 	if got.ForkedFromThreadID != "thread-upd-parent" {
 		t.Errorf("ForkedFromThreadID: got %q, want %q", got.ForkedFromThreadID, "thread-upd-parent")
 	}
+	if got.UpdatedAt != now {
+		t.Errorf("UpdatedAt after metadata update: got %d, want original %d", got.UpdatedAt, now)
+	}
+
+	activityAt := now + 7000
+	if err := s.MarkThreadActivity(thr.ID, activityAt); err != nil {
+		t.Fatalf("MarkThreadActivity() error = %v", err)
+	}
 
 	// Verify clearing a nullable field back to empty works.
 	thr.WorktreePath = ""
@@ -259,6 +267,9 @@ func TestUpdateThreadNewFields(t *testing.T) {
 	}
 	if got2.Branch != "" {
 		t.Errorf("Branch after clear: got %q, want empty", got2.Branch)
+	}
+	if got2.UpdatedAt != activityAt {
+		t.Errorf("UpdatedAt after stale metadata update: got %d, want activity timestamp %d", got2.UpdatedAt, activityAt)
 	}
 }
 
@@ -826,8 +837,8 @@ func TestListThreadsWithItemsSurfacesNonEmptyDrafts(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertThreadDraft(implDraft): %v", err)
 	}
-// emptyDraft gets a content-only draft with no source-plan link. That is
-// still user-authored state, so it should now surface in the sidebar.
+	// emptyDraft gets a content-only draft with no source-plan link. That is
+	// still user-authored state, so it should now surface in the sidebar.
 	if err := s.UpsertThreadDraft(ThreadDraft{
 		ThreadID:      emptyDraft.ID,
 		Content:       "typed but never sent",

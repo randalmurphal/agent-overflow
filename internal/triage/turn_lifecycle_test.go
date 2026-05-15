@@ -396,6 +396,55 @@ func TestHandleEventTurnComplete_UpdatesTurnRow(t *testing.T) {
 	if payload.AssistantMessageID != "msg_01abc" {
 		t.Errorf("payload.AssistantMessageID = %q, want msg_01abc", payload.AssistantMessageID)
 	}
+	if !payload.CountsAsActivity {
+		t.Error("payload.CountsAsActivity = false, want true for top-level turn complete")
+	}
+}
+
+func TestHandleEventTurnComplete_NestedEmissionDoesNotCountAsActivity(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startedAt := time.UnixMilli(1_700_000_000_000)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:            provider.EventTurnStart,
+		ThreadID:        "t1",
+		TurnIndex:       3,
+		ParentToolUseID: "spawn-1",
+		Timestamp:       startedAt,
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:            provider.EventTurnComplete,
+		ThreadID:        "t1",
+		ParentToolUseID: "spawn-1",
+		TurnComplete:    &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
+		Timestamp:       startedAt.Add(2500 * time.Millisecond),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+
+	completed := filterEmissions(*emissions, "provider:turn_completed")
+	if len(completed) != 1 {
+		t.Fatalf("expected 1 provider:turn_completed emission, got %d", len(completed))
+	}
+	payload, ok := completed[0].data.(TurnCompletedEvent)
+	if !ok {
+		t.Fatalf("payload type = %T, want TurnCompletedEvent", completed[0].data)
+	}
+	if payload.CountsAsActivity {
+		t.Error("payload.CountsAsActivity = true, want false for nested turn complete")
+	}
+
+	turn, found, err := st.GetTurn("t1:3")
+	if err != nil || !found {
+		t.Fatalf("get turn: found=%v err=%v", found, err)
+	}
+	if turn.CompletedAt != nil {
+		t.Fatalf("nested turn complete should not settle top-level turn row, got completed_at=%d", *turn.CompletedAt)
+	}
 }
 
 func TestHandleEventTurnCompleteDuplicatePersistsLateUsage(t *testing.T) {

@@ -205,7 +205,7 @@ func (r *Router) attachProviderItemIDToUserRow(threadID, aoItemID, providerItemI
 	if err := r.store.UpdateCheckpointProviderIDs(threadID, aoItemID, providerItemID, parentUUID); err != nil {
 		return fmt.Errorf("triage: update message checkpoint provider ids: %w", err)
 	}
-	r.emitItemUpsert(persisted)
+	r.emitItemUpsertWithActivity(persisted, false)
 	return nil
 }
 
