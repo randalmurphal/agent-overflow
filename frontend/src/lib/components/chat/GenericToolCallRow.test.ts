@@ -151,6 +151,152 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     expect(status.className).not.toContain('text-[10px]');
   });
 
+  it('suppresses the live duration ticker on a backgrounded launch row so chat history shows only a timestamp', () => {
+    // Backgrounded launches in chat are stable transcript records.
+    // A wall-clock ticker that keeps counting up indefinitely is
+    // misleading there — the user can't act on it from a chat row.
+    // Live status lives in the tray (which passes its own
+    // durationLabel; that path is exercised by BackgroundTaskTrayRow).
+    // The eventual completion lands as its own sibling row with its
+    // own duration. Use a generous 60s offset so the assertion stays
+    // unambiguously past the 2s `RUNNING_ELAPSED_THRESHOLD_MS` gate
+    // — a future bump of that threshold won't silently re-mean this
+    // test as "ticker is empty in the gate window."
+    const sixtySecondsAgo = Date.now() - 60_000;
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'running',
+      isBackground: true,
+      toolName: 'Bash',
+      summary: 'long-running task',
+      createdAt: sixtySecondsAgo,
+      updatedAt: sixtySecondsAgo,
+    });
+    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
+    // Duration slot is reserved (always present in the DOM for layout
+    // stability — see ToolHeaderMeta) but the label is empty because
+    // shouldTickElapsed is gated off for backgrounded launches.
+    expect(getByTestId('tool-call-card-duration').textContent?.trim()).toBe('');
+    // Timestamp still renders so the row is anchored in time.
+    expect(getByTestId('tool-call-card-time')).toBeInTheDocument();
+  });
+
+  it('ticks the live duration on a non-backgrounded running tool (contrast for the suppression above)', () => {
+    // Same wall-clock as the backgrounded test, no isBackground flag.
+    // This locks in that the timer suppression is gated by
+    // isBackgroundedLaunch and not an accidental wider regression.
+    const sixtySecondsAgo = Date.now() - 60_000;
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'running',
+      toolName: 'Bash',
+      summary: 'foreground bash',
+      createdAt: sixtySecondsAgo,
+      updatedAt: sixtySecondsAgo,
+    });
+    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
+    expect(getByTestId('tool-call-card-duration').textContent?.trim()).not.toBe('');
+  });
+
+  it('renders a Claude Agent row with the title-cased subagent_type label and the model affix', () => {
+    // Without this header treatment a backgrounded Agent renders the
+    // bare "Subagent" classifier label with no model — completely
+    // different from the inline `SubagentGroup` card a foreground
+    // Agent gets. Matching what `SubagentGroup` does here is what
+    // keeps the two surfaces visually aligned.
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'running',
+      isBackground: true,
+      toolName: 'Agent',
+      summary: 'Agent: Review: security',
+      meta: JSON.stringify({ subagent_model: 'claude-opus-4-7' }),
+      payloadMeta: JSON.stringify({
+        toolName: 'Agent',
+        input: { subagent_type: 'Explore', description: 'Review: security' },
+      }),
+    });
+    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
+    const label = getByTestId('tool-call-card-label');
+    expect(label.textContent).toContain('Explore');
+    expect(label.textContent).not.toContain('Subagent');
+    expect(getByTestId('tool-call-card-model').textContent).toContain('Opus 4.7');
+    // Preview shows just the description, not the "Agent: …" summary
+    // line the generic preview formatter would otherwise emit.
+    const preview = getByTestId('tool-call-card-preview');
+    expect(preview.textContent?.trim()).toBe('Review: security');
+    expect(preview.textContent).not.toContain('Agent:');
+  });
+
+  it('falls back to the launch input.model when no subagent_model is stamped on a backgrounded Agent yet', () => {
+    // Brief window between launch and the subagent's first assistant
+    // envelope — the parser hasn't stamped parent.meta.subagent_model
+    // yet, but the user-supplied input.model alias should still drive
+    // the affix so the row never renders without a model.
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'running',
+      isBackground: true,
+      toolName: 'Agent',
+      summary: 'Agent: launching',
+      // No meta.subagent_model.
+      payloadMeta: JSON.stringify({
+        toolName: 'Agent',
+        input: { subagent_type: 'Explore', description: 'Just launched', model: 'opus' },
+      }),
+    });
+    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
+    expect(getByTestId('tool-call-card-model').textContent).toContain('Opus');
+  });
+
+  it('falls back to "Agent" (not "Subagent") when subagent_type is missing on an Agent row', () => {
+    // Without the `.not.toContain('Subagent')` clause, this assertion
+    // would also pass if the row regressed to the classifier label
+    // "Subagent" (which itself contains "Agent"). Pin both directions.
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'running',
+      isBackground: true,
+      toolName: 'Agent',
+      summary: 'Agent: do something',
+      payloadMeta: JSON.stringify({
+        toolName: 'Agent',
+        input: { description: 'do something' },
+      }),
+    });
+    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
+    const label = getByTestId('tool-call-card-label');
+    expect(label.textContent).toContain('Agent');
+    expect(label.textContent).not.toContain('Subagent');
+  });
+
+  it('falls through to the generic preview when an Agent row has no description or prompt', () => {
+    // The `isClaudeAgent && subagentDescription` guard on inputPreview
+    // must NOT swallow the row when description+prompt are both empty
+    // — otherwise the preview would render as ''. Without this test a
+    // future regression that drops the `&& subagentDescription` guard
+    // would silently blank the preview.
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'running',
+      isBackground: true,
+      toolName: 'Agent',
+      summary: 'Agent: fallback preview',
+      payloadMeta: JSON.stringify({
+        toolName: 'Agent',
+        input: { subagent_type: 'Explore' },
+      }),
+    });
+    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
+    // Label still renders as "Explore" (the subagent_type), and the
+    // preview falls through to toolCardInputPreview which returns
+    // item.summary.
+    expect(getByTestId('tool-call-card-label').textContent).toContain('Explore');
+    expect(getByTestId('tool-call-card-preview').textContent?.trim()).toBe(
+      'Agent: fallback preview',
+    );
+  });
+
   it('suppresses the dropdown for TaskOutput rows even when a payload exists', async () => {
     // TaskOutput retrieves the same stdout already shown on the
     // originating Bash row, so the row keeps the stable header shell but

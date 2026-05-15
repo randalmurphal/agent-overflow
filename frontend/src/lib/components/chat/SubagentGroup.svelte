@@ -32,7 +32,12 @@
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { formatElapsedSeconds } from '../../utils/format';
-  import { displayModelLabel } from '../../utils/modelLabels';
+  import {
+    deriveClaudeSubagentDescription,
+    deriveClaudeSubagentLabel,
+    deriveClaudeSubagentModelLabel,
+    readClaudeSubagentInput,
+  } from '../../utils/claudeSubagentLabel';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { SubagentGroupNode, TimelineNode } from '../../utils/subagentGrouping';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
@@ -98,72 +103,18 @@
   let parent = $derived(group.parent);
   let parentMeta = $derived(parseJsonObject(parent.meta));
   let payloadMeta = $derived(parseJsonObject(parent.payloadMeta));
+  let inputObject = $derived(readClaudeSubagentInput(payloadMeta, parentMeta));
+  let parentToolName = $derived((parent.toolName ?? '').trim());
 
-  // Tool input lives in payloadMeta.input (`marshalToolMeta` for Claude).
-  let inputObject = $derived.by<Record<string, unknown> | null>(() => {
-    const raw = payloadMeta?.input ?? parentMeta?.input;
-    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-      return raw as Record<string, unknown>;
-    }
-    return null;
-  });
-
-  function readString(obj: Record<string, unknown> | null, key: string): string {
-    if (!obj) return '';
-    const v = obj[key];
-    return typeof v === 'string' ? v.trim() : '';
-  }
-
-  // Title-cased label. Claude `Agent` uses `subagent_type` (e.g.
-  // "Explore"). Fall back so the row never renders an empty label.
-  let label = $derived.by<string>(() => {
-    const toolName = (parent.toolName ?? '').trim();
-    if (toolName === 'Agent') {
-      return titleCase(readString(inputObject, 'subagent_type') || 'Agent');
-    }
-    // Defensive: any other tool that nonetheless declared children
-    // (rare but possible if the provider tags parent_tool_use_id
-    // against a non-subagent tool). Use the tool name itself.
-    return titleCase(toolName || 'Subagent');
-  });
-
-  function titleCase(raw: string): string {
-    if (!raw) return '';
-    // Split CamelCase / kebab-case / snake_case into words; capitalise
-    // each. "spawnAgent" -> "Spawn Agent"; "general-purpose" ->
-    // "General Purpose".
-    const tokens = raw
-      .replace(/([a-z])([A-Z])/g, '$1 $2')
-      .split(/[-_\s]+/)
-      .filter((t) => t.length > 0);
-    return tokens.map((t) => t.charAt(0).toUpperCase() + t.slice(1)).join(' ');
-  }
-
-  // Subagent model affix. Resolution order for Claude:
-  //   1. parent.meta.subagent_model — stamped by the parser on the
-  //      first subagent assistant envelope (most authoritative).
-  //   2. payloadMeta.input.model — the user-supplied alias on the
-  //      tool input (e.g. "opus"). Surfaces something for the brief
-  //      window before the first subagent assistant message lands.
-  //   3. omitted otherwise.
-  let modelLabel = $derived.by<string>(() => {
-    if ((parent.toolName ?? '') !== 'Agent') return '';
-    const stamped = typeof parentMeta?.subagent_model === 'string' ? parentMeta.subagent_model : '';
-    if (stamped) return displayModelLabel('claude', stamped);
-    const requested = readString(inputObject, 'model');
-    if (requested) return displayModelLabel('claude', requested);
-    return '';
-  });
-
-  // Description stays on the first header line. The latest-action row below
-  // is always present and swaps from "Initializing..." once child work lands.
-  let inputDescription = $derived.by<string>(() => {
-    const desc = readString(inputObject, 'description');
-    if (desc) return desc;
-    const prompt = readString(inputObject, 'prompt');
-    if (prompt) return prompt.length > 80 ? `${prompt.slice(0, 80)}…` : prompt;
-    return '';
-  });
+  // Title-cased label, model affix, and description — see
+  // utils/claudeSubagentLabel.ts for the resolution rules. The
+  // latest-action row below is always present and swaps from
+  // "Initializing..." once child work lands.
+  let label = $derived(deriveClaudeSubagentLabel(inputObject, parentToolName));
+  let modelLabel = $derived(
+    deriveClaudeSubagentModelLabel(inputObject, parentMeta, parentToolName),
+  );
+  let inputDescription = $derived(deriveClaudeSubagentDescription(inputObject));
 
   let previewText = $derived.by<string>(() => {
     return group.latestChildSummary || 'Initializing...';

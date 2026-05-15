@@ -26,6 +26,12 @@
   import { formatElapsedSeconds } from '../../utils/format';
   import { isCodexSubagentLaunchItem } from '../../utils/subagentLaunch';
   import { parseClaudeSubagentTranscript } from '../../utils/claudeSubagentTranscript';
+  import {
+    deriveClaudeSubagentDescription,
+    deriveClaudeSubagentLabel,
+    deriveClaudeSubagentModelLabel,
+    readClaudeSubagentInput,
+  } from '../../utils/claudeSubagentLabel';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
 
   // Threshold (ms) at which the running row starts displaying elapsed
@@ -92,7 +98,30 @@
     }),
   );
 
+  // Claude Agent rows reuse SubagentGroup's title-case label, model
+  // affix, and description treatment via the shared util so the
+  // chat/tray surface matches the inline card. Non-Agent rows
+  // short-circuit through isClaudeAgent.
+  let isClaudeAgent = $derived((effectiveDisplayItem.toolName ?? '') === 'Agent');
+  let agentInputObject = $derived(
+    isClaudeAgent ? readClaudeSubagentInput(summaryMeta, displayMeta) : null,
+  );
+  let subagentLabel = $derived(
+    isClaudeAgent ? deriveClaudeSubagentLabel(agentInputObject, 'Agent') : '',
+  );
+  let subagentModelLabel = $derived(
+    isClaudeAgent ? deriveClaudeSubagentModelLabel(agentInputObject, displayMeta, 'Agent') : '',
+  );
+  let subagentDescription = $derived(
+    isClaudeAgent ? deriveClaudeSubagentDescription(agentInputObject) : '',
+  );
+  // subagentLabel is always non-empty when isClaudeAgent (the helper
+  // falls back through subagent_type → "Agent"), so the gate is just
+  // isClaudeAgent.
+  let displayLabel = $derived(isClaudeAgent ? subagentLabel : classification.label);
+
   let inputPreview = $derived.by<string>(() => {
+    if (isClaudeAgent && subagentDescription) return subagentDescription;
     return toolCardInputPreview(effectiveDisplayItem, classification, summaryMeta, displayMeta);
   });
 
@@ -127,7 +156,17 @@
 
   let completionStatus = $derived(deriveCompletionStatus(effectiveStatusItem, { meta: statusMeta }));
   let completionTitle = $derived(completionBadgeTitleForStatus(effectiveStatusItem.status));
-  let shouldTickElapsed = $derived(runningLabel !== null && durationLabel === '');
+  // Backgrounded launch rows are stable transcript records — they keep
+  // the `…` affordance for the row's lifetime, but a live wall-clock
+  // ticker in chat history is misleading (the user can't act on it
+  // from the chat row; the tray is the live-status surface). Suppress
+  // the internal ticker; the launch shows just its timestamp while
+  // running, the eventual completion appears as its own sibling row
+  // with its own durationMs. The tray surface passes a non-empty
+  // `durationLabel` so its live elapsed display is unaffected.
+  let shouldTickElapsed = $derived(
+    runningLabel !== null && durationLabel === '' && !isBackgroundedLaunch,
+  );
 
   // Wall-clock ticker, paused when the row isn't running. Mirrors the
   // SubagentGroup elapsed-display pattern: the interval clears on
@@ -213,7 +252,7 @@
 {#snippet headerContent()}
   <ToolKindIcon kind={classification.icon} ariaLabel={classification.label} />
   <span class="text-[11px] font-medium text-fg-muted shrink-0 uppercase tracking-[0.04em]" data-testid="tool-call-card-label">
-    {classification.label}
+    {displayLabel}{#if subagentModelLabel}<span class="ml-1 text-fg-hint normal-case tracking-normal" data-testid="tool-call-card-model">({subagentModelLabel})</span>{/if}
   </span>
   <span class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75" data-testid="tool-call-card-preview">
     {inputPreview}

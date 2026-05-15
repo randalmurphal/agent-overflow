@@ -293,7 +293,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(queryByTestId("tool-call-card-body")).toBeNull();
   });
 
-  it('renders a robot icon + "Subagent" label for Agent and collab_agent', async () => {
+  it("renders a robot icon for Agent and collab_agent", async () => {
     const pane = await buildPane();
     for (const toolName of ["Agent", "collab_agent"]) {
       const item = makeItem({
@@ -308,9 +308,47 @@ describe("<ToolCallCard> header dispatcher", () => {
       expect(getByTestId("tool-call-card").getAttribute("data-tool-kind")).toBe(
         "robot",
       );
-      expect(getByTestId("tool-call-card-label").textContent).toBe("Subagent");
       unmount();
     }
+  });
+
+  it('renders Agent rows with the title-cased subagent label (falls back to "Agent" when subagent_type is missing)', async () => {
+    // GenericToolCallRow uses the same `deriveSubagentLabel` helper
+    // SubagentGroup does — so a backgrounded Agent row in chat
+    // history / the activity tray matches the inline `EXPLORE` /
+    // `GENERAL PURPOSE` shape instead of rendering the bare
+    // "Subagent" classifier label.
+    const pane = await buildPane();
+    const item = makeItem({
+      id: "agent",
+      kind: "tool_call",
+      status: "running",
+      toolName: "Agent",
+    });
+    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+    expect(getByTestId("tool-call-card-label").textContent).toContain("Agent");
+    expect(getByTestId("tool-call-card-label").textContent).not.toContain(
+      "Subagent",
+    );
+  });
+
+  it('renders collab_agent rows with the "Subagent" classifier label', async () => {
+    // Codex collab_agent uses a different input shape — the inline
+    // CollabToolRow renders the spawn card. The plain
+    // GenericToolCallRow fallback path keeps the classifier label so
+    // it never goes blank when something else routes a collab_agent
+    // row through here.
+    const pane = await buildPane();
+    const item = makeItem({
+      id: "collab",
+      kind: "tool_call",
+      status: "running",
+      toolName: "collab_agent",
+    });
+    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+    expect(getByTestId("tool-call-card-label").textContent).toContain(
+      "Subagent",
+    );
   });
 
   it("renders a speech-bubble icon for send_input", async () => {
