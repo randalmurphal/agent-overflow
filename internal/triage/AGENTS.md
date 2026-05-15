@@ -136,7 +136,8 @@ Authoritative mental model:
   `codex_background.go` tracks unifiedExec items as transient state and
   shows them in the running tray immediately. They only become
   backgrounded after a wire-typed yield signal (EventTextDelta /
-  EventThinking, turn complete, or an explicit empty write_stdin poll).
+  EventThinking, turn complete, or a typed terminal-interaction
+  notification for an explicit empty write_stdin poll).
   Quick unifiedExec completions persist as normal command rows.
   Backgrounded unifiedExec completions stay transient until an explicit
   terminal wait/poll row can own the output. Spawn-agent starts are

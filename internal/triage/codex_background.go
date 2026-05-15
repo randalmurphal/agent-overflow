@@ -161,9 +161,8 @@ type codexBackgroundState struct {
 	pendingWaitByProcess map[string]pendingTerminalWait
 	// waitCarrierByProcess maps process_id → latest empty-stdin wait
 	// carrier in the current turn. It outlives pendingWaitByProcess so
-	// the canonical typed TerminalInteraction signal can settle/update a
-	// provisional raw write_stdin carrier even after the PTY wait has
-	// already completed.
+	// repeated canonical TerminalInteraction signals can update one visible
+	// carrier even after the PTY wait has already completed.
 	waitCarrierByProcess map[string]pendingTerminalWait
 	// spawnAgent maps launchID → tracker for collabAgentToolCall
 	// spawn_agent items that may outlive their parent turn.

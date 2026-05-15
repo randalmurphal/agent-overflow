@@ -19,9 +19,9 @@ import (
 //
 //   - `stdin == ""`: the model polled the PTY without sending input.
 //     Codex's own TUI keeps this as a status streak. Agent Overflow adds a
-//     visible carrier row, so raw write_stdin and canonical typed
-//     notifications for the same process reuse one carrier until output lands
-//     or another timeline boundary makes the wait stale.
+//     visible carrier row, so repeated typed notifications for the same
+//     process reuse one carrier until output lands or another timeline
+//     boundary makes the wait stale.
 //   - `stdin != ""`: keystrokes were forwarded. We persist an
 //     "Interacted with background terminal" marker, but never persist
 //     stdin bytes because interactive input can contain secrets.
@@ -36,11 +36,8 @@ import (
 // buildTerminalInteractionMeta in the Codex parser. Only the fields we
 // actually read are listed; unknown keys are tolerated.
 type terminalInteractionMeta struct {
-	ProcessID  string `json:"process_id"`
-	Stdin      string `json:"stdin"`
-	Source     string `json:"source"`
-	WaitResult string `json:"wait_result"`
-	ToolCallID string `json:"tool_call_id"`
+	ProcessID string `json:"process_id"`
+	Stdin     string `json:"stdin"`
 }
 
 func decodeTerminalInteractionMeta(raw json.RawMessage) terminalInteractionMeta {
@@ -72,16 +69,11 @@ func decodeTerminalInteractionMeta(raw json.RawMessage) terminalInteractionMeta 
 //   - Stable ids use `waited:<processID>:<turn_index>:<seq>` for wait
 //     carriers and `interacted:<processID>:<turn_index>:<seq>` for forwarded
 //     stdin. Empty polls for the same process can reuse their prior id so
-//     repeated raw/typed wait signals update the same visible row until output
+//     repeated typed wait signals update the same visible row until output
 //     arrives or a later timeline boundary settles it as stale.
 func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	meta := decodeTerminalInteractionMeta(evt.Meta)
 	isPoll := evt.Content == "" && meta.Stdin == ""
-	isRawWaitStart := isPoll && meta.Source == "rawResponseItem/function_call"
-	isRawWaitOutput := isPoll && meta.Source == "rawResponseItem/function_call_output"
-	if isRawWaitOutput {
-		return nil
-	}
 
 	turnIndex, ok := r.openTurnIndex(evt.ThreadID)
 	if !ok {
@@ -97,14 +89,8 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 
 	now := eventTimestampMillis(evt)
 	itemID := ""
-	if isRawWaitStart {
-		// Raw write_stdin is emitted before Codex waits on the PTY. Seeing
-		// it is typed proof that the referenced unified exec is now being
-		// resumed as a background terminal, even if no assistant text or
-		// follow-up tool boundary has happened yet.
-		r.markCodexUnifiedExecProcessBackgrounded(evt.ThreadID, meta.ProcessID)
-	}
 	if isPoll {
+		r.markCodexUnifiedExecProcessBackgrounded(evt.ThreadID, meta.ProcessID)
 		itemID = r.codexTerminalWaitItemIDForProcess(evt.ThreadID, meta.ProcessID, turnIndex)
 	}
 	if itemID == "" {
@@ -120,15 +106,6 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	}
 	if !isPoll {
 		metaMap["has_stdin"] = true
-	}
-	if meta.Source != "" {
-		metaMap["source"] = meta.Source
-	}
-	if meta.WaitResult != "" {
-		metaMap["wait_result"] = meta.WaitResult
-	}
-	if meta.ToolCallID != "" {
-		metaMap["tool_call_id"] = meta.ToolCallID
 	}
 	metaBlob, err := json.Marshal(metaMap)
 	if err != nil {
@@ -171,7 +148,7 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		if isPoll && commandSummary == "" && strings.TrimSpace(existing.Summary) != "" {
 			item.Summary = existing.Summary
 		}
-		if existingSettledPoll && meta.WaitResult == "" {
+		if existingSettledPoll {
 			if err := r.persistItem(item, nil); err != nil {
 				return err
 			}
@@ -182,16 +159,6 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	}
 	if isPoll {
 		r.rememberCodexTerminalWaitCarrier(evt.ThreadID, meta.ProcessID, item.ID, turnIndex, now)
-		if meta.WaitResult == provider.TerminalWaitResultRunning {
-			item.Status = statusCompleted
-			if err := r.persistItem(item, nil); err != nil {
-				return err
-			}
-			if err := r.clearCodexPendingTerminalWait(evt.ThreadID, meta.ProcessID); err != nil {
-				return err
-			}
-			return nil
-		}
 		if tracker, ok := r.codexCompletedUnifiedExecTrackerForProcess(evt.ThreadID, meta.ProcessID); ok {
 			item.Status = statusCompleted
 			if err := r.persistItem(item, nil); err != nil {
@@ -202,9 +169,6 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 			}
 			r.clearCodexCompletedOutputTracker(evt.ThreadID, meta.ProcessID)
 			return nil
-		}
-		if meta.WaitResult == provider.TerminalWaitResultExited {
-			item.Status = statusCompleted
 		}
 	}
 	var payload *store.Payload

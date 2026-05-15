@@ -673,10 +673,12 @@ ghost-row problem the former `BackgroundClassifier` had. The TRIGGER
 for stamping an already-authorized row is not a classifier; it's the
 observable moment at which the wire-typed commitment becomes visible.
 Valid triggers are a model-produced yield (text/reasoning delta), the
-turn boundary catchall, or an explicit raw empty `write_stdin`
-`function_call` against that unified-exec process. The raw wait trigger
-is process-scoped and only applies after `unifiedExecStartup` has already
-authorized the tracker. See `internal/triage/codex_background.go`.
+turn boundary catchall, or the canonical typed
+`item/commandExecution/terminalInteraction` notification for an empty
+`write_stdin` poll against that unified-exec process. The terminal
+interaction trigger is process-scoped and only applies after
+`unifiedExecStartup` has already authorized the tracker. See
+`internal/triage/codex_background.go`.
 
 **Rationale.** Codex has no `run_in_background` flag on ThreadItems, but
 it does have backgrounded execution: `exec_command` yields to the model

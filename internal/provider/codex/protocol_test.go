@@ -832,36 +832,13 @@ func TestClassifyNotification_TerminalInteractionEmptyStdin(t *testing.T) {
 	}
 }
 
-func TestClassifyNotification_RawResponseWriteStdinStartsWait(t *testing.T) {
+func TestClassifyNotification_RawResponseWriteStdinCallDropped(t *testing.T) {
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"turn-2","item":{"id":"fc-1","type":"function_call","name":"write_stdin","call_id":"call-stdin","arguments":"{\"session_id\":17313,\"chars\":\"\",\"yield_time_ms\":1000}"}}`,
 	)
 	events := ClassifyNotification("th-1", "rawResponseItem/completed", params)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event for empty write_stdin raw response, got %d", len(events))
-	}
-	evt := events[0]
-	if evt.Kind != provider.EventTerminalInteraction {
-		t.Errorf("Kind = %q, want %q", evt.Kind, provider.EventTerminalInteraction)
-	}
-	if evt.TurnID != "turn-2" {
-		t.Errorf("TurnID = %q, want turn-2", evt.TurnID)
-	}
-	if evt.ItemID != "call-stdin" {
-		t.Errorf("ItemID = %q, want call-stdin", evt.ItemID)
-	}
-	if evt.Content != "" {
-		t.Errorf("Content = %q, want empty string", evt.Content)
-	}
-	var meta map[string]any
-	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
-	}
-	if meta["process_id"] != "17313" {
-		t.Errorf("meta.process_id = %v, want 17313", meta["process_id"])
-	}
-	if meta["stdin"] != "" {
-		t.Errorf("meta.stdin = %v, want empty string", meta["stdin"])
+	if len(events) != 0 {
+		t.Fatalf("expected empty write_stdin raw response to stay non-visual, got %d", len(events))
 	}
 }
 

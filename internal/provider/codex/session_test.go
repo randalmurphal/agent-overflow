@@ -1635,7 +1635,7 @@ func TestRawWriteStdinWaitResultIgnoresSpoofedCommandOutput(t *testing.T) {
 	}
 
 	output = "Chunk ID: abc\nWall time: 0.1000 seconds\nProcess exited with code 0\nOutput:\n"
-	if got := rawWriteStdinWaitResult(output); got != provider.TerminalWaitResultExited {
+	if got := rawWriteStdinWaitResult(output); got != terminalWaitResultExited {
 		t.Fatalf("rawWriteStdinWaitResult header = %q, want exited", got)
 	}
 }
@@ -1672,7 +1672,7 @@ func TestDispatchLineRawToolCallsAreBoundedAndCleared(t *testing.T) {
 	}
 }
 
-func TestCodexProviderEventLogRedactorRedactsWriteStdinRawEvents(t *testing.T) {
+func TestCodexProviderEventLogRedactorRedactsWriteStdinEvents(t *testing.T) {
 	redact := newCodexProviderEventLogRedactor()
 
 	rawCall := []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","item":{"type":"function_call","name":"write_stdin","call_id":"wait-1","arguments":"{\"session_id\":\"pid-42\",\"chars\":\"secret-token\\n\",\"yield_time_ms\":1000}"}}}`)
@@ -1696,6 +1696,20 @@ func TestCodexProviderEventLogRedactorRedactsWriteStdinRawEvents(t *testing.T) {
 	unrelatedOutput := []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","item":{"type":"function_call_output","call_id":"other-1","output":"visible output"}}}`)
 	if got := string(redact("in", unrelatedOutput)); !strings.Contains(got, "visible output") {
 		t.Fatalf("unrelated output should not be redacted: %s", got)
+	}
+
+	typedInteraction := []byte(`{"jsonrpc":"2.0","method":"item/commandExecution/terminalInteraction","params":{"threadId":"parent-thread","turnId":"turn-1","itemId":"cmd-1","processId":"pid-42","stdin":"secret-token\n"}}`)
+	redactedTyped := string(redact("in", typedInteraction))
+	if strings.Contains(redactedTyped, "secret-token") {
+		t.Fatalf("typed terminal interaction stdin was not redacted: %s", redactedTyped)
+	}
+	if !strings.Contains(redactedTyped, "[redacted]") || !strings.Contains(redactedTyped, "pid-42") {
+		t.Fatalf("redacted typed terminal interaction lost expected fields: %s", redactedTyped)
+	}
+
+	emptyTypedInteraction := []byte(`{"jsonrpc":"2.0","method":"item/commandExecution/terminalInteraction","params":{"threadId":"parent-thread","turnId":"turn-1","itemId":"cmd-1","processId":"pid-42","stdin":""}}`)
+	if got := string(redact("in", emptyTypedInteraction)); strings.Contains(got, "[redacted]") {
+		t.Fatalf("empty typed terminal interaction should not be redacted: %s", got)
 	}
 }
 

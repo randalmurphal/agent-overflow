@@ -80,10 +80,10 @@ const (
 	// without sending input); a non-empty value carries the keystrokes
 	// Codex forwarded. Triage persists a lightweight
 	// `terminal_interaction` row for the empty case so the timeline can
-	// render the explicit wait as chat history; Codex's own TUI keeps this
-	// as status text unless output is returned by the wait. The non-empty
-	// case persists an "Interacted with background terminal" marker while
-	// redacting the stdin bytes from durable item metadata.
+	// render the explicit wait as chat history when Codex's own TUI would
+	// flush its wait streak. The non-empty case persists an "Interacted
+	// with background terminal" marker while redacting the stdin bytes from
+	// durable item metadata.
 	EventTerminalInteraction EventKind = "terminal_interaction"
 
 	// EventUserText is the wire-confirmation envelope for an AO-initiated
@@ -97,11 +97,6 @@ const (
 	EventCommandOutput EventKind = "command_output"
 	EventThinking      EventKind = "thinking"
 	EventProposedPlan  EventKind = "proposed_plan"
-)
-
-const (
-	TerminalWaitResultRunning = "running"
-	TerminalWaitResultExited  = "exited"
 )
 
 // AllEventKinds is the canonical list of EventKind values. Triage and the

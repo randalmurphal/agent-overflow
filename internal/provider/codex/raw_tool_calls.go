@@ -11,6 +11,11 @@ import (
 
 const maxRawToolCallRecords = 512
 
+const (
+	terminalWaitResultRunning = "running"
+	terminalWaitResultExited  = "exited"
+)
+
 type rawToolCall struct {
 	CallID    string
 	Name      string
@@ -224,19 +229,23 @@ func rawWriteStdinWaitResult(output string) string {
 	for _, line := range strings.Split(header, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "Process running with session ID ") {
-			return provider.TerminalWaitResultRunning
+			return terminalWaitResultRunning
 		}
 		if strings.HasPrefix(line, "Process exited with code ") {
-			return provider.TerminalWaitResultExited
+			return terminalWaitResultExited
 		}
 	}
 	return ""
 }
 
-func classifyRawResponseNotification(threadID, method string, params json.RawMessage, now time.Time) ([]provider.ProviderEvent, bool) {
+func classifyRawResponseNotification(_ string, method string, _ json.RawMessage, _ time.Time) ([]provider.ProviderEvent, bool) {
 	switch method {
 	case "rawResponseItem/completed":
-		return classifyRawResponseItemCompleted(threadID, params, now), true
+		// Raw response items are model transcript detail. Codex app-server
+		// emits typed item notifications for UI lifecycle events; preserving
+		// this as "handled" prevents the generic unknown-notification path
+		// from fabricating chat rows from raw tool transcripts.
+		return nil, true
 	}
 	return nil, false
 }
@@ -256,59 +265,6 @@ func buildTerminalInteractionMeta(params json.RawMessage) json.RawMessage {
 	return encoded
 }
 
-func classifyRawResponseItemCompleted(threadID string, params json.RawMessage, now time.Time) []provider.ProviderEvent {
-	item := readNestedObject(params, "item")
-	itemType := readRawString(item, "type")
-	toolName := firstNonEmptyString(readRawString(item, "name"), readRawString(item, "rawToolName"))
-	if toolName != "write_stdin" {
-		return nil
-	}
-
-	processID := readRawString(item, "processId")
-	switch itemType {
-	case "function_call":
-		args, ok := decodeFunctionArguments(readRawString(item, "arguments"))
-		if !ok || readFlexibleString(args, "chars") != "" {
-			return nil
-		}
-		processID = readFlexibleString(args, "session_id")
-	case "function_call_output":
-		// Raw outputs are not a transcript lifecycle source. Codex emits the
-		// canonical typed TerminalInteraction after write_stdin returns, and
-		// command item/completed owns final output/status.
-		return nil
-	default:
-		return nil
-	}
-
-	if processID == "" {
-		return nil
-	}
-
-	metaMap := map[string]any{
-		"process_id": processID,
-		"stdin":      "",
-		"source":     "rawResponseItem/function_call",
-	}
-	if callID := readRawString(item, "call_id"); callID != "" {
-		metaMap["tool_call_id"] = callID
-	}
-	meta, err := json.Marshal(metaMap)
-	if err != nil {
-		meta = json.RawMessage(`{"stdin":""}`)
-	}
-
-	return []provider.ProviderEvent{{
-		Kind:      provider.EventTerminalInteraction,
-		ThreadID:  threadID,
-		TurnID:    readTopLevelString(params, "turnId"),
-		ItemID:    firstNonEmptyString(readRawString(item, "call_id"), readRawString(item, "id")),
-		Content:   "",
-		Meta:      meta,
-		Timestamp: now,
-	}}
-}
-
 type codexProviderEventLogRedactor struct {
 	mu                sync.Mutex
 	writeStdinCallIDs map[string]struct{}
@@ -326,11 +282,18 @@ func (r *codexProviderEventLogRedactor) redact(direction string, data []byte) []
 		return data
 	}
 	var root map[string]json.RawMessage
-	if json.Unmarshal(data, &root) != nil || readRawString(root, "method") != "rawResponseItem/completed" {
+	if json.Unmarshal(data, &root) != nil {
 		return data
 	}
+	method := readRawString(root, "method")
 	var params map[string]json.RawMessage
 	if json.Unmarshal(root["params"], &params) != nil {
+		return data
+	}
+	if method == "item/commandExecution/terminalInteraction" {
+		return redactTerminalInteractionStdin(root, params, data)
+	}
+	if method != "rawResponseItem/completed" {
 		return data
 	}
 	var item map[string]json.RawMessage
@@ -361,6 +324,22 @@ func (r *codexProviderEventLogRedactor) redact(direction string, data []byte) []
 	redacted, err := encodeRedactedRawResponseLine(root, params, item)
 	if err != nil {
 		return data
+	}
+	return redacted
+}
+
+func redactTerminalInteractionStdin(root, params map[string]json.RawMessage, original []byte) []byte {
+	if readRawString(params, "stdin") == "" {
+		return original
+	}
+	encodedRedaction, err := json.Marshal("[redacted]")
+	if err != nil {
+		return original
+	}
+	params["stdin"] = encodedRedaction
+	redacted, err := encodeRedactedParamsLine(root, params)
+	if err != nil {
+		return original
 	}
 	return redacted
 }
@@ -428,6 +407,10 @@ func encodeRedactedRawResponseLine(root, params, item map[string]json.RawMessage
 		return nil, err
 	}
 	params["item"] = encodedItem
+	return encodeRedactedParamsLine(root, params)
+}
+
+func encodeRedactedParamsLine(root, params map[string]json.RawMessage) ([]byte, error) {
 	encodedParams, err := json.Marshal(params)
 	if err != nil {
 		return nil, err
