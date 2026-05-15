@@ -150,7 +150,7 @@ describe('<AssistantMessage>', () => {
         'max-w-full',
         'overflow-x-auto',
         'whitespace-nowrap',
-        'align-baseline',
+        'align-middle',
         'leading-[1.35]',
       );
     });
