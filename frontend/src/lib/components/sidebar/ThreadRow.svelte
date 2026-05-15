@@ -14,6 +14,7 @@
   } from '../../stores/threadStatuses.svelte';
   import type { Thread } from '../../types/models';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
+  import FolderGit2 from 'lucide-svelte/icons/folder-git-2';
   import Icon from '../primitives/Icon.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import { relativeTime } from '../../utils/format';
@@ -229,8 +230,7 @@
 
   let worktreeName = $derived(pathBasename(thread.worktreePath));
   let showWorktreeMeta = $derived(!editing && Boolean(thread.worktreePath && worktreeName));
-  let worktreeIndentPx = $derived(indentPx + 10);
-  let worktreeConnectorLeftPx = $derived(worktreeIndentPx - 8);
+  let worktreeIndentPx = $derived(indentPx);
   let worktreeRightPaddingPx = $derived(52);
 </script>
 
@@ -374,15 +374,16 @@
       data-testid="thread-row-worktree"
     >
       <span
-        class="absolute top-0 h-2 w-2 rounded-bl-[3px] border-l border-b border-border-subtle/70"
-        style="left: {worktreeConnectorLeftPx}px"
-        aria-hidden="true"
-      ></span>
-      <span
-        class="ml-auto min-w-0 max-w-full truncate px-1 py-0 text-right font-mono text-[10px] text-fg-hint"
-        data-testid="thread-row-worktree-name"
+        class="ml-auto inline-flex min-w-0 max-w-full items-center gap-1 px-1 py-0 text-fg-hint"
+        data-testid="thread-row-worktree-label"
       >
-        {worktreeName}
+        <Icon icon={FolderGit2} size={10} strokeWidth={1.8} class="shrink-0 opacity-85" />
+        <span
+          class="min-w-0 truncate text-right font-mono text-[10px]"
+          data-testid="thread-row-worktree-name"
+        >
+          {worktreeName}
+        </span>
       </span>
     </div>
   {/if}

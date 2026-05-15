@@ -277,8 +277,20 @@ describe('<ThreadRow> worktree metadata', () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
 
-    expect(getByTestId('thread-row-worktree-name').classList.contains('text-fg-hint')).toBe(true);
-    expect(getByTestId('thread-row-worktree-name').classList.contains('text-fg-muted')).toBe(false);
+    expect(getByTestId('thread-row-worktree-label').classList.contains('text-fg-hint')).toBe(true);
+    expect(getByTestId('thread-row-worktree-label').classList.contains('text-fg-muted')).toBe(false);
+  });
+
+  it('uses an icon instead of a connector line', () => {
+    const thread = makeThread({
+      id: 'worktree-thread',
+      worktreePath: '/tmp/worktrees/feature-demo',
+    });
+    const pane = createThreadPane();
+    const { container, getByTestId } = render(ThreadRow, { props: { thread, pane } });
+
+    expect(getByTestId('thread-row-worktree-label').querySelector('svg')).not.toBeNull();
+    expect(container.querySelector('[data-testid="thread-row-worktree"] .border-l')).toBeNull();
   });
 
   it('uses the final path segment with trailing slashes ignored', () => {
