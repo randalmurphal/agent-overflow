@@ -231,6 +231,7 @@
   let showWorktreeMeta = $derived(!editing && Boolean(thread.worktreePath && worktreeName));
   let worktreeIndentPx = $derived(indentPx + 10);
   let worktreeConnectorLeftPx = $derived(worktreeIndentPx - 8);
+  let worktreeRightPaddingPx = $derived(52);
 </script>
 
 <div
@@ -366,8 +367,8 @@
 
   {#if showWorktreeMeta}
     <div
-      class="relative -mt-1.5 flex h-3.5 items-center pr-1 text-[10px] leading-none text-fg-hint"
-      style="padding-left: {worktreeIndentPx}px"
+      class="relative -mt-1.5 flex h-3.5 items-center text-[10px] leading-none text-fg-hint"
+      style="padding-left: {worktreeIndentPx}px; padding-right: {worktreeRightPaddingPx}px"
       title="Worktree: {thread.worktreePath}"
       aria-label="Worktree {worktreeName}"
       data-testid="thread-row-worktree"
@@ -378,7 +379,7 @@
         aria-hidden="true"
       ></span>
       <span
-        class="min-w-0 max-w-full truncate px-1 py-0 font-mono text-[10px] text-fg-hint"
+        class="ml-auto min-w-0 max-w-full truncate px-1 py-0 text-right font-mono text-[10px] text-fg-hint"
         data-testid="thread-row-worktree-name"
       >
         {worktreeName}
