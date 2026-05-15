@@ -32,6 +32,27 @@ export interface TimelineAutoLoadOlderState extends TimelineAutoLoadOlderPrechec
   indexThreshold: number;
 }
 
+export interface AutoLoadOlderGateOptions {
+  offsetThreshold: number;
+  indexThreshold: number;
+}
+
+export interface AutoLoadOlderGateState {
+  offset: number;
+  hasMoreHistory: boolean;
+  loadingOlder: boolean;
+  oldestLoadedTurnIndex: number | null;
+  restoredThreadId: string | null;
+  threadId: string | null;
+  findFirstVisibleIndex: () => number;
+}
+
+export interface AutoLoadOlderGate {
+  readonly attemptedAtFloor: number | null;
+  reset(): void;
+  shouldLoad(state: AutoLoadOlderGateState): boolean;
+}
+
 export function resolveVisibleTimelineNodeIndex(
   nodes: TimelineNode[],
   items: readonly Item[],
@@ -105,4 +126,35 @@ export function isAutoLoadOlderIndexEligible(
 export function shouldAutoLoadOlder(state: TimelineAutoLoadOlderState): boolean {
   return shouldInspectAutoLoadOlderIndex(state)
     && isAutoLoadOlderIndexEligible(state.firstVisibleIndex, state.indexThreshold);
+}
+
+export function createAutoLoadOlderGate({
+  offsetThreshold,
+  indexThreshold,
+}: AutoLoadOlderGateOptions): AutoLoadOlderGate {
+  let attemptedAtFloor: number | null = null;
+  return {
+    get attemptedAtFloor() { return attemptedAtFloor; },
+    reset(): void {
+      attemptedAtFloor = null;
+    },
+    shouldLoad(state: AutoLoadOlderGateState): boolean {
+      if (!shouldInspectAutoLoadOlderIndex({
+        offset: state.offset,
+        hasMoreHistory: state.hasMoreHistory,
+        loadingOlder: state.loadingOlder,
+        oldestLoadedTurnIndex: state.oldestLoadedTurnIndex,
+        restoredThreadId: state.restoredThreadId,
+        threadId: state.threadId,
+        attemptedAtFloor,
+        offsetThreshold,
+      })) return false;
+
+      const firstVisibleIndex = state.findFirstVisibleIndex();
+      if (!isAutoLoadOlderIndexEligible(firstVisibleIndex, indexThreshold)) return false;
+
+      attemptedAtFloor = state.oldestLoadedTurnIndex;
+      return true;
+    },
+  };
 }

@@ -4,6 +4,7 @@ import { groupItemsBySubagent } from '../../utils/subagentGrouping';
 import {
   captureTimelineAnchor,
   centeredScrollTop,
+  createAutoLoadOlderGate,
   isAutoLoadOlderIndexEligible,
   resolveVisibleTimelineNodeIndex,
   shouldAutoLoadOlder,
@@ -173,5 +174,64 @@ describe('timelineScroll', () => {
   it('checks first visible row eligibility separately from cheap auto-load gates', () => {
     expect(isAutoLoadOlderIndexEligible(5, 5)).toBe(true);
     expect(isAutoLoadOlderIndexEligible(6, 5)).toBe(false);
+  });
+
+  it('tracks auto-load attempts by floor and resets explicitly', () => {
+    const gate = createAutoLoadOlderGate({
+      offsetThreshold: 800,
+      indexThreshold: 5,
+    });
+    const findFirstVisibleIndex = vi.fn(() => 5);
+    const base = {
+      offset: 799,
+      hasMoreHistory: true,
+      loadingOlder: false,
+      restoredThreadId: 'thread-1',
+      threadId: 'thread-1',
+      findFirstVisibleIndex,
+    };
+
+    expect(gate.shouldLoad({
+      ...base,
+      oldestLoadedTurnIndex: 10,
+    })).toBe(true);
+    expect(gate.attemptedAtFloor).toBe(10);
+
+    expect(gate.shouldLoad({
+      ...base,
+      oldestLoadedTurnIndex: 10,
+    })).toBe(false);
+
+    expect(gate.shouldLoad({
+      ...base,
+      oldestLoadedTurnIndex: 8,
+    })).toBe(true);
+    expect(gate.attemptedAtFloor).toBe(8);
+
+    gate.reset();
+    expect(gate.attemptedAtFloor).toBeNull();
+    expect(gate.shouldLoad({
+      ...base,
+      oldestLoadedTurnIndex: 8,
+    })).toBe(true);
+  });
+
+  it('defers virtualizer index lookup until cheap auto-load gates pass', () => {
+    const gate = createAutoLoadOlderGate({
+      offsetThreshold: 800,
+      indexThreshold: 5,
+    });
+    const findFirstVisibleIndex = vi.fn(() => 5);
+
+    expect(gate.shouldLoad({
+      offset: 800,
+      hasMoreHistory: true,
+      loadingOlder: false,
+      oldestLoadedTurnIndex: 10,
+      restoredThreadId: 'thread-1',
+      threadId: 'thread-1',
+      findFirstVisibleIndex,
+    })).toBe(false);
+    expect(findFirstVisibleIndex).not.toHaveBeenCalled();
   });
 });

@@ -42,9 +42,8 @@
   import {
     captureTimelineAnchor,
     centeredScrollTop,
-    isAutoLoadOlderIndexEligible,
+    createAutoLoadOlderGate,
     resolveVisibleTimelineNodeIndex,
-    shouldInspectAutoLoadOlderIndex,
     timelineRowElementForIndex,
   } from './timelineScroll';
   import { createTimelineTargetFlash } from './timelineTargetFlash.svelte';
@@ -128,13 +127,10 @@
   // scroll, programmatic scrollToItem — so async restore work can detect
   // staleness and bail.
   let restoreToken = 0;
-  // Progress guard for the scroll-driven auto-load-older trigger. Pins
-  // the floor a previous auto-load attempted so subsequent scroll events
-  // in the same range don't re-fire the same query. Plain `let` (not
-  // `$state`) because it's read only inside `maybeAutoLoadOlder` (a
-  // passive scroll-event callback) and reset in `$effect.pre` — no
-  // template or `$derived` consumers.
-  let autoLoadAttemptedAtFloor: number | null = null;
+  const autoLoadOlderGate = createAutoLoadOlderGate({
+    offsetThreshold: AUTO_LOAD_OFFSET_PX,
+    indexThreshold: AUTO_LOAD_INDEX_THRESHOLD,
+  });
   const targetFlash = createTimelineTargetFlash(TARGET_FLASH_MS);
 
   let groupedNodes = $derived<TimelineNode[]>(
@@ -310,19 +306,15 @@
   // bypassed (no progress, fast-skip past the threshold, etc.).
   function maybeAutoLoadOlder(offset: number): void {
     if (!listRef) return;
-    if (!shouldInspectAutoLoadOlderIndex({
+    if (!autoLoadOlderGate.shouldLoad({
       offset,
       hasMoreHistory: pane.hasMoreHistory,
       loadingOlder: pane.loadingOlder,
       oldestLoadedTurnIndex: pane.oldestLoadedTurnIndex,
       restoredThreadId,
       threadId: pane.threadId,
-      attemptedAtFloor: autoLoadAttemptedAtFloor,
-      offsetThreshold: AUTO_LOAD_OFFSET_PX,
+      findFirstVisibleIndex: () => listRef!.findItemIndex(offset),
     })) return;
-    const firstIdx = listRef.findItemIndex(offset);
-    if (!isAutoLoadOlderIndexEligible(firstIdx, AUTO_LOAD_INDEX_THRESHOLD)) return;
-    autoLoadAttemptedAtFloor = pane.oldestLoadedTurnIndex;
     void handleLoadOlder();
   }
 
@@ -408,7 +400,7 @@
         restoredThreadId = null;
         restoreToken += 1;
       }
-      autoLoadAttemptedAtFloor = null;
+      autoLoadOlderGate.reset();
       stick.setEscapedFromLock(true);
       // Re-arm the warm-up gate BEFORE the DOM update flushes. The
       // restore $effect calls forceStick() (which also arms the gate),
