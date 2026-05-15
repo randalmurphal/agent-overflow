@@ -94,6 +94,10 @@ import {
   normalizeContextWindowForThread,
   seedContextWindow,
 } from './threadContextWindow';
+import {
+  createThreadChannelState,
+  type ThreadChannelStatus,
+} from './threadChannelState.svelte';
 import { createThreadDesignState } from './threadDesignState.svelte';
 import type { ThreadLiveState } from '../../../bindings/agent-overflow/models';
 import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
@@ -380,10 +384,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // caches don't leak between threads.
   const diffPanel: DiffPanelState = createDiffPanelState();
 
-  // Channel state (only populated for discussion threads).
-  let channelMessages: ChannelMessage[] = $state([]);
-  let channelStatus: 'open' | 'concluded' | 'closed' | null = $state(null);
-
+  const channelState = createThreadChannelState();
   const designState = createThreadDesignState();
 
   // Top-level mode tab (Chat | Design). Drives the segmented control in
@@ -846,8 +847,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     providerBanner = undefined;
     generalError = null;
     sendInFlight = false;
-    channelMessages = [];
-    channelStatus = null;
+    channelState.clear();
     designState.reset();
     // Bottom-drawer state is pane-scoped: opening the terminal on thread
     // A should not spill into thread B. The RHS sidebar is different:
@@ -1176,8 +1176,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * advances. `itemId === ''` means "no request".
      */
     get scrollToItemRequest() { return scrollToItemRequest; },
-    get channelMessages() { return channelMessages; },
-    get channelStatus() { return channelStatus; },
+    get channelMessages() { return channelState.messages; },
+    get channelStatus() { return channelState.status; },
     get pendingClarification() { return designState.pendingClarification; },
     get exposedControls() { return designState.exposedControls; },
     get activeOptionSet() { return designState.activeOptionSet; },
@@ -1311,8 +1311,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       sendInFlight = false;
       showTerminal = false;
       rhsPanelSlot.reset();
-      channelMessages = [];
-      channelStatus = null;
+      channelState.clear();
       designState.reset();
       // activeTurn lives in the global registry (threadStatuses) and is
       // cleared by projectTurnCompleted; clearing it from a pane.clear()
@@ -2001,32 +2000,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       activatePanel(null);
     },
 
-    /**
-     * Merge channel messages into local state, de-duplicating by sequence.
-     * Expected to be called with `afterSeq` set to the highest sequence we've
-     * seen, so most calls append a small number of rows.
-     */
     mergeChannelMessages(incoming: ChannelMessage[]): void {
-      if (!incoming || incoming.length === 0) return;
-      const seen = new Set(channelMessages.map((m) => m.sequence));
-      const next = channelMessages.slice();
-      for (const msg of incoming) {
-        if (!seen.has(msg.sequence)) {
-          next.push(msg);
-          seen.add(msg.sequence);
-        }
-      }
-      next.sort((a, b) => a.sequence - b.sequence);
-      channelMessages = next;
+      channelState.mergeMessages(incoming);
     },
 
-    setChannelStatus(status: 'open' | 'concluded' | 'closed' | null): void {
-      channelStatus = status;
+    setChannelStatus(status: ThreadChannelStatus): void {
+      channelState.setStatus(status);
     },
 
     clearChannel(): void {
-      channelMessages = [];
-      channelStatus = null;
+      channelState.clear();
     },
 
     // --- Design-mode mutations ---

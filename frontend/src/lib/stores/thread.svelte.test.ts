@@ -1004,6 +1004,27 @@ describe('createThreadPane', () => {
     expect(pane.isSubagentGroupExpanded('parent-x')).toBe(false);
   });
 
+  it('clears discussion channel state on switchThread', async () => {
+    const pane = createThreadPane();
+    await pane.switchThread(makeThread({ id: 'thread-a' }));
+    pane.mergeChannelMessages([{
+      id: 'channel-message-1',
+      channelId: 'channel-1',
+      sequence: 1,
+      fromType: 'agent',
+      fromId: 'agent-1',
+      fromRole: 'advocate',
+      content: 'channel text',
+      createdAt: 0,
+    }]);
+    pane.setChannelStatus('concluded');
+
+    await pane.switchThread(makeThread({ id: 'thread-b' }));
+
+    expect(pane.channelMessages).toEqual([]);
+    expect(pane.channelStatus).toBeNull();
+  });
+
   it('drops deltas that arrive before the row exists', async () => {
     // With single-source-of-truth, deltas append in place to
     // `pane.items[i].summary`. A delta whose itemId has no entry in
@@ -1374,6 +1395,17 @@ describe('createThreadPane', () => {
       input: null,
       title: 'Approve bash',
     });
+    pane.mergeChannelMessages([{
+      id: 'channel-message-1',
+      channelId: 'channel-1',
+      sequence: 1,
+      fromType: 'agent',
+      fromId: 'agent-1',
+      fromRole: 'advocate',
+      content: 'channel text',
+      createdAt: 0,
+    }]);
+    pane.setChannelStatus('concluded');
     const expansion = pane.expansionStateFor(item);
     pane.toggleSubagentGroupExpanded('group-x');
     pane.attachmentCacheFor(item.id).set('attachment-x', {
@@ -1389,6 +1421,8 @@ describe('createThreadPane', () => {
     expect(pane.thread).toBeNull();
     expect(pane.items).toEqual([]);
     expect(pane.pendingApprovals).toEqual([]);
+    expect(pane.channelMessages).toEqual([]);
+    expect(pane.channelStatus).toBeNull();
     expect(pane.contextWindow).toBeNull();
     expect(pane.generalError).toBeNull();
     expect(pane.expansionStateFor(item)).not.toBe(expansion);
