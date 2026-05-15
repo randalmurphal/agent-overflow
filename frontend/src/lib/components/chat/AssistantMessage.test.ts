@@ -156,6 +156,38 @@ describe('<AssistantMessage>', () => {
     });
   });
 
+  it.each([
+    {
+      name: 'ordered',
+      summary: '1. First predicate\n2. Second predicate',
+      selector: 'ol[data-streamdown-ol]',
+      expectedClasses: ['ml-0', 'pl-5', 'list-outside', 'whitespace-normal'],
+    },
+    {
+      name: 'unordered',
+      summary: '- First predicate\n- Second predicate',
+      selector: 'ul[data-streamdown-ul]',
+      expectedClasses: ['ml-0', 'pl-5', 'list-outside', 'list-disc', 'whitespace-normal'],
+    },
+  ])('keeps $name list markers inside the markdown clipping box', async ({ summary, selector, expectedClasses }) => {
+    const { getByTestId } = render(AssistantMessage, {
+      props: {
+        item: makeItem({
+          status: 'completed',
+          summary,
+        }),
+      },
+    });
+
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const list = body.querySelector(selector);
+      expect(list).not.toBeNull();
+      expect(list).toHaveClass(...expectedClasses);
+      expect(list).not.toHaveClass('ml-4');
+    });
+  });
+
   it('renders blank-line markdown as adjacent paragraph elements', async () => {
     const { getByTestId } = render(AssistantMessage, {
       props: {

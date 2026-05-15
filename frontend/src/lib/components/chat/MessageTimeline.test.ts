@@ -290,6 +290,39 @@ describe('<MessageTimeline>', () => {
     expect(getAllByText('Ship it').length).toBeGreaterThan(0);
   });
 
+  it('renders proposed plan tables with Streamdown as the table scroller', async () => {
+    const planMarkdown = [
+      '# Behavior Spec',
+      '',
+      '| Behavior Spec | Predicate |',
+      '| --- | --- |',
+      '| There is an active turn | `canReview` |',
+    ].join('\n');
+    setBindingMock('GetPayloadData', async () => ({ data: planMarkdown }));
+    const pane = await buildPane(undefined, [
+      makeItem({
+        id: 'plan-table',
+        kind: 'tool_call',
+        summary: 'Plan',
+        payloadId: 'plan-table-payload',
+        payloadKind: 'proposed_plan',
+        payloadMeta: JSON.stringify({
+          title: 'Behavior Spec',
+          lineCount: 5,
+          charCount: planMarkdown.length,
+          preview: planMarkdown,
+        }),
+      }),
+    ]);
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+
+    const tableWrapper = container.querySelector('[data-streamdown-table]');
+    expect(tableWrapper).not.toBeNull();
+    expect(tableWrapper).toHaveClass('overflow-x-auto');
+    expect(tableWrapper?.querySelector('table')).not.toBeNull();
+  });
+
   it('renders one wrapper per timeline node', async () => {
     // Virtualization is owned by virtua/svelte (`<Virtualizer>`); in production,
     // virtua mounts only the rows that fit the viewport plus an overscan

@@ -242,6 +242,19 @@ pre, code, kbd, samp, .ansi-body {
   background: color-mix(in oklab, var(--surface-0) 50%, transparent);
 }
 
+/*
+ * Streamdown already wraps tables in a dedicated horizontal scroller
+ * (`[data-streamdown-table]`). Keep the inner table as a real table so
+ * cell contents and outside list markers are not clipped by a second
+ * nested overflow box inherited from the legacy markdown table rules.
+ */
+.markdown-body [data-streamdown-table] table {
+  display: table;
+  overflow: visible;
+  max-width: none;
+  margin: 0;
+}
+
 /* GFM task lists. */
 .markdown-body li:has(> input[type="checkbox"]) {
   list-style: none;

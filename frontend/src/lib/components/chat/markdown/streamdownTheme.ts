@@ -143,7 +143,7 @@ export const chatMarkdownTheme: ThemeOverride = {
   h4: { base: 'mt-2 mb-1 text-sm font-semibold' },
   h5: { base: 'mt-2 mb-1 text-sm font-semibold' },
   h6: { base: 'mt-2 mb-1 text-sm font-semibold' },
-  ul: { base: 'ml-4 list-outside list-disc whitespace-normal' },
-  ol: { base: 'ml-4 list-outside whitespace-normal' },
+  ul: { base: 'ml-0 pl-5 list-outside list-disc whitespace-normal' },
+  ol: { base: 'ml-0 pl-5 list-outside whitespace-normal' },
   li: { base: 'py-0.5', checkbox: 'mr-2' },
 };
