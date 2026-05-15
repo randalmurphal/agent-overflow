@@ -233,25 +233,30 @@
   let worktreeConnectorLeftPx = $derived(worktreeIndentPx - 8);
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  bind:this={rowEl}
-  onclick={(e) => handleClick(e)}
-  ondblclick={startRename}
-  oncontextmenu={handleContextMenu}
-  onkeydown={(e) => { if (!editing && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleClick(); } if (!editing && e.key === 'F2') { e.preventDefault(); startRename(); } }}
-  role="button"
-  tabindex={0}
-  aria-pressed={selected}
-  class="group/thread-row relative flex items-center gap-1.5 h-6 pr-1 rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
-    {selected ? 'bg-accent/15 text-fg' : isActive ? 'bg-accent/10 text-fg' : 'text-fg-muted hover:bg-surface-2/30 hover:text-fg'}
+  class="group/thread-item rounded-[var(--radius-field)] transition-colors
+    {selected ? 'bg-accent/15' : isActive ? 'bg-accent/10' : 'hover:bg-surface-2/30'}
     {pill?.glowClass ?? ''}"
-  style="padding-left: {indentPx}px"
-  data-testid="thread-row"
-  data-sidebar-thread-id={thread.id}
-  data-live-status={liveStatus}
-  data-effective-status={effectiveStatus}
+  data-testid="thread-row-shell"
 >
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    bind:this={rowEl}
+    onclick={(e) => handleClick(e)}
+    ondblclick={startRename}
+    oncontextmenu={handleContextMenu}
+    onkeydown={(e) => { if (!editing && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleClick(); } if (!editing && e.key === 'F2') { e.preventDefault(); startRename(); } }}
+    role="button"
+    tabindex={0}
+    aria-pressed={selected}
+    class="group/thread-row relative flex items-center gap-1.5 h-6 pr-1 rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
+      {selected || isActive ? 'text-fg' : 'text-fg-muted group-hover/thread-item:text-fg'}"
+    style="padding-left: {indentPx}px"
+    data-testid="thread-row"
+    data-sidebar-thread-id={thread.id}
+    data-live-status={liveStatus}
+    data-effective-status={effectiveStatus}
+  >
   {#if hasChildren}
     <button
       type="button"
@@ -337,14 +342,14 @@
         </span>
       {:else}
         <span
-          class="text-[10px] tabular-nums text-fg-hint transition-opacity duration-150 pointer-events-none group-hover/thread-row:opacity-0 group-focus-within/thread-row:opacity-0"
+          class="text-[10px] tabular-nums text-fg-hint transition-opacity duration-150 pointer-events-none group-hover/thread-item:opacity-0 group-focus-within/thread-row:opacity-0"
           data-testid="thread-row-time"
         >
           {relativeTime(thread.updatedAt, getSettings().timestampFormat)}
         </span>
       {/if}
       <div
-        class="absolute inset-y-0 right-0 flex items-center opacity-0 pointer-events-none transition-opacity duration-150 group-hover/thread-row:opacity-100 group-hover/thread-row:pointer-events-auto group-focus-within/thread-row:opacity-100 group-focus-within/thread-row:pointer-events-auto"
+        class="absolute inset-y-0 right-0 flex items-center opacity-0 pointer-events-none transition-opacity duration-150 group-hover/thread-item:opacity-100 group-hover/thread-item:pointer-events-auto group-focus-within/thread-row:opacity-100 group-focus-within/thread-row:pointer-events-auto"
       >
         <ThreadRowActions
           {thread}
@@ -357,29 +362,30 @@
       </div>
     </div>
   {/if}
-</div>
-
-{#if showWorktreeMeta}
-  <div
-    class="relative -mt-1.5 flex h-3.5 items-center pr-1 text-[10px] leading-none text-fg-hint"
-    style="padding-left: {worktreeIndentPx}px"
-    title="Worktree: {thread.worktreePath}"
-    aria-label="Worktree {worktreeName}"
-    data-testid="thread-row-worktree"
-  >
-    <span
-      class="absolute top-0 h-2 w-2 rounded-bl-[3px] border-l border-b border-border-subtle/70"
-      style="left: {worktreeConnectorLeftPx}px"
-      aria-hidden="true"
-    ></span>
-    <span
-      class="min-w-0 max-w-full truncate px-1 py-0 font-mono text-[10px] text-fg-hint"
-      data-testid="thread-row-worktree-name"
-    >
-      {worktreeName}
-    </span>
   </div>
-{/if}
+
+  {#if showWorktreeMeta}
+    <div
+      class="relative -mt-1.5 flex h-3.5 items-center pr-1 text-[10px] leading-none text-fg-hint"
+      style="padding-left: {worktreeIndentPx}px"
+      title="Worktree: {thread.worktreePath}"
+      aria-label="Worktree {worktreeName}"
+      data-testid="thread-row-worktree"
+    >
+      <span
+        class="absolute top-0 h-2 w-2 rounded-bl-[3px] border-l border-b border-border-subtle/70"
+        style="left: {worktreeConnectorLeftPx}px"
+        aria-hidden="true"
+      ></span>
+      <span
+        class="min-w-0 max-w-full truncate px-1 py-0 font-mono text-[10px] text-fg-hint"
+        data-testid="thread-row-worktree-name"
+      >
+        {worktreeName}
+      </span>
+    </div>
+  {/if}
+</div>
 
 <ThreadContextMenu
   {thread}
