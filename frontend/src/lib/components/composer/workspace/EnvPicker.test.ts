@@ -57,7 +57,9 @@ describe('<EnvPicker>', () => {
   it('labels the trigger Local at the project root', async () => {
     const pane = await buildPane(makeThread({ workspacePath: '/repo' }));
     const { getByTestId } = render(EnvPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
-    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Local/);
+    const trigger = getByTestId('env-picker-trigger');
+    expect(trigger.textContent ?? '').toMatch(/Local/);
+    expect(trigger).toHaveAttribute('data-trigger-icon', 'folder');
   });
 
   it('labels the trigger with the worktree basename when off-root', async () => {
@@ -65,7 +67,9 @@ describe('<EnvPicker>', () => {
       makeThread({ workspacePath: '/tmp/wt-feature', projectPath: '/repo' }),
     );
     const { getByTestId } = render(EnvPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
-    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/wt-feature/);
+    const trigger = getByTestId('env-picker-trigger');
+    expect(trigger.textContent ?? '').toMatch(/wt-feature/);
+    expect(trigger).toHaveAttribute('data-trigger-icon', 'folder-git-2');
   });
 
   it('lists worktrees on open and switches via UpdateThreadWorkspace', async () => {
@@ -101,6 +105,7 @@ describe('<EnvPicker>', () => {
     await fireEvent.click(row);
 
     expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/New Worktree/);
+    expect(getByTestId('env-picker-trigger')).toHaveAttribute('data-trigger-icon', 'folder-git-2');
     expect(getBindingMock('UpdateThreadWorkspace')).toBeUndefined();
   });
 

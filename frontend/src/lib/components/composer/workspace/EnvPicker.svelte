@@ -12,7 +12,7 @@
   import type { Thread } from '../../../types/models';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import Folder from 'lucide-svelte/icons/folder';
-  import GitBranch from 'lucide-svelte/icons/git-branch';
+  import FolderGit2 from 'lucide-svelte/icons/folder-git-2';
   import Trash2 from 'lucide-svelte/icons/trash-2';
   import Icon from '../../primitives/Icon.svelte';
   import { composerTriggerClasses } from '../triggerClasses';
@@ -80,8 +80,12 @@
     return pathBasename(currentWorkspace) || 'Worktree';
   });
   let triggerIcon = $derived.by(() => {
-    if (intent.mode === 'new-worktree') return GitBranch;
-    return isAtProjectRoot ? Folder : GitBranch;
+    if (intent.mode === 'new-worktree') return FolderGit2;
+    return isAtProjectRoot ? Folder : FolderGit2;
+  });
+  let triggerIconName = $derived.by(() => {
+    if (intent.mode === 'new-worktree') return 'folder-git-2';
+    return isAtProjectRoot ? 'folder' : 'folder-git-2';
   });
 
   let disabledReason = $derived(workspaceLock.reason);
@@ -241,6 +245,7 @@
   disabled={!pane.thread || applying}
   aria-haspopup="menu"
   aria-expanded={open}
+  data-trigger-icon={triggerIconName}
   data-testid="env-picker-trigger"
   class={composerTriggerClasses}
 >
