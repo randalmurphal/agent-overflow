@@ -10,7 +10,8 @@ import {
   projectTurnStarted,
 } from '../../stores/threadStatuses.svelte';
 import { getToasts } from '../../stores/toast.svelte';
-import MessageTimeline, { clearMessageTimelineScrollSnapshotsForTest } from './MessageTimeline.svelte';
+import { clearThreadScrollSnapshotsForTest } from '../../utils/threadScrollSnapshots';
+import MessageTimeline from './MessageTimeline.svelte';
 
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
@@ -41,7 +42,7 @@ function inlineAgentMeta(assistantMessageId: string, description: string): strin
 describe('<MessageTimeline>', () => {
   beforeEach(async () => {
     resetBindingMocks();
-    clearMessageTimelineScrollSnapshotsForTest();
+    clearThreadScrollSnapshotsForTest();
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
   });

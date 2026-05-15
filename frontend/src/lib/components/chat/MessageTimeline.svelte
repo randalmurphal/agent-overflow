@@ -1,10 +1,3 @@
-<script lang="ts" module>
-  // The snapshot store + helpers live in `utils/threadScrollSnapshots`.
-  // Re-export the test helper so existing tests keep working without
-  // chasing the new path.
-  export { clearThreadScrollSnapshotsForTest as clearMessageTimelineScrollSnapshotsForTest } from '../../utils/threadScrollSnapshots';
-</script>
-
 <script lang="ts">
   import { onDestroy, tick } from 'svelte';
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
