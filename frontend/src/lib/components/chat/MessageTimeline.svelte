@@ -17,12 +17,9 @@
     type ScrollSnapshot,
   } from '../../utils/threadScrollSnapshots';
   import {
-    finalAssistantTextIdsByTurn,
     groupItemsBySubagent,
-    isToolTextBoundary as isToolTextBoundaryAt,
-    nodeRole,
+    timelineRowDecorations,
     timelineNodeKey,
-    timelineNodeTurnIndex,
     type TimelineNode,
   } from '../../utils/subagentGrouping';
   import { codexSubagentReceiverLabels } from '../../utils/subagentLaunch';
@@ -89,20 +86,6 @@
     userMessageActions?: UserMessageActions;
   } = $props();
 
-  function shouldRenderTurnBoundaryBefore(index: number, node: TimelineNode): boolean {
-    if (node.kind !== 'leaf' || node.item.kind !== 'assistant_text') return false;
-    for (let i = index - 1; i >= 0; i -= 1) {
-      const previous = groupedNodes[i];
-      if (!previous) return false;
-      if (previous.kind === 'leaf' && previous.item.turnIndex !== node.item.turnIndex) return false;
-      if (previous.kind !== 'leaf' && timelineNodeTurnIndex(previous) !== node.item.turnIndex) return false;
-      const previousRole = nodeRole(previous);
-      if (previousRole === 'tool') return true;
-      if (previousRole === 'text') return false;
-    }
-    return false;
-  }
-
   // Inner scroll container. We own scrolling here; <Virtualizer> renders
   // its measured rows inside `contentEl` and reads/writes via scrollRef.
   // The element is wrapped in a non-scrolling `relative flex h-full
@@ -142,8 +125,8 @@
       : new Map<string, string>(),
   );
 
-  let finalAssistantTextIds = $derived(
-    finalAssistantTextIdsByTurn(groupedNodes, getActiveTurn(pane.threadId)?.turnIndex ?? null),
+  let rowDecorations = $derived(
+    timelineRowDecorations(groupedNodes, getActiveTurn(pane.threadId)?.turnIndex ?? null),
   );
 
   // Animation mode is keyed on whether the thread has an in-flight
@@ -266,10 +249,6 @@
 
   function findTimelineNodeIndex(itemId: string): number {
     return resolveVisibleTimelineNodeIndex(groupedNodes, pane.items, itemId);
-  }
-
-  function isToolTextBoundary(index: number): boolean {
-    return isToolTextBoundaryAt(groupedNodes, index);
   }
 
   function rowElementForIndex(index: number): HTMLElement | null {
@@ -844,7 +823,7 @@
                  only TimelineLeaf owns that attribute on its root. Structural
                  rows stay unanchored, and tests rely on the divider rendering
                  BEFORE the [data-item-id] node, not containing it. -->
-            <div data-row-index={index} class:mt-4={isToolTextBoundary(index)}>
+            <div data-row-index={index} class:mt-4={rowDecorations[index]?.toolTextBoundary}>
               {#if index === 0}
                 <!-- Top of timeline. Load-older button (when applicable) and
                      a small top breathing-room spacer ride inside the first
@@ -872,8 +851,8 @@
               {/if}
 
               <div class="mx-auto w-full max-w-[62rem] px-6">
-                {#if shouldRenderTurnBoundaryBefore(index, node)}
-                  {@const showResponsePill = node.kind === 'leaf' && finalAssistantTextIds.has(node.item.id)}
+                {#if rowDecorations[index]?.responseDivider}
+                  {@const showResponsePill = rowDecorations[index]?.finalResponse === true}
                   <!-- Two visual modes share a fixed wrapper height
                        (`h-[1.625rem]` = 26px = pill chrome: text-[10px]
                        × leading-tight ≈ 12px + py-1 8px + 2× 1px border).
