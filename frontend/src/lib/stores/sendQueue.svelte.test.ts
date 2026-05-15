@@ -146,6 +146,58 @@ describe('sendQueue store', () => {
     });
   });
 
+  describe('revision tracking', () => {
+    it('bumps when flushed snapshots are replaced or deleted', () => {
+      replaceFlushedForThread('t1', []);
+      expect(getQueueRevisionForThread('t1')).toBe(0);
+
+      replaceFlushedForThread('t1', [{
+        queueItemId: 'q:0',
+        userItemId: 'u:0',
+        message: 'a',
+        flushedAt: 1,
+      }]);
+      expect(getQueueRevisionForThread('t1')).toBe(1);
+
+      replaceFlushedForThread('t1', []);
+      expect(getQueueRevisionForThread('t1')).toBe(2);
+    });
+
+    it('bumps markItemsFlushed only when entries are appended', () => {
+      markItemsFlushed('t1', []);
+      expect(getQueueRevisionForThread('t1')).toBe(0);
+
+      markItemsFlushed('t1', [{ queueItemId: 'q:0', userItemId: 'u:0', message: 'a' }]);
+      expect(getQueueRevisionForThread('t1')).toBe(1);
+    });
+
+    it('bumps confirmFlushedByUserItemId only when an entry is removed', () => {
+      markItemsFlushed('t1', [{ queueItemId: 'q:0', userItemId: 'u:0', message: 'a' }]);
+      expect(getQueueRevisionForThread('t1')).toBe(1);
+
+      confirmFlushedByUserItemId('t1', 'u:missing');
+      expect(getQueueRevisionForThread('t1')).toBe(1);
+
+      confirmFlushedByUserItemId('t1', 'u:0');
+      expect(getQueueRevisionForThread('t1')).toBe(2);
+    });
+
+    it('bumps clearForThread only when either zone has entries', () => {
+      clearForThread('t1');
+      expect(getQueueRevisionForThread('t1')).toBe(0);
+
+      replaceQueueForThread('t1', [makeItem({ threadId: 't1', message: 'a' })]);
+      markItemsFlushed('t1', [{ queueItemId: 'q:0', userItemId: 'u:0', message: 'a' }]);
+      expect(getQueueRevisionForThread('t1')).toBe(2);
+
+      clearForThread('t1');
+      expect(getQueueRevisionForThread('t1')).toBe(3);
+
+      clearForThread('t1');
+      expect(getQueueRevisionForThread('t1')).toBe(3);
+    });
+  });
+
   describe('combineForRetract', () => {
     it('joins messages with double-newlines', () => {
       const items: QueueItem[] = [

@@ -122,6 +122,51 @@ function bumpQueueRevision(threadId: string): void {
   queueRevisionByThread.set(threadId, getQueueRevisionForThread(threadId) + 1);
 }
 
+type QueueZone<T> = SvelteMap<string, readonly T[]>;
+
+function replaceZoneItems<T>(
+  zone: QueueZone<T>,
+  threadId: string,
+  items: readonly T[],
+): boolean {
+  if (items.length === 0 && !zone.has(threadId)) return false;
+  if (items.length === 0) {
+    zone.delete(threadId);
+    return true;
+  }
+  zone.set(threadId, items);
+  return true;
+}
+
+function appendZoneItems<T>(
+  zone: QueueZone<T>,
+  threadId: string,
+  additions: readonly T[],
+  empty: readonly T[],
+): boolean {
+  if (additions.length === 0) return false;
+  const current = zone.get(threadId) ?? empty;
+  zone.set(threadId, [...current, ...additions]);
+  return true;
+}
+
+function filterZoneItems<T>(
+  zone: QueueZone<T>,
+  threadId: string,
+  keep: (item: T) => boolean,
+): boolean {
+  const current = zone.get(threadId);
+  if (!current || current.length === 0) return false;
+  const next = current.filter(keep);
+  if (next.length === current.length) return false;
+  if (next.length === 0) {
+    zone.delete(threadId);
+  } else {
+    zone.set(threadId, next);
+  }
+  return true;
+}
+
 // ---- Backend RPC mutations ------------------------------------------
 
 /** Register a queued user message via the backend RPC. Backend
@@ -185,13 +230,8 @@ export function replaceQueueForThread(
   items: readonly QueueItem[],
 ): void {
   if (!threadId) return;
-  if (items.length === 0 && !queueByThread.has(threadId)) return;
+  if (!replaceZoneItems(queueByThread, threadId, items)) return;
   bumpQueueRevision(threadId);
-  if (items.length === 0) {
-    queueByThread.delete(threadId);
-    return;
-  }
-  queueByThread.set(threadId, items);
 }
 
 export function replaceFlushedForThread(
@@ -199,13 +239,8 @@ export function replaceFlushedForThread(
   items: readonly FlushedItem[],
 ): void {
   if (!threadId) return;
-  if (items.length === 0 && !flushedByThread.has(threadId)) return;
+  if (!replaceZoneItems(flushedByThread, threadId, items)) return;
   bumpQueueRevision(threadId);
-  if (items.length === 0) {
-    flushedByThread.delete(threadId);
-    return;
-  }
-  flushedByThread.set(threadId, items);
 }
 
 /** Move a batch of items to Zone 2. Called by the
@@ -224,9 +259,8 @@ export function markItemsFlushed(
     message: item.message,
     flushedAt: now,
   }));
-  const current = flushedByThread.get(threadId) ?? EMPTY_FLUSHED;
+  if (!appendZoneItems(flushedByThread, threadId, additions, EMPTY_FLUSHED)) return;
   bumpQueueRevision(threadId);
-  flushedByThread.set(threadId, [...current, ...additions]);
 }
 
 /** Remove a Zone 2 entry by userItemId. Called when a timeline
@@ -238,16 +272,13 @@ export function confirmFlushedByUserItemId(
   userItemId: string,
 ): void {
   if (!threadId || !userItemId) return;
-  const current = flushedByThread.get(threadId);
-  if (!current || current.length === 0) return;
-  const next = current.filter((entry) => entry.userItemId !== userItemId);
-  if (next.length === current.length) return; // no match, no mutation
+  const changed = filterZoneItems(
+    flushedByThread,
+    threadId,
+    (entry) => entry.userItemId !== userItemId,
+  );
+  if (!changed) return;
   bumpQueueRevision(threadId);
-  if (next.length === 0) {
-    flushedByThread.delete(threadId);
-  } else {
-    flushedByThread.set(threadId, next);
-  }
 }
 
 /** Drop every entry in both zones for a thread. Called from
