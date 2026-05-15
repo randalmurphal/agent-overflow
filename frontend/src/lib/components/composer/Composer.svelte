@@ -27,7 +27,7 @@
   import { createComposerMentions } from './composerMentions.svelte';
   import { deriveComposerSendState } from './composerSendState';
   import { createComposerUploads } from './composerUploads.svelte';
-  import { dispatchInterrupt, dispatchSend, dispatchSteer } from './composerSend';
+  import { dispatchInterrupt, dispatchSend } from './composerSend';
   import { RespondToApproval, RespondToUserInput, type ApprovalResponse, type UserInputResponse } from '../../stores/bindings';
   import {
     getPlanComments,

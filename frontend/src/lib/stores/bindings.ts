@@ -264,7 +264,6 @@ export {
 import {
   CreateThread as CreateThreadRaw,
   SendMessageWithOptions as SendMessageWithOptionsRaw,
-  SteerMessageWithOptions as SteerMessageWithOptionsRaw,
   UpdateContextSettingsProfile as UpdateContextSettingsProfileRaw,
   UpdateThreadContextSettings as UpdateThreadContextSettingsRaw,
 } from '../../../bindings/agent-overflow/app.js';
@@ -328,25 +327,6 @@ export function SendMessageWithOptions(
   opts: SendMessageOptions,
 ): Promise<Thread> {
   return SendMessageWithOptionsRaw(
-    threadId,
-    content,
-    new SendMessageOptionsClass(opts),
-  ) as unknown as Promise<Thread>;
-}
-
-/**
- * SteerMessageWithOptions is the Codex-only mid-turn-injection
- * counterpart to SendMessageWithOptions. The active-turn check is the
- * caller's responsibility — see Composer.svelte's
- * `dispatchSteerOrEnqueue` for the routing decision (Codex active turn
- * → here; Claude active turn → enqueue path).
- */
-export function SteerMessageWithOptions(
-  threadId: string,
-  content: string,
-  opts: SendMessageOptions,
-): Promise<Thread> {
-  return SteerMessageWithOptionsRaw(
     threadId,
     content,
     new SendMessageOptionsClass(opts),
