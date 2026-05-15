@@ -149,7 +149,7 @@
   </button>
 {:else}
   <div
-    class="flex flex-col gap-px ml-2 pl-2 border-l border-border-subtle/60"
+    class="flex flex-col gap-px ml-2 pl-4 border-l border-border-subtle/60"
     role="list"
     aria-label="Project Threads"
     data-testid="project-thread-list"
