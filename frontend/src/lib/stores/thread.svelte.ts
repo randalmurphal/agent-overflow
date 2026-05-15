@@ -377,7 +377,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // Shared right-side panel slot. The shell width and the active panel are
   // saved per thread so plan/diff/payload views swap inside one stable pane
   // instead of mounting separate sidebars with separate width stores.
-  const rhsPanelSlot: RhsPanelSlot = createRhsPanelSlot();
+  const rhsPanelSlot: RhsPanelSlot = createRhsPanelSlot(paneId);
 
   /**
    * Single source of truth for which RHS panel is open. The store is the

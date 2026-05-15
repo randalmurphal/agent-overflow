@@ -15,8 +15,10 @@
 
   let {
     context,
+    contextForPane,
   }: {
     context: CommandContext;
+    contextForPane?: (paneId: string) => CommandContext | null;
   } = $props();
 
   let query = $state('');
@@ -25,16 +27,22 @@
   let listEl: HTMLDivElement | undefined = $state(undefined);
 
   let open = $derived(isPaletteOpen());
+  let targetPaneId: string | null = $state(null);
+  let wasOpen = false;
 
   // Every time the palette opens, reset state and focus the textbox.
   // Modal's focusTrap doesn't autofocus the input by default (no
   // [data-autofocus]) so we explicitly focus it after mount.
   $effect(() => {
-    if (open) {
+    if (open && !wasOpen) {
+      targetPaneId = context.paneId;
       query = '';
       activeIndex = 0;
       tick().then(() => inputEl?.focus());
+    } else if (!open && wasOpen) {
+      targetPaneId = null;
     }
+    wasOpen = open;
   });
 
   interface PaletteRow {
@@ -43,7 +51,10 @@
     indices: number[];
   }
 
-  let allCommands = $derived(enabledCommands(context));
+  let activeContext = $derived(
+    targetPaneId && contextForPane ? contextForPane(targetPaneId) : context,
+  );
+  let allCommands = $derived(activeContext ? enabledCommands(activeContext) : []);
 
   let results: PaletteRow[] = $derived.by(() => {
     const candidates = allCommands.map((cmd) => ({ item: cmd, text: cmd.label }));
@@ -119,11 +130,16 @@
   function executeActive(): void {
     const row = results[activeIndex];
     if (!row) return;
+    const capturedContext = activeContext;
+    if (!capturedContext) {
+      closePalette();
+      return;
+    }
     closePalette();
     // Run after close so the palette stops capturing focus before the
     // command mutates the app (e.g. opening settings).
     queueMicrotask(() => {
-      void Promise.resolve(row.command.run(context)).catch((err) => {
+      void Promise.resolve(row.command.run(capturedContext)).catch((err) => {
         console.error(`command ${row.command.id} failed:`, err);
       });
     });

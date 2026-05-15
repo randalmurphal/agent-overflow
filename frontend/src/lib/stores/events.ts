@@ -36,7 +36,7 @@ import {
   replaceQueueForThread,
 } from './sendQueue.svelte';
 import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
-import { getAllPanes, syncThread } from './panes.svelte';
+import { findPaneShowingThread, iterPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
 import { setProviderRateLimits } from './rateLimitsInfo.svelte';
@@ -321,7 +321,7 @@ function syncThreadRow(updated: Thread): Thread {
     activityMarkers.push(cachedThread.updatedAt);
   }
 
-  for (const pane of getAllPanes().values()) {
+  for (const pane of iterPanes()) {
     if (pane.threadId !== updated.id || !pane.thread) continue;
     if (pane.thread.lastReadAt !== undefined) {
       readMarkers.push(pane.thread.lastReadAt);
@@ -344,7 +344,7 @@ function syncThreadRow(updated: Thread): Thread {
 
 function syncLatestTurnCompleted(evt: TurnCompletedEvent): void {
   const cachedThread = getThreadById(evt.threadId)
-    ?? [...getAllPanes().values()].find((pane) => pane.threadId === evt.threadId)?.thread;
+    ?? findPaneShowingThread(evt.threadId)?.thread;
   if (!cachedThread) {
     return;
   }
@@ -364,7 +364,7 @@ function syncThreadActivity(threadId: string, updatedAt: number): void {
   let projectId = thread?.projectId;
   let latestUpdatedAt = thread?.updatedAt ?? updatedAt;
 
-  for (const pane of getAllPanes().values()) {
+  for (const pane of iterPanes()) {
     if (pane.threadId !== threadId || !pane.thread) continue;
     projectId = projectId ?? pane.thread.projectId;
     const paneUpdatedAt = Math.max(pane.thread.updatedAt ?? 0, updatedAt);
@@ -412,7 +412,7 @@ function updateThreadUsageCache(threadId: string, raw: string): void {
   if (existing) {
     replaceThread({ ...existing, lastTokenUsage: raw });
   }
-  for (const pane of getAllPanes().values()) {
+  for (const pane of iterPanes()) {
     if (pane.threadId !== threadId || !pane.thread) continue;
     pane.replaceThread({ ...pane.thread, lastTokenUsage: raw });
   }
@@ -426,7 +426,7 @@ function patchThreadDurableStatus(
   if (existing) {
     replaceThread({ ...existing, ...patch });
   }
-  for (const pane of getAllPanes().values()) {
+  for (const pane of iterPanes()) {
     if (pane.threadId !== threadId || !pane.thread) continue;
     pane.replaceThread({ ...pane.thread, ...patch });
   }
@@ -463,7 +463,7 @@ function applyApprovalEvent(evt: ApprovalEvent): void {
       evt.request.requestId,
       evt.request.kind,
     );
-    for (const pane of getAllPanes().values()) {
+    for (const pane of iterPanes()) {
       if (pane.threadId === evt.request.threadId) {
         pane.addApproval(evt.request);
       }
@@ -479,7 +479,7 @@ function applyApprovalEvent(evt: ApprovalEvent): void {
 
   if ((evt.action === 'resolve' || evt.action === 'fail') && evt.requestId) {
     projectApprovalResolution(evt.threadId, evt.requestId);
-    for (const pane of getAllPanes().values()) {
+    for (const pane of iterPanes()) {
       if (evt.threadId && pane.threadId !== evt.threadId) continue;
       const hadApproval = pane.pendingApprovals.some((approval) => approval.requestId === evt.requestId);
       pane.removeApproval(evt.requestId);
@@ -495,7 +495,7 @@ function applyUserInputEvent(evt: UserInputEvent): void {
 
   if (evt.action === 'request' && evt.request?.threadId) {
     projectUserInputRequest(evt.request.threadId, evt.request.requestId);
-    for (const pane of getAllPanes().values()) {
+    for (const pane of iterPanes()) {
       if (pane.threadId === evt.request.threadId) {
         pane.addUserInput(evt.request);
       }
@@ -511,7 +511,7 @@ function applyUserInputEvent(evt: UserInputEvent): void {
 
   if ((evt.action === 'resolve' || evt.action === 'fail') && evt.requestId) {
     projectUserInputResolution(evt.threadId, evt.requestId);
-    for (const pane of getAllPanes().values()) {
+    for (const pane of iterPanes()) {
       if (evt.threadId && pane.threadId !== evt.threadId) continue;
       const hadRequest = pane.pendingUserInputs.some((request) => request.requestId === evt.requestId);
       pane.removeUserInput(evt.requestId);
@@ -558,7 +558,7 @@ function applyUsageEvent(evt: UsageEvent): void {
       }
     : null;
 
-  for (const pane of getAllPanes().values()) {
+  for (const pane of iterPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     if (payload) {
       pane.setContextWindow(payload);
@@ -610,7 +610,7 @@ function applyItemUpserts(items: Item[]): void {
       }
     }
   }
-  for (const pane of getAllPanes().values()) {
+  for (const pane of iterPanes()) {
     const threadItems = pane.threadId ? itemsByThread.get(pane.threadId) : undefined;
     if (!threadItems) continue;
     pane.upsertItems(threadItems);
@@ -640,7 +640,7 @@ function applyItemDelta(evt: ItemDeltaEvent): void {
   if (!isBoundedString(evt.kind, 128) || !isBoundedString(evt.delta)) return;
   if (!isFiniteNumber(evt.updatedAt)) return;
 
-  for (const pane of getAllPanes().values()) {
+  for (const pane of iterPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.applyItemDelta(evt);
   }
@@ -809,7 +809,7 @@ function applyProviderStatus(evt: ProviderStatusEvent): void {
   }
 
   const banner = effectiveStatus === 'ready' ? null : normalized;
-  for (const pane of getAllPanes().values()) {
+  for (const pane of iterPanes()) {
     if (pane.thread?.provider !== provider) continue;
     // Kind-bearing events can carry a threadId for per-pane scoping; when
     // present, only update the matching pane. Without a threadId the event
@@ -877,7 +877,7 @@ function applyTurnCompleted(evt: TurnCompletedEvent): void {
     errorMessage: settled.errorMessage,
   });
   patchThreadDurableStatus(evt.threadId, { hasIncompleteTurn: false });
-  for (const pane of getAllPanes().values()) {
+  for (const pane of iterPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.settleTurn(settled);
   }
@@ -909,7 +909,7 @@ function applyTurnCompleted(evt: TurnCompletedEvent): void {
 function applySessionDied(evt: SessionDiedEvent): void {
   if (!evt?.threadId) return;
   const message = sessionDiedBannerMessage(evt);
-  for (const pane of getAllPanes().values()) {
+  for (const pane of iterPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.setGeneralError(message);
   }
@@ -931,7 +931,7 @@ function sessionDiedBannerMessage(evt: SessionDiedEvent): string {
  */
 function applySubagentNotification(evt: SubagentNotificationEvent): void {
   if (!evt?.threadId) return;
-  for (const pane of getAllPanes().values()) {
+  for (const pane of iterPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.appendSubagentNotification(evt);
   }
@@ -947,7 +947,7 @@ function applySubagentNotification(evt: SubagentNotificationEvent): void {
 function applyTodoUpdate(evt: TodoUpdateEvent): void {
   if (!evt?.threadId) return;
   const steps = Array.isArray(evt.steps) ? evt.steps : [];
-  for (const pane of getAllPanes().values()) {
+  for (const pane of iterPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.setLiveTodo(steps);
   }
@@ -1054,7 +1054,7 @@ export function setupEventListeners(): () => void {
   const cancelCheckpointCaptured = wailsEventOn<CheckpointCapturedEvent | null>(
     'checkpoint:captured',
     (payload) => {
-      for (const pane of getAllPanes().values()) {
+      for (const pane of iterPanes()) {
         pane.applyCheckpointCaptured(payload);
       }
     },
@@ -1062,7 +1062,7 @@ export function setupEventListeners(): () => void {
   const cancelCheckpointUnavailable = wailsEventOn<CheckpointUnavailableEvent | null>(
     'checkpoint:unavailable',
     (payload) => {
-      for (const pane of getAllPanes().values()) {
+      for (const pane of iterPanes()) {
         pane.applyCheckpointUnavailable(payload);
       }
     },
@@ -1070,7 +1070,7 @@ export function setupEventListeners(): () => void {
   const cancelCheckpointError = wailsEventOn<CheckpointErrorEvent | null>(
     'checkpoint:error',
     (payload) => {
-      for (const pane of getAllPanes().values()) {
+      for (const pane of iterPanes()) {
         pane.applyCheckpointError(payload);
       }
     },
@@ -1078,7 +1078,7 @@ export function setupEventListeners(): () => void {
   const cancelCheckpointReverted = wailsEventOn<CheckpointRevertedEvent | null>(
     'checkpoint:reverted',
     (payload) => {
-      for (const pane of getAllPanes().values()) {
+      for (const pane of iterPanes()) {
         pane.applyCheckpointReverted(payload);
       }
     },
@@ -1131,7 +1131,7 @@ export function setupEventListeners(): () => void {
         case 'provider:turn_completed':
         case 'thread:updated': {
           refreshSidebarProjections();
-          for (const pane of getAllPanes().values()) {
+          for (const pane of iterPanes()) {
             if (!pane.threadId) continue;
             void pane.refreshFromBackend();
           }
@@ -1145,7 +1145,7 @@ export function setupEventListeners(): () => void {
             `events: transport gap on unknown channel "${gap.channel}" — refreshing active panes`,
           );
           refreshSidebarProjections();
-          for (const pane of getAllPanes().values()) {
+          for (const pane of iterPanes()) {
             if (!pane.threadId) continue;
             void pane.refreshFromBackend();
           }
@@ -1174,7 +1174,7 @@ export function setupEventListeners(): () => void {
       if (!payload?.threadId) return;
       const detail = payload;
       fireThrottled(designOptionsThrottle, payload.threadId, DESIGN_OTHER_THROTTLE_MS, () => {
-        for (const pane of getAllPanes().values()) {
+        for (const pane of iterPanes()) {
           if (pane.threadId === detail.threadId) {
             void pane.applyDesignOptionsUpdate(detail.threadId, detail.setId ?? '');
           }
@@ -1196,7 +1196,7 @@ export function setupEventListeners(): () => void {
       if (existing) {
         replaceThread({ ...existing, runtimeMode: payload.runtimeMode });
       }
-      for (const pane of getAllPanes().values()) {
+      for (const pane of iterPanes()) {
         if (pane.threadId !== payload.threadId) continue;
         if (pane.thread) {
           pane.replaceThread({ ...pane.thread, runtimeMode: payload.runtimeMode });
@@ -1217,7 +1217,7 @@ export function setupEventListeners(): () => void {
       if (existing) {
         replaceThread({ ...existing, mode: payload.mode });
       }
-      for (const pane of getAllPanes().values()) {
+      for (const pane of iterPanes()) {
         if (pane.threadId !== payload.threadId) continue;
         if (pane.thread) {
           pane.replaceThread({ ...pane.thread, mode: payload.mode });

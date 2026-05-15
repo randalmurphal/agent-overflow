@@ -11,9 +11,10 @@
    *
    * Width bounds are passed in by the shell. The parent owns the live
    * width + persistence; this component only emits move/end callbacks.
-   */
+  */
   import { onDestroy } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { createResizeGesture } from '../../utils/resizeGesture.svelte';
 
   interface Props {
     width: number;
@@ -47,58 +48,22 @@
     pane,
   }: Props = $props();
 
-  let dragging = $state(false);
-  let startPointer = 0;
-  let startWidth = 0;
-  let maxWidth = Number.POSITIVE_INFINITY;
-  let releasePause: (() => void) | null = null;
-
-  function clamp(value: number): number {
-    return Math.max(minWidth, Math.min(maxWidth, value));
-  }
-
-  function restoreBodyStyles(): void {
-    document.body.style.cursor = '';
-    document.body.style.userSelect = '';
-  }
-
-  function onPointerDown(e: PointerEvent): void {
-    e.preventDefault();
-    window.getSelection()?.removeAllRanges();
-    dragging = true;
-    startPointer = e.clientX;
-    startWidth = width;
-    maxWidth = getMaxWidth();
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    // Suspend auto-follow on the active pane's timeline. Released in
-    // endDrag (and as a safety net in onDestroy).
-    releasePause = pane?.scrollController?.pauseAutoScroll() ?? null;
-  }
-
-  function onPointerMove(e: PointerEvent): void {
-    if (!dragging) return;
+  const resize = createResizeGesture(() => ({
+    axis: 'x',
+    cursor: 'col-resize',
+    currentSize: width,
+    minSize: minWidth,
+    maxSize: getMaxWidth(),
     // Inverted direction: handle is on the LEFT edge of a RIGHT-anchored
     // panel, so a leftward drag (negative delta) grows the panel.
-    const next = clamp(startWidth - (e.clientX - startPointer));
-    if (next !== width) onResizeLive(next);
-  }
-
-  function endDrag(e: PointerEvent): void {
-    if (!dragging) return;
-    dragging = false;
-    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-    restoreBodyStyles();
-    releasePause?.();
-    releasePause = null;
-    onResizeEnd();
-  }
+    direction: -1,
+    onResizeLive,
+    onResizeEnd: () => onResizeEnd(),
+    acquireLease: () => pane?.scrollController?.pauseAutoScroll() ?? null,
+  }));
 
   onDestroy(() => {
-    if (dragging) restoreBodyStyles();
-    releasePause?.();
-    releasePause = null;
+    resize.destroy();
   });
 </script>
 
@@ -113,11 +78,11 @@
     'absolute top-0 bottom-0 left-0 w-1 cursor-col-resize z-20',
     'select-none touch-none',
     'hover:bg-accent/30 transition-colors',
-    dragging ? 'bg-accent/50' : '',
+    resize.dragging ? 'bg-accent/50' : '',
   ].join(' ')}
-  onpointerdown={onPointerDown}
-  onpointermove={onPointerMove}
-  onpointerup={endDrag}
-  onpointercancel={endDrag}
+  onpointerdown={resize.onPointerDown}
+  onpointermove={resize.onPointerMove}
+  onpointerup={resize.endDrag}
+  onpointercancel={resize.endDrag}
   data-testid={testId}
 ></div>

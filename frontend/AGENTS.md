@@ -15,6 +15,9 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
   streaming, approvals, design artifacts, channel messages, token
   usage). `events.ts` declares custom event names. `bindings.ts` wraps
   the auto-generated Wails bindings.
+- `src/lib/components/panes/` — pane host/layout surfaces. This is the
+  only place that should translate layout items into mounted chat
+  panes.
 - `src/lib/components/chat/` — timeline rendering. Kind-based
   discrimination; no role/content matching.
 - `src/lib/components/composer/` — message composer, mode / effort /
@@ -58,6 +61,26 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
   shape leaves room for tiling / multi-pane without a rewrite.
 - The sidebar thread list is its own store — it doesn't hold pane
   state.
+- Pane layout and pane runtime state are separate. Layout stores own
+  placement/order/min-size metadata. `ThreadPane` owns runtime UI state
+  for that pane. Do not make layout code reach into chat internals to
+  decide behavior, and do not make pane state infer where it is mounted.
+- Global app surfaces (settings, app-level modals, global thread list)
+  are not pane-owned. Render them outside the pane loop unless the
+  product decision is explicitly "one instance per pane".
+- Right-side panel state is pane-owned. Visibility, active panel,
+  width, per-thread restore snapshots, and max-width clamping belong to
+  the owning `ThreadPane`/RHS slot and must use the owning pane's
+  measured width, not the app shell or total pane host width.
+- Command palette actions must resolve against an explicit target pane.
+  Capturing a whole command context at open time is wrong because
+  command enablement changes while the palette is open.
+- Terminal UI is a pane/thread surface. Placement is a layout policy
+  (`ThreadTerminalPlacement` today); terminal bodies should not assume
+  bottom-drawer permanence because the terminal may become a right-side
+  panel option.
+- Registry/layout drift should fail visibly. Do not silently render the
+  main pane as a fallback for a missing layout pane.
 
 ## Thread switch — cache + tail-only initial load
 

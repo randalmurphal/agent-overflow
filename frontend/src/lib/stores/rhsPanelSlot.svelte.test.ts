@@ -5,6 +5,7 @@ import {
   RHS_PANEL_LRU_CAP,
   RHS_PANEL_MIN_WIDTH,
 } from './rhsPanelSlot.svelte';
+import { resetLayoutMetricsForTest, setPaneWidth } from './layoutMetrics.svelte';
 
 const diffUI = {
   viewMode: 'split' as const,
@@ -15,6 +16,7 @@ const diffUI = {
 
 describe('createRhsPanelSlot', () => {
   beforeEach(() => {
+    resetLayoutMetricsForTest();
     Object.defineProperty(window, 'innerWidth', {
       configurable: true,
       writable: true,
@@ -23,13 +25,13 @@ describe('createRhsPanelSlot', () => {
   });
 
   it('starts closed at the shared default width', () => {
-    const slot = createRhsPanelSlot();
+    const slot = createRhsPanelSlot('main');
     expect(slot.activePanel).toBeNull();
     expect(slot.width).toBe(RHS_PANEL_DEFAULT_WIDTH);
   });
 
   it('restores the active panel and width for a thread', () => {
-    const slot = createRhsPanelSlot();
+    const slot = createRhsPanelSlot('main');
     slot.open({ kind: 'plan' });
     slot.setWidthLive(RHS_PANEL_DEFAULT_WIDTH + 40);
     slot.snapshotForThread('thread-a');
@@ -41,7 +43,7 @@ describe('createRhsPanelSlot', () => {
   });
 
   it('keeps width when explicitly closing but does not restore a panel', () => {
-    const slot = createRhsPanelSlot();
+    const slot = createRhsPanelSlot('main');
     slot.open({ kind: 'diff-checkpoint' });
     slot.setWidthLive(RHS_PANEL_DEFAULT_WIDTH + 20);
 
@@ -53,7 +55,7 @@ describe('createRhsPanelSlot', () => {
   });
 
   it('restores diff-payload UI state once', () => {
-    const slot = createRhsPanelSlot();
+    const slot = createRhsPanelSlot('main');
     slot.open({ kind: 'diff-payload', payloadId: 'payload-1', filePath: 'src/foo.ts' });
     slot.recordDiffPayloadUI(diffUI);
     slot.snapshotForThread('thread-a');
@@ -70,7 +72,7 @@ describe('createRhsPanelSlot', () => {
   });
 
   it('keeps widths isolated by thread', () => {
-    const slot = createRhsPanelSlot();
+    const slot = createRhsPanelSlot('main');
     slot.open({ kind: 'plan' });
     slot.setWidthLive(620);
     slot.snapshotForThread('thread-a');
@@ -92,13 +94,40 @@ describe('createRhsPanelSlot', () => {
   });
 
   it('clamps width below the minimum', () => {
-    const slot = createRhsPanelSlot();
+    const slot = createRhsPanelSlot('main');
     slot.setWidthLive(1);
     expect(slot.width).toBe(RHS_PANEL_MIN_WIDTH);
   });
 
+  it('clamps width against the owning pane width', () => {
+    setPaneWidth('left', 1000);
+    setPaneWidth('right', 1400);
+    const left = createRhsPanelSlot('left');
+    const right = createRhsPanelSlot('right');
+
+    left.setWidthLive(900);
+    right.setWidthLive(900);
+
+    expect(left.getMaxWidth()).toBe(RHS_PANEL_MIN_WIDTH);
+    expect(left.width).toBe(RHS_PANEL_MIN_WIDTH);
+    expect(right.getMaxWidth()).toBe(760);
+    expect(right.width).toBe(760);
+  });
+
+  it('re-clamps the visible width when the owning pane narrows', () => {
+    setPaneWidth('main', 1600);
+    const slot = createRhsPanelSlot('main');
+    slot.setWidthLive(900);
+    expect(slot.width).toBe(900);
+
+    setPaneWidth('main', 1000);
+
+    expect(slot.getMaxWidth()).toBe(RHS_PANEL_MIN_WIDTH);
+    expect(slot.width).toBe(RHS_PANEL_MIN_WIDTH);
+  });
+
   it('caps stored thread snapshots', () => {
-    const slot = createRhsPanelSlot();
+    const slot = createRhsPanelSlot('main');
     for (let i = 0; i < RHS_PANEL_LRU_CAP + 5; i += 1) {
       slot.open({ kind: 'plan' });
       slot.snapshotForThread(`thread-${i}`);

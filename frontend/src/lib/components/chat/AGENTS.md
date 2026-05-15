@@ -313,6 +313,19 @@ chrome (`pane.getRhsSidebarMaxWidth`, `pane.setRhsSidebarWidthLive`,
 `pane.persistRhsSidebarWidth`) and the scroll-controller lease
 (`pane.scrollController`). Don't migrate the shell.
 
+RHS panel sizing is pane-local. The shell must clamp width through the
+owning pane (`pane.getRhsSidebarMaxWidth`) because `PaneHost` publishes
+measured pane widths by pane id. Do not clamp plan/diff/terminal panels
+against `window.innerWidth`, app-shell width, or total pane-host width;
+those values are wrong as soon as two panes are mounted side by side.
+
+Terminal placement is intentionally outside the terminal body. Today
+`ThreadTerminalPlacement` mounts the bottom drawer, but terminal as a
+right-side panel is a valid future policy. Keep terminal actions routed
+through pane/thread context and add a `RhsPanel` variant if terminal
+moves into this shell; don't wire terminal-specific globals into
+`ChatView`.
+
 **Future transcript-style panels** (e.g. a subagent's full transcript
 with tool calls): the row primitives in this directory —
 `TimelineLeaf`, `SubagentGroup`, `GenericToolCallRow`, `CommandOutput`,

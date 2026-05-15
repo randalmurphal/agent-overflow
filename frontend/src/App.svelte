@@ -1,13 +1,13 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { getAllPanes, getFocusedPane, getMainPane, openThreadFromNavigation } from './lib/stores/panes.svelte';
+  import { getFocusedPane, getMainPane, getPane, openThreadFromNavigation } from './lib/stores/panes.svelte';
   import { setupEventListeners } from './lib/stores/events';
   import { getThreads, refreshThreads } from './lib/stores/threads.svelte';
   import { loadSettings, getSettings } from './lib/stores/settings.svelte';
   import { applyTheme } from './lib/utils/theme';
   import { applyFonts } from './lib/utils/fonts';
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
-  import ChatView from './lib/components/chat/ChatView.svelte';
+  import PaneHost from './lib/components/panes/PaneHost.svelte';
   import Toast from './lib/components/shared/Toast.svelte';
   import TransportStatusBanner from './lib/components/shared/TransportStatusBanner.svelte';
   import SettingsView from './lib/components/settings/SettingsView.svelte';
@@ -17,7 +17,7 @@
   import MessageSearch from './lib/components/palette/MessageSearch.svelte';
   import UnifiedThreadPicker from './lib/components/palette/UnifiedThreadPicker.svelte';
   import type { Thread } from './lib/types/models';
-  import { isPaletteOpen } from './lib/stores/palette.svelte';
+  import { getPaletteTargetPaneId, isPaletteOpen } from './lib/stores/palette.svelte';
   import { closeCheatSheet, isCheatSheetOpen } from './lib/stores/cheatSheet.svelte';
   import { closeMessageSearch, getMessageSearchTargetPaneId, isMessageSearchOpen } from './lib/stores/messageSearch.svelte';
   import { closeThreadPicker, getThreadPickerTargetPaneId, isThreadPickerOpen } from './lib/stores/threadPicker.svelte';
@@ -26,12 +26,13 @@
     eventMatchesKeybindingCommand,
     loadKeybindings,
   } from './lib/stores/keybindings.svelte';
-  import { clearCommandRegistry } from './lib/stores/commandRegistry.svelte';
+  import { clearCommandRegistry, type CommandContext } from './lib/stores/commandRegistry.svelte';
   import { registerBuiltinCommands, makeCommandContext } from './lib/stores/builtinCommands.svelte';
   import { installUiRenderTraceApi } from './lib/utils/uiRenderTrace';
   import { dispatchTextEditing } from './lib/utils/textEditingKeymap';
   import { installExternalLinkDelegate } from './lib/utils/externalLinks';
   import { getVisibleSidebarThreadIds } from './lib/stores/sidebarThreadOrder';
+  import { setAppShellWidth } from './lib/stores/layoutMetrics.svelte';
   import DiagramInteractionHost from './lib/components/chat/DiagramInteractionHost.svelte';
 
   type SettingsSection = 'general' | 'providers' | 'editor' | 'network' | 'discussions' | 'keybindings' | 'observability' | 'archived';
@@ -50,6 +51,7 @@
   let discussionStartFor = $state<Thread | null>(null);
   let searchFocuser = $state<(() => void) | null>(null);
   let openFromPR = $state<(() => void) | null>(null);
+  let appContentEl: HTMLDivElement | undefined = $state(undefined);
 
   const pane = getMainPane();
   const EDITABLE_REACHABLE_COMMANDS = new Set([
@@ -82,8 +84,8 @@
     showSettings = true;
   }
 
-  let paletteContext = $derived(
-    makeCommandContext(getFocusedPane(), {
+  function makeAppCommandContext(targetPane = getFocusedPane()) {
+    return makeCommandContext(targetPane, {
       paletteOpen: isPaletteOpen(),
       cheatSheetOpen: isCheatSheetOpen(),
       messageSearchOpen: isMessageSearchOpen(),
@@ -94,13 +96,22 @@
         isCheatSheetOpen() ||
         isMessageSearchOpen() ||
         isThreadPickerOpen(),
-    }),
+    });
+  }
+
+  function makeCommandContextForPaneId(paneId: string): CommandContext | null {
+    const targetPane = getPane(paneId);
+    return targetPane ? makeAppCommandContext(targetPane) : null;
+  }
+
+  let paletteContext = $derived(
+    makeAppCommandContext(getPane(getPaletteTargetPaneId() ?? '') ?? getFocusedPane()),
   );
   let messageSearchPane = $derived(
-    getAllPanes().get(getMessageSearchTargetPaneId() ?? '') ?? getFocusedPane(),
+    getPane(getMessageSearchTargetPaneId() ?? '') ?? getFocusedPane(),
   );
   let threadPickerPane = $derived(
-    getAllPanes().get(getThreadPickerTargetPaneId() ?? '') ?? getFocusedPane(),
+    getPane(getThreadPickerTargetPaneId() ?? '') ?? getFocusedPane(),
   );
 
   function handleGlobalKeydown(ev: KeyboardEvent): void {
@@ -164,6 +175,18 @@
     applyFonts(s.sansFont, s.monoFont);
   });
 
+  $effect(() => {
+    const el = appContentEl;
+    if (!el) return;
+    const obs = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) setAppShellWidth(entry.contentRect.width);
+    });
+    obs.observe(el);
+    setAppShellWidth(el.getBoundingClientRect().width);
+    return () => obs.disconnect();
+  });
+
   onMount(() => {
     const cleanupEvents = setupEventListeners();
     refreshThreads();
@@ -188,12 +211,12 @@
         // same pattern as focusThreadSearch above.
         openFromPR?.();
       },
-      openShipChanges: () => {
+      openShipChanges: (paneId) => {
         // The Ship Changes drawer lives inside GitActionsControl (deep in
         // the chat tree). A CustomEvent keeps App.svelte from owning a
         // reference to a component it never renders.
         window.dispatchEvent(new CustomEvent('agent-overflow:open-ship-changes', {
-          detail: { paneId: getFocusedPane().paneId },
+          detail: { paneId },
         }));
       },
       requestRename: requestRenameForThread,
@@ -231,24 +254,24 @@
 
 <main class="app-shell relative h-screen w-screen overflow-hidden text-text-primary flex flex-col">
   <TransportStatusBanner />
-  <div class="relative flex flex-1 min-h-0 w-full">
+  <div bind:this={appContentEl} class="relative flex flex-1 min-h-0 w-full">
     <Sidebar
       {pane}
       onOpenSettings={() => openSettings('general')}
       registerFocusSearch={(focus) => (searchFocuser = focus)}
       registerOpenFromPR={(cb) => (openFromPR = cb)}
     />
-    <div class="flex-1 flex flex-col min-w-0">
+    <PaneHost>
       {#if showSettings}
-        <SettingsView
-          initialSection={settingsSection}
-          contextTarget={settingsContextTarget}
-          onClose={() => showSettings = false}
-        />
-      {:else}
-        <ChatView {pane} />
+        {#snippet settings()}
+          <SettingsView
+            initialSection={settingsSection}
+            contextTarget={settingsContextTarget}
+            onClose={() => showSettings = false}
+          />
+        {/snippet}
       {/if}
-    </div>
+    </PaneHost>
   </div>
 </main>
 <DiscussionStartFlow
@@ -257,7 +280,7 @@
   {pane}
   onClose={closeDiscussionStart}
 />
-<CommandPalette context={paletteContext} />
+<CommandPalette context={paletteContext} contextForPane={makeCommandContextForPaneId} />
 <KeybindingsCheatSheet open={isCheatSheetOpen()} onClose={closeCheatSheet} />
 <MessageSearch open={isMessageSearchOpen()} pane={messageSearchPane} onClose={closeMessageSearch} />
 <UnifiedThreadPicker open={isThreadPickerOpen()} pane={threadPickerPane} onClose={closeThreadPicker} />

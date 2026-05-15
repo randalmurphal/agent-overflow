@@ -46,6 +46,10 @@ export function getThreadScrollSnapshot(threadId: string): ScrollSnapshot | unde
   return snapshots.get(threadId);
 }
 
+export function clearThreadScrollSnapshot(threadId: string): void {
+  snapshots.delete(threadId);
+}
+
 export function clearThreadScrollSnapshotsForTest(): void {
   snapshots.clear();
 }

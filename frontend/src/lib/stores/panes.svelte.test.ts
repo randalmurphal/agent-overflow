@@ -1,14 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   createPane,
+  destroyPane,
   focusPane,
   getAllPanes,
   getFocusedPane,
   getFocusedPaneId,
   getMainPane,
   getPaneActivation,
+  isThreadVisible,
+  listPanes,
   openThreadFromNavigation,
   openThreadInPane,
+  panesShowingThread,
   registerPaneForTest,
   resetPanesForTest,
   syncThread,
@@ -85,6 +89,25 @@ describe('panes store', () => {
       expect(getFocusedPaneId()).toBe('secondary');
     });
 
+    it('lists panes without exposing the registry as the production iteration contract', () => {
+      const main = getMainPane();
+      const secondary = createPane('secondary');
+
+      expect(listPanes()).toEqual([main, secondary]);
+    });
+
+    it('destroys a pane and moves focus to a remaining pane', () => {
+      const main = getMainPane();
+      createPane('secondary');
+      focusPane('secondary');
+
+      destroyPane('secondary');
+
+      expect(listPanes()).toEqual([main]);
+      expect(getFocusedPane()).toBe(main);
+      expect(getPaneActivation('secondary')).toBe('committed');
+    });
+
     it('opens a thread in the requested pane when it is not already visible', async () => {
       const thread = makeThread({ id: 'target' });
       const pane = createThreadPane({ paneId: 'external' });
@@ -128,6 +151,8 @@ describe('panes store', () => {
       expect(focused).toBe(left);
       expect(right.threadId).toBeNull();
       expect(getFocusedPaneId()).toBe('left');
+      expect(isThreadVisible(thread.id)).toBe(true);
+      expect(panesShowingThread(thread.id)).toEqual([left]);
     });
 
     it('promotes an existing preview pane when opened through the committed path', async () => {

@@ -21,10 +21,10 @@
   import TerminalBody from './TerminalBody.svelte';
   import type { ThreadTerminalDrawerProps } from './terminalDrawerTypes';
 
-  let { pane, manual = false, onSendToComposer }: ThreadTerminalDrawerProps = $props();
+  let { surface, manual = false }: ThreadTerminalDrawerProps = $props();
 
   function initialTerminalStateKey(): string {
-    return pane.thread?.id ?? pane.paneId;
+    return surface.threadId ?? surface.paneId;
   }
 
   // Thread-owned state lets this renderer unmount/remount without losing tabs
@@ -39,11 +39,12 @@
   }
 
   async function openTerminal() {
-    if (!pane.thread) return;
+    const threadId = surface.threadId;
+    if (!threadId) return;
     try {
       const th = (await OpenTerminal(
-        pane.thread.id,
-        new TerminalOpenOptions({ cwd: pane.thread.workspacePath }),
+        threadId,
+        new TerminalOpenOptions({ cwd: surface.workspacePath }),
       )) as TerminalHandle;
       if (th?.summary) {
         handle.addTab(th.summary);
@@ -74,7 +75,7 @@
   }
 
   function collapseDrawer() {
-    pane.setShowTerminal(false);
+    surface.setVisible(false);
   }
 
   let previousTabCount = handle.tabs.length;
@@ -88,10 +89,11 @@
   });
 
   onMount(async () => {
-    if (manual || !pane.thread) return;
+    const threadId = surface.threadId;
+    if (manual || !threadId) return;
 
     try {
-      const list = (await ListTerminals(pane.thread.id)) as TerminalSessionSummary[] | null;
+      const list = (await ListTerminals(threadId)) as TerminalSessionSummary[] | null;
       if (list) {
         const listedIDs = new Set(list.map((s) => s.terminalID));
         for (const tab of handle.tabs) {
@@ -120,7 +122,7 @@
     minSize={120}
     resizable={true}
     onResize={handleResize}
-    acquireResizeLease={() => pane.scrollController?.pauseAutoScroll() ?? null}
+    acquireResizeLease={surface.acquireResizeLease}
   >
     {#snippet children()}
       <TerminalTabStrip
@@ -129,7 +131,7 @@
         onClose={closeTerminal}
         onSelect={selectTerminal}
         onCollapse={collapseDrawer}
-        workspacePath={pane.thread?.workspacePath}
+        workspacePath={surface.workspacePath}
       />
 
       {#if handle.activeTerminalID}
@@ -137,7 +139,7 @@
           <TerminalBody
             {handle}
             terminalID={handle.activeTerminalID}
-            onSendToComposer={onSendToComposer}
+            onSendToComposer={surface.sendTerminalChip}
           />
         {/key}
       {:else}

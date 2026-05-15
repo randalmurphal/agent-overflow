@@ -89,6 +89,65 @@ describe('<CommandPalette>', () => {
     expect(firstRun).not.toHaveBeenCalled();
   });
 
+  it('runs commands against the context captured when the palette opened', async () => {
+    const seenPaneIds: string[] = [];
+    registerCommand({
+      id: 'targeted',
+      label: 'Targeted Command',
+      run: (ctx) => {
+        seenPaneIds.push(ctx.paneId);
+      },
+    });
+    openPalette('left');
+    let currentContext = baseCtx({ paneId: 'left' });
+
+    const view = render(CommandPalette, {
+      props: {
+        context: currentContext,
+        contextForPane: () => currentContext,
+      },
+    });
+    await Promise.resolve();
+    currentContext = baseCtx({ paneId: 'left' });
+    await view.rerender({
+      context: baseCtx({ paneId: 'right' }),
+      contextForPane: () => currentContext,
+    });
+
+    const input = view.getByTestId('command-palette-input') as HTMLInputElement;
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(seenPaneIds).toEqual(['left']);
+  });
+
+  it('disables commands when the captured target pane disappears', async () => {
+    const run = vi.fn();
+    registerCommand({ id: 'targeted', label: 'Targeted Command', run });
+    openPalette('left');
+    let paneExists = true;
+    const leftContext = baseCtx({ paneId: 'left' });
+
+    const view = render(CommandPalette, {
+      props: {
+        context: leftContext,
+        contextForPane: () => (paneExists ? leftContext : null),
+      },
+    });
+    await Promise.resolve();
+
+    paneExists = false;
+    await view.rerender({
+      context: baseCtx({ paneId: 'right' }),
+      contextForPane: () => null,
+    });
+
+    expect(view.queryByRole('option', { name: /Targeted Command/i })).toBeNull();
+    expect(view.getByTestId('command-palette-empty')).toBeInTheDocument();
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it('Escape closes the palette', async () => {
     registerCommand({ id: 'a', label: 'Alpha', run: () => {} });
     openPalette();

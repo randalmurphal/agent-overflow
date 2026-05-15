@@ -1,5 +1,3 @@
-import type { ThreadPane } from '../../stores/thread.svelte';
-
 export interface SendToComposerChip {
   id: string;
   label: string;
@@ -8,10 +6,17 @@ export interface SendToComposerChip {
   createdAt: number;
 }
 
+export interface ThreadTerminalSurfaceContext {
+  paneId: string;
+  threadId: string | null;
+  workspacePath: string | undefined;
+  setVisible(value: boolean): void;
+  acquireResizeLease(): (() => void) | null;
+  sendTerminalChip(chip: SendToComposerChip): void;
+}
+
 export interface ThreadTerminalDrawerProps {
-  pane: ThreadPane;
+  surface: ThreadTerminalSurfaceContext;
   /** Injected by tests to skip auto-ListTerminals/OpenTerminal on mount. */
   manual?: boolean;
-  /** Called when the user captures selected terminal text as a chip. */
-  onSendToComposer?: (chip: SendToComposerChip) => void;
 }

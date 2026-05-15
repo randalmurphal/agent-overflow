@@ -1,5 +1,6 @@
 import type { Thread } from '../types/models';
 import type { DiffViewMode } from './diffPanel.svelte';
+import { getPaneWidth } from './layoutMetrics.svelte';
 import { syncThread } from './panes.svelte';
 import type { ThreadPane } from './thread.svelte';
 
@@ -7,7 +8,9 @@ export const RHS_PANEL_LRU_CAP = 20;
 export const RHS_PANEL_DEFAULT_WIDTH = 560;
 export const RHS_PANEL_MIN_WIDTH = 380;
 
-const DEFAULT_MAIN_RESERVE = 640;
+// Keep this much of the owning pane available for the chat column when
+// a right-side panel is open.
+const RHS_PANEL_CHAT_RESERVE_WIDTH = 640;
 
 export type RhsPanel =
   | { kind: 'plan' }
@@ -62,9 +65,9 @@ export interface PanelContext {
  * every pane.thread reassignment, propagating prop-identity churn into
  * PlanSidebar and visibly flickering the sidebar surface.
  */
-export function makePanelContext(pane: ThreadPane, paneId = 'main'): PanelContext {
+export function makePanelContext(pane: ThreadPane): PanelContext {
   return {
-    paneId,
+    paneId: pane.paneId,
     get threadId() { return pane.threadId; },
     get workspacePath() { return pane.thread?.workspacePath; },
     close: () => pane.closeRhsPanel(),
@@ -103,13 +106,12 @@ export interface RhsPanelSlot {
   reset(): void;
 }
 
-function getMaxWidth(): number {
-  if (typeof window === 'undefined') return Number.POSITIVE_INFINITY;
-  return Math.max(RHS_PANEL_MIN_WIDTH, window.innerWidth - DEFAULT_MAIN_RESERVE);
+function maxWidthForPane(paneId: string): number {
+  return Math.max(RHS_PANEL_MIN_WIDTH, getPaneWidth(paneId) - RHS_PANEL_CHAT_RESERVE_WIDTH);
 }
 
-function clampWidth(px: number): number {
-  return Math.max(RHS_PANEL_MIN_WIDTH, Math.min(getMaxWidth(), Math.round(px)));
+function clampWidth(paneId: string, px: number): number {
+  return Math.max(RHS_PANEL_MIN_WIDTH, Math.min(maxWidthForPane(paneId), Math.round(px)));
 }
 
 function clonePanel(panel: RhsPanel): RhsPanel {
@@ -127,7 +129,7 @@ function cloneDiffUI(state: DiffSidebarUIState | null): DiffSidebarUIState | nul
   };
 }
 
-export function createRhsPanelSlot(): RhsPanelSlot {
+export function createRhsPanelSlot(paneId: string): RhsPanelSlot {
   const byThread = new Map<string, RhsPanelSnapshot>();
   let activePanel: RhsPanel | null = $state(null);
   let width = $state(RHS_PANEL_DEFAULT_WIDTH);
@@ -157,7 +159,7 @@ export function createRhsPanelSlot(): RhsPanelSlot {
 
   return {
     get activePanel() { return activePanel; },
-    get width() { return width; },
+    get width() { return clampWidth(paneId, width); },
     get diffPayloadRestoreState() { return diffPayloadRestoreState; },
     get snapshotCount() { return byThread.size; },
 
@@ -177,7 +179,7 @@ export function createRhsPanelSlot(): RhsPanelSlot {
     },
 
     setWidthLive(next) {
-      const clamped = clampWidth(next);
+      const clamped = clampWidth(paneId, next);
       if (clamped === width) return;
       width = clamped;
     },
@@ -192,7 +194,9 @@ export function createRhsPanelSlot(): RhsPanelSlot {
       });
     },
 
-    getMaxWidth,
+    getMaxWidth() {
+      return maxWidthForPane(paneId);
+    },
 
     recordDiffPayloadUI(state) {
       if (activePanel?.kind !== 'diff-payload') return;
@@ -223,7 +227,7 @@ export function createRhsPanelSlot(): RhsPanelSlot {
       }
       byThread.delete(threadId);
       byThread.set(threadId, restored);
-      width = clampWidth(restored.width);
+      width = clampWidth(paneId, restored.width);
       activePanel = restored.panel ? clonePanel(restored.panel) : null;
       diffPayloadRestoreState = activePanel?.kind === 'diff-payload'
         ? cloneDiffUI(restored.diffPayloadUI)

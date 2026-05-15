@@ -84,9 +84,7 @@ function emitEvent(name: string, data: unknown) {
   }
 }
 
-function makePane() {
-  // Tiny stub — we only need the thread + setShowTerminal/toggle functions for
-  // drawer behaviour.
+function makeSurface() {
   const thread = {
     id: 'thread-A',
     workspacePath: '/workspace',
@@ -99,9 +97,12 @@ function makePane() {
     updatedAt: 0,
   };
   return {
-    get thread() { return thread; },
-    setShowTerminal: vi.fn(),
-    toggleTerminal: vi.fn(),
+    paneId: 'main',
+    get threadId() { return thread.id; },
+    get workspacePath() { return thread.workspacePath; },
+    setVisible: vi.fn(),
+    acquireResizeLease: vi.fn(() => null),
+    sendTerminalChip: vi.fn(),
   };
 }
 
@@ -147,8 +148,8 @@ afterEach(() => {
 
 describe('ThreadTerminalDrawer', () => {
   it('renders while global terminal event routing is installed', async () => {
-    const pane = makePane();
-    render(ThreadTerminalDrawer, { pane: pane as never, manual: true });
+    const pane = makeSurface();
+    render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
     // Next microtask: onMount async.
     await Promise.resolve();
     await Promise.resolve();
@@ -157,9 +158,19 @@ describe('ThreadTerminalDrawer', () => {
     expect(eventListeners['terminal:exit']).toBeDefined();
   });
 
+  it('does not list or open terminals when mounted in manual mode', async () => {
+    const pane = makeSurface();
+    render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(callLog.filter((c) => c.fn === 'ListTerminals')).toHaveLength(0);
+    expect(callLog.filter((c) => c.fn === 'OpenTerminal')).toHaveLength(0);
+  });
+
   it('opens a terminal via OpenTerminal on +', async () => {
-    const pane = makePane();
-    const { getByTestId } = render(ThreadTerminalDrawer, { pane: pane as never, manual: true });
+    const pane = makeSurface();
+    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
     await tick();
 
     getByTestId('terminal-open').click();
@@ -175,8 +186,8 @@ describe('ThreadTerminalDrawer', () => {
   });
 
   it('closes a terminal and clears its tab', async () => {
-    const pane = makePane();
-    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { pane: pane as never, manual: true });
+    const pane = makeSurface();
+    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
     await tick();
 
     getByTestId('terminal-open').click();
@@ -196,16 +207,16 @@ describe('ThreadTerminalDrawer', () => {
   });
 
   it('collapses when ▾ is pressed', async () => {
-    const pane = makePane();
-    const { getByTestId } = render(ThreadTerminalDrawer, { pane: pane as never, manual: true });
+    const pane = makeSurface();
+    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
     await Promise.resolve();
     getByTestId('terminal-collapse').click();
-    expect(pane.setShowTerminal).toHaveBeenCalledWith(false);
+    expect(pane.setVisible).toHaveBeenCalledWith(false);
   });
 
   it('auto-removes a tab when terminal:exit fires for it', async () => {
-    const pane = makePane();
-    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { pane: pane as never, manual: true });
+    const pane = makeSurface();
+    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
     await tick();
 
     getByTestId('terminal-open').click();
@@ -226,11 +237,11 @@ describe('ThreadTerminalDrawer', () => {
 
     expect(queryByTestId('terminal-tab-t1')).toBeNull();
     // Last tab gone → drawer collapses.
-    expect(pane.setShowTerminal).toHaveBeenCalledWith(false);
+    expect(pane.setVisible).toHaveBeenCalledWith(false);
   });
 
   it('does not auto-collapse on terminal:exit when other tabs remain', async () => {
-    const pane = makePane();
+    const pane = makeSurface();
     let nextId = 1;
     const bindings = await import('../../stores/bindings');
     (bindings.OpenTerminal as unknown as { mockImplementation: (fn: unknown) => void }).mockImplementation(
@@ -256,7 +267,7 @@ describe('ThreadTerminalDrawer', () => {
       },
     );
 
-    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { pane: pane as never, manual: true });
+    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
     await tick();
 
     getByTestId('terminal-open').click();
@@ -278,12 +289,12 @@ describe('ThreadTerminalDrawer', () => {
 
     expect(queryByTestId('terminal-tab-t1')).toBeNull();
     expect(getByTestId('terminal-tab-t2')).toBeDefined();
-    expect(pane.setShowTerminal).not.toHaveBeenCalled();
+    expect(pane.setVisible).not.toHaveBeenCalled();
   });
 
   it('ignores terminal:exit for other threads', async () => {
-    const pane = makePane();
-    const { getByTestId } = render(ThreadTerminalDrawer, { pane: pane as never, manual: true });
+    const pane = makeSurface();
+    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
     await tick();
 
     getByTestId('terminal-open').click();
@@ -300,12 +311,12 @@ describe('ThreadTerminalDrawer', () => {
     await tick();
 
     expect(getByTestId('terminal-tab-t1')).toBeDefined();
-    expect(pane.setShowTerminal).not.toHaveBeenCalled();
+    expect(pane.setVisible).not.toHaveBeenCalled();
   });
 
   it('auto-collapses when the last tab is closed', async () => {
-    const pane = makePane();
-    const { getByTestId } = render(ThreadTerminalDrawer, { pane: pane as never, manual: true });
+    const pane = makeSurface();
+    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
     await tick();
 
     // Open one terminal, then close it — that's the last tab.
@@ -318,11 +329,11 @@ describe('ThreadTerminalDrawer', () => {
     await Promise.resolve();
     await tick();
 
-    expect(pane.setShowTerminal).toHaveBeenCalledWith(false);
+    expect(pane.setVisible).toHaveBeenCalledWith(false);
   });
 
   it('does not auto-collapse when a non-last tab is closed', async () => {
-    const pane = makePane();
+    const pane = makeSurface();
     // Override OpenTerminal so each call returns a fresh ID.
     let nextId = 1;
     const bindings = await import('../../stores/bindings');
@@ -349,7 +360,7 @@ describe('ThreadTerminalDrawer', () => {
       },
     );
 
-    const { getByTestId } = render(ThreadTerminalDrawer, { pane: pane as never, manual: true });
+    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
     await tick();
 
     getByTestId('terminal-open').click();
@@ -366,12 +377,12 @@ describe('ThreadTerminalDrawer', () => {
     await Promise.resolve();
     await tick();
 
-    expect(pane.setShowTerminal).not.toHaveBeenCalled();
+    expect(pane.setVisible).not.toHaveBeenCalled();
   });
 
   it('routes terminal:output events to the active tab', async () => {
-    const pane = makePane();
-    const { getByTestId } = render(ThreadTerminalDrawer, { pane: pane as never, manual: true });
+    const pane = makeSurface();
+    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
     await Promise.resolve();
     getByTestId('terminal-open').click();
     await Promise.resolve();
@@ -391,8 +402,8 @@ describe('ThreadTerminalDrawer', () => {
   });
 
   it('filters events for other threads', async () => {
-    const pane = makePane();
-    render(ThreadTerminalDrawer, { pane: pane as never, manual: true });
+    const pane = makeSurface();
+    render(ThreadTerminalDrawer, { surface: pane as never, manual: true });
     await Promise.resolve();
 
     // Emitting an event for a different thread must not crash even if no tabs
@@ -410,9 +421,9 @@ describe('ThreadTerminalDrawer', () => {
   // These tests pin the integration so a lazy rewrite can't silently
   // revert to the hand-rolled <aside> + pointer-capture code.
   it('composes its chrome via the Drawer primitive (has data-drawer-position)', async () => {
-    const pane = makePane();
+    const pane = makeSurface();
     const { container } = render(ThreadTerminalDrawer, {
-      pane: pane as never,
+      surface: pane as never,
       manual: true,
     });
     await tick();
@@ -424,9 +435,9 @@ describe('ThreadTerminalDrawer', () => {
   });
 
   it('renders the drawer height based on handle.drawerHeight', async () => {
-    const pane = makePane();
+    const pane = makeSurface();
     const { container } = render(ThreadTerminalDrawer, {
-      pane: pane as never,
+      surface: pane as never,
       manual: true,
     });
     await tick();

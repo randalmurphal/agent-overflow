@@ -533,6 +533,34 @@ describe('mode.cycle command', () => {
   });
 });
 
+describe('git.ship command', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+  });
+
+  it('passes the command target pane id to the ship-changes hook', () => {
+    const pane = readyPane();
+    const openedForPaneIds: string[] = [];
+    registerBuiltinCommands({
+      openSettings: () => {},
+      openThreadForm: () => {},
+      openThreadFromPR: () => {},
+      openShipChanges: (paneId) => {
+        openedForPaneIds.push(paneId);
+      },
+      requestRename: () => {},
+      requestDiscussion: () => {},
+      focusThreadSearch: () => {},
+      requestThreadJump: () => {},
+      requestThreadStep: () => {},
+    });
+
+    runCommand('git.ship', makeCommandContext(pane, {}));
+
+    expect(openedForPaneIds).toEqual([pane.paneId]);
+  });
+});
+
 // --- sidebar.focus-search wiring ---
 //
 // ⌘K moved from palette.open (now ⌘⇧K) to sidebar.focus-search in Wave 4.

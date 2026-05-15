@@ -12,11 +12,13 @@
 
   import { onDestroy } from 'svelte';
   import {
-    clampChatWidth,
+    DESIGN_CHAT_MIN_PX,
+    DESIGN_PREVIEW_MIN_PX,
     persistChatPx,
     setChatPx,
   } from '../../stores/designLayout.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { createResizeGesture } from '../../utils/resizeGesture.svelte';
 
   interface Props {
     /** Current chat-pane width in pixels (already clamped). */
@@ -29,55 +31,23 @@
 
   let { width, containerWidth, pane }: Props = $props();
 
-  let dragging = $state(false);
-  let startPointer = 0;
-  let startWidth = 0;
-  let lockedContainer = 0;
-  let releasePause: (() => void) | null = null;
-
-  function restoreBodyStyles(): void {
-    document.body.style.cursor = '';
-    document.body.style.userSelect = '';
-  }
-
-  function onPointerDown(e: PointerEvent): void {
-    e.preventDefault();
-    window.getSelection()?.removeAllRanges();
-    dragging = true;
-    startPointer = e.clientX;
-    startWidth = width;
+  const RESIZER_PX = 4;
+  const resize = createResizeGesture(() => ({
+    axis: 'x',
+    cursor: 'col-resize',
+    currentSize: width,
+    minSize: DESIGN_CHAT_MIN_PX,
     // Freeze the container width at drag-start: a window resize mid-drag
     // shouldn't yank the handle into the wrong half of the new viewport.
-    lockedContainer = containerWidth;
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    releasePause = pane.scrollController?.pauseAutoScroll() ?? null;
-  }
-
-  function onPointerMove(e: PointerEvent): void {
-    if (!dragging) return;
-    const next = clampChatWidth(
-      startWidth + (e.clientX - startPointer),
-      lockedContainer,
-    );
-    if (next !== width) setChatPx(next, pane.paneId);
-  }
-
-  function endDrag(e: PointerEvent): void {
-    if (!dragging) return;
-    dragging = false;
-    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-    restoreBodyStyles();
-    releasePause?.();
-    releasePause = null;
-    persistChatPx(pane.paneId);
-  }
+    maxSize: Math.max(DESIGN_CHAT_MIN_PX, containerWidth - DESIGN_PREVIEW_MIN_PX - RESIZER_PX),
+    direction: 1,
+    onResizeLive: (next) => setChatPx(next, pane.paneId),
+    onResizeEnd: () => persistChatPx(pane.paneId),
+    acquireLease: () => pane.scrollController?.pauseAutoScroll() ?? null,
+  }));
 
   onDestroy(() => {
-    if (dragging) restoreBodyStyles();
-    releasePause?.();
-    releasePause = null;
+    resize.destroy();
   });
 </script>
 
@@ -90,11 +60,11 @@
   class={[
     'shrink-0 w-1 cursor-col-resize select-none touch-none',
     'bg-border-subtle/40 hover:bg-accent/30 transition-colors',
-    dragging ? 'bg-accent/50' : '',
+    resize.dragging ? 'bg-accent/50' : '',
   ].join(' ')}
-  onpointerdown={onPointerDown}
-  onpointermove={onPointerMove}
-  onpointerup={endDrag}
-  onpointercancel={endDrag}
+  onpointerdown={resize.onPointerDown}
+  onpointermove={resize.onPointerMove}
+  onpointerup={resize.endDrag}
+  onpointercancel={resize.endDrag}
   data-testid="design-split-resizer"
 ></div>

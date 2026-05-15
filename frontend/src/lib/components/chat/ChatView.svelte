@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import { fade } from 'svelte/transition';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import MessageTimeline from './MessageTimeline.svelte';
@@ -7,7 +7,7 @@
   import ComposerHint from '../composer/ComposerHint.svelte';
   import SendQueuePreview from '../composer/SendQueuePreview.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
-  import LazyThreadTerminalDrawer from '../terminal/LazyThreadTerminalDrawer.svelte';
+  import ThreadTerminalPlacement from '../terminal/ThreadTerminalPlacement.svelte';
   import DiscussionView from '../discussion/DiscussionView.svelte';
   import DesignPreviewPanel from '../design/DesignPreviewPanel.svelte';
   import DesignFeedbackPanel from '../design/DesignFeedbackPanel.svelte';
@@ -25,6 +25,7 @@
   import ExpandedImageDialog from './ExpandedImageDialog.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
+  import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
   import {
     ForkThreadFromMessage,
     GetMessageCheckpointRevertDiff,
@@ -60,6 +61,15 @@
   );
 
   const draft = createComposerDraftStore();
+  let releaseComposerDraft: (() => void) | null = null;
+
+  onMount(() => {
+    releaseComposerDraft = registerComposerDraft(pane.paneId, draft);
+    return () => {
+      releaseComposerDraft?.();
+      releaseComposerDraft = null;
+    };
+  });
   let chatRoot: HTMLDivElement | undefined = $state(undefined);
   let chatColumn: HTMLDivElement | undefined = $state(undefined);
   let composerOverlay: HTMLDivElement | undefined = $state(undefined);
@@ -355,17 +365,6 @@
     return () => obs.disconnect();
   });
 
-  // Exposed so the terminal drawer can "send to composer".
-  export function addTerminalChipToDraft(chip: {
-    id: string;
-    label: string;
-    preview: string;
-    content: string;
-    createdAt: number;
-  }) {
-    draft.addTerminalChip(chip);
-  }
-
   function openImagePreview(preview: ExpandedImagePreview): void {
     // If a previous preview is still open (rapid re-click on a different
     // image before the dialog has closed), revoke its blob URLs before
@@ -486,6 +485,8 @@
   });
 
   onDestroy(() => {
+    releaseComposerDraft?.();
+    releaseComposerDraft = null;
     void draft.flushPending();
     if (queuedReadTimer !== null) {
       clearTimeout(queuedReadTimer);
@@ -550,11 +551,7 @@
         </div>
       </div>
     </div>
-    {#if pane.showTerminal && pane.threadId}
-      {#key pane.threadId}
-        <LazyThreadTerminalDrawer {pane} onSendToComposer={addTerminalChipToDraft} />
-      {/key}
-    {/if}
+    <ThreadTerminalPlacement {pane} />
   </div>
 {/snippet}
 

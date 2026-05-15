@@ -14,22 +14,14 @@ vi.mock('./ThreadTerminalDrawer.svelte', () => {
 
 import LazyThreadTerminalDrawer from './LazyThreadTerminalDrawer.svelte';
 
-function makePane() {
-  const thread = {
-    id: 'thread-A',
-    workspacePath: '/workspace',
-    title: 't',
-    provider: 'claude',
-    projectPath: '/workspace',
-    model: '',
-    mode: 'chat',
-    createdAt: 0,
-    updatedAt: 0,
-  };
+function makeSurface() {
   return {
-    get thread() { return thread; },
-    setShowTerminal: vi.fn(),
-    toggleTerminal: vi.fn(),
+    paneId: 'main',
+    threadId: 'thread-A',
+    workspacePath: '/workspace',
+    setVisible: vi.fn(),
+    acquireResizeLease: vi.fn(() => null),
+    sendTerminalChip: vi.fn(),
   };
 }
 
@@ -43,7 +35,7 @@ describe('LazyThreadTerminalDrawer', () => {
     terminalDrawerMock.shouldFailLoad = true;
 
     const { getByTestId } = render(LazyThreadTerminalDrawer, {
-      pane: makePane() as never,
+      surface: makeSurface() as never,
       manual: true,
     });
 

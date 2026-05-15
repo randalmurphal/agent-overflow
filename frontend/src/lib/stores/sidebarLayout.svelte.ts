@@ -7,6 +7,8 @@
 // The clamp is also enforced here so every caller (resize handle,
 // palette command, settings sync) converges on the same bounds.
 
+import { getAppShellWidth } from './layoutMetrics.svelte';
+
 const STORAGE_KEY = 'agent-overflow:sidebar:width';
 const DEFAULT_WIDTH = 280;
 export const SIDEBAR_MIN_WIDTH = 200;
@@ -15,10 +17,7 @@ export const SIDEBAR_MIN_WIDTH = 200;
 const MAIN_RESERVE = 560;
 
 function clamp(px: number): number {
-  const viewportMax =
-    typeof window === 'undefined'
-      ? Number.POSITIVE_INFINITY
-      : Math.max(SIDEBAR_MIN_WIDTH, window.innerWidth - MAIN_RESERVE);
+  const viewportMax = Math.max(SIDEBAR_MIN_WIDTH, getAppShellWidth() - MAIN_RESERVE);
   return Math.max(SIDEBAR_MIN_WIDTH, Math.min(viewportMax, Math.round(px)));
 }
 
@@ -85,8 +84,7 @@ export function setSidebarWidth(next: number): void {
 /** Viewport-derived maximum — callers use this to render a resize-cap
  *  visual cue or to refuse a drag that would eat the main pane. */
 export function getSidebarMaxWidth(): number {
-  if (typeof window === 'undefined') return Number.POSITIVE_INFINITY;
-  return Math.max(SIDEBAR_MIN_WIDTH, window.innerWidth - MAIN_RESERVE);
+  return Math.max(SIDEBAR_MIN_WIDTH, getAppShellWidth() - MAIN_RESERVE);
 }
 
 /** Test helper — restore the default + wipe storage between unit tests. */

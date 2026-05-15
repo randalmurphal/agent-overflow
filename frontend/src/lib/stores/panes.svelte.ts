@@ -1,5 +1,6 @@
 import type { Thread } from '../types/models';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
+import { removePaneLayoutItem } from './paneLayout.svelte';
 import { touchProjectActivity } from './projects.svelte';
 import { replaceThread as replaceThreadInRegistry } from './threads.svelte';
 
@@ -33,6 +34,10 @@ export function createPane(id: string): ThreadPane {
   return registerPane(id, pane, 'committed');
 }
 
+export function getPane(id: string): ThreadPane | undefined {
+  return panes.get(id);
+}
+
 export function registerPaneForTest(id: string, pane: ThreadPane): void {
   registerPane(id, pane, 'committed');
 }
@@ -52,6 +57,51 @@ export function getFocusedPaneId(): string {
 
 export function getAllPanes(): Map<string, ThreadPane> {
   return panes;
+}
+
+export function listPanes(): ThreadPane[] {
+  return Array.from(panes.values());
+}
+
+export function iterPanes(): IterableIterator<ThreadPane> {
+  return panes.values();
+}
+
+export function forEachPane(fn: (pane: ThreadPane) => void): void {
+  for (const pane of panes.values()) {
+    fn(pane);
+  }
+}
+
+export function panesShowingThread(threadId: string): ThreadPane[] {
+  return listPanes().filter((pane) => pane.threadId === threadId);
+}
+
+export function forPanesShowingThread(
+  threadId: string,
+  fn: (pane: ThreadPane) => void,
+): void {
+  for (const pane of panes.values()) {
+    if (pane.threadId !== threadId) continue;
+    fn(pane);
+  }
+}
+
+export function isThreadVisible(threadId: string): boolean {
+  return findPaneShowingThread(threadId) !== null;
+}
+
+export function destroyPane(id: string): void {
+  const pane = panes.get(id);
+  if (!pane) return;
+  pane.clear();
+  panes = new Map(panes);
+  panes.delete(id);
+  paneActivationById = new Map(paneActivationById);
+  paneActivationById.delete(id);
+  removePaneLayoutItem(id);
+  if (focusedPaneId !== id) return;
+  focusedPaneId = panes.keys().next().value ?? 'main';
 }
 
 export function getPaneActivation(id: string): PaneActivation {

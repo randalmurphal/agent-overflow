@@ -35,7 +35,7 @@
 
   let { pane }: Props = $props();
   let activePanel = $derived(pane.activeRhsPanel);
-  let panelContext = $derived(makePanelContext(pane, pane.paneId));
+  let panelContext = $derived(makePanelContext(pane));
   let panelKey = $derived(
     pane.thread && activePanel ? `${pane.thread.id}:${activePanel.kind}` : '',
   );

@@ -43,7 +43,7 @@ export interface BuiltinCommandHooks {
   openSettings: () => void;
   openThreadForm: () => void;
   openThreadFromPR: () => void;
-  openShipChanges: () => void;
+  openShipChanges: (paneId: string) => void;
   requestRename: (thread: Thread) => void;
   requestDiscussion: (thread: Thread) => void;
   focusThreadSearch: () => void;
@@ -117,7 +117,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'palette.open',
     label: 'Command Palette: Open',
     icon: '⌘',
-    run: () => openPalette(),
+    run: (ctx) => openPalette(ctx.paneId),
   });
 
   registerCommand({
@@ -567,7 +567,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     when: 'hasActiveThread',
     run: (ctx) =>
       withActiveThread(ctx, () => {
-        openShipChanges();
+        openShipChanges(ctx.paneId);
       }),
   });
 }

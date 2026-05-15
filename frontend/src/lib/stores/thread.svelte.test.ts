@@ -15,6 +15,8 @@ import {
 import type { Item } from '../types/models';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
+import { resetLayoutMetricsForTest, setPaneWidth } from './layoutMetrics.svelte';
+import { RHS_PANEL_MIN_WIDTH } from './rhsPanelSlot.svelte';
 
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => {
@@ -38,6 +40,7 @@ describe('createThreadPane', () => {
       value: 1400,
     });
     resetBindingMocks();
+    resetLayoutMetricsForTest();
     resetThreadStatuses();
     resetSendQueueForTest();
     setBindingMock('SwitchThread', async (threadId: unknown) =>
@@ -551,6 +554,21 @@ describe('createThreadPane', () => {
       await pane.switchThread(makeThread({ id: 'thread-b' }));
       expect(pane.rhsSidebarWidth).toBe(590);
       expect(pane.diffPanel.open).toBe(true);
+    });
+
+    it('clamps right-sidebar width against the owning pane width', () => {
+      setPaneWidth('left', 1000);
+      setPaneWidth('right', 1400);
+      const leftPane = createThreadPane({ paneId: 'left' });
+      const rightPane = createThreadPane({ paneId: 'right' });
+
+      leftPane.setRhsSidebarWidthLive(900);
+      rightPane.setRhsSidebarWidthLive(900);
+
+      expect(leftPane.getRhsSidebarMaxWidth()).toBe(RHS_PANEL_MIN_WIDTH);
+      expect(leftPane.rhsSidebarWidth).toBe(RHS_PANEL_MIN_WIDTH);
+      expect(rightPane.getRhsSidebarMaxWidth()).toBe(760);
+      expect(rightPane.rhsSidebarWidth).toBe(760);
     });
 
     it('restores activeDiffPayload when switching back to a previously-open thread', async () => {
