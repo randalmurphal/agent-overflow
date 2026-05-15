@@ -2,6 +2,18 @@ import type { Attachment } from '../types/attachment';
 import type { Draft, TerminalChip } from '../types/draft';
 import type { SourceProposedPlan } from '../types/models';
 import {
+  cloneDraftSnapshot,
+  draftSnapshotMatchesPersistedState,
+  forgetDraftSnapshot,
+  forgetDraftSnapshotIfMatches,
+  getRememberedDraftSnapshotForStore,
+  rememberDraftSnapshot,
+  resetComposerDraftSnapshotStateForTest,
+  trackActiveDraftSave,
+  waitForActiveDraftSaves,
+  type ComposerDraftSnapshot,
+} from './composerDraftSnapshots';
+import {
   ClearDraft,
   GetDraft,
   ListAttachments,
@@ -11,53 +23,13 @@ import { errString } from '../utils/errors';
 import { ensureImagePlaceholders } from '../utils/imagePlaceholders';
 
 const DEFAULT_DEBOUNCE_MS = 500;
-const MAX_CACHED_DRAFTS = 100;
 
 interface DraftStoreOptions {
   debounceMs?: number;
 }
 
-interface ComposerDraftSnapshot {
-  content: string;
-  attachments: Attachment[];
-  terminalChips: TerminalChip[];
-  sourceProposedPlan: SourceProposedPlan | null;
-}
-
-// Unsaved local edits are kept here so a fast A -> B -> A switch can restore
-// immediately even before the debounce write reaches SQLite. Entries are
-// removed once their snapshot is durably saved or cleared.
-const localDraftSnapshots = new Map<string, ComposerDraftSnapshot>();
-const activeSavePromises = new Map<string, Set<Promise<unknown>>>();
-
-function cloneSourceProposedPlan(source: SourceProposedPlan | null): SourceProposedPlan | null {
-  return source ? { ...source } : null;
-}
-
-function cloneSnapshot(snapshot: ComposerDraftSnapshot): ComposerDraftSnapshot {
-  return {
-    content: snapshot.content,
-    attachments: snapshot.attachments.map((attachment) => ({ ...attachment })),
-    terminalChips: snapshot.terminalChips.map((chip) => ({ ...chip })),
-    sourceProposedPlan: cloneSourceProposedPlan(snapshot.sourceProposedPlan),
-  };
-}
-
-function rememberDraftSnapshot(threadId: string, snapshot: ComposerDraftSnapshot): void {
-  if (localDraftSnapshots.has(threadId)) {
-    localDraftSnapshots.delete(threadId);
-  }
-  localDraftSnapshots.set(threadId, cloneSnapshot(snapshot));
-  if (localDraftSnapshots.size <= MAX_CACHED_DRAFTS) return;
-  const oldestThreadId = localDraftSnapshots.keys().next().value as string | undefined;
-  if (oldestThreadId) {
-    localDraftSnapshots.delete(oldestThreadId);
-  }
-}
-
 export function resetComposerDraftSnapshotsForTest(): void {
-  localDraftSnapshots.clear();
-  activeSavePromises.clear();
+  resetComposerDraftSnapshotStateForTest();
 }
 
 /**
@@ -92,58 +64,10 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     }
   }
 
-  function snapshotsMatch(a: ComposerDraftSnapshot, b: ComposerDraftSnapshot): boolean {
-    return a.content === b.content
-      && a.sourceProposedPlan?.threadId === b.sourceProposedPlan?.threadId
-      && a.sourceProposedPlan?.itemId === b.sourceProposedPlan?.itemId
-      && a.sourceProposedPlan?.payloadId === b.sourceProposedPlan?.payloadId
-      && a.sourceProposedPlan?.title === b.sourceProposedPlan?.title
-      && a.attachments.length === b.attachments.length
-      && a.attachments.every((attachment, index) => attachment.id === b.attachments[index]?.id)
-      && a.terminalChips.length === b.terminalChips.length
-      && a.terminalChips.every((chip, index) => {
-        const other = b.terminalChips[index];
-        return chip.id === other?.id
-          && chip.label === other.label
-          && chip.preview === other.preview
-          && chip.content === other.content
-          && chip.createdAt === other.createdAt;
-      });
-  }
-
   function clearLocalSnapshotIfCurrent(id: string, savedSnapshot: ComposerDraftSnapshot): void {
-    const current = localDraftSnapshots.get(id);
-    if (current && snapshotsMatch(current, savedSnapshot)) {
-      localDraftSnapshots.delete(id);
-    }
-    if (threadId === id && snapshotsMatch(buildSnapshot(), savedSnapshot)) {
+    forgetDraftSnapshotIfMatches(id, savedSnapshot);
+    if (threadId === id && draftSnapshotMatchesPersistedState(buildSnapshot(), savedSnapshot)) {
       hasPendingSave = false;
-    }
-  }
-
-  function trackActiveSave(id: string, promise: Promise<unknown>): void {
-    let saves = activeSavePromises.get(id);
-    if (!saves) {
-      saves = new Set();
-      activeSavePromises.set(id, saves);
-    }
-    saves.add(promise);
-    const cleanup = () => {
-      const current = activeSavePromises.get(id);
-      if (!current) return;
-      current.delete(promise);
-      if (current.size === 0) {
-        activeSavePromises.delete(id);
-      }
-    };
-    promise.then(cleanup, cleanup);
-  }
-
-  async function waitForActiveSaves(id: string): Promise<void> {
-    while (true) {
-      const saves = activeSavePromises.get(id);
-      if (!saves || saves.size === 0) return;
-      await Promise.allSettled([...saves]);
     }
   }
 
@@ -156,12 +80,12 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
         snapshot.terminalChips,
         snapshot.sourceProposedPlan,
       );
-      trackActiveSave(id, savePromise);
+      trackActiveDraftSave(id, savePromise);
       await savePromise;
       clearLocalSnapshotIfCurrent(id, snapshot);
     } catch (err) {
       rememberDraftSnapshot(id, snapshot);
-      if (threadId === id && snapshotsMatch(buildSnapshot(), snapshot)) {
+      if (threadId === id && draftSnapshotMatchesPersistedState(buildSnapshot(), snapshot)) {
         hasPendingSave = true;
       }
       error = `${failureLabel}: ${errString(err)}`;
@@ -177,7 +101,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   async function hydrate(id: string, expectedGeneration: number): Promise<void> {
     hydrating = true;
     error = null;
-    const cached = localDraftSnapshots.get(id);
+    const cached = getRememberedDraftSnapshotForStore(id);
     if (cached) {
       applySnapshot(cached);
       hasPendingSave = true;
@@ -188,7 +112,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
         loadAttachments(id),
       ]);
       if (threadId !== id || switchGeneration !== expectedGeneration) return; // thread switched while loading
-      const currentCached = localDraftSnapshots.get(id);
+      const currentCached = getRememberedDraftSnapshotForStore(id);
       if (currentCached) {
         applySnapshot(currentCached);
         return;
@@ -265,7 +189,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   }
 
   function applySnapshot(snapshot: ComposerDraftSnapshot): void {
-    const cloned = cloneSnapshot(snapshot);
+    const cloned = cloneDraftSnapshot(snapshot);
     content = cloned.content;
     attachments = cloned.attachments;
     terminalChips = cloned.terminalChips;
@@ -329,7 +253,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     if (!id || threadId !== id) return;
     clearDebounce();
     pendingSaveGeneration++;
-    localDraftSnapshots.delete(id);
+    forgetDraftSnapshot(id);
     hasPendingSave = false;
     const generation = ++switchGeneration;
     await hydrate(id, generation);
@@ -342,8 +266,8 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       pendingSaveGeneration++;
       hasPendingSave = false;
     }
-    localDraftSnapshots.delete(id);
-    await waitForActiveSaves(id);
+    forgetDraftSnapshot(id);
+    await waitForActiveDraftSaves(id);
   }
 
   return {
@@ -433,7 +357,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       sourceProposedPlan = null;
       hasPendingSave = false;
       if (id) {
-        localDraftSnapshots.delete(id);
+        forgetDraftSnapshot(id);
       }
       if (!id) return;
       try {
