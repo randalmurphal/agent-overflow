@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { writePayloadCache } from '../../utils/payloadDataCache';
+import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { writePayloadCache } from './payloadDataCache';
 import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
 
 describe('payloadExpansion', () => {

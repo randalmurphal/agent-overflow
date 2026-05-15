@@ -5,7 +5,7 @@
   import {
     createPayloadExpansion,
     keepExpandedPayloadFresh,
-  } from './payloadExpansion.svelte';
+  } from '../../utils/payloadExpansion.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';
   import { addToast } from '../../stores/toast.svelte';

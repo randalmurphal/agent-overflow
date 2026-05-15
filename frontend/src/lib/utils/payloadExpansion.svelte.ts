@@ -1,5 +1,5 @@
-import { GetPayloadChunk, GetPayloadData, GetPayloadPreview } from '../../stores/bindings';
-import { readPayloadCache, writePayloadCache } from '../../utils/payloadDataCache';
+import { GetPayloadChunk, GetPayloadData, GetPayloadPreview } from '../stores/bindings';
+import { readPayloadCache, writePayloadCache } from './payloadDataCache';
 
 export const DEFAULT_PAYLOAD_PREVIEW_BYTES = 32 * 1024;
 export const DEFAULT_PAYLOAD_CHUNK_BYTES = 256 * 1024;

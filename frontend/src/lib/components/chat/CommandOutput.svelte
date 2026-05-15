@@ -15,7 +15,7 @@
   import {
     createPayloadExpansion,
     keepExpandedPayloadFresh,
-  } from './payloadExpansion.svelte';
+  } from '../../utils/payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
   import {
     commandErrorLineForItem,

@@ -28,7 +28,7 @@
     createPayloadExpansion,
     formatPayloadSize,
     keepExpandedPayloadFresh,
-  } from './payloadExpansion.svelte';
+  } from '../../utils/payloadExpansion.svelte';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
   import {
     stringArrayValue,

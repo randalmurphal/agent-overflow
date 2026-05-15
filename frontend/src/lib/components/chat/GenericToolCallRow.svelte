@@ -18,7 +18,7 @@
     createPayloadExpansion,
     formatPayloadSize,
     keepExpandedPayloadFresh,
-  } from './payloadExpansion.svelte';
+  } from '../../utils/payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
   import ClaudeSubagentTranscript from './ClaudeSubagentTranscript.svelte';
   import EditorLink from '../common/EditorLink.svelte';

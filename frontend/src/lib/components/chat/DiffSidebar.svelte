@@ -18,7 +18,7 @@
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import type { DiffViewMode } from '../../stores/diffPanel.svelte';
   import { parsePatchFiles, patchFileRowId, type PatchFile } from '../../utils/patchFiles';
-  import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
+  import { createPayloadExpansion, formatPayloadSize } from '../../utils/payloadExpansion.svelte';
   import DiffSidebarBody from './DiffSidebarBody.svelte';
   import DiffSidebarHeader from './DiffSidebarHeader.svelte';
 

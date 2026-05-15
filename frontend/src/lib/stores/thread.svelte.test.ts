@@ -1319,7 +1319,9 @@ describe('createThreadPane', () => {
   it('clear resets the pane completely', async () => {
     const pane = createThreadPane();
     await pane.switchThread(makeThread());
-    pane.upsertItem(makeItem({ id: 'x' }));
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const item = makeItem({ id: 'x', kind: 'tool_call', payloadId: 'payload-x' });
+    pane.upsertItem(item);
     pane.setGeneralError('boom');
     pane.addApproval({
       requestId: 'req-1',
@@ -1329,6 +1331,15 @@ describe('createThreadPane', () => {
       input: null,
       title: 'Approve bash',
     });
+    const expansion = pane.expansionStateFor(item);
+    pane.toggleSubagentGroupExpanded('group-x');
+    pane.attachmentCacheFor(item.id).set('attachment-x', {
+      id: 'attachment-x',
+      filename: 'x.png',
+      mimeType: 'image/png',
+      size: 1,
+      url: 'blob:pane-clear',
+    });
 
     pane.clear();
 
@@ -1337,6 +1348,11 @@ describe('createThreadPane', () => {
     expect(pane.pendingApprovals).toEqual([]);
     expect(pane.contextWindow).toBeNull();
     expect(pane.generalError).toBeNull();
+    expect(pane.expansionStateFor(item)).not.toBe(expansion);
+    expect(pane.isSubagentGroupExpanded('group-x')).toBe(false);
+    expect(pane.attachmentCacheFor(item.id).get('attachment-x')).toBeUndefined();
+    expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:pane-clear');
+    revoke.mockRestore();
   });
 
   describe('windowed history', () => {

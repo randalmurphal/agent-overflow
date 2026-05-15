@@ -3,7 +3,7 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import GenericToolCallRow from './GenericToolCallRow.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeItem } from '../../../test/helpers/chat';
-import { createPayloadExpansion } from './payloadExpansion.svelte';
+import { createPayloadExpansion } from '../../utils/payloadExpansion.svelte';
 import type { Item } from '../../types/models';
 
 // Minimal fake pane that satisfies the expansion-registry surface

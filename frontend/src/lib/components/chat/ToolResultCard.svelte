@@ -17,7 +17,7 @@
     createPayloadExpansion,
     formatPayloadSize,
     keepExpandedPayloadFresh,
-  } from './payloadExpansion.svelte';
+  } from '../../utils/payloadExpansion.svelte';
   import { openDiffSidebar } from './diffSidebarTrigger';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
 

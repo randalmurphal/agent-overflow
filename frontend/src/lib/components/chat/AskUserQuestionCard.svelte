@@ -33,7 +33,7 @@
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import { parseJsonObject } from '../../utils/parseJsonObject';
-  import { createPayloadExpansion } from './payloadExpansion.svelte';
+  import { createPayloadExpansion } from '../../utils/payloadExpansion.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
 

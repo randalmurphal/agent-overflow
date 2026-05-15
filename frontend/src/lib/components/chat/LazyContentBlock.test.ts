@@ -3,7 +3,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import LazyContentBlock from './LazyContentBlock.svelte';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { MAX_INLINE_BYTES } from '../../utils/inlineThreshold';
-import { DEFAULT_PAYLOAD_CHUNK_BYTES, DEFAULT_PAYLOAD_PREVIEW_BYTES } from './payloadExpansion.svelte';
+import { DEFAULT_PAYLOAD_CHUNK_BYTES, DEFAULT_PAYLOAD_PREVIEW_BYTES } from '../../utils/payloadExpansion.svelte';
 
 describe('<LazyContentBlock>', () => {
   it('renders the preview verbatim and no toggle when preview is short', () => {

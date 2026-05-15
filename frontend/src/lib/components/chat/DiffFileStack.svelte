@@ -20,7 +20,7 @@
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { parsePatchFiles, type PatchFile, type PatchLine } from '../../utils/patchFiles';
   import { INLINE_DIFF_PAYLOAD_PREVIEW_BYTES } from '../../utils/inlineThreshold';
-  import { createPayloadExpansion } from './payloadExpansion.svelte';
+  import { createPayloadExpansion } from '../../utils/payloadExpansion.svelte';
   import DiffFileBlock from './DiffFileBlock.svelte';
 
   interface Props {

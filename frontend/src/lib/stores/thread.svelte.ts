@@ -44,15 +44,6 @@ import {
   parseDesignAssistantPayloads,
 } from '../utils/designAssistantPayload';
 import { replaceThread } from './threads.svelte';
-import {
-  createPayloadExpansion,
-  type PayloadExpansionHandle,
-  type PayloadExpansionOptions,
-} from '../components/chat/payloadExpansion.svelte';
-import type {
-  AttachmentPreviewCache,
-  ImagePreviewItem,
-} from '../utils/attachmentPreview.svelte';
 import { leaseDuringSettle } from '../utils/scrollLeaseDuringTransition';
 
 import { addToast } from './toast.svelte';
@@ -105,6 +96,7 @@ import {
   type SettledTurn,
   type TurnRow,
 } from './threadTurnProjection';
+import { createThreadRowUiState } from './threadRowUiState.svelte';
 import type { ThreadLiveState } from '../../../bindings/agent-overflow/models';
 import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
 
@@ -338,21 +330,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   let draftPlaceholder: DraftThreadPlaceholder | null = $state(null);
   let items: Item[] = $state([]);
   let timelineRevision = $state(0);
-  // Per-itemId expansion state. Survives row remount (virtua's overscan
-  // eviction would otherwise reset toggle + drop loaded chunks, forcing
-  // a re-fetch from Go on every back-scroll). Cleared on thread switch.
-  const expansionStates: Map<string, PayloadExpansionHandle> = new Map();
-  // Per-groupKey subagent group expand state. ProposedPlanCard
-  // expansion state is deliberately NOT lifted — it appears on rare item
-  // types and the back-scroll remount frequency is low in practice. Lift
-  // if profiling proves it.
-  let subagentGroupExpanded: Set<string> = $state(new Set());
-  // Per-itemId attachment blob cache: outer key=itemId, inner key=attachmentId.
-  // The pane owns the blob URLs so they survive virtua's overscan eviction
-  // (which would otherwise revoke them in UserMessage's onDestroy and force
-  // a re-fetch+re-allocate on the next back-scroll). Revoked on thread switch.
-  const attachmentBlobs: Map<string, Map<string, ImagePreviewItem>> = new Map();
   const itemIndexById: Map<string, number> = new Map();
+  const rowUiState = createThreadRowUiState({
+    getItemById(itemId: string): Item | undefined {
+      const index = itemIndexById.get(itemId);
+      return index === undefined ? undefined : items[index];
+    },
+  });
   let pendingApprovals: ApprovalRequest[] = $state([]);
   let pendingUserInputs: UserInputRequest[] = $state([]);
   const resolvedApprovalIds = new Set<string>();
@@ -598,164 +582,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * only re-read we need.
    */
   let cachedVirtuaCache: CacheSnapshot | undefined = undefined;
-
-  // ---- Per-row UI state registries ----------------------------------
-  //
-  // virtua's overscan eviction unmounts row components when they scroll
-  // far past the viewport; remounting reconstructs the snippet's local
-  // state from scratch. For state the user expects to survive scrolling
-  // (expand/collapse, loaded payload chunks, expanded directories), we
-  // hoist it into pane-scoped registries here so the same record is
-  // returned on every remount of the same itemId.
-  //
-  // Registries are cleared on thread switch (this is per-pane state and
-  // there's no global LRU need; a single pane's max thread is bounded
-  // by the thread's item count, which has its own loose memory ceiling
-  // via the thread-windowing floor).
-  //
-  // Within the lifetime of a single thread, each expanded tool_call
-  // holds its loaded payload chunks until the user collapses it or
-  // switches threads. We deliberately do not auto-collapse open rows:
-  // collapsing an item the user is reading changes transcript geometry
-  // from outside the row's own interaction path, which fights the
-  // virtualizer and creates visible jumps/flashes.
-
-  function withExpansionRegistry(inner: PayloadExpansionHandle): PayloadExpansionHandle {
-    return {
-      get expanded() { return inner.expanded; },
-      get loading() { return inner.loading; },
-      get error() { return inner.error; },
-      get previewData() { return inner.previewData; },
-      get fullData() { return inner.fullData; },
-      get totalSize() { return inner.totalSize; },
-      get isComplete() { return inner.isComplete; },
-      get payloadVersion() { return inner.payloadVersion; },
-      get hasMore() { return inner.hasMore; },
-      get displayData() { return inner.displayData; },
-      toggle: () => inner.toggle(),
-      expand: () => inner.expand(),
-      ensureLoaded: () => inner.ensureLoaded(),
-      collapse: () => { inner.collapse(); },
-      showFull: () => inner.showFull(),
-      retry: () => inner.retry(),
-      reset: () => { inner.reset(); },
-      setPayloadVersion: (version: unknown) => { inner.setPayloadVersion(version); },
-    };
-  }
-
-  /**
-   * Look up or lazily construct the PayloadExpansion handle for an
-   * item. The handle's payload-id and thread-id sources read through
-   * to the live `Item` reference each time, so post-mount enrichment
-   * (a tool_completion gaining its `output_file` after the fact) is
-   * picked up automatically without a reset.
-   */
-  function expansionStateFor(
-    item: Item,
-    options: Pick<PayloadExpansionOptions, 'loadMode'> = {},
-  ): PayloadExpansionHandle {
-    const key = 'i:' + item.id + ':' + (options.loadMode ?? 'preview');
-    let cached = expansionStates.get(key);
-    if (cached) return cached;
-    const id = item.id;
-    const getCurrentItem = (): Item | undefined => {
-      const idx = itemIndexById.get(id);
-      return idx === undefined ? undefined : items[idx];
-    };
-    const inner = createPayloadExpansion(
-      () => getCurrentItem()?.payloadId,
-      () => getCurrentItem()?.threadId,
-      {
-        payloadVersion: () => getCurrentItem()?.updatedAt,
-        loadMode: options.loadMode,
-      },
-    );
-    cached = withExpansionRegistry(inner);
-    expansionStates.set(key, cached);
-    return cached;
-  }
-
-  /**
-   * Payload-keyed expansion handle. Used by sub-row components like
-   * `LazyContentBlock` that operate on a payload reference without
-   * needing a parent Item context. Returns a stable handle for the
-   * same `(payloadId, threadId)` pair across remounts.
-   */
-  function expansionStateForPayload(
-    payloadId: string,
-    threadId: string,
-    payloadVersion?: unknown,
-  ): PayloadExpansionHandle {
-    const key = 'p:' + payloadId;
-    let cached = expansionStates.get(key);
-    if (cached) {
-      cached.setPayloadVersion(payloadVersion);
-      return cached;
-    }
-    const inner = createPayloadExpansion(
-      () => payloadId,
-      () => threadId,
-    );
-    inner.setPayloadVersion(payloadVersion);
-    cached = withExpansionRegistry(inner);
-    expansionStates.set(key, cached);
-    return cached;
-  }
-
-  function isSubagentGroupExpanded(groupKey: string): boolean {
-    return subagentGroupExpanded.has(groupKey);
-  }
-
-  /**
-   * Cache view scoped to a single user-message item. UserMessage uses this
-   * via `createAttachmentPreviews({ cache: pane.attachmentCacheFor(item.id) })`
-   * so blob URLs persist through virtua remount.
-   */
-  function attachmentCacheFor(itemId: string): AttachmentPreviewCache {
-    let inner = attachmentBlobs.get(itemId);
-    if (!inner) {
-      inner = new Map<string, ImagePreviewItem>();
-      attachmentBlobs.set(itemId, inner);
-    }
-    const innerRef = inner;
-    return {
-      get(attachmentId: string): ImagePreviewItem | undefined {
-        return innerRef.get(attachmentId);
-      },
-      set(attachmentId: string, preview: ImagePreviewItem): void {
-        innerRef.set(attachmentId, preview);
-      },
-    };
-  }
-
-  function disposeAttachmentBlobs(): void {
-    for (const inner of attachmentBlobs.values()) {
-      for (const preview of inner.values()) {
-        if (preview.url.startsWith('blob:')) URL.revokeObjectURL(preview.url);
-      }
-    }
-    attachmentBlobs.clear();
-  }
-
-  function toggleSubagentGroupExpanded(groupKey: string): boolean {
-    const next = new Set(subagentGroupExpanded);
-    const willExpand = !next.has(groupKey);
-    if (willExpand) next.add(groupKey); else next.delete(groupKey);
-    subagentGroupExpanded = next;
-    return willExpand;
-  }
-
-  /**
-   * Clears all per-row UI state registries. Called from `switchThread`.
-   * Attachment blobs are explicitly revoked because they hold external
-   * resources (object URLs); the other registries hold no external
-   * resources and just drop their entries.
-   */
-  function clearRowUiState(): void {
-    expansionStates.clear();
-    subagentGroupExpanded = new Set();
-    disposeAttachmentBlobs();
-  }
 
   function rebuildItemIndexes(nextItems: Item[]): void {
     itemIndexById.clear();
@@ -1194,7 +1020,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       cachedVirtuaCache = undefined;
     }
     rebuildItemIndexes(items);
-    clearRowUiState();
+    rowUiState.clear();
     loadingOlder = false;
     return { cached, sliceAnchorId };
   }
@@ -1592,6 +1418,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       draftPlaceholder = null;
       items = [];
       rebuildItemIndexes(items);
+      rowUiState.clear();
       pendingApprovals = [];
       pendingUserInputs = [];
       resolvedApprovalIds.clear();
@@ -2021,11 +1848,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
 
     // ---- Per-row UI state (survives virtua remount) ----
-    expansionStateFor,
-    expansionStateForPayload,
-    isSubagentGroupExpanded,
-    toggleSubagentGroupExpanded,
-    attachmentCacheFor,
+    expansionStateFor: rowUiState.expansionStateFor,
+    expansionStateForPayload: rowUiState.expansionStateForPayload,
+    isSubagentGroupExpanded: rowUiState.isSubagentGroupExpanded,
+    toggleSubagentGroupExpanded: rowUiState.toggleSubagentGroupExpanded,
+    attachmentCacheFor: rowUiState.attachmentCacheFor,
 
     setGeneralError(message: string | null): void {
       generalError = message;
