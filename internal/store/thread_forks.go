@@ -18,6 +18,13 @@ import (
 // value on the first session start (the same default-resolution path a
 // brand-new thread follows).
 //
+// `LastTokenUsage` IS copied so the meter reflects the inherited
+// conversation history from frame 0. The new resumed session emits a
+// fresh `thread/tokenUsage/updated` on its first turn which overwrites
+// this seed with the live measurement. Without the copy the meter
+// would render 0% for forked threads even though the cloned items
+// occupy meaningful context.
+//
 // Pure: this only builds the row. The caller persists it (CreateThread)
 // and pairs it with the side-effecting clone steps.
 func BuildForkedThread(source Thread) Thread {
@@ -36,6 +43,7 @@ func BuildForkedThread(source Thread) Thread {
 		FastMode:           source.FastMode,
 		ContextWindow:      source.ContextWindow,
 		RuntimeMode:        source.RuntimeMode,
+		LastTokenUsage:     source.LastTokenUsage,
 		ForkedFromThreadID: source.ID,
 		CreatedAt:          now,
 		UpdatedAt:          now,

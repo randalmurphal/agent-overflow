@@ -311,6 +311,7 @@ func TestBuildForkedThreadCopiesEverythingButSessionState(t *testing.T) {
 		RuntimeMode:                "full-access",
 		SessionRef:                 "live-session",
 		PendingForkRef:             "pending-fork",
+		LastTokenUsage:             `{"usedTokens":98765,"maxTokens":1000000,"contextPercent":9.876}`,
 		ForkedFromThreadID:         "previous-fork",
 		CreatedAt:                  1,
 		UpdatedAt:                  2,
@@ -356,6 +357,13 @@ func TestBuildForkedThreadCopiesEverythingButSessionState(t *testing.T) {
 	if fork.AutoCompactStandardPercent != 0 || fork.AutoCompactExtendedPercent != 0 {
 		t.Errorf("AutoCompact percents leaked: std=%d ext=%d, want 0 0",
 			fork.AutoCompactStandardPercent, fork.AutoCompactExtendedPercent)
+	}
+	// LastTokenUsage IS copied so the meter renders inherited usage from
+	// frame 0 instead of falsely showing 0% until the new resumed
+	// session emits its first reading.
+	if fork.LastTokenUsage != source.LastTokenUsage {
+		t.Errorf("LastTokenUsage = %q, want copied source value %q",
+			fork.LastTokenUsage, source.LastTokenUsage)
 	}
 	if fork.CreatedAt == 0 || fork.CreatedAt != fork.UpdatedAt {
 		t.Errorf("CreatedAt/UpdatedAt = (%d, %d), want non-zero and equal", fork.CreatedAt, fork.UpdatedAt)

@@ -9,6 +9,7 @@ interface PersistedTokenUsage {
   contextPercent?: number;
   autoCompactPercent?: number;
   autoCompactTokenLimit?: number;
+  exceeded?: boolean;
 }
 
 export function seedContextWindow(nextThread: Thread | null): ContextWindow | null {
@@ -31,6 +32,7 @@ export function seedContextWindow(nextThread: Thread | null): ContextWindow | nu
       usedPercentage: parsed.contextPercent,
       autoCompactPercent: parsed.autoCompactPercent,
       autoCompactTokenLimit: parsed.autoCompactTokenLimit,
+      exceeded: parsed.exceeded,
     }, nextThread);
   } catch {
     return null;
@@ -45,10 +47,23 @@ export function normalizeContextWindowForThread(
   const percent = nextThread
     ? activeAutoCompactPercent(nextThread, maxTokens)
     : (data.autoCompactPercent ?? 0);
+  // The Go side computes UsedPercentage with a provider-aware formula
+  // (Codex subtracts a 12000-token baseline; see
+  // `internal/provider/usage.go:ComputeContextPercent`). Trust the wire
+  // value and only fall back to the plain ratio when it's missing — that
+  // path runs for legacy persisted blobs and any pre-Go-aware events.
+  // Clamp to [0,100] and reject NaN/±Infinity at the seam: SVG arithmetic
+  // downstream (dashOffset, color gates) breaks visibly on non-finite
+  // input, and trusting the wire removes the implicit Math-coerced
+  // safety the recompute used to provide.
+  const usedPercentage = clampPercentage(
+    data.usedPercentage ?? (maxTokens > 0 ? (data.usedTokens / maxTokens) * 100 : 0),
+  );
   return {
     usedTokens: data.usedTokens,
     maxTokens,
-    usedPercentage: maxTokens > 0 ? (data.usedTokens / maxTokens) * 100 : data.usedPercentage,
+    usedPercentage,
+    ...(data.exceeded ? { exceeded: true } : {}),
     ...(percent > 0 ? {
       autoCompactPercent: percent,
       autoCompactTokenLimit: maxTokens > 0
@@ -56,6 +71,13 @@ export function normalizeContextWindowForThread(
         : data.autoCompactTokenLimit,
     } : {}),
   };
+}
+
+function clampPercentage(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 100) return 100;
+  return value;
 }
 
 export function activeAutoCompactPercent(

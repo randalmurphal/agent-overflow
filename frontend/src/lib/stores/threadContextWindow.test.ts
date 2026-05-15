@@ -38,7 +38,10 @@ describe('threadContextWindow', () => {
     });
   });
 
-  it('parses persisted token usage and recomputes percentage from max tokens', () => {
+  it('parses persisted token usage and trusts the wire percentage', () => {
+    // Go side computes UsedPercentage with a provider-aware formula
+    // (Codex subtracts a 12000-token baseline; Claude uses the plain
+    // ratio). Frontend must trust the wire value rather than recomputing.
     const thread = makeThread({
       contextWindow: 272000,
       autoCompactStandardPercent: 80,
@@ -53,10 +56,24 @@ describe('threadContextWindow', () => {
     expect(seedContextWindow(thread)).toEqual({
       usedTokens: 136000,
       maxTokens: 1050000,
-      usedPercentage: 12.95238095238095,
+      usedPercentage: 12.95,
       autoCompactPercent: 88,
       autoCompactTokenLimit: 924000,
     });
+  });
+
+  it('falls back to plain ratio when wire percentage is absent', () => {
+    // Legacy persisted blobs (or any future event missing the field) are
+    // recomputed locally so the meter still renders something sensible.
+    const thread = makeThread({
+      contextWindow: 272000,
+      lastTokenUsage: JSON.stringify({
+        usedTokens: 136000,
+        maxTokens: 1050000,
+      }),
+    });
+    const seeded = seedContextWindow(thread);
+    expect(seeded?.usedPercentage).toBeCloseTo(12.95238095238095, 9);
   });
 
   it('drops malformed or incomplete persisted token usage', () => {
@@ -66,7 +83,7 @@ describe('threadContextWindow', () => {
     }))).toBeNull();
   });
 
-  it('normalizes live snapshots against the active thread', () => {
+  it('normalizes live snapshots and trusts the wire percentage', () => {
     const thread = makeThread({
       contextWindow: 272000,
       autoCompactStandardPercent: 80,
@@ -82,10 +99,37 @@ describe('threadContextWindow', () => {
     }, thread)).toEqual({
       usedTokens: 136000,
       maxTokens: 1050000,
-      usedPercentage: 12.95238095238095,
+      usedPercentage: 12.95,
       autoCompactPercent: 88,
       autoCompactTokenLimit: 924000,
     });
+  });
+
+  it('propagates the exceeded sentinel through normalize and seed', () => {
+    // Codex `total.totalTokens === modelContextWindow` is the
+    // ContextWindowExceeded sentinel (set by `fill_to_context_window`);
+    // the meter renders it distinctly. The persisted JSON arrives with
+    // `exceeded: true` after Go-side classification.
+    const thread = makeThread({
+      provider: 'codex',
+      contextWindow: 200000,
+      lastTokenUsage: JSON.stringify({
+        usedTokens: 200000,
+        maxTokens: 200000,
+        contextPercent: 100,
+        exceeded: true,
+      }),
+    });
+    const seeded = seedContextWindow(thread);
+    expect(seeded?.exceeded).toBe(true);
+
+    const normalized = normalizeContextWindowForThread({
+      usedTokens: 200000,
+      maxTokens: 200000,
+      usedPercentage: 100,
+      exceeded: true,
+    }, thread);
+    expect(normalized.exceeded).toBe(true);
   });
 
   it('prefers thread-specific compact overrides by context tier', () => {

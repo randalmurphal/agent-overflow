@@ -41,9 +41,44 @@ func (s *Session) allSubagentNotificationsResolveToParent(notifications []subage
 	return true
 }
 
+// isChildTurnLifecycleNotification lists the methods that drive the
+// child-spawn EventSubagentStatus emission (see childLifecycleEvent
+// below). Coupled-pair with `isChildSuppressedThreadNotification`: these
+// two functions partition the child-thread notifications we care about
+// — anything in either set is intercepted before reaching the parent
+// dispatch in session_notifications.go.
 func isChildTurnLifecycleNotification(method string) bool {
 	switch method {
 	case "turn/started", "turn/completed":
+		return true
+	default:
+		return false
+	}
+}
+
+// isChildSuppressedThreadNotification lists the notification methods that
+// describe child-thread state and must NOT update the parent thread's
+// projection when received on a known child wire-thread. Per
+// ADR-002, Codex subagents flatten onto the parent thread; these
+// notifications would otherwise overwrite the parent's meter / title /
+// compact state with the child's. Mirrors the Claude precedent in
+// `internal/provider/claude/parse_assistant.go:appendContextUsageEvent`
+// (`if parentToolUseID != "" { return events }`).
+//
+// `turn/started` / `turn/completed` are intentionally NOT here — they
+// drive the EventSubagentStatus emission that the spawn card needs.
+// Routing for those lives in `isChildTurnLifecycleNotification` above
+// (coupled-pair: adding to one without the other is a subtle bug).
+//
+// `error` and unrecognised `thread/*` methods (e.g. a future
+// `thread/error`) are ALSO intentionally not suppressed — subagent
+// failures need to surface on the parent thread so the user knows
+// something went wrong; silently dropping them would hide real errors.
+func isChildSuppressedThreadNotification(method string) bool {
+	switch method {
+	case "thread/tokenUsage/updated",
+		"thread/compacted",
+		"thread/name/updated":
 		return true
 	default:
 		return false

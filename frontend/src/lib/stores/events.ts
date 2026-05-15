@@ -59,6 +59,7 @@ import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import {
   getThreadTerminalState,
 } from '../components/terminal/terminalStore.svelte';
+import { GetThread } from './bindings';
 
 /**
  * Min interval between consecutive `design:reload-main` cache-bust
@@ -568,6 +569,7 @@ function applyUsageEvent(evt: UsageEvent): void {
         usedPercentage: evt.contextPercent,
         ...(evt.autoCompactPercent ? { autoCompactPercent: evt.autoCompactPercent } : {}),
         ...(evt.autoCompactTokenLimit ? { autoCompactTokenLimit: evt.autoCompactTokenLimit } : {}),
+        ...(evt.exceeded ? { exceeded: true } : {}),
       }
     : null;
 
@@ -589,6 +591,7 @@ function applyUsageEvent(evt: UsageEvent): void {
           contextPercent: payload.usedPercentage,
           autoCompactPercent: payload.autoCompactPercent,
           autoCompactTokenLimit: payload.autoCompactTokenLimit,
+          ...(payload.exceeded ? { exceeded: true } : {}),
         })
       : '',
   );
@@ -1179,6 +1182,31 @@ export function setupEventListeners(): () => void {
           for (const pane of iterPanes()) {
             if (!pane.threadId) continue;
             void pane.refreshFromBackend();
+          }
+          return;
+        }
+        case 'provider:usage': {
+          // refreshFromBackend doesn't pull `lastTokenUsage` from the
+          // store, so a missed usage event would leave the meter stale
+          // forever. Re-read each affected thread's row so
+          // `seedContextWindow` rebuilds the meter from the persisted
+          // snapshot. (`replaceThread` re-runs the seed via
+          // thread.svelte.ts.) Dedupe by threadId so two panes mounting
+          // the same thread don't issue two RPCs for the same refresh.
+          const seen = new Set<string>();
+          for (const pane of iterPanes()) {
+            if (!pane.threadId || seen.has(pane.threadId)) continue;
+            const threadId = pane.threadId;
+            seen.add(threadId);
+            void GetThread(threadId).then((thread) => {
+              const t = thread as Thread | null;
+              if (!t) return;
+              for (const p of iterPanes()) {
+                if (p.threadId === threadId) p.replaceThread(t);
+              }
+            }).catch((err: unknown) => {
+              console.warn(`events: refresh thread ${threadId} after provider:usage gap: ${err}`);
+            });
           }
           return;
         }

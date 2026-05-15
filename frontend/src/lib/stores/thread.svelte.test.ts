@@ -265,7 +265,7 @@ describe('createThreadPane', () => {
     expect(pane.contextWindow).toEqual({
       usedTokens: 136000,
       maxTokens: 1050000,
-      usedPercentage: 12.95238095238095,
+      usedPercentage: 12.95,
       autoCompactPercent: 88,
       autoCompactTokenLimit: 924000,
     });
@@ -295,7 +295,7 @@ describe('createThreadPane', () => {
     expect(pane.contextWindow).toEqual({
       usedTokens: 136000,
       maxTokens: 1050000,
-      usedPercentage: 12.95238095238095,
+      usedPercentage: 12.95,
       autoCompactPercent: 88,
       autoCompactTokenLimit: 924000,
     });

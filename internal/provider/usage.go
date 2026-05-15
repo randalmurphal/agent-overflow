@@ -12,7 +12,13 @@ type UsageEvent struct {
 	ContextPercent        float64             `json:"contextPercent,omitempty"`
 	AutoCompactPercent    int                 `json:"autoCompactPercent,omitempty"`
 	AutoCompactTokenLimit int                 `json:"autoCompactTokenLimit,omitempty"`
-	RateLimits            *RateLimitsSnapshot `json:"rateLimits,omitempty"`
+	// Exceeded is the wire signal that the model returned
+	// `ContextWindowExceeded` and the provider pegged usage to the window
+	// size as a sentinel. UI should render this distinctly from a real
+	// 100% reading. Codex-only today (`codex-rs/protocol/src/protocol.rs`
+	// `set_total_tokens_full`); Claude has no equivalent sentinel.
+	Exceeded   bool                `json:"exceeded,omitempty"`
+	RateLimits *RateLimitsSnapshot `json:"rateLimits,omitempty"`
 }
 
 // SessionInfo contains metadata from the provider init/handshake.
@@ -55,6 +61,57 @@ type ContextWindow struct {
 	UsedPercentage        float64 `json:"usedPercentage,omitempty"`
 	AutoCompactPercent    int     `json:"autoCompactPercent,omitempty"`
 	AutoCompactTokenLimit int     `json:"autoCompactTokenLimit,omitempty"`
+	// Exceeded mirrors UsageEvent.Exceeded — set by the Codex parser when
+	// the wire reports `last.totalTokens == modelContextWindow` exactly,
+	// which is the Codex sentinel for `ContextWindowExceeded` (not a
+	// real reading at 100%).
+	Exceeded bool `json:"exceeded,omitempty"`
+}
+
+// codexContextBaselineTokens is reserved for system prompt, tools, and the
+// compact-call headroom by Codex's TUI before computing "% context left".
+// See `codex-rs/protocol/src/protocol.rs` `percent_of_context_window_remaining`
+// (BASELINE_TOKENS = 12000).
+const codexContextBaselineTokens = 12000
+
+// ComputeContextPercent returns the "used" percentage shown on the
+// context-window meter for a given provider. The formula is
+// provider-aware so the meter agrees with what each provider's native UX
+// shows for the same wire numbers.
+//
+// Codex: mirrors `codex-rs/protocol/src/protocol.rs:2113-2159`. A baseline
+// of 12000 tokens is subtracted from both numerator and denominator. The
+// result is clamped to [0,100].
+//
+// Claude (and everything else): plain `used / max * 100`.
+//
+// Inputs with `max <= 0` return 0 (caller is responsible for falling back
+// to a default before displaying anything). Callers with a string-valued
+// provider name (e.g. from settings rows) should cast at the boundary:
+// `ComputeContextPercent(ProviderKind(settings.Provider), used, max)`.
+func ComputeContextPercent(kind ProviderKind, used, max int) float64 {
+	if max <= 0 {
+		return 0
+	}
+	if kind == Codex {
+		if max <= codexContextBaselineTokens {
+			return 100
+		}
+		effectiveWindow := max - codexContextBaselineTokens
+		effectiveUsed := used - codexContextBaselineTokens
+		if effectiveUsed < 0 {
+			effectiveUsed = 0
+		}
+		pct := float64(effectiveUsed) / float64(effectiveWindow) * 100
+		if pct < 0 {
+			return 0
+		}
+		if pct > 100 {
+			return 100
+		}
+		return pct
+	}
+	return float64(used) / float64(max) * 100
 }
 
 // RateLimitEntry represents a single rate limit window.

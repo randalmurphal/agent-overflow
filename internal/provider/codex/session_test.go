@@ -1188,6 +1188,97 @@ func TestDispatchLineSuppressesChildTurnLifecycle(t *testing.T) {
 	}
 }
 
+// TestDispatchLineSuppressesChildTokenUsage ensures that child-thread
+// `thread/tokenUsage/updated` notifications do not surface as
+// EventTokenUsage on the parent thread. Per ADR-002 Codex subagents
+// flatten onto the parent; without this filter the child's context
+// window would overwrite the parent meter every time a subagent ran a
+// turn. Mirrors the Claude precedent at
+// internal/provider/claude/parse_assistant.go:appendContextUsageEvent.
+func TestDispatchLineSuppressesChildTokenUsage(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:            "parent-thread",
+		pending:             make(map[int64]chan json.RawMessage),
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"child-provider-1","tokenUsage":{"last":{"totalTokens":50000},"modelContextWindow":200000}}}`))
+
+	if len(events) != 0 {
+		t.Fatalf("expected no events for child token usage, got %+v", events)
+	}
+}
+
+// TestDispatchLineSuppressesChildCompacted ensures child-thread compaction
+// notifications do not pollute parent state.
+func TestDispatchLineSuppressesChildCompacted(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:            "parent-thread",
+		pending:             make(map[int64]chan json.RawMessage),
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/compacted","params":{"threadId":"child-provider-1"}}`))
+
+	if len(events) != 0 {
+		t.Fatalf("expected no events for child compaction, got %+v", events)
+	}
+}
+
+// TestDispatchLineSuppressesChildNameUpdated ensures child-thread name updates
+// don't rename the parent thread.
+func TestDispatchLineSuppressesChildNameUpdated(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:            "parent-thread",
+		pending:             make(map[int64]chan json.RawMessage),
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/name/updated","params":{"threadId":"child-provider-1","threadName":"Subagent Title"}}`))
+
+	if len(events) != 0 {
+		t.Fatalf("expected no events for child name update, got %+v", events)
+	}
+}
+
+// TestDispatchLineParentTokenUsageStillEmits is the positive control for
+// the suppression filter: parent-thread token usage must continue to flow.
+func TestDispatchLineParentTokenUsageStillEmits(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:            "parent-thread",
+		pending:             make(map[int64]chan json.RawMessage),
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"provider-parent","tokenUsage":{"last":{"totalTokens":80000},"modelContextWindow":200000}}}`))
+
+	if len(events) != 1 {
+		t.Fatalf("expected one parent token usage event, got %+v", events)
+	}
+	if events[0].Kind != provider.EventTokenUsage {
+		t.Fatalf("kind = %q, want %q", events[0].Kind, provider.EventTokenUsage)
+	}
+	if events[0].ParentToolUseID != "" {
+		t.Fatalf("parent token usage should not carry ParentToolUseID, got %q", events[0].ParentToolUseID)
+	}
+}
+
 func TestDispatchLineCollabSpawnRemembersReceiverThread(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{

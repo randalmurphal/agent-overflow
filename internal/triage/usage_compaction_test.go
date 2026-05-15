@@ -1,0 +1,164 @@
+package triage
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
+)
+
+// TestPersistAndEmitContextWindow_CodexBaselineFormula pins that Codex
+// threads use the 12000-token baseline formula from
+// codex-rs/protocol/src/protocol.rs:percent_of_context_window_remaining
+// (mirrored in provider.ComputeContextPercent). This is what makes our
+// meter agree with Codex's TUI for the same wire numbers.
+func TestPersistAndEmitContextWindow_CodexBaselineFormula(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createCodexThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTokenUsage,
+		ThreadID:  "t1",
+		Meta:      mustMarshalContextWindow(t, provider.ContextWindow{UsedTokens: 125000, MaxTokens: 200000}),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	usageEmits := filterEmissions(*emissions, "provider:usage")
+	if len(usageEmits) != 1 {
+		t.Fatalf("expected 1 usage emission, got %+v", *emissions)
+	}
+	got := usageEmits[0].data.(provider.UsageEvent)
+	// (200000-12000) effective window = 188000.
+	// (125000-12000) effective used = 113000.
+	// percent used = 113000 / 188000 * 100 = 60.106...
+	want := provider.ComputeContextPercent(provider.Codex, 125000, 200000)
+	if got.ContextPercent != want {
+		t.Fatalf("Codex baseline percent: got %v, want %v", got.ContextPercent, want)
+	}
+	plain := float64(125000) / float64(200000) * 100 // 62.5
+	if got.ContextPercent == plain {
+		t.Fatalf("Codex meter must NOT use the plain ratio (%v)", plain)
+	}
+}
+
+// TestPersistAndEmitContextWindow_ClaudePlainRatio pins that Claude
+// threads keep using the plain `used / max * 100` formula — the Codex
+// 12000 baseline is provider-specific and must not leak.
+func TestPersistAndEmitContextWindow_ClaudePlainRatio(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1") // default provider is "claude"
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTokenUsage,
+		ThreadID:  "t1",
+		Meta:      mustMarshalContextWindow(t, provider.ContextWindow{UsedTokens: 100000, MaxTokens: 200000}),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	usageEmits := filterEmissions(*emissions, "provider:usage")
+	if len(usageEmits) != 1 {
+		t.Fatalf("expected 1 usage emission, got %+v", *emissions)
+	}
+	got := usageEmits[0].data.(provider.UsageEvent)
+	want := float64(100000) / float64(200000) * 100 // 50
+	if got.ContextPercent != want {
+		t.Fatalf("Claude percent: got %v, want %v", got.ContextPercent, want)
+	}
+}
+
+// TestPersistAndEmitContextWindow_ExceededPlumbsThrough verifies that the
+// Codex `ContextWindowExceeded` sentinel propagates from the parsed
+// ContextWindow through the persisted JSON and the emitted UsageEvent.
+func TestPersistAndEmitContextWindow_ExceededPlumbsThrough(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createCodexThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTokenUsage,
+		ThreadID:  "t1",
+		Meta:      mustMarshalContextWindow(t, provider.ContextWindow{UsedTokens: 200000, MaxTokens: 200000, Exceeded: true}),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	usageEmits := filterEmissions(*emissions, "provider:usage")
+	if len(usageEmits) != 1 {
+		t.Fatalf("expected 1 usage emission, got %+v", *emissions)
+	}
+	got := usageEmits[0].data.(provider.UsageEvent)
+	if !got.Exceeded {
+		t.Fatalf("UsageEvent.Exceeded must propagate, got %+v", got)
+	}
+
+	thread, err := st.GetThread("t1")
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if !strings.Contains(thread.LastTokenUsage, "\"exceeded\":true") {
+		t.Fatalf("persisted JSON must include exceeded=true, got %q", thread.LastTokenUsage)
+	}
+}
+
+// TestHandleTokenUsage_DropsSubagentEvents is the triage-side
+// defense-in-depth for Bug C1: even if a future classifier regression
+// lets a subagent token-usage event through with ParentToolUseID set,
+// the handler must drop it instead of overwriting the parent meter.
+// Mirrors internal/provider/claude/parse_assistant.go:appendContextUsageEvent.
+func TestHandleTokenUsage_DropsSubagentEvents(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:            provider.EventTokenUsage,
+		ThreadID:        "t1",
+		ParentToolUseID: "spawn-call-1",
+		Meta:            mustMarshalContextWindow(t, provider.ContextWindow{UsedTokens: 99999, MaxTokens: 200000}),
+		Timestamp:       time.Now(),
+	}); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	if got := len(filterEmissions(*emissions, "provider:usage")); got != 0 {
+		t.Fatalf("expected 0 usage emissions for subagent token usage, got %d (%+v)", got, *emissions)
+	}
+	thread, err := st.GetThread("t1")
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if thread.LastTokenUsage != "" {
+		t.Fatalf("subagent token usage must NOT touch parent's last_token_usage, got %q", thread.LastTokenUsage)
+	}
+}
+
+// createCodexThread mirrors createTestThread but sets Provider=codex so
+// the formula branch under test is exercised.
+func createCodexThread(t *testing.T, st *store.Store, id string) {
+	t.Helper()
+	ensureTriageProject(t, st)
+	now := time.Now().UnixMilli()
+	if err := st.CreateThread(store.Thread{
+		ID:            id,
+		ProjectID:     triageTestProjectID,
+		Title:         "Codex Test",
+		Provider:      "codex",
+		Model:         "gpt-5.4",
+		WorkspacePath: "/tmp",
+		ContextWindow: 200000,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}); err != nil {
+		t.Fatalf("create codex thread: %v", err)
+	}
+}
+
+// Compile-time guard so the imports stay flagged as used even if a test
+// is removed.
+var _ = json.RawMessage{}

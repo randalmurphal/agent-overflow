@@ -17,17 +17,28 @@
   const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
   let maxTokens = $derived(data.maxTokens ?? 0);
-  let percentage = $derived(
-    maxTokens > 0 ? (data.usedTokens / maxTokens) * 100 : (data.usedPercentage ?? 0),
-  );
+  // Trust the wire `usedPercentage`. The canonical normalizer lives in
+  // `stores/threadContextWindow.ts` (provider-aware, clamps NaN/±Infinity
+  // / negative); by the time data reaches this component it has been
+  // through that pipeline. Don't recompute `usedTokens / maxTokens` here —
+  // it would silently undo the Codex baseline correction.
+  let percentage = $derived(data.usedPercentage ?? 0);
+
+  let exceeded = $derived(data.exceeded === true);
 
   let dashOffset = $derived(CIRCUMFERENCE - (percentage / 100) * CIRCUMFERENCE);
 
   let strokeColor = $derived(
-    percentage > 95 ? 'stroke-error' : percentage > 80 ? 'stroke-warning' : 'stroke-fg-subtle',
+    exceeded || percentage > 95 ? 'stroke-error' : percentage > 80 ? 'stroke-warning' : 'stroke-fg-subtle',
   );
 
   let displayPct = $derived(Math.round(percentage));
+  // Keep the small numeric label readable; the popover spells out
+  // "exceeded" so the precise wire signal isn't lost.
+  let displayLabel = $derived(exceeded ? 'MAX' : `${displayPct}`);
+  let ariaLabel = $derived(
+    exceeded ? 'Context Window: exceeded (model returned ContextWindowExceeded)' : `Context Window: ${displayPct}% used`,
+  );
 
   function openPopover(): void {
     if (closeTimer !== null) {
@@ -72,7 +83,7 @@
   bind:this={buttonEl}
   type="button"
   class="relative inline-flex h-8 w-8 items-center justify-center bg-transparent border-none p-0 cursor-help focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded-full hover:bg-surface-2/30 transition-colors"
-  aria-label="Context Window: {displayPct}% used"
+  aria-label={ariaLabel}
   onmouseenter={openPopover}
   onmouseleave={scheduleClose}
   onfocus={openPopover}
@@ -96,7 +107,7 @@
     />
   </svg>
   <span class="absolute left-1/2 top-1/2 block -translate-x-1/2 -translate-y-1/2 text-center text-[8.5px] leading-none font-semibold tabular-nums text-text-secondary" aria-hidden="true">
-    {displayPct}
+    {displayLabel}
   </span>
 </button>
 
@@ -127,7 +138,11 @@
       {/if}
       <p class="mb-1.5 pr-7 text-[10px] font-semibold text-fg-subtle uppercase tracking-wider">Context window</p>
       <div class="space-y-0.5 text-xs text-fg-muted">
-        <p>{displayPct}% used</p>
+        {#if exceeded}
+          <p class="text-error">Context window exceeded</p>
+        {:else}
+          <p>{displayPct}% used</p>
+        {/if}
         <p>{formatTokens(data.usedTokens)}{maxTokens > 0 ? ` / ${formatTokens(maxTokens)}` : ''} tokens</p>
         {#if data.autoCompactPercent}
           <p class="text-fg-hint">

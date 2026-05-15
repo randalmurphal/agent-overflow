@@ -114,6 +114,58 @@ func TestClassifyNotification_ThreadTokenUsageUpdatedDoesNotSumBreakdowns(t *tes
 	}
 }
 
+// TestClassifyNotification_ThreadTokenUsageUpdatedDetectsExceededSentinel
+// pins the Codex `ContextWindowExceeded` sentinel:
+// `fill_to_context_window` (codex-rs/protocol/src/protocol.rs:2040) sets
+// `total.totalTokens = modelContextWindow` exactly while
+// `last.totalTokens` becomes `(window - previous_total).max(0)` — a small
+// delta in the realistic case (previous_total > 0), NOT the window. So
+// checking `last == window` would only fire on the very first turn; the
+// load-bearing signal is `total.totalTokens == modelContextWindow`. The
+// parser surfaces it as `ContextWindow.Exceeded` so the meter renders a
+// distinct state.
+func TestClassifyNotification_ThreadTokenUsageUpdatedDetectsExceededSentinel(t *testing.T) {
+	// Realistic shape: previous_total=250000, window=258400 → delta=8400 in `last`,
+	// `total.totalTokens` pegged to 258400 (the sentinel).
+	params := json.RawMessage(`{"tokenUsage":{"last":{"totalTokens":8400},"total":{"totalTokens":258400},"modelContextWindow":258400}}`)
+	events := ClassifyNotification("thread-1", "thread/tokenUsage/updated", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	var window provider.ContextWindow
+	if err := json.Unmarshal(events[0].Meta, &window); err != nil {
+		t.Fatalf("unmarshal context window: %v", err)
+	}
+	if !window.Exceeded {
+		t.Fatalf("expected Exceeded=true for sentinel total==modelContextWindow, got %+v", window)
+	}
+	if window.MaxTokens != 258400 {
+		t.Fatalf("expected max equal to 258400, got %+v", window)
+	}
+}
+
+// TestClassifyNotification_ThreadTokenUsageUpdatedDoesNotFalseFireExceeded
+// guards against false-firing the sentinel for ordinary readings —
+// including the case where `last.totalTokens == modelContextWindow` but
+// `total.totalTokens` is the rolling aggregate (NOT the sentinel). The
+// rolling aggregate is what the wire docs describe as "total processed
+// across messages" and must NOT trigger the exceeded state on its own.
+func TestClassifyNotification_ThreadTokenUsageUpdatedDoesNotFalseFireExceeded(t *testing.T) {
+	// Ordinary high reading: total < window, so no sentinel.
+	params := json.RawMessage(`{"tokenUsage":{"last":{"totalTokens":258399},"total":{"totalTokens":11839},"modelContextWindow":258400}}`)
+	events := ClassifyNotification("thread-1", "thread/tokenUsage/updated", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	var window provider.ContextWindow
+	if err := json.Unmarshal(events[0].Meta, &window); err != nil {
+		t.Fatalf("unmarshal context window: %v", err)
+	}
+	if window.Exceeded {
+		t.Fatalf("expected Exceeded=false for normal high reading (last==window but total!=window), got %+v", window)
+	}
+}
+
 // TestClassifyNotification_ItemUpdatedIsPhantom pins that the Codex
 // app-server wire protocol has NO `item/updated` method — it only
 // emits `item/started` and `item/completed`. Reference:

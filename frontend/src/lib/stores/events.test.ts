@@ -1108,6 +1108,47 @@ describe('setupEventListeners', () => {
     expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(10_000);
   });
 
+  it('refreshes the context meter via GetThread after a provider:usage transport gap', async () => {
+    // Fix 7: provider:usage events run through the meter pipeline, not
+    // refreshFromBackend, so a gap that drops a usage event leaves the
+    // meter stale forever without an explicit re-fetch. The handler must
+    // call GetThread per affected pane and re-seed `lastTokenUsage`.
+    const stale = makeThread({
+      id: 'thread-meter',
+      provider: 'codex',
+      contextWindow: 200000,
+      lastTokenUsage: JSON.stringify({
+        usedTokens: 50000,
+        maxTokens: 200000,
+        contextPercent: 25,
+      }),
+    });
+    const pane = await buildPane(stale);
+    expect(pane.contextWindow?.usedTokens).toBe(50000);
+
+    setBindingMock('GetThread', async (threadId: unknown) => {
+      if (threadId !== 'thread-meter') return null;
+      return {
+        ...stale,
+        lastTokenUsage: JSON.stringify({
+          usedTokens: 175000,
+          maxTokens: 200000,
+          contextPercent: 87.5,
+        }),
+      };
+    });
+
+    emitWailsEvent(transportGapChannel, {
+      channel: 'provider:usage',
+      seq: 7,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(pane.contextWindow?.usedTokens).toBe(175000);
+    expect(pane.contextWindow?.usedPercentage).toBe(87.5);
+  });
+
   it('preserves an explicit unread marker when thread:updated is stale', async () => {
     setBindingMock('ListThreads', async () => [
       makeThread({

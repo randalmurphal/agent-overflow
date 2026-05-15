@@ -61,6 +61,7 @@ type codexThreadTokenUsageNotification struct {
 
 type codexThreadTokenUsage struct {
 	Last               codexTokenBreakdown `json:"last"`
+	Total              codexTokenBreakdown `json:"total"`
 	ModelContextWindow int                 `json:"modelContextWindow"`
 }
 
@@ -82,8 +83,16 @@ func normalizeThreadTokenUsage(params json.RawMessage) json.RawMessage {
 		UsedTokens: used,
 		MaxTokens:  maxTokens,
 	}
-	if maxTokens > 0 {
-		window.UsedPercentage = float64(used) / float64(maxTokens) * 100
+	// Sentinel: Codex's `fill_to_context_window` pegs `total.totalTokens`
+	// to exactly `modelContextWindow` when the model returned
+	// `ContextWindowExceeded` (see codex-rs/protocol/src/protocol.rs:2040
+	// — `total_token_usage.total_tokens = context_window`, while
+	// `last_token_usage.total_tokens` becomes `(window - previous_total).max(0)`,
+	// a delta that is rarely == window). The meter renders this as a
+	// distinct "exceeded" state. UsedPercentage is intentionally NOT set
+	// here; persistAndEmitContextWindow owns the provider-aware formula.
+	if maxTokens > 0 && payload.TokenUsage.Total.TotalTokens == maxTokens {
+		window.Exceeded = true
 	}
 	meta, err := json.Marshal(window)
 	if err != nil {

@@ -713,7 +713,17 @@ func (r *Router) handleThreadRename(evt provider.ProviderEvent) error {
 // handleTokenUsage accepts provider-normalized context-window snapshots only.
 // Per-turn token/cost accounting lives on turn-complete metadata; summing those
 // totals here would over-count multi-call turns and subagent work.
+//
+// Subagent-emitted token usage (ParentToolUseID set) is dropped — subagent
+// context tracking is private to the subagent; surfacing it on the parent
+// meter would conflate two unrelated context windows. Mirrors the Claude
+// pattern in `internal/provider/claude/parse_assistant.go:appendContextUsageEvent`.
+// The provider parser already filters child-thread tokenUsage notifications;
+// this is defense-in-depth for any future regression in the classifier.
 func (r *Router) handleTokenUsage(evt provider.ProviderEvent) error {
+	if strings.TrimSpace(evt.ParentToolUseID) != "" {
+		return nil
+	}
 	window, ok := decodeContextWindow(evt.Meta)
 	if !ok {
 		return nil

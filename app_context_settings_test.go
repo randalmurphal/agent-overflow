@@ -101,6 +101,60 @@ func TestUpdateThreadContextSettingsPersistsAndRemembersProfile(t *testing.T) {
 	}
 }
 
+// TestUpdateThreadContextSettingsClearsLastTokenUsageAndEmitsReset
+// pins Fix 6: changing context settings clears the persisted token-usage
+// snapshot AND emits a `provider:usage` reset so the meter doesn't
+// render stale `usedTokens` against the new max during the brief
+// restart gap.
+func TestUpdateThreadContextSettingsClearsLastTokenUsageAndEmitsReset(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "codex", "/tmp/context-settings-reset", "gpt-5.5", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	if err := app.store.UpdateLastTokenUsage(thread.ID, `{"usedTokens":180000,"maxTokens":1000000}`); err != nil {
+		t.Fatalf("seed last token usage: %v", err)
+	}
+
+	var (
+		emittedAction   string
+		emittedThreadID string
+	)
+	app.testEmitHook = func(name string, data any) {
+		if name != "provider:usage" {
+			return
+		}
+		evt, ok := data.(provider.UsageEvent)
+		if !ok {
+			t.Errorf("usage payload type = %T", data)
+			return
+		}
+		emittedAction = evt.Action
+		emittedThreadID = evt.ThreadID
+	}
+
+	if _, err := app.UpdateThreadContextSettings(thread.ID, ContextSettingsUpdate{
+		Provider:                   "codex",
+		Model:                      "gpt-5.5",
+		ContextWindow:              provider.CodexStandardContextWindow,
+		AutoCompactStandardPercent: 75,
+		AutoCompactExtendedPercent: 80,
+	}); err != nil {
+		t.Fatalf("UpdateThreadContextSettings: %v", err)
+	}
+
+	if emittedAction != "reset" || emittedThreadID != thread.ID {
+		t.Fatalf("provider:usage reset = (%q, %q), want (reset, %q)", emittedAction, emittedThreadID, thread.ID)
+	}
+	got, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if got.LastTokenUsage != "" {
+		t.Fatalf("LastTokenUsage = %q, want empty", got.LastTokenUsage)
+	}
+}
+
 func TestUpdateThreadContextSettingsRestartsActiveSession(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "codex", "/tmp/context-settings-active", "gpt-5.5", "")

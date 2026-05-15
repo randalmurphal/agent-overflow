@@ -530,23 +530,19 @@ func TestCompactBoundaryAndRateLimitsEmit(t *testing.T) {
 	}
 
 	// Neither event should land on the legacy passthrough channel —
-	// compact-boundary produces an item_event upsert + usage reset, and
-	// rate-limits now folds onto provider:usage per the chat-rewrite
-	// spec (Channels section).
+	// compact-boundary produces an item_event upsert (and rate-limits now
+	// folds onto provider:usage per the chat-rewrite spec). Compaction
+	// without a window in meta does NOT emit a reset — that flash of 0%
+	// was the bug; the next thread/tokenUsage/updated overwrites the
+	// meter naturally.
 	if got := len(filterEmissions(*emissions, "provider:event")); got != 0 {
 		t.Fatalf("expected zero provider:event emissions, got %d (%+v)", got, *emissions)
 	}
-	// Compact boundary emits a `reset` usage; rate-limits emits a
-	// `rate_limits` usage. Assert both are present and ordered so the
-	// discriminator is verified rather than the raw count alone.
 	usageEmits := filterEmissions(*emissions, "provider:usage")
-	if len(usageEmits) != 2 {
-		t.Fatalf("expected 2 provider:usage emissions (compact reset + rate_limits), got %+v", *emissions)
+	if len(usageEmits) != 1 {
+		t.Fatalf("expected 1 provider:usage emission (rate_limits only — no compact reset), got %+v", *emissions)
 	}
-	if got := usageEmits[0].data.(provider.UsageEvent).Action; got != "reset" {
-		t.Fatalf("compact-boundary usage action = %q, want %q", got, "reset")
-	}
-	if got := usageEmits[1].data.(provider.UsageEvent).Action; got != "rate_limits" {
+	if got := usageEmits[0].data.(provider.UsageEvent).Action; got != "rate_limits" {
 		t.Fatalf("rate-limits usage action = %q, want %q", got, "rate_limits")
 	}
 	if len(filterItemEventUpserts(*emissions)) != 1 {
@@ -599,10 +595,27 @@ func TestCompactBoundaryWithContextWindowEmitsUsageSnapshot(t *testing.T) {
 	}
 }
 
-func TestCompactBoundaryWithAggregateOnlyUsageMetaResets(t *testing.T) {
+// TestCompactBoundaryWithAggregateOnlyUsageMetaDoesNotReset locks in the
+// behavior that compact events whose meta does NOT decode as a
+// ContextWindow do NOT clear `last_token_usage` or emit a reset. The
+// previous "reset" branch caused a brief 0%-meter flash between the
+// compact event and the post-compact `thread/tokenUsage/updated` —
+// Codex's `recompute_token_usage` always emits a fresh reading, so
+// trusting that next signal keeps the meter consistent without the flash.
+func TestCompactBoundaryWithAggregateOnlyUsageMetaDoesNotReset(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
+	// Seed a prior reading so we can prove the compact event does not
+	// clear it.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTokenUsage,
+		ThreadID:  "t1",
+		Meta:      mustMarshalContextWindow(t, provider.ContextWindow{UsedTokens: 100000, MaxTokens: 200000}),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle prior token usage: %v", err)
+	}
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventCompactBoundary,
 		ThreadID:  "t1",
@@ -612,14 +625,78 @@ func TestCompactBoundaryWithAggregateOnlyUsageMetaResets(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
+	// Only the original token-usage emission. No compact-driven reset.
 	usageEmits := filterEmissions(*emissions, "provider:usage")
 	if len(usageEmits) != 1 {
-		t.Fatalf("expected 1 provider:usage emission, got %+v", *emissions)
+		t.Fatalf("expected exactly the prior usage emission, got %+v", *emissions)
 	}
-	usage := usageEmits[0].data.(provider.UsageEvent)
-	if usage.Action != "reset" {
-		t.Fatalf("usage action: got %q, want reset", usage.Action)
+	if got := usageEmits[0].data.(provider.UsageEvent).Action; got != "usage" {
+		t.Fatalf("usage action: got %q, want usage", got)
 	}
+
+	thread, err := st.GetThread("t1")
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if !strings.Contains(thread.LastTokenUsage, "\"usedTokens\":100000") {
+		t.Fatalf("compact must NOT clear last_token_usage; got %q", thread.LastTokenUsage)
+	}
+}
+
+// TestCompactBoundaryFollowedByTokenUsageOverwrites pins the wire-order
+// path Codex takes after `recompute_token_usage`: the post-compact
+// `thread/tokenUsage/updated` overwrites the meter with the fresh
+// reading. Without Fix 3 in place, the intermediate compact-clear
+// would have flashed 0% in between.
+func TestCompactBoundaryFollowedByTokenUsageOverwrites(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTokenUsage,
+		ThreadID:  "t1",
+		Meta:      mustMarshalContextWindow(t, provider.ContextWindow{UsedTokens: 180000, MaxTokens: 200000}),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle pre-compact: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventCompactBoundary,
+		ThreadID:  "t1",
+		Meta:      json.RawMessage(`{"totalProcessed":120000}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle compact: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTokenUsage,
+		ThreadID:  "t1",
+		Meta:      mustMarshalContextWindow(t, provider.ContextWindow{UsedTokens: 30000, MaxTokens: 200000}),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle post-compact: %v", err)
+	}
+
+	usageEmits := filterEmissions(*emissions, "provider:usage")
+	if len(usageEmits) != 2 {
+		t.Fatalf("expected pre-compact + post-compact usage emissions only, got %+v", *emissions)
+	}
+	final := usageEmits[len(usageEmits)-1].data.(provider.UsageEvent)
+	if final.UsedTokens != 30000 {
+		t.Fatalf("final usage tokens: got %d, want 30000", final.UsedTokens)
+	}
+	if final.Action != "usage" {
+		t.Fatalf("final action: got %q, want usage", final.Action)
+	}
+}
+
+func mustMarshalContextWindow(t *testing.T, w provider.ContextWindow) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("marshal context window: %v", err)
+	}
+	return raw
 }
 
 // TestRateLimitsRoutedToUsageChannel verifies EventRateLimits emits on the

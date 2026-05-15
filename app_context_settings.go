@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"agent-overflow/internal/chatmodel"
@@ -107,6 +108,21 @@ func (a *App) UpdateThreadContextSettings(threadID string, update ContextSetting
 	if err := a.store.UpdateContextSettings(threadID, update.ContextWindow, update.AutoCompactStandardPercent, update.AutoCompactExtendedPercent); err != nil {
 		return store.Thread{}, err
 	}
+	// Clear the persisted token-usage snapshot and notify the frontend
+	// that the meter is no longer authoritative. The new context-window
+	// max would otherwise be paired with stale `usedTokens` from the
+	// previous setting until the next session emits a fresh reading
+	// (and shrinking the window from 1M to 200k would briefly render
+	// usage as a wildly wrong percentage). The session restart below
+	// brings the new state online; once a turn runs the meter is
+	// authoritative again.
+	if err := a.store.ClearLastTokenUsage(threadID); err != nil {
+		log.Printf("UpdateThreadContextSettings: clear last token usage: %v", err)
+	}
+	a.emit("provider:usage", provider.UsageEvent{
+		Action:   "reset",
+		ThreadID: threadID,
+	})
 	refreshed, err := a.restartSessionIfAffected(threadID, "contextSettings")
 	if err != nil {
 		return store.Thread{}, err

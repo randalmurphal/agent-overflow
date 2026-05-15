@@ -87,6 +87,12 @@ export interface ContextWindow {
   usedPercentage?: number;
   autoCompactPercent?: number;
   autoCompactTokenLimit?: number;
+  /**
+   * Wire-confirmed `ContextWindowExceeded` sentinel from Codex
+   * (`last.totalTokens === modelContextWindow`). Render as a distinct
+   * state — not a real reading at 100%. Claude has no equivalent.
+   */
+  exceeded?: boolean;
 }
 
 export interface ApprovalEvent {
@@ -161,6 +167,11 @@ export interface UsageEvent {
   contextPercent?: number;
   autoCompactPercent?: number;
   autoCompactTokenLimit?: number;
+  /**
+   * Mirrors `ContextWindow.exceeded` — set when the wire signals
+   * `ContextWindowExceeded` rather than a real reading at 100%.
+   */
+  exceeded?: boolean;
   rateLimits?: RateLimitsSnapshot;
 }
 
