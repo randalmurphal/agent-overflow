@@ -34,9 +34,9 @@ import {
   resolveThreadStatusPill,
   type ThreadStatusPill,
 } from '../components/sidebar/threadStatusPill';
+import { THREAD_PREVIEW_LIMIT } from './sidebarThreadLimits';
 
 export const DEFAULT_SIDEBAR_TREE_MAX_DEPTH = 2;
-export const THREAD_PREVIEW_LIMIT = 8;
 
 export type ThreadStatusSortGroup =
   | 'pinned'
@@ -321,7 +321,7 @@ export function toggleSidebarTreeThreadExpansion(
 }
 
 /**
- * Slice a sorted top-level node list into a 6-row preview window. If
+ * Slice a sorted top-level node list into a preview window. If
  * the active thread sits outside that window we surface it alongside
  * (mirrors t3-code: 6 + active = up to 7 rows). Pinned threads always
  * stay visible — they don't consume preview slots; the limit only
@@ -372,6 +372,33 @@ export function previewSidebarThreads(input: {
     visibleNodes: [...pinned, ...head, activeNode],
     hiddenNodes: tail.filter((n) => n.thread.id !== activeId),
   };
+}
+
+export function nextSidebarThreadRevealLimit(input: {
+  nodes: readonly SidebarTreeNode[];
+  activeThreadId: string | null;
+  currentLimit: number;
+  revealCount: number;
+}): number {
+  const currentPreview = previewSidebarThreads({
+    nodes: input.nodes,
+    activeThreadId: input.activeThreadId,
+    limit: input.currentLimit,
+  });
+  const targetHiddenCount = Math.max(0, currentPreview.hiddenNodes.length - input.revealCount);
+  let nextLimit = input.currentLimit;
+  let nextPreview = currentPreview;
+
+  while (nextPreview.hiddenNodes.length > targetHiddenCount) {
+    nextLimit += 1;
+    nextPreview = previewSidebarThreads({
+      nodes: input.nodes,
+      activeThreadId: input.activeThreadId,
+      limit: nextLimit,
+    });
+  }
+
+  return nextLimit;
 }
 
 /**

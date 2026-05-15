@@ -1,9 +1,9 @@
 <script lang="ts">
   // Nested thread list for a single project. Builds the discussion tree
   // (depth ≤ 2) once per render so child status / activity bubbles into
-  // each parent row, then truncates to THREAD_PREVIEW_LIMIT (with the
-  // active thread always pinned in if it would otherwise sit below the
-  // fold), and finally flattens to a flat list of visible nodes honoring
+  // each parent row, then truncates to the project-specific visible
+  // limit (with the active thread always pinned in if it would otherwise
+  // sit below the fold), and finally flattens to a flat list honoring
   // the per-thread expand/collapse state. Indent comes from the node's
   // depth (rendered via ThreadRow's `indent` prop). We deliberately do
   // NOT virtualize — at 50 threads the flat render is 60fps and the
@@ -13,9 +13,10 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     collapseThreadList,
-    expandThreadList,
     getExpandedDiscussions,
+    getThreadListVisibleLimit,
     isThreadListExpanded,
+    setThreadListVisibleLimit,
     setExpandedDiscussions,
     toggleDiscussion,
   } from '../../stores/sidebar.svelte';
@@ -33,11 +34,12 @@
   import {
     buildSidebarThreadTree,
     flattenSidebarThreadTree,
+    nextSidebarThreadRevealLimit,
     previewSidebarThreads,
     rollupDisplayStatus,
     syncExpandedTreeForActiveThread,
-    THREAD_PREVIEW_LIMIT,
   } from '../../utils/sidebarTree';
+  import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../../utils/sidebarThreadLimits';
 
   interface Props {
     projectId: string;
@@ -59,13 +61,20 @@
   );
 
   let listExpanded = $derived(isThreadListExpanded(projectId));
+  let visibleLimit = $derived(getThreadListVisibleLimit(projectId));
 
   // Truncation operates on top-level nodes only — discussion children
   // are nested under their parent and don't compete for preview slots.
   let preview = $derived.by(() => {
-    if (listExpanded) return { visibleNodes: tree, hiddenNodes: [] };
-    return previewSidebarThreads({ nodes: tree, activeThreadId: pane.threadId ?? null });
+    return previewSidebarThreads({
+      nodes: tree,
+      activeThreadId: pane.threadId ?? null,
+      limit: visibleLimit,
+    });
   });
+
+  let hiddenThreadCount = $derived(preview.hiddenNodes.length);
+  let nextRevealCount = $derived(Math.min(THREAD_REVEAL_INCREMENT, hiddenThreadCount));
 
   let hiddenStatus = $derived(rollupDisplayStatus(preview.hiddenNodes));
 
@@ -91,7 +100,13 @@
 
   function handleShowMore(e: MouseEvent): void {
     e.stopPropagation();
-    expandThreadList(projectId);
+    const nextLimit = nextSidebarThreadRevealLimit({
+      nodes: tree,
+      activeThreadId: pane.threadId ?? null,
+      currentLimit: visibleLimit,
+      revealCount: THREAD_REVEAL_INCREMENT,
+    });
+    setThreadListVisibleLimit(projectId, nextLimit);
   }
 
   function handleShowLess(e: MouseEvent): void {
@@ -157,36 +172,42 @@
       </div>
     {/each}
 
-    {#if preview.hiddenNodes.length > 0 && !listExpanded}
-      <button
-        type="button"
-        onclick={handleShowMore}
-        data-testid="project-thread-list-show-more"
-        class="group/more flex items-center gap-1.5 h-6 mr-1 px-2 rounded-[var(--radius-field)] text-[10px] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-      >
-        {#if hiddenStatus}
-          <span
-            class="w-1.5 h-1.5 rounded-full shrink-0 {hiddenStatus.pill.dotClass} {hiddenStatus.pill.pulse ? 'animate-pulse' : ''}"
-            aria-hidden="true"
-            data-testid="project-thread-list-hidden-status"
-            data-status={hiddenStatus.liveStatus}
-          ></span>
-          <span class="font-medium {hiddenStatus.pill.labelClass}">{hiddenStatus.pill.label}</span>
-          <span aria-hidden="true">·</span>
+    {#if hiddenThreadCount > 0 || (listExpanded && tree.length > THREAD_PREVIEW_LIMIT)}
+      <div class="flex items-center gap-1 mr-1">
+        {#if hiddenThreadCount > 0}
+          <button
+            type="button"
+            onclick={handleShowMore}
+            data-testid="project-thread-list-show-more"
+            class="group/more flex items-center gap-1.5 h-6 px-2 rounded-[var(--radius-field)] text-[10px] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          >
+            {#if hiddenStatus}
+              <span
+                class="w-1.5 h-1.5 rounded-full shrink-0 {hiddenStatus.pill.dotClass} {hiddenStatus.pill.pulse ? 'animate-pulse' : ''}"
+                aria-hidden="true"
+                data-testid="project-thread-list-hidden-status"
+                data-status={hiddenStatus.liveStatus}
+              ></span>
+              <span class="font-medium {hiddenStatus.pill.labelClass}">{hiddenStatus.pill.label}</span>
+              <span aria-hidden="true">·</span>
+            {/if}
+            <span>
+              Show {nextRevealCount} More{hiddenThreadCount > THREAD_REVEAL_INCREMENT ? ` (${hiddenThreadCount})` : ''}
+            </span>
+          </button>
         {/if}
-        <span>Show {preview.hiddenNodes.length} More</span>
-      </button>
-    {/if}
 
-    {#if listExpanded && tree.length > THREAD_PREVIEW_LIMIT}
-      <button
-        type="button"
-        onclick={handleShowLess}
-        data-testid="project-thread-list-show-less"
-        class="flex items-center h-6 mr-1 px-2 rounded-[var(--radius-field)] text-[10px] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-      >
-        Show Less
-      </button>
+        {#if listExpanded && tree.length > THREAD_PREVIEW_LIMIT}
+          <button
+            type="button"
+            onclick={handleShowLess}
+            data-testid="project-thread-list-show-less"
+            class="flex items-center h-6 px-2 rounded-[var(--radius-field)] text-[10px] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          >
+            Show Less
+          </button>
+        {/if}
+      </div>
     {/if}
   </div>
 {/if}

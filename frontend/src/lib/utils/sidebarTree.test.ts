@@ -4,11 +4,13 @@ import type { Thread } from '../types/models';
 import {
   buildSidebarThreadTree,
   flattenSidebarThreadTree,
+  nextSidebarThreadRevealLimit,
   previewSidebarThreads,
   rollupDisplayStatus,
   syncExpandedTreeForActiveThread,
   toggleSidebarTreeThreadExpansion,
 } from './sidebarTree';
+import { THREAD_PREVIEW_LIMIT } from './sidebarThreadLimits';
 
 function mkThread(id: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -288,13 +290,13 @@ describe('previewSidebarThreads', () => {
     expect(result.hiddenNodes).toHaveLength(0);
   });
 
-  it('truncates to the default limit of 8 with the rest hidden', () => {
+  it('truncates to the default limit of 6 with the rest hidden', () => {
     const tree = buildAt(
       Array.from({ length: 12 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i })),
     );
     const result = previewSidebarThreads({ nodes: tree, activeThreadId: null });
-    expect(result.visibleNodes).toHaveLength(8);
-    expect(result.hiddenNodes).toHaveLength(4);
+    expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT);
+    expect(result.hiddenNodes).toHaveLength(6);
   });
 
   it('floats the active thread back into view when it would otherwise be hidden', () => {
@@ -302,7 +304,7 @@ describe('previewSidebarThreads', () => {
       Array.from({ length: 12 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i })),
     );
     const result = previewSidebarThreads({ nodes: tree, activeThreadId: 't11' });
-    expect(result.visibleNodes).toHaveLength(9);
+    expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 1);
     expect(result.visibleNodes.at(-1)?.thread.id).toBe('t11');
     expect(result.hiddenNodes.map((n) => n.thread.id)).not.toContain('t11');
   });
@@ -312,7 +314,7 @@ describe('previewSidebarThreads', () => {
       Array.from({ length: 12 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i })),
     );
     const result = previewSidebarThreads({ nodes: tree, activeThreadId: 't1' });
-    expect(result.visibleNodes).toHaveLength(8);
+    expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT);
     expect(result.visibleNodes.filter((n) => n.thread.id === 't1')).toHaveLength(1);
   });
 
@@ -321,9 +323,48 @@ describe('previewSidebarThreads', () => {
     const rest = Array.from({ length: 9 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i }));
     const tree = buildAt([pinned, ...rest]);
     const result = previewSidebarThreads({ nodes: tree, activeThreadId: null });
-    expect(result.visibleNodes).toHaveLength(9);
+    expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 1);
     expect(result.visibleNodes[0].thread.id).toBe('pinned');
-    expect(result.hiddenNodes).toHaveLength(1);
+    expect(result.hiddenNodes).toHaveLength(3);
+  });
+
+  it('honors an explicit larger preview limit', () => {
+    const tree = buildAt(
+      Array.from({ length: 30 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i })),
+    );
+    const result = previewSidebarThreads({ nodes: tree, activeThreadId: null, limit: 26 });
+    expect(result.visibleNodes).toHaveLength(26);
+    expect(result.hiddenNodes).toHaveLength(4);
+  });
+});
+
+describe('nextSidebarThreadRevealLimit', () => {
+  function buildAt(threads: Thread[]) {
+    return buildSidebarThreadTree({ threads, liveStatusOf: liveStatusMap({}) });
+  }
+
+  it('advances far enough to reveal the requested number of currently hidden nodes', () => {
+    const tree = buildAt(
+      Array.from({ length: 31 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i })),
+    );
+    const current = previewSidebarThreads({
+      nodes: tree,
+      activeThreadId: 't10',
+      limit: THREAD_PREVIEW_LIMIT,
+    });
+
+    const nextLimit = nextSidebarThreadRevealLimit({
+      nodes: tree,
+      activeThreadId: 't10',
+      currentLimit: THREAD_PREVIEW_LIMIT,
+      revealCount: 20,
+    });
+    const next = previewSidebarThreads({ nodes: tree, activeThreadId: 't10', limit: nextLimit });
+
+    expect(current.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 1);
+    expect(current.hiddenNodes).toHaveLength(24);
+    expect(next.hiddenNodes).toHaveLength(4);
+    expect(next.visibleNodes).toHaveLength(27);
   });
 });
 

@@ -2,12 +2,18 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   collapseProject,
   expandProject,
+  collapseThreadList,
   getProjectSortMode,
+  getThreadListVisibleLimit,
   isProjectExpanded,
+  isThreadListExpanded,
   resetSidebarForTest,
+  revealMoreThreadList,
+  setThreadListVisibleLimit,
   setProjectSortMode,
   toggleProject,
 } from './sidebar.svelte';
+import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
 
 describe('sidebar store', () => {
   beforeEach(() => {
@@ -77,6 +83,35 @@ describe('sidebar store', () => {
       // path doesn't accept invalid input:
       setProjectSortMode('lastActivity');
       expect(getProjectSortMode()).toBe('lastActivity');
+    });
+  });
+
+  describe('thread list visible limit', () => {
+    it('starts at the preview limit and reveals 20 more per call', () => {
+      expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT);
+      expect(isThreadListExpanded('p1')).toBe(false);
+
+      revealMoreThreadList('p1');
+      expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
+      expect(isThreadListExpanded('p1')).toBe(true);
+
+      revealMoreThreadList('p1');
+      expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT * 2);
+    });
+
+    it('collapseThreadList resets a project to the preview limit', () => {
+      revealMoreThreadList('p1');
+      collapseThreadList('p1');
+      expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT);
+      expect(isThreadListExpanded('p1')).toBe(false);
+    });
+
+    it('setThreadListVisibleLimit persists explicit reveal sizes and resets defaults', () => {
+      setThreadListVisibleLimit('p1', 27);
+      expect(getThreadListVisibleLimit('p1')).toBe(27);
+
+      setThreadListVisibleLimit('p1', THREAD_PREVIEW_LIMIT);
+      expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT);
     });
   });
 });

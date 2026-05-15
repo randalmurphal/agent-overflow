@@ -13,11 +13,14 @@
 // screen but have different lifecycles (data refreshes; view state
 // persists across refreshes).
 
+import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
+
 const COLLAPSED_STORAGE_KEY = 'agent-overflow:sidebar:collapsedProjects';
 const LEGACY_EXPANDED_STORAGE_KEY = 'agent-overflow:sidebar:expandedProjects';
 const SORT_MODE_KEY = 'agent-overflow:sidebar:projectSortMode';
 const EXPANDED_DISCUSSIONS_KEY = 'agent-overflow:sidebar:expandedDiscussions';
-const EXPANDED_THREAD_LISTS_KEY = 'agent-overflow:sidebar:expandedThreadLists';
+const LEGACY_EXPANDED_THREAD_LISTS_KEY = 'agent-overflow:sidebar:expandedThreadLists';
+const THREAD_LIST_VISIBLE_LIMITS_KEY = 'agent-overflow:sidebar:threadListVisibleLimits';
 
 /**
  * Project sort mode. Three discrete strategies with no per-mode tuning
@@ -79,6 +82,27 @@ function readProjectSortMode(): ProjectSortMode {
   }
 }
 
+function readThreadListVisibleLimits(): Record<string, number> {
+  if (typeof localStorage === 'undefined') return {};
+  try {
+    localStorage.removeItem(LEGACY_EXPANDED_THREAD_LISTS_KEY);
+    const raw = localStorage.getItem(THREAD_LIST_VISIBLE_LIMITS_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+
+    const out: Record<string, number> = {};
+    for (const [projectId, value] of Object.entries(parsed)) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+      if (value <= THREAD_PREVIEW_LIMIT) continue;
+      out[projectId] = Math.floor(value);
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 function writeStringSet(key: string, set: Set<string>): void {
   if (typeof localStorage === 'undefined') return;
   try {
@@ -101,9 +125,22 @@ function writeProjectSortMode(mode: ProjectSortMode): void {
   }
 }
 
+function writeThreadListVisibleLimits(limits: Record<string, number>): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (Object.keys(limits).length === 0) {
+      localStorage.removeItem(THREAD_LIST_VISIBLE_LIMITS_KEY);
+      return;
+    }
+    localStorage.setItem(THREAD_LIST_VISIBLE_LIMITS_KEY, JSON.stringify(limits));
+  } catch {
+    // Ignore quota / access errors — in-memory state stays consistent.
+  }
+}
+
 let collapsedProjects: Set<string> = $state(readCollapsed());
 let expandedDiscussions: Set<string> = $state(readStringSet(EXPANDED_DISCUSSIONS_KEY));
-let expandedThreadLists: Set<string> = $state(readStringSet(EXPANDED_THREAD_LISTS_KEY));
+let threadListVisibleLimits: Record<string, number> = $state(readThreadListVisibleLimits());
 let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
 
 export function isProjectExpanded(id: string): boolean {
@@ -190,42 +227,65 @@ export function setExpandedDiscussions(next: ReadonlySet<string>): void {
 }
 
 /**
- * Per-project "show all threads" state. When a project's id is in this
- * set, ProjectThreadList renders the full sorted list; otherwise it
- * truncates at THREAD_PREVIEW_LIMIT (with the active thread always
- * pinned in). Persisted so reopening keeps the user's chosen view.
+ * Per-project thread preview size. Projects start at THREAD_PREVIEW_LIMIT;
+ * each "Show more" click adds THREAD_REVEAL_INCREMENT, and "Show less"
+ * drops the project back to the default preview.
  */
 export function isThreadListExpanded(id: string): boolean {
-  return expandedThreadLists.has(id);
+  return getThreadListVisibleLimit(id) > THREAD_PREVIEW_LIMIT;
 }
 
-export function expandThreadList(id: string): void {
-  if (expandedThreadLists.has(id)) return;
-  const next = new Set(expandedThreadLists).add(id);
-  expandedThreadLists = next;
-  writeStringSet(EXPANDED_THREAD_LISTS_KEY, next);
+export function getThreadListVisibleLimit(id: string): number {
+  return threadListVisibleLimits[id] ?? THREAD_PREVIEW_LIMIT;
+}
+
+export function revealMoreThreadList(id: string): void {
+  const current = getThreadListVisibleLimit(id);
+  const next = visibleLimitsWith(id, current + THREAD_REVEAL_INCREMENT);
+  threadListVisibleLimits = next;
+  writeThreadListVisibleLimits(next);
+}
+
+export function setThreadListVisibleLimit(id: string, limit: number): void {
+  const roundedLimit = Math.floor(limit);
+  if (!Number.isFinite(roundedLimit) || roundedLimit <= THREAD_PREVIEW_LIMIT) {
+    collapseThreadList(id);
+    return;
+  }
+  if (getThreadListVisibleLimit(id) === roundedLimit) return;
+  const next = visibleLimitsWith(id, roundedLimit);
+  threadListVisibleLimits = next;
+  writeThreadListVisibleLimits(next);
 }
 
 export function collapseThreadList(id: string): void {
-  if (!expandedThreadLists.has(id)) return;
-  const next = new Set(expandedThreadLists);
-  next.delete(id);
-  expandedThreadLists = next;
-  writeStringSet(EXPANDED_THREAD_LISTS_KEY, next);
+  if (!(id in threadListVisibleLimits)) return;
+  const next = { ...threadListVisibleLimits };
+  delete next[id];
+  threadListVisibleLimits = next;
+  writeThreadListVisibleLimits(next);
+}
+
+function visibleLimitsWith(id: string, limit: number): Record<string, number> {
+  return {
+    ...threadListVisibleLimits,
+    [id]: limit,
+  };
 }
 
 /** Test helper: clears in-memory + storage between tests. */
 export function resetSidebarForTest(): void {
   collapsedProjects = new Set();
   expandedDiscussions = new Set();
-  expandedThreadLists = new Set();
+  threadListVisibleLimits = {};
   projectSortMode = DEFAULT_PROJECT_SORT_MODE;
   if (typeof localStorage !== 'undefined') {
     try {
       localStorage.removeItem(COLLAPSED_STORAGE_KEY);
       localStorage.removeItem(LEGACY_EXPANDED_STORAGE_KEY);
       localStorage.removeItem(EXPANDED_DISCUSSIONS_KEY);
-      localStorage.removeItem(EXPANDED_THREAD_LISTS_KEY);
+      localStorage.removeItem(LEGACY_EXPANDED_THREAD_LISTS_KEY);
+      localStorage.removeItem(THREAD_LIST_VISIBLE_LIMITS_KEY);
       localStorage.removeItem(SORT_MODE_KEY);
     } catch {
       // ignore

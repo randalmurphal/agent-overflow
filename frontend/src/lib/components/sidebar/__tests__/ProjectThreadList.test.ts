@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { fireEvent, render } from '@testing-library/svelte';
 import ProjectThreadList from '../ProjectThreadList.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
 import type { Thread } from '../../../types/models';
@@ -90,5 +90,60 @@ describe('<ProjectThreadList>', () => {
     const dot = getByTestId('thread-row-status-dot');
     expect(dot.getAttribute('data-status')).toBe('interrupted');
     expect(dot.getAttribute('aria-label')).toBe('Interrupted');
+  });
+
+  it('shows 6 threads before the show-more row, then reveals 20 more per click', async () => {
+    const pane = createThreadPane();
+    const threads = Array.from({ length: 31 }, (_, i) => mkThread(`t${i}`, {
+      title: `Thread ${i}`,
+      updatedAt: 100 - i,
+    }));
+    const { getByTestId, queryByTestId } = render(ProjectThreadList, {
+      props: {
+        projectId: 'p1',
+        threads,
+        pane,
+      },
+    });
+
+    const list = getByTestId('project-thread-list');
+    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(6);
+    const firstShowMore = getByTestId('project-thread-list-show-more');
+    expect(firstShowMore).toHaveTextContent('Show 20 More (25)');
+
+    await fireEvent.click(firstShowMore);
+    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(26);
+    const secondShowMore = getByTestId('project-thread-list-show-more');
+    expect(secondShowMore).toHaveTextContent('Show 5 More');
+
+    await fireEvent.click(secondShowMore);
+    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(31);
+    expect(queryByTestId('project-thread-list-show-more')).toBeNull();
+  });
+
+  it('reveals 20 hidden threads when the active thread is already floated into view', async () => {
+    const pane = createThreadPane();
+    const threads = Array.from({ length: 31 }, (_, i) => mkThread(`t${i}`, {
+      title: `Thread ${i}`,
+      updatedAt: 100 - i,
+    }));
+    pane.replaceThread(threads[10]);
+
+    const { getByTestId } = render(ProjectThreadList, {
+      props: {
+        projectId: 'p1',
+        threads,
+        pane,
+      },
+    });
+
+    const list = getByTestId('project-thread-list');
+    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(7);
+    const firstShowMore = getByTestId('project-thread-list-show-more');
+    expect(firstShowMore).toHaveTextContent('Show 20 More (24)');
+
+    await fireEvent.click(firstShowMore);
+    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(27);
+    expect(getByTestId('project-thread-list-show-more')).toHaveTextContent('Show 4 More');
   });
 });
