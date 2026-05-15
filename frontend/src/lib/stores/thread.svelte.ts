@@ -84,6 +84,7 @@ import {
   type QueueItem as SendQueueItem,
 } from './sendQueue.svelte';
 import { createLiveTodoState } from './liveTodoState.svelte';
+import { createThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
 import {
   turnRowToSettled,
   type SettledTurn,
@@ -165,27 +166,6 @@ function sameRhsPanel(left: RhsPanel | null, right: RhsPanel | null): boolean {
   if (left.kind !== right.kind) return false;
   if (left.kind !== 'diff-payload' || right.kind !== 'diff-payload') return true;
   return left.payloadId === right.payloadId && left.filePath === right.filePath;
-}
-
-function mergePendingRequests<T extends { requestId: string }>(
-  snapshot: T[],
-  current: T[],
-  resolvedRequestIds: Set<string>,
-): T[] {
-  const merged: T[] = [];
-  const seen = new Set<string>();
-  for (const request of snapshot) {
-    if (!request.requestId || resolvedRequestIds.has(request.requestId)) continue;
-    merged.push(request);
-    seen.add(request.requestId);
-  }
-  for (const request of current) {
-    if (!request.requestId || resolvedRequestIds.has(request.requestId)) continue;
-    if (seen.has(request.requestId)) continue;
-    merged.push(request);
-    seen.add(request.requestId);
-  }
-  return merged;
 }
 
 // ActiveTurn now lives in threadStatuses.svelte.ts (single source of
@@ -339,10 +319,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return index === undefined ? undefined : items[index];
     },
   });
-  let pendingApprovals: ApprovalRequest[] = $state([]);
-  let pendingUserInputs: UserInputRequest[] = $state([]);
-  const resolvedApprovalIds = new Set<string>();
-  const resolvedUserInputIds = new Set<string>();
+  const pendingInteractiveState = createThreadPendingInteractiveState();
   let contextWindow: ContextWindow | null = $state(null);
   // Rate-limit snapshots live in the global `rateLimitsInfo.svelte.ts`
   // store keyed by provider — they are an account property, not a
@@ -600,32 +577,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     }
   }
 
-  function filteredPendingInteractiveSnapshot(
-    snapshot: PendingInteractiveRequests | null | undefined,
-  ): PendingInteractiveRequests {
-    const approvals = (snapshot?.approvals ?? [])
-      .filter((request) => request.requestId && !resolvedApprovalIds.has(request.requestId));
-    const userInputs = (snapshot?.userInputs ?? [])
-      .filter((request) => request.requestId && !resolvedUserInputIds.has(request.requestId));
-    return { approvals, userInputs };
-  }
-
   function applyPendingInteractiveSnapshot(
     threadID: string,
     snapshot: PendingInteractiveRequests | null | undefined,
   ): void {
-    const filtered = filteredPendingInteractiveSnapshot(snapshot);
-    pendingApprovals = mergePendingRequests(
-      filtered.approvals,
-      pendingApprovals,
-      resolvedApprovalIds,
-    );
-    pendingUserInputs = mergePendingRequests(
-      filtered.userInputs,
-      pendingUserInputs,
-      resolvedUserInputIds,
-    );
-    replaceInteractiveRequestsForThread(threadID, filtered);
+    const registrySnapshot = pendingInteractiveState.registrySnapshotFor(snapshot);
+    pendingInteractiveState.applySnapshot(snapshot);
+    replaceInteractiveRequestsForThread(threadID, registrySnapshot);
   }
 
   async function hydratePendingInteractiveRequests(
@@ -839,10 +797,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * outgoing-thread side effects.
    */
   function resetIncomingPaneState(newThread: Thread): void {
-    pendingApprovals = [];
-    pendingUserInputs = [];
-    resolvedApprovalIds.clear();
-    resolvedUserInputIds.clear();
+    pendingInteractiveState.clear();
     contextWindow = seedContextWindow(newThread);
     providerBanner = undefined;
     generalError = null;
@@ -1099,8 +1054,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      */
     get isLocked() { return items.length > 0; },
     get timelineRevision() { return timelineRevision; },
-    get pendingApprovals() { return pendingApprovals; },
-    get pendingUserInputs() { return pendingUserInputs; },
+    get pendingApprovals() { return pendingInteractiveState.approvals; },
+    get pendingUserInputs() { return pendingInteractiveState.userInputs; },
     get contextWindow() { return contextWindow; },
     get providerBanner() { return providerBanner; },
     get generalError() { return generalError; },
@@ -1283,8 +1238,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
           if (gen !== switchGeneration) return;
           console.error('Failed to refresh recent turns after gap:', err);
         }
-        pendingApprovals = [];
-        pendingUserInputs = [];
+        pendingInteractiveState.prepareForLiveStateHydration();
         await hydrateThreadLiveState(currentThread.id, gen, liveStateHydrationToken);
         liveStateHydrationToken = 0;
       } finally {
@@ -1300,10 +1254,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       items = [];
       rebuildItemIndexes(items);
       rowUiState.clear();
-      pendingApprovals = [];
-      pendingUserInputs = [];
-      resolvedApprovalIds.clear();
-      resolvedUserInputIds.clear();
+      pendingInteractiveState.clear();
       contextWindow = null;
       providerBanner = undefined;
       generalError = null;
@@ -1648,29 +1599,19 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // --- Mutations (called by event router) ---
 
     addApproval(approval: ApprovalRequest): void {
-      resolvedApprovalIds.delete(approval.requestId);
-      pendingApprovals = [
-        ...pendingApprovals.filter((a) => a.requestId !== approval.requestId),
-        approval,
-      ];
+      pendingInteractiveState.addApproval(approval);
     },
 
     removeApproval(requestId: string): void {
-      resolvedApprovalIds.add(requestId);
-      pendingApprovals = pendingApprovals.filter((a) => a.requestId !== requestId);
+      pendingInteractiveState.removeApproval(requestId);
     },
 
     addUserInput(request: UserInputRequest): void {
-      resolvedUserInputIds.delete(request.requestId);
-      pendingUserInputs = [
-        ...pendingUserInputs.filter((r) => r.requestId !== request.requestId),
-        request,
-      ];
+      pendingInteractiveState.addUserInput(request);
     },
 
     removeUserInput(requestId: string): void {
-      resolvedUserInputIds.add(requestId);
-      pendingUserInputs = pendingUserInputs.filter((r) => r.requestId !== requestId);
+      pendingInteractiveState.removeUserInput(requestId);
     },
 
     /**
