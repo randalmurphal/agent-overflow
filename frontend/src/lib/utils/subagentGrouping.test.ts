@@ -334,7 +334,7 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(nodes).toHaveLength(2);
+    expect(nodes).toHaveLength(1);
     const group = expectWaitGroup(nodes[0]);
     expect(group.parent.id).toBe('wait-1');
     expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual([
@@ -343,7 +343,6 @@ describe('groupItemsBySubagent', () => {
     expect(group.descendantCount).toBe(1);
     expect(nodeContainsItem(group, 'complete-wait-1')).toBe(false);
     expect(nodeContainsItem(group, 'complete-spawn-1')).toBe(true);
-    expect(expectLeaf(nodes[1]).item.id).toBe('complete-wait-1');
   });
 
   it('keeps terminal command completions as siblings after the terminal wait carrier', () => {

@@ -166,7 +166,7 @@ describe('<MessageTimeline>', () => {
     expect(getByTestId('command-output-row').textContent).toContain('error code 1');
   });
 
-  it('renders Codex wait_agent completion signals separately from wait carriers', async () => {
+  it('hides redundant Codex wait_agent completion signals when child completions are grouped', async () => {
     const wait = makeItem({
       id: 'wait-agents',
       kind: 'tool_call',
@@ -216,7 +216,7 @@ describe('<MessageTimeline>', () => {
     const { getByTestId, queryByText } = render(MessageTimeline, { props: { pane } });
 
     expect(getByTestId('wait-group').textContent).toContain('Waiting for Agent');
-    expect(queryByText('Finished waiting')).toBeInTheDocument();
+    expect(queryByText('Finished waiting')).toBeNull();
     expect(getByTestId('wait-group-children').textContent).toContain('Agent finished cleanly');
   });
 

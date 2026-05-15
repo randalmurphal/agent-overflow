@@ -545,6 +545,10 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
       return false;
     }
     if (waitChildIDs.has(item.id)) return false;
+    if (item.kind === 'tool_completion' && item.toolName === 'wait_agent' && item.completionOf) {
+      const groupedChildren = waitChildrenByCarrierID.get(item.completionOf);
+      if (groupedChildren && groupedChildren.length > 0) return false;
+    }
     return true;
   });
 
