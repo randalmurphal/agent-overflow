@@ -4,7 +4,6 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import MessageTimeline from './MessageTimeline.svelte';
   import Composer from '../composer/Composer.svelte';
-  import ComposerHint from '../composer/ComposerHint.svelte';
   import SendQueuePreview from '../composer/SendQueuePreview.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
   import ThreadTerminalPlacement from '../terminal/ThreadTerminalPlacement.svelte';
@@ -545,9 +544,6 @@
         </div>
         <div class="pointer-events-auto">
           <Composer {pane} {draft} onImageExpand={openImagePreview} />
-        </div>
-        <div class="pointer-events-auto">
-          <ComposerHint {pane} {draft} />
         </div>
       </div>
     </div>

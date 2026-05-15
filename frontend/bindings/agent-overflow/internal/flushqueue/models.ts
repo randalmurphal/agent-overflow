@@ -14,8 +14,7 @@ import * as store$0 from "../store/models.js";
  * used by the frontend to mirror the backend's per-thread queue. The
  * wire shape mirrors SendMessageOptions's data fields plus the
  * frontend-allocated id and stamped enqueuedAt — together they're
- * enough for both the queue overlay rendering and the UP-arrow
- * retract path that re-hydrates the composer draft.
+ * enough for queue overlay rendering and provider-echo correlation.
  * 
  * AttachmentIDs (not full Attachment records) ride the wire because
  * the frontend already has the full records in its attachment store

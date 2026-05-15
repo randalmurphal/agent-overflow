@@ -1389,15 +1389,16 @@ export function ReconnectSession(threadID: string): $CancellablePromise<void> {
 }
 
 /**
- * RegisterQueueItem appends a queued user message to the thread's
- * in-flight queue. Called by the composer when the user submits while
- * a wire round is still active — the message waits in the queue until
- * the next safe provider boundary (see triage flush_queue.go).
+ * RegisterQueueItem appends a user message to the thread's pending-send
+ * queue. The composer keeps this item above the chat box immediately; if a
+ * provider session is live, the backend dispatches it as soon as possible and
+ * keeps it pending there until the provider-visible user-message echo creates
+ * the chat-history row.
  * 
  * The wire-shape options carry attachment IDs and plan refs but NOT
- * resolved attachments / plans — the dispatcher re-resolves at
- * trigger-fire time so attachment validation reflects current store
- * state. Validation establishes resource bounds (queue length,
+ * resolved attachments / plans — the dispatcher re-resolves at provider-write
+ * time so attachment validation reflects current store state. Validation
+ * establishes resource bounds (queue length,
  * message size, attachment count) AND shape preconditions (existing
  * thread, plan-ref shape).
  * 
@@ -1552,7 +1553,7 @@ export function SendMessage(threadID: string, content: string, attachmentIDs: st
 /**
  * SendMessageWithOptions applies send-time composer settings and dispatches the
  * user turn. RuntimeMode is staged in the composer and persisted here, under
- * the same per-thread send lock as provider session start/send.
+ * the same per-thread action lock as provider session start/send.
  */
 export function SendMessageWithOptions(threadID: string, content: string, opts: $models.SendMessageOptions): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3632185196, threadID, content, opts).then(($result: any) => {
@@ -1782,21 +1783,6 @@ export function UnarchiveProject(id: string): $CancellablePromise<store$0.Projec
 export function UnarchiveThread(id: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3655125512, id).then(($result: any) => {
         return $$createType5($result);
-    });
-}
-
-/**
- * UndoQueuedItems drops every queued item for the thread and returns
- * them so the composer can combine them into a single editable draft
- * (matching Claude TUI's popAllEditable). Called by the UP-arrow
- * retract handler.
- * 
- * Emits `provider:queue_state_changed` after the drop so other clients
- * observing the same thread see the empty queue.
- */
-export function UndoQueuedItems(threadID: string): $CancellablePromise<$models.QueuedItem[]> {
-    return $Call.ByID(3976043546, threadID).then(($result: any) => {
-        return $$createType28($result);
     });
 }
 

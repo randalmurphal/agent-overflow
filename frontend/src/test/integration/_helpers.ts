@@ -248,11 +248,6 @@ export function installComposerDefaults(threadId: string): void {
     ]);
     return wire;
   });
-  setBindingMock('UndoQueuedItems', async (targetThreadId: string) => {
-    const current = getQueueForThread(targetThreadId);
-    replaceQueueForThread(targetThreadId, []);
-    return current;
-  });
   setBindingMock('GetQueueState', async (targetThreadId: string) => {
     return [...getQueueForThread(targetThreadId)];
   });

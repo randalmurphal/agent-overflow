@@ -19,8 +19,6 @@
   import {
     focusTextareaAtEnd,
     handleMentionPopoverKeydown,
-    performQueueRetract,
-    shouldRetractQueueOnUpArrow,
   } from './composerKeyboard';
   import { createComposerImagePlaceholders } from './composerImagePlaceholders';
   import { deriveComposerInputState } from './composerInputState';
@@ -42,7 +40,7 @@
     refreshDiffReviewComments,
   } from '../../stores/diffReviewComments.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { hasRetractableQueueItems, registerQueueItem } from '../../stores/sendQueue.svelte';
+  import { registerQueueItem } from '../../stores/sendQueue.svelte';
   import { getThreadById, prependThread, removeThread } from '../../stores/threads.svelte';
   import {
     hasRuntimeModeDraft,
@@ -102,11 +100,8 @@
   // Mid-round signal: a wire round is currently in flight (the model
   // is streaming text/tool work). The composer stays typeable during
   // a round and Send routes through the backend-owned per-thread
-  // queue (RegisterQueueItem). The flush trigger fires on the first
-  // non-subagent tool_use of the round — see internal/triage/router.go
-  // — and the dispatcher delivers each queued message via Send/Steer.
-  // Matches both reference UIs (Claude Code's `commandQueue`, Codex's
-  // `VecDeque<QueuedUserMessage>`).
+  // queue (RegisterQueueItem), and the backend dispatch worker delivers
+  // each queued message via Send/Steer as soon as possible.
   //
   // BETWEEN rounds — Claude's multi-result-per-turn cascade emits the
   // first `result` envelope, then the model is idle while a backgrounded
@@ -117,12 +112,6 @@
   // actual behaviour and is the canonical wire-round emission contract
   // documented in internal/triage/AGENTS.md "Wire-round vs logical-turn".
   let isTurnActive = $derived(getActiveTurn(pane.threadId) !== null);
-  // Mid-round signal: true while Zone 1 of the per-thread queue has at
-  // least one retractable item. Drives the "Send Now" affordance — a
-  // peer to Stop that interrupts the active turn so the queued items
-  // dispatch on the next round, instead of waiting for the current
-  // round to finish on its own.
-  let hasQueuedItems = $derived(hasRetractableQueueItems(pane.threadId));
   let blockingApprovals = $derived(pane.pendingApprovals);
   let activeApproval = $derived(blockingApprovals[0]);
   let activeUserInput = $derived(pane.pendingUserInputs[0]);
@@ -350,9 +339,8 @@
     const draftSourcePlan = draft.sourceProposedPlan ?? null;
 
     // Mid-round path: backend owns the queue. Both providers go
-    // through the same `RegisterQueueItem` RPC; triage flushes at safe
-    // provider boundaries and the dispatcher delivers each queued
-    // message via Send (Claude) or Steer with Send fallback (Codex).
+    // through the same `RegisterQueueItem` RPC; the backend keeps the
+    // pending preview alive until the provider echo creates the chat row.
     // The Composer is intentionally
     // provider-agnostic here — provider branching previously needed
     // to choose between Steer and a frontend-side queue, but the
@@ -491,32 +479,6 @@
     // Popover dispatch short-circuits when the keystroke was consumed;
     // otherwise we fall through to the send guard below.
     if (handleMentionPopoverKeydown(e, mentions)) return;
-
-    // UP-arrow retract: when the composer is empty and Zone 1 has
-    // queued items, plain UP drops every queued item and merges them
-    // into one editable draft (Claude TUI's `popAllEditable`). The
-    // predicate gates on no-modifiers / empty-composer / non-empty-queue
-    // so legit cursor navigation isn't intercepted. Runs AFTER popover
-    // dispatch — an open mention popover owns ArrowUp for its own
-    // active-index navigation.
-    if (
-      pane.threadId
-      && shouldRetractQueueOnUpArrow({
-        event: e,
-        threadId: pane.threadId,
-        hasDraftContent,
-      })
-    ) {
-      e.preventDefault();
-      const threadIdForRetract = pane.threadId;
-      void performQueueRetract({
-        threadId: threadIdForRetract,
-        draft,
-        textarea,
-        reportError: (msg) => pane.setGeneralError(msg),
-      });
-      return;
-    }
 
     if (imagePlaceholders.handleAtomicPlaceholderKeydown(e)) return;
 
@@ -751,7 +713,6 @@
         {sendLabel}
         hasCurrentPlan={Boolean(latestPlanItem)}
         planCommentCount={hasDraftDiffReviewComments ? activeDiffReviewDraftComments.length : latestPlanDraftComments.length}
-        {hasQueuedItems}
         onSend={() => send()}
         onSendWithoutPlanComments={(hasDraftPlanComments || hasDraftDiffReviewComments) && hasDraftContent ? () => send(false) : undefined}
         onSendInNewThread={hasPlanImplementAction ? sendPlanToNewThread : undefined}

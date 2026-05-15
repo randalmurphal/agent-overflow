@@ -1,20 +1,17 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   clearForThread,
-  combineForRetract,
   confirmFlushedByUserItemId,
   getFlushedForThread,
   getQueueRevisionForThread,
   getQueueForThread,
   hasQueueItems,
-  hasRetractableQueueItems,
   markItemsFlushed,
   replaceFlushedForThread,
   replaceQueueForThread,
   resetForTest as resetSendQueueForTest,
   type QueueItem,
 } from './sendQueue.svelte';
-import type { Attachment } from '../types/attachment';
 
 function makeItem(overrides: Partial<QueueItem> & { message: string; threadId: string }): QueueItem {
   return {
@@ -50,12 +47,6 @@ describe('sendQueue store', () => {
     it('replaceQueueForThread empty no-op does not create revision state', () => {
       replaceQueueForThread('t1', []);
       expect(getQueueRevisionForThread('t1')).toBe(0);
-    });
-
-    it('hasRetractableQueueItems is true only when Zone 1 non-empty', () => {
-      expect(hasRetractableQueueItems('t1')).toBe(false);
-      replaceQueueForThread('t1', [makeItem({ threadId: 't1', message: 'a' })]);
-      expect(hasRetractableQueueItems('t1')).toBe(true);
     });
 
     it('queues are isolated per thread', () => {
@@ -96,6 +87,16 @@ describe('sendQueue store', () => {
       expect(getFlushedForThread('t1').map((f) => f.message)).toEqual(['a', 'b']);
     });
 
+    it('markItemsFlushed moves matching queued rows into flushed state', () => {
+      replaceQueueForThread('t1', [
+        makeItem({ id: 'q:0', threadId: 't1', message: 'a' }),
+        makeItem({ id: 'q:1', threadId: 't1', message: 'b' }),
+      ]);
+      markItemsFlushed('t1', [{ queueItemId: 'q:0', userItemId: 'u:0', message: 'a' }]);
+      expect(getQueueForThread('t1').map((q) => q.id)).toEqual(['q:1']);
+      expect(getFlushedForThread('t1').map((f) => f.userItemId)).toEqual(['u:0']);
+    });
+
     it('confirmFlushedByUserItemId removes a single entry', () => {
       markItemsFlushed('t1', [
         { queueItemId: 'q:0', userItemId: 'u:0', message: 'a' },
@@ -109,6 +110,39 @@ describe('sendQueue store', () => {
       markItemsFlushed('t1', [{ queueItemId: 'q:0', userItemId: 'u:0', message: 'a' }]);
       confirmFlushedByUserItemId('t1', 'u:does-not-exist');
       expect(getFlushedForThread('t1')).toHaveLength(1);
+    });
+
+    it('does not add a flushed marker when confirmation arrives first', () => {
+      confirmFlushedByUserItemId('t1', 'u:0');
+      markItemsFlushed('t1', [{ queueItemId: 'q:0', userItemId: 'u:0', message: 'a' }]);
+      expect(getFlushedForThread('t1')).toHaveLength(0);
+    });
+
+    it('filters confirmed ids from replaced flushed snapshots', () => {
+      confirmFlushedByUserItemId('t1', 'u:0');
+      replaceFlushedForThread('t1', [
+        {
+          queueItemId: 'q:0',
+          userItemId: 'u:0',
+          message: 'a',
+          flushedAt: 1,
+        },
+        {
+          queueItemId: 'q:1',
+          userItemId: 'u:1',
+          message: 'b',
+          flushedAt: 1,
+        },
+      ]);
+      expect(getFlushedForThread('t1').map((f) => f.userItemId)).toEqual(['u:1']);
+    });
+
+    it('clearForThread clears remembered confirmations', () => {
+      confirmFlushedByUserItemId('t1', 'u:0');
+      replaceQueueForThread('t1', [makeItem({ threadId: 't1', message: 'queued' })]);
+      clearForThread('t1');
+      markItemsFlushed('t1', [{ queueItemId: 'q:0', userItemId: 'u:0', message: 'a' }]);
+      expect(getFlushedForThread('t1').map((f) => f.userItemId)).toEqual(['u:0']);
     });
 
     it('confirming the last entry deletes the map key', () => {
@@ -198,37 +232,4 @@ describe('sendQueue store', () => {
     });
   });
 
-  describe('combineForRetract', () => {
-    it('joins messages with double-newlines', () => {
-      const items: QueueItem[] = [
-        makeItem({ threadId: 't1', message: 'first' }),
-        makeItem({ threadId: 't1', message: 'second' }),
-      ];
-      const snap = combineForRetract(items, () => undefined);
-      expect(snap.content).toBe('first\n\nsecond');
-    });
-
-    it('deduplicates attachments by id', () => {
-      const att: Attachment = {
-        id: 'a1',
-        threadId: 't1',
-        filename: 'f.png',
-        mimeType: 'image/png',
-        size: 1,
-      } as Attachment;
-      const items: QueueItem[] = [
-        makeItem({ threadId: 't1', message: 'a', attachmentIds: ['a1'] }),
-        makeItem({ threadId: 't1', message: 'b', attachmentIds: ['a1'] }),
-      ];
-      const snap = combineForRetract(items, (id) => (id === 'a1' ? att : undefined));
-      expect(snap.attachments).toHaveLength(1);
-      expect(snap.attachments[0].id).toBe('a1');
-    });
-
-    it('skips attachments the resolver returns undefined for', () => {
-      const items: QueueItem[] = [makeItem({ threadId: 't1', message: 'a', attachmentIds: ['a1'] })];
-      const snap = combineForRetract(items, () => undefined);
-      expect(snap.attachments).toHaveLength(0);
-    });
-  });
 });

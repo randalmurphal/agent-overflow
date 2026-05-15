@@ -335,15 +335,13 @@ export function SendMessageWithOptions(
 
 /**
  * Send-queue surface — backend-owned per-thread queue for messages
- * the user submits while a wire round is in flight. Triage flushes at
- * safe provider boundaries and the dispatcher delivers each queued
- * message to the provider; until then, items sit in `RegisterQueueItem`
- * and can be retracted via `UndoQueuedItems`. `GetQueueState` is the
- * bootstrap snapshot for remote / re-attached clients.
+ * the user submits while a wire round is in flight. The backend dispatch
+ * worker delivers each queued message to the provider as soon as possible;
+ * `GetQueueState` is the bootstrap snapshot for remote / re-attached
+ * clients.
  */
 import {
   RegisterQueueItem as RegisterQueueItemRaw,
-  UndoQueuedItems as UndoQueuedItemsRaw,
   GetQueueState as GetQueueStateRaw,
 } from '../../../bindings/agent-overflow/app.js';
 import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
@@ -358,10 +356,6 @@ export function RegisterQueueItem(
     message,
     new SendMessageOptionsClass(opts),
   ) as unknown as Promise<WireQueuedItem>;
-}
-
-export function UndoQueuedItems(threadId: string): Promise<WireQueuedItem[]> {
-  return UndoQueuedItemsRaw(threadId) as unknown as Promise<WireQueuedItem[]>;
 }
 
 export function GetQueueState(threadId: string): Promise<WireQueuedItem[]> {

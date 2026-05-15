@@ -283,7 +283,7 @@ export function clearThreadStatus(threadId: string): void {
  * Optimistically flip a thread to running when AO has started a
  * provider send/write that should open a fresh round, but the backend
  * has not emitted `provider:turn_started` yet. This covers normal
- * composer sends and Send Now's immediate queue drain after interrupt.
+ * composer sends before the provider emits its round-start signal.
  * Paired with projectSendResolved / turn lifecycle events to clear the
  * flag.
  */
@@ -329,9 +329,7 @@ export function hasPendingSend(threadId: string | null | undefined): boolean {
 
 /**
  * Explicit clear for the pending-send flag without changing other
- * status flags. The immediate queue-drain failure path uses this —
- * `projectTurnStarted` clears the flag on a successful fresh-send
- * drain (the backend confirmed the new round), but on a thrown
+ * status flags. Queue-drain failure uses this because on a thrown
  * provider write the flag would otherwise leak forever. Distinct from
  * `projectSendResolved({error:true})` because we don't want to flip the
  * thread to a Failed status pill: the queue preview is still showing

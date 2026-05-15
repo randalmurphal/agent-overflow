@@ -171,7 +171,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "TouchRemoteEndpoint", ID: 2647456459}, // main.App.TouchRemoteEndpoint
 	{Name: "UnarchiveProject", ID: 2561521885}, // main.App.UnarchiveProject
 	{Name: "UnarchiveThread", ID: 3655125512}, // main.App.UnarchiveThread
-	{Name: "UndoQueuedItems", ID: 3976043546}, // main.App.UndoQueuedItems
 	{Name: "UnpinThread", ID: 3175043037}, // main.App.UnpinThread
 	{Name: "UpdateContextSettingsProfile", ID: 1472386383}, // main.App.UpdateContextSettingsProfile
 	{Name: "UpdateDiffReviewComment", ID: 2452201652}, // main.App.UpdateDiffReviewComment

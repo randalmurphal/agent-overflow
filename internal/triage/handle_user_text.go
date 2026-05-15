@@ -93,7 +93,11 @@ func (r *Router) persistDeferredUserText(pending pendingSend, providerItemID str
 	if item.Status == "" {
 		item.Status = statusCompleted
 	}
-	if err := r.persistItem(item, nil); err != nil {
+	if pending.InsertItemIndex != nil {
+		if err := r.persistItemAtIndex(item, *pending.InsertItemIndex); err != nil {
+			return fmt.Errorf("triage: persist deferred user_text %s/%s at index %d: %w", item.ThreadID, item.ID, *pending.InsertItemIndex, err)
+		}
+	} else if err := r.persistItem(item, nil); err != nil {
 		return fmt.Errorf("triage: persist deferred user_text %s/%s: %w", item.ThreadID, item.ID, err)
 	}
 	persisted, found, err := r.store.GetThreadItem(item.ThreadID, item.ID)

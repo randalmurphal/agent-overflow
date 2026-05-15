@@ -3,15 +3,12 @@
 // Mounts the full <App> against mocked Wails bindings to validate the
 // frontend's reaction to the backend-owned queue across:
 //
-//  - submit-while-turn-active → Zone 1 enqueue via RegisterQueueItem
-//  - `provider:queue_state_changed` → reactive Zone 1 mirror
-//  - `provider:queue_flushed` → Zone 2 entries
-//  - `provider:item_event` upserts with `provider_item_id` → Zone 2 clear
-//  - UP-arrow retract → UndoQueuedItems + draft restoration
-//  - Send Now button visibility tied to (active turn ∧ queue non-empty)
-//  - ComposerHint visibility tied to (queue non-empty ∧ composer empty)
-//  - Two-zone simultaneous render with hairline divider
-//  - Thread switch sweeps the outgoing thread's queue + Zone 2
+//  - submit-while-turn-active → pending enqueue via RegisterQueueItem
+//  - `provider:queue_state_changed` → reactive pending mirror
+//  - `provider:queue_flushed` → flushed-but-unconfirmed pending entries
+//  - `provider:item_event` upserts with `provider_item_id` → pending clear
+//  - combined pending render above the composer
+//  - thread switch sweeps the outgoing thread's queue + flushed markers
 //
 // Earlier frontend-driven drain tests were removed when the queue
 // moved to the backend (Phases G1–G6). The triage-side trigger and
@@ -93,9 +90,9 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
       message: string,
       opts: { attachmentIds?: string[] } = {},
     ) => {
-      // Mirror the production round-trip: seed Zone 1 directly so the
-      // composer's $derived(`hasQueuedItems`) flips on without a real
-      // event. Tests asserting the event-driven path use T2 below.
+      // Mirror the production round-trip: seed the local pending queue
+      // directly without a real event. Tests asserting the event-driven
+      // path use T2 below.
       const wire = {
         id: 'q-1',
         threadId,
@@ -351,150 +348,10 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
     ]);
   });
 
-  // ---- T5 — UP-arrow retract path full flow ----------------------------
+  // ---- T8 — Pending queue renders queued and flushed rows together ---------
 
-  it('T5: UP-arrow on empty composer calls UndoQueuedItems and restores draft + attachments', async () => {
-    const att = {
-      id: 'att-zoom',
-      threadId: 'thread-1',
-      filename: 'zoom.png',
-      mimeType: 'image/png',
-      size: 256,
-      relativePath: 'thread-1/zoom.png',
-      createdAt: 1,
-    };
-    setBindingMock('ListAttachments', async () => [att]);
-
-    const { getByLabelText } = await mountWithActiveThread();
-
-    // Seed Zone 1 with two items, one carrying an attachment id so the
-    // restore path resolves it.
-    replaceQueueForThread('thread-1', [
-      {
-        id: 'q-1',
-        threadId: 'thread-1',
-        message: 'first',
-        attachmentIds: ['att-zoom'],
-        sourceProposedPlan: null,
-        revisionSourceProposedPlan: null,
-        revisionSourceCommentIds: undefined,
-        enqueuedAt: 1,
-      },
-      {
-        id: 'q-2',
-        threadId: 'thread-1',
-        message: 'second',
-        attachmentIds: [],
-        sourceProposedPlan: null,
-        revisionSourceProposedPlan: null,
-        revisionSourceCommentIds: undefined,
-        enqueuedAt: 2,
-      },
-    ]);
-    await flush();
-
-    // Override the default UndoQueuedItems mock so we can assert it was
-    // called and return the items the predicate-and-store now expect.
-    const undoMock = setBindingMock('UndoQueuedItems', async () => {
-      const dropped = [...getQueueForThread('thread-1')];
-      replaceQueueForThread('thread-1', []);
-      return dropped;
-    });
-
-    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
-    expect(textarea.value).toBe('');
-    expect(textarea.selectionStart).toBe(0);
-
-    await fireEvent.keyDown(textarea, { key: 'ArrowUp' });
-    await waitFor(() => expect(undoMock).toHaveBeenCalledWith('thread-1'));
-
-    // Combined draft: items joined with a blank line; queue empty.
-    await waitFor(() => expect(textarea.value).toBe('first\n\nsecond'));
-    expect(getQueueForThread('thread-1')).toEqual([]);
-  });
-
-  // ---- T6 — Send Now visibility tracks (turn ∧ queue) -------------------
-
-  it('T6: Send Now button visibility tracks active turn ∧ queue non-empty', async () => {
-    const interruptMock = setBindingMock('InterruptTurn', async () => {});
-    const { getByTestId, queryByTestId } = await mountWithActiveThread();
-
-    // No turn, no queue → hidden.
-    expect(queryByTestId('composer-send-now')).toBeNull();
-
-    // Active turn but empty queue → still hidden.
-    startActiveTurn('thread-1');
-    await flush();
-    expect(queryByTestId('composer-send-now')).toBeNull();
-
-    // Active turn + queue items → visible.
-    replaceQueueForThread('thread-1', [
-      {
-        id: 'q-now',
-        threadId: 'thread-1',
-        message: 'in queue',
-        attachmentIds: [],
-        sourceProposedPlan: null,
-        revisionSourceProposedPlan: null,
-        revisionSourceCommentIds: undefined,
-        enqueuedAt: 1,
-      },
-    ]);
-    await flush();
-    const sendNow = await waitFor(() => getByTestId('composer-send-now'));
-    expect(sendNow).toBeTruthy();
-
-    // Click → calls InterruptTurn for the active thread.
-    await fireEvent.click(sendNow);
-    await waitFor(() => expect(interruptMock).toHaveBeenCalledWith('thread-1'));
-  });
-
-  // ---- T7 — ComposerHint visibility tracks (empty composer ∧ queue) -----
-
-  it('T7: ComposerHint shows when composer empty + queue non-empty; hidden once user types', async () => {
-    const { getByLabelText, queryByTestId, getByTestId } = await mountWithActiveThread();
-
-    // Empty composer + empty queue → no hint text rendered (slot still
-    // mounted for layout reservation).
-    expect(queryByTestId('composer-hint')).toBeNull();
-    expect(getByTestId('composer-hint-slot')).toBeTruthy();
-
-    // Seed the queue → hint flips on.
-    replaceQueueForThread('thread-1', [
-      {
-        id: 'q-hint',
-        threadId: 'thread-1',
-        message: 'queued for hint',
-        attachmentIds: [],
-        sourceProposedPlan: null,
-        revisionSourceProposedPlan: null,
-        revisionSourceCommentIds: undefined,
-        enqueuedAt: 1,
-      },
-    ]);
-    await flush();
-    await waitFor(() => expect(queryByTestId('composer-hint')).toBeTruthy());
-
-    // Typing in the composer hides the hint (the user has draft content
-    // so plain UP no longer retracts).
-    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
-    await fireEvent.input(textarea, { target: { value: 'follow-up text' } });
-    await flush();
-    expect(queryByTestId('composer-hint')).toBeNull();
-
-    // Clear the textarea and the queue → hint stays hidden because the
-    // queue is empty (and re-checks that the predicate is the
-    // intersection, not just "composer empty").
-    await fireEvent.input(textarea, { target: { value: '' } });
-    replaceQueueForThread('thread-1', []);
-    await flush();
-    expect(queryByTestId('composer-hint')).toBeNull();
-  });
-
-  // ---- T8 — Both zones render simultaneously with hairline divider ------
-
-  it('T8: SendQueuePreview shows hairline divider when Zone 1 + Zone 2 both populated', async () => {
-    const { getByTestId, queryByTestId } = await mountWithActiveThread();
+  it('T8: SendQueuePreview keeps pending rows above the composer until provider confirmation', async () => {
+    const { getByTestId } = await mountWithActiveThread();
 
     // Only Zone 1 → no divider.
     replaceQueueForThread('thread-1', [
@@ -510,11 +367,11 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
       },
     ]);
     await flush();
-    expect(getByTestId('send-queue-zone-queued')).toBeTruthy();
-    expect(queryByTestId('send-queue-zone-flushed')).toBeNull();
-    expect(queryByTestId('send-queue-zone-divider')).toBeNull();
+    let rows = Array.from(getByTestId('send-queue-preview').querySelectorAll('[data-testid="send-queue-preview-row"]'));
+    expect(rows.map((row) => row.getAttribute('data-state'))).toEqual(['queued']);
 
-    // Add Zone 2 (in-flight) → divider appears between zones.
+    // Add an in-flight flushed marker. It stays in the same pending stack
+    // until the provider echo confirms the user_text row.
     emitWailsEvent('provider:queue_flushed', {
       threadId: 'thread-1',
       items: [
@@ -522,20 +379,10 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
       ],
     });
     await flush();
-    await waitFor(() => expect(getByTestId('send-queue-zone-flushed')).toBeTruthy());
-    expect(getByTestId('send-queue-zone-divider')).toBeTruthy();
-
-    // Zone-2 row sits BEFORE Zone-1 row in DOM order — confirms the
-    // visual stack we assert in SendQueuePreview unit tests is wired
-    // through the integrated render.
-    const root = getByTestId('send-queue-preview');
-    const flushedZone = getByTestId('send-queue-zone-flushed');
-    const queuedZone = getByTestId('send-queue-zone-queued');
-    const flushedIdx = Array.from(root.children).indexOf(flushedZone);
-    const queuedIdx = Array.from(root.children).indexOf(queuedZone);
-    expect(flushedIdx).toBeGreaterThanOrEqual(0);
-    expect(queuedIdx).toBeGreaterThanOrEqual(0);
-    expect(flushedIdx).toBeLessThan(queuedIdx);
+    await waitFor(() => {
+      rows = Array.from(getByTestId('send-queue-preview').querySelectorAll('[data-testid="send-queue-preview-row"]'));
+      expect(rows.map((row) => row.getAttribute('data-state'))).toEqual(['flushed', 'queued']);
+    });
   });
 
   // ---- T9 — Thread switch clears queue state for outgoing thread --------

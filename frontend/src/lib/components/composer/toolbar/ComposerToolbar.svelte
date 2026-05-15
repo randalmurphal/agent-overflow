@@ -17,7 +17,6 @@
   import AccessToggle from './AccessToggle.svelte';
   import PlanSidebarToggleButton from './PlanSidebarToggleButton.svelte';
   import SendButton from './SendButton.svelte';
-  import SendNowButton from './SendNowButton.svelte';
   import ContextWindowMeter from '../../chat/ContextWindowMeter.svelte';
   import RateLimitMeter from '../../chat/RateLimitMeter.svelte';
   import type { SendButtonAction } from './sendButtonTypes';
@@ -38,13 +37,6 @@
     sendLabel?: string;
     hasCurrentPlan?: boolean;
     planCommentCount?: number;
-    /**
-     * True when the per-thread queue (Zone 1) has at least one
-     * retractable item. Drives the "Send Now" affordance: while a turn
-     * is active AND queued items exist, the user can ship the queue
-     * immediately by interrupting (same wire result as Stop).
-     */
-    hasQueuedItems?: boolean;
     onSend: () => void;
     onSendWithoutPlanComments?: () => void;
     onSendInNewThread?: () => void;
@@ -60,7 +52,6 @@
     sendLabel,
     hasCurrentPlan = false,
     planCommentCount = 0,
-    hasQueuedItems = false,
     onSend,
     onSendWithoutPlanComments,
     onSendInNewThread,
@@ -121,11 +112,6 @@
         <ContextWindowMeter data={pane.contextWindow} thread={pane.thread} />
       </div>
     {/if}
-    <SendNowButton
-      {isTurnActive}
-      {hasQueuedItems}
-      {onInterrupt}
-    />
     <SendButton
       {canSend}
       {isTurnActive}

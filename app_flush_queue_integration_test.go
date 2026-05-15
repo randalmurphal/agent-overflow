@@ -16,15 +16,14 @@ import (
 // full G1–G5 backend pipeline against a fake Codex session, exercising
 // the cross-package contract that earlier focused tests stub:
 //
-//  1. Two queue items registered via App.RegisterQueueItem land in
-//     triage's per-thread queue and emit
-//     `provider:queue_state_changed` snapshots after each register.
-//  2. Driving EventTurnStart → EventToolStart → EventToolComplete
-//     fires the flush trigger at the first clear provider boundary.
-//  3. The dispatcher emits `provider:queue_state_changed` with an
+//  1. EventTurnStart opens the active turn.
+//  2. Two queue items registered via App.RegisterQueueItem land in
+//     triage's per-thread queue, emit `provider:queue_state_changed`,
+//     and flush immediately through the dispatch worker.
+//  3. The dispatcher emits `provider:queue_flushed` for each successful
+//     provider write, then emits `provider:queue_state_changed` with an
 //     empty list so any client mirroring the queue observes Zone 1
-//     collapsing, then emits `provider:queue_flushed` for each
-//     successful provider write.
+//     collapse after it has a provider-sent marker to render.
 //  4. No `user:<turn>:flush:*` rows land before provider confirmation;
 //     pending-send markers carry deferred row data instead.
 //  5. Driving the wire echo (EventUserText with provider_item_id meta)
@@ -61,29 +60,6 @@ func TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex(t *testing.T) {
 		codex:    sess,
 	}
 
-	// 1. Register two queue items via the public RPC.
-	first, err := app.RegisterQueueItem(thread.ID, "first queued", SendMessageOptions{})
-	if err != nil {
-		t.Fatalf("RegisterQueueItem first: %v", err)
-	}
-	second, err := app.RegisterQueueItem(thread.ID, "second queued", SendMessageOptions{})
-	if err != nil {
-		t.Fatalf("RegisterQueueItem second: %v", err)
-	}
-
-	// Sanity: pre-flush queue snapshot has both items.
-	state := rec.lastQueueState(t)
-	if len(state.Items) != 2 {
-		t.Fatalf("pre-flush queue items: got %d, want 2", len(state.Items))
-	}
-	if state.Items[0].ID != first.ID || state.Items[1].ID != second.ID {
-		t.Errorf("pre-flush order: got [%s, %s], want [%s, %s]",
-			state.Items[0].ID, state.Items[1].ID, first.ID, second.ID)
-	}
-
-	// 2. Drive EventTurnStart and a top-level tool lifecycle. Tool
-	// start proves there is active provider work; tool completion is
-	// the boundary where the queued messages can be sent.
 	now := time.Now()
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind:      provider.EventTurnStart,
@@ -94,36 +70,19 @@ func TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex(t *testing.T) {
 		t.Fatalf("EventTurnStart: %v", err)
 	}
 
-	startMeta, _ := json.Marshal(map[string]any{
-		"toolName": "Bash",
-	})
-	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventToolStart,
-		ThreadID:  thread.ID,
-		TurnIndex: 0,
-		ItemID:    "tool-1",
-		ItemType:  "Bash",
-		Meta:      startMeta,
-		Timestamp: now,
-	}); err != nil {
-		t.Fatalf("EventToolStart: %v", err)
+	// Register two queue items via the public RPC. RegisterQueueItem now
+	// drains as soon as a live provider session exists, so the items move
+	// from queue snapshot to sent-but-unconfirmed markers immediately.
+	first, err := app.RegisterQueueItem(thread.ID, "first queued", SendMessageOptions{})
+	if err != nil {
+		t.Fatalf("RegisterQueueItem first: %v", err)
 	}
-	if len(emittedQueueFlushed(rec)) != 0 {
-		t.Fatalf("tool start should not flush queued messages")
-	}
-	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventToolComplete,
-		ThreadID:  thread.ID,
-		TurnIndex: 0,
-		ItemID:    "tool-1",
-		ItemType:  "Bash",
-		Meta:      startMeta,
-		Timestamp: now,
-	}); err != nil {
-		t.Fatalf("EventToolComplete: %v", err)
+	second, err := app.RegisterQueueItem(thread.ID, "second queued", SendMessageOptions{})
+	if err != nil {
+		t.Fatalf("RegisterQueueItem second: %v", err)
 	}
 
-	// 3. provider:queue_flushed must have fired once per accepted item
+	// provider:queue_flushed must have fired once per accepted item
 	// in original order with deterministic userItemIds.
 	flushedEvts := waitForAtLeastQueueFlushed(t, rec, 2)
 	if len(flushedEvts) != 2 {
@@ -154,7 +113,7 @@ func TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex(t *testing.T) {
 	// Post-flush queue snapshot is empty — triage emptied the queue
 	// and dispatchFlush emits a follow-up queue_state_changed so any
 	// mirror sees Zone 1 drain.
-	postFlushState := rec.lastQueueState(t)
+	postFlushState := waitForEmptyQueueState(t, rec, thread.ID)
 	if postFlushState.ThreadID != thread.ID {
 		t.Errorf("post-flush state ThreadID: got %q, want %q", postFlushState.ThreadID, thread.ID)
 	}
@@ -266,7 +225,7 @@ func TestParserToTriageSeam_QueuedCommandReplay_StampsRow(t *testing.T) {
 	// this test we want to focus on the parser → triage seam, not the
 	// dispatcher.
 	now := time.Now().UnixMilli()
-	app.triage.RegisterPendingSendWithDeferredItem(thread.ID, store.Item{
+	app.triage.RegisterPendingFlushSendAtIndex(thread.ID, "queue:test", store.Item{
 		ID:        aoItemID,
 		ThreadID:  thread.ID,
 		TurnIndex: 0,
@@ -277,7 +236,7 @@ func TestParserToTriageSeam_QueuedCommandReplay_StampsRow(t *testing.T) {
 		Meta:      `{"attachments":[]}`,
 		CreatedAt: now,
 		UpdatedAt: now,
-	})
+	}, 0)
 
 	// Reset captures so the assertions below only see emissions
 	// driven by the parser → triage flow.
@@ -375,6 +334,22 @@ func waitForAtLeastQueueFlushed(t *testing.T, rec *emitRecorder, want int) []Que
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("queue_flushed emissions: got %d, want at least %d", len(flushed), want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func waitForEmptyQueueState(t *testing.T, rec *emitRecorder, threadID string) QueueStateChangedEvent {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		for _, state := range emittedQueueStates(rec) {
+			if state.ThreadID == threadID && len(state.Items) == 0 {
+				return state
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("empty queue_state_changed for %s not observed", threadID)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

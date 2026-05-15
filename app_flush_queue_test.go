@@ -57,7 +57,7 @@ func TestDispatchFlush_Codex_DefersUserItemUntilWireEcho(t *testing.T) {
 			Message: "drained",
 			Payload: json.RawMessage(`{}`),
 		},
-	}, triage.FlushDispatchModeBoundary)
+	})
 
 	items, err := app.store.ListItemsForTurn(thread.ID, 3)
 	if err != nil {
@@ -104,6 +104,92 @@ func TestDispatchFlush_Codex_DefersUserItemUntilWireEcho(t *testing.T) {
 	}
 }
 
+func TestDispatchFlush_EchoInsertsAtDispatchPositionAndShiftsLaterRows(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	thread := testThread("flush-echo-insert-position")
+	thread.Provider = string(provider.Codex)
+	thread.WorkspacePath = initCheckpointRepo(t)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-3",
+		ThreadID:  thread.ID,
+		TurnIndex: 3,
+		StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+
+	sess := installSteerTestSession(t, app, thread, "ok")
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Codex),
+		token:    "flush-token",
+		codex:    sess,
+	}
+
+	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+		{
+			ID:      "queue:abc",
+			Message: "queued before assistant output",
+			Payload: json.RawMessage(`{}`),
+		},
+	})
+
+	if _, err := app.store.AppendItem(store.Item{
+		ID:        "assistant:3:0",
+		ThreadID:  thread.ID,
+		TurnIndex: 3,
+		Kind:      "assistant_text",
+		Role:      "assistant",
+		Status:    "completed",
+		Summary:   "assistant output caused by the queued text",
+		CreatedAt: now + 1,
+		UpdatedAt: now + 1,
+	}); err != nil {
+		t.Fatalf("append assistant row: %v", err)
+	}
+
+	echoMeta, _ := json.Marshal(map[string]any{
+		"provider_item_id": "wire-user-1",
+	})
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  thread.ID,
+		TurnIndex: 3,
+		ItemID:    "user:3:flush:1",
+		Content:   "queued before assistant output",
+		Meta:      echoMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("EventUserText: %v", err)
+	}
+
+	items, err := app.store.ListItemsForTurn(thread.ID, 3)
+	if err != nil {
+		t.Fatalf("ListItemsForTurn: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %+v, want queued user + shifted assistant", items)
+	}
+	if items[0].ID != "user:3:flush:1" || items[0].ItemIndex != 0 {
+		t.Fatalf("first item = %+v, want queued user at index 0", items[0])
+	}
+	if items[1].ID != "assistant:3:0" || items[1].ItemIndex != 1 {
+		t.Fatalf("second item = %+v, want shifted assistant at index 1", items[1])
+	}
+
+	upsertIndexes := map[string]int{}
+	for _, item := range emittedItemUpserts(rec) {
+		upsertIndexes[item.ID] = item.ItemIndex
+	}
+	if upsertIndexes["user:3:flush:1"] != 0 || upsertIndexes["assistant:3:0"] != 1 {
+		t.Fatalf("item upsert indexes = %+v, want shifted rows emitted", upsertIndexes)
+	}
+}
+
 func TestDispatchFlush_SecondBatchBeforeEchoAllocatesNextFlushID(t *testing.T) {
 	app, rec := newAppForFlushQueueRPC(t)
 
@@ -132,10 +218,10 @@ func TestDispatchFlush_SecondBatchBeforeEchoAllocatesNextFlushID(t *testing.T) {
 
 	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:first", Message: "first"},
-	}, triage.FlushDispatchModeBoundary)
+	})
 	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:second", Message: "second"},
-	}, triage.FlushDispatchModeBoundary)
+	})
 
 	flushed := emittedQueueFlushed(rec)
 	if len(flushed) != 2 {
@@ -148,7 +234,7 @@ func TestDispatchFlush_SecondBatchBeforeEchoAllocatesNextFlushID(t *testing.T) {
 	}
 }
 
-func TestDispatchFlush_BoundaryFlushDoesNotEmitSendBridgeReason(t *testing.T) {
+func TestDispatchFlush_EmitsQueueFlushedBeforeQueueDrainedSnapshot(t *testing.T) {
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-boundary-no-send-bridge")
@@ -189,84 +275,31 @@ func TestDispatchFlush_BoundaryFlushDoesNotEmitSendBridgeReason(t *testing.T) {
 
 	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:started", Message: "started"},
-	}, triage.FlushDispatchModeBoundary)
+	})
 
+	calls := rec.snapshot()
+	var flushedIndex, stateIndex = -1, -1
+	for i, call := range calls {
+		switch call.Channel {
+		case "provider:queue_flushed":
+			if flushedIndex == -1 {
+				flushedIndex = i
+			}
+		case "provider:queue_state_changed":
+			if stateIndex == -1 {
+				stateIndex = i
+			}
+		}
+	}
+	if flushedIndex == -1 || stateIndex == -1 {
+		t.Fatalf("expected queue_flushed and queue_state_changed events, got %+v", calls)
+	}
+	if flushedIndex > stateIndex {
+		t.Fatalf("queue_state_changed emitted before queue_flushed: flushed=%d state=%d", flushedIndex, stateIndex)
+	}
 	states := emittedQueueStates(rec)
-	if len(states) == 0 {
-		t.Fatal("expected queue_state_changed event")
-	}
-	if states[0].Reason != "" {
-		t.Fatalf("first queue_state_changed reason = %q, want empty", states[0].Reason)
-	}
-	if len(states[0].Items) != 0 {
-		t.Fatalf("flush-started queue snapshot items: got %d, want 0", len(states[0].Items))
-	}
-}
-
-func TestDispatchFlush_ImmediateCodexUsesFreshSend(t *testing.T) {
-	app, rec := newAppForFlushQueueRPC(t)
-
-	thread := testThread("flush-immediate-send")
-	thread.Provider = string(provider.Codex)
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	if err := app.store.InsertTurn(store.Turn{
-		TurnID:    "turn-0",
-		ThreadID:  thread.ID,
-		TurnIndex: 0,
-		StartedAt: time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatalf("InsertTurn: %v", err)
-	}
-	now := time.Now().UnixMilli()
-	if _, err := app.store.AppendItem(store.Item{
-		ID:        "user:0",
-		ThreadID:  thread.ID,
-		TurnIndex: 0,
-		Kind:      "user_text",
-		Role:      "user",
-		Status:    "completed",
-		Summary:   "interrupted turn seed",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("seed interrupted turn item: %v", err)
-	}
-
-	methodLog := filepath.Join(t.TempDir(), "codex-methods.log")
-	sess := installMethodLoggingCodexSession(t, thread, methodLog)
-	app.sessions[thread.ID] = session{
-		provider: string(provider.Codex),
-		token:    "flush-token",
-		codex:    sess,
-	}
-
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
-		{ID: "queue:forced", Message: "forced"},
-	}, triage.FlushDispatchModeImmediate)
-
-	states := emittedQueueStates(rec)
-	if len(states) == 0 {
-		t.Fatal("expected queue_state_changed event")
-	}
-	if states[0].Reason != queueStateReasonFlushStarted {
-		t.Fatalf("first queue_state_changed reason = %q, want %q", states[0].Reason, queueStateReasonFlushStarted)
-	}
-	methods := readMethodLog(t, methodLog)
-	if strings.Contains(methods, "turn/steer") {
-		t.Fatalf("immediate flush used turn/steer; methods:\n%s", methods)
-	}
-	if !strings.Contains(methods, "turn/start") {
-		t.Fatalf("immediate flush did not start a fresh turn; methods:\n%s", methods)
-	}
-	flushed := emittedQueueFlushed(rec)
-	if len(flushed) != 1 {
-		t.Fatalf("queue_flushed events: got %d, want 1", len(flushed))
-	}
-	if got := flushed[0].Items[0].UserItemID; got != "user:1:flush:1" {
-		t.Fatalf("immediate flush user item id = %q, want user:1:flush:1", got)
+	if len(states) == 0 || len(states[len(states)-1].Items) != 0 {
+		t.Fatalf("final queue snapshot = %+v, want empty", states)
 	}
 }
 
@@ -307,7 +340,12 @@ func TestDispatchFlush_Codex_NoActiveTurnFallsBackToSend(t *testing.T) {
 
 	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:fallback", Message: "race"},
-	}, triage.FlushDispatchModeBoundary)
+	})
+	flushed := app.triage.LiveStateSnapshotForThread(thread.ID).FlushedItems
+	if len(flushed) != 1 {
+		t.Fatalf("pending flushed items: got %+v, want one item", flushed)
+	}
+	userItemID := flushed[0].UserItemID
 
 	// Even though Steer returned NoActiveTurn, the fallback path
 	// reaches sess.Send. The user_text row still waits for the
@@ -324,7 +362,7 @@ func TestDispatchFlush_Codex_NoActiveTurnFallsBackToSend(t *testing.T) {
 		}
 	}
 	for _, item := range items {
-		if strings.HasPrefix(item.ID, "user:2:flush:") {
+		if item.ID == userItemID {
 			t.Fatalf("user_text row should wait for provider echo after fallback, got %+v", item)
 		}
 	}
@@ -333,15 +371,15 @@ func TestDispatchFlush_Codex_NoActiveTurnFallsBackToSend(t *testing.T) {
 		Kind:      provider.EventUserText,
 		ThreadID:  thread.ID,
 		TurnIndex: 2,
-		ItemID:    "user:2:flush:1",
+		ItemID:    userItemID,
 		Content:   "race",
 		Meta:      echoMeta,
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("EventUserText: %v", err)
 	}
-	if _, found, err := app.store.GetThreadItem(thread.ID, "user:2:flush:1"); err != nil || !found {
-		t.Fatalf("expected user:2:flush:1 after echo: found=%v err=%v", found, err)
+	if _, found, err := app.store.GetThreadItem(thread.ID, userItemID); err != nil || !found {
+		t.Fatalf("expected %s after echo: found=%v err=%v", userItemID, found, err)
 	}
 }
 
@@ -364,7 +402,7 @@ func TestDispatchFlush_NoSession_DoesNotPersistUserRow(t *testing.T) {
 	// No app.sessions entry — this simulates the torn-down case.
 	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:0", Message: "x"},
-	}, triage.FlushDispatchModeBoundary)
+	})
 
 	// We expect NO user_text row (we bail before persistence) and
 	// also NO sibling error row (because the persistence path didn't
@@ -425,7 +463,7 @@ func TestDispatchFlush_PerItemFailure_AbortsBatch(t *testing.T) {
 		{ID: "queue:0", Message: "first"},
 		{ID: "queue:1", Message: "second"},
 		{ID: "queue:2", Message: "third"},
-	}, triage.FlushDispatchModeBoundary)
+	})
 
 	// The attempted item registers a deferred pending marker before
 	// dispatch, but the failed provider write clears it and persists
@@ -495,19 +533,19 @@ func TestDispatchFlush_FailedItemDoesNotEmitQueueFlushed(t *testing.T) {
 
 	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:failed", Message: "failed"},
-	}, triage.FlushDispatchModeBoundary)
+	})
 
 	if flushed := emittedQueueFlushed(rec); len(flushed) != 0 {
 		t.Fatalf("failed dispatch emitted queue_flushed events: %+v", flushed)
 	}
 
 	states := emittedQueueStates(rec)
-	if len(states) < 2 {
-		t.Fatalf("queue_state_changed events: got %d, want at least 2", len(states))
+	if len(states) == 0 {
+		t.Fatalf("queue_state_changed events: got %d, want at least 1", len(states))
 	}
 	last := states[len(states)-1]
-	if last.Reason != "" {
-		t.Fatalf("last queue_state_changed reason = %q, want empty for boundary failure", last.Reason)
+	if len(last.Items) != 0 {
+		t.Fatalf("last queue_state_changed items = %+v, want empty for failed single-item dispatch", last.Items)
 	}
 }
 
@@ -540,7 +578,7 @@ func TestDispatchFlush_CodexSteerTimeoutKeepsPendingConfirmation(t *testing.T) {
 
 	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:timeout", Message: "eventually accepted"},
-	}, triage.FlushDispatchModeBoundary)
+	})
 
 	if flushed := emittedQueueFlushed(rec); len(flushed) != 1 {
 		t.Fatalf("ambiguous timeout should still enter Zone 2, queue_flushed=%+v", flushed)
@@ -609,9 +647,6 @@ func TestConfiguredFlushDispatcher_DoesNotBlockProviderEventHandler(t *testing.T
 		codex:    sess,
 	}
 
-	if _, err := app.RegisterQueueItem(thread.ID, "queued while provider works", SendMessageOptions{}); err != nil {
-		t.Fatalf("RegisterQueueItem: %v", err)
-	}
 	now := time.Now()
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind:      provider.EventTurnStart,
@@ -636,22 +671,16 @@ func TestConfiguredFlushDispatcher_DoesNotBlockProviderEventHandler(t *testing.T
 
 	done := make(chan error, 1)
 	go func() {
-		done <- app.triage.Handle(provider.ProviderEvent{
-			Kind:      provider.EventToolComplete,
-			ThreadID:  thread.ID,
-			TurnIndex: 0,
-			ItemID:    "tool-1",
-			ItemType:  "Bash",
-			Timestamp: now,
-		})
+		_, err := app.RegisterQueueItem(thread.ID, "queued while provider works", SendMessageOptions{})
+		done <- err
 	}()
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("EventToolComplete: %v", err)
+			t.Fatalf("RegisterQueueItem: %v", err)
 		}
 	case <-time.After(250 * time.Millisecond):
-		t.Fatal("configured flush dispatcher blocked provider event handler")
+		t.Fatal("configured flush dispatcher blocked queue registration")
 	}
 	if got := app.flushDispatchItemCount(thread.ID); got != 1 {
 		unlock()
@@ -686,8 +715,8 @@ func TestEnqueueFlushDispatch_SerializesBatchesForOneThread(t *testing.T) {
 	}
 
 	unlock := app.threadLocks().Lock(thread.ID)
-	app.enqueueFlushDispatch(thread.ID, []triage.QueuedFlushItem{{ID: "queue:0", Message: "first"}}, triage.FlushDispatchModeBoundary)
-	app.enqueueFlushDispatch(thread.ID, []triage.QueuedFlushItem{{ID: "queue:1", Message: "second"}}, triage.FlushDispatchModeBoundary)
+	app.enqueueFlushDispatch(thread.ID, []triage.QueuedFlushItem{{ID: "queue:0", Message: "first"}})
+	app.enqueueFlushDispatch(thread.ID, []triage.QueuedFlushItem{{ID: "queue:1", Message: "second"}})
 	if got := app.flushDispatchItemCount(thread.ID); got != 2 {
 		unlock()
 		t.Fatalf("in-flight flush dispatch count: got %d, want 2", got)
@@ -812,7 +841,7 @@ func TestDispatchFlushToProvider_RoutesByProviderType(t *testing.T) {
 
 func (a *App) dispatchFlushToProviderShouldErrorWith(t *testing.T, sess session, want string) {
 	t.Helper()
-	err := a.dispatchFlushToProvider(sess, "x", provider.SendOptions{}, triage.FlushDispatchModeBoundary)
+	err := a.dispatchFlushToProvider(sess, "x", provider.SendOptions{})
 	if err == nil {
 		t.Fatalf("dispatchFlushToProvider with empty session: nil err, want %q", want)
 	}
@@ -861,7 +890,7 @@ func TestDispatchFlush_PayloadDecoding(t *testing.T) {
 			Message: "no payload",
 			Payload: json.RawMessage(`{}`),
 		},
-	}, triage.FlushDispatchModeBoundary)
+	})
 
 	items, err := app.store.ListItemsForTurn(thread.ID, 1)
 	if err != nil {
@@ -945,9 +974,9 @@ func TestDispatchFlush_ResolveTurnIndex_FallsBackToNextWhenNoActiveTurn(t *testi
 	}
 
 	// active turn check returns nothing → fallback path.
-	got, err := app.resolveFlushTurnIndex(thread.ID, triage.FlushDispatchModeBoundary)
+	got, _, err := app.resolveFlushTurnPlacement(thread.ID)
 	if err != nil {
-		t.Fatalf("resolveFlushTurnIndex: %v", err)
+		t.Fatalf("resolveFlushTurnPlacement: %v", err)
 	}
 	if got != 1 {
 		t.Errorf("turn index: got %d, want 1 (next after settled turn 0)", got)
@@ -977,9 +1006,9 @@ func TestDispatchFlush_ResolveTurnIndex_PrefersActiveTurn(t *testing.T) {
 		t.Fatalf("InsertTurn: %v", err)
 	}
 
-	got, err := app.resolveFlushTurnIndex(thread.ID, triage.FlushDispatchModeBoundary)
+	got, _, err := app.resolveFlushTurnPlacement(thread.ID)
 	if err != nil {
-		t.Fatalf("resolveFlushTurnIndex: %v", err)
+		t.Fatalf("resolveFlushTurnPlacement: %v", err)
 	}
 	if got != 7 {
 		t.Errorf("turn index: got %d, want 7 (active turn)", got)
@@ -1108,6 +1137,21 @@ func (r *emitRecorder) reset() {
 	r.calls = r.calls[:0]
 }
 
+func emittedItemUpserts(rec *emitRecorder) []store.Item {
+	out := make([]store.Item, 0)
+	for _, c := range rec.snapshot() {
+		if c.Channel != "provider:item_event" {
+			continue
+		}
+		evt, ok := c.Data.(triage.ItemStreamEvent)
+		if !ok || evt.Action != "upsert" || evt.Item == nil {
+			continue
+		}
+		out = append(out, *evt.Item)
+	}
+	return out
+}
+
 func emittedQueueStates(rec *emitRecorder) []QueueStateChangedEvent {
 	out := make([]QueueStateChangedEvent, 0)
 	for _, c := range rec.snapshot() {
@@ -1225,56 +1269,6 @@ func TestRegisterQueueItem_RejectsRevisionCommentsWithoutPlan(t *testing.T) {
 	}
 }
 
-func TestUndoQueuedItems_DropsAndReturnsAll(t *testing.T) {
-	app, rec := newAppForFlushQueueRPC(t)
-	thread := testThread("rpc-undo")
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-
-	queued1, _ := app.RegisterQueueItem(thread.ID, "first", SendMessageOptions{})
-	queued2, _ := app.RegisterQueueItem(thread.ID, "second", SendMessageOptions{})
-
-	dropped, err := app.UndoQueuedItems(thread.ID)
-	if err != nil {
-		t.Fatalf("UndoQueuedItems: %v", err)
-	}
-	if len(dropped) != 2 {
-		t.Fatalf("dropped count: got %d, want 2", len(dropped))
-	}
-	if dropped[0].ID != queued1.ID || dropped[1].ID != queued2.ID {
-		t.Errorf("dropped order: got [%s, %s], want [%s, %s]",
-			dropped[0].ID, dropped[1].ID, queued1.ID, queued2.ID)
-	}
-	state := rec.lastQueueState(t)
-	if len(state.Items) != 0 {
-		t.Errorf("post-undo queue state: got %d items, want 0", len(state.Items))
-	}
-}
-
-func TestUndoQueuedItems_EmptyQueue_NoEmission(t *testing.T) {
-	app, rec := newAppForFlushQueueRPC(t)
-	thread := testThread("rpc-undo-empty")
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-
-	dropped, err := app.UndoQueuedItems(thread.ID)
-	if err != nil {
-		t.Fatalf("UndoQueuedItems: %v", err)
-	}
-	if len(dropped) != 0 {
-		t.Errorf("dropped count on empty queue: got %d, want 0", len(dropped))
-	}
-	for _, c := range rec.snapshot() {
-		if c.Channel == "provider:queue_state_changed" {
-			t.Errorf("unexpected queue_state_changed emission for no-op undo")
-		}
-	}
-}
-
 func TestGetQueueState_ReturnsSnapshot(t *testing.T) {
 	app, _ := newAppForFlushQueueRPC(t)
 	thread := testThread("rpc-snapshot")
@@ -1352,7 +1346,7 @@ func TestGetThreadLiveState_ReturnsServerSideSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("todo update: %v", err)
 	}
-	app.triage.RegisterPendingFlushSend(thread.ID, "queue-flushed", store.Item{
+	app.triage.RegisterPendingFlushSendAtIndex(thread.ID, "queue-flushed", store.Item{
 		ID:        "user:7:flush:1",
 		ThreadID:  thread.ID,
 		TurnIndex: 7,
@@ -1360,7 +1354,7 @@ func TestGetThreadLiveState_ReturnsServerSideSnapshot(t *testing.T) {
 		Role:      "user",
 		Status:    "completed",
 		Summary:   "flushed text",
-	})
+	}, 0)
 
 	state, err := app.GetThreadLiveState(thread.ID)
 	if err != nil {

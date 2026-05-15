@@ -1,15 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  QUEUE_STATE_REASON_FLUSH_FAILED,
-  QUEUE_STATE_REASON_FLUSH_STARTED,
-  setupEventListeners,
-} from './events';
+import { setupEventListeners } from './events';
 import { createThreadPane } from './thread.svelte';
 import { getAllPanes } from './panes.svelte';
 import {
   getActiveTurn,
   getThreadStatus,
-  hasPendingSend,
   resetForTest as resetThreadStatuses,
 } from './threadStatuses.svelte';
 import { resetForTest as resetSendQueue } from './sendQueue.svelte';
@@ -1390,33 +1385,6 @@ describe('setupEventListeners', () => {
     expect(getThreads().find((thread) => thread.id === 'thread-1')?.latestTurnCompletedAt).toBe(2000);
   });
 
-  it('turns on the pending-send bridge when the backend starts flushing queued items', async () => {
-    expect(hasPendingSend('thread-1')).toBe(false);
-
-    emitWailsEvent('provider:queue_state_changed', {
-      threadId: 'thread-1',
-      items: [],
-      reason: QUEUE_STATE_REASON_FLUSH_STARTED,
-    });
-
-    expect(hasPendingSend('thread-1')).toBe(true);
-    expect(getThreadStatus('thread-1')).toBe('running');
-
-    emitWailsEvent('provider:turn_started', {
-      threadId: 'thread-1',
-      turnId: 'turn-after-flush',
-      turnIndex: 1,
-      startedAt: 3000,
-    });
-
-    expect(hasPendingSend('thread-1')).toBe(false);
-    expect(getActiveTurn('thread-1')).toEqual({
-      turnId: 'turn-after-flush',
-      turnIndex: 1,
-      startedAt: 3000,
-    });
-  });
-
   it('does not turn on the pending-send bridge for boundary queue snapshots', async () => {
     emitWailsEvent('provider:turn_started', {
       threadId: 'thread-1',
@@ -1430,8 +1398,6 @@ describe('setupEventListeners', () => {
       items: [],
     });
 
-    expect(hasPendingSend('thread-1')).toBe(false);
-
     emitWailsEvent('provider:turn_completed', {
       threadId: 'thread-1',
       turnId: 'turn-boundary',
@@ -1441,25 +1407,6 @@ describe('setupEventListeners', () => {
       stopReason: 'end_turn',
     });
 
-    expect(hasPendingSend('thread-1')).toBe(false);
-    expect(getThreadStatus('thread-1')).toBe('idle');
-  });
-
-  it('clears the pending-send bridge when queued-item flush fails before a new turn starts', async () => {
-    emitWailsEvent('provider:queue_state_changed', {
-      threadId: 'thread-1',
-      items: [],
-      reason: QUEUE_STATE_REASON_FLUSH_STARTED,
-    });
-    expect(hasPendingSend('thread-1')).toBe(true);
-
-    emitWailsEvent('provider:queue_state_changed', {
-      threadId: 'thread-1',
-      items: [],
-      reason: QUEUE_STATE_REASON_FLUSH_FAILED,
-    });
-
-    expect(hasPendingSend('thread-1')).toBe(false);
     expect(getThreadStatus('thread-1')).toBe('idle');
   });
 

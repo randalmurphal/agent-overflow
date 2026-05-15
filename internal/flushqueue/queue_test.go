@@ -73,7 +73,7 @@ func TestItemFromTriagePopulatedPayload(t *testing.T) {
 func TestItemFromTriageCorruptPayloadReturnsIdentityOnly(t *testing.T) {
 	// A corrupt payload must still produce a renderable wire item:
 	// losing the attachment refs is preferable to dropping the message
-	// entirely (the frontend renders the text + offers retract).
+	// entirely while it waits above the composer.
 	got := ItemFromTriage("thread-3", triage.QueuedFlushItem{
 		ID:         "queue:ghi",
 		Message:    "broken payload",

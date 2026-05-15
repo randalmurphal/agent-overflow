@@ -14,8 +14,7 @@ import (
 // used by the frontend to mirror the backend's per-thread queue. The
 // wire shape mirrors SendMessageOptions's data fields plus the
 // frontend-allocated id and stamped enqueuedAt — together they're
-// enough for both the queue overlay rendering and the UP-arrow
-// retract path that re-hydrates the composer draft.
+// enough for queue overlay rendering and provider-echo correlation.
 //
 // AttachmentIDs (not full Attachment records) ride the wire because
 // the frontend already has the full records in its attachment store
@@ -23,16 +22,16 @@ import (
 // gain. Plan refs are passed by value because they're tiny and
 // already used as plain JSON across the existing send path.
 type QueuedItem struct {
-	ID                           string                        `json:"id"`
-	ThreadID                     string                        `json:"threadId"`
-	Message                      string                        `json:"message"`
-	AttachmentIDs                []string                      `json:"attachmentIds,omitempty"`
-	SourceProposedPlan           *store.ProposedPlanSourceRef  `json:"sourceProposedPlan,omitempty"`
-	RevisionSourceProposedPlan   *store.ProposedPlanSourceRef  `json:"revisionSourceProposedPlan,omitempty"`
-	RevisionSourceCommentIDs     []string                      `json:"revisionSourceCommentIds,omitempty"`
-	RevisionSourceDiffReview     *store.DiffReviewSourceRef    `json:"revisionSourceDiffReview,omitempty"`
-	RevisionSourceDiffCommentIDs []string                      `json:"revisionSourceDiffCommentIds,omitempty"`
-	EnqueuedAt                   int64                         `json:"enqueuedAt"`
+	ID                           string                       `json:"id"`
+	ThreadID                     string                       `json:"threadId"`
+	Message                      string                       `json:"message"`
+	AttachmentIDs                []string                     `json:"attachmentIds,omitempty"`
+	SourceProposedPlan           *store.ProposedPlanSourceRef `json:"sourceProposedPlan,omitempty"`
+	RevisionSourceProposedPlan   *store.ProposedPlanSourceRef `json:"revisionSourceProposedPlan,omitempty"`
+	RevisionSourceCommentIDs     []string                     `json:"revisionSourceCommentIds,omitempty"`
+	RevisionSourceDiffReview     *store.DiffReviewSourceRef   `json:"revisionSourceDiffReview,omitempty"`
+	RevisionSourceDiffCommentIDs []string                     `json:"revisionSourceDiffCommentIds,omitempty"`
+	EnqueuedAt                   int64                        `json:"enqueuedAt"`
 }
 
 // Payload is the wire shape of triage.QueuedFlushItem.Payload — the
@@ -53,9 +52,8 @@ type Payload struct {
 // ItemFromTriage decodes a triage QueuedFlushItem back into the
 // wire-side QueuedItem. The Payload is opaque app-layer JSON; on
 // decode failure we still return a partially-populated wire item so
-// the frontend can render the message text and offer retract — losing
-// attachment refs on a corrupt payload is preferable to the wire
-// dropping the item entirely.
+// the frontend can render the message text — losing attachment refs on
+// a corrupt payload is preferable to dropping the item entirely.
 func ItemFromTriage(threadID string, item triage.QueuedFlushItem) QueuedItem {
 	out := QueuedItem{
 		ID:         item.ID,

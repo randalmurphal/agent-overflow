@@ -18,13 +18,12 @@ type recordingDispatcher struct {
 type dispatchCall struct {
 	ThreadID string
 	Items    []QueuedFlushItem
-	Mode     FlushDispatchMode
 }
 
-func (rd *recordingDispatcher) dispatch(threadID string, items []QueuedFlushItem, mode FlushDispatchMode) {
+func (rd *recordingDispatcher) dispatch(threadID string, items []QueuedFlushItem) {
 	rd.mu.Lock()
 	defer rd.mu.Unlock()
-	rd.calls = append(rd.calls, dispatchCall{ThreadID: threadID, Items: items, Mode: mode})
+	rd.calls = append(rd.calls, dispatchCall{ThreadID: threadID, Items: items})
 }
 
 func (rd *recordingDispatcher) snapshot() []dispatchCall {
@@ -127,83 +126,6 @@ func TestRegisterQueueItem_IsolatedPerThread(t *testing.T) {
 	}
 }
 
-func TestDropQueueItem_RemovesMatchingEntry_PreservesOrder(t *testing.T) {
-	router, _, _ := newTestRouter(t)
-
-	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
-	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "second"))
-	router.RegisterQueueItem("t1", makeQueueItem("queue:2", "third"))
-
-	dropped, ok := router.DropQueueItem("t1", "queue:1")
-	if !ok {
-		t.Fatalf("drop: ok=false")
-	}
-	if dropped.ID != "queue:1" || dropped.Message != "second" {
-		t.Errorf("dropped: got %+v, want id=queue:1 message=second", dropped)
-	}
-
-	got := router.QueuedFlushItems("t1")
-	if len(got) != 2 {
-		t.Fatalf("len after drop: got %d, want 2", len(got))
-	}
-	if got[0].ID != "queue:0" || got[1].ID != "queue:2" {
-		t.Errorf("order after drop: got [%s, %s], want [queue:0, queue:2]", got[0].ID, got[1].ID)
-	}
-}
-
-func TestDropQueueItem_NoMatch_ReturnsFalse(t *testing.T) {
-	router, _, _ := newTestRouter(t)
-
-	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "x"))
-
-	if _, ok := router.DropQueueItem("t1", "queue:nope"); ok {
-		t.Errorf("drop unmatched id: ok=true, want false")
-	}
-	got := router.QueuedFlushItems("t1")
-	if len(got) != 1 {
-		t.Errorf("queue length after no-op drop: got %d, want 1", len(got))
-	}
-}
-
-func TestDropQueueItem_LastEntry_DeletesMapKey(t *testing.T) {
-	router, _, _ := newTestRouter(t)
-
-	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "x"))
-	if _, ok := router.DropQueueItem("t1", "queue:0"); !ok {
-		t.Fatalf("drop: ok=false")
-	}
-	if router.HasQueuedFlushItems("t1") {
-		t.Errorf("HasQueuedFlushItems after dropping last entry: true, want false")
-	}
-}
-
-func TestDropAllQueuedItems_ReturnsAllAndClears(t *testing.T) {
-	router, _, _ := newTestRouter(t)
-
-	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
-	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "second"))
-
-	got := router.DropAllQueuedItems("t1")
-	if len(got) != 2 {
-		t.Fatalf("len: got %d, want 2", len(got))
-	}
-	if got[0].ID != "queue:0" || got[1].ID != "queue:1" {
-		t.Errorf("order: got [%s, %s], want [queue:0, queue:1]", got[0].ID, got[1].ID)
-	}
-	if router.HasQueuedFlushItems("t1") {
-		t.Errorf("queue should be empty after DropAllQueuedItems")
-	}
-}
-
-func TestDropAllQueuedItems_EmptyQueue_ReturnsNil(t *testing.T) {
-	router, _, _ := newTestRouter(t)
-
-	got := router.DropAllQueuedItems("t1")
-	if got != nil {
-		t.Errorf("DropAllQueuedItems on empty queue: got %v, want nil", got)
-	}
-}
-
 func TestQueuedFlushItems_ReturnsCopySnapshot(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 
@@ -239,9 +161,6 @@ func TestTryFlushQueue_FiresAndConsumes(t *testing.T) {
 	if calls[0].ThreadID != "t1" || len(calls[0].Items) != 2 {
 		t.Errorf("dispatch[0]: got threadID=%q, items=%d, want t1 / 2", calls[0].ThreadID, len(calls[0].Items))
 	}
-	if calls[0].Mode != FlushDispatchModeBoundary {
-		t.Errorf("dispatch mode: got %q, want %q", calls[0].Mode, FlushDispatchModeBoundary)
-	}
 	if calls[0].Items[0].ID != "queue:0" || calls[0].Items[1].ID != "queue:1" {
 		t.Errorf("dispatch order: got [%s, %s], want [queue:0, queue:1]", calls[0].Items[0].ID, calls[0].Items[1].ID)
 	}
@@ -250,22 +169,22 @@ func TestTryFlushQueue_FiresAndConsumes(t *testing.T) {
 	}
 }
 
-func TestFlushQueuedItemsNow_UsesImmediateMode(t *testing.T) {
+func TestFlushQueuedItems_DispatchesQueuedItems(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 	rec := &recordingDispatcher{}
 	router.SetFlushDispatcher(rec.dispatch)
 
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
 
-	if !router.FlushQueuedItemsNow("t1") {
-		t.Fatalf("FlushQueuedItemsNow returned false")
+	if !router.FlushQueuedItems("t1") {
+		t.Fatalf("FlushQueuedItems returned false")
 	}
 	calls := rec.waitForAtLeastCalls(t, 1)
 	if len(calls) != 1 {
 		t.Fatalf("dispatch calls: got %d, want 1", len(calls))
 	}
-	if calls[0].Mode != FlushDispatchModeImmediate {
-		t.Fatalf("dispatch mode: got %q, want %q", calls[0].Mode, FlushDispatchModeImmediate)
+	if calls[0].ThreadID != "t1" || len(calls[0].Items) != 1 || calls[0].Items[0].ID != "queue:0" {
+		t.Fatalf("dispatch call: got %#v", calls[0])
 	}
 }
 

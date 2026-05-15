@@ -1,38 +1,25 @@
 import { SvelteMap } from 'svelte/reactivity';
-import type { Attachment } from '../types/attachment';
-import type { TerminalChip } from '../types/draft';
 import type { SourceDiffReview, SourceProposedPlan } from '../types/models';
 import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
 import * as bindings from './bindings';
 
 /**
- * Two-zone send queue.
+ * Pending send queue.
  *
- * Zone 1 — "queued, retractable". The user typed during a wire round
- * and the message is sitting in the backend's per-thread queue
- * waiting for the next safe provider boundary. The frontend MIRRORS this state via
- * `provider:queue_state_changed` events; Zone 1 is therefore a
- * reactive projection of the backend, not authoritative.
+ * `queueByThread` holds messages registered with the backend but not
+ * yet written to the provider by the dispatch worker.
  *
- * Zone 2 — "flushed, headed to history". The trigger fired and the
- * dispatcher began writing the user message to the provider. Zone 2
- * is the brief handoff between the queue overlay and the chat row:
- * populated by `provider:queue_flushed`, cleared when the matching
- * provider-confirmed `user_text` row appears with `provider_item_id`.
- * Bulk-cleared on thread switch / session teardown.
+ * `flushedByThread` holds messages written to the provider but not
+ * yet confirmed by the provider-visible user-message echo. Both states
+ * render in the same pending area above the composer.
  *
- * The store does not own dispatch decisions. RegisterQueueItem and
- * UndoQueuedItems both go through the backend RPC; the backend's
- * `provider:queue_state_changed` echo is what mutates Zone 1 here.
- * Optimistic local mutation is intentionally NOT done — the backend
- * is the source of truth and racing it would violate Core Principle
- * 1 ("Go is triage + pipe").
+ * The store does not own dispatch decisions. RegisterQueueItem goes
+ * through the backend RPC; backend events are the source of truth.
  */
 
 /** Wire-side queue item shape — what the frontend stores in Zone 1
  * after `provider:queue_state_changed` arrives, and what
- * RegisterQueueItem returns. Carries attachment IDs (not full
- * Attachment records) — the attachment store keys lookups by ID. */
+ * RegisterQueueItem returns. */
 export interface QueueItem {
   id: string;
   threadId: string;
@@ -57,20 +44,9 @@ export interface FlushedItem {
   flushedAt: number;
 }
 
-/** Snapshot shape consumed by `composerDraft.restoreDraftFor`. The
- * UP-arrow retract path collapses every Zone 1 item into one
- * snapshot — the Claude TUI's `popAllEditable` shape. Plan-revision
- * metadata is intentionally dropped (send-only routing data; not
- * part of the editable composer surface). */
-export interface QueueDraftSnapshot {
-  content: string;
-  attachments: Attachment[];
-  terminalChips: TerminalChip[];
-  sourceProposedPlan: SourceProposedPlan | null;
-}
-
 const queueByThread = new SvelteMap<string, readonly QueueItem[]>();
 const flushedByThread = new SvelteMap<string, readonly FlushedItem[]>();
+const confirmedFlushedUserIdsByThread = new Map<string, Set<string>>();
 const queueRevisionByThread = new Map<string, number>();
 
 const EMPTY_QUEUE: readonly QueueItem[] = Object.freeze([]);
@@ -103,15 +79,6 @@ export function hasQueueItems(threadId: string | null | undefined): boolean {
   return !!f && f.length > 0;
 }
 
-/** True only when Zone 1 (the retractable queue) has items. The
- * UP-arrow retract handler gates on this; Zone 2 items are not
- * retractable. */
-export function hasRetractableQueueItems(threadId: string | null | undefined): boolean {
-  if (!threadId) return false;
-  const q = queueByThread.get(threadId);
-  return !!q && q.length > 0;
-}
-
 /** Monotonic revision for combined queued/flushed state stale-hydration guards. */
 export function getQueueRevisionForThread(threadId: string | null | undefined): number {
   if (!threadId) return 0;
@@ -120,6 +87,28 @@ export function getQueueRevisionForThread(threadId: string | null | undefined): 
 
 function bumpQueueRevision(threadId: string): void {
   queueRevisionByThread.set(threadId, getQueueRevisionForThread(threadId) + 1);
+}
+
+function rememberFlushedConfirmation(threadId: string, userItemId: string): void {
+  let confirmed = confirmedFlushedUserIdsByThread.get(threadId);
+  if (!confirmed) {
+    confirmed = new Set<string>();
+    confirmedFlushedUserIdsByThread.set(threadId, confirmed);
+  }
+  confirmed.add(userItemId);
+}
+
+function isFlushedConfirmed(threadId: string, userItemId: string): boolean {
+  return confirmedFlushedUserIdsByThread.get(threadId)?.has(userItemId) ?? false;
+}
+
+function forgetFlushedConfirmation(threadId: string, userItemId: string): void {
+  const confirmed = confirmedFlushedUserIdsByThread.get(threadId);
+  if (!confirmed) return;
+  confirmed.delete(userItemId);
+  if (confirmed.size === 0) {
+    confirmedFlushedUserIdsByThread.delete(threadId);
+  }
 }
 
 type QueueZone<T> = SvelteMap<string, readonly T[]>;
@@ -167,6 +156,11 @@ function filterZoneItems<T>(
   return true;
 }
 
+function removeQueuedItemsById(threadId: string, queueItemIds: Set<string>): boolean {
+  if (queueItemIds.size === 0) return false;
+  return filterZoneItems(queueByThread, threadId, (item) => !queueItemIds.has(item.id));
+}
+
 // ---- Backend RPC mutations ------------------------------------------
 
 /** Register a queued user message via the backend RPC. Backend
@@ -204,16 +198,6 @@ export async function registerQueueItem(
   return queueItemFromWire(wire);
 }
 
-/** Drop every Zone 1 item via the backend RPC. Returns the dropped
- * items so the UP-arrow retract handler can combine them into a
- * single composer draft. */
-export async function undoQueuedItems(threadId: string): Promise<QueueItem[]> {
-  if (!threadId) return [];
-  const wire = await bindings.UndoQueuedItems(threadId);
-  if (!wire || wire.length === 0) return [];
-  return wire.map(queueItemFromWire);
-}
-
 // Note: `bindings.GetQueueState` exists for remote-client / re-attach
 // bootstrap, but no caller wires it today (events drive Zone 1 in the
 // running session). Re-add a `fetchQueueState` wrapper here when the
@@ -239,7 +223,12 @@ export function replaceFlushedForThread(
   items: readonly FlushedItem[],
 ): void {
   if (!threadId) return;
-  if (!replaceZoneItems(flushedByThread, threadId, items)) return;
+  const visibleItems = items.filter((item) => {
+    if (!isFlushedConfirmed(threadId, item.userItemId)) return true;
+    forgetFlushedConfirmation(threadId, item.userItemId);
+    return false;
+  });
+  if (!replaceZoneItems(flushedByThread, threadId, visibleItems)) return;
   bumpQueueRevision(threadId);
 }
 
@@ -253,14 +242,25 @@ export function markItemsFlushed(
 ): void {
   if (!threadId || items.length === 0) return;
   const now = Date.now();
-  const additions: FlushedItem[] = items.map((item) => ({
-    queueItemId: item.queueItemId,
-    userItemId: item.userItemId,
-    message: item.message,
-    flushedAt: now,
-  }));
-  if (!appendZoneItems(flushedByThread, threadId, additions, EMPTY_FLUSHED)) return;
-  bumpQueueRevision(threadId);
+  const queueItemIds = new Set(items.map((item) => item.queueItemId));
+  const removedQueuedItems = removeQueuedItemsById(threadId, queueItemIds);
+  const additions: FlushedItem[] = [];
+  for (const item of items) {
+    if (isFlushedConfirmed(threadId, item.userItemId)) {
+      forgetFlushedConfirmation(threadId, item.userItemId);
+      continue;
+    }
+    additions.push({
+      queueItemId: item.queueItemId,
+      userItemId: item.userItemId,
+      message: item.message,
+      flushedAt: now,
+    });
+  }
+  const appendedFlushedItems = appendZoneItems(flushedByThread, threadId, additions, EMPTY_FLUSHED);
+  if (removedQueuedItems || appendedFlushedItems) {
+    bumpQueueRevision(threadId);
+  }
 }
 
 /** Remove a Zone 2 entry by userItemId. Called when a timeline
@@ -277,8 +277,11 @@ export function confirmFlushedByUserItemId(
     threadId,
     (entry) => entry.userItemId !== userItemId,
   );
-  if (!changed) return;
-  bumpQueueRevision(threadId);
+  if (changed) {
+    bumpQueueRevision(threadId);
+    return;
+  }
+  rememberFlushedConfirmation(threadId, userItemId);
 }
 
 /** Drop every entry in both zones for a thread. Called from
@@ -287,57 +290,12 @@ export function confirmFlushedByUserItemId(
  * bleed into the next. */
 export function clearForThread(threadId: string): void {
   if (!threadId) return;
-  if (!queueByThread.has(threadId) && !flushedByThread.has(threadId)) return;
+  const hadVisibleItems = queueByThread.has(threadId) || flushedByThread.has(threadId);
+  confirmedFlushedUserIdsByThread.delete(threadId);
+  if (!hadVisibleItems) return;
   bumpQueueRevision(threadId);
   queueByThread.delete(threadId);
   flushedByThread.delete(threadId);
-}
-
-/** Build a draft snapshot from the union of Zone 1 items, in
- * arrival order. The UP-arrow retract handler uses this — every
- * queued message becomes one editable composer entry. Plan-revision
- * metadata is dropped because it isn't part of the composer's
- * editable surface (matches the user's "retract restores text +
- * attachments" expectation).
- *
- * Resolves attachment records via the supplied lookup so the
- * snapshot carries full Attachment objects (the shape
- * `composerDraft.restoreDraftFor` expects). */
-export function combineForRetract(
-  items: readonly QueueItem[],
-  resolveAttachment: (id: string) => Attachment | undefined,
-): QueueDraftSnapshot {
-  const messages = items.map((item) => item.message).filter((line) => line.length > 0);
-  const content = messages.join('\n\n');
-
-  const seen = new Set<string>();
-  const attachments: Attachment[] = [];
-  for (const item of items) {
-    for (const id of item.attachmentIds) {
-      if (seen.has(id)) continue;
-      seen.add(id);
-      const a = resolveAttachment(id);
-      if (a) attachments.push(a);
-    }
-  }
-
-  // Plan refs: take the first non-null sourceProposedPlan; combining
-  // multiple is not meaningful (different plans would imply different
-  // implementation contexts).
-  let sourcePlan: SourceProposedPlan | null = null;
-  for (const item of items) {
-    if (item.sourceProposedPlan) {
-      sourcePlan = item.sourceProposedPlan;
-      break;
-    }
-  }
-
-  return {
-    content,
-    attachments,
-    terminalChips: [],
-    sourceProposedPlan: sourcePlan,
-  };
 }
 
 // ---- Wire conversion -------------------------------------------------
@@ -371,5 +329,6 @@ export function queueItemFromWire(item: WireQueuedItem): QueueItem {
 export function resetForTest(): void {
   queueByThread.clear();
   flushedByThread.clear();
+  confirmedFlushedUserIdsByThread.clear();
   queueRevisionByThread.clear();
 }

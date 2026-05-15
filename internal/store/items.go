@@ -251,6 +251,71 @@ func (s *Store) AppendItem(item Item) (int, error) {
 	return next, nil
 }
 
+const insertItemAtIndexShiftOffset = 1000000
+
+// InsertItemAtIndex inserts item at a specific timeline slot, shifting
+// existing rows at or after item.ItemIndex down by one inside the same
+// transaction. Use this only when the provider has already established a
+// transcript boundary but the confirming row arrived after later rows.
+//
+// It returns every row whose item_index changed or was inserted, ordered by
+// the final item_index. Callers that mirror timeline rows live must emit all
+// returned rows, not only the inserted item.
+func (s *Store) InsertItemAtIndex(item Item, payload *Payload) ([]Item, error) {
+	applyItemDefaults(&item)
+	if item.ItemIndex < 0 {
+		return nil, fmt.Errorf("store: insert item at index: negative item_index %d", item.ItemIndex)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("store: begin insert item at index tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := upsertPayload(tx, payload, &item); err != nil {
+		return nil, err
+	}
+
+	// Avoid transient UNIQUE(thread_id, turn_index, item_index) collisions
+	// while shifting contiguous rows. The schema does not constrain
+	// item_index to non-negative values, and the transaction rolls back the
+	// temporary negative values if any later step fails.
+	if _, err := tx.Exec(
+		`UPDATE items
+		    SET item_index = -item_index - ?
+		  WHERE thread_id = ?
+		    AND turn_index = ?
+		    AND item_index >= ?`,
+		insertItemAtIndexShiftOffset, item.ThreadID, item.TurnIndex, item.ItemIndex,
+	); err != nil {
+		return nil, fmt.Errorf("store: shift item indexes before insert %s: %w", item.ID, err)
+	}
+
+	if err := insertItemWithIDTx(tx, item, "store: insert item at index"); err != nil {
+		return nil, err
+	}
+
+	if _, err := tx.Exec(
+		`UPDATE items
+		    SET item_index = -item_index - ?
+		  WHERE thread_id = ?
+		    AND turn_index = ?
+		    AND item_index <= ?`,
+		insertItemAtIndexShiftOffset-1, item.ThreadID, item.TurnIndex, -insertItemAtIndexShiftOffset,
+	); err != nil {
+		return nil, fmt.Errorf("store: restore shifted item indexes after insert %s: %w", item.ID, err)
+	}
+
+	affected, err := listItemsForTurnFromIndexTx(tx, item.ThreadID, item.TurnIndex, item.ItemIndex)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: commit insert item at index tx: %w", err)
+	}
+	return affected, nil
+}
+
 // AppendItemSummary appends delta to the item's summary column in-place
 // without round-tripping the full existing summary through Go memory. The
 // caller passes only the newly-arrived text; SQLite's `||` operator does the
@@ -548,6 +613,33 @@ func (s *Store) ListItemsForTurn(threadID string, turnIndex int) ([]Item, error)
 		it, err := scanItemRow(rows)
 		if err != nil {
 			return nil, fmt.Errorf("store: scan item row: %w", err)
+		}
+		items = append(items, it)
+	}
+	return items, rows.Err()
+}
+
+func listItemsForTurnFromIndexTx(tx *sql.Tx, threadID string, turnIndex int, itemIndex int) ([]Item, error) {
+	rows, err := tx.Query(
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.thread_id = ?
+		    AND items.turn_index = ?
+		    AND items.item_index >= ?
+		  ORDER BY items.item_index`,
+		threadID, turnIndex, itemIndex,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list shifted items for thread %s turn %d from index %d: %w", threadID, turnIndex, itemIndex, err)
+	}
+	defer rows.Close()
+
+	var items []Item
+	for rows.Next() {
+		it, err := scanItemRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan shifted item row: %w", err)
 		}
 		items = append(items, it)
 	}

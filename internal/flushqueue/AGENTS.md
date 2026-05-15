@@ -18,8 +18,8 @@ Pure projectors backing the per-thread flush queue: the wire-side
     `Payload` opaque to triage) into the rendered wire `QueuedItem`.
   - The queue-item id allocator.
 - What does NOT belong here:
-  - The App-bound `RegisterQueueItem` / `UndoQueuedItems` /
-    `GetQueueState` sagas — they stay in `app_flush_queue.go` where
+  - The App-bound `RegisterQueueItem` / `GetQueueState` sagas — they stay in
+    `app_flush_queue.go` where
     attachment / plan / triage coordination already lives.
   - Provider dispatch — `dispatchFlush` in `app_flush_queue.go`.
 
@@ -29,8 +29,8 @@ Pure projectors backing the per-thread flush queue: the wire-side
   to wire-shape + projection.
 - Do NOT log-and-swallow inside the projector. A corrupt payload
   intentionally returns a partially-populated wire item (message text
-  preserved, attachment refs nil) so the frontend can render the row
-  and offer retract — see the doc comment on `ItemFromTriage`.
+  preserved, attachment refs nil) so the frontend can render the row —
+  see the doc comment on `ItemFromTriage`.
 
 ## Anti-pattern carve-out: drift guard test
 

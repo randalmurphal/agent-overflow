@@ -24,11 +24,12 @@ import (
 // EventUserText arrives. Bounded by user attention (typically 0-1
 // entries per thread); swept at CleanupThread as a safety net.
 type pendingSend struct {
-	AOItemID     string // "user:<turnIndex>"
-	QueueItemID  string
-	TurnIndex    int
-	EnqueuedAt   int64
-	DeferredItem *store.Item
+	AOItemID        string // "user:<turnIndex>"
+	QueueItemID     string
+	TurnIndex       int
+	EnqueuedAt      int64
+	DeferredItem    *store.Item
+	InsertItemIndex *int
 }
 
 type PendingFlushItemSnapshot struct {
@@ -43,32 +44,40 @@ type PendingFlushItemSnapshot struct {
 // for diagnostics on stranded entries and the wall clock at the
 // register call is the natural reference.
 func (r *Router) RegisterPendingSend(threadID, aoItemID string, turnIndex int) {
-	r.registerPendingSend(threadID, aoItemID, turnIndex, "", nil)
+	r.registerPendingSend(threadID, aoItemID, turnIndex, "", nil, nil)
 }
 
-// RegisterPendingSendWithDeferredItem appends a pending-send marker whose
-// timeline row should be created only when the provider echo arrives. Used by
-// normal queued sends: Zone 2 remains visible until EventUserText proves the
-// provider accepted the message into context.
-func (r *Router) RegisterPendingSendWithDeferredItem(threadID string, item store.Item) {
-	r.RegisterPendingFlushSend(threadID, item.ID, item)
+func (r *Router) RegisterPendingFlushSendAtIndex(threadID, queueItemID string, item store.Item, itemIndex int) {
+	r.registerPendingSend(threadID, item.ID, item.TurnIndex, queueItemID, &item, &itemIndex)
 }
 
-func (r *Router) RegisterPendingFlushSend(threadID, queueItemID string, item store.Item) {
-	r.registerPendingSend(threadID, item.ID, item.TurnIndex, queueItemID, &item)
+func (r *Router) PendingDeferredInsertCount(threadID string, turnIndex int) int {
+	if threadID == "" {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, pending := range r.pendingByThread[threadID] {
+		if pending.TurnIndex == turnIndex && pending.DeferredItem != nil && pending.InsertItemIndex != nil {
+			count++
+		}
+	}
+	return count
 }
 
-func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, queueItemID string, deferredItem *store.Item) {
+func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, queueItemID string, deferredItem *store.Item, insertItemIndex *int) {
 	if threadID == "" || aoItemID == "" {
 		return
 	}
 	r.mu.Lock()
 	r.pendingByThread[threadID] = append(r.pendingByThread[threadID], pendingSend{
-		AOItemID:     aoItemID,
-		QueueItemID:  queueItemID,
-		TurnIndex:    turnIndex,
-		EnqueuedAt:   time.Now().UnixMilli(),
-		DeferredItem: deferredItem,
+		AOItemID:        aoItemID,
+		QueueItemID:     queueItemID,
+		TurnIndex:       turnIndex,
+		EnqueuedAt:      time.Now().UnixMilli(),
+		DeferredItem:    deferredItem,
+		InsertItemIndex: insertItemIndex,
 	})
 	r.mu.Unlock()
 }
@@ -133,11 +142,14 @@ func (r *Router) ClearPendingSendForFailure(threadID, aoItemID string) {
 		if entry.AOItemID != aoItemID {
 			continue
 		}
-		queue = append(queue[:i], queue[i+1:]...)
-		if len(queue) == 0 {
+		nextLen := len(queue) - 1
+		if nextLen == 0 {
 			delete(r.pendingByThread, threadID)
 		} else {
-			r.pendingByThread[threadID] = queue
+			next := make([]pendingSend, 0, nextLen)
+			next = append(next, queue[:i]...)
+			next = append(next, queue[i+1:]...)
+			r.pendingByThread[threadID] = next
 		}
 		return
 	}
