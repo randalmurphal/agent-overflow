@@ -615,14 +615,17 @@ export function projectUserInputResolution(
 /**
  * Clear statuses whose only purpose is to get the user's attention for
  * unseen activity. Completed is handled by lastReadAt on the Thread row;
- * this store owns transient live-status state, so it clears stale errors
- * once the user is viewing the thread. Blocking states stay until their
- * underlying request is actually resolved.
+ * interrupted durable state is handled the same way by MarkThreadReadNow.
+ * This store owns transient live-status state, so it clears stale errors
+ * and clean interrupts once the user is viewing the thread. Blocking states
+ * stay until their underlying request is actually resolved.
  */
 export function projectThreadViewed(threadId: string): void {
   if (!threadId) return;
-  if (!errorThreads.has(threadId)) return;
+  const hadAttentionStatus = errorThreads.has(threadId) || interruptedThreads.has(threadId);
+  if (!hadAttentionStatus) return;
   errorThreads.delete(threadId);
+  interruptedThreads.delete(threadId);
   recalculateThreadStatus(threadId);
 }
 

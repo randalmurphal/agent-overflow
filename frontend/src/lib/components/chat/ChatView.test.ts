@@ -16,6 +16,7 @@ import { getThreads, refreshThreads } from '../../stores/threads.svelte';
 import {
   getThreadStatus,
   projectTurnStarted,
+  projectTurnCompleted,
   projectThreadItem,
   resetForTest as resetThreadStatuses,
 } from '../../stores/threadStatuses.svelte';
@@ -582,6 +583,20 @@ describe('<ChatView>', () => {
       role: 'system',
       status: 'completed',
     }));
+
+    render(ChatView, { props: { pane } });
+    await tick();
+
+    expect(getThreadStatus('thread-1')).toBe('idle');
+  });
+
+  it('clears a stale sidebar interrupted status once the thread is open', async () => {
+    const thread = seedThread();
+    setBindingMock('ListThreads', async () => [thread]);
+    await refreshThreads();
+    const pane = await buildPane(thread);
+    projectTurnStarted('thread-1', 'turn-1', 0, 0);
+    projectTurnCompleted('thread-1', 'turn-1', { aborted: true });
 
     render(ChatView, { props: { pane } });
     await tick();

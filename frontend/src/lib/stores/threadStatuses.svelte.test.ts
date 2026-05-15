@@ -160,6 +160,16 @@ describe('threadStatuses store', () => {
     expect(getThreadStatus('thread-1')).toBe('idle');
   });
 
+  it('clears an interrupted turn when the thread is viewed', () => {
+    projectTurnStarted('thread-1', 'turn-1', 0, 0);
+    projectTurnCompleted('thread-1', 'turn-1', { aborted: true });
+    expect(getThreadStatus('thread-1')).toBe('interrupted');
+
+    projectThreadViewed('thread-1');
+
+    expect(getThreadStatus('thread-1')).toBe('idle');
+  });
+
   it('viewing a thread does not clear blocking action states', () => {
     projectTurnStarted('thread-1', 'turn-1', 0, 0);
     projectApprovalRequest('thread-1', 'req-1', 'command');
@@ -176,6 +186,19 @@ describe('threadStatuses store', () => {
     projectPlanReady('thread-1');
     projectThreadViewed('thread-1');
     expect(getThreadStatus('thread-1')).toBe('plan-ready');
+  });
+
+  it('clears interrupted even when a higher-priority visible status masks it', () => {
+    projectTurnStarted('thread-1', 'turn-1', 0, 0);
+    projectTurnCompleted('thread-1', 'turn-1', { aborted: true });
+    projectPlanReady('thread-1');
+    expect(getThreadStatus('thread-1')).toBe('plan-ready');
+
+    projectThreadViewed('thread-1');
+    expect(getThreadStatus('thread-1')).toBe('plan-ready');
+
+    projectPlanResolved('thread-1');
+    expect(getThreadStatus('thread-1')).toBe('idle');
   });
 
   describe('optimistic send', () => {

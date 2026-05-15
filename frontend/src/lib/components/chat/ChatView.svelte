@@ -274,14 +274,18 @@
     schedulePersistThreadRead(pane.threadId);
   });
 
-  // Error pills are attention state, like Completed. Once the user is
-  // looking at the thread, the timeline/banner carries the failure and the
-  // sidebar should stop advertising it as unseen. Pending approvals, user
-  // input, and plan-ready remain until the user resolves those actions.
+  // Error and Interrupted pills are attention state, like Completed. Once
+  // the user is looking at the thread, the timeline/banner carries the
+  // event and the sidebar should stop advertising it as unseen. Pending
+  // approvals, user input, and plan-ready remain until the user resolves
+  // those actions.
   $effect(() => {
     const threadId = pane.thread?.id;
     if (!threadId) return;
-    if (getThreadStatus(threadId) !== 'error') return;
+    // Dependency read: rerun when attention status changes while this thread
+    // is already active. projectThreadViewed owns the exact clear policy so
+    // masked flags still clear without duplicating priority rules here.
+    getThreadStatus(threadId);
     untrack(() => {
       projectThreadViewed(threadId);
     });
