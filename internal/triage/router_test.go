@@ -82,7 +82,7 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventBackgroundTaskNotification: true, // Claude task_notification is a notification, not a terminal lifecycle signal
 		provider.EventSubagentNotification:       true, // reserved for Codex subagent UI
 		provider.EventSubagentStatus:             true, // Codex child lifecycle marker; updates live state only
-		provider.EventCodexExecResult:            true, // Codex raw exec_command result; internal background projection signal
+		provider.EventCodexExecResult:            true, // Codex raw exec_command result; live-state enrichment only
 		provider.EventTerminalInteraction:        true, // Codex polling marker; triage persists empty-stdin variant
 		provider.EventUserText:                   true, // Phase A: dispatch case wired; full handler lands in Phase E
 		provider.EventDiff:                       true,

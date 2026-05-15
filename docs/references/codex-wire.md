@@ -60,10 +60,12 @@ The item stays `status: inProgress` until `spawn_exit_watcher` fires
 
 **Implication for agent-overflow**:
 `source: "unifiedExecStartup"` is the wire-typed signal that an item may
-become a background terminal. The model-visible raw `exec_command` result is
-the yield discriminator: `Process running with session ID ...` authorizes the
-background projection, while `Process exited with code ...` authorizes a
-normal foreground command row. Per
+become a background terminal. Typed `item/completed` is the history source for
+the command row, using the same item id. Typed
+`TerminalInteractionNotification` is the history source for the separate
+waited/interacted marker rows. Raw `exec_command` function-call output is
+model-facing text; it can enrich live metadata but must not gate or fabricate
+chat history. Per
 [invariant 25](../architecture/invariants.md#25-codex-backgrounding-uses-wire-typed-signals-never-heuristics),
 heuristic classifiers (event-ordering, etc.) are forbidden because that's
 what produced ghost rows in the former `BackgroundClassifier` (previously at
@@ -71,9 +73,9 @@ what produced ghost rows in the former `BackgroundClassifier` (previously at
 
 On the wire, Codex items close via `item/completed` using the same
 `item_id` — the status flips in place, no sibling row is emitted.
-Clients that want tray-pair semantics (Claude-style launch + sibling
-completion) synthesize the sibling row at the `item/completed`
-boundary themselves. See
+Agent Overflow follows that shape for Codex command executions: no
+`tool_completion` sibling is synthesized for unified exec command completion.
+See
 [`codex.md §Known upstream constraints`](codex.md#known-upstream-constraints)
 for the per-row stop gap.
 

@@ -42,12 +42,10 @@ func codexE2EExecResultMeta(t *testing.T, result, processID, command string) jso
 // wire-typed Codex projection: an item/started for a unifiedExecStartup
 // command is tracked transiently without creating a transcript row. It
 // appears in the running tray immediately, then becomes a background
-// task only after the raw exec_command result says Codex yielded the
-// running process back to the model. When the command completes after
-// that yield, the completion remains tray-only until Codex explicitly
-// polls the background PTY with TerminalInteractionNotification. That
-// wait signal is where completed command output becomes the next chat
-// history sibling.
+// task after a typed wait/yield signal marks the PTY backgrounded. When
+// the command completes, typed item/completed persists the command row
+// itself and clears the live tray. TerminalInteractionNotification owns only
+// separate waited/interacted marker rows while the PTY is still tracked.
 //
 // The Codex wire path is driven by direct triage.Handle calls because
 // the fake app-server harness only responds to requests — it can't
@@ -155,9 +153,9 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 		t.Error("no provider:background_tasks_changed emitted for cmd-e2e")
 	}
 
-	// Close the streaming text block so the completion sibling isn't
-	// deferred behind it. We use EventContentBlockStop with text block
-	// type — the same signal the streaming state machine watches.
+	// Close the streaming text block so the command row isn't deferred
+	// behind it. We use EventContentBlockStop with text block type — the
+	// same signal the streaming state machine watches.
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind: provider.EventContentBlockStop, ThreadID: thread.ID,
 		Meta:      json.RawMessage(`{"blockType":"text"}`),
@@ -175,8 +173,7 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 	}
 
 	// item/completed for the unifiedExec arrives "eventually" after the
-	// command exits. Backgrounded Codex completions update the live tray;
-	// transcript history is written only once the model explicitly polls.
+	// command exits. This is the Codex TUI history source for command rows.
 	completeMeta, _ := json.Marshal(map[string]any{
 		"source":      "unifiedExecStartup",
 		"item_status": "completed",
@@ -191,16 +188,17 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 		t.Fatalf("tool complete: %v", err)
 	}
 
-	waitUntilE2E(t, 3*time.Second, "completed command visible in tray", func() bool {
+	waitUntilE2E(t, 3*time.Second, "completed command persisted and tray cleared", func() bool {
 		live, err := app.ListLiveBackgroundTasks(thread.ID)
-		if err != nil || len(live) != 2 {
+		if err != nil || len(live) != 0 {
 			return false
 		}
-		return live[1].Kind == "tool_completion" && live[1].CompletionOf == "cmd-e2e" && live[1].Status == "completed"
+		row, found, err := app.store.GetThreadItem(thread.ID, "cmd-e2e")
+		return err == nil && found && row.Status == "completed" && row.PayloadKind == "command_output"
 	})
 
 	if siblings := findItemsByKindE2E(t, app.store, thread.ID, "tool_completion"); len(siblings) != 0 {
-		t.Fatalf("Codex command completion should not create transcript sibling: %+v", siblings)
+		t.Fatalf("Codex command completion should not create transcript sibling rows: %+v", siblings)
 	}
 
 	if err := app.triage.Handle(provider.ProviderEvent{
@@ -211,19 +209,16 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 		t.Fatalf("terminal interaction: %v", err)
 	}
 	waits := findItemsByKindE2E(t, app.store, thread.ID, string(provider.ItemTerminalInteraction))
-	if len(waits) != 1 {
-		t.Fatalf("completed poll should keep one wait carrier, got wait rows %+v", waits)
+	if len(waits) != 0 {
+		t.Fatalf("post-completion poll should not create detached waits: %+v", waits)
 	}
-	if waits[0].Status != "completed" {
-		t.Fatalf("wait carrier status = %q, want completed", waits[0].Status)
-	}
-	completion, found, err := app.store.GetThreadItem(thread.ID, "complete:cmd-e2e")
+	completion, found, err := app.store.GetThreadItem(thread.ID, "cmd-e2e")
 	if err != nil || !found {
 		t.Fatalf("command completion missing: found=%v err=%v", found, err)
 	}
 	completionMeta := decodeE2EItemMeta(t, completion.Meta)
 	if _, ok := completionMeta["wait_carrier_id"]; ok {
-		t.Fatalf("completion wait_carrier_id = %v, want command completion as a sibling row", completionMeta["wait_carrier_id"])
+		t.Fatalf("completion wait_carrier_id = %v, want original command row without wait carrier", completionMeta["wait_carrier_id"])
 	}
 	if completion.PayloadKind != "command_output" {
 		t.Fatalf("completion payload kind = %q, want command_output", completion.PayloadKind)
@@ -237,13 +232,14 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 	}
 }
 
-// --- Codex scenario 4: stop-all → clean RPC + per-terminal siblings ---
+// --- Codex scenario 4: stop-all → clean RPC + per-terminal command rows ---
 
 // TestE2E_Codex_StopAll_CleanRPC drives the Codex Stop-all primitive.
 // Two live Codex terminals on one thread, one
 // CleanCodexBackgroundTerminals binding call that fires the
 // thread/backgroundTerminals/clean RPC, then simulated item/completed
-// events (one per terminated PTY) that update the live tray. Verifies
+// events (one per terminated PTY) that persist command rows and clear
+// the live tray. Verifies
 // exactly ONE RPC fired — thread-wide, not per-row.
 func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 	app, bus := setupE2EApp(t)
@@ -261,9 +257,9 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 		t.Fatalf("turn start: %v", err)
 	}
 
-	// Seed two backgrounded unifiedExec launches through the projector
-	// (start + raw exec yield result), mirroring what the real wire path
-	// produces.
+	// Seed two live unifiedExec launches through the projector. The raw
+	// running result enriches live state only; typed item/completed below owns
+	// transcript history.
 	for _, id := range []string{"cmd-stop-1", "cmd-stop-2"} {
 		command := "server for " + id
 		startMeta, _ := json.Marshal(map[string]any{
@@ -303,8 +299,8 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("text delta: %v", err)
 	}
-	// Close the text block so completion siblings aren't queued behind
-	// an active streaming text block.
+	// Close the text block so command rows aren't queued behind an
+	// active streaming text block.
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind: provider.EventContentBlockStop, ThreadID: thread.ID,
 		Meta:      json.RawMessage(`{"blockType":"text"}`),
@@ -352,8 +348,8 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 	}
 
 	// The app-server responds by emitting item/completed for each
-	// terminated PTY. Triage updates the live tray for each completed
-	// command. A real app-server would also deliver a failed or completed
+	// terminated PTY. Triage persists each command row and clears each
+	// live tracker. A real app-server would also deliver a failed or completed
 	// item_status — we use completed here for the clean-shutdown case.
 	for _, id := range []string{"cmd-stop-1", "cmd-stop-2"} {
 		completeMeta, _ := json.Marshal(map[string]any{
@@ -369,18 +365,18 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 		}
 	}
 
-	waitUntilE2E(t, 3*time.Second, "two live tray completions", func() bool {
+	waitUntilE2E(t, 3*time.Second, "two command rows and empty live tray", func() bool {
 		live, err := app.ListLiveBackgroundTasks(thread.ID)
-		if err != nil {
+		if err != nil || len(live) != 0 {
 			return false
 		}
-		completions := 0
-		for _, it := range live {
-			if it.Kind == "tool_completion" && (it.CompletionOf == "cmd-stop-1" || it.CompletionOf == "cmd-stop-2") {
-				completions++
+		for _, id := range []string{"cmd-stop-1", "cmd-stop-2"} {
+			row, found, err := app.store.GetThreadItem(thread.ID, id)
+			if err != nil || !found || row.Status != "completed" {
+				return false
 			}
 		}
-		return completions == 2
+		return true
 	})
 
 	// Drain bus so the test cleanup doesn't trip on an oversized channel.

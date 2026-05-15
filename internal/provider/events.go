@@ -76,8 +76,8 @@ const (
 	// EventCodexExecResult is a Codex-only internal signal derived from the
 	// raw `exec_command` function-call output. It records whether the model
 	// was told the process exited during the initial wait or yielded with a
-	// resumable session id. Triage uses it to decide whether a unified exec
-	// completion is a normal command row or delayed background output.
+	// resumable session id. Triage uses it only to enrich live process state;
+	// typed item/completed owns command history.
 	EventCodexExecResult EventKind = "codex_exec_result"
 
 	// EventTerminalInteraction surfaces Codex's

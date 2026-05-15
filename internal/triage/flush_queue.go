@@ -293,7 +293,7 @@ func (r *Router) hasActiveCodexUnifiedExec(threadID string) bool {
 		return false
 	}
 	for _, tracker := range state.unifiedExec {
-		if tracker != nil && !tracker.completed {
+		if tracker != nil {
 			return true
 		}
 	}

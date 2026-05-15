@@ -26,10 +26,8 @@ import (
 //     "Interacted with background terminal" marker, but never persist
 //     stdin bytes because interactive input can contain secrets.
 //
-// Empty polls leave a visible wait carrier only when they can be correlated to
-// a tracked unified-exec PTY. Command item/completed owns final output/status
-// and is persisted as the next sibling when the carrier is flushed. Interactive
-// markers can still carry completed output payloads for legacy/non-poll signals.
+// Terminal interactions persist only when they can be correlated to a tracked
+// unified-exec PTY. Command item/completed owns final output/status.
 
 // terminalInteractionMeta is the Meta shape populated by
 // buildTerminalInteractionMeta in the Codex parser. Only the fields we
@@ -49,10 +47,9 @@ func decodeTerminalInteractionMeta(raw json.RawMessage) terminalInteractionMeta 
 }
 
 // handleTerminalInteraction routes Codex's `TerminalInteractionNotification`
-// events. Polling variants persist timeline rows while the command is still
-// running; when a poll observes completed output, the wait carrier is settled
-// and the command completion row is persisted as the next sibling. The interactive
-// variant records only `has_stdin` and never stores stdin text.
+// events. Polling variants persist marker rows while the command is still
+// running. The interactive variant records only `has_stdin` and never stores
+// stdin text.
 //
 // Correlation rules:
 //
@@ -90,16 +87,18 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		if strings.TrimSpace(meta.ProcessID) != "" {
 			r.settleCodexTerminalWaitsExcept(evt.ThreadID, meta.ProcessID)
 		}
-		r.markCodexUnifiedExecProcessBackgrounded(evt.ThreadID, meta.ProcessID)
-		if !r.hasCodexBackgroundTerminalForProcess(evt.ThreadID, meta.ProcessID) {
-			log.Printf("triage: terminal_interaction poll on %s for untracked process %q; dropping", evt.ThreadID, meta.ProcessID)
-			return nil
-		}
-		itemID = r.codexTerminalWaitItemIDForProcess(evt.ThreadID, meta.ProcessID, turnIndex)
 	} else {
 		if err := r.settleCodexTerminalWaitForProcess(evt.ThreadID, meta.ProcessID); err != nil {
 			return fmt.Errorf("terminal_interaction settle active wait %s: %w", meta.ProcessID, err)
 		}
+	}
+	r.markCodexUnifiedExecProcessBackgrounded(evt.ThreadID, meta.ProcessID)
+	if !r.hasCodexBackgroundTerminalForProcess(evt.ThreadID, meta.ProcessID) {
+		log.Printf("triage: terminal_interaction on %s for untracked process %q; dropping", evt.ThreadID, meta.ProcessID)
+		return nil
+	}
+	if isPoll {
+		itemID = r.codexTerminalWaitItemIDForProcess(evt.ThreadID, meta.ProcessID, turnIndex)
 	}
 	// A valid terminal interaction is a timeline boundary even though Codex does
 	// not emit a normal tool-start event for it. Close the current assistant
@@ -173,38 +172,11 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	}
 	if isPoll {
 		r.rememberCodexTerminalWaitCarrier(evt.ThreadID, meta.ProcessID, item.ID, turnIndex, now)
-		if tracker, ok := r.codexCompletedUnifiedExecTrackerForProcess(evt.ThreadID, meta.ProcessID); ok {
-			item.Status = statusCompleted
-			if err := r.persistItem(item, nil); err != nil {
-				return err
-			}
-			if err := r.persistCodexUnifiedExecCompletion(evt, tracker, turnIndex); err != nil {
-				return err
-			}
-			r.clearCodexTerminalWaitCarrierIfMatches(evt.ThreadID, meta.ProcessID, item.ID)
-			r.clearCodexCompletedOutputTracker(evt.ThreadID, meta.ProcessID)
-			return nil
-		}
-	}
-	var payload *store.Payload
-	var outputSummary string
-	if !isPoll {
-		payload, outputSummary = r.codexCompletedOutputPayloadForProcess(evt.ThreadID, meta.ProcessID, item.ID, evt.Meta, now)
-	}
-	if outputSummary != "" {
-		if !isPoll {
-			outputSummary = strings.Replace(outputSummary, "Waited for background terminal", "Interacted with background terminal", 1)
-		}
-		item.Summary = outputSummary
-	}
-	if payload != nil {
-		r.clearCodexCompletedOutputTracker(evt.ThreadID, meta.ProcessID)
-	} else if isPoll {
 		if !r.trackCodexPendingTerminalWait(evt.ThreadID, meta.ProcessID, item.ID, turnIndex, now) {
 			item.Status = statusCompleted
 		}
 	}
-	if err := r.persistItem(item, payload); err != nil {
+	if err := r.persistItem(item, nil); err != nil {
 		return err
 	}
 	return nil

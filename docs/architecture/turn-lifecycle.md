@@ -69,17 +69,17 @@ Codex has no `run_in_background` flag, but it still has backgrounded
 work. Triage may stamp `is_background=true` only from wire-typed
 signals:
 
-- The raw `exec_command` result for a `unifiedExecStartup` command reports
-  `Process running with session ID ...`, proving the model saw a resumable
-  background PTY instead of an initial-wait completion.
+- A typed `TerminalInteraction` notification for an empty `write_stdin` poll
+  targets a `unifiedExecStartup` process, proving the model explicitly waited
+  on the live background PTY.
 - `collabAgentToolCall` `spawn_agent` whose `agentsStates` still
   reports a non-terminal child when the parent yields or reaches
   `turn/completed`.
 
-Codex command executions follow the same sibling completion contract as
-Claude background work. Codex `spawn_agent` is different: the parent
-launch row is only the completed "spawned" event. Child-agent terminal
-state is shown by a separate `tool_completion` sibling created from
+Codex command executions do not follow Claude's sibling completion contract:
+typed `item/completed` updates the original command row. Codex `spawn_agent`
+is different: the parent launch row is only the completed "spawned" event.
+Child-agent terminal state is shown by a separate `tool_completion` sibling created from
 `wait_agent` or injected `<subagent_notification>` fragments. Direct child
 lifecycle notifications only update live/incomplete state so later explicit
 wait or notification output can own the visible transcript boundary.
@@ -87,12 +87,12 @@ wait or notification output can own the visible transcript boundary.
 Codex `unifiedExecStartup` command executions are the exception to the
 persisted-launch-row shape. Their starts are tracked as transient
 running-tray state so the user can see the command immediately, but
-they are not written into transcript history at start time. If the
-command completes before the model-visible raw result says it yielded, triage
-waits for that raw result before deciding whether to persist one normal command
-row. If Codex yields while the command is still running, the transient tray item
-flips to `is_background=true`; its output becomes chat history only when Codex
-explicitly polls the terminal.
+they are not written into transcript history at start time. Typed
+`item/completed` persists the command row with the original item id and clears
+the transient tray state, matching Codex TUI. Raw `exec_command` output may
+enrich live process metadata, but it does not create, delay, or reorder command
+history. Empty `write_stdin` polls persist separate terminal-interaction marker
+rows only while the command tracker is still live.
 
 The retired `BackgroundClassifier` heuristic must not come back.
 Background authorization comes from the wire fields above; model
@@ -664,7 +664,7 @@ counterpart "retry succeeded" wire signal from either provider.
 | `ChatWorkingIndicator` | `pane.activeTurn.startedAt` | Self-ticking timer, appears iff `activeTurn !== null`. |
 | `MessageTimeline` (response divider) | Ordered timeline nodes | Separator rendered before assistant text when tool activity immediately precedes the response in the same turn. |
 | `ToolCallCard` (backgrounded badge) | `item.isBackground && item.status === 'running'` | Renders a `…` status badge on the inline launch row. |
-| `BackgroundTaskTray` | `ListLiveBackgroundTasks(threadId)` | Shows running launches, pending Codex unifiedExec commands, and recent completion siblings; drops completed pairs on retention. |
+| `BackgroundTaskTray` | `ListLiveBackgroundTasks(threadId)` | Shows running launches and pending Codex unifiedExec commands; completed Codex commands leave the live tray when typed completion persists the command row. |
 
 ## Anti-patterns (forbidden)
 

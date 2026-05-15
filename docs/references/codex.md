@@ -41,10 +41,9 @@ Codex has no `run_in_background` flag, but it does background work via
 `exec_command`. The shape to remember:
 
 - `CommandExecution.source == "unifiedExecStartup"` is the wire-typed
-  signal for a unified exec command. The raw `exec_command` result tells
-  whether this instance actually yielded: `Process running with session ID
-  ...` means the model saw a resumable background PTY; `Process exited with
-  code ...` means the command completed during the initial wait.
+  signal for a unified exec command. Raw `exec_command` result text can say
+  whether the model saw a running process or an immediate exit, but it is not
+  the UI history source.
 - `yield_time_ms` (default 10s, `core/src/tools/handlers/unified_exec.rs`)
   governs how long the tool blocks before returning partial output.
 - After yield, the PTY is tracked by `UnifiedExecProcessManager`;
@@ -54,8 +53,8 @@ Codex has no `run_in_background` flag, but it does background work via
 - On the wire: one `item/*` pair. `item/started` (status `inProgress`),
   optional streaming output deltas, eventual `item/completed` (status
   flips in place, same `item_id`). No "yielded" event and no
-  `is_background` flag. Agent Overflow synthesizes the sibling
-  `tool_completion` row for background-tray/history parity.
+  `is_background` flag. Agent Overflow persists the same item id as the
+  command row on typed `item/completed`, matching Codex TUI.
 - `exec_command` supports parallel tool calls (`supports_parallel_tool_calls = true`).
   Each parallel call has its own `call_id` and random-i32 `process_id`.
 - `TerminalInteractionNotification` with empty `stdin` = the model
