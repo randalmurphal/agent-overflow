@@ -431,6 +431,34 @@ describe('<BranchPicker>', () => {
     expect(cleanRow.textContent ?? '').not.toMatch(/[↑↓]/);
   });
 
+  it('truncates long branch labels and surfaces the full name as the row tooltip', async () => {
+    const pane = await buildPane('main');
+    const longName = 'feature/this-is-a-very-long-branch-name';
+    setBindingMock('GitListBranches', async () => [
+      { name: 'main', isCurrent: true, isDefault: true },
+      { name: longName, isCurrent: false, isDefault: false },
+      { name: 'short', isCurrent: false, isDefault: false },
+    ]);
+
+    const { getByTestId, findByTitle, findByRole } = render(BranchPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+
+    // Hover tooltip carries the full branch name.
+    const longRow = await findByTitle(longName);
+    expect(longRow.getAttribute('role')).toBe('menuitem');
+    // Visible label is right-truncated with an ellipsis and never exceeds
+    // the configured ceiling (20 chars including the …).
+    expect(longRow.textContent ?? '').toContain(`${longName.slice(0, 19)}…`);
+    expect(longRow.textContent ?? '').not.toContain(longName);
+
+    // Short names render unchanged and skip the tooltip — nothing to expand.
+    const shortRow = await findByRole('menuitem', { name: /short/ });
+    expect(shortRow.getAttribute('title')).toBeNull();
+    expect(shortRow.textContent ?? '').toContain('short');
+  });
+
   it('fires background fetch on open and refreshes branches when it actually fetched', async () => {
     const pane = await buildPane('main');
     let listCallCount = 0;

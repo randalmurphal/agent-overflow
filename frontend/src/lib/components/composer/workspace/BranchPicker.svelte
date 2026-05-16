@@ -253,6 +253,22 @@
     return tag ? `${arrows} · ${tag}` : arrows;
   }
 
+  // Display ceiling for branch labels in the row list. Anything longer is
+  // right-truncated to MAX-1 visible chars + "…"; the full name surfaces
+  // via the title attribute on the row.
+  const BRANCH_LABEL_MAX_CHARS = 20;
+
+  function truncateBranchLabel(name: string): string {
+    if (name.length <= BRANCH_LABEL_MAX_CHARS) return name;
+    return name.slice(0, BRANCH_LABEL_MAX_CHARS - 1) + '…';
+  }
+
+  function branchRowTitle(branch: GitBranch): string | undefined {
+    if (!creating && workspaceChangingDisabled) return disabledReason;
+    if (branch.name.length > BRANCH_LABEL_MAX_CHARS) return branch.name;
+    return undefined;
+  }
+
   function isSelectedBranch(branch: GitBranch): boolean {
     if (branch.name !== currentBranch) return false;
     if (branch.worktreePath) return sameNormalizedPath(branch.worktreePath, currentWorkspace);
@@ -467,11 +483,11 @@
         <div class="max-h-56 overflow-y-auto">
           {#each filteredBranches as branch (branch.name)}
             <MenuItem
-              label={branch.name}
+              label={truncateBranchLabel(branch.name)}
               suffix={branchBadge(branch)}
               checked={isBaseSelected(branch)}
               disabled={!creating && workspaceChangingDisabled}
-              title={!creating && workspaceChangingDisabled ? disabledReason : undefined}
+              title={branchRowTitle(branch)}
               onSelect={() => selectBranch(branch)}
               action={showsSyncAction(branch) ? syncIcon : undefined}
               actionLabel={syncingBranch === branch.name
