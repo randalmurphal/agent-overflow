@@ -10,7 +10,6 @@ describe("classifyToolName", () => {
     expect(classifyToolName(null)).toEqual({
       icon: "generic",
       label: "tool",
-      displayName: "Tool",
       isSubagent: false,
     });
   });
@@ -19,7 +18,6 @@ describe("classifyToolName", () => {
     expect(classifyToolName(undefined)).toEqual({
       icon: "generic",
       label: "tool",
-      displayName: "Tool",
       isSubagent: false,
     });
   });
@@ -28,19 +26,14 @@ describe("classifyToolName", () => {
     expect(classifyToolName("")).toEqual({
       icon: "generic",
       label: "tool",
-      displayName: "Tool",
       isSubagent: false,
     });
   });
 
   it("trims whitespace-only tool names to the generic fallback", () => {
-    // Whitespace-only strings are functionally unnamed tools; we
-    // should not fall through to a bare "Tool" display with a
-    // whitespace displayName.
     expect(classifyToolName("   ")).toEqual({
       icon: "generic",
       label: "tool",
-      displayName: "Tool",
       isSubagent: false,
     });
   });
@@ -51,12 +44,14 @@ describe("classifyToolName", () => {
     const out = classifyToolName("MCP/Bash");
     expect(out.icon).toBe("puzzle");
     expect(out.label).toBe("mcp");
-    expect(out.displayName).toBe("Bash");
     expect(out.isSubagent).toBe(false);
   });
 
-  it('MCP/ with empty suffix falls back to "MCP tool" display', () => {
-    expect(classifyToolName("MCP/").displayName).toBe("MCP tool");
+  it('MCP/ with empty suffix stays in the MCP bucket', () => {
+    const out = classifyToolName("MCP/");
+    expect(out.icon).toBe("puzzle");
+    expect(out.label).toBe("mcp");
+    expect(out.isSubagent).toBe(false);
   });
 
   it("Bash maps to terminal icon", () => {
@@ -76,7 +71,6 @@ describe("classifyToolName", () => {
       const out = classifyToolName(name);
       expect(out.icon).toBe("file");
       expect(out.label).toBe(label);
-      expect(out.displayName).toBe(name);
       expect(out.isSubagent).toBe(false);
     },
   );
@@ -104,7 +98,6 @@ describe("classifyToolName", () => {
       const out = classifyToolName(name);
       expect(out.icon).toBe("eye");
       expect(out.label).toBe("image");
-      expect(out.displayName).toBe(name);
       expect(out.isSubagent).toBe(false);
     },
   );
@@ -113,14 +106,12 @@ describe("classifyToolName", () => {
     const out = classifyToolName("MCP");
     expect(out.icon).toBe("puzzle");
     expect(out.label).toBe("mcp");
-    expect(out.displayName).toBe("MCP tool");
   });
 
   it("Agent classifies as subagent and uses robot icon", () => {
     const out = classifyToolName("Agent");
     expect(out.icon).toBe("robot");
     expect(out.label).toBe("agent");
-    expect(out.displayName).toBe("Agent");
     expect(out.isSubagent).toBe(true);
   });
 
@@ -147,20 +138,18 @@ describe("classifyToolName", () => {
     const out = classifyToolName("wait_agent");
     expect(out.icon).toBe("robot");
     expect(out.label).toBe("waiting");
-    expect(out.displayName).toBe("Wait for agent");
     expect(out.isSubagent).toBe(false);
   });
 
   it.each([
-    ["close_agent", "closed", "Close agent"],
-    ["resume_agent", "resume", "Resume agent"],
+    ["close_agent", "closed"],
+    ["resume_agent", "resume"],
   ])(
     "%s maps to a non-parent collab control row",
-    (name, label, displayName) => {
+    (name, label) => {
       const out = classifyToolName(name);
       expect(out.icon).toBe("robot");
       expect(out.label).toBe(label);
-      expect(out.displayName).toBe(displayName);
       expect(out.isSubagent).toBe(false);
     },
   );
@@ -169,23 +158,20 @@ describe("classifyToolName", () => {
     expect(classifyToolName(name).icon).toBe("checklist");
   });
 
-  it("unknown tool names fall through to the generic category but preserve the display name", () => {
+  it("unknown tool names fall through to the generic category", () => {
     const out = classifyToolName("SomeCustomTool");
     expect(out.icon).toBe("generic");
     expect(out.label).toBe("tool");
-    expect(out.displayName).toBe("SomeCustomTool");
     expect(out.isSubagent).toBe(false);
   });
 
   it('case-sensitive matching — "bash" (lowercase) falls through to generic', () => {
     // The switch table uses exact provider tool names; a lowercase
-    // variant is treated as custom/unknown so the display shows what
-    // the provider actually sent.
+    // variant is treated as custom/unknown.
     expect(classifyToolName("bash").icon).toBe("generic");
-    expect(classifyToolName("bash").displayName).toBe("bash");
   });
 
-  it("preserves leading/trailing whitespace around the display name after trim", () => {
+  it("trims leading/trailing whitespace before classification", () => {
     // Whitespace is trimmed at entry so "  Bash  " routes to the Bash
     // branch rather than falling to generic.
     expect(classifyToolName("  Bash  ").icon).toBe("terminal");

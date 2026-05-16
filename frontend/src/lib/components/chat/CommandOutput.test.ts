@@ -363,7 +363,7 @@ describe('<CommandOutput>', () => {
   });
 
   it('renders foreground running commands in the reserved status slot', () => {
-    const { getByTestId, queryByTestId } = render(CommandOutput, {
+    const { getByTestId } = render(CommandOutput, {
       props: {
         item: makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' }),
         meta: commandMeta({ command: 'pnpm test' }),
@@ -374,11 +374,10 @@ describe('<CommandOutput>', () => {
     const status = getByTestId('command-output-status');
     expect(slot.className).toContain('min-w-');
     expect(status.querySelector('[data-testid="indicator"]')?.getAttribute('aria-label')).toBe('Running');
-    expect(queryByTestId('completion-badge')).toBeNull();
   });
 
-  it('keeps the running status slot without rendering a success badge', () => {
-    const { getByTestId, queryByTestId } = render(CommandOutput, {
+  it('keeps the running status slot stable', () => {
+    const { getByTestId } = render(CommandOutput, {
       props: {
         item: makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' }),
         meta: commandMeta({ command: 'pnpm test' }),
@@ -387,7 +386,6 @@ describe('<CommandOutput>', () => {
 
     expect(getByTestId('command-output-status-slot').className).toContain('min-w-');
     expect(getByTestId('indicator').getAttribute('aria-label')).toBe('Running');
-    expect(queryByTestId('completion-badge')).toBeNull();
   });
 
   it('keeps the same status slot when a foreground command completes', async () => {

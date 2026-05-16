@@ -73,7 +73,7 @@
   let agentLabel = $derived(deriveClaudeSubagentLabel(agentInputObject, agentToolName));
   let modelLabel = $derived(deriveClaudeSubagentModelLabel(agentInputObject, displayMeta, agentToolName));
   let description = $derived(deriveClaudeSubagentDescription(agentInputObject));
-  let inputPreview = $derived(description || toolCardInputPreview(effectiveDisplayItem, classification, summaryMeta, displayMeta));
+  let inputPreview = $derived(description || toolCardInputPreview(effectiveDisplayItem, summaryMeta, displayMeta));
   let time = $derived(
     new Date(effectiveStatusItem.createdAt).toLocaleTimeString(undefined, {
       hour: 'numeric',

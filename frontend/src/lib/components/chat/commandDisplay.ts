@@ -63,16 +63,6 @@ export function commandErrorForItem(
   return { code: codeLabel, msg: message };
 }
 
-export function commandErrorLineForItem(
-  item: Item,
-  meta: CommandOutputMeta | null | undefined,
-  itemMeta: Record<string, unknown> | null,
-  payloadMeta: Record<string, unknown> | null,
-): string {
-  const error = commandErrorForItem(item, meta, itemMeta, payloadMeta);
-  return [error.code ?? 'error code unknown', error.msg].join(': ');
-}
-
 export function terminalInteractionLabelFromSummary(summary: string | undefined): string {
   const raw = (summary ?? '').trim();
   if (!raw) return 'Waited for background terminal';

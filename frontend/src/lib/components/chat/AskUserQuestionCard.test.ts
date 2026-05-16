@@ -103,15 +103,14 @@ describe('<AskUserQuestionCard>', () => {
       }),
     });
 
-    const { getByTestId, queryByTestId } = render(AskUserQuestionCard, {
+    const { getByTestId } = render(AskUserQuestionCard, {
       props: { item },
     });
 
     expect(getByTestId('ask-user-question-status').querySelector('[data-testid="indicator"]')?.getAttribute('data-state')).toBe('running');
-    expect(queryByTestId('completion-badge')).toBeNull();
   });
 
-  it('shows no success badge once the user has answered', () => {
+  it('shows no success indicator once the user has answered', () => {
     const item = makeItem({
       kind: 'tool_call',
       status: 'completed',
@@ -137,7 +136,6 @@ describe('<AskUserQuestionCard>', () => {
     });
 
     expect(queryByTestId('ask-user-question-status')).toBeNull();
-    expect(queryByTestId('completion-badge')).toBeNull();
   });
 
   it('shows the failure indicator when the row was force-closed by interrupt', () => {

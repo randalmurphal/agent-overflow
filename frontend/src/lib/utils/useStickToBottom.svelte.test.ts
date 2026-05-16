@@ -4,6 +4,7 @@ import {
   resetUseStickToBottomModuleStateForTest,
   type UseStickToBottomController,
 } from './useStickToBottom.svelte';
+import { clearUiRenderTrace, setUiRenderTraceEnabled } from './uiRenderTrace';
 
 // happy-dom doesn't measure layout, so tests stub scrollHeight /
 // clientHeight / scrollTop on the scroll element via Object.defineProperty.
@@ -109,6 +110,8 @@ describe('createUseStickToBottomController', () => {
 
   beforeEach(() => {
     resetUseStickToBottomModuleStateForTest();
+    setUiRenderTraceEnabled(false);
+    clearUiRenderTrace();
     MockResizeObserver.instances = [];
     originalRO = globalThis.ResizeObserver;
     (globalThis as unknown as { ResizeObserver: typeof MockResizeObserver }).ResizeObserver = MockResizeObserver;
@@ -129,6 +132,8 @@ describe('createUseStickToBottomController', () => {
 
   afterEach(() => {
     controller.detach();
+    setUiRenderTraceEnabled(false);
+    clearUiRenderTrace();
     scrollEl.remove();
     if (originalRO) {
       (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = originalRO;

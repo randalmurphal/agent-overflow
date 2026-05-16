@@ -1,7 +1,7 @@
 import type { Item } from '../../types/models';
 import { findPathRanges } from '../../utils/pathLinkify';
 import { waitAgentDisplayReceiverIds } from '../../utils/waitAgentDisplay';
-import type { ToolKindVisual } from './toolCardHeader';
+import { isCommandToolName } from './commandDisplay';
 
 /**
  * Decoded preview shape. The single-segment plain-text result is the
@@ -19,7 +19,6 @@ export interface ToolCardPreview {
 
 export function toolCardInputPreview(
   item: Item,
-  classification: ToolKindVisual,
   summaryMeta: Record<string, unknown> | null,
   itemMeta: Record<string, unknown> | null,
 ): string {
@@ -32,7 +31,7 @@ export function toolCardInputPreview(
     const title = summaryMeta.title;
     if (typeof title === 'string' && title.trim()) return title.trim();
   }
-  return classification.displayName;
+  return fallbackPreviewForToolName(item.toolName);
 }
 
 /**
@@ -60,6 +59,15 @@ function waitAgentPreview(item: Item, meta: Record<string, unknown> | null): str
     ? 'Waiting on'
     : 'Waited on';
   return count > 0 ? `${verb} ${count} ${noun}` : `${verb} agents`;
+}
+
+function fallbackPreviewForToolName(toolName: string | undefined): string {
+  const raw = (toolName ?? '').trim();
+  if (!raw) return 'Tool';
+  if (raw === 'MCP') return 'MCP tool';
+  if (raw.startsWith('MCP/')) return raw.slice(4) || 'MCP tool';
+  if (isCommandToolName(raw)) return 'Bash';
+  return raw;
 }
 
 function receiverThreadCount(meta: Record<string, unknown> | null): number {

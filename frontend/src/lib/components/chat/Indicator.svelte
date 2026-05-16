@@ -8,9 +8,8 @@
    * no "RUNNING" / "Failed" / "Stopped" annotations — those live in
    * `RowError.svelte` when an error sub-line is warranted.
    *
-   * Companion to `CompletionBadge.svelte`, which Phase 2/3 retires:
-   * Indicator's `null` state replaces the success badge, and its
-   * `error` state replaces the failure badge.
+   * `null` is the redesigned success state. Error/declined detail
+   * belongs in `RowError.svelte`.
    *
    * `backgrounded` uses three small staggered dots so a running
    * backgrounded launch is visually distinct from a foreground

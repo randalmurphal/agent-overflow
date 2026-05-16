@@ -1026,7 +1026,6 @@ describe("<ToolCallCard> header dispatcher", () => {
 
     expect(text).toContain("Waiting for Galileo [explorer]");
     expect(text).not.toContain("└ Galileo [explorer]");
-    expect(queryByTestId("completion-badge")).toBeNull();
   });
 
   it("renders a checklist icon for Plan / ExitPlanMode", async () => {
@@ -1489,7 +1488,6 @@ describe("<ToolCallCard> backgrounded status indicator", () => {
     });
 
     expect(queryByTestId("command-output-status")).toBeNull();
-    expect(queryByTestId("completion-badge")).toBeNull();
   });
 
   it("renders the Bash label for tool_completion kind even when the flags match", async () => {
@@ -1578,8 +1576,8 @@ describe("<ToolCallCard> status dispatch", () => {
       props: { pane, item },
     });
 
-    expect(queryByTestId("tool-call-card-status")).toBeNull();
-    expect(queryByTestId("completion-badge")).toBeNull();
+    expect(queryByTestId("command-output-status")).toBeNull();
+    expect(queryByTestId("indicator")).toBeNull();
   });
 
   it("renders the error indicator and sub-line for errored tool calls", async () => {
@@ -1615,8 +1613,8 @@ describe("<ToolCallCard> status dispatch", () => {
       props: { pane, item },
     });
 
-    expect(queryByTestId("tool-call-card-status")).toBeNull();
-    expect(queryByTestId("completion-badge")).toBeNull();
+    expect(queryByTestId("command-output-status")).toBeNull();
+    expect(queryByTestId("indicator")).toBeNull();
   });
 
   it("collapses killed into the error indicator and sub-line", async () => {

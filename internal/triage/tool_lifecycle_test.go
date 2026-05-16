@@ -2271,7 +2271,7 @@ func TestRecoverOrphanedBackgroundTasksSkipsLaunchWithoutTaskID(t *testing.T) {
 // Now recovery drains the stash and uses its data — status, exit
 // code, output file — to write the session_died sibling. The user
 // sees the real outcome the host captured rather than a generic
-// "killed" badge.
+// stopped state.
 func TestRecoverOrphanedBackgroundTasksDrainsStash(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -2470,7 +2470,7 @@ func TestForceClosedRow_LateCompletionDoesNotResurrect(t *testing.T) {
 // stamps is_error on every non-completed terminal, so the status
 // precedence has to favour killed over the generic errored bucket).
 // Every other non-completed status still collapses to statusErrored
-// so an unknown wire value never renders as a success badge.
+// so an unknown wire value never renders as a successful row.
 func TestBackgroundTerminalStatus_KilledMapping(t *testing.T) {
 	cases := []struct {
 		name string
@@ -2534,8 +2534,8 @@ func TestBackgroundTerminalStatus_KilledMapping(t *testing.T) {
 
 	// statusKilled must be the literal 'killed' — the store CHECK
 	// constraint (migration v22) pins this literal, and the frontend
-	// renders the Stopped badge off this exact string. A rename would
-	// silently slip past the other tests in this file.
+	// renders the stopped RowError copy off this exact string. A rename
+	// would silently slip past the other tests in this file.
 	if statusKilled != "killed" {
 		t.Errorf("statusKilled = %q, want %q", statusKilled, "killed")
 	}
@@ -2642,8 +2642,9 @@ func TestAskUserQuestionLifecycle_StartCompletedFlipsToCompleted(t *testing.T) {
 // AskUserQuestion is awaiting an answer, the turn ends without a
 // matching tool_result. The existing forceCloseOrphanToolCalls safety
 // net (invariant 23) flips the orphan tool_call to errored with the
-// "turn ended with tool unresolved" summary suffix. Same behavior the
-// frontend renders as the failure CompletionBadge for any inline tool.
+// "turn ended with tool unresolved" summary suffix. The frontend
+// renders the same state as an error indicator plus RowError for any
+// inline tool.
 func TestAskUserQuestionLifecycle_InterruptForceClosesToErrored(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

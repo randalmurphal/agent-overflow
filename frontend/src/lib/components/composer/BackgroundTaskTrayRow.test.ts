@@ -31,7 +31,7 @@ function renderTrayRow(task: TrayTask, provider: ProviderID | null = 'codex') {
 }
 
 describe('<BackgroundTaskTrayRow>', () => {
-  it('renders command tray rows with the backgrounded indicator and no completion badge', () => {
+  it('renders command tray rows with the backgrounded indicator', () => {
     const launch = makeItem({
       id: 'bg-command',
       kind: 'tool_call',
@@ -43,11 +43,10 @@ describe('<BackgroundTaskTrayRow>', () => {
       payloadMeta: JSON.stringify({ command: 'sleep 30', lineCount: 0, preview: '' }),
     });
 
-    const { getByTestId, queryByTestId } = renderTrayRow(taskFor(launch));
+    const { getByTestId } = renderTrayRow(taskFor(launch));
 
     expect(getByTestId('command-output-label').textContent).toBe('bash');
     expect(getByTestId('command-output-status')).toHaveAttribute('data-state', 'backgrounded');
-    expect(queryByTestId('completion-badge')).toBeNull();
   });
 
   it('routes Claude Agent tray rows through AgentRow', () => {
@@ -63,11 +62,10 @@ describe('<BackgroundTaskTrayRow>', () => {
       }),
     });
 
-    const { getByTestId, queryByTestId } = renderTrayRow(taskFor(launch), 'claude');
+    const { getByTestId } = renderTrayRow(taskFor(launch), 'claude');
 
     expect(getByTestId('agent-row-label').textContent).toBe('agent');
     expect(getByTestId('agent-row-preview').textContent).toContain('Explorer');
-    expect(queryByTestId('completion-badge')).toBeNull();
   });
 
   it('routes Codex collab tray rows through CollabToolRow with spawn status enabled', () => {
@@ -86,11 +84,10 @@ describe('<BackgroundTaskTrayRow>', () => {
       }),
     });
 
-    const { getByTestId, queryByTestId } = renderTrayRow(taskFor(launch));
+    const { getByTestId } = renderTrayRow(taskFor(launch));
 
     expect(getByTestId('collab-tool-row-label').textContent).toBe('spawn');
     expect(getByTestId('collab-tool-row-status-slot').querySelector('[data-state="running"]')).not.toBeNull();
-    expect(queryByTestId('completion-badge')).toBeNull();
   });
 
   it('routes generic tray rows through GenericToolCallRow', () => {
@@ -102,9 +99,8 @@ describe('<BackgroundTaskTrayRow>', () => {
       status: 'running',
     });
 
-    const { getByTestId, queryByTestId } = renderTrayRow(taskFor(launch), 'claude');
+    const { getByTestId } = renderTrayRow(taskFor(launch), 'claude');
 
     expect(getByTestId('tool-call-card-label').textContent).toBe('read');
-    expect(queryByTestId('completion-badge')).toBeNull();
   });
 });

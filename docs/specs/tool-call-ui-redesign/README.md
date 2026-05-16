@@ -317,10 +317,10 @@ Project rules that bound this work — pointers, not duplication.
 | `AskUserQuestionCard.svelte` | 2 | Restyle chrome (borders, fonts, drop success badge). Behavior unchanged. |
 | `ProposedPlanCard.svelte` | 2 | Restyle chrome only. |
 | `BackgroundTaskTrayRow.svelte` | 2 | Tray surface re-uses the same renderers; verify `surface: 'tray'` modes still render correctly after `CompletionBadge` removal. |
-| `toolCardHeader.ts` | 3 | `label` / `displayName` fields trimmed — gutter labels are now by *category* (`bash`, `read`, `edit`, `agent`, `mcp`). `icon` and `isSubagent` remain. |
+| `toolCardHeader.ts` / `toolCardPreview.ts` | 3 | `ToolKindVisual` keeps only visual category data: `icon`, gutter `label`, and `isSubagent`. Raw fallback display text lives in `toolCardPreview.ts`, derived from `item.toolName` only when summary/title metadata is absent. |
 | `subagentLaunch.ts`, `claudeSubagentLabel.ts`, `claudeSubagentTranscript.ts` | 3 | Audit; fold what only `AgentRow` consumes into `AgentRow.svelte`. |
-| `commandDisplay.ts` | 3 | `commandErrorLineForItem` becomes a thin helper producing `{ code, msg }` for `RowError`. |
-| `CompletionBadge.svelte` | 3 | Component stays for any non-tool surface that still uses it; if no callers remain after Phase 2, delete. |
+| `commandDisplay.ts` | 3 | Delete the legacy string error-line helper; `commandErrorForItem` returns `{ code, msg }` for `RowError`. |
+| `CompletionBadge.svelte` | 3 | Deleted after Phase 2 left no real callers. |
 
 ## Phase 1 — Primitives and rail (no behavior change)
 
@@ -381,14 +381,14 @@ Sequence keeps the screen working between commits.
 
 **Goal:** remove dead code, validate, run review.
 
-1. Trim `toolCardHeader.ts` (drop now-unused `label` / `displayName`
-   fields).
+1. Trim `toolCardHeader.ts` (drop now-unused `displayName`; keep
+   `label` as the gutter category).
 2. Audit subagent utilities (`subagentLaunch.ts`,
    `claudeSubagentLabel.ts`, `claudeSubagentTranscript.ts`); fold
    what only `AgentRow.svelte` consumes.
-3. `commandDisplay.ts` → split into `{ code, msg }` shape for
-   `RowError`.
-4. Delete `CompletionBadge.svelte` if no callers remain.
+3. `commandDisplay.ts` → keep `{ code, msg }` shape for `RowError`;
+   delete the legacy string-line helper.
+4. Delete `CompletionBadge.svelte`; no callers remain.
 5. Update tests that asserted on uppercase labels, `CompletionBadge`
    presence, success-badge text, etc.
 6. Run `post-task-review` skill — parallel review across performance

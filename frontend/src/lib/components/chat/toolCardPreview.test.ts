@@ -1,5 +1,51 @@
 import { describe, expect, it } from 'vitest';
-import { decodeToolCardPreview } from './toolCardPreview';
+import type { Item } from '../../types/models';
+import { decodeToolCardPreview, toolCardInputPreview } from './toolCardPreview';
+
+function makeItem(overrides: Partial<Item>): Item {
+  return {
+    id: 'i1',
+    threadId: 't1',
+    turnIndex: 0,
+    itemIndex: 0,
+    kind: 'tool_call',
+    role: 'assistant',
+    status: 'completed',
+    summary: '',
+    createdAt: 0,
+    updatedAt: 0,
+    ...overrides,
+  };
+}
+
+describe('toolCardInputPreview', () => {
+  it('falls back to the raw custom tool name without storing it in the classification', () => {
+    const item = makeItem({ toolName: 'SomeCustomTool' });
+    expect(toolCardInputPreview(item, null, null)).toBe('SomeCustomTool');
+  });
+
+  it('falls back to the MCP suffix for prefixed MCP tools', () => {
+    const item = makeItem({ toolName: 'MCP/filesystem.read' });
+    expect(toolCardInputPreview(item, null, null)).toBe('filesystem.read');
+  });
+
+  it('falls back to MCP tool for bare and empty-suffix MCP names', () => {
+    expect(toolCardInputPreview(makeItem({ toolName: 'MCP' }), null, null)).toBe('MCP tool');
+    expect(toolCardInputPreview(makeItem({ toolName: 'MCP/' }), null, null)).toBe('MCP tool');
+  });
+
+  it('preserves leading whitespace in MCP fallback suffixes so they do not become path links', () => {
+    const item = makeItem({ toolName: 'MCP/ /tmp/foo.ts' });
+    const preview = toolCardInputPreview(item, null, null);
+    expect(preview).toBe(' /tmp/foo.ts');
+    expect(decodeToolCardPreview(preview).path).toBeUndefined();
+  });
+
+  it('keeps command fallback text human-readable after category-label trimming', () => {
+    const item = makeItem({ toolName: 'Bash' });
+    expect(toolCardInputPreview(item, null, null)).toBe('Bash');
+  });
+});
 
 describe('decodeToolCardPreview', () => {
   it('returns plain text when the input has no path', () => {

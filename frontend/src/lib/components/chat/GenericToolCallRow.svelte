@@ -70,7 +70,7 @@
   );
 
   let inputPreview = $derived.by<string>(() => {
-    return toolCardInputPreview(effectiveDisplayItem, classification, summaryMeta, displayMeta);
+    return toolCardInputPreview(effectiveDisplayItem, summaryMeta, displayMeta);
   });
 
   let previewDecoded = $derived(decodeToolCardPreview(inputPreview));

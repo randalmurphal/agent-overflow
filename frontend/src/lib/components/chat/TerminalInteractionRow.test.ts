@@ -21,13 +21,12 @@ function makeItem(overrides: Partial<Item> = {}): Item {
 
 describe('<TerminalInteractionRow>', () => {
   it('renders the "Waited for background terminal" label from item.summary', () => {
-    const { getByTestId, queryByRole, container } = render(TerminalInteractionRow, { props: { item: makeItem() } });
+    const { getByTestId, queryByRole } = render(TerminalInteractionRow, { props: { item: makeItem() } });
     const row = getByTestId('terminal-interaction-row');
     expect(row.textContent).toContain('Waited for background terminal');
     // Without an attached command_output payload there's no embedded
     // command summary and no embedded CommandOutput shell.
     expect(queryByRole('button', { name: /Toggle command output/i })).toBeNull();
-    expect(container.querySelector('[data-testid="completion-badge"]')).toBeNull();
   });
 
   it('falls back to the canonical label when summary is empty', () => {
@@ -84,11 +83,10 @@ describe('<TerminalInteractionRow>', () => {
     const item = makeItem({
       summary: 'Waited for background terminal: sleep 1; echo done',
     });
-    const { getByTestId, queryByRole, queryByTestId } = render(TerminalInteractionRow, { props: { item } });
+    const { getByTestId, queryByRole } = render(TerminalInteractionRow, { props: { item } });
 
     expect(getByTestId('terminal-interaction-row').textContent).toContain('Waited for background terminal');
     expect(queryByRole('button', { name: /Toggle command output/i })).toBeNull();
-    expect(queryByTestId('completion-badge')).toBeNull();
   });
 
   it('keeps structured terminal command metadata out of the wait carrier body', () => {

@@ -200,7 +200,7 @@ describe('<SubagentGroup>', () => {
     expect(getByTestId('subagent-group-label').textContent).toContain('Opus');
   });
 
-  it('shows a running indicator while parent.status is running, and no success badge once it flips', () => {
+  it('shows a running indicator while parent.status is running, and no success indicator once it flips', () => {
     const running = mkGroup({
       parentId: 'p-run',
       parentItem: mkAgentParent('p-run', {
@@ -221,7 +221,6 @@ describe('<SubagentGroup>', () => {
     });
     const { container } = render(SubagentGroupTestHarness, { props: { group: completed } });
     expect(container.querySelector('[data-testid="subagent-group-status"]')).toBeNull();
-    expect(container.querySelector('[data-testid="completion-badge"]')).toBeNull();
   });
 
   it('shows RowError for terminal failed parent statuses', () => {
@@ -249,11 +248,11 @@ describe('<SubagentGroup>', () => {
   });
 
   it('keeps the status slot wrapper present in both running and completed states', () => {
-    // Stability guard: the running label and CompletionBadge live in
-    // the SAME slot wrapper so the running → terminal transition does
-    // not shift adjacent chrome (entry-count, elapsed). The slot
-    // wrapper carries `subagent-group-status-slot` and a min-width
-    // class; the inner content swaps under it.
+    // Stability guard: running and terminal states share the same slot
+    // wrapper so the transition does not shift adjacent chrome
+    // (entry-count, elapsed). The wrapper carries
+    // `subagent-group-status-slot` and a min-width class; the inner
+    // content swaps under it.
     const running = mkGroup({
       parentId: 'p-run-slot',
       parentItem: mkAgentParent('p-run-slot', {

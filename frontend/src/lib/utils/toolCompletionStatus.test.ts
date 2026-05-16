@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Item } from '../types/models';
-import {
-  completionBadgeTitleForStatus,
-  deriveCompletionStatus,
-} from './toolCompletionStatus';
+import { deriveCompletionStatus } from './toolCompletionStatus';
 
 function makeItem(overrides: Partial<Item>): Item {
   return {
@@ -180,15 +177,5 @@ describe('deriveCompletionStatus', () => {
       });
       expect(deriveCompletionStatus(item)).toBe('failure');
     });
-  });
-});
-
-describe('completionBadgeTitleForStatus', () => {
-  it('returns specific terminal titles only when the generic badge needs extra context', () => {
-    expect(completionBadgeTitleForStatus('killed')).toBe('Stopped');
-    expect(completionBadgeTitleForStatus('declined')).toBe('Declined');
-    expect(completionBadgeTitleForStatus('errored')).toBe('Failed');
-    expect(completionBadgeTitleForStatus('completed')).toBeUndefined();
-    expect(completionBadgeTitleForStatus('running')).toBeUndefined();
   });
 });
