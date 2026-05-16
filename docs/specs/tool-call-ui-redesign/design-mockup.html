@@ -1,0 +1,1331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Rail & Reveal — mono</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --surface-0: oklch(0.145 0.014 285.82);
+    --surface-1: oklch(0.178 0.014 285.82);
+    --surface-2: oklch(0.215 0.014 285.82);
+    --border: oklch(0.3 0.014 285.82);
+    --border-subtle: color-mix(in oklab, var(--border) 55%, transparent);
+    --text-primary: oklch(0.95 0.006 285.82);
+    --fg-muted: color-mix(in oklab, var(--text-primary) 80%, transparent);
+    --fg-subtle: color-mix(in oklab, var(--text-primary) 55%, transparent);
+    --fg-hint: color-mix(in oklab, var(--text-primary) 30%, transparent);
+    --accent: oklch(0.58 0.19 276);
+    --accent-soft: color-mix(in oklab, var(--accent) 30%, transparent);
+    --add: oklch(0.7 0.13 150);
+    --del: oklch(0.65 0.18 25);
+    --add-bg: color-mix(in oklab, var(--add) 12%, transparent);
+    --del-bg: color-mix(in oklab, var(--del) 12%, transparent);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--surface-0);
+    color: var(--text-primary);
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 13px;
+    line-height: 1.55;
+    min-height: 100vh;
+    padding: 56px 0 120px;
+  }
+
+  .label-bar {
+    max-width: 880px;
+    margin: 0 auto 28px;
+    padding: 0 32px;
+    display: flex;
+    align-items: baseline;
+    gap: 18px;
+  }
+  .label-bar h1 {
+    font-weight: 500;
+    font-size: 13px;
+    margin: 0;
+    color: var(--fg-muted);
+    letter-spacing: 0;
+  }
+  .label-bar .tag {
+    font-size: 10px;
+    color: var(--fg-hint);
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+  }
+  .label-bar p {
+    margin: 0;
+    color: var(--fg-hint);
+    font-size: 11px;
+    flex: 1;
+  }
+
+  .transcript {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 0 32px;
+  }
+
+  /* Session-boundary timestamp — one per assistant turn, not per row */
+  .stamp {
+    font-size: 10px;
+    color: var(--fg-hint);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.06em;
+    padding: 28px 0 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .stamp::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border-subtle);
+    opacity: 0.4;
+  }
+  .stamp .kind {
+    color: var(--fg-hint);
+    opacity: 0.7;
+  }
+
+  /* Assistant prose — same font family, but full-contrast, weight 500,
+     generous leading. Breaks out of the rail. The "voice." */
+  .assistant {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 500;
+    font-size: 13.5px;
+    line-height: 1.7;
+    color: var(--text-primary);
+    padding: 6px 0 14px;
+    max-width: 72ch;
+  }
+  .assistant code {
+    font-weight: 400;
+    font-size: 12.5px;
+    background: var(--surface-2);
+    color: var(--fg-muted);
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border-subtle);
+  }
+
+  /* The rail — where tool calls and thinking live, indented from prose */
+  .rail {
+    position: relative;
+    margin-left: 14px;
+    padding-left: 18px;
+    border-left: 1px solid var(--border-subtle);
+  }
+
+  /* Tool row.
+     Columns: chev | icon | label (fixed width) | body | stat-dot | time(hover)
+     The fixed-width label column gives a vertical gutter the eye learns. */
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 3px 6px 3px 0;
+    margin-left: -6px;
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--fg-subtle);
+    font-size: 12px;
+    line-height: 1.5;
+    min-height: 24px;
+    transition: background 120ms, color 120ms;
+  }
+  .row:hover {
+    background: color-mix(in oklab, var(--surface-2) 50%, transparent);
+    color: var(--fg-muted);
+  }
+  .row .chev {
+    color: var(--fg-hint);
+    font-size: 10px;
+    width: 8px;
+    flex-shrink: 0;
+  }
+  .row .ico {
+    width: 14px;
+    text-align: center;
+    color: var(--fg-subtle);
+    font-size: 11px;
+    flex-shrink: 0;
+  }
+  .row .ico.bash { color: oklch(0.72 0.09 150); }
+  .row .ico.read { color: oklch(0.7 0.11 220); }
+  .row .ico.edit { color: oklch(0.72 0.13 60); }
+  .row .ico.tool { color: var(--accent); }
+  .row .ico.think { color: var(--fg-hint); }
+  /* Quiet label column — fixed width, lowercase, fg-hint. Vertical gutter. */
+  .row .label {
+    width: 48px;
+    flex-shrink: 0;
+    color: var(--fg-hint);
+    font-size: 11px;
+    letter-spacing: 0;
+  }
+  .row .body {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: inherit;
+  }
+  .row .body .path { color: var(--fg-muted); }
+  .row .body .preview-mute { color: var(--fg-subtle); }
+  .row .stat-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: transparent;
+    flex-shrink: 0;
+  }
+  .row .time {
+    font-size: 10px;
+    color: var(--fg-hint);
+    font-variant-numeric: tabular-nums;
+    margin-left: auto;
+    padding-left: 12px;
+    flex-shrink: 0;
+  }
+  .row.error .stat-dot { background: oklch(0.65 0.18 25); }
+
+  /* Stats slot — +N −N magnitude indicator for edit rows */
+  .row .stats {
+    flex-shrink: 0;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    font-size: 10.5px;
+    color: var(--fg-hint);
+    font-variant-numeric: tabular-nums;
+    margin-left: 4px;
+  }
+  .row .stats .add { color: var(--add); }
+  .row .stats .del { color: var(--del); }
+
+  /* Side-panel jump affordance — header-level shortcut */
+  .row .open-side {
+    color: var(--fg-hint);
+    font-size: 11px;
+    padding: 0 5px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: color 120ms, background 120ms;
+    flex-shrink: 0;
+  }
+  .row .open-side:hover {
+    color: var(--accent);
+    background: color-mix(in oklab, var(--accent) 12%, transparent);
+  }
+
+  /* Inline diff block — sits below an edit row, in the rail */
+  .diff {
+    margin: 4px 0 6px 24px;
+    border-radius: 5px;
+    overflow: hidden;
+    background: color-mix(in oklab, var(--surface-1) 45%, transparent);
+    border: 1px solid var(--border-subtle);
+  }
+  .dline {
+    display: flex;
+    font-size: 11.5px;
+    line-height: 1.55;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .dline .ln {
+    width: 44px;
+    padding: 0 8px 0 6px;
+    text-align: right;
+    color: var(--fg-hint);
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+    user-select: none;
+    border-right: 1px solid var(--border-subtle);
+  }
+  .dline .sign {
+    width: 16px;
+    text-align: center;
+    color: var(--fg-hint);
+    flex-shrink: 0;
+  }
+  .dline .code {
+    flex: 1;
+    min-width: 0;
+    padding: 0 8px 0 4px;
+    color: var(--fg-muted);
+    white-space: pre;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .dline.add { background: var(--add-bg); }
+  .dline.add .sign { color: var(--add); }
+  .dline.del { background: var(--del-bg); }
+  .dline.del .sign { color: var(--del); }
+  .dline.ctx { color: var(--fg-subtle); }
+
+  /* Inter-hunk gap — shows "N unchanged lines" between visible hunks */
+  .dline.gap {
+    color: var(--fg-hint);
+    font-size: 10.5px;
+    background: color-mix(in oklab, var(--surface-2) 15%, transparent);
+  }
+  .dline.gap .ln {
+    color: var(--fg-hint);
+    opacity: 0.6;
+    text-align: center;
+    padding: 0 4px;
+  }
+  .dline.gap .code { color: var(--fg-hint); font-style: italic; }
+
+  /* Truncation affordance — sits at the bottom of a capped diff. Soft
+     gradient fade signals "there's more here"; the whole strip is the
+     click target that jumps to the sidebar. No border, no separate
+     footer band — one chrome element. */
+  .diff-fade-action {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    width: 100%;
+    height: 38px;
+    padding: 0 10px 8px;
+    background: linear-gradient(
+      to bottom,
+      transparent 0%,
+      color-mix(in oklab, var(--surface-2) 45%, transparent) 100%
+    );
+    border: 0;
+    cursor: pointer;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--fg-subtle);
+    letter-spacing: 0;
+    transition: color 150ms, background 150ms;
+  }
+  .diff-fade-action:hover {
+    color: var(--accent);
+    background: linear-gradient(
+      to bottom,
+      transparent 0%,
+      color-mix(in oklab, var(--accent) 18%, transparent) 100%
+    );
+  }
+  .diff-fade-action:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  /* Chevron rotates when row is expanded */
+  .row.expanded .chev {
+    display: inline-block;
+    transform: rotate(90deg);
+    transform-origin: 50% 50%;
+  }
+
+  /* Codex-specific icons */
+  .row .ico.agent { color: var(--accent); }
+  .row .ico.waiting { color: var(--accent); }
+  .row .ico.waited { color: var(--fg-hint); }
+
+  /* Agent name inline in the body, when a row represents an agent action */
+  .row .body .agent-name {
+    color: var(--fg-muted);
+    font-weight: 500;
+    margin-right: 6px;
+  }
+  .row .body .sep {
+    color: var(--fg-hint);
+    margin: 0 6px;
+  }
+  .row .body .meta-tag {
+    color: var(--fg-hint);
+    font-size: 10.5px;
+    margin-left: 4px;
+  }
+
+  /* Quiet row variant — used for waited / passive events */
+  .row.muted {
+    color: var(--fg-hint);
+  }
+  .row.muted .label,
+  .row.muted .body { color: var(--fg-hint); }
+  .row.muted .body .path { color: var(--fg-subtle); }
+
+  /* SVG icons inside .ico containers — inherit color, center, scale to 14px */
+  .row .ico,
+  .think-row .ico {
+    width: 16px;
+  }
+  .row .ico svg,
+  .think-row .ico svg {
+    width: 14px;
+    height: 14px;
+    display: block;
+    margin: 0 auto;
+  }
+  .think-row .ico { padding-top: 4px; }
+
+  /* Thinking — italic mono, same label-column layout for visual rhyme.
+     Distinct register from tool rows: italic + 60% text-primary, vs 55% muted */
+  .think-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 6px 6px 6px 0;
+    margin-left: -6px;
+    color: var(--fg-subtle);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .think-row .chev {
+    color: var(--fg-hint);
+    font-size: 10px;
+    width: 8px;
+    flex-shrink: 0;
+    padding-top: 3px;
+  }
+  .think-row .ico {
+    width: 14px;
+    text-align: center;
+    color: var(--fg-hint);
+    font-size: 11px;
+    flex-shrink: 0;
+    padding-top: 2px;
+  }
+  .think-row .label {
+    width: 48px;
+    flex-shrink: 0;
+    color: var(--fg-hint);
+    font-size: 11px;
+    padding-top: 2px;
+  }
+  .think-row .body {
+    flex: 1;
+    min-width: 0;
+    font-style: italic;
+    color: color-mix(in oklab, var(--text-primary) 60%, transparent);
+    max-width: 64ch;
+  }
+  .think-row .body code {
+    font-style: normal;
+    color: var(--fg-muted);
+    background: transparent;
+    border: 0;
+    padding: 0;
+    font-size: 11.5px;
+  }
+
+  /* Footer status */
+  .footer {
+    max-width: 880px;
+    margin: 40px auto 0;
+    padding: 0 32px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 11px;
+    color: var(--fg-subtle);
+  }
+  .footer .pulse {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 0 var(--accent);
+    animation: pulse 2s ease-out infinite;
+  }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 color-mix(in oklab, var(--accent) 60%, transparent); }
+    100% { box-shadow: 0 0 0 8px transparent; }
+  }
+  .footer .todo { color: var(--fg-hint); }
+  .footer .todo b { color: var(--accent); font-weight: 500; }
+
+  /* Mockup-only chrome — labels the scenario groups on this page.
+     Doesn't exist in the real product; transcripts are continuous. */
+  .section-divider {
+    max-width: 880px;
+    margin: 56px auto 8px;
+    padding: 0 32px;
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+  }
+  .section-divider .num {
+    font-size: 10px;
+    color: var(--fg-hint);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+  .section-divider .name {
+    font-size: 12px;
+    color: var(--fg-muted);
+    font-weight: 500;
+  }
+  .section-divider .rule {
+    flex: 1;
+    height: 1px;
+    background: var(--border-subtle);
+    opacity: 0.5;
+  }
+  .section-blurb {
+    max-width: 880px;
+    margin: 0 auto 20px;
+    padding: 0 32px;
+    color: var(--fg-hint);
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
+  /* Text-free status indicators. Each is a small dot or dot-cluster
+     just before .time. Meaning is carried by color and motion alone. */
+  .row .ind {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    margin-left: auto;
+    padding-left: 12px;
+    height: 14px;
+  }
+  .row.has-ind .time { margin-left: 8px; padding-left: 0; }
+
+  /* Running — single pulsing accent dot */
+  .row .ind.running::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: row-pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes row-pulse {
+    0%, 100% { opacity: 0.35; transform: scale(0.85); }
+    50% { opacity: 1; transform: scale(1.05); }
+  }
+
+  /* Backgrounded — three animated accent dots, no text, no duration */
+  .row .ind.backgrounded { gap: 3px; }
+  .row .ind.backgrounded span {
+    width: 3.5px;
+    height: 3.5px;
+    border-radius: 50%;
+    background: var(--accent);
+    opacity: 0.25;
+    animation: bg-dot 1.4s ease-in-out infinite;
+  }
+  .row .ind.backgrounded span:nth-child(2) { animation-delay: 0.2s; }
+  .row .ind.backgrounded span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes bg-dot {
+    0%, 80%, 100% { opacity: 0.2; }
+    40% { opacity: 1; }
+  }
+
+  /* Errored / killed — small static red dot */
+  .row .ind.error::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--del);
+  }
+
+  /* Declined — small static amber dot */
+  .row .ind.declined::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: oklch(0.75 0.14 75);
+  }
+
+  /* Error sub-line — sits directly under errored/killed/declined rows.
+     Aligns to the body column (clears chev + icon + label gutters). */
+  .row-error {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin: -2px 0 4px;
+    padding: 0 6px 0 78px;
+    font-size: 11px;
+    color: var(--fg-hint);
+    line-height: 1.5;
+  }
+  .row-error .code {
+    color: var(--del);
+    font-variant-numeric: tabular-nums;
+    font-weight: 500;
+  }
+  .row-error .msg {
+    color: color-mix(in oklab, var(--del) 80%, var(--text-primary));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    flex: 1;
+  }
+  .row-error.declined .code { color: oklch(0.75 0.14 75); }
+  .row-error.declined .msg { color: color-mix(in oklab, oklch(0.75 0.14 75) 70%, var(--text-primary)); }
+
+  /* Additional icon colors for scenario sections */
+  .row .ico.write { color: oklch(0.74 0.14 145); }
+  .row .ico.notebook { color: oklch(0.72 0.14 25); }
+  .row .ico.grep { color: oklch(0.7 0.11 220); }
+  .row .ico.glob { color: oklch(0.7 0.11 220); }
+  .row .ico.web { color: oklch(0.7 0.15 195); }
+  .row .ico.terminal { color: oklch(0.72 0.09 150); }
+</style>
+</head>
+<body>
+  <div class="label-bar">
+    <span class="tag">main</span>
+    <h1>Rail &amp; Reveal — mono</h1>
+    <p>Assistant voice in full-contrast mono / 500. Tool labels return as a quiet lowercase gutter column.</p>
+  </div>
+
+  <div class="transcript">
+    <div class="stamp"><span class="kind">planning</span> · 9:42 PM</div>
+
+    <p class="assistant">
+      Let me load <code>TodoWrite</code> and explore the state shape + send flow before planning the refactor.
+    </p>
+
+    <div class="rail">
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></span>
+        <span class="label">tool</span>
+        <span class="body">ToolSearch <span class="preview-mute">select:TodoWrite</span></span>
+        <span class="stat-dot"></span>
+        <span class="time">9:42 PM</span>
+      </div>
+
+      <div class="think-row">
+        <span class="chev">›</span>
+        <span class="ico think"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></svg></span>
+        <span class="label">think</span>
+        <span class="body">current structure before refactoring. I'll examine the state shape in <code>worktreeIntent.svelte.ts</code>, check how <code>BranchCreateForm</code> works, and see what bindings are already available.</span>
+      </div>
+
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico bash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg></span>
+        <span class="label">bash</span>
+        <span class="body">find <span class="path">/home/rmurphy/repos/agent-overflow/frontend/src/lib/stores -name "worktreeIntent*"</span></span>
+        <span class="stat-dot"></span>
+        <span class="time">9:42 PM</span>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico bash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg></span>
+        <span class="label">bash</span>
+        <span class="body">grep -rn <span class="path">"GitCheckoutNewBranch|CheckoutNewBranch|GitCreateBranch|worktreeIntent|materializ…"</span></span>
+        <span class="stat-dot"></span>
+        <span class="time">9:42 PM</span>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico read"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg></span>
+        <span class="label">read</span>
+        <span class="body"><span class="path">frontend/src/lib/stores/worktreeIntent.svelte.ts</span></span>
+        <span class="stat-dot"></span>
+        <span class="time">9:42 PM</span>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico read"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg></span>
+        <span class="label">read</span>
+        <span class="body"><span class="path">frontend/src/lib/components/composer/workspa…</span></span>
+        <span class="stat-dot"></span>
+        <span class="time">9:42 PM</span>
+      </div>
+
+      <div class="think-row">
+        <span class="chev">›</span>
+        <span class="ico think"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></svg></span>
+        <span class="label">think</span>
+        <span class="body">Now I'm examining the send-path materialization to trace how worktree intent flows through the system.</span>
+      </div>
+
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico bash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg></span>
+        <span class="label">bash</span>
+        <span class="body">grep -rn <span class="path">"worktreeIntent|WorktreeIntent|intent.mode|intent.branchName|intent.baseBranch"</span></span>
+        <span class="stat-dot"></span>
+        <span class="time">9:42 PM</span>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico read"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg></span>
+        <span class="label">read</span>
+        <span class="body"><span class="path">frontend/src/lib/components/composer/compose…</span></span>
+        <span class="stat-dot"></span>
+        <span class="time">9:42 PM</span>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico bash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg></span>
+        <span class="label">bash</span>
+        <span class="body">grep -n <span class="path">"PrepareThreadWorktree" /home/rmurphy/repos/agent-overflow/app_git.go /home/rmurphy/re…</span></span>
+        <span class="stat-dot"></span>
+        <span class="time">9:43 PM</span>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico read"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg></span>
+        <span class="label">read</span>
+        <span class="body"><span class="path">agent-overflow/app_worktree.go</span></span>
+        <span class="stat-dot"></span>
+        <span class="time">9:43 PM</span>
+      </div>
+
+      <div class="think-row">
+        <span class="chev">›</span>
+        <span class="ico think"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></svg></span>
+        <span class="label">think</span>
+        <span class="body">I need to understand what <code>CreateWorktreeFromBranch</code> actually does — specifically whether it creates a new branch or reuses an existing one when the branch already exists.</span>
+      </div>
+
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico bash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg></span>
+        <span class="label">bash</span>
+        <span class="body">grep -n <span class="path">"CreateWorktreeFromBranch|worktree add" /home/rmurphy/repos/agent-overflow/internal/g…</span></span>
+        <span class="stat-dot"></span>
+        <span class="time">9:45 PM</span>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico read"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg></span>
+        <span class="label">read</span>
+        <span class="body"><span class="path">agent-overflow/internal/git/core.go</span></span>
+        <span class="stat-dot"></span>
+        <span class="time">9:45 PM</span>
+      </div>
+    </div>
+
+    <div class="stamp">9:46 PM</div>
+
+    <p class="assistant">
+      <code>PrepareThreadWorktree</code> only supports the &ldquo;create new branch&rdquo; path (<code>git worktree add -b</code>). I need to add an &ldquo;attach to existing branch&rdquo; path on the backend. Updating the plan accordingly.
+    </p>
+
+    <div class="stamp"><span class="kind">implementing</span> · 9:47 PM</div>
+
+    <p class="assistant">
+      Now register <code>AttachThreadWorktree</code> in <code>LocalOnlyMethods</code> and the dispatcher test stub. Then regenerate bindings.
+    </p>
+
+    <div class="rail">
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico bash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg></span>
+        <span class="label">bash</span>
+        <span class="body">grep -n <span class="path">"PrepareThreadWorktree" /home/rmurphy/repos/agent-overflow/internal/transport/internal…</span></span>
+        <span class="stat-dot"></span>
+        <span class="time">9:47 PM</span>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico read"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg></span>
+        <span class="label">read</span>
+        <span class="body"><span class="path">internal/transport/internalmethods.go</span></span>
+        <span class="stat-dot"></span>
+        <span class="time">9:47 PM</span>
+      </div>
+      <div class="row expanded">
+        <span class="chev">›</span>
+        <span class="ico edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/><path d="m15 5 3 3"/></svg></span>
+        <span class="label">edit</span>
+        <span class="body"><span class="path">internal/transport/internalmethods.go</span></span>
+        <span class="stats"><span class="add">+3</span></span>
+        <span class="open-side" title="Open in side panel">↗</span>
+        <span class="time">9:47 PM</span>
+      </div>
+      <div class="diff">
+        <div class="dline ctx"><span class="ln">118</span><span class="sign"> </span><span class="code">  // PrepareThreadWorktree creates a git worktree on disk; same</span></div>
+        <div class="dline ctx"><span class="ln">119</span><span class="sign"> </span><span class="code">  // class as the Git* mutators above.</span></div>
+        <div class="dline ctx"><span class="ln">120</span><span class="sign"> </span><span class="code">  "PrepareThreadWorktree": true,</span></div>
+        <div class="dline add"><span class="ln">121</span><span class="sign">+</span><span class="code">  // AttachThreadWorktree creates a worktree pointing at an existing</span></div>
+        <div class="dline add"><span class="ln">122</span><span class="sign">+</span><span class="code">  // branch; same class as PrepareThreadWorktree.</span></div>
+        <div class="dline add"><span class="ln">123</span><span class="sign">+</span><span class="code">  "AttachThreadWorktree": true,</span></div>
+        <div class="dline ctx"><span class="ln">124</span><span class="sign"> </span><span class="code">  // RevertToMessageCheckpoint mutates the local working tree (git restore</span></div>
+        <div class="dline ctx"><span class="ln">125</span><span class="sign"> </span><span class="code">  // checkout into the workspace). Same class.</span></div>
+        <div class="dline ctx"><span class="ln">126</span><span class="sign"> </span><span class="code">  "RevertToMessageCheckpoint": true,</span></div>
+      </div>
+
+      <div class="row expanded">
+        <span class="chev">›</span>
+        <span class="ico edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/><path d="m15 5 3 3"/></svg></span>
+        <span class="label">edit</span>
+        <span class="body"><span class="path">internal/transport/dispatcher_test.go</span></span>
+        <span class="stats"><span class="add">+1</span></span>
+        <span class="open-side" title="Open in side panel">↗</span>
+        <span class="time">9:48 PM</span>
+      </div>
+      <div class="diff">
+        <div class="dline ctx"><span class="ln">631</span><span class="sign"> </span><span class="code">func (p *privilegedApp) GitStageAll() string                  { return "ok" }</span></div>
+        <div class="dline ctx"><span class="ln">632</span><span class="sign"> </span><span class="code">func (p *privilegedApp) GitCreatePR() string                  { return "ok" }</span></div>
+        <div class="dline ctx"><span class="ln">633</span><span class="sign"> </span><span class="code">func (p *privilegedApp) PrepareThreadWorktree() string        { return "ok" }</span></div>
+        <div class="dline add"><span class="ln">634</span><span class="sign">+</span><span class="code">func (p *privilegedApp) AttachThreadWorktree() string         { return "ok" }</span></div>
+        <div class="dline ctx"><span class="ln">635</span><span class="sign"> </span><span class="code">func (p *privilegedApp) RevertToMessageCheckpoint() string    { return "ok" }</span></div>
+        <div class="dline ctx"><span class="ln">636</span><span class="sign"> </span><span class="code">func (p *privilegedApp) GetMessageCheckpointDiff() string     { return "ok" }</span></div>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico bash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg></span>
+        <span class="label">bash</span>
+        <span class="body">go run <span class="path">./internal/transport/methodgen 2&gt;&amp;1 | tail -5</span></span>
+        <span class="stat-dot"></span>
+        <span class="time">9:48 PM</span>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico bash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg></span>
+        <span class="label">bash</span>
+        <span class="body">wails3 task <span class="path">common:generate:bindings 2&gt;&amp;1 | tail -10</span></span>
+        <span class="stat-dot"></span>
+        <span class="time">9:48 PM</span>
+      </div>
+
+      <div class="row expanded">
+        <span class="chev">›</span>
+        <span class="ico edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/><path d="m15 5 3 3"/></svg></span>
+        <span class="label">edit</span>
+        <span class="body"><span class="path">frontend/src/lib/components/composer/workspace/BranchPicker.test.ts</span></span>
+        <span class="stats"><span class="add">+8</span><span class="del">−136</span></span>
+        <span class="open-side" title="Open in side panel">↗</span>
+        <span class="time">9:50 PM</span>
+      </div>
+      <div class="diff">
+        <div class="dline ctx"><span class="ln">257</span><span class="sign"> </span><span class="code">    expect(getBindingMock('GitCheckout')).not.toHaveBeenCalled();</span></div>
+        <div class="dline ctx"><span class="ln">258</span><span class="sign"> </span><span class="code">  }));</span></div>
+        <div class="dline ctx"><span class="ln">259</span><span class="sign"> </span><span class="code"></span></div>
+        <div class="dline del"><span class="ln">260</span><span class="sign">−</span><span class="code">  it('exposes a New branch row that opens the inline create form', async () =&gt; {</span></div>
+        <div class="dline add"><span class="ln">260</span><span class="sign">+</span><span class="code">  it('+ New branch dropdown entry enters creating-branch mode and closes the menu', async () =&gt; {</span></div>
+        <div class="dline ctx"><span class="ln">261</span><span class="sign"> </span><span class="code">    const pane = await buildPane('main');</span></div>
+        <div class="dline add"><span class="ln">262</span><span class="sign">+</span><span class="code">    if (!pane.thread) throw new Error('missing test thread');</span></div>
+        <div class="dline ctx"><span class="ln">263</span><span class="sign"> </span><span class="code">    setBindingMock('GitListBranches', async () =&gt; [</span></div>
+        <div class="dline ctx"><span class="ln">264</span><span class="sign"> </span><span class="code">      { name: 'main', isCurrent: true, isDefault: true },</span></div>
+        <div class="dline ctx"><span class="ln">265</span><span class="sign"> </span><span class="code">    ]);</span></div>
+        <div class="dline gap"><span class="ln">⋯</span><span class="sign"> </span><span class="code">11 unchanged lines</span></div>
+        <div class="dline ctx"><span class="ln">277</span><span class="sign"> </span><span class="code">      hasOriginRemote: true,</span></div>
+        <div class="dline ctx"><span class="ln">278</span><span class="sign"> </span><span class="code">    }));</span></div>
+        <div class="dline ctx"><span class="ln">279</span><span class="sign"> </span><span class="code"></span></div>
+        <div class="dline del"><span class="ln">279</span><span class="sign">−</span><span class="code">    const { getByTestId, findByRole, queryByTestId } = render(BranchPicker, {</span></div>
+        <div class="dline add"><span class="ln">280</span><span class="sign">+</span><span class="code">    const { getByTestId, findByRole, queryByRole } = render(BranchPicker, {</span></div>
+        <div class="dline ctx"><span class="ln">281</span><span class="sign"> </span><span class="code">      props: { pane, workspaceLock: makeWorkspaceLock() },</span></div>
+        <div class="dline ctx"><span class="ln">282</span><span class="sign"> </span><span class="code">    });</span></div>
+        <button class="diff-fade-action" type="button" title="Open full diff in side panel">↗ open in side panel</button>
+      </div>
+    </div>
+
+    <div class="stamp"><span class="kind">codex · review</span> · 10:14 PM</div>
+
+    <p class="assistant">
+      Spawning six review agents in parallel — one per post-task review lens. Will collect findings and apply the validated ones.
+    </p>
+
+    <div class="rail">
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">spawn</span>
+        <span class="body"><span class="agent-name">Hypatia</span><span class="meta-tag">[default]</span><span class="sep">·</span>Performance &amp; Memory lens<span class="meta-tag">gpt-5.5 high</span></span>
+        <span class="time">10:14 PM</span>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">spawn</span>
+        <span class="body"><span class="agent-name">Kierkegaard</span><span class="meta-tag">[default]</span><span class="sep">·</span>Code Quality / Readability / Maintainability lens<span class="meta-tag">gpt-5.5 high</span></span>
+        <span class="time">10:14 PM</span>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">spawn</span>
+        <span class="body"><span class="agent-name">Newton</span><span class="meta-tag">[default]</span><span class="sep">·</span>Architecture &amp; Organization lens<span class="meta-tag">gpt-5.5 high</span></span>
+        <span class="time">10:14 PM</span>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">spawn</span>
+        <span class="body"><span class="agent-name">Gauss</span><span class="meta-tag">[default]</span><span class="sep">·</span>Testing &amp; Correctness lens<span class="meta-tag">gpt-5.5 high</span></span>
+        <span class="time">10:14 PM</span>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">spawn</span>
+        <span class="body"><span class="agent-name">Tesla</span><span class="meta-tag">[default]</span><span class="sep">·</span>Security lens<span class="meta-tag">gpt-5.5 high</span></span>
+        <span class="time">10:14 PM</span>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">spawn</span>
+        <span class="body"><span class="agent-name">Mill</span><span class="meta-tag">[default]</span><span class="sep">·</span>Codebase Consistency lens<span class="meta-tag">gpt-5.5 high</span></span>
+        <span class="time">10:14 PM</span>
+      </div>
+
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico waiting"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>
+        <span class="label">waiting</span>
+        <span class="body">on <span class="agent-name" style="font-weight:400">3 agents</span><span class="sep">·</span>2m 41s elapsed<span class="meta-tag">Gauss, Tesla, Mill</span></span>
+        <span class="time">10:16 PM</span>
+      </div>
+
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">agent</span>
+        <span class="body"><span class="agent-name">Hypatia</span><span style="color:var(--fg-subtle)">no findings</span></span>
+        <span class="time">10:15 PM</span>
+      </div>
+
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">agent</span>
+        <span class="body"><span class="agent-name">Newton</span>recommended<span class="sep">·</span><span class="path">frontend/src/app.css:258</span><span class="sep">·</span>Streamdown list spacing is owned twice: <code style="font-size:11.5px;background:var(--surface-2);color:var(--fg-muted);padding:1px 5px;border-radius:3px;border:1px solid var(--border-subtle)">streamdownTheme.ts</code> sets <code style="font-size:11.5px;background:var(--surface-2);color:var(--fg-muted);padding:1px 5px;border-radius:3px;border:1px solid var(--border-subtle)">ml-0 pl-5 list-outside</code>…</span>
+        <span class="time">10:15 PM</span>
+      </div>
+
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">agent</span>
+        <span class="body"><span class="agent-name">Kierkegaard</span>nit<span class="sep">·</span><span class="path">frontend/src/lib/utils/format.ts:42</span><span class="sep">·</span><code style="font-size:11.5px;background:var(--surface-2);color:var(--fg-muted);padding:1px 5px;border-radius:3px;border:1px solid var(--border-subtle)">formatElapsedSeconds</code> recomputes minute/second math each call; could memoize at the call site…</span>
+        <span class="time">10:16 PM</span>
+      </div>
+    </div>
+
+    <div class="stamp"><span class="kind">testing</span> · 10:24 PM</div>
+
+    <p class="assistant">
+      Applying Newton's fix and re-running the affected test suites.
+    </p>
+
+    <div class="rail">
+      <div class="row has-ind">
+        <span class="chev">›</span>
+        <span class="ico bash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg></span>
+        <span class="label">bash</span>
+        <span class="body">pnpm test -- <span class="path">AssistantMessage.test.ts MessageTimeline.test.ts</span></span>
+        <span class="ind backgrounded"><span></span><span></span><span></span></span>
+        <span class="time">10:24 PM</span>
+      </div>
+
+      <div class="row muted">
+        <span class="chev">›</span>
+        <span class="ico waited"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>
+        <span class="label">waited</span>
+        <span class="body">background terminal<span class="sep">·</span>2.4s</span>
+        <span class="time">10:24 PM</span>
+      </div>
+
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico bash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg></span>
+        <span class="label">bash</span>
+        <span class="body">pnpm test -- <span class="path">AssistantMessage.test.ts MessageTimeline.test.ts</span><span class="meta-tag">52 passed · 0 failed · 1.8s</span></span>
+        <span class="time">10:24 PM</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- 01 · BASH VARIANTS — running, errored, killed, backgrounded   -->
+  <!-- ============================================================ -->
+  <div class="section-divider">
+    <span class="num">01</span>
+    <span class="name">Bash variants</span>
+    <span class="rule"></span>
+  </div>
+  <div class="section-blurb">Live runs, errors with exit code + message, kills, backgrounded, and the waited completion. State carried by a small dot on the right — no labels, no duration on the indicator itself.</div>
+
+  <div class="transcript">
+    <div class="rail">
+      <div class="row has-ind">
+        <span class="chev">›</span>
+        <span class="ico bash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg></span>
+        <span class="label">bash</span>
+        <span class="body">pnpm test -- <span class="path">--run AssistantMessage.test.ts</span></span>
+        <span class="ind running"></span>
+        <span class="time">10:42 PM</span>
+      </div>
+
+      <div class="row has-ind">
+        <span class="chev">›</span>
+        <span class="ico bash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg></span>
+        <span class="label">bash</span>
+        <span class="body">pnpm <span class="path">vitest --reporter=verbose</span></span>
+        <span class="ind error"></span>
+        <span class="time">10:42 PM</span>
+      </div>
+      <div class="row-error">
+        <span class="code">exit 127</span>
+        <span class="msg">bash: pnpm: command not found</span>
+      </div>
+
+      <div class="row has-ind">
+        <span class="chev">›</span>
+        <span class="ico bash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg></span>
+        <span class="label">bash</span>
+        <span class="body">go test <span class="path">./internal/transport/... -count=1 -race</span></span>
+        <span class="ind error"></span>
+        <span class="time">10:43 PM</span>
+      </div>
+      <div class="row-error">
+        <span class="code">signal 9</span>
+        <span class="msg">killed by user — runtime exceeded budget</span>
+      </div>
+
+      <div class="row has-ind">
+        <span class="chev">›</span>
+        <span class="ico bash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg></span>
+        <span class="label">bash</span>
+        <span class="body">wails3 task <span class="path">dev:watch</span></span>
+        <span class="ind backgrounded"><span></span><span></span><span></span></span>
+        <span class="time">10:44 PM</span>
+      </div>
+
+      <div class="row muted">
+        <span class="chev">›</span>
+        <span class="ico waited"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>
+        <span class="label">waited</span>
+        <span class="body">background terminal <span class="path">wails3 task dev:watch</span><span class="sep">·</span>exited 0</span>
+        <span class="time">10:56 PM</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- 02 · FILE OPERATIONS — write, multi-edit, notebook, patch     -->
+  <!-- ============================================================ -->
+  <div class="section-divider">
+    <span class="num">02</span>
+    <span class="name">File operations</span>
+    <span class="rule"></span>
+  </div>
+  <div class="section-blurb">Create, multi-edit, notebook cells, and a Codex <code style="font-size:11px;background:var(--surface-2);color:var(--fg-muted);padding:1px 5px;border-radius:3px;border:1px solid var(--border-subtle)">apply_patch</code>.</div>
+
+  <div class="transcript">
+    <div class="rail">
+      <div class="row expanded">
+        <span class="chev">›</span>
+        <span class="ico write"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" x2="12" y1="18" y2="12"/><line x1="9" x2="15" y1="15" y2="15"/></svg></span>
+        <span class="label">write</span>
+        <span class="body"><span class="path">internal/git/attach_test.go</span><span class="meta-tag">new file</span></span>
+        <span class="stats"><span class="add">+42</span></span>
+        <span class="open-side" title="Open in side panel">↗</span>
+        <span class="time">10:48 PM</span>
+      </div>
+      <div class="diff">
+        <div class="dline add"><span class="ln">1</span><span class="sign">+</span><span class="code">package git</span></div>
+        <div class="dline add"><span class="ln">2</span><span class="sign">+</span><span class="code"></span></div>
+        <div class="dline add"><span class="ln">3</span><span class="sign">+</span><span class="code">import (</span></div>
+        <div class="dline add"><span class="ln">4</span><span class="sign">+</span><span class="code">  "testing"</span></div>
+        <div class="dline add"><span class="ln">5</span><span class="sign">+</span><span class="code">)</span></div>
+        <div class="dline add"><span class="ln">6</span><span class="sign">+</span><span class="code"></span></div>
+        <div class="dline add"><span class="ln">7</span><span class="sign">+</span><span class="code">func TestAttachWorktree_ExistingBranch(t *testing.T) {</span></div>
+        <div class="dline add"><span class="ln">8</span><span class="sign">+</span><span class="code">  repo := scratchRepoWithBranch(t, "feature/x")</span></div>
+        <button class="diff-fade-action" type="button" title="Open full diff in side panel">↗ open in side panel</button>
+      </div>
+
+      <div class="row expanded">
+        <span class="chev">›</span>
+        <span class="ico edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/><path d="m15 5 3 3"/></svg></span>
+        <span class="label">edit</span>
+        <span class="body"><span class="path">frontend/src/lib/components/composer/workspace/BranchPicker.svelte</span><span class="meta-tag">3 edits</span></span>
+        <span class="stats"><span class="add">+11</span><span class="del">−4</span></span>
+        <span class="open-side" title="Open in side panel">↗</span>
+        <span class="time">10:49 PM</span>
+      </div>
+      <div class="diff">
+        <div class="dline ctx"><span class="ln">42</span><span class="sign"> </span><span class="code">  let intent = $derived(getWorktreeIntent(pane));</span></div>
+        <div class="dline del"><span class="ln">43</span><span class="sign">−</span><span class="code">  let isCreating = $state(false);</span></div>
+        <div class="dline add"><span class="ln">43</span><span class="sign">+</span><span class="code">  let isCreating = $derived(intent.mode === 'creating-branch');</span></div>
+        <div class="dline ctx"><span class="ln">44</span><span class="sign"> </span><span class="code">  let dropdownOpen = $state(false);</span></div>
+        <div class="dline gap"><span class="ln">⋯</span><span class="sign"> </span><span class="code">22 unchanged lines</span></div>
+        <div class="dline ctx"><span class="ln">67</span><span class="sign"> </span><span class="code">  function selectBranch(name: string) {</span></div>
+        <div class="dline del"><span class="ln">68</span><span class="sign">−</span><span class="code">    setIntent({ mode: 'switch', branchName: name });</span></div>
+        <div class="dline add"><span class="ln">68</span><span class="sign">+</span><span class="code">    setIntent({ mode: 'attach', branchName: name, baseBranch: null });</span></div>
+        <button class="diff-fade-action" type="button" title="Open full diff in side panel">↗ open in side panel</button>
+      </div>
+
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico notebook"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg></span>
+        <span class="label">notebook</span>
+        <span class="body"><span class="path">analysis/throughput.ipynb</span><span class="sep">·</span>cell <span style="color:var(--fg-muted)">[7]</span> · replaced</span>
+        <span class="stats"><span class="add">+18</span><span class="del">−6</span></span>
+        <span class="open-side" title="Open in side panel">↗</span>
+        <span class="time">10:50 PM</span>
+      </div>
+
+      <div class="row expanded">
+        <span class="chev">›</span>
+        <span class="ico edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/><path d="m15 5 3 3"/></svg></span>
+        <span class="label">patch</span>
+        <span class="body"><span class="path">app_worktree.go</span><span class="meta-tag">apply_patch · codex</span></span>
+        <span class="stats"><span class="add">+24</span><span class="del">−2</span></span>
+        <span class="open-side" title="Open in side panel">↗</span>
+        <span class="time">10:51 PM</span>
+      </div>
+      <div class="diff">
+        <div class="dline ctx"><span class="ln">88</span><span class="sign"> </span><span class="code">func (a *App) PrepareThreadWorktree(threadID string) error {</span></div>
+        <div class="dline ctx"><span class="ln">89</span><span class="sign"> </span><span class="code">  return a.prepareWorktree(threadID, false)</span></div>
+        <div class="dline ctx"><span class="ln">90</span><span class="sign"> </span><span class="code">}</span></div>
+        <div class="dline add"><span class="ln">91</span><span class="sign">+</span><span class="code"></span></div>
+        <div class="dline add"><span class="ln">92</span><span class="sign">+</span><span class="code">// AttachThreadWorktree creates a worktree pointing at an existing branch.</span></div>
+        <div class="dline add"><span class="ln">93</span><span class="sign">+</span><span class="code">func (a *App) AttachThreadWorktree(threadID, branch string) error {</span></div>
+        <div class="dline add"><span class="ln">94</span><span class="sign">+</span><span class="code">  return a.attachWorktree(threadID, branch)</span></div>
+        <div class="dline add"><span class="ln">95</span><span class="sign">+</span><span class="code">}</span></div>
+        <button class="diff-fade-action" type="button" title="Open full diff in side panel">↗ open in side panel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- 03 · SEARCH — grep / glob / web                               -->
+  <!-- ============================================================ -->
+  <div class="section-divider">
+    <span class="num">03</span>
+    <span class="name">Search &amp; fetch</span>
+    <span class="rule"></span>
+  </div>
+  <div class="section-blurb">Grep, Glob, WebFetch, WebSearch — same row vocabulary, distinct icons + colors.</div>
+
+  <div class="transcript">
+    <div class="rail">
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico grep"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/></svg></span>
+        <span class="label">grep</span>
+        <span class="body"><span class="path">"setWorktreeIntent\|getWorktreeIntent"</span><span class="sep">·</span><span class="meta-tag">14 matches · 9 files</span></span>
+        <span class="time">10:53 PM</span>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico glob"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><circle cx="14" cy="14" r="2.5"/><path d="m16 16-1.5-1.5"/></svg></span>
+        <span class="label">glob</span>
+        <span class="body"><span class="path">frontend/src/lib/components/**/*.svelte</span><span class="sep">·</span><span class="meta-tag">87 files</span></span>
+        <span class="time">10:53 PM</span>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico web"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" x2="22" y1="12" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></span>
+        <span class="label">fetch</span>
+        <span class="body"><span class="path">github.com/sveltejs/svelte/issues/13902</span><span class="sep">·</span><span class="meta-tag">2.1 KB</span></span>
+        <span class="time">10:54 PM</span>
+      </div>
+      <div class="row has-ind">
+        <span class="chev">›</span>
+        <span class="ico web"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" x2="22" y1="12" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></span>
+        <span class="label">search</span>
+        <span class="body">"svelte 5 runes derived async pattern"</span>
+        <span class="ind running"></span>
+        <span class="time">10:54 PM</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- 04 · CLAUDE SUBAGENTS — each Agent call is one flat row       -->
+  <!-- ============================================================ -->
+  <div class="section-divider">
+    <span class="num">04</span>
+    <span class="name">Claude subagents</span>
+    <span class="rule"></span>
+  </div>
+  <div class="section-blurb">Each <code style="font-size:11px;background:var(--surface-2);color:var(--fg-muted);padding:1px 5px;border-radius:3px;border:1px solid var(--border-subtle)">Agent()</code> call is one row in the rail. Running rows show the pulsing dot. Completed rows replace the dot with the result summary in the body. Sub-tool-calls live in the subagent transcript, not in this view.</div>
+
+  <div class="transcript">
+    <div class="rail">
+      <div class="row has-ind">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">agent</span>
+        <span class="body"><span class="agent-name">Explore</span><span class="sep">·</span>locate touch points for <code style="font-size:11.5px;background:var(--surface-2);color:var(--fg-muted);padding:1px 5px;border-radius:3px;border:1px solid var(--border-subtle)">worktreeIntent</code><span class="meta-tag">claude-haiku</span></span>
+        <span class="ind running"></span>
+        <span class="time">11:02 PM</span>
+      </div>
+
+      <div class="row has-ind">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">agent</span>
+        <span class="body"><span class="agent-name">general</span><span class="sep">·</span>audit Streamdown list spacing across themes<span class="meta-tag">claude-sonnet</span></span>
+        <span class="ind running"></span>
+        <span class="time">11:02 PM</span>
+      </div>
+
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">agent</span>
+        <span class="body"><span class="agent-name">Explore</span><span class="sep">·</span>4 files touch the store: picker, composer, send-path materializer, intent serializer</span>
+        <span class="time">11:03 PM</span>
+      </div>
+
+      <div class="row has-ind">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">agent</span>
+        <span class="body"><span class="agent-name">general</span><span class="sep">·</span>investigate why <code style="font-size:11.5px;background:var(--surface-2);color:var(--fg-muted);padding:1px 5px;border-radius:3px;border:1px solid var(--border-subtle)">BranchPicker.test.ts</code> hangs on CI</span>
+        <span class="ind error"></span>
+        <span class="time">11:04 PM</span>
+      </div>
+      <div class="row-error">
+        <span class="code">timeout</span>
+        <span class="msg">subagent exceeded 8m budget — partial transcript saved</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- 05 · CODEX SUBAGENTS — spawn / wait / agent result / close    -->
+  <!-- ============================================================ -->
+  <div class="section-divider">
+    <span class="num">05</span>
+    <span class="name">Codex subagents</span>
+    <span class="rule"></span>
+  </div>
+  <div class="section-blurb"><code style="font-size:11px;background:var(--surface-2);color:var(--fg-muted);padding:1px 5px;border-radius:3px;border:1px solid var(--border-subtle)">collab_agent</code> emits three separate events — spawn, agent result, close. <code style="font-size:11px;background:var(--surface-2);color:var(--fg-muted);padding:1px 5px;border-radius:3px;border:1px solid var(--border-subtle)">wait_agent</code> shows as its own row while pending. Every agent's response is a flat row.</div>
+
+  <div class="transcript">
+    <div class="rail">
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">spawn</span>
+        <span class="body"><span class="agent-name">Curie</span><span class="meta-tag">[default]</span><span class="sep">·</span>investigate flaky test in <code style="font-size:11.5px;background:var(--surface-2);color:var(--fg-muted);padding:1px 5px;border-radius:3px;border:1px solid var(--border-subtle)">AssistantMessage.test.ts</code><span class="meta-tag">gpt-5.5 medium</span></span>
+        <span class="time">11:18 PM</span>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">spawn</span>
+        <span class="body"><span class="agent-name">Lovelace</span><span class="meta-tag">[default]</span><span class="sep">·</span>cross-check store invariants<span class="meta-tag">gpt-5.5 medium</span></span>
+        <span class="time">11:18 PM</span>
+      </div>
+
+      <div class="row has-ind">
+        <span class="chev">›</span>
+        <span class="ico waiting"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>
+        <span class="label">waiting</span>
+        <span class="body">on <span class="agent-name" style="font-weight:400">Curie, Lovelace</span></span>
+        <span class="ind running"></span>
+        <span class="time">11:19 PM</span>
+      </div>
+
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">agent</span>
+        <span class="body"><span class="agent-name">Curie</span><span class="sep">·</span>root cause: timer leak in <code style="font-size:11.5px;background:var(--surface-2);color:var(--fg-muted);padding:1px 5px;border-radius:3px;border:1px solid var(--border-subtle)">streamingTextController</code> — never cleared on unmount</span>
+        <span class="time">11:20 PM</span>
+      </div>
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">agent</span>
+        <span class="body"><span class="agent-name">Lovelace</span><span class="sep">·</span>no invariant violations · 14 stores audited</span>
+        <span class="time">11:20 PM</span>
+      </div>
+
+      <div class="row muted">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">closed</span>
+        <span class="body"><span class="agent-name" style="color:var(--fg-subtle)">Curie</span><span class="sep">·</span>exit 0 · 18.2k tokens</span>
+        <span class="time">11:20 PM</span>
+      </div>
+      <div class="row muted">
+        <span class="chev">›</span>
+        <span class="ico agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+        <span class="label">closed</span>
+        <span class="body"><span class="agent-name" style="color:var(--fg-subtle)">Lovelace</span><span class="sep">·</span>exit 0 · 9.4k tokens</span>
+        <span class="time">11:20 PM</span>
+      </div>
+
+      <div class="row">
+        <span class="chev">›</span>
+        <span class="ico terminal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg></span>
+        <span class="label">terminal</span>
+        <span class="body">send <span class="path">"q\n"</span> → <span style="color:var(--fg-subtle)">background terminal</span> <span class="meta-tag">pid 48211</span></span>
+        <span class="time">11:22 PM</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- 06 · ERROR STATES — errored / killed / declined indicators    -->
+  <!-- ============================================================ -->
+  <div class="section-divider">
+    <span class="num">06</span>
+    <span class="name">Error states</span>
+    <span class="rule"></span>
+  </div>
+  <div class="section-blurb">Failures, kills, and user-declined invocations. Dot color + sub-line carry the meaning — no text badges.</div>
+
+  <div class="transcript">
+    <div class="rail">
+      <div class="row has-ind">
+        <span class="chev">›</span>
+        <span class="ico read"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg></span>
+        <span class="label">read</span>
+        <span class="body"><span class="path">internal/git/attach.go</span></span>
+        <span class="ind error"></span>
+        <span class="time">11:38 PM</span>
+      </div>
+      <div class="row-error">
+        <span class="code">ENOENT</span>
+        <span class="msg">no such file — file was deleted between glob and read</span>
+      </div>
+
+      <div class="row has-ind">
+        <span class="chev">›</span>
+        <span class="ico bash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg></span>
+        <span class="label">bash</span>
+        <span class="body">find <span class="path">/ -name "*.svelte" 2&gt;/dev/null</span></span>
+        <span class="ind error"></span>
+        <span class="time">11:39 PM</span>
+      </div>
+      <div class="row-error">
+        <span class="code">SIGTERM</span>
+        <span class="msg">killed by sandbox — root traversal blocked</span>
+      </div>
+
+      <div class="row has-ind">
+        <span class="chev">›</span>
+        <span class="ico bash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg></span>
+        <span class="label">bash</span>
+        <span class="body">rm -rf <span class="path">/home/rmurphy/.config/agent-overflow</span></span>
+        <span class="ind declined"></span>
+        <span class="time">11:40 PM</span>
+      </div>
+      <div class="row-error declined">
+        <span class="msg">denied by user — destructive operation outside repo root</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span class="pulse"></span>
+    <span>working · 6m 20s</span>
+    <span class="todo">› Todos <b>0/11</b> · Add Core.AttachWorktree(cwd, path, branch) + App.AttachThrea…</span>
+  </div>
+</body>
+</html>
