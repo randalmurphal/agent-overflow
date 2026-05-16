@@ -1,4 +1,5 @@
 import type { Item } from '../types/models';
+import { payloadVersionForItem } from '../utils/payloadVersion';
 import {
   createPayloadExpansion,
   type PayloadExpansionHandle,
@@ -41,9 +42,11 @@ export interface RowExpansionStateOptions
    */
   stateKey?: string;
   /**
-   * Version used for cache invalidation and remount-safe auto-loads. Defaults
-   * to item.updatedAt. Callers with richer payload signatures should provide
-   * one so UI-only item changes do not invalidate loaded payload content.
+   * Version used for cache invalidation and remount-safe auto-loads. The
+   * default comes from `payloadVersionForItem`, which prefers explicit
+   * payload signatures before falling back to ids/meta/updatedAt. Callers
+   * with richer row-local signatures can still provide one so UI-only item
+   * changes do not invalidate loaded payload content.
    */
   payloadVersion?: (item: Item | undefined) => unknown;
 }
@@ -113,8 +116,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
 
     const itemId = item.id;
     const getCurrentItem = (): Item | undefined => options.getItemById(itemId);
-    const currentPayloadVersion = rowOptions.payloadVersion
-      ?? ((currentItem: Item | undefined) => currentItem?.updatedAt);
+    const currentPayloadVersion = rowOptions.payloadVersion ?? payloadVersionForItem;
     cached = createPayloadExpansion(
       () => getCurrentItem()?.payloadId,
       () => getCurrentItem()?.threadId,

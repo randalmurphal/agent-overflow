@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render } from "@testing-library/svelte";
+import { fireEvent, render } from "@testing-library/svelte";
 import WaitGroup from "./WaitGroup.svelte";
 import { buildPane, makeItem, makeThread } from "../../../test/helpers/chat";
 import type { WaitGroupNode } from "../../utils/subagentGrouping";
@@ -38,6 +38,8 @@ describe("<WaitGroup>", () => {
     });
 
     expect(getByTestId("wait-group")).toBeInTheDocument();
+    expect(getByTestId("wait-group-children").className).toContain("max-h-[20rem]");
+    expect(getByTestId("wait-group-children").className).toContain("overflow-y-auto");
     expect(getByText(/Waiting for agents/)).toBeInTheDocument();
     expect(getByText(/Spawned Galileo -> done/)).toBeInTheDocument();
   });
@@ -65,5 +67,46 @@ describe("<WaitGroup>", () => {
 
     expect(getByTestId("wait-group")).toBeInTheDocument();
     expect(queryByTestId("wait-group-children")).not.toBeInTheDocument();
+  });
+
+  it("does not mount every child row until the user asks for the full wait group", async () => {
+    const pane = await buildPane(makeThread({ provider: "codex" }));
+    const children = Array.from({ length: 30 }, (_, index) => ({
+      kind: "leaf" as const,
+      item: makeItem({
+        id: `complete-spawn-${index}`,
+        kind: "tool_completion",
+        toolName: "collab_agent",
+        completionOf: `spawn-${index}`,
+        summary: `Spawned Agent ${index} -> done`,
+      }),
+    }));
+    const group: WaitGroupNode = {
+      kind: "wait_group",
+      groupKey: "wait:wait-many",
+      parent: makeItem({
+        id: "wait-many",
+        kind: "tool_call",
+        toolName: "wait_agent",
+        status: "completed",
+        summary: "wait_agent",
+        meta: JSON.stringify({ input: { tool: "wait_agent" } }),
+      }),
+      children,
+      descendantCount: children.length,
+    };
+
+    const { getByTestId, queryByText, getByText } = render(WaitGroup, {
+      props: { pane, group },
+    });
+
+    expect(getByText(/Spawned Agent 24 -> done/)).toBeInTheDocument();
+    expect(queryByText(/Spawned Agent 25 -> done/)).not.toBeInTheDocument();
+
+    const showAll = getByTestId("wait-group-show-all");
+    expect(showAll.textContent).toContain("Show 5 more");
+    await fireEvent.click(showAll);
+
+    expect(getByText(/Spawned Agent 29 -> done/)).toBeInTheDocument();
   });
 });

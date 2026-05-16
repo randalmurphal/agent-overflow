@@ -33,6 +33,17 @@ describe('createThreadChannelState', () => {
     expect(state.messages.map((message) => message.content)).toEqual(['first', 'second', 'third']);
   });
 
+  it('keeps the messages array reference when incoming messages are duplicates', () => {
+    const state = createThreadChannelState();
+    state.mergeMessages([makeMessage({ id: 'message-1', sequence: 1 })]);
+    const before = state.messages;
+
+    state.mergeMessages([makeMessage({ id: 'duplicate-1', sequence: 1, content: 'ignored' })]);
+
+    expect(state.messages).toBe(before);
+    expect(state.messages.map((message) => message.content)).toEqual(['hello']);
+  });
+
   it('tracks channel status separately from messages', () => {
     const state = createThreadChannelState();
 

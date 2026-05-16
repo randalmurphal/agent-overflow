@@ -3,6 +3,7 @@ import {
   __payloadCacheStatsForTest,
   __resetPayloadCacheForTest,
   clearPayloadCacheForThread,
+  payloadVersionKey,
   readPayloadCache,
   writePayloadCache,
 } from './payloadDataCache';
@@ -61,6 +62,14 @@ describe('payloadDataCache', () => {
     expect(readPayloadCache('thread-1', 'payload-a', null)?.chunks).toEqual(['nullv']);
     expect(readPayloadCache('thread-1', 'payload-a', '')?.chunks).toEqual(['empty']);
     expect(readPayloadCache('thread-1', 'payload-a', 'null')?.chunks).toEqual(['strnull']);
+  });
+
+  it('bounds large string versions before embedding them in cache keys', () => {
+    const largeVersion = 'x'.repeat(10_000);
+    const key = payloadVersionKey(largeVersion);
+
+    expect(key.length).toBeLessThan(190);
+    expect(key).not.toContain(largeVersion);
   });
 
   it('rewriting the same key replaces, not duplicates, the entry and updates byte accounting', () => {

@@ -201,7 +201,7 @@ function evictOldPlanCommentCacheEntries(): void {
   }
 }
 
-function upsertItemIntoCache(item: Item): void {
+function upsertItemIntoCache(item: Item): boolean {
   const wasNewEntry = cache[item.threadId] === undefined;
   const entry = entryForThread(item.threadId);
   const existingIdx = entry.items.findIndex((e) => e.id === item.id);
@@ -209,7 +209,7 @@ function upsertItemIntoCache(item: Item): void {
     const existing = entry.items[existingIdx];
     if (existing && itemsAreEqual(existing, item)) {
       entry.loaded = true;
-      return;
+      return false;
     }
     const replaced = entry.items.slice();
     replaced[existingIdx] = item;
@@ -225,6 +225,7 @@ function upsertItemIntoCache(item: Item): void {
   // past MAX_CACHED_THREADS in a long-running session because eviction
   // otherwise only runs in refreshThreadProposedPlans's success branch.
   if (wasNewEntry) evictOldPlanCacheEntries();
+  return true;
 }
 
 export function scheduleThreadProposedPlansRefresh(threadId: string | null | undefined): void {
@@ -251,7 +252,8 @@ export function retainProposedPlanEventListener(threadIdScope?: () => string | n
       // returns stale data for ~100ms until the debounced refresh resolves.
       // That window forced PlanSidebar to read pane.items as a fallback,
       // which coupled it to chat streaming. See Composer.svelte / PlanSidebar.svelte.
-      upsertItemIntoCache(item);
+      const changed = upsertItemIntoCache(item);
+      if (!changed) return;
       if (listenerThreadScopes.size > 0) {
         let matched = false;
         for (const scope of listenerThreadScopes) {

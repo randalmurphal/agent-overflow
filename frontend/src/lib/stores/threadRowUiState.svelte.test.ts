@@ -30,7 +30,7 @@ describe('createThreadRowUiState', () => {
     items.set(item.id, updated);
 
     expect(rowUiState.expansionStateFor(updated)).toBe(first);
-    expect(first.payloadVersion).toBe(2);
+    expect(first.payloadVersion).toBe('payload-b');
   });
 
   it('lets item-keyed expansion handles use a payload-specific version', () => {

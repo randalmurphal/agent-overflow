@@ -1,3 +1,5 @@
+import { boundedPayloadVersionString } from './payloadVersion';
+
 // Module-level LRU cache for fetched payload chunks. Survives both
 // virtua row remount AND switchThread, so re-entering a thread that
 // already loaded a payload renders synchronously from cache instead of
@@ -6,7 +8,9 @@
 //
 // Keyed by JSON-encoded (threadId, payloadId, version) tuples so item
 // updates that bump `updatedAt` invalidate cleanly without delimiter
-// collision risk from provider-derived ids.
+// collision risk from provider-derived ids. Version fragments are
+// bounded before key construction so large provider metadata cannot
+// hide uncounted megabytes in Map keys.
 //
 // Cache is bytes-aware rather than entry-count: 16 MB ≈ 50 typical
 // preview-loaded diffs, comfortably bigger than any realistic
@@ -42,13 +46,13 @@ function payloadCacheThreadPrefix(threadId: string): string {
 export function payloadVersionKey(version: unknown): string {
   if (version === undefined) return 'u';
   if (version === null) return 'n';
-  if (typeof version === 'string') return `s:${version}`;
+  if (typeof version === 'string') return `s:${boundedPayloadVersionString(version)}`;
   if (typeof version === 'number') return `n:${version}`;
   if (typeof version === 'boolean') return `b:${version}`;
   try {
-    return `j:${JSON.stringify(version)}`;
+    return `j:${boundedPayloadVersionString(JSON.stringify(version))}`;
   } catch {
-    return `r:${String(version)}`;
+    return `r:${boundedPayloadVersionString(String(version))}`;
   }
 }
 

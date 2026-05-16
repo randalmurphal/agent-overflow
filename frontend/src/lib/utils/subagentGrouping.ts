@@ -641,10 +641,10 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
     };
   }
 
-  function buildInlineAgentWrapper(members: Item[]): InlineSubagentGroupNode {
+  function buildInlineAgentWrapper(members: Item[], segmentKey: string): InlineSubagentGroupNode {
     const [first] = members;
     const baseGroupKey = inlineGroupKeyByItemID.get(first.id) ?? `item:${first.id}`;
-    const groupKey = `${baseGroupKey}:${first.id}`;
+    const groupKey = `${baseGroupKey}:${segmentKey}`;
     const memberNodes = members
       .map((member) => buildNode(member, 1))
       .filter((node): node is SubagentGroupNode => node.kind === 'group')
@@ -660,6 +660,7 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
   }
 
   const roots: TimelineNode[] = [];
+  const seenInlineGroupKeys = new Set<string>();
   for (let index = 0; index < sorted.length; index += 1) {
     const item = sorted[index];
     const inlineKey = inlineGroupKeyByItemID.get(item.id);
@@ -669,6 +670,10 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
         continue;
       }
       const members = [item];
+      const previous = sorted[index - 1];
+      const segmentKey = seenInlineGroupKeys.has(inlineKey) && previous
+        ? `after:${previous.id}`
+        : 'start';
       let cursor = index + 1;
       while (cursor < sorted.length) {
         const candidate = sorted[cursor];
@@ -680,7 +685,8 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
         members.push(candidate);
         cursor += 1;
       }
-      roots.push(buildInlineAgentWrapper(members));
+      roots.push(buildInlineAgentWrapper(members, segmentKey));
+      seenInlineGroupKeys.add(inlineKey);
       index = cursor - 1;
       continue;
     }

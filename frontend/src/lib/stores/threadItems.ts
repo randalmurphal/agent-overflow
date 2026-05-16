@@ -79,6 +79,9 @@ export function mergeItemsById(incoming: readonly Item[], current: readonly Item
   let changed = false;
   for (const it of incoming) {
     const existing = byId.get(it.id);
+    if (existing && itemsAreEqual(existing, it)) {
+      continue;
+    }
     if (existing !== it) {
       byId.set(it.id, it);
       changed = true;
@@ -88,6 +91,36 @@ export function mergeItemsById(incoming: readonly Item[], current: readonly Item
   const merged = Array.from(byId.values());
   merged.sort(compareItemsByTimelinePosition);
   return merged;
+}
+
+export function reconcileItemWindow(incoming: readonly Item[], current: readonly Item[]): Item[] {
+  if (incoming.length === 0 && current.length === 0) return current as Item[];
+
+  const currentById = new Map<string, Item>();
+  for (const item of current) currentById.set(item.id, item);
+
+  const next: Item[] = [];
+  let changed = incoming.length !== current.length;
+  for (const item of incoming) {
+    const existing = currentById.get(item.id);
+    if (existing && itemsAreEqual(existing, item)) {
+      next.push(existing);
+    } else {
+      next.push(item);
+      if (existing !== item) changed = true;
+    }
+  }
+
+  if (!changed) {
+    for (let index = 0; index < current.length; index += 1) {
+      if (current[index] !== next[index]) {
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  return changed ? next : current as Item[];
 }
 
 /**
@@ -122,6 +155,7 @@ export interface ApplyItemUpsertsToWindowOptions {
 export interface ApplyItemUpsertsToWindowResult {
   items: Item[];
   appendedItems: readonly Item[];
+  changedItems: readonly Item[];
   indexesNeedRebuild: boolean;
 }
 
@@ -140,18 +174,25 @@ export function applyItemUpsertsToWindow({
 }: ApplyItemUpsertsToWindowOptions): ApplyItemUpsertsToWindowResult | null {
   if (incoming.length === 0) return null;
 
-  const next = current.slice();
+  let next: Item[] | null = null;
   const appendedIndexById = new Map<string, number>();
   const appendedItems: Item[] = [];
+  const changedItems: Item[] = [];
   let changed = false;
   let needsSort = false;
+
+  const workingItems = (): Item[] => {
+    if (next === null) next = current.slice();
+    return next;
+  };
 
   for (const item of incoming) {
     if (currentThreadId !== null && item.threadId !== currentThreadId) continue;
 
     const existingIndex = itemIndexById.get(item.id) ?? appendedIndexById.get(item.id);
     if (existingIndex !== undefined) {
-      const previous = next[existingIndex];
+      const previous = (next ?? current)[existingIndex];
+      if (!previous) continue;
       // No-op dedupe: if the backend re-emits an upsert with identical
       // content, skip the array replace. Otherwise every redundant
       // upsert produces a new `pane.items` reference, which cascades
@@ -160,7 +201,9 @@ export function applyItemUpsertsToWindow({
       // every ~115 ms in plan-ready threads. See `itemsAreEqual` for
       // the fields compared.
       if (itemsAreEqual(previous, item)) continue;
-      next[existingIndex] = item;
+      workingItems()[existingIndex] = item;
+      changed = true;
+      changedItems.push(item);
       if (appendedIndexById.has(item.id)) {
         const appendedOffset = existingIndex - current.length;
         appendedItems[appendedOffset] = item;
@@ -168,7 +211,6 @@ export function applyItemUpsertsToWindow({
       if (compareItemsByTimelinePosition(previous, item) !== 0) {
         needsSort = true;
       }
-      changed = true;
       continue;
     }
 
@@ -176,24 +218,29 @@ export function applyItemUpsertsToWindow({
       continue;
     }
 
-    const previousTail = next.at(-1);
+    const source = next ?? current;
+    const previousTail = source.at(-1);
     if (previousTail && compareItemsByTimelinePosition(previousTail, item) > 0) {
       needsSort = true;
     }
-    appendedIndexById.set(item.id, next.length);
-    next.push(item);
-    appendedItems.push(item);
+    const target = workingItems();
+    appendedIndexById.set(item.id, target.length);
+    target.push(item);
     changed = true;
+    appendedItems.push(item);
+    changedItems.push(item);
   }
 
   if (!changed) return null;
+  const result = next ?? current.slice();
 
   if (needsSort) {
-    next.sort(compareItemsByTimelinePosition);
+    result.sort(compareItemsByTimelinePosition);
   }
   return {
-    items: next,
+    items: result,
     appendedItems,
+    changedItems,
     indexesNeedRebuild: needsSort,
   };
 }

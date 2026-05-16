@@ -209,7 +209,7 @@
                   onclick={() => expansion.showFull()}
                   data-testid="tool-result-patch-show-full"
                 >
-                  Show full output ({formatPayloadSize(expansion.totalSize)}) ↓
+                  Show more output ({formatPayloadSize(expansion.totalSize)}) ↓
                 </button>
               {/if}
             {/if}

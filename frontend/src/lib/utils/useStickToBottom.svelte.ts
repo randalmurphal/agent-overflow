@@ -27,9 +27,11 @@
 //     remeasurement and async Streamdown typesetting would spring-
 //     chase a thread restore visibly.
 //
-// User-initiated snaps (the scroll-to-bottom chip, send, thread
-// restore) go through `forceStick()` which writes scrollTop directly
-// and resets the warm gate so post-snap settling stays silent.
+// User-initiated snaps (the scroll-to-bottom chip, send) and thread
+// restores go through `forceStick()` which writes scrollTop directly.
+// Restore snaps also reset the warm gate so post-thread-switch
+// measurement settling stays silent; user snaps keep already-settled
+// content visible.
 //
 // Unlike the previous controller, this owns the scroll element directly.
 // MessageTimeline pairs it with virtua's <Virtualizer scrollRef={scrollEl}>
@@ -79,6 +81,9 @@ const RE_STICK_OFFSET_PX = 5;
 const RESIZE_CLEAR_PADDING_MS = 1;
 const DEFAULT_PROGRAMMATIC_SCROLL_DURATION_MS = 420;
 const PROGRAMMATIC_SCROLL_DISTANCE_THRESHOLD_PX = 1;
+const USER_SCROLL_INTENT_WINDOW_MS = 160;
+const USER_SCROLL_ESCAPE_THRESHOLD_PX = 1;
+const EXTERNAL_SCROLL_TAG_CLEAR_MS = 100;
 
 // ===== Spring chase tuning =====
 // Defaults match upstream stackblitz-labs/use-stick-to-bottom:
@@ -176,7 +181,7 @@ export interface UseStickToBottomController {
    * should be hidden. Mirrors upstream `use-stick-to-bottom`'s return.
    */
   readonly isAtBottom: boolean;
-  /** True when the user has explicitly scrolled away (wheel/key/touch/select). */
+  /** True when the user has explicitly moved the outer scroller away from bottom. */
   readonly escapedFromLock: boolean;
   /**
    * True once the warm-up gate has cleared — either QUIET_MS of
@@ -185,10 +190,10 @@ export interface UseStickToBottomController {
    * can hide content during the cascade and reveal here to avoid
    * showing the user a brief estimated-size paint before the
    * measured-size correction lands. Reset to false on attach,
-   * forceStick, and explicit armWarmup() — the latter is the seam
-   * for "I'm about to render fundamentally different content (e.g.
-   * thread switch) and the DOM update will happen BEFORE my next
-   * forceStick / attach call, so reset the gate now."
+   * restore-reason forceStick, and explicit armWarmup() — the latter
+   * is the seam for "I'm about to render fundamentally different
+   * content (e.g. thread switch) and the DOM update will happen BEFORE
+   * my next forceStick / attach call, so reset the gate now."
    */
   readonly isWarm: boolean;
 
@@ -228,18 +233,19 @@ export interface UseStickToBottomController {
    * call. Set by the thread-switch entry point (MessageTimeline's
    * `$effect.pre`, ChannelView's initial-poll path) immediately
    * before the restore $effect runs. Auto-clears on consume by the
-   * next restore-forceStick call, on explicit user actions (wheel /
-   * key / touch / scrollbar drag escape, animateScrollTo, stopScroll,
-   * pauseAutoScroll), and on any user-reason `forceStick()`. This is
+   * next restore-forceStick call, on outer-scroll escape intent
+   * (wheel / key / touch that can reach the chat scroller),
+   * animateScrollTo, stopScroll, and on any
+   * user-reason `forceStick()`. This is
    * the load-bearing distinguisher between "the user is explicitly
    * escaped" and "I just defensively set escape=true while preparing
    * the new thread for restore."
    */
   armRestoreSnap(): void;
   /**
-   * Flip intent flags to sticky-bottom WITHOUT writing scrollTop. Pairs
-   * with `listRef.scrollToIndex(last, 'end')` — virtua positioned the
-   * geometry, this just resumes streaming follow.
+   * Flip intent flags to sticky-bottom WITHOUT writing scrollTop.
+   * Use only when the caller has already established bottom geometry
+   * or when the timeline is empty and there is no geometry to write.
    */
   markAtBottom(): void;
   /**
@@ -249,9 +255,16 @@ export interface UseStickToBottomController {
    */
   animateScrollTo(targetTop: number, opts?: { durationMs?: number }): Promise<'completed' | 'cancelled'>;
   /**
-   * Mark the upcoming external scroll as not user-driven. Call before
-   * `listRef.scrollToIndex(...)` so the controller doesn't auto-restick
-   * if virtua's jump happens to land near the bottom.
+   * Run an external programmatic scroll, such as virtua's
+   * `listRef.scrollToIndex(...)`, under the controller's scroll-intent
+   * tag. This is the escape hatch for scroll writers the controller
+   * cannot perform itself.
+   */
+  runExternalScroll(action: () => void): void;
+  /**
+   * Cancel any active controller-owned animation and mark the user as
+   * escaped. Kept for callers that need to stop motion without performing
+   * a scroll write.
    */
   stopScroll(): void;
   /**
@@ -276,7 +289,7 @@ export interface UseStickToBottomController {
    * Re-arm the warm-up gate WITHOUT writing scrollTop or changing
    * intent / escape flags. Sets `isWarm` to false and restarts the
    * QUIET_MS / FAILSAFE_MS timers, exactly as `attach()` and
-   * `forceStick()` do.
+   * restore-reason `forceStick()` do.
    *
    * The use case is a consumer that needs `isWarm` to be false BEFORE
    * the next DOM flush, where calling `forceStick()` would be wrong
@@ -316,7 +329,7 @@ export function createUseStickToBottomController(
   // Intent flag: "we want to be glued to the bottom". Mirrors upstream's
   // state.isAtBottom — set true on initial mount, on forceStick, and when
   // a re-stick condition fires from the scroll handler. Set false on
-  // explicit escape (wheel/key/touch/select) and on stopScroll. Crucially
+  // explicit escape (outer wheel/key/touch scroll, select) and on stopScroll. Crucially
   // this is NOT geometry-derived; the contentRO sync-pin path relies on
   // it staying true even when content grew the bottom out from under us
   // — that's the gate that keeps the pin from running after the user
@@ -344,6 +357,12 @@ export function createUseStickToBottomController(
   let resizeDifference = 0;
   let resizeClearTimer: ReturnType<typeof setTimeout> | null = null;
   let ignoreScrollToTop = -1;
+  let externalScrollIgnoreUntil = 0;
+  let externalScrollClearTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingUserScrollIntent:
+    | { source: 'wheel' | 'key' | 'touch'; startScrollTop: number }
+    | null = null;
+  let pendingUserScrollIntentTimer: ReturnType<typeof setTimeout> | null = null;
   let previousHeight: number | undefined;
   let touchStartY: number | null = null;
 
@@ -363,11 +382,11 @@ export function createUseStickToBottomController(
   // One-shot flag the thread-switch entry point arms immediately before
   // the restore $effect runs (after the defensive `setEscapedFromLock`).
   // `forceStick({reason: 'restore'})` consumes the flag and proceeds;
-  // when the flag is unset, that call NO-OPs. Any user-initiated escape
-  // (handleWheel / handleKeydown / handleTouchMove / position-based
-  // escape / selection / animateScrollTo / stopScroll / explicit
-  // user-reason forceStick) also clears the flag, so a stale restore
-  // $effect that fires after a user escape cannot clobber it. This is
+  // when the flag is unset, that call NO-OPs. Any outer-scroll escape
+  // intent (wheel / key / touch that can reach the scroll element), plus
+  // selection, animateScrollTo, stopScroll, or explicit user-reason forceStick,
+  // also clears the flag, so a stale restore $effect that fires after
+  // a user escape cannot clobber it. This is
   // the load-bearing distinguisher between "the user has explicitly
   // escaped" and "the $effect.pre just defensively set escape=true
   // while preparing the new thread for restore."
@@ -376,10 +395,10 @@ export function createUseStickToBottomController(
   // ===== Warm-up (quiescence) state =====
   // `warm` flips true once the controller observes a quiet period of
   // QUIET_MS on contentRO, OR the FAILSAFE_MS deadline trips (whichever
-  // comes first). Reset to false on attach and forceStick. Backed by
-  // $state so consumers can subscribe to the transition — chat's
-  // MessageTimeline hides contentEl on uncached loads (no
-  // pane.cachedVirtuaCache) until warm fires, which is the canonical
+  // comes first). Reset to false on attach, explicit armWarmup(), and
+  // restore-reason forceStick. Backed by $state so consumers can
+  // subscribe to the transition — chat's MessageTimeline hides contentEl
+  // while warm is false, which is the canonical
   // "virtua's measurement cascade has settled" signal. Without this,
   // an uncached thread's first paint renders rows at virtua's
   // ESTIMATED_ROW_SIZE × N offsets; the RO-correction pass then shifts
@@ -599,6 +618,7 @@ export function createUseStickToBottomController(
   // double-gate and confuse the read.
   function springGateOpen(): boolean {
     return !springStopRequested
+      && pendingUserScrollIntent === null
       && pauseDepth === 0
       && isAtBottomState
       && !escapedFromLockState
@@ -698,7 +718,7 @@ export function createUseStickToBottomController(
         // First fire: snap to bottom synchronously so the initial paint
         // lands at the right place. Matches upstream's `initial` behavior
         // when isAtBottom starts true.
-        const willPin = isAtBottomState && !escapedFromLockState;
+        const willPin = isAtBottomState && !escapedFromLockState && pendingUserScrollIntent === null;
         trace('scroll.contentRO.firstFire', () => ({
           nextHeight: Math.round(nextHeight),
           willPin,
@@ -732,10 +752,15 @@ export function createUseStickToBottomController(
       refreshIsNearBottom();
       const overshoot = scrollEl.scrollTop > targetScrollTop();
       const positiveWillPin = delta > 0
-        && isAtBottomState && !escapedFromLockState && pauseDepth === 0;
+        && isAtBottomState
+        && !escapedFromLockState
+        && pendingUserScrollIntent === null
+        && pauseDepth === 0;
       const negativeWillPin = delta < 0
         && (isAtBottomState || isNearBottomState)
-        && !escapedFromLockState && pauseDepth === 0;
+        && !escapedFromLockState
+        && pendingUserScrollIntent === null
+        && pauseDepth === 0;
       trace('scroll.contentRO', () => ({
         prev: Math.round(prev),
         next: Math.round(nextHeight),
@@ -762,7 +787,12 @@ export function createUseStickToBottomController(
       // Without this gate, an `applyJump` shift past the new bottom
       // while the user was reading mid-history (esp. with shrinking
       // content above the viewport) could snap them to bottom.
-      if (overshoot && !escapedFromLockState && pauseDepth === 0) {
+      if (
+        overshoot
+        && !escapedFromLockState
+        && pendingUserScrollIntent === null
+        && pauseDepth === 0
+      ) {
         writeCaller = 'contentRO.overshoot';
         writeScrollTop(targetScrollTop());
       }
@@ -867,27 +897,82 @@ export function createUseStickToBottomController(
     const cs = window.getComputedStyle(el);
     return /(auto|scroll)/.test(cs.overflowY) || /(auto|scroll)/.test(cs.overflow);
   }
+
+  function canConsumeWheelDelta(el: HTMLElement, deltaY: number): boolean {
+    if (deltaY < 0) return el.scrollTop > 0;
+    if (deltaY > 0) return el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+    return false;
+  }
+
+  function clearPendingUserScrollIntent(
+    intent: typeof pendingUserScrollIntent = pendingUserScrollIntent,
+    opts: { repinIfStillSticky?: boolean } = {},
+  ): void {
+    if (intent && pendingUserScrollIntent !== intent) return;
+    pendingUserScrollIntent = null;
+    if (pendingUserScrollIntentTimer) {
+      clearTimeout(pendingUserScrollIntentTimer);
+      pendingUserScrollIntentTimer = null;
+    }
+    if (!escapedFromLockState && isAtBottomState) {
+      springStopRequested = false;
+      if (opts.repinIfStillSticky && scrollEl && distanceFromBottom() > RE_STICK_OFFSET_PX) {
+        writeCaller = 'pendingUserScrollIntent.expire';
+        writeScrollTop(targetScrollTop());
+      }
+    }
+  }
+
+  function armUserScrollIntent(source: 'wheel' | 'key' | 'touch'): void {
+    if (!scrollEl) return;
+    cancelTargetAnimation();
+    cancelSpring();
+    springStopRequested = true;
+    restoreSnapArmed = false;
+    const intent = { source, startScrollTop: scrollEl.scrollTop };
+    pendingUserScrollIntent = intent;
+    if (pendingUserScrollIntentTimer) clearTimeout(pendingUserScrollIntentTimer);
+    pendingUserScrollIntentTimer = setTimeout(() => {
+      clearPendingUserScrollIntent(intent, { repinIfStillSticky: true });
+    }, USER_SCROLL_INTENT_WINDOW_MS);
+    trace('scroll.userScrollIntent.arm', () => ({
+      source,
+      startScrollTop: Math.round(intent.startScrollTop),
+      isAtBottomState,
+      escapedFromLockState,
+    }));
+  }
+
   function handleWheel(e: WheelEvent): void {
     if (!scrollEl) return;
     if (e.deltaY >= 0) return; // only up-wheel can break the lock
     // Walk parents from event target; if first overflow ancestor is the
-    // scroll element, the wheel landed on us. If a nested scroller (e.g.
-    // a code block with overflow-y:auto) is encountered first, ignore —
-    // the user is scrolling that nested element, not us.
+    // scroll element, the wheel landed on us. If a nested scroller can
+    // consume this delta, ignore — the user is scrolling that nested
+    // element, not us. If the nested scroller is already at its boundary,
+    // the wheel can chain to the chat scroll element, so this is a real
+    // escape gesture for the outer timeline.
     let cur: Element | null = e.target instanceof Element ? e.target : null;
     while (cur && cur !== scrollEl) {
-      if (isOverflowAncestor(cur) && cur.scrollHeight > cur.clientHeight) return;
+      if (
+        isOverflowAncestor(cur)
+        && cur instanceof HTMLElement
+        && cur.scrollHeight > cur.clientHeight
+        && canConsumeWheelDelta(cur, e.deltaY)
+      ) {
+        return;
+      }
       cur = cur.parentElement;
     }
     if (cur !== scrollEl) return;
     if (scrollEl.scrollHeight <= scrollEl.clientHeight) return;
-    trace('scroll.wheel.escape', () => ({
+    trace('scroll.wheel.escapeIntent', () => ({
       deltaY: e.deltaY,
       scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
       isAtBottomState,
       escapedFromLockState,
     }));
-    setEscapedFromLock(true);
+    armUserScrollIntent('wheel');
   }
 
   // ===== Scroll handler =====
@@ -899,12 +984,18 @@ export function createUseStickToBottomController(
     // user scroll back to the same scrollTop value would be ignored.
     const tag = ignoreScrollToTop;
     ignoreScrollToTop = -1;
+    const externalTagged = externalScrollIgnoreUntil > nowMs();
     refreshIsNearBottom();
-    const tagged = scrollTopAtEvent === tag;
+    const userScrollIntent = pendingUserScrollIntent;
+    const pendingUserIntentMovedUp = !!userScrollIntent
+      && scrollTopAtEvent < userScrollIntent.startScrollTop - USER_SCROLL_ESCAPE_THRESHOLD_PX;
+    const tagged = (scrollTopAtEvent === tag || externalTagged) && !pendingUserIntentMovedUp;
     trace('scroll.scrollEvent', () => ({
       scrollTop: Math.round(scrollTopAtEvent),
       tag: Math.round(tag),
+      externalTagged,
       tagged,
+      pendingUserIntentMovedUp,
       scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
       clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
       resizeDifference: Math.round(resizeDifference),
@@ -951,6 +1042,22 @@ export function createUseStickToBottomController(
         return;
       }
 
+      if (userScrollIntent && pendingUserIntentMovedUp) {
+        trace('scroll.scrollEvent.deferred.escapeUserScroll', () => ({
+          source: userScrollIntent.source,
+          startScrollTop: Math.round(userScrollIntent.startScrollTop),
+          scrollTop: Math.round(scrollTopAtEvent),
+          resizeDifference: Math.round(resizeDifference),
+        }));
+        clearPendingUserScrollIntent(userScrollIntent);
+        setEscapedFromLock(true);
+        return;
+      }
+
+      if (userScrollIntent) {
+        clearPendingUserScrollIntent(userScrollIntent);
+      }
+
       if (isSelectingInside(scrollEl)) {
         trace('scroll.scrollEvent.deferred.escapeSelection', () => ({
           scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
@@ -965,12 +1072,12 @@ export function createUseStickToBottomController(
       // scrollTop write here — they're already at the bottom.
       //
       // Two gates:
-      //   1. Direction. The scroll event from a wheel-up gesture itself
-      //      arrives RIGHT AFTER handleWheel set escape; if we re-sticked
-      //      whenever the user happens to land near the bottom, that
-      //      same event would undo the escape. Skip re-stick when
-      //      scrollTop is decreasing (UP direction); only DOWN-direction
-      //      scrolls toward the bottom can re-engage auto-follow.
+      //   1. Direction. The scroll event from a wheel-up gesture is the
+      //      event that confirms escape; if we also re-sticked whenever
+      //      the user happens to land near the bottom, that same event
+      //      would undo the escape. Skip re-stick when scrollTop is
+      //      decreasing (UP direction); only DOWN-direction scrolls
+      //      toward the bottom can re-engage auto-follow.
       //   2. RE_STICK_OFFSET_PX (small) rather than the looser
       //      isNearBottomState (70px). Even on a DOWN scroll, only
       //      essentially-at-bottom positions count.
@@ -1005,7 +1112,7 @@ export function createUseStickToBottomController(
 
   // ===== Keydown / touch handlers (intent signals) =====
   function handleKeydown(e: KeyboardEvent): void {
-    if (UP_KEYS.has(e.key)) setEscapedFromLock(true);
+    if (UP_KEYS.has(e.key)) armUserScrollIntent('key');
     // DOWN_KEYS deliberately not handled here — see the comment near the
     // UP_KEYS declaration for why down-direction is geometric, not gestural.
   }
@@ -1020,7 +1127,7 @@ export function createUseStickToBottomController(
     // Finger moves DOWN visually → content moves DOWN → user wants to
     // see content above → escape. Finger moves UP → leave to scroll
     // handler's re-stick path.
-    if (dy > 1) setEscapedFromLock(true);
+    if (dy > 1) armUserScrollIntent('touch');
   }
   function handleTouchEnd(): void {
     touchStartY = null;
@@ -1028,6 +1135,7 @@ export function createUseStickToBottomController(
 
   // ===== Public actions =====
   function setEscapedFromLock(next: boolean): void {
+    clearPendingUserScrollIntent();
     if (next) {
       cancelTargetAnimation();
       // User explicitly broke from auto-follow — bail any in-flight
@@ -1072,12 +1180,18 @@ export function createUseStickToBottomController(
   }
 
   function stopScroll(): void {
-    // Mark the upcoming external scroll as not user-driven so the
-    // controller doesn't auto-restick if virtua's jump (or another
-    // programmatic write) lands near the bottom. Also cancels any
-    // in-flight animateScrollTo via setEscapedFromLock's
-    // cancelTargetAnimation call.
     setEscapedFromLock(true);
+  }
+
+  function runExternalScroll(action: () => void): void {
+    setEscapedFromLock(true);
+    externalScrollIgnoreUntil = nowMs() + EXTERNAL_SCROLL_TAG_CLEAR_MS;
+    if (externalScrollClearTimer) clearTimeout(externalScrollClearTimer);
+    externalScrollClearTimer = setTimeout(() => {
+      externalScrollIgnoreUntil = 0;
+      externalScrollClearTimer = null;
+    }, EXTERNAL_SCROLL_TAG_CLEAR_MS);
+    action();
   }
 
   function animateScrollTo(
@@ -1159,6 +1273,19 @@ export function createUseStickToBottomController(
       }));
       return;
     }
+    const pendingIntent = pendingUserScrollIntent;
+    if (reason === 'restore' && pendingIntent !== null) {
+      trace('scroll.forceStick.skipPendingUserIntent', () => ({
+        reason,
+        source: pendingIntent.source,
+        startScrollTop: Math.round(pendingIntent.startScrollTop),
+        isAtBottomState,
+        escapedFromLockState,
+        pauseDepth,
+        scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+      }));
+      return;
+    }
     restoreSnapArmed = false;
     trace('scroll.forceStick.entry', () => ({
       reason,
@@ -1171,11 +1298,6 @@ export function createUseStickToBottomController(
       target: scrollEl ? Math.round(targetScrollTop()) : null,
     }));
     setEscapedFromLock(false);
-    // forceStick is the regression-defense entry point for thread
-    // restore — the caller just landed us at the bottom and any
-    // subsequent contentRO fires for the next QUIET_MS/FAILSAFE_MS
-    // are virtua/Streamdown settling, not real content arrival.
-    // Re-arm the warm gate so those settle fires sync-pin.
     cancelSpring();
     // Reset the stop flag AFTER cancel — cancelSpring observes
     // springStopRequested via the rAF tick guard, but the value at the
@@ -1183,7 +1305,12 @@ export function createUseStickToBottomController(
     // mismatch on the next tick handles it). We clear it now so the
     // next streaming chunk can re-engage the spring.
     springStopRequested = false;
-    beginWarmup();
+    // Only restore/thread-switch snaps should re-hide content for the
+    // measurement warmup. A user click on the scroll-to-bottom chip is
+    // an explicit visible action in an already-mounted thread; blanking
+    // the transcript until the failsafe fires is worse than the small
+    // chance of a post-snap measurement correction.
+    if (reason === 'restore') beginWarmup();
     if (!scrollEl) return;
     isAtBottomState = true;
     writeCaller = 'forceStick';
@@ -1191,13 +1318,12 @@ export function createUseStickToBottomController(
   }
 
   function markAtBottom(): void {
-    // Flag-only counterpart to forceStick: caller already positioned
-    // the geometry (typically via virtua's listRef.scrollToIndex(last,
-    // 'end')), we just resume streaming follow. Used by chat's
-    // restoreToBottom empty-timeline branch — so the restore-snap
-    // consent must be consumed here too, otherwise the arm leaks past
-    // a completed empty-thread restore and admits a later stale
-    // restore-stick.
+    // Flag-only counterpart to forceStick: caller already established
+    // bottom geometry, or there is no geometry yet because the
+    // timeline is empty. Used by chat's restoreToBottom empty-timeline
+    // branch — so the restore-snap consent must be consumed here too,
+    // otherwise the arm leaks past a completed empty-thread restore
+    // and admits a later stale restore-stick.
     trace('scroll.markAtBottom', () => ({
       isAtBottomState,
       escapedFromLockState,
@@ -1215,13 +1341,19 @@ export function createUseStickToBottomController(
   function notifyContentMaybeGrew(): void {
     const gateScrollEl = scrollEl !== undefined;
     const gateEscape = escapedFromLockState;
+    const gatePendingUserIntent = pendingUserScrollIntent !== null;
     const gatePause = pauseDepth > 0;
     const gateNotAtBottom = !isAtBottomState;
-    const willPin = gateScrollEl && !gateEscape && !gatePause && !gateNotAtBottom;
+    const willPin = gateScrollEl
+      && !gateEscape
+      && !gatePendingUserIntent
+      && !gatePause
+      && !gateNotAtBottom;
     trace('scroll.notifyContentMaybeGrew', () => ({
       willPin,
       gateScrollEl,
       gateEscape,
+      gatePendingUserIntent,
       gatePause,
       gateNotAtBottom,
       pauseDepth,
@@ -1233,6 +1365,7 @@ export function createUseStickToBottomController(
     }));
     if (!scrollEl) return;
     if (escapedFromLockState || pauseDepth > 0) return;
+    if (pendingUserScrollIntent !== null) return;
     if (!isAtBottomState) return;
     // Stamp resizeDifference BEFORE writing scrollTop so the resulting
     // scroll event is treated as RO-correlated, not user-driven. Without
@@ -1261,7 +1394,10 @@ export function createUseStickToBottomController(
       if (released) return;
       released = true;
       pauseDepth = Math.max(0, pauseDepth - 1);
-      const willRepin = pauseDepth === 0 && !escapedFromLockState && isAtBottomState;
+      const willRepin = pauseDepth === 0
+        && !escapedFromLockState
+        && pendingUserScrollIntent === null
+        && isAtBottomState;
       trace('scroll.pause.release', () => ({
         pauseDepth,
         willRepin,
@@ -1343,6 +1479,12 @@ export function createUseStickToBottomController(
       clearTimeout(resizeClearTimer);
       resizeClearTimer = null;
     }
+    if (externalScrollClearTimer) {
+      clearTimeout(externalScrollClearTimer);
+      externalScrollClearTimer = null;
+    }
+    externalScrollIgnoreUntil = 0;
+    clearPendingUserScrollIntent();
     cancelTargetAnimation();
     cancelSpring();
     springStopRequested = false;
@@ -1358,10 +1500,10 @@ export function createUseStickToBottomController(
     // mount that wipe ran BETWEEN the consumer's $effect.pre arm and
     // the restore $effect's forceStick({reason:'restore'}), making
     // the consent effectively unusable for the initial-mount path.
-    // The flag is invalidated by user gestures (handleWheel /
-    // handleKeydown / handleTouchMove / position-based escape /
-    // selection / animateScrollTo / stopScroll), explicit user-reason
-    // forceStick, and the consume-on-restore path itself — that's
+    // The flag is invalidated by outer-scroll escape intent (wheel / key /
+    // touch that can reach the scroll element), selection, animateScrollTo /
+    // stopScroll, explicit user-reason forceStick, and the
+    // consume-on-restore path itself — that's
     // enough to keep it from leaking stale consent across legitimate
     // lifecycles. True teardown also discards the entire controller
     // instance, so a residual `true` here has no observable effect.
@@ -1391,6 +1533,7 @@ export function createUseStickToBottomController(
     forceStick,
     markAtBottom,
     animateScrollTo,
+    runExternalScroll,
     stopScroll,
     setEscapedFromLock,
     armWarmup: beginWarmup,

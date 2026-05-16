@@ -1,11 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import LazyContentBlock from './LazyContentBlock.svelte';
-import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { MAX_INLINE_BYTES } from '../../utils/inlineThreshold';
+import { __resetPayloadCacheForTest } from '../../utils/payloadDataCache';
 import { DEFAULT_PAYLOAD_CHUNK_BYTES, DEFAULT_PAYLOAD_PREVIEW_BYTES } from '../../utils/payloadExpansion.svelte';
 
 describe('<LazyContentBlock>', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    __resetPayloadCacheForTest();
+  });
+
   it('renders the preview verbatim and no toggle when preview is short', () => {
     const { getByTestId, queryByTestId } = render(LazyContentBlock, {
       props: { payloadId: 'p1', preview: 'small preview' },
@@ -121,7 +127,7 @@ describe('<LazyContentBlock>', () => {
     expect(getByTestId('lazy-content-full').textContent).toBe('PREVIEW BODYFULL BODY CONTENT');
   });
 
-  it('discarding on collapse causes re-expand to refetch the preview', async () => {
+  it('discarding local state on collapse re-expands from the payload cache', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: 'PREVIEW',
       totalSize: 8 * 1024,
@@ -152,7 +158,8 @@ describe('<LazyContentBlock>', () => {
     await fireEvent.click(toggle);
     await Promise.resolve();
     await Promise.resolve();
-    expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledTimes(2);
+    expect(getByTestId('lazy-content-preview').textContent).toBe('PREVIEW');
+    expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledTimes(1);
   });
 
   it('surfaces preview fetch errors inline without swallowing them', async () => {

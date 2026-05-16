@@ -15,10 +15,10 @@ shape. Operational rules for code in this directory:
   DOM for first-visible-item or write `scrollTop` directly.
 - Programmatic scrolls go through `useStickToBottom` (`forceStick`,
   `markAtBottom`, `notifyContentMaybeGrew`, `pauseAutoScroll`,
-  `stopScroll`, `armRestoreSnap`) or directly via
-  `listRef.scrollToIndex(...)`. **Always call `stick.stopScroll()`
-  BEFORE any `listRef.scrollToIndex(...)` and never pass `smooth:
-  true`** — virtua's smooth path uses
+  `runExternalScroll`, `stopScroll`, `armRestoreSnap`). Any virtua
+  scroll write must run inside `stick.runExternalScroll(() =>
+  listRef.scrollToIndex(...))`; **never pass `smooth: true`** —
+  virtua's smooth path uses
   `scrollEl.scrollTo({behavior:'smooth'})` natively, which would fight
   the controller. Never `el.scrollIntoView()` on a row that lives
   inside the virtualizer; virtua won't see it and will fight the
@@ -27,13 +27,14 @@ shape. Operational rules for code in this directory:
   flavors.** `'user'` (default) is explicit user intent (chip click,
   send) and always proceeds. `'restore'` is thread-restore-style and
   honored ONLY when the entry point armed consent via
-  `armRestoreSnap()` since the last user escape — otherwise NO-OP, to
+  `armRestoreSnap()` since the last outer-scroll escape intent — otherwise NO-OP, to
   preserve the user's scroll position when a stale or duplicated
   restore $effect fires. MessageTimeline's `$effect.pre` calls
   `stick.armRestoreSnap()` after the defensive
   `setEscapedFromLock(true)` so the upcoming restoreToBottom's
-  `forceStick({reason:'restore'})` is honored; any user gesture
-  between arm and consume re-clears the arm and the restore NO-OPs.
+  `forceStick({reason:'restore'})` is honored; any wheel/key/touch
+  intent that can reach the chat scroller between arm and consume
+  re-clears the arm and the restore NO-OPs.
   Don't call `forceStick({reason:'restore'})` from a restore path
   without a paired `armRestoreSnap()` from the matching entry point —
   the call will silently NO-OP. Don't call `armRestoreSnap()` from
@@ -59,14 +60,11 @@ shape. Operational rules for code in this directory:
   sizes one frame after mount, and the first burst of Streamdown async
   typesetting (shiki / KaTeX / mermaid / parseIncompleteMarkdown
   rebalance). The trailing pin is escape-aware (`notifyContentMaybeGrew`
-  bails on `escapedFromLockState || pauseDepth>0 || !isAtBottomState`)
+  bails on `escapedFromLockState || pending outer-scroll intent ||
+  pauseDepth>0 || !isAtBottomState`)
   so a user wheel-up between frames cancels it; thread-switch is also
   guarded explicitly via a captured-`restoredThreadId` check inside
-  the rAF. The per-thread virtua row-size cache (replayed via
-  `<Virtualizer cache={pane.cachedVirtuaCache}>` inside
-  `{#key pane.threadId}`) gives virtua the correct `totalSize` from
-  frame 0, so the synchronous `forceStick` target is right at first
-  paint. Subsequent contentEl growth gets handled by the controller's
+  the rAF. Subsequent contentEl growth gets handled by the controller's
   contentRO path: while warming, positive deltas sync-pin (mount
   settling stays invisible); once warm and a turn is running, positive
   deltas trigger the velocity-spring chase so streaming chunks animate.
@@ -90,9 +88,8 @@ shape. Operational rules for code in this directory:
   returns the active turn) spring-chase the moving bottom. The
   warm-up gate prevents thread-restore-while-streaming from
   spring-chasing the post-mount measurement loop.
-- **contentEl hides during the uncached-load measurement cascade.**
-  When `pane.cachedVirtuaCache` is undefined (cache miss — new
-  thread, evicted LRU entry, or first visit), virtua starts with
+- **contentEl hides during virtua's fresh-mount measurement cascade.**
+  On thread switch, virtua starts with
   `ESTIMATED_ROW_SIZE × N` for totalSize. The per-row RO measurement
   cascade then corrects each row's actual height across the next
   ~25ms, which shifts every row's Y-offset AND clamps scrollTop by a
@@ -101,8 +98,7 @@ shape. Operational rules for code in this directory:
   sync-pin re-pins scrollTop correctly, but the user still sees the
   row-content shift between two paints. MessageTimeline binds
   `style:visibility={hideContentForWarmup ? 'hidden' : 'visible'}`
-  on contentEl, with `hideContentForWarmup = !stick.isWarm &&
-  pane.cachedVirtuaCache === undefined`. The warm gate fires
+  on contentEl, with `hideContentForWarmup = !stick.isWarm`. The warm gate fires
   `QUIET_MS = 100ms` after the last contentRO event ONCE AT LEAST
   ONE EVENT HAS FIRED (the quiet timer is gated on RO evidence,
   not the wall clock alone — see `useStickToBottom.svelte.ts`
@@ -113,8 +109,7 @@ shape. Operational rules for code in this directory:
   visible throughout (it's a sibling, not a child of contentEl), so
   the user sees a brief unpopulated scroll area with the live
   composer above it, then the full timeline reveals with rows at
-  their measured offsets. Cached loads skip the gate — virtua has
-  correct totalSize from frame 0 and there's no cascade to hide.
+  their measured offsets.
 
   **Critical timing: `armWarmup()` MUST be called from `$effect.pre`
   on thread switch, not just from `forceStick()` in `$effect`.**
@@ -173,19 +168,11 @@ shape. Operational rules for code in this directory:
   still useful for any future template/derivation that reads it; the
   microtask flush rewrites the same CSS-variable value, idempotently.
 - **`<Virtualizer>` is wrapped in `{#key pane.threadId}`** so its
-  `cache` prop is re-read on thread switch. The cache itself comes
-  from `pane.cachedVirtuaCache` (sourced from the LRU snapshot in
-  `threadItemCache.ts`); MessageTimeline registers the capture getter
-  via the matched-pair `pane.attachVirtuaCacheGetter(getter)` on
-  mount and `pane.detachVirtuaCacheGetter(getter)` on destroy
-  (symmetric with `pane.attachScrollController` /
-  `pane.detachScrollController` — the same getter reference must be
-  passed to detach so a stale teardown can't dispose a freshly
-  remounted timeline's getter during fast switches). Without the
-  `{#key}` the cache prop silently goes stale on thread switch
-  (`createVirtualStore` reads it once); without the getter the LRU
-  snapshot has no `virtuaCache` field and a re-entered thread eats
-  the underestimate-then-grow pass at first paint.
+  internal row-size store resets on thread switch. We deliberately do
+  not replay virtua row-size snapshots: those measurements are only
+  valid with the row UI state that produced them, and `switchThread`
+  clears row UI registries to bound memory. Re-entry measures fresh
+  behind the warm-up visibility gate.
 - Don't add a parallel virtualizer over `pane.items` or `groupedNodes`.
 - The auto-follow `$effect` is gone. Streaming flow is: text rewrites in
   the streaming row → row's height changes → virtua's per-row RO bumps
@@ -280,7 +267,7 @@ Every row rendered inside `<Virtualizer>`'s children snippet:
 - Reads any payload BYTES through the module-level data cache in
   `utils/payloadDataCache.ts`. The per-pane registry above tracks
   toggle/expansion intent; the data cache tracks the bytes themselves,
-  keyed by `(threadId, payloadId, version)` with NUL delimiters and
+  keyed by a JSON-encoded `(threadId, payloadId, version)` tuple with
   type-tagged version keys, byte-bounded by a 16 MB LRU. The cache
   survives `switchThread` so re-entering a thread with already-loaded
   payloads paints synchronously at full height from frame 0 —

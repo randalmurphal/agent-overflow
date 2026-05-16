@@ -129,7 +129,7 @@ describe('setupEventListeners', () => {
     expect(paneB.items).toEqual([]);
   });
 
-  it('evicts the cached snapshot for every thread touched by an item upsert batch', async () => {
+  it('evicts the cached snapshot when an active-thread item upsert changes the pane window', async () => {
     const cacheModule = await import('./threadItemCache');
     cacheModule.threadItemCache.clear();
     // Seed snapshots for two threads.
@@ -159,11 +159,40 @@ describe('setupEventListeners', () => {
     });
     await nextFrame();
 
-    // 'thread-a' was touched — its snapshot must be gone.
+    // 'thread-a' changed in the active pane — its snapshot must be gone.
     expect(cacheModule.threadItemCache.get('thread-a')).toBeNull();
     // 'thread-other' was untouched — its snapshot survives.
     expect(cacheModule.threadItemCache.get('thread-other')).not.toBeNull();
 
+    cacheModule.threadItemCache.clear();
+  });
+
+  it('preserves the cached snapshot for redundant active-thread item upserts', async () => {
+    const cacheModule = await import('./threadItemCache');
+    cacheModule.threadItemCache.clear();
+    const item = makeItem({
+      id: 'cached-a',
+      threadId: 'thread-a',
+      kind: 'assistant_text',
+      summary: 'same',
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
+    getAllPanes().set('a', pane);
+    cacheModule.threadItemCache.set('thread-a', {
+      items: [item],
+      oldestLoadedTurnIndex: 0,
+      hasMoreHistory: false,
+      latestSettledTurn: null,
+    });
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: { ...item },
+    });
+    await nextFrame();
+
+    expect(cacheModule.threadItemCache.get('thread-a')).not.toBeNull();
     cacheModule.threadItemCache.clear();
   });
 

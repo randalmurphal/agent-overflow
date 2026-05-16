@@ -659,18 +659,25 @@ function applyItemUpserts(upserts: PendingItemUpsert[]): void {
       }
     }
   }
+  const changedThreadIds = new Set<string>();
+  const activeThreadIds = new Set<string>();
   for (const pane of iterPanes()) {
-    const threadItems = pane.threadId ? itemsByThread.get(pane.threadId) : undefined;
+    const threadId = pane.threadId;
+    if (!threadId) continue;
+    const threadItems = itemsByThread.get(threadId);
     if (!threadItems) continue;
-    pane.upsertItems(threadItems);
+    activeThreadIds.add(threadId);
+    if (pane.upsertItems(threadItems)) changedThreadIds.add(threadId);
   }
-  // Evict cached snapshots for every thread touched by this batch — a
-  // persisted item upsert may invalidate the snapshot we'd otherwise
-  // serve on next switch. Eviction is one delete per thread per batch
-  // (not per item), so a long streaming run amortises to ~one hash
-  // delete per coalesced flush.
+  // Evict cached snapshots only when this batch produced an observable
+  // active-pane change. Inactive threads still evict defensively because
+  // we do not have their current item window available for value dedupe.
+  // This keeps redundant active-thread echoes from invalidating the warm
+  // re-entry cache and rebuilding rows for no visible data change.
   for (const threadId of itemsByThread.keys()) {
-    threadItemCache.evict(threadId);
+    if (changedThreadIds.has(threadId) || !activeThreadIds.has(threadId)) {
+      threadItemCache.evict(threadId);
+    }
   }
   for (const [threadId, updatedAt] of userTextActivityByThread) {
     syncThreadActivity(threadId, updatedAt);
@@ -746,8 +753,9 @@ function flushItemEventQueue(): void {
 
   const flushPendingUpserts = () => {
     if (pendingUpserts.length === 0) return;
+    const semanticUpserts = pendingUpserts.map((upsert) => upsert.item);
     applyItemUpserts(pendingUpserts);
-    notifiedUpserts.push(...pendingUpserts.map((upsert) => upsert.item));
+    notifiedUpserts.push(...semanticUpserts);
     pendingUpserts.length = 0;
   };
 

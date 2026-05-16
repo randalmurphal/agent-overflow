@@ -99,7 +99,7 @@ describe('groupItemsBySubagent', () => {
     const nodes = groupItemsBySubagent([inlineAgent('agent-1', 0)]);
 
     const wrapper = expectInlineGroup(nodes[0]);
-    expect(wrapper.groupKey).toBe('inline:assistant-1:agent-1');
+    expect(wrapper.groupKey).toBe('inline:assistant-1:start');
     expect(wrapper.memberCount).toBe(1);
     expect(wrapper.members).toHaveLength(1);
     expect(wrapper.members[0].parent.id).toBe('agent-1');
@@ -115,7 +115,7 @@ describe('groupItemsBySubagent', () => {
 
     expect(nodes).toHaveLength(1);
     const wrapper = expectInlineGroup(nodes[0]);
-    expect(wrapper.groupKey).toBe('inline:assistant-1:agent-1');
+    expect(wrapper.groupKey).toBe('inline:assistant-1:start');
     expect(wrapper.memberCount).toBe(2);
     expect(wrapper.members.map((member) => member.parent.id)).toEqual(['agent-1', 'agent-2']);
     expect(nodeContainsItem(wrapper, 'agent-2')).toBe(true);
@@ -575,25 +575,40 @@ describe('groupItemsBySubagent', () => {
     expect(expectLeaf(nodes[1]).item.id).toBe('bash');
     const second = expectInlineGroup(nodes[2]);
     expect(second.members[0].parent.id).toBe('agent-2');
-    expect(second.groupKey).toBe('inline:assistant-1:agent-2');
+    expect(second.groupKey).toBe('inline:assistant-1:after:bash');
   });
 
-  it('keeps non-contiguous inline wrapper keys stable when older history loads', () => {
+  it('keeps first visible inline wrapper keys stable when older unrelated rows load', () => {
     const partial = groupItemsBySubagent([
+      inlineAgent('agent-2', 2, 'assistant-1'),
+    ]);
+    const partialWrapper = expectInlineGroup(partial[0]);
+
+    const complete = groupItemsBySubagent([
       mkItem({ id: 'bash', itemIndex: 1, kind: 'tool_call', toolName: 'Bash' }),
       inlineAgent('agent-2', 2, 'assistant-1'),
     ]);
-    const partialWrapper = expectInlineGroup(partial[1]);
+    const completeWrapper = expectInlineGroup(complete[1]);
+
+    expect(partialWrapper.groupKey).toBe('inline:assistant-1:start');
+    expect(completeWrapper.groupKey).toBe(partialWrapper.groupKey);
+  });
+
+  it('keeps contiguous inline wrapper keys stable when older sibling agents load', () => {
+    const partial = groupItemsBySubagent([
+      inlineAgent('agent-2', 1, 'assistant-1'),
+    ]);
+    const partialWrapper = expectInlineGroup(partial[0]);
 
     const complete = groupItemsBySubagent([
       inlineAgent('agent-1', 0, 'assistant-1'),
-      mkItem({ id: 'bash', itemIndex: 1, kind: 'tool_call', toolName: 'Bash' }),
-      inlineAgent('agent-2', 2, 'assistant-1'),
+      inlineAgent('agent-2', 1, 'assistant-1'),
     ]);
-    const completeWrapper = expectInlineGroup(complete[2]);
+    const completeWrapper = expectInlineGroup(complete[0]);
 
-    expect(partialWrapper.groupKey).toBe('inline:assistant-1:agent-2');
+    expect(partialWrapper.groupKey).toBe('inline:assistant-1:start');
     expect(completeWrapper.groupKey).toBe(partialWrapper.groupKey);
+    expect(completeWrapper.members.map((member) => member.parent.id)).toEqual(['agent-1', 'agent-2']);
   });
 
   it('surfaces missing parents as orphan leaves instead of dropping them', () => {
@@ -613,7 +628,7 @@ describe('groupItemsBySubagent', () => {
       mkItem({ id: 'after', itemIndex: 2, summary: 'after' }),
     ]);
 
-    expect(timelineNodeKey(nodes[0])).toBe('ig:thread-1:inline:assistant-1:agent-1');
+    expect(timelineNodeKey(nodes[0])).toBe('ig:thread-1:inline:assistant-1:start');
     expect(timelineNodeItemId(nodes[0])).toBe('agent-1');
     expect(findTimelineNodeIndex(nodes, 'child')).toBe(0);
     expect(findTimelineNodeIndex(nodes, 'after')).toBe(1);

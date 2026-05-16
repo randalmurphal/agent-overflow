@@ -1,5 +1,6 @@
 import { GetPayloadChunk, GetPayloadData, GetPayloadPreview } from '../stores/bindings';
 import { payloadVersionKey, readPayloadCache, writePayloadCache } from './payloadDataCache';
+import { boundedPayloadVersionString } from './payloadVersion';
 
 export const DEFAULT_PAYLOAD_PREVIEW_BYTES = 32 * 1024;
 export const DEFAULT_PAYLOAD_CHUNK_BYTES = 256 * 1024;
@@ -102,23 +103,7 @@ export function createPayloadExpansion(
   // expect their thread-switch reset of `expanded=false` to survive the
   // cache hit; the data simply flashes in instantly when the user later
   // clicks expand.
-  {
-    const id = currentPayloadID();
-    const tid = currentThreadID();
-    if (id && tid) {
-      const cached = readPayloadCache(tid, id, currentPayloadVersion());
-      if (cached) {
-        chunks = cached.chunks;
-        hasFullChunks = cached.hasFullChunks;
-        totalSize = cached.totalSize;
-        isComplete = cached.isComplete;
-        loadedBytes = cached.loadedBytes;
-        loadedPayloadID = id;
-        loadedPayloadVersion = currentPayloadVersion();
-        if (options.loadOnMount) expanded = true;
-      }
-    }
-  }
+  hydrateFromCache({ expandOnHit: options.loadOnMount === true });
 
   // loadOnMount: drive expand() as soon as a payloadID becomes
   // available. Replaces the per-consumer `$effect(() => {
@@ -172,6 +157,13 @@ export function createPayloadExpansion(
   function setPayloadVersion(version: unknown): void {
     overridePayloadVersion = version;
     hasOverridePayloadVersion = true;
+    cancelInflight();
+    activePreviewLoad = null;
+    activeFullLoad = null;
+    loadingPreview = false;
+    loadingFull = false;
+    clearLoadedData();
+    hydrateFromCache({ expandOnHit: false });
   }
 
   function cancelInflight(): number {
@@ -190,6 +182,25 @@ export function createPayloadExpansion(
     loadedPayloadVersion = undefined;
   }
 
+  function hydrateFromCache(opts: { expandOnHit: boolean }): boolean {
+    const id = currentPayloadID();
+    const tid = currentThreadID();
+    if (!id || !tid) return false;
+    const version = currentPayloadVersion();
+    const cached = readPayloadCache(tid, id, version);
+    if (!cached) return false;
+    chunks = cached.chunks;
+    hasFullChunks = cached.hasFullChunks;
+    totalSize = cached.totalSize;
+    isComplete = cached.isComplete;
+    loadedBytes = cached.loadedBytes;
+    loadedPayloadID = id;
+    loadedPayloadVersion = version;
+    error = null;
+    if (opts.expandOnHit) expanded = true;
+    return true;
+  }
+
   async function loadPreview(): Promise<boolean> {
     const id = currentPayloadID();
     const ownerThreadID = currentThreadID();
@@ -198,6 +209,7 @@ export function createPayloadExpansion(
     if (chunks.length > 0 && loadedPayloadID === id && Object.is(loadedPayloadVersion, version)) {
       return false;
     }
+    if (hydrateFromCache({ expandOnHit: false })) return false;
     if (chunks.length > 0) clearLoadedData();
     if (!ownerThreadID) {
       error = 'Missing thread context for payload read';
@@ -212,7 +224,11 @@ export function createPayloadExpansion(
     const request = (async (): Promise<boolean> => {
       try {
         const result = await loadInitialPayload(ownerThreadID, id);
-        if (generation !== requestGeneration || !expanded) return false;
+        if (
+          generation !== requestGeneration
+          || !expanded
+          || !Object.is(currentPayloadVersion(), version)
+        ) return false;
         chunks = [result.data];
         hasFullChunks = loadMode === 'full';
         totalSize = result.totalSize;
@@ -308,6 +324,7 @@ export function createPayloadExpansion(
     const id = currentPayloadID();
     const ownerThreadID = currentThreadID();
     if (!expanded || !id || isComplete) return;
+    const version = currentPayloadVersion();
     if (!ownerThreadID) {
       error = 'Missing thread context for payload read';
       return;
@@ -326,7 +343,11 @@ export function createPayloadExpansion(
           requestTimeoutMs,
           'Loading payload chunk timed out',
         );
-        if (generation !== requestGeneration || !expanded) return;
+        if (
+          generation !== requestGeneration
+          || !expanded
+          || !Object.is(currentPayloadVersion(), version)
+        ) return;
         // Append the chunk to the buffer instead of re-allocating a
         // cumulative string. Writing `[...chunks, ...]` produces a
         // new array reference so $derived re-evaluates `displayData`.
@@ -335,7 +356,7 @@ export function createPayloadExpansion(
         totalSize = content.totalSize;
         loadedBytes = content.nextOffset;
         isComplete = content.isComplete;
-        writePayloadCache(ownerThreadID, id, currentPayloadVersion(), {
+        writePayloadCache(ownerThreadID, id, version, {
           chunks,
           hasFullChunks,
           totalSize,
@@ -420,8 +441,7 @@ export function keepExpandedPayloadFresh(
 
 export function compactPayloadVersion(value: string | undefined): string {
   if (!value) return '';
-  if (value.length <= 128) return value;
-  return `${value.length}:${value.slice(0, 64)}:${value.slice(-64)}`;
+  return boundedPayloadVersionString(value);
 }
 
 async function withTimeout<T>(

@@ -1,4 +1,3 @@
-import type { CacheSnapshot } from 'virtua';
 import type { Item, Project, Thread } from '../types/models';
 import type { Checkpoint } from '../types/checkpoint';
 import type {
@@ -56,11 +55,13 @@ import {
   type ThreadItemSnapshot,
 } from './threadItemCache';
 import {
+  type ApplyItemUpsertsToWindowResult,
   applyItemUpsertsToWindow,
   compareItemsByTimelinePosition,
   itemsForThread,
   mergeItemsById,
   mergeMissingItemsById,
+  reconcileItemWindow,
 } from './threadItems';
 import { getThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
 import { ListThreadSliceAround } from './bindings';
@@ -502,39 +503,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    */
   let scrollController: PaneScrollController | null = $state(null);
 
-  /**
-   * MessageTimeline registers a getter that returns virtua's per-row
-   * size cache (`listRef.getCache()`). `snapshotOutgoingPane` calls
-   * the getter synchronously before items mutate to the incoming
-   * thread, capturing the outgoing thread's measured row sizes into
-   * the LRU snapshot. On the next switch back, virtua mounts with the
-   * replayed cache so `totalSize` is accurate from the first paint —
-   * no underestimate-then-grow pass that the controller would have to
-   * absorb via repeated sync re-pins. ChannelView (no virtualizer)
-   * leaves this null. Non-reactive — read inside switchThread, never
-   * by templates.
-   */
-  let virtuaCacheGetter: (() => CacheSnapshot | undefined) | null = null;
-  /**
-   * Cached virtua snapshot for the currently-mounted thread, set in
-   * `installCacheOrFreshState` from the LRU's `virtuaCache` field.
-   * MessageTimeline reads this once per `{#key pane.threadId}` mount
-   * and passes it to `<Virtualizer cache={...}>`. `undefined` means
-   * "fresh measurement" — the first switch into a thread, an
-   * evicted-cache re-entry, or a same-thread re-switch that
-   * deliberately drops the entry.
-   *
-   * Deliberately NOT `$state` — virtua's CacheSnapshot is an opaque
-   * tuple `[number[], number]`, and `$state` would wrap it in a
-   * deeply-reactive Proxy that breaks reference equality with the
-   * original snapshot (Virtualizer captures `cache` once at mount
-   * via `createVirtualStore(...)`, so reactive tracking would not
-   * help anyway). The {#key pane.threadId} wrapper in MessageTimeline
-   * forces a fresh prop read on every thread change, which is the
-   * only re-read we need.
-   */
-  let cachedVirtuaCache: CacheSnapshot | undefined = undefined;
-
   function rebuildItemIndexes(nextItems: Item[]): void {
     itemIndexById.clear();
     for (let index = 0; index < nextItems.length; index += 1) {
@@ -543,8 +511,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     }
   }
 
-  function upsertItemsBatch(incoming: Item[]): void {
-    if (incoming.length === 0) return;
+  function upsertItemsBatch(incoming: Item[]): ApplyItemUpsertsToWindowResult | null {
+    if (incoming.length === 0) return null;
 
     const next = applyItemUpsertsToWindow({
       current: items,
@@ -553,7 +521,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       currentThreadId: thread?.id ?? null,
       oldestLoadedTurnIndex,
     });
-    if (!next) return;
+    if (!next) return null;
     items = next.items;
     if (next.indexesNeedRebuild) {
       rebuildItemIndexes(items);
@@ -571,10 +539,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // missing fence prefix); designState owns dedupe across streaming
     // deltas and resets it on thread switch.
     if (thread?.mode === 'design') {
-      for (const item of incoming) {
+      for (const item of next.changedItems) {
         designState.applyAssistantPayloadsForItem(item, thread);
       }
     }
+    return next;
   }
 
   function applyPendingInteractiveSnapshot(
@@ -738,9 +707,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * Same-thread re-switch (revert-to-checkpoint flows) skips the
    * snapshot AND force-evicts the cache entry so the incoming load
    * fetches fresh state instead of flashing the stale view through
-   * `cache.get`. Streamed events evict the cache entry on every
-   * `applyItemUpserts` batch in `events.ts`, so a stale snapshot can't
-   * outlive a backend mutation.
+   * `cache.get`. Streamed events evict inactive-thread cache entries
+   * defensively, and evict active-thread entries only when the upsert
+   * changes the visible item window; redundant active-thread echoes
+   * keep the warm re-entry snapshot intact.
    */
   function snapshotOutgoingPane(incomingThreadId: string): void {
     const outgoingThreadId = thread?.id ?? null;
@@ -752,27 +722,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       items.length > 0 &&
       items.length <= MAX_CACHED_SNAPSHOT_ITEMS
     ) {
-      // Capture virtua's per-row size cache while the OLD virtualizer
-      // is still mounted (this runs synchronously inside switchThread,
-      // before {#key pane.threadId} unmounts and remounts the
-      // <Virtualizer> in MessageTimeline). Replay on next switch-back
-      // gives virtua the correct totalSize at first paint, eliminating
-      // the underestimate-then-grow pass that the controller would
-      // otherwise have to absorb via repeated sync re-pins.
-      //
-      // Two `undefined` cases collapse intentionally here: (a) no
-      // getter registered (ChannelView, or a chat surface mid-mount)
-      // and (b) getter returned undefined (virtualizer not yet
-      // mounted). Both mean "no cache to capture" for the LRU's
-      // optional `virtuaCache` field, so the resolved value is the
-      // same and the merge is safe.
-      const virtuaCache = virtuaCacheGetter?.() ?? undefined;
+      // Deliberately do not snapshot virtua's row-size cache here. Those
+      // sizes are only valid with the row UI state that produced them
+      // (expanded payloads, loaded thumbnails, nested bodies). switchThread
+      // clears that state for the incoming thread, so replaying old row
+      // sizes can make virtua trust geometry the DOM cannot reproduce.
       threadItemCache.set(outgoingThreadId, {
         items,
         oldestLoadedTurnIndex,
         hasMoreHistory,
         latestSettledTurn,
-        virtuaCache,
       });
     }
     if (sameThreadReswitch) {
@@ -844,7 +803,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       oldestLoadedTurnIndex = cached.oldestLoadedTurnIndex;
       hasMoreHistory = cached.hasMoreHistory;
       latestSettledTurn = cached.latestSettledTurn;
-      cachedVirtuaCache = cached.virtuaCache;
     } else {
       items = [];
       // Windowed-history reset. A null floor disables the upsert floor
@@ -853,7 +811,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // already ours to append normally.
       oldestLoadedTurnIndex = null;
       hasMoreHistory = false;
-      cachedVirtuaCache = undefined;
     }
     rebuildItemIndexes(items);
     rowUiState.clear();
@@ -1214,8 +1171,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         try {
           const paged = await ListRecentThreadItems(currentThread.id, 0);
           if (gen !== switchGeneration) return;
-          items = itemsForThread((paged.items ?? []) as Item[], currentThread.id);
-          rebuildItemIndexes(items);
+          const nextItems = reconcileItemWindow(
+            itemsForThread((paged.items ?? []) as Item[], currentThread.id),
+            items,
+          );
+          if (nextItems !== items) {
+            items = nextItems;
+            rebuildItemIndexes(items);
+            timelineRevision++;
+          }
           oldestLoadedTurnIndex = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
           hasMoreHistory = paged.hasMore ?? false;
         } catch (err) {
@@ -1550,52 +1514,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       }
     },
 
-    /**
-     * Cached virtua row-size snapshot for the current thread. Read by
-     * MessageTimeline on `<Virtualizer cache={...}>` mount inside its
-     * `{#key pane.threadId}` wrapper. `undefined` means fresh start —
-     * a thread visited for the first time, an evicted-cache re-entry,
-     * or a same-thread re-switch.
-     *
-     * Read-once-at-mount: virtua's `cache` prop is consumed inside
-     * `createVirtualStore(...)` and not reactive afterward. Do NOT
-     * subscribe to this getter from a `$derived` or `$effect` — only
-     * read it from the `<Virtualizer cache={...}>` prop position
-     * inside `{#key pane.threadId}`. Reading it elsewhere creates a
-     * dependency that would force re-derives whenever the underlying
-     * snapshot is replaced (e.g. after a switch-out write) without
-     * any matching virtua re-mount, which is wasteful at best and
-     * misleading at worst.
-     */
-    get cachedVirtuaCache(): CacheSnapshot | undefined {
-      return cachedVirtuaCache;
-    },
-
-    /**
-     * Register a virtua-cache getter from the timeline. Called by
-     * `snapshotOutgoingPane` (synchronously, while the old virtualizer
-     * is still mounted) to capture per-row sizes into the LRU.
-     * ChannelView (no virtualizer) leaves the slot unattached.
-     *
-     * Symmetric with `attachScrollController`/`detachScrollController`
-     * — call from MessageTimeline's `$effect` on mount, return a
-     * teardown that calls `detachVirtuaCacheGetter(getter)` so a
-     * stale teardown from a fast thread switch can't dispose the
-     * fresh getter registered by the remounted timeline.
-     */
-    attachVirtuaCacheGetter(getter: () => CacheSnapshot | undefined): void {
-      virtuaCacheGetter = getter;
-    },
-
-    detachVirtuaCacheGetter(getter: () => CacheSnapshot | undefined): void {
-      // Only clear if the registered getter matches — protects
-      // against a stale teardown disposing a freshly remounted
-      // timeline's getter during fast thread switches.
-      if (virtuaCacheGetter === getter) {
-        virtuaCacheGetter = null;
-      }
-    },
-
     // --- Mutations (called by event router) ---
 
     addApproval(approval: ApprovalRequest): void {
@@ -1619,8 +1537,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * Event routing uses `upsertItems` so bursts of wait rows and payload
      * enrichments hit the timeline in one paint.
      */
-    upsertItem(item: Item): void {
-      upsertItemsBatch([item]);
+    upsertItem(item: Item): boolean {
+      return upsertItemsBatch([item]) !== null;
     },
 
     /**
@@ -1628,8 +1546,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * The final state is still the backend-authored transcript, but bursts
      * only allocate/sort/bump revision once.
      */
-    upsertItems(incoming: Item[]): void {
-      upsertItemsBatch(incoming);
+    upsertItems(incoming: Item[]): boolean {
+      return upsertItemsBatch(incoming) !== null;
     },
 
     /**

@@ -14,6 +14,7 @@
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import {
     createPayloadExpansion,
+    formatPayloadSize,
     keepExpandedPayloadFresh,
   } from '../../utils/payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
@@ -71,10 +72,10 @@
       : createPayloadExpansion(
           () => payloadId,
           () => item.threadId,
-          { payloadVersion: () => item.updatedAt, loadMode: 'full' },
+          { payloadVersion: () => item.updatedAt },
         ),
   );
-  let expansion = $derived(pane ? pane.expansionStateFor(item, { loadMode: 'full' }) : localFallback!);
+  let expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
   let hasPayload = $derived(Boolean(payloadId));
   let itemMeta = $derived(parseJsonObject(item.meta));
   let payloadMeta = $derived(parseJsonObject(item.payloadMeta));
@@ -218,7 +219,7 @@
   <!-- Output content -->
   {#if hasBody && expansion.expanded}
     <div id="cmd-output-{payloadId || item.id}" class="ml-5 border-l border-border-subtle bg-surface-0/35">
-      <div class="px-3 py-2 overflow-x-auto">
+      <div class="max-h-96 overflow-auto px-3 py-2">
         {#if hasPayload && expansion.loading}
           <p class="text-[11px] text-fg-subtle" role="status" aria-live="polite">Loading output…</p>
         {:else if hasPayload && expansion.error}
@@ -235,6 +236,16 @@
           </div>
         {:else if hasPayload}
           <AnsiText source={expansion.displayData ?? ''} class="text-[11px] whitespace-pre text-fg-muted leading-relaxed" />
+          {#if expansion.hasMore}
+            <button
+              type="button"
+              class="mt-2 inline-flex items-center rounded-[var(--radius-control)] border border-border-subtle px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2/40 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              onclick={() => void expansion.showFull()}
+              data-testid="command-output-show-full"
+            >
+              Show more output ({formatPayloadSize(expansion.totalSize)})
+            </button>
+          {/if}
         {:else if deferredOutputState === 'loading'}
           <p class="text-[11px] text-fg-subtle animate-pulse" role="status" aria-live="polite">
             Loading…
@@ -246,7 +257,7 @@
         {/if}
       </div>
       {#if !expansion.loading && !expansion.error && expansion.displayData}
-        <CopyFooter text={expansion.displayData} label="Copy output" />
+        <CopyFooter text={expansion.displayData} label={expansion.hasMore ? 'Copy visible output' : 'Copy output'} />
       {/if}
     </div>
   {/if}
