@@ -2,6 +2,7 @@ import type { Item, ProposedPlanComment } from '../types/models';
 import { comparePlanItemPosition, latestProposedPlanItem } from '../utils/proposedPlan';
 import { ListProposedPlanComments, ListThreadProposedPlans } from './bindings';
 import { onItemUpsert } from './events';
+import { itemsAreEqual } from './threadItems';
 
 const REFRESH_DEBOUNCE_MS = 100;
 const MAX_CACHED_THREADS = 64;
@@ -60,6 +61,16 @@ function entryForPlanComments(threadId: string, planItemId: string): ProposedPla
   return commentCache[key];
 }
 
+function itemListsAreEqual(left: readonly Item[], right: readonly Item[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) {
+    const a = left[i];
+    const b = right[i];
+    if (!a || !b || !itemsAreEqual(a, b)) return false;
+  }
+  return true;
+}
+
 export function getThreadProposedPlans(threadId: string | null | undefined): Item[] {
   if (!threadId) return [];
   const entry = cache[threadId];
@@ -113,7 +124,10 @@ export async function refreshThreadProposedPlans(threadId: string | null | undef
       cacheAccess.set(threadId, Date.now());
       return;
     }
-    entry.items = items.filter((item) => item.threadId === threadId);
+    const nextItems = items.filter((item) => item.threadId === threadId);
+    if (!itemListsAreEqual(entry.items, nextItems)) {
+      entry.items = nextItems;
+    }
     entry.loaded = true;
     cacheAccess.set(threadId, Date.now());
     evictOldPlanCacheEntries();
@@ -126,7 +140,9 @@ export async function refreshThreadProposedPlans(threadId: string | null | undef
       cacheAccess.set(threadId, Date.now());
       return;
     }
-    entry.items = [];
+    if (entry.items.length > 0) {
+      entry.items = [];
+    }
     entry.loaded = true;
     cacheAccess.set(threadId, Date.now());
   }
@@ -185,11 +201,16 @@ function evictOldPlanCommentCacheEntries(): void {
   }
 }
 
-function upsertItemIntoCache(item: Item): void {
+function upsertItemIntoCache(item: Item): boolean {
   const wasNewEntry = cache[item.threadId] === undefined;
   const entry = entryForThread(item.threadId);
   const existingIdx = entry.items.findIndex((e) => e.id === item.id);
   if (existingIdx >= 0) {
+    const existing = entry.items[existingIdx];
+    if (existing && itemsAreEqual(existing, item)) {
+      entry.loaded = true;
+      return false;
+    }
     const replaced = entry.items.slice();
     replaced[existingIdx] = item;
     replaced.sort(comparePlanItemPosition);
@@ -204,6 +225,7 @@ function upsertItemIntoCache(item: Item): void {
   // past MAX_CACHED_THREADS in a long-running session because eviction
   // otherwise only runs in refreshThreadProposedPlans's success branch.
   if (wasNewEntry) evictOldPlanCacheEntries();
+  return true;
 }
 
 export function scheduleThreadProposedPlansRefresh(threadId: string | null | undefined): void {
@@ -230,7 +252,8 @@ export function retainProposedPlanEventListener(threadIdScope?: () => string | n
       // returns stale data for ~100ms until the debounced refresh resolves.
       // That window forced PlanSidebar to read pane.items as a fallback,
       // which coupled it to chat streaming. See Composer.svelte / PlanSidebar.svelte.
-      upsertItemIntoCache(item);
+      const changed = upsertItemIntoCache(item);
+      if (!changed) return;
       if (listenerThreadScopes.size > 0) {
         let matched = false;
         for (const scope of listenerThreadScopes) {

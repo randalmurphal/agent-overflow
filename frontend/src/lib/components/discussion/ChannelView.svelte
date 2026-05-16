@@ -69,6 +69,16 @@
       // chat surface's MessageTimeline.$effect.pre escape guard on
       // threadId change.
       stick.setEscapedFromLock(true);
+      // Arm the one-shot restore-snap consent for the post-poll
+      // `forceStick({reason:'restore'})` below. The defensive
+      // `setEscapedFromLock(true)` above clears any prior arm and
+      // suspends auto-follow until the initial batch lands; arming
+      // restore-snap right after gives the post-poll commit the
+      // consent it needs to clear escape and snap to bottom. If the
+      // user scrolls between now and the poll completing (rare —
+      // typically <100ms), their gesture re-clears the arm via the
+      // user-escape paths and the post-poll forceStick NO-OPs.
+      stick.armRestoreSnap();
       // Only wipe the channel buffer when we're switching to a different
       // channel — re-entry of the same channel preserves whatever status
       // the caller pre-seeded (e.g. `concluded` after a prior run).
@@ -140,7 +150,12 @@
           // on top of the content arrival.
           await tick();
           if (generation === pollGeneration) {
-            stick.forceStick();
+            // reason:'restore' so an intervening user scroll-up (which
+            // re-clears the restore-snap consent armed in the channel
+            // setup $effect above) preserves the user's position
+            // instead of slamming them to the bottom of the initial
+            // batch.
+            stick.forceStick({ reason: 'restore' });
           }
         }
         // Exponential backoff on consecutive failures so a stuck backend

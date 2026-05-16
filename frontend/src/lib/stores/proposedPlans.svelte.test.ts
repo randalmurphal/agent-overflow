@@ -74,6 +74,16 @@ describe('proposed-plan cache sync upsert', () => {
     expect(cached[0]!.meta).toBe(JSON.stringify({ planImplementedAt: 123 }));
   });
 
+  it('drops no-op upserts without replacing the cached item list', () => {
+    const original = planItem({ id: 'plan-1', turnIndex: 1, itemIndex: 0 });
+    upsertProposedPlanForTests(original);
+    const before = getThreadProposedPlans('thread-1');
+
+    upsertProposedPlanForTests({ ...original });
+
+    expect(getThreadProposedPlans('thread-1')).toBe(before);
+  });
+
   it('keeps the latest by (turnIndex, itemIndex) when multiple plans are upserted', () => {
     upsertProposedPlanForTests(planItem({ id: 'plan-1', turnIndex: 1, itemIndex: 0 }));
     upsertProposedPlanForTests(planItem({ id: 'plan-2', turnIndex: 3, itemIndex: 0 }));
@@ -103,6 +113,18 @@ describe('proposed-plan cache sync upsert', () => {
 });
 
 describe('proposed-plan refresh / sync upsert race', () => {
+  it('keeps the existing item list reference when refresh returns identical items', async () => {
+    const item = planItem({ id: 'plan-1', turnIndex: 1, itemIndex: 0 });
+    setBindingMock('ListThreadProposedPlans', async () => [item]);
+    await refreshThreadProposedPlans('thread-1');
+    const before = getThreadProposedPlans('thread-1');
+
+    setBindingMock('ListThreadProposedPlans', async () => [{ ...item }]);
+    await refreshThreadProposedPlans('thread-1');
+
+    expect(getThreadProposedPlans('thread-1')).toBe(before);
+  });
+
   it('does not let a stale RPC response wipe items upserted during the fetch', async () => {
     // Setup: the RPC for ListThreadProposedPlans is in flight.
     let resolveFetch!: (items: Item[]) => void;

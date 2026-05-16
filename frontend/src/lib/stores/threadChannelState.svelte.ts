@@ -23,12 +23,14 @@ export function createThreadChannelState(): ThreadChannelState {
     if (!incoming || incoming.length === 0) return;
 
     const seenSequences = new Set(messages.map((message) => message.sequence));
-    const nextMessages = messages.slice();
+    const additions: ChannelMessage[] = [];
     for (const message of incoming) {
       if (seenSequences.has(message.sequence)) continue;
-      nextMessages.push(message);
+      additions.push(message);
       seenSequences.add(message.sequence);
     }
+    if (additions.length === 0) return;
+    const nextMessages = messages.concat(additions);
     nextMessages.sort((a, b) => a.sequence - b.sequence);
     messages = nextMessages;
   }

@@ -436,14 +436,41 @@ function patchThreadDurableStatus(
   threadId: string,
   patch: Pick<Partial<Thread>, 'hasActionableProposedPlan' | 'hasIncompleteTurn'>,
 ): void {
+  // No-op dedupe: skip the replace when none of the patch fields actually
+  // change the thread. This is the cooperating half of the item-upsert
+  // dedupe in `applyItemUpsertsToWindow` — `syncProposedPlanStatus` fires
+  // this on every proposed-plan upsert, and without the dedupe a repeated
+  // upsert that doesn't move the durable status STILL replaces
+  // `pane.thread` with a new reference, triggering the same reactive
+  // cascade through any component that reads `pane.thread` directly.
   const existing = getThreads().find((thread) => thread.id === threadId);
-  if (existing) {
+  if (existing && !patchMatchesThread(existing, patch)) {
     replaceThread({ ...existing, ...patch });
   }
   for (const pane of iterPanes()) {
     if (pane.threadId !== threadId || !pane.thread) continue;
+    if (patchMatchesThread(pane.thread, patch)) continue;
     pane.replaceThread({ ...pane.thread, ...patch });
   }
+}
+
+function patchMatchesThread(
+  thread: Thread,
+  patch: Pick<Partial<Thread>, 'hasActionableProposedPlan' | 'hasIncompleteTurn'>,
+): boolean {
+  if (
+    patch.hasActionableProposedPlan !== undefined
+    && thread.hasActionableProposedPlan !== patch.hasActionableProposedPlan
+  ) {
+    return false;
+  }
+  if (
+    patch.hasIncompleteTurn !== undefined
+    && thread.hasIncompleteTurn !== patch.hasIncompleteTurn
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function isImplementedProposedPlan(item: Item): boolean {
@@ -632,18 +659,25 @@ function applyItemUpserts(upserts: PendingItemUpsert[]): void {
       }
     }
   }
+  const changedThreadIds = new Set<string>();
+  const activeThreadIds = new Set<string>();
   for (const pane of iterPanes()) {
-    const threadItems = pane.threadId ? itemsByThread.get(pane.threadId) : undefined;
+    const threadId = pane.threadId;
+    if (!threadId) continue;
+    const threadItems = itemsByThread.get(threadId);
     if (!threadItems) continue;
-    pane.upsertItems(threadItems);
+    activeThreadIds.add(threadId);
+    if (pane.upsertItems(threadItems)) changedThreadIds.add(threadId);
   }
-  // Evict cached snapshots for every thread touched by this batch — a
-  // persisted item upsert may invalidate the snapshot we'd otherwise
-  // serve on next switch. Eviction is one delete per thread per batch
-  // (not per item), so a long streaming run amortises to ~one hash
-  // delete per coalesced flush.
+  // Evict cached snapshots only when this batch produced an observable
+  // active-pane change. Inactive threads still evict defensively because
+  // we do not have their current item window available for value dedupe.
+  // This keeps redundant active-thread echoes from invalidating the warm
+  // re-entry cache and rebuilding rows for no visible data change.
   for (const threadId of itemsByThread.keys()) {
-    threadItemCache.evict(threadId);
+    if (changedThreadIds.has(threadId) || !activeThreadIds.has(threadId)) {
+      threadItemCache.evict(threadId);
+    }
   }
   for (const [threadId, updatedAt] of userTextActivityByThread) {
     syncThreadActivity(threadId, updatedAt);
@@ -719,8 +753,9 @@ function flushItemEventQueue(): void {
 
   const flushPendingUpserts = () => {
     if (pendingUpserts.length === 0) return;
+    const semanticUpserts = pendingUpserts.map((upsert) => upsert.item);
     applyItemUpserts(pendingUpserts);
-    notifiedUpserts.push(...pendingUpserts.map((upsert) => upsert.item));
+    notifiedUpserts.push(...semanticUpserts);
     pendingUpserts.length = 0;
   };
 
@@ -1109,21 +1144,29 @@ export function setupEventListeners(): () => void {
     },
   );
   // `user_message:reverted` fires after InterruptAndRevertIfClean rolls
-  // back the most-recent user message. The optimistic frontend path
-  // already removed the row (and was confirmed by the backend), so this
-  // handler is responsible for: (1) idempotently confirming the row
-  // removal in any pane viewing the thread (defends against a stale
-  // optimistic miss / cross-pane reflection); (2) refreshing the
-  // composer draft from disk so the user's typed text reappears in the
-  // input. `reloadFromBackend` is a no-op when the draft store is not
-  // pointed at this thread, so we just fire it for every active draft.
+  // back the most-recent user message. Backend truncates SQLite via
+  // `DeleteConversationFromTurn(threadId, turnIndex)` — inclusive — so
+  // synthetic siblings on the same turn (thinking, api_retry, error,
+  // notification, terminal_interaction waits) all go with the user row.
+  // This handler mirrors that truncate on the frontend: removing only
+  // the user item would strand orphans in `pane.items` that no longer
+  // back any SQLite row, surviving until thread switch / cache evict.
+  //
+  // Responsibilities: (1) idempotently remove every pane item at
+  // `>= turnIndex` for any pane viewing the thread (matches backend
+  // truncate; defends against a stale optimistic miss / cross-pane
+  // reflection); (2) refresh the composer draft from disk so the
+  // user's typed text reappears in the input. `reloadFromBackend` is
+  // a no-op when the draft store is not pointed at this thread, so we
+  // just fire it for every active draft.
   const cancelUserMessageReverted = wailsEventOn<UserMessageRevertedEvent | null>(
     'user_message:reverted',
     (payload) => {
       if (!payload?.threadId || !payload.userItemId) return;
+      if (typeof payload.turnIndex !== 'number') return;
       for (const pane of iterPanes()) {
         if (pane.threadId !== payload.threadId) continue;
-        pane.removeItemById(payload.userItemId);
+        pane.removeItemsFromTurn(payload.turnIndex);
         const draft = getComposerDraftForPane(pane.paneId);
         if (draft) {
           void draft.reloadFromBackend(payload.threadId);

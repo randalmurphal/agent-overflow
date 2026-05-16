@@ -261,12 +261,24 @@ func newSessionLiveness(now time.Time) *sessionLiveness {
 
 // bumpActivity stamps the current time as the last activity timestamp.
 // Safe to call from any goroutine. now() is injected so tests can pin
-// the clock; production callers pass time.Now.
+// the clock; production callers pass time.Now. The stored value is
+// monotonic even when two activity events observe the same wall-clock
+// nanosecond; the idle reaper only needs ordering, and identical stamps
+// make rapid event bursts look like no activity happened.
 func (l *sessionLiveness) bumpActivity(now time.Time) {
 	if l == nil {
 		return
 	}
-	l.lastActivityUnixNano.Store(now.UnixNano())
+	next := now.UnixNano()
+	for {
+		prev := l.lastActivityUnixNano.Load()
+		if next <= prev {
+			next = prev + 1
+		}
+		if l.lastActivityUnixNano.CompareAndSwap(prev, next) {
+			return
+		}
+	}
 }
 
 // providerSession returns the underlying provider-agnostic Session, or

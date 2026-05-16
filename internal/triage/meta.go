@@ -1,6 +1,8 @@
 package triage
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"strings"
 	"unicode/utf8"
 )
@@ -33,10 +35,12 @@ type ThinkingMeta struct {
 
 // ProposedPlanMeta is the JSON structure for proposed plan payloads.
 type ProposedPlanMeta struct {
-	Title     string `json:"title"`
-	LineCount int    `json:"lineCount"`
-	CharCount int    `json:"charCount"`
-	Preview   string `json:"preview"`
+	Title            string `json:"title"`
+	LineCount        int    `json:"lineCount"`
+	CharCount        int    `json:"charCount"`
+	Preview          string `json:"preview"`
+	Signature        string `json:"signature,omitempty"`
+	PreviewTruncated bool   `json:"previewTruncated"`
 }
 
 // ExtractDiffMeta parses a unified diff string and returns structured meta.
@@ -214,12 +218,16 @@ func ExtractProposedPlanMeta(planMarkdown string) ProposedPlanMeta {
 	if len(lines) == 1 && lines[0] == "" {
 		lines = nil
 	}
+	preview, previewTruncated := buildCollapsedPlanPreview(trimmed, 10)
+	signature := sha256.Sum256([]byte(trimmed))
 
 	return ProposedPlanMeta{
-		Title:     proposedPlanTitle(trimmed),
-		LineCount: len(lines),
-		CharCount: len(trimmed),
-		Preview:   buildCollapsedPlanPreview(trimmed, 10),
+		Title:            proposedPlanTitle(trimmed),
+		LineCount:        len(lines),
+		CharCount:        len(trimmed),
+		Preview:          preview,
+		Signature:        fmt.Sprintf("sha256:%x", signature),
+		PreviewTruncated: previewTruncated,
 	}
 }
 
@@ -236,7 +244,7 @@ func proposedPlanTitle(planMarkdown string) string {
 	return "Proposed plan"
 }
 
-func buildCollapsedPlanPreview(planMarkdown string, maxLines int) string {
+func buildCollapsedPlanPreview(planMarkdown string, maxLines int) (string, bool) {
 	sourceLines := strings.Split(strings.TrimRight(stripDisplayedPlanMarkdown(planMarkdown), "\n"), "\n")
 	var preview []string
 	visibleLines := 0
@@ -258,12 +266,12 @@ func buildCollapsedPlanPreview(planMarkdown string, maxLines int) string {
 		preview = preview[:len(preview)-1]
 	}
 	if len(preview) == 0 {
-		return proposedPlanTitle(planMarkdown)
+		return proposedPlanTitle(planMarkdown), false
 	}
 	if hasMore {
 		preview = append(preview, "", "...")
 	}
-	return strings.Join(preview, "\n")
+	return strings.Join(preview, "\n"), hasMore
 }
 
 func stripDisplayedPlanMarkdown(planMarkdown string) string {

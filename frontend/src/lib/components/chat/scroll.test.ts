@@ -35,6 +35,10 @@ import {
 import MessageTimeline from './MessageTimeline.svelte';
 import ChatView from './ChatView.svelte';
 
+function waitForScrollIntent(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 5));
+}
+
 beforeEach(async () => {
   resetBindingMocks();
   clearThreadScrollSnapshotsForTest();
@@ -98,10 +102,8 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
 
   it('bottom-snapshot restore leaves the controller sticky and not escaped', async () => {
     // The bottom-restore path uses `stick.forceStick()` — a single
-    // scrollTop write against the current target, with the per-thread
-    // virtua row-size cache (replayed via `<Virtualizer cache={...}>`
-    // inside `{#key pane.threadId}`) ensuring `totalSize` is correct
-    // from frame 0. Subsequent svelte-streamdown async typesetting
+    // scrollTop write against the current target. Subsequent
+    // svelte-streamdown async typesetting
     // (shiki / KaTeX / mermaid / parseIncompleteMarkdown rebalance)
     // and virtua's per-row remeasurement get handled invisibly by the
     // controller's contentRO sync-pin path.
@@ -239,7 +241,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
 
   it('bottom-snapshot restore schedules a rAF notifyContentMaybeGrew settle pass', async () => {
     // The synchronous forceStick at restore time lands scrollTop against
-    // the geometry virtua reports at frame 0 from the cached row sizes.
+    // the geometry virtua reports at frame 0 from its initial estimates.
     // Late layout settling — composer-height RO updating scrollEl's
     // padding-bottom (padding-only growth doesn't refire the contentRO),
     // virtua's per-row remeasurement on the next frame, and the first
@@ -431,55 +433,6 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
 
     expect(loadUntilItem).toHaveBeenCalledWith('anchor-row');
-  });
-
-  it('publishes a virtua-cache getter on mount that delegates to virtua, and clears it on unmount', async () => {
-    // Per-thread virtua cache wiring. Two invariants:
-    //   1. The getter is attached on mount and detached on unmount —
-    //      a stale closure capturing the torn-down virtualizer must
-    //      not survive past component teardown. The detach call must
-    //      pass the SAME getter reference (matched-pair guard in
-    //      thread.svelte.ts) so a stale teardown can't dispose a
-    //      freshly remounted timeline's getter during fast switches.
-    //   2. The getter actually delegates to virtua's listRef.getCache(),
-    //      not a stub that returns a constant. Verified indirectly by
-    //      rendering virtua (test-mode ssrCount populates listRef) and
-    //      asserting the getter returns the same value as a direct
-    //      listRef.getCache() call would — i.e. the CacheSnapshot
-    //      tuple shape `[number[], number]`. A regression that swapped
-    //      the closure to `() => undefined` or `() => null` fails
-    //      assertion #2 even though assertion #1 still passes.
-    const pane = await buildPane(undefined, [
-      makeItem({ id: 'a', summary: 'first' }),
-    ]);
-    const attachVirtuaCacheGetter = vi.spyOn(pane, 'attachVirtuaCacheGetter');
-    const detachVirtuaCacheGetter = vi.spyOn(pane, 'detachVirtuaCacheGetter');
-
-    const { unmount } = render(MessageTimeline, { props: { pane } });
-    await tick();
-    await tick();
-
-    expect(attachVirtuaCacheGetter).toHaveBeenCalledTimes(1);
-    const registered = attachVirtuaCacheGetter.mock.calls[0][0];
-    expect(typeof registered).toBe('function');
-
-    // Invariant #2: the returned value matches virtua's CacheSnapshot
-    // shape — `[number[], number]`. happy-dom's ssrCount-mode virtua
-    // mount populates listRef synchronously, so the getter resolves to
-    // a real tuple, not undefined. Stubbed-getter regressions surface
-    // here because they return primitives or null instead of the tuple.
-    const captured = registered!();
-    expect(Array.isArray(captured)).toBe(true);
-    expect(captured).toHaveLength(2);
-    expect(Array.isArray((captured as unknown as [unknown, unknown])[0])).toBe(true);
-    expect(typeof (captured as unknown as [unknown, number])[1]).toBe('number');
-
-    unmount();
-    // Invariant #1: detach must be called with the same getter
-    // reference that was attached — the matched-pair guard in
-    // thread.svelte.ts only clears the slot on a reference match.
-    expect(detachVirtuaCacheGetter).toHaveBeenCalledTimes(1);
-    expect(detachVirtuaCacheGetter).toHaveBeenLastCalledWith(registered);
   });
 
 });
@@ -806,6 +759,10 @@ describe('scroll integration — auto-follow + button', () => {
     // before the listener is attached.
     await tick();
     await tick();
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="message-timeline-node"]')).not.toBeNull();
+      expect(pane.scrollController).not.toBeNull();
+    });
 
     const wrapper = container.querySelector('[data-testid="message-timeline-scroll"]') as HTMLElement;
     expect(wrapper).not.toBeNull();
@@ -813,25 +770,37 @@ describe('scroll integration — auto-follow + button', () => {
     // the container isn't scrollable (`scrollHeight <= clientHeight`).
     // happy-dom returns 0 for both unless we override, so the test
     // wheel would otherwise be ignored. Stub geometry so the wheel
-    // handler proceeds to flip escapedFromLock — and so the scroll
+    // handler can arm escape — and so the scroll
     // event fired below refreshes `isNearBottomState` to false (we want
     // `isAtBottom` to be false after escape, which requires both intent
     // and geometry to be away from the bottom).
+    let scrollTop = 400;
     Object.defineProperty(wrapper, 'scrollHeight', { configurable: true, get: () => 1000 });
     Object.defineProperty(wrapper, 'clientHeight', { configurable: true, get: () => 600 });
-    Object.defineProperty(wrapper, 'scrollTop', { configurable: true, get: () => 0, set: () => {} });
-    wrapper.dispatchEvent(new WheelEvent('wheel', { deltaY: -50, bubbles: true }));
-    // Fire a scroll event so the controller refreshes isNearBottomState
-    // from the new (stubbed) geometry. The wheel handler itself only
-    // flips escapedFromLock; the scroll handler is what re-reads
-    // distanceFromBottom and sets isNearBottomState=false (distance=400).
+    Object.defineProperty(wrapper, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => { scrollTop = value; },
+    });
+    const wheel = new WheelEvent('wheel', { deltaY: -50, bubbles: true });
+    Object.defineProperty(wheel, 'target', { value: wrapper });
+    wrapper.dispatchEvent(wheel);
+    scrollTop = 0;
+    // Fire a scroll event so the controller confirms the outer scroller
+    // moved up, then refreshes isNearBottomState from the new geometry.
     wrapper.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await waitForScrollIntent();
     await tick();
     await tick();
 
     // After the gesture the chip's button is in the DOM (it may still
     // be in a fade-in transition; what matters is presence as a
     // signal that the user is no longer at-or-near the bottom).
+    const ctrl = pane.scrollController as
+      | (PaneScrollController & { escapedFromLock: boolean; isAtBottom: boolean })
+      | null;
+    expect(ctrl?.escapedFromLock).toBe(true);
+    expect(ctrl?.isAtBottom).toBe(false);
     expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull();
   });
 
@@ -851,17 +820,30 @@ describe('scroll integration — auto-follow + button', () => {
     const { container } = render(MessageTimeline, { props: { pane } });
     await tick();
     await tick();
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="message-timeline-node"]')).not.toBeNull();
+      expect(pane.scrollController).not.toBeNull();
+    });
 
     const scrollEl = container.querySelector('[data-testid="message-timeline-scroll"]') as HTMLElement;
     expect(scrollEl).not.toBeNull();
     // Force the chip visible: stub scrollable geometry, fire a wheel-up
     // gesture, then a scroll event so isNearBottomState refreshes to
     // false (intent + geometry both away from bottom → chip visible).
+    let scrollTop = 400;
     Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 1000 });
     Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, get: () => 600 });
-    Object.defineProperty(scrollEl, 'scrollTop', { configurable: true, get: () => 0, set: () => {} });
-    scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -50, bubbles: true }));
+    Object.defineProperty(scrollEl, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => { scrollTop = value; },
+    });
+    const wheel = new WheelEvent('wheel', { deltaY: -50, bubbles: true });
+    Object.defineProperty(wheel, 'target', { value: scrollEl });
+    scrollEl.dispatchEvent(wheel);
+    scrollTop = 0;
     scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await waitForScrollIntent();
     await tick();
     await tick();
 
@@ -1216,9 +1198,8 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await tick();
 
     // Immediately after switch, isWarm must be false (armWarmup ran in
-    // $effect.pre) AND the new thread is uncached (cache miss).
+    // $effect.pre).
     expect(ctrl.isWarm).toBe(false);
-    expect(pane.cachedVirtuaCache).toBeUndefined();
 
     // Therefore hideContentForWarmup is true, contentEl is hidden, and
     // the new thread's measurement cascade lands behind the gate.
@@ -1238,17 +1219,13 @@ describe('scroll integration — useStickToBottom wiring', () => {
     // sequence between two paints.
     //
     // MessageTimeline gates contentEl visibility on the controller's
-    // warmup signal when pane.cachedVirtuaCache is missing. The cascade
-    // happens behind a hidden contentEl; the user only sees the first
-    // post-warmup frame, by which point measurements have settled and
-    // scrollTop is at the correct bottom.
+    // warmup signal. The cascade happens behind a hidden contentEl; the
+    // user only sees the first post-warmup frame, by which point
+    // measurements have settled and scrollTop is at the correct bottom.
     const pane = await buildPane(undefined, [
       makeItem({ id: 'a', summary: 'a' }),
       makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
     ]);
-    // Cache miss: pane.cachedVirtuaCache stays undefined (no prior visit).
-    expect(pane.cachedVirtuaCache).toBeUndefined();
-
     const { container } = render(MessageTimeline, { props: { pane } });
     await tick();
     await tick();

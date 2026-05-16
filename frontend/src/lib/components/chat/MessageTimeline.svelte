@@ -94,6 +94,14 @@
   let listRef: VirtualizerHandle | undefined = $state(undefined);
 
   let restoredThreadId: string | null = $state(null);
+  // Diagnostic: timestamp of the most recent legitimate `restoredThreadId = null`
+  // (i.e. one that the `$effect.pre` thread-switch path performed).
+  // Used to flag stale-restore conditions if restoreToBottom() ever
+  // fires with a stale-looking lastEffectPreAt → diff > ~50 ms means
+  // a path other than $effect.pre cleared restoredThreadId. See the
+  // seq-509 trace investigation that motivated the restore-snap
+  // consent gate in useStickToBottom.
+  let lastEffectPreAt = 0;
   // Tracks which thread we last persisted into the snapshot store via
   // the thread-switch effect — separate from `restoredThreadId` so a
   // thread switch can dispose the previous snapshot before the next
@@ -136,26 +144,13 @@
     animationMode: () => (getActiveTurn(pane.threadId) ? 'spring' : 'instant'),
   });
 
-  // Hide contentEl during the initial measurement cascade on UNCACHED
-  // loads. Without `pane.cachedVirtuaCache`, virtua starts with
-  // `ESTIMATED_ROW_SIZE × N` for totalSize; per-row ResizeObservers
-  // then correct each row's actual height across the next ~25ms, which
-  // shifts every row's Y-offset and clamps scrollTop by a fraction of
-  // a page (216-item thread sample: 461px clamp). The controller's
-  // sync-pin re-pins scrollTop correctly, but the user still sees the
-  // row-content shift between the two paints. Hiding contentEl until
-  // the controller's warmup gate fires (QUIET_MS=100ms of contentRO
-  // silence, or FAILSAFE_MS=2500ms ceiling — whichever first) covers
-  // the cascade with a brief blank-then-correct reveal instead of a
-  // visible "land wrong, jump to correct" sequence.
-  //
-  // Cached loads skip this — virtua has correct totalSize from frame 0
-  // and there's no measurement cascade to hide. The scroll controller
-  // and composer overlay stay visible in both branches; only the
-  // virtualizer's contentEl is hidden.
-  let hideContentForWarmup = $derived(
-    !stick.isWarm && pane.cachedVirtuaCache === undefined,
-  );
+  // Hide contentEl while virtua and async row content settle. Fresh
+  // virtua mounts start from `ESTIMATED_ROW_SIZE × N`; per-row
+  // ResizeObservers then correct actual heights. The controller keeps
+  // scrollTop pinned, but rows can still shift between paints. The
+  // warmup gate reveals content after QUIET_MS=100ms of contentRO
+  // silence or the FAILSAFE_MS=2500ms ceiling.
+  let hideContentForWarmup = $derived(!stick.isWarm);
 
   // Publish the controller on the pane so external surfaces (sidebar
   // resizers, resizable drawers) can acquire a `pauseAutoScroll()` lease
@@ -174,19 +169,6 @@
   $effect(() => {
     if (!scrollEl || !contentEl) return;
     stick.attach(scrollEl, contentEl);
-  });
-
-  // Publish a virtua-cache getter so `pane.snapshotOutgoingPane` can
-  // capture the OUTGOING thread's per-row sizes into the LRU before
-  // {#key pane.threadId} unmounts the <Virtualizer>. The next switch
-  // back replays the cache via `cache={pane.cachedVirtuaCache}` below,
-  // so virtua starts with the correct totalSize at first paint instead
-  // of the ESTIMATED_ROW_SIZE × N underestimate that lazy mount-time
-  // measurement would otherwise produce.
-  $effect(() => {
-    const getter = () => listRef?.getCache();
-    pane.attachVirtuaCacheGetter(getter);
-    return () => pane.detachVirtuaCacheGetter(getter);
   });
 
   // Diagnostic UI render trace — extracted to messageTimelineTrace.ts.
@@ -365,12 +347,18 @@
           clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
           paneItems: pane.items.length,
           paneLoading: pane.loading,
-          hasCachedVirtuaCache: pane.cachedVirtuaCache !== undefined,
         });
       }
       if (scrollSnapshotThreadId) {
         restoredThreadId = null;
         restoreToken += 1;
+        if (isUiRenderTraceEnabled()) {
+          // Diagnostic-only — gated to keep prod builds free of any
+          // observable cost. The companion read at the restore $effect
+          // is also gated, so production reads -1 (initial) and the
+          // dead branch is DCE-friendly.
+          lastEffectPreAt = Date.now();
+        }
       }
       autoLoadOlderGate.reset();
       stick.setEscapedFromLock(true);
@@ -388,6 +376,19 @@
       // sequence; cache-miss switches off an unsettled prior thread
       // (warm=false coincidentally) hid the cascade and looked fine.
       stick.armWarmup();
+      // Arm the one-shot restore-snap consent AFTER the defensive
+      // setEscapedFromLock — which itself clears any prior arm — so the
+      // upcoming `restoreToBottom() → stick.forceStick({reason:
+      // 'restore'})` is honored. Any outer-scroll intent between this
+      // point and the restore $effect (extremely rare; both run inside
+      // the same flush) re-clears the arm, causing the restore to NO-OP
+      // and preserving the user's intent. This is the load-bearing
+      // distinguisher between "the
+      // user has explicitly escaped" and "the $effect.pre just
+      // defensively set escape=true while preparing the new thread for
+      // restore." See useStickToBottom.svelte.ts § Restore-snap
+      // consent state.
+      stick.armRestoreSnap();
     }
     scrollSnapshotThreadId = nextThreadId;
   });
@@ -419,6 +420,8 @@
     // outgoing thread before our forceStick landed.
     const snap = getThreadScrollSnapshot(threadId);
     if (isUiRenderTraceEnabled()) {
+      const now = Date.now();
+      const msSinceEffectPre = lastEffectPreAt === 0 ? -1 : now - lastEffectPreAt;
       recordUiTrace('timeline.restore.effect', {
         threadId,
         snapKind: snap?.kind ?? null,
@@ -432,6 +435,15 @@
         scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
         scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
         clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+        // Diagnostic: a healthy thread-switch sequence has the
+        // $effect.pre fire immediately before this restore $effect.
+        // If msSinceEffectPre is large (> a few ms) OR -1 (never
+        // fired), some path OTHER than the thread-switch effect
+        // cleared `restoredThreadId` — that's the seq-509 stale
+        // restore class of bug. With the new forceStick({reason:
+        // 'restore'}) consent gate this no longer slams the user,
+        // but it still indicates a state-management bug to find.
+        msSinceEffectPre,
       });
     }
     if (!snap || snap.kind === 'bottom') {
@@ -448,11 +460,8 @@
   //   bottom. There's no scrollTop to write yet.
   //
   // - Non-empty timeline: forceStick() lands scrollTop at the current
-  //   target in a single write. The per-thread virtua row-size cache
-  //   (replayed via `<Virtualizer cache={pane.cachedVirtuaCache}>` in
-  //   the {#key pane.threadId} wrapper) gives virtua the correct
-  //   totalSize from frame 0, so the target is right from the first
-  //   paint. Any subsequent contentEl growth from svelte-streamdown's
+  //   target in a single write. Any subsequent contentEl growth from
+  //   svelte-streamdown's
   //   async typesetting (shiki / KaTeX / mermaid /
   //   parseIncompleteMarkdown rebalance) and from virtua's per-row
   //   ResizeObservers refining row heights gets handled invisibly by
@@ -501,7 +510,15 @@
       }
       return;
     }
-    stick.forceStick();
+    // reason:'restore' so the controller's consent gate filters this
+    // call. The matching `armRestoreSnap()` runs from `$effect.pre`
+    // above; if anything cleared the consent between then and now
+    // (outer-scroll intent, selection, or programmatic escape), this
+    // NO-OPs and the user's scroll position is preserved. This is what defends
+    // against the seq-509 stale-restore bug — a `restoreToBottom()`
+    // mistakenly firing without a real thread switch can no longer
+    // slam the user to the bottom and wipe their escape.
+    stick.forceStick({ reason: 'restore' });
     saveScrollSnapshot();
     // Capture the thread the rAF was scheduled for so a thread switch
     // between forceStick and the next frame doesn't run the late re-pin
@@ -605,9 +622,9 @@
         restoreToBottom();
         return;
       }
-      stick.stopScroll();
-      stick.setEscapedFromLock(true);
-      listRef.scrollToIndex(idx, { align: 'start', offset: -snap.offsetTop });
+      stick.runExternalScroll(() => {
+        listRef?.scrollToIndex(idx, { align: 'start', offset: -snap.offsetTop });
+      });
       saveScrollSnapshot();
     } finally {
       release();
@@ -642,8 +659,9 @@
       if (!anchorId) return;
       const newIdx = findTimelineNodeIndex(anchorId);
       if (newIdx < 0) return;
-      stick.stopScroll();
-      listRef.scrollToIndex(newIdx, { align: 'start', offset: -anchorOffsetTop });
+      stick.runExternalScroll(() => {
+        listRef?.scrollToIndex(newIdx, { align: 'start', offset: -anchorOffsetTop });
+      });
       saveScrollSnapshot();
     } finally {
       release();
@@ -683,9 +701,9 @@
       await tick();
       if (myToken !== restoreToken || result !== 'completed') return;
     } else {
-      stick.stopScroll();
-      stick.setEscapedFromLock(true);
-      listRef.scrollToIndex(idx, { align: 'center' });
+      stick.runExternalScroll(() => {
+        listRef?.scrollToIndex(idx, { align: 'center' });
+      });
     }
     if (options.flash) targetFlash.flash(targetItemId);
   }
@@ -788,12 +806,9 @@
            Virtua's container has `contain: size; height: totalSize+'px'`,
            so contentEl.scrollHeight reflects virtua's totalSize exactly.
            {#key pane.threadId} forces the <Virtualizer> to remount on
-           every thread switch so it can re-read the `cache` prop. The
-           prop is consumed only at `createVirtualStore(...)` mount time
-           (see virtua/svelte/Virtualizer.svelte) — without the {#key},
-           a thread switch back would still render the old cache and
-           virtua would underestimate `totalSize` until per-row
-           ResizeObservers re-measured every visible row. -->
+           every thread switch so its internal row-size store resets with
+           the timeline. Row-size snapshots are not replayed because they
+           are only valid with the row UI state that produced them. -->
       <div
         bind:this={contentEl}
         style:visibility={hideContentForWarmup ? 'hidden' : 'visible'}
@@ -807,7 +822,6 @@
           itemSize={ESTIMATED_ROW_SIZE}
           bufferSize={BUFFER_SIZE_PX}
           ssrCount={IS_TEST ? 100_000 : undefined}
-          cache={pane.cachedVirtuaCache}
           onscroll={handleVirtuaScroll}
           onscrollend={handleVirtuaScrollEnd}
         >

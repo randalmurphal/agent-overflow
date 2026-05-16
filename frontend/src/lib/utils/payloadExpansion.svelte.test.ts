@@ -1,18 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { writePayloadCache } from './payloadDataCache';
+import { __resetPayloadCacheForTest, writePayloadCache } from './payloadDataCache';
 import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
 
 describe('payloadExpansion', () => {
   beforeEach(() => {
     resetBindingMocks();
+    __resetPayloadCacheForTest();
   });
 
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it('loads preview before full payload and discards both on collapse', async () => {
+  it('loads preview before full payload and hydrates from cache after collapse', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: 'PREVIEW ',
       nextOffset: 8,
@@ -45,7 +46,8 @@ describe('payloadExpansion', () => {
     expect(expansion.fullData).toBeNull();
 
     await expansion.expand();
-    expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledTimes(2);
+    expect(expansion.displayData).toBe('PREVIEW FULL PAYLOAD');
+    expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledTimes(1);
   });
 
   it('uses backend byte offsets instead of UTF-16 string length', async () => {
@@ -307,6 +309,236 @@ describe('payloadExpansion', () => {
     });
     dispose();
     expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('loadOnMount reloads the same payload id when the payload version changes', async () => {
+    let fetchCount = 0;
+    const preview = setBindingMock('GetPayloadPreview', async () => {
+      fetchCount += 1;
+      return {
+        data: fetchCount === 1 ? 'payload v1' : 'payload v2',
+        nextOffset: 10,
+        totalSize: 10,
+        isComplete: true,
+      };
+    });
+
+    let expansion!: ReturnType<typeof createPayloadExpansion>;
+    const dispose = $effect.root(() => {
+      expansion = createPayloadExpansion(
+        'payload-auto',
+        'thread-auto',
+        { loadOnMount: true },
+      );
+    });
+
+    await vi.waitFor(() => expect(expansion.displayData).toBe('payload v1'));
+    expansion.setPayloadVersion(2);
+    await vi.waitFor(() => expect(expansion.displayData).toBe('payload v2'));
+
+    expect(preview).toHaveBeenCalledTimes(2);
+    dispose();
+  });
+
+  it('loadOnMount does not consume a newer version while an older request is loading', async () => {
+    const resolvers: Array<(value: {
+      data: string;
+      nextOffset: number;
+      totalSize: number;
+      isComplete: boolean;
+    }) => void> = [];
+    const preview = setBindingMock('GetPayloadPreview', async () => (
+      new Promise((resolve) => {
+        resolvers.push(resolve);
+      })
+    ));
+
+    let expansion!: ReturnType<typeof createPayloadExpansion>;
+    const dispose = $effect.root(() => {
+      expansion = createPayloadExpansion(
+        'payload-race',
+        'thread-race',
+        { payloadVersion: () => 1, loadOnMount: true },
+      );
+    });
+
+    await vi.waitFor(() => expect(preview).toHaveBeenCalledTimes(1));
+    expansion.setPayloadVersion(2);
+
+    resolvers[0]!({
+      data: 'payload v1',
+      nextOffset: 10,
+      totalSize: 10,
+      isComplete: true,
+    });
+    await vi.waitFor(() => expect(preview).toHaveBeenCalledTimes(2));
+    resolvers[1]!({
+      data: 'payload v2',
+      nextOffset: 10,
+      totalSize: 10,
+      isComplete: true,
+    });
+
+    await vi.waitFor(() => expect(expansion.displayData).toBe('payload v2'));
+    dispose();
+  });
+
+  it('setPayloadVersion hydrates a cached replacement without refetching', async () => {
+    writePayloadCache('thread-cache', 'payload-cached', 1, {
+      chunks: ['old cached'],
+      hasFullChunks: true,
+      totalSize: 10,
+      isComplete: true,
+      loadedBytes: 10,
+    });
+    writePayloadCache('thread-cache', 'payload-cached', 2, {
+      chunks: ['new cached'],
+      hasFullChunks: true,
+      totalSize: 10,
+      isComplete: true,
+      loadedBytes: 10,
+    });
+    const preview = setBindingMock('GetPayloadPreview', async () => {
+      throw new Error('version cache hit must not refetch');
+    });
+
+    const expansion = createPayloadExpansion(
+      'payload-cached',
+      'thread-cache',
+      { payloadVersion: () => 1 },
+    );
+    expect(expansion.displayData).toBe('old cached');
+
+    expansion.setPayloadVersion(2);
+    expect(expansion.displayData).toBe('new cached');
+
+    await expansion.expand();
+    expect(expansion.displayData).toBe('new cached');
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('setPayloadVersion prevents an older preview request from overwriting a cached replacement', async () => {
+    let resolvePreview!: (value: {
+      data: string;
+      nextOffset: number;
+      totalSize: number;
+      isComplete: boolean;
+    }) => void;
+    setBindingMock('GetPayloadPreview', async () => (
+      new Promise((resolve) => {
+        resolvePreview = resolve;
+      })
+    ));
+    writePayloadCache('thread-race', 'payload-race', 2, {
+      chunks: ['new cached'],
+      hasFullChunks: true,
+      totalSize: 10,
+      isComplete: true,
+      loadedBytes: 10,
+    });
+
+    const expansion = createPayloadExpansion(
+      'payload-race',
+      'thread-race',
+      { payloadVersion: () => 1 },
+    );
+    const firstExpand = expansion.expand();
+    await vi.waitFor(() => expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledTimes(1));
+
+    expansion.setPayloadVersion(2);
+    expect(expansion.displayData).toBe('new cached');
+
+    resolvePreview({
+      data: 'old preview',
+      nextOffset: 11,
+      totalSize: 11,
+      isComplete: true,
+    });
+    await firstExpand;
+
+    expect(expansion.payloadVersion).toBe(2);
+    expect(expansion.displayData).toBe('new cached');
+  });
+
+  it('setPayloadVersion prevents an older full chunk from overwriting a cached replacement', async () => {
+    let resolveChunk!: (value: {
+      data: string;
+      offset: number;
+      nextOffset: number;
+      totalSize: number;
+      isComplete: boolean;
+    }) => void;
+    setBindingMock('GetPayloadPreview', async () => ({
+      data: 'preview v1',
+      nextOffset: 10,
+      totalSize: 30,
+      isComplete: false,
+    }));
+    setBindingMock('GetPayloadChunk', async () => (
+      new Promise((resolve) => {
+        resolveChunk = resolve;
+      })
+    ));
+    writePayloadCache('thread-race', 'payload-race', 2, {
+      chunks: ['new cached'],
+      hasFullChunks: true,
+      totalSize: 10,
+      isComplete: true,
+      loadedBytes: 10,
+    });
+
+    const expansion = createPayloadExpansion(
+      'payload-race',
+      'thread-race',
+      { payloadVersion: () => 1 },
+    );
+    await expansion.expand();
+    expect(expansion.displayData).toBe('preview v1');
+
+    const fullLoad = expansion.showFull();
+    await vi.waitFor(() => expect(getBindingMock('GetPayloadChunk')).toHaveBeenCalledTimes(1));
+
+    expansion.setPayloadVersion(2);
+    expect(expansion.displayData).toBe('new cached');
+
+    resolveChunk({
+      data: ' old full chunk',
+      offset: 10,
+      nextOffset: 25,
+      totalSize: 25,
+      isComplete: true,
+    });
+    await fullLoad;
+
+    expect(expansion.payloadVersion).toBe(2);
+    expect(expansion.displayData).toBe('new cached');
+  });
+
+  it('expand waits for an existing full-payload load to finish', async () => {
+    let resolvePayload!: (value: { data: string }) => void;
+    const data = setBindingMock('GetPayloadData', async () => (
+      new Promise<{ data: string }>((resolve) => {
+        resolvePayload = resolve;
+      })
+    ));
+
+    let expansion!: ReturnType<typeof createPayloadExpansion>;
+    const dispose = $effect.root(() => {
+      expansion = createPayloadExpansion(
+        'payload-full-pending',
+        'thread-full-pending',
+        { loadMode: 'full', loadOnMount: true },
+      );
+    });
+
+    await vi.waitFor(() => expect(data).toHaveBeenCalledTimes(1));
+    const manualExpand = expansion.expand();
+    resolvePayload({ data: 'FULL PAYLOAD' });
+    await manualExpand;
+
+    expect(expansion.displayData).toBe('FULL PAYLOAD');
+    expect(data).toHaveBeenCalledTimes(1);
+    dispose();
   });
 
   it('cache miss on version mismatch falls through to a fresh fetch', async () => {

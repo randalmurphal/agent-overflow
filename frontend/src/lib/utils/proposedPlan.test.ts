@@ -7,9 +7,12 @@ import {
   buildPlanImplementationPrompt,
   buildPlanImplementationThreadTitle,
   buildProposedPlanMarkdownFilename,
+  isProposedPlanPreviewTruncated,
   latestProposedPlanItem,
   normalizePlanMarkdownForExport,
+  proposedPlanPayloadVersion,
   proposedPlanTitle,
+  shouldCapProposedPlanBody,
   splitProposedPlanMarkdownBlocks,
   stripDisplayedPlanMarkdown,
 } from './proposedPlan';
@@ -88,6 +91,52 @@ describe('stripDisplayedPlanMarkdown', () => {
 
   it('returns an empty string if all content is stripped', () => {
     expect(stripDisplayedPlanMarkdown('# Title')).toBe('');
+  });
+});
+
+describe('proposed plan body sizing helpers', () => {
+  it('uses the backend truncation flag when present', () => {
+    expect(isProposedPlanPreviewTruncated({
+      title: 'Plan',
+      lineCount: 3,
+      charCount: 20,
+      preview: 'short',
+      previewTruncated: true,
+    })).toBe(true);
+  });
+
+  it('falls back to legacy preview shape for older metadata', () => {
+    expect(isProposedPlanPreviewTruncated({
+      title: 'Plan',
+      lineCount: 11,
+      charCount: 80,
+      preview: 'line 1\n\n...',
+    })).toBe(true);
+  });
+
+  it('caps long single-paragraph plans even when the line count is small', () => {
+    expect(shouldCapProposedPlanBody({
+      title: 'Plan',
+      lineCount: 1,
+      charCount: 901,
+      preview: 'long',
+      previewTruncated: false,
+    })).toBe(true);
+  });
+
+  it('prefers the payload signature as the payload version', () => {
+    const item = planItem({
+      payloadMeta: JSON.stringify({ title: 'Plan' }),
+      updatedAt: 42,
+    });
+
+    expect(proposedPlanPayloadVersion(item, {
+      title: 'Plan',
+      lineCount: 1,
+      charCount: 4,
+      preview: 'body',
+      signature: 'sha256:abc',
+    })).toBe('sha256:abc');
   });
 });
 

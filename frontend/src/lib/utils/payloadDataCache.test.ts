@@ -3,6 +3,7 @@ import {
   __payloadCacheStatsForTest,
   __resetPayloadCacheForTest,
   clearPayloadCacheForThread,
+  payloadVersionKey,
   readPayloadCache,
   writePayloadCache,
 } from './payloadDataCache';
@@ -63,6 +64,14 @@ describe('payloadDataCache', () => {
     expect(readPayloadCache('thread-1', 'payload-a', 'null')?.chunks).toEqual(['strnull']);
   });
 
+  it('bounds large string versions before embedding them in cache keys', () => {
+    const largeVersion = 'x'.repeat(10_000);
+    const key = payloadVersionKey(largeVersion);
+
+    expect(key.length).toBeLessThan(190);
+    expect(key).not.toContain(largeVersion);
+  });
+
   it('rewriting the same key replaces, not duplicates, the entry and updates byte accounting', () => {
     writePayloadCache('thread-1', 'payload-a', 1, {
       chunks: ['abc'], hasFullChunks: false, totalSize: 100, isComplete: false, loadedBytes: 3,
@@ -101,12 +110,7 @@ describe('payloadDataCache', () => {
     expect(__payloadCacheStatsForTest().bytes).toBe(3);
   });
 
-  it('does not collide threadId/payloadId boundaries — the NUL separator pins the prefix match', () => {
-    // If the separator were a space or any character that could appear
-    // inside an id, "thread-1" + "payload" + "" could collide with
-    // "thread" + "1 payload" + "". The NUL delimiter is byte-illegal in
-    // any practical id, so prefix matching by `${threadId}\0` cannot
-    // overshoot.
+  it('does not collide threadId/payloadId boundaries', () => {
     writePayloadCache('thread', '1', 1, {
       chunks: ['boundary-a'], hasFullChunks: true, totalSize: 10, isComplete: true, loadedBytes: 10,
     });
@@ -119,6 +123,23 @@ describe('payloadDataCache', () => {
     // Only the (threadId='thread', payloadId='1') entry is evicted.
     expect(readPayloadCache('thread', '1', 1)).toBeUndefined();
     expect(readPayloadCache('thread-1', '', 1)?.chunks).toEqual(['boundary-b']);
+  });
+
+  it('does not collide when ids contain the old separator byte', () => {
+    writePayloadCache('thread', 'payload\0v1', 1, {
+      chunks: ['nul-a'], hasFullChunks: true, totalSize: 5, isComplete: true, loadedBytes: 5,
+    });
+    writePayloadCache('thread\0payload', 'v1', 1, {
+      chunks: ['nul-b'], hasFullChunks: true, totalSize: 5, isComplete: true, loadedBytes: 5,
+    });
+
+    expect(readPayloadCache('thread', 'payload\0v1', 1)?.chunks).toEqual(['nul-a']);
+    expect(readPayloadCache('thread\0payload', 'v1', 1)?.chunks).toEqual(['nul-b']);
+
+    clearPayloadCacheForThread('thread');
+
+    expect(readPayloadCache('thread', 'payload\0v1', 1)).toBeUndefined();
+    expect(readPayloadCache('thread\0payload', 'v1', 1)?.chunks).toEqual(['nul-b']);
   });
 
   it('LRU touch on read moves the entry to the freshest slot', () => {

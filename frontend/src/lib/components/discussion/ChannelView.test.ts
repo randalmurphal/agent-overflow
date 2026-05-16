@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import ChannelView from './ChannelView.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
@@ -297,7 +298,8 @@ describe('<ChannelView>', () => {
     // writes scrollTop to the current target (= 1000 - 600 = 400).
     await vi.advanceTimersByTimeAsync(0);
     for (let i = 0; i < 5; i++) await Promise.resolve();
-    const ro = FireableResizeObserver.instances.at(-1);
+    const composerSection = getByTestId('channel-composer-section');
+    const ro = FireableResizeObserver.instances.find((observer) => observer.observed[0] !== composerSection);
     if (!ro) throw new Error('expected useStickToBottom to install a ResizeObserver');
     const contentEl = ro.observed[0] as HTMLElement;
 
@@ -331,13 +333,12 @@ describe('<ChannelView>', () => {
   });
 
   it('reveals the scroll-to-bottom chip after a wheel-up gesture, ignores content arrivals while escaped, and hides it on forceStick', async () => {
-    // The unified controller (useStickToBottom) treats wheel-up as the
-    // canonical "I want to read above" intent signal — escapedFromLock
-    // flips synchronously, geometric near-bottom flips false, the chip
-    // becomes visible, and the contentRO's sync-pin path bails out for
-    // as long as escapedFromLock stays true. Clicking the chip calls
-    // forceStick which slams scrollTop back to bottom and clears the
-    // escape, so the chip hides.
+    // The unified controller (useStickToBottom) treats wheel-up as an
+    // escape intent and confirms it only when the outer scroller moves
+    // upward. Then geometric near-bottom flips false, the chip becomes
+    // visible, and the contentRO's sync-pin path bails while escaped.
+    // Clicking the chip calls forceStick, which slams scrollTop back to
+    // bottom and clears the escape.
     const pane = await buildPane();
     let callCount = 0;
     setBindingMock('GetChannelMessages', async () => {
@@ -364,24 +365,24 @@ describe('<ChannelView>', () => {
     // first-mount RO callback so the controller seeds previousHeight.
     await vi.advanceTimersByTimeAsync(0);
     for (let i = 0; i < 5; i++) await Promise.resolve();
-    const ro = FireableResizeObserver.instances.at(-1);
+    const composerSection = getByTestId('channel-composer-section');
+    const ro = FireableResizeObserver.instances.find((observer) => observer.observed[0] !== composerSection);
     if (!ro) throw new Error('expected useStickToBottom to install a ResizeObserver');
     const contentEl = ro.observed[0] as HTMLElement;
     ro.fire(contentEl, 400);
     expect(queryByTestId('scroll-to-bottom')).toBeNull();
 
-    // User scrolls up partway, then lifts a real wheel-up gesture. The
-    // wheel-up is the intent signal that flips escapedFromLock; without
-    // it, the controller would treat scrollTop changes as RO-correlated
-    // and would not change intent.
+    // User lifts a real wheel-up gesture and the outer scroller moves up.
+    scroll.scrollTop = 400;
+    await fireEvent.wheel(scroll, { deltaY: -100 });
     scroll.scrollTop = 200;
     await fireEvent.scroll(scroll);
-    await fireEvent.wheel(scroll, { deltaY: -100 });
     await vi.advanceTimersByTimeAsync(16);
+    await tick();
     for (let i = 0; i < 3; i++) await Promise.resolve();
 
     // Distance from bottom is 1000-200-600 = 200 (>70 threshold), and the
-    // wheel-up has flipped escapedFromLock + cleared isAtBottomState,
+    // wheel-up scroll has flipped escapedFromLock + cleared isAtBottomState,
     // so both inputs to `stick.isAtBottom` are false. Chip is visible.
     expect(getByTestId('scroll-to-bottom')).toBeInTheDocument();
 
@@ -425,16 +426,19 @@ describe('<ChannelView>', () => {
 
     await vi.advanceTimersByTimeAsync(0);
     for (let i = 0; i < 5; i++) await Promise.resolve();
-    const ro = FireableResizeObserver.instances.at(-1);
+    const composerSection = getByTestId('channel-composer-section');
+    const ro = FireableResizeObserver.instances.find((observer) => observer.observed[0] !== composerSection);
     if (!ro) throw new Error('expected useStickToBottom to install a ResizeObserver');
     const contentEl = ro.observed[0] as HTMLElement;
     ro.fire(contentEl, 400);
 
-    // Escape via wheel-up; verify chip becomes visible.
+    // Escape via wheel-up that moves the outer scroller; verify chip becomes visible.
+    scroll.scrollTop = 400;
+    await fireEvent.wheel(scroll, { deltaY: -100 });
     scroll.scrollTop = 100;
     await fireEvent.scroll(scroll);
-    await fireEvent.wheel(scroll, { deltaY: -100 });
     await vi.advanceTimersByTimeAsync(16);
+    await tick();
     for (let i = 0; i < 3; i++) await Promise.resolve();
     expect(getByTestId('scroll-to-bottom')).toBeInTheDocument();
 

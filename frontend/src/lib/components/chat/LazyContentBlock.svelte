@@ -95,7 +95,7 @@
         class="mt-2 text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
         data-testid="lazy-content-show-full"
       >
-        Show full output ({formatPayloadSize(expansion.totalSize)}) ↓
+        Show more output ({formatPayloadSize(expansion.totalSize)}) ↓
       </button>
     {/if}
   {/if}

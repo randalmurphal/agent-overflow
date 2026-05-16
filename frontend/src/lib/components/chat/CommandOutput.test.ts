@@ -47,8 +47,11 @@ describe('<CommandOutput>', () => {
   });
 
   it('renders raw ANSI payloads in the expanded output', async () => {
-    setBindingMock('GetPayloadData', async () => ({
+    setBindingMock('GetPayloadPreview', async () => ({
       data: '\x1b[31mred\x1b[0m then plain',
+      nextOffset: 24,
+      totalSize: 24,
+      isComplete: true,
     }));
 
     const { getByRole, container } = render(CommandOutput, {
@@ -66,6 +69,8 @@ describe('<CommandOutput>', () => {
 
     const pre = container.querySelector('pre');
     if (!pre) throw new Error('expected <pre> for the command output body');
+    expect(pre.parentElement?.className).toContain('max-h-96');
+    expect(pre.parentElement?.className).toContain('overflow-auto');
     const styledSpans = pre.querySelectorAll('span.ansi-fg-31');
     expect(styledSpans.length).toBeGreaterThan(0);
     expect(styledSpans[0]?.textContent).toBe('red');
@@ -74,8 +79,11 @@ describe('<CommandOutput>', () => {
   });
 
   it('escapes raw HTML payloads so script tags never become live nodes', async () => {
-    setBindingMock('GetPayloadData', async () => ({
+    setBindingMock('GetPayloadPreview', async () => ({
       data: '<script>alert(1)</script>',
+      nextOffset: 25,
+      totalSize: 25,
+      isComplete: true,
     }));
 
     const { getByRole, container } = render(CommandOutput, {
@@ -97,15 +105,18 @@ describe('<CommandOutput>', () => {
     expect(pre.querySelector('script')).toBeNull();
   });
 
-  it('loads the complete command payload only when expanded', async () => {
-    const dataMock = setBindingMock('GetPayloadData', async () => ({
+  it('loads a command output preview only when expanded', async () => {
+    const previewMock = setBindingMock('GetPayloadPreview', async () => ({
       data: '\u001b[32mok\u001b[0m\nfull body',
+      nextOffset: 22,
+      totalSize: 22,
+      isComplete: true,
     }));
-    const previewMock = setBindingMock('GetPayloadPreview', async () => {
-      throw new Error('command rows should not fetch previews');
-    });
     const chunkMock = setBindingMock('GetPayloadChunk', async () => {
-      throw new Error('command rows should not fetch chunks');
+      throw new Error('command rows should not fetch chunks for complete previews');
+    });
+    const dataMock = setBindingMock('GetPayloadData', async () => {
+      throw new Error('command rows should not fetch full payloads by default');
     });
 
     const { getByRole, queryByText, findByText } = render(CommandOutput, {
@@ -120,20 +131,62 @@ describe('<CommandOutput>', () => {
       },
     });
     expect(queryByText('inline preview')).toBeNull();
-    expect(dataMock).not.toHaveBeenCalled();
     expect(previewMock).not.toHaveBeenCalled();
     expect(chunkMock).not.toHaveBeenCalled();
+    expect(dataMock).not.toHaveBeenCalled();
 
     await fireEvent.click(getByRole('button', { name: /Toggle command output/i }));
     expect(await findByText(/full body/)).toBeInTheDocument();
-    expect(dataMock).toHaveBeenCalledWith('thread-1', 'pay-3');
-    expect(previewMock).not.toHaveBeenCalled();
+    expect(previewMock).toHaveBeenCalledWith('thread-1', 'pay-3', 32768);
     expect(chunkMock).not.toHaveBeenCalled();
+    expect(dataMock).not.toHaveBeenCalled();
+  });
+
+  it('loads the rest of a large command output only on explicit request', async () => {
+    const previewMock = setBindingMock('GetPayloadPreview', async () => ({
+      data: 'first chunk',
+      nextOffset: 11,
+      totalSize: 22,
+      isComplete: false,
+    }));
+    const chunkMock = setBindingMock('GetPayloadChunk', async () => ({
+      data: '\nsecond chunk',
+      nextOffset: 24,
+      totalSize: 24,
+      isComplete: true,
+    }));
+    const dataMock = setBindingMock('GetPayloadData', async () => {
+      throw new Error('command rows should not fetch full payloads by default');
+    });
+
+    const { getByRole, getByTestId, findByText, queryByTestId } = render(CommandOutput, {
+      props: {
+        item: makeItem({ id: 'tool-cmd', kind: 'tool_call' }),
+        meta: commandMeta({ command: 'long-command', preview: '', lineCount: 1000 }),
+        payloadId: 'pay-large',
+      },
+    });
+
+    await fireEvent.click(getByRole('button', { name: /Toggle command output/i }));
+    expect(await findByText(/first chunk/)).toBeInTheDocument();
+    expect(getByTestId('command-output-show-full').textContent).toContain('22 B');
+    expect(getByTestId('command-output-show-full').textContent).toContain('Show more output');
+    expect(chunkMock).not.toHaveBeenCalled();
+
+    await fireEvent.click(getByTestId('command-output-show-full'));
+    expect(await findByText(/second chunk/)).toBeInTheDocument();
+    expect(previewMock).toHaveBeenCalledWith('thread-1', 'pay-large', 32768);
+    expect(chunkMock).toHaveBeenCalledWith('thread-1', 'pay-large', 11, 262144);
+    expect(dataMock).not.toHaveBeenCalled();
+    expect(queryByTestId('command-output-show-full')).toBeNull();
   });
 
   it('loads output when an already-expanded deferred row gains a payload id', async () => {
-    const dataMock = setBindingMock('GetPayloadData', async () => ({
+    const previewMock = setBindingMock('GetPayloadPreview', async () => ({
       data: 'arrived later',
+      nextOffset: 13,
+      totalSize: 13,
+      isComplete: true,
     }));
     const itemWithoutPayload = makeItem({
       id: 'tool-deferred-output',
@@ -152,7 +205,7 @@ describe('<CommandOutput>', () => {
 
     await fireEvent.click(getByRole('button', { name: /Toggle command output/i }));
     expect(await findByText('Loading…')).toBeInTheDocument();
-    expect(dataMock).not.toHaveBeenCalled();
+    expect(previewMock).not.toHaveBeenCalled();
 
     const itemWithPayload = {
       ...itemWithoutPayload,
@@ -167,11 +220,16 @@ describe('<CommandOutput>', () => {
     });
 
     expect(await findByText('arrived later')).toBeInTheDocument();
-    expect(dataMock).toHaveBeenCalledWith('thread-1', 'payload-deferred-output');
+    expect(previewMock).toHaveBeenCalledWith('thread-1', 'payload-deferred-output', 32768);
   });
 
   it('shows no collapsed output preview for successful commands', () => {
-    setBindingMock('GetPayloadData', async () => ({ data: 'full output' }));
+    setBindingMock('GetPayloadPreview', async () => ({
+      data: 'full output',
+      nextOffset: 11,
+      totalSize: 11,
+      isComplete: true,
+    }));
     const { queryByText } = render(CommandOutput, {
       props: {
         item: makeItem({ id: 'tool-cmd', kind: 'tool_completion', status: 'completed' }),
@@ -181,11 +239,16 @@ describe('<CommandOutput>', () => {
     });
 
     expect(queryByText('inline preview')).toBeNull();
-    expect(getBindingMock('GetPayloadData')).not.toHaveBeenCalled();
+    expect(getBindingMock('GetPayloadPreview')).not.toHaveBeenCalled();
   });
 
   it('shows an explicit collapsed preview for wait-owned command completions', async () => {
-    const dataMock = setBindingMock('GetPayloadData', async () => ({ data: 'full output' }));
+    const previewMock = setBindingMock('GetPayloadPreview', async () => ({
+      data: 'full output',
+      nextOffset: 11,
+      totalSize: 11,
+      isComplete: true,
+    }));
     const { getByRole, getByTestId, queryByTestId } = render(CommandOutput, {
       props: {
         item: makeItem({ id: 'tool-cmd', kind: 'tool_completion', status: 'completed' }),
@@ -196,7 +259,7 @@ describe('<CommandOutput>', () => {
     });
 
     expect(getByTestId('command-output-preview').textContent).toContain('done');
-    expect(dataMock).not.toHaveBeenCalled();
+    expect(previewMock).not.toHaveBeenCalled();
 
     await fireEvent.click(getByRole('button', { name: /Toggle command output/i }));
     await waitFor(() => {
@@ -220,7 +283,12 @@ describe('<CommandOutput>', () => {
   });
 
   it('shows a compact red error line for failed commands without expanding output', () => {
-    const dataMock = setBindingMock('GetPayloadData', async () => ({ data: 'full output' }));
+    const previewMock = setBindingMock('GetPayloadPreview', async () => ({
+      data: 'full output',
+      nextOffset: 11,
+      totalSize: 11,
+      isComplete: true,
+    }));
     const { getByTestId } = render(CommandOutput, {
       props: {
         item: makeItem({
@@ -245,7 +313,7 @@ describe('<CommandOutput>', () => {
     const error = getByTestId('command-output-error');
     expect(error.textContent).toBe('error code 7: first line last failure line');
     expect(error.className).toContain('text-error');
-    expect(dataMock).not.toHaveBeenCalled();
+    expect(previewMock).not.toHaveBeenCalled();
   });
 
   it('uses Claude stderr metadata for legacy Bash failure rows', () => {

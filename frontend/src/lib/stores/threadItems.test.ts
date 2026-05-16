@@ -6,6 +6,7 @@ import {
   itemsForThread,
   mergeItemsById,
   mergeMissingItemsById,
+  reconcileItemWindow,
 } from './threadItems';
 
 describe('threadItems', () => {
@@ -60,6 +61,42 @@ describe('threadItems', () => {
 
     expect(mergeItemsById([existing], current)).toBe(current);
     expect(mergeMissingItemsById([existing], current)).toBe(current);
+  });
+
+  it('preserves current row references when merge rows are equal by value', () => {
+    const existing = makeItem({ id: 'existing', summary: 'same' });
+    const current = [existing];
+    const incoming = makeItem({ id: 'existing', summary: 'same' });
+
+    const merged = mergeItemsById([incoming], current);
+
+    expect(merged).toBe(current);
+    expect(merged[0]).toBe(existing);
+  });
+
+  it('reconciles full windows without replacing equal row references', () => {
+    const existingA = makeItem({ id: 'a', turnIndex: 0, summary: 'same' });
+    const existingB = makeItem({ id: 'b', turnIndex: 1, summary: 'same' });
+    const current = [existingA, existingB];
+
+    const identical = reconcileItemWindow([
+      makeItem({ id: 'a', turnIndex: 0, summary: 'same' }),
+      makeItem({ id: 'b', turnIndex: 1, summary: 'same' }),
+    ], current);
+
+    expect(identical).toBe(current);
+    expect(identical[0]).toBe(existingA);
+    expect(identical[1]).toBe(existingB);
+
+    const changedB = makeItem({ id: 'b', turnIndex: 1, summary: 'changed' });
+    const changed = reconcileItemWindow([
+      makeItem({ id: 'a', turnIndex: 0, summary: 'same' }),
+      changedB,
+    ], current);
+
+    expect(changed).not.toBe(current);
+    expect(changed[0]).toBe(existingA);
+    expect(changed[1]).toBe(changedB);
   });
 
   it('adds only missing rows and preserves existing row references', () => {
@@ -138,6 +175,31 @@ describe('threadItems', () => {
 
     expect(next?.items.map((item) => item.id)).toEqual(['existing']);
     expect(next?.items[0]).toBe(corrected);
+  });
+
+  it('applies existing-row upserts when only an observable optional field changes', () => {
+    const current = [
+      makeItem({
+        id: 'approval',
+        threadId: 'thread-1',
+        turnIndex: 3,
+        decision: '',
+      }),
+    ];
+    const decided = {
+      ...current[0]!,
+      decision: 'approved' as const,
+    };
+
+    const next = applyItemUpsertsToWindow({
+      current,
+      incoming: [decided],
+      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: 2,
+    });
+
+    expect(next?.items[0]).toBe(decided);
   });
 
   it('returns the current reference when every incoming upsert is ignored', () => {

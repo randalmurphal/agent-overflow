@@ -98,9 +98,10 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
   the live pane until the user navigates away — once a snapshot is the
   sole root, GC reclaims it on eviction. Three eviction paths keep the
   cache fresh: (1) LRU drop when capacity is hit; (2) `events.ts`
-  evicts every thread touched by an `applyItemUpserts` batch so a
-  persisted mutation never reads stale; (3) `removeThread` evicts on
-  delete so a deleted thread can't wedge a multi-MB snapshot.
+  evicts inactive threads touched by an upsert defensively, and evicts
+  an active thread only when the value-deduped pane window actually
+  changes; (3) `removeThread` evicts on delete so a deleted thread
+  can't wedge a multi-MB snapshot.
   Same-thread re-switch (the revert-then-switchThread UX) skips the
   outgoing snapshot AND force-evicts the entry so the load fetches
   fresh state instead of flashing the stale view.
@@ -188,7 +189,7 @@ frontend layers on top:
   Both paths share a **warm-up gate** that defends against the
   e00723f regression (mount-time virtua remeasurement + Streamdown
   async typesetting would spring-chase a thread restore visibly).
-  After `attach()`, `forceStick()`, or `armWarmup()`, the controller
+  After `attach()`, restore-reason `forceStick()`, or `armWarmup()`, the controller
   stays in sync-pin mode until either at least one contentRO event
   has fired AND `QUIET_MS = 100ms` of contentRO silence has passed
   (the common case — virtua's per-row ResizeObservers fire on row
@@ -196,7 +197,7 @@ frontend layers on top:
   worst case — joining a thread mid-stream where contentRO never
   goes quiet). The quiet timer is INTENTIONALLY gated on contentRO
   evidence — the original implementation armed it eagerly inside
-  `beginWarmup`, which firing at QUIET_MS regardless of whether any
+  `beginWarmup`, firing at QUIET_MS regardless of whether any
   cascade had started. On uncached re-entries to long threads, the
   slice fetch could exceed QUIET_MS while MessageTimeline rendered
   the loading-spinner branch (no contentEl, no RO); by the time
@@ -207,9 +208,8 @@ frontend layers on top:
   "lands half-screen high" symptom). After warm, the
   selected `animationMode` takes effect. The warm state is exposed as
   `controller.isWarm` (state-backed) so consumers can co-gate UI on
-  it; chat's MessageTimeline binds `visibility:hidden` to
-  `!stick.isWarm && pane.cachedVirtuaCache === undefined` on
-  contentEl, covering the uncached-load measurement cascade behind a
+  it; chat's MessageTimeline binds `visibility:hidden` to `!stick.isWarm`
+  on contentEl, covering virtua's fresh-mount measurement cascade behind a
   brief blank rather than a visible "lands wrong, jumps to correct"
   sequence (the larger the thread, the larger the scrollTop clamp +
   row-offset shift — a 216-item sample produced a 461px jump).
@@ -222,29 +222,55 @@ frontend layers on top:
   contentEl are unchanged across a thread switch — MessageTimeline
   isn't keyed on threadId so those refs are stable, and `attach()`'s
   early-return path is hit on every switch.
-  Programmatic scrolls go through `forceStick()` / `markAtBottom()` /
-  `notifyContentMaybeGrew()` / `pauseAutoScroll()` / `stopScroll()` /
-  `animateScrollTo()`; the one place virtua writes scrollTop is
-  `listRef.scrollToIndex(...)`, which MUST be preceded by
-  `stick.stopScroll()` so the controller doesn't auto-restick mid-jump
-  if virtua's measurement loop happens to land near the bottom. Never
-  write `scrollTop` directly.
+  Programmatic scrolls go through `forceStick(opts?)` / `markAtBottom()` /
+  `notifyContentMaybeGrew()` / `pauseAutoScroll()` /
+  `runExternalScroll()` / `stopScroll()` / `animateScrollTo()` /
+  `armRestoreSnap()`; the one place virtua writes scrollTop is
+  `listRef.scrollToIndex(...)`, which MUST run inside
+  `stick.runExternalScroll(() => listRef.scrollToIndex(...))` so the
+  controller tags virtua's next scroll event and does not auto-restick
+  mid-jump if the measurement loop lands near the bottom. Never write
+  `scrollTop` directly.
   `prefers-reduced-motion: reduce` forces the sync-pin path
   unconditionally — the spring is suppressed regardless of
   `animationMode`.
-  - `forceStick()` clears escape, sets sticky, and writes `scrollTop`
-    to the current target. Used by the scroll-to-bottom chip, by
-    Discussion's initial channel load, and by chat's bottom-snapshot
-    restore on thread switch (paired with the per-thread virtua
-    row-size cache, which makes the target correct from frame 0 — see
-    below). Chat's bottom restore additionally schedules a single rAF
-    `notifyContentMaybeGrew()` after `forceStick()` to catch late layout
-    settling — composer-height RO updating scrollEl's padding-bottom
-    (padding-only growth doesn't refire contentRO), virtua's per-row
-    remeasurement after mount, and the first burst of Streamdown async
-    typesetting can each shift the bottom by a few pixels one frame
-    later. The trailing pin is escape-aware, so a user wheel-up between
-    frames cancels it.
+  - `forceStick(opts?: { reason?: 'user' | 'restore' })` clears escape,
+    sets sticky, and writes `scrollTop` to the current target. Two
+    flavors:
+    - `'user'` (default): explicit user intent — scroll-to-bottom chip
+      click, send / post. Always proceeds.
+    - `'restore'`: thread-restore-style snap. Honored ONLY when the
+      entry point armed consent via `armRestoreSnap()` since the
+      last user-initiated escape; otherwise NO-OPs to preserve the
+      user's escape. This stops a stale or duplicated restore $effect
+      from clobbering an existing user escape with a snap they didn't
+      ask for (the seq-509 trace bug). Consent is also cleared by any
+      outer-scroll escape intent that can reach the chat scroller
+      (wheel / key / touch), by selection,
+      `stopScroll`, `animateScrollTo`, user-reason `forceStick`, and
+      the consume path itself.
+    Used by the scroll-to-bottom chip (`'user'`), by chat's
+    bottom-snapshot restore on thread switch (`'restore'` paired with
+    `$effect.pre`'s `armRestoreSnap()`), and by Discussion's initial
+    channel load (`'restore'` paired with the channel setup $effect's
+    `armRestoreSnap()`). Chat's bottom restore additionally schedules
+    a single rAF `notifyContentMaybeGrew()` after `forceStick()` to
+    catch late layout settling — composer-height RO updating scrollEl's
+    padding-bottom (padding-only growth doesn't refire contentRO),
+    virtua's per-row remeasurement after mount, and the first burst of
+    Streamdown async typesetting can each shift the bottom by a few
+    pixels one frame later. The trailing pin is escape-aware, so a user
+    wheel-up between frames cancels it.
+  - `armRestoreSnap()` is the one-shot consent companion to
+    `forceStick({reason:'restore'})`. The thread-switch entry point
+    calls it AFTER its defensive `setEscapedFromLock(true)` so the
+    upcoming restore-stick is honored; `setEscapedFromLock(true)`
+    itself clears any pending consent, so the order matters. Repeated
+    arms are idempotent. The flag survives `attach()` / `detach()`
+    deliberately because `attach()` calls `detach()` between the
+    consumer's `$effect.pre` arm and the restore `$effect` consume on
+    first mount; it is invalidated by outer-scroll escape intent and
+    consumed by the next restore-stick or `markAtBottom()`.
   - `markAtBottom()` flips the controller flags to sticky-bottom
     WITHOUT writing `scrollTop`. Used for the empty-timeline branch of
     bottom-snapshot restore (no rows to anchor against yet, but the
@@ -272,25 +298,15 @@ frontend layers on top:
   `{kind:'bottom'} | {kind:'anchor', itemId, offsetTop}`. Snapshots are
   semantic (item id + offset), not virtua's internal cache shape, so
   they survive virtua version bumps.
-- **Per-thread virtua row-size cache.** `threadItemCache.ts`'s
-  `ThreadItemSnapshot` carries an optional `virtuaCache` field
-  (virtua's `CacheSnapshot`). On `switchThread`, the pane calls a
-  getter registered by `MessageTimeline` (matched-pair
-  `pane.attachVirtuaCacheGetter(getter)` /
-  `pane.detachVirtuaCacheGetter(getter)`, symmetric with the scroll
-  controller pair) that returns `listRef.getCache()` — captured
-  synchronously while the OLD virtualizer is still mounted. On
-  switch-back, the snapshot surfaces as `pane.cachedVirtuaCache` and
-  the timeline passes it to `<Virtualizer cache={...}>`. The
-  Virtualizer is wrapped in `{#key pane.threadId}` so this prop is
-  re-read at mount (virtua's `cache` is consumed once at
-  `createVirtualStore(...)`, not reactively). Without the cache,
-  virtua's lazy mount-time measurement underestimates `totalSize` at
-  `ESTIMATED_ROW_SIZE × N`
-  until per-row ResizeObservers fire, and a `{kind:'bottom'}`
-  restoration lands above the eventual bottom — the controller would
-  then absorb the gap through repeated sync re-pins as rows grew.
-  ChannelView (no virtualizer) leaves the getter unregistered.
+- **No per-thread virtua row-size replay.** `threadItemCache.ts`
+  snapshots the item window only. Virtua's measured row sizes are valid
+  only with the exact row UI state that produced them (expanded payloads,
+  loaded thumbnails, nested scroll bodies). Since `switchThread` clears
+  pane-level row UI registries to bound memory, replaying geometry alone
+  makes virtua trust heights the DOM cannot reproduce. The Virtualizer is
+  still wrapped in `{#key pane.threadId}` so its internal row-size store
+  resets on every thread switch, and MessageTimeline hides content behind
+  the warm-up gate until fresh ResizeObserver measurements settle.
 - **Negative-delta re-pin honors logical intent, not just geometry.**
   The controller's contentRO re-stick on a shrink fires when EITHER
   `isAtBottomState` (logical intent) OR `isNearBottomState` (geometric
@@ -460,9 +476,9 @@ What NOT to add:
 - `smooth: true` on any `listRef.scrollToIndex(...)` call. Virtua's
   smooth path uses the native `scrollTo({behavior:'smooth'})` which
   fires its own scroll events asynchronously and would race the
-  controller's auto-restick / programmatic-write tagging. Always pair
-  `scrollToIndex` with a preceding `stick.stopScroll()` and let virtua
-  jump synchronously.
+  controller's auto-restick / programmatic-write tagging. Always wrap
+  `scrollToIndex` in `stick.runExternalScroll(...)` and let virtua jump
+  synchronously.
 - `transition:slide` adjacent to the scroll area — animated height
   shifts visible content under the user's cursor.
 - Late transcript adornments on completion. If the UI needs a marker,
@@ -480,9 +496,9 @@ What NOT to add:
   browser-native find which only sees mounted rows.
 - A search hit calls `pane.requestScrollToItem(itemId)`;
   `MessageTimeline` reacts by paging older items in via
-  `pane.loadUntilItem(id)` and then, after `stick.stopScroll()` +
-  `stick.setEscapedFromLock(true)`, `listRef.scrollToIndex(idx, { align:
-  'center' })`. The two-step (load-then-scroll) is necessary because
+  `pane.loadUntilItem(id)` and then
+  `stick.runExternalScroll(() => listRef.scrollToIndex(idx, { align:
+  'center' }))`. The two-step (load-then-scroll) is necessary because
   virtua only knows about items present in `pane.items`. Never pass
   `smooth: true` — virtua's smooth path uses
   `scrollEl.scrollTo({behavior:'smooth'})` which fires its own scroll
@@ -492,14 +508,15 @@ What NOT to add:
 
 ## Accepted scroll-surface tradeoffs
 
-- **SubagentGroup inner overflow.** The expanded subagent body uses an
-  internal `max-h-[20rem] overflow-y-auto` instead of nesting a
-  virtualizer. Children are rendered eagerly when expanded, so a
-  subagent with 200 children pays full DOM cost on expand. In
-  practice subagents top out around 50 children (~100 KB DOM); the
-  dense overview UX wins over micro-optimizing a worst case we don't
-  see. Revisit only if a real thread shows DOM cost from a
-  200+-child subagent.
+- **Nested row overflow.** Expanded `SubagentGroup`, `WaitGroup`, and
+  large command-output bodies use bounded internal scroll panes instead
+  of letting a single transcript row grow without limit. `SubagentGroup`
+  children are still rendered eagerly when expanded because the dense
+  overview UX is worth it at current sizes. `WaitGroup` mounts an
+  initial slice and requires an explicit "show more" click for large
+  child sets, and `CommandOutput` fetches a preview before the user
+  asks for the full payload. Revisit only if a real thread shows DOM
+  cost from a 200+-child subagent.
 - **Focus survival across virtua remount.** When the focused element
   belongs to a row that scrolls past `bufferSize=900` and unmounts,
   focus jumps to `<body>`. Tab through a long virtualized timeline

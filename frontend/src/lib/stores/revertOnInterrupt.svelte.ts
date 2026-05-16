@@ -35,8 +35,11 @@ import {
 } from './bindings';
 
 /**
- * Result of the frontend revert-eligibility predicate. `canRevert` is
- * true only when ALL of the following hold:
+ * Result of the frontend revert-eligibility predicate. Discriminated
+ * on `canRevert` so callers don't have to defensively re-check
+ * `userItem`: when the predicate says yes, the user row is guaranteed.
+ *
+ * `canRevert` is true only when ALL of the following hold:
  *   - The thread has an active turn.
  *   - The composer is empty (user hasn't started typing again).
  *   - The send queue is empty (no queued follow-up to drain).
@@ -44,15 +47,10 @@ import {
  *     and no assistant_text / tool_call rows. Thinking blocks and
  *     synthetic error rows DO NOT block the revert (matches Claude
  *     Code's TUI semantics).
- *
- * When false, `reason` carries a short tag for debugging / telemetry.
- * When true, `userItem` is the row that will be removed optimistically.
  */
-export interface RevertEligibility {
-  canRevert: boolean;
-  userItem?: Item;
-  reason?: string;
-}
+export type RevertEligibility =
+  | { canRevert: true; userItem: Item }
+  | { canRevert: false; reason: string };
 
 interface DraftSnapshotInputs {
   content: string;
@@ -99,7 +97,7 @@ export function canRevertEarlyInterrupt(
       userCount++;
     }
   }
-  if (userCount === 0) return { canRevert: false, reason: 'no user_text item' };
+  if (userCount === 0 || !userItem) return { canRevert: false, reason: 'no user_text item' };
   // Multiple user_text rows on one turn means the user steered mid-
   // round; reverting one would break ordering. Defer to plain interrupt.
   if (userCount > 1) return { canRevert: false, reason: 'turn has steered user messages' };
@@ -113,8 +111,11 @@ export function canRevertEarlyInterrupt(
  * and the plain-interrupt fallback, paints optimistic UI immediately,
  * and dispatches the matching backend RPC fire-and-forget. The plain-
  * interrupt branch matches the legacy `dispatchInterrupt` behavior;
- * the revert branch additionally removes the user row from the timeline
- * and rolls it back on rollback / error.
+ * the revert branch additionally truncates the active turn from the
+ * timeline (matching the backend's `DeleteConversationFromTurn` —
+ * inclusive at turnIndex — so synthetic siblings like thinking /
+ * api_retry / error rows go with the user row) and rolls everything
+ * back on rollback / error.
  *
  * The pane's active-turn and send-in-flight flags ARE NOT cleared here.
  * Callers (builtin command, Composer.interrupt) own that decision so
@@ -137,21 +138,24 @@ export function runInterruptOrRevert(
     return;
   }
 
-  const removedItem = eligibility.userItem
-    ? pane.removeItemById(eligibility.userItem.id)
-    : null;
+  // Match the backend truncate: remove EVERY item on the active turn,
+  // not just the user_text. Stranded thinking / api_retry / error rows
+  // are the visible symptom of doing this piecewise. The rollback path
+  // restores the full set via `upsertItems` when the backend refuses
+  // the revert (predicate raced).
+  const removedItems = pane.removeItemsFromTurn(eligibility.userItem.turnIndex);
 
   void InterruptAndRevertIfClean(threadId)
     .then((result) => {
-      if (!result.reverted) {
-        if (removedItem) pane.upsertItem(removedItem);
+      if (!result.reverted && removedItems.length > 0) {
+        pane.upsertItems(removedItems);
       }
       // Reverted=true: backend will emit `user_message:reverted` which
       // confirms the removal (idempotent) and refreshes the composer
       // draft. No additional client-side work required.
     })
     .catch((err) => {
-      if (removedItem) pane.upsertItem(removedItem);
+      if (removedItems.length > 0) pane.upsertItems(removedItems);
       reportNonBenignInterruptError(pane, err);
     });
 }

@@ -233,6 +233,8 @@ export interface ProposedPlanMeta {
   lineCount: number;
   charCount: number;
   preview: string;
+  signature?: string;
+  previewTruncated?: boolean;
 }
 
 export interface ProposedPlanItemMeta {
