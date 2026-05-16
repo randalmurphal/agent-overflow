@@ -244,6 +244,7 @@ export const GitPruneRemotes = dispatch('GitPruneRemotes');
 export const GitSyncBranch = dispatch('GitSyncBranch');
 export const GitWorktreeStatus = dispatch('GitWorktreeStatus');
 export const PrepareThreadWorktree = dispatch('PrepareThreadWorktree');
+export const AttachThreadWorktree = dispatch('AttachThreadWorktree');
 export const GitRemoveWorktree = dispatch('GitRemoveWorktree');
 export const RemoveOtherWorktree = dispatch('RemoveOtherWorktree');
 // WorktreeStatus mirrors the generated class; tests stub the binding

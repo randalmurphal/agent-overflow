@@ -161,6 +161,31 @@ func (c *Core) CreateWorktree(cwd, path, branch string) error {
 	return c.CreateWorktreeFromBranch(cwd, path, "", branch)
 }
 
+// AttachWorktree creates a new worktree at path pointing at an existing
+// branch. Fails if the branch already has a worktree (git's own
+// invariant — one branch checked out in one place at a time).
+func (c *Core) AttachWorktree(cwd, path, branch string) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("git worktree path is required")
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return errors.New("git worktree branch is required")
+	}
+	if err := validateBranchName(branch); err != nil {
+		return err
+	}
+	_, stderr, err := c.Execute(cwd, "worktree", "add", "--", path, branch)
+	if err != nil {
+		message := strings.TrimSpace(stderr)
+		if message == "" {
+			message = err.Error()
+		}
+		return fmt.Errorf("git worktree add failed: %s", message)
+	}
+	return nil
+}
+
 // CreateWorktreeFromBranch creates a new worktree backed by newBranch from an
 // explicit base branch. Empty baseBranch lets git use the current HEAD.
 func (c *Core) CreateWorktreeFromBranch(cwd, path, baseBranch, newBranch string) error {

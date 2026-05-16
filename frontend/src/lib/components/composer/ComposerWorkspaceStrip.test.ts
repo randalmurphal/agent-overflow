@@ -5,7 +5,11 @@ import { tick } from 'svelte';
 import ComposerWorkspaceStrip from './ComposerWorkspaceStrip.svelte';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { resetForTest as resetWorktreeIntent, setThreadEnvMode } from '../../stores/worktreeIntent.svelte';
+import {
+  enterCreateBranchMode,
+  resetForTest as resetWorktreeIntent,
+  setThreadEnvMode,
+} from '../../stores/worktreeIntent.svelte';
 
 describe('<ComposerWorkspaceStrip>', () => {
   beforeEach(() => {
@@ -40,14 +44,26 @@ describe('<ComposerWorkspaceStrip>', () => {
     ]);
   });
 
-  it('renders the worktree branch-name input only when worktree intent is "new-worktree"', async () => {
+  it('renders the "+ new branch" toggle when intent flips to "new-worktree" and the input only after entering creating-branch mode', async () => {
+    // Two-step disclosure: picking "New worktree" surfaces the toggle
+    // adjacent to the BranchPicker so the user can opt into creating a
+    // new branch; entering creating-branch mode (via the toggle, or
+    // via the BranchPicker dropdown's "+ New branch" entry) is what
+    // turns the slot into the actual text input.
     const thread = makeThread();
     const pane = await buildPane(thread);
     const { queryByTestId, findByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
     expect(queryByTestId('worktree-branch-name-input')).toBeNull();
+    expect(queryByTestId('new-branch-toggle')).toBeNull();
 
     setThreadEnvMode(thread, 'new-worktree');
     await tick();
+    expect(await findByTestId('new-branch-toggle')).toBeInTheDocument();
+    expect(queryByTestId('worktree-branch-name-input')).toBeNull();
+
+    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
+    await tick();
     expect(await findByTestId('worktree-branch-name-input')).toBeInTheDocument();
+    expect(queryByTestId('new-branch-toggle')).toBeNull();
   });
 });

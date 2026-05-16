@@ -631,6 +631,7 @@ func (p *privilegedApp) GitPull() string                        { return "ok" }
 func (p *privilegedApp) GitStageAll() string                    { return "ok" }
 func (p *privilegedApp) GitCreatePR() string                    { return "ok" }
 func (p *privilegedApp) PrepareThreadWorktree() string          { return "ok" }
+func (p *privilegedApp) AttachThreadWorktree() string           { return "ok" }
 func (p *privilegedApp) RevertToMessageCheckpoint() string      { return "ok" }
 func (p *privilegedApp) GetMessageCheckpointDiff() string       { return "ok" }
 func (p *privilegedApp) GetMessageCheckpointRevertDiff() string { return "ok" }

@@ -118,6 +118,9 @@ var LocalOnlyMethods = map[string]bool{
 	// PrepareThreadWorktree creates a git worktree on disk; same
 	// class as the Git* mutators above.
 	"PrepareThreadWorktree": true,
+	// AttachThreadWorktree creates a worktree pointing at an existing
+	// branch; same class as PrepareThreadWorktree.
+	"AttachThreadWorktree": true,
 	// RevertToMessageCheckpoint mutates the local working tree (git restore
 	// checkout into the workspace). Same class.
 	"RevertToMessageCheckpoint": true,

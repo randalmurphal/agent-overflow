@@ -31,8 +31,8 @@
     <ProjectPicker {pane} />
     {#if pane.threadId}
       <EnvPicker {pane} {workspaceLock} />
-      <WorktreeNameInput {pane} />
       <BranchPicker {pane} {workspaceLock} />
+      <WorktreeNameInput {pane} workspaceDirty={false} />
     {/if}
   </div>
 {/if}

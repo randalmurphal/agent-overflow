@@ -26,6 +26,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "AppendUIRenderTraceBatch", ID: 2157691816}, // main.App.AppendUIRenderTraceBatch
 	{Name: "ArchiveProject", ID: 1352159878}, // main.App.ArchiveProject
 	{Name: "ArchiveThread", ID: 3655608409}, // main.App.ArchiveThread
+	{Name: "AttachThreadWorktree", ID: 2367642633}, // main.App.AttachThreadWorktree
 	{Name: "AutoResumeThread", ID: 4095667805}, // main.App.AutoResumeThread
 	{Name: "BrowseDirectory", ID: 320967638}, // main.App.BrowseDirectory
 	{Name: "CleanCodexBackgroundTerminals", ID: 16360282}, // main.App.CleanCodexBackgroundTerminals

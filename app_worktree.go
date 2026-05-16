@@ -156,6 +156,58 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 	return refreshed, nil
 }
 
+// AttachThreadWorktree creates a worktree pointing at an existing branch and
+// switches the thread to it. Distinct from PrepareThreadWorktree (which always
+// creates a new branch via `git worktree add -b`): this path is `git worktree
+// add <path> <existing>` and refuses if the branch is already checked out
+// elsewhere — git's own one-branch-one-worktree invariant. Frontend dedups by
+// flipping to the existing worktree before calling here.
+func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error) {
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return store.Thread{}, err
+	}
+
+	project, _, err := a.resolveGitPaths(thread)
+	if err != nil {
+		return store.Thread{}, err
+	}
+
+	unlock := a.threadLocks().Lock(threadID)
+	defer unlock()
+	if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
+		return store.Thread{}, err
+	}
+
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return store.Thread{}, fmt.Errorf("attach worktree: branch is required")
+	}
+
+	core := a.gitCore()
+
+	worktreePath, err := a.defaultWorktreePath(project, branch)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	if err := core.AttachWorktree(project, worktreePath, branch); err != nil {
+		return store.Thread{}, err
+	}
+
+	thread.WorktreePath = worktreePath
+	thread.WorkspacePath = worktreePath
+	thread.Branch = branch
+	if err := a.store.UpdateThread(thread); err != nil {
+		_ = core.RemoveWorktreeForce(project, worktreePath, true)
+		return store.Thread{}, err
+	}
+	refreshed, err := a.restartSessionIfAffected(threadID, "workspace")
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("attach worktree: refresh thread after workspace switch: %w", err)
+	}
+	return refreshed, nil
+}
+
 // GitRemoveWorktree removes the worktree the thread is currently attached to.
 // Thin wrapper over RemoveOtherWorktree using the thread's own worktree path
 // so the auto-reattach behavior stays unified.

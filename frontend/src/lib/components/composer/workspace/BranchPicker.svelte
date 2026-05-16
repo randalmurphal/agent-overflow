@@ -1,19 +1,22 @@
 <script lang="ts">
-  // Branch trigger + list for the below-composer bar. Two modes share the
-  // same dropdown surface:
+  // Branch trigger + list for the below-composer bar. The trigger
+  // doubles as a "from <base>" picker whenever the worktree intent
+  // has the creating-branch flag set: in that quadrant the rows are a
+  // base picker, not a checkout target. Otherwise behavior splits by
+  // workspace mode:
   //
-  //   - Selection: pick a branch to checkout (idle thread) or to use as
-  //     the base for staged new-worktree intent.
-  //   - Creation: top "+ New branch…" row toggles BranchCreateForm
-  //     above the branch list; the branch list below becomes a base
-  //     picker — selecting a row sets the form's base instead of
-  //     switching the workspace.
+  //   - mode='local':         pick a row → checkout that branch
+  //   - mode='new-worktree':  pick a row → stage as the worktree's
+  //     attach target. If the branch already has a worktree, flip
+  //     mode='local' and switch workspace to the existing one (git's
+  //     own one-branch-one-worktree invariant — no point staging an
+  //     attach that would fail at materialization).
   //
-  // When the workspace is dirty, both modes surface a "Local (with
-  // changes)" entry at the top of the branch list. Picking it carries
-  // the uncommitted changes; picking any real branch while dirty
-  // performs a clean checkout (the destructive path is gated by an
-  // explicit confirmation chip in BranchCreateForm).
+  // The "+ New branch…" entry inside the dropdown is the local-mode
+  // entry point into the create-branch flow; the inline "+ new branch"
+  // button next to BranchPicker (in WorktreeNameInput.svelte) is the
+  // new-worktree-mode entry point. Both call enterCreateBranchMode and
+  // surface the same WorktreeNameInput text input above the strip.
 
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import GitBranchIcon from 'lucide-svelte/icons/git-branch';
@@ -40,9 +43,12 @@
   import { errString } from '../../../utils/errors';
   import { sameNormalizedPath } from '../../../utils/path';
   import {
+    enterCreateBranchMode,
     isLocalBase,
     LOCAL_BASE_SENTINEL,
-    setWorktreeBaseBranch,
+    setAttachBranch,
+    setNewBranchBase,
+    setThreadEnvMode,
     worktreeIntentForThread,
   } from '../../../stores/worktreeIntent.svelte';
   import type { WorkspaceChangeLockState } from '../../../stores/workspaceChangeLock.svelte';
@@ -50,7 +56,6 @@
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import MenuDivider from '../../primitives/MenuDivider.svelte';
-  import BranchCreateForm from './BranchCreateForm.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -69,26 +74,25 @@
   let pruning = $state(false);
   let syncingBranch: string | null = $state(null);
 
-  // BranchCreateForm owns its name + pending + error state. The parent
-  // only tracks whether the form is mounted and what base the form is
-  // pointed at — branch-row clicks flow back into createBase via $bindable.
-  let creating = $state(false);
-  let createBase = $state('');
-
   let currentBranch = $derived(pane.thread?.branch ?? '');
   let currentWorkspace = $derived(pane.thread?.workspacePath ?? '');
   let projectPath = $derived(pane.thread?.projectPath ?? '');
   let intent = $derived(worktreeIntentForThread(pane.thread));
 
-  // The trigger surface reflects whatever the next action will use:
-  //   - In worktree intent with the Local sentinel: "From Local (with changes)"
-  //   - In worktree intent with a normal base: "From <base>"
-  //   - Otherwise: the currently checked-out branch.
+  // Trigger label reflects what picking a row will do next:
+  //   - creatingBranch:        "From <base>" (rows set the base)
+  //   - new-worktree, !creating: <attach branch | currentBranch> (rows attach)
+  //   - local, !creating:      currentBranch (rows checkout)
   let triggerLabel = $derived.by(() => {
-    if (intent.mode !== 'new-worktree') return currentBranch || 'No branch';
-    if (isLocalBase(intent.baseBranch)) return 'From Local (with changes)';
-    const base = intent.baseBranch || currentBranch;
-    return `From ${base || 'branch'}`;
+    if (intent.creatingBranch) {
+      if (isLocalBase(intent.newBranchBase)) return 'From Local (with changes)';
+      const base = intent.newBranchBase || currentBranch;
+      return `From ${base || 'branch'}`;
+    }
+    if (intent.mode === 'new-worktree') {
+      return intent.attachBranch || currentBranch || 'No branch';
+    }
+    return currentBranch || 'No branch';
   });
 
   let disabledReason = $derived(workspaceLock.reason);
@@ -100,33 +104,19 @@
     return branches.filter((branch) => branch.name.toLowerCase().includes(needle));
   });
 
-  // Local-row visibility: only useful when we'd otherwise be choosing a
-  // base (worktree intent or active create form). Surfacing it during
-  // plain checkout selection would imply switching the current branch
-  // would carry the changes — but plain checkout never does that.
-  let showLocalRow = $derived(workspaceDirty && (intent.mode === 'new-worktree' || creating));
+  // Local-row only makes sense as a base picker — the user is choosing
+  // what their NEW branch is built off. Outside the create flow it would
+  // suggest "checkout the local working copy", which isn't a thing.
+  let showLocalRow = $derived(workspaceDirty && intent.creatingBranch);
 
-  // Highlight the Local row when the live worktree intent or the in-flight
-  // create form is pointing at the sentinel. Both flows share the same row.
-  let isLocalSelected = $derived.by(() => {
-    if (creating) return isLocalBase(createBase);
-    return intent.mode === 'new-worktree' && isLocalBase(intent.baseBranch);
-  });
+  let isLocalSelected = $derived(intent.creatingBranch && isLocalBase(intent.newBranchBase));
 
   async function handleTrigger(): Promise<void> {
     open = !open;
-    if (!open) {
-      cancelCreate();
-      return;
-    }
+    if (!open) return;
     if (!pane.thread || loading) return;
     const threadId = pane.thread.id;
     loading = true;
-    // Two independent fetches, parallelized via Promise.all on IIFEs so
-    // a synchronous failure in one (e.g. binding not wired in a test)
-    // can't poison the other. workspaceDirty is a UI hint that drives
-    // the "Local (with changes)" row; a failed dirty check should hide
-    // the hint but never block the branch list render.
     const fetchBranches = (async () => {
       try {
         const res = (await GitListBranches(threadId)) as GitBranch[] | null;
@@ -145,12 +135,6 @@
         workspaceDirty = false;
       }
     })();
-    // Stale-window fetch: backend returns immediately when fresh, runs
-    // `git fetch --all` and returns true otherwise. Fires alongside the
-    // initial list so the picker paints from cached refs instantly;
-    // when the fetch lands we re-list to surface any new ahead/behind
-    // counts or remote-only branches. Failures are silent — the
-    // picker stays usable on stale data.
     void (async () => {
       try {
         const fetched = await GitMaybeFetchRemotes(threadId);
@@ -170,11 +154,8 @@
     }
   }
 
-  // Sync surfaces on rows where local is behind upstream. The hard rule
-  // is FF-only: diverged rows (ahead > 0 AND behind > 0) render the
-  // icon disabled with a tooltip explaining why. The backend enforces
-  // the same constraint via git's native refusal of non-FF refspecs,
-  // so even a bypassed UI gate can't produce a non-FF update.
+  // FF-only sync. Diverged rows render the icon disabled with a
+  // tooltip; backend mirrors the gate via git's native non-FF refusal.
   function canSync(branch: GitBranch): boolean {
     return (branch.behindCount ?? 0) > 0 && (branch.aheadCount ?? 0) === 0;
   }
@@ -230,14 +211,9 @@
   function closeMenu(): void {
     open = false;
     query = '';
-    cancelCreate();
     triggerEl?.focus();
   }
 
-  // The suffix slot on a branch row carries (1) ahead/behind hints
-  // versus upstream and (2) the branch tag (worktree / default).
-  // When both are present they're joined with a thin separator so the
-  // arrows read as one group and the tag as another.
   function branchBadge(branch: GitBranch): string | undefined {
     const counts: string[] = [];
     if ((branch.aheadCount ?? 0) > 0) counts.push(`↑${branch.aheadCount}`);
@@ -253,9 +229,8 @@
     return tag ? `${arrows} · ${tag}` : arrows;
   }
 
-  // Display ceiling for branch labels in the row list. Anything longer is
-  // right-truncated to MAX-1 visible chars + "…"; the full name surfaces
-  // via the title attribute on the row.
+  // Cap visible branch labels at 20 chars (19 + ellipsis); full name
+  // surfaces via the row's title attribute.
   const BRANCH_LABEL_MAX_CHARS = 20;
 
   function truncateBranchLabel(name: string): string {
@@ -264,7 +239,7 @@
   }
 
   function branchRowTitle(branch: GitBranch): string | undefined {
-    if (!creating && workspaceChangingDisabled) return disabledReason;
+    if (!intent.creatingBranch && workspaceChangingDisabled) return disabledReason;
     if (branch.name.length > BRANCH_LABEL_MAX_CHARS) return branch.name;
     return undefined;
   }
@@ -275,12 +250,13 @@
     return true;
   }
 
-  // Highlight the row that backs the active flow's base. In creation
-  // mode this is the form's createBase; in worktree-intent mode it's
-  // the staged baseBranch; otherwise it's the checkout state.
+  // Highlight reflects the active flow's target:
+  //   - creating: the row that is the staged base
+  //   - new-worktree, !creating: the row that is the staged attach target
+  //   - local, !creating: the row that's currently checked out
   function isBaseSelected(branch: GitBranch): boolean {
-    if (creating) return branch.name === createBase;
-    if (intent.mode === 'new-worktree') return branch.name === intent.baseBranch;
+    if (intent.creatingBranch) return branch.name === intent.newBranchBase;
+    if (intent.mode === 'new-worktree') return branch.name === intent.attachBranch;
     return isSelectedBranch(branch);
   }
 
@@ -290,55 +266,58 @@
 
   function startCreate(): void {
     if (!pane.thread || workspaceChangingDisabled) return;
-    // Default base mirrors the worktree intent flow: dirty workspace
-    // pre-selects "Local (with changes)" so the destructive clean-checkout
-    // path is opt-in. Otherwise, branch off the current HEAD.
-    createBase = workspaceDirty ? LOCAL_BASE_SENTINEL : currentBranch;
-    creating = true;
-  }
-
-  function cancelCreate(): void {
-    creating = false;
-    createBase = '';
-  }
-
-  function handleCreated(updated: Thread): void {
-    syncThread(updated);
-    addToast('info', 'Created branch');
-    cancelCreate();
+    enterCreateBranchMode(pane.thread, { workspaceDirty, currentBranch });
     closeMenu();
   }
 
   function selectLocalRow(): void {
     if (!pane.thread) return;
-    if (creating) {
-      createBase = LOCAL_BASE_SENTINEL;
-      return;
-    }
-    if (intent.mode === 'new-worktree' && !workspaceChangingDisabled) {
-      // setWorktreeBaseBranch flips carryLocalChanges based on the
-      // sentinel — the store keeps the carry flag in sync, the picker
-      // doesn't need to repeat that logic.
-      setWorktreeBaseBranch(pane.thread, LOCAL_BASE_SENTINEL);
-      closeMenu();
-    }
+    if (!intent.creatingBranch) return;
+    setNewBranchBase(pane.thread, LOCAL_BASE_SENTINEL);
+    closeMenu();
   }
 
   async function selectBranch(branch: GitBranch): Promise<void> {
-    if (creating) {
-      createBase = branch.name;
-      return;
-    }
-    if (!pane.thread || applying) {
+    if (!pane.thread) {
       closeMenu();
       return;
     }
-    if (workspaceChangingDisabled) {
+    if (intent.creatingBranch) {
+      setNewBranchBase(pane.thread, branch.name);
+      closeMenu();
+      return;
+    }
+    if (applying || workspaceChangingDisabled) {
       closeMenu();
       return;
     }
     if (intent.mode === 'new-worktree') {
-      setWorktreeBaseBranch(pane.thread, branch.name);
+      // Dedup: a branch can only have one worktree at a time. If one
+      // already exists, switch to it instead of staging an attach that
+      // would fail at materialization.
+      if (
+        branch.worktreePath &&
+        !sameNormalizedPath(branch.worktreePath, currentWorkspace)
+      ) {
+        setThreadEnvMode(pane.thread, 'local');
+        applying = true;
+        try {
+          const updated = (await UpdateThreadWorkspace(
+            pane.thread.id,
+            branch.worktreePath,
+          )) as Thread;
+          syncThread(updated);
+          addToast('info', `Switched to existing worktree for ${branch.name}`);
+        } catch (err) {
+          console.error('UpdateThreadWorkspace failed:', err);
+          addToast('error', `Failed to switch worktree: ${errString(err)}`);
+        } finally {
+          applying = false;
+          closeMenu();
+        }
+        return;
+      }
+      setAttachBranch(pane.thread, branch.name);
       closeMenu();
       return;
     }
@@ -405,52 +384,40 @@
   role="none"
 >
   <Menu ariaLabel="Branches" onClose={closeMenu}>
-    {#if creating && pane.thread}
-      <BranchCreateForm
-        {pane}
-        {workspaceDirty}
-        {currentBranch}
-        bind:base={createBase}
-        onCancel={cancelCreate}
-        onCreated={handleCreated}
+    <MenuItem
+      label="New branch…"
+      disabled={workspaceChangingDisabled}
+      title={workspaceChangingDisabled ? disabledReason : undefined}
+      onSelect={startCreate}
+    >
+      {#snippet icon()}
+        <Icon icon={Plus} size={12} strokeWidth={2} />
+      {/snippet}
+    </MenuItem>
+    <MenuItem
+      label={pruning ? 'Pruning…' : 'Prune stale branches'}
+      disabled={pruning}
+      onSelect={handlePrune}
+    >
+      {#snippet icon()}
+        <Icon icon={Trash2} size={12} strokeWidth={2} />
+      {/snippet}
+    </MenuItem>
+    <MenuDivider />
+    <div class="px-2 pb-1">
+      <input
+        type="search"
+        value={query}
+        placeholder="Search Branches"
+        onkeydown={handleSearchKeydown}
+        oninput={(e) => (query = (e.target as HTMLInputElement).value)}
+        class={[
+          'h-7 w-72 rounded border border-border-subtle bg-surface-0',
+          'px-2 text-xs text-text-primary placeholder:text-fg-hint',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+        ].join(' ')}
       />
-      <MenuDivider />
-    {:else}
-      <MenuItem
-        label="New branch…"
-        disabled={workspaceChangingDisabled}
-        title={workspaceChangingDisabled ? disabledReason : undefined}
-        onSelect={startCreate}
-      >
-        {#snippet icon()}
-          <Icon icon={Plus} size={12} strokeWidth={2} />
-        {/snippet}
-      </MenuItem>
-      <MenuItem
-        label={pruning ? 'Pruning…' : 'Prune stale branches'}
-        disabled={pruning}
-        onSelect={handlePrune}
-      >
-        {#snippet icon()}
-          <Icon icon={Trash2} size={12} strokeWidth={2} />
-        {/snippet}
-      </MenuItem>
-      <MenuDivider />
-      <div class="px-2 pb-1">
-        <input
-          type="search"
-          value={query}
-          placeholder="Search Branches"
-          onkeydown={handleSearchKeydown}
-          oninput={(e) => (query = (e.target as HTMLInputElement).value)}
-          class={[
-            'h-7 w-72 rounded border border-border-subtle bg-surface-0',
-            'px-2 text-xs text-text-primary placeholder:text-fg-hint',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-          ].join(' ')}
-        />
-      </div>
-    {/if}
+    </div>
     {#if loading}
       <div
         class="px-3 py-1.5 text-xs text-text-secondary/60"
@@ -465,8 +432,8 @@
           label="Local (with changes)"
           description={currentBranch || undefined}
           checked={isLocalSelected}
-          disabled={!creating && workspaceChangingDisabled}
-          title={!creating && workspaceChangingDisabled ? disabledReason : undefined}
+          disabled={!intent.creatingBranch && workspaceChangingDisabled}
+          title={!intent.creatingBranch && workspaceChangingDisabled ? disabledReason : undefined}
           onSelect={selectLocalRow}
         />
         <MenuDivider />
@@ -486,7 +453,7 @@
               label={truncateBranchLabel(branch.name)}
               suffix={branchBadge(branch)}
               checked={isBaseSelected(branch)}
-              disabled={!creating && workspaceChangingDisabled}
+              disabled={!intent.creatingBranch && workspaceChangingDisabled}
               title={branchRowTitle(branch)}
               onSelect={() => selectBranch(branch)}
               action={showsSyncAction(branch) ? syncIcon : undefined}

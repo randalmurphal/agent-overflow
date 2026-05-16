@@ -25,10 +25,11 @@ import {
 } from '../../stores/sendQueue.svelte';
 import { resetForTest as resetThreadStatuses } from '../../stores/threadStatuses.svelte';
 import {
+  enterCreateBranchMode,
   resetForTest as resetWorktreeIntent,
+  setNewBranchBase,
+  setNewBranchName,
   setThreadEnvMode,
-  setWorktreeBaseBranch,
-  setWorktreeBranchName,
 } from '../../stores/worktreeIntent.svelte';
 import {
   getProjectDraft,
@@ -870,8 +871,9 @@ describe('<Composer>', () => {
     const draft = await buildDraft();
     if (!pane.thread) throw new Error('missing test thread');
     setThreadEnvMode(pane.thread, 'new-worktree');
-    setWorktreeBaseBranch(pane.thread, 'release');
-    setWorktreeBranchName(pane.thread, 'feature/custom');
+    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    setNewBranchBase(pane.thread, 'release');
+    setNewBranchName(pane.thread, 'feature/custom');
 
     const prepare = setBindingMock('PrepareThreadWorktree', async () => worktreeThread);
     const send = setBindingMock('SendMessageWithOptions', async () => worktreeThread);
@@ -899,6 +901,9 @@ describe('<Composer>', () => {
     const draft = await buildDraft();
     if (!pane.thread) throw new Error('missing test thread');
     setThreadEnvMode(pane.thread, 'new-worktree');
+    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    setNewBranchBase(pane.thread, 'release');
+    setNewBranchName(pane.thread, 'feature/custom');
 
     let finishPrepare!: () => void;
     setBindingMock('PrepareThreadWorktree', async () => {

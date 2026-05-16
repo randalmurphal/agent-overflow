@@ -117,6 +117,7 @@ export {
   GitRemoveWorktree,
   GitWorktreeStatus,
   PrepareThreadWorktree,
+  AttachThreadWorktree,
   RemoveOtherWorktree,
 
   // Terminal operations

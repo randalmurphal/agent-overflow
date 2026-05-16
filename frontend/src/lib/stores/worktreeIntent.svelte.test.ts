@@ -5,13 +5,16 @@ import { setBindingMock } from '../../test/mocks/bindings-app';
 import { loadSettings, updateSetting } from './settings.svelte';
 import {
   LOCAL_BASE_SENTINEL,
+  enterCreateBranchMode,
+  exitCreateBranchMode,
   isLocalBase,
   resetForTest,
   resolveBaseForWire,
   seedDefaultWorktreeIntentForDraft,
+  setAttachBranch,
+  setNewBranchBase,
+  setNewBranchName,
   setThreadEnvMode,
-  setWorktreeBaseBranch,
-  setWorktreeBranchName,
   worktreeIntentForThread,
 } from './worktreeIntent.svelte';
 import type { Settings } from '../types/settings';
@@ -73,7 +76,7 @@ describe('worktreeIntent store', () => {
     await loadSettings();
   });
 
-  it('materializes default worktree intent when the draft is created', async () => {
+  it('seeds new-worktree + creatingBranch when defaultThreadEnvMode=worktree on draft creation', async () => {
     await updateSetting('defaultThreadEnvMode', 'worktree');
     const thread = makeThread();
 
@@ -82,8 +85,9 @@ describe('worktreeIntent store', () => {
 
     const intent = worktreeIntentForThread(thread);
     expect(intent.mode).toBe('new-worktree');
-    expect(intent.baseBranch).toBe('main');
-    expect(intent.branchName).toMatch(/^ao-[0-9a-f]{8}$/);
+    expect(intent.creatingBranch).toBe(true);
+    expect(intent.newBranchBase).toBe('main');
+    expect(intent.newBranchName).toMatch(/^ao-[0-9a-f]{8}$/);
   });
 
   it('does not let later settings changes affect an unseeded draft', async () => {
@@ -94,59 +98,109 @@ describe('worktreeIntent store', () => {
     expect(worktreeIntentForThread(thread).mode).toBe('local');
   });
 
-  it('seeds a generated branch name on local→new-worktree transition', () => {
+  it('toggling into new-worktree leaves creatingBranch=false (user opts in via + new branch)', () => {
     const thread = makeThread({ id: 'thread-prefill' });
 
     setThreadEnvMode(thread, 'new-worktree');
 
     const intent = worktreeIntentForThread(thread);
     expect(intent.mode).toBe('new-worktree');
-    expect(intent.branchName).toMatch(/^ao-[0-9a-f]{8}$/);
+    expect(intent.creatingBranch).toBe(false);
+    expect(intent.newBranchName).toBe('');
+    expect(intent.attachBranch).toBe('');
   });
 
-  it('regenerates the branch name when the user toggles out and back into worktree mode', () => {
-    const thread = makeThread({ id: 'thread-regen' });
+  it('enterCreateBranchMode seeds an auto branch name in new-worktree mode but leaves it blank in local mode', () => {
+    const wtThread = makeThread({ id: 'thread-wt-create' });
+    setThreadEnvMode(wtThread, 'new-worktree');
+    enterCreateBranchMode(wtThread, { workspaceDirty: false, currentBranch: 'main' });
+    const wt = worktreeIntentForThread(wtThread);
+    expect(wt.creatingBranch).toBe(true);
+    expect(wt.newBranchName).toMatch(/^ao-[0-9a-f]{8}$/);
+    expect(wt.newBranchBase).toBe('main');
 
-    setThreadEnvMode(thread, 'new-worktree');
-    const first = worktreeIntentForThread(thread).branchName;
-
-    setThreadEnvMode(thread, 'local');
-    setThreadEnvMode(thread, 'new-worktree');
-    const second = worktreeIntentForThread(thread).branchName;
-
-    expect(second).toMatch(/^ao-[0-9a-f]{8}$/);
-    // 8 hex bits is 32 bits — collision is astronomically unlikely.
-    expect(second).not.toBe(first);
+    const localThread = makeThread({ id: 'thread-local-create' });
+    enterCreateBranchMode(localThread, { workspaceDirty: false, currentBranch: 'main' });
+    const local = worktreeIntentForThread(localThread);
+    expect(local.mode).toBe('local');
+    expect(local.creatingBranch).toBe(true);
+    expect(local.newBranchName).toBe('');
+    expect(local.newBranchBase).toBe('main');
   });
 
-  it('preserves a user-typed branch name when staying in worktree mode', () => {
-    const thread = makeThread({ id: 'thread-preserve' });
-
-    setThreadEnvMode(thread, 'new-worktree');
-    setWorktreeBranchName(thread, 'custom/feature');
-    setThreadEnvMode(thread, 'new-worktree');
-
-    expect(worktreeIntentForThread(thread).branchName).toBe('custom/feature');
+  it('enterCreateBranchMode pre-selects the LOCAL sentinel when the workspace is dirty', () => {
+    const thread = makeThread({ id: 'thread-dirty' });
+    enterCreateBranchMode(thread, { workspaceDirty: true, currentBranch: 'main' });
+    expect(worktreeIntentForThread(thread).newBranchBase).toBe(LOCAL_BASE_SENTINEL);
   });
 
-  it('records the Local sentinel as the stored baseBranch when the user picks it', () => {
-    // carryLocalChanges is no longer a stored field — derived at the
-    // wire boundary via resolveBaseForWire. The store's contract is
-    // that the sentinel survives round-trip; a follow-up
-    // resolveBaseForWire call recovers the carry flag.
+  it('exitCreateBranchMode drops creatingBranch + name/base but preserves the workspace mode', () => {
+    const thread = makeThread({ id: 'thread-exit' });
+    setThreadEnvMode(thread, 'new-worktree');
+    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
+    setNewBranchName(thread, 'feat/x');
+    expect(worktreeIntentForThread(thread).creatingBranch).toBe(true);
+
+    exitCreateBranchMode(thread);
+    const intent = worktreeIntentForThread(thread);
+    expect(intent.creatingBranch).toBe(false);
+    expect(intent.newBranchName).toBe('');
+    expect(intent.newBranchBase).toBe('');
+    expect(intent.mode).toBe('new-worktree');
+  });
+
+  it('setNewBranchName / setNewBranchBase only mutate while creatingBranch=true', () => {
+    const thread = makeThread({ id: 'thread-guard' });
+    setThreadEnvMode(thread, 'new-worktree');
+
+    setNewBranchName(thread, 'should-not-stick');
+    setNewBranchBase(thread, 'dev');
+
+    const before = worktreeIntentForThread(thread);
+    expect(before.newBranchName).toBe('');
+    expect(before.newBranchBase).toBe('');
+
+    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
+    setNewBranchName(thread, 'feat/now');
+    setNewBranchBase(thread, 'dev');
+    const after = worktreeIntentForThread(thread);
+    expect(after.newBranchName).toBe('feat/now');
+    expect(after.newBranchBase).toBe('dev');
+  });
+
+  it('setAttachBranch only applies in new-worktree + !creatingBranch', () => {
+    const thread = makeThread({ id: 'thread-attach' });
+
+    // local mode: ignored
+    setAttachBranch(thread, 'feat/x');
+    expect(worktreeIntentForThread(thread).attachBranch).toBe('');
+
+    // new-worktree, !creating: applies
+    setThreadEnvMode(thread, 'new-worktree');
+    setAttachBranch(thread, 'feat/x');
+    expect(worktreeIntentForThread(thread).attachBranch).toBe('feat/x');
+
+    // new-worktree, creating: ignored
+    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
+    setAttachBranch(thread, 'feat/y');
+    expect(worktreeIntentForThread(thread).attachBranch).toBe('');
+  });
+
+  it('records the LOCAL sentinel as the stored newBranchBase when the user picks it', () => {
     const thread = makeThread({ id: 'thread-local-base' });
     setThreadEnvMode(thread, 'new-worktree');
+    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
 
-    setWorktreeBaseBranch(thread, LOCAL_BASE_SENTINEL);
-    expect(worktreeIntentForThread(thread).baseBranch).toBe(LOCAL_BASE_SENTINEL);
+    setNewBranchBase(thread, LOCAL_BASE_SENTINEL);
+    expect(worktreeIntentForThread(thread).newBranchBase).toBe(LOCAL_BASE_SENTINEL);
     expect(
-      resolveBaseForWire(worktreeIntentForThread(thread).baseBranch, 'main').carryLocalChanges,
+      resolveBaseForWire(worktreeIntentForThread(thread).newBranchBase, 'main').carryLocalChanges,
     ).toBe(true);
 
-    setWorktreeBaseBranch(thread, 'dev');
-    expect(worktreeIntentForThread(thread).baseBranch).toBe('dev');
+    setNewBranchBase(thread, 'dev');
+    expect(worktreeIntentForThread(thread).newBranchBase).toBe('dev');
     expect(
-      resolveBaseForWire(worktreeIntentForThread(thread).baseBranch, 'main').carryLocalChanges,
+      resolveBaseForWire(worktreeIntentForThread(thread).newBranchBase, 'main').carryLocalChanges,
     ).toBe(false);
   });
 
