@@ -323,6 +323,62 @@ describe('<MessageTimeline>', () => {
     expect(tableWrapper?.querySelector('table')).not.toBeNull();
   });
 
+  it('marks tool / think leaf rows with data-rail="true" and flat rows with "false"', async () => {
+    // Phase 1 rail: every per-row wrapper carries a `data-rail`
+    // attribute derived from the leaf item's kind at first render.
+    // Tool / completion / thinking leaves participate in the
+    // continuous left-border; assistant_text, user_text, and other
+    // structural rows opt out. The attribute is the behavior contract;
+    // the `border-l ...` class is the implementation. Assert on the
+    // attribute so a future class rename doesn't silently break the
+    // discriminator.
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'u:0', kind: 'user_text', role: 'user', summary: 'hi' }),
+      makeItem({
+        id: 't:0',
+        itemIndex: 1,
+        kind: 'tool_call',
+        toolName: 'Bash',
+        summary: 'ls',
+      }),
+      makeItem({
+        id: 't:1',
+        itemIndex: 2,
+        kind: 'tool_completion',
+        toolName: 'Bash',
+        summary: 'ls',
+      }),
+      makeItem({
+        id: 'th:0',
+        itemIndex: 3,
+        kind: 'thinking',
+        summary: 'pondering',
+      }),
+      makeItem({
+        id: 'a:0',
+        itemIndex: 4,
+        kind: 'assistant_text',
+        summary: 'done',
+      }),
+    ]);
+    const { container } = render(MessageTimeline, { props: { pane } });
+
+    const wrappers = container.querySelectorAll('[data-testid="message-timeline-node"]');
+    expect(wrappers.length).toBe(5);
+    // Order matches the items array above.
+    expect(wrappers[0].getAttribute('data-rail')).toBe('false'); // user_text
+    expect(wrappers[1].getAttribute('data-rail')).toBe('true');  // tool_call
+    expect(wrappers[2].getAttribute('data-rail')).toBe('true');  // tool_completion
+    expect(wrappers[3].getAttribute('data-rail')).toBe('true');  // thinking
+    expect(wrappers[4].getAttribute('data-rail')).toBe('false'); // assistant_text
+
+    // Rail-bearing rows also carry the border-l utility; flat rows
+    // don't. Pin both since the class is what produces the visual.
+    expect(wrappers[1].className).toContain('border-l');
+    expect(wrappers[0].className).not.toContain('border-l');
+    expect(wrappers[4].className).not.toContain('border-l');
+  });
+
   it('renders one wrapper per timeline node', async () => {
     // Virtualization is owned by virtua/svelte (`<Virtualizer>`); in production,
     // virtua mounts only the rows that fit the viewport plus an overscan

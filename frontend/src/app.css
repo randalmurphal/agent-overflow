@@ -18,6 +18,25 @@
   --warning: oklch(0.75 0.15 75);
   --provider-codex: oklch(0.72 0.15 55);
   --overlay: oklch(0 0 0 / 60%);
+
+  /* Per-tool-kind icon colors. Cooler tones in the cobalt-violet
+     family so categories read distinct without clashing with --accent.
+     Keyed by ToolKindIcon enum names (see chat/toolCardHeader.ts),
+     not by raw tool names — Edit / Write / MultiEdit all share `file`
+     and so all read at --ico-file. `generic` falls back to the
+     secondary text color so unclassified tools sit quietly. */
+  --ico-terminal: oklch(0.78 0.12 195);
+  --ico-file: oklch(0.72 0.16 305);
+  --ico-eye: oklch(0.78 0.1 220);
+  --ico-search: oklch(0.74 0.13 240);
+  --ico-globe: oklch(0.78 0.12 215);
+  --ico-robot: oklch(0.72 0.16 280);
+  --ico-speech-bubble: oklch(0.76 0.14 330);
+  --ico-checklist: oklch(0.76 0.12 255);
+  --ico-puzzle: oklch(0.74 0.14 325);
+  /* Intentional alias — unclassified tools share the secondary-text
+     palette, keeping the dark/light pair in sync automatically. */
+  --ico-generic: var(--text-secondary);
 }
 
 html {
@@ -40,6 +59,20 @@ html.light {
   --warning: oklch(0.78 0.16 78);
   --provider-codex: oklch(0.74 0.16 55);
   --overlay: oklch(0.22 0.01 255 / 28%);
+
+  /* Light-mode icon palette. Same hues, lower lightness so the icons
+     read crisply against the light surface tier. */
+  --ico-terminal: oklch(0.5 0.12 195);
+  --ico-file: oklch(0.5 0.18 305);
+  --ico-eye: oklch(0.5 0.1 220);
+  --ico-search: oklch(0.48 0.15 240);
+  --ico-globe: oklch(0.5 0.12 215);
+  --ico-robot: oklch(0.5 0.18 280);
+  --ico-speech-bubble: oklch(0.52 0.16 330);
+  --ico-checklist: oklch(0.5 0.12 255);
+  --ico-puzzle: oklch(0.5 0.16 325);
+  /* See dark-mode block for the alias rationale. */
+  --ico-generic: var(--text-secondary);
 }
 
 @theme {
@@ -84,6 +117,21 @@ html.light {
   --shadow-sheet: var(--shadow-sheet);
   --shadow-menu: var(--shadow-menu);
   --shadow-modal: var(--shadow-modal);
+
+  /* Per-tool-kind icon colors, exposed so `text-ico-terminal` etc.
+     compile as Tailwind utilities. Token names match the
+     `ToolKindIcon` enum in chat/toolCardHeader.ts; tool-name → kind
+     mapping happens there. */
+  --color-ico-terminal: var(--ico-terminal);
+  --color-ico-file: var(--ico-file);
+  --color-ico-eye: var(--ico-eye);
+  --color-ico-search: var(--ico-search);
+  --color-ico-globe: var(--ico-globe);
+  --color-ico-robot: var(--ico-robot);
+  --color-ico-speech-bubble: var(--ico-speech-bubble);
+  --color-ico-checklist: var(--ico-checklist);
+  --color-ico-puzzle: var(--ico-puzzle);
+  --color-ico-generic: var(--ico-generic);
 }
 
 html,

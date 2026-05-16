@@ -138,7 +138,7 @@
   keepExpandedPayloadFresh(() => expansion, () => hasPayload);
 </script>
 
-<div class="group/tool mb-1.5 overflow-hidden" data-testid="command-output-row">
+<div class="group/tool overflow-hidden" data-testid="command-output-row">
   {#snippet headerContent()}
     <span class="flex size-3.5 shrink-0 items-center justify-center text-text-secondary" data-testid="command-output-icon" aria-hidden="true">
       <Icon icon={Terminal} size={14} strokeWidth={2} class="opacity-75" />

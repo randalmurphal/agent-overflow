@@ -62,6 +62,15 @@
   // loading just because the whole thing fits in viewport.
   const AUTO_LOAD_OFFSET_PX = 800;
   const AUTO_LOAD_INDEX_THRESHOLD = 5;
+  // Leaf item kinds that participate in the continuous left-border
+  // rail. Group containers (SubagentGroup, InlineSubagentGroup,
+  // WaitGroup) handle their own internal rail layout — see
+  // docs/specs/tool-call-ui-redesign/README.md Phase 2.
+  const RAIL_LEAF_KINDS = new Set<string>([
+    'tool_call',
+    'tool_completion',
+    'thinking',
+  ]);
   // happy-dom returns 0 for clientHeight/clientWidth, which makes virtua
   // mount zero rows. In test runs we ask virtua to mount everything via
   // ssrCount so test assertions can find the rendered DOM. Production
@@ -829,7 +838,16 @@
             <!-- Outer per-row wrapper. We do NOT set data-item-id here:
                  only TimelineLeaf owns that attribute on its root. Structural
                  rows stay unanchored, and tests rely on the divider rendering
-                 BEFORE the [data-item-id] node, not containing it. -->
+                 BEFORE the [data-item-id] node, not containing it.
+
+                 `isRail` decides whether this row participates in the
+                 continuous left-border under consecutive tool / think rows.
+                 Leaf rows of those kinds get the rail; everything else
+                 (assistant_text, user_text, group containers, notifications,
+                 api errors) renders flat and breaks the line. Container rail
+                 handling for subagent groups is deferred — those components
+                 own their own internal rail layout in Phase 2. -->
+            {@const isRail = node.kind === 'leaf' && RAIL_LEAF_KINDS.has(node.item.kind)}
             <div data-row-index={index} class:mt-4={rowDecorations.toolTextBoundaryIndexes.has(index)}>
               {#if index === 0}
                 <!-- Top of timeline. Load-older button (when applicable) and
@@ -889,7 +907,18 @@
                     </div>
                   </div>
                 {/if}
-                <div data-testid="message-timeline-node">
+                <!-- Rail offsets: ml-[14px] places the border-l 14px
+                     inside the row column (under the chev gutter);
+                     pl-[18px] shifts content past the icon + label
+                     gutters so the row body lines up with the body
+                     column described in
+                     docs/specs/tool-call-ui-redesign/README.md
+                     §Row geometry. -->
+                <div
+                  data-testid="message-timeline-node"
+                  data-rail={isRail ? 'true' : 'false'}
+                  class={isRail ? 'border-l border-border-subtle ml-[14px] pl-[18px]' : ''}
+                >
                   {@render renderNode(node, 1)}
                 </div>
               </div>

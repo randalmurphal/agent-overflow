@@ -316,7 +316,7 @@
 {/snippet}
 
 <div
-  class="group/tool mb-1.5 overflow-hidden"
+  class="group/tool overflow-hidden"
   data-testid="tool-call-card"
   data-tool-kind={classification.icon}
 >

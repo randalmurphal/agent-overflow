@@ -97,7 +97,7 @@
   const canCopy = $derived(!isStreaming && /\S/.test(item.summary ?? ''));
 </script>
 
-<div class="group/thinking mb-1.5">
+<div class="group/thinking">
   <TranscriptDisclosureHeader
     {expanded}
     controls={`thinking-${item.id}`}
