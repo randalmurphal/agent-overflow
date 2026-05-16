@@ -310,9 +310,8 @@ describe('<CommandOutput>', () => {
       },
     });
 
-    const error = getByTestId('command-output-error');
-    expect(error.textContent).toBe('error code 7: first line last failure line');
-    expect(error.className).toContain('text-error');
+    expect(getByTestId('row-error-code').textContent).toBe('exit 7');
+    expect(getByTestId('row-error-msg').textContent).toBe('first line last failure line');
     expect(previewMock).not.toHaveBeenCalled();
   });
 
@@ -335,25 +334,22 @@ describe('<CommandOutput>', () => {
       },
     });
 
-    expect(getByTestId('command-output-error').textContent).toBe(
-      'error code 2: No such file or directory',
-    );
+    expect(getByTestId('row-error-code').textContent).toBe('exit 2');
+    expect(getByTestId('row-error-msg').textContent).toBe('No such file or directory');
   });
 
-  it('renders the success badge for an exitCode=0 command', () => {
-    const { getByTestId } = render(CommandOutput, {
+  it('renders no indicator for an exitCode=0 command', () => {
+    const { queryByTestId } = render(CommandOutput, {
       props: {
         item: makeItem({ id: 'tool-cmd', kind: 'tool_completion', status: 'completed' }),
         meta: commandMeta({ command: 'ls', exitCode: 0 }),
         payloadId: 'cmd-payload',
       },
     });
-    const badge = getByTestId('completion-badge');
-    expect(badge.getAttribute('data-status')).toBe('success');
-    expect(badge.className).toContain('text-success');
+    expect(queryByTestId('indicator')).toBeNull();
   });
 
-  it('renders command rows with a terminal icon, Bash label, and command text', () => {
+  it('renders command rows with a terminal icon, bash label, and command text', () => {
     const { getByTestId } = render(CommandOutput, {
       props: {
         item: makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' }),
@@ -362,7 +358,7 @@ describe('<CommandOutput>', () => {
     });
 
     expect(getByTestId('command-output-icon')).toBeInTheDocument();
-    expect(getByTestId('command-output-label').textContent?.trim()).toBe('Bash');
+    expect(getByTestId('command-output-label').textContent?.trim()).toBe('bash');
     expect(getByTestId('command-output-command').textContent).toBe('pnpm test');
   });
 
@@ -376,24 +372,21 @@ describe('<CommandOutput>', () => {
 
     const slot = getByTestId('command-output-status-slot');
     const status = getByTestId('command-output-status');
-    expect(slot.className).toContain('min-w-[3.5rem]');
-    expect(status.textContent?.trim()).toBe('…');
-    expect(status.className).toContain('animate-pulse');
-    expect(status.getAttribute('aria-label')).toBe('Running');
+    expect(slot.className).toContain('min-w-');
+    expect(status.querySelector('[data-testid="indicator"]')?.getAttribute('aria-label')).toBe('Running');
     expect(queryByTestId('completion-badge')).toBeNull();
   });
 
-  it('keeps the running status slot when completion badges are suppressed', () => {
+  it('keeps the running status slot without rendering a success badge', () => {
     const { getByTestId, queryByTestId } = render(CommandOutput, {
       props: {
         item: makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' }),
         meta: commandMeta({ command: 'pnpm test' }),
-        showCompletionBadge: false,
       },
     });
 
-    expect(getByTestId('command-output-status-slot').className).toContain('min-w-[3.5rem]');
-    expect(getByTestId('command-output-status').getAttribute('aria-label')).toBe('Running');
+    expect(getByTestId('command-output-status-slot').className).toContain('min-w-');
+    expect(getByTestId('indicator').getAttribute('aria-label')).toBe('Running');
     expect(queryByTestId('completion-badge')).toBeNull();
   });
 
@@ -408,8 +401,8 @@ describe('<CommandOutput>', () => {
     });
 
     const runningSlot = getByTestId('command-output-status-slot');
-    expect(runningSlot.className).toContain('min-w-[3.5rem]');
-    expect(getByTestId('command-output-status').textContent?.trim()).toBe('…');
+    expect(runningSlot.className).toContain('min-w-');
+    expect(getByTestId('command-output-status').querySelector('[data-testid="indicator"]')).not.toBeNull();
 
     await rerender({
       item: completed,
@@ -418,7 +411,7 @@ describe('<CommandOutput>', () => {
 
     const completedSlot = getByTestId('command-output-status-slot');
     expect(completedSlot.className).toBe(runningSlot.className);
-    expect(getByTestId('completion-badge').getAttribute('data-status')).toBe('success');
+    expect(completedSlot.querySelector('[data-testid="indicator"]')).toBeNull();
   });
 
   it('uses the same metadata lane contract as generic tool rows', async () => {
@@ -446,8 +439,8 @@ describe('<CommandOutput>', () => {
       generic.getByTestId('tool-call-card-status-slot'),
     ]) {
       expect(slot.className).toContain('inline-flex');
-      expect(slot.className).toContain('justify-end');
-      expect(slot.className).toContain('min-w-[3.5rem]');
+      expect(slot.className).toContain('justify-center');
+      expect(slot.className).toContain('min-w-');
     }
 
     for (const duration of [
@@ -463,7 +456,7 @@ describe('<CommandOutput>', () => {
     generic.unmount();
   });
 
-  it('places the command completion badge before the timestamp', () => {
+  it('places the command indicator slot before the timestamp', () => {
     const { getByTestId } = render(CommandOutput, {
       props: {
         item: makeItem({ id: 'tool-cmd', kind: 'tool_completion', status: 'completed' }),
@@ -471,7 +464,6 @@ describe('<CommandOutput>', () => {
       },
     });
 
-    expectBefore(getByTestId('completion-badge'), getByTestId('command-output-time'));
     expectBefore(getByTestId('command-output-status-slot'), getByTestId('command-output-time'));
   });
 
@@ -487,7 +479,7 @@ describe('<CommandOutput>', () => {
     expect(getByTestId('command-output-toggle').className).toContain('text-left');
   });
 
-  it('renders the failure badge for a non-zero exit code', () => {
+  it('renders the failure indicator and row error for a non-zero exit code', () => {
     // Pre-unification this row carried an `exit 7` rose pill. Now the
     // failure verdict is conveyed by the unified badge alone — no
     // exit-code text in the chat.
@@ -498,14 +490,12 @@ describe('<CommandOutput>', () => {
         payloadId: 'cmd-payload',
       },
     });
-    const badge = getByTestId('completion-badge');
-    expect(badge.getAttribute('data-status')).toBe('failure');
-    expect(badge.className).toContain('text-error');
-    // The old `exit 7` text must not return.
-    expect(queryByText(/exit 7/)).toBeNull();
+    expect(getByTestId('indicator').getAttribute('data-state')).toBe('error');
+    expect(getByTestId('row-error-code').textContent).toBe('exit 7');
+    expect(queryByText(/error code 7/)).toBeNull();
   });
 
-  it('renders the failure badge when the parent item was killed even if the command reports exit 0', () => {
+  it('renders the failure indicator when the parent item was killed even if the command reports exit 0', () => {
     // Codex reports "command finished" before the kill signal lands;
     // the parent item carries `status='killed'` and the unified
     // helper must collapse that to failure regardless of the exit
@@ -517,7 +507,8 @@ describe('<CommandOutput>', () => {
         payloadId: 'cmd-payload',
       },
     });
-    expect(getByTestId('completion-badge').getAttribute('data-status')).toBe('failure');
+    expect(getByTestId('indicator').getAttribute('data-state')).toBe('error');
+    expect(getByTestId('row-error-msg').textContent).toBe('Tool call stopped');
   });
 
   it('shows the item timestamp in the header instead of the line count', () => {

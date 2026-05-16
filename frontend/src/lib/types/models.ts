@@ -195,7 +195,7 @@ export interface DiffMeta {
 
 export interface CommandOutputMeta {
   command: string;
-  exitCode: number;
+  exitCode?: number;
   lineCount: number;
   preview?: string;
   errorMessage?: string;

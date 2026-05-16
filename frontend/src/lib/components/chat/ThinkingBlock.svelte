@@ -9,6 +9,7 @@
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import ToolKindIcon from './ToolKindIcon.svelte';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
@@ -107,16 +108,19 @@
     buttonClass="!items-start"
     onToggle={() => handleToggle()}
   >
-    <span class="text-[11px] text-fg-muted font-medium uppercase tracking-[0.04em] shrink-0 pt-[2px]">Thinking</span>
-    <span
-      bind:this={bodyEl}
-      id={`thinking-${item.id}`}
-      data-testid="thinking-body"
-      class={[
-        'flex-1 min-w-0 block text-[12px] text-fg-muted/70 italic whitespace-pre-wrap leading-relaxed',
-        !expanded ? 'max-h-[3lh] overflow-hidden' : null,
-      ]}
-    >{bodyText}</span>
+    {#snippet icon()}<ToolKindIcon kind="checklist" ariaLabel="think" />{/snippet}
+    {#snippet label()}<span data-testid="thinking-label">think</span>{/snippet}
+    {#snippet body()}
+      <span
+        bind:this={bodyEl}
+        id={`thinking-${item.id}`}
+        data-testid="thinking-body"
+        class={[
+          'flex-1 min-w-0 block text-[12px] text-fg-muted/70 italic whitespace-pre-wrap leading-relaxed',
+          !expanded ? 'max-h-[3lh] overflow-hidden' : null,
+        ]}
+      >{bodyText}</span>
+    {/snippet}
     {#snippet actions()}
       <div class="shrink-0 flex items-center gap-1.5 text-[10px] text-fg-hint pt-[2px]">
         {#if canCopy}

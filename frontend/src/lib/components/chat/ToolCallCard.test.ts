@@ -45,7 +45,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(getByTestId("command-output-row")).toBeInTheDocument();
     expect(getByTestId("command-output-icon")).toBeInTheDocument();
     expect(getByTestId("command-output-label").textContent?.trim()).toBe(
-      "Bash",
+      "bash",
     );
     expect(getByTestId("command-output-command").textContent).toContain(
       "ls -la",
@@ -70,7 +70,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(getByTestId("command-output-row")).toBeInTheDocument();
     expect(getByTestId("command-output-icon")).toBeInTheDocument();
     expect(getByTestId("command-output-label").textContent?.trim()).toBe(
-      "Bash",
+      "bash",
     );
     expect(getByTestId("command-output-command").textContent).toBe(
       "git status --short",
@@ -90,7 +90,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
 
     expect(getByTestId("command-output-label").textContent?.trim()).toBe(
-      "Bash",
+      "bash",
     );
     expect(getByTestId("command-output-command").textContent).toBe("sleep 10");
   });
@@ -185,7 +185,9 @@ describe("<ToolCallCard> header dispatcher", () => {
       expect(getByTestId("tool-call-card").getAttribute("data-tool-kind")).toBe(
         "file",
       );
-      expect(getByTestId("tool-call-card-label").textContent).toBe(toolName);
+      expect(getByTestId("tool-call-card-label").textContent).toBe(
+        toolName === "Write" ? "write" : "edit",
+      );
       unmount();
     }
   });
@@ -204,7 +206,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(getByTestId("tool-call-card").getAttribute("data-tool-kind")).toBe(
       "eye",
     );
-    expect(getByTestId("tool-call-card-label").textContent).toBe("Read");
+    expect(getByTestId("tool-call-card-label").textContent).toBe("read");
   });
 
   it("renders a search icon for Grep and Glob", async () => {
@@ -222,7 +224,9 @@ describe("<ToolCallCard> header dispatcher", () => {
       expect(getByTestId("tool-call-card").getAttribute("data-tool-kind")).toBe(
         "search",
       );
-      expect(getByTestId("tool-call-card-label").textContent).toBe(toolName);
+      expect(getByTestId("tool-call-card-label").textContent).toBe(
+        toolName.toLowerCase(),
+      );
       unmount();
     }
   });
@@ -293,7 +297,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(queryByTestId("tool-call-card-body")).toBeNull();
   });
 
-  it("renders a robot icon for Agent and collab_agent", async () => {
+  it("renders robot rows for Agent and collab_agent", async () => {
     const pane = await buildPane();
     for (const toolName of ["Agent", "collab_agent"]) {
       const item = makeItem({
@@ -305,9 +309,11 @@ describe("<ToolCallCard> header dispatcher", () => {
       const { getByTestId, unmount } = render(ToolCallCard, {
         props: { pane, item },
       });
-      expect(getByTestId("tool-call-card").getAttribute("data-tool-kind")).toBe(
-        "robot",
-      );
+      if (toolName === "Agent") {
+        expect(getByTestId("agent-row").getAttribute("data-tool-kind")).toBe("robot");
+      } else {
+        expect(getByTestId("tool-call-card").getAttribute("data-tool-kind")).toBe("robot");
+      }
       unmount();
     }
   });
@@ -326,13 +332,11 @@ describe("<ToolCallCard> header dispatcher", () => {
       toolName: "Agent",
     });
     const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
-    expect(getByTestId("tool-call-card-label").textContent).toContain("Agent");
-    expect(getByTestId("tool-call-card-label").textContent).not.toContain(
-      "Subagent",
-    );
+    expect(getByTestId("agent-row-preview").textContent).toContain("Agent");
+    expect(getByTestId("agent-row-preview").textContent).not.toContain("Subagent");
   });
 
-  it('renders collab_agent rows with the "Subagent" classifier label', async () => {
+  it('renders non-Codex collab_agent rows with the "spawn" classifier label', async () => {
     // Codex collab_agent uses a different input shape — the inline
     // CollabToolRow renders the spawn card. The plain
     // GenericToolCallRow fallback path keeps the classifier label so
@@ -346,9 +350,7 @@ describe("<ToolCallCard> header dispatcher", () => {
       toolName: "collab_agent",
     });
     const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
-    expect(getByTestId("tool-call-card-label").textContent).toContain(
-      "Subagent",
-    );
+    expect(getByTestId("tool-call-card-label").textContent).toContain("spawn");
   });
 
   it("renders a speech-bubble icon for send_input", async () => {
@@ -1061,7 +1063,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(getByTestId("tool-call-card").getAttribute("data-tool-kind")).toBe(
       "puzzle",
     );
-    expect(getByTestId("tool-call-card-label").textContent).toBe("MCP");
+    expect(getByTestId("tool-call-card-label").textContent).toBe("mcp");
     expect(getByTestId("tool-call-card-preview").textContent).toContain(
       "browser_snapshot",
     );
@@ -1082,7 +1084,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(getByTestId("tool-call-card").getAttribute("data-tool-kind")).toBe(
       "puzzle",
     );
-    expect(getByTestId("tool-call-card-label").textContent).toBe("MCP");
+    expect(getByTestId("tool-call-card-label").textContent).toBe("mcp");
     expect(getByTestId("tool-call-card-preview").textContent).toContain(
       "docs/lookup",
     );
@@ -1103,7 +1105,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(getByTestId("tool-call-card").getAttribute("data-tool-kind")).toBe(
       "generic",
     );
-    expect(getByTestId("tool-call-card-label").textContent).toBe("Tool");
+    expect(getByTestId("tool-call-card-label").textContent).toBe("tool");
     expect(getByTestId("tool-call-card-preview").textContent).toContain(
       "doing something",
     );
@@ -1225,7 +1227,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(getByTestId("command-output-command").textContent).toBe("pnpm test");
   });
 
-  it("keeps failure badges for command payloads with snake-case exit status", async () => {
+  it("shows the error indicator and sub-line for command payloads with snake-case exit status", async () => {
     const pane = await buildPane();
     const item = makeItem({
       id: "cmd-exit-code",
@@ -1243,12 +1245,11 @@ describe("<ToolCallCard> header dispatcher", () => {
 
     const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
 
-    expect(getByTestId("completion-badge").getAttribute("data-status")).toBe(
-      "failure",
-    );
+    expect(getByTestId("command-output-status").getAttribute("data-state")).toBe("error");
+    expect(getByTestId("command-output-error").textContent).toContain("exit 137");
   });
 
-  it("keeps failure badges for command payloads with is_error", async () => {
+  it("shows the error indicator and sub-line for command payloads with is_error", async () => {
     const pane = await buildPane();
     const item = makeItem({
       id: "cmd-is-error",
@@ -1267,9 +1268,8 @@ describe("<ToolCallCard> header dispatcher", () => {
 
     const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
 
-    expect(getByTestId("completion-badge").getAttribute("data-status")).toBe(
-      "failure",
-    );
+    expect(getByTestId("command-output-status").getAttribute("data-state")).toBe("error");
+    expect(getByTestId("command-output-error").textContent).toContain("No such file");
   });
 
   it("delegates to DiffPreview when payloadKind=diff", async () => {
@@ -1407,15 +1407,8 @@ describe("<ToolCallCard> header dispatcher", () => {
   });
 });
 
-describe("<ToolCallCard> backgrounded status label", () => {
-  // Per-spec (invariant 24, docs/architecture/turn-lifecycle.md §UI
-  // components driven by this state), the status chip replaces "running"
-  // with "…" for a backgrounded launch. The "…" is the visual signal
-  // that the agent dispatched the tool and moved on — it is NOT a
-  // claim that the tool is currently executing. The existing
-  // status-chip slot renders it; no separate badge is added to the row.
-
-  it('shows "…" in the status chip when isBackground && status === "running"', async () => {
+describe("<ToolCallCard> backgrounded status indicator", () => {
+  it("shows the backgrounded indicator when isBackground && status === running", async () => {
     const pane = await buildPane();
     const item = makeItem({
       id: "bg-run",
@@ -1431,14 +1424,12 @@ describe("<ToolCallCard> backgrounded status label", () => {
     });
 
     const status = getByTestId("command-output-status");
-    expect(status.textContent?.trim()).toBe("…");
+    expect(status.getAttribute("data-state")).toBe("backgrounded");
     expect(status.getAttribute("aria-label")).toBe("Backgrounded");
-    expect(status.getAttribute("title")).toBe("Running in background");
-    // No separate badge element — the label itself carries the signal.
     expect(queryByTestId("tool-call-backgrounded-badge")).toBeNull();
   });
 
-  it('does not show "…" for Codex subagent launch history rows', async () => {
+  it("does not show a backgrounded indicator for Codex subagent launch history rows", async () => {
     const pane = await buildPane(makeThread({ provider: "codex" }));
     const item = makeItem({
       id: "spawn-bg",
@@ -1460,7 +1451,7 @@ describe("<ToolCallCard> backgrounded status label", () => {
     expect(getByTestId("collab-tool-row").textContent).not.toContain("…");
   });
 
-  it('renders the Bash command label when !isBackground && status === "running"', async () => {
+  it("renders the running indicator when !isBackground && status === running", async () => {
     const pane = await buildPane();
     const item = makeItem({
       id: "inline-run",
@@ -1476,23 +1467,13 @@ describe("<ToolCallCard> backgrounded status label", () => {
     });
 
     expect(queryByTestId("tool-call-card-status")).toBeNull();
-    expect(getByTestId("command-output-status").textContent?.trim()).toBe("…");
-    expect(getByTestId("command-output-status").className).toContain(
-      "animate-pulse",
-    );
+    expect(getByTestId("command-output-status").getAttribute("data-state")).toBe("running");
     expect(getByTestId("command-output-label").textContent?.trim()).toBe(
-      "Bash",
+      "bash",
     );
   });
 
-  it('keeps "…" with no badge when a backgrounded launch row is somehow status=completed', async () => {
-    // Per the transcript stability invariant
-    // (docs/architecture/turn-lifecycle.md §1, plus the user-facing
-    // requirement that persisted launch rows do not mutate visually),
-    // a backgrounded tool_call launch row keeps its `…` affordance for
-    // the lifetime of the transcript even if its status flips. The
-    // completion lands on a separate tool_completion sibling row, and
-    // that's where the unified CompletionBadge renders.
+  it("shows no status indicator when a backgrounded launch row is completed", async () => {
     const pane = await buildPane();
     const item = makeItem({
       id: "bg-done",
@@ -1503,13 +1484,11 @@ describe("<ToolCallCard> backgrounded status label", () => {
       isBackground: true,
     });
 
-    const { getByTestId, queryByTestId } = render(ToolCallCard, {
+    const { queryByTestId } = render(ToolCallCard, {
       props: { pane, item },
     });
 
-    const status = getByTestId("command-output-status");
-    expect(status.textContent?.trim()).toBe("…");
-    expect(status.getAttribute("aria-label")).toBe("Backgrounded");
+    expect(queryByTestId("command-output-status")).toBeNull();
     expect(queryByTestId("completion-badge")).toBeNull();
   });
 
@@ -1533,9 +1512,9 @@ describe("<ToolCallCard> backgrounded status label", () => {
     });
 
     expect(queryByTestId("tool-call-card-status")).toBeNull();
-    expect(getByTestId("command-output-status").textContent?.trim()).toBe("…");
+    expect(getByTestId("command-output-status").getAttribute("data-state")).toBe("running");
     expect(getByTestId("command-output-label").textContent?.trim()).toBe(
-      "Bash",
+      "bash",
     );
   });
 
@@ -1580,15 +1559,11 @@ describe("<ToolCallCard> status dispatch", () => {
 
     expect(queryByTestId("tool-call-card-status")).toBeNull();
     expect(getByTestId("command-output-label").textContent?.trim()).toBe(
-      "Bash",
+      "bash",
     );
   });
 
-  it("renders the success badge for an inline tool_call that completed (non-background)", async () => {
-    // Helper coverage in toolCompletionStatus.test.ts pins the
-    // derivation; this pins the wiring in GenericToolCallRow's
-    // template — that the badge renders in the same slot the old
-    // status text occupied when the row resolves to success.
+  it("renders no success indicator for an inline tool_call that completed", async () => {
     const pane = await buildPane();
     const item = makeItem({
       id: "t",
@@ -1599,16 +1574,15 @@ describe("<ToolCallCard> status dispatch", () => {
       summary: "ls",
     });
 
-    const { getByTestId, queryByTestId } = render(ToolCallCard, {
+    const { queryByTestId } = render(ToolCallCard, {
       props: { pane, item },
     });
 
     expect(queryByTestId("tool-call-card-status")).toBeNull();
-    const badge = getByTestId("completion-badge");
-    expect(badge.getAttribute("data-status")).toBe("success");
+    expect(queryByTestId("completion-badge")).toBeNull();
   });
 
-  it("renders the failure badge for errored tool calls", async () => {
+  it("renders the error indicator and sub-line for errored tool calls", async () => {
     const pane = await buildPane();
     const item = makeItem({
       id: "t",
@@ -1622,13 +1596,12 @@ describe("<ToolCallCard> status dispatch", () => {
       props: { pane, item },
     });
 
-    expect(queryByTestId("tool-call-card-status")).toBeNull();
-    const badge = getByTestId("completion-badge");
-    expect(badge.getAttribute("data-status")).toBe("failure");
-    expect(badge.className).toContain("text-error");
+    expect(getByTestId("command-output-status").getAttribute("data-state")).toBe("error");
+    expect(queryByTestId("row-error-code")).toBeNull();
+    expect(getByTestId("command-output-error").textContent).toContain("command failed");
   });
 
-  it("renders the success badge for completed tool calls", async () => {
+  it("renders no success indicator for completed tool calls", async () => {
     const pane = await buildPane();
     const item = makeItem({
       id: "t",
@@ -1638,22 +1611,15 @@ describe("<ToolCallCard> status dispatch", () => {
       summary: "ok",
     });
 
-    const { getByTestId, queryByTestId } = render(ToolCallCard, {
+    const { queryByTestId } = render(ToolCallCard, {
       props: { pane, item },
     });
 
     expect(queryByTestId("tool-call-card-status")).toBeNull();
-    const badge = getByTestId("completion-badge");
-    expect(badge.getAttribute("data-status")).toBe("success");
-    expect(badge.className).toContain("text-success");
+    expect(queryByTestId("completion-badge")).toBeNull();
   });
 
-  it("collapses killed into the failure badge (user stop is a non-success terminal)", async () => {
-    // Pre-unification the row had a third "stopped" muted style. The
-    // unified badge collapses errored/killed/declined into a single
-    // failure variant per the design choice in the planning step —
-    // simpler vocabulary, fewer ad-hoc colors. The decision chip /
-    // tray still differentiate the cause (stopped vs failed).
+  it("collapses killed into the error indicator and sub-line", async () => {
     const pane = await buildPane();
     const item = makeItem({
       id: "t",
@@ -1663,14 +1629,11 @@ describe("<ToolCallCard> status dispatch", () => {
       summary: "stopped",
     });
 
-    const { getByTestId, queryByTestId } = render(ToolCallCard, {
+    const { getByTestId } = render(ToolCallCard, {
       props: { pane, item },
     });
 
-    expect(queryByTestId("tool-call-card-status")).toBeNull();
-    const badge = getByTestId("completion-badge");
-    expect(badge.getAttribute("data-status")).toBe("failure");
-    expect(badge.className).toContain("text-error");
-    expect(badge.className).not.toContain("text-success");
+    expect(getByTestId("command-output-status").getAttribute("data-state")).toBe("error");
+    expect(getByTestId("command-output-error").textContent).toContain("Tool call stopped");
   });
 });

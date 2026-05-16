@@ -1,7 +1,7 @@
 <script lang="ts">
   /*
    * Inline per-file diff block. Visually structured to match
-   * GenericToolCallRow — chevron + ToolKindIcon + uppercase label +
+ * GenericToolCallRow — chevron + ToolKindIcon + lowercase label +
    * path preview, body indented `ml-5 border-l border-border-subtle
    * bg-surface-0/35`, no kind-chip pill, no outer card chrome. One
    * Claude tool call = one file = one row; Codex apply_patch with N
@@ -52,8 +52,8 @@
     threadId: string;
     workspacePath?: string;
     /** Tool name the file edit originated from (Edit / Write /
-     *  MultiEdit / NotebookEdit / fileChange). Drives the icon +
-     *  uppercase label. Falls back to a generic "Diff" label. */
+   *  MultiEdit / NotebookEdit / fileChange). Drives the icon +
+   *  category label. Falls back to a generic "diff" label. */
     toolName?: string;
     hasMoreDiffContent?: boolean;
   }
@@ -138,11 +138,14 @@
   let maxLineNo = $derived(inlineRows.maxLineNo);
   let gutterChars = $derived(Math.max(2, String(maxLineNo).length));
 
-  // Header label: uppercase tool name (`EDIT`, `WRITE`, `MULTIEDIT`,
-  // `NOTEBOOKEDIT`). Falls back to `DIFF` when the caller didn't
-  // pass toolName (per-turn EventDiff path or summary-only fallback).
   let classification = $derived(classifyToolName(toolName ?? null));
-  let labelText = $derived((toolName ?? 'Diff').toUpperCase());
+  let labelText = $derived.by(() => {
+    if (toolName === 'apply_patch') return 'patch';
+    if (toolName === 'Write') return 'write';
+    if (toolName === 'NotebookEdit') return 'notebook';
+    if (toolName === 'Edit' || toolName === 'MultiEdit' || toolName === 'file_change' || toolName === 'fileChange') return 'edit';
+    return toolName ? classification.label : 'diff';
+  });
 
   let displayPath = $derived.by(() => {
     if (file.kind !== 'renamed') return file.path;
@@ -217,7 +220,7 @@
   expand/collapse for diffs.
 -->
 <div
-  class="group/tool mb-1.5 overflow-hidden"
+  class="group/tool overflow-hidden"
   data-testid="diff-file-block"
   data-file-path={file.path}
 >
@@ -237,10 +240,7 @@
       <Icon icon={ChevronRight} size={12} strokeWidth={2} class="rotate-90 opacity-70" />
     </span>
     <ToolKindIcon kind={classification.icon} ariaLabel={labelText} />
-    <span
-      class="text-[11px] font-medium text-fg-muted shrink-0 uppercase tracking-[0.04em]"
-      data-testid="diff-file-label"
-    >{labelText}</span>
+    <span class="w-12 shrink-0 text-[11px] text-fg-hint" data-testid="diff-file-label">{labelText}</span>
     <span
       class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75 font-mono"
       data-testid="diff-file-path"

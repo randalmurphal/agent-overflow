@@ -1,11 +1,13 @@
 <script lang="ts">
-  import Clock from 'lucide-svelte/icons/clock';
-  import Icon from '../primitives/Icon.svelte';
   import type { CommandOutputMeta, Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { terminalInteractionLabelFromSummary } from './commandDisplay';
   import CommandOutput from './CommandOutput.svelte';
+  import ToolHeaderMeta from './ToolHeaderMeta.svelte';
+  import Indicator from './Indicator.svelte';
+  import ToolKindIcon from './ToolKindIcon.svelte';
+  import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
@@ -29,14 +31,23 @@
    */
 </script>
 
-<div class="mb-1.5">
-  <div
-    class="flex items-center gap-2 px-1 py-1 text-[12px] text-fg-muted"
-    data-testid="terminal-interaction-row"
+<div>
+  <TranscriptDisclosureHeader
+    expanded={false}
+    expandable={false}
+    testId="terminal-interaction-row"
+    class="rounded-[var(--radius-control)] px-1 py-1 text-[12px] text-fg-muted"
+    buttonClass="text-[12px] text-fg-muted"
   >
-    <Icon icon={Clock} size={13} strokeWidth={2} class="shrink-0 opacity-75" />
-    <span class="min-w-0 truncate">{rowLabel}</span>
-  </div>
+    {#snippet icon()}<ToolKindIcon kind="terminal" ariaLabel="terminal" />{/snippet}
+    {#snippet label()}<span data-testid="terminal-interaction-label">terminal</span>{/snippet}
+    {#snippet body()}<span class="min-w-0 truncate">{rowLabel}</span>{/snippet}
+    {#snippet actions()}
+      <ToolHeaderMeta statusSlotTestId="terminal-interaction-status-slot">
+        {#snippet status()}<Indicator state={isRunning ? 'running' : null} />{/snippet}
+      </ToolHeaderMeta>
+    {/snippet}
+  </TranscriptDisclosureHeader>
   {#if shouldRenderCommandShell}
     <div class="ml-5">
       <CommandOutput
@@ -44,7 +55,6 @@
         item={item}
         meta={commandOutputMeta}
         payloadId={item.payloadId}
-        showCompletionBadge={Boolean(item.payloadId)}
       />
     </div>
   {/if}

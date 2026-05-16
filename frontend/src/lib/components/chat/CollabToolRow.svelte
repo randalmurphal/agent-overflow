@@ -10,7 +10,6 @@
   import AnsiText from './AnsiText.svelte';
   import CopyFooter from './CopyFooter.svelte';
   import Icon from '../primitives/Icon.svelte';
-  import CompletionBadge from './CompletionBadge.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import type { Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -20,16 +19,16 @@
     codexSubagentLaunchInfo,
     isCodexSubagentLaunchItem,
   } from '../../utils/subagentLaunch';
-  import {
-    completionBadgeTitleForStatus,
-    deriveCompletionStatus,
-  } from '../../utils/toolCompletionStatus';
+  import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import {
     createPayloadExpansion,
     formatPayloadSize,
     keepExpandedPayloadFresh,
   } from '../../utils/payloadExpansion.svelte';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
+  import Indicator from './Indicator.svelte';
+  import RowError from './RowError.svelte';
+  import { indicatorStateForItem, rowErrorForStatus } from './rowState';
   import {
     stringArrayValue,
     waitAgentDisplayReceiverIds,
@@ -266,7 +265,6 @@
     if (tool === 'wait_agent' && item.kind === 'tool_call') return null;
     return deriveCompletionStatus(effectiveStatusItem, { meta: statusPayloadMeta });
   });
-  let completionTitle = $derived(completionBadgeTitleForStatus(effectiveStatusItem.status));
   let isStatusBackgroundedLaunch = $derived(
     effectiveStatusItem.kind === 'tool_call' && effectiveStatusItem.isBackground === true,
   );
@@ -275,6 +273,21 @@
       tool !== 'wait_agent' &&
       (effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming'),
   );
+  let indicatorState = $derived(indicatorStateForItem(effectiveStatusItem, { meta: statusPayloadMeta }));
+  let rowError = $derived.by(() => {
+    if (badgeStatus !== 'failure') return null;
+    return rowErrorForStatus(effectiveStatusItem.status, 'Agent operation failed') ?? {
+      tone: 'error' as const,
+      msg: 'Agent operation failed',
+    };
+  });
+  let gutterLabel = $derived.by(() => {
+    if (tool === 'send_input') return 'send';
+    if (tool === 'wait_agent') return item.kind === 'tool_completion' ? 'waited' : 'waiting';
+    if (tool === 'close_agent') return 'closed';
+    if (tool === 'resume_agent') return 'resume';
+    return 'spawn';
+  });
   let hasOutputShell = $derived(
     item.kind === 'tool_completion' &&
       item.toolName === 'collab_agent',
@@ -302,8 +315,15 @@
   );
 </script>
 
-{#snippet rowContent()}
+{#snippet rowIcon()}
   <Icon {icon} size={13} strokeWidth={2} class="shrink-0 opacity-75" />
+{/snippet}
+
+{#snippet rowLabel()}
+  <span data-testid="collab-tool-row-label">{gutterLabel}</span>
+{/snippet}
+
+{#snippet rowBody()}
   <span class="min-w-0 flex-1 truncate">
     {title}{#if modelAffix}<span class="ml-1 text-fg-hint">({modelAffix})</span>{/if}
   </span>
@@ -319,44 +339,34 @@
     {trailingActions}
   >
     {#snippet status()}
-      {#if showRunningStatus}
-        <span
-          class="shrink-0 {isStatusBackgroundedLaunch ? 'text-[20px] leading-none' : 'text-[10px]'} text-accent opacity-70"
-          data-testid="collab-tool-row-status"
-          aria-label={isStatusBackgroundedLaunch ? 'Backgrounded' : 'Running'}
-        >
-          {isStatusBackgroundedLaunch ? '…' : 'running'}
-        </span>
-      {:else if badgeStatus}
-        <CompletionBadge status={badgeStatus} title={completionTitle} class="opacity-80" />
-      {/if}
+      <Indicator state={showRunningStatus || badgeStatus === 'failure' ? indicatorState : null} />
     {/snippet}
   </ToolHeaderMeta>
 {/snippet}
 
-<div class="group/tool mb-1.5 px-1 py-1 text-[12px] text-fg-muted" data-testid="collab-tool-row">
-  {#if hasOutputShell}
-    <TranscriptDisclosureHeader
-      expanded={expansion?.expanded ?? false}
-      expandable={hasExpandableOutput}
-      controls={hasExpandableOutput ? `collab-tool-row-output-${item.id}` : undefined}
-      testId="collab-tool-row-toggle"
-      class="rounded-[var(--radius-control)] py-1 {hasExpandableOutput ? 'hover:bg-surface-2/20' : ''}"
-      onToggle={() => toggle()}
-    >
-      {@render rowContent()}
-      {#snippet actions()}
-        {@render rowActions()}
-      {/snippet}
-    </TranscriptDisclosureHeader>
-  {:else}
-    <div class="flex items-center gap-2">
-      {@render rowContent()}
+<div class="group/tool px-1 py-1 text-[12px] text-fg-muted" data-testid="collab-tool-row">
+  <TranscriptDisclosureHeader
+    expanded={expansion?.expanded ?? false}
+    expandable={hasExpandableOutput}
+    controls={hasExpandableOutput ? `collab-tool-row-output-${item.id}` : undefined}
+    testId="collab-tool-row-toggle"
+    class="rounded-[var(--radius-control)] py-1 {hasExpandableOutput ? 'hover:bg-surface-2/20' : ''}"
+    onToggle={() => toggle()}
+  >
+    {#snippet icon()}{@render rowIcon()}{/snippet}
+    {#snippet label()}{@render rowLabel()}{/snippet}
+    {#snippet body()}{@render rowBody()}{/snippet}
+    {#snippet actions()}
       {@render rowActions()}
-    </div>
-  {/if}
+    {/snippet}
+  </TranscriptDisclosureHeader>
   {#if promptPreview}
     <div class="ml-5 mt-0.5 truncate text-[11px] text-fg-subtle">└ {promptPreview}</div>
+  {/if}
+  {#if rowError}
+    <div class="ml-[5.25rem] px-3 pb-1">
+      <RowError tone={rowError.tone} msg={rowError.msg} />
+    </div>
   {/if}
   {#if completionPreview && !expansion?.expanded}
     <div class="ml-5 mt-0.5 truncate text-[11px] text-fg-subtle" data-testid="collab-tool-row-preview">

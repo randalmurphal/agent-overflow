@@ -172,7 +172,7 @@ describe('<SubagentGroup>', () => {
     expect(getByTestId('subagent-group-label').textContent).toContain('Agent');
   });
 
-  it('shows "running" while parent.status is streaming (matches running branch)', () => {
+  it('shows the running indicator while parent.status is streaming', () => {
     const group = mkGroup({
       parentId: 'p-stream',
       parentItem: mkAgentParent('p-stream', {
@@ -181,7 +181,7 @@ describe('<SubagentGroup>', () => {
       }),
     });
     const { getByTestId } = render(SubagentGroupTestHarness, { props: { group } });
-    expect(getByTestId('subagent-group-status').textContent?.trim()).toBe('running');
+    expect(getByTestId('subagent-group-status').querySelector('[data-testid="indicator"]')?.getAttribute('data-state')).toBe('running');
   });
 
   it('falls back to the launch input.model when no subagent_model is stamped yet', () => {
@@ -200,7 +200,7 @@ describe('<SubagentGroup>', () => {
     expect(getByTestId('subagent-group-label').textContent).toContain('Opus');
   });
 
-  it('shows "running" while parent.status is running, and CompletionBadge once it flips', () => {
+  it('shows a running indicator while parent.status is running, and no success badge once it flips', () => {
     const running = mkGroup({
       parentId: 'p-run',
       parentItem: mkAgentParent('p-run', {
@@ -209,7 +209,7 @@ describe('<SubagentGroup>', () => {
       }),
     });
     const { getByTestId, unmount } = render(SubagentGroupTestHarness, { props: { group: running } });
-    expect(getByTestId('subagent-group-status').textContent?.trim()).toBe('running');
+    expect(getByTestId('subagent-group-status').querySelector('[data-testid="indicator"]')?.getAttribute('data-state')).toBe('running');
     unmount();
 
     const completed = mkGroup({
@@ -220,11 +220,32 @@ describe('<SubagentGroup>', () => {
       }),
     });
     const { container } = render(SubagentGroupTestHarness, { props: { group: completed } });
-    // Completion badge is rendered instead of the "running" label.
     expect(container.querySelector('[data-testid="subagent-group-status"]')).toBeNull();
-    // CompletionBadge component renders a node with role status / aria-label.
-    const badge = container.querySelector('[data-testid="completion-badge"]');
-    expect(badge).not.toBeNull();
+    expect(container.querySelector('[data-testid="completion-badge"]')).toBeNull();
+  });
+
+  it('shows RowError for terminal failed parent statuses', () => {
+    const cases = [
+      { status: 'errored' as const, expected: 'Agent failed' },
+      { status: 'killed' as const, expected: 'Tool call stopped' },
+      { status: 'declined' as const, expected: 'Tool call declined' },
+    ];
+
+    for (const testCase of cases) {
+      const group = mkGroup({
+        parentId: `p-${testCase.status}`,
+        parentItem: mkAgentParent(`p-${testCase.status}`, {
+          status: testCase.status,
+          input: { description: 'Failed', subagent_type: 'Explore' },
+        }),
+      });
+      const { getByTestId, unmount } = render(SubagentGroupTestHarness, { props: { group } });
+      expect(getByTestId('subagent-group-status').querySelector('[data-testid="indicator"]')?.getAttribute('data-state')).toBe(
+        testCase.status === 'declined' ? 'declined' : 'error',
+      );
+      expect(getByTestId('subagent-group-error').textContent).toContain(testCase.expected);
+      unmount();
+    }
   });
 
   it('keeps the status slot wrapper present in both running and completed states', () => {
@@ -298,7 +319,7 @@ describe('<SubagentGroup>', () => {
     expect(getByTestId('subagent-group-duration').textContent?.trim()).toBe('1m 30s');
   });
 
-  it('shows the "…" chip when the parent is a backgrounded launch', () => {
+  it('shows the backgrounded indicator when the parent is a backgrounded launch', () => {
     const group = mkGroup({
       parentId: 'bg',
       parentItem: mkAgentParent('bg', {
@@ -309,8 +330,9 @@ describe('<SubagentGroup>', () => {
     });
     const { getByTestId } = render(SubagentGroupTestHarness, { props: { group } });
     const status = getByTestId('subagent-group-status');
-    expect(status.textContent?.trim()).toBe('…');
-    expect(status.getAttribute('aria-label')).toBe('Backgrounded');
+    const indicator = status.querySelector('[data-testid="indicator"]');
+    expect(indicator?.getAttribute('data-state')).toBe('backgrounded');
+    expect(indicator?.getAttribute('aria-label')).toBe('Backgrounded');
   });
 
   it('clicking the header toggles expansion and renders children inside a scrollable body', async () => {

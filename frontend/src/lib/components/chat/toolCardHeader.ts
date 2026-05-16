@@ -52,7 +52,7 @@ export function classifyToolName(
   if (!raw) {
     return {
       icon: "generic",
-      label: "Tool",
+      label: "tool",
       displayName: "Tool",
       isSubagent: false,
     };
@@ -63,7 +63,7 @@ export function classifyToolName(
   if (raw === "MCP") {
     return {
       icon: "puzzle",
-      label: "MCP",
+      label: "mcp",
       displayName: "MCP tool",
       isSubagent: false,
     };
@@ -73,7 +73,7 @@ export function classifyToolName(
     const suffix = raw.slice(4);
     return {
       icon: "puzzle",
-      label: "MCP",
+      label: "mcp",
       displayName: suffix || "MCP tool",
       isSubagent: false,
     };
@@ -82,7 +82,7 @@ export function classifyToolName(
   if (isCommandToolName(raw)) {
     return {
       icon: "terminal",
-      label: "Bash",
+      label: "bash",
       displayName: "Bash",
       isSubagent: false,
     };
@@ -93,28 +93,28 @@ export function classifyToolName(
       case "send_input":
         return {
           icon: "speech-bubble",
-          label: "send_input",
+          label: "send",
           displayName: "send_input",
           isSubagent: false,
         };
       case "wait_agent":
         return {
           icon: "robot",
-          label: "Wait",
+          label: "waiting",
           displayName: "Wait for agent",
           isSubagent: false,
         };
       case "close_agent":
         return {
           icon: "robot",
-          label: "Close",
+          label: "closed",
           displayName: "Close agent",
           isSubagent: false,
         };
       case "resume_agent":
         return {
           icon: "robot",
-          label: "Resume",
+          label: "resume",
           displayName: "Resume agent",
           isSubagent: false,
         };
@@ -123,16 +123,22 @@ export function classifyToolName(
 
   switch (raw) {
     case "Edit":
-    case "Write":
     case "MultiEdit":
+    case "Write":
     case "NotebookEdit":
+    case "apply_patch":
     case "file_change":
     case "fileChange":
-      return { icon: "file", label: raw, displayName: raw, isSubagent: false };
+      return {
+        icon: "file",
+        label: raw === "Write" ? "write" : raw === "NotebookEdit" ? "notebook" : raw === "apply_patch" ? "patch" : "edit",
+        displayName: raw,
+        isSubagent: false,
+      };
     case "Read":
       return {
         icon: "eye",
-        label: "Read",
+        label: "read",
         displayName: "Read",
         isSubagent: false,
       };
@@ -140,7 +146,7 @@ export function classifyToolName(
     case "Glob":
       return {
         icon: "search",
-        label: raw,
+        label: raw === "Glob" ? "glob" : "grep",
         displayName: raw,
         isSubagent: false,
       };
@@ -148,26 +154,27 @@ export function classifyToolName(
     case "WebSearch":
     case "webSearch":
     case "web_search":
-      return { icon: "globe", label: raw, displayName: raw, isSubagent: false };
+      return { icon: "globe", label: raw === "WebFetch" ? "fetch" : "search", displayName: raw, isSubagent: false };
     case "ViewImage":
     case "ImageGeneration":
       return {
         icon: "eye",
-        label: "Image",
+        label: "image",
         displayName: raw,
         isSubagent: false,
       };
     case "Agent":
+    case "Task":
       return {
         icon: "robot",
-        label: "Subagent",
-        displayName: "Agent",
+        label: "agent",
+        displayName: raw,
         isSubagent: true,
       };
     case "collab_agent":
       return {
         icon: "robot",
-        label: "Subagent",
+        label: "spawn",
         displayName: "collab_agent",
         isSubagent: true,
       };
@@ -175,7 +182,7 @@ export function classifyToolName(
     case "ExitPlanMode":
       return {
         icon: "checklist",
-        label: "Plan",
+        label: "plan",
         displayName: raw,
         isSubagent: false,
       };
@@ -183,7 +190,7 @@ export function classifyToolName(
 
   return {
     icon: "generic",
-    label: "Tool",
+    label: "tool",
     displayName: raw,
     isSubagent: false,
   };

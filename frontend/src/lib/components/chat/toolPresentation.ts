@@ -64,6 +64,12 @@ export type ToolPresentation =
       collapsedPreview: string;
     }
   | {
+      kind: 'agent';
+      item: Item;
+      displayItem?: Item;
+      statusItem?: Item;
+    }
+  | {
       kind: 'generic';
       item: Item;
       displayItem?: Item;
@@ -79,12 +85,13 @@ export type TimelineToolPresentation = Extract<
   | { kind: 'diff-stack' }
   | { kind: 'tool-result' }
   | { kind: 'command' }
+  | { kind: 'agent' }
   | { kind: 'generic' }
 >;
 
 export type TrayToolPresentation = Extract<
   ToolPresentation,
-  { kind: 'collab' } | { kind: 'command' } | { kind: 'generic' }
+  { kind: 'collab' } | { kind: 'command' } | { kind: 'agent' } | { kind: 'generic' }
 >;
 
 export function resolveToolPresentation(
@@ -159,6 +166,10 @@ function resolveTimelineToolPresentation(input: ToolPresentationInput): ToolPres
     return commandPresentation(item, item, item);
   }
 
+  if (isClaudeAgentTool(item)) {
+    return { kind: 'agent', item };
+  }
+
   return {
     kind: 'generic',
     item,
@@ -183,6 +194,15 @@ function resolveTrayToolPresentation(input: ToolPresentationInput): ToolPresenta
     };
   }
 
+  if (isClaudeAgentTool(displayItem)) {
+    return {
+      kind: 'agent',
+      item: outputItem,
+      displayItem,
+      statusItem,
+    };
+  }
+
   return {
     kind: 'generic',
     item: outputItem,
@@ -199,11 +219,13 @@ function commandPresentation(
   const parsedMeta = parseCommandOutputMeta(item);
   const meta: CommandOutputMeta = {
     command: commandTextForItem(displayItem, parsedMeta),
-    exitCode: parsedMeta?.exitCode ?? 0,
     lineCount: parsedMeta?.lineCount ?? 0,
     preview: parsedMeta?.preview,
     errorMessage: parsedMeta?.errorMessage,
   };
+  if (parsedMeta?.exitCode !== undefined) {
+    meta.exitCode = parsedMeta.exitCode;
+  }
   return {
     kind: 'command',
     item,
@@ -239,7 +261,7 @@ function parseCommandOutputMeta(item: Item): CommandOutputMeta | null {
   }
   return {
     command: typeof parsed.command === 'string' ? parsed.command : '',
-    exitCode: typeof parsed.exitCode === 'number' ? parsed.exitCode : 0,
+    exitCode: typeof parsed.exitCode === 'number' ? parsed.exitCode : undefined,
     lineCount: typeof parsed.lineCount === 'number' ? parsed.lineCount : 0,
     preview: typeof parsed.preview === 'string' ? parsed.preview : undefined,
     errorMessage: typeof parsed.errorMessage === 'string' ? parsed.errorMessage : undefined,
@@ -271,6 +293,10 @@ function isCommandPresentation(displayItem: Item, outputItem: Item): boolean {
 
 function isUserInputTool(item: Item): boolean {
   return item.toolName === 'AskUserQuestion' || item.toolName === 'request_user_input';
+}
+
+function isClaudeAgentTool(item: Item): boolean {
+  return item.toolName === 'Agent' || item.toolName === 'Task';
 }
 
 function isCollabControlTool(provider: string | null | undefined, item: Item): boolean {

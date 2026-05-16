@@ -91,7 +91,7 @@ describe('<AskUserQuestionCard>', () => {
     );
   });
 
-  it('shows the running pill while the question is unanswered', () => {
+  it('shows the running indicator while the question is unanswered', () => {
     const item = makeItem({
       kind: 'tool_call',
       status: 'running',
@@ -107,11 +107,11 @@ describe('<AskUserQuestionCard>', () => {
       props: { item },
     });
 
-    expect(getByTestId('ask-user-question-status').textContent).toBe('running');
+    expect(getByTestId('ask-user-question-status').querySelector('[data-testid="indicator"]')?.getAttribute('data-state')).toBe('running');
     expect(queryByTestId('completion-badge')).toBeNull();
   });
 
-  it('shows the success badge once the user has answered', () => {
+  it('shows no success badge once the user has answered', () => {
     const item = makeItem({
       kind: 'tool_call',
       status: 'completed',
@@ -137,10 +137,10 @@ describe('<AskUserQuestionCard>', () => {
     });
 
     expect(queryByTestId('ask-user-question-status')).toBeNull();
-    expect(getByTestId('completion-badge').getAttribute('data-status')).toBe('success');
+    expect(queryByTestId('completion-badge')).toBeNull();
   });
 
-  it('shows the failure badge when the row was force-closed by interrupt', () => {
+  it('shows the failure indicator when the row was force-closed by interrupt', () => {
     const item = makeItem({
       kind: 'tool_call',
       status: 'errored',
@@ -153,7 +153,8 @@ describe('<AskUserQuestionCard>', () => {
 
     const { getByTestId } = render(AskUserQuestionCard, { props: { item } });
 
-    expect(getByTestId('completion-badge').getAttribute('data-status')).toBe('failure');
+    expect(getByTestId('ask-user-question-status').querySelector('[data-testid="indicator"]')?.getAttribute('data-state')).toBe('error');
+    expect(getByTestId('row-error')).toBeInTheDocument();
   });
 
   it('expands to show check/X marks per option', async () => {

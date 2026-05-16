@@ -42,7 +42,7 @@ export function truncateForPreview(text: string, max = MAX_INLINE_BYTES): string
  * Maximum number of display rows rendered for a diff file inside chat.
  * Files over this cap render the same number of rows plus a side-panel CTA.
  */
-export const INLINE_DIFF_PREVIEW_LINE_COUNT = 30;
+export const INLINE_DIFF_PREVIEW_LINE_COUNT = 15;
 
 /**
  * Payload preview budget for inline chat diff rows. The sidebar owns the full

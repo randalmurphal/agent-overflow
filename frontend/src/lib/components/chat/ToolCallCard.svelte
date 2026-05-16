@@ -6,6 +6,7 @@
   import type { Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { paneWorkspacePath } from '../../stores/thread.svelte';
+  import AgentRow from './AgentRow.svelte';
   import AskUserQuestionCard from './AskUserQuestionCard.svelte';
   import CollabToolRow from './CollabToolRow.svelte';
   import CommandOutput from './CommandOutput.svelte';
@@ -80,6 +81,8 @@
     payloadId={presentation.payloadId}
     collapsedPreview={presentation.collapsedPreview}
   />
+{:else if presentation.kind === 'agent'}
+  <AgentRow {pane} {item} />
 {:else}
   <GenericToolCallRow {pane} {item} />
 {/if}

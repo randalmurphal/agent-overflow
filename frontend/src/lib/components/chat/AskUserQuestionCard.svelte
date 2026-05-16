@@ -17,17 +17,15 @@
    *   the user has answered. Parsed from Claude's canonical
    *   `"question"="answer"` sentence, with JSON kept for legacy rows.
    *
-   * Status rendering reuses `deriveCompletionStatus` so the badge logic
-   * stays consistent with every other tool card. Running shows the
-   * "running" pill; answered shows green check; force-closed-by-interrupt
-   * (status='errored' from `forceCloseOrphanToolCalls`) shows red.
+   * Status rendering reuses `deriveCompletionStatus` so the row state
+   * stays consistent with every other tool card. Running shows an
+   * Indicator dot, answered renders no success chrome, and failures
+   * show an error Indicator plus RowError.
    */
   import { untrack } from 'svelte';
   import Check from 'lucide-svelte/icons/check';
   import X from 'lucide-svelte/icons/x';
-  import HelpCircle from 'lucide-svelte/icons/help-circle';
   import Icon from '../primitives/Icon.svelte';
-  import CompletionBadge from './CompletionBadge.svelte';
   import ChatMarkdown from './ChatMarkdown.svelte';
   import type { Item } from '../../types/models';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
@@ -36,21 +34,20 @@
   import { createPayloadExpansion } from '../../utils/payloadExpansion.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
+  import ToolKindIcon from './ToolKindIcon.svelte';
+  import Indicator from './Indicator.svelte';
+  import RowError from './RowError.svelte';
+  import { indicatorAriaLabel, indicatorStateForItem, rowErrorForStatus } from './rowState';
+  import {
+    answersForQuestion as answersForQuestionFromMap,
+    classifyAnswers,
+    extractAnswers,
+    extractQuestions,
+    headerLabelForQuestions,
+    type AskQuestion,
+  } from './askUserQuestionData';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
-
-  interface AskOption {
-    label: string;
-    description?: string;
-    preview?: string;
-  }
-  interface AskQuestion {
-    id?: string;
-    header?: string;
-    question: string;
-    multiSelect?: boolean;
-    options?: AskOption[];
-  }
 
   // Expansion state lives on the per-pane registry so it survives
   // virtua remount when the row scrolls past `bufferSize=900` and back
@@ -78,12 +75,7 @@
   const itemMeta = $derived(parseJsonObject(item.meta));
 
   const questions = $derived.by<AskQuestion[]>(() => {
-    if (!itemMeta) return [];
-    const input = itemMeta.input;
-    if (!input || typeof input !== 'object') return [];
-    const list = (input as Record<string, unknown>).questions;
-    if (!Array.isArray(list)) return [];
-    return list.filter((q): q is AskQuestion => !!q && typeof q === 'object' && typeof (q as Record<string, unknown>).question === 'string');
+    return extractQuestions(itemMeta);
   });
 
   // Answers are persisted directly on Codex request_user_input rows and
@@ -99,89 +91,20 @@
     return { ...directAnswers, ...toolResultAnswers };
   });
 
-  function extractAnswers(content: unknown): Record<string, string | string[]> {
-    if (typeof content === 'string') {
-      return parseAnswersString(content);
-    }
-    if (Array.isArray(content)) {
-      // Tool result content can be a list of `{type, text}` blocks; we
-      // concatenate the text parts and try to parse the result.
-      const text = content
-        .map((part) => {
-          if (part && typeof part === 'object' && typeof (part as Record<string, unknown>).text === 'string') {
-            return (part as Record<string, unknown>).text as string;
-          }
-          return '';
-        })
-        .join('');
-      return parseAnswersString(text);
-    }
-    if (content && typeof content === 'object') {
-      const candidate = (content as Record<string, unknown>).answers ?? content;
-      return normalizeAnswerObject(candidate);
-    }
-    return {};
-  }
-
-  function parseAnswersString(text: string): Record<string, string | string[]> {
-    const trimmed = text.trim();
-    if (!trimmed) return {};
-    try {
-      const parsed = JSON.parse(trimmed) as unknown;
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        const answers = normalizeAnswerObject((parsed as Record<string, unknown>).answers ?? parsed);
-        if (Object.keys(answers).length > 0) return answers;
-      }
-    } catch {
-      // Not JSON — fall through.
-    }
-    return parseClaudeAnsweredSentence(trimmed);
-  }
-
-  function normalizeAnswerObject(candidate: unknown): Record<string, string | string[]> {
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return {};
-    const out: Record<string, string | string[]> = {};
-    for (const [k, v] of Object.entries(candidate as Record<string, unknown>)) {
-      if (typeof v === 'string') out[k] = v;
-      else if (Array.isArray(v)) {
-        const list = v.filter((entry): entry is string => typeof entry === 'string');
-        if (list.length > 0) out[k] = list;
-      }
-    }
-    return out;
-  }
-
-  function parseClaudeAnsweredSentence(text: string): Record<string, string> {
-    if (!text.startsWith('User has answered your questions:')) return {};
-    const out: Record<string, string> = {};
-    const pairPattern = /"((?:\\.|[^"\\])*)"\s*=\s*"((?:\\.|[^"\\])*)"/g;
-    for (const match of text.matchAll(pairPattern)) {
-      const key = decodeQuotedSegment(match[1] ?? '');
-      const value = decodeQuotedSegment(match[2] ?? '');
-      if (key) out[key] = value;
-    }
-    return out;
-  }
-
-  function decodeQuotedSegment(value: string): string {
-    try {
-      return JSON.parse(`"${value}"`) as string;
-    } catch {
-      return value.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-    }
-  }
-
-  // Title rendering rule:
-  // - Single question: "Question: <question text>" (truncates via CSS).
-  // - Multi-question: "Question: N questions".
   const headerLabel = $derived.by<string>(() => {
-    if (questions.length === 0) return 'Question';
-    if (questions.length === 1) return `Question: ${questions[0].question}`;
-    return `Question: ${questions.length} questions`;
+    return headerLabelForQuestions(questions);
   });
 
   const completionStatus = $derived(deriveCompletionStatus(item));
-  const showRunningPill = $derived(item.status === 'running' || item.status === 'streaming');
+  const isRunningQuestion = $derived(item.status === 'running' || item.status === 'streaming');
+  const indicatorState = $derived(indicatorStateForItem(item));
+  const rowError = $derived.by(() => {
+    if (completionStatus !== 'failure') return null;
+    return rowErrorForStatus(item.status, 'Question was not answered') ?? {
+      tone: 'error' as const,
+      msg: 'Question was not answered',
+    };
+  });
 
   let time = $derived(
     new Date(item.createdAt).toLocaleTimeString(undefined, {
@@ -191,77 +114,13 @@
   );
 
   function answersForQuestion(q: AskQuestion): string[] {
-    const id = q.id ?? '';
-    const direct = id ? answersByQuestion[id] : undefined;
-    if (direct !== undefined) return normalizeQuestionAnswers(q, direct);
-    // Some answers come back keyed by header or by question text. Try
-    // those before giving up.
-    const byHeader = q.header ? answersByQuestion[q.header] : undefined;
-    if (byHeader !== undefined) return normalizeQuestionAnswers(q, byHeader);
-    const byQuestion = answersByQuestion[q.question];
-    if (byQuestion !== undefined) return normalizeQuestionAnswers(q, byQuestion);
-    return [];
-  }
-
-  function normalizeQuestionAnswers(q: AskQuestion, answer: string | string[]): string[] {
-    if (Array.isArray(answer)) return answer;
-    if (q.multiSelect) {
-      const parsedOptions = splitKnownMultiSelectOptions(answer, q.options ?? []);
-      if (parsedOptions.length > 1) return parsedOptions;
-    }
-    return [answer];
-  }
-
-  function splitKnownMultiSelectOptions(answer: string, options: AskOption[]): string[] {
-    const optionLabels = new Set(options.map((option) => option.label));
-    if (optionLabels.size === 0 || optionLabels.has(answer)) return [];
-    const parts = answer
-      .split(',')
-      .map((part) => part.trim())
-      .filter(Boolean);
-    if (parts.length < 2) return [];
-    return parseKnownOptionSequence(parts, optionLabels) ?? [];
-  }
-
-  function parseKnownOptionSequence(parts: string[], optionLabels: Set<string>): string[] | null {
-    function parseFrom(index: number): string[] | null {
-      if (index >= parts.length) return [];
-      for (let end = index + 1; end <= parts.length; end++) {
-        const candidate = parts.slice(index, end).join(', ');
-        if (!optionLabels.has(candidate)) continue;
-        const rest = parseFrom(end);
-        if (rest) return [candidate, ...rest];
-      }
-      return null;
-    }
-    return parseFrom(0);
-  }
-
-  /**
-   * Splits a question's answers into "matched a predefined option" vs
-   * "custom typed answer." This lets the expanded body render
-   * predefined options with check/X marks AND surface a separate
-   * `Custom: <text>` row when the user picked "Other" and typed a
-   * value.
-   */
-  function classifyAnswers(q: AskQuestion, answers: string[]) {
-    const optionLabels = new Set((q.options ?? []).map((o) => o.label));
-    const matched = new Set<string>();
-    const customs: string[] = [];
-    for (const answer of answers) {
-      if (optionLabels.has(answer)) {
-        matched.add(answer);
-      } else if (answer.trim()) {
-        customs.push(answer);
-      }
-    }
-    return { matched, customs };
+    return answersForQuestionFromMap(q, answersByQuestion);
   }
 
 </script>
 
 <div
-  class="group/tool mb-1.5 overflow-hidden"
+  class="group/tool overflow-hidden"
   data-testid="ask-user-question-card"
   data-status={item.status}
 >
@@ -272,21 +131,13 @@
     class="rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
     onToggle={() => toggle()}
   >
-    <span class="text-fg-muted shrink-0" aria-label="Question">
-      <Icon icon={HelpCircle} size={14} />
-    </span>
-    <span
-      class="text-[11px] font-medium text-fg-muted shrink-0 uppercase tracking-[0.04em]"
-      data-testid="ask-user-question-label"
-    >
-      Ask
-    </span>
-    <span
-      class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75"
-      data-testid="ask-user-question-title"
-    >
-      {headerLabel}
-    </span>
+    {#snippet icon()}<ToolKindIcon kind="speech-bubble" ariaLabel="ask" />{/snippet}
+    {#snippet label()}<span data-testid="ask-user-question-label">ask</span>{/snippet}
+    {#snippet body()}
+      <span class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75" data-testid="ask-user-question-title">
+        {headerLabel}
+      </span>
+    {/snippet}
     {#snippet actions()}
       <ToolHeaderMeta
         statusSlotTestId="ask-user-question-status-slot"
@@ -294,24 +145,37 @@
         timestamp={{ testId: 'ask-user-question-time', value: item.createdAt, label: time }}
       >
         {#snippet status()}
-          {#if showRunningPill}
+          {#if isRunningQuestion}
             <span
-              class="text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
               data-testid="ask-user-question-status"
               data-status={item.status}
+              data-state={indicatorState}
+              aria-label={indicatorAriaLabel(indicatorState)}
             >
-              running
+              <Indicator state={indicatorState} />
             </span>
-          {:else if completionStatus !== null}
-            <CompletionBadge
-              status={completionStatus}
-              class="opacity-80 transition-opacity group-hover/tool:opacity-100"
-            />
+          {:else}
+            {#if completionStatus === 'failure'}
+              <span
+                data-testid="ask-user-question-status"
+                data-status={item.status}
+                data-state={indicatorState}
+                aria-label={indicatorAriaLabel(indicatorState)}
+              >
+                <Indicator state={indicatorState} />
+              </span>
+            {/if}
           {/if}
         {/snippet}
       </ToolHeaderMeta>
     {/snippet}
   </TranscriptDisclosureHeader>
+
+  {#if rowError}
+    <div class="ml-[5.25rem] px-3 pb-1">
+      <RowError tone={rowError.tone} msg={rowError.msg} />
+    </div>
+  {/if}
 
   {#if expansion.expanded}
     <!-- No transition: the timeline scroll surface forbids height-shifting
@@ -394,7 +258,7 @@
                   </p>
                 </div>
               {/each}
-              {#if answers.length === 0 && !showRunningPill}
+              {#if answers.length === 0 && !isRunningQuestion}
                 <p class="ml-2 text-[11px] italic text-fg-subtle">
                   No answer recorded.
                 </p>

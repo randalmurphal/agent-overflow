@@ -1,6 +1,11 @@
 import type { Item, CommandOutputMeta } from '../../types/models';
 
-export const COMMAND_TOOL_NAMES = new Set(['Bash', 'command_execution', 'commandExecution', 'exec_command']);
+export interface CommandRowError {
+  code?: string;
+  msg: string;
+}
+
+export const COMMAND_TOOL_NAMES = new Set(['Bash', 'command_execution', 'commandExecution', 'exec_command', 'shell']);
 
 export function isCommandToolName(toolName: string | undefined | null): boolean {
   const raw = (toolName ?? '').trim();
@@ -30,12 +35,12 @@ export function displayCommandForItem(
   return stripShellWrapper(commandTextForItem(item, meta));
 }
 
-export function commandErrorLineForItem(
+export function commandErrorForItem(
   item: Item,
   meta: CommandOutputMeta | null | undefined,
   itemMeta: Record<string, unknown> | null,
   payloadMeta: Record<string, unknown> | null,
-): string {
+): CommandRowError {
   // New command_output rows should arrive with normalized errorMessage
   // in payload meta. The provider-specific probes below are legacy
   // fallbacks for older persisted Claude/Codex rows with no command
@@ -54,8 +59,18 @@ export function commandErrorLineForItem(
     compactErrorMessage(readNestedString(itemMeta, ['tool_result', 'content'])) ||
     compactErrorMessage(meta?.errorMessage) ||
     'command failed';
-  const codeLabel = typeof code === 'number' && Number.isFinite(code) ? code : 'unknown';
-  return `error code ${codeLabel}: ${message}`;
+  const codeLabel = typeof code === 'number' && Number.isFinite(code) ? `exit ${code}` : undefined;
+  return { code: codeLabel, msg: message };
+}
+
+export function commandErrorLineForItem(
+  item: Item,
+  meta: CommandOutputMeta | null | undefined,
+  itemMeta: Record<string, unknown> | null,
+  payloadMeta: Record<string, unknown> | null,
+): string {
+  const error = commandErrorForItem(item, meta, itemMeta, payloadMeta);
+  return [error.code ?? 'error code unknown', error.msg].join(': ');
 }
 
 export function terminalInteractionLabelFromSummary(summary: string | undefined): string {

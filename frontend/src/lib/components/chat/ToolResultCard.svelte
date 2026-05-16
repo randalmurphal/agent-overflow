@@ -7,7 +7,6 @@
   import { parseDiffLines, type DiffLine } from '../../utils/diff';
   import { lineTintClass } from '../../utils/diffLineTint';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
-  import CompletionBadge from './CompletionBadge.svelte';
   import CopyFooter from './CopyFooter.svelte';
   import Icon from '../primitives/Icon.svelte';
   import LazyContentBlock from './LazyContentBlock.svelte';
@@ -20,6 +19,11 @@
   } from '../../utils/payloadExpansion.svelte';
   import { openDiffSidebar } from './diffSidebarTrigger';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
+  import ToolKindIcon from './ToolKindIcon.svelte';
+  import ToolHeaderMeta from './ToolHeaderMeta.svelte';
+  import Indicator from './Indicator.svelte';
+  import RowError from './RowError.svelte';
+  import { indicatorStateForItem, rowErrorForStatus } from './rowState';
 
   let { pane, item, meta, payloadId }: { pane?: ThreadPane; item: Item; meta: ToolResultMeta; payloadId?: string } = $props();
 
@@ -60,11 +64,16 @@
   const hasExactPatch = $derived(meta.inlineDiff?.availability === 'exact_patch');
   const canExpandExactPatch = $derived(hasExactPatch && Boolean(payloadId));
   const wrapClass = $derived(getSettings().diffWordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre');
-  // Re-parse payloadMeta inside the helper rather than reusing the
-  // `meta: ToolResultMeta` prop: ToolResultMeta does not declare
-  // `is_error` or `exit_code`, so the typed view is an incomplete
-  // signal source. payloadMeta is the canonical record.
-  const completionStatus = $derived(deriveCompletionStatus(item));
+  const resultMeta = $derived(meta as unknown as Record<string, unknown>);
+  const completionStatus = $derived(deriveCompletionStatus(item, { meta: resultMeta }));
+  const indicatorState = $derived(indicatorStateForItem(item, { meta: resultMeta }));
+  const rowError = $derived.by(() => {
+    if (completionStatus !== 'failure') return null;
+    return rowErrorForStatus(item.status, 'Tool output failed') ?? {
+      tone: 'error' as const,
+      msg: 'Tool output failed',
+    };
+  });
   const patchLines = $derived.by<DiffLine[] | null>(() => {
     if (expansion.displayData === null) return null;
     return parseDiffLines(expansion.displayData);
@@ -96,33 +105,36 @@
   }
 </script>
 
-<div class="mb-1.5 rounded-[var(--radius-control)] border border-border-subtle bg-card/25">
-  <div class="flex items-start gap-2.5 px-2.5 py-2">
-    <span class="font-mono text-[10px] text-fg-subtle mt-0.5">[F]</span>
-    <div class="min-w-0 flex-1">
-      <div class="flex items-center gap-2">
-        <p class="truncate text-[13px] font-medium text-fg">{meta.title || item.summary}</p>
-        <ToolDecisionChip decision={item.decision} />
-        {#if completionStatus !== null}
-          <CompletionBadge status={completionStatus} class="ml-auto opacity-80" />
-        {/if}
-      </div>
+<div class="group/tool overflow-hidden" data-testid="tool-result-card">
+  <TranscriptDisclosureHeader
+    expanded={false}
+    expandable={false}
+    testId="tool-result-row-toggle"
+    class="rounded-[var(--radius-control)] px-1 py-1 text-[12px] text-fg-muted"
+  >
+    {#snippet icon()}<ToolKindIcon kind="generic" ariaLabel="output" />{/snippet}
+    {#snippet label()}<span>output</span>{/snippet}
+    {#snippet body()}
+      <p class="min-w-0 truncate text-[12px] text-fg-muted/75">{meta.title || item.summary}</p>
+    {/snippet}
+    {#snippet actions()}
+      <ToolDecisionChip decision={item.decision} />
+      <ToolHeaderMeta statusSlotTestId="tool-result-status-slot" class="ml-auto">
+        {#snippet status()}<Indicator state={completionStatus === 'failure' ? indicatorState : null} />{/snippet}
+      </ToolHeaderMeta>
+    {/snippet}
+  </TranscriptDisclosureHeader>
+
+  {#if detailText || hasInlineDiff}
+    <div class="ml-[5.25rem] px-3 pb-1">
       {#if detailText}
-        <div class="mt-1">
+        <div>
           <LazyContentBlock {pane} payloadId={undefined} preview={detailText} />
         </div>
       {/if}
       {#if hasInlineDiff}
         <div class="mt-2 flex flex-wrap gap-2" data-testid="tool-result-inline-diffs">
           {#each meta.inlineDiff?.files ?? [] as file (file.path)}
-            <!--
-              Each chip is a span with a sibling EditorLink. The chip
-              itself isn't a clickable target (the parent card has its
-              own toggle below), so the EditorLink doesn't need
-              stopPropagation here — but we keep the icon visible at
-              rest because the chip otherwise has no affordance for
-              opening the file.
-            -->
             <span class="group/chip inline-flex items-center gap-2 rounded-full px-2 py-1 text-[11px] {kindClasses(file)}">
               <span class="font-mono">{fileLabel(file)}</span>
               {#if file.insertions || file.deletions}
@@ -153,7 +165,13 @@
         </div>
       {/if}
     </div>
-  </div>
+  {/if}
+
+  {#if rowError}
+    <div class="ml-[5.25rem] px-3 pb-1">
+      <RowError tone={rowError.tone} msg={rowError.msg} />
+    </div>
+  {/if}
 
   {#if hasExactPatch}
     <div class="group/patch border-t border-border">

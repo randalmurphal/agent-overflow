@@ -35,7 +35,7 @@
 
 <span class="flex shrink-0 items-center gap-2 {className}">
   <span
-    class="inline-flex shrink-0 items-center justify-end min-w-[3.5rem]"
+    class="inline-flex min-w-5 shrink-0 items-center justify-center"
     data-testid={statusSlotTestId}
   >
     {#if status}

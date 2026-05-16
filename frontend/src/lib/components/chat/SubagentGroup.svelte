@@ -27,7 +27,6 @@
 
   import type { Snippet } from 'svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
-  import CompletionBadge from './CompletionBadge.svelte';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import { parseJsonObject } from '../../utils/parseJsonObject';
@@ -41,6 +40,9 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { SubagentGroupNode, TimelineNode } from '../../utils/subagentGrouping';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
+  import Indicator from './Indicator.svelte';
+  import RowError from './RowError.svelte';
+  import { indicatorAriaLabel, indicatorStateForItem, rowErrorForStatus } from './rowState';
 
   let {
     pane,
@@ -110,7 +112,7 @@
   // utils/claudeSubagentLabel.ts for the resolution rules. The
   // latest-action row below is always present and swaps from
   // "Initializing..." once child work lands.
-  let label = $derived(deriveClaudeSubagentLabel(inputObject, parentToolName));
+  let agentTitle = $derived(deriveClaudeSubagentLabel(inputObject, parentToolName));
   let modelLabel = $derived(
     deriveClaudeSubagentModelLabel(inputObject, parentMeta, parentToolName),
   );
@@ -152,6 +154,14 @@
   let completionStatus = $derived(
     deriveCompletionStatus(parent, { meta: payloadMeta }),
   );
+  let indicatorState = $derived(indicatorStateForItem(parent, { meta: payloadMeta }));
+  let rowError = $derived.by(() => {
+    if (completionStatus !== 'failure') return null;
+    return rowErrorForStatus(parent.status, 'Agent failed') ?? {
+      tone: 'error' as const,
+      msg: 'Agent failed',
+    };
+  });
 
   let entryCountLabel = $derived.by(() => {
     if (group.descendantCount === 0) return '';
@@ -174,7 +184,7 @@
   </div>
 {:else}
   <div
-    class="group/tool mb-1.5 overflow-hidden"
+    class="group/tool overflow-hidden"
     style="margin-left: {indentRem}rem"
     data-testid="subagent-group"
     data-tool-kind="robot"
@@ -186,14 +196,16 @@
       class="rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
       onToggle={() => toggle()}
     >
-      <ToolKindIcon kind="robot" ariaLabel="Subagent" />
+      {#snippet icon()}<ToolKindIcon kind="robot" ariaLabel="agent" />{/snippet}
+      {#snippet label()}<span data-testid="subagent-group-gutter-label">agent</span>{/snippet}
+      {#snippet body()}
       <span class="min-w-0 flex-1">
         <span class="flex min-w-0 items-center gap-2">
           <span
-            class="text-[11px] font-medium text-fg-muted shrink-0 tracking-[0.04em] uppercase"
+            class="text-[12px] text-fg-muted shrink-0"
             data-testid="subagent-group-label"
           >
-            {label}{#if modelLabel}<span class="ml-1 text-fg-hint normal-case tracking-normal">({modelLabel})</span>{/if}
+            {agentTitle}{#if modelLabel}<span class="ml-1 text-fg-hint normal-case tracking-normal">({modelLabel})</span>{/if}
           </span>
           {#if inputDescription}
             <span class="min-w-0 truncate text-[12px] text-fg-muted/75" data-testid="subagent-group-description">
@@ -206,6 +218,7 @@
           {previewText}
         </span>
       </span>
+      {/snippet}
       {#snippet actions()}
         {#if entryCountLabel}
           <span
@@ -221,36 +234,26 @@
           duration={{ testId: 'subagent-group-duration', label: elapsedLabel }}
         >
           {#snippet status()}
-            {#if runningLabel !== null}
-              {#if isBackgroundedLaunch}
-                <span
-                  class="text-[20px] leading-none text-accent opacity-90 transition-opacity group-hover/tool:opacity-100"
-                  data-testid="subagent-group-status"
-                  data-status={parent.status}
-                  title="Running in background"
-                  aria-label="Backgrounded"
-                >
-                  …
-                </span>
-              {:else}
-                <span
-                  class="text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
-                  data-testid="subagent-group-status"
-                  data-status={parent.status}
-                >
-                  {runningLabel}
-                </span>
-              {/if}
-            {:else if completionStatus !== null}
-              <CompletionBadge
-                status={completionStatus}
-                class="opacity-80 transition-opacity group-hover/tool:opacity-100"
-              />
+            {#if runningLabel !== null || completionStatus === 'failure'}
+              <span
+                data-testid="subagent-group-status"
+                data-status={parent.status}
+                data-state={indicatorState}
+                aria-label={indicatorAriaLabel(indicatorState)}
+              >
+                <Indicator state={indicatorState} />
+              </span>
             {/if}
           {/snippet}
         </ToolHeaderMeta>
       {/snippet}
     </TranscriptDisclosureHeader>
+
+    {#if rowError}
+      <div class="ml-[5.25rem] px-3 pb-1" data-testid="subagent-group-error">
+        <RowError tone={rowError.tone} msg={rowError.msg} />
+      </div>
+    {/if}
 
     {#if expanded}
       <div

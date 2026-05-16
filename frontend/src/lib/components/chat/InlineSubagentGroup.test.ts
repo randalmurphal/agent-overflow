@@ -54,7 +54,7 @@ describe('<InlineSubagentGroup>', () => {
       props: { group, startDepth: 1 },
     });
 
-    expect(getByTestId('inline-subagent-group-label').textContent).toContain('Running Agents');
+    expect(getByTestId('inline-subagent-group-label').textContent).toContain('agent');
     expect(getByTestId('inline-subagent-group-meta').textContent?.trim()).toBe('2 agents · 2 running · 3 entries');
     expect(queryByTestId('inline-subagent-group-toggle')).toBeNull();
 

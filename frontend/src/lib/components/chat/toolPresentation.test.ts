@@ -89,6 +89,65 @@ describe('resolveToolPresentation', () => {
     expect(presentation.kind).toBe('collab');
   });
 
+  it('routes Claude Agent and Task rows to agent presentation', () => {
+    for (const toolName of ['Agent', 'Task']) {
+      const item = makeItem({
+        kind: 'tool_call',
+        status: 'running',
+        toolName,
+      });
+
+      const presentation = resolveToolPresentation({ item, provider: 'claude' });
+
+      expect(presentation.kind).toBe('agent');
+      if (presentation.kind !== 'agent') return;
+      expect(presentation.item).toBe(item);
+    }
+  });
+
+  it('keeps non-Codex collab_agent on the generic presentation path', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'running',
+      toolName: 'collab_agent',
+    });
+
+    expect(resolveToolPresentation({ item, provider: 'claude' }).kind).toBe('generic');
+  });
+
+  it('routes tray Claude Agent rows with launch and completion context', () => {
+    const launch = makeItem({
+      id: 'agent-launch',
+      kind: 'tool_call',
+      status: 'running',
+      toolName: 'Agent',
+      summary: 'Agent: explore',
+    });
+    const completion = makeItem({
+      id: 'agent-complete',
+      kind: 'tool_completion',
+      status: 'completed',
+      completionOf: launch.id,
+      toolName: 'Agent',
+      payloadId: 'agent-payload',
+    });
+
+    const presentation = resolveToolPresentation({
+      item: completion,
+      provider: 'claude',
+      surface: 'tray',
+      displayItem: launch,
+      statusItem: completion,
+      outputItem: completion,
+    });
+
+    expect(presentation.kind).toBe('agent');
+    if (presentation.kind !== 'agent') return;
+    expect(presentation.item).toBe(completion);
+    expect(presentation.displayItem).toBe(launch);
+    expect(presentation.statusItem).toBe(completion);
+  });
+
   it('routes proposed plan payloads', () => {
     const item = makeItem({
       payloadId: 'payload-plan',

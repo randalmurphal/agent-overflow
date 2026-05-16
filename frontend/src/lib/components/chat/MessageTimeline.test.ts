@@ -150,7 +150,7 @@ describe('<MessageTimeline>', () => {
     const pane = await buildPane(makeThread({ provider: 'codex' }), [wait]);
     const { getByTestId, queryByTestId } = render(MessageTimeline, { props: { pane } });
 
-    expect(getByTestId('terminal-interaction-row').textContent?.trim()).toBe(
+    expect(getByTestId('terminal-interaction-row').textContent).toContain(
       'Waiting for background terminal',
     );
     expect(queryByTestId('wait-group-children')).toBeNull();
@@ -158,12 +158,12 @@ describe('<MessageTimeline>', () => {
     pane.upsertItems([completion, completedWait]);
     await tick();
 
-    expect(getByTestId('terminal-interaction-row').textContent?.trim()).toBe(
+    expect(getByTestId('terminal-interaction-row').textContent).toContain(
       'Waited for background terminal',
     );
     expect(queryByTestId('wait-group-children')).toBeNull();
     expect(getByTestId('command-output-row').textContent).toContain('sleep 1; echo done');
-    expect(getByTestId('command-output-row').textContent).toContain('error code 1');
+    expect(getByTestId('command-output-row').textContent).toContain('exit 1');
   });
 
   it('hides redundant Codex wait_agent completion signals when child completions are grouped', async () => {
@@ -428,7 +428,7 @@ describe('<MessageTimeline>', () => {
 
     const { getByTestId, getAllByTestId, queryByTestId } = render(MessageTimeline, { props: { pane } });
 
-    expect(getByTestId('inline-subagent-group-label').textContent).toContain('Running Agents');
+    expect(getByTestId('inline-subagent-group-label').textContent).toContain('agent');
     expect(getByTestId('inline-subagent-group-meta').textContent).toContain('2 agents');
     expect(queryByTestId('inline-subagent-group-toggle')).toBeNull();
     expect(getAllByTestId('subagent-group')).toHaveLength(2);

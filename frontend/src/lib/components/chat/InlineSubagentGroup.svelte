@@ -28,12 +28,7 @@
     return count;
   });
 
-  const label = $derived.by(() => {
-    if (runningCount === 0) {
-      return group.memberCount === 1 ? 'Agent' : 'Agents';
-    }
-    return runningCount === 1 ? 'Running Agent' : 'Running Agents';
-  });
+  const label = $derived('agent');
 
   const metaLabel = $derived.by(() => {
     const agentLabel = `${group.memberCount} ${group.memberCount === 1 ? 'agent' : 'agents'}`;
@@ -47,8 +42,8 @@
 
 <div
   class={group.memberCount > 1
-    ? 'mb-1.5 border-l border-border-subtle pl-2'
-    : 'mb-1.5'}
+    ? 'border-l border-border-subtle pl-2'
+    : ''}
   data-testid="inline-subagent-group"
   data-agent-count={group.memberCount}
   data-running-count={runningCount}
@@ -59,7 +54,7 @@
       data-testid="inline-subagent-group-header"
     >
       <ToolKindIcon kind="robot" ariaLabel="Inline Subagents" />
-      <span class="shrink-0 font-medium uppercase tracking-[0.04em]" data-testid="inline-subagent-group-label">
+      <span class="w-12 shrink-0 text-[11px] text-fg-hint" data-testid="inline-subagent-group-label">
         {label}
       </span>
       <span class="min-w-0 truncate tabular-nums text-[10px]" data-testid="inline-subagent-group-meta">

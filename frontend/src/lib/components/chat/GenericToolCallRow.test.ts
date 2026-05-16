@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import AgentRow from './AgentRow.svelte';
 import GenericToolCallRow from './GenericToolCallRow.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeItem } from '../../../test/helpers/chat';
@@ -120,7 +121,7 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0, '/home/user/repo']);
   });
 
-  it('places the completion badge before the timestamp', () => {
+  it('places the empty indicator slot before the timestamp', () => {
     const item = makeItem({
       kind: 'tool_call',
       status: 'completed',
@@ -130,10 +131,10 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
 
     const { getByTestId } = render(GenericToolCallRow, { props: { item } });
 
-    expectBefore(getByTestId('completion-badge'), getByTestId('tool-call-card-time'));
+    expectBefore(getByTestId('tool-call-card-status-slot'), getByTestId('tool-call-card-time'));
   });
 
-  it('renders the backgrounded "…" badge larger than the inline running label', () => {
+  it('renders the backgrounded indicator state', () => {
     const item = makeItem({
       kind: 'tool_call',
       status: 'running',
@@ -143,12 +144,9 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     });
     const { getByTestId } = render(GenericToolCallRow, { props: { item } });
     const status = getByTestId('tool-call-card-status');
-    expect(status.textContent?.trim()).toBe('…');
-    expect(status.getAttribute('aria-label')).toBe('Backgrounded');
-    // The backgrounded variant uses a much larger font so the affordance
-    // is visible without hover. The inline running label uses 10px.
-    expect(status.className).toContain('text-[20px]');
-    expect(status.className).not.toContain('text-[10px]');
+    const indicator = status.querySelector('[data-testid="indicator"]');
+    expect(indicator?.getAttribute('data-state')).toBe('backgrounded');
+    expect(indicator?.getAttribute('aria-label')).toBe('Backgrounded');
   });
 
   it('suppresses the live duration ticker on a backgrounded launch row so chat history shows only a timestamp', () => {
@@ -216,15 +214,14 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
         input: { subagent_type: 'Explore', description: 'Review: security' },
       }),
     });
-    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
-    const label = getByTestId('tool-call-card-label');
-    expect(label.textContent).toContain('Explore');
-    expect(label.textContent).not.toContain('Subagent');
-    expect(getByTestId('tool-call-card-model').textContent).toContain('Opus 4.7');
+    const { getByTestId } = render(AgentRow, { props: { item } });
     // Preview shows just the description, not the "Agent: …" summary
     // line the generic preview formatter would otherwise emit.
-    const preview = getByTestId('tool-call-card-preview');
-    expect(preview.textContent?.trim()).toBe('Review: security');
+    const preview = getByTestId('agent-row-preview');
+    expect(getByTestId('agent-row-label').textContent).toBe('agent');
+    expect(preview.textContent).toContain('Explore');
+    expect(preview.textContent).toContain('Opus 4.7');
+    expect(preview.textContent).toContain('Review: security');
     expect(preview.textContent).not.toContain('Agent:');
   });
 
@@ -245,8 +242,27 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
         input: { subagent_type: 'Explore', description: 'Just launched', model: 'opus' },
       }),
     });
-    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
-    expect(getByTestId('tool-call-card-model').textContent).toContain('Opus');
+    const { getByTestId } = render(AgentRow, { props: { item } });
+    expect(getByTestId('agent-row-preview').textContent).toContain('Opus');
+  });
+
+  it('treats legacy Task rows as Claude Agent rows for label and model derivation', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'running',
+      isBackground: true,
+      toolName: 'Task',
+      summary: 'Task: launching',
+      payloadMeta: JSON.stringify({
+        toolName: 'Task',
+        input: { subagent_type: 'Explore', description: 'Legacy task launch', model: 'opus' },
+      }),
+    });
+    const { getByTestId } = render(AgentRow, { props: { item } });
+    const preview = getByTestId('agent-row-preview').textContent ?? '';
+    expect(preview).toContain('Explore');
+    expect(preview).toContain('Opus');
+    expect(preview).toContain('Legacy task launch');
   });
 
   it('falls back to "Agent" (not "Subagent") when subagent_type is missing on an Agent row', () => {
@@ -264,10 +280,10 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
         input: { description: 'do something' },
       }),
     });
-    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
-    const label = getByTestId('tool-call-card-label');
-    expect(label.textContent).toContain('Agent');
-    expect(label.textContent).not.toContain('Subagent');
+    const { getByTestId } = render(AgentRow, { props: { item } });
+    const preview = getByTestId('agent-row-preview');
+    expect(preview.textContent).toContain('Agent');
+    expect(preview.textContent).not.toContain('Subagent');
   });
 
   it('falls through to the generic preview when an Agent row has no description or prompt', () => {
@@ -287,14 +303,12 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
         input: { subagent_type: 'Explore' },
       }),
     });
-    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
+    const { getByTestId } = render(AgentRow, { props: { item } });
     // Label still renders as "Explore" (the subagent_type), and the
     // preview falls through to toolCardInputPreview which returns
     // item.summary.
-    expect(getByTestId('tool-call-card-label').textContent).toContain('Explore');
-    expect(getByTestId('tool-call-card-preview').textContent?.trim()).toBe(
-      'Agent: fallback preview',
-    );
+    expect(getByTestId('agent-row-preview').textContent).toContain('Explore');
+    expect(getByTestId('agent-row-preview').textContent).toContain('Agent: fallback preview');
   });
 
   it('suppresses the dropdown for TaskOutput rows even when a payload exists', async () => {
@@ -363,11 +377,11 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
       summary: 'Agent: worker -> done',
       payloadId: 'agent-jsonl',
     });
-    const { getByTestId, getAllByTestId, queryByText } = render(GenericToolCallRow, {
+    const { getByTestId, getAllByTestId, queryByText } = render(AgentRow, {
       props: { item },
     });
 
-    await fireEvent.click(getByTestId('tool-call-card-toggle'));
+    await fireEvent.click(getByTestId('agent-row-toggle'));
 
     await waitFor(() => {
       expect(getByTestId('claude-subagent-transcript')).toBeInTheDocument();

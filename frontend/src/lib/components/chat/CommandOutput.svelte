@@ -1,16 +1,10 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  import Terminal from 'lucide-svelte/icons/terminal';
-  import Icon from '../primitives/Icon.svelte';
   import CopyFooter from './CopyFooter.svelte';
-  import CompletionBadge from './CompletionBadge.svelte';
   import { untrack } from 'svelte';
   import type { CommandOutputMeta, Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import {
-    completionBadgeTitleForStatus,
-    deriveCompletionStatus,
-  } from '../../utils/toolCompletionStatus';
+  import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import {
     createPayloadExpansion,
@@ -19,20 +13,23 @@
   } from '../../utils/payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
   import {
-    commandErrorLineForItem,
+    commandErrorForItem,
     commandTextForItem,
     displayCommandForItem,
   } from './commandDisplay';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
+  import ToolKindIcon from './ToolKindIcon.svelte';
+  import Indicator from './Indicator.svelte';
+  import RowError from './RowError.svelte';
+  import { indicatorAriaLabel, indicatorStateForItem, rowErrorForStatus } from './rowState';
 
   let {
     pane,
     item,
     meta,
     payloadId,
-    showCompletionBadge = true,
     displayItem,
     statusItem,
     collapsedPreview = '',
@@ -44,11 +41,6 @@
     item: Item;
     meta?: CommandOutputMeta | null;
     payloadId?: string;
-    /** Suppress the completion badge in surfaces where the parent
-     * already renders a status icon (e.g. BackgroundTaskTrayRow's
-     * Loader/Check/AlertCircle/Square). Defaults to true so the
-     * chat-timeline rendering is unaffected. */
-    showCompletionBadge?: boolean;
     /** Item used for command extraction and user-facing command text. */
     displayItem?: Item;
     /** Item used for status/badge derivation. Useful for launch+completion pairs. */
@@ -115,19 +107,17 @@
       meta: statusMeta ?? (meta as unknown as Record<string, unknown> | undefined),
     }),
   );
-  let completionTitle = $derived(completionBadgeTitleForStatus(effectiveStatusItem.status));
-  let errorLine = $derived(
-    completionStatus === 'failure' &&
-      effectiveStatusItem.status !== 'killed' &&
-      effectiveStatusItem.status !== 'declined'
-      ? commandErrorLineForItem(item, meta, itemMeta, statusMeta ?? payloadMeta)
-      : '',
-  );
-  let isForegroundRunning = $derived(
-    !isBackgroundedLaunch && (effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming'),
-  );
-  let statusSlotHasContent = $derived(
-    isBackgroundedLaunch || isForegroundRunning || (showCompletionBadge && completionStatus !== null),
+  let commandError = $derived.by(() => {
+    if (completionStatus !== 'failure') return rowErrorForStatus(effectiveStatusItem.status, 'Command failed');
+    const statusError = rowErrorForStatus(effectiveStatusItem.status, 'Command failed');
+    if (statusError && effectiveStatusItem.status !== 'errored') return statusError;
+    const error = commandErrorForItem(item, meta, itemMeta, statusMeta ?? payloadMeta);
+    return { tone: 'error' as const, ...error };
+  });
+  let indicatorState = $derived(
+    indicatorStateForItem(effectiveStatusItem, {
+      meta: statusMeta ?? (meta as unknown as Record<string, unknown> | undefined),
+    }),
   );
   let compactCollapsedPreview = $derived.by(() => {
     const normalized = collapsedPreview.replace(/\s+/g, ' ').trim();
@@ -139,13 +129,15 @@
 </script>
 
 <div class="group/tool overflow-hidden" data-testid="command-output-row">
-  {#snippet headerContent()}
-    <span class="flex size-3.5 shrink-0 items-center justify-center text-text-secondary" data-testid="command-output-icon" aria-hidden="true">
-      <Icon icon={Terminal} size={14} strokeWidth={2} class="opacity-75" />
-    </span>
-    <span class="shrink-0 text-[11px] font-medium text-fg-muted uppercase tracking-[0.04em]" data-testid="command-output-label">
-      Bash
-    </span>
+  {#snippet headerIcon()}
+    <span data-testid="command-output-icon"><ToolKindIcon kind="terminal" ariaLabel="bash" /></span>
+  {/snippet}
+
+  {#snippet headerLabel()}
+    <span data-testid="command-output-label">bash</span>
+  {/snippet}
+
+  {#snippet headerBody()}
     <span class="min-w-0 flex-1 truncate font-mono text-[12px] text-fg-muted" data-testid="command-output-command">{displayCommand}</span>
   {/snippet}
 
@@ -160,28 +152,14 @@
       {trailingActions}
     >
       {#snippet status()}
-        {#if statusSlotHasContent}
-          {#if isBackgroundedLaunch}
-            <span
-              class="shrink-0 text-[20px] leading-none text-accent opacity-90 transition-opacity"
-              data-testid="command-output-status"
-              title="Running in background"
-              aria-label="Backgrounded"
-            >
-              …
-            </span>
-          {:else if isForegroundRunning}
-            <span
-              class="shrink-0 text-[20px] leading-none text-accent opacity-90 animate-pulse"
-              data-testid="command-output-status"
-              title="Running"
-              aria-label="Running"
-            >
-              …
-            </span>
-          {:else if showCompletionBadge && completionStatus !== null}
-            <CompletionBadge status={completionStatus} title={completionTitle} />
-          {/if}
+        {#if indicatorState}
+          <span
+            data-testid="command-output-status"
+            data-state={indicatorState}
+            aria-label={indicatorAriaLabel(indicatorState)}
+          >
+            <Indicator state={indicatorState} class="command-output-status" />
+          </span>
         {/if}
       {/snippet}
     </ToolHeaderMeta>
@@ -197,17 +175,17 @@
     class="rounded-[var(--radius-control)] px-1 py-1 text-[12px] {hasBody ? 'hover:bg-surface-2/20' : ''}"
     onToggle={() => expansion.toggle()}
   >
-    {@render headerContent()}
+    {#snippet icon()}{@render headerIcon()}{/snippet}
+    {#snippet label()}{@render headerLabel()}{/snippet}
+    {#snippet body()}{@render headerBody()}{/snippet}
     {#snippet actions()}
       {@render headerActions()}
     {/snippet}
   </TranscriptDisclosureHeader>
 
-  {#if errorLine}
-    <div class="ml-5 border-l border-border-subtle px-3 pb-1">
-      <p class="text-[11px] leading-relaxed text-error" data-testid="command-output-error">
-        {errorLine}
-      </p>
+  {#if commandError}
+    <div class="ml-[5.25rem] px-3 pb-1" data-testid="command-output-error">
+      <RowError tone={commandError.tone} code={commandError.code} msg={commandError.msg} />
     </div>
   {/if}
   {#if compactCollapsedPreview && !expansion.expanded}

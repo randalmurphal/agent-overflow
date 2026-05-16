@@ -46,7 +46,9 @@ describe('<TerminalInteractionRow>', () => {
     const { getByTestId } = render(TerminalInteractionRow, { props: { item } });
     const row = getByTestId('terminal-interaction-row');
 
-    expect(row.textContent?.trim()).toBe('Waiting for background terminal');
+    expect(row.textContent).toContain('terminal');
+    expect(row.textContent).toContain('Waiting for background terminal');
+    expect(getByTestId('indicator').getAttribute('data-state')).toBe('running');
     expect(row.textContent).not.toContain('running');
   });
 
@@ -71,15 +73,11 @@ describe('<TerminalInteractionRow>', () => {
     });
     const { getByRole, getByTestId } = render(TerminalInteractionRow, { props: { item } });
 
-    expect(getByTestId('terminal-interaction-row').textContent?.trim()).toBe('Waited for background terminal');
+    expect(getByTestId('terminal-interaction-row').textContent).toContain('Waited for background terminal');
     expect(getByTestId('command-output-row')).toBeInTheDocument();
     const toggle = getByRole('button', { name: /Toggle command output: sleep 1; echo done/i });
     expect(toggle.textContent).toContain('sleep 1; echo done');
-    // exit-code text is gone; the unified completion badge carries the
-    // success/failure signal now (success because exitCode === 0). It
-    // sits in the stable header action slot, outside the toggle button
-    // so future interactive actions cannot become nested controls.
-    expect(getByTestId('completion-badge').getAttribute('data-status')).toBe('success');
+    expect(getByTestId('command-output-status-slot').querySelector('[data-testid="indicator"]')).toBeNull();
   });
 
   it('does not render a duplicate command shell before a completion child attaches', () => {
@@ -88,7 +86,7 @@ describe('<TerminalInteractionRow>', () => {
     });
     const { getByTestId, queryByRole, queryByTestId } = render(TerminalInteractionRow, { props: { item } });
 
-    expect(getByTestId('terminal-interaction-row').textContent?.trim()).toBe('Waited for background terminal');
+    expect(getByTestId('terminal-interaction-row').textContent).toContain('Waited for background terminal');
     expect(queryByRole('button', { name: /Toggle command output/i })).toBeNull();
     expect(queryByTestId('completion-badge')).toBeNull();
   });
@@ -100,7 +98,7 @@ describe('<TerminalInteractionRow>', () => {
     });
     const { getByTestId, queryByRole } = render(TerminalInteractionRow, { props: { item } });
 
-    expect(getByTestId('terminal-interaction-row').textContent?.trim()).toBe('Waited for background terminal');
+    expect(getByTestId('terminal-interaction-row').textContent).toContain('Waited for background terminal');
     expect(queryByRole('button', { name: /sleep 1; echo done/i })).toBeNull();
   });
 });

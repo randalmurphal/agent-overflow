@@ -2,13 +2,9 @@
   import type { Snippet } from 'svelte';
   import { untrack } from 'svelte';
   import CopyFooter from './CopyFooter.svelte';
-  import CompletionBadge from './CompletionBadge.svelte';
   import type { Item } from '../../types/models';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
-  import {
-    completionBadgeTitleForStatus,
-    deriveCompletionStatus,
-  } from '../../utils/toolCompletionStatus';
+  import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   import { classifyToolName } from './toolCardHeader';
@@ -20,26 +16,15 @@
     keepExpandedPayloadFresh,
   } from '../../utils/payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
-  import ClaudeSubagentTranscript from './ClaudeSubagentTranscript.svelte';
   import EditorLink from '../common/EditorLink.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import { isCodexSubagentLaunchItem } from '../../utils/subagentLaunch';
-  import { parseClaudeSubagentTranscript } from '../../utils/claudeSubagentTranscript';
-  import {
-    deriveClaudeSubagentDescription,
-    deriveClaudeSubagentLabel,
-    deriveClaudeSubagentModelLabel,
-    readClaudeSubagentInput,
-  } from '../../utils/claudeSubagentLabel';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
+  import Indicator from './Indicator.svelte';
+  import RowError from './RowError.svelte';
+  import { indicatorAriaLabel, indicatorStateForItem, rowErrorForStatus } from './rowState';
 
-  // Threshold (ms) at which the running row starts displaying elapsed
-  // time in the duration slot. Sub-2s tools (most Read/Edit/Write/etc.)
-  // would just churn the digits up to "1s" and finish before anyone
-  // could read it; gating on >=2s keeps the transcript quiet for the
-  // common case while still surfacing progress on slow Bash/MultiEdit/
-  // network-bound tools.
   const RUNNING_ELAPSED_THRESHOLD_MS = 2_000;
 
   let {
@@ -53,28 +38,16 @@
   }: {
     pane?: ThreadPane;
     item: Item;
-    /** Item used for the tool label/input preview. */
     displayItem?: Item;
-    /** Item used for running/completion status. */
     statusItem?: Item;
-    /** Optional duration/elapsed label rendered in the metadata slot. */
     durationLabel?: string;
-    /** Tray surfaces show elapsed time instead of the absolute transcript timestamp. */
     showTimestamp?: boolean;
-    /** Optional actions rendered outside the disclosure button. */
     trailingActions?: Snippet;
   } = $props();
   let effectiveDisplayItem = $derived(displayItem ?? item);
   let effectiveStatusItem = $derived(statusItem ?? item);
 
   let classification = $derived(classifyToolName(effectiveDisplayItem.toolName ?? effectiveDisplayItem.summary));
-  // Use the pane's per-itemId registry when available so expand/collapse
-  // and loaded chunks survive virtua's overscan eviction. Falls back to
-  // local state when rendered outside a pane (e.g. unit tests or surfaces
-  // that haven't been plumbed yet). The registry reads through to the
-  // live Item, so payload_id enrichment is picked up without a reset.
-  // pane is stable across a row's lifetime; intentionally read once via
-  // `untrack` so the local fallback is created exactly when needed.
   const localFallback = untrack(() =>
     pane
       ? null
@@ -98,37 +71,10 @@
     }),
   );
 
-  // Claude Agent rows reuse SubagentGroup's title-case label, model
-  // affix, and description treatment via the shared util so the
-  // chat/tray surface matches the inline card. Non-Agent rows
-  // short-circuit through isClaudeAgent.
-  let isClaudeAgent = $derived((effectiveDisplayItem.toolName ?? '') === 'Agent');
-  let agentInputObject = $derived(
-    isClaudeAgent ? readClaudeSubagentInput(summaryMeta, displayMeta) : null,
-  );
-  let subagentLabel = $derived(
-    isClaudeAgent ? deriveClaudeSubagentLabel(agentInputObject, 'Agent') : '',
-  );
-  let subagentModelLabel = $derived(
-    isClaudeAgent ? deriveClaudeSubagentModelLabel(agentInputObject, displayMeta, 'Agent') : '',
-  );
-  let subagentDescription = $derived(
-    isClaudeAgent ? deriveClaudeSubagentDescription(agentInputObject) : '',
-  );
-  // subagentLabel is always non-empty when isClaudeAgent (the helper
-  // falls back through subagent_type → "Agent"), so the gate is just
-  // isClaudeAgent.
-  let displayLabel = $derived(isClaudeAgent ? subagentLabel : classification.label);
-
   let inputPreview = $derived.by<string>(() => {
-    if (isClaudeAgent && subagentDescription) return subagentDescription;
     return toolCardInputPreview(effectiveDisplayItem, classification, summaryMeta, displayMeta);
   });
 
-  // When the preview leads with a path, surface a sibling EditorLink
-  // so the row is launchable without forcing the user to expand it.
-  // The detection is a leading-only match — see decodeToolCardPreview
-  // for why we don't linkify mid-sentence path tokens.
   let previewDecoded = $derived(decodeToolCardPreview(inputPreview));
 
   let durationMs = $derived.by<number | null>(() => {
@@ -138,10 +84,6 @@
     return null;
   });
 
-  // Backgrounded launch rows are stable transcript records. Regular
-  // backgrounded tools keep the `…` affordance for the lifetime of the
-  // row; Codex spawn_agent rows are informational child-thread markers,
-  // so their running state lives in the tray instead.
   let isBackgroundedLaunch = $derived(
     effectiveStatusItem.kind === 'tool_call' && effectiveStatusItem.isBackground === true,
   );
@@ -155,25 +97,18 @@
   });
 
   let completionStatus = $derived(deriveCompletionStatus(effectiveStatusItem, { meta: statusMeta }));
-  let completionTitle = $derived(completionBadgeTitleForStatus(effectiveStatusItem.status));
-  // Backgrounded launch rows are stable transcript records — they keep
-  // the `…` affordance for the row's lifetime, but a live wall-clock
-  // ticker in chat history is misleading (the user can't act on it
-  // from the chat row; the tray is the live-status surface). Suppress
-  // the internal ticker; the launch shows just its timestamp while
-  // running, the eventual completion appears as its own sibling row
-  // with its own durationMs. The tray surface passes a non-empty
-  // `durationLabel` so its live elapsed display is unaffected.
+  let indicatorState = $derived(indicatorStateForItem(effectiveStatusItem, { meta: statusMeta }));
+  let rowError = $derived.by(() => {
+    if (completionStatus !== 'failure') return null;
+    return rowErrorForStatus(effectiveStatusItem.status, 'Tool call failed') ?? {
+      tone: 'error' as const,
+      msg: 'Tool call failed',
+    };
+  });
   let shouldTickElapsed = $derived(
     runningLabel !== null && durationLabel === '' && !isBackgroundedLaunch,
   );
 
-  // Wall-clock ticker, paused when the row isn't running. Mirrors the
-  // SubagentGroup elapsed-display pattern: the interval clears on
-  // running → done (because the effect re-runs when runningLabel
-  // flips) and on virtua remount (effect cleanup). Only one timer per
-  // visible running row; rows scrolled past `bufferSize=900` stop
-  // ticking entirely.
   let now = $state(Date.now());
   $effect(() => {
     if (!shouldTickElapsed) return;
@@ -184,10 +119,6 @@
     return () => clearInterval(id);
   });
 
-  // Elapsed seconds string while the tool is running, gated on
-  // RUNNING_ELAPSED_THRESHOLD_MS so quick tools don't flash a "1s"
-  // before completing. Empty when running but under threshold so the
-  // reserved-width duration slot stays visually empty in that window.
   let runningElapsedLabel = $derived.by<string>(() => {
     if (!shouldTickElapsed) return '';
     const start = item.createdAt;
@@ -209,19 +140,7 @@
     return typeof error === 'string' ? error : '';
   });
 
-  // TaskOutput is Claude's "retrieve background-task output" tool. Its
-  // tool_result body is an XML envelope wrapping the same stdout/stderr
-  // already shown on the originating Bash row, so the dropdown is
-  // redundant noise. Render the row collapsed-only — the completion
-  // badge and timestamp still convey "model checked the output".
   let suppressBodyExpansion = $derived(item.toolName === 'TaskOutput');
-  let subagentTranscriptEntries = $derived.by(() => {
-    if (item.toolName !== 'Agent') return null;
-    const data = expansion.displayData;
-    if (data === null) return null;
-    return parseClaudeSubagentTranscript(data);
-  });
-
   let hasExpandableBody = $derived(
     !suppressBodyExpansion &&
       (Boolean(item.payloadId) ||
@@ -249,16 +168,6 @@
 
 </script>
 
-{#snippet headerContent()}
-  <ToolKindIcon kind={classification.icon} ariaLabel={classification.label} />
-  <span class="text-[11px] font-medium text-fg-muted shrink-0 uppercase tracking-[0.04em]" data-testid="tool-call-card-label">
-    {displayLabel}{#if subagentModelLabel}<span class="ml-1 text-fg-hint normal-case tracking-normal" data-testid="tool-call-card-model">({subagentModelLabel})</span>{/if}
-  </span>
-  <span class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75" data-testid="tool-call-card-preview">
-    {inputPreview}
-  </span>
-{/snippet}
-
 {#snippet headerActions()}
   {#if previewDecoded.path}
     <EditorLink
@@ -284,32 +193,15 @@
     {trailingActions}
   >
     {#snippet status()}
-      {#if runningLabel !== null}
-        {#if isBackgroundedLaunch}
-          <span
-            class="text-[20px] leading-none text-accent opacity-90 transition-opacity group-hover/tool:opacity-100"
-            data-testid="tool-call-card-status"
-            data-status={item.status}
-            title="Running in background"
-            aria-label="Backgrounded"
-          >
-            …
-          </span>
-        {:else}
-          <span
-            class="text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
-            data-testid="tool-call-card-status"
-            data-status={item.status}
-          >
-            {runningLabel}
-          </span>
-        {/if}
-      {:else if completionStatus !== null}
-        <CompletionBadge
-          status={completionStatus}
-          title={completionTitle}
-          class="opacity-80 transition-opacity group-hover/tool:opacity-100"
-        />
+      {#if indicatorState}
+        <span
+          data-testid="tool-call-card-status"
+          data-status={effectiveStatusItem.status}
+          data-state={indicatorState}
+          aria-label={indicatorAriaLabel(indicatorState)}
+        >
+          <Indicator state={indicatorState} />
+        </span>
       {/if}
     {/snippet}
   </ToolHeaderMeta>
@@ -328,11 +220,21 @@
     class="rounded-[var(--radius-control)] px-1 py-1 {hasExpandableBody ? 'hover:bg-surface-2/20' : ''}"
     onToggle={() => toggle()}
   >
-    {@render headerContent()}
+    {#snippet icon()}<ToolKindIcon kind={classification.icon} ariaLabel={classification.label} />{/snippet}
+    {#snippet label()}<span data-testid="tool-call-card-label">{classification.label}</span>{/snippet}
+    {#snippet body()}
+      <span class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75" data-testid="tool-call-card-preview">{inputPreview}</span>
+    {/snippet}
     {#snippet actions()}
       {@render headerActions()}
     {/snippet}
   </TranscriptDisclosureHeader>
+
+  {#if rowError}
+    <div class="ml-[5.25rem] px-3 pb-1">
+      <RowError tone={rowError.tone} msg={rowError.msg} />
+    </div>
+  {/if}
 
   {#if hasExpandableBody && expansion.expanded}
     <div
@@ -359,18 +261,12 @@
           </button>
         </div>
       {:else if expansion.displayData !== null}
-        {#if subagentTranscriptEntries !== null}
-          <div class="max-h-80 overflow-auto" data-testid="tool-call-card-output">
-            <ClaudeSubagentTranscript entries={subagentTranscriptEntries} />
-          </div>
-        {:else}
-          <div
-            class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 text-[11px] leading-relaxed text-fg-muted"
-            data-testid="tool-call-card-output"
-          >
-            <AnsiText source={expansion.displayData} />
-          </div>
-        {/if}
+        <div
+          class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 text-[11px] leading-relaxed text-fg-muted"
+          data-testid="tool-call-card-output"
+        >
+          <AnsiText source={expansion.displayData} />
+        </div>
         {#if expansion.hasMore}
           <button
             type="button"

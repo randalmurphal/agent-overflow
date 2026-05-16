@@ -2,6 +2,7 @@
   // One row of the activity rail's Background body. The rail owns task
   // grouping and stop dispatch; chat row components own the actual tool
   // presentation so background rows do not drift from transcript styling.
+  import AgentRow from '../chat/AgentRow.svelte';
   import CommandOutput from '../chat/CommandOutput.svelte';
   import CollabToolRow from '../chat/CollabToolRow.svelte';
   import GenericToolCallRow from '../chat/GenericToolCallRow.svelte';
@@ -83,6 +84,15 @@
         statusItem={presentation.statusItem}
         meta={presentation.meta}
         payloadId={presentation.payloadId}
+        {durationLabel}
+        showTimestamp={false}
+        trailingActions={hasStopAction ? stopAction : undefined}
+      />
+    {:else if presentation.kind === 'agent'}
+      <AgentRow
+        item={presentation.item}
+        displayItem={presentation.displayItem}
+        statusItem={presentation.statusItem}
         {durationLabel}
         showTimestamp={false}
         trailingActions={hasStopAction ? stopAction : undefined}

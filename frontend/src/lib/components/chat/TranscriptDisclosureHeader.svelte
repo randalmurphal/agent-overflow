@@ -12,7 +12,10 @@
     headerTestId?: string;
     class?: string;
     buttonClass?: string;
-    children: Snippet;
+    children?: Snippet;
+    icon?: Snippet;
+    label?: Snippet;
+    body?: Snippet;
     actions?: Snippet;
     onToggle?: (event: MouseEvent) => void | Promise<void>;
   }
@@ -27,6 +30,9 @@
     class: className = '',
     buttonClass = '',
     children,
+    icon,
+    label,
+    body,
     actions,
     onToggle,
   }: Props = $props();
@@ -71,7 +77,19 @@
     >
       <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
     </span>
-    {@render children()}
+    {#if icon || label || body}
+      <span class="flex size-3.5 shrink-0 items-center justify-center" data-testid="{testId}-icon-slot">
+        {#if icon}{@render icon()}{/if}
+      </span>
+      <span class="w-12 shrink-0 truncate text-[11px] text-fg-hint" data-testid="{testId}-label-slot">
+        {#if label}{@render label()}{/if}
+      </span>
+      <span class="min-w-0 flex-1" data-testid="{testId}-body-slot">
+        {#if body}{@render body()}{/if}
+      </span>
+    {:else if children}
+      {@render children()}
+    {/if}
   </button>
 
   {#if actions}

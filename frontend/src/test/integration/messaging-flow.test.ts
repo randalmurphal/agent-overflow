@@ -539,13 +539,8 @@ describe('App integration — messaging flow', () => {
     emitItemEventUpsert(launchItem);
     await flush();
 
-    // The inline command row renders "…" in the status chip while
-    // status=running AND isBackground=true. This is the spec's sole
-    // render signal for "work dispatched, waiting for sibling" —
-    // invariant 24 + §UI components driven by this state. The chip
-    // replaces "running"; no separate badge element is rendered.
     const status = await findByTestId('command-output-status');
-    expect(status.textContent?.trim()).toBe('…');
+    expect(status.getAttribute('data-state')).toBe('backgrounded');
     expect(status.getAttribute('aria-label')).toBe('Backgrounded');
 
     // 3. Turn ends while the backgrounded work is still in flight.
@@ -562,9 +557,7 @@ describe('App integration — messaging flow', () => {
     await waitFor(() => expect(getActiveTurn(pane.threadId)).toBeNull());
     await waitFor(() => expect(queryByTestId('activity-rail-working')).toBeNull());
 
-    // The "…" label is still present — invariant 24. The launch row
-    // renders as background+running until the sibling terminal lands.
-    expect(status.textContent?.trim()).toBe('…');
+    expect(status.getAttribute('data-state')).toBe('backgrounded');
 
     // The activity rail's Background segment now renders the launch
     // — the segment consumes pane.items and only filters by
@@ -612,23 +605,11 @@ describe('App integration — messaging flow', () => {
       expect(rowStatus.getAttribute('data-status')).toBe('completed');
     });
 
-    // Cross-cutting end-to-end check: the sibling tool_completion row
-    // in the chat timeline must render the unified success badge
-    // (kind=tool_completion + status=completed → success per
-    // deriveCompletionStatus). The launch row above it still shows
-    // `…` per the transcript-stability invariant — pin both.
-    await waitFor(async () => {
-      const badges = document.querySelectorAll('[data-testid="completion-badge"]');
-      const successBadge = Array.from(badges).find(
-        (b) => b.getAttribute('data-status') === 'success',
-      );
-      expect(successBadge).toBeDefined();
-    });
-    // The launch row keeps `…` even after the sibling completes.
+    expect(document.querySelectorAll('[data-testid="completion-badge"]')).toHaveLength(0);
     const launchStatus = document.querySelector(
       '[data-testid="command-output-status"]',
     );
-    expect(launchStatus?.textContent?.trim()).toBe('…');
+    expect(launchStatus?.getAttribute('data-state')).toBe('backgrounded');
   });
 
   // Multi-result-per-turn cascade: the backend emits one

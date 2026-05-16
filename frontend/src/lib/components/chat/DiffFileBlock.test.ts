@@ -112,26 +112,25 @@ describe('<DiffFileBlock>', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders uppercase tool label, path, and +/- counts in the header', () => {
+  it('renders lowercase tool label, path, and +/- counts in the header', () => {
     const file = makePatchFile();
     const { getByTestId } = render(DiffFileBlock, {
       props: { file, threadId: 'thread-1', toolName: 'Edit' },
     });
 
-    // Tool name renders uppercase as the label, not a kind chip.
-    expect(getByTestId('diff-file-label').textContent).toBe('EDIT');
+    expect(getByTestId('diff-file-label').textContent).toBe('edit');
     expect(getByTestId('diff-file-path').textContent).toBe('src/foo.ts');
     const counts = getByTestId('diff-file-counts').textContent ?? '';
     expect(counts).toContain('+1');
     expect(counts).toContain('-1');
   });
 
-  it('falls back to a generic DIFF label when no toolName is provided', () => {
+  it('falls back to a generic diff label when no toolName is provided', () => {
     const file = makePatchFile();
     const { getByTestId } = render(DiffFileBlock, {
       props: { file, threadId: 'thread-1' },
     });
-    expect(getByTestId('diff-file-label').textContent).toBe('DIFF');
+    expect(getByTestId('diff-file-label').textContent).toBe('diff');
   });
 
   it('renders the diff body inline by default (no expand needed)', () => {
@@ -191,12 +190,12 @@ describe('<DiffFileBlock>', () => {
   });
 
   it('renders the full body when the file is at the inline preview cap', () => {
-    const file = makeLongPatchFile(30);
+    const file = makeLongPatchFile(15);
     const { getByTestId, queryByTestId } = render(DiffFileBlock, {
       props: { file, threadId: 'thread-1' },
     });
     const bodyText = getByTestId('diff-file-body').textContent ?? '';
-    expect(bodyText).toContain('line 30;');
+    expect(bodyText).toContain('line 15;');
     expect(queryByTestId('diff-file-fade')).toBeNull();
     expect(queryByTestId('diff-file-show-full')).toBeNull();
   });
@@ -204,7 +203,7 @@ describe('<DiffFileBlock>', () => {
   it('renders a fade + sidebar CTA when the file exceeds the inline preview cap', async () => {
     const open = vi.fn();
     const pane = fakePane(open) as ThreadPane;
-    const file = makeLongPatchFile(31);
+    const file = makeLongPatchFile(16);
     const { getByTestId } = render(DiffFileBlock, {
       props: { pane, file, payloadId: 'p-long', threadId: 'thread-1' },
     });
@@ -213,8 +212,8 @@ describe('<DiffFileBlock>', () => {
     expect(cta).toBeInTheDocument();
     expect(cta.textContent ?? '').toContain('Show full diff in side panel');
     const bodyText = getByTestId('diff-file-body').textContent ?? '';
-    expect(bodyText).toContain('line 30;');
-    expect(bodyText).not.toContain('line 31;');
+    expect(bodyText).toContain('line 15;');
+    expect(bodyText).not.toContain('line 16;');
     await fireEvent.click(cta);
     expect(open).toHaveBeenCalledWith({ payloadId: 'p-long', filePath: 'src/big.ts' });
   });
@@ -248,7 +247,7 @@ describe('<DiffFileBlock>', () => {
   });
 
   it('does not render an inert long-file CTA when sidebar promotion is unavailable', () => {
-    const file = makeLongPatchFile(31);
+    const file = makeLongPatchFile(16);
     const { queryByTestId } = render(DiffFileBlock, {
       props: { file, threadId: 'thread-1' },
     });
@@ -341,7 +340,7 @@ describe('<DiffFileBlock>', () => {
     // summary→exact upgrade.
     expect(getByTestId('diff-file-block')).toBeInTheDocument();
     expect(getByTestId('diff-file-header')).toBeInTheDocument();
-    expect(getByTestId('diff-file-label').textContent).toBe('EDIT');
+    expect(getByTestId('diff-file-label').textContent).toBe('edit');
     expect(getByTestId('diff-file-path').textContent).toBe('src/loading.ts');
     // Body region absent until lines arrive.
     expect(queryByTestId('diff-file-body')).toBeNull();
