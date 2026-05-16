@@ -1,11 +1,13 @@
 <script lang="ts">
-  // Per-row pin/unpin affordance. Lives in the row's right-side hover
-  // action cluster next to archive/unarchive so the leading title column
-  // stays aligned.
+  // Per-row pin/unpin affordance. Sits in the row's leading pin slot
+  // (the gutter between the project rail and the row content). Pinned
+  // state is rendered at rest as a filled pin; unpinned rows reveal an
+  // outlined pin only on row hover / focus-within so the gutter reads
+  // empty until the user signals intent.
   //
   // Render-time guard: top-level rows only (indent ≤ 1). Discussion
   // children don't pin individually — the parent thread is the pin
-  // target for that whole subtree.
+  // target for that whole subtree. The guard lives in ThreadRow.
 
   import Pin from 'lucide-svelte/icons/pin';
   import Icon from '../primitives/Icon.svelte';
@@ -42,9 +44,12 @@
   aria-pressed={isPinned}
   title={isPinned ? 'Unpin Thread' : 'Pin Thread'}
   class={
-    'flex items-center justify-center h-5 w-5 rounded-[var(--radius-field)] shrink-0 cursor-pointer ' +
+    'flex items-center justify-center h-4 w-4 rounded-[var(--radius-field)] shrink-0 cursor-pointer ' +
     'text-fg-subtle hover:text-fg hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 ' +
-    (isPinned ? 'text-accent' : '')
+    'transition-opacity duration-150 ' +
+    (isPinned
+      ? 'text-accent opacity-100 pointer-events-auto'
+      : 'opacity-0 pointer-events-none group-hover/thread-item:opacity-100 group-hover/thread-item:pointer-events-auto group-focus-within/thread-row:opacity-100 group-focus-within/thread-row:pointer-events-auto')
   }
 >
   <Icon

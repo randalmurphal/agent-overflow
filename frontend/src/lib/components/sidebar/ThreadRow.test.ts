@@ -362,7 +362,7 @@ describe('<ThreadRow> pin affordance placement', () => {
     await refreshThreads();
   });
 
-  it('renders the title before the pin action so the leading title column stays aligned', () => {
+  it('renders the pin in the leading gutter before the title', () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, {
       props: { thread: makeThread({ pinnedAt: 1 }), pane },
@@ -370,10 +370,11 @@ describe('<ThreadRow> pin affordance placement', () => {
     const title = getByTestId('thread-row-title');
     const pin = getByTestId('thread-row-pin');
 
-    expect(title.compareDocumentPosition(pin) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    // Pin lives left of the title now — the leading-gutter slot.
+    expect(pin.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
-  it('keeps pinned state visible at rest in the right-side slot', () => {
+  it('keeps pinned state visible at rest and to the left of the timestamp', () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, {
       props: { thread: makeThread({ pinnedAt: 1 }), pane },
@@ -383,6 +384,19 @@ describe('<ThreadRow> pin affordance placement', () => {
 
     expect(pin.getAttribute('aria-label')).toBe('Unpin Thread');
     expect(pin.compareDocumentPosition(time) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  });
+
+  it('renders an unpinned pin button so row-hover can reveal it', () => {
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread(), pane },
+    });
+    const pin = getByTestId('thread-row-pin');
+
+    expect(pin.getAttribute('aria-label')).toBe('Pin Thread');
+    // Unpinned button is rendered but kept hidden until row hover/focus.
+    expect(pin.className).toContain('opacity-0');
+    expect(pin.className).toContain('group-hover/thread-item:opacity-100');
   });
 
   it('keeps the pin action out of nested discussion participant rows', () => {
@@ -811,8 +825,8 @@ describe('<ThreadRow> nested row chrome', () => {
       props: { thread: makeThread(), pane, indent: 2 },
     });
     const outer = container.querySelector('[role="button"]') as HTMLElement;
-    // Compact layout: depth 1 sits flush against the rail; depth 2+
-    // steps 8px per level. indent=2 → 8px.
-    expect(outer.style.paddingLeft).toBe('8px');
+    // Compact layout: every row reserves a 16px leading pin gutter, then
+    // depth 2+ steps 8px per nesting level. indent=2 → 16 + 8 = 24px.
+    expect(outer.style.paddingLeft).toBe('24px');
   });
 });

@@ -226,11 +226,18 @@
   // 8px per level, with a clamp at depth 3 so malformed deep chains
   // can't push titles off-screen.
   const INDENT_PX = [0, 0, 8, 16];
+  // PIN_SLOT_PX reserves the leading gutter (between the project rail
+  // and the row's first flex child) for the pin affordance. Every row
+  // reserves it — top-level rows render the pin button absolutely into
+  // it; nested rows leave it empty so titles stay aligned with their
+  // parents.
+  const PIN_SLOT_PX = 16;
   let indentPx = $derived(INDENT_PX[Math.min(indent, INDENT_PX.length - 1)]);
+  let rowPaddingLeftPx = $derived(PIN_SLOT_PX + indentPx);
 
   let worktreeName = $derived(pathBasename(thread.worktreePath));
   let showWorktreeMeta = $derived(!editing && Boolean(thread.worktreePath && worktreeName));
-  let worktreeIndentPx = $derived(indentPx);
+  let worktreeIndentPx = $derived(rowPaddingLeftPx);
   let worktreeRightPaddingPx = $derived(52);
 </script>
 
@@ -252,12 +259,24 @@
     aria-pressed={selected}
     class="group/thread-row relative flex items-center gap-1.5 h-6 pr-1 rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
       {selected || isActive ? 'text-fg' : 'text-fg-muted group-hover/thread-item:text-fg'}"
-    style="padding-left: {indentPx}px"
+    style="padding-left: {rowPaddingLeftPx}px"
     data-testid="thread-row"
     data-sidebar-thread-id={thread.id}
     data-live-status={liveStatus}
     data-effective-status={effectiveStatus}
   >
+  {#if showPinAffordance}
+    <!--
+      Leading pin slot. Absolutely positioned inside the row's reserved
+      pin gutter (PIN_SLOT_PX of padding-left) so the pin sits in the
+      gap between the project rail and the row content without
+      contributing a flex gap of its own. The wrapper is non-interactive;
+      the button inside opts back in to pointer events when visible.
+    -->
+    <div class="absolute inset-y-0 left-0 flex items-center justify-center w-4 pointer-events-none">
+      <ThreadRowPinButton {isPinned} buildCtx={ctx} />
+    </div>
+  {/if}
   {#if hasChildren}
     <button
       type="button"
@@ -325,9 +344,6 @@
       the time without pushing layout.
     -->
     <div class="ml-auto relative shrink-0 flex items-center justify-end min-w-12">
-      {#if showPinAffordance && isPinned}
-        <ThreadRowPinButton {isPinned} buildCtx={ctx} />
-      {/if}
       {#if jumpShortcut}
         <!--
           Modifier-held jump-hint pill. Fades in on the right side,
@@ -356,9 +372,6 @@
           {thread}
           onArchive={handleArchive}
           onUnarchive={handleUnarchive}
-          showPin={showPinAffordance && !isPinned}
-          {isPinned}
-          buildCtx={ctx}
         />
       </div>
     </div>

@@ -3,31 +3,24 @@
   // the relative time out and these buttons in via group-hover on the
   // parent row; see ThreadRow.svelte for the fade mechanics.
   //
-  // Other row actions (Rename, Fork, Mark Unread, Copy Path, Copy ID,
-  // Delete) live in ThreadContextMenu so the hover affordance stays compact
-  // at narrow ~200px sidebar widths.
+  // Pin/unpin lives in the row's leading slot (ThreadRowPinButton),
+  // not here. Other row actions (Rename, Fork, Mark Unread, Copy Path,
+  // Copy ID, Delete) live in ThreadContextMenu so the hover affordance
+  // stays compact at narrow ~200px sidebar widths.
 
   import Archive from 'lucide-svelte/icons/archive';
   import ArchiveRestore from 'lucide-svelte/icons/archive-restore';
   import Icon from '../primitives/Icon.svelte';
   import type { Thread } from '../../types/models';
-  import type { ThreadActionCtx } from './threadRowActions';
-  import ThreadRowPinButton from './ThreadRowPinButton.svelte';
 
   let {
     thread,
     onArchive,
     onUnarchive,
-    showPin = false,
-    isPinned = false,
-    buildCtx,
   }: {
     thread: Thread;
     onArchive: (e: MouseEvent) => void;
     onUnarchive: (e: MouseEvent) => void;
-    showPin?: boolean;
-    isPinned?: boolean;
-    buildCtx: () => ThreadActionCtx;
   } = $props();
 
   const btnClass =
@@ -35,10 +28,6 @@
     'cursor-pointer text-fg-subtle hover:text-fg hover:bg-surface-2/40 ' +
     'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40';
 </script>
-
-{#if showPin}
-  <ThreadRowPinButton {isPinned} {buildCtx} />
-{/if}
 
 {#if thread.archived}
   <button
