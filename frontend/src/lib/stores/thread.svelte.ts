@@ -1652,6 +1652,38 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return removed;
     },
 
+    /**
+     * Remove every item with `turnIndex >= fromTurnIndex` from the
+     * pane's timeline. Mirrors the backend `DeleteConversationFromTurn`
+     * truncate that revert-on-interrupt and explicit revert run under
+     * the thread lock — only `user_message:reverted` notifies the user
+     * row, so synthetic siblings on the same turn (thinking, api_retry,
+     * error, notification, terminal_interaction waits) would otherwise
+     * strand in the timeline without backing SQLite rows.
+     *
+     * Returns the removed items in their previous order so optimistic
+     * callers can restore them via `upsertItems` on rollback (the
+     * plain-interrupt fallback when the backend predicate disagrees).
+     * Idempotent: returns `[]` when no rows match.
+     */
+    removeItemsFromTurn(fromTurnIndex: number): Item[] {
+      if (!Number.isFinite(fromTurnIndex)) return [];
+      const removed: Item[] = [];
+      const kept: Item[] = [];
+      for (const it of items) {
+        if (it.turnIndex >= fromTurnIndex) removed.push(it);
+        else kept.push(it);
+      }
+      if (removed.length === 0) return removed;
+      items = kept;
+      rebuildItemIndexes(items);
+      if (thread) {
+        threadItemCache.evict(thread.id);
+      }
+      timelineRevision++;
+      return removed;
+    },
+
     applyItemDelta(evt: ItemDeltaEvent): void {
       if (!evt.itemId || !evt.delta) return;
       if (thread && evt.threadId !== thread.id) return;

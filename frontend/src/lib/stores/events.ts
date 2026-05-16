@@ -1109,21 +1109,29 @@ export function setupEventListeners(): () => void {
     },
   );
   // `user_message:reverted` fires after InterruptAndRevertIfClean rolls
-  // back the most-recent user message. The optimistic frontend path
-  // already removed the row (and was confirmed by the backend), so this
-  // handler is responsible for: (1) idempotently confirming the row
-  // removal in any pane viewing the thread (defends against a stale
-  // optimistic miss / cross-pane reflection); (2) refreshing the
-  // composer draft from disk so the user's typed text reappears in the
-  // input. `reloadFromBackend` is a no-op when the draft store is not
-  // pointed at this thread, so we just fire it for every active draft.
+  // back the most-recent user message. Backend truncates SQLite via
+  // `DeleteConversationFromTurn(threadId, turnIndex)` — inclusive — so
+  // synthetic siblings on the same turn (thinking, api_retry, error,
+  // notification, terminal_interaction waits) all go with the user row.
+  // This handler mirrors that truncate on the frontend: removing only
+  // the user item would strand orphans in `pane.items` that no longer
+  // back any SQLite row, surviving until thread switch / cache evict.
+  //
+  // Responsibilities: (1) idempotently remove every pane item at
+  // `>= turnIndex` for any pane viewing the thread (matches backend
+  // truncate; defends against a stale optimistic miss / cross-pane
+  // reflection); (2) refresh the composer draft from disk so the
+  // user's typed text reappears in the input. `reloadFromBackend` is
+  // a no-op when the draft store is not pointed at this thread, so we
+  // just fire it for every active draft.
   const cancelUserMessageReverted = wailsEventOn<UserMessageRevertedEvent | null>(
     'user_message:reverted',
     (payload) => {
       if (!payload?.threadId || !payload.userItemId) return;
+      if (typeof payload.turnIndex !== 'number') return;
       for (const pane of iterPanes()) {
         if (pane.threadId !== payload.threadId) continue;
-        pane.removeItemById(payload.userItemId);
+        pane.removeItemsFromTurn(payload.turnIndex);
         const draft = getComposerDraftForPane(pane.paneId);
         if (draft) {
           void draft.reloadFromBackend(payload.threadId);

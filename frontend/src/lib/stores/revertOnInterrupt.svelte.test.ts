@@ -118,7 +118,9 @@ describe('canRevertEarlyInterrupt', () => {
     const result = canRevertEarlyInterrupt(pane, EMPTY_DRAFT);
 
     expect(result.canRevert).toBe(true);
-    expect(result.userItem?.id).toBe('u:0');
+    if (result.canRevert) {
+      expect(result.userItem.id).toBe('u:0');
+    }
   });
 
   it('rejects when there is no active turn (Stop after settle)', () => {
@@ -128,7 +130,9 @@ describe('canRevertEarlyInterrupt', () => {
     const result = canRevertEarlyInterrupt(pane, EMPTY_DRAFT);
 
     expect(result.canRevert).toBe(false);
-    expect(result.reason).toBe('no active turn');
+    if (!result.canRevert) {
+      expect(result.reason).toBe('no active turn');
+    }
   });
 
   it('rejects when the composer carries new typing', () => {
@@ -143,7 +147,9 @@ describe('canRevertEarlyInterrupt', () => {
     });
 
     expect(result.canRevert).toBe(false);
-    expect(result.reason).toBe('composer not empty');
+    if (!result.canRevert) {
+      expect(result.reason).toBe('composer not empty');
+    }
   });
 
   it('rejects when the send queue has pending items (steer / follow-up)', () => {
@@ -163,7 +169,9 @@ describe('canRevertEarlyInterrupt', () => {
     const result = canRevertEarlyInterrupt(pane, EMPTY_DRAFT);
 
     expect(result.canRevert).toBe(false);
-    expect(result.reason).toBe('queue has pending items');
+    if (!result.canRevert) {
+      expect(result.reason).toBe('queue has pending items');
+    }
   });
 
   it('rejects when an assistant_text row exists in the active turn', () => {
@@ -175,7 +183,9 @@ describe('canRevertEarlyInterrupt', () => {
     const result = canRevertEarlyInterrupt(pane, EMPTY_DRAFT);
 
     expect(result.canRevert).toBe(false);
-    expect(result.reason).toBe('agent has responded');
+    if (!result.canRevert) {
+      expect(result.reason).toBe('agent has responded');
+    }
   });
 
   it('allows revert when only a thinking row sits with the user_text', () => {
@@ -187,7 +197,9 @@ describe('canRevertEarlyInterrupt', () => {
     const result = canRevertEarlyInterrupt(pane, EMPTY_DRAFT);
 
     expect(result.canRevert).toBe(true);
-    expect(result.userItem?.id).toBe('u:0');
+    if (result.canRevert) {
+      expect(result.userItem.id).toBe('u:0');
+    }
   });
 });
 
@@ -291,5 +303,74 @@ describe('runInterruptOrRevert', () => {
     // surface; just assert that *something* lands so the user sees the
     // failure rather than silently rolling back.
     expect(pane.generalError ?? '').not.toBe('');
+  });
+
+  // The user_text isn't the only kind on the latest turn — thinking,
+  // api_retry, and error rows can sit there too (they don't block the
+  // predicate). Backend `DeleteConversationFromTurn` is inclusive, so
+  // the optimistic remove must wipe ALL of them; otherwise they strand
+  // in pane.items without a backing SQLite row and re-appear stamped
+  // " — interrupted" after the truncated turn-complete fires.
+  it('optimistically truncates every item on the active turn, not just the user row', async () => {
+    const pane = readyPane();
+    pane.upsertItem(userItem('u:0', 0));
+    pane.upsertItem(thinkingItem('think:0:0', 0));
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+
+    setBindingMock('InterruptAndRevertIfClean', async () => ({
+      reverted: true,
+      userItemId: 'u:0',
+      turnIndex: 0,
+    }));
+
+    runInterruptOrRevert(pane, EMPTY_DRAFT);
+
+    expect(pane.items.find((i) => i.id === 'u:0')).toBeUndefined();
+    expect(pane.items.find((i) => i.id === 'think:0:0')).toBeUndefined();
+  });
+
+  it('rolls back every truncated item when the backend declines the revert', async () => {
+    const pane = readyPane();
+    pane.upsertItem(userItem('u:0', 0));
+    pane.upsertItem(thinkingItem('think:0:0', 0));
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+
+    setBindingMock('InterruptAndRevertIfClean', async () => ({
+      reverted: false,
+      reason: 'agent content present',
+    }));
+
+    runInterruptOrRevert(pane, EMPTY_DRAFT);
+    expect(pane.items.find((i) => i.id === 'u:0')).toBeUndefined();
+    expect(pane.items.find((i) => i.id === 'think:0:0')).toBeUndefined();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
+    expect(pane.items.find((i) => i.id === 'think:0:0')).toBeDefined();
+  });
+
+  it('does not touch items on earlier turns when truncating', async () => {
+    const pane = readyPane();
+    // Prior settled turn — must survive the revert.
+    pane.upsertItem(userItem('u:0', 0));
+    pane.upsertItem(assistantItem('a:0', 0));
+    // Active turn with a thinking sibling.
+    pane.upsertItem(userItem('u:1', 1));
+    pane.upsertItem(thinkingItem('think:1:0', 1));
+    pane.setActiveTurn({ turnId: 'turn-2', turnIndex: 1, startedAt: 2 });
+
+    setBindingMock('InterruptAndRevertIfClean', async () => ({
+      reverted: true,
+      userItemId: 'u:1',
+      turnIndex: 1,
+    }));
+
+    runInterruptOrRevert(pane, EMPTY_DRAFT);
+
+    expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
+    expect(pane.items.find((i) => i.id === 'a:0')).toBeDefined();
+    expect(pane.items.find((i) => i.id === 'u:1')).toBeUndefined();
+    expect(pane.items.find((i) => i.id === 'think:1:0')).toBeUndefined();
   });
 });

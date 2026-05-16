@@ -1669,4 +1669,108 @@ describe('setupEventListeners', () => {
     expect(getActiveTurn(pane.threadId)).toBeNull();
     expect(getActiveTurn(pane.threadId) !== null).toBe(false);
   });
+
+  // `user_message:reverted` mirrors the backend's
+  // `DeleteConversationFromTurn` truncate. If the optimistic frontend
+  // path missed a row (or this is the only path, e.g. cross-pane
+  // reflection), this handler is the safety net that removes every
+  // item at the reverted turn — not just the user_text.
+  it('removes every item at the reverted turn on user_message:reverted', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    getAllPanes().set('a', pane);
+    pane.upsertItems([
+      makeItem({ id: 'u:0', threadId: 'thread-a', turnIndex: 0, kind: 'user_text', role: 'user' }),
+      makeItem({ id: 'think:0:0', threadId: 'thread-a', turnIndex: 0, kind: 'thinking', role: 'assistant', status: 'streaming' }),
+      makeItem({ id: 'retry:0', threadId: 'thread-a', turnIndex: 0, kind: 'api_retry', role: 'system', status: 'running' }),
+    ]);
+    expect(pane.items.map((it) => it.id).sort()).toEqual(['retry:0', 'think:0:0', 'u:0']);
+
+    emitWailsEvent('user_message:reverted', {
+      threadId: 'thread-a',
+      userItemId: 'u:0',
+      turnIndex: 0,
+    });
+
+    expect(pane.items).toEqual([]);
+  });
+
+  it('does not disturb earlier turns when handling user_message:reverted', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    getAllPanes().set('a', pane);
+    pane.upsertItems([
+      makeItem({ id: 'u:0', threadId: 'thread-a', turnIndex: 0, kind: 'user_text', role: 'user' }),
+      makeItem({ id: 'a:0', threadId: 'thread-a', turnIndex: 0, kind: 'assistant_text', role: 'assistant' }),
+      makeItem({ id: 'u:1', threadId: 'thread-a', turnIndex: 1, kind: 'user_text', role: 'user' }),
+      makeItem({ id: 'think:1:0', threadId: 'thread-a', turnIndex: 1, kind: 'thinking', role: 'assistant', status: 'streaming' }),
+    ]);
+
+    emitWailsEvent('user_message:reverted', {
+      threadId: 'thread-a',
+      userItemId: 'u:1',
+      turnIndex: 1,
+    });
+
+    // Explicit-length assertion guards against an item silently
+    // surviving at the reverted turn (sort would still pass if a
+    // hidden id sorted before 'a:0').
+    expect(pane.items).toHaveLength(2);
+    expect(pane.items.map((it) => it.id).sort()).toEqual(['a:0', 'u:0']);
+  });
+
+  // The handler iterates every pane via iterPanes(); a regression that
+  // breaks out of the loop early or scopes the truncate to the first
+  // match would ship silently without this coverage. (e.g. two panes
+  // viewing the same thread side-by-side.)
+  it('mirrors the truncate to every pane viewing the reverted thread', async () => {
+    const paneA = await buildPane(makeThread({ id: 'thread-x' }));
+    const paneB = await buildPane(makeThread({ id: 'thread-x' }));
+    getAllPanes().set('a', paneA);
+    getAllPanes().set('b', paneB);
+    const seed = (pane: typeof paneA): void => {
+      pane.upsertItems([
+        makeItem({ id: 'u:0', threadId: 'thread-x', turnIndex: 0, kind: 'user_text', role: 'user' }),
+        makeItem({ id: 'think:0:0', threadId: 'thread-x', turnIndex: 0, kind: 'thinking', role: 'assistant', status: 'streaming' }),
+      ]);
+    };
+    seed(paneA);
+    seed(paneB);
+
+    emitWailsEvent('user_message:reverted', {
+      threadId: 'thread-x',
+      userItemId: 'u:0',
+      turnIndex: 0,
+    });
+
+    expect(paneA.items).toEqual([]);
+    expect(paneB.items).toEqual([]);
+  });
+
+  // The strict `typeof payload.turnIndex !== 'number'` guard exists
+  // because `payload.turnIndex` of 0 is a VALID revert target (first
+  // turn of a fresh thread) and a truthy check would reject it. A
+  // regression that loosens the guard to `!payload.turnIndex` would
+  // strand the user message in the timeline; this test pins the
+  // contract.
+  it('rejects user_message:reverted events with non-number turnIndex', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    getAllPanes().set('a', pane);
+    pane.upsertItem(makeItem({ id: 'u:0', threadId: 'thread-a', turnIndex: 0, kind: 'user_text', role: 'user' }));
+
+    // Missing turnIndex — wire would not include the field.
+    emitWailsEvent('user_message:reverted', {
+      threadId: 'thread-a',
+      userItemId: 'u:0',
+    });
+    expect(pane.items).toHaveLength(1);
+
+    // NaN slips past `typeof === 'number'` in JS, so
+    // removeItemsFromTurn's own Number.isFinite guard is the second
+    // line of defense.
+    emitWailsEvent('user_message:reverted', {
+      threadId: 'thread-a',
+      userItemId: 'u:0',
+      turnIndex: Number.NaN,
+    });
+    expect(pane.items).toHaveLength(1);
+  });
 });
