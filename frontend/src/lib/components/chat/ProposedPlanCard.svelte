@@ -14,6 +14,8 @@
   import ProposedPlanActions from './ProposedPlanActions.svelte';
   import ProposedPlanBody from './ProposedPlanBody.svelte';
   import ProposedPlanSaveModal from './ProposedPlanSaveModal.svelte';
+  import ToolKindIcon from './ToolKindIcon.svelte';
+  import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
 
   let {
     pane,
@@ -80,30 +82,41 @@
   }
 </script>
 
-<div class="group mb-3 border-l-2 border-accent/70 pl-3 sm:pl-4 py-1">
-  <div class="flex flex-wrap items-center justify-between gap-3">
-    <div class="flex min-w-0 items-center gap-1.5">
-      <p class="truncate text-sm font-medium text-text-primary">{title}</p>
-      {#if isAccepted}
-        <span class="text-[12px] font-medium text-success">· Accepted</span>
-      {/if}
-    </div>
-    <div class="opacity-50 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+<div class="group/proposed-plan px-1 py-1" data-testid="proposed-plan-card">
+  <TranscriptDisclosureHeader
+    expanded={false}
+    expandable={false}
+    testId="proposed-plan-header"
+    class="rounded-[var(--radius-control)] py-1"
+    buttonClass="text-[12px] text-fg-muted"
+  >
+    {#snippet icon()}<ToolKindIcon kind="checklist" ariaLabel="Proposed plan" />{/snippet}
+    {#snippet label()}<span data-testid="proposed-plan-label">plan</span>{/snippet}
+    {#snippet body()}
+      <span class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75">
+        {title}{#if isAccepted}<span class="ml-1 text-fg-hint">(accepted)</span>{/if}
+      </span>
+    {/snippet}
+    {#snippet actions()}
+      <div class="opacity-50 transition-opacity group-hover/proposed-plan:opacity-100 focus-within:opacity-100">
       <ProposedPlanActions
         getCopyText={planExport.getCopyableMarkdown}
         onSave={planExport.openSaveDialog}
         onOpenInSidebar={canOpenCurrentPlanSidebar ? openInSidebar : undefined}
       />
-    </div>
-  </div>
+      </div>
+    {/snippet}
+  </TranscriptDisclosureHeader>
 
-  <ProposedPlanBody
-    markdown={displayedMarkdown}
-    capped={cappedBody}
-    loading={expansion.loading}
-    error={expansion.error}
-    workspacePath={paneWorkspacePath(pane)}
-  />
+  <div class="ml-[5.25rem] px-3">
+    <ProposedPlanBody
+      markdown={displayedMarkdown}
+      capped={cappedBody}
+      loading={expansion.loading}
+      error={expansion.error}
+      workspacePath={paneWorkspacePath(pane)}
+    />
+  </div>
 </div>
 
 <ProposedPlanSaveModal

@@ -7,33 +7,34 @@
   import Play from 'lucide-svelte/icons/play';
   import Clock from 'lucide-svelte/icons/clock';
   import CheckCircle2 from 'lucide-svelte/icons/check-circle-2';
-  import AnsiText from './AnsiText.svelte';
-  import CopyFooter from './CopyFooter.svelte';
   import Icon from '../primitives/Icon.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import type { Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import {
-    codexSubagentDisplayLabel,
     codexSubagentLaunchInfo,
     isCodexSubagentLaunchItem,
   } from '../../utils/subagentLaunch';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import {
     createPayloadExpansion,
-    formatPayloadSize,
     keepExpandedPayloadFresh,
   } from '../../utils/payloadExpansion.svelte';
+  import CollabToolRowDetails from './CollabToolRowDetails.svelte';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
   import Indicator from './Indicator.svelte';
-  import RowError from './RowError.svelte';
   import { indicatorStateForItem, rowErrorForStatus } from './rowState';
   import {
-    stringArrayValue,
-    waitAgentDisplayReceiverIds,
-    waitAgentRequestedReceiverIds,
-  } from '../../utils/waitAgentDisplay';
+    collabInputFromMeta,
+    collabSpawnInfo,
+    collabToolName,
+    previewText,
+    receiverIdsForTool,
+    receiverLabelMap,
+    stringValue,
+    usesRequestedWaitReceivers as usesRequestedWaitReceiversForTool,
+  } from './collabToolRowData';
 
   let {
     pane,
@@ -48,15 +49,10 @@
     pane?: ThreadPane;
     item: Item;
     codexSubagentReceiverLabels?: ReadonlyMap<string, string>;
-    /** Item used for running/completion status. */
     statusItem?: Item;
-    /** Optional duration/elapsed label rendered in the metadata area. */
     durationLabel?: string;
-    /** Chat collab rows currently omit timestamps; tray can keep that default. */
     showTimestamp?: boolean;
-    /** Tray rows need status metadata even for spawn_agent launches. */
     showSpawnStatus?: boolean;
-    /** Optional actions rendered outside the row content. */
     trailingActions?: Snippet;
   } = $props();
   let effectiveStatusItem = $derived(statusItem ?? item);
@@ -71,90 +67,12 @@
   let meta = $derived(parseJsonObject(item.meta));
   let payloadMeta = $derived(parseJsonObject(item.payloadMeta));
   let statusPayloadMeta = $derived(parseJsonObject(effectiveStatusItem.payloadMeta));
-  let input = $derived.by<Record<string, unknown>>(() => {
-    const raw = meta?.input ?? payloadMeta?.input;
-    return raw && typeof raw === 'object' && !Array.isArray(raw)
-      ? raw as Record<string, unknown>
-      : {};
-  });
-
-  function stringValue(obj: Record<string, unknown>, key: string): string {
-    const value = obj[key];
-    return typeof value === 'string' ? value.trim() : '';
-  }
-
-  function stringArray(obj: Record<string, unknown>, key: string): string[] {
-    return stringArrayValue(obj, key);
-  }
-
-  function previewText(raw: string, maxLength = 160): string {
-    const normalized = raw.replace(/\s+/g, ' ').trim();
-    if (normalized.length <= maxLength) return normalized;
-    return `${normalized.slice(0, maxLength).trimEnd()}...`;
-  }
-
-  interface ReceiverAgentLabel {
-    threadId: string;
-    label: string;
-  }
-
-  function labelForAgentRecord(record: Record<string, unknown>): ReceiverAgentLabel | null {
-    const threadId = stringValue(record, 'threadId') || stringValue(record, 'thread_id');
-    if (!threadId) return null;
-    const nickname =
-      stringValue(record, 'newAgentNickname') ||
-      stringValue(record, 'agentNickname') ||
-      stringValue(record, 'agent_nickname') ||
-      stringValue(record, 'nickname');
-    const role =
-      stringValue(record, 'newAgentRole') ||
-      stringValue(record, 'agentRole') ||
-      stringValue(record, 'agent_role') ||
-      stringValue(record, 'agentType') ||
-      stringValue(record, 'agent_type');
-    if (!nickname && !role) return null;
-    const label = codexSubagentDisplayLabel(nickname, role, 'Agent');
-    return { threadId, label };
-  }
-
-  function receiverAgentLabels(obj: Record<string, unknown>, keys: string[]): ReceiverAgentLabel[] {
-    const rawEntries = keys.flatMap((key) => {
-      const raw = obj[key];
-      return Array.isArray(raw) ? raw : [];
-    });
-    return rawEntries
-      .filter((entry): entry is Record<string, unknown> =>
-        Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
-      .map(labelForAgentRecord)
-      .filter((entry): entry is ReceiverAgentLabel => entry !== null);
-  }
-
-  let rawTool = $derived(stringValue(input, 'tool') || item.toolName || '');
-  let spawnInfo = $derived.by(() => {
-    return isCodexSubagentLaunchItem(item) ? codexSubagentLaunchInfo(item) : null;
-  });
-  let tool = $derived(spawnInfo ? (spawnInfo.tool || 'spawn_agent') : rawTool);
-  let receivers = $derived.by(() => {
-    if (spawnInfo) return spawnInfo.receiverThreadIds;
-    if (tool === 'wait_agent') return waitAgentDisplayReceiverIds(input);
-    return stringArray(input, 'receiverThreadIds');
-  });
-  let usesRequestedWaitReceivers = $derived(tool === 'wait_agent' && waitAgentRequestedReceiverIds(input).length > 0);
-  let receiverLabels = $derived(receiverAgentLabels(input, ['receiverAgents', 'agentStatuses']));
-  let requestedReceiverLabels = $derived(receiverAgentLabels(input, ['requestedReceiverAgents']));
-  let labelByReceiver = $derived.by(() => {
-    const labels = new Map<string, string>();
-    const primaryLabels = usesRequestedWaitReceivers ? requestedReceiverLabels : receiverLabels;
-    const fallbackLabels = usesRequestedWaitReceivers ? receiverLabels : requestedReceiverLabels;
-    for (const agent of primaryLabels) {
-      labels.set(agent.threadId, agent.label);
-    }
-    for (const agent of fallbackLabels) {
-      if (labels.has(agent.threadId)) continue;
-      labels.set(agent.threadId, agent.label);
-    }
-    return labels;
-  });
+  let input = $derived(collabInputFromMeta(meta, payloadMeta));
+  let spawnInfo = $derived(collabSpawnInfo(item));
+  let tool = $derived(collabToolName(item, input));
+  let receivers = $derived(receiverIdsForTool(tool, input, spawnInfo));
+  let usesRequestedWaitReceivers = $derived(usesRequestedWaitReceiversForTool(tool, input));
+  let labelByReceiver = $derived(receiverLabelMap(input, usesRequestedWaitReceivers));
   let prompt = $derived(spawnInfo?.prompt ?? stringValue(input, 'prompt'));
   let promptPreview = $derived(previewText(prompt));
   let model = $derived(stringValue(input, 'model'));
@@ -360,77 +278,17 @@
       {@render rowActions()}
     {/snippet}
   </TranscriptDisclosureHeader>
-  {#if promptPreview}
-    <div class="ml-5 mt-0.5 truncate text-[11px] text-fg-subtle">└ {promptPreview}</div>
-  {/if}
-  {#if rowError}
-    <div class="ml-[5.25rem] px-3 pb-1">
-      <RowError tone={rowError.tone} msg={rowError.msg} />
-    </div>
-  {/if}
-  {#if completionPreview && !expansion?.expanded}
-    <div class="ml-5 mt-0.5 truncate text-[11px] text-fg-subtle" data-testid="collab-tool-row-preview">
-      └ {completionPreview}
-    </div>
-  {/if}
-  {#if tool === 'wait_agent' && receivers.length > 0 && (item.kind === 'tool_completion' || receiverDisplayLabels.length > 1)}
-    <div class="ml-5 mt-0.5 space-y-0.5 text-[11px] text-fg-subtle">
-      {#each receivers as id, index}
-        <div class="truncate">
-          └ {item.kind === 'tool_completion' ? statusLine(id) : receiverDisplayLabels[index]}
-        </div>
-      {/each}
-    </div>
-  {/if}
-  {#if hasExpandableOutput && expansion?.expanded}
-    <div
-      id="collab-tool-row-output-{item.id}"
-      class="ml-5 border-l border-border-subtle bg-surface-0/35"
-      data-testid="collab-tool-row-output"
-    >
-      {#if expansion.loading}
-        <p class="px-3 py-2 text-[11px] text-fg-subtle animate-pulse" role="status" aria-live="polite">
-          Loading…
-        </p>
-      {:else if expansion.error}
-        <div class="space-y-2 px-3 py-2">
-          <p class="text-[11px] text-error" role="alert">
-            Failed to load: {expansion.error}
-          </p>
-          <button
-            type="button"
-            class="text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
-            onclick={() => expansion.retry()}
-            data-testid="collab-tool-row-retry"
-          >
-            Retry
-          </button>
-        </div>
-      {:else if expansion.displayData !== null}
-        <div
-          class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 text-[11px] leading-relaxed text-fg-muted"
-          data-testid="collab-tool-row-output-text"
-        >
-          <AnsiText source={expansion.displayData} />
-        </div>
-        {#if expansion.hasMore}
-          <button
-            type="button"
-            class="mx-3 mb-3 text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
-            onclick={() => expansion.showFull()}
-            data-testid="collab-tool-row-show-full"
-          >
-            Load more output ({formatPayloadSize(expansion.totalSize)}) ↓
-          </button>
-        {/if}
-        {#if expansion.displayData}
-          <CopyFooter text={expansion.displayData} label="Copy output" />
-        {/if}
-      {:else}
-        <p class="px-3 py-2 text-[11px] text-fg-subtle italic">
-          No stored output for this agent.
-        </p>
-      {/if}
-    </div>
-  {/if}
+  <CollabToolRowDetails
+    itemId={item.id}
+    {promptPreview}
+    {rowError}
+    {completionPreview}
+    expanded={expansion?.expanded ?? false}
+    {tool}
+    isCompletion={item.kind === 'tool_completion'}
+    {receivers}
+    {receiverDisplayLabels}
+    {statusLine}
+    expansion={hasExpandableOutput ? expansion : null}
+  />
 </div>
