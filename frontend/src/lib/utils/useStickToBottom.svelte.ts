@@ -204,8 +204,38 @@ export interface UseStickToBottomController {
   attach(scrollEl: HTMLElement, contentEl: HTMLElement): void;
   detach(): void;
 
-  /** "User wants the bottom now" — called by ScrollToBottomButton, send. */
-  forceStick(): void;
+  /**
+   * Snap to the bottom and resume auto-follow. Two reasons:
+   *
+   * - `'user'` (default): an explicit user action — scroll-to-bottom
+   *   chip click, post / send, etc. Always clears `escapedFromLock`
+   *   and lands scrollTop at the target.
+   * - `'restore'`: a thread-restore-style snap. Honored ONLY if
+   *   `armRestoreSnap()` was called since the last user-initiated
+   *   escape; otherwise NO-OP. This prevents a stale or duplicated
+   *   restore $effect from clobbering an existing user escape with a
+   *   snap-to-bottom they didn't ask for (the seq-509 trace bug).
+   *
+   * Callers writing "user clicked to go to bottom" should pass `'user'`
+   * (or nothing). Callers writing "I just landed on this thread and
+   * the saved snapshot says bottom" should pass `'restore'` AND have
+   * paired their call with an `armRestoreSnap()` from the same
+   * thread-switch entry point.
+   */
+  forceStick(opts?: { reason?: 'user' | 'restore' }): void;
+  /**
+   * Arm a one-shot consent for the next `forceStick({reason:'restore'})`
+   * call. Set by the thread-switch entry point (MessageTimeline's
+   * `$effect.pre`, ChannelView's initial-poll path) immediately
+   * before the restore $effect runs. Auto-clears on consume by the
+   * next restore-forceStick call, on explicit user actions (wheel /
+   * key / touch / scrollbar drag escape, animateScrollTo, stopScroll,
+   * pauseAutoScroll), and on any user-reason `forceStick()`. This is
+   * the load-bearing distinguisher between "the user is explicitly
+   * escaped" and "I just defensively set escape=true while preparing
+   * the new thread for restore."
+   */
+  armRestoreSnap(): void;
   /**
    * Flip intent flags to sticky-bottom WITHOUT writing scrollTop. Pairs
    * with `listRef.scrollToIndex(last, 'end')` — virtua positioned the
@@ -224,7 +254,23 @@ export interface UseStickToBottomController {
    * if virtua's jump happens to land near the bottom.
    */
   stopScroll(): void;
-  /** Public so handleLoadOlder / scrollToItem can opt out of auto-restick. */
+  /**
+   * Set the escape flag. Public so `handleLoadOlder` / `scrollToItem`
+   * can opt out of auto-restick on programmatic jumps.
+   *
+   * Calling with `next=true` also (a) cancels any in-flight spring
+   * chase, (b) cancels any in-flight `animateScrollTo`, and (c) clears
+   * any pending `armRestoreSnap()` consent — a fresh escape
+   * invalidates a yet-to-be-consumed restore-snap. The thread-switch
+   * entry point that legitimately wants the restore-snap calls
+   * `armRestoreSnap()` AFTER its defensive `setEscapedFromLock(true)`
+   * so the clear-then-set order still leaves the arm valid when the
+   * restore `$effect` runs.
+   *
+   * Calling with `next=false` flips intent only — it does not consume
+   * the restore-snap consent (that's `forceStick({reason:'restore'})`
+   * or `markAtBottom()`'s job).
+   */
   setEscapedFromLock(next: boolean): void;
   /**
    * Re-arm the warm-up gate WITHOUT writing scrollTop or changing
@@ -312,6 +358,20 @@ export function createUseStickToBottomController(
   let springFrameHandle: number | null = null;
   let lastGrewAt = 0;
   let springStopRequested = false;
+
+  // ===== Restore-snap consent state =====
+  // One-shot flag the thread-switch entry point arms immediately before
+  // the restore $effect runs (after the defensive `setEscapedFromLock`).
+  // `forceStick({reason: 'restore'})` consumes the flag and proceeds;
+  // when the flag is unset, that call NO-OPs. Any user-initiated escape
+  // (handleWheel / handleKeydown / handleTouchMove / position-based
+  // escape / selection / animateScrollTo / stopScroll / explicit
+  // user-reason forceStick) also clears the flag, so a stale restore
+  // $effect that fires after a user escape cannot clobber it. This is
+  // the load-bearing distinguisher between "the user has explicitly
+  // escaped" and "the $effect.pre just defensively set escape=true
+  // while preparing the new thread for restore."
+  let restoreSnapArmed = false;
 
   // ===== Warm-up (quiescence) state =====
   // `warm` flips true once the controller observes a quiet period of
@@ -694,8 +754,15 @@ export function createUseStickToBottomController(
       }));
 
       // Overscroll guard: if browser auto-clamping or virtua corrections
-      // pushed us past the target, snap back.
-      if (overshoot) {
+      // pushed us past the target, snap back. Gated on the same
+      // escape / pause flags as the positive / negative pin branches
+      // below — when the user has escaped, the browser's own clamp
+      // will fix any out-of-range scrollTop on the next paint, and we
+      // must not yank them back to the bottom under any condition.
+      // Without this gate, an `applyJump` shift past the new bottom
+      // while the user was reading mid-history (esp. with shrinking
+      // content above the viewport) could snap them to bottom.
+      if (overshoot && !escapedFromLockState && pauseDepth === 0) {
         writeCaller = 'contentRO.overshoot';
         writeScrollTop(targetScrollTop());
       }
@@ -969,6 +1036,13 @@ export function createUseStickToBottomController(
       // null it here for the "no rAF before next attach" edge case.
       springStopRequested = true;
       cancelSpring();
+      // Clear any pending restore-snap consent: a fresh user escape
+      // invalidates a yet-to-be-consumed restore-snap. The thread-
+      // switch entry point that legitimately wants a restore-snap
+      // calls `armRestoreSnap()` AFTER its defensive setEscape, so
+      // this clear is the right default — a stale consent left over
+      // from an earlier path can't slip through.
+      restoreSnapArmed = false;
     }
     if (escapedFromLockState === next) return;
     const previousIsAtBottom = isAtBottomState;
@@ -985,6 +1059,15 @@ export function createUseStickToBottomController(
       scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
       scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
       clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+    }));
+  }
+
+  function armRestoreSnap(): void {
+    restoreSnapArmed = true;
+    trace('scroll.restoreSnap.arm', () => ({
+      isAtBottomState,
+      escapedFromLockState,
+      pauseDepth,
     }));
   }
 
@@ -1053,8 +1136,32 @@ export function createUseStickToBottomController(
     });
   }
 
-  function forceStick(): void {
+  function forceStick(opts: { reason?: 'user' | 'restore' } = {}): void {
+    const reason = opts.reason ?? 'user';
+    // Restore-reason consent gate: when called from a restore $effect
+    // (thread switch, channel initial poll), only proceed if the
+    // caller's entry point armed the consent first. This stops a
+    // stale or duplicate restore from clobbering an existing user
+    // escape with a snap-to-bottom they didn't ask for (the seq-509
+    // trace bug — a `restoreToBottom()` firing 17s after the user
+    // wheel-escaped, slamming them to the bottom and wiping escape).
+    // User-reason calls always proceed (chip click / send / explicit
+    // intent), and they ALSO consume any pending restore consent so
+    // the next call doesn't see a stale arm.
+    if (reason === 'restore' && !restoreSnapArmed) {
+      trace('scroll.forceStick.skipRestore', () => ({
+        reason,
+        restoreSnapArmed,
+        isAtBottomState,
+        escapedFromLockState,
+        pauseDepth,
+        scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+      }));
+      return;
+    }
+    restoreSnapArmed = false;
     trace('scroll.forceStick.entry', () => ({
+      reason,
       isAtBottomState,
       escapedFromLockState,
       pauseDepth,
@@ -1086,7 +1193,11 @@ export function createUseStickToBottomController(
   function markAtBottom(): void {
     // Flag-only counterpart to forceStick: caller already positioned
     // the geometry (typically via virtua's listRef.scrollToIndex(last,
-    // 'end')), we just resume streaming follow.
+    // 'end')), we just resume streaming follow. Used by chat's
+    // restoreToBottom empty-timeline branch — so the restore-snap
+    // consent must be consumed here too, otherwise the arm leaks past
+    // a completed empty-thread restore and admits a later stale
+    // restore-stick.
     trace('scroll.markAtBottom', () => ({
       isAtBottomState,
       escapedFromLockState,
@@ -1095,6 +1206,7 @@ export function createUseStickToBottomController(
       scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
       clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
     }));
+    restoreSnapArmed = false;
     setEscapedFromLock(false);
     isAtBottomState = true;
     refreshIsNearBottom();
@@ -1241,6 +1353,18 @@ export function createUseStickToBottomController(
     previousHeight = undefined;
     touchStartY = null;
     lastUntaggedScrollTop = -1;
+    // DELIBERATELY leave `restoreSnapArmed` untouched. attach() calls
+    // detach() up-front when scrollEl / contentEl change, and on first
+    // mount that wipe ran BETWEEN the consumer's $effect.pre arm and
+    // the restore $effect's forceStick({reason:'restore'}), making
+    // the consent effectively unusable for the initial-mount path.
+    // The flag is invalidated by user gestures (handleWheel /
+    // handleKeydown / handleTouchMove / position-based escape /
+    // selection / animateScrollTo / stopScroll), explicit user-reason
+    // forceStick, and the consume-on-restore path itself — that's
+    // enough to keep it from leaking stale consent across legitimate
+    // lifecycles. True teardown also discards the entire controller
+    // instance, so a residual `true` here has no observable effect.
     scrollEl = undefined;
     contentEl = undefined;
   }
@@ -1270,5 +1394,6 @@ export function createUseStickToBottomController(
     stopScroll,
     setEscapedFromLock,
     armWarmup: beginWarmup,
+    armRestoreSnap,
   };
 }

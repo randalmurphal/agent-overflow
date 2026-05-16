@@ -16,17 +16,70 @@ interface ThreadRowUiStateOptions {
 export interface ThreadRowUiState {
   expansionStateFor(
     item: Item,
-    options?: Pick<PayloadExpansionOptions, 'loadMode'>,
+    options?: RowExpansionStateOptions,
   ): PayloadExpansionHandle;
   expansionStateForPayload(
     payloadId: string,
     threadId: string,
-    payloadVersion?: unknown,
+    options?: PayloadExpansionStateOptions | unknown,
   ): PayloadExpansionHandle;
   isSubagentGroupExpanded(groupKey: string): boolean;
   toggleSubagentGroupExpanded(groupKey: string): boolean;
   attachmentCacheFor(itemId: string): AttachmentPreviewCache;
   clear(): void;
+}
+
+export interface RowExpansionStateOptions
+  extends Pick<
+    PayloadExpansionOptions,
+    'loadMode' | 'loadOnMount' | 'previewBytes' | 'chunkBytes' | 'requestTimeoutMs'
+  > {
+  /**
+   * Disambiguates independent payload consumers for the same item. Most rows
+   * have one payload body and can use the default; rows with multiple payload
+   * interpretations should give each one a stable key.
+   */
+  stateKey?: string;
+  /**
+   * Version used for cache invalidation and remount-safe auto-loads. Defaults
+   * to item.updatedAt. Callers with richer payload signatures should provide
+   * one so UI-only item changes do not invalidate loaded payload content.
+   */
+  payloadVersion?: (item: Item | undefined) => unknown;
+}
+
+export interface PayloadExpansionStateOptions
+  extends Pick<
+    PayloadExpansionOptions,
+    'loadMode' | 'loadOnMount' | 'previewBytes' | 'chunkBytes' | 'requestTimeoutMs'
+  > {
+  stateKey?: string;
+  payloadVersion?: unknown;
+}
+
+function normalizePayloadExpansionStateOptions(
+  optionsOrPayloadVersion: PayloadExpansionStateOptions | unknown,
+): PayloadExpansionStateOptions {
+  if (
+    optionsOrPayloadVersion
+    && typeof optionsOrPayloadVersion === 'object'
+    && (
+      'payloadVersion' in optionsOrPayloadVersion
+      || 'stateKey' in optionsOrPayloadVersion
+      || 'loadMode' in optionsOrPayloadVersion
+      || 'loadOnMount' in optionsOrPayloadVersion
+      || 'previewBytes' in optionsOrPayloadVersion
+      || 'chunkBytes' in optionsOrPayloadVersion
+      || 'requestTimeoutMs' in optionsOrPayloadVersion
+    )
+  ) {
+    return optionsOrPayloadVersion as PayloadExpansionStateOptions;
+  }
+  return { payloadVersion: optionsOrPayloadVersion };
+}
+
+function expansionRegistryKey(parts: readonly unknown[]): string {
+  return JSON.stringify(parts);
 }
 
 /**
@@ -42,20 +95,36 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
 
   function expansionStateFor(
     item: Item,
-    rowOptions: Pick<PayloadExpansionOptions, 'loadMode'> = {},
+    rowOptions: RowExpansionStateOptions = {},
   ): PayloadExpansionHandle {
-    const key = 'i:' + item.id + ':' + (rowOptions.loadMode ?? 'preview');
+    const loadMode = rowOptions.loadMode ?? 'preview';
+    const key = expansionRegistryKey([
+      'i',
+      item.id,
+      loadMode,
+      rowOptions.loadOnMount ? 'auto' : 'manual',
+      rowOptions.stateKey ?? 'default',
+      rowOptions.previewBytes ?? 'preview-default',
+      rowOptions.chunkBytes ?? 'chunk-default',
+      rowOptions.requestTimeoutMs ?? 'timeout-default',
+    ]);
     let cached = expansionStates.get(key);
     if (cached) return cached;
 
     const itemId = item.id;
     const getCurrentItem = (): Item | undefined => options.getItemById(itemId);
+    const currentPayloadVersion = rowOptions.payloadVersion
+      ?? ((currentItem: Item | undefined) => currentItem?.updatedAt);
     cached = createPayloadExpansion(
       () => getCurrentItem()?.payloadId,
       () => getCurrentItem()?.threadId,
       {
-        payloadVersion: () => getCurrentItem()?.updatedAt,
-        loadMode: rowOptions.loadMode,
+        payloadVersion: () => currentPayloadVersion(getCurrentItem()),
+        loadMode,
+        loadOnMount: rowOptions.loadOnMount,
+        previewBytes: rowOptions.previewBytes,
+        chunkBytes: rowOptions.chunkBytes,
+        requestTimeoutMs: rowOptions.requestTimeoutMs,
       },
     );
     expansionStates.set(key, cached);
@@ -65,20 +134,39 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   function expansionStateForPayload(
     payloadId: string,
     threadId: string,
-    payloadVersion?: unknown,
+    optionsOrPayloadVersion?: PayloadExpansionStateOptions | unknown,
   ): PayloadExpansionHandle {
-    const key = 'p:' + payloadId;
+    const payloadOptions = normalizePayloadExpansionStateOptions(optionsOrPayloadVersion);
+    const loadMode = payloadOptions.loadMode ?? 'preview';
+    const key = expansionRegistryKey([
+      'p',
+      threadId,
+      payloadId,
+      loadMode,
+      payloadOptions.loadOnMount ? 'auto' : 'manual',
+      payloadOptions.stateKey ?? 'default',
+      payloadOptions.previewBytes ?? 'preview-default',
+      payloadOptions.chunkBytes ?? 'chunk-default',
+      payloadOptions.requestTimeoutMs ?? 'timeout-default',
+    ]);
     let cached = expansionStates.get(key);
     if (cached) {
-      cached.setPayloadVersion(payloadVersion);
+      cached.setPayloadVersion(payloadOptions.payloadVersion);
       return cached;
     }
 
     cached = createPayloadExpansion(
       () => payloadId,
       () => threadId,
+      {
+        payloadVersion: payloadOptions.payloadVersion,
+        loadMode,
+        loadOnMount: payloadOptions.loadOnMount,
+        previewBytes: payloadOptions.previewBytes,
+        chunkBytes: payloadOptions.chunkBytes,
+        requestTimeoutMs: payloadOptions.requestTimeoutMs,
+      },
     );
-    cached.setPayloadVersion(payloadVersion);
     expansionStates.set(key, cached);
     return cached;
   }

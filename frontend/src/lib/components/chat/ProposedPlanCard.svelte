@@ -1,11 +1,13 @@
 <script lang="ts">
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { getThreadCurrentProposedPlan } from '../../stores/proposedPlans.svelte';
-  import { GetPayloadData } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import type { Item, ProposedPlanMeta } from '../../types/models';
   import {
     parseProposedPlanItemMeta,
+    parseProposedPlanPayloadMeta,
+    proposedPlanPayloadVersion,
+    shouldCapProposedPlanBody,
     stripDisplayedPlanMarkdown,
   } from '../../utils/proposedPlan';
   import { createPlanSaveDialog } from '../../utils/planSaveDialog.svelte';
@@ -16,24 +18,37 @@
   let {
     pane,
     item,
-    payloadId,
     meta,
   }: {
     pane: ThreadPane;
-    item?: Item;
-    payloadId: string;
+    item: Item;
     meta: ProposedPlanMeta;
   } = $props();
 
-  let planMarkdown = $state<string | null>(null);
-  let planMarkdownRequest: Promise<string> | null = null;
+  // Plan rows live under virtua, so row-local async state is the wrong
+  // lifetime: recycling the DOM used to reset this expansion and bounce
+  // the row between preview height and full height. Keep the handle in
+  // the pane row registry instead; the DOM can remount without throwing
+  // away loaded chunks or auto-load progress.
+  const expansion = $derived(pane.expansionStateFor(item, {
+    loadMode: 'full',
+    loadOnMount: true,
+    stateKey: 'proposed-plan-history',
+    payloadVersion: (currentItem) => {
+      const currentMeta = currentItem?.payloadMeta
+        ? parseProposedPlanPayloadMeta(currentItem)
+        : meta;
+      return proposedPlanPayloadVersion(currentItem ?? item, currentMeta);
+    },
+  }));
 
   const title = $derived(meta.title || 'Proposed plan');
   const itemMeta = $derived(parseProposedPlanItemMeta(item));
   const isAccepted = $derived(Boolean(itemMeta.planImplementedAt));
   const currentPlan = $derived(getThreadCurrentProposedPlan(pane.threadId));
   const canOpenCurrentPlanSidebar = $derived(Boolean(item?.id) && currentPlan?.id === item?.id);
-  const previewOnly = $derived(meta.charCount > 900 || meta.lineCount > 20);
+  const cappedBody = $derived(shouldCapProposedPlanBody(meta));
+  const planMarkdown = $derived(expansion.displayData);
   const displayedMarkdown = $derived.by(() => {
     const source = planMarkdown ?? meta.preview;
     return planMarkdown ? stripDisplayedPlanMarkdown(source) : source;
@@ -41,35 +56,23 @@
 
   const planExport = createPlanSaveDialog(ensurePlanMarkdown, () => pane.threadId);
 
-  // The body's scrollable viewport (max-h-96 + overflow-y-auto) needs the
-  // full markdown to scroll. meta.preview caps at 10 visible lines, so
-  // load the payload eagerly; preview is the first-paint placeholder.
-  $effect(() => {
-    void ensurePlanMarkdown();
-  });
-
   async function ensurePlanMarkdown(): Promise<string> {
-    const threadId = pane.threadId;
-    if (planMarkdown !== null) return planMarkdown;
-    if (planMarkdownRequest) return planMarkdownRequest;
-    if (!threadId) {
+    if (expansion.displayData !== null && expansion.isComplete) {
+      return expansion.displayData;
+    }
+    try {
+      await expansion.expand();
+      if (expansion.hasMore) await expansion.showFull();
+    } catch (err) {
+      console.error('Failed to load proposed plan:', err);
       addToast('error', 'Failed to load proposed plan');
       return '';
     }
-    planMarkdownRequest = (async () => {
-      try {
-        const content = await GetPayloadData(threadId, payloadId);
-        planMarkdown = content.data;
-        return content.data;
-      } catch (err) {
-        console.error('Failed to load proposed plan:', err);
-        addToast('error', 'Failed to load proposed plan');
-        return '';
-      } finally {
-        planMarkdownRequest = null;
-      }
-    })();
-    return planMarkdownRequest;
+    if (expansion.error) {
+      addToast('error', 'Failed to load proposed plan');
+      return '';
+    }
+    return expansion.displayData ?? '';
   }
 
   function openInSidebar(): void {
@@ -96,7 +99,9 @@
 
   <ProposedPlanBody
     markdown={displayedMarkdown}
-    {previewOnly}
+    capped={cappedBody}
+    loading={expansion.loading}
+    error={expansion.error}
     workspacePath={paneWorkspacePath(pane)}
   />
 </div>

@@ -1,5 +1,5 @@
 import { GetPayloadChunk, GetPayloadData, GetPayloadPreview } from '../stores/bindings';
-import { readPayloadCache, writePayloadCache } from './payloadDataCache';
+import { payloadVersionKey, readPayloadCache, writePayloadCache } from './payloadDataCache';
 
 export const DEFAULT_PAYLOAD_PREVIEW_BYTES = 32 * 1024;
 export const DEFAULT_PAYLOAD_CHUNK_BYTES = 256 * 1024;
@@ -81,6 +81,8 @@ export function createPayloadExpansion(
   let loadedBytes = $state(0);
 
   let requestGeneration = 0;
+  let activePreviewLoad: Promise<boolean> | null = null;
+  let activeFullLoad: Promise<void> | null = null;
   let loadedPayloadID: string | null = null;
   let loadedPayloadVersion: unknown;
   let overridePayloadVersion = $state<unknown>(undefined);
@@ -125,19 +127,22 @@ export function createPayloadExpansion(
   // before the first paint. On cache hit, expand() short-circuits at
   // the loadPreview early-return because chunks are already populated.
   //
-  // The fire-once-per-id guard (`loadOnMountInvokedFor`) keeps the
+  // The fire-once-per-content guard (`loadOnMountInvokedFor`) keeps the
   // effect from re-arming if a future consumer ever exposes a collapse
   // path: the user collapses → `expanded = false` flips → without the
   // guard this effect would re-fire on the next reactive tick and
-  // resurrect `expanded = true` against the user's intent. Tracking
-  // by payloadID (not just a boolean) means a genuine payloadID change
-  // — fork into a different attachment, etc. — DOES re-fire.
+  // resurrect `expanded = true` against the user's intent. Tracking by
+  // payloadID plus version means a genuine content replacement DOES
+  // re-fire even when the backend keeps the same payloadID.
   let loadOnMountInvokedFor: string | null = null;
   if (options.loadOnMount) {
     $effect(() => {
       const id = currentPayloadID();
-      if (!id || id === loadOnMountInvokedFor) return;
-      loadOnMountInvokedFor = id;
+      if (!id) return;
+      const invokeKey = `${id}\0${payloadVersionKey(currentPayloadVersion())}`;
+      if (invokeKey === loadOnMountInvokedFor) return;
+      if (loadingPreview || loadingFull) return;
+      loadOnMountInvokedFor = invokeKey;
       void expand();
     });
   }
@@ -204,33 +209,41 @@ export function createPayloadExpansion(
     loadingFull = false;
     error = null;
 
-    try {
-      const result = await loadInitialPayload(ownerThreadID, id);
-      if (generation !== requestGeneration || !expanded) return false;
-      chunks = [result.data];
-      hasFullChunks = loadMode === 'full';
-      totalSize = result.totalSize;
-      isComplete = result.isComplete;
-      loadedBytes = result.nextOffset;
-      loadedPayloadID = id;
-      loadedPayloadVersion = version;
-      writePayloadCache(ownerThreadID, id, version, {
-        chunks,
-        hasFullChunks,
-        totalSize,
-        isComplete,
-        loadedBytes,
-      });
-      return true;
-    } catch (err) {
-      if (generation !== requestGeneration || !expanded) return false;
-      error = err instanceof Error ? err.message : String(err);
-    } finally {
-      if (generation === requestGeneration) {
-        loadingPreview = false;
+    const request = (async (): Promise<boolean> => {
+      try {
+        const result = await loadInitialPayload(ownerThreadID, id);
+        if (generation !== requestGeneration || !expanded) return false;
+        chunks = [result.data];
+        hasFullChunks = loadMode === 'full';
+        totalSize = result.totalSize;
+        isComplete = result.isComplete;
+        loadedBytes = result.nextOffset;
+        loadedPayloadID = id;
+        loadedPayloadVersion = version;
+        writePayloadCache(ownerThreadID, id, version, {
+          chunks,
+          hasFullChunks,
+          totalSize,
+          isComplete,
+          loadedBytes,
+        });
+        return true;
+      } catch (err) {
+        if (generation !== requestGeneration || !expanded) return false;
+        error = err instanceof Error ? err.message : String(err);
+      } finally {
+        if (generation === requestGeneration) {
+          loadingPreview = false;
+        }
       }
+      return false;
+    })();
+    activePreviewLoad = request;
+    try {
+      return await request;
+    } finally {
+      if (activePreviewLoad === request) activePreviewLoad = null;
     }
-    return false;
   }
 
   async function loadInitialPayload(ownerThreadID: string, id: string): Promise<{
@@ -266,7 +279,12 @@ export function createPayloadExpansion(
   }
 
   async function ensureLoaded(): Promise<boolean> {
-    if (!expanded || loadingPreview || loadingFull || error !== null) return false;
+    if (!expanded || error !== null) return false;
+    if (loadingPreview || loadingFull) {
+      await activePreviewLoad;
+      await activeFullLoad;
+      if (!expanded || error !== null) return false;
+    }
     return loadPreview();
   }
 
@@ -300,36 +318,44 @@ export function createPayloadExpansion(
     loadingFull = true;
     error = null;
 
-    try {
-      const offset = loadedBytes;
-      const content = await withTimeout(
-        GetPayloadChunk(ownerThreadID, id, offset, chunkBytes),
-        requestTimeoutMs,
-        'Loading payload chunk timed out',
-      );
-      if (generation !== requestGeneration || !expanded) return;
-      // Append the chunk to the buffer instead of re-allocating a
-      // cumulative string. Writing `[...chunks, ...]` produces a
-      // new array reference so $derived re-evaluates `displayData`.
-      chunks = [...chunks, content.data];
-      hasFullChunks = true;
-      totalSize = content.totalSize;
-      loadedBytes = content.nextOffset;
-      isComplete = content.isComplete;
-      writePayloadCache(ownerThreadID, id, currentPayloadVersion(), {
-        chunks,
-        hasFullChunks,
-        totalSize,
-        isComplete,
-        loadedBytes,
-      });
-    } catch (err) {
-      if (generation !== requestGeneration || !expanded) return;
-      error = err instanceof Error ? err.message : String(err);
-    } finally {
-      if (generation === requestGeneration) {
-        loadingFull = false;
+    const request = (async (): Promise<void> => {
+      try {
+        const offset = loadedBytes;
+        const content = await withTimeout(
+          GetPayloadChunk(ownerThreadID, id, offset, chunkBytes),
+          requestTimeoutMs,
+          'Loading payload chunk timed out',
+        );
+        if (generation !== requestGeneration || !expanded) return;
+        // Append the chunk to the buffer instead of re-allocating a
+        // cumulative string. Writing `[...chunks, ...]` produces a
+        // new array reference so $derived re-evaluates `displayData`.
+        chunks = [...chunks, content.data];
+        hasFullChunks = true;
+        totalSize = content.totalSize;
+        loadedBytes = content.nextOffset;
+        isComplete = content.isComplete;
+        writePayloadCache(ownerThreadID, id, currentPayloadVersion(), {
+          chunks,
+          hasFullChunks,
+          totalSize,
+          isComplete,
+          loadedBytes,
+        });
+      } catch (err) {
+        if (generation !== requestGeneration || !expanded) return;
+        error = err instanceof Error ? err.message : String(err);
+      } finally {
+        if (generation === requestGeneration) {
+          loadingFull = false;
+        }
       }
+    })();
+    activeFullLoad = request;
+    try {
+      await request;
+    } finally {
+      if (activeFullLoad === request) activeFullLoad = null;
     }
   }
 

@@ -222,29 +222,52 @@ frontend layers on top:
   contentEl are unchanged across a thread switch — MessageTimeline
   isn't keyed on threadId so those refs are stable, and `attach()`'s
   early-return path is hit on every switch.
-  Programmatic scrolls go through `forceStick()` / `markAtBottom()` /
+  Programmatic scrolls go through `forceStick(opts?)` / `markAtBottom()` /
   `notifyContentMaybeGrew()` / `pauseAutoScroll()` / `stopScroll()` /
-  `animateScrollTo()`; the one place virtua writes scrollTop is
-  `listRef.scrollToIndex(...)`, which MUST be preceded by
+  `animateScrollTo()` / `armRestoreSnap()`; the one place virtua writes
+  scrollTop is `listRef.scrollToIndex(...)`, which MUST be preceded by
   `stick.stopScroll()` so the controller doesn't auto-restick mid-jump
   if virtua's measurement loop happens to land near the bottom. Never
   write `scrollTop` directly.
   `prefers-reduced-motion: reduce` forces the sync-pin path
   unconditionally — the spring is suppressed regardless of
   `animationMode`.
-  - `forceStick()` clears escape, sets sticky, and writes `scrollTop`
-    to the current target. Used by the scroll-to-bottom chip, by
-    Discussion's initial channel load, and by chat's bottom-snapshot
-    restore on thread switch (paired with the per-thread virtua
-    row-size cache, which makes the target correct from frame 0 — see
-    below). Chat's bottom restore additionally schedules a single rAF
-    `notifyContentMaybeGrew()` after `forceStick()` to catch late layout
-    settling — composer-height RO updating scrollEl's padding-bottom
-    (padding-only growth doesn't refire contentRO), virtua's per-row
-    remeasurement after mount, and the first burst of Streamdown async
-    typesetting can each shift the bottom by a few pixels one frame
-    later. The trailing pin is escape-aware, so a user wheel-up between
-    frames cancels it.
+  - `forceStick(opts?: { reason?: 'user' | 'restore' })` clears escape,
+    sets sticky, and writes `scrollTop` to the current target. Two
+    flavors:
+    - `'user'` (default): explicit user intent — scroll-to-bottom chip
+      click, send / post. Always proceeds.
+    - `'restore'`: thread-restore-style snap. Honored ONLY when the
+      entry point armed consent via `armRestoreSnap()` since the
+      last user-initiated escape; otherwise NO-OPs to preserve the
+      user's escape. This stops a stale or duplicated restore $effect
+      from clobbering an existing user escape with a snap they didn't
+      ask for (the seq-509 trace bug). Consent is also cleared by any
+      user-gesture escape (wheel / key / touch / selection),
+      `stopScroll`, `animateScrollTo`, user-reason `forceStick`, and
+      the consume path itself.
+    Used by the scroll-to-bottom chip (`'user'`), by chat's
+    bottom-snapshot restore on thread switch (`'restore'` paired with
+    `$effect.pre`'s `armRestoreSnap()`), and by Discussion's initial
+    channel load (`'restore'` paired with the channel setup $effect's
+    `armRestoreSnap()`). Chat's bottom restore additionally schedules
+    a single rAF `notifyContentMaybeGrew()` after `forceStick()` to
+    catch late layout settling — composer-height RO updating scrollEl's
+    padding-bottom (padding-only growth doesn't refire contentRO),
+    virtua's per-row remeasurement after mount, and the first burst of
+    Streamdown async typesetting can each shift the bottom by a few
+    pixels one frame later. The trailing pin is escape-aware, so a user
+    wheel-up between frames cancels it.
+  - `armRestoreSnap()` is the one-shot consent companion to
+    `forceStick({reason:'restore'})`. The thread-switch entry point
+    calls it AFTER its defensive `setEscapedFromLock(true)` so the
+    upcoming restore-stick is honored; `setEscapedFromLock(true)`
+    itself clears any pending consent, so the order matters. Repeated
+    arms are idempotent. The flag survives `attach()` / `detach()`
+    deliberately because `attach()` calls `detach()` between the
+    consumer's `$effect.pre` arm and the restore `$effect` consume on
+    first mount; it is invalidated by user gestures and consumed by
+    the next restore-stick or `markAtBottom()`.
   - `markAtBottom()` flips the controller flags to sticky-bottom
     WITHOUT writing `scrollTop`. Used for the empty-timeline branch of
     bottom-snapshot restore (no rows to anchor against yet, but the

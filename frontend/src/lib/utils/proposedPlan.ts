@@ -12,6 +12,8 @@ export interface ProposedPlanMarkdownBlock {
   endLine: number;
 }
 
+const COLLAPSED_PLAN_VISIBLE_LINES = 10;
+
 export function proposedPlanTitle(planMarkdown: string): string | null {
   const heading = planMarkdown.match(/^\s{0,3}#{1,6}\s+(.+)$/m)?.[1]?.trim();
   return heading && heading.length > 0 ? heading : null;
@@ -86,6 +88,23 @@ export function parseProposedPlanPayloadMeta(item?: Pick<Item, 'payloadMeta'> | 
   } catch {
     return { title: 'Proposed plan', preview: '', lineCount: 0, charCount: 0 };
   }
+}
+
+export function isProposedPlanPreviewTruncated(meta: ProposedPlanMeta): boolean {
+  if (meta.previewTruncated !== undefined) return meta.previewTruncated;
+  if (meta.lineCount > COLLAPSED_PLAN_VISIBLE_LINES) return true;
+  return meta.preview.trimEnd().endsWith('\n\n...');
+}
+
+export function shouldCapProposedPlanBody(meta: ProposedPlanMeta): boolean {
+  return meta.charCount > 900 || isProposedPlanPreviewTruncated(meta);
+}
+
+export function proposedPlanPayloadVersion(
+  item: Pick<Item, 'payloadMeta' | 'payloadId' | 'updatedAt'> | undefined,
+  meta: ProposedPlanMeta,
+): unknown {
+  return meta.signature || item?.payloadMeta || item?.payloadId || item?.updatedAt;
 }
 
 export function sourceFromProposedPlanItem(threadId: string | null | undefined, item: Item | null | undefined): SourceProposedPlan | null {

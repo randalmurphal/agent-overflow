@@ -94,6 +94,14 @@
   let listRef: VirtualizerHandle | undefined = $state(undefined);
 
   let restoredThreadId: string | null = $state(null);
+  // Diagnostic: timestamp of the most recent legitimate `restoredThreadId = null`
+  // (i.e. one that the `$effect.pre` thread-switch path performed).
+  // Used to flag stale-restore conditions if restoreToBottom() ever
+  // fires with a stale-looking lastEffectPreAt → diff > ~50 ms means
+  // a path other than $effect.pre cleared restoredThreadId. See the
+  // seq-509 trace investigation that motivated the restore-snap
+  // consent gate in useStickToBottom.
+  let lastEffectPreAt = 0;
   // Tracks which thread we last persisted into the snapshot store via
   // the thread-switch effect — separate from `restoredThreadId` so a
   // thread switch can dispose the previous snapshot before the next
@@ -371,6 +379,13 @@
       if (scrollSnapshotThreadId) {
         restoredThreadId = null;
         restoreToken += 1;
+        if (isUiRenderTraceEnabled()) {
+          // Diagnostic-only — gated to keep prod builds free of any
+          // observable cost. The companion read at the restore $effect
+          // is also gated, so production reads -1 (initial) and the
+          // dead branch is DCE-friendly.
+          lastEffectPreAt = Date.now();
+        }
       }
       autoLoadOlderGate.reset();
       stick.setEscapedFromLock(true);
@@ -388,6 +403,19 @@
       // sequence; cache-miss switches off an unsettled prior thread
       // (warm=false coincidentally) hid the cascade and looked fine.
       stick.armWarmup();
+      // Arm the one-shot restore-snap consent AFTER the defensive
+      // setEscapedFromLock — which itself clears any prior arm — so the
+      // upcoming `restoreToBottom() → stick.forceStick({reason:
+      // 'restore'})` is honored. Any user gesture between this point
+      // and the restore $effect (extremely rare; both run inside the
+      // same flush) would set escape via a user path and re-clear the
+      // arm, causing the restore to NO-OP and preserving the user's
+      // intent. This is the load-bearing distinguisher between "the
+      // user has explicitly escaped" and "the $effect.pre just
+      // defensively set escape=true while preparing the new thread for
+      // restore." See useStickToBottom.svelte.ts § Restore-snap
+      // consent state.
+      stick.armRestoreSnap();
     }
     scrollSnapshotThreadId = nextThreadId;
   });
@@ -419,6 +447,8 @@
     // outgoing thread before our forceStick landed.
     const snap = getThreadScrollSnapshot(threadId);
     if (isUiRenderTraceEnabled()) {
+      const now = Date.now();
+      const msSinceEffectPre = lastEffectPreAt === 0 ? -1 : now - lastEffectPreAt;
       recordUiTrace('timeline.restore.effect', {
         threadId,
         snapKind: snap?.kind ?? null,
@@ -432,6 +462,15 @@
         scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
         scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
         clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+        // Diagnostic: a healthy thread-switch sequence has the
+        // $effect.pre fire immediately before this restore $effect.
+        // If msSinceEffectPre is large (> a few ms) OR -1 (never
+        // fired), some path OTHER than the thread-switch effect
+        // cleared `restoredThreadId` — that's the seq-509 stale
+        // restore class of bug. With the new forceStick({reason:
+        // 'restore'}) consent gate this no longer slams the user,
+        // but it still indicates a state-management bug to find.
+        msSinceEffectPre,
       });
     }
     if (!snap || snap.kind === 'bottom') {
@@ -501,7 +540,15 @@
       }
       return;
     }
-    stick.forceStick();
+    // reason:'restore' so the controller's consent gate filters this
+    // call. The matching `armRestoreSnap()` runs from `$effect.pre`
+    // above; if anything cleared the consent between then and now
+    // (a user gesture, a programmatic escape), this NO-OPs and the
+    // user's scroll position is preserved. This is what defends
+    // against the seq-509 stale-restore bug — a `restoreToBottom()`
+    // mistakenly firing without a real thread switch can no longer
+    // slam the user to the bottom and wipe their escape.
+    stick.forceStick({ reason: 'restore' });
     saveScrollSnapshot();
     // Capture the thread the rAF was scheduled for so a thread switch
     // between forceStick and the next frame doesn't run the late re-pin

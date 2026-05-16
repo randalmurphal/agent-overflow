@@ -32,31 +32,34 @@
 
   let { pane, item, meta, payloadId }: Props = $props();
 
-  // Local expansion handle. Reads payloadId/threadId straight off the
-  // props — no pane-registry indirection — so the fetch fires
-  // reliably as soon as the component mounts with a valid payloadId.
-  // The cost is one expansion handle per row mount (vs. a shared
-  // pane-keyed handle); for diff rows this is fine because each row
-  // owns one fetch and there's no expand/collapse interaction sharing
-  // state across mounts.
-  //
-  // Legacy rows still auto-load on mount. That does two things:
-  //   1. Synchronously hydrates from the module-level payload cache
-  //      when (threadId, payloadId, updatedAt) hits — so re-entering
-  //      a thread we've already loaded paints with full diff content
-  //      at frame 0 (no empty-then-loaded oscillation that whipsaws
-  //      virtua's per-row size cache and the controller's contentRO).
-  //   2. Drives `expand()` itself so we don't carry a per-component
-  //      $effect just to trigger the fetch.
-  const expansion = createPayloadExpansion(
-    () => legacyPayloadId(),
-    () => item.threadId,
-    {
-      previewBytes: INLINE_DIFF_PAYLOAD_PREVIEW_BYTES,
-      payloadVersion: () => item.updatedAt,
-      loadOnMount: true,
-    },
+  const localFallback = untrack(() =>
+    createPayloadExpansion(
+      () => pane ? undefined : legacyPayloadId(),
+      () => item.threadId,
+      {
+        previewBytes: INLINE_DIFF_PAYLOAD_PREVIEW_BYTES,
+        payloadVersion: () => item.updatedAt,
+        loadOnMount: true,
+      },
+    ),
   );
+
+  const expansion = $derived.by(() => {
+    const legacyId = legacyPayloadId();
+    if (pane && legacyId) {
+      return pane.expansionStateForPayload(
+        legacyId,
+        item.threadId,
+        {
+          stateKey: 'diff-stack-legacy',
+          previewBytes: INLINE_DIFF_PAYLOAD_PREVIEW_BYTES,
+          payloadVersion: item.updatedAt,
+          loadOnMount: true,
+        },
+      );
+    }
+    return localFallback;
+  });
 
   let payloadData: string | null = $derived(expansion.displayData);
   let payloadPreviewIncomplete = $derived(payloadData !== null && !expansion.isComplete);

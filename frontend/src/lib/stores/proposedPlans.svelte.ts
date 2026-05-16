@@ -2,6 +2,7 @@ import type { Item, ProposedPlanComment } from '../types/models';
 import { comparePlanItemPosition, latestProposedPlanItem } from '../utils/proposedPlan';
 import { ListProposedPlanComments, ListThreadProposedPlans } from './bindings';
 import { onItemUpsert } from './events';
+import { itemsAreEqual } from './threadItems';
 
 const REFRESH_DEBOUNCE_MS = 100;
 const MAX_CACHED_THREADS = 64;
@@ -60,6 +61,16 @@ function entryForPlanComments(threadId: string, planItemId: string): ProposedPla
   return commentCache[key];
 }
 
+function itemListsAreEqual(left: readonly Item[], right: readonly Item[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) {
+    const a = left[i];
+    const b = right[i];
+    if (!a || !b || !itemsAreEqual(a, b)) return false;
+  }
+  return true;
+}
+
 export function getThreadProposedPlans(threadId: string | null | undefined): Item[] {
   if (!threadId) return [];
   const entry = cache[threadId];
@@ -113,7 +124,10 @@ export async function refreshThreadProposedPlans(threadId: string | null | undef
       cacheAccess.set(threadId, Date.now());
       return;
     }
-    entry.items = items.filter((item) => item.threadId === threadId);
+    const nextItems = items.filter((item) => item.threadId === threadId);
+    if (!itemListsAreEqual(entry.items, nextItems)) {
+      entry.items = nextItems;
+    }
     entry.loaded = true;
     cacheAccess.set(threadId, Date.now());
     evictOldPlanCacheEntries();
@@ -126,7 +140,9 @@ export async function refreshThreadProposedPlans(threadId: string | null | undef
       cacheAccess.set(threadId, Date.now());
       return;
     }
-    entry.items = [];
+    if (entry.items.length > 0) {
+      entry.items = [];
+    }
     entry.loaded = true;
     cacheAccess.set(threadId, Date.now());
   }
@@ -190,6 +206,11 @@ function upsertItemIntoCache(item: Item): void {
   const entry = entryForThread(item.threadId);
   const existingIdx = entry.items.findIndex((e) => e.id === item.id);
   if (existingIdx >= 0) {
+    const existing = entry.items[existingIdx];
+    if (existing && itemsAreEqual(existing, item)) {
+      entry.loaded = true;
+      return;
+    }
     const replaced = entry.items.slice();
     replaced[existingIdx] = item;
     replaced.sort(comparePlanItemPosition);

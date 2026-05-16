@@ -436,14 +436,41 @@ function patchThreadDurableStatus(
   threadId: string,
   patch: Pick<Partial<Thread>, 'hasActionableProposedPlan' | 'hasIncompleteTurn'>,
 ): void {
+  // No-op dedupe: skip the replace when none of the patch fields actually
+  // change the thread. This is the cooperating half of the item-upsert
+  // dedupe in `applyItemUpsertsToWindow` — `syncProposedPlanStatus` fires
+  // this on every proposed-plan upsert, and without the dedupe a repeated
+  // upsert that doesn't move the durable status STILL replaces
+  // `pane.thread` with a new reference, triggering the same reactive
+  // cascade through any component that reads `pane.thread` directly.
   const existing = getThreads().find((thread) => thread.id === threadId);
-  if (existing) {
+  if (existing && !patchMatchesThread(existing, patch)) {
     replaceThread({ ...existing, ...patch });
   }
   for (const pane of iterPanes()) {
     if (pane.threadId !== threadId || !pane.thread) continue;
+    if (patchMatchesThread(pane.thread, patch)) continue;
     pane.replaceThread({ ...pane.thread, ...patch });
   }
+}
+
+function patchMatchesThread(
+  thread: Thread,
+  patch: Pick<Partial<Thread>, 'hasActionableProposedPlan' | 'hasIncompleteTurn'>,
+): boolean {
+  if (
+    patch.hasActionableProposedPlan !== undefined
+    && thread.hasActionableProposedPlan !== patch.hasActionableProposedPlan
+  ) {
+    return false;
+  }
+  if (
+    patch.hasIncompleteTurn !== undefined
+    && thread.hasIncompleteTurn !== patch.hasIncompleteTurn
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function isImplementedProposedPlan(item: Item): boolean {

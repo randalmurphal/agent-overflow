@@ -6,6 +6,56 @@ export function compareItemsByTimelinePosition(a: Item, b: Item): number {
   return 0;
 }
 
+/**
+ * Field-wise equality for two items at the same id. Returns true when the
+ * incoming upsert carries no observable change vs. the existing row.
+ *
+ * Why this exists: the backend can re-emit the same item event with
+ * unchanged content (event-loop resyncs, redundant `provider:item_event`
+ * upserts on durable-status flag updates, etc.). Each such redundant
+ * upsert otherwise replaces the row in `pane.items` with a new object
+ * reference, which forces `groupedNodes` to rebuild, which forces
+ * `<Virtualizer data={groupedNodes}>` to re-iterate, which can land as
+ * a remount of the affected row's DOM. A row with async render work
+ * (DiffFileBlock token dispatch, Streamdown typesetting, etc.) then
+ * settles at its measured height again — and virtua applies a scrollTop
+ * jump for the size delta. Observed in plan-ready threads as a row
+ * oscillating ±103 px every ~115 ms while the user is trying to scroll.
+ *
+ * Compare-by-value covers the fields the row renderers actually read.
+ * `id`, `threadId`, `turnIndex`, `itemIndex`, `parentId`, `completionOf`,
+ * `payloadId`, `inputPayloadId`, `kind`, `role`, `payloadKind`, `toolName`
+ * are part of identity / structure and would change the renderer's branch
+ * if they differed — included for completeness. `summary`, `status`,
+ * `decision`, `payloadMeta`, `meta`, `createdAt`, `updatedAt`,
+ * `isBackground` are the streaming / mutable surface. If every one of these
+ * matches, the upsert is a true no-op and we can drop it.
+ */
+export function itemsAreEqual(a: Item, b: Item): boolean {
+  return (
+    a.id === b.id
+    && a.threadId === b.threadId
+    && a.turnIndex === b.turnIndex
+    && a.itemIndex === b.itemIndex
+    && a.kind === b.kind
+    && a.role === b.role
+    && a.status === b.status
+    && a.summary === b.summary
+    && a.payloadId === b.payloadId
+    && a.inputPayloadId === b.inputPayloadId
+    && a.payloadKind === b.payloadKind
+    && a.payloadMeta === b.payloadMeta
+    && a.parentId === b.parentId
+    && a.completionOf === b.completionOf
+    && a.toolName === b.toolName
+    && a.decision === b.decision
+    && a.meta === b.meta
+    && a.createdAt === b.createdAt
+    && a.updatedAt === b.updatedAt
+    && a.isBackground === b.isBackground
+  );
+}
+
 export function itemsForThread(
   nextItems: readonly Item[] | null | undefined,
   threadId: string,
@@ -102,6 +152,14 @@ export function applyItemUpsertsToWindow({
     const existingIndex = itemIndexById.get(item.id) ?? appendedIndexById.get(item.id);
     if (existingIndex !== undefined) {
       const previous = next[existingIndex];
+      // No-op dedupe: if the backend re-emits an upsert with identical
+      // content, skip the array replace. Otherwise every redundant
+      // upsert produces a new `pane.items` reference, which cascades
+      // through `groupedNodes`, the Virtualizer's `data` prop, and the
+      // mounted row components — observed as a 103 px row oscillation
+      // every ~115 ms in plan-ready threads. See `itemsAreEqual` for
+      // the fields compared.
+      if (itemsAreEqual(previous, item)) continue;
       next[existingIndex] = item;
       if (appendedIndexById.has(item.id)) {
         const appendedOffset = existingIndex - current.length;

@@ -407,6 +407,47 @@ describe('createUseStickToBottomController', () => {
       expect(geom.scrollTop).toBeLessThanOrEqual(300);
     });
 
+    it('overscroll guard does NOT clamp when escaped (preserves user mid-history position)', () => {
+      // The overshoot guard's purpose is to fix invalid scrollTop
+      // states from virtua mis-correction or browser auto-clamping,
+      // but when the user has explicitly escaped, the browser's own
+      // clamp will fix any out-of-range scrollTop on the next paint
+      // and we must NOT yank the user to the bottom. Without this
+      // gate, a virtua applyJump that nudges scrollTop past a freshly
+      // shrunk target could snap the user from mid-history to bottom
+      // as a side-effect of an above-viewport row remeasure.
+      const ro = getRO();
+      ro.fire(contentEl, 800); // initial — sets previousHeight=800
+      controller.setEscapedFromLock(true);
+      // Simulate the virtua-shift-then-shrink scenario: scrollTop now
+      // sits past the new target.
+      geom.scrollTop = 500;
+      geom.scrollHeight = 900;
+      geom.contentHeight = 700;
+      ro.fire(contentEl, 700); // delta = -100, overshoot would fire
+      // Escape gate: NO write. scrollTop stays at 500. The browser
+      // will clamp it itself on the next paint, or the user can
+      // intentionally scroll. The controller does NOT slam them down.
+      expect(geom.scrollTop).toBe(500);
+      // And escape is still set.
+      expect(controller.escapedFromLock).toBe(true);
+    });
+
+    it('overscroll guard does NOT clamp while pauseAutoScroll lease is held', () => {
+      // Symmetric guard: the resizer/drawer-during-drag lease should
+      // also suppress the overshoot snap, matching the positive and
+      // negative pin branches that already check pauseDepth.
+      const ro = getRO();
+      ro.fire(contentEl, 800); // initial
+      const release = controller.pauseAutoScroll();
+      geom.scrollTop = 500;
+      geom.scrollHeight = 900;
+      geom.contentHeight = 700;
+      ro.fire(contentEl, 700);
+      expect(geom.scrollTop).toBe(500);
+      release();
+    });
+
     it('clears resizeDifference after rAF + 1ms', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800); // initial, sets previousHeight
@@ -588,6 +629,7 @@ describe('createUseStickToBottomController', () => {
       expect(controller.escapedFromLock).toBe(true);
       expect(controller.isSticky).toBe(false);
     });
+
   });
 
   describe('forceStick', () => {
@@ -628,6 +670,177 @@ describe('createUseStickToBottomController', () => {
       const after = geom.scrollTop;
       for (let i = 0; i < 5; i++) await nextFrame();
       expect(geom.scrollTop).toBe(after);
+    });
+  });
+
+  describe("forceStick reason: 'restore' consent gate", () => {
+    it("forceStick({reason:'restore'}) without armRestoreSnap NO-OPs (user escape preserved)", () => {
+      // Reproduces the seq-509 trace bug: a stale or duplicated
+      // `restoreToBottom()` calling forceStick() AFTER the user has
+      // wheel-escaped previously slammed scrollTop to the bottom and
+      // cleared escape. With the consent gate, the restore-reason
+      // call no longer fires unless the entry point armed consent.
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      expect(controller.escapedFromLock).toBe(true);
+
+      controller.forceStick({ reason: 'restore' });
+
+      expect(controller.escapedFromLock).toBe(true); // unchanged
+      expect(geom.scrollTop).toBe(100); // not slammed to 400
+    });
+
+    it("forceStick({reason:'restore'}) with armRestoreSnap proceeds", () => {
+      // Legitimate thread-switch restore: entry point arms consent,
+      // restore $effect's forceStick consumes it.
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      expect(controller.escapedFromLock).toBe(true);
+
+      controller.armRestoreSnap();
+      controller.forceStick({ reason: 'restore' });
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(geom.scrollTop).toBe(400); // snapped to target
+    });
+
+    it("armRestoreSnap is one-shot: second restore-reason call NO-OPs", () => {
+      controller.setEscapedFromLock(true);
+      geom.scrollTop = 100;
+
+      controller.armRestoreSnap();
+      controller.forceStick({ reason: 'restore' }); // consumes
+      expect(geom.scrollTop).toBe(400);
+
+      // Caller re-escapes, then a stale restore fires again.
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      controller.forceStick({ reason: 'restore' });
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(100);
+    });
+
+    it('user-reason forceStick (default) always proceeds AND consumes any pending restore-snap', () => {
+      // Chip click / send: explicit user intent always wins. Also
+      // clears any pending arm so a follow-up stale restore can't
+      // piggy-back on it.
+      controller.armRestoreSnap();
+      controller.forceStick(); // default reason: 'user'
+      expect(geom.scrollTop).toBe(400);
+
+      // Re-escape and verify the arm was consumed.
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      controller.forceStick({ reason: 'restore' });
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(100);
+    });
+
+    it('user wheel-up clears armRestoreSnap (race between arm and restore $effect)', async () => {
+      // Realistic race: MessageTimeline's $effect.pre arms consent,
+      // then the user wheel-ups before the restore $effect runs (rare
+      // since both happen inside the same flush, but possible with an
+      // asynchronously dispatched event). The user's gesture must
+      // invalidate the consent so the restore NO-OPs.
+      controller.armRestoreSnap();
+      fireWheel(scrollEl, -50, scrollEl); // user escapes — clears arm
+
+      const beforeTop = geom.scrollTop;
+      controller.forceStick({ reason: 'restore' });
+      expect(controller.escapedFromLock).toBe(true); // preserved
+      expect(geom.scrollTop).toBe(beforeTop);
+    });
+
+    it('keyboard PageUp clears armRestoreSnap', () => {
+      controller.armRestoreSnap();
+      fireKey(scrollEl, 'PageUp');
+
+      controller.forceStick({ reason: 'restore' });
+      expect(controller.escapedFromLock).toBe(true);
+    });
+
+    it('touch-move-down (visible content moves down → escape) clears armRestoreSnap', () => {
+      controller.armRestoreSnap();
+      fireTouchStart(scrollEl, 100);
+      fireTouchMove(scrollEl, 200); // dy=+100, finger down → escape
+
+      controller.forceStick({ reason: 'restore' });
+      expect(controller.escapedFromLock).toBe(true);
+    });
+
+    it('detach DELIBERATELY preserves armRestoreSnap (load-bearing for initial-mount path)', () => {
+      // attach() calls detach() up-front when scrollEl/contentEl
+      // change, including on first mount. If detach cleared the arm,
+      // the consumer's `$effect.pre → armRestoreSnap` would be wiped
+      // by the immediately-following `$effect → attach` before the
+      // restore `$effect → forceStick({reason:'restore'})` could
+      // consume it. The flag survives detach; user gestures and the
+      // consume path itself are responsible for clearing it.
+      controller.armRestoreSnap();
+      controller.detach();
+      controller.attach(scrollEl, contentEl);
+
+      geom.scrollTop = 100;
+      controller.forceStick({ reason: 'restore' });
+
+      // The arm survived; restore proceeded; user was snapped to bottom.
+      expect(controller.escapedFromLock).toBe(false);
+      expect(geom.scrollTop).toBe(400);
+    });
+
+    it('attach(same scrollEl, same contentEl) preserves armRestoreSnap (real MessageTimeline thread-switch path)', () => {
+      // The previous test exercises explicit detach+attach. The real
+      // MessageTimeline path is different: scrollEl/contentEl never
+      // change across thread switches (the Virtualizer is keyed on
+      // threadId but the outer scroll container is not), so attach()
+      // takes the early-return branch (`scrollEl === nextScrollEl &&
+      // contentEl === nextContentEl`). The arm must survive that path
+      // too. A regression that moves the `restoreSnapArmed = false`
+      // line into attach()'s early-return would silently break the
+      // thread-switch restore for every user. This test pins it down.
+      controller.armRestoreSnap();
+      controller.attach(scrollEl, contentEl); // SAME refs → early return
+
+      geom.scrollTop = 100;
+      controller.forceStick({ reason: 'restore' });
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(geom.scrollTop).toBe(400);
+    });
+
+    it('markAtBottom consumes armRestoreSnap (empty-timeline restore branch)', () => {
+      // restoreToBottom's empty-timeline branch (chat thread with
+      // zero rows) calls markAtBottom() instead of forceStick — but
+      // it's still a completed restore and must consume the arm. If
+      // not, a later stale path that takes the restore branch could
+      // pick up the leftover consent and slam the user.
+      controller.armRestoreSnap();
+      controller.markAtBottom();
+
+      // Arm consumed; a follow-up restore-stick must NO-OP.
+      fireWheel(scrollEl, -50, scrollEl); // user escapes between
+      geom.scrollTop = 100;
+      controller.forceStick({ reason: 'restore' });
+
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(100);
+    });
+
+    it('arm → re-arm idempotent (no double-consume risk)', () => {
+      controller.armRestoreSnap();
+      controller.armRestoreSnap(); // calling twice is a no-op (still one-shot)
+
+      geom.scrollTop = 100;
+      // First restore-stick consumes the arm.
+      controller.forceStick({ reason: 'restore' });
+      expect(geom.scrollTop).toBe(400);
+
+      // Second restore-stick — arm was already consumed by the first
+      // call, so this NO-OPs even though we never invoked any user
+      // escape path between them.
+      geom.scrollTop = 100;
+      controller.forceStick({ reason: 'restore' });
+      expect(geom.scrollTop).toBe(100);
     });
   });
 

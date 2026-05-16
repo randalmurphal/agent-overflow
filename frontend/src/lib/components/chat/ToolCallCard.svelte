@@ -47,7 +47,7 @@
 {:else if presentation.kind === 'collab'}
   <CollabToolRow {pane} {item} {codexSubagentReceiverLabels} />
 {:else if presentation.kind === 'proposed-plan'}
-  <ProposedPlanCard {pane} {item} payloadId={presentation.payloadId} meta={presentation.meta} />
+  <ProposedPlanCard {pane} {item} meta={presentation.meta} />
 {:else if presentation.kind === 'single-file-diff'}
   <!-- Single-file diff payload (Claude legacy `payloadKind=diff`,
        per-turn EventDiff upgrade). The patch text is in the meta's

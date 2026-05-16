@@ -15,16 +15,33 @@ shape. Operational rules for code in this directory:
   DOM for first-visible-item or write `scrollTop` directly.
 - Programmatic scrolls go through `useStickToBottom` (`forceStick`,
   `markAtBottom`, `notifyContentMaybeGrew`, `pauseAutoScroll`,
-  `stopScroll`) or directly via `listRef.scrollToIndex(...)`. **Always
-  call `stick.stopScroll()` BEFORE any `listRef.scrollToIndex(...)` and
-  never pass `smooth: true`** — virtua's smooth path uses
+  `stopScroll`, `armRestoreSnap`) or directly via
+  `listRef.scrollToIndex(...)`. **Always call `stick.stopScroll()`
+  BEFORE any `listRef.scrollToIndex(...)` and never pass `smooth:
+  true`** — virtua's smooth path uses
   `scrollEl.scrollTo({behavior:'smooth'})` natively, which would fight
   the controller. Never `el.scrollIntoView()` on a row that lives
   inside the virtualizer; virtua won't see it and will fight the
   scroll.
+- **`forceStick(opts?: { reason?: 'user' | 'restore' })` has two
+  flavors.** `'user'` (default) is explicit user intent (chip click,
+  send) and always proceeds. `'restore'` is thread-restore-style and
+  honored ONLY when the entry point armed consent via
+  `armRestoreSnap()` since the last user escape — otherwise NO-OP, to
+  preserve the user's scroll position when a stale or duplicated
+  restore $effect fires. MessageTimeline's `$effect.pre` calls
+  `stick.armRestoreSnap()` after the defensive
+  `setEscapedFromLock(true)` so the upcoming restoreToBottom's
+  `forceStick({reason:'restore'})` is honored; any user gesture
+  between arm and consume re-clears the arm and the restore NO-OPs.
+  Don't call `forceStick({reason:'restore'})` from a restore path
+  without a paired `armRestoreSnap()` from the matching entry point —
+  the call will silently NO-OP. Don't call `armRestoreSnap()` from
+  anywhere other than a thread-switch / channel-mount entry point.
 - **Bottom-snapshot restore on thread switch goes through
-  `stick.forceStick()` synchronously inside the restore `$effect`,
-  followed by a single rAF `notifyContentMaybeGrew()` settle pass.**
+  `stick.forceStick({reason:'restore'})` synchronously inside the
+  restore `$effect`, followed by a single rAF `notifyContentMaybeGrew()`
+  settle pass.**
   The synchronous forceStick is the primary writer — running it inline
   (no `pauseAutoScroll` lease, no `await tick()`) keeps the
   contentRO pin enabled across the new-thread mount and avoids

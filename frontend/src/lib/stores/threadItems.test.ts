@@ -140,6 +140,31 @@ describe('threadItems', () => {
     expect(next?.items[0]).toBe(corrected);
   });
 
+  it('applies existing-row upserts when only an observable optional field changes', () => {
+    const current = [
+      makeItem({
+        id: 'approval',
+        threadId: 'thread-1',
+        turnIndex: 3,
+        decision: '',
+      }),
+    ];
+    const decided = {
+      ...current[0]!,
+      decision: 'approved' as const,
+    };
+
+    const next = applyItemUpsertsToWindow({
+      current,
+      incoming: [decided],
+      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: 2,
+    });
+
+    expect(next?.items[0]).toBe(decided);
+  });
+
   it('returns the current reference when every incoming upsert is ignored', () => {
     const current = [
       makeItem({ id: 'existing', threadId: 'thread-1', turnIndex: 3 }),
