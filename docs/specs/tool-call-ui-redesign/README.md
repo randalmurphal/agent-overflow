@@ -87,6 +87,204 @@ This redesign:
 - Subagent transcripts moving to a side panel or new thread view —
   the current inline "latest tool" preview stays.
 
+## Architecture context (current state)
+
+The data layer is already provider-unified. Both Claude and Codex
+normalize into a single `Item` shape (`frontend/src/lib/types/models.ts`)
+with `kind`-discriminated rows (`tool_call`, `tool_completion`,
+`thinking`, `assistant_text`, `user_text`, `terminal_interaction`,
+`notification`, `api_retry`, `api_error`, `error`, `compaction`).
+There is no `claude/` or `codex/` Svelte directory — everything routes
+through one timeline.
+
+**Dispatcher chain:**
+
+```
+ChatView.svelte
+ └─ MessageTimeline.svelte                  (virtua scroll surface, turn dividers)
+     └─ TimelineLeaf.svelte                 (kind-based discrimination)
+         ├─ AssistantMessage / UserMessage  (prose; out of scope)
+         ├─ ThinkingBlock                   (think rows)
+         ├─ ToolCallCard.svelte             (dispatcher for tool_call / tool_completion)
+         │   ├─ AskUserQuestionCard
+         │   ├─ CollabToolRow               (Codex collab family)
+         │   ├─ ProposedPlanCard
+         │   ├─ DiffFileBlock               (single-file diff)
+         │   ├─ DiffFileStack               (multi-file → N DiffFileBlocks)
+         │   ├─ ToolResultCard              (legacy non-diff tool_result)
+         │   ├─ CommandOutput               (bash / shell / exec_command)
+         │   └─ GenericToolCallRow          (catch-all: Read/Grep/Glob/Web/Plan/Agent/MCP/...)
+         ├─ TerminalInteractionRow          (Codex bg-PTY)
+         ├─ NotificationRow / SessionDiedNotification
+         ├─ APIRetryRow / APIErrorRow
+         └─ (compaction marker)
+```
+
+**Provider edge is small** (~6 branch points): `toolPresentation.ts`,
+`MessageTimeline.svelte`, `ToolCallCard.svelte`, `backgroundTray.ts`,
+`BackgroundTaskTrayRow.svelte`, plus the tool-name sets in
+`commandDisplay.ts` and `codexCollabControls.ts`. Everything from
+`ToolCallCard.svelte` down operates on the unified `Item` shape.
+
+**The structure already matches the design at most places:**
+
+- Tool outputs are collapsed by default with chevron-to-expand
+  (`CommandOutput.svelte:219`, `GenericToolCallRow.svelte:337`).
+- Multi-file edits already render one row per file via `DiffFileStack`
+  → N `DiffFileBlock`s.
+- Inline diffs already cap and fade with a side-panel CTA
+  (`DiffFileBlock.svelte:307-314`), just at a different line count
+  (30 today, 15 target).
+- The chevron primitive (`TranscriptDisclosureHeader.svelte`) is
+  already in place and rotates on expand.
+- Thinking is already italic and clamped to 3 lines.
+- Diff stats slot (`+N` / `-N`) already exists.
+
+This means the work is concentrated on **visual presentation** —
+labels, colors, the rail, indicator dots, error sub-lines — not on
+structural / data-layer changes. Risk profile is correspondingly
+small.
+
+## Row geometry
+
+Every tool / think row composes the same column structure. Widths /
+spacing align so consecutive rows form a clean visual grid.
+
+```
+┌──────┬──────┬──────────┬─────────────────────┬───────┬─────────┬─────────┐
+│ chev │ icon │ label    │ body                │ stats │ indic.  │ time    │
+│      │      │ (48px)   │ (flex)              │       │         │         │
+└──────┴──────┴──────────┴─────────────────────┴───────┴─────────┴─────────┘
+  8px    14px   48px       1fr (truncate)        ~3rem   ~3rem     ~4rem
+```
+
+- **chev** — chevron (rotates 90° when expanded). From
+  `TranscriptDisclosureHeader.svelte`.
+- **icon** — colored SVG via `ToolKindIcon.svelte`. Color per tool
+  kind from `--ico-*` tokens.
+- **label** — fixed-width gutter, lowercase, `fg-hint`,
+  no tracking. Examples: `bash`, `read`, `edit`, `write`, `patch`,
+  `grep`, `glob`, `fetch`, `search`, `think`, `agent`, `spawn`,
+  `waiting`, `waited`, `closed`, `terminal`, `mcp`, `tool`,
+  `notebook`, `plan`, `ask`.
+- **body** — flexes; truncates with ellipsis on overflow. Holds
+  the human-readable invocation (command, path, diff filename,
+  query, agent description).
+- **stats** — fixed slot for `+N` / `−N` magnitude indicator on
+  edit / write / patch rows. Empty otherwise.
+- **indicator** — text-free state dot (see table below). Empty for
+  success / idle.
+- **time** — absolute HH:MM, tabular numerals, `fg-hint`.
+
+Rows that have an `errored` / `killed` / `declined` state add a
+`RowError` sub-line below the row, padding-aligned to the body
+column (clears chev + icon + label gutters).
+
+## Indicator states
+
+`Indicator.svelte` is the single source of truth for state on each
+row. Success / idle renders nothing — the absence of a dot is the
+positive signal.
+
+| State | Visual | Trigger |
+|---|---|---|
+| `null` (idle / success) | Empty slot | `status === 'completed'` without `is_error` / non-zero exit / `meta.isError`. Default. |
+| `running` | Pulsing accent dot, ~6px, `var(--accent)`, 1.5s ease-in-out | `status === 'running'` or `'streaming'`, not backgrounded. |
+| `backgrounded` | 3 staggered animated accent dots, ~3.5px each, 1.4s with 0.2s + 0.4s offsets | `status === 'running'` AND `isBackground === true` on the launch row. |
+| `error` | Static red dot, ~6px, `var(--error)` | `status === 'errored'` / `'killed'`, or completed with `is_error` / non-zero exit / `meta.isError`. Pairs with `RowError`. |
+| `declined` | Static amber dot, ~6px, `var(--warning)` | `status === 'declined'`. Pairs with `RowError`. |
+
+No status text labels (no "RUNNING", "Failed", "Stopped"). No success
+pill. No exit-code chip on the row itself — exit code goes in
+`RowError`'s `code` slot when present.
+
+## Tool inventory — current → target
+
+Coverage check so the implementation hits every tool currently
+rendered. Per-tool labels are categorical (the lowercase gutter
+label), not the raw tool name.
+
+| Tool name | Provider | Current renderer | Target gutter label | Notes |
+|---|---|---|---|---|
+| `Bash` | claude | `CommandOutput` | `bash` | |
+| `command_execution`, `commandExecution`, `exec_command`, `shell` | codex | `CommandOutput` | `bash` | All normalize to the same renderer |
+| `Edit` | claude | `DiffFileStack` / `DiffFileBlock` | `edit` | |
+| `MultiEdit` | claude | `DiffFileStack` | `edit` | Explodes to N file rows |
+| `Write` | claude | `DiffFileStack` / `DiffFileBlock` | `write` | |
+| `NotebookEdit` | claude | `DiffFileStack` | `notebook` | |
+| `apply_patch` | codex | `DiffFileStack` | `patch` | Multi-file → N rows |
+| `Read` | claude | `GenericToolCallRow` | `read` | Collapsed by default |
+| `Grep` | claude | `GenericToolCallRow` | `grep` | |
+| `Glob` | claude | `GenericToolCallRow` | `glob` | |
+| `WebFetch` | claude | `GenericToolCallRow` | `fetch` | |
+| `WebSearch`, `web_search`, `webSearch` | both | `GenericToolCallRow` | `search` | |
+| `ViewImage`, `ImageGeneration` | claude | `GenericToolCallRow` | `image` | |
+| `Plan`, `ExitPlanMode` | claude | `GenericToolCallRow` | `plan` | |
+| `Agent`, `Task` | claude | `GenericToolCallRow` + `SubagentGroup` | `agent` | New `AgentRow.svelte` extracted in Phase 2 |
+| `collab_agent` | codex | `CollabToolRow` | `spawn` | |
+| `send_input` | codex | `CollabToolRow` | `send` | |
+| `wait_agent` | codex | `CollabToolRow` | `waiting` | |
+| `close_agent` | codex | `CollabToolRow` | `closed` | |
+| `resume_agent` | codex | `CollabToolRow` | `resume` | |
+| `MCP/<name>` | both | `GenericToolCallRow` | `mcp` | Body: `server.tool(args)` |
+| `AskUserQuestion` | claude | `AskUserQuestionCard` | `ask` | Card chrome; behavior unchanged |
+| `request_user_input` | codex | `AskUserQuestionCard` | `ask` | Same |
+| `TaskOutput` | claude | `GenericToolCallRow` (body suppressed) | `output` | Header-only |
+| terminal_interaction | codex | `TerminalInteractionRow` | `terminal` | |
+| `Thinking` | both | `ThinkingBlock` | `think` | |
+| Proposed plan | both | `ProposedPlanCard` | (own card) | Card chrome restyle |
+| anything else | both | `GenericToolCallRow` | `tool` | Generic fallback |
+
+`TodoWrite` (Claude) and `update_plan` (Codex) are deliberately not in
+this table — they don't render as timeline rows. They drive the
+activity rail (`composer/ActivityRailTodosBody.svelte`).
+
+## Rejected alternatives
+
+Decisions we considered and didn't pick — captured so reviewers don't
+relitigate.
+
+| Considered | Rejected because |
+|---|---|
+| Subagent transcript opens in side panel / new thread view | Loses the at-a-glance "what is the subagent doing right now" affordance. Keep inline "latest tool" preview, restyled. |
+| Multi-file edits as one row with stacked diff | Each file deserves its own row + diff for individual inspection; current `DiffFileStack` already does this. |
+| Group consecutive tool rows in `MessageTimeline.svelte`'s `groupedNodes` to draw the rail | Adds a new `TimelineNode` variant, complicates row-index math + auto-load-older trigger, risks the row-contract stability rule. Per-row `border-l` with tight spacing yields the same visual outcome. |
+| Render full diff inline (no cap) | Conflicts with the compact aesthetic and produces long virtua rows that fight `bufferSize`. Cap at 15 + side-panel CTA. |
+| Phase labels on stamps (`planning · 9:42 PM`, `implementing`, `testing`) | No wire signal exists for phase; inferring from prose is fragile. Out of scope for this redesign. |
+| Adopt JetBrains Mono | Geist Mono is already shipping and looks comparable. Avoids a web-font swap that ripples across composer / sidebar / settings. |
+| Narrow to 880px | 992px gives long bash commands and paths room without aggressive truncation. The compactness goal is met by row density, not container width. |
+| Use the design's exact icon palette | Cobalt-violet accent project; design uses warmer greens / ambers. Pick a project-aligned palette under new `--ico-*` tokens. |
+| Adopt the design's prose treatment | Out of scope — this redesign is the tool-call surface only. |
+| Force interactive cards (AskUserQuestion, ProposedPlan) into the single-row format | They have buttons, multi-select, plan checklists. Restyle their chrome; keep their structural shape. |
+| Header-then-revealable-body for interactive cards | Two-click interaction for high-attention UI. Keep the cards' first-paint interactive. |
+
+## Implementation constraints
+
+Project rules that bound this work — pointers, not duplication.
+
+- **`frontend/CLAUDE.md` § Raw-content rendering** — assistant prose
+  goes through `ChatMarkdown` → `<Streamdown>`. Don't touch.
+- **`frontend/src/lib/components/chat/CLAUDE.md` § Row contract** —
+  every row inside `<Virtualizer>` keeps a stable outer shell. No
+  late chevron insertion, no static-to-button swaps, no
+  completion-time history appendages. Row state lives in per-pane
+  registries (`pane.expansionStateFor`, `pane.attachmentCacheFor`,
+  `pane.isSubagentGroupExpanded`), not local `let foo = $state(false)`.
+  Payload bytes route through `utils/payloadDataCache.ts`.
+- **`frontend/CLAUDE.md` § Scroll architecture** — `MessageTimeline`
+  owns scroll, `useStickToBottom` owns intent. Don't touch. The rail
+  per-row `border-l` approach is chosen specifically to avoid
+  changing `groupedNodes` / row geometry.
+- **`frontend/CLAUDE.md` § Anti-patterns** — no `.svelte` past ~300
+  lines (currently `GenericToolCallRow.svelte` at 402 is over;
+  `AskUserQuestionCard.svelte` at 408 is over). The
+  `GenericToolCallRow` split into `+ AgentRow.svelte` resolves the
+  largest violation.
+- **`CLAUDE.md` (root) § Permanent invariants** — transport boundary
+  stays clean; `.claude/` and `.playwright-mcp/` stay excluded from
+  the dev watcher. Not relevant to this redesign but worth flagging
+  if any helper script ends up running in dev mode.
+
 ## File-level deltas
 
 ### New files (Phase 1)
