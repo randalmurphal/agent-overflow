@@ -189,42 +189,50 @@
   placement="top-start"
   role="none"
 >
-  <Menu ariaLabel="Effort, context, and fast mode" onClose={closeMenu}>
-    <MenuSectionHeader label="Effort" />
-    {#each availableEfforts as tier (tier.slug)}
-      <MenuItem
-        label={tier.label}
-        checked={tier.slug === currentEffort}
-        onSelect={() => handleEffort(tier.slug)}
-      />
-    {/each}
+  <div
+    class={[
+      '[&_[data-menu]]:min-w-[150px] [&_[data-menu]]:py-0.5',
+      '[&_[data-menuitem]]:px-2.5 [&_[data-menuitem]]:py-1 [&_[data-menuitem]]:text-xs [&_[data-menuitem]]:gap-1.5',
+      '[&_[data-menu-section-header]]:px-2.5 [&_[data-menu-section-header]]:pt-1.5 [&_[data-menu-section-header]]:pb-0.5',
+      '[&_[data-menu-divider]]:my-0.5',
+    ].join(' ')}
+  >
+    <Menu ariaLabel="Effort, context, and fast mode" onClose={closeMenu}>
+      {#if contextOptions.length > 1}
+        <MenuSectionHeader label="Context" />
+        {#each contextOptions as option (option.tokens)}
+          <MenuItem
+            label={contextOptionLabel(option)}
+            checked={option.tokens === currentContextWindow}
+            onSelect={() => handleContextWindow(option.tokens)}
+          />
+        {/each}
+        <MenuDivider />
+      {/if}
 
-    {#if contextOptions.length > 1}
-      <MenuDivider />
-      <MenuSectionHeader label="Context" />
-      {#each contextOptions as option (option.tokens)}
+      {#if fastModeSupported}
+        <MenuSectionHeader label="Fast Mode" />
         <MenuItem
-          label={contextOptionLabel(option)}
-          checked={option.tokens === currentContextWindow}
-          onSelect={() => handleContextWindow(option.tokens)}
+          label="Off"
+          checked={!currentFast}
+          onSelect={() => handleFastMode(false)}
+        />
+        <MenuItem
+          label="On"
+          checked={currentFast}
+          onSelect={() => handleFastMode(true)}
+        />
+        <MenuDivider />
+      {/if}
+
+      <MenuSectionHeader label="Effort" />
+      {#each availableEfforts as tier (tier.slug)}
+        <MenuItem
+          label={tier.label}
+          checked={tier.slug === currentEffort}
+          onSelect={() => handleEffort(tier.slug)}
         />
       {/each}
-    {/if}
-
-    {#if fastModeSupported}
-      <MenuDivider />
-      <MenuSectionHeader label="Fast Mode" />
-      <MenuItem
-        label="Off"
-        checked={!currentFast}
-        onSelect={() => handleFastMode(false)}
-      />
-      <MenuItem
-        label="On"
-        checked={currentFast}
-        onSelect={() => handleFastMode(true)}
-      />
-    {/if}
-
-  </Menu>
+    </Menu>
+  </div>
 </Popover>
