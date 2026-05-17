@@ -34,17 +34,9 @@ import (
 // per-turn cascade. See internal/triage/AGENTS.md "Wire-round vs
 // logical-turn".
 func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
-	turnIndex := evt.TurnIndex
-	if turnIndex == 0 {
-		var err error
-		turnIndex, err = r.store.LastTurnIndex(evt.ThreadID)
-		if err != nil {
-			log.Printf("triage: last turn index on turn start: %v", err)
-			turnIndex = 0
-		}
-	}
+	turnIndex := r.resolveTurnIndexOnStart(evt)
 	r.setOpenTurn(evt.ThreadID, turnIndex)
-	r.openTurnSpan(evt)
+	r.openTurnSpan(evt, turnIndex)
 
 	startedAt := eventTimestampMillis(evt)
 	turnID := resolveTurnID(evt, turnIndex)
@@ -73,6 +65,47 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 	r.setOpenRoundSnapshot(snapshot)
 	r.emit("provider:turn_started", TurnStartedEvent(snapshot))
 	return nil
+}
+
+// resolveTurnIndexOnStart picks the right turn index for an incoming
+// EventTurnStart / EventInit-promoted-to-start. Three sources, in
+// priority order:
+//
+//  1. evt.TurnIndex when the wire carries it directly (Codex
+//     turn/started, recovery replays).
+//
+//  2. The pending-send FIFO head when the wire carries no index but
+//     an AO send is awaiting echo. The dispatcher
+//     (RegisterPendingSend / RegisterPendingFlushSend) stamps the
+//     AO-decided turn index BEFORE the provider write, so the FIFO
+//     head carries the authoritative answer for the new turn. The
+//     peek is non-destructive — the pop is owned by handleUserText
+//     when the matching user_text echo arrives.
+//
+//  3. store.LastTurnIndex as the no-pending-send fallback (idle
+//     session attach via EventInit; tests that exercise this handler
+//     directly).
+//
+// For queue dispatches, source 3 returns the PREVIOUS turn because
+// the deferred user_text for the new turn has not been persisted yet
+// (handleUserText persists on echo, which lands AFTER system.init).
+// Resolving on source 2 first is what stops setOpenTurn from
+// re-wiping the previous turn's id-allocating counters and silently
+// overwriting its trailing text via UpsertItem. See
+// queue_dispatch_turn_test.go.
+func (r *Router) resolveTurnIndexOnStart(evt provider.ProviderEvent) int {
+	if evt.TurnIndex != 0 {
+		return evt.TurnIndex
+	}
+	if pending, ok := r.peekPendingSendHead(evt.ThreadID); ok {
+		return pending.TurnIndex
+	}
+	turnIndex, err := r.store.LastTurnIndex(evt.ThreadID)
+	if err != nil {
+		log.Printf("triage: last turn index on turn start: %v", err)
+		return 0
+	}
+	return turnIndex
 }
 
 func (r *Router) markAcceptedRevisionComments(threadID string, turnIndex int, turnID string, startedAt int64) {
@@ -224,8 +257,12 @@ func (r *Router) upsertTurnRow(turn store.Turn) bool {
 // openTurnSpan begins a turn.lifecycle span for the incoming turn. Any
 // existing span for the thread is closed first — the provider sometimes
 // re-sends EventTurnStart (e.g. after a Claude interrupt/re-init) and we
-// don't want to leak orphan spans.
-func (r *Router) openTurnSpan(evt provider.ProviderEvent) {
+// don't want to leak orphan spans. turnIndex is the value the caller has
+// already resolved via resolveTurnIndexOnStart so the span's `turn.index`
+// attribute matches what setOpenTurn / upsertTurnRow wrote; querying
+// LastTurnIndex here would diverge for queue-dispatched turns where the
+// deferred user_text hasn't been persisted yet.
+func (r *Router) openTurnSpan(evt provider.ProviderEvent, turnIndex int) {
 	r.mu.Lock()
 	tracer := r.tracer
 	if existing, ok := r.turnSpans[evt.ThreadID]; ok {
@@ -241,7 +278,6 @@ func (r *Router) openTurnSpan(evt provider.ProviderEvent) {
 		// span rather than record misleading attributes.
 		return
 	}
-	turnIndex, _ := r.store.LastTurnIndex(evt.ThreadID)
 	_, span := tracer.Start(context.Background(), "turn.lifecycle",
 		trace.WithAttributes(
 			attribute.String("thread.id", evt.ThreadID),

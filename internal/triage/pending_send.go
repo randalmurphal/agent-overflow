@@ -10,8 +10,11 @@ import (
 // triage router. The send path registers an entry when an AO-initiated
 // user message is dispatched to a provider; the matching wire
 // EventUserText pops the FIFO head once Phase E lands the consumer
-// path. wireOnlyUserTextSeen dedupes replay-or-self-prompt envelopes
-// that don't correspond to any pending AO send.
+// path. handleTurnStart also peeks the FIFO head (non-destructively)
+// to recover the dispatcher-stamped TurnIndex when the wire init
+// carries no turn index (Claude system.init). wireOnlyUserTextSeen
+// dedupes replay-or-self-prompt envelopes that don't correspond to
+// any pending AO send.
 //
 // All state lives on Router (router.go). The methods here use r.mu —
 // the existing Router mutex — and never introduce a separate lock; the
@@ -38,10 +41,16 @@ import (
 // (the dispatcher writes the same value to both). It is also
 // populated for direct sends (DeferredItem == nil) so the FIFO
 // carries the dispatch-decided turn without forcing every consumer
-// to crack open the item. The fallback in persistDeferredUserText
-// (`item.TurnIndex == 0 && pending.TurnIndex != 0`) is defensive,
-// not load-bearing — every producer sets both fields to the same
-// non-zero value today.
+// to crack open the item.
+//
+// Load-bearing for handleTurnStart: when the wire init carries no
+// turn index (Claude system.init), resolveTurnIndexOnStart peeks the
+// FIFO head and reads this field as the authoritative answer.
+// Producers MUST stamp it before registering. The fallback in
+// persistDeferredUserText (`item.TurnIndex == 0 && pending.TurnIndex
+// != 0`) remains defensive against an item-level zero — it is not
+// the contract that keeps queue-dispatched turn rows from colliding
+// with the previous turn's id-allocating counters.
 type pendingSend struct {
 	AOItemID     string // "user:<turnIndex>"
 	QueueItemID  string
@@ -99,6 +108,23 @@ func (r *Router) HasPendingSendForThread(threadID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.pendingByThread[threadID]) > 0
+}
+
+// peekPendingSendHead returns the FIFO head for threadID without
+// popping it. Used by resolveTurnIndexOnStart to recover the
+// dispatcher-stamped TurnIndex when the wire init carries no turn
+// index (Claude system.init). The pop stays owned by handleUserText
+// so this read-only peek can't strand the marker before the matching
+// wire user_text echo arrives. Returns (zero, false) when no entry
+// exists.
+func (r *Router) peekPendingSendHead(threadID string) (pendingSend, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	queue := r.pendingByThread[threadID]
+	if len(queue) == 0 {
+		return pendingSend{}, false
+	}
+	return queue[0], true
 }
 
 // consumePendingSendHead pops and returns the FIFO head for threadID.
