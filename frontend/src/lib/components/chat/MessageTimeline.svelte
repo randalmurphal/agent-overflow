@@ -64,6 +64,12 @@
   // loading just because the whole thing fits in viewport.
   const AUTO_LOAD_OFFSET_PX = 800;
   const AUTO_LOAD_INDEX_THRESHOLD = 5;
+  // Keep the live-follow nudge scoped to the tail. A structural change
+  // outside the tail can happen during load-older / search-window loads,
+  // where bottom-follow is either paused or irrelevant. Active turn
+  // streaming only appends/replaces near the tail.
+  const LIVE_FOLLOW_TAIL_NODE_COUNT = 5;
+  const LIVE_FOLLOW_TAIL_ITEM_COUNT = 5;
   // Leaf item kinds that participate in the continuous left-border
   // rail. Subagent / wait group containers also participate so the
   // rail stays continuous through nested cards and the agent card's
@@ -156,6 +162,35 @@
     timelineRowDecorations(groupedNodes, getActiveTurn(pane.threadId)?.turnIndex ?? null),
   );
 
+  let activeTurnStructuralSignature = $derived.by(() => {
+    const threadId = pane.threadId;
+    const activeTurn = getActiveTurn(threadId);
+    if (!threadId || !activeTurn) return '';
+
+    const tailNodeKeys = groupedNodes
+      .slice(-LIVE_FOLLOW_TAIL_NODE_COUNT)
+      .map((node) => timelineNodeKey(node))
+      .join(',');
+    const tailItemKeys = pane.items
+      .slice(-LIVE_FOLLOW_TAIL_ITEM_COUNT)
+      .map((item) => [
+        item.id,
+        item.kind,
+        item.status,
+        item.turnIndex,
+        item.itemIndex,
+      ].join(':'))
+      .join(',');
+
+    return [
+      threadId,
+      activeTurn.turnId,
+      activeTurn.turnIndex,
+      tailNodeKeys,
+      tailItemKeys,
+    ].join('|');
+  });
+
   // Animation mode is keyed on whether the thread has an in-flight
   // turn. Streaming chunks come in fast enough that the contentRO
   // sync-pin would land them invisibly; the spring chase gives the
@@ -195,6 +230,68 @@
   $effect(() => {
     if (!scrollEl || !contentEl) return;
     stick.attach(scrollEl, contentEl);
+  });
+
+  let liveFollowSignatureInitialized = false;
+  let lastLiveFollowSignature = '';
+  let liveFollowNudgeToken = 0;
+
+  function nextAnimationFrame(): Promise<void> {
+    return new Promise((resolve) => {
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => resolve());
+        return;
+      }
+      setTimeout(resolve, 0);
+    });
+  }
+
+  async function notifyAfterActiveTurnStructuralChange(
+    signature: string,
+    token: number,
+    threadId: string,
+  ): Promise<void> {
+    await tick();
+    await nextAnimationFrame();
+
+    if (token !== liveFollowNudgeToken) return;
+    if (pane.threadId !== threadId) return;
+    if (activeTurnStructuralSignature !== signature) return;
+    if (!getActiveTurn(threadId)) return;
+
+    stick.notifyContentMaybeGrew();
+  }
+
+  // Thinking rows stream by internally tail-pinning a 3-line clipped body,
+  // so their visible movement often does not grow the outer virtua row.
+  // When the next top-level row arrives (assistant text/tool call), relying
+  // only on contentRO timing can miss the first bottom target, especially
+  // because assistant text then grows through Streamdown's async markdown
+  // layout. This structural nudge asks the sticky controller to re-check the
+  // bottom after Svelte and virtua have had a frame to publish the new row.
+  // It deliberately keys off tail row identity/status/order, not summary
+  // deltas or metadata churn, so normal streaming chunks still use the
+  // contentRO spring path.
+  $effect(() => {
+    const signature = activeTurnStructuralSignature;
+    if (!signature) {
+      liveFollowSignatureInitialized = false;
+      lastLiveFollowSignature = '';
+      liveFollowNudgeToken += 1;
+      return;
+    }
+    if (!liveFollowSignatureInitialized) {
+      liveFollowSignatureInitialized = true;
+      lastLiveFollowSignature = signature;
+      return;
+    }
+    if (signature === lastLiveFollowSignature) return;
+
+    lastLiveFollowSignature = signature;
+    const threadId = pane.threadId;
+    if (!threadId) return;
+    const token = ++liveFollowNudgeToken;
+    void notifyAfterActiveTurnStructuralChange(signature, token, threadId);
   });
 
   // Diagnostic UI render trace — extracted to messageTimelineTrace.ts.

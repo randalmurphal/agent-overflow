@@ -26,7 +26,7 @@ import { tick } from 'svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
-import type { PaneScrollController } from '../../stores/thread.svelte';
+import type { PaneScrollController, ThreadPane } from '../../stores/thread.svelte';
 import {
   clearThreadScrollSnapshotsForTest,
   getThreadScrollSnapshot,
@@ -37,6 +37,28 @@ import ChatView from './ChatView.svelte';
 
 function waitForScrollIntent(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 5));
+}
+
+function waitForAnimationFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+}
+
+function watchNotifyContentMaybeGrew(pane: ThreadPane): {
+  calls(): number;
+  reset(): void;
+} {
+  let spy: ReturnType<typeof vi.spyOn> | null = null;
+  const originalAttach = pane.attachScrollController.bind(pane);
+  pane.attachScrollController = (controller) => {
+    spy = vi.spyOn(controller, 'notifyContentMaybeGrew');
+    originalAttach(controller);
+  };
+  return {
+    calls: () => spy?.mock.calls.length ?? 0,
+    reset: () => spy?.mockClear(),
+  };
 }
 
 beforeEach(async () => {
@@ -1304,6 +1326,154 @@ describe('scroll integration — useStickToBottom wiring', () => {
 
     expect(ctrl.isSticky).toBe(true);
     expect(ctrl.escapedFromLock).toBe(false);
+  });
+
+  it('nudges sticky follow when an active turn appends assistant text after thinking', async () => {
+    const thread = makeThread({ id: 'thread-think-text-follow' });
+    const pane = await buildPane(thread, [
+      makeItem({
+        id: 'think-1',
+        threadId: thread.id,
+        kind: 'thinking',
+        role: 'assistant',
+        status: 'streaming',
+        summary: 'first thought',
+      }),
+    ]);
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    const notifyWatch = watchNotifyContentMaybeGrew(pane);
+
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await waitForAnimationFrame();
+    notifyWatch.reset();
+
+    pane.upsertItem(makeItem({
+      id: 'text-1',
+      threadId: thread.id,
+      itemIndex: 1,
+      kind: 'assistant_text',
+      role: 'assistant',
+      status: 'streaming',
+      summary: 'Here is the next response.',
+    }));
+    await tick();
+    expect(notifyWatch.calls()).toBe(0);
+    await waitForAnimationFrame();
+    await waitFor(() => expect(notifyWatch.calls()).toBeGreaterThan(0));
+  });
+
+  it('does not nudge sticky follow for ordinary streaming text deltas', async () => {
+    const thread = makeThread({ id: 'thread-stream-delta-follow' });
+    const pane = await buildPane(thread, [
+      makeItem({
+        id: 'text-1',
+        threadId: thread.id,
+        kind: 'assistant_text',
+        role: 'assistant',
+        status: 'streaming',
+        summary: 'first',
+      }),
+    ]);
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    const notifyWatch = watchNotifyContentMaybeGrew(pane);
+
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await waitForAnimationFrame();
+    notifyWatch.reset();
+
+    pane.applyItemDelta({
+      threadId: thread.id,
+      itemId: 'text-1',
+      kind: 'assistant_text',
+      delta: ' delta',
+      updatedAt: 2,
+    });
+    await tick();
+    await waitForAnimationFrame();
+    await waitForScrollIntent();
+
+    expect(notifyWatch.calls()).toBe(0);
+  });
+
+  it('does not nudge sticky follow for active-turn structural changes outside the tail', async () => {
+    const thread = makeThread({ id: 'thread-prepend-follow' });
+    const pane = await buildPane(thread, Array.from({ length: 6 }, (_, index) => makeItem({
+      id: `text-${index}`,
+      threadId: thread.id,
+      turnIndex: 0,
+      itemIndex: index,
+      kind: 'assistant_text',
+      role: 'assistant',
+      status: 'completed',
+      summary: `message ${index}`,
+    })));
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    const notifyWatch = watchNotifyContentMaybeGrew(pane);
+
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await waitForAnimationFrame();
+    notifyWatch.reset();
+
+    pane.upsertItem(makeItem({
+      id: 'older-same-turn',
+      threadId: thread.id,
+      turnIndex: 0,
+      itemIndex: -1,
+      kind: 'assistant_text',
+      role: 'assistant',
+      status: 'completed',
+      summary: 'older row',
+    }));
+    await tick();
+    await waitForAnimationFrame();
+    await waitForScrollIntent();
+
+    expect(notifyWatch.calls()).toBe(0);
+  });
+
+  it('does not nudge sticky follow for active-turn tail metadata churn', async () => {
+    const thread = makeThread({ id: 'thread-tail-metadata-follow' });
+    const pane = await buildPane(thread, [
+      makeItem({
+        id: 'text-1',
+        threadId: thread.id,
+        kind: 'assistant_text',
+        role: 'assistant',
+        status: 'streaming',
+        summary: 'first',
+        updatedAt: 1,
+      }),
+    ]);
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    const notifyWatch = watchNotifyContentMaybeGrew(pane);
+
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await waitForAnimationFrame();
+    notifyWatch.reset();
+
+    pane.upsertItem(makeItem({
+      id: 'text-1',
+      threadId: thread.id,
+      kind: 'assistant_text',
+      role: 'assistant',
+      status: 'streaming',
+      summary: 'first',
+      updatedAt: 2,
+      meta: '{"pathRefs":[]}',
+    }));
+    await tick();
+    await waitForAnimationFrame();
+    await waitForScrollIntent();
+
+    expect(notifyWatch.calls()).toBe(0);
   });
 
   it('thread switch off a prior thread keeps contentEl hidden for the new thread (warm does not leak)', async () => {
