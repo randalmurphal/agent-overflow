@@ -244,14 +244,30 @@ func webSearchMetaExtras(item map[string]json.RawMessage) map[string]any {
 func mcpToolCallMetaExtras(item map[string]json.RawMessage) map[string]any {
 	server := readRawString(item, "server")
 	tool := readRawString(item, "tool")
-	input := toolDescriptionInput(server, tool)
 	toolName := "MCP"
 	if tool != "" {
 		toolName = "MCP/" + tool
 	}
 	extras := map[string]any{"toolName": toolName}
-	if len(input) > 0 {
-		extras["input"] = input
+	// Arguments are the raw input the model invoked the tool with. We
+	// surface them as `meta.input` (same shape Claude's parser produces
+	// for `mcp__<server>__<tool>` blocks) so the renderer can compose
+	// `server.tool(args)` from a single source on both providers.
+	if args := readRawJSONObject(item, "arguments"); args != nil {
+		extras["input"] = args
+	}
+	// `meta.mcp` carries the {server, tool} pair the toolName alone
+	// drops (toolName is `MCP/<tool>` once normalized). Both fields
+	// are required for the renderer's body synthesis.
+	if server != "" || tool != "" {
+		mcp := map[string]string{}
+		if server != "" {
+			mcp["server"] = server
+		}
+		if tool != "" {
+			mcp["tool"] = tool
+		}
+		extras["mcp"] = mcp
 	}
 	return extras
 }

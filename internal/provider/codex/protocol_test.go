@@ -1007,15 +1007,29 @@ func TestClassifyNotification_McpToolCallEnrichesToolMeta(t *testing.T) {
 	if _, ok := meta["durationMs"]; ok {
 		t.Fatalf("durationMs should not be surfaced until the UI has a persisted contract for it: %v", meta["durationMs"])
 	}
+	// The redesigned MCP row composes its body as `server.tool(args)`.
+	// `meta.input` carries the raw arguments dict (same shape Claude's
+	// parser produces) and `meta.mcp` carries the {server, tool} pair
+	// the normalized toolName drops.
 	input, ok := meta["input"].(map[string]any)
 	if !ok {
 		t.Fatalf("input missing or wrong type: %#v", meta["input"])
 	}
-	if input["description"] != "docs/lookup" {
-		t.Fatalf("input.description = %v, want docs/lookup", input["description"])
+	if input["q"] != "wails" {
+		t.Fatalf("input.q = %v, want wails", input["q"])
 	}
-	if _, ok := input["arguments"]; ok {
-		t.Fatalf("input.arguments should not duplicate raw item.arguments: %#v", input["arguments"])
+	if _, has := input["description"]; has {
+		t.Fatalf("input.description should be gone after the MCP redesign: %#v", input["description"])
+	}
+	mcp, ok := meta["mcp"].(map[string]any)
+	if !ok {
+		t.Fatalf("meta.mcp missing or wrong type: %#v", meta["mcp"])
+	}
+	if mcp["server"] != "docs" {
+		t.Fatalf("meta.mcp.server = %v, want docs", mcp["server"])
+	}
+	if mcp["tool"] != "lookup" {
+		t.Fatalf("meta.mcp.tool = %v, want lookup", mcp["tool"])
 	}
 }
 

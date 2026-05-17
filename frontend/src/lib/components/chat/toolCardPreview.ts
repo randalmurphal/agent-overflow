@@ -25,6 +25,8 @@ export function toolCardInputPreview(
   if (item.toolName === 'wait_agent') {
     return waitAgentPreview(item, itemMeta);
   }
+  const mcp = mcpPreviewFromMeta(itemMeta);
+  if (mcp) return mcp;
   const fromSummary = (item.summary ?? '').trim();
   if (fromSummary) return fromSummary;
   if (summaryMeta) {
@@ -51,6 +53,74 @@ export function decodeToolCardPreview(text: string): ToolCardPreview {
     path: { path: head.path, line: head.line, col: head.col },
   };
 }
+
+/**
+ * Compose the MCP body the redesign spec calls for — `server.tool(args)`
+ * — from the wire-typed metadata both providers' parsers stamp onto the
+ * item. `meta.mcp` carries the {server, tool} pair (the normalized
+ * `MCP/<tool>` toolName drops the server half), `meta.input` carries
+ * the raw argument dict. Returns `''` when the row is not MCP so the
+ * caller falls back through the normal preview chain.
+ */
+function mcpPreviewFromMeta(itemMeta: Record<string, unknown> | null): string {
+  if (!itemMeta) return '';
+  const mcp = itemMeta.mcp;
+  if (!mcp || typeof mcp !== 'object' || Array.isArray(mcp)) return '';
+  const server = readString((mcp as Record<string, unknown>).server);
+  const tool = readString((mcp as Record<string, unknown>).tool);
+  if (!server && !tool) return '';
+  const head = server && tool ? `${server}.${tool}` : server || tool;
+  const args = formatMcpArgs(itemMeta.input);
+  return `${head}(${args})`;
+}
+
+function readString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * Format an MCP input dict as a compact `key=value, key2=value2`
+ * preview. Values are JSON-serialized so primitives render bare
+ * (`42`, `"foo"`) and nested objects render as their JSON form,
+ * matching how a developer reads a function call. The whole preview
+ * truncates at MCP_ARGS_PREVIEW_MAX with an ellipsis so a giant
+ * argument blob doesn't drown out the rest of the row; the truncation
+ * threshold is generous enough that short arg dicts (the common case)
+ * stay legible without wrapping.
+ */
+function formatMcpArgs(input: unknown): string {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return '';
+  const entries = Object.entries(input as Record<string, unknown>);
+  if (entries.length === 0) return '';
+  const parts: string[] = [];
+  for (const [key, value] of entries) {
+    parts.push(`${key}=${formatMcpArgValue(value)}`);
+  }
+  const joined = parts.join(', ');
+  if (joined.length <= MCP_ARGS_PREVIEW_MAX) return joined;
+  return `${joined.slice(0, MCP_ARGS_PREVIEW_MAX - 1)}…`;
+}
+
+function formatMcpArgValue(value: unknown): string {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value === 'string') {
+    if (value.length <= MCP_ARG_STRING_MAX) return JSON.stringify(value);
+    return `${JSON.stringify(value.slice(0, MCP_ARG_STRING_MAX - 1))}…`;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  try {
+    const json = JSON.stringify(value);
+    if (json.length <= MCP_ARG_STRING_MAX) return json;
+    return `${json.slice(0, MCP_ARG_STRING_MAX - 1)}…`;
+  } catch {
+    return '…';
+  }
+}
+
+const MCP_ARGS_PREVIEW_MAX = 120;
+const MCP_ARG_STRING_MAX = 60;
 
 function waitAgentPreview(item: Item, meta: Record<string, unknown> | null): string {
   const count = receiverThreadCount(meta);

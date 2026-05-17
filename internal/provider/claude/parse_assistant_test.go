@@ -219,6 +219,91 @@ func TestParseAssistant_SubagentErrorCarriesParentToolUseID(t *testing.T) {
 	}
 }
 
+// TestParseAssistant_MCPToolUseNormalizesName covers Claude's
+// `mcp__<server>__<tool>` wire format. The redesigned tool-call UI
+// composes the body as `server.tool(args)` from a single source on
+// both providers; that requires the parser to normalize the raw
+// name to `MCP/<tool>` (matching the Codex `mcpToolCall` shape) and
+// stamp the {server, tool} pair onto `meta.mcp` so the renderer can
+// reconstruct it without re-parsing the original name.
+func TestParseAssistant_MCPToolUseNormalizesName(t *testing.T) {
+	line := []byte(`{"type":"assistant","message":{"id":"msg-mcp","role":"assistant","content":[{"type":"tool_use","id":"tool-mcp","name":"mcp__playwright__browser_click","input":{"selector":"#submit"}}]}}`)
+	events, err := ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var toolEvent provider.ProviderEvent
+	for _, e := range events {
+		if e.Kind == provider.EventToolStart {
+			toolEvent = e
+			break
+		}
+	}
+	if toolEvent.Kind != provider.EventToolStart {
+		t.Fatalf("expected EventToolStart, got %+v", events)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(toolEvent.Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if meta["toolName"] != "MCP/browser_click" {
+		t.Fatalf("toolName: got %v, want MCP/browser_click", meta["toolName"])
+	}
+	mcp, ok := meta["mcp"].(map[string]any)
+	if !ok {
+		t.Fatalf("meta.mcp missing or wrong type: %#v", meta["mcp"])
+	}
+	if mcp["server"] != "playwright" {
+		t.Fatalf("meta.mcp.server = %v, want playwright", mcp["server"])
+	}
+	if mcp["tool"] != "browser_click" {
+		t.Fatalf("meta.mcp.tool = %v, want browser_click", mcp["tool"])
+	}
+	input, ok := meta["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("meta.input missing or wrong type: %#v", meta["input"])
+	}
+	if input["selector"] != "#submit" {
+		t.Fatalf("meta.input.selector = %v, want #submit", input["selector"])
+	}
+}
+
+// TestParseClaudeMCPToolName covers the parser's handling of the
+// `mcp__<server>__<tool>` boundary: server names can contain single
+// underscores; both halves must be non-empty; non-MCP names pass
+// through unchanged.
+func TestParseClaudeMCPToolName(t *testing.T) {
+	cases := []struct {
+		name        string
+		toolName    string
+		wantServer  string
+		wantTool    string
+		wantMatched bool
+	}{
+		{"playwright simple", "mcp__playwright__browser_click", "playwright", "browser_click", true},
+		{"server with single underscore", "mcp__plugin_context7__query-docs", "plugin_context7", "query-docs", true},
+		{"tool with double underscore in name", "mcp__server__tool__with__more", "server", "tool__with__more", true},
+		{"not MCP", "Bash", "", "", false},
+		{"MCP prefix but no separator", "mcp__justaserver", "", "", false},
+		{"MCP prefix with empty tool", "mcp__server__", "", "", false},
+		{"MCP prefix with empty server", "mcp____tool", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server, tool, ok := parseClaudeMCPToolName(tc.toolName)
+			if ok != tc.wantMatched {
+				t.Fatalf("matched: got %v, want %v", ok, tc.wantMatched)
+			}
+			if server != tc.wantServer {
+				t.Fatalf("server: got %q, want %q", server, tc.wantServer)
+			}
+			if tool != tc.wantTool {
+				t.Fatalf("tool: got %q, want %q", tool, tc.wantTool)
+			}
+		})
+	}
+}
+
 // TestErrorEnumToHumanCopy_UnknownEnumFallsBack ensures a future SDK
 // enum we don't recognise still yields a non-empty human-readable
 // summary so the timeline row never goes blank.

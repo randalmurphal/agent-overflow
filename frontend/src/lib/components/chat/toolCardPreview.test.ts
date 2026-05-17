@@ -45,6 +45,59 @@ describe('toolCardInputPreview', () => {
     const item = makeItem({ toolName: 'Bash' });
     expect(toolCardInputPreview(item, null, null)).toBe('Bash');
   });
+
+  describe('MCP body synthesis', () => {
+    // The redesigned MCP row composes its body as `server.tool(args)`
+    // from `meta.mcp` + `meta.input`, regardless of the item's
+    // `summary` (which still carries the triage-built fallback like
+    // `MCP/lookup: query`). The synthesizer must win over the
+    // summary; otherwise the row would display the raw fallback
+    // instead of the spec-specified shape.
+
+    it('composes server.tool(args) from meta.mcp + meta.input', () => {
+      const item = makeItem({
+        toolName: 'MCP/lookup',
+        summary: 'MCP/lookup: query',
+      });
+      const itemMeta = {
+        mcp: { server: 'docs', tool: 'lookup' },
+        input: { q: 'wails' },
+      };
+      expect(toolCardInputPreview(item, null, itemMeta)).toBe('docs.lookup(q="wails")');
+    });
+
+    it('renders multi-arg dicts as a compact key=value, key=value list', () => {
+      const item = makeItem({ toolName: 'MCP/browser_click' });
+      const itemMeta = {
+        mcp: { server: 'playwright', tool: 'browser_click' },
+        input: { selector: '#submit', force: true, retries: 2 },
+      };
+      expect(toolCardInputPreview(item, null, itemMeta)).toBe(
+        'playwright.browser_click(selector="#submit", force=true, retries=2)',
+      );
+    });
+
+    it('renders empty parens when the call took no arguments', () => {
+      const item = makeItem({ toolName: 'MCP/ping' });
+      const itemMeta = { mcp: { server: 'docs', tool: 'ping' }, input: {} };
+      expect(toolCardInputPreview(item, null, itemMeta)).toBe('docs.ping()');
+    });
+
+    it('drops to the summary fallback when meta.mcp is absent', () => {
+      // Both legacy MCP rows (pre-redesign Items without meta.mcp) and
+      // arbitrary non-MCP rows should sail through to the summary
+      // branch — the synthesizer is opt-in via the wire-typed
+      // metadata, not a substring-based heuristic on the tool name.
+      const item = makeItem({
+        toolName: 'MCP/lookup',
+        summary: 'MCP/lookup: query',
+      });
+      expect(toolCardInputPreview(item, null, null)).toBe('MCP/lookup: query');
+      expect(toolCardInputPreview(item, null, { input: { q: 'wails' } })).toBe(
+        'MCP/lookup: query',
+      );
+    });
+  });
 });
 
 describe('decodeToolCardPreview', () => {

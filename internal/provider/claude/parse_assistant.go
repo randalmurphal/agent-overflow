@@ -501,10 +501,27 @@ func hasRunInBackground(input json.RawMessage) bool {
 // `is_background` when false so pipelines downstream don't have to
 // distinguish "explicitly foreground" from "unknown" — absence is the
 // default.
+//
+// MCP tool names arrive on the wire as `mcp__<server>__<tool>`. We
+// normalize them into the unified `MCP/<tool>` shape that the Codex
+// `mcpToolCall` envelope already produces, and stamp the raw
+// `{server, tool}` pair onto `meta.mcp` so the renderer can synthesize
+// the body as `server.tool(args)` from a single source on both
+// providers.
 func marshalToolMeta(toolName string, input json.RawMessage, isBackground bool, assistantMessageID string) json.RawMessage {
+	normalizedToolName := toolName
+	var mcp map[string]string
+	if server, tool, ok := parseClaudeMCPToolName(toolName); ok {
+		normalizedToolName = "MCP/" + tool
+		mcp = map[string]string{"server": server, "tool": tool}
+	}
+
 	fields := map[string]any{
-		"toolName": toolName,
+		"toolName": normalizedToolName,
 		"input":    input,
+	}
+	if mcp != nil {
+		fields["mcp"] = mcp
 	}
 	if isBackground {
 		fields["is_background"] = true
@@ -520,6 +537,29 @@ func marshalToolMeta(toolName string, input json.RawMessage, isBackground bool, 
 	}
 	out, _ := json.Marshal(fields)
 	return out
+}
+
+// parseClaudeMCPToolName splits a Claude `mcp__<server>__<tool>` block
+// name into its server and tool halves. The first `__` after the
+// `mcp__` prefix is the separator — server names can contain single
+// underscores, tool names can contain anything. Both halves must be
+// non-empty for a valid MCP tool name.
+func parseClaudeMCPToolName(toolName string) (server, tool string, ok bool) {
+	const prefix = "mcp__"
+	if !strings.HasPrefix(toolName, prefix) {
+		return "", "", false
+	}
+	rest := toolName[len(prefix):]
+	sep := strings.Index(rest, "__")
+	if sep <= 0 {
+		return "", "", false
+	}
+	server = rest[:sep]
+	tool = rest[sep+len("__"):]
+	if tool == "" {
+		return "", "", false
+	}
+	return server, tool, true
 }
 
 func extractExitPlanModePlan(input json.RawMessage) string {
