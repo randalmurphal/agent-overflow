@@ -24,7 +24,7 @@
   <div
     class:h-96={capped}
     class:overflow-y-auto={capped}
-    class="relative"
+    class="relative border-l-2 border-accent pl-4"
     aria-busy={loading ? 'true' : undefined}
   >
     <ChatMarkdown source={markdown} {workspacePath} />
