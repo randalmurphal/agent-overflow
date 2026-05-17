@@ -202,6 +202,12 @@
     return formatChord(keybindingForCommand(`thread.jump.${jumpLabel}`) ?? `mod+${jumpLabel}`);
   });
 
+  function sidebarTimeLabel(timestampMs: number): string {
+    const label = relativeTime(timestampMs, getSettings().timestampFormat);
+    if (getSettings().timestampFormat !== 'locale') return label;
+    return label === 'just now' ? 'now' : label.replace(/ ago$/, '');
+  }
+
   async function handleUnarchive(e: MouseEvent) {
     e.stopPropagation();
     await unarchiveThreadAction(ctx());
@@ -339,12 +345,12 @@
     <ThreadRowBadges {thread} />
 
     <!--
-      Right-side slot. A fixed min-w-12 keeps the layout stable when the
+      Right-side slot. A fixed min-w-7 keeps the layout stable when the
       time label fades out on hover and the archive button fades in.
       Both live in `relative` so the button can absolute-position over
       the time without pushing layout.
     -->
-    <div class="ml-auto relative shrink-0 flex items-center justify-end min-w-12">
+    <div class="ml-auto relative shrink-0 flex items-center justify-end min-w-7">
       {#if jumpShortcut}
         <!--
           Modifier-held jump-hint pill. Fades in on the right side,
@@ -363,7 +369,7 @@
           class="text-[10px] tabular-nums text-fg-hint transition-opacity duration-150 pointer-events-none group-hover/thread-item:opacity-0 group-focus-within/thread-row:opacity-0"
           data-testid="thread-row-time"
         >
-          {relativeTime(thread.updatedAt, getSettings().timestampFormat)}
+          {sidebarTimeLabel(thread.updatedAt)}
         </span>
       {/if}
       <div

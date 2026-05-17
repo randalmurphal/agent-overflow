@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadRow from './ThreadRow.svelte';
@@ -16,11 +16,13 @@ import {
   resetKeybindingsStore,
   setKeybindingsForTest,
 } from '../../stores/keybindings.svelte';
+import { relativeTime } from '../../utils/format';
 import {
   resetKeyboardModifiersForTest,
   subscribeJumpHints,
 } from '../../stores/keyboardModifiers.svelte';
 import type { Thread } from '../../types/models';
+import type { Settings } from '../../types/settings';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { emitItemEventUpsert } from '../../../test/helpers/chat';
 
@@ -40,8 +42,8 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
   };
 }
 
-async function primeSettings() {
-  setBindingMock('GetSettings', async () => null);
+async function primeSettings(overrides: Partial<Settings> | null = null) {
+  setBindingMock('GetSettings', async () => overrides);
   await loadSettings();
 }
 
@@ -158,6 +160,55 @@ describe('<ThreadRow> title tooltip', () => {
     const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
 
     expect(getByTestId('thread-row-title').getAttribute('title')).toBe('Untitled');
+  });
+});
+
+describe('<ThreadRow> timestamp label', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    await primeSettings();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-17T18:00:00.000Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('renders compact locale-relative time in the sidebar', () => {
+    const pane = createThreadPane();
+    const thread = makeThread({
+      updatedAt: new Date('2026-05-17T17:39:00.000Z').getTime(),
+    });
+
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+
+    expect(getByTestId('thread-row-time').textContent?.trim()).toBe('21m');
+  });
+
+  it('renders now instead of just now for current timestamps', () => {
+    const pane = createThreadPane();
+    const thread = makeThread({
+      updatedAt: new Date('2026-05-17T18:00:00.000Z').getTime(),
+    });
+
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+
+    expect(getByTestId('thread-row-time').textContent?.trim()).toBe('now');
+  });
+
+  it('leaves absolute timestamp formats unchanged', async () => {
+    await primeSettings({ timestampFormat: '24-hour' });
+    const pane = createThreadPane();
+    const thread = makeThread({
+      updatedAt: new Date('2026-05-17T17:39:00.000Z').getTime(),
+    });
+
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+
+    expect(getByTestId('thread-row-time').textContent?.trim()).toBe(
+      relativeTime(thread.updatedAt, '24-hour'),
+    );
   });
 });
 
