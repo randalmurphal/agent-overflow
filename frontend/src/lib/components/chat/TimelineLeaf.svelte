@@ -98,7 +98,10 @@
       {displayItem.summary}
     </div>
   {:else if displayItem.kind === 'compaction'}
-    <div class="mb-4 flex items-center gap-3 text-[10px] uppercase tracking-[0.18em] text-fg-subtle">
+    <div
+      data-testid="compaction-divider"
+      class="my-8 flex items-center gap-3 text-[10px] uppercase tracking-[0.18em] text-fg-subtle"
+    >
       <div class="h-px flex-1 bg-border-subtle"></div>
       <span>{displayItem.summary || 'Context compacted'}</span>
       <div class="h-px flex-1 bg-border-subtle"></div>

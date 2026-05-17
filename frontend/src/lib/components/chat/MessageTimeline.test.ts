@@ -85,12 +85,15 @@ describe('<MessageTimeline>', () => {
       makeItem({ id: 'compact:1', turnIndex: 1, itemIndex: 0, kind: 'compaction', role: 'system', summary: 'Context compacted' }),
     ]);
 
-    const { getByText } = render(MessageTimeline, { props: { pane } });
+    const { getByTestId, getByText } = render(MessageTimeline, { props: { pane } });
 
     expect(getByText('hi')).toBeInTheDocument();
     expect(getByText('hello')).toBeInTheDocument();
     expect(getByText('boom')).toBeInTheDocument();
     expect(getByText('Context compacted')).toBeInTheDocument();
+
+    const compactionDivider = getByTestId('compaction-divider');
+    expect(compactionDivider).toHaveClass('my-8');
   });
 
   it('dispatches terminal_interaction items to TerminalInteractionRow', async () => {
