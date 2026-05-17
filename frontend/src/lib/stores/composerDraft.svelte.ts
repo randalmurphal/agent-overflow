@@ -56,6 +56,8 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   let pendingSaveGeneration = 0;
   let switchGeneration = 0;
   let hasPendingSave = false;
+  let optimisticRestoredDraft: { threadId: string; snapshot: ComposerDraftSnapshot } | null = null;
+  let optimisticRestoredDraftDirty = false;
 
   function clearDebounce() {
     if (debounceTimer) {
@@ -196,6 +198,26 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     sourceProposedPlan = cloned.sourceProposedPlan;
   }
 
+  function emptySnapshot(): ComposerDraftSnapshot {
+    return {
+      content: '',
+      attachments: [],
+      terminalChips: [],
+      sourceProposedPlan: null,
+    };
+  }
+
+  function markOptimisticRestoredDraftDirty(): void {
+    if (optimisticRestoredDraft?.threadId === threadId) {
+      optimisticRestoredDraftDirty = true;
+    }
+  }
+
+  function clearOptimisticRestoredDraftMarker(): void {
+    optimisticRestoredDraft = null;
+    optimisticRestoredDraftDirty = false;
+  }
+
   function rememberCurrentDraft(): void {
     if (!threadId) return;
     rememberDraftSnapshot(threadId, buildSnapshot());
@@ -220,6 +242,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     attachments = [];
     terminalChips = [];
     sourceProposedPlan = null;
+    clearOptimisticRestoredDraftMarker();
     hasPendingSave = false;
     error = null;
     hydrating = false;
@@ -237,6 +260,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     threadId = id;
     hydrating = false;
     error = null;
+    clearOptimisticRestoredDraftMarker();
     hasPendingSave = true;
     const snapshot = buildSnapshot();
     rememberDraftSnapshot(id, snapshot);
@@ -251,8 +275,21 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
 
   async function reloadFromBackend(id: string | null = threadId): Promise<void> {
     if (!id || threadId !== id) return;
+    if (
+      optimisticRestoredDraft?.threadId === id
+      && (
+        optimisticRestoredDraftDirty
+        || !draftSnapshotMatchesPersistedState(buildSnapshot(), optimisticRestoredDraft.snapshot)
+      )
+    ) {
+      clearOptimisticRestoredDraftMarker();
+      return;
+    }
     clearDebounce();
     pendingSaveGeneration++;
+    if (optimisticRestoredDraft?.threadId === id) {
+      clearOptimisticRestoredDraftMarker();
+    }
     forgetDraftSnapshot(id);
     hasPendingSave = false;
     const generation = ++switchGeneration;
@@ -264,6 +301,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     if (threadId === id) {
       clearDebounce();
       pendingSaveGeneration++;
+      clearOptimisticRestoredDraftMarker();
       hasPendingSave = false;
     }
     forgetDraftSnapshot(id);
@@ -292,14 +330,58 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     flush,
     flushPending,
 
+    /**
+     * Paints a reverted prompt back into the live composer without
+     * touching SQLite. The backend writes the durable draft as part of
+     * the locked revert; this only removes the visual gap between the
+     * optimistic timeline truncate and the later confirmation event.
+     */
+    applyOptimisticRestoredDraft(id: string, snapshot: ComposerDraftSnapshot): void {
+      if (threadId !== id) return;
+      clearDebounce();
+      pendingSaveGeneration++;
+      applySnapshot(snapshot);
+      optimisticRestoredDraft = {
+        threadId: id,
+        snapshot: cloneDraftSnapshot(snapshot),
+      };
+      optimisticRestoredDraftDirty = false;
+      hasPendingSave = false;
+      error = null;
+    },
+
+    /**
+     * Undo the local-only optimistic restore when the backend declines
+     * or fails the revert. If the user has edited meanwhile, preserve
+     * that newer composer state.
+     */
+    clearOptimisticRestoredDraft(id: string, snapshot: ComposerDraftSnapshot): void {
+      if (threadId !== id) return;
+      if (
+        optimisticRestoredDraftDirty
+        || !draftSnapshotMatchesPersistedState(buildSnapshot(), snapshot)
+      ) {
+        clearOptimisticRestoredDraftMarker();
+        return;
+      }
+      clearOptimisticRestoredDraftMarker();
+      clearDebounce();
+      pendingSaveGeneration++;
+      applySnapshot(emptySnapshot());
+      forgetDraftSnapshot(id);
+      hasPendingSave = false;
+    },
+
     // ---- content mutations ----
     setContent(next: string): void {
+      markOptimisticRestoredDraftDirty();
       content = next;
       rememberCurrentDraft();
       queueSave();
     },
 
     setContentAndAttachments(nextContent: string, nextAttachments: Attachment[]): void {
+      markOptimisticRestoredDraftDirty();
       content = nextContent;
       attachments = [...nextAttachments];
       rememberCurrentDraft();
@@ -309,6 +391,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     removeAttachment(id: string): void {
       const next = attachments.filter((a) => a.id !== id);
       if (next.length === attachments.length) return;
+      markOptimisticRestoredDraftDirty();
       attachments = next;
       rememberCurrentDraft();
       queueSave();
@@ -316,6 +399,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
 
     addAttachment(attachment: Attachment): void {
       if (attachments.some((a) => a.id === attachment.id)) return;
+      markOptimisticRestoredDraftDirty();
       attachments = [...attachments, attachment];
       rememberCurrentDraft();
       queueSave();
@@ -323,6 +407,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
 
     addTerminalChip(chip: TerminalChip): void {
       if (terminalChips.some((c) => c.id === chip.id)) return;
+      markOptimisticRestoredDraftDirty();
       terminalChips = [...terminalChips, chip];
       rememberCurrentDraft();
       queueSave();
@@ -331,6 +416,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     removeTerminalChip(id: string): void {
       const next = terminalChips.filter((c) => c.id !== id);
       if (next.length === terminalChips.length) return;
+      markOptimisticRestoredDraftDirty();
       terminalChips = next;
       rememberCurrentDraft();
       queueSave();
@@ -349,6 +435,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
      */
     async clearAfterSend(): Promise<void> {
       const id = threadId;
+      markOptimisticRestoredDraftDirty();
       clearDebounce();
       pendingSaveGeneration++;
       content = '';
@@ -402,6 +489,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       if (threadId === id) {
         clearDebounce();
         pendingSaveGeneration++;
+        clearOptimisticRestoredDraftMarker();
         applySnapshot(restoredSnapshot);
         hasPendingSave = false;
       }

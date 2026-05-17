@@ -13,9 +13,10 @@
 //   - Backend re-checks under the per-thread lock (SQLite + flush
 //     queue) so a Send→Stop race resolves correctly. Result.reverted
 //     tells the frontend which path the backend actually took.
-//   - Backend emits `user_message:reverted` on success; events.ts
-//     refreshes the composer draft so the user sees their text reappear
-//     in the input.
+//   - The draft is restored locally in the same tick as the optimistic
+//     timeline truncate. Backend success later confirms the durable draft;
+//     backend decline/error clears the optimistic restore if the user has
+//     not already edited it.
 //
 // References:
 //   - claude-code-source-code/src/components/REPL.tsx — the TUI's
@@ -24,8 +25,12 @@
 //   - app_revert_on_interrupt.go — the backend method this dispatches
 //     to and the predicate it re-runs under the lock.
 
+import type { Attachment } from '../types/attachment';
+import type { TerminalChip } from '../types/draft';
 import type { Item } from '../types/models';
+import type { ComposerDraftSnapshot } from './composerDraftSnapshots';
 import type { ThreadPane } from './thread.svelte';
+import { restoredDraftSnapshotFromUserItem } from '../utils/userMessageDraftSnapshot';
 import { getActiveTurn } from './threadStatuses.svelte';
 import { getQueueForThread } from './sendQueue.svelte';
 import { reportNonBenignInterruptError } from './interruptErrors';
@@ -54,8 +59,10 @@ export type RevertEligibility =
 
 interface DraftSnapshotInputs {
   content: string;
-  attachments: { length: number };
-  terminalChips: { length: number };
+  attachments: Attachment[] | { length: number };
+  terminalChips: TerminalChip[] | { length: number };
+  applyOptimisticRestoredDraft?: (threadId: string, snapshot: ComposerDraftSnapshot) => void;
+  clearOptimisticRestoredDraft?: (threadId: string, snapshot: ComposerDraftSnapshot) => void;
 }
 
 export function canRevertEarlyInterrupt(
@@ -144,18 +151,33 @@ export function runInterruptOrRevert(
   // restores the full set via `upsertItems` when the backend refuses
   // the revert (predicate raced).
   const removedItems = pane.removeItemsFromTurn(eligibility.userItem.turnIndex);
+  const shouldRestoreDraft = Boolean(
+    draft.applyOptimisticRestoredDraft || draft.clearOptimisticRestoredDraft,
+  );
+  const restoredDraft = shouldRestoreDraft
+    ? restoredDraftSnapshotFromUserItem(eligibility.userItem)
+    : null;
+  if (restoredDraft) {
+    draft.applyOptimisticRestoredDraft?.(threadId, restoredDraft);
+  }
 
   void InterruptAndRevertIfClean(threadId)
     .then((result) => {
-      if (!result.reverted && removedItems.length > 0) {
-        pane.upsertItems(removedItems);
+      if (!result.reverted) {
+        if (removedItems.length > 0) pane.upsertItems(removedItems);
+        if (restoredDraft) {
+          draft.clearOptimisticRestoredDraft?.(threadId, restoredDraft);
+        }
       }
       // Reverted=true: backend will emit `user_message:reverted` which
-      // confirms the removal (idempotent) and refreshes the composer
-      // draft. No additional client-side work required.
+      // confirms the removal (idempotent) and refreshes the composer draft
+      // if the user has not already edited the optimistic restore.
     })
     .catch((err) => {
       if (removedItems.length > 0) pane.upsertItems(removedItems);
+      if (restoredDraft) {
+        draft.clearOptimisticRestoredDraft?.(threadId, restoredDraft);
+      }
       reportNonBenignInterruptError(pane, err);
     });
 }

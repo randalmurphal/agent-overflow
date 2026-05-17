@@ -11,12 +11,31 @@ import {
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { replaceQueueForThread } from './sendQueue.svelte';
 import type { Item, Thread } from '../types/models';
+import type { ComposerDraftSnapshot } from './composerDraftSnapshots';
 
 const EMPTY_DRAFT = {
   content: '',
   attachments: [] as { length: number },
   terminalChips: [] as { length: number },
 };
+
+function optimisticDraftProbe() {
+  let applied: ComposerDraftSnapshot | null = null;
+  let cleared: ComposerDraftSnapshot | null = null;
+  return {
+    get content() { return ''; },
+    attachments: [] as { length: number },
+    terminalChips: [] as { length: number },
+    get applied() { return applied; },
+    get cleared() { return cleared; },
+    applyOptimisticRestoredDraft(_threadId: string, snapshot: ComposerDraftSnapshot): void {
+      applied = snapshot;
+    },
+    clearOptimisticRestoredDraft(_threadId: string, snapshot: ComposerDraftSnapshot): void {
+      cleared = snapshot;
+    },
+  };
+}
 
 function readyPane(threadId = 'thread-1'): ReturnType<typeof createThreadPane> {
   setBindingMock('SwitchThread', async (id: unknown) => ({
@@ -239,6 +258,104 @@ describe('runInterruptOrRevert', () => {
     expect(pane.items.find((i) => i.id === 'u:0')).toBeUndefined();
   });
 
+  it('restores the interrupted user message into the draft synchronously', async () => {
+    const pane = readyPane();
+    pane.upsertItem(userItem('u:0', 0));
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    const draft = optimisticDraftProbe();
+
+    setBindingMock('InterruptAndRevertIfClean', async () => ({
+      reverted: true,
+      userItemId: 'u:0',
+      turnIndex: 0,
+    }));
+
+    runInterruptOrRevert(pane, draft);
+
+    expect(pane.items.find((i) => i.id === 'u:0')).toBeUndefined();
+    expect(draft.applied?.content).toBe('hello');
+    expect(draft.applied?.attachments).toEqual([]);
+  });
+
+  it('restores attachment and source-plan metadata from the interrupted user item', async () => {
+    const pane = readyPane();
+    pane.upsertItem({
+      ...userItem('u:0', 0),
+      summary: 'implement this',
+      meta: JSON.stringify({
+        attachments: [
+          {
+            id: 'att-1',
+            threadId: 'thread-1',
+            filename: 'shot.png',
+            mimeType: 'image/png',
+            size: 123,
+          },
+        ],
+        sourceProposedPlan: {
+          threadId: 'src-thread',
+          itemId: 'plan-1',
+          payloadId: 'payload-1',
+          title: 'Plan',
+        },
+      }),
+    });
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    const draft = optimisticDraftProbe();
+
+    setBindingMock('InterruptAndRevertIfClean', async () => ({
+      reverted: true,
+      userItemId: 'u:0',
+      turnIndex: 0,
+    }));
+
+    runInterruptOrRevert(pane, draft);
+
+    expect(draft.applied?.content).toBe('implement this [Image #1]');
+    expect(draft.applied?.attachments).toEqual([
+      expect.objectContaining({
+        id: 'att-1',
+        threadId: 'thread-1',
+        filename: 'shot.png',
+        mimeType: 'image/png',
+        size: 123,
+      }),
+    ]);
+    expect(draft.applied?.sourceProposedPlan).toEqual({
+      threadId: 'src-thread',
+      itemId: 'plan-1',
+      payloadId: 'payload-1',
+      title: 'Plan',
+    });
+  });
+
+  it('ignores malformed attachment metadata during optimistic draft restore', async () => {
+    const pane = readyPane();
+    pane.upsertItem({
+      ...userItem('u:0', 0),
+      meta: JSON.stringify({
+        attachments: [
+          null,
+          { id: 'cross-thread', threadId: 'other-thread', filename: 'x.png', mimeType: 'image/png', size: 1 },
+          { id: 'bad-mime', threadId: 'thread-1', filename: 'x.txt', mimeType: 'text/plain', size: 1 },
+          { id: 'att-1', threadId: 'thread-1', filename: 'shot.png', mimeType: 'image/png', size: 123 },
+        ],
+      }),
+    });
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    const draft = optimisticDraftProbe();
+
+    setBindingMock('InterruptAndRevertIfClean', async () => ({
+      reverted: true,
+      userItemId: 'u:0',
+      turnIndex: 0,
+    }));
+
+    runInterruptOrRevert(pane, draft);
+
+    expect(draft.applied?.attachments.map((attachment) => attachment.id)).toEqual(['att-1']);
+  });
+
   it('restores the optimistic row removal when the backend declines the revert', async () => {
     const pane = readyPane();
     pane.upsertItem(userItem('u:0', 0));
@@ -257,6 +374,25 @@ describe('runInterruptOrRevert', () => {
     await Promise.resolve();
 
     expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
+  });
+
+  it('clears the optimistic draft restore when the backend declines the revert', async () => {
+    const pane = readyPane();
+    pane.upsertItem(userItem('u:0', 0));
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    const draft = optimisticDraftProbe();
+
+    setBindingMock('InterruptAndRevertIfClean', async () => ({
+      reverted: false,
+      reason: 'agent content present',
+    }));
+
+    runInterruptOrRevert(pane, draft);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(draft.applied?.content).toBe('hello');
+    expect(draft.cleared).toEqual(draft.applied);
   });
 
   it('falls back to InterruptTurn when the frontend predicate fails', async () => {
@@ -303,6 +439,24 @@ describe('runInterruptOrRevert', () => {
     // surface; just assert that *something* lands so the user sees the
     // failure rather than silently rolling back.
     expect(pane.generalError ?? '').not.toBe('');
+  });
+
+  it('clears the optimistic draft restore when the backend RPC rejects', async () => {
+    const pane = readyPane();
+    pane.upsertItem(userItem('u:0', 0));
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    const draft = optimisticDraftProbe();
+
+    setBindingMock('InterruptAndRevertIfClean', async () => {
+      throw new Error('boom: provider crashed');
+    });
+
+    runInterruptOrRevert(pane, draft);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(draft.applied?.content).toBe('hello');
+    expect(draft.cleared).toEqual(draft.applied);
   });
 
   // The user_text isn't the only kind on the latest turn — thinking,

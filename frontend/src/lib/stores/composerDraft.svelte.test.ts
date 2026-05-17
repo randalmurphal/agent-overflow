@@ -95,6 +95,82 @@ describe('composerDraft store', () => {
     expect(store.attachments).toHaveLength(0);
   });
 
+  it('applies an optimistic restored draft locally without saving', async () => {
+    const saveMock = setBindingMock('SaveDraft', async () => {});
+    const store = createComposerDraftStore({ debounceMs: 0 });
+    await store.setThread('thread-1');
+
+    store.applyOptimisticRestoredDraft('thread-1', {
+      content: 'interrupted prompt',
+      attachments: [sampleAttachment('att-1')],
+      terminalChips: [],
+      sourceProposedPlan: { threadId: 'src', itemId: 'plan-1' },
+    });
+
+    expect(store.content).toBe('interrupted prompt');
+    expect(store.attachments.map((a) => a.id)).toEqual(['att-1']);
+    expect(store.sourceProposedPlan).toEqual({ threadId: 'src', itemId: 'plan-1' });
+    expect(saveMock).not.toHaveBeenCalled();
+  });
+
+  it('clears an unchanged optimistic restored draft when the revert is declined', async () => {
+    const store = createComposerDraftStore({ debounceMs: 0 });
+    await store.setThread('thread-1');
+    const snapshot = {
+      content: 'interrupted prompt',
+      attachments: [sampleAttachment('att-1')],
+      terminalChips: [],
+      sourceProposedPlan: null,
+    };
+
+    store.applyOptimisticRestoredDraft('thread-1', snapshot);
+    store.clearOptimisticRestoredDraft('thread-1', snapshot);
+
+    expect(store.content).toBe('');
+    expect(store.attachments).toEqual([]);
+  });
+
+  it('preserves user edits made before backend confirmation reloads the draft', async () => {
+    installMocks({
+      content: 'backend prompt',
+      attachmentIds: [],
+      terminalChips: [],
+    });
+    const store = createComposerDraftStore({ debounceMs: 50 });
+    await store.setThread('thread-1');
+    const snapshot = {
+      content: 'interrupted prompt',
+      attachments: [],
+      terminalChips: [],
+      sourceProposedPlan: null,
+    };
+
+    store.applyOptimisticRestoredDraft('thread-1', snapshot);
+    store.setContent('edited prompt');
+    await store.reloadFromBackend('thread-1');
+
+    expect(store.content).toBe('edited prompt');
+    await store.flushPending();
+  });
+
+  it('preserves user edits when clearing a declined optimistic restore', async () => {
+    const store = createComposerDraftStore({ debounceMs: 50 });
+    await store.setThread('thread-1');
+    const snapshot = {
+      content: 'interrupted prompt',
+      attachments: [],
+      terminalChips: [],
+      sourceProposedPlan: null,
+    };
+
+    store.applyOptimisticRestoredDraft('thread-1', snapshot);
+    store.setContent('edited prompt');
+    store.clearOptimisticRestoredDraft('thread-1', snapshot);
+
+    expect(store.content).toBe('edited prompt');
+    await store.flushPending();
+  });
+
   it('clearAfterSend resets state and calls ClearDraft', async () => {
     const clearMock = setBindingMock('ClearDraft', async () => {});
     const store = createComposerDraftStore({ debounceMs: 0 });

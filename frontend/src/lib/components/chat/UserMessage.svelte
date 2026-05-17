@@ -15,7 +15,10 @@
   import Popover from '../primitives/Popover.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
-  import { parseJsonObject } from '../../utils/parseJsonObject';
+  import {
+    parseUserMessageAttachments,
+    parseUserMessageMeta,
+  } from '../../utils/userMessageMeta';
   import type { RevertMode } from '../../types/checkpoint';
   import type { UserMessageActions } from './userMessageActions';
 
@@ -38,7 +41,7 @@
   }: Props = $props();
   let revertAnchor: HTMLSpanElement | undefined = $state(undefined);
 
-  const userMeta = $derived(parseJsonObject(item.meta));
+  const userMeta = $derived(parseUserMessageMeta(item.meta));
   const hasMessageCheckpoint = $derived(pane?.diffPanel.checkpointUserItemIds.has(item.id) ?? false);
   const isWireOnlyUserMessage = $derived(userMeta?.wire_only === true);
   const canRequestRevert = $derived(typeof actions?.onRevertMessage === 'function');
@@ -74,7 +77,7 @@
   );
 
   const attachments = $derived<AttachmentPreviewSource[]>(
-    Array.isArray(userMeta?.attachments) ? userMeta.attachments as AttachmentPreviewSource[] : [],
+    parseUserMessageAttachments(item.meta, item.threadId),
   );
   // Pane-owned blob cache: blob URLs survive virtua's overscan eviction,
   // so back-scrolling to a previously-mounted UserMessage doesn't refetch

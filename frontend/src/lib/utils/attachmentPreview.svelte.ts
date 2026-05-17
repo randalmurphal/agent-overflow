@@ -1,13 +1,14 @@
 import { onDestroy, untrack } from 'svelte';
 import { GetAttachmentData, GetAttachmentThumbnail } from '../stores/bindings';
+import {
+  parseUserMessageAttachments,
+  type AttachmentPreviewSource,
+} from './userMessageMeta';
 
-export interface AttachmentPreviewSource {
-  id: string;
-  threadId: string;
-  filename: string;
-  mimeType: string;
-  size: number;
-}
+export {
+  parseUserMessageAttachments,
+  type AttachmentPreviewSource,
+};
 
 export interface ImagePreviewItem {
   id: string;
@@ -27,20 +28,6 @@ export interface ExpandedImagePreview {
    * is dismissed.
    */
   dispose?: () => void;
-}
-
-export interface UserMessageMeta {
-  attachments?: AttachmentPreviewSource[];
-}
-
-export function parseUserMessageAttachments(meta: string | undefined): AttachmentPreviewSource[] {
-  if (!meta) return [];
-  try {
-    const parsed = JSON.parse(meta) as UserMessageMeta;
-    return Array.isArray(parsed.attachments) ? parsed.attachments : [];
-  } catch {
-    return [];
-  }
 }
 
 /**
