@@ -18,6 +18,7 @@
     'speech-bubble': 'text-ico-speech-bubble',
     checklist: 'text-ico-checklist',
     puzzle: 'text-ico-puzzle',
+    clock: 'text-ico-clock',
     generic: 'text-ico-generic',
   };
 
@@ -67,6 +68,9 @@
     <path d="M20 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11" />
   {:else if kind === 'puzzle'}
     <path d="M19.5 12A2.5 2.5 0 0 0 17 9.5V7a2 2 0 0 0-2-2h-2.5A2.5 2.5 0 0 0 10 7.5 2.5 2.5 0 0 0 12.5 10H13v2H9.5A2.5 2.5 0 0 0 7 14.5 2.5 2.5 0 0 0 9.5 17H12v3a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-2.5A2.5 2.5 0 0 0 18.5 15 2.5 2.5 0 0 0 16 12.5H15v-.5h2.5A2.5 2.5 0 0 0 19.5 12z" />
+  {:else if kind === 'clock'}
+    <circle cx="12" cy="12" r="10" />
+    <polyline points="12 6 12 12 16 14" />
   {:else}
     <!-- Generic "tool" fallback: lucide wrench. Reads as a tool rather
          than the circle/exclamation idiom that the prior info-icon

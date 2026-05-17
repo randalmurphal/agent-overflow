@@ -59,6 +59,19 @@ describe('<TerminalInteractionRow>', () => {
     expect(row.className).toContain('text-[12px]');
   });
 
+  it('renders the clock icon with a `wait` gutter label', () => {
+    // The gutter label is fixed-width; "terminal" overflowed visibly
+    // ("termin…") on rows next to the body's own "Waited for background
+    // terminal" phrase. The clock icon + "wait" label keeps the gutter
+    // compact and reads as "this row is the agent waiting for the PTY"
+    // rather than another bash invocation.
+    const { getByTestId } = render(TerminalInteractionRow, { props: { item: makeItem() } });
+    expect(getByTestId('terminal-interaction-label').textContent).toBe('wait');
+    const icon = getByTestId('terminal-interaction-row').querySelector('svg[data-icon]');
+    expect(icon?.getAttribute('data-icon')).toBe('clock');
+    expect(icon?.getAttribute('aria-label')).toBe('wait');
+  });
+
   it('renders attached command output underneath the wait carrier', () => {
     const item = makeItem({
       payloadKind: 'command_output',

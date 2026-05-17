@@ -34,6 +34,7 @@
   --ico-speech-bubble: oklch(0.76 0.14 330);
   --ico-checklist: oklch(0.76 0.12 255);
   --ico-puzzle: oklch(0.74 0.14 325);
+  --ico-clock: oklch(0.76 0.1 90);
   /* Intentional alias — unclassified tools share the secondary-text
      palette, keeping the dark/light pair in sync automatically. */
   --ico-generic: var(--text-secondary);
@@ -71,6 +72,7 @@ html.light {
   --ico-speech-bubble: oklch(0.52 0.16 330);
   --ico-checklist: oklch(0.5 0.12 255);
   --ico-puzzle: oklch(0.5 0.16 325);
+  --ico-clock: oklch(0.5 0.12 90);
   /* See dark-mode block for the alias rationale. */
   --ico-generic: var(--text-secondary);
 }
@@ -131,6 +133,7 @@ html.light {
   --color-ico-speech-bubble: var(--ico-speech-bubble);
   --color-ico-checklist: var(--ico-checklist);
   --color-ico-puzzle: var(--ico-puzzle);
+  --color-ico-clock: var(--ico-clock);
   --color-ico-generic: var(--ico-generic);
 }
 

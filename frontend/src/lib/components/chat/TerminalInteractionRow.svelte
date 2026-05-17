@@ -39,8 +39,8 @@
     class="rounded-[var(--radius-control)] px-1 py-1 text-[12px] text-fg-muted"
     buttonClass="text-[12px] text-fg-muted"
   >
-    {#snippet icon()}<ToolKindIcon kind="terminal" ariaLabel="terminal" />{/snippet}
-    {#snippet label()}<span data-testid="terminal-interaction-label">terminal</span>{/snippet}
+    {#snippet icon()}<ToolKindIcon kind="clock" ariaLabel="wait" />{/snippet}
+    {#snippet label()}<span data-testid="terminal-interaction-label">wait</span>{/snippet}
     {#snippet body()}<span class="min-w-0 truncate">{rowLabel}</span>{/snippet}
     {#snippet actions()}
       <ToolHeaderMeta statusSlotTestId="terminal-interaction-status-slot">

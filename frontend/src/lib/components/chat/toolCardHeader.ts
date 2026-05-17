@@ -25,6 +25,7 @@ export type ToolKindIcon =
   | "speech-bubble"
   | "checklist"
   | "puzzle"
+  | "clock"
   | "generic";
 
 export interface ToolKindVisual {
