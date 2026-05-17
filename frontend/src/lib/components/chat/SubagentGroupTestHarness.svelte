@@ -33,8 +33,10 @@
     <SubagentGroup group={node} depth={depth} renderNode={renderNode} />
   {:else if node.kind === 'inline_subagent_group'}
     <InlineSubagentGroup group={node} depth={depth} renderNode={renderNode} />
-  {:else}
+  {:else if node.kind === 'wait_group'}
     <div data-testid="wait-group" data-depth={depth} data-id={node.parent.id}></div>
+  {:else}
+    <div data-testid="read-group" data-depth={depth} data-id={node.groupKey}></div>
   {/if}
 {/snippet}
 

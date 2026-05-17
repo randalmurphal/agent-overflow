@@ -14,6 +14,7 @@
     timelineNodeKey,
     type TimelineNode,
   } from '../../utils/subagentGrouping';
+  import { groupConsecutiveReads } from '../../utils/readGrouping';
   import { timelineRowDecorations } from './timelineRows';
   import { codexSubagentReceiverLabels } from '../../utils/subagentLaunch';
   import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
@@ -21,6 +22,7 @@
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import Button from '../primitives/Button.svelte';
   import InlineSubagentGroup from './InlineSubagentGroup.svelte';
+  import ReadGroupRow from './ReadGroupRow.svelte';
   import ScrollToBottomButton from './ScrollToBottomButton.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
   import TimelineLeaf from './TimelineLeaf.svelte';
@@ -76,6 +78,7 @@
     'group',
     'inline_subagent_group',
     'wait_group',
+    'read_group',
   ]);
   // happy-dom returns 0 for clientHeight/clientWidth, which makes virtua
   // mount zero rows. In test runs we ask virtua to mount everything via
@@ -133,7 +136,7 @@
   const targetFlash = createTimelineTargetFlash(TARGET_FLASH_MS);
 
   let groupedNodes = $derived<TimelineNode[]>(
-    groupItemsBySubagent(filterRedundantNotifications(pane.items)),
+    groupConsecutiveReads(groupItemsBySubagent(filterRedundantNotifications(pane.items))),
   );
   let codexReceiverLabels = $derived(
     pane.thread?.provider === PROVIDER_DEFINITIONS.codex.id
@@ -812,6 +815,8 @@
           <SubagentGroup {pane} group={node} {depth} {renderNode} />
         {:else if node.kind === 'wait_group'}
           <WaitGroup {pane} group={node} {onImageExpand} {userMessageActions} />
+        {:else if node.kind === 'read_group'}
+          <ReadGroupRow {pane} group={node} />
         {:else}
           <InlineSubagentGroup group={node} {depth} {renderNode} />
         {/if}

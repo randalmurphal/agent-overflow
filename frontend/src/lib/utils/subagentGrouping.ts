@@ -49,10 +49,17 @@ const PREVIEW_MAX_CHARS = 160;
 const PREVIEW_SCAN_CHARS = 512;
 
 /**
- * A node in the timeline tree returned by `groupItemsBySubagent`.
- * Consumers should dispatch on `.kind`.
+ * A node in the timeline tree returned by `groupItemsBySubagent`,
+ * plus the `read_group` variant produced as a top-level post-pass by
+ * `groupConsecutiveReads` (`readGrouping.ts`). Consumers should
+ * dispatch on `.kind`.
  */
-export type TimelineNode = TimelineLeaf | SubagentGroupNode | InlineSubagentGroupNode | WaitGroupNode;
+export type TimelineNode =
+  | TimelineLeaf
+  | SubagentGroupNode
+  | InlineSubagentGroupNode
+  | WaitGroupNode
+  | ReadGroupNode;
 
 export interface TimelineLeaf {
   kind: 'leaf';
@@ -116,6 +123,24 @@ export interface WaitGroupNode {
   children: TimelineLeaf[];
   /** Total child count. */
   descendantCount: number;
+}
+
+/**
+ * Top-level wrapper that folds adjacent Read tool_calls into a single
+ * compact row. Produced by `groupConsecutiveReads` (`readGrouping.ts`)
+ * as a post-pass over the output of `groupItemsBySubagent`, so Reads
+ * nested inside a subagent stay inside their parent group and only
+ * the top-level transcript collapses. Has no expansion or body — the
+ * row renders a wrapped list of file links keyed by `members[i].id`.
+ */
+export interface ReadGroupNode {
+  kind: 'read_group';
+  /** Stable structural key derived from the first member's coordinates. */
+  groupKey: string;
+  /** Carried directly because this node has no synthetic anchor item. */
+  threadId: string;
+  /** Grouped Read tool_call items in timeline order. Always >= 2. */
+  members: Item[];
 }
 
 /**
@@ -234,6 +259,7 @@ function subagentNodeGroupKey(item: Item, inlineGroupKey: string): string {
 function timelineNodeRootItem(node: TimelineNode): Item {
   if (node.kind === 'leaf') return node.item;
   if (node.kind === 'group' || node.kind === 'wait_group') return node.parent;
+  if (node.kind === 'read_group') return node.members[0];
   return node.members[0].parent;
 }
 
@@ -257,6 +283,10 @@ function* descendantItems(nodes: TimelineNode[]): Generator<Item> {
     if (node.kind === 'wait_group') {
       yield node.parent;
       yield* descendantItems(node.children);
+      continue;
+    }
+    if (node.kind === 'read_group') {
+      for (const member of node.members) yield member;
       continue;
     }
     for (const member of node.members) {
@@ -304,6 +334,7 @@ function countDescendants(children: TimelineNode[]): number {
     n += 1;
     if (child.kind === 'group' || child.kind === 'wait_group') n += countDescendants(child.children);
     if (child.kind === 'inline_subagent_group') n += countDescendants(child.members);
+    if (child.kind === 'read_group') n += child.members.length - 1;
   }
   return n;
 }
@@ -326,6 +357,7 @@ export function timelineNodeKey(node: TimelineNode): string {
   if (node.kind === 'leaf') return `l:${node.item.threadId}:${node.item.id}`;
   if (node.kind === 'group') return `g:${node.parent.threadId}:${node.groupKey}`;
   if (node.kind === 'wait_group') return `wg:${node.parent.threadId}:${node.groupKey}`;
+  if (node.kind === 'read_group') return `rg:${node.threadId}:${node.groupKey}`;
   return `ig:${node.threadId}:${node.groupKey}`;
 }
 
@@ -333,6 +365,7 @@ export function timelineNodeKey(node: TimelineNode): string {
 export function timelineNodeItemId(node: TimelineNode): string {
   if (node.kind === 'leaf') return node.item.id;
   if (node.kind === 'group' || node.kind === 'wait_group') return node.parent.id;
+  if (node.kind === 'read_group') return node.members[0].id;
   return node.members[0].parent.id;
 }
 
@@ -350,7 +383,12 @@ export function timelineNodeTurnIndex(node: TimelineNode): number {
 export type NodeRole = 'tool' | 'text' | 'other';
 
 export function nodeRole(node: TimelineNode): NodeRole {
-  if (node.kind === 'group' || node.kind === 'inline_subagent_group' || node.kind === 'wait_group') return 'tool';
+  if (
+    node.kind === 'group'
+    || node.kind === 'inline_subagent_group'
+    || node.kind === 'wait_group'
+    || node.kind === 'read_group'
+  ) return 'tool';
   const k = node.item.kind;
   if (k === 'tool_call' || k === 'tool_completion' || k === 'terminal_interaction') return 'tool';
   if (k === 'assistant_text' || k === 'user_text') return 'text';
@@ -411,6 +449,9 @@ export function nodeContainsItem(node: TimelineNode, itemId: string): boolean {
   if (node.kind === 'group' || node.kind === 'wait_group') {
     return node.parent.id === itemId
       || node.children.some((child) => nodeContainsItem(child, itemId));
+  }
+  if (node.kind === 'read_group') {
+    return node.members.some((m) => m.id === itemId);
   }
   return node.members.some((member) => nodeContainsItem(member, itemId));
 }

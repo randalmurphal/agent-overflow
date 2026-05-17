@@ -434,6 +434,71 @@ describe('<MessageTimeline>', () => {
     }
   });
 
+  it('folds consecutive Read tool_calls into a single rail-bearing read_group row', async () => {
+    // Three reads in a row collapse to one ReadGroupRow with three
+    // EditorLink members. Pin: (1) only ONE wrapper appears for the
+    // run (vs. three when the grouping is bypassed); (2) the wrapper
+    // carries data-rail="true" so it stays under the continuous rail
+    // alongside neighboring tool rows; (3) each member surfaces as a
+    // discrete EditorLink keyed off its workspace-relative path.
+    const pane = await buildPane(undefined, [
+      makeItem({
+        id: 'read:0',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'Read',
+        summary: 'Read: src/lib/foo.ts',
+      }),
+      makeItem({
+        id: 'read:1',
+        itemIndex: 1,
+        kind: 'tool_call',
+        toolName: 'Read',
+        summary: 'Read: src/lib/bar.ts',
+      }),
+      makeItem({
+        id: 'read:2',
+        itemIndex: 2,
+        kind: 'tool_call',
+        toolName: 'Read',
+        summary: 'Read: src/lib/baz.ts',
+      }),
+    ]);
+    const { container, getByTestId, getAllByTestId } = render(MessageTimeline, { props: { pane } });
+
+    const wrappers = container.querySelectorAll('[data-testid="message-timeline-node"]');
+    expect(wrappers).toHaveLength(1);
+    expect(wrappers[0].getAttribute('data-rail')).toBe('true');
+    expect(getByTestId('read-group-row')).toBeInTheDocument();
+    const links = getAllByTestId('editor-link');
+    expect(links.map((el) => el.getAttribute('data-path'))).toEqual([
+      'src/lib/foo.ts',
+      'src/lib/bar.ts',
+      'src/lib/baz.ts',
+    ]);
+  });
+
+  it('keeps a single Read as a normal expandable row (grouping requires a run of >=2)', async () => {
+    // Isolated reads keep their full GenericToolCallRow chrome —
+    // chev + label + body preview + hover-revealed editor-link icon.
+    // Without this guard, the compact row would replace EVERY Read
+    // row in the timeline and lose the expansion affordance for users
+    // who want to inspect the file's loaded contents inline.
+    const pane = await buildPane(undefined, [
+      makeItem({
+        id: 'read:lonely',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'Read',
+        summary: 'Read: src/lib/foo.ts',
+      }),
+    ]);
+    const { queryByTestId, getByTestId } = render(MessageTimeline, { props: { pane } });
+
+    expect(queryByTestId('read-group-row')).toBeNull();
+    expect(getByTestId('tool-call-card')).toBeInTheDocument();
+  });
+
   it('renders one wrapper per timeline node', async () => {
     // Virtualization is owned by virtua/svelte (`<Virtualizer>`); in production,
     // virtua mounts only the rows that fit the viewport plus an overscan

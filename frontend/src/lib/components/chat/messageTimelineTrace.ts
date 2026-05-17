@@ -58,6 +58,15 @@ export function recordTimelineRenderTrace(
           turnIndex: node.parent.turnIndex,
         };
       }
+      if (node.kind === 'read_group') {
+        return {
+          kind: 'read_group',
+          groupKey: node.groupKey,
+          threadId: node.threadId,
+          memberCount: node.members.length,
+          turnIndex: node.members[0]?.turnIndex ?? 0,
+        };
+      }
       return {
         kind: 'inline_subagent_group',
         groupKey: node.groupKey,
