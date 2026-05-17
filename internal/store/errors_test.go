@@ -67,9 +67,6 @@ func TestStoreMethodsReturnErrorsAfterClose(t *testing.T) {
 	if _, err := s.ListItems(thread.ID); err == nil {
 		t.Fatal("expected ListItems to fail after store close")
 	}
-	if _, err := s.NextItemIndex(thread.ID, 0); err == nil {
-		t.Fatal("expected NextItemIndex to fail after store close")
-	}
 	if _, err := s.LastTurnIndex(thread.ID); err == nil {
 		t.Fatal("expected LastTurnIndex to fail after store close")
 	}

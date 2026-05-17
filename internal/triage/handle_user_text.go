@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -79,26 +78,14 @@ func (r *Router) persistDeferredUserText(pending pendingSend, providerItemID str
 		return fmt.Errorf("triage: merge provider_item_id into deferred %s/%s meta: %w", item.ThreadID, item.ID, err)
 	}
 	item.Meta = mergedMeta
-	if strings.TrimSpace(item.ThreadID) == "" {
-		item.ThreadID = evt.ThreadID
-	}
-	if item.TurnIndex == 0 && pending.TurnIndex != 0 {
-		item.TurnIndex = pending.TurnIndex
-	}
-	if item.Kind == "" {
-		item.Kind = string(provider.ItemUserText)
-	}
-	if item.Role == "" {
-		item.Role = "user"
-	}
-	if item.Status == "" {
-		item.Status = statusCompleted
-	}
-	if pending.InsertItemIndex != nil {
-		if err := r.persistItemAtIndex(item, *pending.InsertItemIndex); err != nil {
-			return fmt.Errorf("triage: persist deferred user_text %s/%s at index %d: %w", item.ThreadID, item.ID, *pending.InsertItemIndex, err)
-		}
-	} else if err := r.persistItem(item, nil); err != nil {
+	// Persist via the standard MAX+1 path so the queued message lands
+	// AFTER any rows the model emitted between dispatch and this wire
+	// echo. Capturing an item_index at dispatch time was the ordering
+	// bug: streaming rows occupied the captured slot, then a shift on
+	// insert placed the queued message above content that arrived first.
+	// ThreadID / TurnIndex / Kind / Role / Status are guaranteed populated
+	// by the dispatcher's row construction in app_flush_queue.go.
+	if err := r.persistItem(item, nil); err != nil {
 		return fmt.Errorf("triage: persist deferred user_text %s/%s: %w", item.ThreadID, item.ID, err)
 	}
 	persisted, found, err := r.store.GetThreadItem(item.ThreadID, item.ID)

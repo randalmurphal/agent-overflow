@@ -267,6 +267,19 @@ settles, then assigns indexes in the intended visual order.
 they must route through the queue too**, or the same "new row inserts
 before the streaming tail" bug recurs.
 
+**Carve-out: deferred queued user_text (`RegisterPendingFlushSend`).**
+Queued user messages dispatched at a boundary are NOT routed through
+the interrupt queue. `persistDeferredUserText` calls the standard
+`persistItem` path at echo time, which allocates `MAX+1` of the
+dispatch-decided turn. This is correct because the "intended visual
+order" for a queued send is the tail at the moment the agent observes
+it — anything the model emits between dispatch and echo should sort
+BEFORE the queued message, not after. Capturing an item_index at
+dispatch (and then inserting at that captured slot via the now-removed
+`InsertItemAtIndex`) was the queued-message ordering regression
+documented in
+`internal/triage/handle_user_text_test.go::TestHandleUserText_DeferredFlush_LandsAfterContentThatArrivedFirst`.
+
 **Enforcement.** `Router.maybeDeferOrPersist` /
 `Router.drainInterruptQueue` in
 `internal/triage/stream_state.go`.
@@ -274,7 +287,10 @@ before the streaming tail" bug recurs.
 **Test.** Queue ordering coverage in
 `internal/triage/tool_lifecycle_test.go` alongside the end-to-end
 `app_e2e_lifecycle_test.go` scenarios that drive mixed inline +
-backgrounded mid-stream completions.
+backgrounded mid-stream completions. Queued-user-text MAX+1-at-echo
+coverage in
+`internal/triage/handle_user_text_test.go::TestHandleUserText_DeferredFlush_LandsAfterContentThatArrivedFirst`
+and `app_flush_queue_test.go::TestDispatchFlush_EchoLandsAfterRowsThatArrivedFirst`.
 
 ---
 

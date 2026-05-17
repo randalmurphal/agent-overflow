@@ -225,7 +225,7 @@ func TestParserToTriageSeam_QueuedCommandReplay_StampsRow(t *testing.T) {
 	// this test we want to focus on the parser → triage seam, not the
 	// dispatcher.
 	now := time.Now().UnixMilli()
-	app.triage.RegisterPendingFlushSendAtIndex(thread.ID, "queue:test", store.Item{
+	app.triage.RegisterPendingFlushSend(thread.ID, "queue:test", store.Item{
 		ID:        aoItemID,
 		ThreadID:  thread.ID,
 		TurnIndex: 0,
@@ -236,7 +236,7 @@ func TestParserToTriageSeam_QueuedCommandReplay_StampsRow(t *testing.T) {
 		Meta:      `{"attachments":[]}`,
 		CreatedAt: now,
 		UpdatedAt: now,
-	}, 0)
+	})
 
 	// Reset captures so the assertions below only see emissions
 	// driven by the parser → triage flow.

@@ -23,13 +23,31 @@ import (
 // confirmation. FIFO per thread; consumed when the matching wire
 // EventUserText arrives. Bounded by user attention (typically 0-1
 // entries per thread); swept at CleanupThread as a safety net.
+//
+// Position contract for queued sends (DeferredItem != nil):
+// `item_index` is NOT captured here — persistDeferredUserText calls
+// the standard MAX+1 path at echo time so the queued message lands
+// AFTER any rows the model emitted between dispatch and echo.
+// Capturing the index at dispatch was the queued-message ordering
+// bug: streaming rows landed at MAX+1 in the captured slot, then
+// InsertItemAtIndex shifted them down and placed the queued message
+// ABOVE content that arrived first. See handle_user_text_test.go's
+// TestHandleUserText_DeferredFlush_LandsAfterContentThatArrivedFirst.
+//
+// TurnIndex mirrors DeferredItem.TurnIndex when DeferredItem is set
+// (the dispatcher writes the same value to both). It is also
+// populated for direct sends (DeferredItem == nil) so the FIFO
+// carries the dispatch-decided turn without forcing every consumer
+// to crack open the item. The fallback in persistDeferredUserText
+// (`item.TurnIndex == 0 && pending.TurnIndex != 0`) is defensive,
+// not load-bearing — every producer sets both fields to the same
+// non-zero value today.
 type pendingSend struct {
-	AOItemID        string // "user:<turnIndex>"
-	QueueItemID     string
-	TurnIndex       int
-	EnqueuedAt      int64
-	DeferredItem    *store.Item
-	InsertItemIndex *int
+	AOItemID     string // "user:<turnIndex>"
+	QueueItemID  string
+	TurnIndex    int
+	EnqueuedAt   int64
+	DeferredItem *store.Item
 }
 
 type PendingFlushItemSnapshot struct {
@@ -44,40 +62,29 @@ type PendingFlushItemSnapshot struct {
 // for diagnostics on stranded entries and the wall clock at the
 // register call is the natural reference.
 func (r *Router) RegisterPendingSend(threadID, aoItemID string, turnIndex int) {
-	r.registerPendingSend(threadID, aoItemID, turnIndex, "", nil, nil)
+	r.registerPendingSend(threadID, aoItemID, turnIndex, "", nil)
 }
 
-func (r *Router) RegisterPendingFlushSendAtIndex(threadID, queueItemID string, item store.Item, itemIndex int) {
-	r.registerPendingSend(threadID, item.ID, item.TurnIndex, queueItemID, &item, &itemIndex)
+// RegisterPendingFlushSend registers a deferred user_text row whose
+// persistence is gated on the wire echo. The row's item_index is
+// recomputed at echo time (persistDeferredUserText) so the queued
+// message lands after content the model emitted between dispatch and
+// echo — see the pendingSend doc comment.
+func (r *Router) RegisterPendingFlushSend(threadID, queueItemID string, item store.Item) {
+	r.registerPendingSend(threadID, item.ID, item.TurnIndex, queueItemID, &item)
 }
 
-func (r *Router) PendingDeferredInsertCount(threadID string, turnIndex int) int {
-	if threadID == "" {
-		return 0
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	count := 0
-	for _, pending := range r.pendingByThread[threadID] {
-		if pending.TurnIndex == turnIndex && pending.DeferredItem != nil && pending.InsertItemIndex != nil {
-			count++
-		}
-	}
-	return count
-}
-
-func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, queueItemID string, deferredItem *store.Item, insertItemIndex *int) {
+func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, queueItemID string, deferredItem *store.Item) {
 	if threadID == "" || aoItemID == "" {
 		return
 	}
 	r.mu.Lock()
 	r.pendingByThread[threadID] = append(r.pendingByThread[threadID], pendingSend{
-		AOItemID:        aoItemID,
-		QueueItemID:     queueItemID,
-		TurnIndex:       turnIndex,
-		EnqueuedAt:      time.Now().UnixMilli(),
-		DeferredItem:    deferredItem,
-		InsertItemIndex: insertItemIndex,
+		AOItemID:     aoItemID,
+		QueueItemID:  queueItemID,
+		TurnIndex:    turnIndex,
+		EnqueuedAt:   time.Now().UnixMilli(),
+		DeferredItem: deferredItem,
 	})
 	r.mu.Unlock()
 }

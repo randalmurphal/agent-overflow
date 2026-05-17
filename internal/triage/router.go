@@ -992,32 +992,6 @@ func (r *Router) persistItem(item store.Item, payload *store.Payload) error {
 	return r.persistItemWithEmit(item, payload, nil, true)
 }
 
-func (r *Router) persistItemAtIndex(item store.Item, itemIndex int) error {
-	if item.ParentID != "" {
-		if dropped, reason := r.shouldDropParentID(item.ThreadID, item.ID, item.ParentID); dropped {
-			log.Printf("triage: dropping parent_id %q on item %s: %s", item.ParentID, item.ID, reason)
-			item.ParentID = ""
-		}
-	}
-	item.ItemIndex = itemIndex
-	affected, err := r.store.InsertItemAtIndex(item, nil)
-	if err != nil {
-		return err
-	}
-	if len(affected) == 0 {
-		return nil
-	}
-	if userTextCountsAsThreadActivity(item) {
-		r.bumpThreadActivity(item.ThreadID, item.UpdatedAt, "user_text persist")
-	}
-	for _, persisted := range affected {
-		r.emitItemUpsertWithActivity(persisted, userTextCountsAsThreadActivity(persisted))
-	}
-	r.metrics.ItemsPersisted.Add(context.Background(), 1,
-		metric.WithAttributes(attribute.String("kind", item.Kind)))
-	return nil
-}
-
 func (r *Router) persistItemQuiet(item store.Item, payload *store.Payload) error {
 	return r.persistItemWithEmit(item, payload, nil, false)
 }

@@ -835,49 +835,6 @@ func TestInsertItemWithPayloadAtomicRollbackOnPayloadFailure(t *testing.T) {
 	}
 }
 
-func TestNextItemIndex(t *testing.T) {
-	s := newTestStore(t)
-
-	thr := makeThread("t1", "claude")
-	if err := s.CreateThread(thr); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-
-	// Empty turn -> next index is 0.
-	idx, err := s.NextItemIndex("t1", 0)
-	if err != nil {
-		t.Fatalf("next index (empty): %v", err)
-	}
-	if idx != 0 {
-		t.Errorf("expected 0 for empty turn, got %d", idx)
-	}
-
-	// Insert items and verify increment.
-	now := time.Now().UnixMilli()
-	for i := 0; i < 3; i++ {
-		item := Item{
-			ID:        "i" + string(rune('0'+i)),
-			ThreadID:  "t1",
-			TurnIndex: 0,
-			ItemIndex: i,
-			Kind:      "user_text",
-			Role:      "user",
-			CreatedAt: now,
-		}
-		if err := s.InsertItem(item); err != nil {
-			t.Fatalf("insert item %d: %v", i, err)
-		}
-	}
-
-	idx, err = s.NextItemIndex("t1", 0)
-	if err != nil {
-		t.Fatalf("next index (3 items): %v", err)
-	}
-	if idx != 3 {
-		t.Errorf("expected 3 after 3 items, got %d", idx)
-	}
-}
-
 func TestLastTurnIndex(t *testing.T) {
 	s := newTestStore(t)
 

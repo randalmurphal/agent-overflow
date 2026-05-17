@@ -542,3 +542,309 @@ func TestReadProviderItemIDFromMeta(t *testing.T) {
 // internal/usermessage/usermessage_test.go::TestMergeProviderItemID*.
 // The triage path is now a thin call site over
 // usermessage.MergeProviderItemID; duplicate coverage here would drift.
+
+// TestHandleUserText_DeferredFlush_LandsAfterContentThatArrivedFirst pins
+// the queued-message ordering: when the user queues a message while the
+// agent is busy, the persisted user_text row must land at a position
+// AFTER every row that was persisted before the wire echo arrived. The
+// frontend sorts strictly by (turn_index, item_index) with no timestamp
+// tiebreaker (frontend/src/lib/stores/threadItems.ts), so on-disk
+// ordering is the visible ordering.
+//
+// The previous design captured item_index at dispatch time and inserted
+// at that captured slot when the wire echo arrived. Between dispatch and
+// echo the model can stream rows (handleTextDelta and friends persist
+// via UpsertItem -> nextItemIndexTx, MAX+1), so those rows took the
+// captured slot. Insert-at-index then shifted them down to make room
+// for the queued message — placing the queued message ABOVE rows that
+// arrived first. persistDeferredUserText now recomputes MAX+1 at echo
+// time, so the queued message lands at the actual tail.
+//
+// This test reproduces the screenshot scenario: a tool completes, the
+// model streams assistant content while the queued send is in flight,
+// and the wire echo arrives last. The queued row must be the LAST item
+// in the turn.
+func TestHandleUserText_DeferredFlush_LandsAfterContentThatArrivedFirst(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	// Pre-existing row at item_index=0 — the "pnpm test" bash row that
+	// just completed in the screenshot scenario. AppendItem mirrors the
+	// MAX+1 path triage takes for ordinary completion writes.
+	if _, err := st.AppendItem(store.Item{
+		ID:        "tool:pnpm-test",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "completed",
+		Summary:   "Bash: pnpm test",
+		ToolName:  "Bash",
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("seed pre-existing tool_call: %v", err)
+	}
+
+	// Register the deferred pending send exactly as dispatchFlushItem does
+	// before writing to the provider's stdin / JSON-RPC seam.
+	queuedItem := store.Item{
+		ID:        "user:0:flush:0",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "Also, the think icon, i want that to be a lucide icon for a brain",
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}
+	router.RegisterPendingFlushSend("t1", "queue:abc", queuedItem)
+
+	// Model emits assistant text BETWEEN the dispatch and the wire echo.
+	// First text delta goes through persistItem -> UpsertItem ->
+	// nextItemIndexTx, so it lands at MAX+1 = 1 (one past the seeded tool
+	// row).
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "All 3029 tests pass. Now the full check:",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle intervening text delta: %v", err)
+	}
+
+	// Wire echo of the queued message finally arrives.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "Also, the think icon, i want that to be a lucide icon for a brain",
+		Meta:      json.RawMessage(`{"provider_item_id":"msg_queued_echo"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle wire echo: %v", err)
+	}
+
+	// Build an index -> id map for a readable failure message.
+	rows, err := st.ListItemsForTurn("t1", 0)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	idsByIndex := make(map[int]string, len(rows))
+	for _, r := range rows {
+		idsByIndex[r.ItemIndex] = r.ID
+	}
+
+	queued, found, err := st.GetThreadItem("t1", queuedItem.ID)
+	if err != nil || !found {
+		t.Fatalf("queued row missing after wire echo: found=%v err=%v", found, err)
+	}
+
+	// The queued message must be the LAST row in the turn — its
+	// item_index must be greater than every row persisted before the
+	// echo arrived. Anything else means we placed the queued message
+	// above content that the agent had already produced.
+	for _, r := range rows {
+		if r.ID == queued.ID {
+			continue
+		}
+		if r.ItemIndex >= queued.ItemIndex {
+			t.Fatalf(
+				"queued user_text item_index %d should be greater than "+
+					"every row that arrived before its wire echo, but %s "+
+					"has item_index %d (final ordering: %v)",
+				queued.ItemIndex, r.ID, r.ItemIndex, idsByIndex,
+			)
+		}
+	}
+}
+
+// TestHandleUserText_DeferredFlush_TurnBoundaryHonorsDispatchTurn pins the
+// turn-placement contract for queued sends: a queued message dispatched
+// at turn N must persist into turn N even if a new turn N+1 opened on
+// the wire side between dispatch and the wire echo. The
+// `pendingSend.TurnIndex` capture (mirrored on `DeferredItem.TurnIndex`)
+// is what anchors the row to the dispatch-decided turn; if a future
+// refactor stripped the capture and recomputed turn-from-current-open,
+// the queued message would silently jump into the new turn.
+func TestHandleUserText_DeferredFlush_TurnBoundaryHonorsDispatchTurn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	// Pre-existing row at turn 0, item_index 0 — establishes the
+	// dispatch-time turn.
+	if _, err := st.AppendItem(store.Item{
+		ID:        "tool:before-flush",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "completed",
+		Summary:   "pre-dispatch tool",
+		ToolName:  "Bash",
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("seed pre-dispatch tool: %v", err)
+	}
+
+	queuedItem := store.Item{
+		ID:        "user:0:flush:0",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "queued at turn 0",
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}
+	router.RegisterPendingFlushSend("t1", "queue:abc", queuedItem)
+
+	// Turn 1 opens before the wire echo arrives — simulates the rare
+	// case where the current turn completed and a new one started in
+	// the gap between dispatch and echo.
+	seedOpenTurn(t, router, st, "t1", 1)
+	if _, err := st.AppendItem(store.Item{
+		ID:        "tool:turn-one",
+		ThreadID:  "t1",
+		TurnIndex: 1,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "completed",
+		Summary:   "next turn tool",
+		ToolName:  "Bash",
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("seed turn-1 tool: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "queued at turn 0",
+		Meta:      json.RawMessage(`{"provider_item_id":"msg_echo_late"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle wire echo: %v", err)
+	}
+
+	queued, found, err := st.GetThreadItem("t1", queuedItem.ID)
+	if err != nil || !found {
+		t.Fatalf("queued row missing: found=%v err=%v", found, err)
+	}
+	if queued.TurnIndex != 0 {
+		t.Fatalf("queued user_text TurnIndex = %d, want 0 (the dispatch-decided turn)", queued.TurnIndex)
+	}
+	if queued.ItemIndex != 1 {
+		t.Fatalf("queued user_text ItemIndex = %d, want 1 (MAX+1 of turn 0)", queued.ItemIndex)
+	}
+
+	// Turn 1 must be untouched.
+	turn1, err := st.ListItemsForTurn("t1", 1)
+	if err != nil {
+		t.Fatalf("list turn 1: %v", err)
+	}
+	if len(turn1) != 1 || turn1[0].ID != "tool:turn-one" || turn1[0].ItemIndex != 0 {
+		t.Fatalf("turn 1 should be unchanged, got %+v", turn1)
+	}
+}
+
+// TestHandleUserText_DeferredFlush_BatchOrderingFIFO pins the
+// multi-queued-message contract: two queued sends registered in order,
+// with content streamed between dispatch and the first wire echo, must
+// each land at MAX+1 at their own echo time, preserving FIFO order. A
+// regression that broke FIFO (or reintroduced index capture) would
+// either reorder the two queued messages or place either of them
+// before the intervening streaming row.
+func TestHandleUserText_DeferredFlush_BatchOrderingFIFO(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	first := store.Item{
+		ID:        "user:0:flush:1",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "first queued",
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}
+	second := first
+	second.ID = "user:0:flush:2"
+	second.Summary = "second queued"
+
+	router.RegisterPendingFlushSend("t1", "queue:1", first)
+	router.RegisterPendingFlushSend("t1", "queue:2", second)
+
+	// Model streams a text row between dispatch and the first echo.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "assistant text emitted before either echo lands",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle text delta: %v", err)
+	}
+
+	// Wire echoes arrive in registration order. The FIFO at
+	// consumePendingSendHead pops first the head, then the tail.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "first queued",
+		Meta:      json.RawMessage(`{"provider_item_id":"msg_1"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle first echo: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "second queued",
+		Meta:      json.RawMessage(`{"provider_item_id":"msg_2"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle second echo: %v", err)
+	}
+
+	firstRow, found, err := st.GetThreadItem("t1", first.ID)
+	if err != nil || !found {
+		t.Fatalf("first queued row missing: found=%v err=%v", found, err)
+	}
+	secondRow, found, err := st.GetThreadItem("t1", second.ID)
+	if err != nil || !found {
+		t.Fatalf("second queued row missing: found=%v err=%v", found, err)
+	}
+
+	rows, err := st.ListItemsForTurn("t1", 0)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+
+	// Find the intervening text row's index for a relative assertion
+	// (its exact id is generated by textItemID and not stable to assert).
+	var textIndex int = -1
+	for _, r := range rows {
+		if r.Kind == "assistant_text" {
+			textIndex = r.ItemIndex
+			break
+		}
+	}
+	if textIndex < 0 {
+		t.Fatalf("expected an assistant_text row in turn 0, got %+v", rows)
+	}
+
+	if firstRow.ItemIndex <= textIndex {
+		t.Fatalf("first queued ItemIndex %d must be greater than intervening text index %d", firstRow.ItemIndex, textIndex)
+	}
+	if secondRow.ItemIndex <= firstRow.ItemIndex {
+		t.Fatalf("second queued ItemIndex %d must be greater than first queued %d (FIFO order)", secondRow.ItemIndex, firstRow.ItemIndex)
+	}
+}

@@ -104,7 +104,19 @@ func TestDispatchFlush_Codex_DefersUserItemUntilWireEcho(t *testing.T) {
 	}
 }
 
-func TestDispatchFlush_EchoInsertsAtDispatchPositionAndShiftsLaterRows(t *testing.T) {
+// TestDispatchFlush_EchoLandsAfterRowsThatArrivedFirst is the integration-
+// level companion to triage's
+// TestHandleUserText_DeferredFlush_LandsAfterContentThatArrivedFirst.
+// It exercises the full dispatchFlush -> provider write -> wire echo
+// path: a row persisted between dispatch and the wire echo must keep its
+// index, and the queued user_text row must land at MAX+1 at echo time
+// (i.e. AFTER the rows the model emitted first).
+//
+// The previous behavior captured item_index at dispatch and inserted
+// at that slot, shifting later-arriving rows DOWN — which placed the
+// queued message above content the agent had already produced. See
+// the bug walkthrough in pendingSend's doc comment.
+func TestDispatchFlush_EchoLandsAfterRowsThatArrivedFirst(t *testing.T) {
 	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-echo-insert-position")
@@ -138,6 +150,9 @@ func TestDispatchFlush_EchoInsertsAtDispatchPositionAndShiftsLaterRows(t *testin
 		},
 	})
 
+	// Assistant row arrives BEFORE the wire echo. AppendItem allocates
+	// MAX+1 = 0 (turn is empty in SQLite — the deferred queued row is
+	// in router memory only).
 	if _, err := app.store.AppendItem(store.Item{
 		ID:        "assistant:3:0",
 		ThreadID:  thread.ID,
@@ -172,21 +187,21 @@ func TestDispatchFlush_EchoInsertsAtDispatchPositionAndShiftsLaterRows(t *testin
 		t.Fatalf("ListItemsForTurn: %v", err)
 	}
 	if len(items) != 2 {
-		t.Fatalf("items = %+v, want queued user + shifted assistant", items)
+		t.Fatalf("items = %+v, want assistant + queued user", items)
 	}
-	if items[0].ID != "user:3:flush:1" || items[0].ItemIndex != 0 {
-		t.Fatalf("first item = %+v, want queued user at index 0", items[0])
+	if items[0].ID != "assistant:3:0" || items[0].ItemIndex != 0 {
+		t.Fatalf("first item = %+v, want assistant at index 0 (kept its slot)", items[0])
 	}
-	if items[1].ID != "assistant:3:0" || items[1].ItemIndex != 1 {
-		t.Fatalf("second item = %+v, want shifted assistant at index 1", items[1])
+	if items[1].ID != "user:3:flush:1" || items[1].ItemIndex != 1 {
+		t.Fatalf("second item = %+v, want queued user at index 1 (echo-time MAX+1)", items[1])
 	}
 
-	upsertIndexes := map[string]int{}
+	// The frontend treats item upserts as authoritative; verify no
+	// shift-down upsert was emitted for the assistant row.
 	for _, item := range emittedItemUpserts(rec) {
-		upsertIndexes[item.ID] = item.ItemIndex
-	}
-	if upsertIndexes["user:3:flush:1"] != 0 || upsertIndexes["assistant:3:0"] != 1 {
-		t.Fatalf("item upsert indexes = %+v, want shifted rows emitted", upsertIndexes)
+		if item.ID == "assistant:3:0" && item.ItemIndex != 0 {
+			t.Fatalf("assistant upsert re-emitted at index %d — should keep index 0", item.ItemIndex)
+		}
 	}
 }
 
@@ -347,30 +362,60 @@ func TestDispatchFlush_Codex_NoActiveTurnFallsBackToSend(t *testing.T) {
 	}
 	userItemID := flushed[0].UserItemID
 
+	// The fallback re-register bumps turnIndex when activeAtResolution
+	// fires (turn 2 was active, so the fresh turn is 3). The new userItemID
+	// encodes the bumped turn as "user:<turn>:flush:<n>"; parse it rather
+	// than search-by-content so the test stays decoupled from any future
+	// fallback semantics that change item placement.
+	if !strings.HasPrefix(userItemID, "user:3:flush:") {
+		t.Fatalf("fallback user item id = %q, want user:3:flush:<n> (no-active-turn bumps from 2 -> 3)", userItemID)
+	}
+	fallbackTurn := 3
+
 	// Even though Steer returned NoActiveTurn, the fallback path
 	// reaches sess.Send. The user_text row still waits for the
-	// provider echo, and there must be NO
-	// sibling `error` row — the fallback succeeded, so this isn't a
-	// failure case from the user's POV.
-	items, err := app.store.ListItemsForTurn(thread.ID, 2)
-	if err != nil {
-		t.Fatalf("ListItemsForTurn: %v", err)
-	}
-	for _, it := range items {
-		if it.Kind == "error" {
-			t.Errorf("unexpected error row after fallback: %+v", it)
+	// provider echo, and there must be NO sibling `error` row — the
+	// fallback succeeded, so this isn't a failure case from the user's
+	// POV.
+	for _, turn := range []int{2, 3} {
+		items, err := app.store.ListItemsForTurn(thread.ID, turn)
+		if err != nil {
+			t.Fatalf("ListItemsForTurn turn=%d: %v", turn, err)
+		}
+		for _, it := range items {
+			if it.Kind == "error" {
+				t.Errorf("unexpected error row after fallback (turn %d): %+v", turn, it)
+			}
+			if it.ID == userItemID {
+				t.Fatalf("user_text row should wait for provider echo after fallback, got %+v", it)
+			}
 		}
 	}
-	for _, item := range items {
-		if item.ID == userItemID {
-			t.Fatalf("user_text row should wait for provider echo after fallback, got %+v", item)
-		}
+
+	// Insert an assistant row BEFORE the wire echo arrives — represents
+	// content the model emitted after the fallback Send established the
+	// turn but before the queued message's echo round-trip. The queued
+	// row must land at MAX+1 of the fallback turn, AFTER the assistant
+	// row, not at index 0.
+	if _, err := app.store.AppendItem(store.Item{
+		ID:        "assistant:fallback:0",
+		ThreadID:  thread.ID,
+		TurnIndex: fallbackTurn,
+		Kind:      "assistant_text",
+		Role:      "assistant",
+		Status:    "completed",
+		Summary:   "model speaks before queued echo",
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("append assistant row in fallback turn: %v", err)
 	}
+
 	echoMeta, _ := json.Marshal(map[string]any{"provider_item_id": "wire-fallback"})
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind:      provider.EventUserText,
 		ThreadID:  thread.ID,
-		TurnIndex: 2,
+		TurnIndex: fallbackTurn,
 		ItemID:    userItemID,
 		Content:   "race",
 		Meta:      echoMeta,
@@ -378,8 +423,20 @@ func TestDispatchFlush_Codex_NoActiveTurnFallsBackToSend(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("EventUserText: %v", err)
 	}
-	if _, found, err := app.store.GetThreadItem(thread.ID, userItemID); err != nil || !found {
+
+	queued, found, err := app.store.GetThreadItem(thread.ID, userItemID)
+	if err != nil || !found {
 		t.Fatalf("expected %s after echo: found=%v err=%v", userItemID, found, err)
+	}
+	assistant, found, err := app.store.GetThreadItem(thread.ID, "assistant:fallback:0")
+	if err != nil || !found {
+		t.Fatalf("assistant row missing: found=%v err=%v", found, err)
+	}
+	if queued.TurnIndex != fallbackTurn {
+		t.Fatalf("queued user_text TurnIndex = %d, want %d (the fallback turn)", queued.TurnIndex, fallbackTurn)
+	}
+	if queued.ItemIndex <= assistant.ItemIndex {
+		t.Fatalf("queued user_text item_index %d should be greater than assistant item_index %d — the no-active-turn re-register must use the same MAX+1-at-echo rule", queued.ItemIndex, assistant.ItemIndex)
 	}
 }
 
@@ -1346,7 +1403,7 @@ func TestGetThreadLiveState_ReturnsServerSideSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("todo update: %v", err)
 	}
-	app.triage.RegisterPendingFlushSendAtIndex(thread.ID, "queue-flushed", store.Item{
+	app.triage.RegisterPendingFlushSend(thread.ID, "queue-flushed", store.Item{
 		ID:        "user:7:flush:1",
 		ThreadID:  thread.ID,
 		TurnIndex: 7,
@@ -1354,7 +1411,7 @@ func TestGetThreadLiveState_ReturnsServerSideSnapshot(t *testing.T) {
 		Role:      "user",
 		Status:    "completed",
 		Summary:   "flushed text",
-	}, 0)
+	})
 
 	state, err := app.GetThreadLiveState(thread.ID)
 	if err != nil {

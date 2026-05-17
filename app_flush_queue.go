@@ -183,11 +183,15 @@ type flushQueuePayload = flushqueue.Payload
 //  3. Allocate the AO item id (`user:<turnIndex>:flush:<n>`) — never
 //     collides with the seed `user:<turnIndex>` row or with
 //     `:steer:<n>` rows.
-//  4. RegisterPendingFlushSendAtIndex so the wire echo (Claude
+//  4. RegisterPendingFlushSend so the wire echo (Claude
 //     `--replay-user-messages` envelope or Codex `item/completed
-//     userMessage`) creates the chat-history row at the position
-//     captured when the message was written, with `provider_item_id`
-//     already attached.
+//     userMessage`) creates the chat-history row at MAX+1 of the
+//     dispatch-decided turn, computed at echo time, with
+//     `provider_item_id` already attached. The position is recomputed
+//     at echo time deliberately — capturing it at dispatch would
+//     place the queued message above any rows the model emitted
+//     between dispatch and echo. See triage/pending_send.go
+//     pendingSend.
 //  5. Call the provider:
 //     - Claude: sess.Send writes a fresh user envelope to stdin;
 //     Claude's mid-loop drain (query.ts:1547) consumes it on the
@@ -309,17 +313,15 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	insertItemIndex, err := a.nextFlushInsertItemIndex(threadID, turnIndex)
-	if err != nil {
-		return QueueFlushedItem{}, fmt.Errorf("allocate insert index: %w", err)
-	}
 	// Register the pending-send marker BEFORE the provider write so the
 	// wire echo can't race ahead of the marker and miss the
 	// pending-send-present branch in handleUserText. The row is deferred:
 	// normal queued sends should not appear in chat history until the
 	// provider confirms they entered context. Cleared on dispatch failure
-	// below.
-	a.triage.RegisterPendingFlushSendAtIndex(threadID, item.ID, userItem, insertItemIndex)
+	// below. The persisted row's item_index is computed at echo time
+	// (persistDeferredUserText) so the queued message lands after rows
+	// the model emitted between dispatch and echo.
+	a.triage.RegisterPendingFlushSend(threadID, item.ID, userItem)
 
 	sendOpts := provider.SendOptions{
 		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
@@ -346,12 +348,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 			userItem.TurnIndex = turnIndex
 			userItem.CreatedAt = time.Now().UnixMilli()
 			userItem.UpdatedAt = userItem.CreatedAt
-			insertItemIndex, indexErr := a.nextFlushInsertItemIndex(threadID, turnIndex)
-			if indexErr != nil {
-				a.persistFlushDispatchError(threadID, turnIndex, indexErr)
-				return QueueFlushedItem{}, indexErr
-			}
-			a.triage.RegisterPendingFlushSendAtIndex(threadID, item.ID, userItem, insertItemIndex)
+			a.triage.RegisterPendingFlushSend(threadID, item.ID, userItem)
 			sess.liveness.bumpActivity(time.Now())
 			if sendErr := sess.codex.Send(context.Background(), content, sendOpts); sendErr != nil {
 				a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
@@ -395,17 +392,6 @@ func (a *App) nextFlushSequenceForTurn(threadID string, turnIndex int) (int, err
 		return pendingNext, nil
 	}
 	return next, nil
-}
-
-func (a *App) nextFlushInsertItemIndex(threadID string, turnIndex int) (int, error) {
-	itemIndex, err := a.store.NextItemIndex(threadID, turnIndex)
-	if err != nil {
-		return 0, err
-	}
-	if a.triage == nil {
-		return itemIndex, nil
-	}
-	return itemIndex + a.triage.PendingDeferredInsertCount(threadID, turnIndex), nil
 }
 
 func (a *App) resolveFlushTurnPlacement(threadID string) (turnIndex int, activeAtResolution bool, err error) {
