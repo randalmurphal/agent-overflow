@@ -122,10 +122,7 @@ const QUIET_MS = 100;
 const FAILSAFE_MS = 2500;
 
 const UP_KEYS: ReadonlySet<string> = new Set(['PageUp', 'ArrowUp', 'Home']);
-// Down-keys (PageDown / ArrowDown / End) are deliberately NOT enumerated
-// here. Re-stick happens geometrically through the scroll handler — when
-// the user reaches near-bottom, escapedFromLock is cleared. We don't want
-// pressing PageDown to immediately re-stick before any geometry catches up.
+const DOWN_KEYS: ReadonlySet<string> = new Set(['PageDown', 'ArrowDown', 'End']);
 
 let mouseDown = false;
 let listenersInstalled = false;
@@ -352,6 +349,7 @@ export function createUseStickToBottomController(
   let contentRO: ResizeObserver | undefined;
   let detachWheel: (() => void) | undefined;
   let detachScroll: (() => void) | undefined;
+  let detachPointer: (() => void) | undefined;
   let detachKeyTouch: (() => void) | undefined;
 
   let targetAnimationFrame: number | null = null;
@@ -363,7 +361,7 @@ export function createUseStickToBottomController(
   let externalScrollIgnoreUntil = 0;
   let externalScrollClearTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingUserScrollIntent:
-    | { source: 'wheel' | 'key' | 'touch'; startScrollTop: number }
+    | { source: 'wheel' | 'key' | 'touch' | 'pointer'; startScrollTop: number }
     | null = null;
   let pendingUserScrollIntentTimer: ReturnType<typeof setTimeout> | null = null;
   let previousHeight: number | undefined;
@@ -896,7 +894,7 @@ export function createUseStickToBottomController(
 
       // Schedule resizeDifference clear AFTER the scroll handler's 1ms.
       // The scroll event fired by the layout change above must observe
-      // resizeDifference !== 0 so it bails the up-direction inference.
+      // resizeDifference !== 0 so it is treated as layout, not input.
       if (resizeClearTimer) clearTimeout(resizeClearTimer);
       const myDelta = delta;
       resizeClearTimer = setTimeout(() => {
@@ -961,7 +959,7 @@ export function createUseStickToBottomController(
     clearPendingUserScrollIntent(intent, { repinIfStillSticky: true });
   }
 
-  function armUserScrollIntent(source: 'wheel' | 'key' | 'touch'): void {
+  function armUserScrollIntent(source: 'wheel' | 'key' | 'touch' | 'pointer'): void {
     if (!scrollEl) return;
     cancelTargetAnimation();
     cancelSpring();
@@ -983,13 +981,14 @@ export function createUseStickToBottomController(
 
   function handleWheel(e: WheelEvent): void {
     if (!scrollEl) return;
-    if (e.deltaY >= 0) return; // only up-wheel can break the lock
+    if (e.deltaY === 0) return;
+    if (e.deltaY > 0 && !escapedFromLockState) return;
     // Walk parents from event target; if first overflow ancestor is the
     // scroll element, the wheel landed on us. If a nested scroller can
     // consume this delta, ignore — the user is scrolling that nested
     // element, not us. If the nested scroller is already at its boundary,
-    // the wheel can chain to the chat scroll element, so this is a real
-    // escape gesture for the outer timeline.
+    // the wheel can chain to the chat scroll element, so this is real
+    // outer-timeline scroll intent.
     let cur: Element | null = e.target instanceof Element ? e.target : null;
     while (cur && cur !== scrollEl) {
       if (
@@ -1004,13 +1003,37 @@ export function createUseStickToBottomController(
     }
     if (cur !== scrollEl) return;
     if (scrollEl.scrollHeight <= scrollEl.clientHeight) return;
-    trace('scroll.wheel.escapeIntent', () => ({
+    trace('scroll.wheel.userScrollIntent', () => ({
       deltaY: e.deltaY,
       scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
       isAtBottomState,
       escapedFromLockState,
     }));
     armUserScrollIntent('wheel');
+  }
+
+  function handlePointerDown(e: PointerEvent): void {
+    if (!scrollEl) return;
+    if (e.isPrimary === false) return;
+    if (scrollEl.scrollHeight <= scrollEl.clientHeight) return;
+
+    const scrollbarWidth = scrollEl.offsetWidth - scrollEl.clientWidth;
+    if (scrollbarWidth <= 0) return;
+
+    const rect = scrollEl.getBoundingClientRect();
+    const style = window.getComputedStyle(scrollEl);
+    const inRightGutter = e.clientX >= rect.right - scrollbarWidth;
+    const inLeftGutter = style.direction === 'rtl' && e.clientX <= rect.left + scrollbarWidth;
+    if (!inRightGutter && !inLeftGutter) return;
+
+    trace('scroll.pointer.userScrollIntent', () => ({
+      clientX: Math.round(e.clientX),
+      scrollbarWidth: Math.round(scrollbarWidth),
+      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+      isAtBottomState,
+      escapedFromLockState,
+    }));
+    armUserScrollIntent('pointer');
   }
 
   // ===== Scroll handler =====
@@ -1025,6 +1048,7 @@ export function createUseStickToBottomController(
     const externalTagged = externalScrollIgnoreUntil > nowMs();
     refreshIsNearBottom();
     const userScrollIntent = pendingUserScrollIntent;
+    const hadUserScrollIntent = userScrollIntent !== null;
     const pendingUserIntentMovedUp = !!userScrollIntent
       && movedUpEnoughToEscape(userScrollIntent.startScrollTop, scrollTopAtEvent);
     const tagged = (scrollTopAtEvent === tag || externalTagged) && !pendingUserIntentMovedUp;
@@ -1095,10 +1119,6 @@ export function createUseStickToBottomController(
         return;
       }
 
-      if (userScrollIntent) {
-        clearPendingUserScrollIntent(userScrollIntent);
-      }
-
       if (isSelectingInside(scrollEl)) {
         trace('scroll.scrollEvent.deferred.escapeSelection', () => ({
           scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
@@ -1107,50 +1127,50 @@ export function createUseStickToBottomController(
         return;
       }
 
-      const scrolledUp = previousUntagged >= 0
-        && movedUpEnoughToEscape(previousUntagged, scrollTopAtEvent);
-      if (scrolledUp && !escapedFromLockState) {
-        trace('scroll.scrollEvent.deferred.escapeUntaggedScroll', () => ({
-          scrollTop: Math.round(scrollTopAtEvent),
-          previousUntagged: Math.round(previousUntagged),
-          resizeDifference: Math.round(resizeDifference),
-        }));
-        setEscapedFromLock(true);
-        return;
-      }
-
       // Re-stick: user scrolled BACK essentially to the bottom by hand
-      // (touch, scrollbar drag, keyboard). Restore intent flag so the
+      // (wheel, touch, keyboard). Restore intent flag so the
       // contentRO sync-pin can resume on the next content grow. No
       // scrollTop write here — they're already at the bottom.
       //
-      // Two gates:
-      //   1. Direction. The scroll event from a wheel-up gesture is the
+      // Three gates:
+      //   1. Input-backed intent. Layout/virtua can also emit untagged
+      //      scroll events while measuring rows; those must not mutate
+      //      follow intent. A wheel/key/touch signal has to precede the
+      //      scroll event.
+      //   2. Direction. The scroll event from a wheel-up gesture is the
       //      event that confirms escape; if we also re-sticked whenever
       //      the user happens to land near the bottom, that same event
       //      would undo the escape. Skip re-stick when scrollTop is
       //      decreasing (UP direction); only DOWN-direction scrolls
       //      toward the bottom can re-engage auto-follow.
-      //   2. AUTO_FOLLOW_BOTTOM_EPSILON_PX rather than the looser
+      //   3. AUTO_FOLLOW_BOTTOM_EPSILON_PX rather than the looser
       //      isNearBottomState (70px). Even on a DOWN scroll, only the
       //      actual bottom (within sub-pixel rounding) counts.
       const scrolledDown = previousUntagged < 0
         ? false
         : scrollTopAtEvent > previousUntagged;
       const distFromBottom = distanceFromBottom();
+      const shouldKeepIntentForRestick = !!userScrollIntent
+        && escapedFromLockState
+        && scrollTopAtEvent > userScrollIntent.startScrollTop
+        && distFromBottom > AUTO_FOLLOW_BOTTOM_EPSILON_PX;
       const willRestick = scrolledDown
+        && hadUserScrollIntent
         && escapedFromLockState
         && distFromBottom <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
       trace('scroll.scrollEvent.deferred', () => ({
         scrollTop: Math.round(scrollTopAtEvent),
         previousUntagged: Math.round(previousUntagged),
         scrolledDown,
+        hadUserScrollIntent,
+        shouldKeepIntentForRestick,
         distanceFromBottom: Math.round(distFromBottom),
         willRestick,
         isAtBottomState,
         escapedFromLockState,
       }));
       if (willRestick) {
+        if (userScrollIntent) clearPendingUserScrollIntent(userScrollIntent);
         escapedFromLockState = false;
         isAtBottomState = true;
         // Re-arm the spring after user gestures back to the bottom —
@@ -1159,6 +1179,8 @@ export function createUseStickToBottomController(
         // user's "I want to follow again" signal. Without this, future
         // streaming chunks would sync-pin instead of spring-chase.
         springStopRequested = false;
+      } else if (userScrollIntent && !shouldKeepIntentForRestick) {
+        clearPendingUserScrollIntent(userScrollIntent);
       }
     }, RESIZE_CLEAR_PADDING_MS);
   }
@@ -1166,8 +1188,7 @@ export function createUseStickToBottomController(
   // ===== Keydown / touch handlers (intent signals) =====
   function handleKeydown(e: KeyboardEvent): void {
     if (UP_KEYS.has(e.key)) armUserScrollIntent('key');
-    // DOWN_KEYS deliberately not handled here — see the comment near the
-    // UP_KEYS declaration for why down-direction is geometric, not gestural.
+    if (escapedFromLockState && DOWN_KEYS.has(e.key)) armUserScrollIntent('key');
   }
   function handleTouchStart(e: TouchEvent): void {
     touchStartY = e.touches[0]?.clientY ?? null;
@@ -1178,9 +1199,10 @@ export function createUseStickToBottomController(
     const dy = y - touchStartY;
     touchStartY = y;
     // Finger moves DOWN visually → content moves DOWN → user wants to
-    // see content above → escape. Finger moves UP → leave to scroll
-    // handler's re-stick path.
+    // see content above → escape. Finger moves UP while already escaped
+    // is the matching "scroll back toward bottom" input signal.
     if (dy > 1) armUserScrollIntent('touch');
+    if (dy < -1 && escapedFromLockState) armUserScrollIntent('touch');
   }
   function handleTouchEnd(): void {
     touchStartY = null;
@@ -1553,6 +1575,7 @@ export function createUseStickToBottomController(
     setupContentRO();
     nextScrollEl.addEventListener('wheel', handleWheel, { passive: true });
     nextScrollEl.addEventListener('scroll', handleScroll, { passive: true });
+    nextScrollEl.addEventListener('pointerdown', handlePointerDown, { passive: true });
     nextScrollEl.addEventListener('keydown', handleKeydown);
     nextScrollEl.addEventListener('touchstart', handleTouchStart, { passive: true });
     nextScrollEl.addEventListener('touchmove', handleTouchMove, { passive: true });
@@ -1560,6 +1583,7 @@ export function createUseStickToBottomController(
     nextScrollEl.addEventListener('touchcancel', handleTouchEnd, { passive: true });
     detachWheel = () => nextScrollEl.removeEventListener('wheel', handleWheel);
     detachScroll = () => nextScrollEl.removeEventListener('scroll', handleScroll);
+    detachPointer = () => nextScrollEl.removeEventListener('pointerdown', handlePointerDown);
     detachKeyTouch = () => {
       nextScrollEl.removeEventListener('keydown', handleKeydown);
       nextScrollEl.removeEventListener('touchstart', handleTouchStart);
@@ -1582,6 +1606,8 @@ export function createUseStickToBottomController(
     detachWheel = undefined;
     detachScroll?.();
     detachScroll = undefined;
+    detachPointer?.();
+    detachPointer = undefined;
     detachKeyTouch?.();
     detachKeyTouch = undefined;
     if (resizeClearTimer) {

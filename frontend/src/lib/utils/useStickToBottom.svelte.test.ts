@@ -337,9 +337,33 @@ describe('createUseStickToBottomController', () => {
       expect(controller.isSticky).toBe(false);
     });
 
-    it('wheel down is a no-op', () => {
+    it('wheel down while sticky is a no-op', () => {
       fireWheel(scrollEl, 50, scrollEl);
       expect(controller.escapedFromLock).toBe(false);
+    });
+
+    it('scrollbar pointer drag escapes after the outer scrollTop decreases', async () => {
+      Object.defineProperty(scrollEl, 'offsetWidth', { configurable: true, get: () => 200 });
+      Object.defineProperty(scrollEl, 'clientWidth', { configurable: true, get: () => 180 });
+      vi.spyOn(scrollEl, 'getBoundingClientRect').mockReturnValue({
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 200,
+        bottom: 600,
+        width: 200,
+        height: 600,
+        toJSON: () => ({}),
+      } as DOMRect);
+
+      scrollEl.dispatchEvent(new MouseEvent('pointerdown', { clientX: 195, bubbles: true }));
+      geom.scrollTop = 399;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
     });
 
     it('wheel up does nothing when content fits in viewport', () => {
@@ -660,6 +684,7 @@ describe('createUseStickToBottomController', () => {
       geom.scrollTop = 100;
       fireScroll(scrollEl);
       await nextTimer();
+      fireWheel(scrollEl, 100, scrollEl);
       geom.scrollTop = 400;
       fireScroll(scrollEl);
       await nextTimer();
@@ -713,6 +738,13 @@ describe('createUseStickToBottomController', () => {
       // User scrolls back to within the sub-pixel auto-follow epsilon.
       // Public near-bottom still has a 70px visual band, but autonomous
       // following should only re-arm at the actual bottom.
+      fireWheel(scrollEl, 50, scrollEl);
+      geom.scrollTop = 250;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
+
       geom.scrollTop = 399.75; // distance = 0.25
       fireScroll(scrollEl);
       await nextTimer();
@@ -787,7 +819,7 @@ describe('createUseStickToBottomController', () => {
       expect(controller.isAtBottom).toBe(true);
     });
 
-    it('plain untagged upward scroll escapes and blocks subsequent content growth', async () => {
+    it('plain untagged upward scroll without input preserves bottom-follow intent', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       fireScroll(scrollEl); // consumes programmatic tag from first-fire pin
@@ -797,16 +829,16 @@ describe('createUseStickToBottomController', () => {
       fireScroll(scrollEl);
       await nextTimer();
 
-      expect(controller.escapedFromLock).toBe(true);
-      expect(controller.isSticky).toBe(false);
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
 
       geom.scrollHeight = 1200;
       geom.contentHeight = 1000;
       ro.fire(contentEl, 1000);
-      expect(geom.scrollTop).toBe(399);
+      expect(geom.scrollTop).toBe(600);
     });
 
-    it('plain upward scroll after a sticky content-growth pin compares against the new bottom', async () => {
+    it('wheel-backed upward scroll after a sticky content-growth pin compares against the new bottom', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       fireScroll(scrollEl); // consumes first-fire programmatic tag
@@ -819,6 +851,7 @@ describe('createUseStickToBottomController', () => {
       fireScroll(scrollEl); // tagged programmatic event, should still refresh baseline via write path
       await nextTimer();
 
+      fireWheel(scrollEl, -1, scrollEl);
       geom.scrollTop = 599;
       fireScroll(scrollEl);
       await nextTimer();
@@ -1470,10 +1503,10 @@ describe('createUseStickToBottomController', () => {
     // These tests lock in the design choice that distinguishes the
     // unified controller from its predecessors: intent (escapedFromLock,
     // isAtBottomState) is mutated only by explicit signals — gestures,
-    // forceStick, stopScroll, the scroll handler's escape→re-stick
-    // path. Pure geometry mutation does not cross the boundary. If a
-    // future change reintroduces a "scrollTop direction" inference,
-    // these tests fail.
+    // forceStick, stopScroll, and input-backed scroll-handler paths.
+    // Pure geometry mutation does not cross the boundary. If a future
+    // change reintroduces a bare "scrollTop direction" inference, these
+    // tests fail.
 
     it('mutating scrollTop without firing any event never flips escapedFromLock', () => {
       // Start sticky + at-bottom.
@@ -1521,7 +1554,7 @@ describe('createUseStickToBottomController', () => {
       expect(controller.isSticky).toBe(false);
     });
 
-    it('only the scroll handler\'s near-bottom + escaped path resurrects intent', async () => {
+    it('only an input-backed near-bottom scroll resurrects intent', async () => {
       // Companion to the test above: this proves the design DOES
       // re-stick when the user actually scrolls back, so the previous
       // assertion is about the absence of polling, not a regression.
@@ -1537,6 +1570,7 @@ describe('createUseStickToBottomController', () => {
       await nextTimer();
       expect(controller.escapedFromLock).toBe(true);
 
+      fireWheel(scrollEl, 100, scrollEl);
       geom.scrollTop = 400;
       fireScroll(scrollEl);
       await nextTimer();
@@ -2320,6 +2354,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       geom.scrollTop = 100; // intermediate
       fireScroll(scrollEl);
       await nextTimer();
+      fireWheel(scrollEl, 100, scrollEl);
       geom.scrollTop = 400; // right at bottom; distance=0
       fireScroll(scrollEl);
       await nextTimer();

@@ -849,7 +849,49 @@ describe('scroll integration — auto-follow + button', () => {
     expect(scrollTop).toBe(399);
   });
 
-  it('plain upward scroll prevents later layout-growth re-pin', async () => {
+  it('wheel-backed upward scroll prevents later layout-growth re-pin', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'a' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
+    ]);
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="message-timeline-node"]')).not.toBeNull();
+      expect(pane.scrollController).not.toBeNull();
+    });
+
+    const scrollEl = container.querySelector('[data-testid="message-timeline-scroll"]') as HTMLElement;
+    let scrollTop = 400;
+    Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 1000 });
+    Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, get: () => 600 });
+    Object.defineProperty(scrollEl, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => { scrollTop = value; },
+    });
+
+    scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await waitForScrollIntent();
+    scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    scrollTop = 399;
+    scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await waitForScrollIntent();
+
+    const ctrl = pane.scrollController as
+      | (PaneScrollController & { escapedFromLock: boolean; isSticky: boolean })
+      | null;
+    expect(ctrl?.escapedFromLock).toBe(true);
+    expect(ctrl?.isSticky).toBe(false);
+
+    Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 1200 });
+    pane.scrollController?.notifyContentMaybeGrew();
+    expect(scrollTop).toBe(399);
+  });
+
+  it('layout-only upward scroll preserves auto-follow for later growth', async () => {
     const pane = await buildPane(undefined, [
       makeItem({ id: 'a', summary: 'a' }),
       makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
@@ -882,12 +924,12 @@ describe('scroll integration — auto-follow + button', () => {
     const ctrl = pane.scrollController as
       | (PaneScrollController & { escapedFromLock: boolean; isSticky: boolean })
       | null;
-    expect(ctrl?.escapedFromLock).toBe(true);
-    expect(ctrl?.isSticky).toBe(false);
+    expect(ctrl?.escapedFromLock).toBe(false);
+    expect(ctrl?.isSticky).toBe(true);
 
     Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 1200 });
     pane.scrollController?.notifyContentMaybeGrew();
-    expect(scrollTop).toBe(399);
+    expect(scrollTop).toBe(600);
   });
 
   it('renders the scroll-to-bottom chip OUTSIDE the scroll container', async () => {
