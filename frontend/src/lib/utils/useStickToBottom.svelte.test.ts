@@ -1916,6 +1916,117 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBeLessThan(800);
     });
 
+    it('notifyLiveContentMaybeGrew spring-chases when warm AND mode=spring', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      controller.notifyLiveContentMaybeGrew();
+
+      // Live-content nudge should not sync-pin to the new target. It uses
+      // the same spring policy as contentRO positive deltas.
+      expect(geom.scrollTop).toBe(400);
+
+      for (let i = 0; i < 3; i++) await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+      expect(geom.scrollTop).toBeLessThan(800);
+    });
+
+    it('notifyLiveContentMaybeGrew sync-pins when animation mode is instant', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      mode = 'instant';
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      controller.notifyLiveContentMaybeGrew();
+
+      expect(geom.scrollTop).toBe(800);
+      for (let i = 0; i < 3; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(800);
+    });
+
+    it('notifyLiveContentMaybeGrew clamps instead of springing when already past target', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Simulate a structural live-content nudge after content shrank or
+      // the browser left scrollTop beyond the new bottom. A spring cannot
+      // advance because current >= target, so the hook must use the
+      // instant clamp path.
+      geom.scrollHeight = 950;
+      geom.contentHeight = 750;
+      controller.notifyLiveContentMaybeGrew();
+
+      expect(geom.scrollTop).toBe(350);
+      for (let i = 0; i < 3; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(350);
+    });
+
+    it('notifyLiveContentMaybeGrew does nothing while escaped', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      controller.setEscapedFromLock(true);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      controller.notifyLiveContentMaybeGrew();
+
+      expect(geom.scrollTop).toBe(400);
+      for (let i = 0; i < 3; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(400);
+    });
+
+    it('notifyLiveContentMaybeGrew does nothing while auto-scroll is paused', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      const release = controller.pauseAutoScroll();
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      controller.notifyLiveContentMaybeGrew();
+
+      expect(geom.scrollTop).toBe(400);
+      for (let i = 0; i < 3; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(400);
+      release();
+    });
+
+    it('notifyLiveContentMaybeGrew does nothing while user scroll intent is pending', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      fireWheel(scrollEl, -10, scrollEl);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      controller.notifyLiveContentMaybeGrew();
+
+      expect(geom.scrollTop).toBe(400);
+      for (let i = 0; i < 3; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(400);
+    });
+
+    it('notifyContentMaybeGrew remains an instant layout nudge even in spring mode', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      controller.notifyContentMaybeGrew();
+
+      expect(geom.scrollTop).toBe(800);
+      for (let i = 0; i < 3; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(800);
+    });
+
     it('lands at target eventually and stops ticking', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);

@@ -278,7 +278,7 @@
     if (activeTurnStructuralSignature !== signature) return;
     if (!getActiveTurn(threadId)) return;
 
-    stick.notifyContentMaybeGrew();
+    stick.notifyLiveContentMaybeGrew();
   }
 
   // Thinking rows stream by internally tail-pinning a 3-line clipped body,
@@ -290,7 +290,9 @@
   // bottom after Svelte and virtua have had a frame to publish the new row.
   // It deliberately keys off tail row identity/status/order, not summary
   // deltas or metadata churn, so normal streaming chunks still use the
-  // contentRO spring path.
+  // contentRO spring path. The nudge uses the live-content controller hook,
+  // which honors spring mode; composer/sidebar layout nudges keep using the
+  // instant notifyContentMaybeGrew path.
   $effect(() => {
     const signature = activeTurnStructuralSignature;
     if (!signature) {

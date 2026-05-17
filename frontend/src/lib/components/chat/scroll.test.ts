@@ -45,19 +45,29 @@ function waitForAnimationFrame(): Promise<void> {
   });
 }
 
-function watchNotifyContentMaybeGrew(pane: ThreadPane): {
-  calls(): number;
+function watchStickNotifications(pane: ThreadPane): {
+  instantCalls(): number;
+  liveCalls(): number;
   reset(): void;
 } {
-  let spy: ReturnType<typeof vi.spyOn> | null = null;
+  let instantSpy: ReturnType<typeof vi.spyOn> | null = null;
+  let liveSpy: ReturnType<typeof vi.spyOn> | null = null;
   const originalAttach = pane.attachScrollController.bind(pane);
   pane.attachScrollController = (controller) => {
-    spy = vi.spyOn(controller, 'notifyContentMaybeGrew');
+    instantSpy = vi.spyOn(controller, 'notifyContentMaybeGrew');
+    liveSpy = vi.spyOn(
+      controller as PaneScrollController & { notifyLiveContentMaybeGrew(): void },
+      'notifyLiveContentMaybeGrew',
+    );
     originalAttach(controller);
   };
   return {
-    calls: () => spy?.mock.calls.length ?? 0,
-    reset: () => spy?.mockClear(),
+    instantCalls: () => instantSpy?.mock.calls.length ?? 0,
+    liveCalls: () => liveSpy?.mock.calls.length ?? 0,
+    reset: () => {
+      instantSpy?.mockClear();
+      liveSpy?.mockClear();
+    },
   };
 }
 
@@ -1376,7 +1386,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
       }),
     ]);
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
-    const notifyWatch = watchNotifyContentMaybeGrew(pane);
+    const notifyWatch = watchStickNotifications(pane);
 
     render(MessageTimeline, { props: { pane } });
     await tick();
@@ -1394,9 +1404,11 @@ describe('scroll integration — useStickToBottom wiring', () => {
       summary: 'Here is the next response.',
     }));
     await tick();
-    expect(notifyWatch.calls()).toBe(0);
+    expect(notifyWatch.liveCalls()).toBe(0);
+    expect(notifyWatch.instantCalls()).toBe(0);
     await waitForAnimationFrame();
-    await waitFor(() => expect(notifyWatch.calls()).toBeGreaterThan(0));
+    await waitFor(() => expect(notifyWatch.liveCalls()).toBeGreaterThan(0));
+    expect(notifyWatch.instantCalls()).toBe(0);
   });
 
   it('does not nudge sticky follow for ordinary streaming text deltas', async () => {
@@ -1412,7 +1424,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
       }),
     ]);
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
-    const notifyWatch = watchNotifyContentMaybeGrew(pane);
+    const notifyWatch = watchStickNotifications(pane);
 
     render(MessageTimeline, { props: { pane } });
     await tick();
@@ -1431,7 +1443,8 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await waitForAnimationFrame();
     await waitForScrollIntent();
 
-    expect(notifyWatch.calls()).toBe(0);
+    expect(notifyWatch.liveCalls()).toBe(0);
+    expect(notifyWatch.instantCalls()).toBe(0);
   });
 
   it('does not nudge sticky follow for active-turn structural changes outside the tail', async () => {
@@ -1447,7 +1460,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
       summary: `message ${index}`,
     })));
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
-    const notifyWatch = watchNotifyContentMaybeGrew(pane);
+    const notifyWatch = watchStickNotifications(pane);
 
     render(MessageTimeline, { props: { pane } });
     await tick();
@@ -1469,7 +1482,8 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await waitForAnimationFrame();
     await waitForScrollIntent();
 
-    expect(notifyWatch.calls()).toBe(0);
+    expect(notifyWatch.liveCalls()).toBe(0);
+    expect(notifyWatch.instantCalls()).toBe(0);
   });
 
   it('does not nudge sticky follow for active-turn tail metadata churn', async () => {
@@ -1486,7 +1500,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
       }),
     ]);
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
-    const notifyWatch = watchNotifyContentMaybeGrew(pane);
+    const notifyWatch = watchStickNotifications(pane);
 
     render(MessageTimeline, { props: { pane } });
     await tick();
@@ -1508,7 +1522,8 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await waitForAnimationFrame();
     await waitForScrollIntent();
 
-    expect(notifyWatch.calls()).toBe(0);
+    expect(notifyWatch.liveCalls()).toBe(0);
+    expect(notifyWatch.instantCalls()).toBe(0);
   });
 
   it('thread switch off a prior thread keeps contentEl hidden for the new thread (warm does not leak)', async () => {

@@ -200,6 +200,14 @@ export interface UseStickToBottomController {
    */
   notifyContentMaybeGrew(): void;
   /**
+   * Notify the controller that live transcript content may have advanced
+   * without the content ResizeObserver producing a usable positive delta.
+   * Uses the same escape/pause/user-intent gates as notifyContentMaybeGrew,
+   * but honors animationMode: active chat turns spring-chase instead of
+   * sync-pinning.
+   */
+  notifyLiveContentMaybeGrew(): void;
+  /**
    * Run an explicit user disclosure action while preserving the user's
    * current follow intent. Sticky users stay pinned to bottom; escaped
    * users keep the clicked anchor at the same viewport position.
@@ -1466,35 +1474,36 @@ export function createUseStickToBottomController(
     refreshIsNearBottom();
   }
 
-  function notifyContentMaybeGrew(): void {
+  function readNotifyContentGate(): {
+    gateScrollEl: boolean;
+    gateEscape: boolean;
+    gatePendingUserIntent: boolean;
+    gatePause: boolean;
+    gateNotAtBottom: boolean;
+    canPin: boolean;
+  } {
     const gateScrollEl = scrollEl !== undefined;
     const gateEscape = escapedFromLockState;
     const gatePendingUserIntent = pendingUserScrollIntent !== null;
     const gatePause = pauseDepth > 0;
     const gateNotAtBottom = !isAtBottomState;
-    const willPin = gateScrollEl
+    const canPin = gateScrollEl
       && !gateEscape
       && !gatePendingUserIntent
       && !gatePause
       && !gateNotAtBottom;
-    trace('scroll.notifyContentMaybeGrew', () => ({
-      willPin,
+
+    return {
       gateScrollEl,
       gateEscape,
       gatePendingUserIntent,
       gatePause,
       gateNotAtBottom,
-      pauseDepth,
-      isNearBottomState,
-      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-      scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
-      clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
-      target: scrollEl ? Math.round(targetScrollTop()) : null,
-    }));
-    if (!scrollEl) return;
-    if (escapedFromLockState || pauseDepth > 0) return;
-    if (pendingUserScrollIntent !== null) return;
-    if (!isAtBottomState) return;
+      canPin,
+    };
+  }
+
+  function instantPinAfterExternalGeometryChange(caller: string): void {
     // Stamp resizeDifference BEFORE writing scrollTop so the resulting
     // scroll event is treated as RO-correlated, not user-driven. Without
     // this, a textarea-shrink could cause the scroll handler's re-stick
@@ -1509,8 +1518,62 @@ export function createUseStickToBottomController(
         }
       });
     }, RESIZE_CLEAR_PADDING_MS);
-    writeCaller = 'notifyContentMaybeGrew';
+    writeCaller = caller;
     writeScrollTop(targetScrollTop());
+  }
+
+  function notifyContentMaybeGrew(): void {
+    const gate = readNotifyContentGate();
+    trace('scroll.notifyContentMaybeGrew', () => ({
+      willPin: gate.canPin,
+      gateScrollEl: gate.gateScrollEl,
+      gateEscape: gate.gateEscape,
+      gatePendingUserIntent: gate.gatePendingUserIntent,
+      gatePause: gate.gatePause,
+      gateNotAtBottom: gate.gateNotAtBottom,
+      pauseDepth,
+      isNearBottomState,
+      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+      scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+      clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+      target: scrollEl ? Math.round(targetScrollTop()) : null,
+    }));
+    if (!gate.canPin) return;
+    instantPinAfterExternalGeometryChange('notifyContentMaybeGrew');
+  }
+
+  function notifyLiveContentMaybeGrew(): void {
+    const gate = readNotifyContentGate();
+    const willSpring = gate.canPin && warm && springGateOpen();
+    trace('scroll.notifyLiveContentMaybeGrew', () => ({
+      canPin: gate.canPin,
+      willSpring,
+      gateScrollEl: gate.gateScrollEl,
+      gateEscape: gate.gateEscape,
+      gatePendingUserIntent: gate.gatePendingUserIntent,
+      gatePause: gate.gatePause,
+      gateNotAtBottom: gate.gateNotAtBottom,
+      pauseDepth,
+      isNearBottomState,
+      warm,
+      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+      scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+      clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+      target: scrollEl ? Math.round(targetScrollTop()) : null,
+    }));
+    if (!gate.canPin) return;
+
+    const target = targetScrollTop();
+    if (willSpring && scrollEl && scrollEl.scrollTop < target) {
+      lastGrewAt = nowMs();
+      startSpringIfNeeded();
+      return;
+    }
+
+    // Same instant fallback as notifyContentMaybeGrew for non-spring
+    // modes, warm-up, reduced-motion users, and no-distance/overshoot
+    // nudges where a spring has nothing useful to chase.
+    instantPinAfterExternalGeometryChange('notifyLiveContentMaybeGrew');
   }
 
   function pauseAutoScroll(): () => void {
@@ -1664,6 +1727,7 @@ export function createUseStickToBottomController(
     },
     pauseAutoScroll,
     notifyContentMaybeGrew,
+    notifyLiveContentMaybeGrew,
     preserveScrollAnchor,
     attach,
     detach,
