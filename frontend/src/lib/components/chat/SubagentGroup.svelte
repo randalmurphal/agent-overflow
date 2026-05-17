@@ -81,8 +81,12 @@
 
   // Visual depth cap so wildly nested trees don't run off the right
   // edge. Grouping already limits structural depth; this just keeps
-  // the indent budget sane.
-  const indentRem = $derived(Math.min(depth, 3) * 0.75);
+  // the indent budget sane. The outer rail wrapper in MessageTimeline
+  // supplies the "top-level card" inset at depth=1, so adding our own
+  // margin there would shift the chevron off-grid from adjacent tool
+  // rows. Nested cards (depth ≥ 2) still indent so the parent/child
+  // relationship reads visually inside the parent's expanded body.
+  const indentRem = $derived(depth <= 1 ? 0 : Math.min(depth, 3) * 0.75);
 
   // Collapsed by default so large subagents don't dominate the
   // initial view. Persisted on the pane (keyed by group.groupKey) so the

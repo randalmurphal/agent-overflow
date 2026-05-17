@@ -63,13 +63,19 @@
   const AUTO_LOAD_OFFSET_PX = 800;
   const AUTO_LOAD_INDEX_THRESHOLD = 5;
   // Leaf item kinds that participate in the continuous left-border
-  // rail. Group containers (SubagentGroup, InlineSubagentGroup,
-  // WaitGroup) handle their own internal rail layout — see
-  // docs/specs/tool-call-ui-redesign/README.md Phase 2.
+  // rail. Subagent / wait group containers also participate so the
+  // rail stays continuous through nested cards and the agent card's
+  // chevron/icon/label gutter aligns with adjacent tool rows — see
+  // docs/specs/tool-call-ui-redesign/README.md.
   const RAIL_LEAF_KINDS = new Set<string>([
     'tool_call',
     'tool_completion',
     'thinking',
+  ]);
+  const RAIL_GROUP_KINDS = new Set<string>([
+    'group',
+    'inline_subagent_group',
+    'wait_group',
   ]);
   // happy-dom returns 0 for clientHeight/clientWidth, which makes virtua
   // mount zero rows. In test runs we ask virtua to mount everything via
@@ -842,12 +848,15 @@
 
                  `isRail` decides whether this row participates in the
                  continuous left-border under consecutive tool / think rows.
-                 Leaf rows of those kinds get the rail; everything else
-                 (assistant_text, user_text, group containers, notifications,
-                 api errors) renders flat and breaks the line. Container rail
-                 handling for subagent groups is deferred — those components
-                 own their own internal rail layout in Phase 2. -->
-            {@const isRail = node.kind === 'leaf' && RAIL_LEAF_KINDS.has(node.item.kind)}
+                 Leaf rows of those kinds get the rail; subagent / wait
+                 group containers also opt in so the rail stays continuous
+                 through nested cards and the agent card's chev/ico/label
+                 gutter aligns with adjacent tool rows. Everything else
+                 (assistant_text, user_text, notifications, api errors)
+                 renders flat and breaks the line. -->
+            {@const isRail =
+              (node.kind === 'leaf' && RAIL_LEAF_KINDS.has(node.item.kind)) ||
+              RAIL_GROUP_KINDS.has(node.kind)}
             <div data-row-index={index} class:mt-4={rowDecorations.toolTextBoundaryIndexes.has(index)}>
               {#if index === 0}
                 <!-- Top of timeline. Load-older button (when applicable) and

@@ -379,6 +379,61 @@ describe('<MessageTimeline>', () => {
     expect(wrappers[4].className).not.toContain('border-l');
   });
 
+  it('extends data-rail="true" to subagent / wait group container rows', async () => {
+    // Group containers (InlineSubagentGroup, WaitGroup, nested
+    // SubagentGroup) also participate in the rail so consecutive
+    // agent/wait rows form one continuous left border with adjacent
+    // tool rows. Without this, the rail would visibly break around
+    // a subagent card — the bug we're guarding against here.
+    const pane = await buildPane(undefined, [
+      makeItem({
+        id: 'tool:0',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'Bash',
+        summary: 'ls',
+      }),
+      // Two inline-subagent Agent calls collapse into one
+      // InlineSubagentGroup wrapper at the top level.
+      makeItem({
+        id: 'agent:0',
+        itemIndex: 1,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        status: 'running',
+        summary: 'Agent: one',
+        meta: inlineAgentMeta('assistant:0', 'First agent'),
+      }),
+      makeItem({
+        id: 'agent:1',
+        itemIndex: 2,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        status: 'running',
+        summary: 'Agent: two',
+        meta: inlineAgentMeta('assistant:0', 'Second agent'),
+      }),
+      // Codex wait_agent carrier renders as a WaitGroup wrapper.
+      makeItem({
+        id: 'wait:0',
+        itemIndex: 3,
+        kind: 'tool_call',
+        toolName: 'wait_agent',
+        summary: 'wait_agent',
+        meta: JSON.stringify({ input: { tool: 'wait_agent' } }),
+      }),
+    ]);
+    const { container } = render(MessageTimeline, { props: { pane } });
+
+    const wrappers = container.querySelectorAll('[data-testid="message-timeline-node"]');
+    // tool_call leaf + inline_subagent_group wrapper + wait_group wrapper.
+    expect(wrappers.length).toBe(3);
+    for (const wrapper of wrappers) {
+      expect(wrapper.getAttribute('data-rail')).toBe('true');
+      expect(wrapper.className).toContain('border-l');
+    }
+  });
+
   it('renders one wrapper per timeline node', async () => {
     // Virtualization is owned by virtua/svelte (`<Virtualizer>`); in production,
     // virtua mounts only the rows that fit the viewport plus an overscan
