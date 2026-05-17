@@ -1,4 +1,4 @@
-import { SvelteMap } from 'svelte/reactivity';
+import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import type { ApprovalKind } from '../types/events';
 import type { Item, Thread } from '../types/models';
 import { clearForThread as clearSendQueueForThread } from './sendQueue.svelte';
@@ -92,7 +92,7 @@ const approvalThreadByID = new Map<string, string>();
 // is engaged right now" rather than "user-typed prompt is in flight."
 const activeTurnByThread = new SvelteMap<string, ActiveTurn>();
 const completedTurnIDsByThread = new Map<string, Set<string>>();
-const pendingSendThreads = new Set<string>();
+const pendingSendThreads = new SvelteSet<string>();
 const planReadyThreads = new Set<string>();
 const errorThreads = new Set<string>();
 const interruptedThreads = new Set<string>();
@@ -300,8 +300,8 @@ export function projectSendStarted(threadId: string): void {
 /**
  * Clear the pending-send flag. Called by composerSend when SendMessage
  * rejects (with `error: true` so the pill flips to Failed rather than
- * idle) or when turn lifecycle events arrive and take over ownership
- * of the running signal.
+ * idle), by early provider process failure before `turn_started`, or when
+ * turn lifecycle events arrive and take over ownership of the running signal.
  */
 export function projectSendResolved(threadId: string, opts: { error?: boolean } = {}): void {
   if (!threadId) return;
@@ -325,6 +325,10 @@ export function projectSendResolved(threadId: string, opts: { error?: boolean } 
 export function hasPendingSend(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
   return pendingSendThreads.has(threadId);
+}
+
+export function isSendInFlight(threadId: string | null | undefined, paneSendInFlight: boolean): boolean {
+  return paneSendInFlight || hasPendingSend(threadId);
 }
 
 /**
@@ -520,6 +524,7 @@ export function projectThreadItem(item: Item): void {
   if (!item?.threadId || !item.id) return;
 
   if (item.kind === 'error') {
+    pendingSendThreads.delete(item.threadId);
     errorThreads.add(item.threadId);
   } else if (item.kind === 'user_text' || isActiveTimelineItem(item)) {
     errorThreads.delete(item.threadId);

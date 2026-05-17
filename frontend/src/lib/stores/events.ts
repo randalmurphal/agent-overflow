@@ -47,6 +47,7 @@ import { parseJsonObject } from '../utils/parseJsonObject';
 import {
   projectApprovalRequest,
   projectApprovalResolution,
+  projectSendResolved,
   projectThreadItem,
   projectTurnCompleted,
   projectTurnStarted,
@@ -961,13 +962,14 @@ function applyTurnCompleted(evt: TurnCompletedEvent): void {
  * The wire-side row in the timeline (kind `notification` with
  * `meta.kind = "session_died"`) provides the historical trace; this
  * listener flips `pane.generalError` so the existing
- * `ProviderStatusBanner` Reconnect-button banner fires. The triage
- * router synthesizes the truncated `provider:turn_completed` on its
- * own — that path clears the working indicator independently, so this
- * listener never has to touch turn state.
+ * `ProviderStatusBanner` Reconnect-button banner fires. If the process
+ * dies before `provider:turn_started`, this listener also clears the
+ * optimistic pending-send bridge; the triage router still owns active
+ * turn cleanup by synthesizing the truncated `provider:turn_completed`.
  */
 function applySessionDied(evt: SessionDiedEvent): void {
   if (!evt?.threadId) return;
+  projectSendResolved(evt.threadId, { error: true });
   const message = sessionDiedBannerMessage(evt);
   for (const pane of iterPanes()) {
     if (pane.threadId !== evt.threadId) continue;

@@ -5,6 +5,8 @@ import { getAllPanes } from './panes.svelte';
 import {
   getActiveTurn,
   getThreadStatus,
+  hasPendingSend,
+  projectSendStarted,
   resetForTest as resetThreadStatuses,
 } from './threadStatuses.svelte';
 import { resetForTest as resetSendQueue } from './sendQueue.svelte';
@@ -1520,6 +1522,22 @@ describe('setupEventListeners', () => {
     } as unknown as ProviderStatusEvent);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('unknown kind'));
     warnSpy.mockRestore();
+  });
+
+  it('session death clears pending-send bridge state before turn start', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+    getAllPanes().set('main', pane);
+    projectSendStarted('thread-1');
+
+    emitWailsEvent('provider:session_died', {
+      threadId: 'thread-1',
+      exitCode: 1,
+      reason: 'provider exited before turn start',
+    });
+
+    expect(hasPendingSend('thread-1')).toBe(false);
+    expect(getThreadStatus('thread-1')).toBe('error');
+    expect(pane.generalError).toBe('provider exited before turn start');
   });
 
   // --- Turn lifecycle routing (Wave 2) ---------------------------------------

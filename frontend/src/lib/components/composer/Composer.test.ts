@@ -23,7 +23,11 @@ import {
   replaceQueueForThread,
   resetForTest as resetSendQueueForTest,
 } from '../../stores/sendQueue.svelte';
-import { resetForTest as resetThreadStatuses } from '../../stores/threadStatuses.svelte';
+import {
+  projectSendResolved,
+  projectSendStarted,
+  resetForTest as resetThreadStatuses,
+} from '../../stores/threadStatuses.svelte';
 import {
   enterCreateBranchMode,
   resetForTest as resetWorktreeIntent,
@@ -610,7 +614,7 @@ describe('<Composer>', () => {
     ]);
     const draft = await buildDraft();
     setBindingMock('ListProposedPlanComments', async () => []);
-    setBindingMock('SendMessageWithOptions', async () =>
+    const send = setBindingMock('SendMessageWithOptions', async () =>
       makeTestThread({ runtimeMode: 'full-access' }));
 
     const { getByTestId, findByText, queryByText } = render(Composer, { props: { pane, draft } });
@@ -620,7 +624,16 @@ describe('<Composer>', () => {
     await waitFor(() => {
       expect(queryByText('Implement')).toBeNull();
     });
-    expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled();
+    });
+    projectSendResolved('thread-1');
+    await waitFor(() => {
+      expect(queryByText('Working')).toBeNull();
+    });
+    await waitFor(() => {
+      expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+    });
   });
 
   it('does not fall back to an older plan when the latest plan is implemented', async () => {
@@ -1080,6 +1093,20 @@ describe('<Composer>', () => {
     pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
     const draft = await buildDraft();
     const interrupt = setBindingMock('InterruptTurn', async () => {});
+
+    const { getByTestId, queryByTestId } = render(Composer, { props: { pane, draft } });
+
+    expect(queryByTestId('composer-send')).toBeNull();
+    await fireEvent.click(getByTestId('composer-interrupt'));
+
+    expect(interrupt).toHaveBeenCalledWith('thread-1');
+  });
+
+  it('shows the interrupt affordance while a send is waiting for turn start', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+    const interrupt = setBindingMock('InterruptTurn', async () => {});
+    projectSendStarted('thread-1');
 
     const { getByTestId, queryByTestId } = render(Composer, { props: { pane, draft } });
 

@@ -14,7 +14,7 @@ import { closeMessageSearch, openMessageSearch } from './messageSearch.svelte';
 import { closePalette, openPalette } from './palette.svelte';
 import { closeThreadPicker, openThreadPicker } from './threadPicker.svelte';
 import { addToast } from './toast.svelte';
-import { getActiveTurn } from './threadStatuses.svelte';
+import { getActiveTurn, isSendInFlight } from './threadStatuses.svelte';
 import { openThreadInPane, syncThread } from './panes.svelte';
 import { removeThread } from './threads.svelte';
 import { forkThreadAction } from '../components/sidebar/threadRowActions';
@@ -293,10 +293,10 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         );
       } else {
         const draft = getComposerDraftForPane(pane.paneId);
-        runInterruptOrRevert(pane, {
-          content: draft?.content ?? '',
-          attachments: draft?.attachments ?? [],
-          terminalChips: draft?.terminalChips ?? [],
+        runInterruptOrRevert(pane, draft ?? {
+          content: '',
+          attachments: [],
+          terminalChips: [],
         });
       }
 
@@ -566,7 +566,7 @@ export function makeCommandContext(pane: ThreadPane, extra: Partial<CommandFlags
     anyModalOpen: false,
     hasActiveThread: thread !== null,
     turnActive: getActiveTurn(pane.threadId) !== null,
-    sendInFlight: pane.sendInFlight,
+    sendInFlight: isSendInFlight(pane.threadId, pane.sendInFlight),
     hasPendingPrompt: pane.pendingApprovals.length > 0 || pane.pendingUserInputs.length > 0,
     canForkActiveThread: !!thread?.sessionRef,
     canStartDiscussion:

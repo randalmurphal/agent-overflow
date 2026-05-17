@@ -1,13 +1,16 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 )
@@ -213,6 +216,238 @@ func TestWorktreeMutationRejectsActiveTurnWithoutSession(t *testing.T) {
 	_, err = app.PrepareThreadWorktree(thread.ID, "main", "feature/blocked", false)
 	if err == nil || !strings.Contains(err.Error(), "cannot switch workspace while turn 0 is active") {
 		t.Fatalf("PrepareThreadWorktree() error = %v, want active-turn rejection", err)
+	}
+}
+
+func TestPrepareThreadWorktreeWaitsForLiveSessionRestart(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-worktree-sync-restart")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	thread.Branch = "main"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "old-session",
+		liveness: newSessionLiveness(time.Now()),
+	}
+
+	restartWorkspace := make(chan string, 1)
+	releaseRestart := make(chan struct{})
+	restartBlocked := make(chan struct{})
+	app.startSessionFn = func(threadID string) error {
+		stored, err := app.store.GetThread(threadID)
+		if err != nil {
+			return err
+		}
+		restartWorkspace <- stored.WorkspacePath
+		close(restartBlocked)
+		<-releaseRestart
+		return nil
+	}
+
+	type result struct {
+		thread store.Thread
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		updated, err := app.PrepareThreadWorktree(thread.ID, "main", "feature/sync-restart", false)
+		done <- result{thread: updated, err: err}
+	}()
+
+	var worktreePath string
+	select {
+	case worktreePath = <-restartWorkspace:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for synchronous session restart")
+	}
+	if samePath(worktreePath, repo) {
+		t.Fatalf("restart saw old workspace %q, want new worktree", worktreePath)
+	}
+	if !strings.Contains(worktreePath, "feature-sync-restart") {
+		t.Fatalf("restart workspace = %q, want generated worktree path", worktreePath)
+	}
+	<-restartBlocked
+
+	select {
+	case got := <-done:
+		t.Fatalf("PrepareThreadWorktree returned before restart completed: %+v", got)
+	default:
+	}
+
+	close(releaseRestart)
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("PrepareThreadWorktree() error = %v", got.err)
+		}
+		if !samePath(got.thread.WorkspacePath, worktreePath) {
+			t.Fatalf("WorkspacePath = %q, want %q", got.thread.WorkspacePath, worktreePath)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for PrepareThreadWorktree after restart release")
+	}
+}
+
+func TestPrepareThreadWorktreeRestartsAfterInFlightSessionStart(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-worktree-inflight-restart")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	thread.Branch = "main"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	firstStartWorkspace := make(chan string, 1)
+	secondStartWorkspace := make(chan string, 1)
+	releaseFirstStart := make(chan struct{})
+	releaseSecondStart := make(chan struct{})
+	var startCalls int
+	app.startSessionFn = func(threadID string) error {
+		stored, err := app.store.GetThread(threadID)
+		if err != nil {
+			return err
+		}
+		startCalls++
+		switch startCalls {
+		case 1:
+			firstStartWorkspace <- stored.WorkspacePath
+			<-releaseFirstStart
+			app.sessionManager().put(threadID, session{
+				provider: string(provider.Claude),
+				token:    "first-start",
+				liveness: newSessionLiveness(time.Now()),
+			})
+		case 2:
+			secondStartWorkspace <- stored.WorkspacePath
+			<-releaseSecondStart
+		default:
+			t.Fatalf("unexpected startSessionFn call %d", startCalls)
+		}
+		return nil
+	}
+
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- app.startSession(thread.ID)
+	}()
+	select {
+	case workspace := <-firstStartWorkspace:
+		if !samePath(workspace, repo) {
+			t.Fatalf("first start workspace = %q, want repo %q", workspace, repo)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial in-flight start")
+	}
+
+	type result struct {
+		thread store.Thread
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		updated, err := app.PrepareThreadWorktree(thread.ID, "main", "feature/inflight-restart", false)
+		done <- result{thread: updated, err: err}
+	}()
+
+	close(releaseFirstStart)
+	select {
+	case err := <-startDone:
+		if err != nil {
+			t.Fatalf("initial start error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial start release")
+	}
+
+	var worktreePath string
+	select {
+	case worktreePath = <-secondStartWorkspace:
+	case got := <-done:
+		t.Fatalf("PrepareThreadWorktree returned before post-start restart: %+v", got)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for workspace restart after in-flight start")
+	}
+	if samePath(worktreePath, repo) {
+		t.Fatalf("second start saw old workspace %q, want new worktree", worktreePath)
+	}
+	if !strings.Contains(worktreePath, "feature-inflight-restart") {
+		t.Fatalf("second start workspace = %q, want generated worktree path", worktreePath)
+	}
+
+	select {
+	case got := <-done:
+		t.Fatalf("PrepareThreadWorktree returned before second restart completed: %+v", got)
+	default:
+	}
+
+	close(releaseSecondStart)
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("PrepareThreadWorktree() error = %v", got.err)
+		}
+		if !samePath(got.thread.WorkspacePath, worktreePath) {
+			t.Fatalf("WorkspacePath = %q, want %q", got.thread.WorkspacePath, worktreePath)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for PrepareThreadWorktree after restart release")
+	}
+}
+
+func TestPrepareThreadWorktreeKeepsWorkspaceSwitchWhenRestartFails(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-worktree-restart-fails")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	thread.Branch = "main"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "old-session",
+		liveness: newSessionLiveness(time.Now()),
+	}
+	app.startSessionFn = func(string) error {
+		return errors.New("provider restart failed")
+	}
+
+	updated, err := app.PrepareThreadWorktree(thread.ID, "main", "feature/restart-fails", false)
+	if err != nil {
+		t.Fatalf("PrepareThreadWorktree() error = %v", err)
+	}
+	if samePath(updated.WorkspacePath, repo) {
+		t.Fatalf("WorkspacePath = %q, want new worktree despite restart failure", updated.WorkspacePath)
+	}
+	if !strings.Contains(updated.WorkspacePath, "feature-restart-fails") {
+		t.Fatalf("WorkspacePath = %q, want generated worktree path", updated.WorkspacePath)
+	}
+	if app.hasActiveSession(thread.ID) {
+		t.Fatal("expected failed reconnect to remove stale session")
 	}
 }
 

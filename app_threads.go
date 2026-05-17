@@ -363,14 +363,18 @@ var sessionAffectingFields = map[string]struct{}{
 
 // restartSessionIfAffected emits the refreshed thread and, when the
 // named field affects provider launch config AND a session is live,
-// fires a best-effort session restart in the background. Centralizing
-// the restart call keeps the per-field bindings free of duplicated
-// "is this session live" plumbing.
+// refreshes the provider session so the new launch config takes
+// effect. Centralizing the restart call keeps the per-field bindings
+// free of duplicated "is this session live" plumbing.
 //
-// Returns the refreshed thread and any GetThread error. Restart
-// failures are surfaced via a thread-scoped error event; we do NOT
-// propagate them synchronously so the UI can still render the
-// optimistic state.
+// Workspace changes synchronize with provider start state: the provider
+// process is bound to its cwd, and returning before any old or in-flight
+// session is retired lets the next send reuse a stale process. A restart
+// failure is surfaced as thread error state while the persisted workspace
+// switch still succeeds; once the stale session has been removed, a later
+// send can attempt a normal lazy start. Other field changes keep the legacy
+// best-effort background restart policy so low-risk preference toggles don't
+// block the UI.
 func (a *App) restartSessionIfAffected(threadID, changedField string) (store.Thread, error) {
 	refreshed, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -378,6 +382,13 @@ func (a *App) restartSessionIfAffected(threadID, changedField string) (store.Thr
 	}
 	if _, ok := sessionAffectingFields[changedField]; !ok {
 		return refreshed, nil
+	}
+	if changedField == "workspace" {
+		if err := a.restartWorkspaceSession(threadID); err != nil {
+			log.Printf("thread %s: workspace change reconnect failed: %v", threadID, err)
+			a.emitErrorToThread(threadID, fmt.Sprintf("workspace change failed to reconnect: %v", err))
+		}
+		return a.store.GetThread(threadID)
 	}
 	if !a.hasActiveSession(threadID) {
 		return refreshed, nil
@@ -389,6 +400,16 @@ func (a *App) restartSessionIfAffected(threadID, changedField string) (store.Thr
 		}
 	}()
 	return refreshed, nil
+}
+
+func (a *App) restartWorkspaceSession(threadID string) error {
+	if startState, ok := a.sessionManager().startState(threadID); ok {
+		<-startState.done
+	}
+	if !a.hasActiveSession(threadID) {
+		return nil
+	}
+	return a.ReconnectSession(threadID)
 }
 
 // UpdateThreadProvider persists the provider column and restarts the

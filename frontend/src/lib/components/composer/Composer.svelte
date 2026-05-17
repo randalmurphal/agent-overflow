@@ -47,7 +47,7 @@
     hasRuntimeModeDraft,
     runtimeModeForThread,
   } from '../../stores/runtimeModeDraft.svelte';
-  import { getActiveTurn } from '../../stores/threadStatuses.svelte';
+  import { getActiveTurn, isSendInFlight } from '../../stores/threadStatuses.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
   import { sourceFromProposedPlanItem } from '../../utils/proposedPlan';
@@ -715,7 +715,7 @@
         {pane}
         {canSend}
         {isTurnActive}
-        sendInFlight={pane.sendInFlight}
+        sendInFlight={isSendInFlight(pane.threadId, pane.sendInFlight)}
         {sendAction}
         {sendLabel}
         hasCurrentPlan={Boolean(latestPlanItem)}

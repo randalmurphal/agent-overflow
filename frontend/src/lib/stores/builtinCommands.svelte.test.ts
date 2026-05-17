@@ -3,7 +3,11 @@
 
 import { describe, expect, it, beforeEach } from 'vitest';
 import { createThreadPane } from './thread.svelte';
-import { getActiveTurn } from './threadStatuses.svelte';
+import {
+  getActiveTurn,
+  projectSendStarted,
+  resetForTest as resetThreadStatuses,
+} from './threadStatuses.svelte';
 import { makeCommandContext, registerBuiltinCommands } from './builtinCommands.svelte';
 import {
   clearCommandRegistry,
@@ -67,6 +71,7 @@ function readyPane(overrides: Partial<Thread> = {}): ReturnType<typeof createThr
 describe('makeCommandContext', () => {
   beforeEach(() => {
     resetTerminalFocusForTest();
+    resetThreadStatuses();
   });
 
   // --- Bug D5 regression ---
@@ -146,6 +151,13 @@ describe('thread.interrupt command', () => {
     expect(isCommandEnabled('thread.interrupt', makeCommandContext(pane, {}))).toBe(true);
     pane.setSendInFlight(false);
     expect(isCommandEnabled('thread.interrupt', makeCommandContext(pane, {}))).toBe(false);
+  });
+
+  it('enabled when a pending send is waiting for backend turn-start confirmation', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    projectSendStarted('thread-1');
+    expect(isCommandEnabled('thread.interrupt', makeCommandContext(pane, {}))).toBe(true);
   });
 
   it('enabled when a pending prompt exists even without an active turn', () => {

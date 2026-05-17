@@ -561,6 +561,21 @@ describe('threadStatuses store', () => {
       expect(hasPendingSend('thread-1')).toBe(false);
     });
 
+    it('error items clear the pending-send bridge and expose failure status', () => {
+      projectSendStarted('thread-1');
+      expect(getThreadStatus('thread-1')).toBe('running');
+
+      projectThreadItem(makeItem({
+        id: 'error-before-turn',
+        kind: 'error',
+        role: 'system',
+        status: 'completed',
+      }));
+
+      expect(hasPendingSend('thread-1')).toBe(false);
+      expect(getThreadStatus('thread-1')).toBe('error');
+    });
+
     it('clearPendingSend drops the flag without flipping the thread to error', () => {
       // Mirrors the drain failure path: SendMessageWithOptions threw,
       // we want to stop advertising "running" but the thread should
