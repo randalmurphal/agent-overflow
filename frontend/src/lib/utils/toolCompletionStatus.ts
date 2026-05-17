@@ -2,7 +2,9 @@
 // docs/architecture/turn-lifecycle.md §1 the launch row stays
 // active while the host-side background work is unobserved; the actual
 // completion lands on a separate `tool_completion` sibling row, which
-// is where the badge belongs. The `null` return below preserves that
+// is where the success/failure verdict belongs (rendered by
+// `Indicator` after the tool-call UI redesign dropped the explicit
+// completion badge). The `null` return below preserves that
 // invariant — backgrounded launches never receive a success/failure
 // verdict here.
 

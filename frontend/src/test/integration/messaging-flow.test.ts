@@ -605,7 +605,6 @@ describe('App integration — messaging flow', () => {
       expect(rowStatus.getAttribute('data-status')).toBe('completed');
     });
 
-    expect(document.querySelectorAll('[data-testid="completion-badge"]')).toHaveLength(0);
     const launchStatus = document.querySelector(
       '[data-testid="command-output-status"]',
     );
