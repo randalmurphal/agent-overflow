@@ -38,18 +38,22 @@ export function toolCardInputPreview(
 
 /**
  * Pre-rendered tool body preview: starts from
- * `toolCardInputPreview` and applies two strip passes that target the
- * common redundancies in the triage-built summary string:
+ * `toolCardInputPreview` and applies three strip passes that target
+ * the common redundancies in the triage-built summary string:
  *
  *   1. Strip the leading `${toolName}: ` segment that
  *      `buildToolCallSummary` embeds at persist time. The tool kind
  *      already renders as the gutter label, so repeating it inside
  *      the body adds noise without information.
  *   2. Relativize a leading workspace-rooted absolute path to its
- *      workspace-relative form. The full workspace path is constant
- *      across every row in a thread and only obscures the file name
- *      that the user actually cares about (e.g.
- *      `/home/me/repo/src/foo.ts` → `src/foo.ts`).
+ *      workspace-relative form. EditorLink's `path` keeps this
+ *      relative form so click-to-open still resolves through
+ *      `workspacePath`.
+ *   3. Collapse the displayed text to the basename of the leading
+ *      path token (e.g. `src/lib/foo.ts` → `foo.ts`). The relative
+ *      path is what gets clicked through; the displayed text is what
+ *      a human reads at a glance, and the directory prefix is noise
+ *      when every row in a turn is in the same project.
  *
  * Stripping only applies to the leading path token to avoid mangling
  * mid-string usage (e.g. `cd /path && ls`). Paths outside the
@@ -58,9 +62,11 @@ export function toolCardInputPreview(
  *
  * Returns the same `{text, path?}` shape `decodeToolCardPreview`
  * produces so callers can render the text and feed `path` straight
- * into EditorLink. The path is relativized in sync with the text:
- * when display becomes `src/foo.ts`, the EditorLink path is also
- * `src/foo.ts` and EditorLink's workspacePath prop joins it back
+ * into EditorLink. The EditorLink path stays workspace-relative
+ * (`src/lib/foo.ts`) while the displayed text shows just `foo.ts` —
+ * the EditorLink renders its own label from `text`, so the basename
+ * is what the user sees and clicks on, but the underlying target is
+ * the full relative path EditorLink's workspacePath prop joins back
  * into an absolute open target.
  */
 export function presentToolCardInputPreview(
@@ -75,10 +81,17 @@ export function presentToolCardInputPreview(
   const text = relativizeLeadingWorkspacePath(decoded.text, workspacePath);
   if (!decoded.path) return { text };
   const relPath = relativizeLeadingWorkspacePath(decoded.path.path, workspacePath);
+  const base = basenameOf(relPath);
+  const displayText = text.startsWith(relPath) ? base + text.slice(relPath.length) : text;
   return {
-    text,
+    text: displayText,
     path: { path: relPath, line: decoded.path.line, col: decoded.path.col },
   };
+}
+
+function basenameOf(path: string): string {
+  const lastSep = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return lastSep === -1 ? path : path.slice(lastSep + 1);
 }
 
 function stripToolNamePrefix(text: string, toolName: string | undefined): string {

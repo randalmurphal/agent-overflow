@@ -50,8 +50,10 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     });
     const { getByTestId } = render(GenericToolCallRow, { props: { item } });
     const link = getByTestId('editor-link-icon');
+    // Click target stays workspace-relative so OpenInEditor can resolve
+    // it; displayed accessible name collapses to the basename.
     expect(link.getAttribute('data-path')).toBe('src/lib/foo.ts');
-    expect(getByTestId('tool-call-card-toggle')).toHaveAccessibleName(/src\/lib\/foo\.ts:12/);
+    expect(getByTestId('tool-call-card-toggle')).toHaveAccessibleName(/foo\.ts:12/);
   });
 
   it('keeps the editor-link usable on a non-expandable row', async () => {

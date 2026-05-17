@@ -110,13 +110,13 @@ describe('presentToolCardInputPreview', () => {
     expect(presentToolCardInputPreview(item, null, null, '').text).toBe('foo.go');
   });
 
-  it('relativizes a leading workspace-rooted absolute path', () => {
+  it('collapses the displayed text to the basename while keeping a workspace-relative click target', () => {
     const item = makeItem({
       toolName: 'Read',
       summary: 'Read: /home/me/repo/src/foo.ts',
     });
     const result = presentToolCardInputPreview(item, null, null, '/home/me/repo');
-    expect(result.text).toBe('src/foo.ts');
+    expect(result.text).toBe('foo.ts');
     expect(result.path).toEqual({
       path: 'src/foo.ts',
       line: undefined,
@@ -124,26 +124,33 @@ describe('presentToolCardInputPreview', () => {
     });
   });
 
-  it('relativizes the EditorLink path in sync with the displayed text', () => {
-    // The relativized form is what EditorLink renders; EditorLink's
+  it('preserves trailing line/col on the displayed basename and the click target', () => {
+    // The relativized form is what EditorLink targets; EditorLink's
     // workspacePath prop joins it back to absolute when invoking
     // OpenInEditor, so the click target still resolves correctly.
+    // The displayed text shows just the basename so a row in a long
+    // directory tree stays compact.
     const item = makeItem({
       toolName: 'Read',
       summary: 'Read: /home/me/repo/src/foo.ts:42:7',
     });
     const result = presentToolCardInputPreview(item, null, null, '/home/me/repo');
-    expect(result.text).toBe('src/foo.ts:42:7');
+    expect(result.text).toBe('foo.ts:42:7');
     expect(result.path).toEqual({ path: 'src/foo.ts', line: 42, col: 7 });
   });
 
-  it('passes paths outside the workspace through untouched', () => {
+  it('collapses paths outside the workspace to basename too while preserving the absolute click target', () => {
+    // The relativizer leaves a non-workspace path alone, but the
+    // basename collapse runs after it — readers don't gain anything
+    // from seeing the full /usr/local/share prefix inline, and the
+    // EditorLink target still carries the absolute path so the click
+    // resolves.
     const item = makeItem({
       toolName: 'Read',
       summary: 'Read: /usr/local/share/foo.go',
     });
     const result = presentToolCardInputPreview(item, null, null, '/home/me/repo');
-    expect(result.text).toBe('/usr/local/share/foo.go');
+    expect(result.text).toBe('foo.go');
     expect(result.path).toEqual({
       path: '/usr/local/share/foo.go',
       line: undefined,
@@ -174,14 +181,21 @@ describe('presentToolCardInputPreview', () => {
     );
   });
 
-  it('leaves the preview alone when workspacePath is empty', () => {
+  it('still collapses the displayed text to basename when workspacePath is empty', () => {
+    // No workspace means the relativizer is a no-op and the EditorLink
+    // target stays absolute, but the display still collapses to the
+    // basename — readers want the file name, not the directory tree.
     const item = makeItem({
       toolName: 'Read',
       summary: 'Read: /home/me/repo/test.go',
     });
-    expect(presentToolCardInputPreview(item, null, null, '').text).toBe(
-      '/home/me/repo/test.go',
-    );
+    const result = presentToolCardInputPreview(item, null, null, '');
+    expect(result.text).toBe('test.go');
+    expect(result.path).toEqual({
+      path: '/home/me/repo/test.go',
+      line: undefined,
+      col: undefined,
+    });
   });
 
   it('refuses to strip the workspace root with no separator following', () => {
@@ -193,18 +207,24 @@ describe('presentToolCardInputPreview', () => {
     );
   });
 
-  it('does not over-strip when the text starts with a workspace-lookalike prefix', () => {
+  it('does not over-strip the click target when the text starts with a workspace-lookalike prefix', () => {
     // `/home/me/repository` shares a prefix with `/home/me/repo`. The
-    // strip must check for a path separator at the root boundary, not
-    // just a startsWith match, or it would mangle paths under a
-    // similarly-named sibling repo.
+    // relativizer must check for a path separator at the root boundary,
+    // not just a startsWith match, or it would mangle paths under a
+    // similarly-named sibling repo. The displayed text still collapses
+    // to basename, but `path` must stay absolute so EditorLink doesn't
+    // try to join a mangled relative against the wrong workspace.
     const item = makeItem({
       toolName: 'Read',
       summary: 'Read: /home/me/repository/foo.go',
     });
-    expect(
-      presentToolCardInputPreview(item, null, null, '/home/me/repo').text,
-    ).toBe('/home/me/repository/foo.go');
+    const result = presentToolCardInputPreview(item, null, null, '/home/me/repo');
+    expect(result.text).toBe('foo.go');
+    expect(result.path).toEqual({
+      path: '/home/me/repository/foo.go',
+      line: undefined,
+      col: undefined,
+    });
   });
 
   it('strips Windows-style workspacePath + backslash separator', () => {

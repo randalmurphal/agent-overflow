@@ -36,7 +36,7 @@ function paneWithWorkspace(path: string): ThreadPane {
 }
 
 describe('<ReadGroupRow>', () => {
-  it('renders one EditorLink per member with workspace-relative labels', () => {
+  it('renders one EditorLink per member with basename labels and workspace-relative click targets', () => {
     const group = mkGroup([
       mkReadItem('r1', 'Read: /home/me/repo/src/foo.ts'),
       mkReadItem('r2', 'Read: /home/me/repo/src/bar.ts'),
@@ -51,18 +51,19 @@ describe('<ReadGroupRow>', () => {
     // wraps via CSS (flex-wrap) — the rendered DOM is just a flat list.
     const links = getAllByTestId('editor-link');
     expect(links).toHaveLength(3);
+    // data-path keeps the workspace-relative form so EditorLink's
+    // workspacePath prop can join it back to absolute for OpenInEditor.
     expect(links.map((el) => el.getAttribute('data-path'))).toEqual([
       'src/foo.ts',
       'src/bar.ts',
       'test/baz_test.ts',
     ]);
-    // EditorLink renders the label as the button text. The presenter
-    // strips both the `Read: ` prefix and the workspace root before
-    // the row sees it, so the display matches the data-path here.
+    // The displayed label collapses to the basename so a wide directory
+    // tree doesn't blow out the inline row.
     expect(links.map((el) => el.textContent?.trim())).toEqual([
-      'src/foo.ts',
-      'src/bar.ts',
-      'test/baz_test.ts',
+      'foo.ts',
+      'bar.ts',
+      'baz_test.ts',
     ]);
     expect(getByTestId('read-group-row-label').textContent).toBe('reads');
   });
