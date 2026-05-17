@@ -73,6 +73,11 @@
   let preview = $derived(
     presentToolCardInputPreview(effectiveDisplayItem, summaryMeta, displayMeta, paneWorkspacePath(pane)),
   );
+  let previewClass = $derived(
+    preview.path
+      ? 'min-w-0 flex-1 whitespace-normal break-all text-[12px] leading-4 text-fg-muted/75'
+      : 'min-w-0 flex-1 truncate text-[12px] text-fg-muted/75',
+  );
 
   let durationMs = $derived.by<number | null>(() => {
     if (!summaryMeta) return null;
@@ -175,6 +180,7 @@
       line={preview.path.line ?? 0}
       col={preview.path.col ?? 0}
       workspacePath={paneWorkspacePath(pane)}
+      openLabel={preview.text}
       asIcon
       stopPropagation
       class="opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100"
@@ -223,7 +229,7 @@
     {#snippet icon()}<ToolKindIcon kind={classification.icon} ariaLabel={classification.label} />{/snippet}
     {#snippet label()}<span data-testid="tool-call-card-label">{classification.label}</span>{/snippet}
     {#snippet body()}
-      <span class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75" data-testid="tool-call-card-preview">{preview.text}</span>
+      <span class={previewClass} data-testid="tool-call-card-preview">{preview.text}</span>
     {/snippet}
     {#snippet actions()}
       {@render headerActions()}

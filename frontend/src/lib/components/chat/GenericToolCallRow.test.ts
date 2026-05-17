@@ -56,6 +56,24 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     expect(getByTestId('tool-call-card-toggle')).toHaveAccessibleName(/foo\.ts:12/);
   });
 
+  it('shows read file basenames without clipping the visible label or editor tooltip', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      toolName: 'Read',
+      summary: 'Read: frontend/src/lib/components/chat/WaitGroup.svelte',
+    });
+    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
+
+    const preview = getByTestId('tool-call-card-preview');
+    const link = getByTestId('editor-link-icon');
+    expect(preview.textContent).toBe('WaitGroup.svelte');
+    expect(preview.className).not.toContain('truncate');
+    expect(preview.className).toContain('break-all');
+    expect(link.getAttribute('data-path')).toBe('frontend/src/lib/components/chat/WaitGroup.svelte');
+    expect(link.getAttribute('title')).toBe('Open WaitGroup.svelte in editor');
+    expect(link.getAttribute('aria-label')).toBe('Open WaitGroup.svelte in editor');
+  });
+
   it('keeps the editor-link usable on a non-expandable row', async () => {
     const openMock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
     const item = makeItem({

@@ -80,7 +80,8 @@
         col={entry.col}
         workspacePath={workspacePath}
         label={entry.display}
-        class="text-fg-muted/75 hover:text-accent"
+        openLabel={entry.display}
+        class="max-w-full break-all text-fg-muted/75 hover:text-accent"
       />
     {/each}
   </span>

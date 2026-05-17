@@ -40,9 +40,16 @@
     /** Stop the click event from bubbling so a wrapping button's
      *  onclick (toggle, expand, select) doesn't also fire. */
     stopPropagation?: boolean;
-    /** Override the visible label. Inline mode falls back to `path`;
-     *  icon mode uses it as the aria-label / title. */
+    /** Override the visible label. Inline mode falls back to `path`. */
     label?: string;
+    /** Override the target text used inside the generated
+     *  `Open <target> in editor` aria/title text. */
+    openLabel?: string;
+    /** Complete accessibility label for icon/action callers that need
+     *  custom wording instead of the generated open-in-editor text. */
+    ariaLabel?: string;
+    /** Complete tooltip text. Defaults to `ariaLabel`. */
+    title?: string;
     class?: string;
   }
 
@@ -54,13 +61,22 @@
     asIcon = false,
     stopPropagation = false,
     label,
+    openLabel,
+    ariaLabel,
+    title,
     class: className = '',
   }: Props = $props();
 
-  const ariaLabel = $derived(
-    label ??
-      (line > 0 ? `Open ${path}:${line} in editor` : `Open ${path} in editor`),
-  );
+  const targetLabel = $derived(openLabel ?? label ?? path);
+  const generatedAriaLabel = $derived(openInEditorLabel(targetLabel, line, col));
+  const effectiveAriaLabel = $derived(ariaLabel ?? generatedAriaLabel);
+  const effectiveTitle = $derived(title ?? effectiveAriaLabel);
+
+  function openInEditorLabel(target: string, line: number, col: number): string {
+    const suffix = line > 0 ? `:${line}${col > 0 ? `:${col}` : ''}` : '';
+    const labelWithLocation = suffix && !target.endsWith(suffix) ? `${target}${suffix}` : target;
+    return `Open ${labelWithLocation} in editor`;
+  }
 
   async function handleClick(e: MouseEvent): Promise<void> {
     // Anchor's default href="#" navigation would scroll to top; cancel
@@ -80,8 +96,8 @@
   <button
     type="button"
     onclick={handleClick}
-    aria-label={ariaLabel}
-    title={ariaLabel}
+    aria-label={effectiveAriaLabel}
+    title={effectiveTitle}
     data-testid="editor-link-icon"
     data-path={path}
     class={[
@@ -106,8 +122,8 @@
     type="button"
     role="link"
     onclick={handleClick}
-    aria-label={ariaLabel}
-    title={ariaLabel}
+    aria-label={effectiveAriaLabel}
+    title={effectiveTitle}
     data-testid="editor-link"
     data-path={path}
     class={[

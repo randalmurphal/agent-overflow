@@ -65,6 +65,8 @@ describe('<ReadGroupRow>', () => {
       'bar.ts',
       'baz_test.ts',
     ]);
+    expect(links[0].className).toContain('break-all');
+    expect(links[0].getAttribute('title')).toBe('Open foo.ts in editor');
     expect(getByTestId('read-group-row-label').textContent).toBe('reads');
   });
 

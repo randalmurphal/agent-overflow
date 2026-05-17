@@ -87,7 +87,8 @@
       <EditorLink
         path={workspacePath}
         asIcon
-        label="Open Workspace in Editor"
+        ariaLabel="Open Workspace in Editor"
+        title="Open Workspace in Editor"
       />
     </div>
   {/if}

@@ -124,6 +124,34 @@ describe('<EditorLink>', () => {
     const { getByTestId } = render(EditorLink, {
       props: { path: 'a/b/c.ts', label: 'c.ts' },
     });
-    expect(getByTestId('editor-link').textContent).toBe('c.ts');
+    const link = getByTestId('editor-link');
+    expect(link.textContent).toBe('c.ts');
+    expect(link.getAttribute('title')).toBe('Open c.ts in editor');
+    expect(link.getAttribute('aria-label')).toBe('Open c.ts in editor');
+  });
+
+  it('does not duplicate line and column suffixes in labelled editor tooltips', () => {
+    setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+    const { getByTestId } = render(EditorLink, {
+      props: { path: 'src/lib/foo.ts', line: 12, col: 4, label: 'foo.ts:12:4' },
+    });
+    expect(getByTestId('editor-link').getAttribute('title')).toBe(
+      'Open foo.ts:12:4 in editor',
+    );
+  });
+
+  it('supports explicit action text for icon-only callers', () => {
+    setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+    const { getByTestId } = render(EditorLink, {
+      props: {
+        path: '/work/project',
+        asIcon: true,
+        ariaLabel: 'Open Workspace in Editor',
+        title: 'Open Workspace in Editor',
+      },
+    });
+    const button = getByTestId('editor-link-icon');
+    expect(button.getAttribute('title')).toBe('Open Workspace in Editor');
+    expect(button.getAttribute('aria-label')).toBe('Open Workspace in Editor');
   });
 });
