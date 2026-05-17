@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import AnsiText from './AnsiText.svelte';
   import CopyFooter from './CopyFooter.svelte';
   import type { PayloadExpansionHandle } from '../../utils/payloadExpansion.svelte';
@@ -16,6 +17,7 @@
     emptyMessage,
     deferredOutputState = '',
     deferredOutputError = '',
+    renderContent,
   }: {
     pane?: ThreadPane;
     expansion: PayloadExpansionHandle;
@@ -26,6 +28,14 @@
     emptyMessage: string;
     deferredOutputState?: string;
     deferredOutputError?: string;
+    /**
+     * Optional content renderer that replaces the default `<AnsiText>`
+     * branch. Receives the resolved `displayData` and the
+     * `outputTestId` so callers can wire their own renderer (e.g.
+     * `ClaudeSubagentTranscript`) while keeping the surrounding
+     * loading / error / show-more / copy-footer chrome consistent.
+     */
+    renderContent?: Snippet<[{ data: string; testId: string }]>;
   } = $props();
 </script>
 
@@ -53,12 +63,16 @@
       </button>
     </div>
   {:else if expansion.displayData !== null}
-    <div
-      class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 text-[11px] leading-relaxed text-fg-muted"
-      data-testid={outputTestId}
-    >
-      <AnsiText source={expansion.displayData} />
-    </div>
+    {#if renderContent}
+      {@render renderContent({ data: expansion.displayData, testId: outputTestId })}
+    {:else}
+      <div
+        class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 text-[11px] leading-relaxed text-fg-muted"
+        data-testid={outputTestId}
+      >
+        <AnsiText source={expansion.displayData} />
+      </div>
+    {/if}
     {#if expansion.hasMore}
       <button
         type="button"

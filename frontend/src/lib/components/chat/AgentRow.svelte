@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { untrack } from 'svelte';
-  import CopyFooter from './CopyFooter.svelte';
   import type { Item } from '../../types/models';
   import { type ThreadPane } from '../../stores/thread.svelte';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
@@ -12,11 +11,11 @@
   import { toolCardInputPreview } from './toolCardPreview';
   import {
     createPayloadExpansion,
-    formatPayloadSize,
     keepExpandedPayloadFresh,
   } from '../../utils/payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
   import ClaudeSubagentTranscript from './ClaudeSubagentTranscript.svelte';
+  import ExpandablePayloadBody from './ExpandablePayloadBody.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import { parseClaudeSubagentTranscript } from '../../utils/claudeSubagentTranscript';
@@ -188,39 +187,30 @@
   {/if}
 
   {#if hasExpandableBody && expansion.expanded}
-    <div id="agent-row-body-{item.id}" class="ml-5 border-l border-border-subtle bg-surface-0/35" data-testid="agent-row-body">
-      {#if expansion.loading}
-        <p class="px-3 py-2 text-[11px] text-fg-subtle animate-pulse" role="status" aria-live="polite">Loading…</p>
-      {:else if expansion.error}
-        <div class="space-y-2 px-3 py-2">
-          <p class="text-[11px] text-error" role="alert">Failed to load: {expansion.error}</p>
-          <button type="button" class="text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded" onclick={() => expansion.retry()} data-testid="agent-row-retry">Retry</button>
-        </div>
-      {:else if expansion.displayData !== null}
-        {#if transcriptEntries !== null}
-          <div class="max-h-80 overflow-auto" data-testid="agent-row-output">
-            <ClaudeSubagentTranscript entries={transcriptEntries} />
-          </div>
-        {:else}
-          <div class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 text-[11px] leading-relaxed text-fg-muted" data-testid="agent-row-output">
-            <AnsiText source={expansion.displayData} />
-          </div>
-        {/if}
-        {#if expansion.hasMore}
-          <button type="button" class="mx-3 mb-3 text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded" onclick={(event) => preservePaneScrollAnchor(pane, event, () => expansion.showFull())} data-testid="agent-row-show-full">
-            Load more output ({formatPayloadSize(expansion.totalSize)}) ↓
-          </button>
-        {/if}
-        {#if expansion.displayData}
-          <CopyFooter text={expansion.displayData} label="Copy output" />
-        {/if}
-      {:else if deferredOutputState === 'loading'}
-        <p class="px-3 py-2 text-[11px] text-fg-subtle animate-pulse" role="status" aria-live="polite">Loading…</p>
-      {:else if deferredOutputState === 'error'}
-        <p class="px-3 py-2 text-[11px] text-error" role="alert">Failed to load: {deferredOutputError || 'Background output could not be loaded.'}</p>
-      {:else}
-        <p class="px-3 py-2 text-[11px] text-fg-subtle italic">No stored payload for this agent.</p>
-      {/if}
-    </div>
+    <ExpandablePayloadBody
+      {pane}
+      {expansion}
+      id="agent-row-body-{item.id}"
+      testPrefix="agent-row"
+      emptyMessage="No stored payload for this agent."
+      {deferredOutputState}
+      {deferredOutputError}
+      renderContent={agentBodyContent}
+    />
   {/if}
 </div>
+
+{#snippet agentBodyContent({ data, testId }: { data: string; testId: string })}
+  {#if transcriptEntries !== null}
+    <div class="max-h-80 overflow-auto" data-testid={testId}>
+      <ClaudeSubagentTranscript entries={transcriptEntries} />
+    </div>
+  {:else}
+    <div
+      class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 text-[11px] leading-relaxed text-fg-muted"
+      data-testid={testId}
+    >
+      <AnsiText source={data} />
+    </div>
+  {/if}
+{/snippet}

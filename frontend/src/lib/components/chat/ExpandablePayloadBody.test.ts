@@ -54,4 +54,26 @@ describe('<ExpandablePayloadBody>', () => {
     expect(preserveScrollAnchor).toHaveBeenCalledWith(button, expect.any(Function));
     expect(expansion.showFull).toHaveBeenCalledTimes(1);
   });
+
+  it('renders the default AnsiText output when no renderContent snippet is provided', () => {
+    const expansion = expansionHandle({
+      displayData: 'plain ansi line',
+      hasMore: false,
+    });
+    const { getByTestId } = render(ExpandablePayloadBody, {
+      props: {
+        expansion,
+        id: 'payload-body',
+        testPrefix: 'payload-body',
+        emptyMessage: 'No output.',
+      },
+    });
+
+    const output = getByTestId('payload-body-output');
+    // The default branch wraps AnsiText in an `ansi-body` shell; pin
+    // the class so a consumer that needs to skin the default branch
+    // (rather than override it) has a stable hook.
+    expect(output.className).toContain('ansi-body');
+    expect(output.textContent).toContain('plain ansi line');
+  });
 });
