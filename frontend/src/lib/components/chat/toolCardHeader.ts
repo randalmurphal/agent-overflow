@@ -26,6 +26,7 @@ export type ToolKindIcon =
   | "checklist"
   | "puzzle"
   | "clock"
+  | "brain"
   | "generic";
 
 export interface ToolKindVisual {

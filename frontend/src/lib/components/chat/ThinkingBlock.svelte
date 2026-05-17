@@ -109,7 +109,7 @@
     buttonClass="!items-start"
     onToggle={(event) => preservePaneScrollAnchor(pane, event, handleToggle)}
   >
-    {#snippet icon()}<ToolKindIcon kind="checklist" ariaLabel="think" />{/snippet}
+    {#snippet icon()}<ToolKindIcon kind="brain" ariaLabel="think" />{/snippet}
     {#snippet label()}<span data-testid="thinking-label">think</span>{/snippet}
     {#snippet body()}
       <span

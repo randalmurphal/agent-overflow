@@ -31,6 +31,24 @@ describe('<ThinkingBlock>', () => {
     expect(container.querySelector('time[datetime]')).not.toBeNull();
   });
 
+  it('renders the brain icon in the gutter', () => {
+    // The think row used to share the checklist icon, which read as
+    // "todo list" next to actual TodoWrite rows. The brain icon is a
+    // distinct visual that doesn't collide with any other tool kind.
+    const { container } = render(ThinkingBlock, {
+      props: {
+        item: makeItem({
+          kind: 'thinking',
+          summary: 'reasoning content',
+          payloadId: 'thinking-payload',
+        }),
+      },
+    });
+    const icon = container.querySelector('svg[data-icon]');
+    expect(icon?.getAttribute('data-icon')).toBe('brain');
+    expect(icon?.getAttribute('aria-label')).toBe('think');
+  });
+
   it('tail-clamps the body to 3 lines via max-height when collapsed', () => {
     const { container } = render(ThinkingBlock, {
       props: {
