@@ -39,7 +39,12 @@
     display: string;
   }
 
+  interface DisplayReadEntry extends ReadEntry {
+    label: string;
+  }
+
   let entries = $derived<ReadEntry[]>(group.members.map((item) => entryFor(item, workspacePath)));
+  let displayEntries = $derived<DisplayReadEntry[]>(labelDuplicateBasenames(entries));
 
   function entryFor(item: Item, workspacePath: string): ReadEntry {
     const summaryMeta = parseJsonObject(item.payloadMeta);
@@ -53,6 +58,33 @@
       col: preview.path?.col ?? 0,
       display: fallback,
     };
+  }
+
+  function labelDuplicateBasenames(entries: ReadEntry[]): DisplayReadEntry[] {
+    const pathsByBasename = new Map<string, Set<string>>();
+    for (const entry of entries) {
+      const basename = basenameOf(entry.path);
+      const paths = pathsByBasename.get(basename) ?? new Set<string>();
+      paths.add(entry.path);
+      pathsByBasename.set(basename, paths);
+    }
+    return entries.map((entry) => {
+      const shouldShowPath = (pathsByBasename.get(basenameOf(entry.path))?.size ?? 0) > 1;
+      return {
+        ...entry,
+        label: shouldShowPath ? withLocation(entry.path, entry.line, entry.col) : entry.display,
+      };
+    });
+  }
+
+  function basenameOf(path: string): string {
+    const lastSep = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+    return lastSep === -1 ? path : path.slice(lastSep + 1);
+  }
+
+  function withLocation(path: string, line: number, col: number): string {
+    if (line <= 0) return path;
+    return col > 0 ? `${path}:${line}:${col}` : `${path}:${line}`;
   }
 </script>
 
@@ -73,14 +105,14 @@
     class="min-w-0 flex-1 inline-flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[12px] text-fg-muted/75"
     data-testid="read-group-row-list"
   >
-    {#each entries as entry (entry.id)}
+    {#each displayEntries as entry (entry.id)}
       <EditorLink
         path={entry.path}
         line={entry.line}
         col={entry.col}
         workspacePath={workspacePath}
-        label={entry.display}
-        openLabel={entry.display}
+        label={entry.label}
+        openLabel={entry.label}
         class="max-w-full break-all text-fg-muted/75 hover:text-accent"
       />
     {/each}

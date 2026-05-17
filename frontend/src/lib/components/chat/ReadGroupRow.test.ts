@@ -90,6 +90,44 @@ describe('<ReadGroupRow>', () => {
     ]);
   });
 
+  it('shows repo-relative paths when duplicate filenames come from different paths', () => {
+    const group = mkGroup([
+      mkReadItem('r1', 'Read: /home/me/repo/internal/store/paging_test.go'),
+      mkReadItem('r2', 'Read: /home/me/repo/app_paging_test.go'),
+      mkReadItem('r3', 'Read: /home/me/repo/frontend/src/lib/paging_test.go'),
+    ]);
+    const { getAllByTestId } = render(ReadGroupRow, {
+      props: { pane: paneWithWorkspace('/home/me/repo'), group },
+    });
+
+    const links = getAllByTestId('editor-link');
+    expect(links.map((el) => el.textContent?.trim())).toEqual([
+      'internal/store/paging_test.go',
+      'app_paging_test.go',
+      'frontend/src/lib/paging_test.go',
+    ]);
+    expect(links[0].getAttribute('title')).toBe(
+      'Open internal/store/paging_test.go in editor',
+    );
+  });
+
+  it('keeps exact duplicate paths as duplicate basenames', () => {
+    const group = mkGroup([
+      mkReadItem('r1', 'Read: /home/me/repo/internal/store/paging_test.go'),
+      mkReadItem('r2', 'Read: /home/me/repo/internal/store/paging_test.go'),
+      mkReadItem('r3', 'Read: /home/me/repo/app_paging.go'),
+    ]);
+    const { getAllByTestId } = render(ReadGroupRow, {
+      props: { pane: paneWithWorkspace('/home/me/repo'), group },
+    });
+
+    expect(getAllByTestId('editor-link').map((el) => el.textContent?.trim())).toEqual([
+      'paging_test.go',
+      'paging_test.go',
+      'app_paging.go',
+    ]);
+  });
+
   it('renders the eye tool-kind so the rail rhythm matches single Read rows', () => {
     // The continuous left rail under consecutive tool rows aligns
     // icon columns by tool kind. ReadGroupRow keeps `eye` (same as a
