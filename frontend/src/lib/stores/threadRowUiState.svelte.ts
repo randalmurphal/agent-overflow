@@ -85,13 +85,18 @@ function expansionRegistryKey(parts: readonly unknown[]): string {
   return JSON.stringify(parts);
 }
 
+interface ExpansionRegistryEntry {
+  handle: PayloadExpansionHandle;
+  dispose: () => void;
+}
+
 /**
  * Per-row UI registries live outside row components so virtua remounts
  * do not drop loaded payload chunks, attachment thumbnails, or group
  * expansion state while the user scrolls around a thread.
  */
 export function createThreadRowUiState(options: ThreadRowUiStateOptions): ThreadRowUiState {
-  const expansionStates = new Map<string, PayloadExpansionHandle>();
+  const expansionStates = new Map<string, ExpansionRegistryEntry>();
   let subagentGroupExpanded: Set<string> = $state(new Set());
   const attachmentBlobs = new Map<string, Map<string, ImagePreviewItem>>();
   let attachmentCacheEpoch = 0;
@@ -112,25 +117,27 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       rowOptions.requestTimeoutMs ?? 'timeout-default',
     ]);
     let cached = expansionStates.get(key);
-    if (cached) return cached;
+    if (cached) return cached.handle;
 
     const itemId = item.id;
     const getCurrentItem = (): Item | undefined => options.getItemById(itemId);
     const currentPayloadVersion = rowOptions.payloadVersion ?? payloadVersionForItem;
-    cached = createPayloadExpansion(
-      () => getCurrentItem()?.payloadId,
-      () => getCurrentItem()?.threadId,
-      {
-        payloadVersion: () => currentPayloadVersion(getCurrentItem()),
-        loadMode,
-        loadOnMount: rowOptions.loadOnMount,
-        previewBytes: rowOptions.previewBytes,
-        chunkBytes: rowOptions.chunkBytes,
-        requestTimeoutMs: rowOptions.requestTimeoutMs,
-      },
+    cached = createRegistryExpansion(() =>
+      createPayloadExpansion(
+        () => getCurrentItem()?.payloadId,
+        () => getCurrentItem()?.threadId,
+        {
+          payloadVersion: () => currentPayloadVersion(getCurrentItem()),
+          loadMode,
+          loadOnMount: rowOptions.loadOnMount,
+          previewBytes: rowOptions.previewBytes,
+          chunkBytes: rowOptions.chunkBytes,
+          requestTimeoutMs: rowOptions.requestTimeoutMs,
+        },
+      ),
     );
     expansionStates.set(key, cached);
-    return cached;
+    return cached.handle;
   }
 
   function expansionStateForPayload(
@@ -153,24 +160,40 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     ]);
     let cached = expansionStates.get(key);
     if (cached) {
-      cached.setPayloadVersion(payloadOptions.payloadVersion);
-      return cached;
+      cached.handle.setPayloadVersion(payloadOptions.payloadVersion);
+      return cached.handle;
     }
 
-    cached = createPayloadExpansion(
-      () => payloadId,
-      () => threadId,
-      {
-        payloadVersion: payloadOptions.payloadVersion,
-        loadMode,
-        loadOnMount: payloadOptions.loadOnMount,
-        previewBytes: payloadOptions.previewBytes,
-        chunkBytes: payloadOptions.chunkBytes,
-        requestTimeoutMs: payloadOptions.requestTimeoutMs,
-      },
+    cached = createRegistryExpansion(() =>
+      createPayloadExpansion(
+        () => payloadId,
+        () => threadId,
+        {
+          payloadVersion: payloadOptions.payloadVersion,
+          loadMode,
+          loadOnMount: payloadOptions.loadOnMount,
+          previewBytes: payloadOptions.previewBytes,
+          chunkBytes: payloadOptions.chunkBytes,
+          requestTimeoutMs: payloadOptions.requestTimeoutMs,
+        },
+      ),
     );
     expansionStates.set(key, cached);
-    return cached;
+    return cached.handle;
+  }
+
+  function createRegistryExpansion(
+    create: () => PayloadExpansionHandle,
+  ): ExpansionRegistryEntry {
+    let handle: PayloadExpansionHandle | undefined;
+    const dispose = $effect.root(() => {
+      handle = create();
+    });
+    if (!handle) {
+      dispose();
+      throw new Error('Failed to create payload expansion state');
+    }
+    return { handle, dispose };
   }
 
   function isSubagentGroupExpanded(groupKey: string): boolean {
@@ -228,6 +251,9 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   }
 
   function clear(): void {
+    for (const entry of expansionStates.values()) {
+      entry.dispose();
+    }
     expansionStates.clear();
     subagentGroupExpanded = new Set();
     attachmentCacheEpoch += 1;

@@ -24,6 +24,7 @@
   import Indicator from './Indicator.svelte';
   import RowError from './RowError.svelte';
   import { indicatorAriaLabel, indicatorStateForItem, rowErrorForStatus } from './rowState';
+  import { preservePaneScrollAnchor } from './preserveScrollAnchor';
 
   let {
     pane,
@@ -173,7 +174,7 @@
     ariaLabel={`Toggle Command Output: ${rawCommand}`}
     testId="command-output-toggle"
     class="rounded-[var(--radius-control)] px-1 py-1 text-[12px] {hasBody ? 'hover:bg-surface-2/20' : ''}"
-    onToggle={() => expansion.toggle()}
+    onToggle={(event) => preservePaneScrollAnchor(pane, event, () => expansion.toggle())}
   >
     {#snippet icon()}{@render headerIcon()}{/snippet}
     {#snippet label()}{@render headerLabel()}{/snippet}
@@ -218,7 +219,7 @@
             <button
               type="button"
               class="mt-2 inline-flex items-center rounded-[var(--radius-control)] border border-border-subtle px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2/40 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-              onclick={() => void expansion.showFull()}
+              onclick={(event) => preservePaneScrollAnchor(pane, event, () => expansion.showFull())}
               data-testid="command-output-show-full"
             >
               Show more output ({formatPayloadSize(expansion.totalSize)})

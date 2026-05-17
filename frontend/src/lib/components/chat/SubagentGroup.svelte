@@ -43,6 +43,7 @@
   import Indicator from './Indicator.svelte';
   import RowError from './RowError.svelte';
   import { indicatorAriaLabel, indicatorStateForItem, rowErrorForStatus } from './rowState';
+  import { preservePaneScrollAnchor } from './preserveScrollAnchor';
 
   let {
     pane,
@@ -194,7 +195,7 @@
       controls={`subagent-group-${parent.id}`}
       testId="subagent-group-toggle"
       class="rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
-      onToggle={() => toggle()}
+      onToggle={(event) => preservePaneScrollAnchor(pane, event, toggle)}
     >
       {#snippet icon()}<ToolKindIcon kind="robot" ariaLabel="agent" />{/snippet}
       {#snippet label()}<span data-testid="subagent-group-gutter-label">agent</span>{/snippet}

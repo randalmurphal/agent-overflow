@@ -24,6 +24,7 @@
   import Indicator from './Indicator.svelte';
   import RowError from './RowError.svelte';
   import { indicatorStateForItem, rowErrorForStatus } from './rowState';
+  import { preservePaneScrollAnchor } from './preserveScrollAnchor';
 
   let { pane, item, meta, payloadId }: { pane?: ThreadPane; item: Item; meta: ToolResultMeta; payloadId?: string } = $props();
 
@@ -182,7 +183,7 @@
         ariaLabel="Toggle Exact Patch"
         testId="tool-result-patch-toggle"
         class="rounded-[var(--radius-control)] px-1 py-1 text-[12px] text-fg-muted {canExpandExactPatch ? 'hover:bg-surface-2/20' : ''}"
-        onToggle={() => expansion.toggle()}
+        onToggle={(event) => preservePaneScrollAnchor(pane, event, () => expansion.toggle())}
       >
         {#snippet icon()}<ToolKindIcon kind="file" ariaLabel="patch" />{/snippet}
         {#snippet label()}<span>patch</span>{/snippet}
@@ -228,7 +229,7 @@
                 <button
                   type="button"
                   class="mt-2 text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
-                  onclick={() => expansion.showFull()}
+                  onclick={(event) => preservePaneScrollAnchor(pane, event, () => expansion.showFull())}
                   data-testid="tool-result-patch-show-full"
                 >
                   Show more output ({formatPayloadSize(expansion.totalSize)}) ↓

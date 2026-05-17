@@ -46,6 +46,7 @@
     headerLabelForQuestions,
     type AskQuestion,
   } from './askUserQuestionData';
+  import { preservePaneScrollAnchor } from './preserveScrollAnchor';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
@@ -129,7 +130,7 @@
     controls={`ask-user-question-body-${item.id}`}
     testId="ask-user-question-toggle"
     class="rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
-    onToggle={() => toggle()}
+    onToggle={(event) => preservePaneScrollAnchor(pane, event, toggle)}
   >
     {#snippet icon()}<ToolKindIcon kind="speech-bubble" ariaLabel="ask" />{/snippet}
     {#snippet label()}<span data-testid="ask-user-question-label">ask</span>{/snippet}

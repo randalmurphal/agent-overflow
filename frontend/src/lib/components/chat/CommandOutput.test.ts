@@ -105,6 +105,29 @@ describe('<CommandOutput>', () => {
     expect(pre.querySelector('script')).toBeNull();
   });
 
+  it('shows a payload protocol error instead of crashing when output data is not text', async () => {
+    setBindingMock('GetPayloadPreview', async () => ({
+      data: { output: 'object payload' } as unknown as string,
+      nextOffset: 1,
+      totalSize: 1,
+      isComplete: true,
+    }));
+
+    const { getByRole, findByRole } = render(CommandOutput, {
+      props: {
+        item: makeItem({ id: 'tool-cmd', kind: 'tool_call' }),
+        meta: commandMeta({ command: 'echo', preview: '', lineCount: 1 }),
+        payloadId: 'cmd-payload',
+      },
+    });
+
+    await fireEvent.click(getByRole('button', { name: /Toggle command output/i }));
+
+    expect(await findByRole('alert')).toHaveTextContent(
+      'GetPayloadPreview returned non-string payload data',
+    );
+  });
+
   it('loads a command output preview only when expanded', async () => {
     const previewMock = setBindingMock('GetPayloadPreview', async () => ({
       data: '\u001b[32mok\u001b[0m\nfull body',

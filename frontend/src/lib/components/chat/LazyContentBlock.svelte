@@ -9,6 +9,7 @@
     keepExpandedPayloadFresh,
   } from '../../utils/payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
+  import { preservePaneScrollAnchor } from './preserveScrollAnchor';
 
   interface Props {
     /** Pane for the per-payload expansion registry. When omitted, falls
@@ -91,7 +92,7 @@
     {#if expansion.hasMore}
       <button
         type="button"
-        onclick={() => expansion.showFull()}
+        onclick={(event) => preservePaneScrollAnchor(pane, event, () => expansion.showFull())}
         class="mt-2 text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
         data-testid="lazy-content-show-full"
       >
@@ -106,7 +107,7 @@
 {#if canExpand}
   <button
     type="button"
-    onclick={toggle}
+    onclick={(event) => preservePaneScrollAnchor(pane, event, toggle)}
     aria-expanded={expansion.expanded}
     data-testid="lazy-content-toggle"
     class="mt-1 text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"

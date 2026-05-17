@@ -10,6 +10,7 @@
   import CopyButton from '../primitives/CopyButton.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
+  import { preservePaneScrollAnchor } from './preserveScrollAnchor';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
@@ -106,7 +107,7 @@
     testId="thinking-toggle"
     class="!items-start rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
     buttonClass="!items-start"
-    onToggle={() => handleToggle()}
+    onToggle={(event) => preservePaneScrollAnchor(pane, event, handleToggle)}
   >
     {#snippet icon()}<ToolKindIcon kind="checklist" ariaLabel="think" />{/snippet}
     {#snippet label()}<span data-testid="thinking-label">think</span>{/snippet}

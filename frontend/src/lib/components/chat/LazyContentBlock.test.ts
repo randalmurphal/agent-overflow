@@ -100,23 +100,19 @@ describe('<LazyContentBlock>', () => {
       isComplete: true,
     }));
     const preview = 'a'.repeat(MAX_INLINE_BYTES + 1);
-    const { getByTestId } = render(LazyContentBlock, {
+    const { findByTestId, getByTestId } = render(LazyContentBlock, {
       props: { threadId: 'thread-1', payloadId: 'p1', preview },
     });
 
     const toggle = getByTestId('lazy-content-toggle');
     await fireEvent.click(toggle);
-    await Promise.resolve();
-    await Promise.resolve();
 
     expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledWith('thread-1', 'p1', DEFAULT_PAYLOAD_PREVIEW_BYTES);
     expect(getBindingMock('GetPayloadChunk')).not.toHaveBeenCalled();
-    expect(getByTestId('lazy-content-preview').textContent).toBe('PREVIEW BODY');
+    expect((await findByTestId('lazy-content-preview')).textContent).toBe('PREVIEW BODY');
     expect(getByTestId('lazy-content-show-full').textContent).toContain('64.0 KB');
 
     await fireEvent.click(getByTestId('lazy-content-show-full'));
-    await Promise.resolve();
-    await Promise.resolve();
 
     expect(getBindingMock('GetPayloadChunk')).toHaveBeenCalledWith(
       'thread-1',
@@ -124,7 +120,7 @@ describe('<LazyContentBlock>', () => {
       'PREVIEW BODY'.length,
       DEFAULT_PAYLOAD_CHUNK_BYTES,
     );
-    expect(getByTestId('lazy-content-full').textContent).toBe('PREVIEW BODYFULL BODY CONTENT');
+    expect((await findByTestId('lazy-content-full')).textContent).toBe('PREVIEW BODYFULL BODY CONTENT');
   });
 
   it('discarding local state on collapse re-expands from the payload cache', async () => {
@@ -141,24 +137,20 @@ describe('<LazyContentBlock>', () => {
       isComplete: true,
     }));
     const preview = 'a'.repeat(MAX_INLINE_BYTES + 1);
-    const { getByTestId, queryByTestId } = render(LazyContentBlock, {
+    const { findByTestId, getByTestId, queryByTestId } = render(LazyContentBlock, {
       props: { threadId: 'thread-1', payloadId: 'p1', preview },
     });
 
     const toggle = getByTestId('lazy-content-toggle');
     await fireEvent.click(toggle);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(getByTestId('lazy-content-preview').textContent).toBe('PREVIEW');
+    expect((await findByTestId('lazy-content-preview')).textContent).toBe('PREVIEW');
 
     await fireEvent.click(toggle);
     expect(queryByTestId('lazy-content-full')).toBeNull();
     expect(getByTestId('lazy-content-preview')).toBeInTheDocument();
 
     await fireEvent.click(toggle);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(getByTestId('lazy-content-preview').textContent).toBe('PREVIEW');
+    expect((await findByTestId('lazy-content-preview')).textContent).toBe('PREVIEW');
     expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledTimes(1);
   });
 
@@ -167,13 +159,11 @@ describe('<LazyContentBlock>', () => {
       throw new Error('preview boom');
     });
     const preview = 'a'.repeat(MAX_INLINE_BYTES + 1);
-    const { getByTestId } = render(LazyContentBlock, {
+    const { findByTestId, getByTestId } = render(LazyContentBlock, {
       props: { threadId: 'thread-1', payloadId: 'p1', preview },
     });
     await fireEvent.click(getByTestId('lazy-content-toggle'));
-    await Promise.resolve();
-    await Promise.resolve();
-    const errorNode = getByTestId('lazy-content-error');
+    const errorNode = await findByTestId('lazy-content-error');
     expect(errorNode.textContent).toContain('preview boom');
     expect(errorNode.getAttribute('role')).toBe('alert');
   });

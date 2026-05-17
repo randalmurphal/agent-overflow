@@ -109,6 +109,22 @@ describe('payloadExpansion', () => {
     expect(chunk).not.toHaveBeenCalled();
   });
 
+  it('surfaces non-string payload data as a load error instead of caching it', async () => {
+    setBindingMock('GetPayloadPreview', async () => ({
+      data: { text: 'not a string' } as unknown as string,
+      nextOffset: 1,
+      totalSize: 1,
+      isComplete: true,
+    }));
+
+    const expansion = createPayloadExpansion('payload-1', 'thread-1');
+    await expansion.expand();
+
+    expect(expansion.expanded).toBe(true);
+    expect(expansion.displayData).toBeNull();
+    expect(expansion.error).toContain('GetPayloadPreview returned non-string payload data');
+  });
+
   it('times out a stuck preview request and can retry', async () => {
     vi.useFakeTimers();
     let call = 0;

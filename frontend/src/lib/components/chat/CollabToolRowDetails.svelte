@@ -1,10 +1,12 @@
 <script lang="ts">
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import type { PayloadExpansionHandle } from '../../utils/payloadExpansion.svelte';
   import ExpandablePayloadBody from './ExpandablePayloadBody.svelte';
   import RowError from './RowError.svelte';
   import type { RowErrorData } from './rowState';
 
   let {
+    pane,
     itemId,
     promptPreview,
     rowError,
@@ -17,6 +19,7 @@
     statusLine,
     expansion,
   }: {
+    pane?: ThreadPane;
     itemId: string;
     promptPreview: string;
     rowError: RowErrorData | null;
@@ -55,6 +58,7 @@
 {/if}
 {#if expansion && expanded}
   <ExpandablePayloadBody
+    {pane}
     {expansion}
     id="collab-tool-row-output-{itemId}"
     testPrefix="collab-tool-row"

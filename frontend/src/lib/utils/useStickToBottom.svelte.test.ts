@@ -1139,6 +1139,74 @@ describe('createUseStickToBottomController', () => {
     });
   });
 
+  describe('preserveScrollAnchor', () => {
+    it('keeps the anchor at the same viewport position across explicit row growth', async () => {
+      const anchor = document.createElement('button');
+      contentEl.appendChild(anchor);
+      let anchorTop = 200;
+      vi.spyOn(anchor, 'getBoundingClientRect').mockImplementation(() => ({
+        top: anchorTop,
+        bottom: anchorTop + 20,
+        left: 0,
+        right: 100,
+        width: 100,
+        height: 20,
+        x: 0,
+        y: anchorTop,
+        toJSON: () => ({}),
+      } as DOMRect));
+
+      const ro = getRO();
+      await controller.preserveScrollAnchor(anchor, () => {
+        geom.scrollHeight = 1200;
+        geom.contentHeight = 1000;
+        anchorTop = 260;
+        ro.fire(contentEl, 1000);
+      });
+
+      expect(geom.scrollTop).toBe(460);
+      expect(controller.escapedFromLock).toBe(true);
+    });
+
+    it('releases the scroll pause after the immediate disclosure flush, before slow payload work settles', async () => {
+      const anchor = document.createElement('button');
+      contentEl.appendChild(anchor);
+      let anchorTop = 200;
+      vi.spyOn(anchor, 'getBoundingClientRect').mockImplementation(() => ({
+        top: anchorTop,
+        bottom: anchorTop + 20,
+        left: 0,
+        right: 100,
+        width: 100,
+        height: 20,
+        x: 0,
+        y: anchorTop,
+        toJSON: () => ({}),
+      } as DOMRect));
+      let resolvePayloadWork: (() => void) | undefined;
+
+      const ro = getRO();
+      const preserve = controller.preserveScrollAnchor(anchor, () => {
+        geom.scrollHeight = 1200;
+        geom.contentHeight = 1000;
+        anchorTop = 260;
+        ro.fire(contentEl, 1000);
+        return new Promise<void>((resolve) => {
+          resolvePayloadWork = resolve;
+        });
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(geom.scrollTop).toBe(460);
+      controller.forceStick();
+      expect(controller.isSticky).toBe(true);
+
+      resolvePayloadWork?.();
+      await preserve;
+    });
+  });
+
   describe('pauseAutoScroll', () => {
     it('depth-counted; idempotent dispose', async () => {
       const r1 = controller.pauseAutoScroll();

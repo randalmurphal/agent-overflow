@@ -30,6 +30,7 @@
   import Indicator from './Indicator.svelte';
   import RowError from './RowError.svelte';
   import { indicatorAriaLabel, indicatorStateForItem, rowErrorForStatus } from './rowState';
+  import { preservePaneScrollAnchor } from './preserveScrollAnchor';
 
   const RUNNING_ELAPSED_THRESHOLD_MS = 2_000;
 
@@ -144,7 +145,7 @@
     controls={hasExpandableBody ? `agent-row-body-${item.id}` : undefined}
     testId="agent-row-toggle"
     class="rounded-[var(--radius-control)] px-1 py-1 {hasExpandableBody ? 'hover:bg-surface-2/20' : ''}"
-    onToggle={() => expansion.toggle()}
+    onToggle={(event) => preservePaneScrollAnchor(pane, event, () => expansion.toggle())}
   >
     {#snippet icon()}<ToolKindIcon kind="robot" ariaLabel="agent" />{/snippet}
     {#snippet label()}<span data-testid="agent-row-label">agent</span>{/snippet}
@@ -206,7 +207,7 @@
           </div>
         {/if}
         {#if expansion.hasMore}
-          <button type="button" class="mx-3 mb-3 text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded" onclick={() => expansion.showFull()} data-testid="agent-row-show-full">
+          <button type="button" class="mx-3 mb-3 text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded" onclick={(event) => preservePaneScrollAnchor(pane, event, () => expansion.showFull())} data-testid="agent-row-show-full">
             Load more output ({formatPayloadSize(expansion.totalSize)}) ↓
           </button>
         {/if}

@@ -22,6 +22,7 @@
   import Indicator from './Indicator.svelte';
   import RowError from './RowError.svelte';
   import { indicatorAriaLabel, indicatorStateForItem, rowErrorForStatus } from './rowState';
+  import { preservePaneScrollAnchor } from './preserveScrollAnchor';
 
   const RUNNING_ELAPSED_THRESHOLD_MS = 2_000;
 
@@ -216,7 +217,7 @@
     controls={hasExpandableBody ? `tool-call-card-body-${item.id}` : undefined}
     testId="tool-call-card-toggle"
     class="rounded-[var(--radius-control)] px-1 py-1 {hasExpandableBody ? 'hover:bg-surface-2/20' : ''}"
-    onToggle={() => toggle()}
+    onToggle={(event) => preservePaneScrollAnchor(pane, event, toggle)}
   >
     {#snippet icon()}<ToolKindIcon kind={classification.icon} ariaLabel={classification.label} />{/snippet}
     {#snippet label()}<span data-testid="tool-call-card-label">{classification.label}</span>{/snippet}
@@ -236,6 +237,7 @@
 
   {#if hasExpandableBody && expansion.expanded}
     <ExpandablePayloadBody
+      {pane}
       {expansion}
       id="tool-call-card-body-{item.id}"
       testPrefix="tool-call-card"

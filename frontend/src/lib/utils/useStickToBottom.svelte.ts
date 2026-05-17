@@ -49,6 +49,7 @@
 // when their out-of-content height changes; the seam is identical on
 // both surfaces.
 
+import { tick } from 'svelte';
 import { isUiRenderTraceEnabled, recordUiTrace } from './uiRenderTrace';
 
 // Diagnostic trace helper — no-op in production (gated by
@@ -205,6 +206,14 @@ export interface UseStickToBottomController {
    * shrink is the canonical case. Re-pins to the new target if sticky.
    */
   notifyContentMaybeGrew(): void;
+  /**
+   * Run an explicit user disclosure action and keep the clicked anchor
+   * at the same viewport position after Svelte flushes the resulting
+   * row-height change. This is for in-row expand/collapse affordances,
+   * where the user's click target should stay stable even if the
+   * controller was previously sticky-bottom.
+   */
+  preserveScrollAnchor(anchor: HTMLElement, action: () => void | Promise<void>): Promise<void>;
 
   attach(scrollEl: HTMLElement, contentEl: HTMLElement): void;
   detach(): void;
@@ -1194,6 +1203,44 @@ export function createUseStickToBottomController(
     action();
   }
 
+  async function preserveScrollAnchor(
+    anchor: HTMLElement,
+    action: () => void | Promise<void>,
+  ): Promise<void> {
+    if (!scrollEl || !anchor.isConnected) {
+      await action();
+      return;
+    }
+
+    const targetScrollEl = scrollEl;
+    const beforeTop = anchor.getBoundingClientRect().top;
+    const release = pauseAutoScroll();
+    setEscapedFromLock(true);
+    let actionError: unknown;
+    let actionPromise: Promise<void> | undefined;
+    try {
+      actionPromise = (async () => {
+        await action();
+      })().catch((err: unknown) => {
+        actionError = err;
+      });
+      await tick();
+      if (scrollEl === targetScrollEl && anchor.isConnected) {
+        const afterTop = anchor.getBoundingClientRect().top;
+        const delta = afterTop - beforeTop;
+        if (Number.isFinite(delta) && Math.abs(delta) >= 0.5) {
+          runExternalScroll(() => {
+            targetScrollEl.scrollTop += delta;
+          });
+        }
+      }
+    } finally {
+      release();
+    }
+    await actionPromise;
+    if (actionError !== undefined) throw actionError;
+  }
+
   function animateScrollTo(
     rawTargetTop: number,
     opts?: { durationMs?: number },
@@ -1528,6 +1575,7 @@ export function createUseStickToBottomController(
     },
     pauseAutoScroll,
     notifyContentMaybeGrew,
+    preserveScrollAnchor,
     attach,
     detach,
     forceStick,

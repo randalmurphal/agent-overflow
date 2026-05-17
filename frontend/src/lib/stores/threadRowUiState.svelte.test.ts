@@ -3,9 +3,11 @@ import type { Item } from '../types/models';
 import { makeItem } from '../../test/helpers/chat';
 import { __resetPayloadCacheForTest, writePayloadCache } from '../utils/payloadDataCache';
 import { createThreadRowUiState } from './threadRowUiState.svelte';
+import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 
 describe('createThreadRowUiState', () => {
   beforeEach(() => {
+    resetBindingMocks();
     __resetPayloadCacheForTest();
   });
 
@@ -31,6 +33,43 @@ describe('createThreadRowUiState', () => {
 
     expect(rowUiState.expansionStateFor(updated)).toBe(first);
     expect(first.payloadVersion).toBe('payload-b');
+  });
+
+  it('does not bind cached expansion handles to a transient row derived owner', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const items = new Map<string, Item>();
+      const rowUiState = createThreadRowUiState({
+        getItemById(itemId: string): Item | undefined {
+          return items.get(itemId);
+        },
+      });
+      const item = makeItem({
+        id: 'tool:derived-owner',
+        kind: 'tool_call',
+        payloadId: 'payload-derived-owner',
+        threadId: 'thread-a',
+        updatedAt: 1,
+      });
+      items.set(item.id, item);
+
+      let expansion = rowUiState.expansionStateFor(item);
+      const dispose = $effect.root(() => {
+        const fromRowDerived = $derived(rowUiState.expansionStateFor(item));
+        $effect(() => {
+          expansion = fromRowDerived;
+        });
+      });
+      dispose();
+
+      expect(expansion.displayData).toBeNull();
+      const warnedDerivedInert = warn.mock.calls
+        .flat()
+        .some((arg) => String(arg).includes('derived_inert'));
+      expect(warnedDerivedInert).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('lets item-keyed expansion handles use a payload-specific version', () => {
@@ -77,6 +116,36 @@ describe('createThreadRowUiState', () => {
 
     expect(second).toBe(first);
     expect(second.payloadVersion).toBe(2);
+  });
+
+  it('does not cancel an in-flight payload load when reacquired with the same version', async () => {
+    let resolvePreview: ((value: {
+      data: string;
+      nextOffset: number;
+      totalSize: number;
+      isComplete: boolean;
+    }) => void) | undefined;
+    const preview = setBindingMock('GetPayloadPreview', () => new Promise((resolve) => {
+      resolvePreview = resolve;
+    }));
+    const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+
+    const first = rowUiState.expansionStateForPayload('payload-a', 'thread-a', 'version-a');
+    const expand = first.expand();
+    await vi.waitFor(() => expect(preview).toHaveBeenCalledTimes(1));
+
+    const second = rowUiState.expansionStateForPayload('payload-a', 'thread-a', 'version-a');
+    expect(second).toBe(first);
+    resolvePreview?.({
+      data: 'loaded payload',
+      nextOffset: 14,
+      totalSize: 14,
+      isComplete: true,
+    });
+
+    await expand;
+    expect(first.displayData).toBe('loaded payload');
+    expect(preview).toHaveBeenCalledTimes(1);
   });
 
   it('does not collide item-keyed expansion handles when ids contain key delimiters', () => {
@@ -231,7 +300,8 @@ describe('createThreadRowUiState', () => {
     rowUiState.toggleSubagentGroupExpanded('group-a');
     rowUiState.clear();
 
-    expect(rowUiState.expansionStateFor(item)).not.toBe(beforeClear);
+    const afterClear = rowUiState.expansionStateFor(item);
+    expect(Object.is(afterClear, beforeClear)).toBe(false);
     expect(rowUiState.isSubagentGroupExpanded('group-a')).toBe(false);
   });
 });

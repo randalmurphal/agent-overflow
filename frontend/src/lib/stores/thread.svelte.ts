@@ -232,6 +232,12 @@ export interface PaneScrollController {
    */
   notifyContentMaybeGrew(): void;
   /**
+   * Preserve a clicked disclosure header's viewport position while the
+   * row expands or collapses. Optional so Discussion and simple test
+   * doubles can keep the minimal pause/notify-only shape.
+   */
+  preserveScrollAnchor?(anchor: HTMLElement, action: () => void | Promise<void>): Promise<void>;
+  /**
    * Optional. True when the user is sticky-pinned to (or geometrically
    * near) the bottom of the timeline. Lifecycle-aware rows read this
    * before transitioning their own height on settle — e.g. ThinkingBlock

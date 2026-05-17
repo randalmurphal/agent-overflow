@@ -155,6 +155,7 @@ export function createPayloadExpansion(
   }
 
   function setPayloadVersion(version: unknown): void {
+    if (Object.is(currentPayloadVersion(), version)) return;
     overridePayloadVersion = version;
     hasOverridePayloadVersion = true;
     cancelInflight();
@@ -274,7 +275,7 @@ export function createPayloadExpansion(
         requestTimeoutMs,
         'Loading payload timed out',
       );
-      const data = result.data ?? '';
+      const data = payloadTextFromBindingData(result.data, 'GetPayloadData');
       return {
         data,
         nextOffset: data.length,
@@ -282,11 +283,15 @@ export function createPayloadExpansion(
         isComplete: true,
       };
     }
-    return withTimeout(
+    const preview = await withTimeout(
       GetPayloadPreview(ownerThreadID, id, previewBytes),
       requestTimeoutMs,
       'Loading payload preview timed out',
     );
+    return {
+      ...preview,
+      data: payloadTextFromBindingData(preview.data, 'GetPayloadPreview'),
+    };
   }
 
   async function expand(): Promise<void> {
@@ -338,11 +343,15 @@ export function createPayloadExpansion(
     const request = (async (): Promise<void> => {
       try {
         const offset = loadedBytes;
-        const content = await withTimeout(
+        const rawContent = await withTimeout(
           GetPayloadChunk(ownerThreadID, id, offset, chunkBytes),
           requestTimeoutMs,
           'Loading payload chunk timed out',
         );
+        const content = {
+          ...rawContent,
+          data: payloadTextFromBindingData(rawContent.data, 'GetPayloadChunk'),
+        };
         if (
           generation !== requestGeneration
           || !expanded
@@ -461,6 +470,12 @@ async function withTimeout<T>(
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+}
+
+function payloadTextFromBindingData(data: unknown, operation: string): string {
+  if (typeof data === 'string') return data;
+  const kind = Array.isArray(data) ? 'array' : data === null ? 'null' : typeof data;
+  throw new Error(`${operation} returned non-string payload data (${kind})`);
 }
 
 export function formatPayloadSize(bytes: number): string {

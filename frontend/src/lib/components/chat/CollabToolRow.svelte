@@ -35,6 +35,7 @@
     stringValue,
     usesRequestedWaitReceivers as usesRequestedWaitReceiversForTool,
   } from './collabToolRowData';
+  import { preservePaneScrollAnchor } from './preserveScrollAnchor';
 
   let {
     pane,
@@ -269,7 +270,7 @@
     controls={hasExpandableOutput ? `collab-tool-row-output-${item.id}` : undefined}
     testId="collab-tool-row-toggle"
     class="rounded-[var(--radius-control)] py-1 {hasExpandableOutput ? 'hover:bg-surface-2/20' : ''}"
-    onToggle={() => toggle()}
+    onToggle={(event) => preservePaneScrollAnchor(pane, event, toggle)}
   >
     {#snippet icon()}{@render rowIcon()}{/snippet}
     {#snippet label()}{@render rowLabel()}{/snippet}
@@ -279,6 +280,7 @@
     {/snippet}
   </TranscriptDisclosureHeader>
   <CollabToolRowDetails
+    {pane}
     itemId={item.id}
     {promptPreview}
     {rowError}

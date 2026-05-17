@@ -3,8 +3,11 @@
   import CopyFooter from './CopyFooter.svelte';
   import type { PayloadExpansionHandle } from '../../utils/payloadExpansion.svelte';
   import { formatPayloadSize } from '../../utils/payloadExpansion.svelte';
+  import type { ThreadPane } from '../../stores/thread.svelte';
+  import { preservePaneScrollAnchor } from './preserveScrollAnchor';
 
   let {
+    pane,
     expansion,
     id,
     testPrefix,
@@ -14,6 +17,7 @@
     deferredOutputState = '',
     deferredOutputError = '',
   }: {
+    pane?: ThreadPane;
     expansion: PayloadExpansionHandle;
     id: string;
     testPrefix: string;
@@ -59,7 +63,7 @@
       <button
         type="button"
         class="mx-3 mb-3 text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
-        onclick={() => expansion.showFull()}
+        onclick={(event) => preservePaneScrollAnchor(pane, event, () => expansion.showFull())}
         data-testid="{testPrefix}-show-full"
       >
         Load more output ({formatPayloadSize(expansion.totalSize)}) ↓
