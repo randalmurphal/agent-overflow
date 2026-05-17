@@ -44,6 +44,48 @@ describe("<WaitGroup>", () => {
     expect(getByText(/Spawned Galileo -> done/)).toBeInTheDocument();
   });
 
+  it("indents the child rail to line up with the parent row's body column", async () => {
+    // The wait_agent's body column ("Waiting for N agents") starts at
+    // 6.375rem from the row's outer edge (px-1 + chevron + gap +
+    // icon + gap + label + gap, all defined in
+    // TranscriptDisclosureHeader). The child rail's ml + border + pl
+    // must add up to the same offset; if the disclosure primitive
+    // grows or shrinks any of those gutter elements, recompute the
+    // margin and update both this expectation and the comment in
+    // WaitGroup.svelte. Without this, the run-of-children renders
+    // hugging the row's left edge instead of indented under the body
+    // text.
+    const pane = await buildPane(makeThread({ provider: "codex" }));
+    const group: WaitGroupNode = {
+      kind: "wait_group",
+      groupKey: "wait:wait-1",
+      parent: makeItem({
+        id: "wait-1",
+        kind: "tool_call",
+        toolName: "wait_agent",
+        status: "completed",
+        summary: "wait_agent",
+        meta: JSON.stringify({ input: { tool: "wait_agent" } }),
+      }),
+      children: [
+        {
+          kind: "leaf",
+          item: makeItem({
+            id: "complete-spawn-1",
+            kind: "tool_completion",
+            toolName: "collab_agent",
+            completionOf: "spawn-1",
+            summary: "Spawned Galileo -> done",
+          }),
+        },
+      ],
+      descendantCount: 1,
+    };
+
+    const { getByTestId } = render(WaitGroup, { props: { pane, group } });
+    expect(getByTestId("wait-group-children").className).toContain("ml-[5.5625rem]");
+  });
+
   it("does not render an empty child rail for timeout waits", async () => {
     const pane = await buildPane(makeThread({ provider: "codex" }));
     const group: WaitGroupNode = {
