@@ -84,7 +84,17 @@
       <span class="w-12 shrink-0 truncate text-[11px] text-fg-hint" data-testid="{testId}-label-slot">
         {#if label}{@render label()}{/if}
       </span>
-      <span class="min-w-0 flex-1" data-testid="{testId}-body-slot">
+      <!--
+        The body slot is a flex container so its child (a single inner
+        span across nearly every consumer — see e.g. GenericToolCallRow,
+        CommandOutput) is a real flex item with effective `flex-1 min-w-0
+        truncate`. Without `flex` here the inner is just nested inline
+        content: `flex-1` / `min-w-0` are ignored and `truncate`'s
+        overflow:hidden + text-overflow:ellipsis don't apply to inline
+        boxes, so a long preview (long Bash command, long file path) ran
+        on under the timestamp instead of clipping at the body's column.
+      -->
+      <span class="flex min-w-0 flex-1" data-testid="{testId}-body-slot">
         {#if body}{@render body()}{/if}
       </span>
     {:else if children}

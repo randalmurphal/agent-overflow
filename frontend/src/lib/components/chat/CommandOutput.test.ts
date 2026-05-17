@@ -385,6 +385,32 @@ describe('<CommandOutput>', () => {
     expect(getByTestId('command-output-command').textContent).toBe('pnpm test');
   });
 
+  it('keeps long bash commands inside the body column so they cannot overflow into the timestamp', () => {
+    // Regression for the case where a long inline command (e.g. a docs
+    // grep with a glob argument) ran on under the trailing timestamp
+    // because the row's body slot was an inline <span> — Tailwind's
+    // `truncate` (overflow:hidden + text-overflow:ellipsis) on an
+    // inline element has no effect. The disclosure primitive now
+    // marks the body slot itself as a flex container so the inner
+    // `flex-1 min-w-0 truncate` resolves into a real truncating
+    // flex item. Pin both the slot's flex context and the inner span's
+    // truncate class so a future refactor that drops either fails fast.
+    const { getByTestId } = render(CommandOutput, {
+      props: {
+        item: makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'completed' }),
+        meta: commandMeta({
+          command: "rg -n --hidden -g '!.git' -g '!node_modules' --type-add 'svelte:*.svelte' --type svelte -e 'docs -g.*node_modules' .",
+        }),
+      },
+    });
+    const bodySlot = getByTestId('command-output-toggle-body-slot');
+    expect(bodySlot.className).toContain('flex');
+    expect(bodySlot.className).toContain('min-w-0');
+    const command = getByTestId('command-output-command');
+    expect(command.className).toContain('truncate');
+    expect(command.className).toContain('min-w-0');
+  });
+
   it('renders foreground running commands in the reserved status slot', () => {
     const { getByTestId } = render(CommandOutput, {
       props: {
