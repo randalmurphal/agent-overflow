@@ -51,63 +51,50 @@ var ErrSessionEmpty = errors.New("sessionfork: source session has no messages to
 // the source transcript.
 var ErrMessageNotFound = errors.New("sessionfork: upToMessageUUID not found in source")
 
-// BuildForkLines is the pure transform: reads JSONL from src, slices the
-// transcript at upToMessageUUID (inclusive), and returns the new session
-// UUID plus the JSONL lines that should be written to the new session
-// file. customTitle, when empty, derives a default ("Forked session
-// (fork)").
+// BuildForkLinesWithUUIDMap is the pure transform: reads JSONL from
+// src, slices the transcript at upToMessageUUID (inclusive), and
+// returns the new session UUID, the JSONL lines that should be
+// written to the new session file, and an `oldUUID → newUUID`
+// rewrite map produced by the fork transform. customTitle, when
+// empty, derives a default ("Forked session (fork)").
 //
 // upToMessageUUID == "" means clone the full transcript (no slice).
-func BuildForkLines(
+//
+// The uuidMap powers the fork-time remap in
+// `app_thread_fork.go::remapForkedClaudeUUIDs`, which refreshes AO
+// `items.meta` and `thread_checkpoints` rows so a subsequent revert
+// lookup in the forked session JSONL finds the cloned user message
+// by its current UUID — preserving the invariant "stored
+// provider_item_id always matches the active session's UUID."
+//
+// The returned map covers every transcript entry that survived the
+// slice (including non-user types like assistant/system); callers
+// only need the user-message entries but the map is unfiltered to
+// keep the helper pure.
+func BuildForkLinesWithUUIDMap(
 	src io.Reader,
 	srcSessionID string,
 	upToMessageUUID string,
 	customTitle string,
-) (newSessionID string, lines []string, err error) {
+) (newSessionID string, lines []string, uuidMap map[string]string, err error) {
 	transcript, contentReplacements, err := parseTranscript(src, srcSessionID)
 	if err != nil {
-		return "", nil, fmt.Errorf("sessionfork: parse transcript: %w", err)
+		return "", nil, nil, fmt.Errorf("sessionfork: parse transcript: %w", err)
 	}
 	return buildLines(transcript, contentReplacements, srcSessionID, upToMessageUUID, customTitle)
 }
 
-// WriteForkFile composes parse + build + atomic write. srcPath is the
-// source JSONL file; the new <newID>.jsonl is written into the same
-// directory with O_EXCL semantics. Returns the new session UUID and the
-// path of the written file so callers can clean it up on later failure.
-//
-// upToMessageUUID == "" clones the full transcript. Callers that want
-// to slice through a specific past turn should use
-// WriteForkFileForLastKeptTurn instead — it computes the slice point
-// from a single read of the source file, avoiding the double-open
-// TOCTOU window.
-func WriteForkFile(
-	srcPath string,
-	upToMessageUUID string,
-	customTitle string,
-) (newSessionID string, newPath string, err error) {
-	srcSessionID := sessionIDFromPath(srcPath)
-
-	f, err := os.Open(srcPath)
-	if err != nil {
-		return "", "", fmt.Errorf("sessionfork: open source: %w", err)
-	}
-	defer f.Close()
-
-	newID, lines, err := BuildForkLines(f, srcSessionID, upToMessageUUID, customTitle)
-	if err != nil {
-		return "", "", err
-	}
-
-	return writeForkOutput(srcPath, newID, lines)
-}
-
 // WriteForkFileForLastKeptTurn opens srcPath ONCE, parses the
 // transcript in memory, computes the slice point at the end of
-// lastKeptTurn (0-indexed), then writes the new <newID>.jsonl. Use
-// this instead of `SliceUUIDForLastKeptTurn` + `WriteForkFile` to
-// close the double-open TOCTOU window where an attacker could
-// substitute the source file between the two reads.
+// lastKeptTurn (0-indexed) via the ordinal walk, then writes the
+// new <newID>.jsonl. Use this only as the legacy fallback when no
+// `provider_item_id` is stored on the user_text item — prefer
+// `WriteForkFileForUserMessageUUID` because the ordinal walk
+// over-counts synthetic user-role entries (`isCompactSummary`,
+// `isMeta`, etc. — see `findmessage.go::isRealUserPrompt` for the
+// filter the walk applies). Returns the old→new uuid remap so
+// callers can refresh AO-stored wire ids
+// (`app_thread_fork.go::remapForkedClaudeUUIDs`).
 //
 // lastKeptTurn < 0 means clear the session entirely — the function
 // returns ErrSessionEmpty so the caller can wire the
@@ -116,34 +103,107 @@ func WriteForkFileForLastKeptTurn(
 	srcPath string,
 	lastKeptTurn int,
 	customTitle string,
-) (newSessionID string, newPath string, err error) {
+) (newSessionID string, newPath string, uuidMap map[string]string, err error) {
 	if lastKeptTurn < 0 {
-		return "", "", ErrSessionEmpty
+		return "", "", nil, ErrSessionEmpty
 	}
 	srcSessionID := sessionIDFromPath(srcPath)
 
 	f, err := os.Open(srcPath)
 	if err != nil {
-		return "", "", fmt.Errorf("sessionfork: open source: %w", err)
+		return "", "", nil, fmt.Errorf("sessionfork: open source: %w", err)
 	}
 	defer f.Close()
 
 	transcript, contentReplacements, err := parseTranscript(f, srcSessionID)
 	if err != nil {
-		return "", "", fmt.Errorf("sessionfork: parse transcript: %w", err)
+		return "", "", nil, fmt.Errorf("sessionfork: parse transcript: %w", err)
 	}
 
 	upToMessageUUID, err := sliceUUIDInTranscript(transcript, lastKeptTurn+1)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 
-	newID, lines, err := buildLines(transcript, contentReplacements, srcSessionID, upToMessageUUID, customTitle)
+	newID, lines, uuidMap, err := buildLines(transcript, contentReplacements, srcSessionID, upToMessageUUID, customTitle)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 
-	return writeForkOutput(srcPath, newID, lines)
+	newID, newPath, err = writeForkOutput(srcPath, newID, lines)
+	if err != nil {
+		return "", "", nil, err
+	}
+	return newID, newPath, uuidMap, nil
+}
+
+// WriteForkFileForUserMessageUUID opens srcPath ONCE, parses the
+// transcript in memory, slices through the parent of the user
+// message identified by upToUserMessageUUID, then writes the new
+// <newID>.jsonl. This is the structural fix for the ordinal-walk
+// off-by-N bug — by matching on the Claude-assigned user message
+// UUID stored on the AO `user_text` row's `meta.provider_item_id`
+// (or its checkpoint's `provider_user_message_id`), the slice point
+// is immune to any number of synthetic user-role entries between
+// real prompts.
+//
+// Returns the old→new uuid remap so the calling fork pipeline can
+// refresh AO-stored wire ids on cloned items / checkpoints
+// (`app_thread_fork.go::remapForkedClaudeUUIDs`); revert callers
+// that aren't forking can discard it.
+//
+// Returns `ErrMessageNotFound` when upToUserMessageUUID does not
+// appear in the source transcript (e.g. the AO row's stored UUID is
+// stale relative to the current session JSONL — most often because
+// the session was forked but the remap didn't propagate). Callers
+// should treat that as a hard error rather than silently falling
+// back to the ordinal walk; a wrong-source revert is worse than no
+// revert.
+func WriteForkFileForUserMessageUUID(
+	srcPath string,
+	upToUserMessageUUID string,
+	customTitle string,
+) (newSessionID string, newPath string, uuidMap map[string]string, err error) {
+	if upToUserMessageUUID == "" {
+		return "", "", nil, fmt.Errorf("sessionfork: empty user message uuid")
+	}
+	srcSessionID := sessionIDFromPath(srcPath)
+
+	f, err := os.Open(srcPath)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("sessionfork: open source: %w", err)
+	}
+	defer f.Close()
+
+	transcript, contentReplacements, err := parseTranscript(f, srcSessionID)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("sessionfork: parse transcript: %w", err)
+	}
+
+	upToParentUUID, err := parentUUIDForUserMessageUUIDInTranscript(transcript, upToUserMessageUUID)
+	if err != nil {
+		return "", "", nil, err
+	}
+	// upToParentUUID == "" means the user message is the very first
+	// real prompt in the transcript — the caller wants to clear the
+	// session entirely rather than slice. Mirror the
+	// `SliceUUIDForLastKeptTurn(-1)` → ErrSessionEmpty contract so
+	// `revertClaudeThreadToMessage` can route through its
+	// "checkpoint.TurnIndex == 0" branch identically.
+	if upToParentUUID == "" {
+		return "", "", nil, ErrSessionEmpty
+	}
+
+	newID, lines, uuidMap, err := buildLines(transcript, contentReplacements, srcSessionID, upToParentUUID, customTitle)
+	if err != nil {
+		return "", "", nil, err
+	}
+
+	newID, newPath, err = writeForkOutput(srcPath, newID, lines)
+	if err != nil {
+		return "", "", nil, err
+	}
+	return newID, newPath, uuidMap, nil
 }
 
 // writeForkOutput writes the JSONL lines to <srcDir>/<newID>.jsonl
@@ -183,6 +243,41 @@ func writeForkOutput(srcPath, newID string, lines []string) (string, string, err
 		return "", "", fmt.Errorf("sessionfork: close: %w", err)
 	}
 	return newID, out, nil
+}
+
+// parentUUIDForUserMessageUUIDInTranscript walks an already-parsed
+// transcript and returns the parentUuid of the user prompt whose
+// `uuid` matches messageUUID. Mirrors
+// `FindParentUUIDForUserMessageUUID` but operates on the in-memory
+// slice so the fork pipeline doesn't re-open the file.
+//
+// Matches on (uuid, type:"user") only — no `isRealUserPrompt`
+// filter. The caller supplies a specific UUID stamped by triage on
+// the AO `user_text` row, so by construction it's a real prompt;
+// re-applying the synthetic-flag filter would be redundant.
+// Matching by UUID is also why this path is structurally immune to
+// the synthetic-entry over-count bug that motivated the fix —
+// counting plays no role.
+//
+// Returns ErrMessageNotFound when messageUUID is not present in the
+// transcript (most often: the AO row's stored UUID is stale relative
+// to the current session JSONL — either a remap regression or a
+// session that pre-dates the wire-id stamp).
+func parentUUIDForUserMessageUUIDInTranscript(transcript []map[string]any, messageUUID string) (string, error) {
+	if messageUUID == "" {
+		return "", fmt.Errorf("sessionfork: empty user message uuid")
+	}
+	for _, entry := range transcript {
+		if u, _ := entry["uuid"].(string); u != messageUUID {
+			continue
+		}
+		if t, _ := entry["type"].(string); t != "user" {
+			continue
+		}
+		parent, _ := entry["parentUuid"].(string)
+		return parent, nil
+	}
+	return "", fmt.Errorf("%w: user message uuid %q", ErrMessageNotFound, messageUUID)
 }
 
 // sliceUUIDInTranscript walks an already-parsed transcript and returns
@@ -271,11 +366,16 @@ func parseTranscript(r io.Reader, srcSessionID string) (
 }
 
 // buildLines is the core transform — Go port of Python `_build_fork_lines`.
+//
+// Returns (newSessionID, lines, oldUUID→newUUID map, err). The
+// uuidMap covers every transcript entry that survived the slice;
+// callers may filter it (e.g. to user-message entries only) before
+// passing it to AO-side remap helpers.
 func buildLines(
 	transcript []map[string]any,
 	contentReplacements []any,
 	srcSessionID, upToMessageUUID, customTitle string,
-) (string, []string, error) {
+) (string, []string, map[string]string, error) {
 	// 1. Filter sidechains — subagent transcripts have separate parentUuid
 	//    graphs and would corrupt the chain walk. Allocate a fresh backing
 	//    slice; sharing with the input would mutate the caller's data and
@@ -288,7 +388,7 @@ func buildLines(
 	}
 	transcript = filtered
 	if len(transcript) == 0 {
-		return "", nil, ErrSessionEmpty
+		return "", nil, nil, ErrSessionEmpty
 	}
 
 	// 2. Slice up to upToMessageUUID inclusive.
@@ -301,7 +401,7 @@ func buildLines(
 			}
 		}
 		if cutoff == -1 {
-			return "", nil, fmt.Errorf("%w: %s", ErrMessageNotFound, upToMessageUUID)
+			return "", nil, nil, fmt.Errorf("%w: %s", ErrMessageNotFound, upToMessageUUID)
 		}
 		transcript = transcript[:cutoff+1]
 	}
@@ -327,7 +427,7 @@ func buildLines(
 		}
 	}
 	if len(writable) == 0 {
-		return "", nil, ErrSessionEmpty
+		return "", nil, nil, ErrSessionEmpty
 	}
 
 	forkedSessionID := uuid.NewString()
@@ -373,7 +473,7 @@ func buildLines(
 
 		b, err := json.Marshal(forked)
 		if err != nil {
-			return "", nil, fmt.Errorf("marshal forked entry: %w", err)
+			return "", nil, nil, fmt.Errorf("marshal forked entry: %w", err)
 		}
 		lines = append(lines, string(b))
 	}
@@ -388,7 +488,7 @@ func buildLines(
 		}
 		b, err := json.Marshal(entry)
 		if err != nil {
-			return "", nil, fmt.Errorf("marshal content-replacement: %w", err)
+			return "", nil, nil, fmt.Errorf("marshal content-replacement: %w", err)
 		}
 		lines = append(lines, string(b))
 	}
@@ -406,11 +506,11 @@ func buildLines(
 	}
 	b, err := json.Marshal(titleEntry)
 	if err != nil {
-		return "", nil, fmt.Errorf("marshal custom-title: %w", err)
+		return "", nil, nil, fmt.Errorf("marshal custom-title: %w", err)
 	}
 	lines = append(lines, string(b))
 
-	return forkedSessionID, lines, nil
+	return forkedSessionID, lines, uuidMap, nil
 }
 
 // resolveParent walks the parentUuid chain skipping progress ancestors —

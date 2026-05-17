@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -438,6 +440,96 @@ func TestInterruptAndRevertIfCleanRevertsWithSynthesizedCheckpoint(t *testing.T)
 	}
 	if len(items) != 0 {
 		t.Fatalf("items after revert = %d, want 0", len(items))
+	}
+}
+
+// TestInterruptAndRevertIfCleanSurvivesCompactBoundary is the
+// interrupt-revert counterpart to TestRevertToMessageCheckpointSurvivesCompactBoundary.
+// The "synthesize a checkpoint when none was captured" branch
+// (`resolveRevertCheckpoint`) now lifts `provider_item_id` off the
+// user item's Meta so the synthesized record drives the same
+// UUID-keyed slice — non-git workspaces benefit from the structural
+// fix too.
+//
+// Scenario: 3 logical turns, /compact summary on disk between turn
+// 0's assistant and turn 1's user prompt (the placement that
+// triggers the ordinal off-by-N). User sends turn 2 and immediately
+// hits Stop before any agent output. AO synthesizes a checkpoint
+// (no at-send capture row exists). The revert must keep turn 1's
+// full assistant response.
+func TestInterruptAndRevertIfCleanSurvivesCompactBoundary(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	const sessionID = "compact-interrupt-session"
+	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"compact-interrupt-session","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"compact-interrupt-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+{"type":"user","uuid":"cs1","parentUuid":"a0","sessionId":"compact-interrupt-session","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{"role":"user","content":"This session is being continued from a previous conversation."}}
+{"type":"user","uuid":"u1","parentUuid":"cs1","sessionId":"compact-interrupt-session","message":{"role":"user","content":"second"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"compact-interrupt-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"compact-interrupt-session","message":{"role":"user","content":"third"}}
+`)
+	thread := createCheckpointTestThread(t, app, "interrupt-compact", "claude", workspace)
+	thread.SessionRef = sessionID
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "u:0", 0, "first")
+	insertUserItem(t, app.store, thread.ID, "u:1", 1, "second")
+	// u:2 carries provider_item_id=u2 — the wire-stamp the synthesize
+	// path will read to populate the synthesized checkpoint.
+	insertUserItemWithMeta(t, app.store, thread.ID, "u:2", 2, "third", `{"provider_item_id":"u2"}`)
+
+	result, err := app.InterruptAndRevertIfClean(thread.ID)
+	if err != nil {
+		t.Fatalf("interrupt-and-revert: %v", err)
+	}
+	if !result.Reverted {
+		t.Fatalf("expected Reverted=true, got Reverted=false reason=%q", result.Reason)
+	}
+
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef == "" || updated.SessionRef == sessionID {
+		t.Fatalf("thread session ref = %q, want sliced fork session", updated.SessionRef)
+	}
+	assertClaudeSessionText(t, workspace, updated.SessionRef,
+		[]string{"first", "reply 0", "second", "reply 1"},
+		[]string{"third"})
+}
+
+// TestResolveRevertCheckpointSynthesizesProviderUserMessageID is the
+// fine-grained unit test for the synthesize path: when no persisted
+// checkpoint exists, the helper must lift the wire id off the user
+// item's Meta so the downstream Claude revert can do UUID-keyed
+// slicing. Regression guard for the bug where a non-git workspace
+// (which never captures git checkpoints) fell back to the legacy
+// ordinal walk even after the fix.
+func TestResolveRevertCheckpointSynthesizesProviderUserMessageID(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	thread := createCheckpointTestThread(t, app, "synth-uuid", "claude", t.TempDir())
+	const meta = `{"provider_item_id":"wire-u1"}`
+	insertUserItemWithMeta(t, app.store, thread.ID, "u:1", 1, "second", meta)
+
+	item := store.Item{ID: "u:1", ThreadID: thread.ID, TurnIndex: 1, Kind: "user_text", Role: "user", Meta: meta}
+	cp := app.resolveRevertCheckpoint(thread.ID, item)
+	if cp.ProviderUserMessageID != "wire-u1" {
+		t.Fatalf("synthesized ProviderUserMessageID = %q, want %q", cp.ProviderUserMessageID, "wire-u1")
+	}
+	if cp.UserItemID != "u:1" {
+		t.Fatalf("synthesized UserItemID = %q, want u:1", cp.UserItemID)
+	}
+	if cp.TurnIndex != 1 {
+		t.Fatalf("synthesized TurnIndex = %d, want 1", cp.TurnIndex)
 	}
 }
 

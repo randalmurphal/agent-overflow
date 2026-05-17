@@ -117,3 +117,61 @@ func EncodeDraftSource(ref *store.ProposedPlanSourceRef) (string, error) {
 	}
 	return string(b), nil
 }
+
+// ReadProviderItemID returns the wire-correlation id stamped onto the
+// user_text item's Meta by triage's handle_user_text path
+// (`provider_item_id` for Claude is the replay envelope's top-level
+// `uuid`; for Codex it is the userMessage item's wire id). Empty when
+// the row predates the field, the meta is malformed, or the value
+// isn't a string. The field rides as a top-level JSON key on the
+// item meta blob alongside the typed Meta fields — it isn't part of
+// the Meta struct because it's internal correlation, not UI-facing
+// content the frontend should ever read.
+//
+// The matching writer lives in
+// `internal/triage/handle_user_text.go::mergeProviderItemIDIntoMeta`
+// — both functions agree on the key name `provider_item_id`.
+func ReadProviderItemID(metaJSON string) string {
+	trimmed := strings.TrimSpace(metaJSON)
+	if trimmed == "" {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal([]byte(trimmed), &m) != nil {
+		return ""
+	}
+	id, _ := m["provider_item_id"].(string)
+	return id
+}
+
+// MergeProviderItemID returns a JSON-encoded meta blob that preserves
+// every key in `existing` and sets `provider_item_id` to
+// providerItemID. Empty providerItemID returns the original meta
+// unchanged. Used by the fork-time UUID remap to rewrite stored wire
+// ids when a Claude session JSONL is forked with fresh uuids; also
+// the canonical writer for triage's `handle_user_text` flow via
+// `mergeProviderItemIDIntoMeta`, which is a one-line delegate.
+func MergeProviderItemID(existing, providerItemID string) (string, error) {
+	if providerItemID == "" {
+		return existing, nil
+	}
+	merged := map[string]any{}
+	trimmed := strings.TrimSpace(existing)
+	if trimmed != "" {
+		if err := json.Unmarshal([]byte(trimmed), &merged); err != nil {
+			return "", fmt.Errorf("decode existing meta: %w", err)
+		}
+		if merged == nil {
+			merged = map[string]any{}
+		}
+	}
+	if cur, ok := merged["provider_item_id"].(string); ok && cur == providerItemID {
+		return existing, nil
+	}
+	merged["provider_item_id"] = providerItemID
+	encoded, err := json.Marshal(merged)
+	if err != nil {
+		return "", fmt.Errorf("encode merged meta: %w", err)
+	}
+	return string(encoded), nil
+}

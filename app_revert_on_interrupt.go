@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/composerdraft"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 )
 
 // InterruptAndRevertResult is returned by InterruptAndRevertIfClean.
@@ -208,11 +209,13 @@ func (a *App) evaluateInterruptRevertPredicate(threadID string) (bool, store.Ite
 }
 
 // resolveRevertCheckpoint returns the persisted checkpoint for the
-// user item, or a synthesized record with just the TurnIndex /
-// WorkspacePath populated when the at-send capture didn't write a
-// row (non-git workspace, capture error). The provider revert
-// helpers only depend on TurnIndex; WorkspacePath is carried for
-// possible future use and consistency with the explicit-revert path.
+// user item, or a synthesized record with just UserItemID, TurnIndex,
+// and ProviderUserMessageID populated when the at-send capture didn't
+// write a row (non-git workspace, capture error). The Claude revert
+// path keys on `ProviderUserMessageID` when available so the slice
+// point is immune to synthetic-entry ordinal drift; populating it on
+// the synthesized record means a non-git workspace also benefits from
+// the structural fix.
 func (a *App) resolveRevertCheckpoint(threadID string, userItem store.Item) store.Checkpoint {
 	if record, ok, err := a.store.GetCheckpointByUserItemID(threadID, userItem.ID); err == nil && ok {
 		if record.TurnIndex == userItem.TurnIndex {
@@ -223,8 +226,9 @@ func (a *App) resolveRevertCheckpoint(threadID string, userItem store.Item) stor
 		log.Printf("app: interrupt-and-revert: load checkpoint: %v", err)
 	}
 	return store.Checkpoint{
-		UserItemID: userItem.ID,
-		TurnIndex:  userItem.TurnIndex,
+		UserItemID:            userItem.ID,
+		TurnIndex:             userItem.TurnIndex,
+		ProviderUserMessageID: usermessage.ReadProviderItemID(userItem.Meta),
 	}
 }
 

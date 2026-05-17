@@ -1,11 +1,8 @@
 package sessionfork
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -21,9 +18,9 @@ const simple3TurnsJSONL = `{"type":"user","uuid":"u1","parentUuid":null,"session
 `
 
 func TestBuildForkLines_FullClone(t *testing.T) {
-	newID, lines, err := BuildForkLines(strings.NewReader(simple3TurnsJSONL), "src", "", "")
+	newID, lines, _, err := BuildForkLinesWithUUIDMap(strings.NewReader(simple3TurnsJSONL), "src", "", "")
 	if err != nil {
-		t.Fatalf("BuildForkLines: %v", err)
+		t.Fatalf("BuildForkLinesWithUUIDMap: %v", err)
 	}
 	if newID == "" {
 		t.Fatalf("expected non-empty newID")
@@ -55,9 +52,9 @@ func TestBuildForkLines_FullClone(t *testing.T) {
 
 func TestBuildForkLines_SliceAtMidpoint(t *testing.T) {
 	// Slice up to u2 inclusive — should have u1, a1, u2 (3 entries) + custom-title.
-	newID, lines, err := BuildForkLines(strings.NewReader(simple3TurnsJSONL), "src", "u2", "")
+	newID, lines, _, err := BuildForkLinesWithUUIDMap(strings.NewReader(simple3TurnsJSONL), "src", "u2", "")
 	if err != nil {
-		t.Fatalf("BuildForkLines: %v", err)
+		t.Fatalf("BuildForkLinesWithUUIDMap: %v", err)
 	}
 	if got, want := len(lines), 4; got != want {
 		t.Fatalf("lines=%d, want %d", got, want)
@@ -99,14 +96,14 @@ func TestBuildForkLines_SliceAtMidpoint(t *testing.T) {
 }
 
 func TestBuildForkLines_MessageNotFound(t *testing.T) {
-	_, _, err := BuildForkLines(strings.NewReader(simple3TurnsJSONL), "src", "no-such-uuid", "")
+	_, _, _, err := BuildForkLinesWithUUIDMap(strings.NewReader(simple3TurnsJSONL), "src", "no-such-uuid", "")
 	if !errors.Is(err, ErrMessageNotFound) {
 		t.Fatalf("err=%v, want ErrMessageNotFound", err)
 	}
 }
 
 func TestBuildForkLines_EmptySession(t *testing.T) {
-	_, _, err := BuildForkLines(strings.NewReader(""), "src", "", "")
+	_, _, _, err := BuildForkLinesWithUUIDMap(strings.NewReader(""), "src", "", "")
 	if !errors.Is(err, ErrSessionEmpty) {
 		t.Fatalf("err=%v, want ErrSessionEmpty", err)
 	}
@@ -120,9 +117,9 @@ const sidechainJSONL = `{"type":"user","uuid":"u1","parentUuid":null,"sessionId"
 `
 
 func TestBuildForkLines_FiltersSidechains(t *testing.T) {
-	_, lines, err := BuildForkLines(strings.NewReader(sidechainJSONL), "src", "", "")
+	_, lines, _, err := BuildForkLinesWithUUIDMap(strings.NewReader(sidechainJSONL), "src", "", "")
 	if err != nil {
-		t.Fatalf("BuildForkLines: %v", err)
+		t.Fatalf("BuildForkLinesWithUUIDMap: %v", err)
 	}
 	// 3 main-chain entries + custom-title, sidechain entries dropped.
 	if got, want := len(lines), 4; got != want {
@@ -146,9 +143,9 @@ const contentReplacementJSONL = `{"type":"user","uuid":"u1","parentUuid":null,"s
 `
 
 func TestBuildForkLines_ReEmitsContentReplacement(t *testing.T) {
-	newID, lines, err := BuildForkLines(strings.NewReader(contentReplacementJSONL), "src", "", "")
+	newID, lines, _, err := BuildForkLinesWithUUIDMap(strings.NewReader(contentReplacementJSONL), "src", "", "")
 	if err != nil {
-		t.Fatalf("BuildForkLines: %v", err)
+		t.Fatalf("BuildForkLinesWithUUIDMap: %v", err)
 	}
 	// Expected: u1, a1, content-replacement (only the one targeting "src"), custom-title = 4
 	if got, want := len(lines), 4; got != want {
@@ -175,9 +172,9 @@ const progressJSONL = `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":
 `
 
 func TestBuildForkLines_ProgressEntriesSkippedInOutputButUsedInChain(t *testing.T) {
-	newID, lines, err := BuildForkLines(strings.NewReader(progressJSONL), "src", "", "")
+	newID, lines, _, err := BuildForkLinesWithUUIDMap(strings.NewReader(progressJSONL), "src", "", "")
 	if err != nil {
-		t.Fatalf("BuildForkLines: %v", err)
+		t.Fatalf("BuildForkLinesWithUUIDMap: %v", err)
 	}
 	// 2 writable entries (u1, a1) + custom-title = 3. Progress dropped.
 	if got, want := len(lines), 3; got != want {
@@ -199,9 +196,9 @@ const truncatedJSONL = `{"type":"user","uuid":"u1","parentUuid":null,"sessionId"
 {"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"src","message":{"role":"user","cont`
 
 func TestBuildForkLines_ToleratesTruncatedFinalLine(t *testing.T) {
-	_, lines, err := BuildForkLines(strings.NewReader(truncatedJSONL), "src", "", "")
+	_, lines, _, err := BuildForkLinesWithUUIDMap(strings.NewReader(truncatedJSONL), "src", "", "")
 	if err != nil {
-		t.Fatalf("BuildForkLines: %v", err)
+		t.Fatalf("BuildForkLinesWithUUIDMap: %v", err)
 	}
 	// Truncated last line silently dropped; should still produce u1+a1+title.
 	if got, want := len(lines), 3; got != want {
@@ -211,9 +208,9 @@ func TestBuildForkLines_ToleratesTruncatedFinalLine(t *testing.T) {
 
 func TestBuildForkLines_StripsLeakageFields(t *testing.T) {
 	src := `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"src","teamName":"team-a","agentName":"alice","slug":"old-slug","sourceToolAssistantUUID":"x","message":{"role":"user","content":"hi"}}` + "\n"
-	_, lines, err := BuildForkLines(strings.NewReader(src), "src", "", "")
+	_, lines, _, err := BuildForkLinesWithUUIDMap(strings.NewReader(src), "src", "", "")
 	if err != nil {
-		t.Fatalf("BuildForkLines: %v", err)
+		t.Fatalf("BuildForkLinesWithUUIDMap: %v", err)
 	}
 	var e map[string]any
 	_ = json.Unmarshal([]byte(lines[0]), &e)
@@ -226,9 +223,9 @@ func TestBuildForkLines_StripsLeakageFields(t *testing.T) {
 
 func TestBuildForkLines_PreservesUnknownFields(t *testing.T) {
 	src := `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"src","cwd":"/repo","gitBranch":"main","version":"1.2.3","customField":"keep-me","message":{"role":"user","content":"hi"}}` + "\n"
-	_, lines, err := BuildForkLines(strings.NewReader(src), "src", "", "")
+	_, lines, _, err := BuildForkLinesWithUUIDMap(strings.NewReader(src), "src", "", "")
 	if err != nil {
-		t.Fatalf("BuildForkLines: %v", err)
+		t.Fatalf("BuildForkLinesWithUUIDMap: %v", err)
 	}
 	var e map[string]any
 	_ = json.Unmarshal([]byte(lines[0]), &e)
@@ -259,9 +256,9 @@ func TestBuildForkLines_RejectsEmptyUUID(t *testing.T) {
 	src := `{"type":"user","uuid":"","parentUuid":null,"sessionId":"src","message":{"role":"user","content":"first"}}
 {"type":"user","uuid":"u1","parentUuid":null,"sessionId":"src","message":{"role":"user","content":"second"}}
 `
-	newID, lines, err := BuildForkLines(strings.NewReader(src), "src", "", "")
+	newID, lines, _, err := BuildForkLinesWithUUIDMap(strings.NewReader(src), "src", "", "")
 	if err != nil {
-		t.Fatalf("BuildForkLines: %v", err)
+		t.Fatalf("BuildForkLinesWithUUIDMap: %v", err)
 	}
 	if newID == "" {
 		t.Fatal("expected non-empty newID")
@@ -270,67 +267,4 @@ func TestBuildForkLines_RejectsEmptyUUID(t *testing.T) {
 	if got, want := len(lines), 2; got != want {
 		t.Errorf("lines = %d, want %d (empty-uuid entry should be dropped)", got, want)
 	}
-}
-
-func TestWriteForkFile_RoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	srcPath := filepath.Join(dir, "src.jsonl")
-	if err := os.WriteFile(srcPath, []byte(simple3TurnsJSONL), 0o600); err != nil {
-		t.Fatalf("write source: %v", err)
-	}
-
-	newID, newPath, err := WriteForkFile(srcPath, "u2", "")
-	if err != nil {
-		t.Fatalf("WriteForkFile: %v", err)
-	}
-	if !strings.HasSuffix(newPath, newID+".jsonl") {
-		t.Errorf("newPath=%q does not match newID=%q", newPath, newID)
-	}
-	if filepath.Dir(newPath) != dir {
-		t.Errorf("newPath in %q, want %q", filepath.Dir(newPath), dir)
-	}
-
-	body, err := os.ReadFile(newPath)
-	if err != nil {
-		t.Fatalf("read forked file: %v", err)
-	}
-	if !bytes.HasSuffix(body, []byte("\n")) {
-		t.Errorf("forked file should end with newline")
-	}
-	// Each line is well-formed JSON.
-	for i, line := range strings.Split(strings.TrimRight(string(body), "\n"), "\n") {
-		var e map[string]any
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			t.Errorf("line %d not valid JSON: %v", i, err)
-		}
-	}
-}
-
-func TestWriteForkFile_RefusesOverwrite(t *testing.T) {
-	dir := t.TempDir()
-	srcPath := filepath.Join(dir, "src.jsonl")
-	if err := os.WriteFile(srcPath, []byte(simple3TurnsJSONL), 0o600); err != nil {
-		t.Fatalf("write source: %v", err)
-	}
-
-	// Pre-create a UUID-named file. We can't predict which UUID
-	// WriteForkFile will pick, so this test only verifies the O_EXCL
-	// flag path by re-checking the new file is created with mode 0600
-	// and we can't open it twice.
-	newID, newPath, err := WriteForkFile(srcPath, "", "")
-	if err != nil {
-		t.Fatalf("first WriteForkFile: %v", err)
-	}
-	st, err := os.Stat(newPath)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	if mode := st.Mode().Perm(); mode != 0o600 {
-		t.Errorf("file mode=%v, want 0600", mode)
-	}
-	// Now try to open the same path with O_EXCL — should fail.
-	if _, err := os.OpenFile(newPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600); err == nil {
-		t.Errorf("expected O_EXCL collision on second open")
-	}
-	_ = newID
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 // ErrUserTurnOutOfRange is returned when userTurnIndex points past the
@@ -153,15 +154,80 @@ func SliceUUIDForLastKeptTurn(srcPath string, lastKeptTurn int) (string, error) 
 	return FindUUIDBeforeUserTurn(f, lastKeptTurn+1)
 }
 
+// syntheticUserEntryFlags names the top-level boolean fields Claude
+// sets on a `type:"user"` JSONL entry that's NOT a user-typed prompt.
+//
+//   - isMeta — Skill bodies, settings injections, other system-side
+//     user-role attachments (createUserMessage({content, isMeta:true})
+//     at claude-code-source-code/src/utils/messages.ts:502-507).
+//   - isReplay — the CLI's wrapper for queued task-notification XML
+//     when a backgrounded subagent completes during a concurrent
+//     foreground tool_result (see parse_user_replay.go and
+//     docs/references/claude-wire.md §Synthetic-XML delivery channel).
+//   - isCompactSummary — written after /compact or auto-compact;
+//     carries the compacted summary as a user-role string.
+//   - isVisibleInTranscriptOnly — UI-only injection, never user input;
+//     pairs with isCompactSummary on auto-compact rows.
+//
+// Drift surface — keep synced with Claude Code's
+// `selectableUserMessagesFilter` at
+// claude-code-source-code/src/components/MessageSelector.tsx:767-792.
+var syntheticUserEntryFlags = []string{
+	"isMeta",
+	"isReplay",
+	"isCompactSummary",
+	"isVisibleInTranscriptOnly",
+}
+
+// injectedUserContentTagPairs names the balanced XML wrappers Claude
+// injects into user-role message content for non-user-authored
+// payloads. Content that contains BOTH the open and close tag of any
+// pair is a CLI injection, not a real prompt. The open-half of the
+// task-notification pair is the prefix `<task-notification` (no
+// closing `>`) so both the bare shape and any future attribute-bearing
+// variant land — every other pair uses the full open tag.
+//
+// Requiring BOTH halves is the load-bearing anti-false-positive
+// guard: a real user typing `<system-reminder>` in chat (or quoting
+// example XML in a prompt) won't trigger because the matching
+// `</system-reminder>` won't be present in their text. The
+// suppression we want catches Claude's own wrapped payloads, which
+// always emit balanced.
+//
+// This pair list deliberately mirrors
+// `internal/provider/claude/parse_user_replay.go::claudeInjectedXMLWrappers`
+// — both files filter the same upstream wrapper set and must stay
+// in lockstep on both the entries and the balanced-matching contract.
+// If you extend one, extend the other.
+//
+// Drift surface — keep synced with upstream:
+//   - <task-notification>      claude-code-source-code/src/tasks/LocalShellTask/LocalShellTask.tsx:160-165
+//   - <system-reminder>        claude-code-source-code/src/utils/messages.ts (pervasive wrapper)
+//   - <bash-input/-stdout/-stderr>  claude-code-source-code/src/services/processBashCommand.tsx
+//   - <local-command-stdout>   claude-code-source-code/src/services/processSlashCommand.tsx
+var injectedUserContentTagPairs = []struct{ open, close string }{
+	{"<task-notification", "</task-notification>"},
+	{"<system-reminder>", "</system-reminder>"},
+	{"<bash-input>", "</bash-input>"},
+	{"<bash-stdout>", "</bash-stdout>"},
+	{"<bash-stderr>", "</bash-stderr>"},
+	{"<local-command-stdout>", "</local-command-stdout>"},
+}
+
 // isRealUserPrompt reports whether a JSONL entry represents a user-typed
-// prompt rather than a tool-result echo or sidechain message.
+// prompt rather than a tool-result echo, sidechain message, or
+// CLI-injected synthetic user-role entry (Skill body, compact
+// summary, replayed task notification, etc.).
 //
 // A real prompt:
 //   - has type == "user"
 //   - is not a sidechain (subagent transcript)
+//   - has NO synthetic-injection flag set (isMeta / isReplay /
+//     isCompactSummary / isVisibleInTranscriptOnly)
 //   - has message.role == "user"
-//   - has message.content that is either a string OR an array with at
-//     least one non-tool_result block
+//   - has message.content that is either a string (not wrapped in any
+//     Claude-injected XML envelope) OR an array with at least one
+//     non-tool_result block whose text (if any) isn't wrapped XML
 //
 // Tool-result echoes have type == "user" but their content is an array
 // composed entirely of tool_result blocks.
@@ -172,6 +238,11 @@ func isRealUserPrompt(entry map[string]any) bool {
 	if v, _ := entry["isSidechain"].(bool); v {
 		return false
 	}
+	for _, flag := range syntheticUserEntryFlags {
+		if v, _ := entry[flag].(bool); v {
+			return false
+		}
+	}
 	msg, ok := entry["message"].(map[string]any)
 	if !ok {
 		return false
@@ -181,23 +252,57 @@ func isRealUserPrompt(entry map[string]any) bool {
 	}
 	switch content := msg["content"].(type) {
 	case string:
+		if hasInjectedUserContentTag(content) {
+			return false
+		}
 		return true
 	case []any:
+		hasNonToolResult := false
 		for _, block := range content {
 			b, ok := block.(map[string]any)
 			if !ok {
 				// Non-object content block — treat as user-authored to be
 				// safe (very rare; e.g. a bare string in array form).
-				return true
+				hasNonToolResult = true
+				continue
 			}
-			if t, _ := b["type"].(string); t != "tool_result" {
-				return true
+			t, _ := b["type"].(string)
+			if t == "tool_result" {
+				continue
+			}
+			hasNonToolResult = true
+			// Reject when ANY text block carries a CLI-injected XML
+			// wrapper — these are non-user-authored payloads even when
+			// they ride an `isMeta:false` entry (rare but observed for
+			// command-output / system-reminder one-shots).
+			if t == "text" {
+				if text, _ := b["text"].(string); hasInjectedUserContentTag(text) {
+					return false
+				}
 			}
 		}
-		return false
+		return hasNonToolResult
 	default:
 		// Unknown content shape. Conservative default: treat as a real
 		// prompt so we don't silently swallow user input.
 		return true
 	}
+}
+
+// hasInjectedUserContentTag reports whether s contains any of the
+// CLI-injected XML wrappers enumerated in injectedUserContentTagPairs.
+// Requires BOTH the open and close tag of a pair to be present
+// (mirrors parse_user_replay.go::isClaudeInjectedReplayContent's
+// balanced-matching contract) so a user typing a single tag-shaped
+// token in chat doesn't false-positive.
+func hasInjectedUserContentTag(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, pair := range injectedUserContentTagPairs {
+		if strings.Contains(s, pair.open) && strings.Contains(s, pair.close) {
+			return true
+		}
+	}
+	return false
 }

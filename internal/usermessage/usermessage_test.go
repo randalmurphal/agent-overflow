@@ -160,3 +160,119 @@ func TestEncodeDraftSourceEncodesValidRef(t *testing.T) {
 		t.Fatalf("encoded ref missing itemId: %s", got)
 	}
 }
+
+func TestReadProviderItemID(t *testing.T) {
+	cases := []struct {
+		name string
+		meta string
+		want string
+	}{
+		{"empty", "", ""},
+		{"whitespace", "   \n\t", ""},
+		{"missing key", `{"foo":"bar"}`, ""},
+		{"present", `{"provider_item_id":"u-abc"}`, "u-abc"},
+		{"present with other keys", `{"foo":"bar","provider_item_id":"u-abc"}`, "u-abc"},
+		{"non-string value", `{"provider_item_id":42}`, ""},
+		{"null value", `{"provider_item_id":null}`, ""},
+		{"malformed json", `{not-json`, ""},
+		{"json null literal", `null`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ReadProviderItemID(tc.meta); got != tc.want {
+				t.Errorf("ReadProviderItemID(%q) = %q, want %q", tc.meta, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMergeProviderItemIDEmptyProviderIDPassesThrough(t *testing.T) {
+	cases := []string{"", `{"foo":"bar"}`, `{"provider_item_id":"u-old"}`}
+	for _, existing := range cases {
+		got, err := MergeProviderItemID(existing, "")
+		if err != nil {
+			t.Fatalf("MergeProviderItemID(%q, \"\"): %v", existing, err)
+		}
+		if got != existing {
+			t.Errorf("MergeProviderItemID(%q, \"\") = %q, want unchanged %q", existing, got, existing)
+		}
+	}
+}
+
+func TestMergeProviderItemIDPreservesOtherKeys(t *testing.T) {
+	got, err := MergeProviderItemID(`{"foo":"bar","baz":42}`, "u-new")
+	if err != nil {
+		t.Fatalf("MergeProviderItemID: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(got), &decoded); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if decoded["provider_item_id"] != "u-new" {
+		t.Errorf("provider_item_id = %v, want u-new", decoded["provider_item_id"])
+	}
+	if decoded["foo"] != "bar" || decoded["baz"].(float64) != 42 {
+		t.Errorf("other keys lost: %+v", decoded)
+	}
+}
+
+func TestMergeProviderItemIDEmptyMetaProducesValidJSON(t *testing.T) {
+	got, err := MergeProviderItemID("", "u-new")
+	if err != nil {
+		t.Fatalf("MergeProviderItemID(\"\", \"u-new\"): %v", err)
+	}
+	if got == "" {
+		t.Fatal("expected JSON output, got empty")
+	}
+	if ReadProviderItemID(got) != "u-new" {
+		t.Errorf("round-trip mismatch: %q reads back as %q, want u-new", got, ReadProviderItemID(got))
+	}
+}
+
+func TestMergeProviderItemIDDuplicateIsNoOp(t *testing.T) {
+	existing := `{"provider_item_id":"u-same","foo":"bar"}`
+	got, err := MergeProviderItemID(existing, "u-same")
+	if err != nil {
+		t.Fatalf("MergeProviderItemID: %v", err)
+	}
+	if got != existing {
+		t.Errorf("duplicate merge should be no-op; got %q, want unchanged %q", got, existing)
+	}
+}
+
+func TestMergeProviderItemIDReplacesExisting(t *testing.T) {
+	got, err := MergeProviderItemID(`{"provider_item_id":"u-old","foo":"bar"}`, "u-new")
+	if err != nil {
+		t.Fatalf("MergeProviderItemID: %v", err)
+	}
+	if ReadProviderItemID(got) != "u-new" {
+		t.Errorf("provider_item_id not replaced; got %q", got)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(got), &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded["foo"] != "bar" {
+		t.Errorf("sibling key lost: %+v", decoded)
+	}
+}
+
+func TestMergeProviderItemIDRejectsMalformedExisting(t *testing.T) {
+	_, err := MergeProviderItemID(`{not-json`, "u-new")
+	if err == nil {
+		t.Fatal("expected error for malformed existing meta, got nil")
+	}
+}
+
+func TestMergeProviderItemIDHandlesJSONNullExisting(t *testing.T) {
+	// "null" decodes to a nil map; the merge must still produce a valid
+	// JSON object with the stamped id so the round-trip through
+	// ReadProviderItemID works.
+	got, err := MergeProviderItemID(`null`, "u-new")
+	if err != nil {
+		t.Fatalf("MergeProviderItemID(\"null\", ...): %v", err)
+	}
+	if ReadProviderItemID(got) != "u-new" {
+		t.Errorf("json-null existing should be replaced with valid object; got %q", got)
+	}
+}

@@ -439,7 +439,16 @@ func (a *App) revertClaudeThreadToMessage(thread store.Thread, checkpoint store.
 	if err != nil {
 		return fmt.Errorf("locate claude session: %w", err)
 	}
-	newID, newPath, err := sessionfork.WriteForkFileForLastKeptTurn(srcPath, checkpoint.TurnIndex-1, "")
+	// Prefer UUID-keyed slicing when the checkpoint carries a wire
+	// id — it is immune to synthetic-entry ordinal drift (e.g.
+	// /compact-summary rows). Fall back to the ordinal walk when
+	// the checkpoint has no stamped id (the user_text row pre-dates
+	// triage's `provider_item_id` stamping path, or the synthesized
+	// at-send record found nothing on the item meta);
+	// `findmessage.isRealUserPrompt` filters the same synthetic
+	// flags so the fallback is correct as long as the wire shape
+	// stays in its documented set.
+	newID, newPath, err := a.writeRevertedClaudeSession(srcPath, checkpoint)
 	if err != nil {
 		return fmt.Errorf("write reverted session: %w", err)
 	}
@@ -450,6 +459,51 @@ func (a *App) revertClaudeThreadToMessage(thread store.Thread, checkpoint store.
 		return fmt.Errorf("persist reverted claude state: %w", err)
 	}
 	return nil
+}
+
+// writeRevertedClaudeSession is the revert-path call into
+// writeClaudeSessionSlice. The revert path discards the uuidMap
+// because nothing downstream remaps stored ids — the active thread's
+// `items.meta.provider_item_id` still points at the source session's
+// UUIDs, which is correct because the source-message AO row remains
+// the slice anchor for any subsequent revert.
+func (a *App) writeRevertedClaudeSession(srcPath string, checkpoint store.Checkpoint) (string, string, error) {
+	newID, newPath, _, err := writeClaudeSessionSlice(
+		srcPath, checkpoint.ProviderUserMessageID, checkpoint.TurnIndex-1, "claude rollback",
+	)
+	return newID, newPath, err
+}
+
+// writeClaudeSessionSlice tries the UUID-keyed fork-slice when
+// anchorUUID is non-empty. On ErrMessageNotFound — most often: the
+// stored UUID is stale because the session was forked but the
+// post-fork remap regressed — it falls back to the ordinal walk at
+// fallbackLastKeptTurn so a known-imperfect slice still beats a
+// hard error. Other errors from the UUID-keyed branch propagate
+// verbatim. logCtx prefixes the fallback log so the operator can
+// tell which entry point hit the stale id; a loud log here is
+// deliberate because a wrong-source slice is worse than the
+// ordinal walk's known synthetic-entry sensitivity.
+//
+// Returns (newSessionID, newPath, uuidMap, err). The fork callers
+// thread the uuidMap into `remapForkedClaudeUUIDs`; the revert
+// caller discards it.
+func writeClaudeSessionSlice(
+	srcPath, anchorUUID string,
+	fallbackLastKeptTurn int,
+	logCtx string,
+) (string, string, map[string]string, error) {
+	if uuid := strings.TrimSpace(anchorUUID); uuid != "" {
+		newID, newPath, uuidMap, err := sessionfork.WriteForkFileForUserMessageUUID(srcPath, uuid, "")
+		if err == nil {
+			return newID, newPath, uuidMap, nil
+		}
+		if !errors.Is(err, sessionfork.ErrMessageNotFound) {
+			return "", "", nil, err
+		}
+		log.Printf("%s: stored provider_user_message_id %q not in session %s — falling back to ordinal slice; check fork remap coverage", logCtx, uuid, srcPath)
+	}
+	return sessionfork.WriteForkFileForLastKeptTurn(srcPath, fallbackLastKeptTurn, "")
 }
 
 func (a *App) deleteCheckpointRefs(ctx context.Context, threadID, action string, refs []store.CheckpointRef) error {

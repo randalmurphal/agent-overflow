@@ -315,6 +315,141 @@ func TestRevertToMessageCheckpointSlicesClaudeSessionByTurnBoundary(t *testing.T
 	assertClaudeSessionText(t, workspace, updated.SessionRef, []string{"first"}, []string{"second"})
 }
 
+// TestRevertToMessageCheckpointSurvivesCompactBoundary is the
+// regression guard for the ordinal-walk off-by-N bug. The fixture
+// places a /compact summary BETWEEN the turn we want to keep (turn
+// 1) and an earlier turn (turn 0) — that ordering is what trips the
+// legacy ordinal walk. Counting cs1 as a "real" user prompt pushes
+// every subsequent real prompt's index off by one; FindUUIDBeforeUserTurn
+// then returns the parent of cs1 (= a0) instead of the parent of u1
+// (= cs1). The fork ends up sliced at end-of-turn-0 (losing u1+a1)
+// instead of end-of-turn-1.
+//
+// With the UUID-keyed path (driven by the checkpoint's stored wire
+// id u2), the slice is immune to that drift — proving the structural
+// fix at the integration level. The companion fallback test below
+// proves the tightened ordinal walk reaches the same answer.
+func TestRevertToMessageCheckpointSurvivesCompactBoundary(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	const sessionID = "compact-revert-session"
+	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"compact-revert-session","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"compact-revert-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+{"type":"user","uuid":"cs1","parentUuid":"a0","sessionId":"compact-revert-session","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{"role":"user","content":"This session is being continued from a previous conversation."}}
+{"type":"user","uuid":"u1","parentUuid":"cs1","sessionId":"compact-revert-session","message":{"role":"user","content":"second"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"compact-revert-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"compact-revert-session","message":{"role":"user","content":"third"}}
+{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"compact-revert-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 2"}]}}
+`)
+	thread := createCheckpointTestThread(t, app, "t-compact-revert", "claude", workspace)
+	thread.SessionRef = sessionID
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	insertUserItem(t, app.store, thread.ID, "user:2", 2, "third")
+	if err := app.store.SaveCheckpoint(store.Checkpoint{
+		ID:                    "chk-compact",
+		ThreadID:              thread.ID,
+		UserItemID:            "user:2",
+		TurnIndex:             2,
+		ProviderUserMessageID: "u2",
+		RefName:               checkpoint.ThreadRefPrefix(thread.ID) + "message/compact-revert",
+		CapturedAt:            time.Now().UnixMilli(),
+		WorkspacePath:         workspace,
+	}); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+
+	if err := app.RevertToMessageCheckpoint(thread.ID, "user:2", RevertModeConversationOnly); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef == "" || updated.SessionRef == sessionID {
+		t.Fatalf("thread session ref = %q, want sliced fork session", updated.SessionRef)
+	}
+	// "second" / "reply 1" MUST survive — the bug was reverting one turn
+	// too far and losing them. "third" / "reply 2" MUST be gone — that's
+	// the turn the user reverted away from.
+	assertClaudeSessionText(t, workspace, updated.SessionRef,
+		[]string{"first", "reply 0", "second", "reply 1"},
+		[]string{"third", "reply 2"})
+}
+
+// TestRevertToMessageCheckpointFallbackHandlesCompactBoundary covers
+// the legacy-row branch in `writeRevertedClaudeSession`: a checkpoint
+// without a stored `ProviderUserMessageID` drops into the ordinal
+// walk. The tightened `isRealUserPrompt` filter (which now rejects
+// `isCompactSummary`) keeps that fallback correct even in the
+// presence of a /compact entry — so pre-fix rows that never got the
+// wire-id stamp still slice in the right place. Fixture mirrors
+// the UUID-keyed test so the bug-trigger condition (compact summary
+// before the revert target) is present in both paths.
+func TestRevertToMessageCheckpointFallbackHandlesCompactBoundary(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	const sessionID = "compact-fallback-session"
+	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"compact-fallback-session","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"compact-fallback-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+{"type":"user","uuid":"cs1","parentUuid":"a0","sessionId":"compact-fallback-session","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{"role":"user","content":"This session is being continued from a previous conversation."}}
+{"type":"user","uuid":"u1","parentUuid":"cs1","sessionId":"compact-fallback-session","message":{"role":"user","content":"second"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"compact-fallback-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"compact-fallback-session","message":{"role":"user","content":"third"}}
+{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"compact-fallback-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 2"}]}}
+`)
+	thread := createCheckpointTestThread(t, app, "t-compact-fallback", "claude", workspace)
+	thread.SessionRef = sessionID
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	insertUserItem(t, app.store, thread.ID, "user:2", 2, "third")
+	// Note: NO ProviderUserMessageID — simulates legacy row pre-dating
+	// the wire-id stamp.
+	if err := app.store.SaveCheckpoint(store.Checkpoint{
+		ID:            "chk-fallback",
+		ThreadID:      thread.ID,
+		UserItemID:    "user:2",
+		TurnIndex:     2,
+		RefName:       checkpoint.ThreadRefPrefix(thread.ID) + "message/compact-fallback",
+		CapturedAt:    time.Now().UnixMilli(),
+		WorkspacePath: workspace,
+	}); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+
+	if err := app.RevertToMessageCheckpoint(thread.ID, "user:2", RevertModeConversationOnly); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef == "" || updated.SessionRef == sessionID {
+		t.Fatalf("thread session ref = %q, want sliced fork session", updated.SessionRef)
+	}
+	assertClaudeSessionText(t, workspace, updated.SessionRef,
+		[]string{"first", "reply 0", "second", "reply 1"},
+		[]string{"third", "reply 2"})
+}
+
 func TestRevertToMessageCheckpointSlicesClaudeSessionFromPendingForkRef(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()

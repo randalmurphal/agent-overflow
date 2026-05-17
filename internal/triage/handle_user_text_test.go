@@ -538,62 +538,7 @@ func TestReadProviderItemIDFromMeta(t *testing.T) {
 	}
 }
 
-func TestMergeProviderItemIDIntoMeta(t *testing.T) {
-	t.Run("empty existing", func(t *testing.T) {
-		got, err := mergeProviderItemIDIntoMeta("", "msg_a")
-		if err != nil {
-			t.Fatalf("merge: %v", err)
-		}
-		var m map[string]any
-		if err := json.Unmarshal([]byte(got), &m); err != nil {
-			t.Fatalf("decode %q: %v", got, err)
-		}
-		if id, _ := m["provider_item_id"].(string); id != "msg_a" {
-			t.Fatalf("provider_item_id = %v, want msg_a", m["provider_item_id"])
-		}
-	})
-
-	t.Run("preserves existing keys", func(t *testing.T) {
-		got, err := mergeProviderItemIDIntoMeta(`{"foo":"bar","attachments":[1,2]}`, "msg_b")
-		if err != nil {
-			t.Fatalf("merge: %v", err)
-		}
-		var m map[string]any
-		if err := json.Unmarshal([]byte(got), &m); err != nil {
-			t.Fatalf("decode %q: %v", got, err)
-		}
-		if m["foo"] != "bar" {
-			t.Fatalf("lost foo: %v", m)
-		}
-		if id, _ := m["provider_item_id"].(string); id != "msg_b" {
-			t.Fatalf("provider_item_id = %v", m["provider_item_id"])
-		}
-	})
-
-	t.Run("empty providerItemID returns existing", func(t *testing.T) {
-		got, err := mergeProviderItemIDIntoMeta(`{"foo":"bar"}`, "")
-		if err != nil {
-			t.Fatalf("merge: %v", err)
-		}
-		if got != `{"foo":"bar"}` {
-			t.Fatalf("got %q, want existing unchanged", got)
-		}
-	})
-
-	t.Run("idempotent on same id", func(t *testing.T) {
-		input := `{"foo":"bar","provider_item_id":"msg_c"}`
-		got, err := mergeProviderItemIDIntoMeta(input, "msg_c")
-		if err != nil {
-			t.Fatalf("merge: %v", err)
-		}
-		if got != input {
-			t.Fatalf("idempotent merge returned %q, want %q", got, input)
-		}
-	})
-
-	t.Run("malformed existing returns error", func(t *testing.T) {
-		if _, err := mergeProviderItemIDIntoMeta(`not json`, "msg_d"); err == nil {
-			t.Fatalf("expected error for malformed meta")
-		}
-	})
-}
+// Merge-meta behavior is covered by
+// internal/usermessage/usermessage_test.go::TestMergeProviderItemID*.
+// The triage path is now a thin call site over
+// usermessage.MergeProviderItemID; duplicate coverage here would drift.

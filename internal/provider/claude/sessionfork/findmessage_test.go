@@ -127,6 +127,113 @@ func TestFindUUIDBeforeUserTurn_OnlyToolResultsIsNotAPrompt(t *testing.T) {
 	}
 }
 
+// TestFindUUIDBeforeUserTurn_SkipsCompactSummary is the regression
+// guard for the off-by-N revert/fork bug. A /compact or auto-compact
+// writes a `user{isCompactSummary:true, isVisibleInTranscriptOnly:true}`
+// entry to the JSONL. That entry's `content` is a string (not a
+// tool_result echo) and its `parentUuid` points at a `system`
+// envelope from the compaction event — NOT at any real assistant
+// turn. Counting it as a real prompt makes the slice point land one
+// turn earlier than intended.
+func TestFindUUIDBeforeUserTurn_SkipsCompactSummary(t *testing.T) {
+	src := `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"src","message":{"role":"user","content":"first real prompt"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"first response"}]}}
+{"type":"system","uuid":"sys-compact","parentUuid":null,"sessionId":"src","content":"compaction event"}
+{"type":"user","uuid":"cs1","parentUuid":"sys-compact","sessionId":"src","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{"role":"user","content":"This session is being continued from a previous conversation..."}}
+{"type":"assistant","uuid":"a2","parentUuid":"cs1","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"resumed response"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a2","sessionId":"src","message":{"role":"user","content":"second real prompt"}}
+`
+	// Two real prompts: u1 (index 0) and u2 (index 1). The compact
+	// summary cs1 is NOT a real prompt and must be skipped.
+	got, err := FindUUIDBeforeUserTurn(strings.NewReader(src), 1)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got != "a2" {
+		t.Errorf("got %q, want a2 (u2's parent — compact summary cs1 must not be counted as a real prompt)", got)
+	}
+}
+
+// TestFindUUIDBeforeUserTurn_SkipsIsMeta covers the Skill-load /
+// system-injected user-role entries Claude writes to JSONL.
+func TestFindUUIDBeforeUserTurn_SkipsIsMeta(t *testing.T) {
+	src := `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"src","message":{"role":"user","content":"first real prompt"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"response"}]}}
+{"type":"user","uuid":"meta1","parentUuid":"a1","sessionId":"src","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /home/foo/.claude/skills/post-task-review"}]}}
+{"type":"user","uuid":"u2","parentUuid":"meta1","sessionId":"src","message":{"role":"user","content":"second real prompt"}}
+`
+	got, err := FindUUIDBeforeUserTurn(strings.NewReader(src), 1)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got != "meta1" {
+		t.Errorf("got %q, want meta1 (u2's parent — isMeta user entries must not be counted)", got)
+	}
+}
+
+// TestFindUUIDBeforeUserTurn_SkipsIsReplay covers the synthetic
+// task-notification echoes the CLI may write into the JSONL when a
+// backgrounded subagent completes during a concurrent foreground
+// tool_result. The boolean `isReplay:true` flag is the load-bearing
+// signal — fixture content is deliberately plain text so the
+// wrapper-XML filter does NOT fire here; we want to prove the flag
+// alone is enough to skip the entry.
+func TestFindUUIDBeforeUserTurn_SkipsIsReplay(t *testing.T) {
+	src := `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"src","message":{"role":"user","content":"first real prompt"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"response"}]}}
+{"type":"user","uuid":"replay1","parentUuid":"a1","sessionId":"src","isReplay":true,"message":{"role":"user","content":"replayed user-role envelope, plain content"}}
+{"type":"user","uuid":"u2","parentUuid":"replay1","sessionId":"src","message":{"role":"user","content":"second real prompt"}}
+`
+	got, err := FindUUIDBeforeUserTurn(strings.NewReader(src), 1)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got != "replay1" {
+		t.Errorf("got %q, want replay1 (u2's parent — isReplay user entries must not be counted)", got)
+	}
+}
+
+// TestFindUUIDBeforeUserTurn_SkipsInjectedXMLContent covers
+// task-notification / system-reminder / bash-stdout / etc. wrapper
+// content even when none of the boolean synthetic flags are set —
+// the wire-replay parser uses the same wrapper set to suppress
+// emission, so the on-disk slice filter must agree.
+func TestFindUUIDBeforeUserTurn_SkipsInjectedXMLContent(t *testing.T) {
+	src := `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"src","message":{"role":"user","content":"first real prompt"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"response"}]}}
+{"type":"user","uuid":"inj1","parentUuid":"a1","sessionId":"src","message":{"role":"user","content":"<system-reminder>some system context</system-reminder>"}}
+{"type":"user","uuid":"u2","parentUuid":"inj1","sessionId":"src","message":{"role":"user","content":"second real prompt"}}
+`
+	got, err := FindUUIDBeforeUserTurn(strings.NewReader(src), 1)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got != "inj1" {
+		t.Errorf("got %q, want inj1 (u2's parent — injected XML wrapper content must not be counted)", got)
+	}
+}
+
+// TestFindParentUUIDForUserMessageUUID_ImmuneToSynthetics demonstrates
+// that the UUID-keyed lookup is structurally immune to the
+// over-counting bug — it matches by UUID, not by ordinal, so any
+// number of synthetic entries between real prompts is irrelevant.
+func TestFindParentUUIDForUserMessageUUID_ImmuneToSynthetics(t *testing.T) {
+	src := `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"src","message":{"role":"user","content":"first real prompt"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"first response"}]}}
+{"type":"system","uuid":"sys-compact","parentUuid":null,"sessionId":"src","content":"compaction event"}
+{"type":"user","uuid":"cs1","parentUuid":"sys-compact","sessionId":"src","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{"role":"user","content":"This session is being continued..."}}
+{"type":"assistant","uuid":"a2","parentUuid":"cs1","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"resumed response"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a2","sessionId":"src","message":{"role":"user","content":"second real prompt"}}
+`
+	got, err := FindParentUUIDForUserMessageUUID(strings.NewReader(src), "u2")
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got != "a2" {
+		t.Fatalf("got %q, want a2 (u2's parent — UUID-keyed lookup must land correctly regardless of synthetic entries between prompts)", got)
+	}
+}
+
 func TestSliceUUIDForLastKeptTurn(t *testing.T) {
 	// Round-trip via the disk-based helper. Slice through turn 0 keeps
 	// only the first prompt's full turn — slice point is u1's parent (a2

@@ -1509,6 +1509,33 @@ func (s *Store) UpdateItemPayload(id, payloadID, summary string, createdAt int64
 	return nil
 }
 
+// UpdateItemMeta rewrites only the `meta` column on a single item
+// row, scoped to the owning thread. Used by the fork-time UUID remap
+// in `app_thread_fork.go::remapForkedClaudeUUIDs` to refresh a
+// cloned `user_text` row's `provider_item_id` after the source
+// session JSONL is forked with fresh uuids. Distinct from
+// `UpsertItem` because the remap is a back-fill on cloned data, not
+// a wire event — it must not bump `updated_at`, must not run the
+// payload upsert path, and must not emit a frontend `item:upsert`
+// notification (no wire correlation occurred).
+//
+// Returns sql.ErrNoRows-wrapped error when (threadID, id) does not
+// match any row so partial fork cleanups can detect drift before
+// committing.
+func (s *Store) UpdateItemMeta(threadID, id, meta string) error {
+	result, err := s.db.Exec(
+		`UPDATE items SET meta = ? WHERE thread_id = ? AND id = ?`,
+		meta, threadID, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update item meta %s/%s: %w", threadID, id, err)
+	}
+	return requireRowsAffected(
+		result,
+		fmt.Sprintf("store: update item meta %s/%s", threadID, id),
+	)
+}
+
 // UpdateItemStatus transitions an inline tool-call item from its current
 // status (typically "running") to the supplied status, replaces its
 // summary, and re-links (or clears) its payload_id. status must be one

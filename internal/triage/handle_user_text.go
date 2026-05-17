@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 )
 
 // handleUserText routes the wire-confirmation envelope for a user message.
@@ -73,7 +74,7 @@ func (r *Router) persistDeferredUserText(pending pendingSend, providerItemID str
 	item.CreatedAt = now
 	item.UpdatedAt = now
 
-	mergedMeta, err := mergeProviderItemIDIntoMeta(item.Meta, providerItemID)
+	mergedMeta, err := usermessage.MergeProviderItemID(item.Meta, providerItemID)
 	if err != nil {
 		return fmt.Errorf("triage: merge provider_item_id into deferred %s/%s meta: %w", item.ThreadID, item.ID, err)
 	}
@@ -171,7 +172,7 @@ func (r *Router) attachProviderItemIDToUserRow(threadID, aoItemID, providerItemI
 		return nil
 	}
 
-	mergedMeta, err := mergeProviderItemIDIntoMeta(existing.Meta, providerItemID)
+	mergedMeta, err := usermessage.MergeProviderItemID(existing.Meta, providerItemID)
 	if err != nil {
 		return fmt.Errorf("triage: merge provider_item_id into %s/%s meta: %w", threadID, aoItemID, err)
 	}
@@ -207,36 +208,6 @@ func (r *Router) attachProviderItemIDToUserRow(threadID, aoItemID, providerItemI
 	}
 	r.emitItemUpsertWithActivity(persisted, false)
 	return nil
-}
-
-// mergeProviderItemIDIntoMeta returns a JSON string that carries the
-// existing meta keys plus `provider_item_id`. An empty providerItemID
-// returns the original meta unchanged (no-op for callers that don't
-// have a wire id). An empty/whitespace existing meta still produces a
-// well-formed `{"provider_item_id":"..."}` so the row's meta stays
-// valid JSON.
-func mergeProviderItemIDIntoMeta(existing, providerItemID string) (string, error) {
-	if providerItemID == "" {
-		return existing, nil
-	}
-	merged := map[string]any{}
-	if existing != "" {
-		if err := json.Unmarshal([]byte(existing), &merged); err != nil {
-			return "", fmt.Errorf("decode existing meta: %w", err)
-		}
-		if merged == nil {
-			merged = map[string]any{}
-		}
-	}
-	if cur, ok := merged["provider_item_id"].(string); ok && cur == providerItemID {
-		return existing, nil
-	}
-	merged["provider_item_id"] = providerItemID
-	encoded, err := json.Marshal(merged)
-	if err != nil {
-		return "", fmt.Errorf("encode merged meta: %w", err)
-	}
-	return string(encoded), nil
 }
 
 // persistWireOnlyUserText creates a fresh `user_text` row representing
