@@ -262,6 +262,21 @@ func (s *Store) AppendPayloadData(id string, delta []byte, meta string, createdA
 	return requireRowsAffected(result, fmt.Sprintf("store: append payload data %s", id))
 }
 
+// ReplacePayloadData replaces an existing payload's data blob in-place,
+// updating its meta and created_at stamp in the same UPDATE. Streaming paths
+// use this when a provider completion sends an authoritative final payload
+// that should supersede accumulated deltas.
+func (s *Store) ReplacePayloadData(id string, data []byte, meta string, createdAt int64) error {
+	result, err := s.db.Exec(
+		`UPDATE payloads SET data = ?, meta = ?, created_at = ? WHERE id = ?`,
+		data, meta, createdAt, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: replace payload data %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: replace payload data %s", id))
+}
+
 // UpdatePayloadMeta updates only the meta column of an existing payload
 // without touching the data blob. Used for signature / preview patches
 // that arrive after the blob is already assembled — callers that

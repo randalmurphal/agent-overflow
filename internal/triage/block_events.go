@@ -25,26 +25,26 @@ func (r *Router) handleContentBlockStop(evt provider.ProviderEvent) error {
 	// the next provider event flow immediately; settleTurnStreaming at
 	// turn boundary still waits on every in-flight scope before the
 	// turns row commits.
-	switch r.blockTypeForStop(evt.ThreadID, turnIndex, scope, evt.Meta) {
+	switch r.blockTypeForStop(evt.ThreadID, turnIndex, scope, evt.ItemID, evt.Meta) {
 	case "thinking":
 		if signature := blockSignature(evt.Meta); signature != "" {
-			_ = r.persistThinkingSignature(evt.ThreadID, turnIndex, scope, signature)
+			_ = r.persistThinkingSignature(evt.ThreadID, turnIndex, scope, evt.ItemID, signature)
 		}
-		r.settleStreamingThinkingAsync(evt.ThreadID, turnIndex, scope, statusCompleted)
+		r.settleStreamingThinkingAsync(evt.ThreadID, turnIndex, scope, evt.ItemID, statusCompleted, evt.Content, evt.ContentPresent)
 		return nil
 	case "text":
-		r.settleStreamingTextAsync(evt.ThreadID, turnIndex, scope, statusCompleted)
+		r.settleStreamingTextAsync(evt.ThreadID, turnIndex, scope, evt.ItemID, statusCompleted, evt.Content, evt.ContentPresent)
 		return nil
 	default:
 		return nil
 	}
 }
 
-func (r *Router) blockTypeForStop(threadID string, turnIndex int, scope string, raw json.RawMessage) string {
+func (r *Router) blockTypeForStop(threadID string, turnIndex int, scope, providerItemID string, raw json.RawMessage) string {
 	if blockType := metaNestedString(raw, "blockType"); blockType != "" {
 		return blockType
 	}
-	key := scopeCounterKey(threadID, turnIndex, scope)
+	key := activeStreamKey(threadID, turnIndex, scope, providerItemID)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	// fall back to whichever block is currently active in the scope
@@ -54,6 +54,19 @@ func (r *Router) blockTypeForStop(threadID string, turnIndex int, scope string, 
 	}
 	if r.activeTextBlocks[key] {
 		return "text"
+	}
+	if providerItemID != "" {
+		return ""
+	}
+	for key, ref := range r.activeThinkingBlockRefs {
+		if ref.threadID == threadID && ref.turnIndex == turnIndex && ref.scope == scope && r.activeThinkingBlocks[key] {
+			return "thinking"
+		}
+	}
+	for key, ref := range r.activeTextBlockRefs {
+		if ref.threadID == threadID && ref.turnIndex == turnIndex && ref.scope == scope && r.activeTextBlocks[key] {
+			return "text"
+		}
 	}
 	return ""
 }
@@ -65,8 +78,11 @@ func blockSignature(raw json.RawMessage) string {
 	return metaNestedString(raw, "content_block", "signature")
 }
 
-func (r *Router) persistThinkingSignature(threadID string, turnIndex int, scope, signature string) error {
-	itemID := thinkingItemID(turnIndex, scope, r.blockIndex(threadID, turnIndex, scope))
+func (r *Router) persistThinkingSignature(threadID string, turnIndex int, scope, providerItemID, signature string) error {
+	itemID, found := r.activeThinkingItemID(threadID, turnIndex, scope, providerItemID)
+	if !found {
+		return nil
+	}
 	item, found, err := r.store.GetThreadItem(threadID, itemID)
 	if err != nil || !found {
 		return err

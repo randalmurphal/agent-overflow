@@ -1060,6 +1060,37 @@ func TestAppendPayloadDataErrorsOnMissingPayload(t *testing.T) {
 	}
 }
 
+func TestReplacePayloadDataReplacesInPlace(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.InsertPayload(Payload{
+		ID: "p", Kind: "thinking", Meta: `{"v":1}`,
+		Data: []byte("streamed draft"), CreatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("insert payload: %v", err)
+	}
+
+	if err := s.ReplacePayloadData("p", []byte("final text"), `{"v":2}`, 2000); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	data, err := s.GetPayloadData("p")
+	if err != nil {
+		t.Fatalf("get data: %v", err)
+	}
+	if string(data) != "final text" {
+		t.Errorf("data = %q, want final text", data)
+	}
+	meta, err := s.GetPayloadMeta("p")
+	if err != nil {
+		t.Fatalf("get meta: %v", err)
+	}
+	if meta.Meta != `{"v":2}` {
+		t.Errorf("meta = %q, want %q", meta.Meta, `{"v":2}`)
+	}
+	if meta.CreatedAt != 2000 {
+		t.Errorf("CreatedAt = %d, want 2000", meta.CreatedAt)
+	}
+}
+
 // TestGetPayloadPreviewSliceInsideSQLite covers the new substr-based
 // preview path. Large payloads must never cross into Go memory past
 // the requested head size.

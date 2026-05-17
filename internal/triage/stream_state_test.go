@@ -694,3 +694,263 @@ func TestSettleTurnStreamingAwaitsAllScopes(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderItemIDsSplitAssistantTextRows(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", TurnID: "turn-1", ItemID: "msg-a",
+		Content: "moving bottom.", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("first text delta: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", TurnID: "turn-1", ItemID: "msg-b",
+		Content: "I'll verify the next row.", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("second text delta: %v", err)
+	}
+
+	for _, itemID := range []string{"msg-a", "msg-b"} {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventContentBlockStop, ThreadID: "t1", TurnID: "turn-1", ItemID: itemID,
+			Meta: json.RawMessage(`{"blockType":"text"}`), Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("stop %s: %v", itemID, err)
+		}
+	}
+	router.WaitForPendingSettles()
+
+	textItems := findItemsByKind(t, st, "t1", itemKindAssistantText)
+	if len(textItems) != 2 {
+		t.Fatalf("assistant_text rows = %d, want 2: %+v", len(textItems), textItems)
+	}
+	if textItems[0].Summary != "moving bottom." {
+		t.Fatalf("first summary = %q, want moving bottom.", textItems[0].Summary)
+	}
+	if textItems[1].Summary != "I'll verify the next row." {
+		t.Fatalf("second summary = %q, want second provider item", textItems[1].Summary)
+	}
+	for _, item := range textItems {
+		if strings.Contains(item.Summary, "bottom.I'll") {
+			t.Fatalf("provider item boundary collapsed into one row: %+v", item)
+		}
+	}
+}
+
+func TestProviderItemCompletionReplacesStreamedAssistantText(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", TurnID: "turn-1", ItemID: "msg-a",
+		Content: "draft answer", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("text delta: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: "t1", TurnID: "turn-1", ItemID: "msg-a",
+		Content: "final answer", ContentPresent: true,
+		Meta: json.RawMessage(`{"blockType":"text"}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("content block stop: %v", err)
+	}
+	router.WaitForPendingSettles()
+
+	item := firstItemByKind(t, st, "t1", itemKindAssistantText)
+	if item.Summary != "final answer" {
+		t.Fatalf("summary = %q, want final authoritative content", item.Summary)
+	}
+	if item.Status != statusCompleted {
+		t.Fatalf("status = %q, want completed", item.Status)
+	}
+}
+
+func TestProviderItemCompletionCanCreateCompletedAssistantText(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: "t1", TurnID: "turn-1", ItemID: "msg-a",
+		Content: "final-only answer", ContentPresent: true,
+		Meta: json.RawMessage(`{"blockType":"text"}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("content block stop: %v", err)
+	}
+	router.WaitForPendingSettles()
+
+	item := firstItemByKind(t, st, "t1", itemKindAssistantText)
+	if item.Summary != "final-only answer" {
+		t.Fatalf("summary = %q, want final-only answer", item.Summary)
+	}
+	if item.Status != statusCompleted {
+		t.Fatalf("status = %q, want completed", item.Status)
+	}
+}
+
+func TestProviderItemCompletionCanReplaceAssistantTextWithEmptyFinal(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", TurnID: "turn-1", ItemID: "msg-a",
+		Content: "draft answer", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("text delta: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: "t1", TurnID: "turn-1", ItemID: "msg-a",
+		Content: "", ContentPresent: true,
+		Meta: json.RawMessage(`{"blockType":"text"}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("content block stop: %v", err)
+	}
+	router.WaitForPendingSettles()
+
+	item := firstItemByKind(t, st, "t1", itemKindAssistantText)
+	if item.Summary != "" {
+		t.Fatalf("summary = %q, want empty authoritative final content", item.Summary)
+	}
+}
+
+func TestProviderItemIDsSplitThinkingRows(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventThinking, ThreadID: "t1", TurnID: "turn-1", ItemID: "reason-a",
+		Content: "first thought", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("first thinking delta: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventThinking, ThreadID: "t1", TurnID: "turn-1", ItemID: "reason-b",
+		Content: "second thought", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("second thinking delta: %v", err)
+	}
+
+	for _, itemID := range []string{"reason-a", "reason-b"} {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventContentBlockStop, ThreadID: "t1", TurnID: "turn-1", ItemID: itemID,
+			Meta: json.RawMessage(`{"blockType":"thinking"}`), Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("stop %s: %v", itemID, err)
+		}
+	}
+	router.WaitForPendingSettles()
+
+	thinkingItems := findItemsByKind(t, st, "t1", itemKindThinking)
+	if len(thinkingItems) != 2 {
+		t.Fatalf("thinking rows = %d, want 2: %+v", len(thinkingItems), thinkingItems)
+	}
+	if thinkingItems[0].Summary != "first thought" {
+		t.Fatalf("first thinking summary = %q, want first thought", thinkingItems[0].Summary)
+	}
+	if thinkingItems[1].Summary != "second thought" {
+		t.Fatalf("second thinking summary = %q, want second thought", thinkingItems[1].Summary)
+	}
+}
+
+func TestProviderItemCompletionCanCreateCompletedThinking(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: "t1", TurnID: "turn-1", ItemID: "reason-a",
+		Content: "final-only thought", ContentPresent: true,
+		Meta: json.RawMessage(`{"blockType":"thinking"}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("content block stop: %v", err)
+	}
+	router.WaitForPendingSettles()
+
+	item := firstItemByKind(t, st, "t1", itemKindThinking)
+	if item.Summary != "final-only thought" {
+		t.Fatalf("summary = %q, want final-only thought", item.Summary)
+	}
+	data, err := st.GetPayloadData(item.PayloadID)
+	if err != nil {
+		t.Fatalf("get payload: %v", err)
+	}
+	if string(data) != "final-only thought" {
+		t.Fatalf("payload = %q, want final-only thought", data)
+	}
+}
+
+func TestProviderItemCompletionCanReplaceThinkingWithEmptyFinal(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventThinking, ThreadID: "t1", TurnID: "turn-1", ItemID: "reason-a",
+		Content: "draft thought", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("thinking delta: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: "t1", TurnID: "turn-1", ItemID: "reason-a",
+		Content: "", ContentPresent: true,
+		Meta: json.RawMessage(`{"blockType":"thinking"}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("content block stop: %v", err)
+	}
+	router.WaitForPendingSettles()
+
+	item := firstItemByKind(t, st, "t1", itemKindThinking)
+	if item.Summary != "" {
+		t.Fatalf("summary = %q, want empty authoritative final content", item.Summary)
+	}
+	data, err := st.GetPayloadData(item.PayloadID)
+	if err != nil {
+		t.Fatalf("get payload: %v", err)
+	}
+	if string(data) != "" {
+		t.Fatalf("payload = %q, want empty authoritative final content", data)
+	}
+}

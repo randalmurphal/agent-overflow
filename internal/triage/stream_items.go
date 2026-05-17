@@ -32,11 +32,10 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 		return fmt.Errorf("text delta turn index: %w", err)
 	}
 	scope := evt.ParentToolUseID
-	firstBlock := r.ensureTextBlockStarted(evt.ThreadID, turnIndex, scope)
+	firstBlock, itemID := r.ensureTextBlockStarted(evt.ThreadID, turnIndex, scope, evt.ItemID)
 	if firstBlock {
 		defer r.drainInterruptQueueIfIdle(evt.ThreadID)
 	}
-	itemID := textItemID(turnIndex, scope, r.segmentIndex(evt.ThreadID, turnIndex, scope))
 	now := evt.Timestamp.UnixMilli()
 	if now == 0 {
 		now = time.Now().UnixMilli()
@@ -87,11 +86,10 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 		return fmt.Errorf("thinking turn index: %w", err)
 	}
 	scope := evt.ParentToolUseID
-	firstBlock := r.ensureThinkingBlockStarted(evt.ThreadID, turnIndex, scope)
+	firstBlock, itemID := r.ensureThinkingBlockStarted(evt.ThreadID, turnIndex, scope, evt.ItemID)
 	if firstBlock {
 		defer r.drainInterruptQueueIfIdle(evt.ThreadID)
 	}
-	itemID := thinkingItemID(turnIndex, scope, r.blockIndex(evt.ThreadID, turnIndex, scope))
 	now := evt.Timestamp.UnixMilli()
 	if now == 0 {
 		now = time.Now().UnixMilli()
@@ -177,26 +175,6 @@ func thinkingItemID(turnIndex int, scope string, blockIndex int) string {
 	return fmt.Sprintf("think:%d:%s:%d", turnIndex, scope, blockIndex)
 }
 
-func (r *Router) segmentIndex(threadID string, turnIndex int, scope string) int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	value, ok := r.segmentIndexByScope[scopeCounterKey(threadID, turnIndex, scope)]
-	if !ok {
-		return 0
-	}
-	return value
-}
-
-func (r *Router) blockIndex(threadID string, turnIndex int, scope string) int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	value, ok := r.blockIndexByScope[scopeCounterKey(threadID, turnIndex, scope)]
-	if !ok {
-		return 0
-	}
-	return value
-}
-
 // settleStreamingScope is the per-scope settle hook used by
 // settleStreamingBeforeTimelineBoundary when a parent_tool_use_id
 // scopes the in-flight blocks (Claude subagent / nested tool path).
@@ -209,7 +187,7 @@ func (r *Router) settleStreamingScope(threadID, scope string) error {
 	if err != nil {
 		return err
 	}
-	r.settleStreamingTextAsync(threadID, turnIndex, scope, statusCompleted)
-	r.settleStreamingThinkingAsync(threadID, turnIndex, scope, statusCompleted)
+	r.settleStreamingTextScopeAsync(threadID, turnIndex, scope, statusCompleted)
+	r.settleStreamingThinkingScopeAsync(threadID, turnIndex, scope, statusCompleted)
 	return nil
 }

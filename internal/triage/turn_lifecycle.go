@@ -719,8 +719,8 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int) {
 	key := scopeCounterKey(threadID, turnIndex, "")
 	r.segmentIndexByScope[key] = -1
 	r.blockIndexByScope[key] = -1
-	delete(r.activeTextBlocks, key)
-	delete(r.activeThinkingBlocks, key)
+	r.clearActiveStreamBlocksForTurnLocked(threadID, turnIndex)
+	r.streamingItemCounts[threadID] = 0
 	delete(r.errorSeqByScope, key)
 	// Clear the settled marker so a re-init (Claude resend system.init
 	// after an interrupt; Codex resend turn/started) can settle the
@@ -729,6 +729,23 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int) {
 	// there and the second complete returns early.
 	delete(r.settledTurns, settledTurnKey(threadID, turnIndex))
 	r.mu.Unlock()
+}
+
+func (r *Router) clearActiveStreamBlocksForTurnLocked(threadID string, turnIndex int) {
+	prefix := fmt.Sprintf("%s|%d|", threadID, turnIndex)
+	deleteByPrefix(r.activeTextBlocks, prefix)
+	deleteByPrefix(r.activeThinkingBlocks, prefix)
+	deleteByPrefix(r.activeTextBlockRefs, prefix)
+	deleteByPrefix(r.activeThinkingBlockRefs, prefix)
+	for key := range r.streamPersistBuffers {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if buffer := r.streamPersistBuffers[key]; buffer != nil && buffer.timer != nil {
+			buffer.timer.Stop()
+		}
+		delete(r.streamPersistBuffers, key)
+	}
 }
 
 // claimTurnSettlement records that handleTurnComplete has begun logical-turn
@@ -854,9 +871,7 @@ func (r *Router) clearOpenTurn(threadID string) {
 	r.mu.Lock()
 	turnIndex, ok := r.openTurns[threadID]
 	if ok {
-		prefix := fmt.Sprintf("%s|%d|", threadID, turnIndex)
-		deleteByPrefix(r.activeTextBlocks, prefix)
-		deleteByPrefix(r.activeThinkingBlocks, prefix)
+		r.clearActiveStreamBlocksForTurnLocked(threadID, turnIndex)
 		// pendingCommandDiffs is keyed by `<threadID>:<itemID>` and
 		// stages an inline-diff preview between EventToolStart and
 		// EventToolComplete for command_execution rows. If the matching
@@ -1109,6 +1124,8 @@ func (r *Router) CleanupThread(threadID string) {
 	deleteByPrefix(r.blockIndexByScope, prefix)
 	deleteByPrefix(r.activeTextBlocks, prefix)
 	deleteByPrefix(r.activeThinkingBlocks, prefix)
+	deleteByPrefix(r.activeTextBlockRefs, prefix)
+	deleteByPrefix(r.activeThinkingBlockRefs, prefix)
 	deleteByPrefix(r.errorSeqByScope, prefix)
 	deleteByPrefix(r.notificationSeqByScope, prefix)
 	for key := range r.streamPersistBuffers {

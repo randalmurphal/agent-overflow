@@ -354,6 +354,18 @@ func TestClassifyItemCompleted_AgentMessageSettlesText(t *testing.T) {
 	if evt.Kind != provider.EventContentBlockStop {
 		t.Fatalf("kind = %q, want content block stop", evt.Kind)
 	}
+	if evt.TurnID != "turn-9" {
+		t.Fatalf("turnID = %q, want turn-9", evt.TurnID)
+	}
+	if evt.ItemID != "agent-1" {
+		t.Fatalf("itemID = %q, want agent-1", evt.ItemID)
+	}
+	if evt.Content != "final answer" {
+		t.Fatalf("content = %q, want final answer", evt.Content)
+	}
+	if !evt.ContentPresent {
+		t.Fatal("ContentPresent = false, want true")
+	}
 	var meta map[string]string
 	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
 		t.Fatalf("meta unmarshal: %v", err)

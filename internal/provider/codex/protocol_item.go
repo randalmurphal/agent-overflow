@@ -110,6 +110,8 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventTextDelta,
 			ThreadID:  threadID,
+			TurnID:    readTopLevelString(params, "turnId"),
+			ItemID:    readTopLevelString(params, "itemId"),
 			Content:   delta,
 			Role:      "assistant",
 			Timestamp: now,
@@ -165,6 +167,8 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventThinking,
 			ThreadID:  threadID,
+			TurnID:    readTopLevelString(params, "turnId"),
+			ItemID:    readTopLevelString(params, "itemId"),
 			Content:   delta,
 			Timestamp: now,
 		}}, true
@@ -177,6 +181,8 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventThinking,
 			ThreadID:  threadID,
+			TurnID:    readTopLevelString(params, "turnId"),
+			ItemID:    readTopLevelString(params, "itemId"),
 			Content:   "\n\n",
 			Timestamp: now,
 		}}, true
@@ -274,24 +280,30 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 	}
 	switch itemType {
 	case "agentMessage", "assistantMessage":
+		text, textPresent := readRawStringPresent(item, "text")
 		return []provider.ProviderEvent{{
-			Kind:      provider.EventContentBlockStop,
-			ThreadID:  threadID,
-			TurnID:    turnID,
-			ItemID:    itemID,
-			ItemType:  itemType,
-			Meta:      json.RawMessage(`{"blockType":"text"}`),
-			Timestamp: now,
+			Kind:           provider.EventContentBlockStop,
+			ThreadID:       threadID,
+			TurnID:         turnID,
+			ItemID:         itemID,
+			ItemType:       itemType,
+			Content:        text,
+			ContentPresent: textPresent,
+			Meta:           json.RawMessage(`{"blockType":"text"}`),
+			Timestamp:      now,
 		}}
 	case "reasoning":
+		text, textPresent := extractCodexReasoningText(item)
 		return []provider.ProviderEvent{{
-			Kind:      provider.EventContentBlockStop,
-			ThreadID:  threadID,
-			TurnID:    turnID,
-			ItemID:    itemID,
-			ItemType:  itemType,
-			Meta:      json.RawMessage(`{"blockType":"thinking"}`),
-			Timestamp: now,
+			Kind:           provider.EventContentBlockStop,
+			ThreadID:       threadID,
+			TurnID:         turnID,
+			ItemID:         itemID,
+			ItemType:       itemType,
+			Content:        text,
+			ContentPresent: textPresent,
+			Meta:           json.RawMessage(`{"blockType":"thinking"}`),
+			Timestamp:      now,
 		}}
 	}
 	if itemType == "userMessage" {

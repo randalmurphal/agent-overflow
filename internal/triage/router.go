@@ -44,26 +44,28 @@ type TurnMetrics struct {
 
 // Router classifies provider events and routes them.
 type Router struct {
-	store                  *store.Store
-	emit                   func(eventName string, data any) // wraps app.Event.Emit
-	tracer                 trace.Tracer
-	metrics                TurnMetrics
-	mu                     sync.Mutex
-	pendingCommandDiffs    map[string]pendingCommandInlineDiff
-	pendingApprovals       map[string]pendingApprovalState
-	pendingApprovalOrder   map[string][]string
-	pendingApprovalItems   map[string]string
-	pendingUserInputs      map[string]provider.UserInputRequest
-	pendingUserInputOrder  map[string][]string
-	interruptQueue         map[string][]queuedPersistence
-	openTurns              map[string]int
-	segmentIndexByScope    map[string]int
-	blockIndexByScope      map[string]int
-	activeTextBlocks       map[string]bool
-	activeThinkingBlocks   map[string]bool
-	streamingItemCounts    map[string]int
-	errorSeqByScope        map[string]int
-	notificationSeqByScope map[string]int
+	store                   *store.Store
+	emit                    func(eventName string, data any) // wraps app.Event.Emit
+	tracer                  trace.Tracer
+	metrics                 TurnMetrics
+	mu                      sync.Mutex
+	pendingCommandDiffs     map[string]pendingCommandInlineDiff
+	pendingApprovals        map[string]pendingApprovalState
+	pendingApprovalOrder    map[string][]string
+	pendingApprovalItems    map[string]string
+	pendingUserInputs       map[string]provider.UserInputRequest
+	pendingUserInputOrder   map[string][]string
+	interruptQueue          map[string][]queuedPersistence
+	openTurns               map[string]int
+	segmentIndexByScope     map[string]int
+	blockIndexByScope       map[string]int
+	activeTextBlocks        map[string]bool
+	activeThinkingBlocks    map[string]bool
+	activeTextBlockRefs     map[string]activeStreamBlock
+	activeThinkingBlockRefs map[string]activeStreamBlock
+	streamingItemCounts     map[string]int
+	errorSeqByScope         map[string]int
+	notificationSeqByScope  map[string]int
 	// streamPersistBuffers decouple the live UI stream from durable
 	// history writes. Text/thinking deltas emit immediately on ordered
 	// provider:item_event deltas, then flush to SQLite by interval, byte
@@ -263,6 +265,8 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		blockIndexByScope:          make(map[string]int),
 		activeTextBlocks:           make(map[string]bool),
 		activeThinkingBlocks:       make(map[string]bool),
+		activeTextBlockRefs:        make(map[string]activeStreamBlock),
+		activeThinkingBlockRefs:    make(map[string]activeStreamBlock),
 		streamingItemCounts:        make(map[string]int),
 		errorSeqByScope:            make(map[string]int),
 		notificationSeqByScope:     make(map[string]int),

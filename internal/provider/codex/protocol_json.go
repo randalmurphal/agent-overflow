@@ -130,6 +130,41 @@ func extractCodexUserMessageText(item map[string]json.RawMessage) string {
 	return string(builder)
 }
 
+func extractCodexReasoningText(item map[string]json.RawMessage) (string, bool) {
+	if item == nil {
+		return "", false
+	}
+	for _, key := range []string{"summary", "content"} {
+		raw, ok := item[key]
+		if !ok {
+			continue
+		}
+		return extractCodexTextField(raw), true
+	}
+	return "", false
+}
+
+func extractCodexTextField(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var asString string
+	if json.Unmarshal(raw, &asString) == nil {
+		return asString
+	}
+	var blocks []map[string]json.RawMessage
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	var builder []byte
+	for _, block := range blocks {
+		if text := readRawString(block, "text"); text != "" {
+			builder = append(builder, text...)
+		}
+	}
+	return string(builder)
+}
+
 func extractCodexPlanMarkdown(data json.RawMessage) string {
 	var payload map[string]json.RawMessage
 	if json.Unmarshal(data, &payload) != nil {
@@ -168,15 +203,20 @@ func extractCodexPlanMarkdown(data json.RawMessage) string {
 }
 
 func readRawString(m map[string]json.RawMessage, key string) string {
+	value, _ := readRawStringPresent(m, key)
+	return value
+}
+
+func readRawStringPresent(m map[string]json.RawMessage, key string) (string, bool) {
 	raw, ok := m[key]
 	if !ok {
-		return ""
+		return "", false
 	}
 	var s string
 	if json.Unmarshal(raw, &s) != nil {
-		return ""
+		return "", true
 	}
-	return s
+	return s, true
 }
 
 func readRawObject(m map[string]json.RawMessage, key string) map[string]json.RawMessage {

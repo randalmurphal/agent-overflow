@@ -151,17 +151,20 @@ var AllEventKinds = []EventKind{
 // ProviderEvent is the normalized event emitted by both provider protocols.
 // The triage layer classifies these and routes them.
 type ProviderEvent struct {
-	Kind      EventKind       `json:"kind"`
-	ThreadID  string          `json:"threadId"`
-	TurnID    string          `json:"turnId,omitempty"`
-	TurnIndex int             `json:"turnIndex,omitempty"`
-	ItemID    string          `json:"itemId,omitempty"`
-	ItemType  string          `json:"itemType,omitempty"`
-	Content   string          `json:"content,omitempty"`
-	Role      string          `json:"role,omitempty"`
-	Meta      json.RawMessage `json:"meta,omitempty"`
-	Timestamp time.Time       `json:"timestamp"`
-	Replace   bool            `json:"replace,omitempty"` // when true, triage upserts instead of inserting
+	Kind      EventKind `json:"kind"`
+	ThreadID  string    `json:"threadId"`
+	TurnID    string    `json:"turnId,omitempty"`
+	TurnIndex int       `json:"turnIndex,omitempty"`
+	ItemID    string    `json:"itemId,omitempty"`
+	ItemType  string    `json:"itemType,omitempty"`
+	Content   string    `json:"content,omitempty"`
+	// ContentPresent distinguishes authoritative empty content from absent
+	// content on completion-style events.
+	ContentPresent bool            `json:"contentPresent,omitempty"`
+	Role           string          `json:"role,omitempty"`
+	Meta           json.RawMessage `json:"meta,omitempty"`
+	Timestamp      time.Time       `json:"timestamp"`
+	Replace        bool            `json:"replace,omitempty"` // when true, triage upserts instead of inserting
 	// ParentToolUseID links a subagent-emitted event to its parent Task-tool
 	// use. Claude surfaces this on assistant messages when the message is
 	// produced inside a Task (Agent) tool call. Empty for top-level events.

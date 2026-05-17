@@ -153,7 +153,7 @@ func TestTurnCompletedFailed(t *testing.T) {
 }
 
 func TestItemAgentMessageDelta(t *testing.T) {
-	params := json.RawMessage(`{"delta":"Hello "}`)
+	params := json.RawMessage(`{"turnId":"turn-1","itemId":"msg-1","delta":"Hello "}`)
 	events := ClassifyNotification(testThread, "item/agentMessage/delta", params)
 
 	if len(events) != 1 {
@@ -164,6 +164,12 @@ func TestItemAgentMessageDelta(t *testing.T) {
 	}
 	if events[0].Content != "Hello " {
 		t.Errorf("content: got %q, want %q", events[0].Content, "Hello ")
+	}
+	if events[0].TurnID != "turn-1" {
+		t.Errorf("turnID: got %q, want %q", events[0].TurnID, "turn-1")
+	}
+	if events[0].ItemID != "msg-1" {
+		t.Errorf("itemID: got %q, want %q", events[0].ItemID, "msg-1")
 	}
 	if events[0].Role != "assistant" {
 		t.Errorf("role: got %q, want %q", events[0].Role, "assistant")
@@ -451,7 +457,7 @@ func TestTurnPlanUpdatedEmitsTodoUpdate(t *testing.T) {
 }
 
 func TestClassifyReasoningTextDelta(t *testing.T) {
-	params := json.RawMessage(`{"delta":"thinking about this..."}`)
+	params := json.RawMessage(`{"turnId":"turn-1","itemId":"reason-1","delta":"thinking about this..."}`)
 	events := ClassifyNotification(testThread, "item/reasoning/textDelta", params)
 
 	if len(events) != 1 {
@@ -465,6 +471,12 @@ func TestClassifyReasoningTextDelta(t *testing.T) {
 	}
 	if events[0].ThreadID != testThread {
 		t.Errorf("threadID: got %q, want %q", events[0].ThreadID, testThread)
+	}
+	if events[0].TurnID != "turn-1" {
+		t.Errorf("turnID: got %q, want %q", events[0].TurnID, "turn-1")
+	}
+	if events[0].ItemID != "reason-1" {
+		t.Errorf("itemID: got %q, want %q", events[0].ItemID, "reason-1")
 	}
 }
 
