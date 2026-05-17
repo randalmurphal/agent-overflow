@@ -407,21 +407,28 @@ describe('<ChannelView>', () => {
     expect(queryByTestId('scroll-to-bottom')).toBeNull();
   });
 
-  it('re-arms stickiness when the user posts a message while escaped', async () => {
-    // Posting is an explicit "I want to follow this conversation"
-    // signal — handlePost calls stick.forceStick() before awaiting the
-    // PostChannelMessage binding. This regression-guards that wiring.
+  it('keeps the user escaped when posting while reading above the bottom', async () => {
+    // Posting preserves current scroll intent. If the user has escaped
+    // upward to read earlier discussion, sending a post must not yank
+    // them back to the bottom.
     const pane = await buildPane();
-    setBindingMock('GetChannelMessages', async () => [
-      makeMsg({ id: 'a', sequence: 1, content: 'first' }),
-    ]);
+    setBindingMock('GetChannelMessages', async (_channelId: string, afterSeq: number) => {
+      if (afterSeq <= 0) {
+        return [makeMsg({ id: 'a', sequence: 1, content: 'first' })];
+      }
+      return [makeMsg({ id: 'b', sequence: 2, content: 'posted reply' })];
+    });
     setBindingMock('PostChannelMessage', async () => {});
 
-    const { container, getByRole, getByTestId, queryByTestId } = render(ChannelView, {
+    const { container, getByRole, getByTestId } = render(ChannelView, {
       props: { pane, channelId: 'channel-1' },
     });
     const scroll = getByTestId('channel-message-list') as HTMLElement;
-    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, get: () => 1000 });
+    let scrollHeightValue = 1000;
+    Object.defineProperty(scroll, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeightValue,
+    });
     Object.defineProperty(scroll, 'clientHeight', { configurable: true, get: () => 600 });
 
     await vi.advanceTimersByTimeAsync(0);
@@ -442,19 +449,30 @@ describe('<ChannelView>', () => {
     for (let i = 0; i < 3; i++) await Promise.resolve();
     expect(getByTestId('scroll-to-bottom')).toBeInTheDocument();
 
-    // User types and clicks Post. handlePost calls stick.forceStick()
-    // synchronously, which slams scrollTop to target = 1000 - 600
-    // = 400 and clears the escape. The chip must hide.
+    // User types and clicks Post. The existing escape must hold: no
+    // forceStick, no target write, and the chip stays visible.
     const textarea = container.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="Channel Message Input"]',
     )!;
     await fireEvent.input(textarea, { target: { value: 'follow up' } });
     await fireEvent.click(getByRole('button', { name: /post/i }));
     await vi.advanceTimersByTimeAsync(16);
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+
+    expect(scroll.scrollTop).toBe(100);
+    expect(getByTestId('scroll-to-bottom')).toBeInTheDocument();
+    expect(pane.channelMessages.map((msg) => msg.id)).toContain('b');
+
+    // The post's follow-up poll merged a new message. If that message
+    // makes content taller, the content RO still must respect the
+    // existing user escape.
+    scrollHeightValue = 1100;
+    ro.fire(contentEl, 500);
+    await vi.advanceTimersByTimeAsync(16);
     for (let i = 0; i < 3; i++) await Promise.resolve();
 
-    expect(scroll.scrollTop).toBe(400);
-    expect(queryByTestId('scroll-to-bottom')).toBeNull();
+    expect(scroll.scrollTop).toBe(100);
+    expect(getByTestId('scroll-to-bottom')).toBeInTheDocument();
   });
 
   it('re-pins scrollTop when the composer section resizes (concluded toggle)', async () => {

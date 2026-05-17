@@ -1228,6 +1228,42 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(ctrl.escapedFromLock).toBe(false);
   });
 
+  it('streaming thinking deltas leave the controller sticky', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({
+        id: 'think-1',
+        kind: 'thinking',
+        role: 'assistant',
+        status: 'streaming',
+        summary: 'first thought',
+      }),
+    ]);
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+
+    const ctrl = pane.scrollController as
+      | (PaneScrollController & { isSticky: boolean; escapedFromLock: boolean })
+      | null;
+    expect(ctrl).not.toBeNull();
+    if (!ctrl) return;
+    expect(ctrl.isSticky).toBe(true);
+    expect(ctrl.escapedFromLock).toBe(false);
+
+    pane.applyItemDelta({
+      threadId: pane.threadId!,
+      itemId: 'think-1',
+      kind: 'thinking',
+      delta: ' that continues streaming through the collapsed thinking tail',
+      updatedAt: 1,
+    });
+    await tick();
+    await tick();
+
+    expect(ctrl.isSticky).toBe(true);
+    expect(ctrl.escapedFromLock).toBe(false);
+  });
+
   it('thread switch off a prior thread keeps contentEl hidden for the new thread (warm does not leak)', async () => {
     // The flaky-fix bug: warm carries over from the previous thread on
     // pane switch. MessageTimeline isn't keyed on threadId (the inner

@@ -237,8 +237,9 @@ frontend layers on top:
   - `forceStick(opts?: { reason?: 'user' | 'restore' })` clears escape,
     sets sticky, and writes `scrollTop` to the current target. Two
     flavors:
-    - `'user'` (default): explicit user intent — scroll-to-bottom chip
-      click, send / post. Always proceeds.
+    - `'user'` (default): explicit bottom-follow intent — the
+      scroll-to-bottom chip. Ordinary send / post preserves the current
+      scroll intent rather than forcing bottom.
     - `'restore'`: thread-restore-style snap. Honored ONLY when the
       entry point armed consent via `armRestoreSnap()` since the
       last user-initiated escape; otherwise NO-OPs to preserve the
@@ -528,19 +529,19 @@ What NOT to add:
   `HighlighterManager` that dynamically loads shiki for code blocks
   inside assistant markdown (and a small set of payload expansions).
   Module-level caches inside the library keep per-row remount cheap.
-- **Click-anchor preservation and pointerdown-defers-forceStick are
-  deliberately NOT implemented in `useStickToBottom`.** The legacy
-  Discussion controller had both: clicking a `<details>` / `<button>`
-  inside a message would adjust `scrollTop` to keep the clicked element
-  fixed in viewport, and a `forceStick` while the user was mid-drag of
-  the scrollbar would defer until pointerup. Neither is reproduced in
-  the unified controller: chat's transcript rows don't expand-collapse
-  in place (every disclosure has a stable header that's part of the
-  row's first-paint shell), and Discussion message bodies are plain
-  Markdown without expandable affordances. The pointerdown-defer is a
-  rare-input-mode case (mouse-drag of scrollbar + concurrent post)
-  with no recorded user impact in the chat surface; treat as an
-  accepted simplification for the unification.
+- **Click-anchor preservation is intent-preserving.** In-row disclosure
+  actions call `preserveScrollAnchor()`, but that helper must not mean
+  "the user escaped." If the controller was sticky when the action
+  started, release re-pins to the bottom and keeps sticky intent. If the
+  user had already escaped, the helper compensates `scrollTop` to keep
+  the clicked anchor fixed and leaves escape intact. This keeps local
+  row UI from unlocking future streaming follow.
+- **Pointerdown-defers-forceStick is deliberately NOT implemented.** The
+  legacy Discussion controller deferred a `forceStick` while the user
+  was mid-drag of the scrollbar. That is a rare-input-mode case
+  (mouse-drag of scrollbar + concurrent explicit chip click) with no
+  recorded user impact in the chat surface; treat as an accepted
+  simplification for the unification.
 
 ## Diagnosing scroll regressions
 

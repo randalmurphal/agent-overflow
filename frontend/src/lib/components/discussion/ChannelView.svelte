@@ -214,9 +214,6 @@
     posting = true;
     const savedText = composing;
     composing = '';
-    // Posting is an explicit "I want to follow this conversation" signal —
-    // re-arm stickiness even if the user had scrolled up.
-    stick.forceStick();
     try {
       await PostChannelMessage(channelId, content);
       // Immediate poll to surface our message rather than wait for interval.

@@ -27,8 +27,8 @@
 //     remeasurement and async Streamdown typesetting would spring-
 //     chase a thread restore visibly.
 //
-// User-initiated snaps (the scroll-to-bottom chip, send) and thread
-// restores go through `forceStick()` which writes scrollTop directly.
+// User-initiated snaps (the scroll-to-bottom chip) and thread restores
+// go through `forceStick()` which writes scrollTop directly.
 // Restore snaps also reset the warm gate so post-thread-switch
 // measurement settling stays silent; user snaps keep already-settled
 // content visible.
@@ -203,11 +203,9 @@ export interface UseStickToBottomController {
    */
   notifyContentMaybeGrew(): void;
   /**
-   * Run an explicit user disclosure action and keep the clicked anchor
-   * at the same viewport position after Svelte flushes the resulting
-   * row-height change. This is for in-row expand/collapse affordances,
-   * where the user's click target should stay stable even if the
-   * controller was previously sticky-bottom.
+   * Run an explicit user disclosure action while preserving the user's
+   * current follow intent. Sticky users stay pinned to bottom; escaped
+   * users keep the clicked anchor at the same viewport position.
    */
   preserveScrollAnchor(anchor: HTMLElement, action: () => void | Promise<void>): Promise<void>;
 
@@ -217,9 +215,9 @@ export interface UseStickToBottomController {
   /**
    * Snap to the bottom and resume auto-follow. Two reasons:
    *
-   * - `'user'` (default): an explicit user action — scroll-to-bottom
-   *   chip click, post / send, etc. Always clears `escapedFromLock`
-   *   and lands scrollTop at the target.
+   * - `'user'` (default): an explicit bottom-follow action such as the
+   *   scroll-to-bottom chip. Always clears `escapedFromLock` and lands
+   *   scrollTop at the target.
    * - `'restore'`: a thread-restore-style snap. Honored ONLY if
    *   `armRestoreSnap()` was called since the last user-initiated
    *   escape; otherwise NO-OP. This prevents a stale or duplicated
@@ -1238,8 +1236,10 @@ export function createUseStickToBottomController(
     setEscapedFromLock(true);
   }
 
-  function runExternalScroll(action: () => void): void {
-    setEscapedFromLock(true);
+  // Tags a non-controller scroll writer so the scroll handler does not
+  // misread it as user intent. This does not change follow/escape state;
+  // callers decide that explicitly before invoking it.
+  function tagExternalProgrammaticScroll(action: () => void): void {
     externalScrollIgnoreUntil = nowMs() + EXTERNAL_SCROLL_TAG_CLEAR_MS;
     if (externalScrollClearTimer) clearTimeout(externalScrollClearTimer);
     externalScrollClearTimer = setTimeout(() => {
@@ -1247,6 +1247,15 @@ export function createUseStickToBottomController(
       externalScrollClearTimer = null;
     }, EXTERNAL_SCROLL_TAG_CLEAR_MS);
     action();
+    if (scrollEl) {
+      lastUntaggedScrollTop = scrollEl.scrollTop;
+      refreshIsNearBottom();
+    }
+  }
+
+  function runExternalScroll(action: () => void): void {
+    setEscapedFromLock(true);
+    tagExternalProgrammaticScroll(action);
   }
 
   async function preserveScrollAnchor(
@@ -1259,25 +1268,29 @@ export function createUseStickToBottomController(
     }
 
     const targetScrollEl = scrollEl;
-    const beforeTop = anchor.getBoundingClientRect().top;
+    const hadBottomFollowIntent = isAtBottomState && !escapedFromLockState;
     const release = pauseAutoScroll();
-    setEscapedFromLock(true);
     let actionError: unknown;
     let actionPromise: Promise<void> | undefined;
     try {
+      const beforeTop = hadBottomFollowIntent ? null : anchor.getBoundingClientRect().top;
       actionPromise = (async () => {
         await action();
       })().catch((err: unknown) => {
         actionError = err;
       });
       await tick();
-      if (scrollEl === targetScrollEl && anchor.isConnected) {
+      if (
+        !hadBottomFollowIntent &&
+        beforeTop !== null &&
+        scrollEl === targetScrollEl &&
+        anchor.isConnected
+      ) {
         const afterTop = anchor.getBoundingClientRect().top;
         const delta = afterTop - beforeTop;
         if (Number.isFinite(delta) && Math.abs(delta) >= 0.5) {
-          runExternalScroll(() => {
-            targetScrollEl.scrollTop += delta;
-          });
+          writeCaller = 'preserveScrollAnchor';
+          writeScrollTop(targetScrollEl.scrollTop + delta);
         }
       }
     } finally {
@@ -1352,7 +1365,7 @@ export function createUseStickToBottomController(
     // escape with a snap-to-bottom they didn't ask for (the seq-509
     // trace bug — a `restoreToBottom()` firing 17s after the user
     // wheel-escaped, slamming them to the bottom and wiping escape).
-    // User-reason calls always proceed (chip click / send / explicit
+    // User-reason calls always proceed (chip click / explicit
     // intent), and they ALSO consume any pending restore consent so
     // the next call doesn't see a stale arm.
     if (reason === 'restore' && !restoreSnapArmed) {

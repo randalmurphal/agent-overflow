@@ -429,6 +429,31 @@ describe('createUseStickToBottomController', () => {
       expect(geom.scrollTop).toBe(before);
     });
 
+    it('escaped thinking-style grow, same-height, shrink, and grow updates do not re-stick', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      controller.setEscapedFromLock(true);
+      geom.scrollTop = 200;
+
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+      ro.fire(contentEl, 1000);
+
+      geom.scrollHeight = 1160;
+      geom.contentHeight = 960;
+      ro.fire(contentEl, 960);
+
+      geom.scrollHeight = 1320;
+      geom.contentHeight = 1120;
+      ro.fire(contentEl, 1120);
+      await nextFrame();
+
+      expect(geom.scrollTop).toBe(200);
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
+    });
+
     it('negative delta with isNearBottom re-pins to target', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800); // initial; scrollTop becomes 400
@@ -1231,7 +1256,7 @@ describe('createUseStickToBottomController', () => {
   });
 
   describe('preserveScrollAnchor', () => {
-    it('keeps the anchor at the same viewport position across explicit row growth', async () => {
+    it('keeps sticky users pinned to bottom across explicit row growth', async () => {
       const anchor = document.createElement('button');
       contentEl.appendChild(anchor);
       let anchorTop = 200;
@@ -1247,6 +1272,36 @@ describe('createUseStickToBottomController', () => {
         toJSON: () => ({}),
       } as DOMRect));
 
+      const ro = getRO();
+      await controller.preserveScrollAnchor(anchor, () => {
+        geom.scrollHeight = 1200;
+        geom.contentHeight = 1000;
+        anchorTop = 260;
+        ro.fire(contentEl, 1000);
+      });
+
+      expect(geom.scrollTop).toBe(600);
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('keeps the anchor at the same viewport position for escaped users', async () => {
+      const anchor = document.createElement('button');
+      contentEl.appendChild(anchor);
+      let anchorTop = 200;
+      vi.spyOn(anchor, 'getBoundingClientRect').mockImplementation(() => ({
+        top: anchorTop,
+        bottom: anchorTop + 20,
+        left: 0,
+        right: 100,
+        width: 100,
+        height: 20,
+        x: 0,
+        y: anchorTop,
+        toJSON: () => ({}),
+      } as DOMRect));
+
+      controller.setEscapedFromLock(true);
       const ro = getRO();
       await controller.preserveScrollAnchor(anchor, () => {
         geom.scrollHeight = 1200;
@@ -1289,8 +1344,7 @@ describe('createUseStickToBottomController', () => {
       await Promise.resolve();
       await Promise.resolve();
 
-      expect(geom.scrollTop).toBe(460);
-      controller.forceStick();
+      expect(geom.scrollTop).toBe(600);
       expect(controller.isSticky).toBe(true);
 
       resolvePayloadWork?.();
@@ -1873,6 +1927,46 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       // Eventually arrives at the moving target.
       await advanceUntil(() => geom.scrollTop === 1200);
+    });
+
+    it('keeps sticky intent across thinking-style grow, same-height, shrink, and grow updates', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Thinking text starts streaming and grows the row.
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+      await nextFrame();
+      const midScrollTop = geom.scrollTop;
+      expect(midScrollTop).toBeGreaterThan(400);
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+
+      // A tail-scroll/body text update can leave outer row height
+      // unchanged. It must not change follow intent.
+      ro.fire(contentEl, 1000);
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+
+      // Tail-clamping or virtua remeasurement can shrink the row while a
+      // spring is active. This must still be treated as layout, not user
+      // escape.
+      geom.scrollHeight = 1160;
+      geom.contentHeight = 960;
+      ro.fire(contentEl, 960);
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+
+      // More thinking text arrives after the shrink. The controller
+      // should keep following the new moving bottom.
+      geom.scrollHeight = 1320;
+      geom.contentHeight = 1120;
+      ro.fire(contentEl, 1120);
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+      await advanceUntil(() => geom.scrollTop === 720);
     });
 
     it('escape (wheel-up) cancels in-flight spring', async () => {

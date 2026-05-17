@@ -24,9 +24,11 @@ shape. Operational rules for code in this directory:
   inside the virtualizer; virtua won't see it and will fight the
   scroll.
 - **`forceStick(opts?: { reason?: 'user' | 'restore' })` has two
-  flavors.** `'user'` (default) is explicit user intent (chip click,
-  send) and always proceeds. `'restore'` is thread-restore-style and
-  honored ONLY when the entry point armed consent via
+  flavors.** `'user'` (default) is explicit bottom-follow intent, such
+  as clicking the scroll-to-bottom chip, and always proceeds. Ordinary
+  send preserves the current scroll intent. `'restore'` is
+  thread-restore-style and honored ONLY when the entry point armed
+  consent via
   `armRestoreSnap()` since the last outer-scroll escape intent — otherwise NO-OP, to
   preserve the user's scroll position when a stale or duplicated
   restore $effect fires. MessageTimeline's `$effect.pre` calls
