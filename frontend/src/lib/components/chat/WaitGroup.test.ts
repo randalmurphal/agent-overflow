@@ -40,6 +40,7 @@ describe("<WaitGroup>", () => {
     expect(getByTestId("wait-group")).toBeInTheDocument();
     expect(getByTestId("wait-group-children").className).toContain("max-h-[20rem]");
     expect(getByTestId("wait-group-children").className).toContain("overflow-y-auto");
+    expect(getByTestId("wait-group-children").className).not.toContain("border-l");
     expect(getByText(/Waiting for agents/)).toBeInTheDocument();
     expect(getByText(/Spawned Galileo -> done/)).toBeInTheDocument();
   });
@@ -48,13 +49,13 @@ describe("<WaitGroup>", () => {
     // The wait_agent's body column ("Waiting for N agents") starts at
     // 6.375rem from the row's outer edge (px-1 + chevron + gap +
     // icon + gap + label + gap, all defined in
-    // TranscriptDisclosureHeader). The child rail's ml + border + pl
-    // must add up to the same offset; if the disclosure primitive
-    // grows or shrinks any of those gutter elements, recompute the
-    // margin and update both this expectation and the comment in
-    // WaitGroup.svelte. Without this, the run-of-children renders
-    // hugging the row's left edge instead of indented under the body
-    // text.
+    // TranscriptDisclosureHeader). With no border / inner padding on
+    // the child rail the margin owns the entire offset; if the
+    // disclosure primitive grows or shrinks any of those gutter
+    // elements, recompute the margin and update both this
+    // expectation and the comment in WaitGroup.svelte. Without this,
+    // the run-of-children renders hugging the row's left edge
+    // instead of indented under the body text.
     const pane = await buildPane(makeThread({ provider: "codex" }));
     const group: WaitGroupNode = {
       kind: "wait_group",
@@ -83,7 +84,7 @@ describe("<WaitGroup>", () => {
     };
 
     const { getByTestId } = render(WaitGroup, { props: { pane, group } });
-    expect(getByTestId("wait-group-children").className).toContain("ml-[5.5625rem]");
+    expect(getByTestId("wait-group-children").className).toContain("ml-[6.375rem]");
   });
 
   it("does not render an empty child rail for timeout waits", async () => {

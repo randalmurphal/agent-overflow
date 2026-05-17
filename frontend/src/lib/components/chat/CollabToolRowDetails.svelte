@@ -50,27 +50,25 @@
 {#if tool === 'wait_agent' && receivers.length > 0 && (isCompletion || receiverDisplayLabels.length > 1)}
   <!--
     `ml-[6.125rem]` lines the receiver list up with the parent row's
-    body column (where "Waiting for N agents" starts), so each agent
-    being waited on reads as a continuation of the parent's body
-    rather than a separate left-edge list. Math from the disclosure
-    primitive's gutter widths (see TranscriptDisclosureHeader):
+    body column (where "Waiting for N agents" starts), so the
+    comma-separated agents read as a continuation of the parent's
+    body rather than a separate left-edge list. Math from the
+    disclosure primitive's gutter widths (see
+    TranscriptDisclosureHeader):
       chevron size-3 (0.75rem) + gap-2 (0.5rem)
       + icon size-3.5 (0.875rem) + gap-2 (0.5rem)
       + label w-12 (3rem) + gap-2 (0.5rem)
       = 6.125rem inside the CollabToolRow's `px-1` content edge.
-    No `└` prefix on the receiver rows — the body-column alignment
-    is the visual cue that these belong to the wait header above;
-    a leader glyph on top of that would double up.
+    Rendered as a single wrapping line — the body-column alignment
+    is the visual cue that these belong to the wait header above,
+    and a comma-separated list keeps long rosters readable without
+    one row per agent.
   -->
   <div
-    class="ml-[6.125rem] mt-0.5 space-y-0.5 text-[11px] text-fg-subtle"
+    class="ml-[6.125rem] mt-0.5 text-[11px] text-fg-subtle"
     data-testid="collab-tool-row-receivers"
   >
-    {#each receivers as id, index}
-      <div class="truncate">
-        {isCompletion ? statusLine(id) : receiverDisplayLabels[index]}
-      </div>
-    {/each}
+    {receivers.map((id, index) => isCompletion ? statusLine(id) : receiverDisplayLabels[index]).join(', ')}
   </div>
 {/if}
 {#if expansion && expanded}

@@ -997,15 +997,17 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(text).not.toContain("Waiting for Hypatia");
   });
 
-  it("aligns the wait_agent receiver list under the parent body and drops the └ leader", async () => {
+  it("renders wait_agent receivers as a single comma-separated line under the parent body", async () => {
     // The receiver list sits below the "Waiting for N agents" header and
     // is meant to read as a continuation of the parent row's body column,
     // not as a separate left-edge list. The body column starts at
     // 6.125rem from the CollabToolRow's `px-1` content edge (chevron +
     // gap + icon + gap + label + gap, all defined in
-    // TranscriptDisclosureHeader). The `└` leader was redundant once the
-    // body-column alignment carried the visual relationship — and the
-    // user explicitly asked that it not appear. If the disclosure
+    // TranscriptDisclosureHeader). Joining the agents with ", " keeps
+    // long rosters readable on a single wrapping line rather than one
+    // truncated row per agent. The `└` leader is gone — body-column
+    // alignment already carries the visual relationship and the user
+    // explicitly asked that it not appear. If the disclosure
     // primitive's gutter widths change, recompute the margin and update
     // both this expectation and the comment in CollabToolRowDetails.
     const pane = await buildPane(makeThread({ provider: "codex" }));
@@ -1030,8 +1032,8 @@ describe("<ToolCallCard> header dispatcher", () => {
     const receivers = getByTestId("collab-tool-row-receivers");
 
     expect(receivers.className).toContain("ml-[6.125rem]");
-    expect(receivers.textContent).toContain("Schrodinger [default]");
-    expect(receivers.textContent).toContain("Kierkegaard [default]");
+    expect(receivers.className).not.toContain("space-y-");
+    expect(receivers.textContent).toBe("Schrodinger [default], Kierkegaard [default]");
     expect(receivers.textContent).not.toContain("└");
   });
 

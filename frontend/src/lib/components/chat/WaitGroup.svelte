@@ -31,22 +31,23 @@
   <TimelineLeaf {pane} item={group.parent} {onImageExpand} {userMessageActions} />
   {#if group.children.length > 0}
     <!--
-      `ml-[5.5625rem]` lines the child rail up with the parent row's
-      body column (where "Waiting for N agents" starts) rather than
-      the gutter under the icon/label. Math:
+      `ml-[6.375rem]` lines the completion rail up with the parent
+      row's body column (where the receiver list above sits) so the
+      completion rows continue the same column rather than the
+      gutter under the icon/label. No `border-l` / `pl-3` — the
+      vertical bar re-introduces the separate-list look the
+      body-column alignment is meant to defeat. Math from the
+      disclosure primitive's gutter widths (see
+      TranscriptDisclosureHeader):
         outer px-1 (0.25rem)
         + chevron size-3 (0.75rem) + gap-2 (0.5rem)
         + icon    size-3.5 (0.875rem) + gap-2 (0.5rem)
         + label   w-12 (3rem) + gap-2 (0.5rem)
-        = 6.375rem to body-column start
-      Subtract the 1px border-l + 0.75rem pl-3 (≈ 0.8125rem) the
-      children container adds to land inside its content box:
-        6.375rem - 0.8125rem ≈ 5.5625rem.
+        = 6.375rem to body-column start.
       If the chevron / icon / label / gap utilities ever change in
-      TranscriptDisclosureHeader, recompute this value to keep the
-      child rail aligned with the body column.
+      TranscriptDisclosureHeader, recompute this value.
     -->
-    <div class="ml-[5.5625rem] max-h-[20rem] overflow-y-auto border-l border-border/70 pl-3" data-testid="wait-group-children">
+    <div class="ml-[6.375rem] max-h-[20rem] overflow-y-auto" data-testid="wait-group-children">
       {#each visibleChildren as child (timelineNodeKey(child))}
         {#if child.kind === 'leaf'}
           <TimelineLeaf {pane} item={child.item} {onImageExpand} {userMessageActions} />
