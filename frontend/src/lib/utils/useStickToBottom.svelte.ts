@@ -68,17 +68,13 @@ function trace(label: string, build: () => Record<string, unknown>): void {
 // the bottom is essentially in view and the scroll-to-bottom chip is
 // noise.
 const STICK_TO_BOTTOM_OFFSET_PX = 70;
-// Re-stick threshold for the SCROLL HANDLER's "user scrolled back" path.
-// Must be small: a 70px tolerance means a user wheel-up of 30–50px lands
-// inside the threshold, so the same scroll handler that observed the
-// escape immediately re-sticks them — their gesture is undone. Keep this
-// near-zero so re-stick only triggers when the user has actually scrolled
-// essentially all the way back to the bottom. At sticky-bottom,
-// `targetScrollTop()` returns `scrollHeight - clientHeight` exactly, so
-// the distance-to-bottom from a sticky session is 0 px. 5 leaves margin
-// for sub-pixel rounding while still excluding any deliberate
-// wheel/touch gesture wider than a few pixels.
-const RE_STICK_OFFSET_PX = 5;
+// Re-stick threshold for the SCROLL HANDLER's "user scrolled back" path:
+// intentionally tighter than the 70px visual near-bottom band above. The
+// visual band hides noisy scroll-to-bottom chips; this epsilon governs
+// auto-follow intent. A deliberate 1px user move away from bottom must
+// break auto-follow, while sub-pixel rounding at the exact bottom should
+// not strand a sticky user.
+const AUTO_FOLLOW_BOTTOM_EPSILON_PX = 0.5;
 const RESIZE_CLEAR_PADDING_MS = 1;
 const DEFAULT_PROGRAMMATIC_SCROLL_DURATION_MS = 420;
 const PROGRAMMATIC_SCROLL_DISTANCE_THRESHOLD_PX = 1;
@@ -374,6 +370,7 @@ export function createUseStickToBottomController(
   let pendingUserScrollIntentTimer: ReturnType<typeof setTimeout> | null = null;
   let previousHeight: number | undefined;
   let touchStartY: number | null = null;
+  let resizeCorrelatedUntaggedScrollBudget = 0;
 
   // ===== Spring chase state =====
   let velocity = 0;
@@ -481,9 +478,9 @@ export function createUseStickToBottomController(
     // Land at the actual bottom (scrollHeight - clientHeight). Upstream
     // use-stick-to-bottom subtracts an extra -1 px to avoid sub-pixel
     // rounding flipping their geometric isAtBottom check, but this
-    // controller's isAtBottom uses a 70 px STICK_TO_BOTTOM_OFFSET_PX
-    // band (button visibility) and re-stick uses RE_STICK_OFFSET_PX
-    // (5 px) — both wide enough that one sub-pixel doesn't matter.
+    // controller's public isAtBottom uses a 70 px visual band while
+    // auto-follow re-stick uses a sub-pixel epsilon. Neither needs the
+    // target itself to sit short of the actual browser bottom.
     // Subtracting -1 here just left the user 1 px above the actual
     // bottom; the scrollbar showed a one-tick gap and the snap felt
     // incomplete.
@@ -492,6 +489,9 @@ export function createUseStickToBottomController(
   function distanceFromBottom(): number {
     if (!scrollEl) return 0;
     return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
+  }
+  function movedUpEnoughToEscape(startScrollTop: number, nextScrollTop: number): boolean {
+    return startScrollTop - nextScrollTop >= USER_SCROLL_ESCAPE_THRESHOLD_PX;
   }
   function refreshIsNearBottom(): void {
     const dist = distanceFromBottom();
@@ -516,6 +516,11 @@ export function createUseStickToBottomController(
     // Tag using the BROWSER-rounded read so the scroll handler's
     // `scrollTop === ignoreScrollToTop` check matches.
     ignoreScrollToTop = scrollEl.scrollTop;
+    // Tagged programmatic scroll events intentionally return before the
+    // user-direction path, so keep the direction baseline current here.
+    // Otherwise a later plain scrollbar/native scroll could compare
+    // against the previous bottom and fail to register a small escape.
+    lastUntaggedScrollTop = scrollEl.scrollTop;
     refreshIsNearBottom();
     trace('scroll.write', () => ({
       caller: writeCaller,
@@ -751,6 +756,12 @@ export function createUseStickToBottomController(
       // geometry change → nothing to chase, no scroll-event tagging needed.
       if (delta === 0) return;
       resizeDifference = delta;
+      // Virtua can emit one untagged scroll jump as part of the same
+      // measurement correction that produced this content resize. The
+      // timer/rAF `resizeDifference` guard catches the normal ordering;
+      // this one-event budget covers environments where the clear races
+      // ahead of the scroll handler. Pending user intent still wins.
+      resizeCorrelatedUntaggedScrollBudget = 1;
 
       // Refresh the geometric near-bottom flag BEFORE computing any
       // pin predicate so the trace and the gate both see the same
@@ -892,7 +903,10 @@ export function createUseStickToBottomController(
       const myDelta = delta;
       resizeClearTimer = setTimeout(() => {
         requestAnimationFrame(() => {
-          if (resizeDifference === myDelta) resizeDifference = 0;
+          if (resizeDifference === myDelta) {
+            resizeDifference = 0;
+            resizeCorrelatedUntaggedScrollBudget = 0;
+          }
         });
       }, RESIZE_CLEAR_PADDING_MS);
     });
@@ -925,11 +939,28 @@ export function createUseStickToBottomController(
     }
     if (!escapedFromLockState && isAtBottomState) {
       springStopRequested = false;
-      if (opts.repinIfStillSticky && scrollEl && distanceFromBottom() > RE_STICK_OFFSET_PX) {
+      if (opts.repinIfStillSticky && scrollEl && distanceFromBottom() > AUTO_FOLLOW_BOTTOM_EPSILON_PX) {
         writeCaller = 'pendingUserScrollIntent.expire';
         writeScrollTop(targetScrollTop());
       }
     }
+  }
+
+  function expirePendingUserScrollIntent(intent: NonNullable<typeof pendingUserScrollIntent>): void {
+    if (pendingUserScrollIntent !== intent) return;
+    if (scrollEl && movedUpEnoughToEscape(intent.startScrollTop, scrollEl.scrollTop)) {
+      trace('scroll.userScrollIntent.expireEscape', () => ({
+        source: intent.source,
+        startScrollTop: Math.round(intent.startScrollTop),
+        scrollTop: Math.round(scrollEl?.scrollTop ?? 0),
+        isAtBottomState,
+        escapedFromLockState,
+      }));
+      clearPendingUserScrollIntent(intent);
+      setEscapedFromLock(true);
+      return;
+    }
+    clearPendingUserScrollIntent(intent, { repinIfStillSticky: true });
   }
 
   function armUserScrollIntent(source: 'wheel' | 'key' | 'touch'): void {
@@ -942,7 +973,7 @@ export function createUseStickToBottomController(
     pendingUserScrollIntent = intent;
     if (pendingUserScrollIntentTimer) clearTimeout(pendingUserScrollIntentTimer);
     pendingUserScrollIntentTimer = setTimeout(() => {
-      clearPendingUserScrollIntent(intent, { repinIfStillSticky: true });
+      expirePendingUserScrollIntent(intent);
     }, USER_SCROLL_INTENT_WINDOW_MS);
     trace('scroll.userScrollIntent.arm', () => ({
       source,
@@ -997,7 +1028,7 @@ export function createUseStickToBottomController(
     refreshIsNearBottom();
     const userScrollIntent = pendingUserScrollIntent;
     const pendingUserIntentMovedUp = !!userScrollIntent
-      && scrollTopAtEvent < userScrollIntent.startScrollTop - USER_SCROLL_ESCAPE_THRESHOLD_PX;
+      && movedUpEnoughToEscape(userScrollIntent.startScrollTop, scrollTopAtEvent);
     const tagged = (scrollTopAtEvent === tag || externalTagged) && !pendingUserIntentMovedUp;
     trace('scroll.scrollEvent', () => ({
       scrollTop: Math.round(scrollTopAtEvent),
@@ -1023,6 +1054,8 @@ export function createUseStickToBottomController(
     // reflects our own write, not user intent.
     if (tagged) return;
     cancelTargetAnimation();
+    const resizeCorrelatedScroll = resizeDifference !== 0 || resizeCorrelatedUntaggedScrollBudget > 0;
+    if (resizeCorrelatedUntaggedScrollBudget > 0) resizeCorrelatedUntaggedScrollBudget -= 1;
     // Capture direction baseline BEFORE the deferral. We're inside the
     // synchronous handler for the current scroll event; this scrollTop
     // is what the user just produced. Used by the deferred re-stick
@@ -1035,22 +1068,6 @@ export function createUseStickToBottomController(
     // before we interpret direction. Mirrors upstream.
     setTimeout(() => {
       if (!scrollEl) return;
-      // RO race — content just resized; the scroll event reflects layout,
-      // not user intent. Most importantly: virtua's $fixScrollJump can
-      // adjust scrollTop to keep above-viewport rows stable, which would
-      // otherwise look like an up-gesture. For non-virtua consumers
-      // (Discussion's ChannelView) this gate is a 1ms suppression window
-      // after each content-RO fire — vanishingly unlikely to swallow a
-      // real user gesture, since the window only opens immediately after
-      // a layout change.
-      if (resizeDifference !== 0) {
-        trace('scroll.scrollEvent.deferred.bailRO', () => ({
-          resizeDifference: Math.round(resizeDifference),
-          scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-        }));
-        return;
-      }
-
       if (userScrollIntent && pendingUserIntentMovedUp) {
         trace('scroll.scrollEvent.deferred.escapeUserScroll', () => ({
           source: userScrollIntent.source,
@@ -1063,6 +1080,23 @@ export function createUseStickToBottomController(
         return;
       }
 
+      // RO race — content just resized; the scroll event reflects layout,
+      // not user intent. Most importantly: virtua's $fixScrollJump can
+      // adjust scrollTop to keep above-viewport rows stable, which would
+      // otherwise look like an up-gesture. For non-virtua consumers
+      // (Discussion's ChannelView) this gate is a 1ms suppression window
+      // after each content-RO fire — vanishingly unlikely to swallow a
+      // real user gesture, since the window only opens immediately after
+      // a layout change.
+      if (resizeCorrelatedScroll) {
+        trace('scroll.scrollEvent.deferred.bailRO', () => ({
+          resizeDifference: Math.round(resizeDifference),
+          resizeCorrelatedScroll,
+          scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+        }));
+        return;
+      }
+
       if (userScrollIntent) {
         clearPendingUserScrollIntent(userScrollIntent);
       }
@@ -1070,6 +1104,18 @@ export function createUseStickToBottomController(
       if (isSelectingInside(scrollEl)) {
         trace('scroll.scrollEvent.deferred.escapeSelection', () => ({
           scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+        }));
+        setEscapedFromLock(true);
+        return;
+      }
+
+      const scrolledUp = previousUntagged >= 0
+        && movedUpEnoughToEscape(previousUntagged, scrollTopAtEvent);
+      if (scrolledUp && !escapedFromLockState) {
+        trace('scroll.scrollEvent.deferred.escapeUntaggedScroll', () => ({
+          scrollTop: Math.round(scrollTopAtEvent),
+          previousUntagged: Math.round(previousUntagged),
+          resizeDifference: Math.round(resizeDifference),
         }));
         setEscapedFromLock(true);
         return;
@@ -1087,16 +1133,16 @@ export function createUseStickToBottomController(
       //      would undo the escape. Skip re-stick when scrollTop is
       //      decreasing (UP direction); only DOWN-direction scrolls
       //      toward the bottom can re-engage auto-follow.
-      //   2. RE_STICK_OFFSET_PX (small) rather than the looser
-      //      isNearBottomState (70px). Even on a DOWN scroll, only
-      //      essentially-at-bottom positions count.
+      //   2. AUTO_FOLLOW_BOTTOM_EPSILON_PX rather than the looser
+      //      isNearBottomState (70px). Even on a DOWN scroll, only the
+      //      actual bottom (within sub-pixel rounding) counts.
       const scrolledDown = previousUntagged < 0
         ? false
         : scrollTopAtEvent > previousUntagged;
       const distFromBottom = distanceFromBottom();
       const willRestick = scrolledDown
         && escapedFromLockState
-        && distFromBottom <= RE_STICK_OFFSET_PX;
+        && distFromBottom <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
       trace('scroll.scrollEvent.deferred', () => ({
         scrollTop: Math.round(scrollTopAtEvent),
         previousUntagged: Math.round(previousUntagged),
@@ -1422,7 +1468,10 @@ export function createUseStickToBottomController(
     if (resizeClearTimer) clearTimeout(resizeClearTimer);
     resizeClearTimer = setTimeout(() => {
       requestAnimationFrame(() => {
-        if (resizeDifference === 1) resizeDifference = 0;
+        if (resizeDifference === 1) {
+          resizeDifference = 0;
+          resizeCorrelatedUntaggedScrollBudget = 0;
+        }
       });
     }, RESIZE_CLEAR_PADDING_MS);
     writeCaller = 'notifyContentMaybeGrew';
@@ -1539,6 +1588,7 @@ export function createUseStickToBottomController(
     clearWarmupTimers();
     warm = false;
     resizeDifference = 0;
+    resizeCorrelatedUntaggedScrollBudget = 0;
     previousHeight = undefined;
     touchStartY = null;
     lastUntaggedScrollTop = -1;
