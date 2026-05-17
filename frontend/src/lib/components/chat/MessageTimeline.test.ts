@@ -478,6 +478,50 @@ describe('<MessageTimeline>', () => {
     ]);
   });
 
+  it('keeps proposed-plan rows out of the continuous left rail', async () => {
+    // Proposed plans render as a full-width structured card
+    // (ProposedPlanCard's TranscriptDisclosureHeader + ProposedPlanBody),
+    // not the compact chev/icon/label/preview pattern other tool rows
+    // share. The rail running alongside that body looks like it
+    // belongs with the tool gutter even though the card spans the
+    // whole row, so plan rows opt out of `data-rail` and the
+    // border-l/ml/pl shell.
+    setBindingMock('GetPayloadData', async () => ({ data: '# Ship it' }));
+    const pane = await buildPane(undefined, [
+      makeItem({
+        id: 'tool-before',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'Bash',
+        summary: 'Bash: ls',
+      }),
+      makeItem({
+        id: 'plan-1',
+        itemIndex: 1,
+        kind: 'tool_call',
+        summary: 'Plan',
+        payloadId: 'plan-payload',
+        payloadKind: 'proposed_plan',
+        payloadMeta: JSON.stringify({
+          title: 'Ship it',
+          lineCount: 3,
+          charCount: 12,
+          preview: '# Ship it',
+        }),
+      }),
+    ]);
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    const wrappers = container.querySelectorAll('[data-testid="message-timeline-node"]');
+    expect(wrappers).toHaveLength(2);
+    // The non-plan tool row keeps the rail so this test would also
+    // catch a regression that disabled the rail wholesale.
+    expect(wrappers[0].getAttribute('data-rail')).toBe('true');
+    expect(wrappers[0].className).toContain('border-l');
+    expect(wrappers[1].getAttribute('data-rail')).toBe('false');
+    expect(wrappers[1].className).not.toContain('border-l');
+  });
+
   it('keeps a single Read as a normal expandable row (grouping requires a run of >=2)', async () => {
     // Isolated reads keep their full GenericToolCallRow chrome —
     // chev + label + body preview + hover-revealed editor-link icon.

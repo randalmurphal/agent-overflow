@@ -80,6 +80,14 @@
     'wait_group',
     'read_group',
   ]);
+  // Tool rows whose body is a structured full-width card rather than
+  // the compact chev/icon/label/preview pattern — these break out of
+  // the rail so the vertical line doesn't run alongside the
+  // structured body (which would otherwise look like it belongs with
+  // the tool gutter even though the card spans the whole row).
+  // Proposed-plan rows are the only entry today; extend the set
+  // alongside any future card-style payload kind.
+  const RAIL_EXEMPT_PAYLOAD_KINDS = new Set<string>(['proposed_plan']);
   // happy-dom returns 0 for clientHeight/clientWidth, which makes virtua
   // mount zero rows. In test runs we ask virtua to mount everything via
   // ssrCount so test assertions can find the rendered DOM. Production
@@ -860,7 +868,9 @@
                  (assistant_text, user_text, notifications, api errors)
                  renders flat and breaks the line. -->
             {@const isRail =
-              (node.kind === 'leaf' && RAIL_LEAF_KINDS.has(node.item.kind)) ||
+              (node.kind === 'leaf'
+                && RAIL_LEAF_KINDS.has(node.item.kind)
+                && !RAIL_EXEMPT_PAYLOAD_KINDS.has(node.item.payloadKind ?? '')) ||
               RAIL_GROUP_KINDS.has(node.kind)}
             <div data-row-index={index} class:mt-4={rowDecorations.toolTextBoundaryIndexes.has(index)}>
               {#if index === 0}
