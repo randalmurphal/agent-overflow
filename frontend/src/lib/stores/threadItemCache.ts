@@ -47,8 +47,8 @@ export const THREAD_ITEM_CACHE_CAP = 5;
 /**
  * Soft cap on per-snapshot item count. Snapshots exceeding this are
  * not cached — the cost-to-benefit on huge threads inverts (cache
- * occupancy grows linearly while the win shrinks because phase 1's
- * 50-item slice already paints the visible viewport quickly).
+ * occupancy grows linearly while the win shrinks because the 200-item
+ * initial slice already paints the visible viewport quickly).
  */
 export const MAX_CACHED_SNAPSHOT_ITEMS = 1000;
 

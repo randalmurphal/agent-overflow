@@ -1829,11 +1829,11 @@ describe('createThreadPane', () => {
       expect(pane.loadingOlder).toBe(false);
     });
 
-    it('loadUntilItem uses the default batch size when the pane floor is null', async () => {
-      // Regression pin for the MAX_SAFE_INTEGER turnSpan bug: when
+    it('loadUntilItem uses the bounded item budget when the pane floor is null', async () => {
+      // Regression pin for the MAX_SAFE_INTEGER itemBudget bug: when
       // currentFloor is null (empty window), the request must pass a
-      // bounded turnLimit rather than a sentinel number. Check that
-      // the actual turnLimit argument is the default batch size.
+      // bounded item budget rather than a sentinel number. Check that
+      // the actual itemBudget argument is the LOAD_UNTIL_ITEM_HARD_CAP.
       const pane = createThreadPane();
       setBindingMock('ListThreadSliceAround', async () => ({
         items: [],
@@ -1844,10 +1844,10 @@ describe('createThreadPane', () => {
         makeItem({ id: 'deep', threadId: 't', turnIndex: 3 }),
       );
       let capturedBeforeTurn: number | null = null;
-      let capturedLimit: number | null = null;
-      setBindingMock('ListItemsBeforeTurn', async (_id, beforeTurn, limit) => {
+      let capturedBudget: number | null = null;
+      setBindingMock('ListItemsBeforeTurn', async (_id, beforeTurn, budget) => {
         capturedBeforeTurn = beforeTurn as number;
-        capturedLimit = limit as number;
+        capturedBudget = budget as number;
         return {
           items: [makeItem({ id: 'deep', threadId: 't', turnIndex: 3 })],
           oldestTurnIndex: 3,
@@ -1859,10 +1859,10 @@ describe('createThreadPane', () => {
       expect(pane.oldestLoadedTurnIndex).toBeNull();
       const ok = await pane.loadUntilItem('deep');
       expect(ok).toBe(true);
-      // The default batch (LOAD_OLDER_TURN_BATCH=50) — not a sentinel
-      // like Number.MAX_SAFE_INTEGER.
-      expect(capturedLimit).toBeLessThanOrEqual(200);
-      expect(capturedLimit).toBeGreaterThan(0);
+      // LOAD_UNTIL_ITEM_HARD_CAP (1000) bounds the per-call item
+      // budget so a deep search hit doesn't request the entire history.
+      expect(capturedBudget).toBeLessThanOrEqual(1000);
+      expect(capturedBudget).toBeGreaterThan(0);
       expect(capturedBeforeTurn).toBe(4);
     });
 

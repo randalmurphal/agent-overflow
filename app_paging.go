@@ -8,24 +8,31 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// Windowed history constants. Tuned for the common chat-thread shape:
-// 50 turns covers most continuous sessions, min 500 items keeps short
-// burst threads from paying a round-trip per Q&A, max 2000 items caps
-// memory when a single agent turn produces hundreds of rows.
+// Windowed history constants. `sliceAroundDefaultItems` and
+// `paginationItems` size the user-facing loads so SubagentGroup
+// collapse (a heavy subagent turn rolls up to one card) doesn't leave
+// the rendered timeline visually truncated. `initialTurnWindow` /
+// `minWindowItems` / `maxWindowItems` exist for the legacy
+// `ListRecentThreadItems` transport-gap-recovery probe only.
 const (
 	initialTurnWindow = 50
 	minWindowItems    = 500
 	maxWindowItems    = 2000
-	paginationTurns   = 50
 
-	// sliceAroundDefaultItems is the target size for the phase-1
-	// fast-path slice loaded on thread switch. ~50 items covers a
-	// desktop-sized viewport (10–15 items) plus enough overscan above
-	// and below for virtua's measurement loop to land cleanly on the
-	// bottom or anchor. Phase 2 always re-runs the full
-	// initialTurnWindow load, so undershooting here is corrected within
-	// a frame.
-	sliceAroundDefaultItems = 50
+	// paginationItems is the default item budget for an explicit
+	// "load older" page. The backend walks turns DESC accumulating
+	// item counts (excluding plan_update notifications) until
+	// cumulative ≥ this budget, then returns that turn's items plus
+	// every newer one strictly below the caller's floor. One click =
+	// ~this many items prepended, regardless of per-turn density.
+	paginationItems = 200
+
+	// sliceAroundDefaultItems is the target size for the slice loaded
+	// on thread switch. 200 items covers a desktop viewport
+	// (10–15 rendered cards) with several screens of overscan, and is
+	// large enough that one heavy subagent turn collapsing to a single
+	// card doesn't leave the timeline visually empty.
+	sliceAroundDefaultItems = 200
 
 	// backgroundTaskRetentionMillis matches
 	// COMPLETION_RETENTION_MS in BackgroundTaskTray.svelte. Completed
@@ -91,14 +98,22 @@ func (a *App) ListThreadSliceAround(threadID, anchorItemID string, targetItemCou
 	return paged, nil
 }
 
-// ListItemsBeforeTurn loads older turns on demand, strictly below
-// `beforeTurnIndex` (the frontend's current window floor). `turnLimit`
-// defaults to paginationTurns when <= 0.
-func (a *App) ListItemsBeforeTurn(threadID string, beforeTurnIndex, turnLimit int) (store.PagedItems, error) {
-	if turnLimit <= 0 {
-		turnLimit = paginationTurns
+// ListItemsBeforeTurn loads older items on demand, strictly below
+// `beforeTurnIndex` (the frontend's current window floor). The third
+// parameter is an **item budget**: the backend walks turns DESC,
+// summing each turn's item count (excluding plan_update notifications),
+// and stops at the first turn that pushes cumulative ≥ itemBudget.
+// Defaults to paginationItems when <= 0, capped at maxWindowItems to
+// defend against a malicious LAN-attached caller asking for the whole
+// thread in one round-trip.
+func (a *App) ListItemsBeforeTurn(threadID string, beforeTurnIndex, itemBudget int) (store.PagedItems, error) {
+	if itemBudget <= 0 {
+		itemBudget = paginationItems
 	}
-	paged, err := a.store.ListItemsBeforeTurn(threadID, beforeTurnIndex, turnLimit)
+	if itemBudget > maxWindowItems {
+		itemBudget = maxWindowItems
+	}
+	paged, err := a.store.ListItemsBeforeTurn(threadID, beforeTurnIndex, itemBudget)
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list items before turn: %w", err)
 	}

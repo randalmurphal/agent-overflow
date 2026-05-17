@@ -44,9 +44,35 @@ export interface AutoLoadOlderGateState {
 
 export interface AutoLoadOlderGate {
   readonly attemptedAtFloor: number | null;
+  readonly armed: boolean;
   reset(): void;
   shouldLoad(state: AutoLoadOlderGateState): boolean;
+  /**
+   * Suspends auto-load until a real user gesture arrives (or the
+   * fallback cooldown elapses). Called after every `pane.loadOlder()`
+   * completes — without this, the anchor-restore programmatic scroll
+   * that follows the prepend re-fires the gate on the next tick and
+   * walks the entire history in a cascade.
+   */
+  disarm(): void;
+  /**
+   * Re-arms the gate. Wired to wheel / touchmove / keydown listeners
+   * on the scroll surface so a real user gesture re-enables auto-load
+   * exactly once per user action. Programmatic scrolls
+   * (`listRef.scrollToIndex`, anchor restore) don't fire these events
+   * so they cannot re-arm.
+   */
+  armOnGesture(): void;
 }
+
+/**
+ * Fallback cooldown that re-arms the gate even when no user gesture
+ * is detected. Belt-and-braces against edge devices (e.g., touch
+ * momentum-scroll that doesn't fire continuous `touchmove`) — the
+ * primary mechanism is gesture detection. 350ms is the smallest
+ * window that doesn't make the next intentional scroll feel laggy.
+ */
+const AUTO_LOAD_COOLDOWN_MS = 350;
 
 export function resolveVisibleTimelineNodeIndex(
   nodes: TimelineNode[],
@@ -123,12 +149,51 @@ export function createAutoLoadOlderGate({
   indexThreshold,
 }: AutoLoadOlderGateOptions): AutoLoadOlderGate {
   let attemptedAtFloor: number | null = null;
+  let armed = true;
+  let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearCooldown(): void {
+    if (cooldownTimer !== null) {
+      clearTimeout(cooldownTimer);
+      cooldownTimer = null;
+    }
+  }
+
   return {
     get attemptedAtFloor() { return attemptedAtFloor; },
+    get armed() { return armed; },
     reset(): void {
+      // Thread switch: clear all state. The new thread should be free
+      // to auto-load older from frame 0 if its initial slice triggers
+      // the geometry conditions.
       attemptedAtFloor = null;
+      armed = true;
+      clearCooldown();
+    },
+    disarm(): void {
+      armed = false;
+      clearCooldown();
+      cooldownTimer = setTimeout(() => {
+        // Fallback: if no user gesture arrives within the cooldown
+        // window, re-arm anyway. Defends against edge devices where
+        // gesture detection misses an event (touch momentum scroll
+        // with sparse `touchmove`).
+        armed = true;
+        cooldownTimer = null;
+      }, AUTO_LOAD_COOLDOWN_MS);
+    },
+    armOnGesture(): void {
+      armed = true;
+      clearCooldown();
     },
     shouldLoad(state: AutoLoadOlderGateState): boolean {
+      // Gesture-armed: after each load, `disarm()` flips this false.
+      // Only a real user gesture (wheel/touchmove/keydown wired by
+      // the timeline) or the cooldown fallback can flip it back true.
+      // Programmatic scrolls don't fire those events, so the
+      // anchor-restore after a load cannot cascade.
+      if (!armed) return false;
+
       if (!shouldInspectAutoLoadOlderIndex({
         offset: state.offset,
         hasMoreHistory: state.hasMoreHistory,

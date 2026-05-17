@@ -292,8 +292,10 @@ func TestListItemsBeforeTurn_RespectsUpperBound(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	// Four turns, all with corresponding turns rows so
-	// floorTurnIndexBefore uses the turns table path.
+	// Four turns, all with corresponding turns rows. The item-budget
+	// walker reads from `items` directly (GROUP BY turn_index) so the
+	// `turns` rows are not strictly required, but seeding both mirrors
+	// the production shape.
 	for i := 0; i < 4; i++ {
 		if err := s.InsertTurn(Turn{
 			TurnID: idForTurn(i), ThreadID: "t", TurnIndex: i, StartedAt: int64(i) * 1000,
@@ -1005,6 +1007,13 @@ func TestListRecentItemsWithAncestors_OuterThreadFilterRequired(t *testing.T) {
 // duplication; this test locks in the backend half of the contract
 // so a future SQL change that silently stopped returning the
 // ancestor on the second call would be caught.
+//
+// Under item-budget semantics, the walker walks past empty turns
+// rather than stopping on them: the second call from floor=2
+// budget=1 walks past empty turn 1 to find ancestor-0 in turn 0,
+// returning it directly. This is the new useful shape — the user
+// pages back and content appears, instead of getting an empty page
+// because the turn-budget-of-1 only reached the next turn down.
 func TestListItemsBeforeTurn_ReturnsAncestorOnEachEligiblePage(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
@@ -1020,8 +1029,9 @@ func TestListItemsBeforeTurn_ReturnsAncestorOnEachEligiblePage(t *testing.T) {
 	seedItem(t, s, "t", "child-3", 3, 0, "ancestor-0")
 	seedItem(t, s, "t", "filler-4", 4, 0, "")
 
-	// First page: before turn 3, turnLimit=1 → newFloor=2. Returns
-	// child-2 and its ancestor (ancestor-0) pulled from turn 0.
+	// First page: before turn 3, itemBudget=1. Walk turn 2 (has
+	// child-2, cumulative=1 ≥ 1, stop). newFloor=2. Returns child-2
+	// + the CTE-pulled ancestor (ancestor-0).
 	first, err := s.ListItemsBeforeTurn("t", 3, 1)
 	if err != nil {
 		t.Fatalf("first: %v", err)
@@ -1032,31 +1042,24 @@ func TestListItemsBeforeTurn_ReturnsAncestorOnEachEligiblePage(t *testing.T) {
 		t.Errorf("first page: got %v, want %v", gotFirst, wantFirst)
 	}
 
-	// Second page: before turn 2, turnLimit=1 → newFloor=1. Turn 1
-	// has no items, but the query is still legitimate. Nothing
-	// matches since ancestor-0 is below newFloor=1.
+	// Second page: before turn 2, itemBudget=1. Walk turn 1 (empty,
+	// cumulative=0). Walk turn 0 (ancestor-0, cumulative=1 ≥ 1, stop).
+	// newFloor=0. Returns ancestor-0 again. The frontend's
+	// `prependDedupById` skips the duplicate in the in-memory array.
 	second, err := s.ListItemsBeforeTurn("t", 2, 1)
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
-	// Turn 1 is empty and ancestor-0 sits at turn 0 (below newFloor=1),
-	// so the second page is empty. A later page at newFloor=0 would
-	// re-surface ancestor-0.
-	if len(second.Items) != 0 {
-		t.Errorf("second page: got %v, want empty (turn 1 has no items)", collectIDs(second.Items))
+	gotSecond := collectIDs(second.Items)
+	wantSecond := []string{"ancestor-0"}
+	if !equalStringSlice(gotSecond, wantSecond) {
+		t.Errorf("second page: got %v, want %v", gotSecond, wantSecond)
 	}
-
-	// Third page: before turn 1, turnLimit=1 → newFloor=0. Returns
-	// ancestor-0 again. The frontend's prependDedupById will skip
-	// it in the in-memory items array.
-	third, err := s.ListItemsBeforeTurn("t", 1, 1)
-	if err != nil {
-		t.Fatalf("third: %v", err)
+	if second.OldestTurnIndex != 0 {
+		t.Errorf("second page floor: got %d, want 0", second.OldestTurnIndex)
 	}
-	gotThird := collectIDs(third.Items)
-	wantThird := []string{"ancestor-0"}
-	if !equalStringSlice(gotThird, wantThird) {
-		t.Errorf("third page: got %v, want %v", gotThird, wantThird)
+	if second.HasMore {
+		t.Error("second page HasMore: got true, want false (floor at turn 0)")
 	}
 }
 
@@ -1322,6 +1325,160 @@ func TestListThreadSliceAround_FiltersPlanUpdateNotifications(t *testing.T) {
 	wantIDs := []string{"a", "b", "c"}
 	if !equalStringSlice(gotIDs, wantIDs) {
 		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
+	}
+}
+
+// TestListItemsBeforeTurn_ItemBudgetWalksUntilCumulative verifies that
+// the item-budget semantic walks turns DESC accumulating item counts
+// until cumulative ≥ budget. With turns 0..3 each holding 5 items
+// (20 total below turn 4), a budget of 7 walks turn 3 (cumulative=5
+// < 7) then turn 2 (cumulative=10 ≥ 7, stop). Floor=2. Returns 10
+// items (turns 2 and 3). Turns 0 and 1 stay below; HasMore=true.
+func TestListItemsBeforeTurn_ItemBudgetWalksUntilCumulative(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	for turn := 0; turn < 4; turn++ {
+		for i := 0; i < 5; i++ {
+			seedItem(t, s, "t", idForItem(turn, i), turn, i, "")
+		}
+	}
+
+	paged, err := s.ListItemsBeforeTurn("t", 4, 7)
+	if err != nil {
+		t.Fatalf("list before: %v", err)
+	}
+	if len(paged.Items) != 10 {
+		t.Errorf("items count: got %d, want 10 (turns 2 and 3)", len(paged.Items))
+	}
+	if paged.OldestTurnIndex != 2 {
+		t.Errorf("oldest: got %d, want 2", paged.OldestTurnIndex)
+	}
+	if !paged.HasMore {
+		t.Error("HasMore: got false, want true (turns 0 and 1 still below)")
+	}
+}
+
+// TestListItemsBeforeTurn_ItemBudgetIgnoresPlanUpdateNotifications
+// guards the kind filter on the item-budget walker. A `plan_update`
+// notification should NOT count toward the cumulative budget — the
+// loader filters them out, so counting them would systematically
+// under-deliver visible content.
+func TestListItemsBeforeTurn_ItemBudgetIgnoresPlanUpdateNotifications(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	// Turn 0: 1 real item + 10 plan_update notifications (excluded).
+	// Turn 1: 1 real item. Budget=2 should reach turn 0 (cumulative=2
+	// counting only the real items).
+	seedItem(t, s, "t", "t1-real", 1, 0, "")
+	seedItem(t, s, "t", "t0-real", 0, 0, "")
+	for i := 0; i < 10; i++ {
+		if err := s.InsertItem(Item{
+			ID:        fmt.Sprintf("t0-plan-%d", i),
+			ThreadID:  "t",
+			TurnIndex: 0,
+			ItemIndex: i + 1,
+			Kind:      "notification",
+			Role:      "system",
+			ToolName:  "plan_update",
+			Summary:   "plan",
+			CreatedAt: int64(i),
+		}); err != nil {
+			t.Fatalf("insert plan_update %d: %v", i, err)
+		}
+	}
+
+	paged, err := s.ListItemsBeforeTurn("t", 2, 2)
+	if err != nil {
+		t.Fatalf("list before: %v", err)
+	}
+	if paged.OldestTurnIndex != 0 {
+		t.Errorf("oldest: got %d, want 0 (plan_update must not count toward budget)", paged.OldestTurnIndex)
+	}
+	// Returned items: turn 0 real + turn 1 real (plan_updates filtered out by queryPagedItems).
+	gotIDs := collectIDs(paged.Items)
+	wantIDs := []string{"t0-real", "t1-real"}
+	if !equalStringSlice(gotIDs, wantIDs) {
+		t.Errorf("items: got %v, want %v (plan_update notifications filtered)", gotIDs, wantIDs)
+	}
+}
+
+// TestHasOlderTurns_IgnoresPlanUpdateOnlySubFloor guards the false-
+// positive Load-older button case. If the only items below the floor
+// are `plan_update` notifications, `hasOlderTurns` must return false —
+// the loaders filter those out, so clicking "Load older" would return
+// zero rows. Before the kind-filter fix, the EXISTS probe didn't
+// match the loader's WHERE clause and the button would render anyway.
+func TestHasOlderTurns_IgnoresPlanUpdateOnlySubFloor(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	// Turn 0: only plan_update notifications. Turn 1: real items
+	// (the "loaded window"). hasOlderTurns(floor=1) must be false:
+	// nothing visible exists below.
+	for i := 0; i < 5; i++ {
+		if err := s.InsertItem(Item{
+			ID:        fmt.Sprintf("t0-plan-%d", i),
+			ThreadID:  "t",
+			TurnIndex: 0,
+			ItemIndex: i,
+			Kind:      "notification",
+			Role:      "system",
+			ToolName:  "plan_update",
+			Summary:   "plan",
+			CreatedAt: int64(i),
+		}); err != nil {
+			t.Fatalf("insert plan_update %d: %v", i, err)
+		}
+	}
+	seedItem(t, s, "t", "t1-real", 1, 0, "")
+
+	exists, err := s.hasOlderTurns("t", 1)
+	if err != nil {
+		t.Fatalf("hasOlderTurns: %v", err)
+	}
+	if exists {
+		t.Error("hasOlderTurns: got true, want false (only plan_update rows below floor)")
+	}
+}
+
+// TestHasOlderTurns_TrueForMixedSubFloor confirms the positive case
+// still works after adding the kind filter: a real item below the
+// floor must report hasMore=true.
+func TestHasOlderTurns_TrueForMixedSubFloor(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	// Turn 0: one real item + a few plan_update notifications. Turn 1:
+	// real items (the loaded window). hasOlderTurns(floor=1) must be
+	// true: the one real item in turn 0 counts.
+	seedItem(t, s, "t", "t0-real", 0, 0, "")
+	if err := s.InsertItem(Item{
+		ID:        "t0-plan",
+		ThreadID:  "t",
+		TurnIndex: 0,
+		ItemIndex: 1,
+		Kind:      "notification",
+		Role:      "system",
+		ToolName:  "plan_update",
+		Summary:   "plan",
+		CreatedAt: 1,
+	}); err != nil {
+		t.Fatalf("insert plan_update: %v", err)
+	}
+	seedItem(t, s, "t", "t1-real", 1, 0, "")
+
+	exists, err := s.hasOlderTurns("t", 1)
+	if err != nil {
+		t.Fatalf("hasOlderTurns: %v", err)
+	}
+	if !exists {
+		t.Error("hasOlderTurns: got false, want true (real item below floor must count)")
 	}
 }
 

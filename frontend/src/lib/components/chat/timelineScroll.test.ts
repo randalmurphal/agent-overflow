@@ -195,4 +195,138 @@ describe('timelineScroll', () => {
     })).toBe(false);
     expect(findFirstVisibleIndex).not.toHaveBeenCalled();
   });
+
+  // Disarm/re-arm state machine. Without these guards the gate's old
+  // floor-progress check let the auto-load cascade walk the whole
+  // thread: each loadOlder advanced `oldestLoadedTurnIndex`, the
+  // floor-progress comparison flipped back to allow, the anchor-
+  // restore programmatic scroll fired the gate again, and so on. The
+  // new shape requires a real user gesture (or the 350ms cooldown
+  // fallback) to re-arm.
+
+  it('disarm() blocks shouldLoad even when geometry would otherwise pass', () => {
+    const gate = createAutoLoadOlderGate({
+      offsetThreshold: 800,
+      indexThreshold: 5,
+    });
+    const findFirstVisibleIndex = vi.fn((_offset: number) => 0);
+    const base = {
+      offset: 100,
+      hasMoreHistory: true,
+      loadingOlder: false,
+      oldestLoadedTurnIndex: 10,
+      restoredThreadId: 'thread-1',
+      threadId: 'thread-1',
+      findFirstVisibleIndex,
+    };
+
+    expect(gate.armed).toBe(true);
+    expect(gate.shouldLoad(base)).toBe(true);
+
+    gate.disarm();
+    expect(gate.armed).toBe(false);
+
+    // Even with a fresh floor (would normally satisfy the
+    // floor-progress guard), the gate refuses while disarmed. This is
+    // the cascade-prevention behavior.
+    expect(gate.shouldLoad({ ...base, oldestLoadedTurnIndex: 8 })).toBe(false);
+    expect(gate.shouldLoad({ ...base, oldestLoadedTurnIndex: 5 })).toBe(false);
+  });
+
+  it('armOnGesture() re-enables shouldLoad after disarm', () => {
+    const gate = createAutoLoadOlderGate({
+      offsetThreshold: 800,
+      indexThreshold: 5,
+    });
+    const findFirstVisibleIndex = vi.fn((_offset: number) => 0);
+    const base = {
+      offset: 100,
+      hasMoreHistory: true,
+      loadingOlder: false,
+      oldestLoadedTurnIndex: 10,
+      restoredThreadId: 'thread-1',
+      threadId: 'thread-1',
+      findFirstVisibleIndex,
+    };
+
+    expect(gate.shouldLoad(base)).toBe(true);
+    gate.disarm();
+    expect(gate.shouldLoad({ ...base, oldestLoadedTurnIndex: 8 })).toBe(false);
+
+    // A real user gesture (wheel / touchmove / keydown wired by
+    // MessageTimeline.svelte) re-arms exactly once.
+    gate.armOnGesture();
+    expect(gate.armed).toBe(true);
+    expect(gate.shouldLoad({ ...base, oldestLoadedTurnIndex: 8 })).toBe(true);
+  });
+
+  it('disarm cooldown re-arms after the fallback timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const gate = createAutoLoadOlderGate({
+        offsetThreshold: 800,
+        indexThreshold: 5,
+      });
+      gate.disarm();
+      expect(gate.armed).toBe(false);
+
+      // Cooldown is AUTO_LOAD_COOLDOWN_MS = 350ms. Anything before
+      // that must keep the gate disarmed (gesture-detection is the
+      // primary mechanism; the timer is a fallback).
+      vi.advanceTimersByTime(349);
+      expect(gate.armed).toBe(false);
+
+      vi.advanceTimersByTime(2);
+      expect(gate.armed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reset() re-arms and clears the cooldown timer on thread switch', () => {
+    vi.useFakeTimers();
+    try {
+      const gate = createAutoLoadOlderGate({
+        offsetThreshold: 800,
+        indexThreshold: 5,
+      });
+      gate.disarm();
+      expect(gate.armed).toBe(false);
+
+      gate.reset();
+      expect(gate.armed).toBe(true);
+
+      // The pending cooldown timer must be cleared so it can't fire
+      // later and surprise a freshly-switched thread.
+      vi.advanceTimersByTime(1000);
+      expect(gate.armed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('armOnGesture() clears the cooldown so a future disarm gets a fresh window', () => {
+    vi.useFakeTimers();
+    try {
+      const gate = createAutoLoadOlderGate({
+        offsetThreshold: 800,
+        indexThreshold: 5,
+      });
+      gate.disarm();
+      vi.advanceTimersByTime(100);
+      gate.armOnGesture();
+      expect(gate.armed).toBe(true);
+
+      // The original cooldown's leftover 250ms must NOT fire and
+      // mistakenly "re-arm" the gate after a subsequent disarm.
+      gate.disarm();
+      vi.advanceTimersByTime(250);
+      expect(gate.armed).toBe(false);
+
+      vi.advanceTimersByTime(101);
+      expect(gate.armed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

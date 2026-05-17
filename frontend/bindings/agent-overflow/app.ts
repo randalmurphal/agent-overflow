@@ -1075,12 +1075,17 @@ export function ListItems(threadID: string): $CancellablePromise<store$0.Item[]>
 }
 
 /**
- * ListItemsBeforeTurn loads older turns on demand, strictly below
- * `beforeTurnIndex` (the frontend's current window floor). `turnLimit`
- * defaults to paginationTurns when <= 0.
+ * ListItemsBeforeTurn loads older items on demand, strictly below
+ * `beforeTurnIndex` (the frontend's current window floor). The third
+ * parameter is an **item budget**: the backend walks turns DESC,
+ * summing each turn's item count (excluding plan_update notifications),
+ * and stops at the first turn that pushes cumulative ≥ itemBudget.
+ * Defaults to paginationItems when <= 0, capped at maxWindowItems to
+ * defend against a malicious LAN-attached caller asking for the whole
+ * thread in one round-trip.
  */
-export function ListItemsBeforeTurn(threadID: string, beforeTurnIndex: number, turnLimit: number): $CancellablePromise<store$0.PagedItems> {
-    return $Call.ByID(2147361923, threadID, beforeTurnIndex, turnLimit).then(($result: any) => {
+export function ListItemsBeforeTurn(threadID: string, beforeTurnIndex: number, itemBudget: number): $CancellablePromise<store$0.PagedItems> {
+    return $Call.ByID(2147361923, threadID, beforeTurnIndex, itemBudget).then(($result: any) => {
         return $$createType52($result);
     });
 }

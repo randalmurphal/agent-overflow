@@ -480,6 +480,41 @@ describe('scroll integration — load older', () => {
 
     expect(loadOlder).toHaveBeenCalled();
   });
+
+  // Cascade-prevention. Before the fix, the auto-load gate's
+  // floor-progress predicate cleared the moment `oldestLoadedTurnIndex`
+  // advanced, so the anchor-restore programmatic scroll that followed
+  // `pane.loadOlder()` re-fired the gate on the next tick. With the
+  // gesture-armed gate, a successive button click loads exactly one
+  // section per click (and never auto-cascades without a real user
+  // wheel/touch/keydown gesture in between).
+  it('does not cascade — clicking Load Older twice in a row loads one batch per click', async () => {
+    const items = Array.from({ length: 3 }, (_, i) =>
+      makeItem({ id: `m:${i}`, turnIndex: i + 10, summary: `m${i}` }),
+    );
+    const pane = await buildPane(undefined, items);
+    Object.defineProperty(pane, 'hasMoreHistory', { configurable: true, get: () => true });
+    Object.defineProperty(pane, 'loadingOlder', { configurable: true, get: () => false });
+    const loadOlder = vi.spyOn(pane, 'loadOlder').mockResolvedValue({
+      status: 'loaded',
+      insertedRows: true,
+      insertedBeforeWindow: true,
+    });
+
+    const { getByTestId } = render(MessageTimeline, { props: { pane } });
+    const button = getByTestId('load-older-messages');
+
+    await fireEvent.click(button);
+    await tick();
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+
+    // A second click is an explicit user action — the button path is
+    // always available, gate-state notwithstanding. This pins that
+    // behavior so a future refactor doesn't gate the button itself.
+    await fireEvent.click(button);
+    await tick();
+    expect(loadOlder).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('scroll integration — scroll to item', () => {

@@ -1,9 +1,22 @@
 package store
 
 import (
-	"database/sql"
 	"fmt"
 )
+
+// visibleItemsFilter is the WHERE-clause fragment shared by every read
+// path that walks the timeline. plan_update notifications are excluded
+// because the frontend renders them out of band (live plan store) —
+// counting them against item budgets would systematically under-deliver
+// visible content, and a thread whose only sub-floor rows are plan_update
+// notifications would otherwise flash a "Load older messages" button
+// that loads zero rows. Both unqualified and items-qualified forms are
+// needed: queries with a LEFT JOIN onto `payloads` (which also has a
+// `kind` column) must qualify, the rest of the queries don't have the
+// ambiguity. Change both at once if you ever add another excluded
+// notification kind here.
+const visibleItemsFilter = "NOT (kind = 'notification' AND tool_name = 'plan_update')"
+const visibleItemsFilterQualified = "NOT (items.kind = 'notification' AND items.tool_name = 'plan_update')"
 
 // PagedItems is the return shape for windowed item loads. `Items` is sorted
 // by (turn_index, item_index) ASC so callers can append the slice directly
@@ -75,26 +88,33 @@ func (s *Store) ListRecentItemsWithAncestors(threadID string, floorTurnIndex int
 	return s.finalizePagedItems(threadID, items)
 }
 
-// ListItemsBeforeTurn loads the next `turnLimit` turns strictly below
-// `beforeTurnIndex`, returning only items that weren't already above the
-// caller's existing floor. Ancestor items below the new floor are pulled
-// in via the same recursive CTE ListRecentItemsWithAncestors uses so
-// subagent chains stay consistent across paging boundaries.
+// ListItemsBeforeTurn loads older items strictly below `beforeTurnIndex`
+// until cumulative item count reaches `itemBudget`. Ancestor items below
+// the new floor are pulled in via the same recursive CTE
+// ListRecentItemsWithAncestors uses so subagent chains stay consistent
+// across paging boundaries.
+//
+// The third parameter is an **item budget**, not a turn count: the
+// backend walks turns DESC starting at `beforeTurnIndex - 1`, summing
+// each turn's item count (excluding `plan_update` notifications), and
+// stops at the first turn that pushes cumulative ≥ itemBudget. This
+// keeps a page predictably sized for the frontend regardless of how
+// many items any single turn happens to contain.
 //
 // `beforeTurnIndex` is exclusive — callers pass their current floor and
-// get back items for turns strictly below it. `turnLimit` is the maximum
-// number of distinct turn_index values to pull in; a non-positive value
-// is treated as "nothing to load" and returns an empty page.
+// get back items for turns strictly below it. A non-positive
+// `itemBudget` is treated as "nothing to load" and returns an empty
+// page.
 //
 // Returns PagedItems{Items: []Item{}, OldestTurnIndex: -1, HasMore: false}
-// when no older turns exist or turnLimit is non-positive.
-func (s *Store) ListItemsBeforeTurn(threadID string, beforeTurnIndex, turnLimit int) (PagedItems, error) {
+// when no older turns exist or itemBudget is non-positive.
+func (s *Store) ListItemsBeforeTurn(threadID string, beforeTurnIndex, itemBudget int) (PagedItems, error) {
 	empty := PagedItems{Items: []Item{}, OldestTurnIndex: -1, HasMore: false}
-	if turnLimit <= 0 {
+	if itemBudget <= 0 {
 		return empty, nil
 	}
 
-	newFloor, ok, err := s.floorTurnIndexBefore(threadID, beforeTurnIndex, turnLimit)
+	newFloor, ok, err := s.floorTurnByItemBudget(threadID, int64(beforeTurnIndex), itemBudget)
 	if err != nil {
 		return PagedItems{}, err
 	}
@@ -169,7 +189,7 @@ func (s *Store) queryPagedItems(threadID string, floor, upper int64, ancestorCut
 		  FROM items
 		  LEFT JOIN payloads ON payloads.id = items.payload_id
 		 WHERE items.thread_id = ?
-		   AND NOT (items.kind = 'notification' AND items.tool_name = 'plan_update')
+		   AND `+visibleItemsFilterQualified+`
 		   AND (
 		     (items.turn_index >= ? AND items.turn_index < ?)
 		     OR (items.id IN (SELECT id FROM ancestors)
@@ -219,14 +239,24 @@ func (s *Store) finalizePagedItems(threadID string, items []Item) (PagedItems, e
 	return PagedItems{Items: items, OldestTurnIndex: oldest, HasMore: hasMore}, nil
 }
 
-// hasOlderTurns answers "does the thread have any item with
+// hasOlderTurns answers "does the thread have any visible item with
 // turn_index < floor?" in one probe, used to populate PagedItems.HasMore.
 // Uses the idx_items_thread composite index so the EXISTS probe is an
 // index lookup.
+//
+// Filters out `plan_update` notifications via the shared
+// `visibleItemsFilter` to match every other loader (`queryPagedItems`,
+// `floorTurnByItemBudget`, `walkSliceTurns`). Without the filter,
+// threads whose only sub-floor rows are plan_update notifications would
+// report `hasMore=true`, the frontend would render a "Load older
+// messages" button, and clicking it would load zero rows before the
+// frontend's self-heal cleared the button.
 func (s *Store) hasOlderTurns(threadID string, floorTurnIndex int) (bool, error) {
 	var exists int
 	err := s.db.QueryRow(
-		`SELECT EXISTS(SELECT 1 FROM items WHERE thread_id = ? AND turn_index < ?)`,
+		`SELECT EXISTS(SELECT 1 FROM items
+		   WHERE thread_id = ? AND turn_index < ?
+		     AND `+visibleItemsFilter+`)`,
 		threadID, floorTurnIndex,
 	).Scan(&exists)
 	if err != nil {
@@ -235,34 +265,55 @@ func (s *Store) hasOlderTurns(threadID string, floorTurnIndex int) (bool, error)
 	return exists != 0, nil
 }
 
-// floorTurnIndexBefore returns the Nth-from-the-top turn_index strictly
-// below `beforeTurnIndex`, where N = turnLimit. Serves as the "new floor"
-// for ListItemsBeforeTurn. Returns (0, false, nil) when no older turns
-// exist for the thread.
+// floorTurnByItemBudget walks turns DESC strictly below `beforeTurnIndex`,
+// summing each turn's item count (excluding plan_update notifications),
+// and returns the smallest turn_index reached once cumulative ≥ itemBudget.
+// Returns (0, false, nil) when no items exist below `beforeTurnIndex`.
 //
-// Reads from the `turns` table (not `items`) so the query hits the
-// compact `turns_thread_index` and works even when a turn has no items
-// yet (newly-started active turn on a fresh thread).
-func (s *Store) floorTurnIndexBefore(threadID string, beforeTurnIndex, turnLimit int) (int, bool, error) {
-	// Prefer the turns table when present. It's small and indexed.
-	row := s.db.QueryRow(
-		`SELECT turn_index FROM turns
-		  WHERE thread_id = ? AND turn_index < ?
-		  ORDER BY turn_index DESC
-		  LIMIT 1 OFFSET ?`,
-		threadID, beforeTurnIndex, turnLimit-1,
-	)
-	var ti int
-	if err := row.Scan(&ti); err != nil {
-		if err == sql.ErrNoRows {
-			// Either the turns table is sparse for this thread or there
-			// are fewer than turnLimit older turns. Fall back to "the
-			// smallest turn_index that exists below beforeTurnIndex."
-			return s.smallestTurnIndexBefore(threadID, beforeTurnIndex)
-		}
-		return 0, false, fmt.Errorf("store: pick floor before turn for %s: %w", threadID, err)
+// One walker, two entry points: ListItemsBeforeTurn passes the caller's
+// current floor (page-back), listTailSlice passes openUpperBound (initial
+// tail load). The plan_update filter and the cumulative-budget shape must
+// stay aligned with `queryPagedItems` — counting filtered rows against
+// the budget would systematically under-deliver visible content.
+func (s *Store) floorTurnByItemBudget(threadID string, beforeTurnIndex int64, itemBudget int) (int, bool, error) {
+	if itemBudget < 1 {
+		itemBudget = 1
 	}
-	return ti, true, nil
+	limit := boundedSliceTurnLimit(itemBudget)
+	rows, err := s.db.Query(
+		`SELECT turn_index, COUNT(*) AS item_count
+		   FROM items
+		  WHERE thread_id = ? AND turn_index < ?
+		    AND `+visibleItemsFilter+`
+		  GROUP BY turn_index
+		  ORDER BY turn_index DESC
+		  LIMIT ?`,
+		threadID, beforeTurnIndex, limit,
+	)
+	if err != nil {
+		return 0, false, fmt.Errorf("store: floor turn by item budget for %s: %w", threadID, err)
+	}
+	defer rows.Close()
+
+	cumulative := 0
+	floor := 0
+	saw := false
+	for rows.Next() {
+		var ti, cnt int
+		if err := rows.Scan(&ti, &cnt); err != nil {
+			return 0, false, fmt.Errorf("store: scan floor turn by item budget row: %w", err)
+		}
+		floor = ti
+		saw = true
+		cumulative += cnt
+		if cumulative >= itemBudget {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, false, fmt.Errorf("store: iterate floor turn by item budget for %s: %w", threadID, err)
+	}
+	return floor, saw, nil
 }
 
 // ListThreadSliceAround loads a small slice of items around an anchor
@@ -314,7 +365,7 @@ func (s *Store) ListThreadSliceAround(threadID, anchorItemID string, targetItemC
 // ancestors stitched in. Used when the snapshot is a bottom-restore or
 // the anchor item has been deleted.
 func (s *Store) listTailSlice(threadID string, targetItemCount int) (PagedItems, error) {
-	floor, found, err := s.tailFloorTurn(threadID, targetItemCount)
+	floor, found, err := s.floorTurnByItemBudget(threadID, openUpperBound, targetItemCount)
 	if err != nil {
 		return PagedItems{}, err
 	}
@@ -326,50 +377,6 @@ func (s *Store) listTailSlice(threadID string, targetItemCount int) (PagedItems,
 		return PagedItems{}, err
 	}
 	return s.finalizePagedItems(threadID, items)
-}
-
-// tailFloorTurn returns the smallest turn_index whose items, summed with
-// every newer turn's items, reach `targetItemCount`. Returns
-// (0, false, nil) when the thread has no items.
-func (s *Store) tailFloorTurn(threadID string, targetItemCount int) (int, bool, error) {
-	if targetItemCount < 1 {
-		targetItemCount = 1
-	}
-	limit := boundedSliceTurnLimit(targetItemCount)
-	rows, err := s.db.Query(
-		`SELECT turn_index, COUNT(*) AS item_count
-		   FROM items
-		  WHERE thread_id = ?
-		    AND NOT (kind = 'notification' AND tool_name = 'plan_update')
-		  GROUP BY turn_index
-		  ORDER BY turn_index DESC
-		  LIMIT ?`,
-		threadID, limit,
-	)
-	if err != nil {
-		return 0, false, fmt.Errorf("store: tail floor turn for %s: %w", threadID, err)
-	}
-	defer rows.Close()
-
-	cumulative := 0
-	floor := 0
-	saw := false
-	for rows.Next() {
-		var ti, cnt int
-		if err := rows.Scan(&ti, &cnt); err != nil {
-			return 0, false, fmt.Errorf("store: scan tail floor turn: %w", err)
-		}
-		floor = ti
-		saw = true
-		cumulative += cnt
-		if cumulative >= targetItemCount {
-			break
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return 0, false, fmt.Errorf("store: iterate tail floor turn for %s: %w", threadID, err)
-	}
-	return floor, saw, nil
 }
 
 // pickSliceTurnRange returns inclusive (floor, upper) turn_index bounds
@@ -419,7 +426,7 @@ func (s *Store) walkSliceTurns(threadID string, anchorTurnIndex, budget int, dir
 		query = `SELECT turn_index, COUNT(*) AS item_count
 		   FROM items
 		  WHERE thread_id = ? AND turn_index <= ?
-		    AND NOT (kind = 'notification' AND tool_name = 'plan_update')
+		    AND ` + visibleItemsFilter + `
 		  GROUP BY turn_index
 		  ORDER BY turn_index DESC
 		  LIMIT ?`
@@ -427,7 +434,7 @@ func (s *Store) walkSliceTurns(threadID string, anchorTurnIndex, budget int, dir
 		query = `SELECT turn_index, COUNT(*) AS item_count
 		   FROM items
 		  WHERE thread_id = ? AND turn_index > ?
-		    AND NOT (kind = 'notification' AND tool_name = 'plan_update')
+		    AND ` + visibleItemsFilter + `
 		  GROUP BY turn_index
 		  ORDER BY turn_index ASC
 		  LIMIT ?`
@@ -473,30 +480,3 @@ func boundedSliceTurnLimit(budget int) int {
 	return limit
 }
 
-// smallestTurnIndexBefore returns the minimum turn_index across both the
-// turns and items tables that is strictly below `beforeTurnIndex`. Used
-// when `floorTurnIndexBefore` runs out of turn rows — we still want to
-// include every older item that exists on `items` alone.
-//
-// Returns (0, false, nil) when neither table has an older row.
-func (s *Store) smallestTurnIndexBefore(threadID string, beforeTurnIndex int) (int, bool, error) {
-	row := s.db.QueryRow(
-		`SELECT MIN(ti) FROM (
-		    SELECT MIN(turn_index) AS ti FROM turns
-		     WHERE thread_id = ? AND turn_index < ?
-		    UNION ALL
-		    SELECT MIN(turn_index) AS ti FROM items
-		     WHERE thread_id = ? AND turn_index < ?
-		 ) WHERE ti IS NOT NULL`,
-		threadID, beforeTurnIndex,
-		threadID, beforeTurnIndex,
-	)
-	var ti sql.NullInt64
-	if err := row.Scan(&ti); err != nil {
-		return 0, false, fmt.Errorf("store: smallest turn before for %s: %w", threadID, err)
-	}
-	if !ti.Valid {
-		return 0, false, nil
-	}
-	return int(ti.Int64), true, nil
-}

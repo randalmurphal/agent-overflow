@@ -149,7 +149,7 @@ func TestListRecentThreadItems_RespectsExplicitTurnLimit(t *testing.T) {
 	}
 }
 
-func TestListItemsBeforeTurn_DefaultsTurnLimitWhenNonPositive(t *testing.T) {
+func TestListItemsBeforeTurn_DefaultsItemBudgetWhenNonPositive(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/w-before", "claude-sonnet-4-6", "")
 	if err != nil {
@@ -183,17 +183,64 @@ func TestListItemsBeforeTurn_DefaultsTurnLimitWhenNonPositive(t *testing.T) {
 		}
 	}
 
-	// turnLimit=0 defaults to paginationTurns (50). Asking for
-	// everything before turn 5 must load all 5 older turns.
+	// itemBudget=0 defaults to paginationItems (200). Asking for
+	// everything before turn 5 must load all 5 older turns — the 5
+	// items easily fit under the default budget.
 	paged, err := app.ListItemsBeforeTurn(thread.ID, 5, 0)
 	if err != nil {
 		t.Fatalf("ListItemsBeforeTurn: %v", err)
 	}
 	if len(paged.Items) != 5 {
-		t.Errorf("Items: got %d, want 5 (default turnLimit must be paginationTurns)", len(paged.Items))
+		t.Errorf("Items: got %d, want 5 (default itemBudget must accommodate 5 items)", len(paged.Items))
 	}
 	if paged.Items == nil {
 		t.Fatal("Items should be empty slice, not nil")
+	}
+}
+
+// TestListItemsBeforeTurn_ItemBudgetSemantics verifies the new
+// item-budget shape. With 3 turns of 4 items each (12 total) below
+// the floor, a budget of 5 walks newest-first until cumulative ≥ 5:
+// turn-2 (4 items, cumulative 4 < 5) then turn-1 (4 items, cumulative
+// 8 ≥ 5, stop). The floor lands on turn 1; turns 1 and 2 are returned
+// (8 items). HasMore=true because turn 0 still has items below.
+func TestListItemsBeforeTurn_ItemBudgetSemantics(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "claude", "/tmp/w-budget", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	for turn := 0; turn < 3; turn++ {
+		for i := 0; i < 4; i++ {
+			if err := app.store.InsertItem(store.Item{
+				ID:        "t" + itoa(turn) + "-i" + itoa(i),
+				ThreadID:  thread.ID,
+				TurnIndex: turn,
+				ItemIndex: i,
+				Kind:      "assistant_text",
+				Role:      "assistant",
+				Status:    "completed",
+				Summary:   "x",
+				CreatedAt: int64(turn*100 + i),
+				UpdatedAt: int64(turn*100 + i),
+			}); err != nil {
+				t.Fatalf("insert t%d-i%d: %v", turn, i, err)
+			}
+		}
+	}
+
+	paged, err := app.ListItemsBeforeTurn(thread.ID, 3, 5)
+	if err != nil {
+		t.Fatalf("ListItemsBeforeTurn: %v", err)
+	}
+	if len(paged.Items) != 8 {
+		t.Errorf("Items: got %d, want 8 (turns 1 and 2 once cumulative ≥ 5)", len(paged.Items))
+	}
+	if paged.OldestTurnIndex != 1 {
+		t.Errorf("OldestTurnIndex: got %d, want 1", paged.OldestTurnIndex)
+	}
+	if !paged.HasMore {
+		t.Error("HasMore: got false, want true (turn 0 still below floor)")
 	}
 }
 

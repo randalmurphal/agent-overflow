@@ -105,25 +105,37 @@ import type { ThreadLiveState } from '../../../bindings/agent-overflow/models';
 import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
 
 /**
- * Default batch size for "Load older" fetches. Matches the initial window
- * size so a single paging click approximately doubles the loaded history.
- * The value is a turn count, not an item count; backend-side caps keep a
- * single page from exceeding reasonable item totals even if those turns
- * are unusually large.
+ * Default raw-item budget passed to `ListItemsBeforeTurn` for an
+ * explicit "Load older" page. The backend walks turns DESC summing
+ * each turn's item count (excluding plan_update notifications) until
+ * cumulative ≥ this budget, then returns that turn's items plus every
+ * newer one strictly below the caller's floor. One click = ~this many
+ * items prepended, regardless of per-turn density. Matches the initial
+ * slice size so the user sees a consistent "page size."
  */
-const LOAD_OLDER_TURN_BATCH = 50;
+const LOAD_OLDER_ITEM_BUDGET = 200;
+
+/**
+ * Hard cap on the item budget passed to `loadUntilItem` for explicit
+ * jump paths (search hits, plan sidebar clicks, checkpoint jumps). A
+ * fixed literal — independent of `LOAD_OLDER_ITEM_BUDGET` — so tuning
+ * the per-click page size for UX doesn't silently shrink the search-
+ * reachability budget. Sized at roughly 5× the normal page so a search
+ * hit deep in a long thread is reachable in one round-trip without
+ * unbounded fetches; if a target lives below this cap, the load fails
+ * cleanly and the caller shows the existing "couldn't locate that
+ * message" toast.
+ */
+const LOAD_UNTIL_ITEM_HARD_CAP = 1000;
 
 /**
  * Initial-load slice size on `switchThread`. Sized to cover a desktop
- * viewport (10–15 rows) plus several screens of overscan — enough that
- * the user can free-scroll a few viewports before the auto-load-older
- * trigger in `MessageTimeline.svelte` kicks in. There is no separate
- * "wider window" load: older items page in lazily as the user scrolls
- * up, so the initial scrollHeight stays small and stable from frame 0
- * (eliminating the Phase 2 → applyJump fight that produced visible
- * scrollTop oscillation on cache miss).
+ * viewport (10–15 rendered cards) with several screens of overscan,
+ * and large enough that one heavy subagent turn collapsing to a
+ * single SubagentGroup card doesn't leave the timeline visually empty.
+ * Older items page in lazily as the user scrolls up.
  */
-const SLICE_AROUND_ITEM_COUNT = 50;
+const SLICE_AROUND_ITEM_BUDGET = 200;
 
 /**
  * Doherty perception threshold. A switch that completes inside this
@@ -942,7 +954,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       : withGenGuard(
           'load items',
           gen,
-          () => ListThreadSliceAround(newThread.id, sliceAnchorId, SLICE_AROUND_ITEM_COUNT),
+          () => ListThreadSliceAround(newThread.id, sliceAnchorId, SLICE_AROUND_ITEM_BUDGET),
           (paged) => {
             applyPagedItems(paged, newThread.id);
           },
@@ -1337,7 +1349,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       const pageGen = ++pagingGeneration;
       loadingOlder = true;
       try {
-        const paged = await ListItemsBeforeTurn(currentThread.id, floor, LOAD_OLDER_TURN_BATCH);
+        const paged = await ListItemsBeforeTurn(currentThread.id, floor, LOAD_OLDER_ITEM_BUDGET);
         if (gen !== switchGeneration || pageGen !== pagingGeneration) return loadOlderResult('stale');
         const prepend = itemsForThread((paged.items ?? []) as Item[], currentThread.id);
         const currentIds = new Set(items.map((item) => item.id));
@@ -1437,24 +1449,20 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         return items.some((it) => it.id === itemID);
       }
 
-      // Load every turn from the target's turn index up through the
-      // existing floor. A single ListItemsBeforeTurn with a turnLimit
-      // sized to cover that distance does it in one shot.
-      //
-      // When `currentFloor` is null (empty window — thread never loaded
-      // items, or cleared pane state), ask for the target turn directly
-      // with a bounded default batch. The old MAX_SAFE_INTEGER sentinel
-      // made the query broad and could still miss the target depending
-      // on backend paging behavior.
-      const targetFloor = fetched.turnIndex;
-      const beforeTurn = currentFloor ?? targetFloor + 1;
-      const turnSpan = currentFloor === null
-        ? LOAD_OLDER_TURN_BATCH
-        : Math.max(LOAD_OLDER_TURN_BATCH, beforeTurn - targetFloor + 1);
+      // Load items between the target turn and the existing floor.
+      // The third parameter is an item-budget; cap at
+      // LOAD_UNTIL_ITEM_HARD_CAP so a search hit deep in a long
+      // thread is bounded to one round-trip. If the target lives
+      // below the cap, this load returns false and callers show the
+      // existing "couldn't locate that message" toast — the
+      // alternative (unbounded item budget) ran the risk of a single
+      // jump pulling the entire history.
+      const beforeTurn = currentFloor ?? fetched.turnIndex + 1;
+      const itemBudget = LOAD_UNTIL_ITEM_HARD_CAP;
 
       loadingOlder = true;
       try {
-        const paged = await ListItemsBeforeTurn(currentThread.id, beforeTurn, turnSpan);
+        const paged = await ListItemsBeforeTurn(currentThread.id, beforeTurn, itemBudget);
         if (gen !== switchGeneration || pageGen !== pagingGeneration) return false;
         const prepend = itemsForThread((paged.items ?? []) as Item[], currentThread.id);
         const next = mergeItemsById(prepend, items);

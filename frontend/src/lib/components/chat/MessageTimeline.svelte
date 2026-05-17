@@ -229,7 +229,26 @@
   // either ref changes (thread switch / HMR).
   $effect(() => {
     if (!scrollEl || !contentEl) return;
-    stick.attach(scrollEl, contentEl);
+    const surface = scrollEl;
+    stick.attach(surface, contentEl);
+
+    // Re-arm the auto-load-older gate on real user gestures so each
+    // user scroll-up loads exactly one section, not a cascade.
+    // `handleLoadOlder` calls `autoLoadOlderGate.disarm()` after each
+    // load; the anchor-restore that follows is a programmatic scroll
+    // (`listRef.scrollToIndex`) which does NOT fire these listeners,
+    // so the gate stays disarmed until the user actually moves. The
+    // 350ms cooldown in the gate itself is a fallback for devices
+    // where gesture detection misses an event.
+    const onUserGesture = (): void => autoLoadOlderGate.armOnGesture();
+    surface.addEventListener('wheel', onUserGesture, { passive: true });
+    surface.addEventListener('touchmove', onUserGesture, { passive: true });
+    surface.addEventListener('keydown', onUserGesture);
+    return () => {
+      surface.removeEventListener('wheel', onUserGesture);
+      surface.removeEventListener('touchmove', onUserGesture);
+      surface.removeEventListener('keydown', onUserGesture);
+    };
   });
 
   let liveFollowSignatureInitialized = false;
@@ -788,6 +807,16 @@
       saveScrollSnapshot();
     } finally {
       release();
+      // Disarm the auto-load gate so the post-load anchor-restore
+      // doesn't re-fire the cascade. A fresh user gesture
+      // (wheel/touchmove/keydown) is required to re-arm — programmatic
+      // scrolls like the anchor-restore above don't qualify. The gate
+      // also re-arms after AUTO_LOAD_COOLDOWN_MS as a fallback.
+      // Guard with the token so a load that finished after a thread
+      // switch can't disarm the NEW thread's gate ($effect.pre already
+      // called reset() for the new thread; disarming after that would
+      // strand the new pane unable to auto-load older for 350ms).
+      if (myToken === restoreToken) autoLoadOlderGate.disarm();
     }
   }
 
@@ -846,6 +875,7 @@
   onDestroy(() => {
     if (restoredThreadId) saveScrollSnapshotForThread(restoredThreadId);
     targetFlash.clear();
+    autoLoadOlderGate.reset();
     stick.detach();
   });
 </script>
