@@ -997,6 +997,44 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(text).not.toContain("Waiting for Hypatia");
   });
 
+  it("aligns the wait_agent receiver list under the parent body and drops the └ leader", async () => {
+    // The receiver list sits below the "Waiting for N agents" header and
+    // is meant to read as a continuation of the parent row's body column,
+    // not as a separate left-edge list. The body column starts at
+    // 6.125rem from the CollabToolRow's `px-1` content edge (chevron +
+    // gap + icon + gap + label + gap, all defined in
+    // TranscriptDisclosureHeader). The `└` leader was redundant once the
+    // body-column alignment carried the visual relationship — and the
+    // user explicitly asked that it not appear. If the disclosure
+    // primitive's gutter widths change, recompute the margin and update
+    // both this expectation and the comment in CollabToolRowDetails.
+    const pane = await buildPane(makeThread({ provider: "codex" }));
+    const item = makeItem({
+      id: "wait-receivers-indent",
+      kind: "tool_call",
+      status: "running",
+      toolName: "wait_agent",
+      meta: JSON.stringify({
+        input: {
+          tool: "wait_agent",
+          receiverThreadIds: ["child-1", "child-2"],
+          receiverAgents: [
+            { threadId: "child-1", agentNickname: "Schrodinger", agentRole: "default" },
+            { threadId: "child-2", agentNickname: "Kierkegaard", agentRole: "default" },
+          ],
+        },
+      }),
+    });
+
+    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+    const receivers = getByTestId("collab-tool-row-receivers");
+
+    expect(receivers.className).toContain("ml-[6.125rem]");
+    expect(receivers.textContent).toContain("Schrodinger [default]");
+    expect(receivers.textContent).toContain("Kierkegaard [default]");
+    expect(receivers.textContent).not.toContain("└");
+  });
+
   it("renders wait_agent receiver nicknames and keeps completed carriers neutral", async () => {
     const pane = await buildPane(makeThread({ provider: "codex" }));
     const item = makeItem({
