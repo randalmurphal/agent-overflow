@@ -37,6 +37,76 @@ export function toolCardInputPreview(
 }
 
 /**
+ * Pre-rendered tool body preview: starts from
+ * `toolCardInputPreview` and applies two strip passes that target the
+ * common redundancies in the triage-built summary string:
+ *
+ *   1. Strip the leading `${toolName}: ` segment that
+ *      `buildToolCallSummary` embeds at persist time. The tool kind
+ *      already renders as the gutter label, so repeating it inside
+ *      the body adds noise without information.
+ *   2. Relativize a leading workspace-rooted absolute path to its
+ *      workspace-relative form. The full workspace path is constant
+ *      across every row in a thread and only obscures the file name
+ *      that the user actually cares about (e.g.
+ *      `/home/me/repo/src/foo.ts` → `src/foo.ts`).
+ *
+ * Stripping only applies to the leading path token to avoid mangling
+ * mid-string usage (e.g. `cd /path && ls`). Paths outside the
+ * workspace pass through untouched, so calls into `/usr/...`,
+ * `/etc/...`, or a sibling repo still render fully.
+ *
+ * Returns the same `{text, path?}` shape `decodeToolCardPreview`
+ * produces so callers can render the text and feed `path` straight
+ * into EditorLink. The path is relativized in sync with the text:
+ * when display becomes `src/foo.ts`, the EditorLink path is also
+ * `src/foo.ts` and EditorLink's workspacePath prop joins it back
+ * into an absolute open target.
+ */
+export function presentToolCardInputPreview(
+  item: Item,
+  summaryMeta: Record<string, unknown> | null,
+  itemMeta: Record<string, unknown> | null,
+  workspacePath: string,
+): ToolCardPreview {
+  const raw = toolCardInputPreview(item, summaryMeta, itemMeta);
+  const afterPrefix = stripToolNamePrefix(raw, item.toolName);
+  const decoded = decodeToolCardPreview(afterPrefix);
+  const text = relativizeLeadingWorkspacePath(decoded.text, workspacePath);
+  if (!decoded.path) return { text };
+  const relPath = relativizeLeadingWorkspacePath(decoded.path.path, workspacePath);
+  return {
+    text,
+    path: { path: relPath, line: decoded.path.line, col: decoded.path.col },
+  };
+}
+
+function stripToolNamePrefix(text: string, toolName: string | undefined): string {
+  if (!toolName) return text;
+  const trimmed = toolName.trim();
+  if (!trimmed) return text;
+  const prefix = `${trimmed}: `;
+  return text.startsWith(prefix) ? text.slice(prefix.length) : text;
+}
+
+// Returns `text` unchanged unless it starts with the workspace root
+// followed by a path separator. Refuses to strip the bare root (no
+// separator after) so we never return an empty preview, and matches
+// both `/` and `\` separators so Windows paths sent through Codex on
+// WSL render relatively too.
+function relativizeLeadingWorkspacePath(text: string, workspacePath: string): string {
+  if (!workspacePath) return text;
+  let root = workspacePath;
+  while (root.endsWith('/') || root.endsWith('\\')) root = root.slice(0, -1);
+  if (!root) return text;
+  if (text.length <= root.length) return text;
+  if (!text.startsWith(root)) return text;
+  const sep = text.charAt(root.length);
+  if (sep !== '/' && sep !== '\\') return text;
+  return text.slice(root.length + 1);
+}
+
+/**
  * Same source string, but split into a leading path (if present) plus
  * the residual prose so the renderer can attach an EditorLink. The
  * path token must begin at offset 0 — anything else is left alone to

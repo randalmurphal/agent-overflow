@@ -2,13 +2,13 @@
   import type { Snippet } from 'svelte';
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
-  import { type ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   import { classifyToolName } from './toolCardHeader';
   import { parseJsonObject } from '../../utils/parseJsonObject';
-  import { toolCardInputPreview } from './toolCardPreview';
+  import { presentToolCardInputPreview } from './toolCardPreview';
   import {
     createPayloadExpansion,
     keepExpandedPayloadFresh,
@@ -73,7 +73,10 @@
   let agentLabel = $derived(deriveClaudeSubagentLabel(agentInputObject, agentToolName));
   let modelLabel = $derived(deriveClaudeSubagentModelLabel(agentInputObject, displayMeta, agentToolName));
   let description = $derived(deriveClaudeSubagentDescription(agentInputObject));
-  let inputPreview = $derived(description || toolCardInputPreview(effectiveDisplayItem, summaryMeta, displayMeta));
+  let inputPreview = $derived(
+    description ||
+      presentToolCardInputPreview(effectiveDisplayItem, summaryMeta, displayMeta, paneWorkspacePath(pane)).text,
+  );
   let time = $derived(
     new Date(effectiveStatusItem.createdAt).toLocaleTimeString(undefined, {
       hour: 'numeric',

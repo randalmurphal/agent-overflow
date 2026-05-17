@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { Item } from '../../types/models';
-import { decodeToolCardPreview, toolCardInputPreview } from './toolCardPreview';
+import {
+  decodeToolCardPreview,
+  presentToolCardInputPreview,
+  toolCardInputPreview,
+} from './toolCardPreview';
 
 function makeItem(overrides: Partial<Item>): Item {
   return {
@@ -97,6 +101,140 @@ describe('toolCardInputPreview', () => {
         'MCP/lookup: query',
       );
     });
+  });
+});
+
+describe('presentToolCardInputPreview', () => {
+  it('strips the redundant `<toolName>: ` prefix triage embeds in the summary', () => {
+    const item = makeItem({ toolName: 'Read', summary: 'Read: foo.go' });
+    expect(presentToolCardInputPreview(item, null, null, '').text).toBe('foo.go');
+  });
+
+  it('relativizes a leading workspace-rooted absolute path', () => {
+    const item = makeItem({
+      toolName: 'Read',
+      summary: 'Read: /home/me/repo/src/foo.ts',
+    });
+    const result = presentToolCardInputPreview(item, null, null, '/home/me/repo');
+    expect(result.text).toBe('src/foo.ts');
+    expect(result.path).toEqual({
+      path: 'src/foo.ts',
+      line: undefined,
+      col: undefined,
+    });
+  });
+
+  it('relativizes the EditorLink path in sync with the displayed text', () => {
+    // The relativized form is what EditorLink renders; EditorLink's
+    // workspacePath prop joins it back to absolute when invoking
+    // OpenInEditor, so the click target still resolves correctly.
+    const item = makeItem({
+      toolName: 'Read',
+      summary: 'Read: /home/me/repo/src/foo.ts:42:7',
+    });
+    const result = presentToolCardInputPreview(item, null, null, '/home/me/repo');
+    expect(result.text).toBe('src/foo.ts:42:7');
+    expect(result.path).toEqual({ path: 'src/foo.ts', line: 42, col: 7 });
+  });
+
+  it('passes paths outside the workspace through untouched', () => {
+    const item = makeItem({
+      toolName: 'Read',
+      summary: 'Read: /usr/local/share/foo.go',
+    });
+    const result = presentToolCardInputPreview(item, null, null, '/home/me/repo');
+    expect(result.text).toBe('/usr/local/share/foo.go');
+    expect(result.path).toEqual({
+      path: '/usr/local/share/foo.go',
+      line: undefined,
+      col: undefined,
+    });
+  });
+
+  it('tolerates a trailing slash on workspacePath', () => {
+    const item = makeItem({
+      toolName: 'Read',
+      summary: 'Read: /home/me/repo/test.go',
+    });
+    expect(presentToolCardInputPreview(item, null, null, '/home/me/repo/').text).toBe(
+      'test.go',
+    );
+  });
+
+  it('does not strip a workspace prefix that appears mid-string', () => {
+    // The strip path must only fire on the leading token — otherwise
+    // a `cd <workspace>/sub && ls` style Bash preview would have its
+    // path argument silently mangled.
+    const item = makeItem({
+      toolName: 'Bash',
+      summary: 'Bash: cd /home/me/repo/src && ls',
+    });
+    expect(presentToolCardInputPreview(item, null, null, '/home/me/repo').text).toBe(
+      'cd /home/me/repo/src && ls',
+    );
+  });
+
+  it('leaves the preview alone when workspacePath is empty', () => {
+    const item = makeItem({
+      toolName: 'Read',
+      summary: 'Read: /home/me/repo/test.go',
+    });
+    expect(presentToolCardInputPreview(item, null, null, '').text).toBe(
+      '/home/me/repo/test.go',
+    );
+  });
+
+  it('refuses to strip the workspace root with no separator following', () => {
+    // Bare-root strip would yield an empty preview. Keep the original
+    // text instead so the row has something to render.
+    const item = makeItem({ toolName: 'Bash', summary: 'Bash: /home/me/repo' });
+    expect(presentToolCardInputPreview(item, null, null, '/home/me/repo').text).toBe(
+      '/home/me/repo',
+    );
+  });
+
+  it('does not over-strip when the text starts with a workspace-lookalike prefix', () => {
+    // `/home/me/repository` shares a prefix with `/home/me/repo`. The
+    // strip must check for a path separator at the root boundary, not
+    // just a startsWith match, or it would mangle paths under a
+    // similarly-named sibling repo.
+    const item = makeItem({
+      toolName: 'Read',
+      summary: 'Read: /home/me/repository/foo.go',
+    });
+    expect(
+      presentToolCardInputPreview(item, null, null, '/home/me/repo').text,
+    ).toBe('/home/me/repository/foo.go');
+  });
+
+  it('strips Windows-style workspacePath + backslash separator', () => {
+    const item = makeItem({
+      toolName: 'Read',
+      summary: 'Read: C:\\Users\\me\\repo\\test.go',
+    });
+    expect(
+      presentToolCardInputPreview(item, null, null, 'C:\\Users\\me\\repo').text,
+    ).toBe('test.go');
+  });
+
+  it('passes the wait_agent synthesizer output through unchanged', () => {
+    // wait_agent takes the early-return synthesizer path inside
+    // toolCardInputPreview, so its preview never starts with a
+    // `<toolName>: ` prefix or a leading absolute path. The presenter
+    // must be a passthrough here.
+    const item = makeItem({ toolName: 'wait_agent', status: 'running' });
+    expect(presentToolCardInputPreview(item, null, null, '/home/me/repo').text).toBe(
+      'Waiting on agents',
+    );
+  });
+
+  it('strips the MCP/<tool>: prefix on legacy MCP rows that fall through to the summary', () => {
+    // Pre-redesign Items don't carry meta.mcp, so the synthesizer
+    // declines and the preview falls back to item.summary. That
+    // summary is `MCP/<tool>: <args>`; the icon already conveys
+    // "MCP", so stripping is an improvement here too.
+    const item = makeItem({ toolName: 'MCP/lookup', summary: 'MCP/lookup: query' });
+    expect(presentToolCardInputPreview(item, null, null, '').text).toBe('query');
   });
 });
 

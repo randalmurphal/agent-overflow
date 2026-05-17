@@ -305,10 +305,13 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     });
     const { getByTestId } = render(AgentRow, { props: { item } });
     // Label still renders as "Explore" (the subagent_type), and the
-    // preview falls through to toolCardInputPreview which returns
-    // item.summary.
-    expect(getByTestId('agent-row-preview').textContent).toContain('Explore');
-    expect(getByTestId('agent-row-preview').textContent).toContain('Agent: fallback preview');
+    // preview falls through to presentToolCardInputPreview, which
+    // strips the redundant `Agent: ` prefix that triage embeds in
+    // item.summary (the gutter label already says "agent").
+    const previewText = getByTestId('agent-row-preview').textContent ?? '';
+    expect(previewText).toContain('Explore');
+    expect(previewText).toContain('fallback preview');
+    expect(previewText).not.toContain('Agent: fallback preview');
   });
 
   it('suppresses the dropdown for TaskOutput rows even when a payload exists', async () => {

@@ -8,7 +8,7 @@
   import ToolKindIcon from './ToolKindIcon.svelte';
   import { classifyToolName } from './toolCardHeader';
   import { parseJsonObject } from '../../utils/parseJsonObject';
-  import { decodeToolCardPreview, toolCardInputPreview } from './toolCardPreview';
+  import { presentToolCardInputPreview } from './toolCardPreview';
   import {
     createPayloadExpansion,
     keepExpandedPayloadFresh,
@@ -70,11 +70,9 @@
     }),
   );
 
-  let inputPreview = $derived.by<string>(() => {
-    return toolCardInputPreview(effectiveDisplayItem, summaryMeta, displayMeta);
-  });
-
-  let previewDecoded = $derived(decodeToolCardPreview(inputPreview));
+  let preview = $derived(
+    presentToolCardInputPreview(effectiveDisplayItem, summaryMeta, displayMeta, paneWorkspacePath(pane)),
+  );
 
   let durationMs = $derived.by<number | null>(() => {
     if (!summaryMeta) return null;
@@ -171,11 +169,11 @@
 </script>
 
 {#snippet headerActions()}
-  {#if previewDecoded.path}
+  {#if preview.path}
     <EditorLink
-      path={previewDecoded.path.path}
-      line={previewDecoded.path.line ?? 0}
-      col={previewDecoded.path.col ?? 0}
+      path={preview.path.path}
+      line={preview.path.line ?? 0}
+      col={preview.path.col ?? 0}
       workspacePath={paneWorkspacePath(pane)}
       asIcon
       stopPropagation
@@ -225,7 +223,7 @@
     {#snippet icon()}<ToolKindIcon kind={classification.icon} ariaLabel={classification.label} />{/snippet}
     {#snippet label()}<span data-testid="tool-call-card-label">{classification.label}</span>{/snippet}
     {#snippet body()}
-      <span class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75" data-testid="tool-call-card-preview">{inputPreview}</span>
+      <span class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75" data-testid="tool-call-card-preview">{preview.text}</span>
     {/snippet}
     {#snippet actions()}
       {@render headerActions()}
