@@ -88,12 +88,15 @@
   );
   let isCodexSubagentLaunch = $derived(isCodexSubagentLaunchItem(effectiveStatusItem));
 
-  let runningLabel = $derived.by<string | null>(() => {
-    if (isCodexSubagentLaunch) return null;
-    if (isBackgroundedLaunch) return '…';
-    if (effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming') return 'running';
-    return null;
-  });
+  // The redesign drops the row-level "running" / "…" text label —
+  // `Indicator` carries that state visually now. The original derived
+  // string survives as a boolean gate for the per-second elapsed-time
+  // ticker: only running, non-backgrounded, non-Codex-subagent rows
+  // need the interval.
+  let isRunning = $derived(
+    !isCodexSubagentLaunch
+      && (effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming'),
+  );
 
   let completionStatus = $derived(deriveCompletionStatus(effectiveStatusItem, { meta: statusMeta }));
   let indicatorState = $derived(indicatorStateForItem(effectiveStatusItem, { meta: statusMeta }));
@@ -105,7 +108,7 @@
     };
   });
   let shouldTickElapsed = $derived(
-    runningLabel !== null && durationLabel === '' && !isBackgroundedLaunch,
+    isRunning && durationLabel === '' && !isBackgroundedLaunch,
   );
 
   let now = $state(Date.now());

@@ -129,18 +129,17 @@
 
   // ---- Status visualization (matches GenericToolCallRow) -----------
 
-  let isBackgroundedLaunch = $derived(
-    parent.kind === 'tool_call' && parent.isBackground === true,
-  );
-  let runningLabel = $derived.by<string | null>(() => {
-    if (isBackgroundedLaunch && (parent.status === 'running' || parent.status === 'streaming')) return '…';
-    if (parent.status === 'running' || parent.status === 'streaming') return 'running';
-    return null;
-  });
+  // The redesign drops the row-level "running" / "…" text label —
+  // `Indicator` carries that state visually now. Keep a boolean
+  // around for the per-second elapsed ticker and the "still running"
+  // branches of the duration / status slots. The previous
+  // `isBackgroundedLaunch` derivation existed only to pick between
+  // the two unused strings, so it goes away with them.
+  let isRunning = $derived(parent.status === 'running' || parent.status === 'streaming');
 
   let now = $state(Date.now());
   $effect(() => {
-    if (runningLabel === null) return;
+    if (!isRunning) return;
     now = Date.now();
     const id = setInterval(() => {
       now = Date.now();
@@ -151,7 +150,7 @@
   let elapsedLabel = $derived.by<string>(() => {
     const start = parent.createdAt;
     if (!Number.isFinite(start) || start <= 0) return '';
-    const end = runningLabel !== null ? now : parent.updatedAt;
+    const end = isRunning ? now : parent.updatedAt;
     if (!Number.isFinite(end) || end <= start) return '';
     return formatElapsedSeconds(Math.floor((end - start) / 1_000));
   });
@@ -239,7 +238,7 @@
           duration={{ testId: 'subagent-group-duration', label: elapsedLabel }}
         >
           {#snippet status()}
-            {#if runningLabel !== null || completionStatus === 'failure'}
+            {#if isRunning || completionStatus === 'failure'}
               <span
                 data-testid="subagent-group-status"
                 data-status={parent.status}
