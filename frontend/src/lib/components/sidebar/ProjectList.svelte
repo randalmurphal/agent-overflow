@@ -37,7 +37,7 @@
     data-testid="sidebar-project-list"
     use:autoAnimate
   >
-    {#each projects as project (project.project.id)}
+    {#each projects as project, index (project.project.id)}
       <ProjectItem
         {project}
         threads={threadsByProject.get(project.project.id) ?? []}
@@ -45,6 +45,7 @@
         {onNewThread}
         {orderedIds}
         {onReorder}
+        separatedFromPrevious={index > 0}
       />
     {/each}
   </div>

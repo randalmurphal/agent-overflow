@@ -81,6 +81,20 @@ describe('<ProjectItem>', () => {
     expect(isProjectExpanded('p1')).toBe(true);
   });
 
+  it('adds top spacing when separated from a previous project', () => {
+    const pane = createThreadPane();
+    const { getByTestId } = render(ProjectItem, {
+      props: {
+        project: wrap('p1'),
+        threads: [],
+        pane,
+        separatedFromPrevious: true,
+      },
+    });
+
+    expect(getByTestId('project-item').className).toContain('mt-0.5');
+  });
+
   it('clicking the chevron toggles the project', async () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ProjectItem, {

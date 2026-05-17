@@ -61,9 +61,19 @@
     orderedIds?: readonly string[];
     /** Commit a new ordering. Caller updates store + persists. */
     onReorder?: (newOrderedIds: string[]) => void;
+    /** Adds the project-to-project rhythm used after the first item. */
+    separatedFromPrevious?: boolean;
   }
 
-  let { project, threads, pane, onNewThread, orderedIds, onReorder }: Props = $props();
+  let {
+    project,
+    threads,
+    pane,
+    onNewThread,
+    orderedIds,
+    onReorder,
+    separatedFromPrevious = false,
+  }: Props = $props();
 
   let rowEl: HTMLDivElement | undefined = $state(undefined);
   let contextMenuOpen = $state(false);
@@ -234,7 +244,11 @@
   ondragover={handleDragOver}
   ondrop={handleDrop}
   ondragend={handleDragEnd}
-  class={'group relative flex flex-col transition-opacity ' + (isDragging ? 'opacity-40' : '')}
+  class={
+    'group relative flex flex-col transition-opacity ' +
+    (separatedFromPrevious ? 'mt-0.5 ' : '') +
+    (isDragging ? 'opacity-40' : '')
+  }
 >
   {#if dropMarker === 'before'}
     <div
