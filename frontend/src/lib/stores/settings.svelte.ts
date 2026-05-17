@@ -38,24 +38,34 @@ const DEFAULT_SETTINGS: Settings = {
   network: { bindAll: false },
 };
 
-let settings: Settings = $state({ ...DEFAULT_SETTINGS });
+function defaultSettings(): Settings {
+  return {
+    ...DEFAULT_SETTINGS,
+    recentWorkspaces: [...DEFAULT_SETTINGS.recentWorkspaces],
+    network: { ...DEFAULT_SETTINGS.network },
+  };
+}
+
+let settings: Settings = $state(defaultSettings());
 
 export function getSettings(): Settings {
   return settings;
 }
 
-export async function loadSettings(): Promise<void> {
+export async function loadSettings(): Promise<boolean> {
   try {
     const result = await GetSettings();
     if (result) {
       settings = {
-        ...DEFAULT_SETTINGS,
+        ...defaultSettings(),
         ...result,
       } as Settings;
     }
+    return true;
   } catch (err) {
     console.error("Failed to load settings:", err);
     addToast("error", "Failed to load settings");
+    return false;
   }
 }
 
@@ -75,7 +85,7 @@ export async function updateSettingsPatch(
     const result = await UpdateSettings(patch);
     if (result) {
       settings = {
-        ...DEFAULT_SETTINGS,
+        ...defaultSettings(),
         ...result,
       } as Settings;
     }
@@ -84,4 +94,8 @@ export async function updateSettingsPatch(
     settings = previous;
     addToast("error", "Failed to save setting");
   }
+}
+
+export function resetSettingsForTest(): void {
+  settings = defaultSettings();
 }

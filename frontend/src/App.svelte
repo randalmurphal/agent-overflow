@@ -4,6 +4,7 @@
   import { setupEventListeners } from './lib/stores/events';
   import { getThreads, refreshThreads } from './lib/stores/threads.svelte';
   import { loadSettings, getSettings } from './lib/stores/settings.svelte';
+  import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
   import { applyTheme } from './lib/utils/theme';
   import { applyFonts } from './lib/utils/fonts';
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
@@ -166,6 +167,12 @@
     if (thread) void openThreadFromNavigation(thread, targetPane);
   }
 
+  async function loadSettingsAndWarmModelCatalogs(): Promise<void> {
+    const loaded = await loadSettings();
+    if (!loaded) return;
+    void preloadProviderModelsForSettings(getSettings());
+  }
+
   $effect(() => {
     applyTheme(getSettings().theme);
   });
@@ -190,7 +197,7 @@
   onMount(() => {
     const cleanupEvents = setupEventListeners();
     refreshThreads();
-    loadSettings();
+    void loadSettingsAndWarmModelCatalogs();
     installUiRenderTraceApi();
     const cleanupExternalLinks = installExternalLinkDelegate();
 

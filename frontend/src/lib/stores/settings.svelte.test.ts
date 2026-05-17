@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { getSettings, loadSettings, updateSetting } from './settings.svelte';
+import { getSettings, loadSettings, resetSettingsForTest, updateSetting } from './settings.svelte';
 import type { Settings } from '../types/settings';
 import { setBindingMock, getBindingMock } from '../../test/mocks/bindings-app';
 
@@ -34,6 +34,7 @@ const FULL_SETTINGS: Settings = {
 
 describe('settings store', () => {
   beforeEach(async () => {
+    resetSettingsForTest();
     setBindingMock('GetSettings', async () => FULL_SETTINGS);
     setBindingMock('UpdateSettings', async () => FULL_SETTINGS);
     await loadSettings();
@@ -63,7 +64,7 @@ describe('settings store', () => {
     it('toasts on failure but does not throw', async () => {
       setBindingMock('GetSettings', async () => { throw new Error('db down'); });
       const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
-      await expect(loadSettings()).resolves.toBeUndefined();
+      await expect(loadSettings()).resolves.toBe(false);
       consoleErr.mockRestore();
     });
   });

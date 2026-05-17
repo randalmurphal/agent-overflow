@@ -24,6 +24,8 @@ import { resetProjectsForTest } from '../../lib/stores/projects.svelte';
 import { resetSidebarForTest, expandProject } from '../../lib/stores/sidebar.svelte';
 import { getAllDrafts, resetForTest as resetDraftThreadsForTest } from '../../lib/stores/draftThreads.svelte';
 import { resetRuntimeModeDraftsForTest } from '../../lib/stores/runtimeModeDraft.svelte';
+import { resetProviderModelsForTest } from '../../lib/stores/providerModels.svelte';
+import { resetSettingsForTest } from '../../lib/stores/settings.svelte';
 import {
   getQueueForThread,
   replaceQueueForThread,
@@ -58,6 +60,8 @@ export function resetAppState(): void {
   // second test never fires.
   resetDraftThreadsForTest();
   resetRuntimeModeDraftsForTest();
+  resetSettingsForTest();
+  resetProviderModelsForTest();
   // Per-thread send queue is in-memory only; clear it between tests
   // so a stale queued item from a prior case doesn't drain into the
   // next test's first SendMessage call.
@@ -73,6 +77,7 @@ export function installAppDefaults(): void {
   setBindingMock('ListThreads', async () => []);
   setBindingMock('GetKeybindings', async () => []);
   setBindingMock('GetProviderStatuses', async () => []);
+  setBindingMock('GetModelsForProvider', async () => []);
   // Sidebar fetches projects on mount. Default to an empty list — tests
   // that need visible threads should seed a project via seedProject().
   setBindingMock('ListProjects', async () => []);

@@ -4,7 +4,7 @@
 
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { Thread } from '../../../types/models';
-  import type { ContextWindowOption, ReasoningEffortOption } from '../../../types/settings';
+  import type { ContextWindowOption, ModelInfo, ReasoningEffortOption } from '../../../types/settings';
   import {
     UpdateThreadFastMode,
     UpdateThreadContextWindow,
@@ -36,9 +36,6 @@
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
-  let contextOptions = $state<ContextWindowOption[]>([]);
-  let reasoningOptions = $state<ReasoningEffortOption[]>([]);
-  let fastModeSupported = $state(false);
 
   type Effort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
@@ -54,6 +51,16 @@
   );
   let currentFast = $derived(pane.thread?.fastMode === true);
   let currentContextWindow = $derived(pane.thread?.contextWindow ?? 0);
+  let activeProvider = $derived(asProviderID(pane.thread?.provider));
+  let activeModel = $derived(pane.thread?.model ?? '');
+  let activeModelInfo = $derived<ModelInfo | undefined>(
+    activeProvider
+      ? getProviderModels(activeProvider).find((candidate) => candidate.slug === activeModel)
+      : undefined,
+  );
+  let contextOptions = $derived<ContextWindowOption[]>(activeModelInfo?.contextWindows ?? []);
+  let reasoningOptions = $derived<ReasoningEffortOption[]>(activeModelInfo?.reasoningEfforts ?? []);
+  let fastModeSupported = $derived(activeModelInfo?.capabilities?.includes('fast_mode') ?? false);
 
   let availableEfforts = $derived(reasoningOptions.length > 0 ? reasoningOptions : FALLBACK_EFFORTS);
 
@@ -82,34 +89,21 @@
       : titleCase(currentEffort),
   );
 
-  async function ensureContextOptions(): Promise<void> {
-    const provider = asProviderID(pane.thread?.provider);
-    const model = pane.thread?.model;
-    if (!provider || !model) {
-      contextOptions = [];
-      reasoningOptions = [];
-      fastModeSupported = false;
-      return;
-    }
+  async function ensureModelMetadata(): Promise<void> {
+    const provider = activeProvider;
+    if (!provider || !activeModel) return;
     try {
       await ensureProviderModels(provider);
-      const current = getProviderModels(provider).find((candidate) => candidate.slug === model);
-      contextOptions = current?.contextWindows ?? [];
-      reasoningOptions = current?.reasoningEfforts ?? [];
-      fastModeSupported = current?.capabilities?.includes('fast_mode') ?? false;
     } catch (err) {
       console.error('GetModelsForProvider failed:', err);
-      addToast('error', `Failed to load context windows: ${errString(err)}`);
-      contextOptions = [];
-      reasoningOptions = [];
-      fastModeSupported = false;
+      addToast('error', `Failed to load model capabilities: ${errString(err)}`);
     }
   }
 
   function handleTrigger(): void {
     open = !open;
     if (!open) return;
-    void ensureContextOptions();
+    void ensureModelMetadata();
   }
 
   function closeMenu(): void {

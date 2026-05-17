@@ -9,7 +9,11 @@ import {
   resetBindingMocks,
   setBindingMock,
 } from "../../../../test/mocks/bindings-app";
-import { invalidateProviderModels } from "../../../stores/providerModels.svelte";
+import {
+  ensureProviderModels,
+  invalidateProviderModels,
+  resetProviderModelsForTest,
+} from "../../../stores/providerModels.svelte";
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -46,7 +50,10 @@ async function buildPane(thread: Thread) {
 }
 
 describe("<EffortMenu>", () => {
-  beforeEach(() => resetBindingMocks());
+  beforeEach(() => {
+    resetBindingMocks();
+    resetProviderModelsForTest();
+  });
 
   it("renders effort and context on Claude threads", async () => {
     const pane = await buildPane(makeThread({ provider: "claude" }));
@@ -170,6 +177,83 @@ describe("<EffortMenu>", () => {
     ).toBeInTheDocument();
     expect(queryByRole("menuitem", { name: /^Max$/ })).toBeNull();
     expect(queryByRole("menuitem", { name: /Greater reasoning depth/ })).toBeNull();
+  });
+
+  it("uses preloaded model metadata without fetching when opened", async () => {
+    setBindingMock("GetModelsForProvider", async () => [
+      {
+        slug: "gpt-5.5",
+        name: "GPT-5.5",
+        provider: "codex",
+        capabilities: ["fast_mode"],
+        contextWindows: [
+          { tokens: 272000, label: "272k", tier: "standard" },
+          { tokens: 1000000, label: "1m", tier: "extended" },
+        ],
+        reasoningEfforts: [
+          { slug: "medium", label: "Medium" },
+          { slug: "xhigh", label: "Extra High" },
+        ],
+      },
+    ]);
+    await ensureProviderModels("codex");
+
+    const pane = await buildPane(
+      makeThread({
+        provider: "codex",
+        model: "gpt-5.5",
+        reasoningEffort: "medium",
+        contextWindow: 272000,
+      }),
+    );
+    getBindingMock("GetModelsForProvider")!.mockClear();
+
+    const { getByTestId, findByRole } = render(EffortMenu, { props: { pane } });
+    await fireEvent.click(getByTestId("composer-effort-trigger"));
+
+    expect(await findByRole("menuitem", { name: /Extra High/ })).toBeInTheDocument();
+    expect(await findByRole("menuitem", { name: /^1m$/ })).toBeInTheDocument();
+    expect(await findByRole("menuitem", { name: /^On$/ })).toBeInTheDocument();
+    expect(getBindingMock("GetModelsForProvider")).not.toHaveBeenCalled();
+  });
+
+  it("updates open menus when model metadata finishes loading", async () => {
+    type PendingModel = {
+      slug: string;
+      name: string;
+      provider: string;
+      contextWindows: Array<{ tokens: number; label: string; tier: string }>;
+    };
+    let resolveModels!: (models: PendingModel[]) => void;
+    const pendingModels = new Promise<PendingModel[]>((resolve) => {
+      resolveModels = resolve;
+    });
+    const pane = await buildPane(
+      makeThread({
+        provider: "codex",
+        model: "gpt-5.5",
+        contextWindow: 272000,
+      }),
+    );
+    setBindingMock("GetModelsForProvider", async () => pendingModels);
+    const { getByTestId, queryByRole, findByRole } = render(EffortMenu, { props: { pane } });
+
+    await fireEvent.click(getByTestId("composer-effort-trigger"));
+    expect(queryByRole("menuitem", { name: /^1m$/ })).toBeNull();
+
+    resolveModels([
+      {
+        slug: "gpt-5.5",
+        name: "GPT-5.5",
+        provider: "codex",
+        contextWindows: [
+          { tokens: 272000, label: "272k", tier: "standard" },
+          { tokens: 1000000, label: "1m", tier: "extended" },
+        ],
+      },
+    ]);
+
+    expect(await findByRole("menuitem", { name: /^1m$/ })).toBeInTheDocument();
   });
 
   it("renders available context rows and updates the thread context window", async () => {

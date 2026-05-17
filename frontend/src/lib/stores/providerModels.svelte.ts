@@ -1,14 +1,24 @@
 import { GetModelsForProvider } from './bindings';
-import type { ModelInfo } from '../types/settings';
+import type { ModelInfo, Settings } from '../types/settings';
 import {
   asProviderID,
   PROVIDER_IDS,
   type ProviderID,
 } from '../types/providers';
+import {
+  getProviderDefinition,
+  PROVIDER_SETTINGS_ORDER,
+} from '../providers/catalog';
 
 let modelsByProvider = $state(new Map<ProviderID, ModelInfo[]>());
 const inFlight = new Map<ProviderID, Promise<ModelInfo[]>>();
 const generations = new Map<ProviderID, number>();
+
+class StaleProviderModelLoadError extends Error {
+  constructor(provider: ProviderID) {
+    super(`provider model catalog load for ${provider} was superseded`);
+  }
+}
 
 function setProviderModels(provider: ProviderID, models: ModelInfo[]): void {
   const next = new Map(modelsByProvider);
@@ -49,6 +59,25 @@ export async function refreshProviderModels(provider: ProviderID): Promise<Model
   return request;
 }
 
+export async function preloadProviderModelsForSettings(
+  settings: Pick<Settings, 'claudeEnabled' | 'codexEnabled'>,
+): Promise<void> {
+  const providers = PROVIDER_SETTINGS_ORDER.filter((provider) => {
+    const definition = getProviderDefinition(provider);
+    return settings[definition.settings.enabledKey];
+  });
+
+  const results = await Promise.allSettled(
+    providers.map((provider) => ensureProviderModels(provider)),
+  );
+
+  for (const [index, result] of results.entries()) {
+    if (result.status === 'fulfilled') continue;
+    const provider = providers[index];
+    console.warn(`Failed to preload ${provider} models:`, result.reason);
+  }
+}
+
 function clearInFlight(provider: ProviderID, request: Promise<ModelInfo[]>): void {
   if (inFlight.get(provider) === request) {
     inFlight.delete(provider);
@@ -65,9 +94,15 @@ async function loadProviderModels(
       const models = Array.isArray(result) ? result : [];
       if ((generations.get(provider) ?? 0) === generation) {
         setProviderModels(provider, models);
+        return models;
       }
-      return models;
+      throw new StaleProviderModelLoadError(provider);
     } catch (err) {
+      if (err instanceof StaleProviderModelLoadError) {
+        const cached = modelsByProvider.get(provider);
+        if (cached) return cached;
+        return ensureProviderModels(provider);
+      }
       throw err;
     }
   })();

@@ -8,6 +8,7 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import App from '../../App.svelte';
 import type { Thread } from '../../lib/types/models';
 import { setBindingMock } from '../mocks/bindings-app';
+import { getProviderModels } from '../../lib/stores/providerModels.svelte';
 import {
   flush,
   installAnimateShim,
@@ -56,6 +57,39 @@ describe('App integration — thread creation', () => {
     expect(await findByTestId('composer-access-toggle')).toBeInTheDocument();
     expect(await findByTestId('env-picker-trigger')).toBeInTheDocument();
     expect(await findByTestId('branch-picker-trigger')).toBeInTheDocument();
+  });
+
+  it('preloads enabled provider model catalogs on app load', async () => {
+    setBindingMock('GetSettings', async () => ({
+      claudeEnabled: false,
+      codexEnabled: true,
+    }));
+    const getModels = setBindingMock('GetModelsForProvider', async (provider) => {
+      const providerName = String(provider);
+      return [{ slug: `${providerName}-model`, name: `${providerName} model`, provider: providerName }];
+    });
+
+    render(App);
+
+    await waitFor(() => {
+      expect(getModels).toHaveBeenCalledWith('codex');
+      expect(getProviderModels('codex')).toEqual([
+        { slug: 'codex-model', name: 'codex model', provider: 'codex' },
+      ]);
+    });
+    expect(getModels).not.toHaveBeenCalledWith('claude');
+  });
+
+  it('does not preload provider model catalogs when settings fail to load', async () => {
+    setBindingMock('GetSettings', async () => {
+      throw new Error('settings unavailable');
+    });
+    const getModels = setBindingMock('GetModelsForProvider', async () => []);
+
+    render(App);
+    await flush(10);
+
+    expect(getModels).not.toHaveBeenCalled();
   });
 
   it('surfaces backend error when draft creation fails', async () => {
