@@ -332,6 +332,7 @@
     <span
       data-testid="thread-row-title"
       class="text-xs truncate flex-1 min-w-0 {unread ? 'font-semibold text-fg' : ''}"
+      title={thread.title || 'Untitled'}
     >
       {thread.title || 'Untitled'}
     </span>

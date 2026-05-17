@@ -134,6 +134,33 @@ describe('<ThreadRow> unarchive', () => {
   });
 });
 
+describe('<ThreadRow> title tooltip', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    await primeSettings();
+  });
+
+  it('uses the full thread title as hover text', () => {
+    const pane = createThreadPane();
+    const thread = makeThread({ title: 'A long thread title that the sidebar may truncate' });
+
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+
+    expect(getByTestId('thread-row-title').getAttribute('title')).toBe(
+      'A long thread title that the sidebar may truncate',
+    );
+  });
+
+  it('uses Untitled as hover text when the thread title is empty', () => {
+    const pane = createThreadPane();
+    const thread = makeThread({ title: '' });
+
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+
+    expect(getByTestId('thread-row-title').getAttribute('title')).toBe('Untitled');
+  });
+});
+
 describe('<ThreadRow> fork lineage affordance', () => {
   beforeEach(async () => {
     resetPanesForTest();
