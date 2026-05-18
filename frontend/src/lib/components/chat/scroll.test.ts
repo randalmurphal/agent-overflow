@@ -1306,6 +1306,39 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(ctrl.isSticky).toBe(false);
   });
 
+  it('host-layout reconciliation restores bottom intent when sticky state was stale but not escaped', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'a' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
+    ]);
+
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+
+    const ctrl = pane.scrollController as
+      | (PaneScrollController & {
+        escapedFromLock: boolean;
+        isSticky: boolean;
+        setEscapedFromLock(value: boolean): void;
+      })
+      | null;
+    expect(ctrl).not.toBeNull();
+    if (!ctrl) return;
+
+    ctrl.setEscapedFromLock(true);
+    ctrl.setEscapedFromLock(false);
+    expect(ctrl.escapedFromLock).toBe(false);
+    expect(ctrl.isSticky).toBe(false);
+
+    ctrl.notifyHostLayoutSettled?.();
+
+    await waitFor(() => {
+      expect(ctrl.escapedFromLock).toBe(false);
+      expect(ctrl.isSticky).toBe(true);
+    });
+  });
+
   it('the published controller honors a pauseAutoScroll lease (no throw, depth-counted release)', async () => {
     const pane = await buildPane(undefined, [
       makeItem({ id: 'a', summary: 'a' }),

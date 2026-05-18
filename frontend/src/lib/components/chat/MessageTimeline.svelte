@@ -216,18 +216,39 @@
     animationMode: () => (getActiveTurn(pane.threadId) ? 'spring' : 'instant'),
   });
 
-  function notifyHostLayoutSettled(): void {
+  let hostLayoutRetryToken = 0;
+
+  function retryHostLayoutSettled(retryCount: number): void {
+    const token = ++hostLayoutRetryToken;
+    void nextAnimationFrame().then(() => {
+      if (token !== hostLayoutRetryToken) return;
+      notifyHostLayoutSettled(retryCount);
+    });
+  }
+
+  function notifyHostLayoutSettled(retryCount = 0): void {
     const lastIndex = groupedNodes.length - 1;
+    const shouldStickToBottom = !stick.escapedFromLock;
+    if (!listRef && lastIndex >= 0) {
+      if (retryCount < 2) retryHostLayoutSettled(retryCount + 1);
+      return;
+    }
+    hostLayoutRetryToken += 1;
     stick.runExternalScroll(() => {
-      if (!listRef || lastIndex < 0) {
-        stick.notifyContentMaybeGrew();
+      if (lastIndex < 0) {
+        if (shouldStickToBottom) {
+          stick.markAtBottom();
+        } else {
+          stick.notifyContentMaybeGrew();
+        }
         return;
       }
-      if (stick.isSticky) {
-        listRef.scrollToIndex(lastIndex, { align: 'end' });
+      if (shouldStickToBottom) {
+        listRef?.scrollToIndex(lastIndex, { align: 'end' });
+        stick.markAtBottom();
         return;
       }
-      listRef.scrollTo(listRef.getScrollOffset());
+      listRef?.scrollTo(listRef.getScrollOffset());
     }, { preserveIntent: true });
   }
 
@@ -903,6 +924,7 @@
   });
 
   onDestroy(() => {
+    hostLayoutRetryToken += 1;
     if (restoredThreadId) saveScrollSnapshotForThread(restoredThreadId);
     targetFlash.clear();
     autoLoadOlderGate.reset();

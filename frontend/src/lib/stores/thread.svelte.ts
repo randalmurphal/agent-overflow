@@ -250,8 +250,9 @@ export interface PaneScrollController {
   /**
    * Notify the timeline that its pane was moved or reflowed by the host
    * without any transcript content change. Reconcile the virtualizer against
-   * the settled layout; sticky panes should remain at bottom, escaped panes
-   * should keep their existing virtual scroll offset.
+   * the settled layout; panes without explicit user escape should restore
+   * bottom intent, while escaped panes should keep their existing virtual
+   * scroll offset.
    */
   notifyHostLayoutSettled?(): void;
   /**
