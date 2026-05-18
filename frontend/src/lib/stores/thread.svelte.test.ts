@@ -847,6 +847,45 @@ describe('createThreadPane', () => {
     expect(pane.timelineRevision).toBe(2);
   });
 
+  it('bumps timeline revision when switchThread installs the initial item window', async () => {
+    const pane = createThreadPane();
+    setBindingMock('ListThreadSliceAround', async () => ({
+      items: [makeItem({ id: 'loaded', threadId: 't', turnIndex: 0, itemIndex: 0 })],
+      oldestTurnIndex: 0,
+      hasMore: false,
+    }));
+    const initialRevision = pane.timelineRevision;
+
+    await pane.switchThread(makeThread({ id: 't' }));
+
+    expect(pane.items.map((item) => item.id)).toEqual(['loaded']);
+    expect(pane.timelineRevision).toBeGreaterThan(initialRevision);
+  });
+
+  it('bumps timeline revision when switchThread restores a cached item window', async () => {
+    const pane = createThreadPane();
+    const loadCalls: string[] = [];
+    setBindingMock('ListThreadSliceAround', async (threadId: unknown) => {
+      const id = String(threadId);
+      loadCalls.push(id);
+      return {
+        items: [makeItem({ id: `${id}-row`, threadId: id, turnIndex: 0, itemIndex: 0 })],
+        oldestTurnIndex: 0,
+        hasMore: false,
+      };
+    });
+
+    await pane.switchThread(makeThread({ id: 't' }));
+    await pane.switchThread(makeThread({ id: 'other' }));
+    const revisionBeforeCacheRestore = pane.timelineRevision;
+
+    await pane.switchThread(makeThread({ id: 't' }));
+
+    expect(loadCalls).toEqual(['t', 'other']);
+    expect(pane.items.map((item) => item.id)).toEqual(['t-row']);
+    expect(pane.timelineRevision).toBeGreaterThan(revisionBeforeCacheRestore);
+  });
+
   it('collapses same-batch wait-row enrichment into one final row', () => {
     const pane = createThreadPane();
 
@@ -1480,6 +1519,7 @@ describe('createThreadPane', () => {
     const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
     const item = makeItem({ id: 'x', kind: 'tool_call', payloadId: 'payload-x' });
     pane.upsertItem(item);
+    const revisionBeforeClear = pane.timelineRevision;
     pane.setGeneralError('boom');
     pane.addApproval({
       requestId: 'req-1',
@@ -1514,6 +1554,7 @@ describe('createThreadPane', () => {
 
     expect(pane.thread).toBeNull();
     expect(pane.items).toEqual([]);
+    expect(pane.timelineRevision).toBeGreaterThan(revisionBeforeClear);
     expect(pane.pendingApprovals).toEqual([]);
     expect(pane.channelMessages).toEqual([]);
     expect(pane.channelStatus).toBeNull();
@@ -1608,9 +1649,11 @@ describe('createThreadPane', () => {
         hasMore: true,
       }));
       await pane.switchThread(makeThread({ id: 't' }));
+      const revisionBeforeLoadOlder = pane.timelineRevision;
       const result = await pane.loadOlder();
 
       expect(pane.items.map((it) => it.id)).toEqual(['t3', 't4', 't5']);
+      expect(pane.timelineRevision).toBeGreaterThan(revisionBeforeLoadOlder);
       expect(pane.oldestLoadedTurnIndex).toBe(3);
       expect(pane.hasMoreHistory).toBe(true);
       expect(pane.loadingOlder).toBe(false);
@@ -1708,9 +1751,11 @@ describe('createThreadPane', () => {
         hasMore: false,
       }));
       await pane.switchThread(makeThread({ id: 't' }));
+      const revisionBeforeLoadUntil = pane.timelineRevision;
       const ok = await pane.loadUntilItem('target');
 
       expect(ok).toBe(true);
+      expect(pane.timelineRevision).toBeGreaterThan(revisionBeforeLoadUntil);
       expect(pane.oldestLoadedTurnIndex).toBe(1);
       expect(pane.items.map((it) => it.id)).toEqual(['target', 't2', 't3', 't4', 't5']);
     });

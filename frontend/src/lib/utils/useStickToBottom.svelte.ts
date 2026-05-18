@@ -544,11 +544,13 @@ export function createUseStickToBottomController(
 
   function writeScrollTop(value: number): void {
     if (!scrollEl) return;
-    const computed = window.getComputedStyle(scrollEl);
-    const original = computed.scrollBehavior;
-    if (original !== 'auto') scrollEl.style.scrollBehavior = 'auto';
+    // Hot path: spring follow can call this every frame. The app contract is
+    // that controller-owned scrollers do not get CSS-authored smooth scroll;
+    // only inline values need temporary suppression here.
+    const original = scrollEl.style.scrollBehavior;
+    if (original && original !== 'auto') scrollEl.style.scrollBehavior = 'auto';
     writeProgrammaticScrollTop(value);
-    if (original !== 'auto') scrollEl.style.scrollBehavior = original;
+    if (original && original !== 'auto') scrollEl.style.scrollBehavior = original;
   }
 
   function requestFrame(callback: FrameRequestCallback): number {

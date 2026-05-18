@@ -333,6 +333,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   let thread: Thread | null = $state(null);
   let draftPlaceholder: DraftThreadPlaceholder | null = $state(null);
   let items: Item[] = $state([]);
+  // Structural revision for timeline projections that should skip
+  // summary-only streaming deltas. Bump whenever the item window's array
+  // changes shape or identity; `applyItemDelta` intentionally does not bump.
   let timelineRevision = $state(0);
   const itemIndexById: Map<string, number> = new Map();
   const rowUiState = createThreadRowUiState({
@@ -532,6 +535,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     }
   }
 
+  function replaceTimelineItems(nextItems: Item[]): boolean {
+    if (items === nextItems) return false;
+    items = nextItems;
+    rebuildItemIndexes(items);
+    timelineRevision++;
+    return true;
+  }
+
   function upsertItemsBatch(incoming: Item[]): ApplyItemUpsertsToWindowResult | null {
     if (incoming.length === 0) return null;
 
@@ -708,8 +719,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    */
   function applyPagedItems(paged: PagedItems, threadID: string): void {
     const incoming = itemsForThread((paged.items ?? []) as Item[], threadID);
-    items = mergeMissingItemsById(incoming, items);
-    rebuildItemIndexes(items);
+    replaceTimelineItems(mergeMissingItemsById(incoming, items));
     const pagedFloor = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
     oldestLoadedTurnIndex = pagedFloor;
     hasMoreHistory = paged.hasMore ?? false;
@@ -820,12 +830,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     loading = true;
     if (cached) {
-      items = cached.items;
+      replaceTimelineItems(cached.items);
       oldestLoadedTurnIndex = cached.oldestLoadedTurnIndex;
       hasMoreHistory = cached.hasMoreHistory;
       latestSettledTurn = cached.latestSettledTurn;
     } else {
-      items = [];
+      replaceTimelineItems([]);
       // Windowed-history reset. A null floor disables the upsert floor
       // check until the backend tells us otherwise — between thread
       // clear and the initial-slice response any streamed upserts are
@@ -833,7 +843,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       oldestLoadedTurnIndex = null;
       hasMoreHistory = false;
     }
-    rebuildItemIndexes(items);
     rowUiState.clear();
     loadingOlder = false;
     return { cached, sliceAnchorId };
@@ -974,8 +983,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
             // Cache miss + load failure leaves the timeline blank and
             // raises a hard error. (Cache hits skip the load entirely
             // so they can't reach this branch.)
-            items = [];
-            rebuildItemIndexes(items);
+            replaceTimelineItems([]);
             oldestLoadedTurnIndex = null;
             hasMoreHistory = false;
             generalError = `Failed to load thread items: ${errString(err)}`;
@@ -1205,11 +1213,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
             itemsForThread((paged.items ?? []) as Item[], currentThread.id),
             items,
           );
-          if (nextItems !== items) {
-            items = nextItems;
-            rebuildItemIndexes(items);
-            timelineRevision++;
-          }
+          replaceTimelineItems(nextItems);
           oldestLoadedTurnIndex = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
           hasMoreHistory = paged.hasMore ?? false;
         } catch (err) {
@@ -1245,8 +1249,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     clear(): void {
       thread = null;
       draftPlaceholder = null;
-      items = [];
-      rebuildItemIndexes(items);
+      replaceTimelineItems([]);
       rowUiState.clear();
       pendingInteractiveState.clear();
       contextWindow = null;
@@ -1374,10 +1377,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
               && compareItemsByTimelinePosition(item, currentFirst) < 0
             ));
         const next = mergeItemsById(prepend, items);
-        if (next !== items) {
-          items = next;
-          rebuildItemIndexes(items);
-        }
+        replaceTimelineItems(next);
         const nextFloor =
           paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : floor;
         oldestLoadedTurnIndex = nextFloor;
@@ -1478,10 +1478,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         if (gen !== switchGeneration || pageGen !== pagingGeneration) return false;
         const prepend = itemsForThread((paged.items ?? []) as Item[], currentThread.id);
         const next = mergeItemsById(prepend, items);
-        if (next !== items) {
-          items = next;
-          rebuildItemIndexes(items);
-        }
+        replaceTimelineItems(next);
         oldestLoadedTurnIndex =
           paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : currentFloor;
         hasMoreHistory = paged.hasMore ?? false;
@@ -1587,12 +1584,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       const idx = itemIndexById.get(itemId);
       if (idx === undefined) return null;
       const removed = items[idx];
-      items = items.filter((it) => it.id !== itemId);
-      rebuildItemIndexes(items);
+      replaceTimelineItems(items.filter((it) => it.id !== itemId));
       if (thread) {
         threadItemCache.evict(thread.id);
       }
-      timelineRevision++;
       return removed;
     },
 
@@ -1619,12 +1614,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         else kept.push(it);
       }
       if (removed.length === 0) return removed;
-      items = kept;
-      rebuildItemIndexes(items);
+      replaceTimelineItems(kept);
       if (thread) {
         threadItemCache.evict(thread.id);
       }
-      timelineRevision++;
       return removed;
     },
 

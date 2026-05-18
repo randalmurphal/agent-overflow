@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, tick } from 'svelte';
+  import { onDestroy, tick, untrack } from 'svelte';
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -94,6 +94,7 @@
   // Proposed-plan rows are the only entry today; extend the set
   // alongside any future card-style payload kind.
   const RAIL_EXEMPT_PAYLOAD_KINDS = new Set<string>(['proposed_plan']);
+  const EMPTY_RECEIVER_LABELS = new Map<string, string>();
   // happy-dom returns 0 for clientHeight/clientWidth, which makes virtua
   // mount zero rows. In test runs we ask virtua to mount everything via
   // ssrCount so test assertions can find the rendered DOM. Production
@@ -152,15 +153,25 @@
   let groupedNodes = $derived<TimelineNode[]>(
     groupConsecutiveReads(groupItemsBySubagent(filterRedundantNotifications(pane.items))),
   );
-  let codexReceiverLabels = $derived(
-    pane.thread?.provider === PROVIDER_DEFINITIONS.codex.id
-      ? codexSubagentReceiverLabels(pane.items)
-      : new Map<string, string>(),
-  );
+  let codexReceiverLabels = $derived.by(() => {
+    const provider = pane.thread?.provider;
+    // Receiver labels come from spawn-row metadata. Summary-only streaming
+    // deltas do not change that metadata and do not bump timelineRevision.
+    pane.timelineRevision;
 
-  let rowDecorations = $derived(
-    timelineRowDecorations(groupedNodes, getActiveTurn(pane.threadId)?.turnIndex ?? null),
-  );
+    return provider === PROVIDER_DEFINITIONS.codex.id
+      ? untrack(() => codexSubagentReceiverLabels(pane.items))
+      : EMPTY_RECEIVER_LABELS;
+  });
+
+  let rowDecorations = $derived.by(() => {
+    const activeTurnIndex = getActiveTurn(pane.threadId)?.turnIndex ?? null;
+    // Decoration sets depend on row structure and active-turn exclusion,
+    // not the growing summary text inside an existing row.
+    pane.timelineRevision;
+
+    return untrack(() => timelineRowDecorations(groupedNodes, activeTurnIndex));
+  });
 
   let activeTurnStructuralSignature = $derived.by(() => {
     const threadId = pane.threadId;

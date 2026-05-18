@@ -546,6 +546,7 @@ describe('setupEventListeners', () => {
   it('applies same-frame upsert bursts as one timeline revision', async () => {
     const pane = await buildPane();
     getAllPanes().set('main', pane);
+    const revisionBeforeBurst = pane.timelineRevision;
 
     const first = makeItem({ id: 'wait-1', kind: 'terminal_interaction', itemIndex: 2 });
     const second = makeItem({ id: 'wait-2', kind: 'terminal_interaction', itemIndex: 1 });
@@ -556,7 +557,7 @@ describe('setupEventListeners', () => {
     await nextFrame();
 
     expect(pane.items.map((item) => item.id)).toEqual(['wait-2', 'wait-1']);
-    expect(pane.timelineRevision).toBe(1);
+    expect(pane.timelineRevision).toBe(revisionBeforeBurst + 1);
   });
 
   it('ignores stale item_event deltas after the item has completed', async () => {

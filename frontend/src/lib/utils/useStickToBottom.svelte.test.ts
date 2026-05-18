@@ -647,6 +647,13 @@ describe('createUseStickToBottomController', () => {
       expect(scrollEl.style.scrollBehavior).toBe('smooth');
     });
 
+    it('does not read computed styles during scroll writes', () => {
+      const getComputedStyleSpy = vi.spyOn(window, 'getComputedStyle');
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      expect(getComputedStyleSpy).not.toHaveBeenCalled();
+    });
+
     it('scroll event with scrollTop === ignoreScrollToTop is ignored', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800); // writes scrollTop=400, tags ignoreScrollToTop=400
