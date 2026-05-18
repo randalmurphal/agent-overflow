@@ -145,6 +145,14 @@ async function buildPane(
   setBindingMock('ListThreadCheckpoints', async () => []);
 
   const pane = createThreadPane({ paneId });
+  // ChatView's read-mark + attention-clear effects are now gated on
+  // getFocusedPaneId() === pane.paneId. Register + focus the test pane
+  // so tests that exercise "user is viewing this thread" behavior have
+  // the focus precondition satisfied. Tests that need to assert the
+  // background-pane behavior (the user is NOT focused on this pane)
+  // can override focus after this returns.
+  registerPaneForTest(paneId, pane);
+  focusPane(paneId);
   await pane.switchThread(thread);
   return pane;
 }
@@ -642,6 +650,64 @@ describe('<ChatView>', () => {
       await tick();
 
       expect(getThreads()[0]?.lastReadAt).toBe(latestTurnCompletedAt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves an unfocused pane unread when a turn completes on its thread', async () => {
+    vi.useFakeTimers();
+    try {
+      // Two panes: 'main' is focused (default after resetPanesForTest),
+      // 'background' is mounted but not focused. A turn completes on
+      // the background pane's thread; the attention dot must stay
+      // because the user hasn't actually seen it yet.
+      const focusedThread = { ...seedThread(), id: 'thread-focused', latestTurnCompletedAt: 500 };
+      const backgroundThread = { ...seedThread(), id: 'thread-background', latestTurnCompletedAt: 1_000 };
+      setBindingMock('ListThreads', async () => [focusedThread, backgroundThread]);
+      await refreshThreads();
+
+      // Register a 'main' pane so we can actually focus it; focusPane
+      // is a no-op if the target isn't in the registry.
+      const mainPane = createThreadPane({ paneId: 'main' });
+      registerPaneForTest('main', mainPane);
+      const backgroundPane = await buildPane(backgroundThread, [], 'background');
+      // buildPane focuses the pane it just built; flip focus back to
+      // 'main' so the background pane is genuinely unfocused. Set the
+      // markRead spy AFTER buildPane because buildPane installs its own
+      // no-op MarkThreadRead mock.
+      focusPane('main');
+      const markRead = setBindingMock('MarkThreadRead', async () => {});
+
+      vi.setSystemTime(1_000);
+      render(ChatView, { props: { pane: backgroundPane } });
+      await tick();
+
+      // No auto read-mark fires because the pane isn't focused.
+      expect(markRead).not.toHaveBeenCalled();
+      expect(backgroundPane.thread?.lastReadAt).toBeUndefined();
+      expect(getThreads().find((t) => t.id === 'thread-background')?.lastReadAt).toBeUndefined();
+
+      // A new turn completes on the background pane's thread.
+      vi.setSystemTime(2_000);
+      backgroundPane.replaceThread({
+        ...backgroundPane.thread!,
+        latestTurnCompletedAt: 2_000,
+        updatedAt: 2_000,
+      });
+      await tick();
+
+      // Still no read-mark — the user hasn't focused the pane yet.
+      expect(markRead).not.toHaveBeenCalled();
+      expect(backgroundPane.thread?.lastReadAt).toBeUndefined();
+
+      // User focuses the background pane. The read-mark fires now.
+      focusPane('background');
+      await tick();
+
+      expect(markRead).toHaveBeenCalledTimes(1);
+      expect(markRead).toHaveBeenLastCalledWith('thread-background');
+      expect(backgroundPane.thread?.lastReadAt).toBe(2_000);
     } finally {
       vi.useRealTimers();
     }

@@ -24,7 +24,7 @@
     RevertToMessageCheckpoint,
   } from '../../stores/bindings';
   import { prependThread, updateThreadReadState } from '../../stores/threads.svelte';
-  import { focusPane, openThreadInPane } from '../../stores/panes.svelte';
+  import { focusPane, getFocusedPaneId, openThreadInPane } from '../../stores/panes.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { getActiveTurn, getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
@@ -234,6 +234,14 @@
   $effect(() => {
     const thread = pane.thread;
     if (!thread || !pane.threadId) return;
+    // Only the focused pane auto-clears unread/completed state. A turn
+    // completing on a thread that's mounted in a background pane must
+    // leave the "Completed" attention dot in place so the user can see
+    // it from the other pane and decide when to switch over. Reading
+    // getFocusedPaneId() here registers a reactive dep, so the effect
+    // re-runs (and can fire the read-mark) the moment the user focuses
+    // this pane.
+    if (getFocusedPaneId() !== pane.paneId) return;
     const marker = [
       thread.id,
       thread.latestTurnCompletedAt ?? '',
@@ -279,6 +287,9 @@
   $effect(() => {
     const threadId = pane.thread?.id;
     if (!threadId) return;
+    // Same focus gate as the read-mark effect — background panes
+    // should not silently clear error/interrupted attention either.
+    if (getFocusedPaneId() !== pane.paneId) return;
     // Dependency read: rerun when attention status changes while this thread
     // is already active. projectThreadViewed owns the exact clear policy so
     // masked flags still clear without duplicating priority rules here.
