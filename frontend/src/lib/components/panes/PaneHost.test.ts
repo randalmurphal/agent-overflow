@@ -260,6 +260,39 @@ describe('PaneHost', () => {
     expect(rightTitle.className).toContain('hover:bg-surface-2/40');
   });
 
+  it('applies the same attention glow class to the title as the sidebar uses for the row', () => {
+    const pending = createThreadPane({ paneId: 'pending' });
+    const waiting = createThreadPane({ paneId: 'waiting' });
+    const idle = createThreadPane({ paneId: 'idle' });
+    pending.replaceThread(makeThread({ id: 'pending-thread', title: 'Pending' }));
+    waiting.replaceThread(makeThread({ id: 'waiting-thread', title: 'Waiting' }));
+    idle.replaceThread(makeThread({ id: 'idle-thread', title: 'Idle' }));
+    setThreadStatus('pending-thread', 'pending-approval');
+    setThreadStatus('waiting-thread', 'awaiting-input');
+    registerPaneForTest('pending', pending);
+    registerPaneForTest('waiting', waiting);
+    registerPaneForTest('idle', idle);
+    setPaneLayoutItemsForTest([
+      { id: 'pending-item', paneId: 'pending', kind: 'thread', ratio: 1 },
+      { id: 'waiting-item', paneId: 'waiting', kind: 'thread', ratio: 1 },
+      { id: 'idle-item', paneId: 'idle', kind: 'thread', ratio: 1 },
+    ]);
+
+    const rendered = render(PaneHost);
+    const titles = rendered.getAllByTestId('pane-header-title');
+    const pendingTitle = titles.find((el) => el.closest('[data-pane-id="pending"]'));
+    const waitingTitle = titles.find((el) => el.closest('[data-pane-id="waiting"]'));
+    const idleTitle = titles.find((el) => el.closest('[data-pane-id="idle"]'));
+    if (!pendingTitle || !waitingTitle || !idleTitle) throw new Error('expected titles for each pane');
+
+    expect(pendingTitle).toHaveAttribute('data-glow', 'status-glow-warning');
+    expect(pendingTitle.className).toContain('status-glow-warning');
+    expect(waitingTitle).toHaveAttribute('data-glow', 'status-glow-info');
+    expect(waitingTitle.className).toContain('status-glow-info');
+    expect(idleTitle).not.toHaveAttribute('data-glow');
+    expect(idleTitle.className).not.toContain('status-glow');
+  });
+
   it('pane header no longer renders a grip icon (title carries the focus indicator)', () => {
     const left = createThreadPane({ paneId: 'left' });
     left.replaceThread(makeThread({ id: 'left-thread', title: 'Left' }));

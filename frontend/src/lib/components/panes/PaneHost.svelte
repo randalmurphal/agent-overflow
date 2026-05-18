@@ -14,6 +14,7 @@
   import { getPaneWidth, setPaneHostWidth } from '../../stores/layoutMetrics.svelte';
   import PaneDivider from './PaneDivider.svelte';
   import PaneAttentionOverlay from './PaneAttentionOverlay.svelte';
+  import { resolvePaneAttentionDot } from './paneAttention';
   import { measurePane } from './measurePane';
   import { createPaneThreadDrag } from './usePaneThreadDrag.svelte';
 
@@ -201,6 +202,7 @@
     {#each layoutItems as item, index (item.id)}
       {@const pane = getPane(item.paneId)}
       {#if pane}
+        {@const titleGlow = resolvePaneAttentionDot(pane.thread ?? null)?.pill.glowClass ?? ''}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <section
           use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
@@ -240,9 +242,11 @@
                   focusedPaneId === item.paneId
                     ? 'bg-accent/15 text-fg'
                     : 'text-fg-muted hover:bg-surface-2/40 hover:text-fg',
+                  titleGlow,
                 ].join(' ')}
                 data-testid="pane-header-title"
                 data-focused={focusedPaneId === item.paneId}
+                data-glow={titleGlow || null}
               >
                 {pane.thread?.title ?? 'Pane'}
               </span>
