@@ -216,6 +216,23 @@
     animationMode: () => (getActiveTurn(pane.threadId) ? 'spring' : 'instant'),
   });
 
+  function notifyHostLayoutSettled(): void {
+    const lastIndex = groupedNodes.length - 1;
+    stick.runExternalScroll(() => {
+      if (!listRef || lastIndex < 0) {
+        stick.notifyContentMaybeGrew();
+        return;
+      }
+      if (stick.isSticky) {
+        listRef.scrollToIndex(lastIndex, { align: 'end' });
+        return;
+      }
+      listRef.scrollTo(listRef.getScrollOffset());
+    }, { preserveIntent: true });
+  }
+
+  const paneScrollController = Object.assign(stick, { notifyHostLayoutSettled });
+
   // Hide contentEl while virtua and async row content settle. Fresh
   // virtua mounts start from `ESTIMATED_ROW_SIZE × N`; per-row
   // ResizeObservers then correct actual heights. The controller keeps
@@ -231,8 +248,8 @@
   // switch, which remounts the timeline) and on component teardown, so
   // a stale pointer to a torn-down controller can't leak.
   $effect(() => {
-    pane.attachScrollController(stick);
-    return () => pane.detachScrollController(stick);
+    pane.attachScrollController(paneScrollController);
+    return () => pane.detachScrollController(paneScrollController);
   });
 
   // Bind the controller to the actual DOM elements. The content RO and

@@ -8,7 +8,6 @@
     focusPane,
     getFocusedPaneId,
     getPane,
-    iterPanes,
   } from '../../stores/panes.svelte';
   import { getMinPaneWidth } from '../../stores/paneDensity.svelte';
   import { getPaneLayoutItems } from '../../stores/paneLayout.svelte';
@@ -125,24 +124,41 @@
 
   // After a layout-order change (alt+shift+h/l, drag-and-drop reorder),
   // the moved pane's <section> is repositioned via insertBefore. The
-  // browser briefly reflows the flex row, scrollEl.clientHeight can be
-  // clamped to 0 mid-reflow, and the chat timeline ends up rendering
-  // against stale geometry — the symptom is a blank timeline that
-  // "fixes itself" the next time the composer ResizeObserver fires
-  // (typing a newline, etc.) because notifyContentMaybeGrew() runs
-  // and the controller re-pins to the bottom. We poke each pane's
-  // scroll controller ourselves after a frame so the user doesn't
-  // have to nudge it manually.
+  // browser can transiently report bad scroll geometry for inactive
+  // timelines, leaving virtua's rendered range out of sync with the
+  // pane's scrollTop. Wait for layout to settle, then ask each timeline
+  // to reconcile its virtualizer against the host layout. This is not a
+  // content-growth path: the transcript did not change.
   const paneOrderKey = $derived(layoutItems.map((item) => item.paneId).join('|'));
+
+  function reconcilePaneHostLayout(): void {
+    for (const item of layoutItems) {
+      const pane = getPane(item.paneId);
+      if (!pane) continue;
+      const controller = pane.scrollController;
+      if (controller?.notifyHostLayoutSettled) {
+        controller.notifyHostLayoutSettled();
+      } else {
+        controller?.notifyContentMaybeGrew();
+      }
+    }
+  }
+
   $effect(() => {
     paneOrderKey; // dep
-    if (typeof requestAnimationFrame === 'undefined') return;
-    const handle = requestAnimationFrame(() => {
-      for (const pane of iterPanes()) {
-        pane.scrollController?.notifyContentMaybeGrew();
-      }
+    if (typeof requestAnimationFrame === 'undefined') {
+      const handle = setTimeout(reconcilePaneHostLayout, 32);
+      return () => clearTimeout(handle);
+    }
+
+    let secondHandle = 0;
+    const firstHandle = requestAnimationFrame(() => {
+      secondHandle = requestAnimationFrame(reconcilePaneHostLayout);
     });
-    return () => cancelAnimationFrame(handle);
+    return () => {
+      cancelAnimationFrame(firstHandle);
+      if (secondHandle) cancelAnimationFrame(secondHandle);
+    };
   });
 
   function requestPaneScroll(paneId: string): void {

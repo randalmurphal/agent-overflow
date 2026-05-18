@@ -1271,6 +1271,39 @@ describe('scroll integration — useStickToBottom wiring', () => {
     // resizable drawers, and ChatView's composer-height publication depend on.
     expect(typeof pane.scrollController?.pauseAutoScroll).toBe('function');
     expect(typeof pane.scrollController?.notifyContentMaybeGrew).toBe('function');
+    expect(typeof pane.scrollController?.notifyHostLayoutSettled).toBe('function');
+  });
+
+  it('host-layout reconciliation preserves the current sticky or escaped intent', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'a' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
+    ]);
+
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+
+    const ctrl = pane.scrollController as
+      | (PaneScrollController & {
+        escapedFromLock: boolean;
+        isSticky: boolean;
+        setEscapedFromLock(value: boolean): void;
+      })
+      | null;
+    expect(ctrl).not.toBeNull();
+    if (!ctrl) return;
+
+    expect(ctrl.isSticky).toBe(true);
+    ctrl.notifyHostLayoutSettled?.();
+    expect(ctrl.escapedFromLock).toBe(false);
+    expect(ctrl.isSticky).toBe(true);
+
+    ctrl.setEscapedFromLock(true);
+    expect(ctrl.isSticky).toBe(false);
+    ctrl.notifyHostLayoutSettled?.();
+    expect(ctrl.escapedFromLock).toBe(true);
+    expect(ctrl.isSticky).toBe(false);
   });
 
   it('the published controller honors a pauseAutoScroll lease (no throw, depth-counted release)', async () => {

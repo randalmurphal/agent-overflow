@@ -1344,6 +1344,19 @@ describe('createUseStickToBottomController', () => {
       expect(controller.escapedFromLock).toBe(true);
       expect(controller.isSticky).toBe(false);
     });
+
+    it('can tag external scroll events without changing sticky intent', async () => {
+      expect(controller.isSticky).toBe(true);
+
+      controller.runExternalScroll(() => {
+        geom.scrollTop = 350;
+      }, { preserveIntent: true });
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
   });
 
   describe('preserveScrollAnchor', () => {

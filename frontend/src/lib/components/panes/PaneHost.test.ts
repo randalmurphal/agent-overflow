@@ -82,6 +82,7 @@ describe('PaneHost', () => {
 
   afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
     resetBindingMocks();
     if (originalResizeObserver) {
       (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =
@@ -395,12 +396,11 @@ describe('PaneHost', () => {
     expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['middle', 'right', 'left']);
   });
 
-  // Regression: alt+shift+l (and drag-reorder) used to leave the moved
-  // pane's chat timeline blank until something else nudged its scroll
-  // controller (typing a newline, etc.). PaneHost now pokes every pane's
-  // scroll controller on the next rAF after a layout-order change so
-  // they can re-pin against the post-reflow geometry.
-  it('notifies each pane scroll controller after a layout-order change', async () => {
+  // Regression: alt+shift+l (and drag-reorder) used to leave inactive
+  // pane timelines blank until the user scrolled. PaneHost now waits for
+  // the DOM move to settle, then asks every pane timeline to reconcile
+  // its virtualizer against the post-reflow layout.
+  it('notifies each pane scroll controller after a settled layout-order change', async () => {
     const leftPane = createThreadPane({ paneId: 'left' });
     const rightPane = createThreadPane({ paneId: 'right' });
     registerPaneForTest('left', leftPane);
@@ -414,34 +414,51 @@ describe('PaneHost', () => {
     const rightNotify = vi.fn();
     leftPane.attachScrollController({
       pauseAutoScroll: () => () => {},
-      notifyContentMaybeGrew: leftNotify,
+      notifyContentMaybeGrew: vi.fn(),
+      notifyHostLayoutSettled: leftNotify,
     });
     rightPane.attachScrollController({
       pauseAutoScroll: () => () => {},
-      notifyContentMaybeGrew: rightNotify,
+      notifyContentMaybeGrew: vi.fn(),
+      notifyHostLayoutSettled: rightNotify,
     });
 
-    const pendingFrames: FrameRequestCallback[] = [];
+    let nextFrameId = 1;
+    const pendingFrames = new Map<number, FrameRequestCallback>();
+    const flushPendingFrames = (): void => {
+      const frames = Array.from(pendingFrames.entries());
+      pendingFrames.clear();
+      for (const [, cb] of frames) cb(0);
+    };
     const requestFrame = vi
       .spyOn(window, 'requestAnimationFrame')
       .mockImplementation((cb) => {
-        pendingFrames.push(cb);
-        return pendingFrames.length;
+        const frameId = nextFrameId;
+        nextFrameId += 1;
+        pendingFrames.set(frameId, cb);
+        return frameId;
       });
-    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((frameId) => {
+      pendingFrames.delete(frameId);
+    });
 
     render(PaneHost);
     // Drain the initial mount's rAF (PaneHost's notify effect fires once
     // on first render too) so we can isolate the reorder fire.
     expect(requestFrame).toHaveBeenCalled();
-    pendingFrames.splice(0).forEach((cb) => cb(0));
+    flushPendingFrames();
+    flushPendingFrames();
     leftNotify.mockClear();
     rightNotify.mockClear();
 
     movePaneLayoutItem('left', 1);
     await tick();
-    expect(pendingFrames.length).toBeGreaterThan(0);
-    pendingFrames.splice(0).forEach((cb) => cb(0));
+    expect(pendingFrames.size).toBeGreaterThan(0);
+    flushPendingFrames();
+    expect(leftNotify).not.toHaveBeenCalled();
+    expect(rightNotify).not.toHaveBeenCalled();
+    expect(pendingFrames.size).toBeGreaterThan(0);
+    flushPendingFrames();
 
     expect(leftNotify).toHaveBeenCalled();
     expect(rightNotify).toHaveBeenCalled();

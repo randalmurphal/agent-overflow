@@ -228,12 +228,13 @@ export type LoadOlderResult = {
  * Discussion ChannelView both register the same controller shape so
  * one set of resizer/drawer hooks works on both surfaces.
  *
- * `notifyContentMaybeGrew` is currently called only from chat's
- * `ChatView` (composer-overlay growth changes the timeline's bottom
- * padding without growing the contentEl). Discussion does not call it
- * today — its textarea sits in a separate `shrink-0` flex section —
- * but the seam is here so a future Discussion composer-height story
- * could reach the controller the same way chat does.
+ * `notifyContentMaybeGrew` is called by chat's `ChatView`
+ * (composer-overlay growth changes the timeline's bottom padding
+ * without growing the contentEl) and as a fallback for host-layout
+ * nudges when a controller has not implemented `notifyHostLayoutSettled`.
+ * Discussion does not call it today — its textarea sits in a separate
+ * `shrink-0` flex section — but the seam is here so a future Discussion
+ * composer-height story could reach the controller the same way chat does.
  */
 export interface PaneScrollController {
   pauseAutoScroll(): () => void;
@@ -246,6 +247,13 @@ export interface PaneScrollController {
    * padding without changing the contentEl's scrollHeight).
    */
   notifyContentMaybeGrew(): void;
+  /**
+   * Notify the timeline that its pane was moved or reflowed by the host
+   * without any transcript content change. Reconcile the virtualizer against
+   * the settled layout; sticky panes should remain at bottom, escaped panes
+   * should keep their existing virtual scroll offset.
+   */
+  notifyHostLayoutSettled?(): void;
   /**
    * Preserve a clicked disclosure header's viewport position while the
    * row expands or collapses. Optional so Discussion and simple test

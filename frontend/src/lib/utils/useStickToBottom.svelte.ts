@@ -267,8 +267,13 @@ export interface UseStickToBottomController {
    * `listRef.scrollToIndex(...)`, under the controller's scroll-intent
    * tag. This is the escape hatch for scroll writers the controller
    * cannot perform itself.
+   *
+   * Most external jumps are explicit navigation and should escape bottom
+   * follow. Host-layout reconciliation is different: it rewrites the
+   * virtualizer's current offset after a pane move without changing user
+   * intent, so it passes `preserveIntent`.
    */
-  runExternalScroll(action: () => void): void;
+  runExternalScroll(action: () => void, opts?: { preserveIntent?: boolean }): void;
   /**
    * Cancel any active controller-owned animation and mark the user as
    * escaped. Kept for callers that need to stop motion without performing
@@ -1296,8 +1301,8 @@ export function createUseStickToBottomController(
     }
   }
 
-  function runExternalScroll(action: () => void): void {
-    setEscapedFromLock(true);
+  function runExternalScroll(action: () => void, opts: { preserveIntent?: boolean } = {}): void {
+    if (!opts.preserveIntent) setEscapedFromLock(true);
     tagExternalProgrammaticScroll(action);
   }
 
