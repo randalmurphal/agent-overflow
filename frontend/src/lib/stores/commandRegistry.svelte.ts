@@ -28,6 +28,8 @@ export interface CommandFlags {
   anyModalOpen: boolean;
   /** Whether there is an active thread. */
   hasActiveThread: boolean;
+  /** True while the active pane has an open RHS panel. */
+  activeRhsPanel: boolean;
   /** True while the active thread has a live provider turn. */
   turnActive: boolean;
   /**
@@ -64,6 +66,7 @@ export interface CommandContext {
   approvalPending: boolean;
   anyModalOpen: boolean;
   hasActiveThread: boolean;
+  activeRhsPanel: boolean;
   turnActive: boolean;
   sendInFlight: boolean;
   hasPendingPrompt: boolean;

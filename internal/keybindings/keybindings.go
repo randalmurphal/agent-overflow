@@ -76,6 +76,7 @@ var Defaults = []Keybinding{
 	{Key: "mod+,", Command: "settings.open", DefaultID: "settings.open"},
 	{Key: "mod+shift+[", Command: "thread.previous", DefaultID: "thread.previous"},
 	{Key: "mod+shift+]", Command: "thread.next", DefaultID: "thread.next"},
+	{Key: "esc", Command: "rhs.close", When: "activeRhsPanel && !anyModalOpen && !terminalFocus", DefaultID: "rhs.close"},
 	{Key: "esc", Command: "thread.interrupt", When: "hasActiveThread && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen", DefaultID: "thread.interrupt"},
 	{Key: "mod+1", Command: "thread.jump.1", DefaultID: "thread.jump.1"},
 	{Key: "mod+2", Command: "thread.jump.2", DefaultID: "thread.jump.2"},

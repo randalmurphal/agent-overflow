@@ -3,6 +3,7 @@
   import { getMinPaneWidth } from '../../stores/paneDensity.svelte';
   import { getPaneWidth } from '../../stores/layoutMetrics.svelte';
   import { resizeAdjacentPaneLayoutItems } from '../../stores/paneLayout.svelte';
+  import { getPane } from '../../stores/panes.svelte';
   import { createResizeGesture } from '../../utils/resizeGesture.svelte';
 
   interface Props {
@@ -13,6 +14,17 @@
   let { leftPaneId, rightPaneId }: Props = $props();
   let startLeftWidth = 0;
   let startRightWidth = 0;
+
+  function acquireAdjacentScrollLeases(): (() => void) | null {
+    const releases = [
+      getPane(leftPaneId)?.scrollController?.pauseAutoScroll() ?? null,
+      getPane(rightPaneId)?.scrollController?.pauseAutoScroll() ?? null,
+    ].filter((release): release is () => void => release !== null);
+    if (releases.length === 0) return null;
+    return () => {
+      for (const release of releases) release();
+    };
+  }
 
   const resize = createResizeGesture(() => {
     startLeftWidth = getPaneWidth(leftPaneId);
@@ -35,6 +47,7 @@
         );
       },
       onResizeEnd: () => {},
+      acquireLease: acquireAdjacentScrollLeases,
     };
   });
 

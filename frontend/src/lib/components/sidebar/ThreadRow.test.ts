@@ -3,7 +3,7 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadRow from './ThreadRow.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { getFocusedPaneId, getMainPane, resetPanesForTest } from '../../stores/panes.svelte';
+import { ensureMainPane, getFocusedPaneId, resetPanesForTest } from '../../stores/panes.svelte';
 import { getPaneLayoutItems, resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { refreshThreads, getThreads } from '../../stores/threads.svelte';
@@ -75,7 +75,7 @@ describe('<ThreadRow> unarchive', () => {
 
   it('shows the unarchive action for an archived thread', async () => {
     const thread = makeThread({ archived: true });
-    const pane = getMainPane();
+    const pane = ensureMainPane();
     const { getByTestId, queryByTestId } = render(ThreadRow, { props: { thread, pane } });
     expect(getByTestId('thread-row-unarchive')).toBeInTheDocument();
     expect(queryByTestId('thread-row-archive')).toBeNull();
@@ -152,7 +152,7 @@ describe('<ThreadRow> unarchive', () => {
     setBindingMock('ListPendingInteractiveRequests', async () => null);
     setBindingMock('AutoResumeThread', async () => null);
 
-    const pane = getMainPane();
+    const pane = ensureMainPane();
     const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
     await fireEvent.click(getByTestId('thread-row'), { ctrlKey: true });
 

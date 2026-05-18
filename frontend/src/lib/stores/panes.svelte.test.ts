@@ -4,6 +4,7 @@ import {
   clearPanesShowingThread,
   clearPanesShowingThreads,
   destroyPane,
+  ensureMainPane,
   focusPane,
   getAllPanes,
   getFocusedPane,
@@ -64,22 +65,27 @@ describe('panes store', () => {
   });
 
   describe('getMainPane()', () => {
-    it('creates the main pane lazily on first call', () => {
+    it('fails visibly when the main pane is missing', () => {
       expect(getAllPanes().size).toBe(0);
-      const pane = getMainPane();
+      expect(() => getMainPane()).toThrow(/missing the main pane/i);
+    });
+
+    it('ensureMainPane creates the main pane explicitly', () => {
+      expect(getAllPanes().size).toBe(0);
+      const pane = ensureMainPane();
       expect(pane).toBeDefined();
       expect(getAllPanes().size).toBe(1);
       expect(getAllPanes().get('main')).toBe(pane);
     });
 
     it('returns the same instance on subsequent calls', () => {
-      const a = getMainPane();
+      const a = ensureMainPane();
       const b = getMainPane();
       expect(a).toBe(b);
     });
 
     it('exposes a usable pane contract', () => {
-      const pane = getMainPane();
+      const pane = ensureMainPane();
       expect(pane.thread).toBeNull();
       expect(pane.items).toEqual([]);
       expect(pane.pendingApprovals).toEqual([]);
@@ -89,7 +95,7 @@ describe('panes store', () => {
 
   describe('pane routing', () => {
     it('tracks focused pane separately from the main pane singleton', () => {
-      const main = getMainPane();
+      const main = ensureMainPane();
       const secondary = createPane('secondary');
 
       expect(getFocusedPane()).toBe(main);
@@ -100,14 +106,14 @@ describe('panes store', () => {
     });
 
     it('lists panes without exposing the registry as the production iteration contract', () => {
-      const main = getMainPane();
+      const main = ensureMainPane();
       const secondary = createPane('secondary');
 
       expect(listPanes()).toEqual([main, secondary]);
     });
 
     it('destroys a pane and moves focus to a remaining pane', () => {
-      const main = getMainPane();
+      const main = ensureMainPane();
       createPane('secondary');
       focusPane('secondary');
 
@@ -150,12 +156,12 @@ describe('panes store', () => {
     });
 
     it('destroying the last focused pane leaves no focused pane and no layout items', () => {
-      const main = getMainPane();
+      const main = ensureMainPane();
       focusPane('main');
 
       destroyPane(main.paneId);
 
-      expect(getFocusedPaneId()).toBe('');
+      expect(getFocusedPaneId()).toBeNull();
       expect(getAllPanes().size).toBe(0);
       expect(getPaneLayoutItems()).toEqual([]);
     });
@@ -179,6 +185,13 @@ describe('panes store', () => {
 
       expect(pane.threadId).toBe('target');
       expect(getFocusedPaneId()).toBe('external');
+    });
+
+    it('throws when replacing a thread into a missing string-target pane', async () => {
+      const thread = makeThread({ id: 'target' });
+
+      await expect(openThreadInPane(thread, 'missing-pane')).rejects.toThrow(/missing-pane/);
+      expect(getAllPanes().size).toBe(0);
     });
 
     it('focuses the existing pane instead of duplicating a visible thread', async () => {

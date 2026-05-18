@@ -7,8 +7,8 @@
     RHS_PANEL_MIN_WIDTH,
     type RhsPanel,
   } from '../../stores/rhsPanelSlot.svelte';
+  import { PANE_DENSITY_MIN_WIDTHS } from '../../stores/paneDensity.svelte';
   import { getPaneWidth } from '../../stores/layoutMetrics.svelte';
-  import { getFocusedPaneId } from '../../stores/panes.svelte';
   import PlanSidebar from './PlanSidebar.svelte';
   import DiffPanelDrawer from './DiffPanelDrawer.svelte';
   import LazyDiffSidebar from './LazyDiffSidebar.svelte';
@@ -46,7 +46,7 @@
 
   let { pane }: Props = $props();
   let activePanel = $derived(pane.activeRhsPanel);
-  const SIDE_PANEL_THRESHOLD_PX = 880;
+  const SIDE_PANEL_THRESHOLD_PX = PANE_DENSITY_MIN_WIDTHS.comfortable;
   let paneWidth = $derived(getPaneWidth(pane.paneId));
   let overlayMode = $derived(paneWidth < SIDE_PANEL_THRESHOLD_PX);
   let panelContext = $derived(makePanelContext(pane));
@@ -54,17 +54,6 @@
     pane.thread && activePanel ? `${pane.thread.id}:${activePanel.kind}` : '',
   );
 
-  $effect(() => {
-    if (!activePanel || typeof window === 'undefined') return;
-    const handleKeydown = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape') return;
-      if (event.defaultPrevented) return;
-      if (getFocusedPaneId() !== pane.paneId) return;
-      pane.closeRhsPanel();
-    };
-    window.addEventListener('keydown', handleKeydown);
-    return () => window.removeEventListener('keydown', handleKeydown);
-  });
 </script>
 
 {#if activePanel && pane.thread}

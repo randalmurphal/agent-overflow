@@ -10,11 +10,11 @@ import {
 import { touchProjectActivity } from './projects.svelte';
 import { replaceThread as replaceThreadInRegistry } from './threads.svelte';
 
-// Active panes, keyed by pane ID. The current UI mounts only "main", but
-// command routing and sidebar actions already go through this registry so
-// adding visible panes does not require re-defining ownership later.
+// Active panes, keyed by pane ID. PaneHost mounts panes from layout order;
+// command routing and sidebar actions resolve explicit pane targets through
+// this registry.
 let panes: Map<string, ThreadPane> = $state(new Map());
-let focusedPaneId: string = $state('main');
+let focusedPaneId: string | null = $state('main');
 export type PaneActivation = 'preview' | 'committed';
 let paneActivationById: Map<string, PaneActivation> = $state(new Map());
 let nextGeneratedPaneId = 1;
@@ -41,7 +41,7 @@ function addThreadPaneToLayout(paneId: string, insertIndex?: number): void {
 }
 
 function nextPaneId(): string {
-  if (panes.size === 0 && !panes.has('main')) return 'main';
+  if (panes.size === 0) return 'main';
   let id = `pane-${nextGeneratedPaneId}`;
   while (panes.has(id) || hasLayoutPane(id)) {
     nextGeneratedPaneId += 1;
@@ -63,11 +63,19 @@ function registerPane(id: string, pane: ThreadPane, activation: PaneActivation =
   return pane;
 }
 
-export function getMainPane(): ThreadPane {
+export function ensureMainPane(): ThreadPane {
   let main = panes.get('main');
   if (!main) {
     main = createThreadPane({ paneId: 'main' });
     registerPane('main', main, 'committed');
+  }
+  return main;
+}
+
+export function getMainPane(): ThreadPane {
+  const main = panes.get('main');
+  if (!main) {
+    throw new Error('Pane registry is missing the main pane.');
   }
   return main;
 }
@@ -88,11 +96,15 @@ export function registerPaneForTest(id: string, pane: ThreadPane): void {
 }
 
 export function getFocusedPane(): ThreadPane {
-  return panes.get(focusedPaneId) ?? getMainPane();
+  const pane = getFocusedPaneOrNull();
+  if (!pane) {
+    throw new Error(`Focused pane "${focusedPaneId ?? 'none'}" is not registered.`);
+  }
+  return pane;
 }
 
 export function getFocusedPaneOrNull(): ThreadPane | null {
-  return panes.get(focusedPaneId) ?? null;
+  return focusedPaneId ? panes.get(focusedPaneId) ?? null : null;
 }
 
 export function focusPane(id: string): void {
@@ -102,7 +114,7 @@ export function focusPane(id: string): void {
   requestPaneReveal(id);
 }
 
-export function getFocusedPaneId(): string {
+export function getFocusedPaneId(): string | null {
   return focusedPaneId;
 }
 
@@ -157,7 +169,7 @@ export function destroyPane(id: string): void {
   paneActivationById.delete(id);
   removePaneLayoutItem(id);
   if (focusedPaneId !== id) return;
-  focusedPaneId = nextFocusId ?? '';
+  focusedPaneId = nextFocusId;
   if (nextFocusId) requestPaneReveal(nextFocusId);
 }
 
@@ -209,12 +221,15 @@ export function findPaneShowingThread(threadId: string): ThreadPane | null {
 
 export async function replaceThreadInPane(
   thread: Thread,
-  targetPane: string | ThreadPane = focusedPaneId,
+  targetPane: string | ThreadPane,
   activation: PaneActivation = 'committed',
 ): Promise<ThreadPane> {
   const target = typeof targetPane === 'string'
-    ? panes.get(targetPane) ?? createPane(targetPane || 'main')
+    ? panes.get(targetPane)
     : targetPane;
+  if (!target) {
+    throw new Error(`Target pane "${targetPane}" is not registered.`);
+  }
   if (!panes.has(target.paneId)) {
     registerPane(target.paneId, target, activation);
   } else {
@@ -235,25 +250,32 @@ export async function revealThreadIfOpen(thread: Thread): Promise<ThreadPane | n
   return pane;
 }
 
+function resolveOpenTargetPane(targetPane?: string | ThreadPane | null): string | ThreadPane {
+  if (targetPane) return targetPane;
+  const focused = getFocusedPaneOrNull();
+  if (focused) return focused;
+  return ensureMainPane();
+}
+
 export async function openThreadInPane(
   thread: Thread,
-  targetPane: string | ThreadPane = focusedPaneId,
+  targetPane?: string | ThreadPane | null,
 ): Promise<ThreadPane> {
   const existing = await revealThreadIfOpen(thread);
   if (existing) {
     commitPanePreview(existing.paneId);
     return existing;
   }
-  return replaceThreadInPane(thread, targetPane, 'committed');
+  return replaceThreadInPane(thread, resolveOpenTargetPane(targetPane), 'committed');
 }
 
 export async function openThreadFromNavigation(
   thread: Thread,
-  targetPane: string | ThreadPane = focusedPaneId,
+  targetPane?: string | ThreadPane | null,
 ): Promise<ThreadPane> {
   const existing = await revealThreadIfOpen(thread);
   if (existing) return existing;
-  return replaceThreadInPane(thread, targetPane, 'preview');
+  return replaceThreadInPane(thread, resolveOpenTargetPane(targetPane), 'preview');
 }
 
 export async function openThreadInNewPane(thread: Thread, insertIndex?: number): Promise<ThreadPane> {
@@ -270,7 +292,7 @@ export async function openThreadInNewPane(thread: Thread, insertIndex?: number):
 
 export function focusAdjacentPane(direction: -1 | 1): ThreadPane | null {
   const order = orderedPaneIds();
-  const index = order.indexOf(focusedPaneId);
+  const index = focusedPaneId ? order.indexOf(focusedPaneId) : -1;
   if (index < 0) return null;
   const nextId = order[index + direction];
   if (!nextId) return null;
@@ -280,8 +302,9 @@ export function focusAdjacentPane(direction: -1 | 1): ThreadPane | null {
 }
 
 export function moveFocusedPane(direction: -1 | 1): void {
-  if (!panes.has(focusedPaneId)) return;
+  if (!focusedPaneId || !panes.has(focusedPaneId)) return;
   movePaneLayoutItem(focusedPaneId, direction);
+  requestPaneReveal(focusedPaneId);
 }
 
 /**

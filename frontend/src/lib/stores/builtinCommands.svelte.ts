@@ -172,6 +172,14 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   });
 
   registerCommand({
+    id: 'rhs.close',
+    label: 'Right Sidebar: Close',
+    icon: '×',
+    when: 'activeRhsPanel && !anyModalOpen && !terminalFocus',
+    run: (ctx) => ctx.pane.closeRhsPanel(),
+  });
+
+  registerCommand({
     id: 'thread.new.fromPR',
     label: 'Thread: New from Pull/Merge Request',
     icon: '⇠',
@@ -620,6 +628,7 @@ export function makeCommandContext(pane: ThreadPane, extra: Partial<CommandFlags
     approvalPending: pane.pendingApprovals.length > 0,
     anyModalOpen: false,
     hasActiveThread: thread !== null,
+    activeRhsPanel: pane.activeRhsPanel !== null,
     turnActive: getActiveTurn(pane.threadId) !== null,
     sendInFlight: isSendInFlight(pane.threadId, pane.sendInFlight),
     hasPendingPrompt: pane.pendingApprovals.length > 0 || pane.pendingUserInputs.length > 0,

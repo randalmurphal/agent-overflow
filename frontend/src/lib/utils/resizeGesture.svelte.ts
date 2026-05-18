@@ -31,6 +31,8 @@ export function createResizeGesture(readOptions: () => ResizeGestureOptions) {
   let activeTarget: HTMLElement | null = null;
   let activeOptions: ResizeGestureOptions | null = null;
   let releaseLease: (() => void) | null = null;
+  let liveFrame: number | null = null;
+  let liveEmittedSize = 0;
 
   function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value));
@@ -45,6 +47,7 @@ export function createResizeGesture(readOptions: () => ResizeGestureOptions) {
     startPointer = pointerFor(options.axis, event);
     startSize = options.currentSize;
     activeSize = options.currentSize;
+    liveEmittedSize = options.currentSize;
     lockedMax = options.maxSize;
     activePointerId = event.pointerId;
     activeTarget = event.currentTarget as HTMLElement;
@@ -52,6 +55,25 @@ export function createResizeGesture(readOptions: () => ResizeGestureOptions) {
     document.body.style.cursor = options.cursor;
     document.body.style.userSelect = 'none';
     releaseLease = options.acquireLease?.() ?? null;
+  }
+
+  function flushLiveResize(options: ResizeGestureOptions): void {
+    if (liveFrame !== null) {
+      cancelAnimationFrame(liveFrame);
+      liveFrame = null;
+    }
+    if (activeSize === liveEmittedSize) return;
+    liveEmittedSize = activeSize;
+    options.onResizeLive(activeSize);
+  }
+
+  function scheduleLiveResize(options: ResizeGestureOptions): void {
+    if (liveFrame !== null) return;
+    liveFrame = requestAnimationFrame(() => {
+      liveFrame = null;
+      if (!dragging || activeOptions !== options) return;
+      flushLiveResize(options);
+    });
   }
 
   function onPointerMove(event: PointerEvent): void {
@@ -65,7 +87,7 @@ export function createResizeGesture(readOptions: () => ResizeGestureOptions) {
     );
     if (next !== activeSize) {
       activeSize = next;
-      options.onResizeLive(next);
+      scheduleLiveResize(options);
     }
   }
 
@@ -78,6 +100,7 @@ export function createResizeGesture(readOptions: () => ResizeGestureOptions) {
     } else if (activeTarget && activePointerId !== null) {
       activeTarget.releasePointerCapture(activePointerId);
     }
+    flushLiveResize(options);
     activePointerId = null;
     activeTarget = null;
     restoreBodyStyles();
@@ -89,6 +112,10 @@ export function createResizeGesture(readOptions: () => ResizeGestureOptions) {
 
   function destroy(): void {
     if (dragging) restoreBodyStyles();
+    if (liveFrame !== null) {
+      cancelAnimationFrame(liveFrame);
+      liveFrame = null;
+    }
     releaseLease?.();
     releaseLease = null;
     dragging = false;

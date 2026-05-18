@@ -127,7 +127,7 @@ describe('PaneHost', () => {
 
     rendered.unmount();
 
-    expect(getPaneWidth('left')).toBe(1200);
-    expect(getPaneWidth('right')).toBe(1200);
+    expect(getPaneWidth('left')).toBe(0);
+    expect(getPaneWidth('right')).toBe(0);
   });
 });

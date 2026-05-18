@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { getFocusedPane, getFocusedPaneOrNull, getMainPane, getPane, openThreadFromNavigation } from './lib/stores/panes.svelte';
+  import { ensureMainPane, getFocusedPaneOrNull, getPane, openThreadFromNavigation } from './lib/stores/panes.svelte';
   import { setupEventListeners } from './lib/stores/events';
   import { getThreads, refreshThreads } from './lib/stores/threads.svelte';
   import { loadSettings, getSettings } from './lib/stores/settings.svelte';
@@ -57,12 +57,13 @@
   let openFromPR = $state<(() => void) | null>(null);
   let appContentEl: HTMLDivElement | undefined = $state(undefined);
 
-  const pane = getMainPane();
+  const pane = ensureMainPane();
   let sidebarPane = $derived(getFocusedPaneOrNull());
   const EDITABLE_REACHABLE_COMMANDS = new Set([
     'sidebar.focus-search',
     'palette.open',
     'mode.cycle',
+    'rhs.close',
     'thread.interrupt',
     'thread.jump.1',
     'thread.jump.2',
@@ -155,13 +156,13 @@
     const targetId = ids[index - 1];
     if (!targetId) return;
     const thread = getThreads().find((t) => t.id === targetId);
-    if (thread) void openThreadFromNavigation(thread, getFocusedPane());
+    if (thread) void openThreadFromNavigation(thread, getFocusedPaneOrNull() ?? ensureMainPane());
   }
 
   function requestThreadStep(delta: number): void {
     const ids = getVisibleSidebarThreadIds();
     if (ids.length === 0) return;
-    const targetPane = getFocusedPane();
+    const targetPane = getFocusedPaneOrNull() ?? ensureMainPane();
     const currentId = targetPane.threadId;
     const currentIndex = currentId ? ids.indexOf(currentId) : -1;
     const nextIndex = currentIndex === -1

@@ -14,9 +14,16 @@ import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
 import SidebarResizer from '../sidebar/SidebarResizer.svelte';
 import RhsSidebarResizer from './RhsSidebarResizer.svelte';
+import PaneDivider from '../panes/PaneDivider.svelte';
+import { createPane, resetPanesForTest } from '../../stores/panes.svelte';
+import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
+import { resetLayoutMetricsForTest, setPaneWidth } from '../../stores/layoutMetrics.svelte';
 
 beforeEach(() => {
   resetBindingMocks();
+  resetPanesForTest();
+  resetPaneLayoutForTest();
+  resetLayoutMetricsForTest();
 });
 
 afterEach(() => {
@@ -193,6 +200,42 @@ describe('RhsSidebarResizer pause-lease wiring', () => {
 
     await fireEvent.pointerDown(handle, { clientX: 600, pointerId: 1 });
     await fireEvent.pointerUp(handle, { clientX: 500, pointerId: 1 });
+  });
+});
+
+describe('PaneDivider pause-lease wiring', () => {
+  it('acquires pause leases for both adjacent panes and releases them on pointerup', async () => {
+    const left = createPane('left');
+    const right = createPane('right');
+    const leftController = makeMockController();
+    const rightController = makeMockController();
+    left.attachScrollController({
+      pauseAutoScroll: leftController.pauseAutoScroll,
+      notifyContentMaybeGrew: () => {},
+    });
+    right.attachScrollController({
+      pauseAutoScroll: rightController.pauseAutoScroll,
+      notifyContentMaybeGrew: () => {},
+    });
+    setPaneLayoutItemsForTest([
+      { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
+      { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+    ]);
+    setPaneWidth('left', 700);
+    setPaneWidth('right', 700);
+
+    const { getByTestId } = render(PaneDivider, {
+      props: { leftPaneId: 'left', rightPaneId: 'right' },
+    });
+    const handle = getByTestId('pane-divider');
+
+    await fireEvent.pointerDown(handle, { clientX: 700, pointerId: 1 });
+    expect(leftController.pauseCalls()).toBe(1);
+    expect(rightController.pauseCalls()).toBe(1);
+
+    await fireEvent.pointerUp(handle, { clientX: 720, pointerId: 1 });
+    expect(leftController.releases[0]).toHaveBeenCalledTimes(1);
+    expect(rightController.releases[0]).toHaveBeenCalledTimes(1);
   });
 });
 

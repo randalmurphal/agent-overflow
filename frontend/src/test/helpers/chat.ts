@@ -123,7 +123,7 @@ export async function buildPane(
   const pane = createThreadPane();
   await pane.switchThread(thread);
   // Register so syncThread (and any other panes-iterating helper) can
-  // reach this pane. Production code goes through getMainPane() which
+  // reach this pane. Production code goes through ensureMainPane() which
   // already registers; tests instantiating createThreadPane directly
   // need this explicit step.
   registerPaneForTest('main', pane);

@@ -29,8 +29,7 @@ export function setPaneHostWidth(width: number): void {
 export function getPaneWidth(paneId: string): number {
   const measuredPaneWidth = paneWidthById.get(paneId);
   if (measuredPaneWidth !== undefined) return measuredPaneWidth;
-  const hostWidth = getPaneHostWidth();
-  return Number.isFinite(hostWidth) ? hostWidth : getAppShellWidth();
+  return 0;
 }
 
 export function setPaneWidth(paneId: string, width: number): void {

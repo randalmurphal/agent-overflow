@@ -411,6 +411,7 @@ describe('<ChatView>', () => {
       isComplete: true,
     }));
     const pane = await buildPane();
+    setPaneWidth(pane.paneId, 1400);
     pane.setShowPlanSidebar(true);
     pane.setRhsSidebarWidthLive(620);
 
@@ -449,34 +450,10 @@ describe('<ChatView>', () => {
     expect(shell).toHaveClass('absolute');
     expect(queryByTestId('rhs-sidebar-resizer')).toBeNull();
 
-    await fireEvent.keyDown(window, { key: 'Escape' });
+    pane.closeRhsPanel();
     await tick();
 
-    expect(queryByTestId('rhs-sidebar-shell')).toBeNull();
-  });
-
-  it('only closes the focused pane RHS panel on Escape', async () => {
-    const left = await buildPane({ ...seedThread(), id: 'left-thread' }, [], 'left-pane');
-    const right = await buildPane({ ...seedThread(), id: 'right-thread' }, [], 'right-pane');
-    registerPaneForTest(left.paneId, left);
-    registerPaneForTest(right.paneId, right);
-    focusPane(left.paneId);
-    setPaneWidth(left.paneId, 700);
-    setPaneWidth(right.paneId, 700);
-    left.setShowPlanSidebar(true);
-    right.setShowPlanSidebar(true);
-
-    const leftView = render(ChatView, { props: { pane: left } });
-    const rightView = render(ChatView, { props: { pane: right } });
-    await tick();
-
-    await fireEvent.keyDown(window, { key: 'Escape' });
-    await tick();
-
-    expect(left.activeRhsPanel).toBeNull();
-    expect(right.activeRhsPanel).not.toBeNull();
-    expect(leftView.container.querySelector('[data-testid="rhs-sidebar-shell"]')).toBeNull();
-    expect(rightView.container.querySelector('[data-testid="rhs-sidebar-shell"]')).not.toBeNull();
+    await waitFor(() => expect(queryByTestId('rhs-sidebar-shell')).toBeNull());
   });
 
   it('renders design preview through the RHS shell only after explicit toggle', async () => {

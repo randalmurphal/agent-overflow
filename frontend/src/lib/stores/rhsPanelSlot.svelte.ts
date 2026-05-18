@@ -130,7 +130,9 @@ export interface RhsPanelSlot {
 }
 
 function maxWidthForPane(paneId: string): number {
-  return Math.max(RHS_PANEL_MIN_WIDTH, getPaneWidth(paneId) - RHS_PANEL_CHAT_RESERVE_WIDTH);
+  const paneWidth = getPaneWidth(paneId);
+  if (paneWidth <= 0) return Number.POSITIVE_INFINITY;
+  return Math.max(RHS_PANEL_MIN_WIDTH, paneWidth - RHS_PANEL_CHAT_RESERVE_WIDTH);
 }
 
 function clampWidth(paneId: string, px: number): number {

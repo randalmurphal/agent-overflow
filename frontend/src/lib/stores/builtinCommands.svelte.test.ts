@@ -110,6 +110,39 @@ describe('makeCommandContext', () => {
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 123 });
     expect(makeCommandContext(pane, {}).turnActive).toBe(true);
   });
+
+  it('activeRhsPanel follows the live pane RHS state', () => {
+    const pane = readyPane();
+    expect(makeCommandContext(pane, {}).activeRhsPanel).toBe(false);
+
+    pane.setShowPlanSidebar(true);
+    expect(makeCommandContext(pane, {}).activeRhsPanel).toBe(true);
+  });
+});
+
+describe('rhs.close command', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+  });
+
+  it('is enabled only while the active pane has an RHS panel', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+
+    expect(isCommandEnabled('rhs.close', makeCommandContext(pane, {}))).toBe(false);
+
+    pane.setShowPlanSidebar(true);
+    expect(isCommandEnabled('rhs.close', makeCommandContext(pane, {}))).toBe(true);
+  });
+
+  it('closes the RHS panel on the command context pane', () => {
+    const pane = readyPane();
+    pane.setShowPlanSidebar(true);
+    registerFixtureCommands(pane);
+
+    expect(runCommand('rhs.close', makeCommandContext(pane, {}))).toBe(true);
+    expect(pane.activeRhsPanel).toBeNull();
+  });
 });
 
 describe('thread.interrupt command', () => {
