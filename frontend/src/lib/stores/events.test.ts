@@ -514,7 +514,87 @@ describe('setupEventListeners', () => {
     }
   });
 
-  it('cancels a queued item_event batch on listener cleanup', async () => {
+  it('flushes a Codex spawn/wait completion burst into the active pane before refresh', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-a', provider: 'codex' }));
+    getAllPanes().set('main', pane);
+    const items = [
+      makeItem({
+        id: 'assistant-before-review',
+        threadId: 'thread-a',
+        itemIndex: 32,
+        kind: 'assistant_text',
+        summary: 'The diff is tiny.',
+      }),
+      makeItem({
+        id: 'wait-review',
+        threadId: 'thread-a',
+        itemIndex: 33,
+        kind: 'tool_call',
+        toolName: 'wait_agent',
+        summary: 'wait_agent',
+        meta: JSON.stringify({
+          input: {
+            tool: 'wait_agent',
+            receiverThreadIds: ['child-review'],
+            agentsStates: {
+              'child-review': { status: 'completed', message: 'Review finished' },
+            },
+          },
+        }),
+      }),
+      makeItem({
+        id: 'complete-wait-review',
+        threadId: 'thread-a',
+        itemIndex: 68,
+        kind: 'tool_completion',
+        toolName: 'wait_agent',
+        completionOf: 'wait-review',
+        payloadId: 'payload-wait-review',
+        payloadKind: 'tool_call_result',
+        summary: 'wait_agent',
+      }),
+      makeItem({
+        id: 'complete-spawn-review',
+        threadId: 'thread-a',
+        itemIndex: 69,
+        kind: 'tool_completion',
+        toolName: 'collab_agent',
+        completionOf: 'spawn-review',
+        payloadId: 'payload-wait-review',
+        payloadKind: 'tool_call_result',
+        summary: 'collab_agent: review -> done',
+        meta: JSON.stringify({ wait_carrier_id: 'wait-review', item_status: 'completed' }),
+      }),
+      makeItem({
+        id: 'assistant-after-review',
+        threadId: 'thread-a',
+        itemIndex: 70,
+        kind: 'assistant_text',
+        summary: 'The review caught one edge I agree with.',
+      }),
+    ];
+
+    for (const item of items) {
+      emitWailsEvent('provider:item_event', {
+        action: 'upsert',
+        threadId: item.threadId,
+        item,
+      });
+    }
+
+    expect(pane.items).toEqual([]);
+    await nextFrame();
+
+    expect(pane.items.map((item) => item.id)).toEqual([
+      'assistant-before-review',
+      'wait-review',
+      'complete-wait-review',
+      'complete-spawn-review',
+      'assistant-after-review',
+    ]);
+  });
+
+  it('flushes a queued item_event batch on listener cleanup', async () => {
     const originalRAF = globalThis.requestAnimationFrame;
     const originalCancelRAF = globalThis.cancelAnimationFrame;
     vi.useFakeTimers();
@@ -535,7 +615,7 @@ describe('setupEventListeners', () => {
 
       await vi.advanceTimersByTimeAsync(60);
 
-      expect(pane.items).toEqual([]);
+      expect(pane.items.map((entry) => entry.id)).toEqual(['cancelled-flush']);
     } finally {
       vi.useRealTimers();
       vi.stubGlobal('requestAnimationFrame', originalRAF);

@@ -1351,13 +1351,13 @@ export function setupEventListeners(): () => void {
   );
 
   return () => {
-    resetItemEventQueue();
+    cancelItemEvent();
+    flushItemEventQueue();
     cancelApproval();
     cancelUserInput();
     cancelUsage();
     cancelProviderStatus();
     cancelProviderAccount();
-    cancelItemEvent();
     cancelTurnStarted();
     cancelTurnCompleted();
     cancelSessionDied();

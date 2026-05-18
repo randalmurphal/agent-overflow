@@ -420,6 +420,112 @@ describe('groupItemsBySubagent', () => {
     expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-spawn-1']);
   });
 
+  it('projects a persisted Codex spawn/wait sequence with hidden child transcript rows', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'spawn-review',
+        itemIndex: 25,
+        kind: 'tool_call',
+        toolName: 'collab_agent',
+        isBackground: true,
+        summary: 'collab_agent: review',
+        meta: toolMeta({
+          toolName: 'collab_agent',
+          input: {
+            tool: 'spawn_agent',
+            receiverThreadIds: ['child-review'],
+            newAgentNickname: 'Chandrasekhar',
+          },
+        }),
+      }),
+      mkItem({
+        id: 'child-prompt',
+        itemIndex: 26,
+        kind: 'user_text',
+        role: 'user',
+        parentId: 'spawn-review',
+        summary: 'Review the timeline code',
+      }),
+      mkItem({
+        id: 'child-progress',
+        itemIndex: 27,
+        kind: 'assistant_text',
+        parentId: 'spawn-review',
+        summary: 'I will inspect the live path.',
+      }),
+      mkItem({
+        id: 'wait-review',
+        itemIndex: 33,
+        kind: 'tool_call',
+        toolName: 'wait_agent',
+        summary: 'wait_agent',
+        meta: toolMeta({
+          input: {
+            tool: 'wait_agent',
+            receiverThreadIds: ['child-review'],
+            agentsStates: {
+              'child-review': {
+                status: 'completed',
+                message: 'Recommended | frontend/src/lib/components/chat/MessageTimeline.svelte:223 | retry layout',
+              },
+            },
+          },
+        }),
+      }),
+      mkItem({
+        id: 'complete-wait-review',
+        itemIndex: 68,
+        kind: 'tool_completion',
+        toolName: 'wait_agent',
+        completionOf: 'wait-review',
+        payloadId: 'payload-wait-review',
+        payloadKind: 'tool_call_result',
+        summary: 'wait_agent',
+        meta: toolMeta({
+          input: {
+            tool: 'wait_agent',
+            receiverThreadIds: ['child-review'],
+            agentsStates: {
+              'child-review': {
+                status: 'completed',
+                message: 'Recommended | frontend/src/lib/components/chat/MessageTimeline.svelte:223 | retry layout',
+              },
+            },
+          },
+        }),
+      }),
+      mkItem({
+        id: 'complete-spawn-review',
+        itemIndex: 69,
+        kind: 'tool_completion',
+        toolName: 'collab_agent',
+        completionOf: 'spawn-review',
+        payloadId: 'payload-wait-review',
+        payloadKind: 'tool_call_result',
+        summary: 'collab_agent: review -> done',
+        meta: toolMeta({ wait_carrier_id: 'wait-review', item_status: 'completed' }),
+      }),
+      mkItem({
+        id: 'assistant-after-review',
+        itemIndex: 70,
+        kind: 'assistant_text',
+        summary: 'The review caught one edge I agree with.',
+      }),
+    ]);
+
+    expect(nodes).toHaveLength(3);
+    expect(expectLeaf(nodes[0]).item.id).toBe('spawn-review');
+    const waitGroup = expectWaitGroup(nodes[1]);
+    expect(waitGroup.parent.id).toBe('wait-review');
+    expect(waitGroup.children.map((node) => expectLeaf(node).item.id)).toEqual([
+      'complete-spawn-review',
+    ]);
+    expect(nodeContainsItem(waitGroup, 'complete-wait-review')).toBe(false);
+    expect(expectLeaf(nodes[2]).item.id).toBe('assistant-after-review');
+    expect(nodes.some((node) => nodeContainsItem(node, 'child-prompt'))).toBe(false);
+    expect(nodes.some((node) => nodeContainsItem(node, 'child-progress'))).toBe(false);
+  });
+
   it('nests target completions under a legacy camelCase wait carrier id', () => {
     const nodes = groupItemsBySubagent([
       mkItem({

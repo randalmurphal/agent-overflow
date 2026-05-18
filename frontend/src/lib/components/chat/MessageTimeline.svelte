@@ -1001,7 +1001,13 @@
         {:else if node.kind === 'group'}
           <SubagentGroup {pane} group={node} {depth} {renderNode} />
         {:else if node.kind === 'wait_group'}
-          <WaitGroup {pane} group={node} {onImageExpand} {userMessageActions} />
+          <WaitGroup
+            {pane}
+            group={node}
+            {onImageExpand}
+            {userMessageActions}
+            codexSubagentReceiverLabels={codexReceiverLabels}
+          />
         {:else if node.kind === 'read_group'}
           <ReadGroupRow {pane} group={node} />
         {:else}

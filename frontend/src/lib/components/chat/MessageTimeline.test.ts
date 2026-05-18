@@ -223,6 +223,125 @@ describe('<MessageTimeline>', () => {
     expect(getByTestId('wait-group-children').textContent).toContain('Agent finished cleanly');
   });
 
+  it('renders a live Codex spawn/wait completion sequence before refresh', async () => {
+    const pane = await buildPane(makeThread({ provider: 'codex' }), [
+      makeItem({
+        id: 'assistant-before-review',
+        itemIndex: 32,
+        kind: 'assistant_text',
+        summary: 'The diff is tiny.',
+      }),
+    ]);
+    const { getByTestId, queryByText } = render(MessageTimeline, { props: { pane } });
+
+    pane.upsertItems([
+      makeItem({
+        id: 'spawn-review',
+        itemIndex: 25,
+        kind: 'tool_call',
+        toolName: 'collab_agent',
+        isBackground: true,
+        summary: 'collab_agent: review',
+        meta: JSON.stringify({
+          toolName: 'collab_agent',
+          input: {
+            tool: 'spawn_agent',
+            receiverThreadIds: ['child-review'],
+            newAgentNickname: 'Chandrasekhar',
+          },
+        }),
+      }),
+      makeItem({
+        id: 'child-prompt',
+        itemIndex: 26,
+        kind: 'user_text',
+        role: 'user',
+        parentId: 'spawn-review',
+        summary: 'Review the timeline code',
+      }),
+      makeItem({
+        id: 'child-progress',
+        itemIndex: 27,
+        kind: 'assistant_text',
+        parentId: 'spawn-review',
+        summary: 'I will inspect the live path.',
+      }),
+      makeItem({
+        id: 'wait-review',
+        itemIndex: 33,
+        kind: 'tool_call',
+        toolName: 'wait_agent',
+        summary: 'wait_agent',
+        meta: JSON.stringify({
+          input: {
+            tool: 'wait_agent',
+            receiverThreadIds: ['child-review'],
+            agentsStates: {
+              'child-review': {
+                status: 'completed',
+                message: 'Recommended | frontend/src/lib/components/chat/MessageTimeline.svelte:223 | retry layout',
+              },
+            },
+          },
+        }),
+      }),
+    ]);
+    await tick();
+
+    expect(getByTestId('wait-group').textContent).toContain('Waiting for Chandrasekhar');
+    expect(queryByText('Review the timeline code')).toBeNull();
+    expect(queryByText('I will inspect the live path.')).toBeNull();
+
+    pane.upsertItems([
+      makeItem({
+        id: 'complete-wait-review',
+        itemIndex: 68,
+        kind: 'tool_completion',
+        toolName: 'wait_agent',
+        completionOf: 'wait-review',
+        payloadId: 'payload-wait-review',
+        payloadKind: 'tool_call_result',
+        payloadMeta: JSON.stringify({ itemStatus: 'completed', preview: 'Review finished' }),
+        summary: 'wait_agent',
+        meta: JSON.stringify({
+          input: {
+            tool: 'wait_agent',
+            receiverThreadIds: ['child-review'],
+            agentsStates: {
+              'child-review': {
+                status: 'completed',
+                message: 'Recommended | frontend/src/lib/components/chat/MessageTimeline.svelte:223 | retry layout',
+              },
+            },
+          },
+        }),
+      }),
+      makeItem({
+        id: 'complete-spawn-review',
+        itemIndex: 69,
+        kind: 'tool_completion',
+        toolName: 'collab_agent',
+        completionOf: 'spawn-review',
+        payloadId: 'payload-wait-review',
+        payloadKind: 'tool_call_result',
+        payloadMeta: JSON.stringify({ itemStatus: 'completed', preview: 'Review finished' }),
+        summary: 'collab_agent: review -> done',
+        meta: JSON.stringify({ wait_carrier_id: 'wait-review', item_status: 'completed' }),
+      }),
+      makeItem({
+        id: 'assistant-after-review',
+        itemIndex: 70,
+        kind: 'assistant_text',
+        summary: 'The review caught one edge I agree with.',
+      }),
+    ]);
+    await tick();
+
+    expect(getByTestId('wait-group-children').textContent).toContain('Review finished');
+    expect(queryByText('Finished waiting')).toBeNull();
+    expect(queryByText('The review caught one edge I agree with.')).toBeInTheDocument();
+  });
+
   it('renders notification rows without routing them through tool lifecycle cards', async () => {
     const pane = await buildPane(undefined, [
       makeItem({

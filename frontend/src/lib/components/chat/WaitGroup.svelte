@@ -13,11 +13,13 @@
     group,
     onImageExpand,
     userMessageActions,
+    codexSubagentReceiverLabels = new Map<string, string>(),
   }: {
     pane: ThreadPane;
     group: WaitGroupNode;
     onImageExpand?: (preview: ExpandedImagePreview) => void;
     userMessageActions?: UserMessageActions;
+    codexSubagentReceiverLabels?: ReadonlyMap<string, string>;
   } = $props();
 
   let showAllChildren = $state(false);
@@ -28,7 +30,7 @@
 </script>
 
 <div data-testid="wait-group">
-  <TimelineLeaf {pane} item={group.parent} {onImageExpand} {userMessageActions} />
+  <TimelineLeaf {pane} item={group.parent} {onImageExpand} {userMessageActions} {codexSubagentReceiverLabels} />
   {#if group.children.length > 0}
     <!--
       `ml-[6.375rem]` lines the completion rail up with the parent
@@ -50,7 +52,7 @@
     <div class="ml-[6.375rem] max-h-[20rem] overflow-y-auto" data-testid="wait-group-children">
       {#each visibleChildren as child (timelineNodeKey(child))}
         {#if child.kind === 'leaf'}
-          <TimelineLeaf {pane} item={child.item} {onImageExpand} {userMessageActions} />
+          <TimelineLeaf {pane} item={child.item} {onImageExpand} {userMessageActions} {codexSubagentReceiverLabels} />
         {/if}
       {/each}
       {#if hiddenChildCount > 0}
