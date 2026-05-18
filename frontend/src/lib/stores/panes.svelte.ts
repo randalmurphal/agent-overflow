@@ -1,6 +1,12 @@
 import type { Thread } from '../types/models';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
-import { removePaneLayoutItem } from './paneLayout.svelte';
+import {
+  addPaneLayoutItem,
+  averagePaneRatio,
+  getPaneLayoutItems,
+  movePaneLayoutItem,
+  removePaneLayoutItem,
+} from './paneLayout.svelte';
 import { touchProjectActivity } from './projects.svelte';
 import { replaceThread as replaceThreadInRegistry } from './threads.svelte';
 
@@ -11,6 +17,45 @@ let panes: Map<string, ThreadPane> = $state(new Map());
 let focusedPaneId: string = $state('main');
 export type PaneActivation = 'preview' | 'committed';
 let paneActivationById: Map<string, PaneActivation> = $state(new Map());
+let nextGeneratedPaneId = 1;
+
+function requestPaneReveal(paneId: string): void {
+  if (typeof window === 'undefined' || !paneId) return;
+  window.dispatchEvent(new CustomEvent('agent-overflow:reveal-pane', {
+    detail: { paneId },
+  }));
+}
+
+function hasLayoutPane(paneId: string): boolean {
+  return getPaneLayoutItems().some((item) => item.paneId === paneId);
+}
+
+function addThreadPaneToLayout(paneId: string, insertIndex?: number): void {
+  if (hasLayoutPane(paneId)) return;
+  addPaneLayoutItem({
+    id: paneId,
+    paneId,
+    kind: 'thread',
+    ratio: averagePaneRatio(),
+  }, insertIndex);
+}
+
+function nextPaneId(): string {
+  if (panes.size === 0 && !panes.has('main')) return 'main';
+  let id = `pane-${nextGeneratedPaneId}`;
+  while (panes.has(id) || hasLayoutPane(id)) {
+    nextGeneratedPaneId += 1;
+    id = `pane-${nextGeneratedPaneId}`;
+  }
+  nextGeneratedPaneId += 1;
+  return id;
+}
+
+function orderedPaneIds(): string[] {
+  return getPaneLayoutItems()
+    .map((item) => item.paneId)
+    .filter((paneId) => panes.has(paneId));
+}
 
 function registerPane(id: string, pane: ThreadPane, activation: PaneActivation = 'committed'): ThreadPane {
   panes = new Map(panes).set(id, pane);
@@ -46,9 +91,15 @@ export function getFocusedPane(): ThreadPane {
   return panes.get(focusedPaneId) ?? getMainPane();
 }
 
+export function getFocusedPaneOrNull(): ThreadPane | null {
+  return panes.get(focusedPaneId) ?? null;
+}
+
 export function focusPane(id: string): void {
+  if (focusedPaneId === id) return;
   if (!panes.has(id)) return;
   focusedPaneId = id;
+  requestPaneReveal(id);
 }
 
 export function getFocusedPaneId(): string {
@@ -94,6 +145,11 @@ export function isThreadVisible(threadId: string): boolean {
 export function destroyPane(id: string): void {
   const pane = panes.get(id);
   if (!pane) return;
+  const order = orderedPaneIds();
+  const removedIndex = order.indexOf(id);
+  const nextFocusId = removedIndex > 0
+    ? order[removedIndex - 1]
+    : order.find((paneId) => paneId !== id) ?? null;
   pane.clear();
   panes = new Map(panes);
   panes.delete(id);
@@ -101,7 +157,28 @@ export function destroyPane(id: string): void {
   paneActivationById.delete(id);
   removePaneLayoutItem(id);
   if (focusedPaneId !== id) return;
-  focusedPaneId = panes.keys().next().value ?? 'main';
+  focusedPaneId = nextFocusId ?? '';
+  if (nextFocusId) requestPaneReveal(nextFocusId);
+}
+
+export function clearPanesShowingThread(threadId: string): void {
+  for (const pane of panes.values()) {
+    if (pane.threadId === threadId) pane.clear();
+  }
+}
+
+export function clearPanesShowingThreads(threadIds: Iterable<string>): void {
+  const ids = new Set(threadIds);
+  if (ids.size === 0) return;
+  for (const pane of panes.values()) {
+    if (pane.threadId && ids.has(pane.threadId)) pane.clear();
+  }
+}
+
+export function closeFocusedPane(): void {
+  const pane = getFocusedPaneOrNull();
+  if (!pane) return;
+  destroyPane(pane.paneId);
 }
 
 export function getPaneActivation(id: string): PaneActivation {
@@ -119,6 +196,7 @@ export function resetPanesForTest(): void {
   panes = new Map();
   paneActivationById = new Map();
   focusedPaneId = 'main';
+  nextGeneratedPaneId = 1;
 }
 
 export function findPaneShowingThread(threadId: string): ThreadPane | null {
@@ -135,14 +213,16 @@ export async function replaceThreadInPane(
   activation: PaneActivation = 'committed',
 ): Promise<ThreadPane> {
   const target = typeof targetPane === 'string'
-    ? panes.get(targetPane) ?? getMainPane()
+    ? panes.get(targetPane) ?? createPane(targetPane || 'main')
     : targetPane;
   if (!panes.has(target.paneId)) {
     registerPane(target.paneId, target, activation);
   } else {
     paneActivationById = new Map(paneActivationById).set(target.paneId, activation);
   }
+  addThreadPaneToLayout(target.paneId);
   focusedPaneId = target.paneId;
+  requestPaneReveal(target.paneId);
   await target.switchThread(thread);
   return target;
 }
@@ -151,6 +231,7 @@ export async function revealThreadIfOpen(thread: Thread): Promise<ThreadPane | n
   const pane = findPaneShowingThread(thread.id);
   if (!pane) return null;
   focusedPaneId = pane.paneId;
+  requestPaneReveal(pane.paneId);
   return pane;
 }
 
@@ -173,6 +254,34 @@ export async function openThreadFromNavigation(
   const existing = await revealThreadIfOpen(thread);
   if (existing) return existing;
   return replaceThreadInPane(thread, targetPane, 'preview');
+}
+
+export async function openThreadInNewPane(thread: Thread, insertIndex?: number): Promise<ThreadPane> {
+  const existing = await revealThreadIfOpen(thread);
+  if (existing) {
+    commitPanePreview(existing.paneId);
+    return existing;
+  }
+  const paneId = nextPaneId();
+  const pane = createPane(paneId);
+  addThreadPaneToLayout(paneId, insertIndex);
+  return replaceThreadInPane(thread, pane, 'committed');
+}
+
+export function focusAdjacentPane(direction: -1 | 1): ThreadPane | null {
+  const order = orderedPaneIds();
+  const index = order.indexOf(focusedPaneId);
+  if (index < 0) return null;
+  const nextId = order[index + direction];
+  if (!nextId) return null;
+  focusedPaneId = nextId;
+  requestPaneReveal(nextId);
+  return panes.get(nextId) ?? null;
+}
+
+export function moveFocusedPane(direction: -1 | 1): void {
+  if (!panes.has(focusedPaneId)) return;
+  movePaneLayoutItem(focusedPaneId, direction);
 }
 
 /**

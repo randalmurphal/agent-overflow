@@ -62,6 +62,7 @@ describe('<ThreadContextMenu> single-row menu', () => {
   it('renders the forge item set in order when fork-able and not a child', () => {
     const { baseElement } = renderMenu(makeThread());
     expect(visibleLabels(baseElement)).toEqual([
+      'Open in New Pane',
       'Rename Thread',
       'Fork Thread',
       'Mark Unread',

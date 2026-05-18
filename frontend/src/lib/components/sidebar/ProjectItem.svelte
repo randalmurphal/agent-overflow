@@ -51,7 +51,7 @@
   interface Props {
     project: ProjectWithCounts;
     threads: Thread[];
-    pane: ThreadPane;
+    pane: ThreadPane | null;
     /** Called with the project id when the user clicks the hover pencil
      * (or otherwise signals "create a new thread in this project"). */
     onNewThread?: (projectId: string) => void;
@@ -108,7 +108,7 @@
   // pin from looking like a "floating indented row".
   let activeWhenCollapsed = $derived.by<Thread | null>(() => {
     if (expanded) return null;
-    const activeId = pane.threadId;
+    const activeId = pane?.threadId;
     if (!activeId) return null;
     return threads.find((t) => t.id === activeId) ?? null;
   });
@@ -368,7 +368,7 @@
 
 <ProjectContextMenu
   {project}
-  {pane}
+  pane={pane ?? undefined}
   anchor={contextMenuAnchor}
   open={contextMenuOpen}
   onClose={closeContextMenu}

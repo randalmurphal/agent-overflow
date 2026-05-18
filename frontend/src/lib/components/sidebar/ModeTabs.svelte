@@ -18,7 +18,7 @@
   import { openThreadFromNavigation } from '../../stores/panes.svelte';
 
   interface Props {
-    pane: ThreadPane;
+    pane: ThreadPane | null;
   }
 
   let { pane }: Props = $props();
@@ -36,10 +36,11 @@
   // Visual state. When the active thread carries a tab-eligible mode we
   // show that; otherwise fall back to the pane's last user intent.
   let currentTab = $derived<ModeTab>(
-    tabForMode(pane.thread?.mode) ?? pane.activeTab,
+    tabForMode(pane?.thread?.mode) ?? pane?.activeTab ?? 'chat',
   );
 
   async function selectTab(tab: ModeTab): Promise<void> {
+    if (!pane) return;
     // Always sync the visible pill, even when nothing else changes.
     pane.setActiveTab(tab);
 

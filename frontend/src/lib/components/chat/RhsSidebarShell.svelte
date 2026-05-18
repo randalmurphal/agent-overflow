@@ -7,6 +7,8 @@
     RHS_PANEL_MIN_WIDTH,
     type RhsPanel,
   } from '../../stores/rhsPanelSlot.svelte';
+  import { getPaneWidth } from '../../stores/layoutMetrics.svelte';
+  import { getFocusedPaneId } from '../../stores/panes.svelte';
   import PlanSidebar from './PlanSidebar.svelte';
   import DiffPanelDrawer from './DiffPanelDrawer.svelte';
   import LazyDiffSidebar from './LazyDiffSidebar.svelte';
@@ -44,10 +46,25 @@
 
   let { pane }: Props = $props();
   let activePanel = $derived(pane.activeRhsPanel);
+  const SIDE_PANEL_THRESHOLD_PX = 880;
+  let paneWidth = $derived(getPaneWidth(pane.paneId));
+  let overlayMode = $derived(paneWidth < SIDE_PANEL_THRESHOLD_PX);
   let panelContext = $derived(makePanelContext(pane));
   let panelKey = $derived(
     pane.thread && activePanel ? `${pane.thread.id}:${activePanel.kind}` : '',
   );
+
+  $effect(() => {
+    if (!activePanel || typeof window === 'undefined') return;
+    const handleKeydown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return;
+      if (event.defaultPrevented) return;
+      if (getFocusedPaneId() !== pane.paneId) return;
+      pane.closeRhsPanel();
+    };
+    window.addEventListener('keydown', handleKeydown);
+    return () => window.removeEventListener('keydown', handleKeydown);
+  });
 </script>
 
 {#if activePanel && pane.thread}
@@ -57,8 +74,14 @@
     transition:fly={{ x: 320, duration: 150 }}
     aria-label="Right Sidebar"
     data-testid="rhs-sidebar-shell"
-    style="width: {pane.rhsSidebarWidth}px"
-    class="relative flex h-full shrink-0 flex-col border-l border-border bg-surface-1"
+    data-rhs-mode={overlayMode ? 'overlay' : 'side-panel'}
+    style={overlayMode ? undefined : `width: ${pane.rhsSidebarWidth}px`}
+    class={[
+      'flex h-full flex-col border-l border-border bg-surface-1',
+      overlayMode
+        ? 'absolute inset-0 z-30 w-full border-l-0 shadow-sheet'
+        : 'relative shrink-0',
+    ].join(' ')}
   >
     {#key panelKey}
       {#if panelEntry.props === 'ctx'}
@@ -68,15 +91,17 @@
       {/if}
     {/key}
 
-    <RhsSidebarResizer
-      width={pane.rhsSidebarWidth}
-      minWidth={RHS_PANEL_MIN_WIDTH}
-      getMaxWidth={() => pane.getRhsSidebarMaxWidth()}
-      onResizeLive={(next) => pane.setRhsSidebarWidthLive(next)}
-      onResizeEnd={() => pane.persistRhsSidebarWidth()}
-      ariaLabel="Resize Right Sidebar"
-      testId="rhs-sidebar-resizer"
-      {pane}
-    />
+    {#if !overlayMode}
+      <RhsSidebarResizer
+        width={pane.rhsSidebarWidth}
+        minWidth={RHS_PANEL_MIN_WIDTH}
+        getMaxWidth={() => pane.getRhsSidebarMaxWidth()}
+        onResizeLive={(next) => pane.setRhsSidebarWidthLive(next)}
+        onResizeEnd={() => pane.persistRhsSidebarWidth()}
+        ariaLabel="Resize Right Sidebar"
+        testId="rhs-sidebar-resizer"
+        {pane}
+      />
+    {/if}
   </aside>
 {/if}

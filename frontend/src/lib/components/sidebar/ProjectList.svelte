@@ -12,7 +12,7 @@
     projects: readonly ProjectWithCounts[];
     /** Map of project id -> visible threads for that project. */
     threadsByProject: Map<string, Thread[]>;
-    pane: ThreadPane;
+    pane: ThreadPane | null;
     onNewThread?: (projectId: string) => void;
     /** Drag-reorder commit. Wired by ProjectsSection only when manual
      *  sort mode is active; ProjectItem ignores it otherwise. */

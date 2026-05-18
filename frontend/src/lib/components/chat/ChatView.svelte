@@ -545,7 +545,7 @@
 {:else if pane.thread}
   <!-- Standard chat surface. RhsSidebarShell carries plan, diff, payload,
        and design preview panels. -->
-  <div bind:this={chatRoot} data-ui-surface="chat" data-thread-id={pane.thread.id} class="flex h-full min-h-0">
+  <div bind:this={chatRoot} data-ui-surface="chat" data-thread-id={pane.thread.id} class="relative flex h-full min-h-0 overflow-hidden">
     {@render chatColumnBody()}
     <RhsSidebarShell {pane} />
     {#if expandedImagePreview}

@@ -11,6 +11,7 @@ import { tick } from 'svelte';
 import appCss from '../../../app.css?raw';
 import ChatView from './ChatView.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
+import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
 import { getThreads, refreshThreads } from '../../stores/threads.svelte';
 import {
@@ -23,6 +24,7 @@ import {
 import type { Item, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeItem } from '../../../test/helpers/chat';
+import { resetLayoutMetricsForTest, setPaneWidth } from '../../stores/layoutMetrics.svelte';
 
 beforeAll(() => {
   // Svelte transitions used by children call element.animate; happy-dom
@@ -61,6 +63,8 @@ beforeEach(() => {
     writable: true,
     value: 1400,
   });
+  resetLayoutMetricsForTest();
+  resetPanesForTest();
   resetThreadStatuses();
   resetComposerDraftSnapshotsForTest();
 });
@@ -95,6 +99,7 @@ function mockDrafts(contents: Map<string, string> = new Map()): Map<string, stri
 async function buildPane(
   thread: Thread = seedThread(),
   items: Item[] = [],
+  paneId = 'pane',
 ): Promise<ReturnType<typeof createThreadPane>> {
   setBindingMock('SwitchThread', async () => thread);
   // ChatView's auto-mark-read $effect fires on every pane.thread change.
@@ -139,7 +144,7 @@ async function buildPane(
   setBindingMock('ListAttachments', async () => []);
   setBindingMock('ListThreadCheckpoints', async () => []);
 
-  const pane = createThreadPane();
+  const pane = createThreadPane({ paneId });
   await pane.switchThread(thread);
   return pane;
 }
@@ -427,6 +432,51 @@ describe('<ChatView>', () => {
     expect(queryAllByTestId('rhs-sidebar-shell')).toHaveLength(1);
     expect(getByTestId('rhs-sidebar-shell')).toHaveStyle({ width: '620px' });
     expect(await findByTestId('diff-sidebar')).toBeInTheDocument();
+  });
+
+  it('renders RHS panels as a pane-local overlay below 880px', async () => {
+    const pane = await buildPane();
+    registerPaneForTest(pane.paneId, pane);
+    focusPane(pane.paneId);
+    setPaneWidth(pane.paneId, 700);
+    pane.setShowPlanSidebar(true);
+
+    const { getByTestId, queryByTestId } = render(ChatView, { props: { pane } });
+    await tick();
+
+    const shell = getByTestId('rhs-sidebar-shell');
+    expect(shell.dataset.rhsMode).toBe('overlay');
+    expect(shell).toHaveClass('absolute');
+    expect(queryByTestId('rhs-sidebar-resizer')).toBeNull();
+
+    await fireEvent.keyDown(window, { key: 'Escape' });
+    await tick();
+
+    expect(queryByTestId('rhs-sidebar-shell')).toBeNull();
+  });
+
+  it('only closes the focused pane RHS panel on Escape', async () => {
+    const left = await buildPane({ ...seedThread(), id: 'left-thread' }, [], 'left-pane');
+    const right = await buildPane({ ...seedThread(), id: 'right-thread' }, [], 'right-pane');
+    registerPaneForTest(left.paneId, left);
+    registerPaneForTest(right.paneId, right);
+    focusPane(left.paneId);
+    setPaneWidth(left.paneId, 700);
+    setPaneWidth(right.paneId, 700);
+    left.setShowPlanSidebar(true);
+    right.setShowPlanSidebar(true);
+
+    const leftView = render(ChatView, { props: { pane: left } });
+    const rightView = render(ChatView, { props: { pane: right } });
+    await tick();
+
+    await fireEvent.keyDown(window, { key: 'Escape' });
+    await tick();
+
+    expect(left.activeRhsPanel).toBeNull();
+    expect(right.activeRhsPanel).not.toBeNull();
+    expect(leftView.container.querySelector('[data-testid="rhs-sidebar-shell"]')).toBeNull();
+    expect(rightView.container.querySelector('[data-testid="rhs-sidebar-shell"]')).not.toBeNull();
   });
 
   it('renders design preview through the RHS shell only after explicit toggle', async () => {

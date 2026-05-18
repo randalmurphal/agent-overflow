@@ -44,7 +44,7 @@
   interface Props {
     projectId: string;
     threads: Thread[];
-    pane: ThreadPane;
+    pane: ThreadPane | null;
     /** Click handler for the empty-state "+ New Thread" button. */
     onNewThread?: (projectId: string) => void;
   }
@@ -68,7 +68,7 @@
   let preview = $derived.by(() => {
     return previewSidebarThreads({
       nodes: tree,
-      activeThreadId: pane.threadId ?? null,
+      activeThreadId: pane?.threadId ?? null,
       limit: visibleLimit,
     });
   });
@@ -86,7 +86,7 @@
     const next = syncExpandedTreeForActiveThread({
       nodes: tree,
       expandedThreadIds: getExpandedDiscussions(),
-      activeThreadId: pane.threadId ?? null,
+      activeThreadId: pane?.threadId ?? null,
     });
     setExpandedDiscussions(next);
   });
@@ -102,7 +102,7 @@
     e.stopPropagation();
     const nextLimit = nextSidebarThreadRevealLimit({
       nodes: tree,
-      activeThreadId: pane.threadId ?? null,
+      activeThreadId: pane?.threadId ?? null,
       currentLimit: visibleLimit,
       revealCount: THREAD_REVEAL_INCREMENT,
     });
@@ -115,12 +115,9 @@
   }
 
   /**
-   * Multi-select row click handler. ⌘/⌃-click toggles a thread in the
-   * selection; shift-click is folded into toggle for now (range-select
-   * needs an anchor that we haven't wired yet — see comment below). A
-   * plain click without a modifier falls through to thread switch via
-   * the row's own switchThread; ProjectThreadList's job here is just to
-   * decide whether to suppress that switch when a modifier is held.
+   * Multi-select row click handler. Shift-click is folded into toggle for
+   * now; Cmd/Ctrl-click is reserved for opening or focusing a pane. A plain
+   * click falls through to thread switch via the row's own switchThread.
    */
   function handleSelectClick(
     threadId: string,

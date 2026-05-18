@@ -641,10 +641,10 @@ describe('createThreadPane', () => {
       leftPane.setRhsSidebarWidthLive(900);
       rightPane.setRhsSidebarWidthLive(900);
 
-      expect(leftPane.getRhsSidebarMaxWidth()).toBe(RHS_PANEL_MIN_WIDTH);
-      expect(leftPane.rhsSidebarWidth).toBe(RHS_PANEL_MIN_WIDTH);
-      expect(rightPane.getRhsSidebarMaxWidth()).toBe(760);
-      expect(rightPane.rhsSidebarWidth).toBe(760);
+      expect(leftPane.getRhsSidebarMaxWidth()).toBe(500);
+      expect(leftPane.rhsSidebarWidth).toBe(500);
+      expect(rightPane.getRhsSidebarMaxWidth()).toBe(900);
+      expect(rightPane.rhsSidebarWidth).toBe(900);
     });
 
     it('restores activeDiffPayload when switching back to a previously-open thread', async () => {

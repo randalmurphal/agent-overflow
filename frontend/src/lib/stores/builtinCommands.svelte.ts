@@ -15,7 +15,13 @@ import { closePalette, openPalette } from './palette.svelte';
 import { closeThreadPicker, openThreadPicker } from './threadPicker.svelte';
 import { addToast } from './toast.svelte';
 import { getActiveTurn, isSendInFlight } from './threadStatuses.svelte';
-import { openThreadInPane, syncThread } from './panes.svelte';
+import {
+  closeFocusedPane,
+  focusAdjacentPane,
+  moveFocusedPane,
+  openThreadInPane,
+  syncThread,
+} from './panes.svelte';
 import { removeThread } from './threads.svelte';
 import { forkThreadAction } from '../components/sidebar/threadRowActions';
 import { userFacingError } from '../utils/userFacingError';
@@ -43,6 +49,7 @@ import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 export interface BuiltinCommandHooks {
   openSettings: () => void;
   openThreadForm: () => void;
+  openThreadInNewPane?: () => void;
   openThreadFromPR: () => void;
   openShipChanges: (paneId: string) => void;
   requestRename: (thread: Thread) => void;
@@ -70,6 +77,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   const {
     openSettings,
     openThreadForm,
+    openThreadInNewPane,
     openThreadFromPR,
     openShipChanges,
     requestRename,
@@ -114,6 +122,53 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Thread: New',
     icon: '+',
     run: () => openThreadForm(),
+  });
+
+  registerCommand({
+    id: 'thread.newPane',
+    label: 'Thread: New in New Pane',
+    icon: '+',
+    run: () => openThreadInNewPane?.(),
+  });
+
+  registerCommand({
+    id: 'pane.close',
+    label: 'Pane: Close Focused',
+    icon: '×',
+    when: '!terminalFocus',
+    run: () => closeFocusedPane(),
+  });
+
+  registerCommand({
+    id: 'pane.focusLeft',
+    label: 'Pane: Focus Left',
+    icon: '←',
+    when: '!terminalFocus',
+    run: () => { focusAdjacentPane(-1); },
+  });
+
+  registerCommand({
+    id: 'pane.focusRight',
+    label: 'Pane: Focus Right',
+    icon: '→',
+    when: '!terminalFocus',
+    run: () => { focusAdjacentPane(1); },
+  });
+
+  registerCommand({
+    id: 'pane.moveLeft',
+    label: 'Pane: Move Left',
+    icon: '⇠',
+    when: '!terminalFocus',
+    run: () => { moveFocusedPane(-1); },
+  });
+
+  registerCommand({
+    id: 'pane.moveRight',
+    label: 'Pane: Move Right',
+    icon: '⇢',
+    when: '!terminalFocus',
+    run: () => { moveFocusedPane(1); },
   });
 
   registerCommand({

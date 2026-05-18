@@ -26,6 +26,7 @@ import { getAllDrafts, resetForTest as resetDraftThreadsForTest } from '../../li
 import { resetRuntimeModeDraftsForTest } from '../../lib/stores/runtimeModeDraft.svelte';
 import { resetProviderModelsForTest } from '../../lib/stores/providerModels.svelte';
 import { resetSettingsForTest } from '../../lib/stores/settings.svelte';
+import { resetPaneDensityForTest } from '../../lib/stores/paneDensity.svelte';
 import {
   getQueueForThread,
   replaceQueueForThread,
@@ -61,6 +62,7 @@ export function resetAppState(): void {
   resetDraftThreadsForTest();
   resetRuntimeModeDraftsForTest();
   resetSettingsForTest();
+  resetPaneDensityForTest();
   resetProviderModelsForTest();
   // Per-thread send queue is in-memory only; clear it between tests
   // so a stale queued item from a prior case doesn't drain into the

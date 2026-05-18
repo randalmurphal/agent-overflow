@@ -118,6 +118,20 @@ describe('keybindings store — dispatch', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  it('does not dispatch pane navigation commands while terminal focus is active', () => {
+    const run = vi.fn();
+    registerCommand({ id: 'pane.focusLeft', label: 'Pane Left', when: '!terminalFocus', run });
+    setKeybindingsForTest([{ key: 'alt+h', command: 'pane.focusLeft', when: '!terminalFocus' }]);
+
+    expect(dispatchKey(ev('h', { altKey: true }), baseCtx({ terminalFocus: true }), { isMac: true }))
+      .toBe(false);
+    expect(run).not.toHaveBeenCalled();
+
+    expect(dispatchKey(ev('h', { altKey: true }), baseCtx({ terminalFocus: false }), { isMac: true }))
+      .toBe(true);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it('keybindingForCommand returns the last-registered chord', () => {
     setKeybindingsForTest([
       { key: 'mod+k', command: 'palette.open' },

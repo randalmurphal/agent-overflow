@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { getFocusedPane, getMainPane, getPane, openThreadFromNavigation } from './lib/stores/panes.svelte';
+  import { getFocusedPane, getFocusedPaneOrNull, getMainPane, getPane, openThreadFromNavigation } from './lib/stores/panes.svelte';
   import { setupEventListeners } from './lib/stores/events';
   import { getThreads, refreshThreads } from './lib/stores/threads.svelte';
   import { loadSettings, getSettings } from './lib/stores/settings.svelte';
@@ -35,6 +35,9 @@
   import { getVisibleSidebarThreadIds } from './lib/stores/sidebarThreadOrder';
   import { setAppShellWidth } from './lib/stores/layoutMetrics.svelte';
   import DiagramInteractionHost from './lib/components/chat/DiagramInteractionHost.svelte';
+  import { openDraftThreadForProject } from './lib/stores/threadCreation.svelte';
+  import { addToast } from './lib/stores/toast.svelte';
+  import { userFacingError } from './lib/utils/userFacingError';
 
   type SettingsSection = 'general' | 'providers' | 'editor' | 'network' | 'discussions' | 'keybindings' | 'observability' | 'archived';
   type SettingsContextTarget = {
@@ -55,6 +58,7 @@
   let appContentEl: HTMLDivElement | undefined = $state(undefined);
 
   const pane = getMainPane();
+  let sidebarPane = $derived(getFocusedPaneOrNull());
   const EDITABLE_REACHABLE_COMMANDS = new Set([
     'sidebar.focus-search',
     'palette.open',
@@ -85,7 +89,7 @@
     showSettings = true;
   }
 
-  function makeAppCommandContext(targetPane = getFocusedPane()) {
+  function makeAppCommandContext(targetPane = getFocusedPaneOrNull() ?? pane) {
     return makeCommandContext(targetPane, {
       paletteOpen: isPaletteOpen(),
       cheatSheetOpen: isCheatSheetOpen(),
@@ -106,13 +110,13 @@
   }
 
   let paletteContext = $derived(
-    makeAppCommandContext(getPane(getPaletteTargetPaneId() ?? '') ?? getFocusedPane()),
+    makeAppCommandContext(getPane(getPaletteTargetPaneId() ?? '') ?? getFocusedPaneOrNull() ?? pane),
   );
   let messageSearchPane = $derived(
-    getPane(getMessageSearchTargetPaneId() ?? '') ?? getFocusedPane(),
+    getPane(getMessageSearchTargetPaneId() ?? '') ?? getFocusedPaneOrNull() ?? pane,
   );
   let threadPickerPane = $derived(
-    getPane(getThreadPickerTargetPaneId() ?? '') ?? getFocusedPane(),
+    getPane(getThreadPickerTargetPaneId() ?? '') ?? getFocusedPaneOrNull() ?? pane,
   );
 
   function handleGlobalKeydown(ev: KeyboardEvent): void {
@@ -167,6 +171,24 @@
     if (thread) void openThreadFromNavigation(thread, targetPane);
   }
 
+  function requestNewThread(openInNewPane: boolean): void {
+    const targetPane = getFocusedPaneOrNull();
+    const projectId = targetPane?.thread?.projectId;
+    if (!projectId) {
+      addToast('warning', 'Open a project thread before creating a new thread from the keyboard.');
+      return;
+    }
+    void openDraftThreadForProject({
+      projectId,
+      mode: targetPane.activeTab,
+      targetPane,
+      openInNewPane,
+    }).catch((err) => {
+      console.error('Failed to create draft thread:', err);
+      addToast('error', userFacingError(err));
+    });
+  }
+
   async function loadSettingsAndWarmModelCatalogs(): Promise<void> {
     const loaded = await loadSettings();
     if (!loaded) return;
@@ -206,12 +228,8 @@
     clearCommandRegistry();
     registerBuiltinCommands({
       openSettings: () => openSettings('general'),
-      openThreadForm: () => {
-        // The sidebar's "+ New Thread" button owns the form today. Firing a
-        // CustomEvent keeps the contract loose; the sidebar can listen for
-        // this event in a future wave without an API rename here.
-        window.dispatchEvent(new CustomEvent('agent-overflow:open-thread-form'));
-      },
+      openThreadForm: () => requestNewThread(false),
+      openThreadInNewPane: () => requestNewThread(true),
       openThreadFromPR: () => {
         // Sidebar registers a callback that flips its local `showFromPR`
         // state. The indirection keeps dialog ownership with the sidebar,
@@ -271,7 +289,7 @@
   <TransportStatusBanner />
   <div bind:this={appContentEl} class="relative flex flex-1 min-h-0 w-full">
     <Sidebar
-      {pane}
+      pane={sidebarPane}
       onOpenSettings={() => openSettings('general')}
       registerFocusSearch={(focus) => (searchFocuser = focus)}
       registerOpenFromPR={(cb) => (openFromPR = cb)}

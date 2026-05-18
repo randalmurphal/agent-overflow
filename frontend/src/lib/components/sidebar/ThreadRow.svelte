@@ -7,7 +7,8 @@
   import { getSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
-  import { openThreadFromNavigation, openThreadInPane } from '../../stores/panes.svelte';
+  import { openThreadFromNavigation, openThreadInNewPane, openThreadInPane } from '../../stores/panes.svelte';
+  import { addToast } from '../../stores/toast.svelte';
   import {
     getEffectiveThreadStatus,
     type ThreadLiveStatus,
@@ -49,13 +50,14 @@
     displayStatus,
   }: {
     thread: Thread;
-    pane: ThreadPane;
+    pane: ThreadPane | null;
     selected?: boolean;
     /**
      * Called before the thread-switch path when the user clicks the row.
      * Return `true` to suppress the thread switch (row handled as a
      * multi-select action instead). `modifier` describes what the click
-     * should do: 'toggle' (cmd/ctrl), 'range' (shift), or null / 'single'.
+     * should do: 'range' (shift) or null / 'single'. Cmd/Ctrl-click is
+     * reserved for opening/focusing a pane.
      */
     onSelectClick?: (modifier: 'toggle' | 'range' | 'single' | null) => boolean;
     /** Visual indent level. 0 = top, 1 = direct child of a discussion parent. */
@@ -75,7 +77,7 @@
     displayStatus?: ThreadStatusPill | null;
   } = $props();
 
-  let isActive = $derived(pane.threadId === thread.id);
+  let isActive = $derived(pane?.threadId === thread.id);
 
   let liveStatus = $derived(getEffectiveThreadStatus(thread));
   let effectiveStatus = $derived(displayLiveStatus ?? liveStatus);
@@ -91,17 +93,24 @@
     return {
       thread,
       isActive,
-      clearPane: () => pane.clear(),
-      switchPane: async (t) => { await openThreadInPane(t, pane); },
-      reportError: (msg) => pane.setGeneralError(msg),
-      replacePaneThread: (t) => pane.replaceThread(t),
+      clearPane: () => pane?.clear(),
+      switchPane: async (t) => {
+        if (pane) await openThreadInPane(t, pane);
+        else await openThreadInPane(t);
+      },
+      reportError: (msg) => {
+        if (pane) pane.setGeneralError(msg);
+        else addToast('error', msg);
+      },
+      replacePaneThread: (t) => pane?.replaceThread(t),
     };
   }
 
   async function handleJumpToParent(e: MouseEvent): Promise<void> {
     e.stopPropagation();
     if (!forkParent) return;
-    await openThreadFromNavigation(forkParent, pane);
+    if (pane) await openThreadFromNavigation(forkParent, pane);
+    else await openThreadFromNavigation(forkParent);
   }
 
   // Inline rename state (owned by the row so the <input> replaces the
@@ -126,10 +135,12 @@
 
   function handleClick(e?: MouseEvent) {
     if (editing) return;
+    if (e && (e.metaKey || e.ctrlKey)) {
+      void openThreadInNewPane(thread);
+      return;
+    }
     if (onSelectClick && e) {
-      const modifier: 'toggle' | 'range' | 'single' | null = (e.metaKey || e.ctrlKey)
-        ? 'toggle'
-        : e.shiftKey
+      const modifier: 'toggle' | 'range' | 'single' | null = e.shiftKey
         ? 'range'
         : null;
       if (modifier !== null) {
@@ -137,7 +148,8 @@
         if (handled) return;
       }
     }
-    void openThreadFromNavigation(thread, pane);
+    if (pane) void openThreadFromNavigation(thread, pane);
+    else void openThreadFromNavigation(thread);
   }
 
   function startRename() {
@@ -410,7 +422,7 @@
   {/if}
 </div>
 
-<ThreadContextMenu
+  <ThreadContextMenu
   {thread}
   {pane}
   anchor={rowEl}

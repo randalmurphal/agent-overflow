@@ -17,7 +17,7 @@
 
   let { open, pane, onClose }: {
     open: boolean;
-    pane: ThreadPane;
+    pane?: ThreadPane;
     onClose: () => void;
   } = $props();
 
@@ -98,7 +98,8 @@
         return;
       }
       prependThread(thread);
-      await openThreadInPane(thread, pane);
+      if (pane) await openThreadInPane(thread, pane);
+      else await openThreadInPane(thread);
       addToast('success', `Thread created from ${refSigil}${prNumber}`);
       onClose();
     } catch (err) {

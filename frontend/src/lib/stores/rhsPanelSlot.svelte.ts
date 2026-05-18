@@ -11,7 +11,7 @@ export const RHS_PANEL_MIN_WIDTH = 380;
 
 // Keep this much of the owning pane available for the chat column when
 // a right-side panel is open.
-const RHS_PANEL_CHAT_RESERVE_WIDTH = 640;
+export const RHS_PANEL_CHAT_RESERVE_WIDTH = 500;
 
 export type RhsPanel =
   | { kind: 'plan' }

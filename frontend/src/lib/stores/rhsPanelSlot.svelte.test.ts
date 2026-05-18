@@ -120,10 +120,10 @@ describe('createRhsPanelSlot', () => {
     left.setWidthLive(900);
     right.setWidthLive(900);
 
-    expect(left.getMaxWidth()).toBe(RHS_PANEL_MIN_WIDTH);
-    expect(left.width).toBe(RHS_PANEL_MIN_WIDTH);
-    expect(right.getMaxWidth()).toBe(760);
-    expect(right.width).toBe(760);
+    expect(left.getMaxWidth()).toBe(500);
+    expect(left.width).toBe(500);
+    expect(right.getMaxWidth()).toBe(900);
+    expect(right.width).toBe(900);
   });
 
   it('re-clamps the visible width when the owning pane narrows', () => {
@@ -134,8 +134,8 @@ describe('createRhsPanelSlot', () => {
 
     setPaneWidth('main', 1000);
 
-    expect(slot.getMaxWidth()).toBe(RHS_PANEL_MIN_WIDTH);
-    expect(slot.width).toBe(RHS_PANEL_MIN_WIDTH);
+    expect(slot.getMaxWidth()).toBe(500);
+    expect(slot.width).toBe(500);
   });
 
   it('caps stored thread snapshots', () => {

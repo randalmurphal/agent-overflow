@@ -35,11 +35,12 @@
     isThreadSelected,
   } from '../../stores/threadFilter.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
-  import { openThreadFromNavigation } from '../../stores/panes.svelte';
+  import { openThreadFromNavigation, openThreadInNewPane } from '../../stores/panes.svelte';
+  import { addToast } from '../../stores/toast.svelte';
 
   interface Props {
     thread: Thread;
-    pane: ThreadPane;
+    pane: ThreadPane | null;
     anchor: HTMLElement | undefined;
     open: boolean;
     onClose: () => void;
@@ -68,9 +69,15 @@
     return {
       thread,
       isActive,
-      clearPane: () => pane.clear(),
-      switchPane: async (t) => { await openThreadFromNavigation(t, pane); },
-      reportError: (msg) => pane.setGeneralError(msg),
+      clearPane: () => pane?.clear(),
+      switchPane: async (t) => {
+        if (pane) await openThreadFromNavigation(t, pane);
+        else await openThreadFromNavigation(t);
+      },
+      reportError: (msg) => {
+        if (pane) pane.setGeneralError(msg);
+        else addToast('error', msg);
+      },
     };
   }
 
@@ -126,9 +133,12 @@
       try {
         await action({
           thread: t,
-          isActive: pane.threadId === t.id,
-          clearPane: () => pane.clear(),
-          switchPane: async (next) => { await openThreadFromNavigation(next, pane); },
+          isActive: pane?.threadId === t.id,
+          clearPane: () => pane?.clear(),
+          switchPane: async (next) => {
+            if (pane) await openThreadFromNavigation(next, pane);
+            else await openThreadFromNavigation(next);
+          },
           reportError: (msg) => {
             lastError = msg;
           },
@@ -141,10 +151,10 @@
     if (failures === 0) {
       clearThreadSelection();
     } else {
-      pane.setGeneralError(
-        `${targets.length - failures}/${targets.length} succeeded` +
-          (lastError ? ` — ${lastError}` : ''),
-      );
+      const message = `${targets.length - failures}/${targets.length} succeeded` +
+        (lastError ? ` — ${lastError}` : '');
+      if (pane) pane.setGeneralError(message);
+      else addToast('error', message);
     }
   }
 </script>
@@ -188,6 +198,13 @@
             }}
           />
         {:else}
+          <MenuItem
+            label="Open in New Pane"
+            onSelect={() => {
+              onClose();
+              void openThreadInNewPane(thread);
+            }}
+          />
           <MenuItem
             label="Rename Thread"
             onSelect={() => {

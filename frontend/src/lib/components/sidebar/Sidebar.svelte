@@ -21,7 +21,7 @@
   import ThreadFromPRDialog from './ThreadFromPRDialog.svelte';
 
   interface Props {
-    pane: ThreadPane;
+    pane: ThreadPane | null;
     onOpenSettings?: () => void;
     /** Palette/command hook: receives a focus callback for the search input. */
     registerFocusSearch?: (focus: () => void) => void;
@@ -75,13 +75,13 @@
     width={getSidebarWidth()}
     onResizeLive={setSidebarWidthLive}
     onResizeEnd={persistSidebarWidth}
-    {pane}
+    pane={pane ?? undefined}
   />
 </aside>
 
 <ThreadFromPRDialog
   open={showFromPR}
-  {pane}
+  pane={pane ?? undefined}
   onClose={() => {
     showFromPR = false;
   }}

@@ -4,6 +4,7 @@
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
+  import PaneDensitySection from './PaneDensitySection.svelte';
   import { INPUT_CLASS, SELECT_CLASS } from './styles';
 
   let settings = $derived(getSettings());
@@ -134,6 +135,8 @@
       </SettingsField>
     </div>
   </section>
+
+  <PaneDensitySection />
 
   <section data-testid="settings-thread-defaults">
     <SettingsHeader
