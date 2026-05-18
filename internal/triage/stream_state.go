@@ -601,7 +601,7 @@ func (r *Router) activeThinkingItemID(threadID string, turnIndex int, scope, pro
 //
 // `item.Summary` already reflects the running tail. AppendItemSummaryTail
 // keeps the last `thinkingPreviewRunes` characters in place on every
-// streaming flush; the frontend mirrors that 200-rune cap in
+// streaming flush; the frontend mirrors that cap in
 // applyItemDelta so the settle is a visual no-op. No payload re-read
 // on the hot path — that would block the next provider event (a
 // tool_use or text_delta following thinking) and produce the

@@ -14,7 +14,14 @@ import (
 // so the in-memory pane summary matches what the server writes at
 // settle time — a divergence would cause the row to visibly shrink at
 // the streaming → completed transition. Keep the two in sync.
-const thinkingPreviewRunes = 200
+//
+// Sized to overflow the 3-line collapsed-view box (`max-h-[3lh]` at
+// 12px italic with `leading-relaxed`) at realistic chat-pane widths so
+// the CSS clip + tail scroll-pin in `ThinkingBlock.svelte` show a
+// consistent 3 lines regardless of pane width. Below this, narrow
+// content would only fill 1–2 lines on wide panes and the box would
+// visibly collapse.
+const thinkingPreviewRunes = 400
 
 func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 	if evt.Content == "" {

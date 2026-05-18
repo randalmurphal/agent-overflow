@@ -33,13 +33,12 @@
 
   // Body text source. `item.summary` is the single source of truth: the
   // pane appends deltas in place during streaming, tail-trimmed to the
-  // server-side 200-rune cap (`THINKING_TAIL_RUNES` in
+  // server-side rune cap (`THINKING_TAIL_RUNES` in
   // `stores/thread.svelte.ts`). The completion upsert carries the same
-  // 200-rune tail, so settle is visually a no-op. After the user
-  // expands, `expansion.displayData` carries the full payload fetched
-  // from SQLite. Pick the longer of the two: the live tail covers
-  // streaming + collapsed-after-settle; the persisted full text covers
-  // expanded.
+  // tail, so settle is visually a no-op. After the user expands,
+  // `expansion.displayData` carries the full payload fetched from
+  // SQLite. Pick the longer of the two: the live tail covers streaming
+  // + collapsed-after-settle; the persisted full text covers expanded.
   const bodyText = $derived.by<string>(() => {
     const live = item.summary ?? '';
     const persisted = expansion.displayData ?? '';

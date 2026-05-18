@@ -151,11 +151,16 @@ const SPINNER_THRESHOLD_MS = 100;
  * thinking row. Mirrors `thinkingPreviewRunes` in
  * `internal/triage/stream_items.go` — the server-side tail cap on the
  * persisted thinking summary. Matching the cap means the completion
- * upsert (which carries the same 200-rune tail) does not visibly shrink
- * the row at settle. Full thinking content stays on-demand via the
- * payload table, fetched when the user expands the row.
+ * upsert (which carries the same tail) does not visibly shrink the row
+ * at settle. Full thinking content stays on-demand via the payload
+ * table, fetched when the user expands the row.
+ *
+ * Sized to overflow the 3-line collapsed-view box (`max-h-[3lh]` at
+ * 12px italic with `leading-relaxed`) at realistic chat-pane widths so
+ * the CSS clip + tail scroll-pin show a consistent 3 lines regardless
+ * of pane width.
  */
-const THINKING_TAIL_RUNES = 200;
+const THINKING_TAIL_RUNES = 400;
 
 /**
  * Returns the tail of `text` containing at most `maxRunes` Unicode code

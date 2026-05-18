@@ -850,11 +850,11 @@ describe('createThreadPane', () => {
     expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe('hello world!');
   });
 
-  it('thinking-row deltas trim to the 200-rune tail in place', async () => {
-    // The frontend mirrors the server-side `thinkingPreviewRunes = 200`
-    // cap so the completion upsert (which carries the same 200-rune
-    // tail) does not visibly shrink the row at settle. Full thinking
-    // content stays on-demand via the expansion handle.
+  it('thinking-row deltas trim to the 400-rune tail in place', async () => {
+    // The frontend mirrors the server-side `thinkingPreviewRunes = 400`
+    // cap so the completion upsert (which carries the same tail) does
+    // not visibly shrink the row at settle. Full thinking content stays
+    // on-demand via the expansion handle.
     const pane = createThreadPane();
     pane.upsertItem(makeItem({
       id: 'think:0:0',
@@ -864,8 +864,8 @@ describe('createThreadPane', () => {
       payloadId: 'thinking-payload',
     }));
 
-    // Send a 500-rune block; only the last 200 should survive.
-    const bigChunk = 'a'.repeat(500);
+    // Send an 800-rune block; only the last 400 should survive.
+    const bigChunk = 'a'.repeat(800);
     pane.applyItemDelta({
       threadId: 'thread-1',
       itemId: 'think:0:0',
@@ -875,8 +875,8 @@ describe('createThreadPane', () => {
     });
 
     const after = pane.items.find((item) => item.id === 'think:0:0')?.summary ?? '';
-    expect([...after].length).toBe(200);
-    expect(after.endsWith('a'.repeat(200))).toBe(true);
+    expect([...after].length).toBe(400);
+    expect(after.endsWith('a'.repeat(400))).toBe(true);
   });
 
   it('replaces the streaming row on completion upsert', async () => {

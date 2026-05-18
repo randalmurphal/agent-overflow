@@ -2042,10 +2042,10 @@ func TestReasoningSummaryIsBoundedButPayloadKeepsFullContent(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	// Two deltas summing to 260 runes: more than `thinkingPreviewRunes`
-	// (200), so the persisted summary must tail-cap to exactly 200
+	// Two deltas summing to 500 runes: more than `thinkingPreviewRunes`
+	// (400), so the persisted summary must tail-cap to exactly 400
 	// characters drawn from the END of the accumulated reasoning.
-	chunks := []string{strings.Repeat("a", 180), strings.Repeat("b", 80)}
+	chunks := []string{strings.Repeat("a", 300), strings.Repeat("b", 200)}
 	for _, chunk := range chunks {
 		if err := router.Handle(provider.ProviderEvent{
 			Kind:      provider.EventThinking,
@@ -2070,9 +2070,9 @@ func TestReasoningSummaryIsBoundedButPayloadKeepsFullContent(t *testing.T) {
 	if got := len([]rune(items[0].Summary)); got != thinkingPreviewRunes {
 		t.Fatalf("summary runes = %d, want %d (tail-cap)", got, thinkingPreviewRunes)
 	}
-	// Tail-cap: the last 200 chars come from chunks[0]+chunks[1] =
-	// 180 'a' + 80 'b'. The tail is 120 'a' + 80 'b'.
-	wantSummary := strings.Repeat("a", 120) + strings.Repeat("b", 80)
+	// Tail-cap: the last 400 chars come from chunks[0]+chunks[1] =
+	// 300 'a' + 200 'b'. The tail is 200 'a' + 200 'b'.
+	wantSummary := strings.Repeat("a", 200) + strings.Repeat("b", 200)
 	if items[0].Summary != wantSummary {
 		t.Fatalf("summary = %q, want %q (tail of accumulated reasoning)", items[0].Summary, wantSummary)
 	}
