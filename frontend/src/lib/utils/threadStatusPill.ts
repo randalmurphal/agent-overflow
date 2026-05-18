@@ -9,8 +9,8 @@
 // Keep this file free of Svelte imports so its behaviour stays
 // table-drivable from unit tests.
 
-import type { ThreadLiveStatus } from '../../stores/threadStatuses.svelte';
-import type { Thread } from '../../types/models';
+import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
+import type { Thread } from '../types/models';
 
 export interface ThreadStatusPill {
   /** Visible text next to the title. `null` → no pill, only the dot. */

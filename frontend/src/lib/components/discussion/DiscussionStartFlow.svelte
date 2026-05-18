@@ -7,18 +7,15 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { syncThread } from '../../stores/panes.svelte';
-  import type { ThreadPane } from '../../stores/thread.svelte';
   import DiscussionPicker from './DiscussionPicker.svelte';
 
   let {
     open,
     thread,
-    pane,
     onClose,
   }: {
     open: boolean;
     thread: Thread | null;
-    pane: ThreadPane;
     onClose: () => void;
   } = $props();
 

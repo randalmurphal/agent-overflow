@@ -3,6 +3,10 @@
   import { ensureMainPane, getFocusedPaneOrNull, getPane, openThreadFromNavigation } from './lib/stores/panes.svelte';
   import { setupEventListeners } from './lib/stores/events';
   import { getThreads, refreshThreads } from './lib/stores/threads.svelte';
+  import {
+    installPaneLayoutPersistence,
+    loadFromStorage as loadPaneLayoutFromStorage,
+  } from './lib/stores/paneLayoutPersistence';
   import { loadSettings, getSettings } from './lib/stores/settings.svelte';
   import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
   import { applyTheme } from './lib/utils/theme';
@@ -56,8 +60,8 @@
   let searchFocuser = $state<(() => void) | null>(null);
   let openFromPR = $state<(() => void) | null>(null);
   let appContentEl: HTMLDivElement | undefined = $state(undefined);
+  let appReady = $state(false);
 
-  const pane = ensureMainPane();
   let sidebarPane = $derived(getFocusedPaneOrNull());
   const EDITABLE_REACHABLE_COMMANDS = new Set([
     'sidebar.focus-search',
@@ -90,7 +94,7 @@
     showSettings = true;
   }
 
-  function makeAppCommandContext(targetPane = getFocusedPaneOrNull() ?? pane) {
+  function makeAppCommandContext(targetPane = getFocusedPaneOrNull()) {
     return makeCommandContext(targetPane, {
       paletteOpen: isPaletteOpen(),
       cheatSheetOpen: isCheatSheetOpen(),
@@ -111,13 +115,13 @@
   }
 
   let paletteContext = $derived(
-    makeAppCommandContext(getPane(getPaletteTargetPaneId() ?? '') ?? getFocusedPaneOrNull() ?? pane),
+    makeAppCommandContext(getPane(getPaletteTargetPaneId() ?? '') ?? getFocusedPaneOrNull()),
   );
   let messageSearchPane = $derived(
-    getPane(getMessageSearchTargetPaneId() ?? '') ?? getFocusedPaneOrNull() ?? pane,
+    getPane(getMessageSearchTargetPaneId() ?? '') ?? getFocusedPaneOrNull(),
   );
   let threadPickerPane = $derived(
-    getPane(getThreadPickerTargetPaneId() ?? '') ?? getFocusedPaneOrNull() ?? pane,
+    getPane(getThreadPickerTargetPaneId() ?? '') ?? getFocusedPaneOrNull(),
   );
 
   function handleGlobalKeydown(ev: KeyboardEvent): void {
@@ -162,8 +166,8 @@
   function requestThreadStep(delta: number): void {
     const ids = getVisibleSidebarThreadIds();
     if (ids.length === 0) return;
-    const targetPane = getFocusedPaneOrNull() ?? ensureMainPane();
-    const currentId = targetPane.threadId;
+    const targetPane = getFocusedPaneOrNull();
+    const currentId = targetPane?.threadId;
     const currentIndex = currentId ? ids.indexOf(currentId) : -1;
     const nextIndex = currentIndex === -1
       ? (delta > 0 ? 0 : ids.length - 1)
@@ -219,7 +223,18 @@
 
   onMount(() => {
     const cleanupEvents = setupEventListeners();
-    refreshThreads();
+    installPaneLayoutPersistence();
+    void (async () => {
+      try {
+        await refreshThreads();
+        await loadPaneLayoutFromStorage(getThreads());
+      } catch (err) {
+        console.error('Failed to restore pane layout:', err);
+        addToast('error', userFacingError(err, 'Failed to restore pane layout.'));
+      } finally {
+        appReady = true;
+      }
+    })();
     void loadSettingsAndWarmModelCatalogs();
     installUiRenderTraceApi();
     const cleanupExternalLinks = installExternalLinkDelegate();
@@ -295,13 +310,14 @@
       registerFocusSearch={(focus) => (searchFocuser = focus)}
       registerOpenFromPR={(cb) => (openFromPR = cb)}
     />
-    <PaneHost globalSurface={showSettings ? settingsSurface : undefined} />
+    {#if appReady}
+      <PaneHost globalSurface={showSettings ? settingsSurface : undefined} />
+    {/if}
   </div>
 </main>
 <DiscussionStartFlow
   open={discussionStartFor !== null}
   thread={discussionStartFor}
-  {pane}
   onClose={closeDiscussionStart}
 />
 <CommandPalette context={paletteContext} contextForPane={makeCommandContextForPaneId} />

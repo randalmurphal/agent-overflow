@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Thread } from '../../types/models';
+import type { Thread } from '../types/models';
 import { hasUnread, resolveEffectiveThreadStatus, resolveThreadStatusPill } from './threadStatusPill';
 
 type MinimalThread = Pick<

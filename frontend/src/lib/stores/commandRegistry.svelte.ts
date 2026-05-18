@@ -55,8 +55,8 @@ export interface CommandFlags {
 
 export interface CommandContext {
   /** Pane the command should mutate. Keep execution target explicit. */
-  pane: ThreadPane;
-  paneId: string;
+  pane: ThreadPane | null;
+  paneId: string | null;
   /** Boolean-only projection used by `when` expressions. */
   flags: CommandFlags;
   /** Mirrored flags for legacy call sites/tests; `when` reads `flags`. */

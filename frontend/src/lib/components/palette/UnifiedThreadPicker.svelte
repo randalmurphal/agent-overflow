@@ -10,11 +10,11 @@
   import { computeHighlightSegments } from '../../utils/highlight';
   import { pathBasename } from '../../utils/pathDisplay';
   import { getProviderDefinition } from '../../providers/catalog';
-  import { resolveThreadStatusPill } from '../sidebar/threadStatusPill';
+  import { resolveThreadStatusPill } from '../../utils/threadStatusPill';
 
   interface Props {
     open: boolean;
-    pane: ThreadPane;
+    pane: ThreadPane | null;
     onClose: () => void;
   }
 
@@ -134,7 +134,7 @@
           {#each hits as hit, i (hit.thread.id)}
             {@const status = getEffectiveThreadStatus(hit.thread)}
             {@const statusPill = resolveThreadStatusPill(hit.thread, status)}
-                {@const basename = pathBasename(hit.thread.projectPath)}
+            {@const basename = pathBasename(hit.thread.projectPath)}
             {@const providerDefinition = getProviderDefinition(hit.thread.provider)}
             <li>
               <button

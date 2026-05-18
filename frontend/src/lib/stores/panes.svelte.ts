@@ -8,7 +8,7 @@ import {
   removePaneLayoutItem,
 } from './paneLayout.svelte';
 import { touchProjectActivity } from './projects.svelte';
-import { replaceThread as replaceThreadInRegistry } from './threads.svelte';
+import { getThreadById, replaceThread as replaceThreadInRegistry } from './threads.svelte';
 
 // Active panes, keyed by pane ID. PaneHost mounts panes from layout order;
 // command routing and sidebar actions resolve explicit pane targets through
@@ -18,6 +18,15 @@ let focusedPaneId: string | null = $state('main');
 export type PaneActivation = 'preview' | 'committed';
 let paneActivationById: Map<string, PaneActivation> = $state(new Map());
 let nextGeneratedPaneId = 1;
+let panePersistenceHandler: (() => void) | null = null;
+
+export function setPanePersistenceHandler(handler: (() => void) | null): void {
+  panePersistenceHandler = handler;
+}
+
+function requestPanePersistence(): void {
+  panePersistenceHandler?.();
+}
 
 function requestPaneReveal(paneId: string): void {
   if (typeof window === 'undefined' || !paneId) return;
@@ -37,7 +46,7 @@ function addThreadPaneToLayout(paneId: string, insertIndex?: number): void {
     paneId,
     kind: 'thread',
     ratio: averagePaneRatio(),
-  }, insertIndex);
+  }, insertIndex, { persist: false });
 }
 
 function nextPaneId(): string {
@@ -111,6 +120,7 @@ export function focusPane(id: string): void {
   if (focusedPaneId === id) return;
   if (!panes.has(id)) return;
   focusedPaneId = id;
+  requestPanePersistence();
   requestPaneReveal(id);
 }
 
@@ -167,10 +177,12 @@ export function destroyPane(id: string): void {
   panes.delete(id);
   paneActivationById = new Map(paneActivationById);
   paneActivationById.delete(id);
-  removePaneLayoutItem(id);
-  if (focusedPaneId !== id) return;
-  focusedPaneId = nextFocusId;
-  if (nextFocusId) requestPaneReveal(nextFocusId);
+  removePaneLayoutItem(id, { persist: false });
+  if (focusedPaneId === id) {
+    focusedPaneId = nextFocusId;
+    if (nextFocusId) requestPaneReveal(nextFocusId);
+  }
+  requestPanePersistence();
 }
 
 export function clearPanesShowingThread(threadId: string): void {
@@ -211,6 +223,58 @@ export function resetPanesForTest(): void {
   nextGeneratedPaneId = 1;
 }
 
+export function resetPaneRegistry(nextFocusedPaneId: string | null = null): void {
+  for (const pane of panes.values()) pane.clear();
+  panes = new Map();
+  paneActivationById = new Map();
+  focusedPaneId = nextFocusedPaneId;
+  nextGeneratedPaneId = 1;
+}
+
+export async function hydrateRestoredPaneRegistry(
+  entries: Array<{ paneId: string; thread: Thread }>,
+  nextFocusedPaneId: string | null,
+): Promise<void> {
+  for (const pane of panes.values()) pane.clear();
+  let nextPanes = new Map<string, ThreadPane>();
+  let nextActivation = new Map<string, PaneActivation>();
+  const hydratedPanes: Array<{ pane: ThreadPane; thread: Thread }> = [];
+  for (const entry of entries) {
+    const pane = createThreadPane({ paneId: entry.paneId });
+    nextPanes = nextPanes.set(entry.paneId, pane);
+    nextActivation = nextActivation.set(entry.paneId, 'committed');
+    hydratedPanes.push({ pane, thread: entry.thread });
+  }
+  panes = nextPanes;
+  paneActivationById = nextActivation;
+  focusedPaneId = nextFocusedPaneId && panes.has(nextFocusedPaneId) ? nextFocusedPaneId : null;
+  nextGeneratedPaneId = 1;
+  const results = await Promise.allSettled(
+    hydratedPanes.map(({ pane, thread }) => pane.switchThread(thread)),
+  );
+  const failedPaneIds = new Set<string>();
+  for (const [index, result] of results.entries()) {
+    if (result.status === 'fulfilled') continue;
+    const paneId = hydratedPanes[index]?.pane.paneId ?? 'unknown';
+    failedPaneIds.add(paneId);
+    console.error(`Failed to restore pane "${paneId}":`, result.reason);
+  }
+  if (failedPaneIds.size === 0) return;
+  for (const paneId of failedPaneIds) {
+    panes.get(paneId)?.clear();
+    const nextPanes = new Map(panes);
+    nextPanes.delete(paneId);
+    panes = nextPanes;
+    const nextActivation = new Map(paneActivationById);
+    nextActivation.delete(paneId);
+    paneActivationById = nextActivation;
+    removePaneLayoutItem(paneId, { persist: false });
+  }
+  if (focusedPaneId && failedPaneIds.has(focusedPaneId)) {
+    focusedPaneId = orderedPaneIds()[0] ?? null;
+  }
+}
+
 export function findPaneShowingThread(threadId: string): ThreadPane | null {
   for (const pane of panes.values()) {
     if (pane.threadId !== threadId) continue;
@@ -239,6 +303,7 @@ export async function replaceThreadInPane(
   focusedPaneId = target.paneId;
   requestPaneReveal(target.paneId);
   await target.switchThread(thread);
+  requestPanePersistence();
   return target;
 }
 
@@ -246,6 +311,7 @@ export async function revealThreadIfOpen(thread: Thread): Promise<ThreadPane | n
   const pane = findPaneShowingThread(thread.id);
   if (!pane) return null;
   focusedPaneId = pane.paneId;
+  requestPanePersistence();
   requestPaneReveal(pane.paneId);
   return pane;
 }
@@ -290,6 +356,20 @@ export async function openThreadInNewPane(thread: Thread, insertIndex?: number):
   return replaceThreadInPane(thread, pane, 'committed');
 }
 
+export async function openThreadIdInNewPane(threadId: string, insertIndex?: number): Promise<ThreadPane | null> {
+  const existing = findPaneShowingThread(threadId);
+  if (existing) {
+    commitPanePreview(existing.paneId);
+    focusedPaneId = existing.paneId;
+    requestPanePersistence();
+    requestPaneReveal(existing.paneId);
+    return existing;
+  }
+  const thread = getThreadById(threadId);
+  if (!thread) return null;
+  return openThreadInNewPane(thread, insertIndex);
+}
+
 export function focusAdjacentPane(direction: -1 | 1): ThreadPane | null {
   const order = orderedPaneIds();
   const index = focusedPaneId ? order.indexOf(focusedPaneId) : -1;
@@ -297,6 +377,7 @@ export function focusAdjacentPane(direction: -1 | 1): ThreadPane | null {
   const nextId = order[index + direction];
   if (!nextId) return null;
   focusedPaneId = nextId;
+  requestPanePersistence();
   requestPaneReveal(nextId);
   return panes.get(nextId) ?? null;
 }

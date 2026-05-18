@@ -9,6 +9,15 @@ export interface PaneLayoutItem {
 
 export const DEFAULT_PANE_RATIO = 1;
 
+interface PaneLayoutPersistenceHandlers {
+  immediate: () => void;
+  debounced: () => void;
+}
+
+interface PaneLayoutMutationOptions {
+  persist?: boolean;
+}
+
 function defaultMainPaneLayoutItem(): PaneLayoutItem {
   return {
     id: 'main',
@@ -18,7 +27,25 @@ function defaultMainPaneLayoutItem(): PaneLayoutItem {
   };
 }
 
-let layoutItems: PaneLayoutItem[] = $state([defaultMainPaneLayoutItem()]);
+let layoutItems: PaneLayoutItem[] = $state([]);
+let persistenceHandlers: PaneLayoutPersistenceHandlers | null = null;
+
+export function setPaneLayoutPersistenceHandlers(handlers: PaneLayoutPersistenceHandlers | null): void {
+  persistenceHandlers = handlers;
+}
+
+function requestLayoutPersistence(debounced = false): void {
+  if (!persistenceHandlers) return;
+  if (debounced) {
+    persistenceHandlers.debounced();
+  } else {
+    persistenceHandlers.immediate();
+  }
+}
+
+function shouldPersist(options?: PaneLayoutMutationOptions): boolean {
+  return options?.persist !== false;
+}
 
 function normalizeRatio(ratio: number): number {
   if (!Number.isFinite(ratio) || ratio <= 0) return DEFAULT_PANE_RATIO;
@@ -38,7 +65,11 @@ export function getPaneLayoutItems(): PaneLayoutItem[] {
   return layoutItems;
 }
 
-export function addPaneLayoutItem(item: PaneLayoutItem, insertIndex?: number): void {
+export function addPaneLayoutItem(
+  item: PaneLayoutItem,
+  insertIndex?: number,
+  options?: PaneLayoutMutationOptions,
+): void {
   if (layoutItems.some((existing) => existing.paneId === item.paneId)) return;
   const nextItem = cloneLayoutItem(item);
   const index = insertIndex === undefined
@@ -49,12 +80,14 @@ export function addPaneLayoutItem(item: PaneLayoutItem, insertIndex?: number): v
     nextItem,
     ...layoutItems.slice(index),
   ];
+  if (shouldPersist(options)) requestLayoutPersistence();
 }
 
-export function removePaneLayoutItem(paneId: string): void {
+export function removePaneLayoutItem(paneId: string, options?: PaneLayoutMutationOptions): void {
   const next = layoutItems.filter((item) => item.paneId !== paneId);
   if (next.length === layoutItems.length) return;
   layoutItems = next;
+  if (shouldPersist(options)) requestLayoutPersistence();
 }
 
 export function movePaneLayoutItem(paneId: string, direction: -1 | 1): void {
@@ -66,6 +99,7 @@ export function movePaneLayoutItem(paneId: string, direction: -1 | 1): void {
   const [item] = next.splice(index, 1);
   next.splice(nextIndex, 0, item);
   layoutItems = next;
+  requestLayoutPersistence();
 }
 
 export function movePaneLayoutItemToIndex(paneId: string, insertIndex: number): void {
@@ -76,6 +110,7 @@ export function movePaneLayoutItemToIndex(paneId: string, insertIndex: number): 
   const clamped = Math.max(0, Math.min(next.length, insertIndex));
   next.splice(clamped, 0, item);
   layoutItems = next;
+  requestLayoutPersistence();
 }
 
 export function resizeAdjacentPaneLayoutItems(
@@ -111,6 +146,7 @@ export function resizeAdjacentPaneLayoutItems(
     ratio: (nextRightWidth / combinedWidth) * combinedRatio,
   };
   layoutItems = next;
+  requestLayoutPersistence(true);
 }
 
 export function averagePaneRatio(): number {
@@ -123,6 +159,10 @@ export function resetPaneLayoutForTest(): void {
   layoutItems = [defaultMainPaneLayoutItem()];
 }
 
-export function setPaneLayoutItemsForTest(items: PaneLayoutItem[]): void {
+export function setPaneLayoutItems(items: PaneLayoutItem[]): void {
   layoutItems = items.map(cloneLayoutItem);
+}
+
+export function setPaneLayoutItemsForTest(items: PaneLayoutItem[]): void {
+  setPaneLayoutItems(items);
 }

@@ -90,7 +90,7 @@ describe('<CommandPalette>', () => {
   });
 
   it('runs commands against the context captured when the palette opened', async () => {
-    const seenPaneIds: string[] = [];
+    const seenPaneIds: Array<string | null> = [];
     registerCommand({
       id: 'targeted',
       label: 'Targeted Command',

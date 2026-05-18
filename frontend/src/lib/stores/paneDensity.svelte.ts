@@ -22,7 +22,8 @@ export function readPersistedPaneDensity(): PaneDensityMode {
     if (!storage) return DEFAULT_PANE_DENSITY;
     const raw = storage.getItem(PANE_DENSITY_STORAGE_KEY);
     return isPaneDensityMode(raw) ? raw : DEFAULT_PANE_DENSITY;
-  } catch {
+  } catch (err) {
+    console.warn('Failed to read pane density persistence:', err);
     return DEFAULT_PANE_DENSITY;
   }
 }
@@ -30,8 +31,8 @@ export function readPersistedPaneDensity(): PaneDensityMode {
 function writePaneDensity(mode: PaneDensityMode): void {
   try {
     globalThis.localStorage?.setItem(PANE_DENSITY_STORAGE_KEY, mode);
-  } catch {
-    // Best-effort persistence. The in-memory setting still updates.
+  } catch (err) {
+    console.warn('Failed to write pane density persistence:', err);
   }
 }
 
@@ -56,7 +57,7 @@ export function resetPaneDensityForTest(): void {
   currentMode = DEFAULT_PANE_DENSITY;
   try {
     globalThis.localStorage?.removeItem(PANE_DENSITY_STORAGE_KEY);
-  } catch {
-    // ignore
+  } catch (err) {
+    console.warn('Failed to clear pane density persistence:', err);
   }
 }

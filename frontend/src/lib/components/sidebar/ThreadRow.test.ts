@@ -26,6 +26,7 @@ import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { emitItemEventUpsert } from '../../../test/helpers/chat';
+import { THREAD_ROW_DRAG_MIME } from '../../utils/threadDragPayload';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -52,6 +53,18 @@ function nextFrame(): Promise<void> {
   return new Promise((resolve) => {
     requestAnimationFrame(() => resolve());
   });
+}
+
+function makeDataTransfer(): DataTransfer {
+  const values = new Map<string, string>();
+  return {
+    effectAllowed: 'none',
+    dropEffect: 'none',
+    setData: (type: string, value: string) => { values.set(type, value); },
+    getData: (type: string) => values.get(type) ?? '',
+    setDragImage: () => {},
+    get types() { return Array.from(values.keys()); },
+  } as unknown as DataTransfer;
 }
 
 describe('<ThreadRow> unarchive', () => {
@@ -159,6 +172,30 @@ describe('<ThreadRow> unarchive', () => {
     await waitFor(() => expect(switchThread).toHaveBeenCalledWith('new-pane-click'));
     await waitFor(() => expect(getFocusedPaneId()).not.toBe('main'));
     expect(getPaneLayoutItems().map((item) => item.paneId)).toContain(getFocusedPaneId());
+  });
+});
+
+describe('<ThreadRow> drag source', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+    await primeSettings();
+  });
+
+  it('publishes a sidebar-thread drag payload', async () => {
+    const thread = makeThread({ id: 'drag-source', title: 'Drag Source' });
+    const pane = createThreadPane();
+    const rendered = render(ThreadRow, { props: { thread, pane } });
+    const row = rendered.getByTestId('thread-row');
+    const dataTransfer = makeDataTransfer();
+
+    await fireEvent.dragStart(row, { dataTransfer });
+
+    expect(dataTransfer.types).toContain(THREAD_ROW_DRAG_MIME);
+    expect(JSON.parse(dataTransfer.getData(THREAD_ROW_DRAG_MIME))).toEqual({
+      threadId: 'drag-source',
+      title: 'Drag Source',
+    });
   });
 });
 

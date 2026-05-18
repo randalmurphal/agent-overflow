@@ -83,7 +83,6 @@ describe('<DiscussionStartFlow>', () => {
       props: {
         open: true,
         thread: pane.thread!,
-        pane,
         onClose: () => {},
       },
     });
@@ -115,7 +114,6 @@ describe('<DiscussionStartFlow>', () => {
       props: {
         open: true,
         thread: pane.thread!,
-        pane,
         onClose: () => { closedCount++; },
       },
     });
@@ -144,7 +142,6 @@ describe('<DiscussionStartFlow>', () => {
       props: {
         open: true,
         thread: pane.thread!,
-        pane,
         onClose: () => { closedCount++; },
       },
     });
@@ -179,7 +176,6 @@ describe('<DiscussionStartFlow>', () => {
       props: {
         open: true,
         thread: pane.thread!,
-        pane,
         onClose: () => {},
       },
     });

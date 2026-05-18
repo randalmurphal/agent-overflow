@@ -33,7 +33,7 @@ import {
   resolveEffectiveThreadStatus,
   resolveThreadStatusPill,
   type ThreadStatusPill,
-} from '../components/sidebar/threadStatusPill';
+} from './threadStatusPill';
 import { THREAD_PREVIEW_LIMIT } from './sidebarThreadLimits';
 
 export const DEFAULT_SIDEBAR_TREE_MAX_DEPTH = 2;

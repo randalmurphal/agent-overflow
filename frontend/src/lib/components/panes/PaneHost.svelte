@@ -4,37 +4,108 @@
   import X from 'lucide-svelte/icons/x';
   import GripVertical from 'lucide-svelte/icons/grip-vertical';
   import Icon from '../primitives/Icon.svelte';
-  import { destroyPane, focusPane, getFocusedPaneId, getPane } from '../../stores/panes.svelte';
-  import { getMinPaneWidth } from '../../stores/paneDensity.svelte';
   import {
-    getPaneLayoutItems,
-    movePaneLayoutItemToIndex,
-  } from '../../stores/paneLayout.svelte';
-  import { clearPaneWidth, setPaneHostWidth, setPaneWidth } from '../../stores/layoutMetrics.svelte';
+    destroyPane,
+    focusPane,
+    getFocusedPaneId,
+    getPane,
+  } from '../../stores/panes.svelte';
+  import { getMinPaneWidth } from '../../stores/paneDensity.svelte';
+  import { getPaneLayoutItems } from '../../stores/paneLayout.svelte';
+  import { getPaneWidth, setPaneHostWidth } from '../../stores/layoutMetrics.svelte';
   import PaneDivider from './PaneDivider.svelte';
+  import PaneAttentionOverlay from './PaneAttentionOverlay.svelte';
+  import { measurePane } from './measurePane';
+  import { createPaneThreadDrag } from './usePaneThreadDrag.svelte';
 
   interface Props {
     children?: Snippet;
     globalSurface?: Snippet;
   }
 
+  const PANE_SELECTOR = '[data-pane-id]';
+
   let { globalSurface }: Props = $props();
   let layoutItems = $derived(getPaneLayoutItems());
   let minPaneWidth = $derived(getMinPaneWidth());
   let focusedPaneId = $derived(getFocusedPaneId());
   let hostEl: HTMLDivElement | undefined = $state(undefined);
-  let draggingPaneId: string | null = $state(null);
+  let scrollLeft = $state(0);
+  let scrollClientWidth = $state(0);
+  let paneOffsetLeftById: Map<string, number> = $state(new Map());
+
+  function paneElementById(paneId: string): HTMLElement | null {
+    for (const paneEl of hostEl?.querySelectorAll<HTMLElement>(PANE_SELECTOR) ?? []) {
+      if (paneEl.dataset.paneId === paneId) return paneEl;
+    }
+    return null;
+  }
+
+  function paneOffsetLeftFallback(paneId: string): number {
+    return paneElementById(paneId)?.offsetLeft ?? 0;
+  }
+
+  function paneMeasuredWidth(paneId: string): number {
+    const cached = getPaneWidth(paneId);
+    if (cached > 0) return cached;
+    return paneElementById(paneId)?.getBoundingClientRect().width ?? 0;
+  }
+
+  const drag = createPaneThreadDrag({
+    getHostEl: () => hostEl,
+    getLayoutItems: () => layoutItems,
+    getMinPaneWidth: () => minPaneWidth,
+    getScrollLeft: () => scrollLeft,
+    setScrollLeft: (value) => {
+      scrollLeft = value;
+    },
+    getScrollClientWidth: () => scrollClientWidth,
+    getPaneOffsetLeft: (paneId) => {
+      const cached = paneOffsetLeftById.get(paneId);
+      return cached !== undefined ? cached : paneOffsetLeftFallback(paneId);
+    },
+    getPaneMeasuredWidth: paneMeasuredWidth,
+  });
+
+  function handlePaneOffsetChange(paneId: string, offsetLeft: number | null): void {
+    const next = new Map(paneOffsetLeftById);
+    if (offsetLeft === null) next.delete(paneId);
+    else next.set(paneId, offsetLeft);
+    paneOffsetLeftById = next;
+  }
 
   $effect(() => {
     const el = hostEl;
     if (!el) return;
+    const publishOffsets = (): void => {
+      const nextOffsets = new Map<string, number>();
+      for (const paneEl of el.querySelectorAll<HTMLElement>(PANE_SELECTOR)) {
+        const paneId = paneEl.dataset.paneId;
+        if (paneId) nextOffsets.set(paneId, paneEl.offsetLeft);
+      }
+      paneOffsetLeftById = nextOffsets;
+    };
+    const publishHostGeometry = (): void => {
+      scrollLeft = el.scrollLeft;
+      scrollClientWidth = el.clientWidth;
+      publishOffsets();
+    };
+    const publishScrollPosition = (): void => {
+      scrollLeft = el.scrollLeft;
+    };
     const obs = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (entry) setPaneHostWidth(entry.contentRect.width);
+      publishHostGeometry();
     });
     obs.observe(el);
     setPaneHostWidth(el.getBoundingClientRect().width);
-    return () => obs.disconnect();
+    publishHostGeometry();
+    el.addEventListener('scroll', publishScrollPosition, { passive: true });
+    return () => {
+      el.removeEventListener('scroll', publishScrollPosition);
+      obs.disconnect();
+    };
   });
 
   $effect(() => {
@@ -48,80 +119,35 @@
     return () => window.removeEventListener('agent-overflow:reveal-pane', handleReveal);
   });
 
-  function measurePane(node: HTMLElement, paneId: string) {
-    let currentPaneId = paneId;
-
-    function publish(): void {
-      setPaneWidth(currentPaneId, node.getBoundingClientRect().width);
-    }
-
-    const obs = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (entry) setPaneWidth(currentPaneId, entry.contentRect.width);
-    });
-    obs.observe(node);
-    publish();
-    return {
-      update(nextPaneId: string) {
-        if (nextPaneId === currentPaneId) return;
-        clearPaneWidth(currentPaneId);
-        currentPaneId = nextPaneId;
-        publish();
-      },
-      destroy() {
-        obs.disconnect();
-        clearPaneWidth(currentPaneId);
-      },
-    };
-  }
+  $effect(() => {
+    return () => drag.destroy();
+  });
 
   function requestPaneScroll(paneId: string): void {
-    const target = Array.from(hostEl?.querySelectorAll<HTMLElement>('[data-pane-id]') ?? [])
-      .find((el) => el.dataset.paneId === paneId);
-    target?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    paneElementById(paneId)?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'nearest',
+      inline: 'nearest',
+    });
   }
 
   function handlePaneFocus(paneId: string): void {
     focusPane(paneId);
     requestPaneScroll(paneId);
   }
-
-  function handleDragStart(event: DragEvent, paneId: string): void {
-    draggingPaneId = paneId;
-    event.dataTransfer?.setData('text/plain', paneId);
-    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
-  }
-
-  function handleDragOver(event: DragEvent): void {
-    if (!draggingPaneId) return;
-    event.preventDefault();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-  }
-
-  function handleDrop(event: DragEvent, targetPaneId: string): void {
-    event.preventDefault();
-    const sourcePaneId = draggingPaneId ?? event.dataTransfer?.getData('text/plain');
-    draggingPaneId = null;
-    if (!sourcePaneId || sourcePaneId === targetPaneId) return;
-    const targetIndex = layoutItems.findIndex((item) => item.paneId === targetPaneId);
-    const sourceIndex = layoutItems.findIndex((item) => item.paneId === sourcePaneId);
-    if (targetIndex < 0) return;
-    const target = event.currentTarget as HTMLElement;
-    const rect = target.getBoundingClientRect();
-    const after = event.clientX > rect.left + rect.width / 2;
-    const targetInsertIndex = after ? targetIndex + 1 : targetIndex;
-    const adjustedInsertIndex = sourceIndex >= 0 && sourceIndex < targetInsertIndex
-      ? targetInsertIndex - 1
-      : targetInsertIndex;
-    movePaneLayoutItemToIndex(sourcePaneId, adjustedInsertIndex);
-  }
-
-  function handleDragEnd(): void {
-    draggingPaneId = null;
-  }
 </script>
 
-<div bind:this={hostEl} class="flex-1 flex min-w-0 min-h-0 overflow-x-auto overflow-y-hidden" data-testid="pane-host">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  bind:this={hostEl}
+  class="relative flex-1 flex min-w-0 min-h-0 overflow-x-auto overflow-y-hidden"
+  style:--pane-header-height="1.75rem"
+  data-testid="pane-host"
+  ondragover={drag.onHostDragOver}
+  ondrop={drag.onHostDrop}
+  ondragleave={drag.onHostDragLeave}
+  ondragend={drag.onPaneDragEnd}
+>
   {#if globalSurface}
     <section class="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="global-pane-surface">
       {@render globalSurface()}
@@ -139,14 +165,15 @@
       {#if pane}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <section
-          use:measurePane={item.paneId}
+          use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
           style:flex-grow={item.ratio}
           style:flex-basis="0"
           style:min-width={`${minPaneWidth}px`}
           class={[
             'flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-border-subtle/70',
             focusedPaneId === item.paneId ? 'bg-surface-0/40' : '',
-            draggingPaneId === item.paneId ? 'opacity-55' : '',
+            drag.draggingPaneId === item.paneId ? 'opacity-55' : '',
+            drag.duplicateDropPaneId === item.paneId ? 'ring-2 ring-accent/70 ring-inset' : '',
           ].join(' ')}
           data-pane-id={item.paneId}
           data-pane-kind={item.kind}
@@ -155,16 +182,15 @@
           data-pane-focused={focusedPaneId === item.paneId}
           onpointerdown={() => handlePaneFocus(item.paneId)}
           onfocusin={() => handlePaneFocus(item.paneId)}
-          ondragover={handleDragOver}
-          ondrop={(event) => handleDrop(event, item.paneId)}
-          ondragend={handleDragEnd}
+          ondrop={(event) => drag.onPaneDrop(event, item.paneId)}
+          ondragend={drag.onPaneDragEnd}
         >
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <header
             draggable="true"
-            ondragstart={(event) => handleDragStart(event, item.paneId)}
+            ondragstart={(event) => drag.onPaneDragStart(event, item.paneId)}
             class={[
-              'group/pane-header flex h-7 shrink-0 items-center gap-1.5 border-b border-border-subtle/60 px-2',
+              'group/pane-header flex h-[var(--pane-header-height)] shrink-0 items-center gap-1.5 border-b border-border-subtle/60 px-2',
               'bg-surface-1/45 text-[11px] text-fg-muted cursor-grab active:cursor-grabbing select-none',
               focusedPaneId === item.paneId ? 'text-fg' : '',
             ].join(' ')}
@@ -205,8 +231,28 @@
         </section>
       {/if}
       {#if index < layoutItems.length - 1}
-        <PaneDivider leftPaneId={item.paneId} rightPaneId={layoutItems[index + 1].paneId} />
+        <div data-pane-gap-index={index + 1} class="shrink-0">
+          <PaneDivider leftPaneId={item.paneId} rightPaneId={layoutItems[index + 1].paneId} />
+        </div>
       {/if}
     {/each}
+    {#if drag.threadDropTarget}
+      <div
+        class="pointer-events-none absolute top-[var(--pane-header-height)] bottom-0 z-40 rounded-[var(--radius-field)] border-2 border-accent/70 bg-accent/10"
+        style:left={`${drag.threadDropPreviewLeft}px`}
+        style:width={`${drag.threadDropPreviewWidth}px`}
+        data-testid="pane-thread-drop-preview"
+        data-drop-kind={drag.threadDropTarget.kind}
+        data-insert-index={drag.threadDropTarget.insertIndex}
+      ></div>
+    {/if}
+    <PaneAttentionOverlay
+      {layoutItems}
+      {scrollLeft}
+      {scrollClientWidth}
+      {paneOffsetLeftById}
+      paneOffsetLeftFallback={paneOffsetLeftFallback}
+      onParkedClick={focusPane}
+    />
   {/if}
 </div>

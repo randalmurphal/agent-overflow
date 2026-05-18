@@ -16,6 +16,7 @@ import {
   resetAppState,
   seedSidebarProject,
 } from './_helpers';
+import { setPaneLayoutItemsForTest } from '../../lib/stores/paneLayout.svelte';
 
 beforeAll(installAnimateShim);
 
@@ -146,7 +147,7 @@ describe('App integration — keybindings + palette', () => {
 
     // Pane should now be showing thread 2. Check the pane state directly.
     const paneMod = await import('../../lib/stores/panes.svelte');
-    const pane = paneMod.getMainPane();
+    const pane = paneMod.ensureMainPane();
     await waitFor(() => expect(pane.thread?.id).toBe('t-2'));
   });
 
@@ -165,8 +166,9 @@ describe('App integration — keybindings + palette', () => {
     ]);
 
     const paneMod = await import('../../lib/stores/panes.svelte');
-    const pane = paneMod.getMainPane();
+    const pane = paneMod.ensureMainPane();
     await pane.switchThread(threads[0]);
+    setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', ratio: 1 }]);
     await flush(15);
 
     const input = rendered.getByLabelText('Message Input') as HTMLTextAreaElement;

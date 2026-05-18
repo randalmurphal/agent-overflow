@@ -10,7 +10,12 @@ import { tick } from 'svelte';
 import { clearCommandRegistry } from '../../lib/stores/commandRegistry.svelte';
 import { closePalette } from '../../lib/stores/palette.svelte';
 import { resetKeybindingsStore } from '../../lib/stores/keybindings.svelte';
-import { ensureMainPane, resetPanesForTest } from '../../lib/stores/panes.svelte';
+import { resetPanesForTest } from '../../lib/stores/panes.svelte';
+import { resetPaneLayoutForTest } from '../../lib/stores/paneLayout.svelte';
+import {
+  PANE_LAYOUT_STORAGE_KEY,
+  resetPaneLayoutPersistenceForTest,
+} from '../../lib/stores/paneLayoutPersistence';
 import {
   clearThreadSelection,
   setIncludeArchived,
@@ -47,7 +52,9 @@ export function resetAppState(): void {
   resetKeybindingsStore();
   closePalette();
   resetPanesForTest();
-  ensureMainPane();
+  resetPaneLayoutForTest();
+  resetPaneLayoutPersistenceForTest();
+  localStorage.removeItem(PANE_LAYOUT_STORAGE_KEY);
   setThreadFilterQuery('');
   setIncludeArchived(false);
   setWorkspaceFilter(null);

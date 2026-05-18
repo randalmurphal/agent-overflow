@@ -34,8 +34,9 @@
     hasUnread,
     resolveThreadStatusPill,
     type ThreadStatusPill,
-  } from './threadStatusPill';
+  } from '../../utils/threadStatusPill';
   import { pathBasename } from '../../utils/pathDisplay';
+  import { encodeThreadDragPayload, THREAD_ROW_DRAG_MIME } from '../../utils/threadDragPayload';
 
   let {
     thread,
@@ -234,6 +235,33 @@
     ctxOpen = true;
   }
 
+  function handleDragStart(e: DragEvent): void {
+    if (editing || !e.dataTransfer) {
+      e.preventDefault();
+      return;
+    }
+    e.dataTransfer.effectAllowed = 'copy';
+    e.dataTransfer.setData(THREAD_ROW_DRAG_MIME, encodeThreadDragPayload({
+      threadId: thread.id,
+      title: thread.title || 'Untitled',
+    }));
+    e.dataTransfer.setData('text/plain', thread.id);
+
+    const ghost = document.createElement('div');
+    ghost.className = 'fixed -top-96 left-0 flex items-center gap-2 rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 px-2 py-1 text-xs text-fg shadow-lg';
+    if (pill) {
+      const dot = document.createElement('span');
+      dot.className = `h-2 w-2 rounded-full ${pill.dotClass}`;
+      ghost.appendChild(dot);
+    }
+    const title = document.createElement('span');
+    title.textContent = thread.title || 'Untitled';
+    ghost.appendChild(title);
+    document.body.appendChild(ghost);
+    e.dataTransfer.setDragImage(ghost, 8, 8);
+    window.setTimeout(() => ghost.remove(), 0);
+  }
+
   function closeCtxMenu() {
     ctxOpen = false;
   }
@@ -272,9 +300,11 @@
     onclick={(e) => handleClick(e)}
     ondblclick={startRename}
     oncontextmenu={handleContextMenu}
+    ondragstart={handleDragStart}
     onkeydown={(e) => { if (!editing && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleClick(); } if (!editing && e.key === 'F2') { e.preventDefault(); startRename(); } }}
     role="button"
     tabindex={0}
+    draggable={!editing}
     aria-pressed={selected}
     class="group/thread-row relative flex items-center gap-1.5 h-6 pr-1 rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
       {selected || isActive ? 'text-fg' : 'text-fg-muted group-hover/thread-item:text-fg'}"

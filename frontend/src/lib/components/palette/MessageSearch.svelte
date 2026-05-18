@@ -10,7 +10,7 @@
 
   interface Props {
     open: boolean;
-    pane: ThreadPane;
+    pane: ThreadPane | null;
     onClose: () => void;
   }
 

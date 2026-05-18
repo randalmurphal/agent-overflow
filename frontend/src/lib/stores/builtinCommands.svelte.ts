@@ -63,14 +63,14 @@ import { reportNonBenignInterruptError } from './interruptErrors';
 
 function withActiveThread(
   ctx: CommandContext,
-  run: (thread: Thread) => void | Promise<void>,
+  run: (thread: Thread, pane: ThreadPane) => void | Promise<void>,
 ): void {
   const pane = ctx.pane;
-  if (!ctx.hasActiveThread || !pane.thread) {
+  if (!pane || !ctx.hasActiveThread || !pane.thread) {
     addToast('warning', 'Open a thread before running this command.');
     return;
   }
-  void run(pane.thread);
+  void run(pane.thread, pane);
 }
 
 export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
@@ -176,7 +176,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Right Sidebar: Close',
     icon: '×',
     when: 'activeRhsPanel && !anyModalOpen && !terminalFocus',
-    run: (ctx) => ctx.pane.closeRhsPanel(),
+    run: (ctx) => ctx.pane?.closeRhsPanel(),
   });
 
   registerCommand({
@@ -214,8 +214,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '▤',
     when: 'hasActiveThread',
     run: (ctx) =>
-      withActiveThread(ctx, async (t) => {
-        const pane = ctx.pane;
+      withActiveThread(ctx, async (t, pane) => {
         try {
           // StopSession can fail if the provider process is already gone;
           // that's fine — we log and continue so the archive still lands.
@@ -261,8 +260,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '✕',
     when: 'hasActiveThread',
     run: (ctx) =>
-      withActiveThread(ctx, async (t) => {
-        const pane = ctx.pane;
+      withActiveThread(ctx, async (t, pane) => {
         try {
           // Same rationale as thread.archive above — log instead of
           // silently swallowing a StopSession failure so the cleanup
@@ -286,8 +284,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '⎇',
     when: 'canForkActiveThread',
     run: (ctx) =>
-      withActiveThread(ctx, async (t) => {
-        const pane = ctx.pane;
+      withActiveThread(ctx, async (t, pane) => {
         await forkThreadAction({
           thread: t,
           isActive: pane.threadId === t.id,
@@ -327,6 +324,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
       // surface as a banner so a real provider crash doesn't get
       // swallowed.
       const pane = ctx.pane;
+      if (!pane) return;
       const threadID = pane.threadId;
       if (!threadID) return;
       const userInput = pane.pendingUserInputs[0];
@@ -478,7 +476,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Terminal: Toggle',
     icon: '▶',
     when: 'hasActiveThread',
-    run: (ctx) => withActiveThread(ctx, () => ctx.pane.toggleTerminal()),
+    run: (ctx) => withActiveThread(ctx, (_t, pane) => pane.toggleTerminal()),
   });
 
   registerCommand({
@@ -486,7 +484,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Diffs: Toggle Panel',
     icon: '±',
     when: 'hasActiveThread',
-    run: (ctx) => withActiveThread(ctx, () => ctx.pane.toggleDiffPanel()),
+    run: (ctx) => withActiveThread(ctx, (_t, pane) => pane.toggleDiffPanel()),
   });
 
   registerCommand({
@@ -495,8 +493,8 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '±',
     when: 'hasActiveThread',
     run: (ctx) =>
-      withActiveThread(ctx, () => {
-        ctx.pane.setDiffPanelOpen(true);
+      withActiveThread(ctx, (_t, pane) => {
+        pane.setDiffPanelOpen(true);
       }),
   });
 
@@ -506,8 +504,8 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '■',
     when: 'hasActiveThread',
     run: (ctx) =>
-      withActiveThread(ctx, () => {
-        ctx.pane.setDiffPanelOpen(false);
+      withActiveThread(ctx, (_t, pane) => {
+        pane.setDiffPanelOpen(false);
       }),
   });
 
@@ -517,8 +515,8 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '▶',
     when: 'hasActiveThread',
     run: (ctx) =>
-      withActiveThread(ctx, () => {
-        ctx.pane.setShowTerminal(true);
+      withActiveThread(ctx, (_t, pane) => {
+        pane.setShowTerminal(true);
       }),
   });
 
@@ -528,8 +526,8 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '■',
     when: 'terminalOpen',
     run: (ctx) =>
-      withActiveThread(ctx, () => {
-        ctx.pane.setShowTerminal(false);
+      withActiveThread(ctx, (_t, pane) => {
+        pane.setShowTerminal(false);
       }),
   });
 
@@ -607,8 +605,8 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '⇪',
     when: 'hasActiveThread',
     run: (ctx) =>
-      withActiveThread(ctx, () => {
-        openShipChanges(ctx.paneId);
+      withActiveThread(ctx, (_t, pane) => {
+        openShipChanges(pane.paneId);
       }),
   });
 }
@@ -617,21 +615,21 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
  * Compute the CommandContext the registry expects. Centralised here so the
  * palette and the keybindings dispatcher see an identical view of the app.
  */
-export function makeCommandContext(pane: ThreadPane, extra: Partial<CommandFlags>): CommandContext {
-  const thread = pane.thread;
+export function makeCommandContext(pane: ThreadPane | null, extra: Partial<CommandFlags>): CommandContext {
+  const thread = pane?.thread ?? null;
   const flags: CommandFlags = {
     paletteOpen: false,
-    terminalOpen: pane.showTerminal,
+    terminalOpen: pane?.showTerminal ?? false,
     // terminalFocus mirrors whether an xterm element has DOM focus. The
     // TerminalBody component bumps the registry on focus/blur events.
     terminalFocus: getTerminalFocused(),
-    approvalPending: pane.pendingApprovals.length > 0,
+    approvalPending: pane ? pane.pendingApprovals.length > 0 : false,
     anyModalOpen: false,
     hasActiveThread: thread !== null,
-    activeRhsPanel: pane.activeRhsPanel !== null,
-    turnActive: getActiveTurn(pane.threadId) !== null,
-    sendInFlight: isSendInFlight(pane.threadId, pane.sendInFlight),
-    hasPendingPrompt: pane.pendingApprovals.length > 0 || pane.pendingUserInputs.length > 0,
+    activeRhsPanel: pane?.activeRhsPanel !== null && pane?.activeRhsPanel !== undefined,
+    turnActive: getActiveTurn(pane?.threadId ?? null) !== null,
+    sendInFlight: isSendInFlight(pane?.threadId ?? null, pane?.sendInFlight ?? false),
+    hasPendingPrompt: pane ? pane.pendingApprovals.length > 0 || pane.pendingUserInputs.length > 0 : false,
     canForkActiveThread: !!thread?.sessionRef,
     canStartDiscussion:
       !!thread && thread.mode !== 'discussion' && !thread.discussionId && !thread.parentThreadId,
@@ -640,7 +638,7 @@ export function makeCommandContext(pane: ThreadPane, extra: Partial<CommandFlags
   return {
     ...flags,
     pane,
-    paneId: pane.paneId,
+    paneId: pane?.paneId ?? null,
     flags,
   } as CommandContext;
 }
