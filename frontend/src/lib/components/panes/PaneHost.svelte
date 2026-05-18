@@ -9,6 +9,7 @@
     focusPane,
     getFocusedPaneId,
     getPane,
+    iterPanes,
   } from '../../stores/panes.svelte';
   import { getMinPaneWidth } from '../../stores/paneDensity.svelte';
   import { getPaneLayoutItems } from '../../stores/paneLayout.svelte';
@@ -121,6 +122,28 @@
 
   $effect(() => {
     return () => drag.destroy();
+  });
+
+  // After a layout-order change (alt+shift+h/l, drag-and-drop reorder),
+  // the moved pane's <section> is repositioned via insertBefore. The
+  // browser briefly reflows the flex row, scrollEl.clientHeight can be
+  // clamped to 0 mid-reflow, and the chat timeline ends up rendering
+  // against stale geometry — the symptom is a blank timeline that
+  // "fixes itself" the next time the composer ResizeObserver fires
+  // (typing a newline, etc.) because notifyContentMaybeGrew() runs
+  // and the controller re-pins to the bottom. We poke each pane's
+  // scroll controller ourselves after a frame so the user doesn't
+  // have to nudge it manually.
+  const paneOrderKey = $derived(layoutItems.map((item) => item.paneId).join('|'));
+  $effect(() => {
+    paneOrderKey; // dep
+    if (typeof requestAnimationFrame === 'undefined') return;
+    const handle = requestAnimationFrame(() => {
+      for (const pane of iterPanes()) {
+        pane.scrollController?.notifyContentMaybeGrew();
+      }
+    });
+    return () => cancelAnimationFrame(handle);
   });
 
   function requestPaneScroll(paneId: string): void {

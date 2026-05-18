@@ -17,6 +17,7 @@ import {
 } from '../../stores/panes.svelte';
 import {
   getPaneLayoutItems,
+  movePaneLayoutItem,
   resetPaneLayoutForTest,
   setPaneLayoutItemsForTest,
 } from '../../stores/paneLayout.svelte';
@@ -354,6 +355,58 @@ describe('PaneHost', () => {
     await fireEvent(rightPane, dropEvent);
 
     expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['middle', 'right', 'left']);
+  });
+
+  // Regression: alt+shift+l (and drag-reorder) used to leave the moved
+  // pane's chat timeline blank until something else nudged its scroll
+  // controller (typing a newline, etc.). PaneHost now pokes every pane's
+  // scroll controller on the next rAF after a layout-order change so
+  // they can re-pin against the post-reflow geometry.
+  it('notifies each pane scroll controller after a layout-order change', async () => {
+    const leftPane = createThreadPane({ paneId: 'left' });
+    const rightPane = createThreadPane({ paneId: 'right' });
+    registerPaneForTest('left', leftPane);
+    registerPaneForTest('right', rightPane);
+    setPaneLayoutItemsForTest([
+      { id: 'left-item', paneId: 'left', kind: 'thread', ratio: 1 },
+      { id: 'right-item', paneId: 'right', kind: 'thread', ratio: 1 },
+    ]);
+
+    const leftNotify = vi.fn();
+    const rightNotify = vi.fn();
+    leftPane.attachScrollController({
+      pauseAutoScroll: () => () => {},
+      notifyContentMaybeGrew: leftNotify,
+    });
+    rightPane.attachScrollController({
+      pauseAutoScroll: () => () => {},
+      notifyContentMaybeGrew: rightNotify,
+    });
+
+    const pendingFrames: FrameRequestCallback[] = [];
+    const requestFrame = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((cb) => {
+        pendingFrames.push(cb);
+        return pendingFrames.length;
+      });
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+
+    render(PaneHost);
+    // Drain the initial mount's rAF (PaneHost's notify effect fires once
+    // on first render too) so we can isolate the reorder fire.
+    expect(requestFrame).toHaveBeenCalled();
+    pendingFrames.splice(0).forEach((cb) => cb(0));
+    leftNotify.mockClear();
+    rightNotify.mockClear();
+
+    movePaneLayoutItem('left', 1);
+    await tick();
+    expect(pendingFrames.length).toBeGreaterThan(0);
+    pendingFrames.splice(0).forEach((cb) => cb(0));
+
+    expect(leftNotify).toHaveBeenCalled();
+    expect(rightNotify).toHaveBeenCalled();
   });
 
   it('auto-scrolls near the row edge during thread drag and cancels on drag end', async () => {
