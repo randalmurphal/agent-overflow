@@ -3,7 +3,6 @@ import { resolveThreadStatusPill } from '../../utils/threadStatusPill';
 import { setThreadStatus, type ThreadLiveStatus } from '../../stores/threadStatuses.svelte';
 import type { Thread } from '../../types/models';
 import {
-  clampDotLeft,
   PANE_ATTENTION_DOT_OFFSET,
   paneDotAnchorX,
   resolvePaneAttentionDot,
@@ -53,18 +52,6 @@ describe('pane attention helpers', () => {
     expect(dot?.pill.dotClass).toBe(expected?.dotClass);
     expect(dot?.pill.pulse).toBe(expected?.pulse);
     expect(dot?.pill.glowClass).toBe(expected?.glowClass);
-  });
-
-  it('clamps off-screen dots to the visible row edges', () => {
-    expect(clampDotLeft(250, 100, 200, 10)).toEqual({ left: 190, parked: true });
-    expect(clampDotLeft(50, 100, 200, 10)).toEqual({ left: 100, parked: true });
-    expect(clampDotLeft(150, 100, 200, 10)).toEqual({ left: 150, parked: false });
-  });
-
-  it('handles a viewport narrower than the dot width', () => {
-    // visibleRight - dotWidth < visibleLeft -> maxLeft falls back to visibleLeft
-    // so the dot parks against the left edge even though it cannot fully fit.
-    expect(clampDotLeft(150, 100, 105, 10)).toEqual({ left: 100, parked: true });
   });
 
   it('offsets the pane anchor by the fixed pane gutter', () => {

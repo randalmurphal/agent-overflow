@@ -293,13 +293,6 @@
         data-insert-index={drag.threadDropTarget.insertIndex}
       ></div>
     {/if}
-    <PaneAttentionOverlay
-      {layoutItems}
-      {scrollLeft}
-      {scrollClientWidth}
-      {paneOffsetLeftById}
-      paneOffsetLeftFallback={paneOffsetLeftFallback}
-      onParkedClick={focusPane}
-    />
+    <PaneAttentionOverlay {layoutItems} {paneOffsetLeftById} />
   {/if}
 </div>
