@@ -1,8 +1,9 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import GitActionsControl from './GitActionsControl.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
+import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import type { GitStatus } from '../../types/git';
 import type { Thread } from '../../types/models';
@@ -70,6 +71,7 @@ async function buildPane(thread = makeThread()) {
   setBindingMock('ListPayloadMetas', async () => []);
   const pane = createThreadPane();
   await pane.switchThread(thread);
+  registerPaneForTest(pane.paneId, pane);
   return pane;
 }
 
@@ -92,8 +94,10 @@ function installSubscribeMock(initial: GitStatus, id = 'sub-1') {
 
 describe('<GitActionsControl> subscribe model', () => {
   beforeEach(async () => {
+    resetPanesForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
+    setBindingMock('UpdateThreadBranch', async () => makeThread({ branch: 'main' }));
     await loadSettings();
   });
 
@@ -152,6 +156,86 @@ describe('<GitActionsControl> subscribe model', () => {
     await flush();
 
     expect(primary?.textContent?.trim()).toBe('Push');
+  });
+
+  it('persists and applies an initial subscribed branch that differs from the thread row', async () => {
+    const pane = await buildPane(makeThread({ branch: 'main' }));
+    const updateBranch = setBindingMock(
+      'UpdateThreadBranch',
+      async (_threadId, branch) => makeThread({ branch: branch as string }),
+    );
+    installSubscribeMock(status({ branch: 'feature/live', isDefaultBranch: false }));
+
+    render(GitActionsControl, { props: { pane } });
+    await waitFor(() => {
+      expect(pane.thread?.branch).toBe('feature/live');
+      expect(updateBranch).toHaveBeenCalledWith('thread-1', 'feature/live');
+    });
+  });
+
+  it('persists and applies branch changes from the active git status subscription', async () => {
+    const pane = await buildPane(makeThread({ branch: 'main' }));
+    const updateBranch = setBindingMock(
+      'UpdateThreadBranch',
+      async (_threadId, branch) => makeThread({ branch: branch as string }),
+    );
+    const { id } = installSubscribeMock(status({ branch: 'main' }));
+    render(GitActionsControl, { props: { pane } });
+    await flush();
+
+    emitWailsEvent('git:status', {
+      subscriptionId: id,
+      status: status({ branch: 'feature/external', isDefaultBranch: false }),
+    });
+
+    await waitFor(() => {
+      expect(pane.thread?.branch).toBe('feature/external');
+      expect(updateBranch).toHaveBeenCalledWith('thread-1', 'feature/external');
+    });
+  });
+
+  it('does not persist branch metadata for same-branch or non-repo status updates', async () => {
+    const pane = await buildPane(makeThread({ branch: 'main' }));
+    const updateBranch = setBindingMock(
+      'UpdateThreadBranch',
+      async (_threadId, branch) => makeThread({ branch: branch as string }),
+    );
+    const { id } = installSubscribeMock(status({ branch: 'main' }));
+    render(GitActionsControl, { props: { pane } });
+    await flush();
+
+    emitWailsEvent('git:status', {
+      subscriptionId: id,
+      status: status({ branch: 'main', hasChanges: true }),
+    });
+    emitWailsEvent('git:status', {
+      subscriptionId: id,
+      status: status({ isRepo: false, branch: 'ignored' }),
+    });
+    await flush();
+
+    expect(pane.thread?.branch).toBe('main');
+    expect(updateBranch).not.toHaveBeenCalled();
+  });
+
+  it('ignores branch changes from a different git status subscription', async () => {
+    const pane = await buildPane(makeThread({ branch: 'main' }));
+    const updateBranch = setBindingMock(
+      'UpdateThreadBranch',
+      async (_threadId, branch) => makeThread({ branch: branch as string }),
+    );
+    const { id } = installSubscribeMock(status({ branch: 'main' }));
+    render(GitActionsControl, { props: { pane } });
+    await flush();
+
+    emitWailsEvent('git:status', {
+      subscriptionId: `not-${id}`,
+      status: status({ branch: 'feature/ignored', isDefaultBranch: false }),
+    });
+    await flush();
+
+    expect(pane.thread?.branch).toBe('main');
+    expect(updateBranch).not.toHaveBeenCalled();
   });
 
   it('ignores "git:status" events targeted at a different subscription', async () => {
@@ -275,8 +359,10 @@ describe('<GitActionsControl> subscribe model', () => {
 
 describe('<GitActionsControl> forge labels', () => {
   beforeEach(async () => {
+    resetPanesForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
+    setBindingMock('UpdateThreadBranch', async () => makeThread({ branch: 'main' }));
     await loadSettings();
   });
 

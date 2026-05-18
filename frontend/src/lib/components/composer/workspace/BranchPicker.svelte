@@ -73,6 +73,8 @@
   let workspaceDirty = $state(false);
   let pruning = $state(false);
   let syncingBranch: string | null = $state(null);
+  let lastOpenBranchKey = $state('');
+  let branchRefreshSeq = 0;
 
   let currentBranch = $derived(pane.thread?.branch ?? '');
   let currentWorkspace = $derived(pane.thread?.workspacePath ?? '');
@@ -111,21 +113,32 @@
 
   let isLocalSelected = $derived(intent.creatingBranch && isLocalBase(intent.newBranchBase));
 
+  function branchRefreshKey(threadId: string | undefined, branch: string): string {
+    return `${threadId ?? ''}\0${branch}`;
+  }
+
+  async function refreshBranches(threadId: string): Promise<void> {
+    const seq = ++branchRefreshSeq;
+    try {
+      const res = (await GitListBranches(threadId)) as GitBranch[] | null;
+      if (seq !== branchRefreshSeq) return;
+      if (pane.thread?.id !== threadId || !open) return;
+      branches = Array.isArray(res) ? res : [];
+    } catch (err) {
+      console.error('GitListBranches failed:', err);
+      if (seq !== branchRefreshSeq) return;
+      if (pane.thread?.id === threadId && open) branches = [];
+    }
+  }
+
   async function handleTrigger(): Promise<void> {
     open = !open;
     if (!open) return;
     if (!pane.thread || loading) return;
     const threadId = pane.thread.id;
+    lastOpenBranchKey = branchRefreshKey(threadId, currentBranch);
     loading = true;
-    const fetchBranches = (async () => {
-      try {
-        const res = (await GitListBranches(threadId)) as GitBranch[] | null;
-        branches = Array.isArray(res) ? res : [];
-      } catch (err) {
-        console.error('GitListBranches failed:', err);
-        branches = [];
-      }
-    })();
+    const fetchBranches = refreshBranches(threadId);
     const fetchStatus = (async () => {
       try {
         const status = (await GetGitStatus(threadId)) as GitStatus;
@@ -140,9 +153,7 @@
         const fetched = await GitMaybeFetchRemotes(threadId);
         if (!fetched) return;
         if (pane.thread?.id !== threadId || !open) return;
-        const refreshed = (await GitListBranches(threadId)) as GitBranch[] | null;
-        if (pane.thread?.id !== threadId || !open) return;
-        if (Array.isArray(refreshed)) branches = refreshed;
+        await refreshBranches(threadId);
       } catch (err) {
         console.error('background fetch failed:', err);
       }
@@ -153,6 +164,19 @@
       loading = false;
     }
   }
+
+  $effect(() => {
+    const branch = currentBranch;
+    const threadId = pane.thread?.id;
+    const key = branchRefreshKey(threadId, branch);
+    if (!open || !threadId) {
+      lastOpenBranchKey = key;
+      return;
+    }
+    if (key === lastOpenBranchKey) return;
+    lastOpenBranchKey = key;
+    void refreshBranches(threadId);
+  });
 
   // FF-only sync. Diverged rows render the icon disabled with a
   // tooltip; backend mirrors the gate via git's native non-FF refusal.

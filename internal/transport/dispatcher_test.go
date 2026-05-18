@@ -673,6 +673,7 @@ func (p *privilegedApp) UpdateThreadFastMode() string           { return "ok" }
 func (p *privilegedApp) UpdateThreadContextWindow() string      { return "ok" }
 func (p *privilegedApp) UpdateThreadContextSettings() string    { return "ok" }
 func (p *privilegedApp) UpdateThreadRuntimeMode() string        { return "ok" }
+func (p *privilegedApp) UpdateThreadBranch() string             { return "ok" }
 func (p *privilegedApp) UpdateThreadWorkspace() string          { return "ok" }
 func (p *privilegedApp) InterruptTurn() string                  { return "ok" }
 func (p *privilegedApp) InterruptAndRevertIfClean() string       { return "ok" }

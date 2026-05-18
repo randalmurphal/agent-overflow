@@ -27,8 +27,10 @@
     GetGitStatus,
     GitStatusSubscribe,
     GitStatusUnsubscribe,
+    UpdateThreadBranch,
     type GitStatusSubscriptionResult,
   } from '../../stores/bindings';
+  import { syncThread } from '../../stores/panes.svelte';
   import CommitDialog from './CommitDialog.svelte';
   import ShipChangesDrawer from './ShipChangesDrawer.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
@@ -61,6 +63,8 @@
   let status = $state<GitStatus | null>(null);
   let statusError = $state(false);
   let actionLoading = $state(false);
+  let queuedBranchPersist: { threadId: string; branch: string } | null = null;
+  let branchPersistRunning = false;
 
   let showCommit = $state(false);
   let showShip = $state(false);
@@ -130,13 +134,49 @@
     if (!id) return;
     try {
       const result = (await GetGitStatus(id)) as GitStatus;
-      status = result;
+      applyObservedStatus(result);
       statusError = false;
     } catch (err) {
       console.error('Failed to refresh git status:', err);
       statusError = true;
       pane.setGeneralError(`Failed to load git status: ${errString(err)}`);
     }
+  }
+
+  function applyObservedStatus(nextStatus: GitStatus): void {
+    status = nextStatus;
+    if (!nextStatus.isRepo) return;
+    const thread = pane.thread;
+    if (!thread) return;
+    const branch = nextStatus.branch ?? '';
+    if ((thread.branch ?? '') === branch) return;
+
+    const updated = { ...thread, branch };
+    syncThread(updated);
+    persistObservedBranch(thread.id, branch);
+  }
+
+  function persistObservedBranch(threadId: string, branch: string): void {
+    queuedBranchPersist = { threadId, branch };
+    if (branchPersistRunning) return;
+    branchPersistRunning = true;
+    void drainBranchPersistQueue();
+  }
+
+  async function drainBranchPersistQueue(): Promise<void> {
+    while (queuedBranchPersist !== null) {
+      const next = queuedBranchPersist;
+      queuedBranchPersist = null;
+      try {
+        await UpdateThreadBranch(next.threadId, next.branch);
+      } catch (err) {
+        console.error('Failed to persist observed git branch:', err);
+        if (pane.threadId === next.threadId) {
+          pane.setGeneralError(`Failed to update thread branch: ${errString(err)}`);
+        }
+      }
+    }
+    branchPersistRunning = false;
   }
 
   $effect(() => {
@@ -171,12 +211,12 @@
           return;
         }
         activeId = result.id;
-        status = result.status;
+        applyObservedStatus(result.status);
         statusError = false;
 
         cancelEvent = wailsEventOn<GitStatusEvent>('git:status', (payload) => {
           if (!payload || payload.subscriptionId !== activeId) return;
-          status = payload.status;
+          applyObservedStatus(payload.status);
         });
       } catch (err) {
         if (cancelled) return;

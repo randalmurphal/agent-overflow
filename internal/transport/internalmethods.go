@@ -191,6 +191,7 @@ var LocalOnlyMethods = map[string]bool{
 	"UpdateThreadContextWindow":      true,
 	"UpdateThreadContextSettings":    true,
 	"UpdateThreadRuntimeMode":        true,
+	"UpdateThreadBranch":             true,
 	"UpdateThreadWorkspace":          true,
 	"InterruptTurn":                  true,
 	"InterruptAndRevertIfClean":      true,

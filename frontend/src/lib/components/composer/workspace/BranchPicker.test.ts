@@ -66,6 +66,17 @@ describe('<BranchPicker>', () => {
     expect(getByTestId('branch-picker-trigger').textContent ?? '').toMatch(/main/);
   });
 
+  it('updates the trigger when the pane thread branch changes after mount', async () => {
+    const pane = await buildPane('main');
+    const { getByTestId } = render(BranchPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
+
+    pane.replaceThread({ ...pane.thread!, branch: 'feature/external' });
+
+    await waitFor(() => {
+      expect(getByTestId('branch-picker-trigger').textContent ?? '').toMatch(/feature\/external/);
+    });
+  });
+
   it('opens the dropdown and lists fetched branches', async () => {
     const pane = await buildPane('main');
     setBindingMock('GitListBranches', async () => [
@@ -76,6 +87,97 @@ describe('<BranchPicker>', () => {
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     const row = await findByRole('menuitem', { name: /feat\/abc/ });
     expect(row).toBeTruthy();
+  });
+
+  it('refreshes the open branch list when the current branch changes externally', async () => {
+    const pane = await buildPane('main');
+    let listCallCount = 0;
+    setBindingMock('GitListBranches', async () => {
+      listCallCount += 1;
+      if (listCallCount === 1) {
+        return [
+          { name: 'main', isCurrent: true, isDefault: true },
+          { name: 'feature/external', isCurrent: false, isDefault: false },
+        ];
+      }
+      return [
+        { name: 'main', isCurrent: false, isDefault: true },
+        { name: 'feature/external', isCurrent: true, isDefault: false },
+      ];
+    });
+    setBindingMock('GetGitStatus', async () => ({
+      isRepo: true,
+      branch: 'main',
+      isDefaultBranch: true,
+      hasChanges: false,
+      insertions: 0,
+      deletions: 0,
+      fileCount: 0,
+      hasUpstream: true,
+      aheadCount: 0,
+      behindCount: 0,
+      hasOriginRemote: true,
+    }));
+
+    const { getByTestId, findByRole } = render(BranchPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    await findByRole('menuitem', { name: /feature\/external/ });
+
+    pane.replaceThread({ ...pane.thread!, branch: 'feature/external' });
+
+    await waitFor(() => {
+      expect(listCallCount).toBe(2);
+      expect(getByTestId('branch-picker-trigger').textContent ?? '').toMatch(/feature\/external/);
+    });
+  });
+
+  it('does not let a stale branch-list response overwrite a newer branch refresh', async () => {
+    const pane = await buildPane('main');
+    let resolveInitial: ((branches: unknown[]) => void) | undefined;
+    let listCallCount = 0;
+    setBindingMock('GitListBranches', async () => {
+      listCallCount += 1;
+      if (listCallCount === 1) {
+        return new Promise((resolve) => {
+          resolveInitial = resolve;
+        });
+      }
+      return [
+        { name: 'feature/external', isCurrent: true, isDefault: false },
+      ];
+    });
+    setBindingMock('GetGitStatus', async () => ({
+      isRepo: true,
+      branch: 'main',
+      isDefaultBranch: true,
+      hasChanges: false,
+      insertions: 0,
+      deletions: 0,
+      fileCount: 0,
+      hasUpstream: true,
+      aheadCount: 0,
+      behindCount: 0,
+      hasOriginRemote: true,
+    }));
+
+    const { getByTestId, findByRole, queryByRole } = render(BranchPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+
+    pane.replaceThread({ ...pane.thread!, branch: 'feature/external' });
+
+    resolveInitial!([
+      { name: 'main', isCurrent: true, isDefault: true },
+    ]);
+
+    await waitFor(() => {
+      expect(listCallCount).toBe(2);
+      expect(queryByRole('menuitem', { name: /^main/ })).toBeNull();
+    });
+    expect(await findByRole('menuitem', { name: /feature\/external/ })).toBeTruthy();
   });
 
   it('calls GitCheckout and refreshes the thread on selection', async () => {
