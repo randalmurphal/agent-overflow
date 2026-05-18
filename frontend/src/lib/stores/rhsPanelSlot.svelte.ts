@@ -1,4 +1,5 @@
 import type { Thread } from '../types/models';
+import type { ActiveOptionSet, DesignViewport } from '../types/design';
 import type { DiffViewMode } from './diffPanel.svelte';
 import { getPaneWidth } from './layoutMetrics.svelte';
 import { syncThread } from './panes.svelte';
@@ -14,6 +15,7 @@ const RHS_PANEL_CHAT_RESERVE_WIDTH = 640;
 
 export type RhsPanel =
   | { kind: 'plan' }
+  | { kind: 'design-preview' }
   | { kind: 'diff-checkpoint' }
   | { kind: 'diff-payload'; payloadId: string; filePath?: string };
 
@@ -37,11 +39,17 @@ export interface PanelContext {
    *  rendering a degraded surface. The shell remounts the body on thread
    *  switch via its `{#key}` boundary. */
   threadId: string | null;
+  /** Current thread object for panel actions that need thread metadata. */
+  thread: Thread | null;
   /** Stable identifier for the owning pane (today: 'main'). Plumbed for
    *  the multi-pane / tiling future where each pane has its own sidebar. */
   paneId: string;
   /** Workspace root for resolving relative paths in panel content. */
   workspacePath: string | undefined;
+  /** Design preview viewport selected for this pane. */
+  designViewport: DesignViewport;
+  /** Active design option set, when the agent has emitted choices. */
+  activeOptionSet: ActiveOptionSet | null;
   /** Close this panel (X button, ESC, programmatic). Generic across panel
    *  kinds — wires through pane.closeRhsPanel(). */
   close(): void;
@@ -49,6 +57,14 @@ export interface PanelContext {
    *  pane plus the global threads registry). Use after a panel action
    *  mutates the thread server-side. */
   replaceThread(thread: Thread): void;
+  /** Switch this pane to another thread after a panel action creates one. */
+  switchThread(thread: Thread): Promise<void>;
+  /** Update the design preview viewport. */
+  setDesignViewport(viewport: DesignViewport): void;
+  /** Activate or clear the design option set. */
+  setActiveOptionSet(set: ActiveOptionSet | null): void;
+  /** Rehydrate design options from the backend workdir. */
+  refreshDesignOptions(threadId: string): Promise<void>;
 }
 
 /**
@@ -69,9 +85,16 @@ export function makePanelContext(pane: ThreadPane): PanelContext {
   return {
     paneId: pane.paneId,
     get threadId() { return pane.threadId; },
+    get thread() { return pane.thread; },
     get workspacePath() { return pane.thread?.workspacePath; },
+    get designViewport() { return pane.designViewport; },
+    get activeOptionSet() { return pane.activeOptionSet; },
     close: () => pane.closeRhsPanel(),
     replaceThread: syncThread,
+    switchThread: (thread) => pane.switchThread(thread),
+    setDesignViewport: (viewport) => pane.setDesignViewport(viewport),
+    setActiveOptionSet: (set) => pane.setActiveOptionSet(set),
+    refreshDesignOptions: (threadId) => pane.applyDesignOptionsUpdate(threadId, ''),
   };
 }
 

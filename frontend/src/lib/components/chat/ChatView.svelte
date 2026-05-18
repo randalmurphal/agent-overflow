@@ -8,17 +8,10 @@
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
   import ThreadTerminalPlacement from '../terminal/ThreadTerminalPlacement.svelte';
   import DiscussionView from '../discussion/DiscussionView.svelte';
-  import DesignPreviewPanel from '../design/DesignPreviewPanel.svelte';
   import DesignFeedbackPanel from '../design/DesignFeedbackPanel.svelte';
-  import DesignOptionsPanel from '../design/DesignOptionsPanel.svelte';
   import DesignClarificationPicker from '../design/DesignClarificationPicker.svelte';
-  import DesignSplitResizer from '../design/DesignSplitResizer.svelte';
   import ModeEmptyForProject from './ModeEmptyForProject.svelte';
   import { getProject } from '../../stores/projects.svelte';
-  import {
-    computeChatWidth,
-    DESIGN_CHAT_DEFAULT_FRACTION,
-  } from '../../stores/designLayout.svelte';
   import RhsSidebarShell from './RhsSidebarShell.svelte';
   import ChatHeader from './ChatHeader.svelte';
   import ExpandedImageDialog from './ExpandedImageDialog.svelte';
@@ -343,31 +336,6 @@
     return project?.project.name ?? '';
   });
 
-  // Design-mode split layout: chat column on the left, resizer, preview
-  // pane on the right. We measure the surrounding container with a
-  // ResizeObserver and clamp the persisted chat width so neither pane
-  // drops below its minimum (320 chat / 400 preview).
-  let designSplitContainer: HTMLDivElement | undefined = $state(undefined);
-  let designContainerWidth = $state(0);
-  let chatPaneWidth = $derived(
-    designContainerWidth > 0
-      ? computeChatWidth(designContainerWidth, pane.paneId)
-      : Math.round((typeof window !== 'undefined' ? window.innerWidth : 1200) * DESIGN_CHAT_DEFAULT_FRACTION),
-  );
-
-  $effect(() => {
-    if (!inDesignMode) return;
-    const el = designSplitContainer;
-    if (!el) return;
-    const obs = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-      designContainerWidth = Math.round(entry.contentRect.width);
-    });
-    obs.observe(el);
-    return () => obs.disconnect();
-  });
-
   function openImagePreview(preview: ExpandedImagePreview): void {
     // If a previous preview is still open (rapid re-click on a different
     // image before the dialog has closed), revoke its blob URLs before
@@ -546,6 +514,16 @@
         <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6">
           <SendQueuePreview {pane} />
         </div>
+        {#if inDesignMode}
+          <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6 pb-2">
+            <div class="flex max-h-[35vh] min-h-0 flex-col overflow-y-auto border border-border-subtle bg-surface-1/95 shadow-sheet">
+              <DesignFeedbackPanel {pane} />
+              {#if pane.pendingClarification}
+                <DesignClarificationPicker {pane} />
+              {/if}
+            </div>
+          </div>
+        {/if}
         <div class="pointer-events-auto">
           <Composer {pane} {draft} onImageExpand={openImagePreview} />
         </div>
@@ -568,76 +546,9 @@
   <div bind:this={chatRoot} data-ui-surface="chat-mode-mismatch" data-thread-id={pane.thread.id} class="flex h-full min-h-0">
     <ModeEmptyForProject mode={pane.activeTab} projectName={mismatchProjectName} />
   </div>
-{:else if pane.thread && inDesignMode}
-  <!--
-    Design-mode split: chat (left, fixed-pixel after first user resize)
-    | resizer | preview (right, fills remainder). The chat column
-    inherits the same composer overlay shape as a normal chat thread —
-    only the surrounding shell differs. RhsSidebarShell isn't mounted in
-    design mode by spec: design threads don't use diff/plan panels.
-  -->
-  <div
-    bind:this={chatRoot}
-    data-ui-surface="chat"
-    data-thread-id={pane.thread.id}
-    class="flex h-full min-h-0"
-  >
-    <div
-      bind:this={designSplitContainer}
-      class="flex h-full min-h-0 flex-1 min-w-0"
-      data-testid="design-split"
-    >
-      <div
-        class="flex flex-col min-h-0 shrink-0"
-        style="width: {chatPaneWidth}px;"
-        data-testid="design-chat-pane"
-      >
-        {@render chatColumnBody()}
-      </div>
-      <DesignSplitResizer
-        width={chatPaneWidth}
-        containerWidth={designContainerWidth}
-        {pane}
-      />
-      <div
-        class="flex flex-col min-h-0 flex-1 min-w-0 relative"
-        data-testid="design-preview-pane"
-      >
-        <!--
-          Top half: either the main preview iframe or the side-by-side
-          options grid when the agent has placed a pickable set. The
-          options panel renders nothing when activeOptionSet is null,
-          so we keep both mounted to avoid teardown/remount churn when
-          the agent toggles between iteration and option exploration.
-        -->
-        <div class="flex-1 min-h-0 flex flex-col">
-          {#if pane.activeOptionSet}
-            <DesignOptionsPanel {pane} />
-          {:else}
-            <DesignPreviewPanel {pane} />
-          {/if}
-        </div>
-        <!--
-          Bottom-half stack: agent clarification picker (when pending) +
-          feedback accumulator. The clarification picker is itself
-          self-gating on pendingClarification so it's a no-op render
-          when no clarification is in flight.
-        -->
-        <div class="border-t border-border-subtle shrink-0 flex flex-col min-h-0" style="max-height: 35%;">
-          <DesignFeedbackPanel {pane} />
-        </div>
-        {#if pane.pendingClarification}
-          <DesignClarificationPicker {pane} />
-        {/if}
-      </div>
-    </div>
-    {#if expandedImagePreview}
-      <ExpandedImageDialog preview={expandedImagePreview} onClose={closeImagePreview} />
-    {/if}
-  </div>
 {:else if pane.thread}
-  <!-- Standard chat surface: no preview pane. RhsSidebarShell carries
-       the diff / plan / payload panels here. -->
+  <!-- Standard chat surface. RhsSidebarShell carries plan, diff, payload,
+       and design preview panels. -->
   <div bind:this={chatRoot} data-ui-surface="chat" data-thread-id={pane.thread.id} class="flex h-full min-h-0">
     {@render chatColumnBody()}
     <RhsSidebarShell {pane} />

@@ -38,7 +38,7 @@
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import MessagesSquare from 'lucide-svelte/icons/messages-square';
   import MessageSquarePlus from 'lucide-svelte/icons/message-square-plus';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type { PanelContext } from '../../stores/rhsPanelSlot.svelte';
   import {
     IngestDiagnosticBatch,
     EnsureDesignWorkdir,
@@ -55,11 +55,12 @@
   import { DESIGN_RELOAD_MAIN_EVENT } from '../../stores/events';
   import Icon from '../primitives/Icon.svelte';
 
-  let { pane }: { pane: ThreadPane } = $props();
+  let { ctx }: { ctx: PanelContext } = $props();
 
   let iframeEl: HTMLIFrameElement | undefined = $state(undefined);
   let cacheBust = $state(0);
   let sendingToThread = $state(false);
+  let threadId = $derived(ctx.threadId);
 
   // workdirReadyForThread is the thread id whose {main,options}/ layout
   // has been confirmed via EnsureDesignWorkdir. We gate the iframe
@@ -73,33 +74,32 @@
   let workdirReadyForThread = $state<string | null>(null);
 
   let iframeSrc = $derived.by<string | null>(() => {
-    const threadId = pane.threadId;
     if (!threadId) return null;
     if (workdirReadyForThread !== threadId) return null;
     return `/design/${encodeURIComponent(threadId)}/main/?cb=${cacheBust}`;
   });
 
   $effect(() => {
-    const threadId = pane.threadId;
-    if (!threadId) {
+    const currentThreadId = threadId;
+    if (!currentThreadId) {
       workdirReadyForThread = null;
       return;
     }
-    if (workdirReadyForThread === threadId) return;
+    if (workdirReadyForThread === currentThreadId) return;
     let cancelled = false;
-    void EnsureDesignWorkdir(threadId)
+    void EnsureDesignWorkdir(currentThreadId)
       .then(() => {
         if (cancelled) return;
-        if (pane.threadId !== threadId) return;
-        workdirReadyForThread = threadId;
+        if (threadId !== currentThreadId) return;
+        workdirReadyForThread = currentThreadId;
         // Re-derive picker state from disk after the workdir is
         // confirmed. Without this, a refresh / app restart drops the
         // in-memory activeOptionSet and leaves the user looking at
         // the empty main/ placeholder even though their pending
         // option set is still on disk under options/{setId}/.
-        // applyDesignOptionsUpdate consults LatestDesignOptionSet,
+        // refreshDesignOptions consults LatestDesignOptionSet,
         // which filters out picked sets via the .picked marker.
-        void pane.applyDesignOptionsUpdate(threadId, '');
+        void ctx.refreshDesignOptions(currentThreadId);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -122,10 +122,10 @@
     { value: 'desktop', label: 'Desktop', icon: Monitor },
   ];
 
-  let viewportWidthPx = $derived(DESIGN_VIEWPORT_WIDTHS[pane.designViewport]);
+  let viewportWidthPx = $derived(DESIGN_VIEWPORT_WIDTHS[ctx.designViewport]);
 
   function selectViewport(next: DesignViewport) {
-    pane.setDesignViewport(next);
+    ctx.setDesignViewport(next);
   }
 
   function refresh(): void {
@@ -152,7 +152,7 @@
     }
     sendingToThread = true;
     try {
-      await sendDesignToThread({ pane, iframe });
+      await sendDesignToThread({ ctx, iframe });
     } finally {
       sendingToThread = false;
     }
@@ -171,15 +171,15 @@
 
   function flushDiagnostics(): void {
     diagFlushHandle = null;
-    const threadId = pane.threadId;
+    const currentThreadId = threadId;
     const batch = diagBuffer;
     diagBuffer = [];
-    if (!threadId || batch.length === 0) return;
+    if (!currentThreadId || batch.length === 0) return;
     // The wire shape is identical; the generated enum-typed class is a
     // type-only convenience. Cast the plain literal so we don't have to
     // construct the class for an outbound call.
     void IngestDiagnosticBatch(
-      { threadId, diagnostics: batch } as Parameters<typeof IngestDiagnosticBatch>[0],
+      { threadId: currentThreadId, diagnostics: batch } as Parameters<typeof IngestDiagnosticBatch>[0],
     ).catch((err) => {
       console.warn('IngestDiagnosticBatch failed:', err);
     });
@@ -237,7 +237,7 @@
 
   function handleReloadMain(ev: Event): void {
     const detail = (ev as CustomEvent).detail as { threadId?: string } | null;
-    if (!detail?.threadId || detail.threadId !== pane.threadId) return;
+    if (!detail?.threadId || detail.threadId !== threadId) return;
     cacheBust += 1;
   }
 
@@ -268,14 +268,14 @@
         <button
           type="button"
           onclick={() => selectViewport(vp.value)}
-          aria-pressed={pane.designViewport === vp.value}
+          aria-pressed={ctx.designViewport === vp.value}
           aria-label={vp.label}
           title={vp.label}
           class={[
             'inline-flex items-center justify-center rounded-[var(--radius-field)]',
             'p-1 cursor-pointer transition-colors',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-            pane.designViewport === vp.value
+            ctx.designViewport === vp.value
               ? 'bg-accent/15 text-fg'
               : 'text-fg-muted hover:bg-surface-2/30 hover:text-fg',
           ].join(' ')}
@@ -326,7 +326,7 @@
   </div>
 
   <div class="flex-1 min-h-0 overflow-auto bg-surface-0/60 flex items-start justify-center p-2">
-    {#if !pane.threadId}
+    {#if !threadId}
       <div class="flex flex-col items-center justify-center h-full text-center text-fg-muted">
         <Icon icon={MessagesSquare} size={36} strokeWidth={1.2} class="text-fg-hint mb-3" />
         <p class="text-[13px]">No Design Thread Loaded</p>

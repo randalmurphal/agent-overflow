@@ -877,6 +877,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       activeTab = 'chat';
     }
     rhsPanelSlot.restoreForThread(newThread.id);
+    if (
+      newThread.mode === 'design'
+      && (
+        rhsPanelSlot.activePanel?.kind === 'diff-checkpoint'
+        || rhsPanelSlot.activePanel?.kind === 'diff-payload'
+      )
+    ) {
+      rhsPanelSlot.closeForThread(newThread.id);
+    }
     if (rhsPanelSlot.activePanel?.kind === 'diff-checkpoint') {
       diffPanel.open_();
     }
@@ -1121,6 +1130,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get activeRhsPanel() { return rhsPanelSlot.activePanel; },
     get rhsSidebarWidth() { return rhsPanelSlot.width; },
     get showPlanSidebar() { return rhsPanelSlot.activePanel?.kind === 'plan'; },
+    get showDesignPreviewPanel() { return rhsPanelSlot.activePanel?.kind === 'design-preview'; },
     get activeDiffPayload() {
       const panel = rhsPanelSlot.activePanel;
       if (panel?.kind !== 'diff-payload') return null;
@@ -1856,6 +1866,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
 
     toggleDiffPanel(): void {
+      if (thread?.mode === 'design') return;
       if (diffPanel.open) activatePanel(null);
       else activatePanel({ kind: 'diff-checkpoint' });
     },
@@ -1870,7 +1881,20 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       else if (rhsPanelSlot.activePanel?.kind === 'plan') activatePanel(null);
     },
 
+    toggleDesignPreviewPanel(): void {
+      if (thread?.mode !== 'design') return;
+      if (rhsPanelSlot.activePanel?.kind === 'design-preview') activatePanel(null);
+      else activatePanel({ kind: 'design-preview' });
+    },
+
+    setShowDesignPreviewPanel(value: boolean): void {
+      if (thread?.mode !== 'design') return;
+      if (value) activatePanel({ kind: 'design-preview' });
+      else if (rhsPanelSlot.activePanel?.kind === 'design-preview') activatePanel(null);
+    },
+
     setDiffPanelOpen(value: boolean): void {
+      if (value && thread?.mode === 'design') return;
       if (value) activatePanel({ kind: 'diff-checkpoint' });
       else if (diffPanel.open) activatePanel(null);
     },
@@ -1883,6 +1907,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * with several files).
      */
     openDiffSidebar(payload: { payloadId: string; filePath?: string }): void {
+      if (thread?.mode === 'design') return;
       activatePanel({ kind: 'diff-payload', payloadId: payload.payloadId, filePath: payload.filePath });
     },
 

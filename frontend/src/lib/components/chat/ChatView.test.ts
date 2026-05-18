@@ -429,6 +429,64 @@ describe('<ChatView>', () => {
     expect(await findByTestId('diff-sidebar')).toBeInTheDocument();
   });
 
+  it('renders design preview through the RHS shell only after explicit toggle', async () => {
+    setBindingMock('EnsureDesignWorkdir', async () => {});
+    setBindingMock('LatestDesignOptionSet', async () => null);
+    const pane = await buildPane({ ...seedThread(), mode: 'design' });
+    const { getByTestId, queryByTestId, queryAllByTestId } = render(ChatView, { props: { pane } });
+    await tick();
+
+    expect(queryByTestId('design-split')).toBeNull();
+    expect(queryByTestId('design-split-resizer')).toBeNull();
+    expect(queryByTestId('rhs-sidebar-shell')).toBeNull();
+
+    await fireEvent.click(getByTestId('design-preview-toggle'));
+
+    await waitFor(() => expect(queryAllByTestId('rhs-sidebar-shell')).toHaveLength(1));
+    expect(queryByTestId('design-split')).toBeNull();
+    await waitFor(() => expect(getByTestId('design-preview-iframe')).toBeInTheDocument());
+
+    const shell = getByTestId('rhs-sidebar-shell');
+    pane.setActiveOptionSet({ setId: 'set-1', optionPaths: ['options/set-1/alpha'] });
+    await tick();
+
+    expect(queryAllByTestId('rhs-sidebar-shell')).toHaveLength(1);
+    expect(getByTestId('rhs-sidebar-shell')).toBe(shell);
+    expect(getByTestId('design-options-panel')).toBeInTheDocument();
+  });
+
+  it('keeps design feedback and clarification controls in the chat column', async () => {
+    setBindingMock('EnsureDesignWorkdir', async () => {});
+    setBindingMock('LatestDesignOptionSet', async () => null);
+    const pane = await buildPane({ ...seedThread(), mode: 'design' });
+    pane.setPendingClarification({
+      requestId: 'clarify-1',
+      threadId: pane.threadId ?? 'thread-1',
+      intro: 'Pick a direction',
+      questions: [{
+        id: 'direction',
+        prompt: 'Which direction should the agent take?',
+        choices: [{ id: 'simple', label: 'Simpler' }],
+      }],
+    });
+
+    const { getByTestId } = render(ChatView, { props: { pane } });
+    await tick();
+
+    const overlay = getByTestId('composer-overlay');
+    const feedback = getByTestId('design-feedback-panel');
+    const picker = getByTestId('design-clarification-picker');
+    expect(overlay).toContainElement(feedback);
+    expect(overlay).toContainElement(picker);
+
+    await fireEvent.click(getByTestId('design-preview-toggle'));
+    await waitFor(() => expect(getByTestId('rhs-sidebar-shell')).toBeInTheDocument());
+
+    const shell = getByTestId('rhs-sidebar-shell');
+    expect(shell).not.toContainElement(feedback);
+    expect(shell).not.toContainElement(picker);
+  });
+
   it('does not render interaction-mode / runtime-mode / branch pickers in the header', async () => {
     const pane = await buildPane();
     const { queryByTestId } = render(ChatView, { props: { pane } });

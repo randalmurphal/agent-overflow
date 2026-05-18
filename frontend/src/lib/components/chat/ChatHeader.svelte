@@ -14,6 +14,7 @@
   import FolderClosed from 'lucide-svelte/icons/folder-closed';
   import SquareTerminal from 'lucide-svelte/icons/square-terminal';
   import Diff from 'lucide-svelte/icons/diff';
+  import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Thread } from '../../types/models';
   import {
@@ -35,6 +36,7 @@
   }
 
   let { pane }: Props = $props();
+  let isDesignThread = $derived(pane.thread?.mode === 'design');
 
   // Inline-rename state. Mirrors the old header's pattern — local string
   // buffer + editing toggle so Svelte's input can treat the field as
@@ -199,20 +201,37 @@
         {/snippet}
       </Button>
 
-      <Button
-        variant="secondary"
-        size="xs"
-        pressed={pane.diffPanel.open}
-        ariaLabel="Toggle Diff Panel"
-        title={`Toggle Diff Panel (${formatChord('mod+shift+g')})`}
-        onclick={() => pane.toggleDiffPanel()}
-        testId="diff-panel-toggle"
-        class="shrink-0 w-6 px-0"
-      >
-        {#snippet children()}
-          <Icon icon={Diff} size={12} strokeWidth={2} class="opacity-90" />
-        {/snippet}
-      </Button>
+      {#if isDesignThread}
+        <Button
+          variant="secondary"
+          size="xs"
+          pressed={pane.showDesignPreviewPanel}
+          ariaLabel="Toggle Design Preview"
+          title="Toggle Design Preview"
+          onclick={() => pane.toggleDesignPreviewPanel()}
+          testId="design-preview-toggle"
+          class="shrink-0 w-6 px-0"
+        >
+          {#snippet children()}
+            <Icon icon={PanelRightOpen} size={12} strokeWidth={2} class="opacity-90" />
+          {/snippet}
+        </Button>
+      {:else}
+        <Button
+          variant="secondary"
+          size="xs"
+          pressed={pane.diffPanel.open}
+          ariaLabel="Toggle Diff Panel"
+          title={`Toggle Diff Panel (${formatChord('mod+shift+g')})`}
+          onclick={() => pane.toggleDiffPanel()}
+          testId="diff-panel-toggle"
+          class="shrink-0 w-6 px-0"
+        >
+          {#snippet children()}
+            <Icon icon={Diff} size={12} strokeWidth={2} class="opacity-90" />
+          {/snippet}
+        </Button>
+      {/if}
       {/if}
     </div>
   </div>

@@ -405,6 +405,33 @@ describe('createThreadPane', () => {
       expect(pane.diffPanel.open).toBe(false);
     });
 
+    it('opening design preview closes other RHS panels on design threads', async () => {
+      const pane = await buildPane(makeThread({ id: 't', mode: 'design' }));
+
+      pane.setShowPlanSidebar(true);
+      pane.setShowDesignPreviewPanel(true);
+
+      expect(pane.showDesignPreviewPanel).toBe(true);
+      expect(pane.showPlanSidebar).toBe(false);
+      expect(pane.activeRhsPanel).toEqual({ kind: 'design-preview' });
+    });
+
+    it('diff panels do not open on design threads', async () => {
+      const pane = await buildPane(makeThread({ id: 't', mode: 'design' }));
+
+      pane.toggleDiffPanel();
+      expect(pane.diffPanel.open).toBe(false);
+      expect(pane.activeRhsPanel).toBeNull();
+
+      pane.setDiffPanelOpen(true);
+      expect(pane.diffPanel.open).toBe(false);
+      expect(pane.activeRhsPanel).toBeNull();
+
+      pane.openDiffSidebar({ payloadId: 'p1' });
+      expect(pane.activeDiffPayload).toBeNull();
+      expect(pane.activeRhsPanel).toBeNull();
+    });
+
     it('closeRhsPanel closes whichever RHS panel kind is active', async () => {
       const pane = createThreadPane();
       await pane.switchThread(makeThread({ id: 't' }));
@@ -424,6 +451,12 @@ describe('createThreadPane', () => {
       expect(pane.activeRhsPanel?.kind).toBe('diff-payload');
       pane.closeRhsPanel();
       expect(pane.activeRhsPanel).toBeNull();
+
+      const designPane = await buildPane(makeThread({ id: 'design-t', mode: 'design' }));
+      designPane.setShowDesignPreviewPanel(true);
+      expect(designPane.activeRhsPanel?.kind).toBe('design-preview');
+      designPane.closeRhsPanel();
+      expect(designPane.activeRhsPanel).toBeNull();
     });
 
     it('togglePlanSidebar respects mutex when opening', async () => {
@@ -535,6 +568,49 @@ describe('createThreadPane', () => {
       await pane.switchThread(makeThread({ id: 'thread-a' }));
       expect(pane.diffPanel.open).toBe(true);
       expect(pane.activeRhsPanel).toEqual({ kind: 'diff-checkpoint' });
+    });
+
+    it('does not auto-open design preview for a fresh design thread', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-a', mode: 'design' }));
+
+      expect(pane.showDesignPreviewPanel).toBe(false);
+      expect(pane.activeRhsPanel).toBeNull();
+    });
+
+    it('does not auto-open design preview when options hydrate while closed', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-a', mode: 'design' }));
+      setBindingMock('LatestDesignOptionSet', async () => ({
+        setId: 'set-1',
+        optionIds: ['alpha'],
+      }));
+
+      await pane.applyDesignOptionsUpdate('thread-a', 'set-1');
+
+      expect(pane.activeOptionSet).toEqual({
+        setId: 'set-1',
+        optionPaths: ['options/set-1/alpha'],
+      });
+      expect(pane.showDesignPreviewPanel).toBe(false);
+      expect(pane.activeRhsPanel).toBeNull();
+
+      pane.toggleDesignPreviewPanel();
+      expect(pane.activeRhsPanel).toEqual({ kind: 'design-preview' });
+    });
+
+    it('restores design preview only after the user opened it for that thread', async () => {
+      const threadA = makeThread({ id: 'thread-a', mode: 'design' });
+      const threadB = makeThread({ id: 'thread-b', mode: 'design' });
+      const pane = await buildPane(threadA);
+      pane.setShowDesignPreviewPanel(true);
+
+      setBindingMock('SwitchThread', async () => threadB);
+      await pane.switchThread(threadB);
+      expect(pane.showDesignPreviewPanel).toBe(false);
+
+      setBindingMock('SwitchThread', async () => threadA);
+      await pane.switchThread(threadA);
+      expect(pane.showDesignPreviewPanel).toBe(true);
+      expect(pane.activeRhsPanel).toEqual({ kind: 'design-preview' });
     });
 
     it('restores right-sidebar width per thread', async () => {

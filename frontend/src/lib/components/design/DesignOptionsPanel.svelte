@@ -1,5 +1,5 @@
 <script lang="ts">
-  // DesignOptionsPanel — when `pane.activeOptionSet` is non-null, render
+  // DesignOptionsPanel — when `ctx.activeOptionSet` is non-null, render
   // the small N-up grid of option iframes side-by-side. Each iframe
   // loads `/design/{threadId}/options/{setId}/{optionId}/` from the Go
   // file server. Clicking an option resolves the pick by sending a
@@ -7,19 +7,18 @@
   // the picked direction to main/) and then clears the active set so
   // the panel collapses and the main preview takes over.
   //
-  // `pane.activeOptionSet` is populated when the file watcher fires
-  // `design:options-update` — the events handler calls
-  // `pane.applyDesignOptionsUpdate(threadId, setId)` which lists the
-  // option directories under `options/{setId}/` and writes them onto
-  // the pane.
+  // `ctx.activeOptionSet` is populated when the file watcher fires
+  // `design:options-update` — the events handler refreshes pane state,
+  // and this panel can call `ctx.refreshDesignOptions(threadId)` to
+  // ask the backend for the latest unresolved option set.
 
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type { PanelContext } from '../../stores/rhsPanelSlot.svelte';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import Icon from '../primitives/Icon.svelte';
   import { DismissDesignOptionSet, SendMessage } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
 
-  let { pane }: { pane: ThreadPane } = $props();
+  let { ctx }: { ctx: PanelContext } = $props();
 
   let busyOptionId = $state<string | null>(null);
   let iframeReloadKey = $state(0);
@@ -32,8 +31,8 @@
     // Svelte's `(path)` keying on the each-block reuses the iframe
     // element for an unchanged path — the user's "refresh this
     // panel" intent wouldn't survive into the children.
-    const threadId = pane.threadId;
-    if (threadId) void pane.applyDesignOptionsUpdate(threadId, '');
+    const threadId = ctx.threadId;
+    if (threadId) void ctx.refreshDesignOptions(threadId);
     iframeReloadKey += 1;
   }
 
@@ -62,8 +61,8 @@
   }
 
   async function pick(optionId: string): Promise<void> {
-    const set = pane.activeOptionSet;
-    const threadId = pane.threadId;
+    const set = ctx.activeOptionSet;
+    const threadId = ctx.threadId;
     if (!set || !threadId || busyOptionId) return;
     busyOptionId = optionId;
     try {
@@ -89,7 +88,7 @@
         // eslint-disable-next-line no-console
         console.warn('design: DismissDesignOptionSet failed:', err);
       });
-      pane.setActiveOptionSet(null);
+      ctx.setActiveOptionSet(null);
     } catch (err) {
       const m = err instanceof Error ? err.message : String(err);
       addToast('error', `Failed to send option pick: ${m}`);
@@ -99,9 +98,9 @@
   }
 </script>
 
-{#if pane.activeOptionSet && pane.threadId}
-  {@const set = pane.activeOptionSet}
-  {@const threadId = pane.threadId}
+{#if ctx.activeOptionSet && ctx.threadId}
+  {@const set = ctx.activeOptionSet}
+  {@const threadId = ctx.threadId}
   <section
     class="flex flex-col h-full min-h-0 bg-transparent"
     data-testid="design-options-panel"
@@ -133,7 +132,7 @@
         </button>
         <button
           type="button"
-          onclick={() => pane.setActiveOptionSet(null)}
+          onclick={() => ctx.setActiveOptionSet(null)}
           title="Dismiss option set"
           class={[
             'inline-flex items-center gap-1 rounded-[var(--radius-field)]',

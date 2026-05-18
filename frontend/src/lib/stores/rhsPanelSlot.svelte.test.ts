@@ -42,6 +42,18 @@ describe('createRhsPanelSlot', () => {
     expect(slot.width).toBe(RHS_PANEL_DEFAULT_WIDTH + 40);
   });
 
+  it('restores the design preview panel as a normal RHS variant', () => {
+    const slot = createRhsPanelSlot('main');
+    slot.open({ kind: 'design-preview' });
+    slot.setWidthLive(RHS_PANEL_DEFAULT_WIDTH + 30);
+    slot.snapshotForThread('thread-a');
+
+    slot.restoreForThread('thread-a');
+
+    expect(slot.activePanel).toEqual({ kind: 'design-preview' });
+    expect(slot.width).toBe(RHS_PANEL_DEFAULT_WIDTH + 30);
+  });
+
   it('keeps width when explicitly closing but does not restore a panel', () => {
     const slot = createRhsPanelSlot('main');
     slot.open({ kind: 'diff-checkpoint' });

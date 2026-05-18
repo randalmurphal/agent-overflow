@@ -9,7 +9,7 @@ import { prependThread } from '../stores/threads.svelte';
 import { expandProject } from '../stores/sidebar.svelte';
 import { addToast } from '../stores/toast.svelte';
 import type { Thread } from '../types/models';
-import type { ThreadPane } from '../stores/thread.svelte';
+import type { PanelContext } from '../stores/rhsPanelSlot.svelte';
 import { requestIframeCapture } from './captureHtml';
 import { errString } from './errors';
 
@@ -74,7 +74,7 @@ export function buildSendToThreadDraftBody(
 }
 
 export interface SendDesignToThreadInput {
-  pane: ThreadPane;
+  ctx: PanelContext;
   iframe: HTMLIFrameElement;
 }
 
@@ -139,16 +139,16 @@ async function captureScreenshotBestEffort(
 //     DeleteThread (cascades). Mirrors the rollback pattern in
 //     `proposedPlanImplementation.ts` so a partial-write doesn't leave
 //     a half-built thread sitting in the sidebar.
-//   - Thread switch during the awaits: each await re-checks the
-//     captured `pane.threadId` against the entry value; on mismatch
+  //   - Thread switch during the awaits: each await re-checks the
+  //     captured `ctx.threadId` against the entry value; on mismatch
 //     we abort before the next mutation. Roll back any thread we
 //     already created.
 export async function sendDesignToThread({
-  pane,
+  ctx,
   iframe,
 }: SendDesignToThreadInput): Promise<SendDesignToThreadResult> {
-  const sourceThread = pane.thread;
-  const sourceThreadId = pane.threadId;
+  const sourceThread = ctx.thread;
+  const sourceThreadId = ctx.threadId;
   if (!sourceThread || !sourceThreadId) return { ok: false };
   if (!sourceThread.projectId) {
     addToast('error', 'Send to thread: source thread is missing a project');
@@ -158,13 +158,13 @@ export async function sendDesignToThread({
   let createdThreadId: string | null = null;
   try {
     const pngBase64 = await captureScreenshotBestEffort(iframe);
-    if (pane.threadId !== sourceThreadId) return { ok: false };
+    if (ctx.threadId !== sourceThreadId) return { ok: false };
 
     const info = (await GetDesignWorkdirInfo(sourceThreadId)) as {
       mainPath: string;
       files: string[];
     };
-    if (pane.threadId !== sourceThreadId) return { ok: false };
+    if (ctx.threadId !== sourceThreadId) return { ok: false };
 
     const created = (await CreateThread({
       projectId: sourceThread.projectId,
@@ -202,7 +202,7 @@ export async function sendDesignToThread({
 
     prependThread(created);
     if (created.projectId) expandProject(created.projectId);
-    await pane.switchThread(created);
+    await ctx.switchThread(created);
     addToast(
       'success',
       pngBase64

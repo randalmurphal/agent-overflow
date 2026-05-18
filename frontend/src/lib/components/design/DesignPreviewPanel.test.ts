@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import DesignPreviewPanel from './DesignPreviewPanel.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
+import { makePanelContext } from '../../stores/rhsPanelSlot.svelte';
 import type { Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { DESIGN_RELOAD_MAIN_EVENT } from '../../stores/events';
@@ -77,7 +78,7 @@ describe('<DesignPreviewPanel>', () => {
 
   it('renders an iframe pointing at /design/{threadId}/main/ once the workdir is ensured', async () => {
     const pane = await buildPane();
-    const { container } = render(DesignPreviewPanel, { props: { pane } });
+    const { container } = render(DesignPreviewPanel, { props: { ctx: makePanelContext(pane) } });
     const iframe = await waitForIframe(container);
     const src = iframe.getAttribute('src') ?? '';
     expect(src.startsWith('/design/thread-1/main/?cb=')).toBe(true);
@@ -98,7 +99,7 @@ describe('<DesignPreviewPanel>', () => {
         resolveEnsure = res;
       }),
     );
-    const { container } = render(DesignPreviewPanel, { props: { pane } });
+    const { container } = render(DesignPreviewPanel, { props: { ctx: makePanelContext(pane) } });
     // Pending — iframe should not be in the DOM yet.
     expect(container.querySelector('iframe[data-testid="design-preview-iframe"]')).toBeNull();
     expect(container.textContent).toMatch(/Preparing preview/);
@@ -108,7 +109,7 @@ describe('<DesignPreviewPanel>', () => {
 
   it('refresh button bumps the cache-bust counter', async () => {
     const pane = await buildPane();
-    const { container, getByTestId } = render(DesignPreviewPanel, { props: { pane } });
+    const { container, getByTestId } = render(DesignPreviewPanel, { props: { ctx: makePanelContext(pane) } });
     const initialIframe = await waitForIframe(container);
     const initialSrc = initialIframe.getAttribute('src')!;
     await fireEvent.click(getByTestId('design-refresh'));
@@ -121,7 +122,7 @@ describe('<DesignPreviewPanel>', () => {
 
   it('viewport toggle updates the iframe width', async () => {
     const pane = await buildPane();
-    const { container, getByRole } = render(DesignPreviewPanel, { props: { pane } });
+    const { container, getByRole } = render(DesignPreviewPanel, { props: { ctx: makePanelContext(pane) } });
     let iframe = await waitForIframe(container);
     expect(iframe.style.width).toBe('100%');
 
@@ -138,7 +139,7 @@ describe('<DesignPreviewPanel>', () => {
 
   it('responds to the reload-main event by bumping the cache-bust', async () => {
     const pane = await buildPane();
-    const { container } = render(DesignPreviewPanel, { props: { pane } });
+    const { container } = render(DesignPreviewPanel, { props: { ctx: makePanelContext(pane) } });
     const initialIframe = await waitForIframe(container);
     const initialSrc = initialIframe.getAttribute('src')!;
 
@@ -153,7 +154,7 @@ describe('<DesignPreviewPanel>', () => {
 
   it('ignores reload-main events for other threads', async () => {
     const pane = await buildPane();
-    const { container } = render(DesignPreviewPanel, { props: { pane } });
+    const { container } = render(DesignPreviewPanel, { props: { ctx: makePanelContext(pane) } });
     const initialIframe = await waitForIframe(container);
     const initialSrc = initialIframe.getAttribute('src')!;
     window.dispatchEvent(
@@ -168,7 +169,7 @@ describe('<DesignPreviewPanel>', () => {
   it('forwards iframe diagnostic postMessages via IngestDiagnosticBatch (debounced)', async () => {
     const pane = await buildPane();
     const ingest = setBindingMock('IngestDiagnosticBatch', async () => {});
-    const { container } = render(DesignPreviewPanel, { props: { pane } });
+    const { container } = render(DesignPreviewPanel, { props: { ctx: makePanelContext(pane) } });
     const iframe = await waitForIframe(container);
     vi.useFakeTimers();
     try {
@@ -202,7 +203,7 @@ describe('<DesignPreviewPanel>', () => {
   it('drops postMessages without an aoDesign tag', async () => {
     const pane = await buildPane();
     const ingest = setBindingMock('IngestDiagnosticBatch', async () => {});
-    const { container } = render(DesignPreviewPanel, { props: { pane } });
+    const { container } = render(DesignPreviewPanel, { props: { ctx: makePanelContext(pane) } });
     const iframe = await waitForIframe(container);
     vi.useFakeTimers();
     try {
@@ -222,7 +223,7 @@ describe('<DesignPreviewPanel>', () => {
   it('drops postMessages whose source is not the mounted iframe', async () => {
     const pane = await buildPane();
     const ingest = setBindingMock('IngestDiagnosticBatch', async () => {});
-    const { container } = render(DesignPreviewPanel, { props: { pane } });
+    const { container } = render(DesignPreviewPanel, { props: { ctx: makePanelContext(pane) } });
     await waitForIframe(container);
     vi.useFakeTimers();
     try {
@@ -282,7 +283,7 @@ describe('<DesignPreviewPanel>', () => {
       const pane = await buildPane();
       const { createMock, uploadMock, saveDraftMock } = mockSendToThreadDeps();
       const { container, getByTestId } = render(DesignPreviewPanel, {
-        props: { pane },
+        props: { ctx: makePanelContext(pane) },
       });
       await waitForIframe(container);
 
@@ -351,7 +352,7 @@ describe('<DesignPreviewPanel>', () => {
       const { createMock, uploadMock, saveDraftMock, deleteMock } = mockSendToThreadDeps();
       vi.mocked(requestIframeCapture).mockRejectedValueOnce(new Error('iframe gone'));
       const { container, getByTestId } = render(DesignPreviewPanel, {
-        props: { pane },
+        props: { ctx: makePanelContext(pane) },
       });
       await waitForIframe(container);
 
@@ -379,7 +380,7 @@ describe('<DesignPreviewPanel>', () => {
         throw new Error('disk full');
       });
       const { container, getByTestId } = render(DesignPreviewPanel, {
-        props: { pane },
+        props: { ctx: makePanelContext(pane) },
       });
       await waitForIframe(container);
 
@@ -407,7 +408,7 @@ describe('<DesignPreviewPanel>', () => {
         }),
       );
       const { container, getByTestId } = render(DesignPreviewPanel, {
-        props: { pane },
+        props: { ctx: makePanelContext(pane) },
       });
       await waitForIframe(container);
 

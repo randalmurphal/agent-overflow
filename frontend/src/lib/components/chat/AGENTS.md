@@ -306,10 +306,11 @@ switch.
 
 Panel **bodies** receive `ctx: PanelContext` (defined in
 `rhsPanelSlot.svelte.ts`), not `pane: ThreadPane`. The narrow contract
-exposes `threadId`, `paneId`, `workspacePath`, `close()`, and
-`replaceThread(thread)` — bodies cannot reach into chat-only state
-(`pane.items`, `pane.timelineRevision`, streaming flags) and therefore
-cannot accidentally re-render on every chat tick. The legacy
+exposes stable thread/layout fields, generic close/sync hooks, and
+design-panel accessors needed by the design preview — bodies cannot
+reach into chat-only state (`pane.items`, `pane.timelineRevision`,
+streaming flags) and therefore cannot accidentally re-render on every
+chat tick. The legacy
 `pane: ThreadPane` shape on `DiffPanelDrawer` / `LazyDiffSidebar` is
 kept until those bodies need to grow; new panels MUST take
 `PanelContext`.
