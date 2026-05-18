@@ -2,7 +2,6 @@
   import type { Snippet } from 'svelte';
   import ChatView from '../chat/ChatView.svelte';
   import X from 'lucide-svelte/icons/x';
-  import GripVertical from 'lucide-svelte/icons/grip-vertical';
   import Icon from '../primitives/Icon.svelte';
   import {
     destroyPane,
@@ -213,16 +212,25 @@
             draggable="true"
             ondragstart={(event) => drag.onPaneDragStart(event, item.paneId)}
             class={[
-              'group/pane-header flex h-[var(--pane-header-height)] shrink-0 items-center gap-1.5 border-b border-border-subtle/60 px-2',
-              'bg-surface-1/45 text-[11px] text-fg-muted cursor-grab active:cursor-grabbing select-none',
-              focusedPaneId === item.paneId ? 'text-fg' : '',
+              'group/pane-header flex h-[var(--pane-header-height)] shrink-0 items-center gap-1.5 border-b border-border-subtle/60 pl-7 pr-2',
+              'bg-surface-1/45 text-[11px] cursor-grab active:cursor-grabbing select-none',
             ].join(' ')}
             data-testid="pane-header"
           >
-            <Icon icon={GripVertical} size={13} strokeWidth={2} class="shrink-0 opacity-65" />
-            <span class="min-w-0 flex-1 truncate font-medium">
-              {pane.thread?.title ?? 'Pane'}
-            </span>
+            <div class="flex min-w-0 flex-1 items-center">
+              <span
+                class={[
+                  'min-w-0 truncate rounded-[var(--radius-field)] px-1.5 py-0.5 font-medium transition-colors',
+                  focusedPaneId === item.paneId
+                    ? 'bg-accent/15 text-fg'
+                    : 'text-fg-muted hover:bg-surface-2/40 hover:text-fg',
+                ].join(' ')}
+                data-testid="pane-header-title"
+                data-focused={focusedPaneId === item.paneId}
+              >
+                {pane.thread?.title ?? 'Pane'}
+              </span>
+            </div>
             <button
               type="button"
               aria-label="Close Pane"

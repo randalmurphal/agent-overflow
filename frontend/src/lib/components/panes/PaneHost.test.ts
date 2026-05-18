@@ -234,6 +234,44 @@ describe('PaneHost', () => {
     expect(getPaneWidth('right')).toBe(0);
   });
 
+  it('highlights the focused pane title and shows hover affordance on unfocused titles', () => {
+    const left = createThreadPane({ paneId: 'left' });
+    const right = createThreadPane({ paneId: 'right' });
+    left.replaceThread(makeThread({ id: 'left-thread', title: 'Left thread' }));
+    right.replaceThread(makeThread({ id: 'right-thread', title: 'Right thread' }));
+    registerPaneForTest('left', left);
+    registerPaneForTest('right', right);
+    setPaneLayoutItemsForTest([
+      { id: 'left-item', paneId: 'left', kind: 'thread', ratio: 1 },
+      { id: 'right-item', paneId: 'right', kind: 'thread', ratio: 1 },
+    ]);
+    focusPane('left');
+
+    const rendered = render(PaneHost);
+    const titles = rendered.getAllByTestId('pane-header-title');
+    const leftTitle = titles.find((el) => el.closest('[data-pane-id="left"]'));
+    const rightTitle = titles.find((el) => el.closest('[data-pane-id="right"]'));
+    if (!leftTitle || !rightTitle) throw new Error('expected pane-header-title for each pane');
+
+    expect(leftTitle).toHaveAttribute('data-focused', 'true');
+    expect(leftTitle.className).toContain('bg-accent/15');
+    expect(rightTitle).toHaveAttribute('data-focused', 'false');
+    expect(rightTitle.className).toContain('hover:bg-surface-2/40');
+  });
+
+  it('pane header no longer renders a grip icon (title carries the focus indicator)', () => {
+    const left = createThreadPane({ paneId: 'left' });
+    left.replaceThread(makeThread({ id: 'left-thread', title: 'Left' }));
+    registerPaneForTest('left', left);
+    setPaneLayoutItemsForTest([
+      { id: 'left-item', paneId: 'left', kind: 'thread', ratio: 1 },
+    ]);
+
+    const rendered = render(PaneHost);
+    const header = rendered.getByTestId('pane-header');
+    expect(header.querySelector('svg.lucide-grip-vertical')).toBeNull();
+  });
+
   it('renders status dots for thread panes and no dot for null-thread panes', () => {
     const left = createThreadPane({ paneId: 'left' });
     left.replaceThread(makeThread({ id: 'left-thread', title: 'Left' }));

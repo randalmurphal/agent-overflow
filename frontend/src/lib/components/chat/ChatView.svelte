@@ -259,9 +259,14 @@
       : { lastReadAt: readAt };
     untrack(() => {
       updateThreadReadState(thread.id, readPatch);
-      if (shouldClearInterrupted) {
-        pane.replaceThread({ ...thread, ...readPatch });
-      }
+      // The sidebar reads lastReadAt from the global threads registry;
+      // the pane attention-dot overlay reads it from pane.thread. Both
+      // surfaces compute their unread state via the same hasUnread()
+      // helper, so they MUST see the same lastReadAt. Update both in
+      // the same untrack block, otherwise the pane keeps showing a
+      // stale "Completed" dot for the active thread while the sidebar
+      // dot correctly clears.
+      pane.replaceThread({ ...thread, ...readPatch });
     });
     schedulePersistThreadRead(pane.threadId);
   });

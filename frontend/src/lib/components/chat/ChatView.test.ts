@@ -580,12 +580,19 @@ describe('<ChatView>', () => {
       expect(markRead).toHaveBeenCalledTimes(1);
       expect(markRead).toHaveBeenLastCalledWith('thread-1');
       expect(getThreads()[0]?.lastReadAt).toBe(1_000);
+      // The pane attention-dot overlay reads lastReadAt from pane.thread;
+      // the sidebar reads it from the global threads registry. Keeping
+      // both in sync is what stops the pane dot from showing a stale
+      // "Completed" green pip after the user is already looking at the
+      // thread.
+      expect(pane.thread?.lastReadAt).toBe(1_000);
 
       vi.setSystemTime(1_010);
       pane.replaceThread({ ...pane.thread!, updatedAt: 1_010, latestTurnCompletedAt: 1_010 });
       await tick();
 
       expect(getThreads()[0]?.lastReadAt).toBe(1_010);
+      expect(pane.thread?.lastReadAt).toBe(1_010);
       expect(markRead).toHaveBeenCalledTimes(1);
 
       await vi.advanceTimersByTimeAsync(100);
