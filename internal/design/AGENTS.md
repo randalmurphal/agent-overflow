@@ -10,8 +10,7 @@ package — see `internal/screenshot/`.
 ## Layout
 
 - `types.go` — public wire shapes: `Diagnostic`, `DiagnosticBatch`,
-  `FeedbackBatch`, `ClarificationRequest`, `ExposeControls`,
-  `OptionChosen`, plus `CaptureResult` (the bundle the
+  `ClarificationRequest`, `OptionChosen`, plus `CaptureResult` (the bundle the
   `read_screenshot` tool returns to the MCP layer). Also the MCP tool
   name constants (`ToolGetDiagnostics`, `ToolReadScreenshot`).
 - `workdir.go` — per-thread directory layout under

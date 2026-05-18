@@ -13,7 +13,7 @@
 
 ## Other design-mode UI
 
-- `DesignFeedbackPanel`, `DesignClarificationPicker` — stay in the chat column. These are conversation-like elements that belong with the thread timeline, not with the preview.
+- `DesignClarificationPicker` stays in the chat column. It is a conversation-like element that belongs with the thread timeline, not with the preview.
 - `DesignOptionsPanel` — goes into the RHS panel alongside the preview body. It's design-iteration scaffolding, naturally co-located with the preview.
 
 ## Inherited behavior

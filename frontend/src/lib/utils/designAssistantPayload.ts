@@ -3,30 +3,23 @@
 // prompt (`internal/design/prompts.go`) teaches the model the on-wire
 // format; this util is the consumer.
 //
-// Two payload kinds are pane-state-bearing:
+// One payload kind is pane-state-bearing:
 //   - clarification_request — populates `pane.pendingClarification` so
 //     `<DesignClarificationPicker>` renders.
-//   - expose_controls       — populates `pane.exposedControls` so the
-//     slider rail in `<DesignFeedbackPanel>` renders.
 //
-// The third kind in the prompt (`option_chosen`) is a user → agent
-// payload sent by `<DesignOptionsPanel>` when the user picks; we don't
-// parse it on the assistant side. Options panel hydration is driven by
-// the file-watcher's `design:options-update` event, not by the agent
-// emitting an `options_created` payload.
+// User → agent payloads such as `option_chosen` are sent by UI panels
+// and are intentionally not parsed here. Options panel hydration is
+// driven by the file-watcher's `design:options-update` event, not by
+// the agent emitting an `options_created` payload.
 
-import type { ClarificationRequest, SliderControl } from '../types/design';
+import type { ClarificationRequest } from '../types/design';
 
 /** Discriminated union of payload shapes the parser hands back. */
 export type DesignAssistantPayload =
-  | {
-      kind: 'clarification_request';
-      payload: ClarificationRequest;
-    }
-  | {
-      kind: 'expose_controls';
-      payload: { controls: SliderControl[] };
-    };
+  {
+    kind: 'clarification_request';
+    payload: ClarificationRequest;
+  };
 
 const FENCE_OPEN_PREFIX = '```aoflow-design';
 const FENCE_CLOSE = '```';
@@ -79,8 +72,6 @@ function classifyPayload(obj: unknown): DesignAssistantPayload | null {
   switch (kind) {
     case 'clarification_request':
       return parseClarification(record);
-    case 'expose_controls':
-      return parseExposeControls(record);
     default:
       return null;
   }
@@ -138,31 +129,6 @@ function parseClarification(record: Record<string, unknown>): DesignAssistantPay
   return { kind: 'clarification_request', payload: result };
 }
 
-function parseExposeControls(record: Record<string, unknown>): DesignAssistantPayload | null {
-  const rawControls = record.controls;
-  if (!Array.isArray(rawControls) || rawControls.length === 0) return null;
-  const controls: SliderControl[] = [];
-  for (const raw of rawControls) {
-    if (!raw || typeof raw !== 'object') return null;
-    const c = raw as Record<string, unknown>;
-    const id = typeof c.id === 'string' ? c.id : '';
-    const label = typeof c.label === 'string' ? c.label : '';
-    const min = typeof c.min === 'number' ? c.min : NaN;
-    const max = typeof c.max === 'number' ? c.max : NaN;
-    const value = typeof c.value === 'number' ? c.value : NaN;
-    if (!id || !label || !Number.isFinite(min) || !Number.isFinite(max) || !Number.isFinite(value)) {
-      return null;
-    }
-    if (min >= max) return null;
-
-    const step = typeof c.step === 'number' && Number.isFinite(c.step) && c.step > 0 ? c.step : undefined;
-    const slider: SliderControl = { id, label, min, max, value };
-    if (step !== undefined) slider.step = step;
-    controls.push(slider);
-  }
-  return { kind: 'expose_controls', payload: { controls } };
-}
-
 // synthesizeRequestId makes the picker idempotent when the agent
 // emits a clarification block without a requestId — same questions
 // produce the same id, so re-upserting the same item doesn't reset
@@ -179,15 +145,4 @@ function synthesizeRequestId(questions: ClarificationRequest['questions']): stri
     h = Math.imul(h, 0x01000193);
   }
   return `synth-${(h >>> 0).toString(16)}`;
-}
-
-// controlsKey collapses an expose_controls payload to a string the
-// pane uses to dedupe re-applies. Two payloads with the same ids /
-// bounds / values produce the same key so a streaming repaint of the
-// same assistant text doesn't keep stomping the user's in-flight
-// slider drag.
-export function controlsKey(controls: SliderControl[]): string {
-  return controls
-    .map((c) => `${c.id}|${c.min}|${c.max}|${c.step ?? ''}|${c.value}`)
-    .join(';');
 }

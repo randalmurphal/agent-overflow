@@ -21,8 +21,6 @@ import type {
   ActiveOptionSet,
   ClarificationRequest,
   DesignViewport,
-  FeedbackBatch,
-  SliderControl,
 } from '../types/design';
 import {
   CreateThread,
@@ -1123,7 +1121,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get channelMessages() { return channelState.messages; },
     get channelStatus() { return channelState.status; },
     get pendingClarification() { return designState.pendingClarification; },
-    get exposedControls() { return designState.exposedControls; },
     get activeOptionSet() { return designState.activeOptionSet; },
     get designViewport() { return designState.designViewport; },
     get activeTab() { return activeTab; },
@@ -1976,14 +1973,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      */
     setPendingClarification(request: ClarificationRequest | null): void {
       designState.setPendingClarification(request);
-    },
-
-    /**
-     * Replace the exposed slider controls. Per the wire contract each
-     * `ExposeControls` event replaces the previous set wholesale.
-     */
-    setExposedControls(controls: SliderControl[]): void {
-      designState.setExposedControls(controls);
     },
 
     /**

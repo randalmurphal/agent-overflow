@@ -455,7 +455,7 @@ describe('<ChatView>', () => {
     expect(getByTestId('design-options-panel')).toBeInTheDocument();
   });
 
-  it('keeps design feedback and clarification controls in the chat column', async () => {
+  it('keeps design clarification controls in the chat column', async () => {
     setBindingMock('EnsureDesignWorkdir', async () => {});
     setBindingMock('LatestDesignOptionSet', async () => null);
     const pane = await buildPane({ ...seedThread(), mode: 'design' });
@@ -474,16 +474,13 @@ describe('<ChatView>', () => {
     await tick();
 
     const overlay = getByTestId('composer-overlay');
-    const feedback = getByTestId('design-feedback-panel');
     const picker = getByTestId('design-clarification-picker');
-    expect(overlay).toContainElement(feedback);
     expect(overlay).toContainElement(picker);
 
     await fireEvent.click(getByTestId('design-preview-toggle'));
     await waitFor(() => expect(getByTestId('rhs-sidebar-shell')).toBeInTheDocument());
 
     const shell = getByTestId('rhs-sidebar-shell');
-    expect(shell).not.toContainElement(feedback);
     expect(shell).not.toContainElement(picker);
   });
 

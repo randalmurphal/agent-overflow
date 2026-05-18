@@ -8,7 +8,6 @@
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
   import ThreadTerminalPlacement from '../terminal/ThreadTerminalPlacement.svelte';
   import DiscussionView from '../discussion/DiscussionView.svelte';
-  import DesignFeedbackPanel from '../design/DesignFeedbackPanel.svelte';
   import DesignClarificationPicker from '../design/DesignClarificationPicker.svelte';
   import ModeEmptyForProject from './ModeEmptyForProject.svelte';
   import { getProject } from '../../stores/projects.svelte';
@@ -514,13 +513,10 @@
         <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6">
           <SendQueuePreview {pane} />
         </div>
-        {#if inDesignMode}
+        {#if inDesignMode && pane.pendingClarification}
           <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6 pb-2">
             <div class="flex max-h-[35vh] min-h-0 flex-col overflow-y-auto border border-border-subtle bg-surface-1/95 shadow-sheet">
-              <DesignFeedbackPanel {pane} />
-              {#if pane.pendingClarification}
-                <DesignClarificationPicker {pane} />
-              {/if}
+              <DesignClarificationPicker {pane} />
             </div>
           </div>
         {/if}

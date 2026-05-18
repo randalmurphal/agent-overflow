@@ -3,44 +3,37 @@ import type {
   ActiveOptionSet,
   ClarificationRequest,
   DesignViewport,
-  SliderControl,
 } from '../types/design';
-import { controlsKey, parseDesignAssistantPayloads } from '../utils/designAssistantPayload';
+import { parseDesignAssistantPayloads } from '../utils/designAssistantPayload';
 import { LatestDesignOptionSet } from './bindings';
 
 export interface ThreadDesignState {
   readonly pendingClarification: ClarificationRequest | null;
-  readonly exposedControls: SliderControl[];
   readonly activeOptionSet: ActiveOptionSet | null;
   readonly designViewport: DesignViewport;
   reset(): void;
   applyAssistantPayloadsForItem(item: Item, thread: Thread | null): void;
   applyDesignOptionsUpdate(getCurrentThread: () => Thread | null, threadId: string): Promise<void>;
   setPendingClarification(request: ClarificationRequest | null): void;
-  setExposedControls(controls: SliderControl[]): void;
   setActiveOptionSet(set: ActiveOptionSet | null): void;
   setDesignViewport(viewport: DesignViewport): void;
 }
 
 export function createThreadDesignState(): ThreadDesignState {
   let pendingClarification: ClarificationRequest | null = $state(null);
-  let exposedControls: SliderControl[] = $state([]);
   let activeOptionSet: ActiveOptionSet | null = $state(null);
   let designViewport: DesignViewport = $state('desktop');
 
-  // Assistant text can be replayed through upserts while it streams. These
-  // keys suppress duplicate projection within a thread and must reset whenever
-  // the pane moves to a different design thread.
+  // Assistant text can be replayed through upserts while it streams. This
+  // request id suppresses duplicate clarification projection within a thread
+  // and must reset whenever the pane moves to a different design thread.
   let lastClarificationRequestId: string | null = null;
-  let lastExposedControlsKey: string | null = null;
 
   function reset(): void {
     pendingClarification = null;
-    exposedControls = [];
     activeOptionSet = null;
     designViewport = 'desktop';
     lastClarificationRequestId = null;
-    lastExposedControlsKey = null;
   }
 
   function applyAssistantPayloadsForItem(item: Item, thread: Thread | null): void {
@@ -59,11 +52,6 @@ export function createThreadDesignState(): ThreadDesignState {
         };
         pendingClarification = next;
         lastClarificationRequestId = next.requestId;
-      } else if (parsed.kind === 'expose_controls') {
-        const key = controlsKey(parsed.payload.controls);
-        if (lastExposedControlsKey === key) continue;
-        exposedControls = [...parsed.payload.controls];
-        lastExposedControlsKey = key;
       }
     }
   }
@@ -89,7 +77,6 @@ export function createThreadDesignState(): ThreadDesignState {
 
   return {
     get pendingClarification() { return pendingClarification; },
-    get exposedControls() { return exposedControls; },
     get activeOptionSet() { return activeOptionSet; },
     get designViewport() { return designViewport; },
 
@@ -99,10 +86,6 @@ export function createThreadDesignState(): ThreadDesignState {
 
     setPendingClarification(request: ClarificationRequest | null): void {
       pendingClarification = request;
-    },
-
-    setExposedControls(controls: SliderControl[]): void {
-      exposedControls = [...controls];
     },
 
     setActiveOptionSet(set: ActiveOptionSet | null): void {

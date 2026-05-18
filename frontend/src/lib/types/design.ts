@@ -30,22 +30,6 @@ export interface DiagnosticBatch {
   diagnostics: Diagnostic[];
 }
 
-/** One slider knob update inside a feedback batch. */
-export interface SliderChange {
-  id: string;
-  value: number;
-}
-
-/**
- * Accumulated user feedback for one round trip. The frontend serialises
- * this and sends it as a regular user message; the agent reads it as
- * input on the next turn.
- */
-export interface FeedbackBatch {
-  sliderChanges?: SliderChange[];
-  notes?: string;
-}
-
 /** One selectable answer within a clarification question. */
 export interface ClarificationChoice {
   id: string;
@@ -69,19 +53,6 @@ export interface ClarificationRequest {
   threadId: string;
   intro?: string;
   questions: ClarificationQuestion[];
-}
-
-/**
- * One agent-emitted slider exposed in the feedback panel after a design
- * iteration lands.
- */
-export interface SliderControl {
-  id: string;
-  label: string;
-  min: number;
-  max: number;
-  step?: number;
-  value: number;
 }
 
 /**

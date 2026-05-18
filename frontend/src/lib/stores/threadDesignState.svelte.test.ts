@@ -16,7 +16,7 @@ describe('createThreadDesignState', () => {
     resetBindingMocks();
   });
 
-  it('projects assistant clarification and controls payloads onto design state', () => {
+  it('projects assistant clarification payloads onto design state', () => {
     const state = createThreadDesignState();
     const thread = makeThread({ id: 'design-1', mode: 'design' });
 
@@ -34,16 +34,11 @@ describe('createThreadDesignState', () => {
             choices: [{ id: 'dense', label: 'Dense' }],
           }],
         }),
-        designFence({
-          kind: 'expose_controls',
-          controls: [{ id: 'density', label: 'Density', min: 0, max: 1, value: 0.5 }],
-        }),
       ].join('\n\n'),
     }), thread);
 
     expect(state.pendingClarification?.requestId).toBe('clarify-1');
     expect(state.pendingClarification?.threadId).toBe('design-1');
-    expect(state.exposedControls.map((control) => control.id)).toEqual(['density']);
   });
 
   it('ignores duplicate payloads until reset gives the next thread a clean slate', () => {

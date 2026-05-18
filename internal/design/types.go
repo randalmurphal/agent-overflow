@@ -52,20 +52,6 @@ type DiagnosticBatch struct {
 	Diagnostics []Diagnostic `json:"diagnostics"`
 }
 
-// SliderChange is one knob update inside a feedback batch.
-type SliderChange struct {
-	ID    string  `json:"id"`
-	Value float64 `json:"value"`
-}
-
-// FeedbackBatch carries accumulated user feedback for one round trip.
-// The frontend serialises this and sends it as a regular user message;
-// the agent reads it as input on the next turn.
-type FeedbackBatch struct {
-	SliderChanges []SliderChange `json:"sliderChanges,omitempty"`
-	Notes         string         `json:"notes,omitempty"`
-}
-
 // ClarificationChoice is one selectable answer within a clarification
 // question.
 type ClarificationChoice struct {
@@ -89,24 +75,6 @@ type ClarificationRequest struct {
 	ThreadID  string                  `json:"threadId"`
 	Intro     string                  `json:"intro,omitempty"`
 	Questions []ClarificationQuestion `json:"questions"`
-}
-
-// SliderControl is one agent-emitted slider exposed in the feedback
-// panel after a design iteration lands.
-type SliderControl struct {
-	ID    string  `json:"id"`
-	Label string  `json:"label"`
-	Min   float64 `json:"min"`
-	Max   float64 `json:"max"`
-	Step  float64 `json:"step,omitempty"`
-	Value float64 `json:"value"`
-}
-
-// ExposeControls is the agent → frontend signal that the user can now
-// tweak these knobs. Updates here replace the previous control set.
-type ExposeControls struct {
-	ThreadID string          `json:"threadId"`
-	Controls []SliderControl `json:"controls"`
 }
 
 // OptionChosen is the user → agent message issued when the user picks

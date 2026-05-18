@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  controlsKey,
-  parseDesignAssistantPayloads,
-} from './designAssistantPayload';
+import { parseDesignAssistantPayloads } from './designAssistantPayload';
 
 describe('parseDesignAssistantPayloads', () => {
   it('returns [] for empty / fence-free text', () => {
@@ -44,25 +41,6 @@ describe('parseDesignAssistantPayloads', () => {
     expect(got[0].payload.questions[0].choices).toHaveLength(2);
   });
 
-  it('extracts an expose_controls block', () => {
-    const text =
-      '```aoflow-design\n' +
-      JSON.stringify({
-        kind: 'expose_controls',
-        controls: [
-          { id: 'density', label: 'Density', min: 0.6, max: 1.4, step: 0.05, value: 1.0 },
-        ],
-      }) +
-      '\n```';
-
-    const got = parseDesignAssistantPayloads(text);
-    expect(got).toHaveLength(1);
-    if (got[0].kind !== 'expose_controls') throw new Error('kind narrow');
-    expect(got[0].payload.controls).toHaveLength(1);
-    expect(got[0].payload.controls[0].id).toBe('density');
-    expect(got[0].payload.controls[0].step).toBe(0.05);
-  });
-
   it('extracts multiple blocks in document order', () => {
     const text = [
       '```aoflow-design',
@@ -81,8 +59,15 @@ describe('parseDesignAssistantPayloads', () => {
       'middle text',
       '```aoflow-design',
       JSON.stringify({
-        kind: 'expose_controls',
-        controls: [{ id: 'k', label: 'K', min: 0, max: 1, value: 0.5 }],
+        kind: 'clarification_request',
+        requestId: 'q2',
+        questions: [
+          {
+            id: 'b',
+            prompt: 'B?',
+            choices: [{ id: 'y', label: 'y' }],
+          },
+        ],
       }),
       '```',
     ].join('\n');
@@ -90,7 +75,7 @@ describe('parseDesignAssistantPayloads', () => {
     const got = parseDesignAssistantPayloads(text);
     expect(got).toHaveLength(2);
     expect(got[0].kind).toBe('clarification_request');
-    expect(got[1].kind).toBe('expose_controls');
+    expect(got[1].kind).toBe('clarification_request');
   });
 
   it('drops blocks with invalid JSON without throwing', () => {
@@ -156,28 +141,6 @@ describe('parseDesignAssistantPayloads', () => {
     expect(first[0].payload.requestId).toBe(second[0].payload.requestId);
   });
 
-  it('drops an expose_controls block with min >= max', () => {
-    const text =
-      '```aoflow-design\n' +
-      JSON.stringify({
-        kind: 'expose_controls',
-        controls: [{ id: 'k', label: 'K', min: 1, max: 1, value: 1 }],
-      }) +
-      '\n```';
-    expect(parseDesignAssistantPayloads(text)).toEqual([]);
-  });
-
-  it('drops an expose_controls block with non-finite value', () => {
-    const text =
-      '```aoflow-design\n' +
-      JSON.stringify({
-        kind: 'expose_controls',
-        controls: [{ id: 'k', label: 'K', min: 0, max: 1, value: null }],
-      }) +
-      '\n```';
-    expect(parseDesignAssistantPayloads(text)).toEqual([]);
-  });
-
   it('handles unclosed fence (streaming) gracefully', () => {
     // No closing ``` — parser stops at the open fence and returns
     // whatever it had collected before. With no prior block, returns [].
@@ -189,8 +152,15 @@ describe('parseDesignAssistantPayloads', () => {
     const text = [
       '```aoflow-design',
       JSON.stringify({
-        kind: 'expose_controls',
-        controls: [{ id: 'k', label: 'K', min: 0, max: 1, value: 0.5 }],
+        kind: 'clarification_request',
+        requestId: 'q1',
+        questions: [
+          {
+            id: 'a',
+            prompt: 'A?',
+            choices: [{ id: 'x', label: 'x' }],
+          },
+        ],
       }),
       '```',
       'streaming partial:',
@@ -200,20 +170,6 @@ describe('parseDesignAssistantPayloads', () => {
 
     const got = parseDesignAssistantPayloads(text);
     expect(got).toHaveLength(1);
-    expect(got[0].kind).toBe('expose_controls');
-  });
-});
-
-describe('controlsKey', () => {
-  it('produces equal keys for identical control sets', () => {
-    const a = [{ id: 'k', label: 'K', min: 0, max: 1, step: 0.1, value: 0.5 }];
-    const b = [{ id: 'k', label: 'K', min: 0, max: 1, step: 0.1, value: 0.5 }];
-    expect(controlsKey(a)).toBe(controlsKey(b));
-  });
-
-  it('differs when value changes', () => {
-    const a = [{ id: 'k', label: 'K', min: 0, max: 1, value: 0.5 }];
-    const b = [{ id: 'k', label: 'K', min: 0, max: 1, value: 0.6 }];
-    expect(controlsKey(a)).not.toBe(controlsKey(b));
+    expect(got[0].kind).toBe('clarification_request');
   });
 });
