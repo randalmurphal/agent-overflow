@@ -1118,10 +1118,21 @@ export function createUseStickToBottomController(
       // after each content-RO fire — vanishingly unlikely to swallow a
       // real user gesture, since the window only opens immediately after
       // a layout change.
-      if (resizeCorrelatedScroll) {
+      //
+      // Gate on `!hadUserScrollIntent`: virtua's applyJump and other
+      // layout-driven scroll writes can't produce wheel / key / touch /
+      // pointer signals, so a pending intent is proof the scroll event
+      // reflects a real user gesture, not the cascade. Without this
+      // guard the bail also swallowed input-backed re-stick gestures
+      // on heavy threads where the contentRO seam fires continuously
+      // (virtua remeasurement + Streamdown async typesetting), leaving
+      // escape stuck true after the user manually wheeled back to the
+      // bottom.
+      if (resizeCorrelatedScroll && !hadUserScrollIntent) {
         trace('scroll.scrollEvent.deferred.bailRO', () => ({
           resizeDifference: Math.round(resizeDifference),
           resizeCorrelatedScroll,
+          hadUserScrollIntent,
           scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
         }));
         return;

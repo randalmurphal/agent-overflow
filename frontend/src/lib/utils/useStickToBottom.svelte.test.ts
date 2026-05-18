@@ -752,6 +752,57 @@ describe('createUseStickToBottomController', () => {
       expect(controller.isSticky).toBe(true);
     });
 
+    it('user wheel-down to bottom during a content-RO cascade clears escape', async () => {
+      // Regression for "auto-follow stops on a thread until refresh".
+      // On heavy threads the contentRO seam fires continuously (virtua
+      // row remeasurement, Streamdown async typesetting completing in
+      // rows above the viewport). The deferred scroll handler's
+      // `resizeCorrelatedScroll` bail defends against virtua's
+      // applyJump producing an untagged scroll event mid-cascade, but
+      // it was too broad — it also blocked input-backed scroll events
+      // that happened to land while the cascade was active, leaving
+      // escapedFromLock stuck true even when the user manually wheeled
+      // back to the bottom. The fix gates the bail on
+      // `!hadUserScrollIntent` so a real user gesture is allowed
+      // through to the re-stick check.
+      //
+      // Covers wheel; key / touch / pointer arming go through the
+      // same `pendingUserScrollIntent` flag and the deferred reads
+      // it source-agnostically, so wheel exercises the shared gate.
+      // Per-source arming has its own coverage in the keyboard /
+      // touch / scrollbar-drag describe blocks above.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      fireScroll(scrollEl); // consume first-fire programmatic-write tag
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(false);
+
+      // 1. Wheel up away from the bottom → escape.
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // 2. ContentRO fires mid-cascade — a row above the viewport
+      //    finishes typesetting or remeasures. resizeDifference is
+      //    now non-zero with a 1ms+rAF clear scheduled.
+      ro.fire(contentEl, 820);
+
+      // 3. While the cascade flag is still set, the user wheels
+      //    back down to the bottom.
+      fireWheel(scrollEl, 50, scrollEl);
+      geom.scrollTop = 400; // distance from bottom = 0
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      // The user's down-gesture landing at bottom must re-stick.
+      // Without the fix, resizeCorrelatedScroll=true bails the
+      // deferred before willRestick runs and escape stays true.
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
     it('stays escaped when near the bottom visually but outside the auto-follow epsilon', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
