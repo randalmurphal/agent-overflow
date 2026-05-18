@@ -63,6 +63,12 @@
   let appReady = $state(false);
 
   let sidebarPane = $derived(getFocusedPaneOrNull());
+  // Commands that fire even when focus sits inside an INPUT / TEXTAREA /
+  // contentEditable. Pane navigation and pane management belong here so
+  // the user can switch / reorder / close panes from the composer
+  // without having to blur it first. The textarea-word-op fallback
+  // (alt+arrow / ctrl+arrow) deliberately yields to these chords when a
+  // keybinding matches — see handleGlobalKeydown below.
   const EDITABLE_REACHABLE_COMMANDS = new Set([
     'sidebar.focus-search',
     'palette.open',
@@ -78,6 +84,12 @@
     'thread.jump.7',
     'thread.jump.8',
     'thread.jump.9',
+    'thread.newPane',
+    'pane.close',
+    'pane.focusLeft',
+    'pane.focusRight',
+    'pane.moveLeft',
+    'pane.moveRight',
   ]);
 
   function handleStartDiscussion(thread: Thread): void {
@@ -126,13 +138,6 @@
 
   function handleGlobalKeydown(ev: KeyboardEvent): void {
     if (ev.defaultPrevented) return;
-    // Word-op keymap (Alt/Ctrl + Backspace/Delete/Arrows) for any text
-    // input. Cross-platform fill-in for the chord half each OS doesn't
-    // bind natively. Runs ahead of the editable bail-out below.
-    if (dispatchTextEditing(ev)) {
-      ev.preventDefault();
-      return;
-    }
     // Let free-text inputs keep their typing behaviour. The palette overlay
     // mounts its own input handler that bypasses this branch naturally.
     const target = ev.target as HTMLElement | null;
@@ -142,8 +147,25 @@
       tag === 'TEXTAREA' ||
       tag === 'SELECT' ||
       target?.isContentEditable === true;
-    if (editable && !eventMatchesKeybindingCommand(ev, paletteContext, EDITABLE_REACHABLE_COMMANDS)) return;
 
+    // Editable target: a keybinding in EDITABLE_REACHABLE_COMMANDS wins
+    // ahead of the word-op fallback. This is what lets alt+arrow drive
+    // pane.focusLeft / focusRight from inside the composer; for chords
+    // that DON'T match a reachable command (alt+backspace, ctrl+arrow,
+    // etc.) the word-op fallback still runs.
+    if (editable) {
+      if (eventMatchesKeybindingCommand(ev, paletteContext, EDITABLE_REACHABLE_COMMANDS)) {
+        if (dispatchKey(ev, paletteContext)) ev.preventDefault();
+        return;
+      }
+      if (dispatchTextEditing(ev)) {
+        ev.preventDefault();
+      }
+      return;
+    }
+
+    // Non-editable target: word-op fallback is a no-op (its own
+    // editableTarget gate returns null), so go straight to dispatch.
     const handled = dispatchKey(ev, paletteContext);
     if (handled) ev.preventDefault();
   }

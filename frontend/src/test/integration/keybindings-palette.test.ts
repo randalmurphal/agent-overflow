@@ -178,4 +178,75 @@ describe('App integration — keybindings + palette', () => {
 
     await waitFor(() => expect(pane.thread?.id).toBe('t-2'));
   });
+
+  // Regression: pane navigation/management chords used to be eaten by
+  // the editable bail-out (and alt+arrow specifically was eaten by the
+  // textarea word-op fallback). The user reported having to blur the
+  // composer before alt+h / alt+arrow / mod+w would take effect.
+  it('pane focus / move / close chords fire while the composer textarea is focused', async () => {
+    const threads: Thread[] = [
+      makeThread({ id: 't-1', title: 'Thread One' }),
+      makeThread({ id: 't-2', title: 'Thread Two' }),
+    ];
+    const rendered = await mountBareApp(threads);
+    await waitForThreadStore(threads.length);
+    await loadKeybindingsFromMock([
+      { key: 'alt+h', command: 'pane.focusLeft', when: '!terminalFocus' },
+      { key: 'alt+arrowleft', command: 'pane.focusLeft', when: '!terminalFocus' },
+      { key: 'alt+shift+arrowright', command: 'pane.moveRight', when: '!terminalFocus' },
+      { key: 'mod+w', command: 'pane.close', when: '!terminalFocus' },
+    ]);
+
+    const panesMod = await import('../../lib/stores/panes.svelte');
+    const layoutMod = await import('../../lib/stores/paneLayout.svelte');
+    const main = panesMod.ensureMainPane();
+    await main.switchThread(threads[0]);
+    const secondary = panesMod.createPane('secondary');
+    secondary.replaceThread(threads[1]);
+    layoutMod.setPaneLayoutItemsForTest([
+      { id: 'main', paneId: 'main', kind: 'thread', ratio: 1 },
+      { id: 'secondary', paneId: 'secondary', kind: 'thread', ratio: 1 },
+    ]);
+    panesMod.focusPane('secondary');
+    await flush(15);
+
+    // With two panes mounted there are two composer textareas; either is
+    // fine as the event target since handleGlobalKeydown reads its
+    // `editable` predicate off `ev.target` only.
+    const input = rendered.getAllByLabelText('Message Input')[0] as HTMLTextAreaElement;
+    input.focus();
+
+    // alt+arrowleft is the canonical conflict — it used to be claimed by
+    // dispatchTextEditing's word-op fallback before the reorder.
+    await fireEvent.keyDown(input, { key: 'ArrowLeft', altKey: true });
+    await flush();
+    await waitFor(() => expect(panesMod.getFocusedPaneId()).toBe('main'));
+
+    // alt+h is the vim-style alias for the same command; should also fire.
+    panesMod.focusPane('secondary');
+    await flush();
+    await fireEvent.keyDown(input, { key: 'h', altKey: true });
+    await flush();
+    await waitFor(() => expect(panesMod.getFocusedPaneId()).toBe('main'));
+
+    // alt+shift+arrowright should move the focused pane (reorder).
+    panesMod.focusPane('main');
+    await flush();
+    await fireEvent.keyDown(input, { key: 'ArrowRight', altKey: true, shiftKey: true });
+    await flush();
+    await waitFor(() =>
+      expect(layoutMod.getPaneLayoutItems().map((item) => item.paneId)).toEqual([
+        'secondary',
+        'main',
+      ]),
+    );
+
+    // mod+w should close the focused pane.
+    await fireEvent.keyDown(input, { key: 'w', ctrlKey: true });
+    await fireEvent.keyDown(input, { key: 'w', metaKey: true });
+    await flush();
+    await waitFor(() =>
+      expect(layoutMod.getPaneLayoutItems().map((item) => item.paneId)).toEqual(['secondary']),
+    );
+  });
 });
