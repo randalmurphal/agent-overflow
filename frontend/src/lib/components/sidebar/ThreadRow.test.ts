@@ -903,8 +903,8 @@ describe('<ThreadRow> nested row chrome', () => {
       props: { thread: makeThread(), pane, indent: 2 },
     });
     const outer = container.querySelector('[role="button"]') as HTMLElement;
-    // Compact layout: every row reserves a 16px leading pin gutter, then
-    // depth 2+ steps 8px per nesting level. indent=2 → 16 + 8 = 24px.
-    expect(outer.style.paddingLeft).toBe('24px');
+    // Compact layout: every row reserves a 24px leading pin gutter, then
+    // depth 2+ steps 8px per nesting level. indent=2 -> 24 + 8 = 32px.
+    expect(outer.style.paddingLeft).toBe('32px');
   });
 });

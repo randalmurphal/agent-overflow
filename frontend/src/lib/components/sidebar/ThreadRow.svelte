@@ -237,7 +237,7 @@
   // reserves it — top-level rows render the pin button absolutely into
   // it; nested rows leave it empty so titles stay aligned with their
   // parents.
-  const PIN_SLOT_PX = 16;
+  const PIN_SLOT_PX = 24;
   let indentPx = $derived(INDENT_PX[Math.min(indent, INDENT_PX.length - 1)]);
   let rowPaddingLeftPx = $derived(PIN_SLOT_PX + indentPx);
 
@@ -279,7 +279,7 @@
       contributing a flex gap of its own. The wrapper is non-interactive;
       the button inside opts back in to pointer events when visible.
     -->
-    <div class="absolute inset-y-0 left-0 flex items-center justify-center w-4 pointer-events-none">
+    <div class="absolute inset-y-0 left-0 flex items-center justify-center w-6 pointer-events-none">
       <ThreadRowPinButton {isPinned} buildCtx={ctx} />
     </div>
   {/if}
