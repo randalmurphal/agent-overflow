@@ -243,7 +243,8 @@
 
   let worktreeName = $derived(pathBasename(thread.worktreePath));
   let showWorktreeMeta = $derived(!editing && Boolean(thread.worktreePath && worktreeName));
-  let worktreeIndentPx = $derived(rowPaddingLeftPx);
+  const WORKTREE_META_OFFSET_PX = 14;
+  let worktreeIndentPx = $derived(rowPaddingLeftPx + WORKTREE_META_OFFSET_PX);
   let worktreeRightPaddingPx = $derived(52);
 </script>
 
@@ -394,12 +395,12 @@
       data-testid="thread-row-worktree"
     >
       <span
-        class="ml-auto inline-flex min-w-0 max-w-full items-center gap-1 px-1 py-0 text-fg-hint"
+        class="inline-flex min-w-0 max-w-full items-center gap-1 px-1 py-0 text-fg-hint"
         data-testid="thread-row-worktree-label"
       >
         <Icon icon={FolderGit2} size={10} strokeWidth={1.8} class="shrink-0 opacity-85" />
         <span
-          class="min-w-0 truncate text-right font-mono text-[10px]"
+          class="min-w-0 truncate font-mono text-[10px]"
           data-testid="thread-row-worktree-name"
         >
           {worktreeName}

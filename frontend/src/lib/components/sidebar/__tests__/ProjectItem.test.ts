@@ -92,7 +92,7 @@ describe('<ProjectItem>', () => {
       },
     });
 
-    expect(getByTestId('project-item').className).toContain('mt-0.5');
+    expect(getByTestId('project-item').className).toContain('mt-[3px]');
   });
 
   it('clicking the chevron toggles the project', async () => {

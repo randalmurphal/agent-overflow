@@ -344,6 +344,7 @@ describe('<ThreadRow> worktree metadata', () => {
 
     expect(queryByText('WT')).toBeNull();
     expect(container.textContent).not.toContain('WT');
+    expect(getByTestId('thread-row-worktree').style.paddingLeft).toBe('38px');
     expect(getByTestId('thread-row-worktree-name').textContent?.trim()).toBe('feature-demo');
   });
 

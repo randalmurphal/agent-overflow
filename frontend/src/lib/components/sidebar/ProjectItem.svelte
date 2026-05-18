@@ -246,7 +246,7 @@
   ondragend={handleDragEnd}
   class={
     'group relative flex flex-col transition-opacity ' +
-    (separatedFromPrevious ? 'mt-0.5 ' : '') +
+    (separatedFromPrevious ? 'mt-[3px] ' : '') +
     (isDragging ? 'opacity-40' : '')
   }
 >

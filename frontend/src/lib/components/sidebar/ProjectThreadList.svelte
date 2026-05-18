@@ -179,7 +179,7 @@
             type="button"
             onclick={handleShowMore}
             data-testid="project-thread-list-show-more"
-            class="group/more flex items-center gap-1.5 h-6 px-2 rounded-[var(--radius-field)] text-[10px] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            class="group/more flex items-center gap-1.5 h-6 pl-6 pr-2 rounded-[var(--radius-field)] text-[10px] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           >
             {#if hiddenStatus}
               <span
