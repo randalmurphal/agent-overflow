@@ -259,6 +259,14 @@
   });
 </script>
 
+{#snippet settingsSurface()}
+  <SettingsView
+    initialSection={settingsSection}
+    contextTarget={settingsContextTarget}
+    onClose={() => showSettings = false}
+  />
+{/snippet}
+
 <main class="app-shell relative h-screen w-screen overflow-hidden text-text-primary flex flex-col">
   <TransportStatusBanner />
   <div bind:this={appContentEl} class="relative flex flex-1 min-h-0 w-full">
@@ -268,17 +276,7 @@
       registerFocusSearch={(focus) => (searchFocuser = focus)}
       registerOpenFromPR={(cb) => (openFromPR = cb)}
     />
-    <PaneHost>
-      {#if showSettings}
-        {#snippet settings()}
-          <SettingsView
-            initialSection={settingsSection}
-            contextTarget={settingsContextTarget}
-            onClose={() => showSettings = false}
-          />
-        {/snippet}
-      {/if}
-    </PaneHost>
+    <PaneHost globalSurface={showSettings ? settingsSurface : undefined} />
   </div>
 </main>
 <DiscussionStartFlow

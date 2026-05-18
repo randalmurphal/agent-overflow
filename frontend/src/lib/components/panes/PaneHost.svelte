@@ -7,10 +7,10 @@
 
   interface Props {
     children?: Snippet;
-    settings?: Snippet;
+    globalSurface?: Snippet;
   }
 
-  let { settings }: Props = $props();
+  let { globalSurface }: Props = $props();
   let layoutItems = $derived(getPaneLayoutItems());
   let hostEl: HTMLDivElement | undefined = $state(undefined);
 
@@ -55,9 +55,9 @@
 </script>
 
 <div bind:this={hostEl} class="flex-1 flex min-w-0 min-h-0 overflow-x-auto overflow-y-hidden" data-testid="pane-host">
-  {#if settings}
+  {#if globalSurface}
     <section class="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="global-pane-surface">
-      {@render settings()}
+      {@render globalSurface()}
     </section>
   {:else}
     {#each layoutItems as item (item.id)}
