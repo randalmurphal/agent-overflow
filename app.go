@@ -175,6 +175,11 @@ type App struct {
 	// can't fire mid-teardown and race the session snapshot.
 	idleReaperStop chan struct{}
 	idleReaperWG   sync.WaitGroup
+	// codexRateLimitProbeRunning coalesces explicit Codex rate-limit refreshes.
+	// Each refresh spawns a short-lived app-server subprocess, so concurrent
+	// turn-complete and periodic triggers should share "already refreshing"
+	// semantics rather than fan out processes for the same account snapshot.
+	codexRateLimitProbeRunning atomic.Bool
 	// Test-only injection points for binding helpers that need to observe start/stop.
 	startSessionFn        func(string) error
 	stopSessionFn         func(string) error
@@ -373,6 +378,11 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	// a minimal Messages API call — see internal/provider/claude/
 	// ratelimits_probe.go for the rationale.
 	a.startClaudeRateLimitProbeLoop()
+
+	// Start the Codex rate-limit probe loop. Startup hydration is already
+	// covered by probeStartupAccountInfo; this loop keeps the rings fresh
+	// while Codex sessions are active.
+	a.startCodexRateLimitProbeLoop()
 
 	// Start the idle-session reaper. Walks a.sessions every
 	// IdleReapInterval and closes provider subprocesses that have been

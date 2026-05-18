@@ -33,14 +33,16 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 				// block it), but the error should be visible.
 				a.emitErrorToThread(threadID, fmt.Sprintf("discussion sync failed: %v", err))
 			}
-			// Rate-limit refresh on Claude turn completion: piggy-back on
-			// the event the user already triggered so the rings reflect
-			// the cost of the turn that just finished. Fires in a
-			// goroutine so the HTTP call doesn't block downstream event
-			// handlers; Codex turns intentionally skip this because the
-			// probe targets Anthropic's API.
-			if providerType == string(provider.Claude) {
+			// Rate-limit refresh on turn completion: piggy-back on the
+			// event the user already triggered so the rings reflect the
+			// cost of the turn that just finished. Fires in a goroutine
+			// so the provider-specific probe doesn't block downstream
+			// event handlers.
+			switch providerType {
+			case string(provider.Claude):
 				go a.probeClaudeRateLimits(context.Background())
+			case string(provider.Codex):
+				go a.probeCodexRateLimits(context.Background())
 			}
 		}
 

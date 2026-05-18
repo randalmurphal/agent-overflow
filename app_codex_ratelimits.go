@@ -1,0 +1,47 @@
+package main
+
+import (
+	"context"
+	"log"
+
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/codex"
+)
+
+// probeCodexRateLimits runs a fresh Codex app-server account probe and emits
+// only the rate-limit snapshot. It deliberately bypasses codexProbeCache:
+// scheduled refreshes are about current quota state, not account-plan metadata.
+func (a *App) probeCodexRateLimits(ctx context.Context) {
+	if a.shuttingDown.Load() {
+		return
+	}
+	if !a.codexRateLimitProbeRunning.CompareAndSwap(false, true) {
+		return
+	}
+	defer a.codexRateLimitProbeRunning.Store(false)
+
+	binary := a.providerBinaryPath(string(provider.Codex))
+	_, err := codex.ProbeAccount(ctx, codex.ProbeConfig{
+		Binary:     binary,
+		OnSnapshot: a.emitRateLimitsSnapshot,
+	})
+	if err != nil {
+		log.Printf("codex: rate-limit probe: %v", err)
+	}
+}
+
+// startCodexRateLimitProbeLoop re-probes Codex limits every
+// rateLimitProbeInterval while at least one Codex session is alive. Startup is
+// intentionally skipped here because probeStartupAccountInfo already hydrates
+// Codex account info and rate-limit data once at boot.
+func (a *App) startCodexRateLimitProbeLoop() {
+	a.startRateLimitProbeLoop(rateLimitProbeLoop{
+		probeImmediately: false,
+		hasActiveSession: a.hasActiveCodexSession,
+		probe:            a.probeCodexRateLimits,
+	})
+}
+
+func (a *App) hasActiveCodexSession() bool {
+	return a.sessionManager().hasProvider(string(provider.Codex))
+}

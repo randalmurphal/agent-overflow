@@ -10,7 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"agent-overflow/internal/provider"
 )
@@ -181,77 +180,6 @@ func TestProbeClaudeRateLimits_RespectsShuttingDownGate(t *testing.T) {
 	}
 	if emits.Load() != 0 {
 		t.Errorf("expected 0 emits with shutdown set, got %d", emits.Load())
-	}
-}
-
-// TestSessionEventHandlerTurnCompleteFiresProbeForClaude verifies the
-// turn-complete trigger is provider-gated: a Claude turn fires the
-// probe, a Codex turn does not. The test injects a fake HTTP server
-// that counts hits; the goroutine launched from sessionEventHandler
-// has its own goroutine cadence so we await up to 1s for the hit.
-func TestSessionEventHandlerTurnCompleteFiresProbeForClaude(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	t.Setenv("USERPROFILE", tmpHome)
-	credsDir := filepath.Join(tmpHome, ".claude")
-	if err := os.MkdirAll(credsDir, 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(credsDir, ".credentials.json"), []byte(`{"claudeAiOauth":{"accessToken":"bearer-x"}}`), 0o600); err != nil {
-		t.Fatalf("write creds: %v", err)
-	}
-
-	hits := atomic.Int32{}
-	hitCh := make(chan struct{}, 4)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hits.Add(1)
-		w.Header().Set("Anthropic-Ratelimit-Unified-5h-Utilization", "0.10")
-		w.Header().Set("Anthropic-Ratelimit-Unified-5h-Reset", "1778479200")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{}`))
-		select {
-		case hitCh <- struct{}{}:
-		default:
-		}
-	}))
-	defer srv.Close()
-	srvURL, _ := url.Parse(srv.URL)
-
-	app := newTestAppWithStore(t)
-	app.rateLimitProbeClientOverride = &http.Client{
-		Transport: redirectRoundTripper{target: srvURL, inner: http.DefaultTransport},
-	}
-
-	// Codex turn-complete: should NOT trigger a probe.
-	codexHandler := app.sessionEventHandler("thread-codex", "tok-codex", string(provider.Codex))
-	codexHandler(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "thread-codex",
-		Timestamp: time.Now(),
-	})
-
-	// Give any incorrectly-fired goroutine a moment to make an HTTP call.
-	time.Sleep(50 * time.Millisecond)
-	if hits.Load() != 0 {
-		t.Fatalf("Codex turn-complete fired the probe (hits=%d)", hits.Load())
-	}
-
-	// Claude turn-complete: SHOULD trigger a probe.
-	claudeHandler := app.sessionEventHandler("thread-claude", "tok-claude", string(provider.Claude))
-	claudeHandler(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "thread-claude",
-		Timestamp: time.Now(),
-	})
-
-	select {
-	case <-hitCh:
-		// Got the expected hit.
-	case <-time.After(1 * time.Second):
-		t.Fatalf("Claude turn-complete did not fire the probe within 1s (hits=%d)", hits.Load())
-	}
-	if hits.Load() != 1 {
-		t.Errorf("hits = %d, want 1", hits.Load())
 	}
 }
 

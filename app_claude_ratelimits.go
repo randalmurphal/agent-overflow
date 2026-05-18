@@ -5,18 +5,10 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 )
-
-// claudeRateLimitProbeInterval is how often the periodic probe fires
-// while at least one Claude session is alive. Anthropic's headers
-// don't change between requests in the same window, so probing more
-// often only burns probe tokens (1 input + 1 output Haiku token each
-// — negligible but pointless).
-const claudeRateLimitProbeInterval = 2 * time.Minute
 
 // rateLimitProbeHTTPClient is the shared HTTP client used by every
 // rate-limit probe. Singleton at the app level so the underlying
@@ -62,7 +54,7 @@ func (a *App) rateLimitProbeClient() *http.Client {
 }
 
 // startClaudeRateLimitProbeLoop fires an initial probe at startup,
-// then re-probes every `claudeRateLimitProbeInterval` while at least
+// then re-probes every `rateLimitProbeInterval` while at least
 // one Claude session is alive.
 //
 // Three trigger points feed into the same probe:
@@ -79,21 +71,11 @@ func (a *App) rateLimitProbeClient() *http.Client {
 // into the loop would require additional plumbing for ~5 lines of
 // glue.
 func (a *App) startClaudeRateLimitProbeLoop() {
-	go func() {
-		a.probeClaudeRateLimits(context.Background())
-
-		ticker := time.NewTicker(claudeRateLimitProbeInterval)
-		defer ticker.Stop()
-		for range ticker.C {
-			if a.shuttingDown.Load() {
-				return
-			}
-			if !a.hasActiveClaudeSession() {
-				continue
-			}
-			a.probeClaudeRateLimits(context.Background())
-		}
-	}()
+	a.startRateLimitProbeLoop(rateLimitProbeLoop{
+		probeImmediately: true,
+		hasActiveSession: a.hasActiveClaudeSession,
+		probe:            a.probeClaudeRateLimits,
+	})
 }
 
 // hasActiveClaudeSession reports whether at least one Claude session

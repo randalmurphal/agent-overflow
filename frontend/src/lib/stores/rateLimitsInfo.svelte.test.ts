@@ -228,12 +228,9 @@ describe('rateLimitsInfo', () => {
     expect(getProviderRateLimit('claude', 300)?.resetsAt).toBe(1776300000);
   });
 
-  // Equal `resetsAt` = same window, latest reading wins. Within a
-  // window, usedPercent climbs monotonically as the user makes
-  // requests. Each new event carries the most current reading and
-  // must update — the stale-event defense is keyed strictly on a
-  // newer boundary, not on equal boundaries.
-  it('updates on a same-window-later-reading event (equal resetsAt is not stale)', () => {
+  // Equal `resetsAt` = same window. Usage climbs monotonically within
+  // a window, so a higher same-window reading is the fresher value.
+  it('updates on a same-window higher-reading event', () => {
     setProviderRateLimits({
       provider: 'claude',
       limits: [
@@ -250,6 +247,28 @@ describe('rateLimitsInfo', () => {
     });
 
     expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(42);
+  });
+
+  // Delayed probe/notification races can replay an older lower reading
+  // for the same reset boundary after a fresher one. Keep the higher
+  // value until the reset boundary advances.
+  it('drops a same-window lower-reading event', () => {
+    setProviderRateLimits({
+      provider: 'codex',
+      limits: [
+        { limitId: 'codex', limitName: 'Codex', usedPercent: 39, windowMins: 300, resetsAt: 1776300000 },
+      ],
+      updatedAt: 1776285000,
+    });
+    setProviderRateLimits({
+      provider: 'codex',
+      limits: [
+        { limitId: 'codex', limitName: 'Codex', usedPercent: 9, windowMins: 300, resetsAt: 1776300000 },
+      ],
+      updatedAt: 1776286000,
+    });
+
+    expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(39);
   });
 
   // The defense applies per-window: a stale 5h event must not

@@ -40,6 +40,7 @@ export function setProviderRateLimits(snapshot: RateLimitsSnapshot): void {
 
   const existing = limitsByProvider.get(provider) ?? new Map<number, RateLimitEntry>();
   const merged = new Map(existing);
+  let changed = false;
   for (const entry of snapshot.limits) {
     // Defense-in-depth: each provider's parser drops snapshots for
     // unknown windows, but multiple parsers feed this same map (Claude,
@@ -64,20 +65,44 @@ export function setProviderRateLimits(snapshot: RateLimitsSnapshot): void {
     // window's `resetsAt` strictly dominates. Drop incoming entries
     // whose `resetsAt` is older than what we've already stored.
     //
-    // Equal `resetsAt` (= same window, fresher reading) DOES update —
-    // usedPercent climbs monotonically inside a window, so the latest
-    // event always carries the most current reading.
+    // Equal `resetsAt` means "same window". Usage should climb
+    // monotonically inside a window, but delayed probe/notification
+    // races can replay an older lower reading after a fresher one.
+    // Drop same-window lower readings; allow lower values only when
+    // `resetsAt` advances, which means the window actually reset.
     const prior = merged.get(entry.windowMins);
     if (prior && prior.resetsAt > entry.resetsAt) continue;
+    if (
+      prior
+      && prior.resetsAt === entry.resetsAt
+      && Number.isFinite(prior.usedPercent)
+      && Number.isFinite(entry.usedPercent)
+      && prior.usedPercent > entry.usedPercent
+    ) {
+      continue;
+    }
+
+    if (prior && rateLimitEntriesEqual(prior, entry)) continue;
 
     merged.set(entry.windowMins, entry);
+    changed = true;
   }
+
+  if (!changed) return;
 
   // Reassign the outer Map so $derived consumers re-run. Svelte 5 runes
   // track Map identity, not in-place mutation.
   const next = new Map(limitsByProvider);
   next.set(provider, merged);
   limitsByProvider = next;
+}
+
+function rateLimitEntriesEqual(a: RateLimitEntry, b: RateLimitEntry): boolean {
+  return a.limitId === b.limitId
+    && a.limitName === b.limitName
+    && a.usedPercent === b.usedPercent
+    && a.windowMins === b.windowMins
+    && a.resetsAt === b.resetsAt;
 }
 
 export function getProviderRateLimit(
