@@ -249,4 +249,57 @@ describe('App integration — keybindings + palette', () => {
       expect(layoutMod.getPaneLayoutItems().map((item) => item.paneId)).toEqual(['secondary']),
     );
   });
+
+  // Regression: pressing alt+h from a textarea should not only flip the
+  // pane focus indicator but also move DOM focus to the newly focused
+  // pane's composer — otherwise the user's next keystroke still lands in
+  // the previously focused pane and the chord feels like a no-op.
+  it('alt+h moves DOM focus to the newly focused pane composer', async () => {
+    const threads: Thread[] = [
+      makeThread({ id: 't-1', title: 'Thread One' }),
+      makeThread({ id: 't-2', title: 'Thread Two' }),
+    ];
+    const rendered = await mountBareApp(threads);
+    await waitForThreadStore(threads.length);
+    await loadKeybindingsFromMock([
+      { key: 'alt+h', command: 'pane.focusLeft', when: '!terminalFocus' },
+    ]);
+
+    const panesMod = await import('../../lib/stores/panes.svelte');
+    const layoutMod = await import('../../lib/stores/paneLayout.svelte');
+    const main = panesMod.ensureMainPane();
+    await main.switchThread(threads[0]);
+    const secondary = panesMod.createPane('secondary');
+    secondary.replaceThread(threads[1]);
+    layoutMod.setPaneLayoutItemsForTest([
+      { id: 'main', paneId: 'main', kind: 'thread', ratio: 1 },
+      { id: 'secondary', paneId: 'secondary', kind: 'thread', ratio: 1 },
+    ]);
+    panesMod.focusPane('secondary');
+    await flush(15);
+
+    // Focus the SECONDARY pane's composer textarea — alt+h should move pane
+    // focus AND DOM focus to the MAIN pane's composer.
+    const secondaryPaneEl = rendered.container.querySelector<HTMLElement>(
+      '[data-pane-id="secondary"]',
+    );
+    expect(secondaryPaneEl).not.toBeNull();
+    const secondaryInput = secondaryPaneEl!.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message Input"]',
+    )!;
+    secondaryInput.focus();
+    expect(document.activeElement).toBe(secondaryInput);
+
+    await fireEvent.keyDown(secondaryInput, { key: 'h', altKey: true });
+    await flush();
+
+    await waitFor(() => expect(panesMod.getFocusedPaneId()).toBe('main'));
+    const mainPaneEl = rendered.container.querySelector<HTMLElement>(
+      '[data-pane-id="main"]',
+    )!;
+    const mainInput = mainPaneEl.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message Input"]',
+    )!;
+    await waitFor(() => expect(document.activeElement).toBe(mainInput));
+  });
 });

@@ -18,10 +18,12 @@ import { getActiveTurn, isSendInFlight } from './threadStatuses.svelte';
 import {
   closeFocusedPane,
   focusAdjacentPane,
+  getFocusedPaneId,
   moveFocusedPane,
   openThreadInPane,
   syncThread,
 } from './panes.svelte';
+import { focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
 import { removeThread } from './threads.svelte';
 import { forkThreadAction } from '../components/sidebar/threadRowActions';
 import { userFacingError } from '../utils/userFacingError';
@@ -136,7 +138,11 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Pane: Close Focused',
     icon: '×',
     when: '!terminalFocus',
-    run: () => closeFocusedPane(),
+    run: () => {
+      closeFocusedPane();
+      const nextFocused = getFocusedPaneId();
+      if (nextFocused) focusPaneComposerIfEditableActive(nextFocused);
+    },
   });
 
   registerCommand({
@@ -144,7 +150,10 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Pane: Focus Left',
     icon: '←',
     when: '!terminalFocus',
-    run: () => { focusAdjacentPane(-1); },
+    run: () => {
+      const next = focusAdjacentPane(-1);
+      if (next) focusPaneComposerIfEditableActive(next.paneId);
+    },
   });
 
   registerCommand({
@@ -152,7 +161,10 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Pane: Focus Right',
     icon: '→',
     when: '!terminalFocus',
-    run: () => { focusAdjacentPane(1); },
+    run: () => {
+      const next = focusAdjacentPane(1);
+      if (next) focusPaneComposerIfEditableActive(next.paneId);
+    },
   });
 
   registerCommand({
