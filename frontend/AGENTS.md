@@ -222,6 +222,79 @@ frontend layers on top:
   contentEl are unchanged across a thread switch — MessageTimeline
   isn't keyed on threadId so those refs are stable, and `attach()`'s
   early-return path is hit on every switch.
+  **Three-band geometry** governs the three different "near the bottom"
+  decisions the controller makes; widening any one of them affects a
+  separate UX surface:
+  - `STICK_TO_BOTTOM_OFFSET_PX = 70` — VISUAL band for the
+    scroll-to-bottom chip. The chip is hidden while the user is within
+    70px of the geometric bottom because that's "essentially in view"
+    and the chip would be noise. Drives `isAtBottom` (the public
+    getter) and the negative-delta re-pin's geometric branch.
+  - `AUTO_FOLLOW_BOTTOM_EPSILON_PX = 4` — RE-STICK band for the
+    scroll handler's "user scrolled back" path. A DOWN-direction
+    scroll that lands within 4px of the bottom flips the user back
+    to sticky. Widened from 0.5 in the 2026-05 gentle-mango plan
+    (matches react-virtuoso's `atBottomThreshold` default) so that
+    virtua row-height estimation + browser scrollTop rounding (which
+    routinely land 1–3px short of the actual bottom on Opus-cadence
+    streams) don't strand the user. Tighter than the visual band on
+    purpose: the chip hides while you can SEE the bottom; auto-follow
+    only re-engages once you've actually REACHED it.
+  - `USER_SCROLL_ESCAPE_THRESHOLD_PX = 0` — ESCAPE band for the
+    "user scrolled away" path. Any non-zero upward movement during a
+    gesture window escapes ("if I scroll away at all I expect to
+    unstick"). Lowered from 1 in the 2026-05 plan. Strict `>` on the
+    threshold so zero-movement scrolls (sub-pixel wheels rounded by
+    the browser) don't spuriously escape.
+  The asymmetry is load-bearing: re-stick has to TOLERATE jitter
+  (otherwise streaming threads can't re-engage); escape has to be
+  STRICT (otherwise user intent is silently ignored). Don't unify
+  these thresholds without first reading the regression tests in
+  `useStickToBottom.svelte.test.ts` under "scroll-intent regressions
+  — Bug A / B / C / trackpad / scrollend".
+  **Sync-captured `distFromBottomAtEvent`** (2026-05, Change 1) is
+  the partner to the widened epsilon. The deferred re-stick check
+  (1ms after the scroll event) uses the distance value captured at
+  EVENT time, not a fresh `distanceFromBottom()` read — a streaming
+  chunk arriving in that 1ms window can grow `scrollHeight` and
+  push the user past the epsilon in the read, even though the user
+  themselves never moved. The captured value reflects what they
+  actually saw.
+  **Direction-aware pin gating** (2026-05, Bug C fix) means the
+  contentRO positive-delta `positiveWillPin`, the
+  `notifyContentMaybeGrew` / `notifyLiveContentMaybeGrew` gates
+  (`readNotifyContentGate`), and the `springGateOpen` predicate all
+  block ONLY when the active `gestureSession.direction` is `'up'`.
+  `'down'` and `'unknown'` (pointer-tap on the scrollbar before any
+  drag, sub-pixel trackpad nudge rounded to no-op) BOTH permit
+  pinning — that's what stops the bottom from drifting away from a
+  sticky user who taps the scrollbar during streaming. The strict
+  `gestureSession === null` gate is preserved at four sites by
+  design: the contentRO `firstFire` willPin, the `negativeWillPin`
+  branch, the overshoot guard, and the `pauseAutoScroll.release`
+  repin. Most importantly, `forceStick({reason: 'restore'})` ALSO
+  keeps the strict gate regardless of direction — restore-snap MUST
+  NO-OP on any pending intent (the seq-509 trace bug defense: a
+  stale restore $effect racing a user gesture mid-stream would slam
+  the user to the bottom on any `'down'` or `'unknown'` intent if
+  the gate were relaxed).
+  **`scrollend` event** (2026-05, Change 5) is wired alongside the
+  160ms intent timer in `attach()` when `'onscrollend' in window`
+  feature-detects truthy. `scrollend` is Baseline since Safari 26.2
+  (Dec 2025) and is a strictly better gesture-termination signal
+  for laptop trackpads where momentum routinely tails 200–500ms
+  past fingertip release. The `handleScrollEnd` handler
+  early-returns on `gestureSession === null` so controller-owned
+  writes (sync-pin, spring chase, animateScrollTo, restore-stick)
+  don't trigger gesture bookkeeping. The 160ms `setTimeout`
+  fallback remains for pointer-tap-without-motion, sub-pixel wheel
+  rounded to a no-op, and any host environment that drops the
+  event. Both paths funnel through `expireGestureSession`'s
+  idempotent guard so dual-firing is safe.
+  **Pinch-zoom filter** (2026-05, Change 6): `handleWheel`
+  early-returns on `e.ctrlKey` so Mac trackpad pinch-to-zoom
+  (`wheel + ctrlKey=true` per browser convention) doesn't
+  spuriously arm a gesture and escape the lock.
   Programmatic scrolls go through `forceStick(opts?)` / `markAtBottom()` /
   `notifyContentMaybeGrew()` / `pauseAutoScroll()` /
   `runExternalScroll()` / `stopScroll()` / `animateScrollTo()` /

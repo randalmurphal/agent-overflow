@@ -28,6 +28,20 @@ function stubGeometry(scrollEl: HTMLElement, contentEl: HTMLElement, geom: Geome
   Object.defineProperty(contentEl, 'scrollHeight', { configurable: true, get: () => geom.contentHeight });
 }
 
+// Stub the geometry that `handlePointerDown` reads to classify a
+// pointerdown as "in the scrollbar gutter": offsetWidth (200) wider
+// than clientWidth (180) so scrollbarWidth=20, with a bounding rect
+// whose right edge is 200. Tests that synthesize scrollbar pointer
+// taps use clientX=195 to land inside the 180..200 gutter.
+function stubScrollbarGutter(scrollEl: HTMLElement): void {
+  Object.defineProperty(scrollEl, 'offsetWidth', { configurable: true, get: () => 200 });
+  Object.defineProperty(scrollEl, 'clientWidth', { configurable: true, get: () => 180 });
+  vi.spyOn(scrollEl, 'getBoundingClientRect').mockReturnValue({
+    x: 0, y: 0, top: 0, left: 0, right: 200, bottom: 600,
+    width: 200, height: 600, toJSON: () => ({}),
+  } as DOMRect);
+}
+
 class MockResizeObserver {
   static instances: MockResizeObserver[] = [];
   callback: ResizeObserverCallback;
@@ -99,6 +113,13 @@ function fireTouchMove(el: HTMLElement, clientY: number): void {
 }
 function fireScroll(el: HTMLElement): void {
   el.dispatchEvent(new Event('scroll'));
+}
+// happy-dom 20.9 reflects `onscrollend` properties so feature detection
+// in the controller succeeds, but it never dispatches the event natively.
+// Tests synthesize the event explicitly to exercise the scrollend handler
+// (Change 5 — gesture-termination signal that beats the 160ms timer).
+function fireScrollEnd(el: HTMLElement): void {
+  el.dispatchEvent(new Event('scrollend'));
 }
 
 describe('createUseStickToBottomController', () => {
@@ -343,21 +364,11 @@ describe('createUseStickToBottomController', () => {
     });
 
     it('scrollbar pointer drag escapes after the outer scrollTop decreases', async () => {
-      Object.defineProperty(scrollEl, 'offsetWidth', { configurable: true, get: () => 200 });
-      Object.defineProperty(scrollEl, 'clientWidth', { configurable: true, get: () => 180 });
-      vi.spyOn(scrollEl, 'getBoundingClientRect').mockReturnValue({
-        x: 0,
-        y: 0,
-        top: 0,
-        left: 0,
-        right: 200,
-        bottom: 600,
-        width: 200,
-        height: 600,
-        toJSON: () => ({}),
-      } as DOMRect);
+      stubScrollbarGutter(scrollEl);
 
-      scrollEl.dispatchEvent(new MouseEvent('pointerdown', { clientX: 195, bubbles: true }));
+      scrollEl.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, isPrimary: true, clientX: 195, clientY: 300 }),
+      );
       geom.scrollTop = 399;
       fireScroll(scrollEl);
       await nextTimer();
@@ -774,8 +785,8 @@ describe('createUseStickToBottomController', () => {
       // through to the re-stick check.
       //
       // Covers wheel; key / touch / pointer arming go through the
-      // same `pendingUserScrollIntent` flag and the deferred reads
-      // it source-agnostically, so wheel exercises the shared gate.
+      // same `gestureSession` and the deferred reads it
+      // source-agnostically, so wheel exercises the shared gate.
       // Per-source arming has its own coverage in the keyboard /
       // touch / scrollbar-drag describe blocks above.
       const ro = getRO();
@@ -1646,6 +1657,273 @@ describe('createUseStickToBottomController', () => {
       fireScroll(scrollEl);
       await nextTimer();
 
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+  });
+
+  describe('scroll-intent regressions — Bug A / B / C / trackpad / scrollend', () => {
+    // Pins the controller refinement from the 2026-05 gentle-mango
+    // plan. Headers below mark which change each test guards; the
+    // describe-block name is the anchor referenced from
+    // `frontend/AGENTS.md` for diagnosing scroll regressions, so the
+    // label stays even when the plan is archived.
+    //
+    //   - Change 1: distFromBottom captured at scroll-event time +
+    //     widened auto-follow epsilon (0.5 → 4 px). Bug A defense.
+    //   - Change 2: USER_SCROLL_ESCAPE_THRESHOLD_PX lowered 1 → 0.
+    //   - Change 3: direction-aware pin gating. Only UP intent blocks
+    //     the pin; DOWN and 'unknown' permit it. Bug B / Bug C defense.
+    //   - Change 5: scrollend short-circuits the 160ms expire timer.
+    //   - Change 6: pinch-zoom (wheel + ctrlKey) does not arm intent.
+
+    it('re-stick succeeds when a streaming chunk grows scrollHeight between the scroll event and the deferred check', async () => {
+      // Reproduces the Opus-stream regression: user wheels DOWN to
+      // the bottom; the synchronous handler captures
+      // distFromBottomAtEvent; a contentRO fire BEFORE the 1ms
+      // deferred check grows scrollHeight. Pre-fix the deferred
+      // re-read of distanceFromBottom() missed the bottom (the bottom
+      // moved away in the 1ms window) and re-stick failed. Post-fix
+      // the captured value lets re-stick proceed.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      fireWheel(scrollEl, 100, scrollEl);
+      // target=400 (scrollHeight=1000 - clientHeight=600); landing at
+      // 398 is distFromBottom=2, within Change 1's 4 px epsilon.
+      geom.scrollTop = 398;
+      fireScroll(scrollEl);
+      // Sync handler has captured distFromBottomAtEvent=2. Grow
+      // scrollHeight before the 1ms deferred fires — the regression
+      // timing.
+      geom.scrollHeight = 1050;
+      geom.contentHeight = 850;
+      ro.fire(contentEl, 850);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('re-stick succeeds when scrollTop lands within the 4 px auto-follow epsilon', async () => {
+      // The new AUTO_FOLLOW_BOTTOM_EPSILON_PX is 4 (was 0.5). A user
+      // who lands 3 px short of the actual bottom (common with virtua
+      // row-height estimation + browser scrollTop rounding) re-sticks.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      fireWheel(scrollEl, 100, scrollEl);
+      geom.scrollTop = 397; // distFromBottom = 3 (within 4 px epsilon)
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('scrollTop 5 px short of the bottom stays escaped (epsilon-widening guard)', async () => {
+      // Not a regression test for any change in the gentle-mango plan
+      // — both the old 0.5 px and the new 4 px epsilon reject 5 px.
+      // Locks the boundary so a future widening past 5 px lands a
+      // failing test before it lands a regression.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      fireWheel(scrollEl, 100, scrollEl);
+      geom.scrollTop = 395; // distFromBottom = 5 (outside the epsilon)
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
+    });
+
+    it('pointer-tap on the scrollbar without drag does not snap viewport at intent expiry', async () => {
+      // Pointer-tap on the scrollbar gutter arms a 'pointer' / 'unknown'
+      // gesture. No scroll event follows (user clicked but never
+      // dragged). When the 160ms timer expires, expireGestureSession
+      // falls through to clearGestureSession({repinIfStillSticky:true}).
+      // Pre-Bug-C-fix the contentRO pin was blocked (strict gate), so
+      // the safety-net wrote target=500 at expiry — user-visible snap.
+      // Post-fix the pin already landed at 500 because 'unknown' permits
+      // it, so the safety-net's dist>epsilon guard suppresses the write.
+      // This test verifies *no extra scrollTop write* happens at expiry,
+      // not just that scrollTop's final value is 500 (which passes either
+      // way for opposite reasons).
+      stubScrollbarGutter(scrollEl);
+
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+
+      scrollEl.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, isPrimary: true, clientX: 195, clientY: 300 }),
+      );
+
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+      expect(geom.scrollTop).toBe(500); // direction-aware pin landed target (Bug C)
+
+      // Replace the setter with a counting wrapper. Any write during the
+      // expiry window is a snap-back motion to the user.
+      let writesAfterPin = 0;
+      Object.defineProperty(scrollEl, 'scrollTop', {
+        configurable: true,
+        get: () => geom.scrollTop,
+        set: (v: number) => {
+          writesAfterPin++;
+          geom.scrollTop = Math.max(0, Math.min(v, geom.scrollHeight - geom.clientHeight));
+        },
+      });
+
+      await waitRealMs(180);
+
+      expect(writesAfterPin).toBe(0); // Bug B: safety-net repin write suppressed
+      expect(geom.scrollTop).toBe(500);
+    });
+
+    it('contentRO positive-delta pin runs when gesture direction is `unknown` (pointer-tap)', async () => {
+      // Bug C defense: pointer-tap on the scrollbar gutter must not
+      // black out streaming pins for the 160ms window.
+      stubScrollbarGutter(scrollEl);
+
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+
+      scrollEl.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, isPrimary: true, clientX: 195, clientY: 300 }),
+      );
+
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+      expect(geom.scrollTop).toBe(600);
+    });
+
+    it('notifyLiveContentMaybeGrew pins when gesture direction is `unknown`', async () => {
+      // The Change 3 direction-aware gate must also apply to
+      // notifyContentMaybeGrew / notifyLiveContentMaybeGrew
+      // (`readNotifyContentGate`). composer-grow during a pointer-tap
+      // intent window would otherwise leave the bottom drifting away.
+      stubScrollbarGutter(scrollEl);
+
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+
+      scrollEl.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, isPrimary: true, clientX: 195, clientY: 300 }),
+      );
+
+      // Composer/banner grows scrollHeight (RO doesn't fire because
+      // padding-only changes don't trigger contentRO per W3C spec;
+      // ChatView's composer RO calls notifyContentMaybeGrew to
+      // re-pin). The direction-aware gate must permit 'unknown'.
+      geom.scrollHeight = 1100;
+      controller.notifyContentMaybeGrew();
+      expect(geom.scrollTop).toBe(500);
+    });
+
+    it('sub-pixel upward scroll movement escapes (0 px threshold)', async () => {
+      // Pre-Change-2 the threshold was `>= 1`, so a 0.5 px wheel-up
+      // stayed sticky. Post-fix uses strict `>` against threshold 0
+      // — any non-zero upward movement escapes.
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 399.5; // sub-pixel trackpad nudge
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+    });
+
+    it('zero-movement scroll event during intent does not spuriously escape', async () => {
+      // Boundary lock: strict `>` against threshold 0 means zero
+      // movement does not escape. Catches a `>=` mis-implementation
+      // that would escape on no movement.
+      fireWheel(scrollEl, -50, scrollEl);
+      fireScroll(scrollEl); // no scrollTop change
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(false);
+    });
+
+    it('scrollend resolves an in-flight UP gesture without waiting for the 160ms timer', async () => {
+      // Without the scrollend handler an 'up' gesture lives 160ms and
+      // blocks every contentRO positive-delta pin in that window —
+      // streaming chunks pile up un-pinned. With the handler, the
+      // gesture clears immediately and the next contentRO pins.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+
+      // Arm wheel-UP. Do not fire the scroll event — the deferred
+      // handler would otherwise clear the gesture and the test
+      // wouldn't isolate scrollend's role.
+      fireWheel(scrollEl, -50, scrollEl);
+
+      // Content grows during the gesture window. direction='up'
+      // blocks the pin (Change 3 strict-side).
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+      expect(geom.scrollTop).toBe(400); // pin blocked while 'up' gesture is alive
+
+      // scrollend fires well before the 160ms timer. expireGestureSession
+      // sees no upward movement (we never fired fireScroll) so it
+      // takes the safety-net repin path — distance after the grow is
+      // 100 > 4 px epsilon, so the write fires.
+      fireScrollEnd(scrollEl);
+      expect(geom.scrollTop).toBe(500); // gesture cleared, safety-net repin fired
+
+      // Subsequent contentRO pins normally because gestureSession is null.
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+      expect(geom.scrollTop).toBe(600);
+    });
+
+    it('scrollend with no active gesture is a no-op', () => {
+      // Programmatic writes (spring chase, sync-pin, animateScrollTo)
+      // fire native scrollend per CSSOM View spec. The handler must
+      // early-return on gestureSession===null so it doesn't run
+      // gesture bookkeeping for controller-owned writes.
+      const before = geom.scrollTop;
+      fireScrollEnd(scrollEl);
+      expect(geom.scrollTop).toBe(before);
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('pinch-zoom (wheel + ctrlKey) does not arm intent', async () => {
+      // Mac trackpad pinch-zoom arrives as `wheel + ctrlKey=true`.
+      // handleWheel early-returns on ctrlKey so pinch never escapes.
+      //
+      // happy-dom 20.9 doesn't honor ctrlKey from WheelEventInit (spike-
+      // verified: new WheelEvent('wheel',{ctrlKey:true}).ctrlKey ===
+      // undefined), so defineProperty it explicitly.
+      const event = new WheelEvent('wheel', { deltaY: -50, bubbles: true });
+      Object.defineProperty(event, 'target', { value: scrollEl });
+      Object.defineProperty(event, 'ctrlKey', { value: true });
+      scrollEl.dispatchEvent(event);
+
+      // No gesture armed: a follow-up scroll event with movement does
+      // not escape because there's no pending intent for the deferred
+      // handler to attribute the movement to.
+      geom.scrollTop = 350;
+      fireScroll(scrollEl);
+      await nextTimer();
       expect(controller.escapedFromLock).toBe(false);
       expect(controller.isSticky).toBe(true);
     });

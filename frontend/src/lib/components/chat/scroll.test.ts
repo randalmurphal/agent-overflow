@@ -1055,6 +1055,78 @@ describe('scroll integration — auto-follow + button', () => {
     // contract the wrapper exists to provide.
     expect(chip!.parentElement).toBe(scrollEl.parentElement);
   });
+
+  it('Bug A: re-stick succeeds in a streaming-cadence sequence (60 Hz contentRO + wheel-down)', async () => {
+    // Integration-level reproduction of the Opus-stream Bug A: the
+    // user scrolls up during an active turn, then scrolls back down to
+    // the bottom while contentRO is firing on the streaming cadence.
+    // Pre-fix the deferred re-stick check would re-read
+    // distanceFromBottom() AFTER a streaming chunk grew scrollHeight in
+    // the 1ms window, miss the bottom, and leave escape stuck true.
+    // Post-fix (Change 1) the synchronously-captured
+    // distFromBottomAtEvent lets re-stick proceed.
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'a' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
+      makeItem({ id: 'c', itemIndex: 2, summary: 'c' }),
+    ]);
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="message-timeline-node"]')).not.toBeNull();
+      expect(pane.scrollController).not.toBeNull();
+    });
+
+    const scrollEl = container.querySelector('[data-testid="message-timeline-scroll"]') as HTMLElement;
+    let scrollTop = 400;
+    let scrollHeight = 1000;
+    Object.defineProperty(scrollEl, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, get: () => 600 });
+    Object.defineProperty(scrollEl, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => { scrollTop = value; },
+    });
+
+    // 1. User wheels up — escape.
+    const wheelUp = new WheelEvent('wheel', { deltaY: -50, bubbles: true });
+    Object.defineProperty(wheelUp, 'target', { value: scrollEl });
+    scrollEl.dispatchEvent(wheelUp);
+    scrollTop = 100;
+    scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await waitForScrollIntent();
+    const ctrl = pane.scrollController as
+      | (PaneScrollController & { escapedFromLock: boolean; isSticky: boolean })
+      | null;
+    expect(ctrl?.escapedFromLock).toBe(true);
+
+    // 2. User wheel-down — DOWN gesture, browser scrolls to 397 (3 px
+    //    above the actual bottom = 400 because scrollHeight=1000,
+    //    clientHeight=600). Within the new 4 px epsilon (Change 1).
+    const wheelDown = new WheelEvent('wheel', { deltaY: 100, bubbles: true });
+    Object.defineProperty(wheelDown, 'target', { value: scrollEl });
+    scrollEl.dispatchEvent(wheelDown);
+    scrollTop = 397;
+    scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
+
+    // 3. BEFORE the 1ms deferred check fires, simulate a streaming
+    //    chunk: scrollHeight grows by 60 px. Pre-fix this would have
+    //    pushed distanceFromBottom() to 63 — outside the 0.5 px
+    //    epsilon — and re-stick would have failed. Post-fix the
+    //    sync-captured distFromBottomAtEvent=3 still lets re-stick
+    //    succeed.
+    scrollHeight = 1060;
+    pane.scrollController?.notifyContentMaybeGrew();
+    await waitForScrollIntent();
+
+    expect(ctrl?.escapedFromLock).toBe(false);
+    expect(ctrl?.isSticky).toBe(true);
+  });
 });
 
 describe('scroll integration — mid-list inserts re-sort and re-index', () => {
