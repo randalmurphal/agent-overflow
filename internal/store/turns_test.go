@@ -571,9 +571,9 @@ func TestGetActiveTurnReturnsOnlyInflightRow(t *testing.T) {
 
 func TestGetActiveTurnReturnsMostRecentWhenMultipleInflight(t *testing.T) {
 	// Normal triage serialises turn-start so at most one in-flight row
-	// exists per thread, but a crash could leave an older in-flight row
-	// alongside a newer one. The frontend wants the most recent — it's
-	// what matches any live provider:turn_started push.
+	// exists per thread, but a crash could leave multiple NULL rows.
+	// If the latest row is still NULL, that is the one matching any live
+	// provider:turn_started push.
 	s := newTestStore(t)
 	mustCreateThreadForTurn(t, s, "t1")
 
@@ -596,6 +596,29 @@ func TestGetActiveTurnReturnsMostRecentWhenMultipleInflight(t *testing.T) {
 	}
 	if got.TurnID != "turn-newest" {
 		t.Errorf("turn_id = %q, want turn-newest (highest turn_index wins)", got.TurnID)
+	}
+}
+
+func TestGetActiveTurnIgnoresStaleInflightRowsBehindNewerSettledTurn(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForTurn(t, s, "t1")
+
+	if err := s.InsertTurn(makeInflightTurn("turn-stale", "t1", 0, 1)); err != nil {
+		t.Fatalf("insert stale: %v", err)
+	}
+	if err := s.InsertTurn(makeInflightTurn("turn-done", "t1", 1, 2)); err != nil {
+		t.Fatalf("insert done: %v", err)
+	}
+	if err := s.UpdateTurnCompleted("turn-done", 100, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("settle done: %v", err)
+	}
+
+	got, ok, err := s.GetActiveTurn("t1")
+	if err != nil {
+		t.Fatalf("get active: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected no active turn because latest row is settled, got %+v", got)
 	}
 }
 

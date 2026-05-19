@@ -909,6 +909,72 @@ func TestRemoveOtherWorktreeRejectsActiveTurnOnSibling(t *testing.T) {
 	}
 }
 
+func TestRemoveOtherWorktreeIgnoresObsoleteInflightTurnOnSibling(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	owner := testThread("thread-remove-stale-owner")
+	owner.ProjectID = project.ID
+	owner.WorkspacePath = repo
+	if err := app.store.CreateThread(owner); err != nil {
+		t.Fatalf("CreateThread(owner): %v", err)
+	}
+	worktreePath, err := app.GitCreateWorktree(owner.ID, "feature/stale-turn")
+	if err != nil {
+		t.Fatalf("GitCreateWorktree() error = %v", err)
+	}
+
+	sibling := testThread("thread-remove-stale-sibling")
+	sibling.ProjectID = project.ID
+	sibling.WorkspacePath = worktreePath
+	sibling.WorktreePath = worktreePath
+	sibling.Branch = "feature/stale-turn"
+	if err := app.store.CreateThread(sibling); err != nil {
+		t.Fatalf("CreateThread(sibling): %v", err)
+	}
+
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-stale-sibling",
+		ThreadID:  sibling.ID,
+		TurnIndex: 0,
+		StartedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertTurn(stale): %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-done-sibling",
+		ThreadID:  sibling.ID,
+		TurnIndex: 1,
+		StartedAt: 2,
+	}); err != nil {
+		t.Fatalf("InsertTurn(done): %v", err)
+	}
+	if err := app.store.UpdateTurnCompleted("turn-done-sibling", 3, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted(done): %v", err)
+	}
+
+	if err := app.RemoveOtherWorktree(owner.ID, worktreePath, true); err != nil {
+		t.Fatalf("RemoveOtherWorktree() error = %v", err)
+	}
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Fatalf("worktree should be removed; stat err = %v", err)
+	}
+	refreshedSibling, err := app.store.GetThread(sibling.ID)
+	if err != nil {
+		t.Fatalf("GetThread(sibling) error = %v", err)
+	}
+	if !samePath(refreshedSibling.WorkspacePath, repo) {
+		t.Errorf("sibling WorkspacePath = %q, want project root %q", refreshedSibling.WorkspacePath, repo)
+	}
+	if refreshedSibling.WorktreePath != "" {
+		t.Errorf("sibling WorktreePath = %q, want empty", refreshedSibling.WorktreePath)
+	}
+}
+
 func TestRemoveOtherWorktreeBroadcastsSiblingUpdates(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)

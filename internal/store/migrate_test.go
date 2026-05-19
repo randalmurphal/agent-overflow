@@ -2483,6 +2483,92 @@ func TestMigrationV44AddsInputPayloadID(t *testing.T) {
 	}
 }
 
+func TestMigrationV46SettlesObsoleteInflightTurns(t *testing.T) {
+	db := openSQLiteDB(t)
+	if err := configureDatabase(db); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if err := ensureMigrationTable(db); err != nil {
+		t.Fatalf("ensure migration table: %v", err)
+	}
+	for _, m := range migrations {
+		if m.Version >= 46 {
+			break
+		}
+		if err := applyMigration(db, m); err != nil {
+			t.Fatalf("apply v%d: %v", m.Version, err)
+		}
+	}
+
+	if _, err := db.Exec(`INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-stale', '/p-stale', 'p-stale', 1000, 1000)`); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at)
+		VALUES
+		('t-repair', 'p-stale', 'repair', 'codex', '/tmp', '', 1000, 1000),
+		('t-latest', 'p-stale', 'latest', 'codex', '/tmp', '', 1000, 1000)`); err != nil {
+		t.Fatalf("seed threads: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO turns
+		(turn_id, thread_id, turn_index, started_at, completed_at, stop_reason, assistant_message_id, token_usage_json, error_message)
+		VALUES
+		('turn-stale-with-items', 't-repair', 0, 1000, NULL, '', '', '', ''),
+		('turn-stale-no-items', 't-repair', 1, 2000, NULL, 'custom', '', '', 'keep me'),
+		('turn-done', 't-repair', 2, 3000, 4000, 'end_turn', '', '', ''),
+		('turn-latest-open', 't-latest', 0, 5000, NULL, '', '', '', '')`); err != nil {
+		t.Fatalf("seed turns: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO items
+		(id, thread_id, turn_index, item_index, kind, role, status, summary, created_at, updated_at)
+		VALUES ('i-stale', 't-repair', 0, 0, 'error', 'system', 'completed', 'failed', 1100, 2500)`); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+
+	v46 := findMigration(t, 46)
+	if err := applyMigration(db, v46); err != nil {
+		t.Fatalf("apply v46: %v", err)
+	}
+
+	var completedAt int64
+	var stopReason, errorMessage string
+	if err := db.QueryRow(`SELECT completed_at, stop_reason, error_message FROM turns WHERE turn_id='turn-stale-with-items'`).
+		Scan(&completedAt, &stopReason, &errorMessage); err != nil {
+		t.Fatalf("read repaired item-backed turn: %v", err)
+	}
+	if completedAt != 2000 {
+		t.Errorf("turn-stale-with-items completed_at = %d, want capped next started_at 2000", completedAt)
+	}
+	if stopReason != "interrupted" {
+		t.Errorf("turn-stale-with-items stop_reason = %q, want interrupted", stopReason)
+	}
+	if !strings.Contains(errorMessage, "obsolete in-flight turn") {
+		t.Errorf("turn-stale-with-items error_message = %q, want migration marker", errorMessage)
+	}
+
+	if err := db.QueryRow(`SELECT completed_at, stop_reason, error_message FROM turns WHERE turn_id='turn-stale-no-items'`).
+		Scan(&completedAt, &stopReason, &errorMessage); err != nil {
+		t.Fatalf("read repaired next-start-backed turn: %v", err)
+	}
+	if completedAt != 3000 {
+		t.Errorf("turn-stale-no-items completed_at = %d, want next newer started_at 3000", completedAt)
+	}
+	if stopReason != "custom" {
+		t.Errorf("turn-stale-no-items stop_reason = %q, want preserved custom", stopReason)
+	}
+	if errorMessage != "keep me" {
+		t.Errorf("turn-stale-no-items error_message = %q, want preserved message", errorMessage)
+	}
+
+	var latestCompleted sql.NullInt64
+	if err := db.QueryRow(`SELECT completed_at FROM turns WHERE turn_id='turn-latest-open'`).Scan(&latestCompleted); err != nil {
+		t.Fatalf("read latest open turn: %v", err)
+	}
+	if latestCompleted.Valid {
+		t.Errorf("latest NULL turn should remain untouched, got completed_at=%d", latestCompleted.Int64)
+	}
+}
+
 func findMigration(t *testing.T, version int) Migration {
 	t.Helper()
 	for _, m := range migrations {

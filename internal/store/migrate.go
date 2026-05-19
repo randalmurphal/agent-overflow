@@ -538,11 +538,12 @@ CREATE INDEX IF NOT EXISTS idx_items_meta_task_id
 		// completed_at is nullable by design: NULL means "in-flight or
 		// crashed mid-turn." Triage inserts the row at turn-start with
 		// completed_at=NULL and updates it on turn-complete. Crash-
-		// interrupted turns stay NULL forever — we never fabricate a
-		// completion to dismiss a stuck row. The frontend reads
-		// completed_at=NULL as "interrupted" on thread rehydration and
-		// relies on live provider:turn_started pushes (not this table)
-		// to light up the working indicator.
+		// interrupted latest turns stay NULL forever — we never fabricate
+		// a completion to dismiss a stuck row. Older NULL rows followed
+		// by newer turns are obsolete residue repaired by v46. The
+		// frontend reads completed_at=NULL as "interrupted" on thread
+		// rehydration and relies on live provider:turn_started pushes
+		// (not this table) to light up the working indicator.
 		//
 		// turn_index is assigned by the caller (triage), not by the
 		// store, so it can stay in lock-step with the turn_index
@@ -1280,6 +1281,70 @@ CREATE INDEX idx_items_live_background
   WHERE is_background = 1
     AND status = 'running'
     AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0;
+`,
+	},
+	{
+		Version: 46,
+		Name:    "settle_obsolete_inflight_turns",
+		// Older bugs could leave completed_at=NULL on a turn even after
+		// later turns completed in the same thread. Once a newer turn exists,
+		// that NULL row is historical corruption rather than live provider
+		// state. Repair those rows so backend guards agree with the
+		// frontend's live-state model.
+		SQL: `
+UPDATE turns
+   SET completed_at = CASE
+           WHEN (SELECT MAX(items.updated_at)
+                   FROM items
+                  WHERE items.thread_id = turns.thread_id
+                    AND items.turn_index = turns.turn_index) IS NOT NULL
+            AND (SELECT MIN(newer.started_at)
+                   FROM turns AS newer
+                  WHERE newer.thread_id = turns.thread_id
+                    AND newer.turn_index > turns.turn_index) IS NOT NULL
+           THEN MIN(
+               (SELECT MAX(items.updated_at)
+                  FROM items
+                 WHERE items.thread_id = turns.thread_id
+                   AND items.turn_index = turns.turn_index),
+               (SELECT MIN(newer.started_at)
+                  FROM turns AS newer
+                 WHERE newer.thread_id = turns.thread_id
+                   AND newer.turn_index > turns.turn_index)
+           )
+           WHEN (SELECT MAX(items.updated_at)
+                   FROM items
+                  WHERE items.thread_id = turns.thread_id
+                    AND items.turn_index = turns.turn_index) IS NOT NULL
+           THEN (SELECT MAX(items.updated_at)
+                   FROM items
+                  WHERE items.thread_id = turns.thread_id
+                    AND items.turn_index = turns.turn_index)
+           WHEN (SELECT MIN(newer.started_at)
+                   FROM turns AS newer
+                  WHERE newer.thread_id = turns.thread_id
+                    AND newer.turn_index > turns.turn_index) IS NOT NULL
+           THEN (SELECT MIN(newer.started_at)
+                   FROM turns AS newer
+                  WHERE newer.thread_id = turns.thread_id
+                    AND newer.turn_index > turns.turn_index)
+           ELSE turns.started_at
+       END,
+       stop_reason = CASE
+           WHEN TRIM(stop_reason) = '' THEN 'interrupted'
+           ELSE stop_reason
+       END,
+       error_message = CASE
+           WHEN TRIM(error_message) = '' THEN 'Settled by migration: obsolete in-flight turn followed by newer turn.'
+           ELSE error_message
+       END
+ WHERE completed_at IS NULL
+   AND EXISTS (
+       SELECT 1
+         FROM turns AS newer
+        WHERE newer.thread_id = turns.thread_id
+          AND newer.turn_index > turns.turn_index
+   );
 `,
 	},
 }

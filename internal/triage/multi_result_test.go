@@ -680,6 +680,51 @@ func TestSyntheticTruncatedTurnComplete_ThenRealResult_NoDuplicateEmission(t *te
 	}
 }
 
+func TestSyntheticTruncatedTurnCompleteSettlesCodexWireTurnID(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	const wireTurnID = "turn-codex-fatal"
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnID: wireTurnID, TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	fatalMeta, _ := json.Marshal(map[string]any{"fatal": true})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventError, ThreadID: "t1",
+		Content: "codex fatal error", Meta: fatalMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("fatal error: %v", err)
+	}
+
+	wireTurn, found, err := st.GetTurn(wireTurnID)
+	if err != nil {
+		t.Fatalf("get wire turn: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected wire turn row %q", wireTurnID)
+	}
+	if wireTurn.CompletedAt == nil {
+		t.Fatalf("wire turn %q was not settled", wireTurnID)
+	}
+	if wireTurn.StopReason != "interrupted" {
+		t.Errorf("wire turn stop_reason = %q, want interrupted", wireTurn.StopReason)
+	}
+	if _, synthFound, err := st.GetTurn("t1:0"); err != nil {
+		t.Fatalf("get synthetic turn: %v", err)
+	} else if synthFound {
+		t.Fatalf("synthetic fallback turn row should not be created for Codex wire turn")
+	}
+	if active, ok, err := st.GetActiveTurn("t1"); err != nil {
+		t.Fatalf("get active turn: %v", err)
+	} else if ok {
+		t.Fatalf("expected no active turn after fatal synthesis, got %+v", active)
+	}
+}
+
 // TestMarkUserInterrupt_ThenTurnCompleteThenLateText pins the
 // user-Esc + late-text race: the user hits Esc mid-stream
 // (MarkUserInterrupt does NOT clear the open turn), the wire's real

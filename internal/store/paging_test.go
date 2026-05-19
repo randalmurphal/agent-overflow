@@ -660,21 +660,18 @@ func TestListRecentItemsWithAncestors_TerminatesOnParentCycle(t *testing.T) {
 	}
 }
 
-func TestPickInitialFloorTurn_ActiveTurnBelowPicked(t *testing.T) {
+func TestPickInitialFloorTurn_IgnoresObsoleteInflightBelowPicked(t *testing.T) {
 	// Crash recovery scenario: an older turn was left with
 	// `completed_at = NULL` after a process crash, and a later
-	// (completed) turn sits above it with items. `GetActiveTurn`
-	// returns the older, still-in-flight row; the floor must be
-	// lowered to cover it AND `hasMore` must reflect the lowered
-	// floor (items from an even-older completed turn below).
+	// completed turn sits above it with items. Only the latest turn row
+	// can be live, so the older NULL row is historical corruption and
+	// must not lower the initial floor.
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
 	// InsertTurn always writes completed_at=NULL; use
-	// UpdateTurnCompleted to close the ones we want to be settled. The
-	// one left NULL is the "crash-interrupted" row that activeTurnFloor
-	// must surface.
+	// UpdateTurnCompleted to close the ones we want to be settled.
 	if err := s.InsertTurn(Turn{TurnID: "t0", ThreadID: "t", TurnIndex: 0, StartedAt: 0}); err != nil {
 		t.Fatalf("insert turn 0: %v", err)
 	}
@@ -682,14 +679,13 @@ func TestPickInitialFloorTurn_ActiveTurnBelowPicked(t *testing.T) {
 		t.Fatalf("complete turn 0: %v", err)
 	}
 	seedItem(t, s, "t", "old-0", 0, 0, "")
-	// Turn 1: in-flight (stays NULL). No items yet.
+	// Turn 1: obsolete in-flight row (stays NULL). No items yet.
 	if err := s.InsertTurn(Turn{TurnID: "t1", ThreadID: "t", TurnIndex: 1, StartedAt: 200}); err != nil {
 		t.Fatalf("insert turn 1 in-flight: %v", err)
 	}
 	// Turn 5: completed, with items. PickInitialFloorTurn walking
-	// newest→oldest with turnLimit=1 would pick turn 5, but the
-	// active-turn adjustment must lower picked to turn 1 so the
-	// pre-fixed ordering bug is reproduced/caught.
+	// newest to oldest with turnLimit=1 should pick turn 5 and ignore
+	// the older NULL row.
 	if err := s.InsertTurn(Turn{TurnID: "t5", ThreadID: "t", TurnIndex: 5, StartedAt: 400}); err != nil {
 		t.Fatalf("insert turn 5: %v", err)
 	}
@@ -702,16 +698,12 @@ func TestPickInitialFloorTurn_ActiveTurnBelowPicked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pick: %v", err)
 	}
-	if floor != 1 {
-		t.Errorf("floor: got %d, want 1 (active turn 1 must be covered)", floor)
+	if floor != 5 {
+		t.Errorf("floor: got %d, want 5 (obsolete in-flight turn 1 must be ignored)", floor)
 	}
-	// Turn 0 has items and sits below the lowered floor (1). hasMore
-	// must be probed AFTER the active-turn adjustment so this is true.
-	// Before the fix this was false (probe ran against the higher
-	// picked, missing the items between the active-turn index and
-	// the newer picked).
+	// Turn 0 has items and sits below the returned floor.
 	if !hasMore {
-		t.Error("hasMore: got false, want true (turn 0 has items below the lowered floor)")
+		t.Error("hasMore: got false, want true (turn 0 has items below the returned floor)")
 	}
 }
 
@@ -799,11 +791,12 @@ func TestPickInitialFloorTurn_ActiveTurnAdjustmentRespectsMaxItems(t *testing.T)
 // and we can count every item in the gap, the guard must skip
 // adjustment if adding the gap would blow maxItems.
 //
-// Setup: turns 10 (6 items) and 20 (10 items). turnLimit=1,
+// Setup: latest persisted turn 10 is active with 6 items; malformed
+// item rows exist at turn 20 without a matching turns row. turnLimit=1,
 // maxItems=15. Walker picks 20 (10 items, under maxItems). gap is
 // [activeFloor=10, picked=20); turn 10 sits inside with 6 items.
-// scanLimit = 4, the scan of GROUP-BY item-counts returns both
-// turns (2 rows, under limit), so lastScanned=10 == activeFloor,
+// scanLimit = 4, the scan of GROUP-BY item-counts returns both item
+// groups (2 rows, under limit), so lastScanned=10 == activeFloor,
 // reachable=true. cumulative+extra = 10+6 = 16 > maxItems=15;
 // first branch must skip. picked stays at 20.
 func TestPickInitialFloorTurn_ActiveTurnReachableButOverBudget(t *testing.T) {
@@ -811,27 +804,18 @@ func TestPickInitialFloorTurn_ActiveTurnReachableButOverBudget(t *testing.T) {
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	// Turn 10: completed, 6 items. This is the active-turn
-	// adjustment target.
+	// Turn 10: latest persisted row, still active.
 	if err := s.InsertTurn(Turn{TurnID: "t10", ThreadID: "t", TurnIndex: 10, StartedAt: 1000}); err != nil {
 		t.Fatalf("insert turn 10: %v", err)
 	}
 	for i := 0; i < 6; i++ {
 		seedItem(t, s, "t", idForItem(10, i), 10, i, "")
 	}
-	// Turn 20: completed, 10 items.
-	if err := s.InsertTurn(Turn{TurnID: "t20", ThreadID: "t", TurnIndex: 20, StartedAt: 2000}); err != nil {
-		t.Fatalf("insert turn 20: %v", err)
-	}
-	if err := s.UpdateTurnCompleted("t20", 2500, "end_turn", "", "", ""); err != nil {
-		t.Fatalf("complete turn 20: %v", err)
-	}
+	// Malformed rows above the active turn. This keeps activeFloor < picked
+	// without inserting a newer turn row that would make turn 10 obsolete.
 	for i := 0; i < 10; i++ {
 		seedItem(t, s, "t", idForItem(20, i), 20, i, "")
 	}
-	// Mark turn 10 as the active in-flight turn.
-	// InsertTurn defaults completed_at=NULL, so the insert above
-	// already left it active. We didn't UpdateTurnCompleted it.
 
 	floor, _, err := s.PickInitialFloorTurn("t", 1, 0, 15)
 	if err != nil {
@@ -846,12 +830,10 @@ func TestPickInitialFloorTurn_ActiveTurnReachableButOverBudget(t *testing.T) {
 	}
 }
 
-// Boundary counterpart to the test above: when the gap fits exactly
-// (cumulative+extra == maxItems), the inclusive comparator must
-// ALLOW the adjustment. A regression that swapped `<=` for `<` would
-// silently reject an equal-to-budget window — this test pins the
-// inclusive semantics.
-func TestPickInitialFloorTurn_ActiveTurnReachableAtBudgetAllowed(t *testing.T) {
+// Once a newer completed turn row exists, an older NULL-completed row is
+// obsolete. Even when its items would fit the budget, it must not be treated
+// as live provider work.
+func TestPickInitialFloorTurn_ObsoleteInflightReachableAtBudgetIgnored(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -872,21 +854,19 @@ func TestPickInitialFloorTurn_ActiveTurnReachableAtBudgetAllowed(t *testing.T) {
 		seedItem(t, s, "t", idForItem(20, i), 20, i, "")
 	}
 
-	// Same shape as above but maxItems=16 — cumulative+extra = 16
-	// == maxItems, inclusive. Adjustment MUST be allowed.
 	floor, _, err := s.PickInitialFloorTurn("t", 1, 0, 16)
 	if err != nil {
 		t.Fatalf("pick: %v", err)
 	}
-	if floor != 10 {
-		t.Errorf("floor: got %d, want 10 (budget boundary is inclusive)", floor)
+	if floor != 20 {
+		t.Errorf("floor: got %d, want 20 (obsolete in-flight turn 10 must be ignored)", floor)
 	}
 }
 
-// The active-turn adjustment IS allowed when the gap is trivial —
-// one or two empty turns between picked and activeFloor. This covers
-// the common "just-started turn below newest settled turn" case.
-func TestPickInitialFloorTurn_ActiveTurnAdjacentEmptyTurnAllowed(t *testing.T) {
+// A lower turn_index row inserted after a newer completed turn is still
+// obsolete by index ordering. The active-turn floor is based on the latest
+// turn row, not wall-clock insertion order.
+func TestPickInitialFloorTurn_ObsoleteAdjacentEmptyTurnIgnored(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -898,7 +878,7 @@ func TestPickInitialFloorTurn_ActiveTurnAdjacentEmptyTurnAllowed(t *testing.T) {
 		t.Fatalf("complete turn 5: %v", err)
 	}
 	seedItem(t, s, "t", "item-5", 5, 0, "")
-	// Turn 4: in-flight, no items yet. Gap of 1 turn.
+	// Turn 4: obsolete in-flight row, no items yet. Gap of 1 turn.
 	if err := s.InsertTurn(Turn{TurnID: "t4", ThreadID: "t", TurnIndex: 4, StartedAt: 600}); err != nil {
 		t.Fatalf("insert active turn 4: %v", err)
 	}
@@ -907,8 +887,8 @@ func TestPickInitialFloorTurn_ActiveTurnAdjacentEmptyTurnAllowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pick: %v", err)
 	}
-	if floor != 4 {
-		t.Errorf("floor: got %d, want 4 (adjacent empty active turn must be covered)", floor)
+	if floor != 5 {
+		t.Errorf("floor: got %d, want 5 (adjacent obsolete in-flight turn must be ignored)", floor)
 	}
 }
 

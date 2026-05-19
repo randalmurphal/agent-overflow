@@ -218,8 +218,14 @@ The state diagram lives in
 
 Round id format: opaque per-round `uuid.NewString()` allocated in Go.
 Carried as `TurnStartedEvent.TurnID` / `TurnCompletedEvent.TurnID`.
-The persisted `turns.turn_id` stays on `resolveTurnID` (logical-turn
-granularity) so multi-round logical turns share a single row.
+The persisted `turns.turn_id` is chosen at turn-start granularity:
+provider-supplied `ProviderEvent.TurnID` wins, and `resolveTurnID`
+is the fallback. Completion paths must settle that existing row; when
+a completion event has no `TurnID`, use the persisted `(thread_id,
+turn_index)` row before falling back to `resolveTurnID`. This keeps
+multi-round logical turns on one row and prevents synthetic
+completion paths from inventing `thread:index` rows for providers
+with opaque wire turn ids.
 
 ⚠ **Load-bearing invariants** (see
 [`invariants.md`](../../docs/architecture/invariants.md)):

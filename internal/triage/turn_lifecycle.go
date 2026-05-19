@@ -551,8 +551,10 @@ func forceCloseSummary(summary string) string {
 // because the two consumers run in different cadences (logical-turn
 // vs wire-round) but the projection rules — stop_reason fallback to
 // "error" on persistErr, assistant_message_id resolution across
-// provider shapes, error_message derived from meta or persistErr,
-// turn-id resolution — are exactly the same.
+// provider shapes, and error_message derived from meta or persistErr
+// — are exactly the same. logicalTurnID is caller-supplied because
+// completion paths may need to reconcile an event without TurnID back
+// to the already-persisted (thread_id, turn_index) row.
 type turnCompleteFields struct {
 	logicalTurnID      string
 	stopReason         string
@@ -560,7 +562,7 @@ type turnCompleteFields struct {
 	errorMessage       string
 }
 
-func decodeTurnCompleteFields(evt provider.ProviderEvent, turnIndex int, meta turnCompleteMeta, persistErr error) turnCompleteFields {
+func decodeTurnCompleteFields(evt provider.ProviderEvent, logicalTurnID string, meta turnCompleteMeta, persistErr error) turnCompleteFields {
 	stopReason := canonicalStopReason(meta)
 	if persistErr != nil && stopReason == "" {
 		stopReason = "error"
@@ -570,11 +572,23 @@ func decodeTurnCompleteFields(evt provider.ProviderEvent, turnIndex int, meta tu
 		errorMessage = persistErr.Error()
 	}
 	return turnCompleteFields{
-		logicalTurnID:      resolveTurnID(evt, turnIndex),
+		logicalTurnID:      logicalTurnID,
 		stopReason:         stopReason,
 		assistantMessageID: meta.AssistantMessageID,
 		errorMessage:       errorMessage,
 	}
+}
+
+func (r *Router) persistedTurnID(evt provider.ProviderEvent, turnIndex int) string {
+	if id := strings.TrimSpace(evt.TurnID); id != "" {
+		return id
+	}
+	if existing, found, err := r.store.GetTurnByThreadIndex(evt.ThreadID, turnIndex); err == nil && found {
+		return existing.TurnID
+	} else if err != nil {
+		log.Printf("triage: lookup turn %s/%d: %v", evt.ThreadID, turnIndex, err)
+	}
+	return resolveTurnID(evt, turnIndex)
 }
 
 // settleTurnRow updates the persisted `turns` row at logical-turn
@@ -592,7 +606,7 @@ func decodeTurnCompleteFields(evt provider.ProviderEvent, turnIndex int, meta tu
 // session-died / abort flavors flow through this same path when they
 // belong to the top-level turn.
 func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now int64, meta turnCompleteMeta, persistErr error) {
-	fields := decodeTurnCompleteFields(evt, turnIndex, meta, persistErr)
+	fields := decodeTurnCompleteFields(evt, r.persistedTurnID(evt, turnIndex), meta, persistErr)
 
 	usageJSON := ""
 	if len(meta.Usage) > 0 {
@@ -638,7 +652,7 @@ func (r *Router) buildRoundCompletedEvent(
 	now int64,
 	meta turnCompleteMeta,
 ) TurnCompletedEvent {
-	fields := decodeTurnCompleteFields(evt, turnIndex, meta, nil)
+	fields := decodeTurnCompleteFields(evt, r.persistedTurnID(evt, turnIndex), meta, nil)
 	startedAt := now
 	if existing, found, err := r.store.GetTurn(fields.logicalTurnID); err == nil && found {
 		startedAt = existing.StartedAt
@@ -688,7 +702,7 @@ func (r *Router) buildRoundCompletedEvent(
 // Folded as a single UPDATE so the common case (both fields arrive
 // on the trailing `result`) pays one autocommit boundary.
 func (r *Router) persistLateTurnPayload(evt provider.ProviderEvent, turnIndex int, meta turnCompleteMeta) {
-	turnID := resolveTurnID(evt, turnIndex)
+	turnID := r.persistedTurnID(evt, turnIndex)
 	usageJSON := ""
 	if len(meta.Usage) > 0 {
 		usageJSON = string(meta.Usage)

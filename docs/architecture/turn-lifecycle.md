@@ -404,7 +404,9 @@ The `turns` row carries:
 - `thread_id` FK
 - `turn_index` (incrementing per-thread counter)
 - `started_at` (ms)
-- `completed_at` (ms, nullable; null = in-flight or session died)
+- `completed_at` (ms, nullable; null = latest turn is in-flight or
+  session died; older null rows followed by newer turns are obsolete
+  crash/error residue and are repaired by migration)
 - `stop_reason` (text: `end_turn` / `max_tokens` / `tool_use` /
   `stop_sequence` / `refusal` / `error` / `interrupted`)
 - `assistant_message_id` (text, nullable) — provider-derived final
@@ -416,7 +418,7 @@ The `turns` row carries:
 
 ### Crash behavior
 
-If the app or provider crashes mid-turn, the `turns` row stays
+If the app or provider crashes mid-turn, the latest `turns` row may stay
 with `completed_at=null`. On next startup / thread reopen:
 
 - Frontend shows no active-turn spinner (spinner requires a live
@@ -425,6 +427,11 @@ with `completed_at=null`. On next startup / thread reopen:
   `completed_at`).
 - UI may optionally render an "interrupted" marker for the turn.
 - We do NOT reconcile by probing the session (see §Non-goals).
+
+If a later turn exists for the same thread, any older
+`completed_at=null` row is no longer eligible to mean "active"; it is
+historical corruption from a dropped/faulty completion and should be
+settled or ignored by backend active-turn checks.
 
 ### Non-goals — no session-liveness probing
 
@@ -529,7 +536,7 @@ to rehydrate `latestSettledTurn` from the DB. The global active-turn
 registry is NOT rehydrated from persistence — it's only set on live
 `provider:turn_started` events. A turn with `completed_at=null` in
 the DB renders as "turn was interrupted" not "turn is currently
-active." When the user switches AWAY from a thread with a live
+active"; older null rows behind newer turns are stale history. When the user switches AWAY from a thread with a live
 turn and back, the indicator returns because the global registry
 held the record across the switch — nothing in pane lifecycle
 clears it.

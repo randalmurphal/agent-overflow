@@ -8,11 +8,14 @@ import (
 // Turn is one row in the turns table — a record of a single user → assistant
 // round-trip on a thread.
 //
-// CompletedAt is a pointer because NULL is load-bearing: it means
-// "in-flight or crashed mid-turn." We never write a synthetic CompletedAt
-// to dismiss a stuck row. The frontend treats a NULL CompletedAt on
-// rehydration as "interrupted," separate from the live-push
-// "provider:turn_started" path that drives the working indicator.
+// CompletedAt is a pointer because NULL is load-bearing on the latest
+// turn row: it means "in-flight or crashed mid-turn." We never write a
+// synthetic CompletedAt just to dismiss that latest stuck row. Older
+// NULL rows followed by newer turns are obsolete crash/error residue
+// and may be repaired by migration. The frontend treats a NULL
+// CompletedAt on rehydration as "interrupted," separate from the
+// live-push "provider:turn_started" path that drives the working
+// indicator.
 //
 // See docs/architecture/turn-lifecycle.md §Turn lifecycle for the full
 // mental model and docs/architecture/invariants.md #22-24 for the rules
@@ -374,15 +377,13 @@ func (s *Store) PickInitialFloorTurn(
 		}
 	}
 
-	// Include the active turn (if any) BEFORE probing hasMore — a
-	// crash-interrupted thread can have an in-flight turn whose
-	// turn_index is lower than the newest item's (a stale NULL
-	// completed_at on an earlier turn). If we probed against the
-	// higher `picked` we'd under-report "older history" because items
-	// between the active turn's index and the original picked turn
-	// would fall below the probe threshold. `GetActiveTurn` returns
-	// the latest in-flight turn; for the common happy path
-	// activeFloor >= picked and this is a no-op.
+	// Include the active turn (if any) BEFORE probing hasMore. The
+	// normal just-started case has an active latest turn with no items
+	// yet; when items already exist, activeFloor >= picked and this is
+	// a no-op. The lowering path is defensive for malformed histories
+	// where item rows exist above the latest turn row. Older NULL turns
+	// followed by newer turn rows are not considered active by
+	// GetActiveTurn.
 	//
 	// Cap the lowering so a deep crashed-active-turn scenario can't
 	// silently blow the caller's maxItems budget. The walk above
@@ -454,20 +455,20 @@ func (s *Store) activeTurnFloor(threadID string) (int, bool, error) {
 	return turn.TurnIndex, true, nil
 }
 
-// GetActiveTurn returns the most recent in-flight (completed_at=NULL)
-// turn for a thread. Called on resume to decide whether a crash-
-// interrupted turn is still visible to the UI.
+// GetActiveTurn returns the latest turn for a thread only when that latest
+// turn is still in-flight (completed_at=NULL).
 //
 // In normal operation at most one turn per thread is in-flight at a
-// time (triage serialises turn-start via the per-thread action lock), but the
-// ORDER BY defends against stale rows left over from prior crashes:
-// we want the latest surviving in-flight turn, not the earliest.
+// time (triage serialises turn-start via the per-thread action lock). A
+// crash or old bug can leave older NULL rows behind; once a newer turn exists
+// those rows are historical corruption, not live provider work.
 //
-// Returns (Turn{}, false, nil) when no in-flight row exists.
+// Returns (Turn{}, false, nil) when no turn exists or the latest row is
+// already settled.
 func (s *Store) GetActiveTurn(threadID string) (Turn, bool, error) {
 	row := s.db.QueryRow(
 		`SELECT `+turnColumns+` FROM turns
-		  WHERE thread_id = ? AND completed_at IS NULL
+		  WHERE thread_id = ?
 		  ORDER BY turn_index DESC
 		  LIMIT 1`,
 		threadID,
@@ -478,6 +479,9 @@ func (s *Store) GetActiveTurn(threadID string) (Turn, bool, error) {
 	}
 	if err != nil {
 		return Turn{}, false, fmt.Errorf("store: get active turn for %s: %w", threadID, err)
+	}
+	if turn.CompletedAt != nil {
+		return Turn{}, false, nil
 	}
 	return turn, true, nil
 }
