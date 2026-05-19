@@ -2,11 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { resolveThreadStatusPill } from '../../utils/threadStatusPill';
 import { setThreadStatus, type ThreadLiveStatus } from '../../stores/threadStatuses.svelte';
 import type { Thread } from '../../types/models';
-import {
-  PANE_ATTENTION_DOT_OFFSET,
-  paneDotAnchorX,
-  resolvePaneAttentionDot,
-} from './paneAttention';
+import { resolvePaneAttentionDot } from './paneAttention';
 
 // Prefix avoids collision with the 700+ test files that use plain
 // `thread-1`. setThreadStatus and the other status registries are
@@ -52,11 +48,6 @@ describe('pane attention helpers', () => {
     expect(dot?.pill.dotClass).toBe(expected?.dotClass);
     expect(dot?.pill.pulse).toBe(expected?.pulse);
     expect(dot?.pill.glowClass).toBe(expected?.glowClass);
-  });
-
-  it('offsets the pane anchor by the fixed pane gutter', () => {
-    expect(paneDotAnchorX(0)).toBe(PANE_ATTENTION_DOT_OFFSET);
-    expect(paneDotAnchorX(400)).toBe(400 + PANE_ATTENTION_DOT_OFFSET);
   });
 
   it('renders no model for a null-thread pane', () => {

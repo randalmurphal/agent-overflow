@@ -41,7 +41,12 @@
     summarizePaneForTrace,
   } from '../../utils/uiRenderTrace';
 
-  let { pane }: { pane: ThreadPane } = $props();
+  interface Props {
+    pane: ThreadPane;
+    onPaneDragStart?: (event: DragEvent) => void;
+  }
+
+  let { pane, onPaneDragStart }: Props = $props();
 
   // Wire-side prompts (approval / user-input) draw a backdrop scrim over
   // the timeline so the actionable panel above the composer is the
@@ -495,7 +500,7 @@
     class="relative flex flex-col min-h-0 flex-1 min-w-0"
     style="--composer-height: {composerHeight}px;"
   >
-    <ChatHeader {pane} />
+    <ChatHeader {pane} {onPaneDragStart} />
 
     <ProviderStatusBanner {pane} />
 

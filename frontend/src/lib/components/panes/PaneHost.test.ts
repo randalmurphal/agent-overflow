@@ -3,7 +3,9 @@ import { fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../chat/ChatView.svelte', () => ({ default: () => ({}) }));
+vi.mock('../chat/ChatView.svelte', async () => ({
+  default: (await import('../../../test/mocks/StubChatView.svelte')).default,
+}));
 
 import PaneHost from './PaneHost.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
@@ -23,7 +25,6 @@ import {
 } from '../../stores/paneLayout.svelte';
 import { resetPaneDensityForTest, setPaneDensityMode } from '../../stores/paneDensity.svelte';
 import { makeThread } from '../../../test/helpers/chat';
-import { setThreadStatus } from '../../stores/threadStatuses.svelte';
 import { prependThread } from '../../stores/threads.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import {
@@ -235,97 +236,6 @@ describe('PaneHost', () => {
     expect(getPaneWidth('right')).toBe(0);
   });
 
-  it('highlights the focused pane title and shows hover affordance on unfocused titles', () => {
-    const left = createThreadPane({ paneId: 'left' });
-    const right = createThreadPane({ paneId: 'right' });
-    left.replaceThread(makeThread({ id: 'left-thread', title: 'Left thread' }));
-    right.replaceThread(makeThread({ id: 'right-thread', title: 'Right thread' }));
-    registerPaneForTest('left', left);
-    registerPaneForTest('right', right);
-    setPaneLayoutItemsForTest([
-      { id: 'left-item', paneId: 'left', kind: 'thread', ratio: 1 },
-      { id: 'right-item', paneId: 'right', kind: 'thread', ratio: 1 },
-    ]);
-    focusPane('left');
-
-    const rendered = render(PaneHost);
-    const titles = rendered.getAllByTestId('pane-header-title');
-    const leftTitle = titles.find((el) => el.closest('[data-pane-id="left"]'));
-    const rightTitle = titles.find((el) => el.closest('[data-pane-id="right"]'));
-    if (!leftTitle || !rightTitle) throw new Error('expected pane-header-title for each pane');
-
-    expect(leftTitle).toHaveAttribute('data-focused', 'true');
-    expect(leftTitle.className).toContain('bg-accent/15');
-    expect(rightTitle).toHaveAttribute('data-focused', 'false');
-    expect(rightTitle.className).toContain('hover:bg-surface-2/40');
-  });
-
-  it('applies the same attention glow class to the title as the sidebar uses for the row', () => {
-    const pending = createThreadPane({ paneId: 'pending' });
-    const waiting = createThreadPane({ paneId: 'waiting' });
-    const idle = createThreadPane({ paneId: 'idle' });
-    pending.replaceThread(makeThread({ id: 'pending-thread', title: 'Pending' }));
-    waiting.replaceThread(makeThread({ id: 'waiting-thread', title: 'Waiting' }));
-    idle.replaceThread(makeThread({ id: 'idle-thread', title: 'Idle' }));
-    setThreadStatus('pending-thread', 'pending-approval');
-    setThreadStatus('waiting-thread', 'awaiting-input');
-    registerPaneForTest('pending', pending);
-    registerPaneForTest('waiting', waiting);
-    registerPaneForTest('idle', idle);
-    setPaneLayoutItemsForTest([
-      { id: 'pending-item', paneId: 'pending', kind: 'thread', ratio: 1 },
-      { id: 'waiting-item', paneId: 'waiting', kind: 'thread', ratio: 1 },
-      { id: 'idle-item', paneId: 'idle', kind: 'thread', ratio: 1 },
-    ]);
-
-    const rendered = render(PaneHost);
-    const titles = rendered.getAllByTestId('pane-header-title');
-    const pendingTitle = titles.find((el) => el.closest('[data-pane-id="pending"]'));
-    const waitingTitle = titles.find((el) => el.closest('[data-pane-id="waiting"]'));
-    const idleTitle = titles.find((el) => el.closest('[data-pane-id="idle"]'));
-    if (!pendingTitle || !waitingTitle || !idleTitle) throw new Error('expected titles for each pane');
-
-    expect(pendingTitle).toHaveAttribute('data-glow', 'status-glow-warning');
-    expect(pendingTitle.className).toContain('status-glow-warning');
-    expect(waitingTitle).toHaveAttribute('data-glow', 'status-glow-info');
-    expect(waitingTitle.className).toContain('status-glow-info');
-    expect(idleTitle).not.toHaveAttribute('data-glow');
-    expect(idleTitle.className).not.toContain('status-glow');
-  });
-
-  it('pane header no longer renders a grip icon (title carries the focus indicator)', () => {
-    const left = createThreadPane({ paneId: 'left' });
-    left.replaceThread(makeThread({ id: 'left-thread', title: 'Left' }));
-    registerPaneForTest('left', left);
-    setPaneLayoutItemsForTest([
-      { id: 'left-item', paneId: 'left', kind: 'thread', ratio: 1 },
-    ]);
-
-    const rendered = render(PaneHost);
-    const header = rendered.getByTestId('pane-header');
-    expect(header.querySelector('svg.lucide-grip-vertical')).toBeNull();
-  });
-
-  it('renders status dots for thread panes and no dot for null-thread panes', () => {
-    const left = createThreadPane({ paneId: 'left' });
-    left.replaceThread(makeThread({ id: 'left-thread', title: 'Left' }));
-    setThreadStatus('left-thread', 'running');
-    registerPaneForTest('left', left);
-    registerPaneForTest('empty', createThreadPane({ paneId: 'empty' }));
-    setPaneLayoutItemsForTest([
-      { id: 'left-item', paneId: 'left', kind: 'thread', ratio: 1 },
-      { id: 'empty-item', paneId: 'empty', kind: 'thread', ratio: 1 },
-    ]);
-
-    const rendered = render(PaneHost);
-    const dots = rendered.getAllByTestId('pane-attention-dot');
-
-    expect(dots).toHaveLength(1);
-    expect(dots[0]).toHaveAttribute('data-pane-id', 'left');
-    expect(dots[0]).toHaveAttribute('data-status', 'running');
-    expect(dots[0].getAttribute('class')).toContain('bg-success');
-  });
-
   it('pane reorder drag moves a source pane after a later target', async () => {
     registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
     registerPaneForTest('middle', createThreadPane({ paneId: 'middle' }));
@@ -336,7 +246,9 @@ describe('PaneHost', () => {
       { id: 'right-item', paneId: 'right', kind: 'thread', ratio: 1 },
     ]);
     const rendered = render(PaneHost);
-    const headers = rendered.getAllByTestId('pane-header');
+    const titles = rendered.getAllByTestId('chat-header-title');
+    const leftTitle = titles.find((el) => el.getAttribute('data-pane-id') === 'left');
+    if (!leftTitle) throw new Error('expected drag-handle for left pane');
     const rightPane = rendered.container.querySelector<HTMLElement>('[data-pane-id="right"]');
     if (!rightPane) throw new Error('expected right pane');
     stubRect(rightPane, 1000, 500);
@@ -344,7 +256,7 @@ describe('PaneHost', () => {
     const dataTransfer = paneDataTransfer();
     const dragStartEvent = new Event('dragstart', { bubbles: true, cancelable: true }) as DragEvent;
     Object.defineProperty(dragStartEvent, 'dataTransfer', { value: dataTransfer });
-    await fireEvent(headers[0], dragStartEvent);
+    await fireEvent(leftTitle, dragStartEvent);
     expect(dataTransfer.getData(PANE_REORDER_DRAG_MIME)).toBe('left');
     expect(dataTransfer.effectAllowed).toBe('move');
     const dragOverEvent = new Event('dragover', { bubbles: true, cancelable: true }) as DragEvent;

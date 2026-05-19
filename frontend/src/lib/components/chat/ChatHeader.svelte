@@ -15,6 +15,7 @@
   import SquareTerminal from 'lucide-svelte/icons/square-terminal';
   import Diff from 'lucide-svelte/icons/diff';
   import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
+  import X from 'lucide-svelte/icons/x';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Thread } from '../../types/models';
   import {
@@ -22,20 +23,25 @@
     GetThread,
     OpenInEditor,
   } from '../../stores/bindings';
-  import { syncThread } from '../../stores/panes.svelte';
+  import { destroyPane, getFocusedPaneId, syncThread } from '../../stores/panes.svelte';
   import { errString } from '../../utils/errors';
   import { getProject } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { formatChord } from '../../stores/keybindings.svelte';
+  import { resolvePaneAttentionDot } from '../panes/paneAttention';
   import GitActionsControl from '../git/GitActionsControl.svelte';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
 
   interface Props {
     pane: ThreadPane;
+    onPaneDragStart?: (event: DragEvent) => void;
   }
 
-  let { pane }: Props = $props();
+  let { pane, onPaneDragStart }: Props = $props();
+  let attentionDot = $derived(resolvePaneAttentionDot(pane.thread ?? null));
+  let titleGlow = $derived(attentionDot?.pill.glowClass ?? '');
+  let isFocusedPane = $derived(getFocusedPaneId() === pane.paneId);
   let isDesignThread = $derived(pane.thread?.mode === 'design');
 
   // Inline-rename state. Mirrors the old header's pattern — local string
@@ -139,7 +145,24 @@
     data-testid="chat-header"
     class="flex items-center gap-2 border-b border-border-subtle bg-transparent px-5 py-2 shrink-0 min-w-0 flex-nowrap"
   >
-    <!-- Title — double-click to rename, or single-click the inline button. -->
+    {#if attentionDot}
+      <span
+        aria-label={attentionDot.pill.label}
+        title={attentionDot.pill.label}
+        class={[
+          'shrink-0 h-2.5 w-2.5 rounded-full',
+          attentionDot.pill.dotClass,
+          attentionDot.pill.pulse ? 'animate-pulse' : '',
+          attentionDot.pill.glowClass ?? '',
+        ].join(' ')}
+        data-testid="pane-attention-dot"
+        data-pane-id={pane.paneId}
+        data-status={attentionDot.status}
+      ></span>
+    {/if}
+    <!-- Title is the pane drag-handle. Right-click renames; mousedown +
+         drag reorders the pane. Left-click is reserved for the drag
+         gesture so a fast click doesn't accidentally start an edit. -->
     {#if editing}
       <input
         bind:this={inputEl}
@@ -155,14 +178,41 @@
     {:else}
       <button
         type="button"
-        onclick={startRename}
+        oncontextmenu={(event) => {
+          event.preventDefault();
+          startRename();
+        }}
+        draggable={onPaneDragStart != null}
+        ondragstart={(event) => onPaneDragStart?.(event)}
         data-testid="chat-header-title"
-        title={pane.thread.title}
-        class="text-sm font-medium text-fg truncate min-w-0 text-left bg-transparent border-none p-0 cursor-text hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded transition-colors"
+        data-focused={isFocusedPane}
+        title={`${pane.thread.title} (right-click to rename)`}
+        class={[
+          'text-sm font-medium truncate min-w-0 text-left bg-transparent border-none px-1.5 py-0.5 rounded-[var(--radius-field)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+          onPaneDragStart ? 'cursor-grab active:cursor-grabbing' : 'cursor-default',
+          isFocusedPane
+            ? 'bg-accent/15 text-fg ring-1 ring-accent/40'
+            : 'text-fg hover:bg-surface-2/40',
+          titleGlow,
+        ].join(' ')}
       >
         {pane.thread.title}
       </button>
     {/if}
+    <button
+      type="button"
+      aria-label="Close Pane"
+      title="Close Pane"
+      onpointerdown={(event) => event.stopPropagation()}
+      onclick={(event) => {
+        event.stopPropagation();
+        destroyPane(pane.paneId);
+      }}
+      data-testid="pane-close"
+      class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-field)] text-fg-hint opacity-70 transition-colors hover:bg-surface-2/70 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+    >
+      <Icon icon={X} size={12} strokeWidth={2} />
+    </button>
 
     <!-- Right cluster: wraps, doesn't disappear, at narrow widths. -->
     <div class="ml-auto flex items-center gap-1.5 shrink-0 flex-wrap justify-end">

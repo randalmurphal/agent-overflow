@@ -1,10 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import ChatView from '../chat/ChatView.svelte';
-  import X from 'lucide-svelte/icons/x';
-  import Icon from '../primitives/Icon.svelte';
   import {
-    destroyPane,
     focusPane,
     getFocusedPaneId,
     getPane,
@@ -14,8 +11,6 @@
   import { getPaneWidth, setPaneHostWidth } from '../../stores/layoutMetrics.svelte';
   import { REVEAL_PANE_EVENT } from '../../stores/events';
   import PaneDivider from './PaneDivider.svelte';
-  import PaneAttentionOverlay from './PaneAttentionOverlay.svelte';
-  import { resolvePaneAttentionDot } from './paneAttention';
   import { measurePane } from './measurePane';
   import { createPaneThreadDrag } from './usePaneThreadDrag.svelte';
 
@@ -181,7 +176,6 @@
 <div
   bind:this={hostEl}
   class="relative flex-1 flex min-w-0 min-h-0 overflow-x-auto overflow-y-hidden"
-  style:--pane-header-height="1.75rem"
   data-testid="pane-host"
   ondragover={drag.onHostDragOver}
   ondrop={drag.onHostDrop}
@@ -203,7 +197,6 @@
     {#each layoutItems as item, index (item.id)}
       {@const pane = getPane(item.paneId)}
       {#if pane}
-        {@const titleGlow = resolvePaneAttentionDot(pane.thread ?? null)?.pill.glowClass ?? ''}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <section
           use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
@@ -226,48 +219,7 @@
           ondrop={(event) => drag.onPaneDrop(event, item.paneId)}
           ondragend={drag.onPaneDragEnd}
         >
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <header
-            draggable="true"
-            ondragstart={(event) => drag.onPaneDragStart(event, item.paneId)}
-            class={[
-              'group/pane-header flex h-[var(--pane-header-height)] shrink-0 items-center gap-1.5 border-b border-border-subtle/60 pl-7 pr-2',
-              'bg-surface-1/45 text-[11px] cursor-grab active:cursor-grabbing select-none',
-            ].join(' ')}
-            data-testid="pane-header"
-          >
-            <div class="flex min-w-0 flex-1 items-center">
-              <span
-                class={[
-                  'min-w-0 truncate rounded-[var(--radius-field)] px-1.5 py-0.5 font-medium transition-colors',
-                  focusedPaneId === item.paneId
-                    ? 'bg-accent/15 text-fg'
-                    : 'text-fg-muted hover:bg-surface-2/40 hover:text-fg',
-                  titleGlow,
-                ].join(' ')}
-                data-testid="pane-header-title"
-                data-focused={focusedPaneId === item.paneId}
-                data-glow={titleGlow || null}
-              >
-                {pane.thread?.title ?? 'Pane'}
-              </span>
-            </div>
-            <button
-              type="button"
-              aria-label="Close Pane"
-              title="Close Pane"
-              onpointerdown={(event) => event.stopPropagation()}
-              onclick={(event) => {
-                event.stopPropagation();
-                destroyPane(item.paneId);
-              }}
-              class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-field)] text-fg-hint opacity-70 transition-colors hover:bg-surface-2/70 hover:text-fg group-hover/pane-header:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-              data-testid="pane-close"
-            >
-              <Icon icon={X} size={12} strokeWidth={2} />
-            </button>
-          </header>
-          <ChatView {pane} />
+          <ChatView {pane} onPaneDragStart={(event) => drag.onPaneDragStart(event, item.paneId)} />
         </section>
       {:else}
         <section
@@ -290,7 +242,7 @@
     {/each}
     {#if drag.threadDropTarget}
       <div
-        class="pointer-events-none absolute top-[var(--pane-header-height)] bottom-0 z-40 rounded-[var(--radius-field)] border-2 border-accent/70 bg-accent/10"
+        class="pointer-events-none absolute top-0 bottom-0 z-40 rounded-[var(--radius-field)] border-2 border-accent/70 bg-accent/10"
         style:left={`${drag.threadDropPreviewLeft}px`}
         style:width={`${drag.threadDropPreviewWidth}px`}
         data-testid="pane-thread-drop-preview"
@@ -298,6 +250,5 @@
         data-insert-index={drag.threadDropTarget.insertIndex}
       ></div>
     {/if}
-    <PaneAttentionOverlay {layoutItems} {paneOffsetLeftById} />
   {/if}
 </div>
