@@ -52,8 +52,8 @@
       >
         <span
           class="w-1.5 h-1.5 rounded-full shrink-0"
-          class:bg-green-500={running}
-          class:bg-red-500={!running}
+          class:bg-success={running}
+          class:bg-error={!running}
           aria-hidden="true"
         ></span>
         <span class="truncate max-w-[10ch]" title={`${tab.summary.shell} (pid ${tab.summary.pid})`}>

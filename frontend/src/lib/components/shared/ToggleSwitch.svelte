@@ -26,6 +26,6 @@
       : 'border-border bg-surface-2/80'}"
 >
   <span
-    class="block h-[18px] w-[18px] rounded-full bg-white shadow-sm transition-transform duration-200 {checked ? 'translate-x-[21px]' : 'translate-x-[3px]'}"
+    class="block h-[18px] w-[18px] rounded-full bg-text-primary shadow-sm transition-transform duration-200 {checked ? 'translate-x-[21px]' : 'translate-x-[3px]'}"
   ></span>
 </button>

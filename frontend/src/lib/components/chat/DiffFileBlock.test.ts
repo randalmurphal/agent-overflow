@@ -319,8 +319,8 @@ describe('<DiffFileBlock>', () => {
     // The line-tint classes are applied per-row regardless of
     // tokenization status — that's the "always usable" pre-render
     // pattern documented in DiffSidebarFile.
-    expect(body.querySelectorAll('.bg-success\\/10').length).toBeGreaterThan(0);
-    expect(body.querySelectorAll('.bg-error\\/10').length).toBeGreaterThan(0);
+    expect(body.querySelectorAll('.bg-success\\/20').length).toBeGreaterThan(0);
+    expect(body.querySelectorAll('.bg-error\\/20').length).toBeGreaterThan(0);
   });
 
   it('keeps the outer shell stable when lines are empty (loading state)', () => {

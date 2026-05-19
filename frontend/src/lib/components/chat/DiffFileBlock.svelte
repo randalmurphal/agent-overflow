@@ -288,13 +288,13 @@
               data-testid="diff-file-hunk-separator"
             >
               <span class="flex-1 border-t border-border-subtle"></span>
-              <span class="text-[10px] text-fg-subtle/60">⋮</span>
+              <span class="text-[10px] text-fg-subtle">⋮</span>
               <span class="flex-1 border-t border-border-subtle"></span>
             </div>
           {:else}
             <div class="flex whitespace-pre {lineTintClass(row.line.type)}">
               <span
-                class="select-none tabular-nums text-fg-subtle/60 px-3 text-right shrink-0"
+                class="select-none tabular-nums text-fg-subtle px-3 text-right shrink-0"
                 style="width: var(--gutter-w)"
                 aria-hidden="true"
               >{row.lineNo > 0 ? row.lineNo : ''}</span><span class="pl-1 pr-3 flex-1 min-w-0"

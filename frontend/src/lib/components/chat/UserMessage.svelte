@@ -239,7 +239,7 @@
       ariaLabel="Revert message options"
     >
       <div
-        class="w-[244px] overflow-hidden rounded-[10px] border border-border bg-surface-1/98 p-1.5 text-left shadow-[0_18px_45px_rgba(0,0,0,0.32)]"
+        class="w-[244px] overflow-hidden rounded-[10px] border border-border bg-surface-1/98 p-1.5 text-left shadow-menu"
         data-testid="user-message-revert-popover"
       >
         <button
@@ -274,7 +274,7 @@
 <style>
   @keyframes user-message-target-glow-a {
     0% {
-      border-color: color-mix(in oklab, var(--accent) 88%, white 12%);
+      border-color: color-mix(in oklab, var(--accent) 88%, var(--text-primary) 12%);
       box-shadow:
         0 0 0 1px color-mix(in oklab, var(--accent) 72%, transparent),
         0 0 26px color-mix(in oklab, var(--accent) 34%, transparent);
@@ -293,7 +293,7 @@
 
   @keyframes user-message-target-glow-b {
     0% {
-      border-color: color-mix(in oklab, var(--accent) 88%, white 12%);
+      border-color: color-mix(in oklab, var(--accent) 88%, var(--text-primary) 12%);
       box-shadow:
         0 0 0 1px color-mix(in oklab, var(--accent) 72%, transparent),
         0 0 26px color-mix(in oklab, var(--accent) 34%, transparent);

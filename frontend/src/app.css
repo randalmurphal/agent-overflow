@@ -39,6 +39,29 @@
   /* Intentional alias — unclassified tools share the secondary-text
      palette, keeping the dark/light pair in sync automatically. */
   --ico-generic: var(--text-secondary);
+
+  /* ANSI 16-color palette. Consumed by `.ansi-body .ansi-fg-N` rules
+     below and read at theme-flip time by the xterm.js terminal theme
+     (see terminal/terminalTheme.ts) so chat ANSI output and the
+     terminal stay aesthetically twinned. The light-mode block below
+     re-defines the same names with hex values tuned for ≥4.5:1
+     contrast on --surface-0. */
+  --ansi-fg-30: #4b5563;
+  --ansi-fg-31: oklch(0.7 0.17 27);
+  --ansi-fg-32: oklch(0.75 0.15 150);
+  --ansi-fg-33: oklch(0.82 0.14 85);
+  --ansi-fg-34: oklch(0.72 0.14 250);
+  --ansi-fg-35: oklch(0.75 0.16 320);
+  --ansi-fg-36: oklch(0.8 0.12 205);
+  --ansi-fg-37: var(--text-primary);
+  --ansi-fg-90: var(--text-secondary);
+  --ansi-fg-91: oklch(0.78 0.15 27);
+  --ansi-fg-92: oklch(0.82 0.14 150);
+  --ansi-fg-93: oklch(0.88 0.13 85);
+  --ansi-fg-94: oklch(0.8 0.13 250);
+  --ansi-fg-95: oklch(0.82 0.15 320);
+  --ansi-fg-96: oklch(0.86 0.11 205);
+  --ansi-fg-97: #ffffff;
 }
 
 html {
@@ -47,19 +70,28 @@ html {
 
 html.light {
   color-scheme: light;
+  /* Surface tiers widened from the original (0.985/0.968/0.935) to give
+     code blocks, table headers, hover states, and chip chrome enough
+     elevation step over the page background. Matches the ~0.03/~0.05
+     step typical of GitHub Light Modern. */
   --surface-0: oklch(0.985 0.004 255);
-  --surface-1: oklch(0.968 0.008 255);
-  --surface-2: oklch(0.935 0.012 255);
+  --surface-1: oklch(0.955 0.008 255);
+  --surface-2: oklch(0.915 0.012 255);
   --code-inline-bg: oklch(0.9 0.012 255);
-  --border: oklch(0.86 0.014 255);
+  --border: oklch(0.84 0.014 255);
   --text-primary: oklch(0.23 0.014 255);
   --text-secondary: oklch(0.48 0.018 255);
   --accent: oklch(0.55 0.18 276);
   --info: oklch(0.55 0.17 250);
-  --success: oklch(0.66 0.16 155);
-  --error: oklch(0.61 0.19 27);
-  --warning: oklch(0.78 0.16 78);
-  --provider-codex: oklch(0.74 0.16 55);
+  /* Status colors tuned for ≥4.5:1 contrast on --surface-0 light.
+     Used by both the +N/-N diff summary pills and the
+     `text-success`/`text-error` foregrounds inside diff line tints.
+     Dark variants (above) stay brighter because they read against
+     dark surfaces. */
+  --success: oklch(0.5 0.15 155);
+  --error: oklch(0.5 0.18 27);
+  --warning: oklch(0.6 0.16 78);
+  --provider-codex: oklch(0.58 0.16 55);
   --overlay: oklch(0.22 0.01 255 / 28%);
 
   /* Light-mode icon palette. Same hues, lower lightness so the icons
@@ -77,6 +109,29 @@ html.light {
   --ico-brain: oklch(0.52 0.16 15);
   /* See dark-mode block for the alias rationale. */
   --ico-generic: var(--text-secondary);
+
+  /* ANSI 16-color palette — light variant. GitHub Light Modern hex
+     values; each verified ≥4.5:1 contrast on --surface-0 except
+     --ansi-fg-96 (cyan, 4.0:1 — decorative use). The dark palette
+     above stays in oklch; the light variant uses hex so the xterm.js
+     theme reader (terminalTheme.ts) gets a value it can pass to
+     ITheme directly. */
+  --ansi-fg-30: #24292f;
+  --ansi-fg-31: #cf222e;
+  --ansi-fg-32: #116329;
+  --ansi-fg-33: #7d4e00;
+  --ansi-fg-34: #0550ae;
+  --ansi-fg-35: #8250df;
+  --ansi-fg-36: #1b7c83;
+  --ansi-fg-37: var(--text-primary);
+  --ansi-fg-90: var(--text-secondary);
+  --ansi-fg-91: #a40e26;
+  --ansi-fg-92: #1a7f37;
+  --ansi-fg-93: #633c01;
+  --ansi-fg-94: #0969da;
+  --ansi-fg-95: #6f42c1;
+  --ansi-fg-96: #3192aa;
+  --ansi-fg-97: #1f2328;
 }
 
 @theme {
@@ -252,7 +307,10 @@ pre, code, kbd, samp, .ansi-body {
 .markdown-body pre {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  background: var(--surface-0);
+  /* Aligns with the Streamdown override in chatMarkdownTheme.code.base —
+     code blocks must contrast against the chat surface (--surface-0), so
+     they sit on the surface-1 elevation tier. */
+  background: var(--surface-1);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-field);
   padding: 0.75rem;
@@ -412,22 +470,22 @@ pre, code, kbd, samp, .ansi-body {
 }
 
 .ansi-body { color: inherit; }
-.ansi-body .ansi-fg-30 { color: #4b5563; }
-.ansi-body .ansi-fg-31 { color: oklch(0.7 0.17 27); }
-.ansi-body .ansi-fg-32 { color: oklch(0.75 0.15 150); }
-.ansi-body .ansi-fg-33 { color: oklch(0.82 0.14 85); }
-.ansi-body .ansi-fg-34 { color: oklch(0.72 0.14 250); }
-.ansi-body .ansi-fg-35 { color: oklch(0.75 0.16 320); }
-.ansi-body .ansi-fg-36 { color: oklch(0.8 0.12 205); }
-.ansi-body .ansi-fg-37 { color: var(--text-primary); }
-.ansi-body .ansi-fg-90 { color: var(--text-secondary); }
-.ansi-body .ansi-fg-91 { color: oklch(0.78 0.15 27); }
-.ansi-body .ansi-fg-92 { color: oklch(0.82 0.14 150); }
-.ansi-body .ansi-fg-93 { color: oklch(0.88 0.13 85); }
-.ansi-body .ansi-fg-94 { color: oklch(0.8 0.13 250); }
-.ansi-body .ansi-fg-95 { color: oklch(0.82 0.15 320); }
-.ansi-body .ansi-fg-96 { color: oklch(0.86 0.11 205); }
-.ansi-body .ansi-fg-97 { color: #ffffff; }
+.ansi-body .ansi-fg-30 { color: var(--ansi-fg-30); }
+.ansi-body .ansi-fg-31 { color: var(--ansi-fg-31); }
+.ansi-body .ansi-fg-32 { color: var(--ansi-fg-32); }
+.ansi-body .ansi-fg-33 { color: var(--ansi-fg-33); }
+.ansi-body .ansi-fg-34 { color: var(--ansi-fg-34); }
+.ansi-body .ansi-fg-35 { color: var(--ansi-fg-35); }
+.ansi-body .ansi-fg-36 { color: var(--ansi-fg-36); }
+.ansi-body .ansi-fg-37 { color: var(--ansi-fg-37); }
+.ansi-body .ansi-fg-90 { color: var(--ansi-fg-90); }
+.ansi-body .ansi-fg-91 { color: var(--ansi-fg-91); }
+.ansi-body .ansi-fg-92 { color: var(--ansi-fg-92); }
+.ansi-body .ansi-fg-93 { color: var(--ansi-fg-93); }
+.ansi-body .ansi-fg-94 { color: var(--ansi-fg-94); }
+.ansi-body .ansi-fg-95 { color: var(--ansi-fg-95); }
+.ansi-body .ansi-fg-96 { color: var(--ansi-fg-96); }
+.ansi-body .ansi-fg-97 { color: var(--ansi-fg-97); }
 .ansi-body .ansi-bold { font-weight: 600; }
 .ansi-body .ansi-italic { font-style: italic; }
 .ansi-body .ansi-underline { text-decoration: underline; }

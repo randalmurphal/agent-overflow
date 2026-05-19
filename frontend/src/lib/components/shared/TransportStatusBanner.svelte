@@ -136,7 +136,7 @@
           type="button"
           onclick={handleRetry}
           data-testid="transport-status-retry"
-          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-white/5 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           Retry
         </button>

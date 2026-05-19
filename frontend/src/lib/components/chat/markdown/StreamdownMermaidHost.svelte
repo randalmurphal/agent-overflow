@@ -11,13 +11,25 @@
   // serializer's existing detection (`pre.dataset.mermaidSource` +
   // `:scope > svg` evidence) keeps working with one path tweak (the
   // host is a `<div>` rather than a `<pre>`).
+  //
+  // The `{#key}` wrapper on `<Mermaid>` forces a re-mount when the
+  // app theme flips. svelte-streamdown reads its mermaid theme
+  // (`'default'`/`'dark'`) from a MutationObserver on `html.light` /
+  // `html.dark`, but the inner Mermaid component only calls
+  // `mermaid.initialize(...)` at render time — already-rendered SVGs
+  // stay in the prior palette until a remount. Theme toggles are
+  // rare so the per-diagram re-render cost is acceptable.
 
   import Mermaid from 'svelte-streamdown/mermaid';
   import type { Tokens } from 'marked';
+  import { getResolvedTheme } from '../../../stores/themeMode.svelte';
 
   let { token, id }: { token: Tokens.Code; id: string } = $props();
+  const themeKey = $derived(getResolvedTheme());
 </script>
 
 <div class="mermaid streamdown-mermaid-host" data-mermaid-source={token.text}>
-  <Mermaid {token} {id} />
+  {#key themeKey}
+    <Mermaid {token} {id} />
+  {/key}
 </div>

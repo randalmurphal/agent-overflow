@@ -203,7 +203,7 @@
       aria-controls="diff-sidebar-file-{safeId}"
       class="flex flex-1 min-w-0 items-center gap-2 text-left cursor-pointer bg-transparent border-0 p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded"
     >
-      <span class="flex size-3 shrink-0 items-center justify-center text-fg-subtle/60 select-none transition-transform duration-150" class:rotate-90={expanded}>
+      <span class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150" class:rotate-90={expanded}>
         <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
       </span>
       <ToolKindIcon kind="file" ariaLabel="File" />
@@ -245,7 +245,7 @@
             {#each displayRows as row, i (row.id)}
               <div class="flex {lineTintClass(row.line.type)}">
                 <span
-                  class="select-none tabular-nums text-fg-subtle/60 px-3 text-right shrink-0"
+                  class="select-none tabular-nums text-fg-subtle px-3 text-right shrink-0"
                   style="width: var(--gutter-w)"
                   aria-hidden="true"
                   data-testid="diff-sidebar-line-gutter"
@@ -261,7 +261,7 @@
                   data-testid="diff-sidebar-hunk-separator"
                 >
                   <span class="flex-1 border-t border-border-subtle"></span>
-                  <span class="text-[10px] text-fg-subtle/60">⋮</span>
+                  <span class="text-[10px] text-fg-subtle">⋮</span>
                   <span class="flex-1 border-t border-border-subtle"></span>
                 </div>
               {/if}
@@ -283,7 +283,7 @@
 {#snippet splitSide(side: PatchDisplayRow | null, lineNo: number)}
   <div class="flex py-px {side ? lineTintClass(side.line.type) : 'bg-surface-0/40'} {side?.line.type === 'context' ? 'bg-surface-0' : ''}">
     <span
-      class="select-none tabular-nums text-fg-subtle/60 px-2 text-right shrink-0"
+      class="select-none tabular-nums text-fg-subtle px-2 text-right shrink-0"
       style="width: var(--gutter-w)"
       aria-hidden="true"
       data-testid="diff-sidebar-line-gutter"

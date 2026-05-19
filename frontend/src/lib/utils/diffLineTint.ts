@@ -18,9 +18,9 @@ export type LineTintType = 'add' | 'del' | 'meta' | 'context';
 export function lineTintClass(type: LineTintType): string {
   switch (type) {
     case 'add':
-      return 'bg-success/10 text-success';
+      return 'bg-success/20 text-success';
     case 'del':
-      return 'bg-error/10 text-error';
+      return 'bg-error/20 text-error';
     case 'meta':
       return 'text-accent/70';
     default:

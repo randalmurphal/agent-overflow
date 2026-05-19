@@ -203,7 +203,7 @@
           onclick={handleRecheckBinary}
           disabled={rechecking}
           data-testid="provider-status-recheck"
-          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-white/5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           {rechecking ? 'Checking…' : 'Recheck'}
         </button>
@@ -213,7 +213,7 @@
           onclick={handlePrimaryAction}
           disabled={rechecking}
           data-testid="provider-status-action"
-          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-white/5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           {rechecking ? 'Checking…' : primaryActionLabel}
         </button>
@@ -230,7 +230,7 @@
         <button
           onclick={handleReconnect}
           disabled={reconnecting}
-          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-white/5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           {reconnecting ? 'Reconnecting...' : 'Reconnect'}
         </button>

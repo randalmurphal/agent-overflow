@@ -9,7 +9,9 @@
     ResizeTerminal,
     GetTerminalReplay,
   } from '../../stores/bindings';
+  import { getResolvedTheme } from '../../stores/themeMode.svelte';
   import { decodeTerminalOutput, encodeTerminalInput, normalizeTerminalReplay } from '../../types/terminal';
+  import { getXtermTheme } from './terminalTheme';
   import {
     notifyTerminalFocus,
     type ThreadTerminalStateHandle,
@@ -66,6 +68,7 @@
       lineHeight: 1.2,
       scrollback: 4000,
       allowProposedApi: true,
+      theme: getXtermTheme(getResolvedTheme()),
     });
 
     fit = new FitAddon();
@@ -158,6 +161,14 @@
     }
   });
 
+  // Follow the app theme. Writing term.options.theme applies live —
+  // background, foreground, and ANSI palette swap in place.
+  $effect(() => {
+    const mode = getResolvedTheme();
+    if (!term) return;
+    term.options.theme = getXtermTheme(mode);
+  });
+
   onMount(() => {
     hydrate();
   });
@@ -188,9 +199,9 @@
   }
 </script>
 
-<div class="flex-1 min-h-0 flex flex-col bg-[#111]" data-testid={`terminal-body-${terminalID}`}>
+<div class="flex-1 min-h-0 flex flex-col bg-surface-0" data-testid={`terminal-body-${terminalID}`}>
   {#if onSendToComposer}
-    <div class="flex items-center justify-end border-b border-border/30 bg-black/30 px-2 py-1 text-xs">
+    <div class="flex items-center justify-end border-b border-border/30 bg-surface-2/60 px-2 py-1 text-xs">
       <button
         type="button"
         disabled={!selection.trim()}

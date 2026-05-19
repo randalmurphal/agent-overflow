@@ -3,11 +3,11 @@ import { fontStyleClass, lineTintClass } from './diffLineTint';
 
 describe('lineTintClass', () => {
   it('maps add to success bg + fg', () => {
-    expect(lineTintClass('add')).toBe('bg-success/10 text-success');
+    expect(lineTintClass('add')).toBe('bg-success/20 text-success');
   });
 
   it('maps del to error bg + fg', () => {
-    expect(lineTintClass('del')).toBe('bg-error/10 text-error');
+    expect(lineTintClass('del')).toBe('bg-error/20 text-error');
   });
 
   it('maps meta to dimmed accent fg', () => {
