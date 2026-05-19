@@ -17,6 +17,7 @@ import {
 } from '../../stores/runtimeModeDraft.svelte';
 import {
   resetProposedPlanCacheForTests,
+  upsertProposedPlanForTests,
 } from '../../stores/proposedPlans.svelte';
 import {
   getQueueForThread,
@@ -597,6 +598,46 @@ describe('<Composer>', () => {
         payloadId: 'payload-1',
       }),
     });
+  });
+
+  it('does not reread a cleared plan source after implement send resolves', async () => {
+    const plan = makeItem({
+      id: 'plan-1',
+      kind: 'tool_call',
+      payloadKind: 'proposed_plan',
+      payloadId: 'payload-1',
+      payloadMeta: JSON.stringify({ title: 'Plan', preview: '# Plan' }),
+      turnIndex: 0,
+      itemIndex: 0,
+      updatedAt: 1,
+    });
+    const pane = await buildPane(makeTestThread(), [plan]);
+    const draft = await buildDraft();
+    setBindingMock('ListProposedPlanComments', async () => []);
+    const sendGate = deferred<ReturnType<typeof makeTestThread>>();
+    const send = setBindingMock('SendMessageWithOptions', async () => sendGate.promise);
+
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { getByTestId, findByText, queryByText } = render(Composer, { props: { pane, draft } });
+    await findByText('Implement');
+    await fireEvent.click(getByTestId('composer-send'));
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled();
+    });
+
+    upsertProposedPlanForTests({
+      ...plan,
+      meta: JSON.stringify({ planImplementedAt: 123 }),
+      updatedAt: 2,
+    });
+    await tick();
+    sendGate.resolve(makeTestThread({ runtimeMode: 'full-access' }));
+
+    await waitFor(() => {
+      expect(queryByText('Implement')).toBeNull();
+    });
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
   });
 
   it('returns to the normal send button after implementing the latest plan', async () => {

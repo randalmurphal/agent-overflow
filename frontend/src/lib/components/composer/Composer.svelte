@@ -307,12 +307,13 @@
       const materializedId = await ensureMaterializedThread();
       if (!materializedId) return;
     }
-    if (latestPlanSource && !hasDraftContent && !hasDraftPlanComments && !hasDraftDiffReviewComments) {
+    const planSourceForImplement = latestPlanSource;
+    if (planSourceForImplement && !hasDraftContent && !hasDraftPlanComments && !hasDraftDiffReviewComments) {
       sending = true;
       try {
-        const implemented = await implementProposedPlan(pane, latestPlanSource);
+        const implemented = await implementProposedPlan(pane, planSourceForImplement);
         if (implemented) {
-          locallyImplementedPlanIds = new Set([...locallyImplementedPlanIds, latestPlanSource.itemId]);
+          locallyImplementedPlanIds = new Set([...locallyImplementedPlanIds, planSourceForImplement.itemId]);
         }
       } finally {
         sending = false;
