@@ -6,11 +6,10 @@
 //   - `role` prop maps to the floating element's ARIA role; `role="none"`
 //     omits the attribute.
 //
-// happy-dom doesn't report realistic layout geometry, so we don't assert
-// on pixel coordinates — the positioning math is exercised via
-// `getBoundingClientRect` stubs only where it's cheap to do so.
+// happy-dom doesn't report realistic layout geometry, so pixel-position
+// assertions use explicit viewport and element geometry stubs.
 
-import { describe, expect, it, vi, beforeAll } from 'vitest';
+import { describe, expect, it, vi, beforeAll, afterEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import Harness from './PopoverHarness.svelte';
@@ -28,6 +27,67 @@ beforeAll(() => {
   (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =
     StubResizeObserver as unknown as typeof ResizeObserver;
 });
+
+const originalInnerWidth = window.innerWidth;
+const originalInnerHeight = window.innerHeight;
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  setViewport(originalInnerWidth, originalInnerHeight);
+});
+
+function setViewport(width: number, height: number): void {
+  Object.defineProperty(window, 'innerWidth', { value: width, configurable: true });
+  Object.defineProperty(window, 'innerHeight', { value: height, configurable: true });
+}
+
+function stubPopoverGeometry({
+  anchor,
+  floating,
+}: {
+  anchor: Partial<DOMRect>;
+  floating: { width: number; height: number; scrollHeight?: number };
+}): void {
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getRect(this: HTMLElement) {
+    const el = this as HTMLElement;
+    if (el.dataset.testid === 'popover-anchor') {
+      return {
+        x: anchor.left ?? 0,
+        y: anchor.top ?? 0,
+        top: anchor.top ?? 0,
+        right: anchor.right ?? 0,
+        bottom: anchor.bottom ?? 0,
+        left: anchor.left ?? 0,
+        width: anchor.width ?? Math.max(0, (anchor.right ?? 0) - (anchor.left ?? 0)),
+        height: anchor.height ?? Math.max(0, (anchor.bottom ?? 0) - (anchor.top ?? 0)),
+        toJSON: () => ({}),
+      } as DOMRect;
+    }
+    return {
+      x: 0,
+      y: 0,
+      top: 0,
+      right: 0,
+      bottom: 0,
+      left: 0,
+      width: 0,
+      height: 0,
+      toJSON: () => ({}),
+    } as DOMRect;
+  });
+  vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function getWidth(this: HTMLElement) {
+    const el = this as HTMLElement;
+    return el.dataset.popover !== undefined ? floating.width : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function getHeight(this: HTMLElement) {
+    const el = this as HTMLElement;
+    return el.dataset.popover !== undefined ? floating.height : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function getScrollHeight(this: HTMLElement) {
+    const el = this as HTMLElement;
+    return el.dataset.popover !== undefined ? (floating.scrollHeight ?? floating.height) : 0;
+  });
+}
 
 describe('<Popover>', () => {
   it('renders nothing when closed', () => {
@@ -86,6 +146,81 @@ describe('<Popover>', () => {
     const popover = getByTestId('popover-content').parentElement;
     expect(popover).not.toBeNull();
     expect(popover!.hasAttribute('role')).toBe(false);
+  });
+
+  it('clamps a right-start submenu upward when it would render below the viewport', async () => {
+    setViewport(300, 100);
+    stubPopoverGeometry({
+      anchor: { top: 60, right: 80, bottom: 80, left: 40 },
+      floating: { width: 120, height: 80 },
+    });
+
+    const { getByTestId } = render(Harness, {
+      props: { open: true, placement: 'right-start' },
+    });
+    await tick();
+
+    const popover = getByTestId('popover-content').parentElement;
+    expect(popover).not.toBeNull();
+    expect(popover!.style.top).toBe('12px');
+    expect(popover!.style.maxHeight).toBe('84px');
+    expect(popover!.style.overflowY).toBe('auto');
+  });
+
+  it('limits tall popovers to the viewport height with margins', async () => {
+    setViewport(300, 100);
+    stubPopoverGeometry({
+      anchor: { top: 4, right: 80, bottom: 10, left: 40 },
+      floating: { width: 120, height: 84, scrollHeight: 200 },
+    });
+
+    const { getByTestId } = render(Harness, {
+      props: { open: true, placement: 'bottom-start' },
+    });
+    await tick();
+
+    const popover = getByTestId('popover-content').parentElement;
+    expect(popover).not.toBeNull();
+    expect(popover!.style.top).toBe('8px');
+    expect(popover!.style.maxHeight).toBe('84px');
+    expect(popover!.style.overflowY).toBe('auto');
+  });
+
+  it('still flips right-start to left-start before clamping when horizontal space is available', async () => {
+    setViewport(300, 200);
+    stubPopoverGeometry({
+      anchor: { top: 20, right: 280, bottom: 40, left: 240 },
+      floating: { width: 100, height: 50 },
+    });
+
+    const { getByTestId } = render(Harness, {
+      props: { open: true, placement: 'right-start' },
+    });
+    await tick();
+
+    const popover = getByTestId('popover-content').parentElement;
+    expect(popover).not.toBeNull();
+    expect(popover!.dataset.placement).toBe('left-start');
+    expect(popover!.style.left).toBe('136px');
+  });
+
+  it('flips horizontally even when the flipped submenu also needs vertical clamping', async () => {
+    setViewport(300, 100);
+    stubPopoverGeometry({
+      anchor: { top: 60, right: 280, bottom: 80, left: 240 },
+      floating: { width: 100, height: 80 },
+    });
+
+    const { getByTestId } = render(Harness, {
+      props: { open: true, placement: 'right-start' },
+    });
+    await tick();
+
+    const popover = getByTestId('popover-content').parentElement;
+    expect(popover).not.toBeNull();
+    expect(popover!.dataset.placement).toBe('left-start');
+    expect(popover!.style.left).toBe('136px');
+    expect(popover!.style.top).toBe('12px');
   });
 
   // Regression: the composer card uses `backdrop-filter: blur()` +

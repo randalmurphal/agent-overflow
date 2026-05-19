@@ -77,6 +77,7 @@
   let top = $state(0);
   let left = $state(0);
   let width: number | undefined = $state(undefined);
+  let maxHeight: number | undefined = $state(undefined);
   // Once we've measured the floating element we set resolvedPlacement to
   // the placement we actually used after flip logic. The initial `null`
   // means "not yet positioned" — the floating div is kept invisible so
@@ -209,19 +210,59 @@
     }
   }
 
-  function overflowsViewport(
+  function overflowsPrimaryAxis(
     pos: { top: number; left: number },
     floatRect: { width: number; height: number },
+    p: Placement,
   ): boolean {
     if (typeof window === 'undefined') return false;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    return (
-      pos.top < 0 ||
-      pos.left < 0 ||
-      pos.top + floatRect.height > vh ||
-      pos.left + floatRect.width > vw
-    );
+    switch (p) {
+      case 'bottom-start':
+      case 'bottom-end':
+        return pos.top + floatRect.height > vh;
+      case 'top-start':
+      case 'top-end':
+        return pos.top < 0;
+      case 'right-start':
+        return pos.left + floatRect.width > vw;
+      case 'left-start':
+        return pos.left < 0;
+    }
+  }
+
+  const VIEWPORT_MARGIN = 8;
+
+  function clamp(value: number, min: number, max: number): number {
+    if (max < min) return min;
+    return Math.min(Math.max(value, min), max);
+  }
+
+  function clampToViewport(
+    pos: { top: number; left: number },
+    floatRect: { width: number; height: number },
+  ): { top: number; left: number; maxHeight: number | undefined } {
+    if (typeof window === 'undefined') {
+      return { ...pos, maxHeight: undefined };
+    }
+
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const minLeft = VIEWPORT_MARGIN;
+    const minTop = VIEWPORT_MARGIN;
+    const maxLeft = vw - floatRect.width - VIEWPORT_MARGIN;
+    const maxTop = vh - floatRect.height - VIEWPORT_MARGIN;
+    const clampedTop = clamp(pos.top, minTop, maxTop);
+    const clampedLeft = clamp(pos.left, minLeft, maxLeft);
+    const availableHeight = Math.max(0, vh - (VIEWPORT_MARGIN * 2));
+    const needsHeightLimit = floatRect.height > availableHeight || pos.top !== clampedTop;
+
+    return {
+      top: clampedTop,
+      left: clampedLeft,
+      maxHeight: needsHeightLimit ? availableHeight : undefined,
+    };
   }
 
   function updatePosition(): void {
@@ -229,7 +270,7 @@
     const rect = anchor.getBoundingClientRect();
     const floatRect = {
       width: floatingEl.offsetWidth,
-      height: floatingEl.offsetHeight,
+      height: Math.max(floatingEl.offsetHeight, floatingEl.scrollHeight),
     };
     if (matchAnchorWidth) {
       width = rect.width;
@@ -239,16 +280,18 @@
 
     let chosen: Placement = placement;
     let pos = placePopover(rect, floatRect, chosen);
-    if (overflowsViewport(pos, floatRect)) {
+    if (overflowsPrimaryAxis(pos, floatRect, chosen)) {
       const alt = oppositeOf(chosen);
       const altPos = placePopover(rect, floatRect, alt);
-      if (!overflowsViewport(altPos, floatRect)) {
+      if (!overflowsPrimaryAxis(altPos, floatRect, alt)) {
         chosen = alt;
         pos = altPos;
       }
     }
-    top = pos.top;
-    left = pos.left;
+    const clamped = clampToViewport(pos, floatRect);
+    top = clamped.top;
+    left = clamped.left;
+    maxHeight = clamped.maxHeight;
     resolvedPlacement = chosen;
   }
 
@@ -258,6 +301,7 @@
   $effect(() => {
     if (!open) {
       resolvedPlacement = null;
+      maxHeight = undefined;
       return;
     }
     if (!anchor || !floatingEl) return;
@@ -335,8 +379,9 @@
   // flash at (0,0) before the first layout frame.
   let floatingStyle = $derived.by(() => {
     const widthRule = width !== undefined ? `width: ${width}px;` : '';
+    const maxHeightRule = maxHeight !== undefined ? `max-height: ${maxHeight}px; overflow-y: auto;` : '';
     const visibility = resolvedPlacement === null ? 'visibility: hidden;' : '';
-    return `position: fixed; top: ${top}px; left: ${left}px; ${widthRule} ${visibility}`.trim();
+    return `position: fixed; top: ${top}px; left: ${left}px; ${widthRule} ${maxHeightRule} ${visibility}`.trim();
   });
 
   // `role="none"` tells AT consumers to ignore the wrapper; callers who
