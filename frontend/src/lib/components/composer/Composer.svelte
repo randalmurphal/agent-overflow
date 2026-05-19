@@ -483,6 +483,14 @@
       return;
     }
 
+    // Plain Tab (no popover) is a no-op inside the composer. Browser
+    // default would advance focus out of the textarea, which we don't
+    // want — users navigate panes/sidebar via explicit chords.
+    if (e.key === 'Tab' && !e.shiftKey && !mentions.mentionTrigger) {
+      e.preventDefault();
+      return;
+    }
+
     // Popover dispatch short-circuits when the keystroke was consumed;
     // otherwise we fall through to the send guard below.
     if (handleMentionPopoverKeydown(e, mentions)) return;

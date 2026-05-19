@@ -49,13 +49,21 @@ const MaxCount = 256
 // command-palette / app-level actions this wave introduces layered on
 // top.
 var Defaults = []Keybinding{
-	// Wave 4 swap: ⌘K focuses the sidebar search (the most common
-	// wayfinding chord), and the command palette moves to ⌘⇧K. The
-	// sidebar.focus-search binding fires globally (empty `when`) so
-	// it works from the composer, the diff panel, the terminal, etc.
+	// Keybinding-overhaul swap: mod+j / mod+k are reserved for the
+	// sidebar visual selector (no DOM focus change). Terminal
+	// smart-toggle moves to mod+` (matches VS Code), the sidebar
+	// search input moves to mod+/, and the cheat sheet moves to
+	// mod+shift+/. The sidebar.focus-search binding fires globally
+	// (empty `when`) so it works from the composer, the diff panel,
+	// the terminal, etc.
 	{Key: "mod+shift+k", Command: "palette.open", DefaultID: "palette.open"},
-	{Key: "mod+k", Command: "sidebar.focus-search", DefaultID: "sidebar.focus-search"},
-	{Key: "mod+j", Command: "terminal.toggle", DefaultID: "terminal.toggle"},
+	{Key: "mod+/", Command: "sidebar.focus-search", DefaultID: "sidebar.focus-search"},
+	{Key: "mod+`", Command: "terminal.toggle", DefaultID: "terminal.toggle"},
+	{Key: "mod+j", Command: "sidebar.cursor.down", DefaultID: "sidebar.cursor.down"},
+	{Key: "mod+k", Command: "sidebar.cursor.up", DefaultID: "sidebar.cursor.up"},
+	{Key: "mod+enter", Command: "sidebar.cursor.open", When: "sidebarCursorActive && !anyModalOpen", DefaultID: "sidebar.cursor.open"},
+	{Key: "mod+shift+enter", Command: "sidebar.cursor.openInNewPane", When: "sidebarCursorActive && !anyModalOpen", DefaultID: "sidebar.cursor.openInNewPane"},
+	{Key: "mod+/", Command: "picker.toggleInput", When: "anyPickerOpen", DefaultID: "picker.toggleInput"},
 	{Key: "mod+n", Command: "terminal.new", When: "terminalFocus", DefaultID: "terminal.new"},
 	{Key: "mod+w", Command: "terminal.close", When: "terminalFocus", DefaultID: "terminal.close"},
 	{Key: "mod+n", Command: "thread.new", When: "!terminalFocus", DefaultID: "thread.new.primary"},
@@ -74,8 +82,6 @@ var Defaults = []Keybinding{
 	{Key: "mod+shift+g", Command: "diff.panel.toggle", When: "hasActiveThread && !terminalFocus", DefaultID: "diff.panel.toggle"},
 	{Key: "mod+f", Command: "search.threads", When: "!terminalFocus", DefaultID: "search.threads"},
 	{Key: "mod+,", Command: "settings.open", DefaultID: "settings.open"},
-	{Key: "mod+shift+[", Command: "thread.previous", DefaultID: "thread.previous"},
-	{Key: "mod+shift+]", Command: "thread.next", DefaultID: "thread.next"},
 	{Key: "esc", Command: "rhs.close", When: "activeRhsPanel && !anyModalOpen && !terminalFocus", DefaultID: "rhs.close"},
 	{Key: "esc", Command: "thread.interrupt", When: "hasActiveThread && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen", DefaultID: "thread.interrupt"},
 	{Key: "mod+1", Command: "thread.jump.1", DefaultID: "thread.jump.1"},
@@ -90,12 +96,18 @@ var Defaults = []Keybinding{
 	// Help + global message search — both open dialogs that trap
 	// focus and close with Esc, so they don't need separate
 	// `!terminalFocus` guards the way thread.new does.
-	{Key: "mod+/", Command: "help.keybindings", DefaultID: "help.keybindings"},
+	{Key: "mod+shift+/", Command: "help.keybindings", DefaultID: "help.keybindings"},
 	{Key: "mod+shift+f", Command: "search.messages", DefaultID: "search.messages"},
 	// mod+p opens the unified thread picker — fuzzy-jump across
 	// every project's threads. Like mod+shift+f this traps focus +
 	// closes on Esc so no `!terminalFocus` guard is needed.
 	{Key: "mod+p", Command: "thread.search", DefaultID: "thread.search"},
+	// Composer toolbar pickers. Each chord opens the menu; pressing
+	// the same chord while the menu is open closes it (toggle).
+	{Key: "mod+shift+m", Command: "composer.picker.model", When: "hasActiveThread && !anyModalOpen", DefaultID: "composer.picker.model"},
+	{Key: "mod+shift+e", Command: "composer.picker.effort", When: "hasActiveThread && !anyModalOpen", DefaultID: "composer.picker.effort"},
+	{Key: "mod+shift+a", Command: "composer.picker.access", When: "hasActiveThread && !anyModalOpen", DefaultID: "composer.picker.access"},
+	{Key: "mod+shift+b", Command: "composer.picker.branch", When: "hasActiveThread && !anyModalOpen", DefaultID: "composer.picker.branch"},
 	// shift+tab cycles the active thread through chat → plan →
 	// design. The `when` expression keeps the chord inert while the
 	// palette or any modal has focus so Shift+Tab's default "focus

@@ -26,6 +26,7 @@
   import { closeCheatSheet, isCheatSheetOpen } from './lib/stores/cheatSheet.svelte';
   import { closeMessageSearch, getMessageSearchTargetPaneId, isMessageSearchOpen } from './lib/stores/messageSearch.svelte';
   import { closeThreadPicker, getThreadPickerTargetPaneId, isThreadPickerOpen } from './lib/stores/threadPicker.svelte';
+  import { isAnyComposerPickerOpen } from './lib/stores/composerPickerRegistry.svelte';
   import {
     dispatchKey,
     eventMatchesKeybindingCommand,
@@ -90,6 +91,27 @@
     'pane.focusRight',
     'pane.moveLeft',
     'pane.moveRight',
+    // Sidebar visual cursor — must fire from inside the composer
+    // textarea so users can navigate without blurring first. The
+    // cursor itself never changes DOM focus, so the textarea caret
+    // stays where the user left it.
+    'sidebar.cursor.down',
+    'sidebar.cursor.up',
+    'sidebar.cursor.open',
+    'sidebar.cursor.openInNewPane',
+    // Composer toolbar picker open chords — discoverability from the
+    // textarea is the whole point.
+    'composer.picker.model',
+    'composer.picker.effort',
+    'composer.picker.access',
+    'composer.picker.branch',
+    // Picker input/list toggle stays usable from any input — including
+    // a picker's own search field.
+    'picker.toggleInput',
+    // Terminal smart toggle — reachable from the composer.
+    'terminal.toggle',
+    // Cheat sheet, help.
+    'help.keybindings',
   ]);
 
   function handleStartDiscussion(thread: Thread): void {
@@ -107,11 +129,18 @@
   }
 
   function makeAppCommandContext(targetPane = getFocusedPaneOrNull()) {
+    const pickerOpen =
+      isPaletteOpen() ||
+      isCheatSheetOpen() ||
+      isMessageSearchOpen() ||
+      isThreadPickerOpen() ||
+      isAnyComposerPickerOpen();
     return makeCommandContext(targetPane, {
       paletteOpen: isPaletteOpen(),
       cheatSheetOpen: isCheatSheetOpen(),
       messageSearchOpen: isMessageSearchOpen(),
       threadPickerOpen: isThreadPickerOpen(),
+      anyPickerOpen: pickerOpen,
       anyModalOpen:
         discussionStartFor !== null ||
         showSettings ||
@@ -185,19 +214,6 @@
     if (thread) void openThreadFromNavigation(thread, getFocusedPaneOrNull() ?? ensureMainPane());
   }
 
-  function requestThreadStep(delta: number): void {
-    const ids = getVisibleSidebarThreadIds();
-    if (ids.length === 0) return;
-    const targetPane = getFocusedPaneOrNull();
-    const currentId = targetPane?.threadId;
-    const currentIndex = currentId ? ids.indexOf(currentId) : -1;
-    const nextIndex = currentIndex === -1
-      ? (delta > 0 ? 0 : ids.length - 1)
-      : (currentIndex + delta + ids.length) % ids.length;
-    const thread = getThreads().find((t) => t.id === ids[nextIndex]);
-    if (thread) void openThreadFromNavigation(thread, targetPane);
-  }
-
   function requestNewThread(openInNewPane: boolean): void {
     const targetPane = getFocusedPaneOrNull();
     const projectId = targetPane?.thread?.projectId;
@@ -267,7 +283,7 @@
     registerBuiltinCommands({
       openSettings: () => openSettings('general'),
       openThreadForm: () => requestNewThread(false),
-      openThreadInNewPane: () => requestNewThread(true),
+      openThreadFormInNewPane: () => requestNewThread(true),
       openThreadFromPR: () => {
         // Sidebar registers a callback that flips its local `showFromPR`
         // state. The indirection keeps dialog ownership with the sidebar,
@@ -286,7 +302,6 @@
       requestDiscussion: handleStartDiscussion,
       focusThreadSearch: () => searchFocuser?.(),
       requestThreadJump,
-      requestThreadStep,
     });
 
     void loadKeybindings();

@@ -1,12 +1,16 @@
 <script lang="ts">
-  // Semantic menu container. Owns keyboard navigation (arrows, Home/End,
-  // typeahead) and the roving-tabindex pattern so screen readers and
+  // Semantic menu container. Owns keyboard navigation (arrows, j/k,
+  // Home/End) and the roving-tabindex pattern so screen readers and
   // keyboard users land on the right item.
   //
   // The menu does NOT own a popover — callers pair it with a Popover when
   // the menu is a dropdown, or use it standalone for inline menus
   // (e.g. a settings pane). Separating the two keeps this primitive
   // reusable.
+  //
+  // No typeahead. Menus that need filtering use an explicit text input
+  // (CommandPalette, UnifiedThreadPicker, MessageSearch). Single-letter
+  // keystrokes route to vim-style nav (j/k) instead.
 
   import type { Snippet } from 'svelte';
 
@@ -19,12 +23,6 @@
   let { ariaLabel, children, onClose }: Props = $props();
 
   let containerEl: HTMLDivElement | undefined = $state(undefined);
-
-  // Typeahead buffer: characters accumulate within a 750ms window so
-  // users can type "con" to jump to "Connect". Matching is prefix-only
-  // and case-insensitive.
-  let typeaheadBuffer = $state('');
-  let typeaheadTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Return only enabled menuitems. Disabled items are visible for
   // context but skipped during keyboard navigation.
@@ -53,42 +51,16 @@
     return items.indexOf(active);
   }
 
-  function clearTypeahead(): void {
-    typeaheadBuffer = '';
-    if (typeaheadTimer) {
-      clearTimeout(typeaheadTimer);
-      typeaheadTimer = null;
-    }
-  }
-
-  function handleTypeahead(char: string): void {
-    typeaheadBuffer += char.toLowerCase();
-    if (typeaheadTimer) clearTimeout(typeaheadTimer);
-    typeaheadTimer = setTimeout(() => {
-      typeaheadBuffer = '';
-      typeaheadTimer = null;
-    }, 750);
-
-    const items = getItems();
-    if (items.length === 0) return;
-    // Search starting from the item after the currently-focused one so
-    // repeated presses of the same letter rotate through matches.
-    const idx = currentIndex(items);
-    const start = idx >= 0 ? (idx + (typeaheadBuffer.length === 1 ? 1 : 0)) % items.length : 0;
-    for (let step = 0; step < items.length; step++) {
-      const probe = (start + step) % items.length;
-      const text = (items[probe].textContent ?? '').trim().toLowerCase();
-      if (text.startsWith(typeaheadBuffer)) {
-        setFocus(probe, items);
-        return;
-      }
-    }
-  }
-
   function handleKeydown(e: KeyboardEvent): void {
     const items = getItems();
     if (items.length === 0) return;
     const idx = currentIndex(items);
+
+    // j/k mirror ArrowDown/ArrowUp when no modifier is held. With a
+    // modifier they fall through so global chords (e.g. mod+j sidebar
+    // cursor) still reach the window-level handler.
+    const isPlainJ = e.key === 'j' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey;
+    const isPlainK = e.key === 'k' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey;
 
     switch (e.key) {
       case 'ArrowDown':
@@ -115,12 +87,15 @@
         return;
     }
 
-    // Printable single-character keys feed typeahead. Filter out
-    // modifiers so Cmd+K or Ctrl+Shift+X doesn't accidentally drive
-    // the buffer.
-    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (isPlainJ) {
       e.preventDefault();
-      handleTypeahead(e.key);
+      setFocus(idx < 0 ? 0 : idx + 1, items);
+      return;
+    }
+    if (isPlainK) {
+      e.preventDefault();
+      setFocus(idx < 0 ? items.length - 1 : idx - 1, items);
+      return;
     }
   }
 
@@ -158,14 +133,13 @@
     queueMicrotask(tryFocus);
 
     // MutationObserver covers async-hydrated items. Once the first
-    // focus lands, subsequent mutations (navigation, typeahead, etc.)
-    // don't re-steal focus because `focusInitialized` is latched.
+    // focus lands, subsequent mutations don't re-steal focus because
+    // `focusInitialized` is latched.
     const observer = new MutationObserver(tryFocus);
     observer.observe(container, { childList: true, subtree: true });
 
     return () => {
       observer.disconnect();
-      clearTypeahead();
       focusInitialized = false;
     };
   });

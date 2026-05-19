@@ -1,7 +1,7 @@
 // Focused tests for makeCommandContext — keeps palette / keybindings gates
 // honest about the live pane / terminal-focus state.
 
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { createThreadPane } from './thread.svelte';
 import {
   getActiveTurn,
@@ -402,7 +402,6 @@ function registerFixtureCommands(pane: ReturnType<typeof createThreadPane>): voi
     requestDiscussion: () => {},
     focusThreadSearch: () => {},
     requestThreadJump: () => {},
-    requestThreadStep: () => {},
   });
 }
 
@@ -597,7 +596,6 @@ describe('git.ship command', () => {
       requestDiscussion: () => {},
       focusThreadSearch: () => {},
       requestThreadJump: () => {},
-      requestThreadStep: () => {},
     });
 
     runCommand('git.ship', makeCommandContext(pane, {}));
@@ -632,7 +630,6 @@ describe('sidebar.focus-search command', () => {
         focusCount += 1;
       },
       requestThreadJump: () => {},
-      requestThreadStep: () => {},
     });
     expect(getCommand('sidebar.focus-search')).toBeDefined();
     const ctx = makeCommandContext(pane, {}) as CommandContext;
@@ -701,5 +698,206 @@ describe('thread.fork command', () => {
 
     const isExpanded = sidebar.isProjectExpanded('project-fork');
     expect(isExpanded).toBe(true);
+  });
+});
+
+// --- terminal.toggle smart toggle ---
+//
+// The mod+` chord is three-state: closed → open + focus terminal; open
+// with chat focused → focus terminal; open with terminal focused →
+// focus chat composer. Pin all three states.
+
+describe('terminal.toggle command', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetTerminalFocusForTest();
+  });
+
+  it('opens the terminal drawer and dispatches focus-terminal when closed', async () => {
+    const pane = readyPane();
+    pane.setShowTerminal(false);
+    registerFixtureCommands(pane);
+    const events: CustomEvent[] = [];
+    const handler = (e: Event): void => {
+      events.push(e as CustomEvent);
+    };
+    window.addEventListener('agent-overflow:focus-terminal', handler);
+    try {
+      runCommand('terminal.toggle', makeCommandContext(pane, {}) as CommandContext);
+      expect(pane.showTerminal).toBe(true);
+      // Event fires inside requestAnimationFrame — wait one frame.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      expect(events).toHaveLength(1);
+      expect(events[0].detail).toEqual({ paneId: pane.paneId });
+    } finally {
+      window.removeEventListener('agent-overflow:focus-terminal', handler);
+    }
+  });
+
+  it('dispatches focus-terminal when drawer is open and chat is focused', () => {
+    const pane = readyPane();
+    pane.setShowTerminal(true);
+    notifyTerminalFocus(false);
+    registerFixtureCommands(pane);
+    const events: CustomEvent[] = [];
+    const handler = (e: Event): void => {
+      events.push(e as CustomEvent);
+    };
+    window.addEventListener('agent-overflow:focus-terminal', handler);
+    try {
+      runCommand('terminal.toggle', makeCommandContext(pane, {}) as CommandContext);
+      expect(events).toHaveLength(1);
+      expect(events[0].detail).toEqual({ paneId: pane.paneId });
+    } finally {
+      window.removeEventListener('agent-overflow:focus-terminal', handler);
+    }
+  });
+
+  it('focuses the chat composer when drawer is open and terminal is focused', () => {
+    const pane = readyPane();
+    pane.setShowTerminal(true);
+    notifyTerminalFocus(true);
+    registerFixtureCommands(pane);
+
+    // Stand up a composer textarea so focusPaneComposer can find it.
+    const root = document.createElement('div');
+    root.setAttribute('data-pane-id', pane.paneId);
+    const textarea = document.createElement('textarea');
+    textarea.setAttribute('aria-label', 'Message Input');
+    root.appendChild(textarea);
+    document.body.appendChild(root);
+
+    const events: CustomEvent[] = [];
+    const handler = (e: Event): void => {
+      events.push(e as CustomEvent);
+    };
+    window.addEventListener('agent-overflow:focus-terminal', handler);
+    try {
+      runCommand('terminal.toggle', makeCommandContext(pane, {}) as CommandContext);
+      expect(document.activeElement).toBe(textarea);
+      expect(events).toHaveLength(0);
+    } finally {
+      window.removeEventListener('agent-overflow:focus-terminal', handler);
+      document.body.removeChild(root);
+    }
+  });
+});
+
+// --- composer.picker.* toggle chords ---
+//
+// Each chord calls into composerPickerRegistry; this pins that the
+// command is registered, gated on hasActiveThread, and routes to the
+// handle published by the focused pane's picker component.
+
+describe('composer.picker.* commands', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+  });
+
+  it('registers a command per picker id with the same when clause', () => {
+    registerFixtureCommands(readyPane());
+    for (const id of ['model', 'effort', 'access', 'branch'] as const) {
+      const cmd = getCommand(`composer.picker.${id}`);
+      expect(cmd).toBeDefined();
+      expect(cmd?.when).toBe('hasActiveThread');
+    }
+  });
+
+  it('toggling the chord calls open() on a closed handle', async () => {
+    const { registerComposerPicker, resetComposerPickerRegistryForTest } = await import(
+      './composerPickerRegistry.svelte'
+    );
+    resetComposerPickerRegistryForTest();
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    let isOpen = false;
+    const open = vi.fn(() => {
+      isOpen = true;
+    });
+    const close = vi.fn(() => {
+      isOpen = false;
+    });
+    registerComposerPicker(pane.paneId, 'model', {
+      isOpen: () => isOpen,
+      open,
+      close,
+    });
+    runCommand('composer.picker.model', makeCommandContext(pane, {}) as CommandContext);
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(close).not.toHaveBeenCalled();
+    resetComposerPickerRegistryForTest();
+  });
+
+  it('toggling the chord calls close() on an open handle', async () => {
+    const { registerComposerPicker, resetComposerPickerRegistryForTest } = await import(
+      './composerPickerRegistry.svelte'
+    );
+    resetComposerPickerRegistryForTest();
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    let isOpen = true;
+    const open = vi.fn(() => {
+      isOpen = true;
+    });
+    const close = vi.fn(() => {
+      isOpen = false;
+    });
+    registerComposerPicker(pane.paneId, 'effort', {
+      isOpen: () => isOpen,
+      open,
+      close,
+    });
+    runCommand('composer.picker.effort', makeCommandContext(pane, {}) as CommandContext);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(open).not.toHaveBeenCalled();
+    resetComposerPickerRegistryForTest();
+  });
+});
+
+// --- sidebar.cursor.open clear-after-open ---
+//
+// Both activation commands must clear the cursor after dispatching the
+// open so the visual highlight does not linger on the previously
+// focused row (the user has moved on to the newly opened thread).
+
+describe('sidebar.cursor.open commands', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+  });
+
+  it('clears the cursor after opening (current pane)', async () => {
+    const { setSidebarCursorForTest, getSidebarCursorThreadId, resetSidebarCursorStore } =
+      await import('./sidebarCursor.svelte');
+    const threads = await import('./threads.svelte');
+    threads.prependThread({
+      id: 'thread-target',
+      title: 'Target',
+      provider: 'claude',
+      workspacePath: '/tmp',
+      projectPath: '/tmp',
+      mode: 'chat',
+      model: 'claude-sonnet-4-6',
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    });
+    setSidebarCursorForTest('thread-target');
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+
+    runCommand('sidebar.cursor.open', makeCommandContext(pane, {}) as CommandContext);
+
+    expect(getSidebarCursorThreadId()).toBeNull();
+    resetSidebarCursorStore();
+  });
+
+  it('is gated on sidebarCursorActive so it is unenabled when no cursor exists', async () => {
+    const { resetSidebarCursorStore } = await import('./sidebarCursor.svelte');
+    resetSidebarCursorStore();
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    const ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(isCommandEnabled('sidebar.cursor.open', ctx)).toBe(false);
+    expect(isCommandEnabled('sidebar.cursor.openInNewPane', ctx)).toBe(false);
   });
 });

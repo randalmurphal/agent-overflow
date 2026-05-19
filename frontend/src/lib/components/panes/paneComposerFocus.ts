@@ -17,13 +17,24 @@ function isActiveElementEditable(): boolean {
 export function focusPaneComposerIfEditableActive(paneId: string): void {
   if (typeof document === 'undefined') return;
   if (!isActiveElementEditable()) return;
+  focusPaneComposer(paneId);
+}
+
+/**
+ * Unconditionally move DOM focus to the named pane's composer
+ * textarea. Used by the terminal smart-toggle to flip focus from
+ * the terminal back to the chat composer.
+ */
+export function focusPaneComposer(paneId: string): boolean {
+  if (typeof document === 'undefined') return false;
   const escape = (window as unknown as { CSS?: { escape?: (s: string) => string } }).CSS?.escape;
   const selector = escape ? `[data-pane-id="${escape(paneId)}"]` : `[data-pane-id="${paneId}"]`;
   const root = document.querySelector(selector);
-  if (!root) return;
+  if (!root) return false;
   const textarea = root.querySelector<HTMLTextAreaElement>(
     'textarea[aria-label="Message Input"]',
   );
-  if (!textarea || textarea.disabled) return;
+  if (!textarea || textarea.disabled) return false;
   textarea.focus();
+  return true;
 }

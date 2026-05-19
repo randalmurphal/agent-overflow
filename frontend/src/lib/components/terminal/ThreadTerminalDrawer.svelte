@@ -23,6 +23,24 @@
 
   let { surface, manual = false }: ThreadTerminalDrawerProps = $props();
 
+  let bodyEl: { focus: () => void } | undefined = $state(undefined);
+
+  // Listen for the smart-toggle's "focus terminal" intent so mod+`
+  // can hand DOM focus to the active terminal even when the drawer
+  // was already open.
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    const handler = (event: Event): void => {
+      const detail = (event as CustomEvent<{ paneId?: string }>).detail;
+      if (!detail || detail.paneId !== surface.paneId) return;
+      // Defer to next frame so the drawer's first paint completes
+      // before we try to focus into it (covers the just-opened case).
+      requestAnimationFrame(() => bodyEl?.focus());
+    };
+    window.addEventListener('agent-overflow:focus-terminal', handler);
+    return () => window.removeEventListener('agent-overflow:focus-terminal', handler);
+  });
+
   function initialTerminalStateKey(): string {
     return surface.threadId ?? surface.paneId;
   }
@@ -137,6 +155,7 @@
       {#if handle.activeTerminalID}
         {#key handle.activeTerminalID}
           <TerminalBody
+            bind:this={bodyEl}
             {handle}
             terminalID={handle.activeTerminalID}
             onSendToComposer={surface.sendTerminalChip}

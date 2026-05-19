@@ -27,6 +27,7 @@
   import MenuDivider from '../../primitives/MenuDivider.svelte';
   import MenuSectionHeader from '../../primitives/MenuSectionHeader.svelte';
   import Icon from '../../primitives/Icon.svelte';
+  import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -36,6 +37,23 @@
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
+
+  // Publish an imperative handle so the global mod+shift+e chord can
+  // toggle this picker. The registry keys by (paneId, pickerId) so
+  // multi-pane mode routes the chord to whichever pane has focus.
+  $effect(() => {
+    return registerComposerPicker(pane.paneId, 'effort', {
+      isOpen: () => open,
+      open: () => {
+        if (!pane.thread) return;
+        open = true;
+        void ensureModelMetadata();
+      },
+      close: () => {
+        open = false;
+      },
+    });
+  });
 
   type Effort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 

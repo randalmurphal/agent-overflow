@@ -36,6 +36,7 @@
   import ModelProviderTrigger from './ModelProviderTrigger.svelte';
   import ProviderModelsSubmenu from './ProviderModelsSubmenu.svelte';
   import DiscussionsSubmenu from './DiscussionsSubmenu.svelte';
+  import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -90,6 +91,22 @@
     open = false;
     triggerEl?.focus();
   }
+
+  $effect(() => {
+    return registerComposerPicker(pane.paneId, 'model', {
+      isOpen: () => open,
+      open: () => {
+        if (!pane.thread) return;
+        open = true;
+        const provider = asProviderID(pane.thread?.provider);
+        if (provider) void ensureModels(provider);
+        void ensureFavorites();
+      },
+      close: () => {
+        open = false;
+      },
+    });
+  });
 
   async function handleSelectModel(
     provider: ProviderID,

@@ -5,6 +5,7 @@
   } from '../../stores/keyboardModifiers.svelte';
   import { formatChord, keybindingForCommand } from '../../stores/keybindings.svelte';
   import { getSettings } from '../../stores/settings.svelte';
+  import { clearSidebarCursor, getSidebarCursorThreadId } from '../../stores/sidebarCursor.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
   import { openThreadFromNavigation, openThreadInNewPane, openThreadInPane } from '../../stores/panes.svelte';
@@ -79,6 +80,7 @@
   } = $props();
 
   let isActive = $derived(pane?.threadId === thread.id);
+  let isCursorTarget = $derived(getSidebarCursorThreadId() === thread.id);
 
   let liveStatus = $derived(getEffectiveThreadStatus(thread));
   let effectiveStatus = $derived(displayLiveStatus ?? liveStatus);
@@ -136,6 +138,9 @@
 
   function handleClick(e?: MouseEvent) {
     if (editing) return;
+    // A mouse click is an unambiguous "I'm picking THIS thread" — drop
+    // the visual cursor so it doesn't drift from where the user is.
+    clearSidebarCursor();
     if (e && (e.metaKey || e.ctrlKey)) {
       void openThreadInNewPane(thread);
       return;
@@ -291,8 +296,10 @@
 <div
   class="group/thread-item rounded-[var(--radius-field)] transition-colors
     {selected ? 'bg-accent/15' : isActive ? 'bg-accent/10' : 'hover:bg-surface-2/30'}
+    {isCursorTarget ? 'ring-1 ring-accent/70 ring-inset' : ''}
     {pill?.glowClass ?? ''}"
   data-testid="thread-row-shell"
+  data-cursor-target={isCursorTarget || null}
 >
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div

@@ -30,19 +30,33 @@
   let targetPaneId: string | null = $state(null);
   let wasOpen = false;
 
-  // Every time the palette opens, reset state and focus the textbox.
-  // Modal's focusTrap doesn't autofocus the input by default (no
-  // [data-autofocus]) so we explicitly focus it after mount.
+  // Every time the palette opens, reset state and focus the list
+  // root so plain j/k navigates immediately. mod+/ toggles focus to
+  // the input for filtering.
   $effect(() => {
     if (open && !wasOpen) {
       targetPaneId = context.paneId;
       query = '';
       activeIndex = 0;
-      tick().then(() => inputEl?.focus());
+      tick().then(() => listEl?.focus());
     } else if (!open && wasOpen) {
       targetPaneId = null;
     }
     wasOpen = open;
+  });
+
+  $effect(() => {
+    if (!open || typeof window === 'undefined') return;
+    const handler = (): void => {
+      if (document.activeElement === inputEl) {
+        listEl?.focus();
+      } else {
+        inputEl?.focus();
+        inputEl?.select();
+      }
+    };
+    window.addEventListener('agent-overflow:picker-toggle-input', handler);
+    return () => window.removeEventListener('agent-overflow:picker-toggle-input', handler);
   });
 
   interface PaletteRow {
@@ -77,39 +91,63 @@
     if (activeIndex >= results.length) activeIndex = Math.max(0, results.length - 1);
   });
 
-  function handleInputKeydown(ev: KeyboardEvent): void {
-    // Escape is handled by Modal's backdrop-level keydown; don't
-    // double-fire here or we'd call closePalette twice.
+  // Shared input + list keydown handler. j/k aliases (no modifier) are
+  // wired in handleListKeydown only — they'd otherwise type into the
+  // input. mod+/ is owned by the global keybindings (picker.toggleInput).
+  function navOrActivate(ev: KeyboardEvent): boolean {
     if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      if (results.length === 0) return true;
+      activeIndex = (activeIndex + 1) % results.length;
+      scrollActiveIntoView();
+      return true;
+    }
+    if (ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      if (results.length === 0) return true;
+      activeIndex = (activeIndex - 1 + results.length) % results.length;
+      scrollActiveIntoView();
+      return true;
+    }
+    if (ev.key === 'Home') {
+      ev.preventDefault();
+      activeIndex = 0;
+      scrollActiveIntoView();
+      return true;
+    }
+    if (ev.key === 'End') {
+      ev.preventDefault();
+      activeIndex = Math.max(0, results.length - 1);
+      scrollActiveIntoView();
+      return true;
+    }
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      executeActive();
+      return true;
+    }
+    return false;
+  }
+
+  function handleInputKeydown(ev: KeyboardEvent): void {
+    navOrActivate(ev);
+  }
+
+  function handleListKeydown(ev: KeyboardEvent): void {
+    if (navOrActivate(ev)) return;
+    if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.shiftKey) return;
+    if (ev.key === 'j') {
       ev.preventDefault();
       if (results.length === 0) return;
       activeIndex = (activeIndex + 1) % results.length;
       scrollActiveIntoView();
       return;
     }
-    if (ev.key === 'ArrowUp') {
+    if (ev.key === 'k') {
       ev.preventDefault();
       if (results.length === 0) return;
       activeIndex = (activeIndex - 1 + results.length) % results.length;
       scrollActiveIntoView();
-      return;
-    }
-    if (ev.key === 'Home') {
-      ev.preventDefault();
-      activeIndex = 0;
-      scrollActiveIntoView();
-      return;
-    }
-    if (ev.key === 'End') {
-      ev.preventDefault();
-      activeIndex = Math.max(0, results.length - 1);
-      scrollActiveIntoView();
-      return;
-    }
-    if (ev.key === 'Enter') {
-      ev.preventDefault();
-      executeActive();
-      return;
     }
   }
 
@@ -179,8 +217,10 @@
       bind:this={listEl}
       role="listbox"
       id="palette-listbox"
-      class="max-h-[360px] overflow-y-auto py-1"
+      class="max-h-[360px] overflow-y-auto py-1 focus:outline-none"
       aria-label="Commands"
+      tabindex={-1}
+      onkeydown={handleListKeydown}
     >
       {#each results as row, idx (row.command.id)}
         <PaletteResultRow

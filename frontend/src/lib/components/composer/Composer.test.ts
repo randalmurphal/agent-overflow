@@ -1548,4 +1548,25 @@ describe('<Composer>', () => {
 
     expect(event.defaultPrevented).toBe(false);
   });
+
+  it('swallows plain Tab so it does not move focus out of the textarea', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+    textarea.focus();
+    expect(document.activeElement).toBe(textarea);
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      cancelable: true,
+    });
+    textarea.dispatchEvent(event);
+    await tick();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(textarea);
+  });
 });

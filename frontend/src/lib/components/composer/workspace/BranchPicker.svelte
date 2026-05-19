@@ -56,6 +56,7 @@
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import MenuDivider from '../../primitives/MenuDivider.svelte';
+  import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -237,6 +238,23 @@
     query = '';
     triggerEl?.focus();
   }
+
+  $effect(() => {
+    return registerComposerPicker(pane.paneId, 'branch', {
+      isOpen: () => open,
+      open: () => {
+        if (open || !pane.thread) return;
+        // Reuse handleTrigger so the open path runs the same fetch
+        // pipeline as a mouse click on the trigger button.
+        void handleTrigger();
+      },
+      close: () => {
+        if (!open) return;
+        open = false;
+        query = '';
+      },
+    });
+  });
 
   function branchBadge(branch: GitBranch): string | undefined {
     const counts: string[] = [];

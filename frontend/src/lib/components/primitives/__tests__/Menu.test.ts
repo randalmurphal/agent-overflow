@@ -3,7 +3,7 @@
 //   - first enabled menuitem is focused on mount.
 //   - ArrowDown / ArrowUp move focus; wrap at edges.
 //   - Home / End jump to first/last.
-//   - Typeahead jumps to the first item starting with the typed letter.
+//   - Plain j / k alias ArrowDown / ArrowUp (no modifier).
 //   - Escape calls onClose.
 //   - Disabled items are skipped by arrow navigation.
 //   - Stage 1 redesign: container uses rounded-[var(--radius-control)] + shadow-menu + border-border-subtle.
@@ -97,12 +97,31 @@ describe('<Menu>', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('typeahead jumps focus to the item starting with the typed letter', async () => {
+  it('plain j moves focus forward like ArrowDown', async () => {
     const { getByRole } = render(Harness);
     await flushMicrotasks();
     const menu = getByRole('menu');
-    await pressKey(menu, 'c');
+    await pressKey(menu, 'j');
+    expect(activeLabel()).toBe('Banana');
+    await pressKey(menu, 'j');
     expect(activeLabel()).toBe('Cherry');
+  });
+
+  it('plain k moves focus backwards like ArrowUp', async () => {
+    const { getByRole } = render(Harness);
+    await flushMicrotasks();
+    const menu = getByRole('menu');
+    await pressKey(menu, 'k');
+    expect(activeLabel()).toBe('Date');
+  });
+
+  it('does not typeahead — single letters other than j/k are inert', async () => {
+    const { getByRole } = render(Harness);
+    await flushMicrotasks();
+    const menu = getByRole('menu');
+    const before = activeLabel();
+    await pressKey(menu, 'c');
+    expect(activeLabel()).toBe(before);
   });
 
   it('applies roving tabindex — only one menuitem has tabindex=0 at a time', async () => {

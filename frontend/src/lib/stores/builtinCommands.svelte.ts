@@ -9,10 +9,10 @@
 import type { ThreadPane } from './thread.svelte';
 import type { Thread } from '../types/models';
 import { registerCommand, type CommandContext, type CommandFlags } from './commandRegistry.svelte';
-import { closeCheatSheet, openCheatSheet } from './cheatSheet.svelte';
-import { closeMessageSearch, openMessageSearch } from './messageSearch.svelte';
-import { closePalette, openPalette } from './palette.svelte';
-import { closeThreadPicker, openThreadPicker } from './threadPicker.svelte';
+import { closeCheatSheet, isCheatSheetOpen, openCheatSheet } from './cheatSheet.svelte';
+import { closeMessageSearch, isMessageSearchOpen, openMessageSearch } from './messageSearch.svelte';
+import { closePalette, isPaletteOpen, openPalette } from './palette.svelte';
+import { closeThreadPicker, isThreadPickerOpen, openThreadPicker } from './threadPicker.svelte';
 import { addToast } from './toast.svelte';
 import { getActiveTurn, isSendInFlight } from './threadStatuses.svelte';
 import {
@@ -20,11 +20,16 @@ import {
   focusAdjacentPane,
   getFocusedPaneId,
   moveFocusedPane,
+  openThreadFromNavigation,
+  openThreadInNewPane,
   openThreadInPane,
   syncThread,
 } from './panes.svelte';
-import { focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
-import { removeThread } from './threads.svelte';
+import {
+  focusPaneComposer,
+  focusPaneComposerIfEditableActive,
+} from '../components/panes/paneComposerFocus';
+import { getThreadById, removeThread } from './threads.svelte';
 import { forkThreadAction } from '../components/sidebar/threadRowActions';
 import { userFacingError } from '../utils/userFacingError';
 import { getTerminalFocused } from '../components/terminal/terminalStore.svelte';
@@ -47,21 +52,31 @@ import {
 import { cycleMode } from '../utils/modeCycle';
 import { runInterruptOrRevert } from './revertOnInterrupt.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
+import {
+  clearSidebarCursor,
+  getSidebarCursorThreadId,
+  stepSidebarCursor,
+} from './sidebarCursor.svelte';
+import {
+  toggleComposerPicker,
+  type ComposerPickerId,
+} from './composerPickerRegistry.svelte';
+import { reportNonBenignInterruptError } from './interruptErrors';
 
 export interface BuiltinCommandHooks {
   openSettings: () => void;
   openThreadForm: () => void;
-  openThreadInNewPane?: () => void;
+  // Opens the new-thread form in a new pane (renamed to disambiguate
+  // from panes.svelte#openThreadInNewPane, which opens an existing
+  // thread in a new pane).
+  openThreadFormInNewPane?: () => void;
   openThreadFromPR: () => void;
   openShipChanges: (paneId: string) => void;
   requestRename: (thread: Thread) => void;
   requestDiscussion: (thread: Thread) => void;
   focusThreadSearch: () => void;
   requestThreadJump: (index: number) => void;
-  requestThreadStep: (delta: number) => void;
 }
-
-import { reportNonBenignInterruptError } from './interruptErrors';
 
 function withActiveThread(
   ctx: CommandContext,
@@ -79,21 +94,24 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   const {
     openSettings,
     openThreadForm,
-    openThreadInNewPane,
+    openThreadFormInNewPane,
     openThreadFromPR,
     openShipChanges,
     requestRename,
     requestDiscussion,
     focusThreadSearch,
     requestThreadJump,
-    requestThreadStep,
   } = hooks;
 
   registerCommand({
     id: 'palette.open',
     label: 'Command Palette: Open',
+    description: 'Open the command palette. Pressing the same chord while open closes it.',
     icon: '⌘',
-    run: (ctx) => openPalette(ctx.paneId),
+    run: (ctx) => {
+      if (isPaletteOpen()) closePalette();
+      else openPalette(ctx.paneId);
+    },
   });
 
   registerCommand({
@@ -107,9 +125,12 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   registerCommand({
     id: 'help.keybindings',
     label: 'Help: Show Keyboard Shortcuts',
-    description: 'Open the cheat sheet of every command and its current binding.',
+    description: 'Open the cheat sheet of every command and its current binding. Pressing the same chord while open closes it.',
     icon: '?',
-    run: () => openCheatSheet(),
+    run: () => {
+      if (isCheatSheetOpen()) closeCheatSheet();
+      else openCheatSheet();
+    },
   });
 
   registerCommand({
@@ -130,7 +151,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'thread.newPane',
     label: 'Thread: New in New Pane',
     icon: '+',
-    run: () => openThreadInNewPane?.(),
+    run: () => openThreadFormInNewPane?.(),
   });
 
   registerCommand({
@@ -403,20 +424,6 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
       }),
   });
 
-  registerCommand({
-    id: 'thread.previous',
-    label: 'Thread: Previous',
-    icon: '↑',
-    run: () => requestThreadStep(-1),
-  });
-
-  registerCommand({
-    id: 'thread.next',
-    label: 'Thread: Next',
-    icon: '↓',
-    run: () => requestThreadStep(1),
-  });
-
   for (let i = 1; i <= 9; i += 1) {
     const index = i;
     registerCommand({
@@ -426,6 +433,96 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
       run: () => requestThreadJump(index),
     });
   }
+
+  // Sidebar visual cursor — a floating highlight over a sidebar row
+  // that does NOT take DOM focus. mod+j / mod+k step it; mod+enter /
+  // mod+shift+enter activate it. First press lands on the focused
+  // pane's thread (cold-start anchor); subsequent presses wrap.
+  registerCommand({
+    id: 'sidebar.cursor.down',
+    label: 'Sidebar: Move Cursor Down',
+    description: 'Move the sidebar selection cursor down one row.',
+    icon: '↓',
+    run: (ctx) => stepSidebarCursor(1, ctx.pane?.threadId ?? null),
+  });
+
+  registerCommand({
+    id: 'sidebar.cursor.up',
+    label: 'Sidebar: Move Cursor Up',
+    description: 'Move the sidebar selection cursor up one row.',
+    icon: '↑',
+    run: (ctx) => stepSidebarCursor(-1, ctx.pane?.threadId ?? null),
+  });
+
+  registerCommand({
+    id: 'sidebar.cursor.open',
+    label: 'Sidebar: Open Cursor Thread',
+    description: 'Open the thread under the sidebar cursor in the focused pane.',
+    icon: '↵',
+    when: 'sidebarCursorActive',
+    run: (ctx) => {
+      const id = getSidebarCursorThreadId();
+      if (!id) return;
+      const thread = getThreadById(id);
+      if (!thread) return;
+      const targetPane = ctx.pane ?? null;
+      clearSidebarCursor();
+      void openThreadFromNavigation(thread, targetPane);
+    },
+  });
+
+  registerCommand({
+    id: 'sidebar.cursor.openInNewPane',
+    label: 'Sidebar: Open Cursor Thread in New Pane',
+    description: 'Open the thread under the sidebar cursor in a new pane.',
+    icon: '↵',
+    when: 'sidebarCursorActive',
+    run: () => {
+      const id = getSidebarCursorThreadId();
+      if (!id) return;
+      const thread = getThreadById(id);
+      if (!thread) return;
+      clearSidebarCursor();
+      void openThreadInNewPane(thread);
+    },
+  });
+
+  // Composer toolbar pickers — each chord toggles its menu (open if
+  // closed, close if open). The actual menu component publishes a
+  // handle via composerPickerRegistry on mount; the chord routes to
+  // whichever pane currently has focus.
+  const composerPickers: Array<[ComposerPickerId, string]> = [
+    ['model', 'Composer: Toggle Model Picker'],
+    ['effort', 'Composer: Toggle Effort Picker'],
+    ['access', 'Composer: Toggle Access Toggle'],
+    ['branch', 'Composer: Toggle Branch Picker'],
+  ];
+  for (const [pickerId, label] of composerPickers) {
+    registerCommand({
+      id: `composer.picker.${pickerId}`,
+      label,
+      icon: '⌃',
+      when: 'hasActiveThread',
+      run: (ctx) => {
+        toggleComposerPicker(ctx.paneId, pickerId);
+      },
+    });
+  }
+
+  // mod+/ within any open picker toggles focus between its search
+  // input and its result list. Pickers register a per-mount handler
+  // by dispatching a custom event on the window; we route the chord
+  // through that handler so each picker owns its own focus logic.
+  registerCommand({
+    id: 'picker.toggleInput',
+    label: 'Picker: Toggle Input Focus',
+    description: 'Move focus between the picker search input and its result list.',
+    when: 'anyPickerOpen',
+    run: () => {
+      if (typeof window === 'undefined') return;
+      window.dispatchEvent(new CustomEvent('agent-overflow:picker-toggle-input'));
+    },
+  });
 
   registerCommand({
     id: 'search.threads',
@@ -449,9 +546,12 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   registerCommand({
     id: 'search.messages',
     label: 'Search: Messages',
-    description: 'Full-text search across every thread title and message.',
+    description: 'Full-text search across every thread title and message. Pressing the same chord while open closes it.',
     icon: '⌕',
-    run: (ctx) => openMessageSearch(ctx.paneId),
+    run: (ctx) => {
+      if (isMessageSearchOpen()) closeMessageSearch();
+      else openMessageSearch(ctx.paneId);
+    },
   });
 
   registerCommand({
@@ -464,9 +564,12 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   registerCommand({
     id: 'thread.search',
     label: 'Thread: Open Picker',
-    description: 'Fuzzy-search threads across every project by title.',
+    description: 'Fuzzy-search threads across every project by title. Pressing the same chord while open closes it.',
     icon: '⌖',
-    run: (ctx) => openThreadPicker(ctx.paneId),
+    run: (ctx) => {
+      if (isThreadPickerOpen()) closeThreadPicker();
+      else openThreadPicker(ctx.paneId);
+    },
   });
 
   registerCommand({
@@ -485,10 +588,31 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
 
   registerCommand({
     id: 'terminal.toggle',
-    label: 'Terminal: Toggle',
+    label: 'Terminal: Smart Toggle',
+    description:
+      'Open the terminal if closed; if open, flip focus between the terminal and the chat composer.',
     icon: '▶',
     when: 'hasActiveThread',
-    run: (ctx) => withActiveThread(ctx, (_t, pane) => pane.toggleTerminal()),
+    run: (ctx) =>
+      withActiveThread(ctx, (_t, pane) => {
+        const paneId = pane.paneId;
+        if (!pane.showTerminal) {
+          pane.setShowTerminal(true);
+          requestAnimationFrame(() => {
+            window.dispatchEvent(
+              new CustomEvent('agent-overflow:focus-terminal', { detail: { paneId } }),
+            );
+          });
+          return;
+        }
+        if (getTerminalFocused()) {
+          focusPaneComposer(paneId);
+        } else {
+          window.dispatchEvent(
+            new CustomEvent('agent-overflow:focus-terminal', { detail: { paneId } }),
+          );
+        }
+      }),
   });
 
   registerCommand({
@@ -645,6 +769,8 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     canForkActiveThread: !!thread?.sessionRef,
     canStartDiscussion:
       !!thread && thread.mode !== 'discussion' && !thread.discussionId && !thread.parentThreadId,
+    sidebarCursorActive: getSidebarCursorThreadId() !== null,
+    anyPickerOpen: false,
     ...extra,
   };
   return {

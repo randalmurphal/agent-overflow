@@ -22,6 +22,7 @@
 
   let query = $state('');
   let searchEl: HTMLInputElement | undefined = $state(undefined);
+  let listEl: HTMLDivElement | undefined = $state(undefined);
   let activeIndex = $state(0);
 
   // Result cap — above this, users should refine their query. The footer
@@ -60,13 +61,28 @@
   let overflow = $derived(Math.max(0, matches.length - hits.length));
 
   // Reset query + selection every time the picker opens so yesterday's
-  // search doesn't linger.
+  // search doesn't linger. Focus the list root by default so plain j/k
+  // navigates; mod+/ toggles to the search input.
   $effect(() => {
     if (open) {
       query = '';
       activeIndex = 0;
-      requestAnimationFrame(() => searchEl?.focus());
+      requestAnimationFrame(() => listEl?.focus());
     }
+  });
+
+  $effect(() => {
+    if (!open || typeof window === 'undefined') return;
+    const handler = (): void => {
+      if (document.activeElement === searchEl) {
+        listEl?.focus();
+      } else {
+        searchEl?.focus();
+        searchEl?.select();
+      }
+    };
+    window.addEventListener('agent-overflow:picker-toggle-input', handler);
+    return () => window.removeEventListener('agent-overflow:picker-toggle-input', handler);
   });
 
   // Clamp the active index whenever the hit list shrinks.
@@ -84,6 +100,8 @@
   // Escape is handled by Modal. Enter / Arrow keys are caught at the
   // body level so the search input keeps getting keystrokes it cares
   // about (letters) while navigation / activation are intercepted.
+  // j/k aliases work only when the list root has focus — otherwise
+  // they'd type into the search input.
   function handleBodyKeydown(e: KeyboardEvent): void {
     if (hits.length === 0) return;
     if (e.key === 'ArrowDown') {
@@ -96,6 +114,17 @@
       e.preventDefault();
       const hit = hits[activeIndex];
       if (hit) void openHit(hit.thread);
+    } else if (
+      document.activeElement === listEl &&
+      !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
+    ) {
+      if (e.key === 'j') {
+        e.preventDefault();
+        activeIndex = (activeIndex + 1) % hits.length;
+      } else if (e.key === 'k') {
+        e.preventDefault();
+        activeIndex = (activeIndex - 1 + hits.length) % hits.length;
+      }
     }
   }
 </script>
@@ -110,7 +139,14 @@
 >
   {#snippet children()}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div data-testid="thread-picker" onkeydown={handleBodyKeydown}>
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <div
+      bind:this={listEl}
+      data-testid="thread-picker"
+      tabindex={-1}
+      class="focus:outline-none"
+      onkeydown={handleBodyKeydown}
+    >
       <input
         bind:this={searchEl}
         bind:value={query}

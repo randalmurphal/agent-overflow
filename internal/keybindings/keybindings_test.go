@@ -37,7 +37,7 @@ func TestGetReturnsDefaultsWhenNoFile(t *testing.T) {
 		if b.Command == "palette.open" && b.Key == "mod+shift+k" {
 			wantPalette = true
 		}
-		if b.Command == "sidebar.focus-search" && b.Key == "mod+k" {
+		if b.Command == "sidebar.focus-search" && b.Key == "mod+/" {
 			wantSidebar = true
 		}
 	}
@@ -45,7 +45,7 @@ func TestGetReturnsDefaultsWhenNoFile(t *testing.T) {
 		t.Fatal("expected default palette.open binding (mod+shift+k) in result")
 	}
 	if !wantSidebar {
-		t.Fatal("expected default sidebar.focus-search binding (mod+k) in result")
+		t.Fatal("expected default sidebar.focus-search binding (mod+/) in result")
 	}
 }
 
@@ -57,7 +57,7 @@ func TestGetReturnsDefaultsWhenNoFile(t *testing.T) {
 // features by muscle memory.
 func TestDefaultsIncludeNewHelpSearchAndInterruptBindings(t *testing.T) {
 	want := map[string]string{
-		"help.keybindings": "mod+/",
+		"help.keybindings": "mod+shift+/",
 		"search.messages":  "mod+shift+f",
 		"thread.search":    "mod+p",
 		"thread.interrupt": "esc",

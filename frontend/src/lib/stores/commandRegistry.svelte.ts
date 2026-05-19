@@ -49,6 +49,14 @@ export interface CommandFlags {
   /** Thread metadata fields used by fork / discussion commands. */
   canForkActiveThread: boolean;
   canStartDiscussion: boolean;
+  /** True while the sidebar visual cursor is engaged (a thread is
+   * highlighted). Gates the cursor.open chord so plain Enter inside
+   * the composer keeps sending. */
+  sidebarCursorActive: boolean;
+  /** True while any picker (palette, thread picker, message search,
+   * composer toolbar menu, etc.) is open. Gates the mod+/ in-picker
+   * input toggle. */
+  anyPickerOpen: boolean;
   /** Extra identifiers callers want to expose to `when` expressions. */
   [key: string]: boolean;
 }
@@ -72,6 +80,8 @@ export interface CommandContext {
   hasPendingPrompt: boolean;
   canForkActiveThread: boolean;
   canStartDiscussion: boolean;
+  sidebarCursorActive: boolean;
+  anyPickerOpen: boolean;
   [key: string]: unknown;
 }
 

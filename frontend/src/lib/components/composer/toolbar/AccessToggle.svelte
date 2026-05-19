@@ -18,6 +18,7 @@
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
+  import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   type IconComponent = any;
@@ -84,6 +85,19 @@
     setRuntimeModeDraft(pane.thread.id, mode);
     closeMenu();
   }
+
+  $effect(() => {
+    return registerComposerPicker(pane.paneId, 'access', {
+      isOpen: () => open,
+      open: () => {
+        if (!pane.thread) return;
+        open = true;
+      },
+      close: () => {
+        open = false;
+      },
+    });
+  });
 </script>
 
 <button

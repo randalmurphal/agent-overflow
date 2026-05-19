@@ -50,7 +50,7 @@ describe('App integration — keybindings + palette', () => {
     resetAppState();
   });
 
-  it('Cmd+K opens the palette and focuses its input', async () => {
+  it('Cmd+K opens the palette and focuses the list (mod+/ toggles to the input)', async () => {
     await loadKeybindingsFromMock([{ key: 'mod+k', command: 'palette.open' }]);
     const rendered = await mountBareApp();
     // Reload keybindings AFTER mount so the mount-triggered loadKeybindings
@@ -63,8 +63,11 @@ describe('App integration — keybindings + palette', () => {
 
     const input = await waitFor(() => rendered.getByTestId('command-palette-input'));
     expect(input).toBeInTheDocument();
-    // Svelte's $effect focuses the input on next tick.
-    await waitFor(() => expect(document.activeElement).toBe(input));
+    // Default focus is the list root (so plain j/k navigates without
+    // typing into the search box); mod+/ swings focus to the input.
+    const list = rendered.container.querySelector<HTMLElement>('#palette-listbox');
+    expect(list).not.toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(list));
   });
 
   it('filters commands as the user types', async () => {
