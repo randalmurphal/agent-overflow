@@ -3,7 +3,6 @@
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
-  import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   import { classifyToolName } from './toolCardHeader';
@@ -17,7 +16,7 @@
   import ClaudeSubagentTranscript from './ClaudeSubagentTranscript.svelte';
   import ExpandablePayloadBody from './ExpandablePayloadBody.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
-  import { formatElapsedSeconds } from '../../utils/format';
+  import { formatDurationMs } from '../../utils/format';
   import { parseClaudeSubagentTranscript } from '../../utils/claudeSubagentTranscript';
   import {
     deriveClaudeSubagentDescription,
@@ -26,12 +25,11 @@
     readClaudeSubagentInput,
   } from '../../utils/claudeSubagentLabel';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
-  import Indicator from './Indicator.svelte';
+  import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import RowError from './RowError.svelte';
-  import { indicatorAriaLabel, indicatorStateForItem, rowErrorForStatus } from './rowState';
+  import { indicatorStateForItem, rowErrorWithFallback } from './rowState';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
-
-  const RUNNING_ELAPSED_THRESHOLD_MS = 2_000;
+  import { createRunningElapsed } from './useRunningElapsed.svelte';
 
   let {
     pane,
@@ -86,24 +84,10 @@
 
   let isBackgroundedLaunch = $derived(effectiveStatusItem.kind === 'tool_call' && effectiveStatusItem.isBackground === true);
   let isRunning = $derived(effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming');
-  let shouldTickElapsed = $derived(isRunning && durationLabel === '' && !isBackgroundedLaunch);
-  let now = $state(Date.now());
-  $effect(() => {
-    if (!shouldTickElapsed) return;
-    now = Date.now();
-    const id = setInterval(() => {
-      now = Date.now();
-    }, 1_000);
-    return () => clearInterval(id);
-  });
-
-  let runningElapsedLabel = $derived.by<string>(() => {
-    if (!shouldTickElapsed) return '';
-    if (!Number.isFinite(item.createdAt) || item.createdAt <= 0) return '';
-    const elapsedMs = now - item.createdAt;
-    if (elapsedMs < RUNNING_ELAPSED_THRESHOLD_MS) return '';
-    return formatElapsedSeconds(Math.floor(elapsedMs / 1_000));
-  });
+  const ticker = createRunningElapsed(
+    () => isRunning && durationLabel === '' && !isBackgroundedLaunch,
+    () => item.createdAt,
+  );
   let durationMs = $derived.by<number | null>(() => {
     const d = summaryMeta?.durationMs;
     return typeof d === 'number' && d >= 0 ? d : null;
@@ -117,27 +101,16 @@
     return typeof error === 'string' ? error : '';
   });
   let hasExpandableBody = $derived(Boolean(item.payloadId) || deferredOutputState === 'loading' || deferredOutputState === 'error');
-  let completionStatus = $derived(deriveCompletionStatus(effectiveStatusItem, { meta: statusMeta }));
   let indicatorState = $derived(indicatorStateForItem(effectiveStatusItem, { meta: statusMeta }));
-  let rowError = $derived.by(() => {
-    if (completionStatus !== 'failure') return null;
-    return rowErrorForStatus(effectiveStatusItem.status, 'Agent failed') ?? { tone: 'error' as const, msg: 'Agent failed' };
-  });
+  let rowError = $derived(
+    rowErrorWithFallback(effectiveStatusItem, { meta: statusMeta, fallback: 'Agent failed' }),
+  );
   let transcriptEntries = $derived.by(() => {
     if (expansion.displayData === null) return null;
     return parseClaudeSubagentTranscript(expansion.displayData);
   });
 
   keepExpandedPayloadFresh(() => expansion, () => Boolean(item.payloadId));
-
-  function formatDuration(ms: number): string {
-    if (ms < 1000) return `${ms}ms`;
-    const seconds = ms / 1000;
-    if (seconds < 60) return `${seconds.toFixed(1)}s`;
-    const minutes = Math.floor(seconds / 60);
-    const remSec = Math.round(seconds - minutes * 60);
-    return `${minutes}m ${remSec}s`;
-  }
 </script>
 
 <div class="group/tool overflow-hidden" data-testid="agent-row" data-tool-kind="robot">
@@ -162,22 +135,13 @@
         statusSlotTestId="agent-row-status-slot"
         duration={{
           testId: 'agent-row-duration',
-          label: durationLabel || (durationMs !== null ? formatDuration(durationMs) : runningElapsedLabel),
+          label: durationLabel || (durationMs !== null ? formatDurationMs(durationMs) : ticker.label),
         }}
         timestamp={showTimestamp ? { testId: 'agent-row-time', value: effectiveStatusItem.createdAt, label: time } : undefined}
         {trailingActions}
       >
         {#snippet status()}
-          {#if indicatorState}
-            <span
-              data-testid="agent-row-status"
-              data-status={effectiveStatusItem.status}
-              data-state={indicatorState}
-              aria-label={indicatorAriaLabel(indicatorState)}
-            >
-              <Indicator state={indicatorState} />
-            </span>
-          {/if}
+          <ToolRowStatusIndicator item={effectiveStatusItem} state={indicatorState} testId="agent-row-status" />
         {/snippet}
       </ToolHeaderMeta>
     {/snippet}

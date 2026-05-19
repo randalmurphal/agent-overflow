@@ -46,6 +46,14 @@ type Parser struct {
 	// row to complete. See parse_assistant.go appendTodoWriteEvent and
 	// parse_user.go appendToolResultCompletion.
 	todoWriteToolUses map[string]bool
+	// advisorToolUses flags `server_tool_use` IDs (the `srvtoolu_*`
+	// prefix) emitted by Claude's server-side advisor tool. The matching
+	// `advisor_tool_result` content block on a later assistant envelope
+	// uses this to confirm the result belongs to an advisor call we
+	// observed and not a future server-side tool we haven't taught the
+	// parser yet. See parse_assistant.go appendServerToolUseEvent /
+	// appendAdvisorResultEvent.
+	advisorToolUses map[string]bool
 	// toolUseParents correlates subagent-emitted tool_use ids back to
 	// their parent Agent/Task tool_use id. Claude's later task_started
 	// envelopes only echo task_id + tool_use_id, so this is the bridge
@@ -121,6 +129,7 @@ func (p *Parser) Close() {
 	}
 	p.backgroundToolUses = nil
 	p.todoWriteToolUses = nil
+	p.advisorToolUses = nil
 	p.toolUseParents = nil
 	p.taskToolUses = nil
 	p.subagentModelStamped = nil
@@ -291,6 +300,39 @@ func (p *Parser) clearTodoWrite(toolUseID string) {
 		return
 	}
 	delete(p.todoWriteToolUses, toolUseID)
+}
+
+// markAdvisor records that the given tool_use ID came from a
+// `server_tool_use` advisor block. Bounded by parserTaskMapCap with
+// wholesale reset on overflow, on the same principle as the other
+// correlation maps — a leaked entry is benign (an `advisor_tool_result`
+// with no matching launch would be dropped silently as an orphan, no
+// worse than today's behaviour for unknown server-side tools).
+func (p *Parser) markAdvisor(toolUseID string) {
+	if toolUseID == "" {
+		return
+	}
+	if p.advisorToolUses == nil {
+		p.advisorToolUses = make(map[string]bool)
+	}
+	if len(p.advisorToolUses) >= parserTaskMapCap {
+		p.advisorToolUses = make(map[string]bool)
+	}
+	p.advisorToolUses[toolUseID] = true
+}
+
+func (p *Parser) isAdvisor(toolUseID string) bool {
+	if toolUseID == "" || p.advisorToolUses == nil {
+		return false
+	}
+	return p.advisorToolUses[toolUseID]
+}
+
+func (p *Parser) clearAdvisor(toolUseID string) {
+	if toolUseID == "" || p.advisorToolUses == nil {
+		return
+	}
+	delete(p.advisorToolUses, toolUseID)
 }
 
 // parserTaskMapCap bounds parser correlation maps such as

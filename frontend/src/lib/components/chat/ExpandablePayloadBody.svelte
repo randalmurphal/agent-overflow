@@ -18,6 +18,7 @@
     deferredOutputState = '',
     deferredOutputError = '',
     renderContent,
+    copyLabel = 'Copy output',
   }: {
     pane?: ThreadPane;
     expansion: PayloadExpansionHandle;
@@ -36,6 +37,13 @@
      * loading / error / show-more / copy-footer chrome consistent.
      */
     renderContent?: Snippet<[{ data: string; testId: string }]>;
+    /**
+     * Override for the CopyFooter button label. Defaults to
+     * "Copy output" — prose bodies like AdvisorRow override to
+     * "Copy response" since the payload is text rather than
+     * terminal output.
+     */
+    copyLabel?: string;
   } = $props();
 </script>
 
@@ -84,7 +92,7 @@
       </button>
     {/if}
     {#if expansion.displayData}
-      <CopyFooter text={expansion.displayData} label="Copy output" />
+      <CopyFooter text={expansion.displayData} label={copyLabel} />
     {/if}
   {:else if deferredOutputState === 'loading'}
     <p class="px-3 py-2 text-[11px] text-fg-subtle animate-pulse" role="status" aria-live="polite">

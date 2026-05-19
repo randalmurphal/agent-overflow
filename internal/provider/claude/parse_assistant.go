@@ -19,6 +19,11 @@ import (
 // `assistant.message.content` entry carries. The decoded blocks are fed
 // into the appendX helpers below; each helper reads the fields relevant
 // to its block.Type and ignores the rest.
+//
+// ToolUseID + Content carry the advisor_tool_result shape — the
+// server-side advisor result envelope arrives with `role:"assistant"`
+// (not user-role like the standard tool_result), so the result body
+// rides on a content block here rather than going through parse_user.go.
 type assistantContentBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
@@ -27,6 +32,8 @@ type assistantContentBlock struct {
 	Input     json.RawMessage `json:"input,omitempty"`
 	Thinking  string          `json:"thinking,omitempty"`
 	Signature string          `json:"signature,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"`
 }
 
 // assistantUsage mirrors the usage object Claude attaches to
@@ -120,6 +127,20 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 		p.markSubagentModelStamped(parentToolUseID)
 	}
 
+	// Advisor envelopes carry their own degenerate `usage` block (the
+	// advisor is a separate model run with its own context window — see
+	// docs/references/claude-wire.md §server_tool_use). Routing that
+	// usage through the context meter would clobber the parent's meter
+	// for the duration of the advisor call. Detect "advisor-only"
+	// envelopes here and suppress the usage emit below.
+	advisorOnly := len(msg.Content) > 0
+	for _, block := range msg.Content {
+		if block.Type != "server_tool_use" && block.Type != "advisor_tool_result" {
+			advisorOnly = false
+			break
+		}
+	}
+
 	for _, block := range msg.Content {
 		switch block.Type {
 		case "text":
@@ -136,10 +157,22 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 			events = p.appendToolUseEvent(events, threadID, parentToolUseID, msg.ID, now, block)
 		case "thinking":
 			// Same as text: streamed via stream_event thinking_delta.
+		case "server_tool_use":
+			// Claude's server-side tool call (today: `advisor`). The
+			// matching result arrives on a SECOND assistant envelope
+			// carrying an `advisor_tool_result` content block — see
+			// docs/references/claude-wire.md §server_tool_use.
+			events = p.appendServerToolUseEvent(events, threadID, parentToolUseID, msg.ID, msg.Model, now, block)
+		case "advisor_tool_result":
+			// Result of a prior `server_tool_use` advisor call. Closes
+			// the tool lifecycle for the matching `srvtoolu_*` id.
+			events = p.appendAdvisorResultEvent(events, threadID, parentToolUseID, now, line, block)
 		}
 	}
 
-	events = p.appendAssistantUsageEvent(events, threadID, parentToolUseID, now, msg.Usage)
+	if !advisorOnly {
+		events = p.appendAssistantUsageEvent(events, threadID, parentToolUseID, now, msg.Usage)
+	}
 
 	// `assistant.error` (e.g. `rate_limit`, `authentication_failed`) is
 	// surfaced as a fatal EventError. Per the agent SDK, the CLI follows
@@ -570,4 +603,151 @@ func extractExitPlanModePlan(input json.RawMessage) string {
 		return ""
 	}
 	return payload.Plan
+}
+
+// appendServerToolUseEvent handles a `server_tool_use` content block —
+// the call side of a Claude server-side tool. Today this is exclusively
+// `advisor`; if Anthropic adds web_search/web_fetch under the same
+// envelope shape, route by `block.Name` here.
+//
+// The advisor model is read from the parent envelope's `message.model`
+// (passed in as advisorModel). The wire does not carry a separate
+// `advisor_model` field on the server_tool_use block; the
+// advisor uses the same model family as the parent in practice, so
+// stamping `message.model` is correct and matches what the
+// usage.iterations[type=advisor_message].model field reports.
+//
+// `markAdvisor` remembers the id so the matching `advisor_tool_result`
+// block can identify which completion is an advisor result vs a
+// regular tool_result (the latter never reaches this path — those are
+// user-role envelopes handled in parse_user.go).
+func (p *Parser) appendServerToolUseEvent(
+	events []provider.ProviderEvent,
+	threadID, parentToolUseID, assistantMessageID, advisorModel string,
+	now time.Time,
+	block assistantContentBlock,
+) []provider.ProviderEvent {
+	if block.ID == "" || block.Name == "" {
+		return events
+	}
+	// Hard-gate to the advisor name. The helper's comment promises name
+	// routing for future server-side tools (web_search / web_fetch under
+	// the same envelope shape), but the body — `markAdvisor`,
+	// `marshalAdvisorToolMeta`, the advisor-only result correlation —
+	// only knows how to render advisor. Forwarding an unknown server
+	// tool would stamp `advisor_model` on its meta and route it through
+	// AdvisorRow. Drop unknown names rather than silently misclassify
+	// them; a parser refresh is the right place to recognise the new
+	// shape when it lands.
+	if block.Name != "advisor" {
+		return events
+	}
+	p.markAdvisor(block.ID)
+	meta := marshalAdvisorToolMeta(block.Name, advisorModel, assistantMessageID)
+	return append(events, provider.ProviderEvent{
+		Kind:            provider.EventToolStart,
+		ThreadID:        threadID,
+		ItemID:          block.ID,
+		ItemType:        block.Name,
+		Meta:            meta,
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       now,
+	})
+}
+
+// appendAdvisorResultEvent emits the EventToolComplete for an
+// `advisor_tool_result` content block. The block arrives on a
+// `role:"assistant"` envelope (not user-role like standard tool_result)
+// so it cannot share the parse_user.go plumbing.
+//
+// The result body is `block.content.text` (nested) where the outer
+// `content` is the assistant message's content array element and the
+// inner `content` is `{type:"advisor_result", text:"..."}`. Meta is
+// minimal — no exit_code, no is_background path; the advisor runs
+// inline (not backgrounded) and Anthropic does not surface an error
+// channel on this block today.
+func (p *Parser) appendAdvisorResultEvent(
+	events []provider.ProviderEvent,
+	threadID, parentToolUseID string,
+	now time.Time,
+	line []byte,
+	block assistantContentBlock,
+) []provider.ProviderEvent {
+	if block.ToolUseID == "" {
+		// Orphan result with no correlation id — drop rather than
+		// emit a completion that can't be matched to a launch row.
+		return events
+	}
+	// Drop a stray `advisor_tool_result` that wasn't preceded by a
+	// `server_tool_use` we recognised. Defensive — keeps the parser
+	// from synthesising a completion against a non-existent launch
+	// when the wire shape drifts.
+	if !p.isAdvisor(block.ToolUseID) {
+		return events
+	}
+	p.clearAdvisor(block.ToolUseID)
+
+	text := extractAdvisorResultText(block.Content)
+	meta, _ := json.Marshal(map[string]any{
+		"is_error": false,
+	})
+	return append(events, provider.ProviderEvent{
+		Kind:            provider.EventToolComplete,
+		ThreadID:        threadID,
+		ItemID:          block.ToolUseID,
+		Content:         text,
+		Meta:            meta,
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       now,
+		Raw:             line,
+	})
+}
+
+// extractAdvisorResultText reads the text field out of the nested
+// `content` object on an `advisor_tool_result` block. The wire shape
+// is `{type:"advisor_result", text:"..."}` — distinct from the
+// user-side tool_result `content` (which is string-or-array). Returns
+// "" on malformed input rather than failing; the empty content still
+// produces a completion event so the running row settles.
+func extractAdvisorResultText(content json.RawMessage) string {
+	if len(content) == 0 {
+		return ""
+	}
+	var payload struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(content, &payload) != nil {
+		return ""
+	}
+	// Pin the inner discriminator so a wire-drift shape (e.g. a future
+	// `advisor_error`) doesn't silently slip through as a normal
+	// response body. The completion event still fires with empty
+	// Content so the running row settles; the parser-refresh that
+	// recognises the new shape is the right place to handle it.
+	if payload.Type != "advisor_result" {
+		return ""
+	}
+	return payload.Text
+}
+
+// marshalAdvisorToolMeta builds the EventToolStart Meta for an advisor
+// invocation. Mirrors marshalToolMeta's shape for triage compatibility
+// (same toolName/input/assistant_message_id keys) but adds
+// `advisor_model` — the frontend's AdvisorRow renders it via
+// displayModelLabel, the same way subagent rows render their
+// `subagent_model`.
+func marshalAdvisorToolMeta(toolName, advisorModel, assistantMessageID string) json.RawMessage {
+	fields := map[string]any{
+		"toolName": toolName,
+		"input":    json.RawMessage("{}"),
+	}
+	if advisorModel != "" {
+		fields["advisor_model"] = advisorModel
+	}
+	if assistantMessageID != "" {
+		fields["assistant_message_id"] = assistantMessageID
+	}
+	out, _ := json.Marshal(fields)
+	return out
 }

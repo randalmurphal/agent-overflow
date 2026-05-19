@@ -302,4 +302,62 @@ describe('resolveToolPresentation', () => {
     expect(presentation.payloadId).toBe('payload-command');
     expect(presentation.meta.preview).toBe('done');
   });
+
+  it('routes Claude advisor tool calls to advisor presentation', () => {
+    // Claude's server-side advisor reuses the tool_call kind with
+    // toolName="advisor". The branch must fire BEFORE the generic
+    // tool fallthrough so AdvisorRow renders instead of the generic
+    // header/body. Verifies both the running launch and the
+    // completed row (with a tool_call_result payload) route to the
+    // advisor kind — tool_call_result must NOT be intercepted by
+    // the tool-result branch (which checks for the `tool_result`
+    // payloadKind specifically).
+    const running = makeItem({
+      kind: 'tool_call',
+      status: 'running',
+      toolName: 'advisor',
+      summary: 'advisor',
+      meta: JSON.stringify({ toolName: 'advisor', advisor_model: 'claude-opus-4-7' }),
+    });
+    const runningPresentation = resolveToolPresentation({
+      item: running,
+      provider: 'claude',
+      surface: 'timeline',
+    });
+    expect(runningPresentation.kind).toBe('advisor');
+
+    const completed = makeItem({
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'advisor',
+      summary: 'advisor',
+      payloadId: 'tool-call-result:srvtoolu_xyz',
+      payloadKind: 'tool_call_result',
+      payloadMeta: JSON.stringify({ preview: 'Reviewer suggested two refactors' }),
+      meta: JSON.stringify({ toolName: 'advisor', advisor_model: 'claude-opus-4-7' }),
+    });
+    const completedPresentation = resolveToolPresentation({
+      item: completed,
+      provider: 'claude',
+      surface: 'timeline',
+    });
+    expect(completedPresentation.kind).toBe('advisor');
+  });
+
+  it('does not classify non-advisor tool names as advisor', () => {
+    // The advisor predicate hinges on toolName === 'advisor'; a row
+    // for a different tool (Bash here) must NOT route to advisor.
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'running',
+      toolName: 'Bash',
+      summary: 'Bash: ls',
+    });
+    const presentation = resolveToolPresentation({
+      item,
+      provider: 'claude',
+      surface: 'timeline',
+    });
+    expect(presentation.kind).not.toBe('advisor');
+  });
 });

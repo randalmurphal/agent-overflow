@@ -3,7 +3,6 @@
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
-  import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   import { classifyToolName } from './toolCardHeader';
@@ -16,15 +15,14 @@
   import ExpandablePayloadBody from './ExpandablePayloadBody.svelte';
   import EditorLink from '../common/EditorLink.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
-  import { formatElapsedSeconds } from '../../utils/format';
+  import { formatDurationMs } from '../../utils/format';
   import { isCodexSubagentLaunchItem } from '../../utils/subagentLaunch';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
-  import Indicator from './Indicator.svelte';
+  import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import RowError from './RowError.svelte';
-  import { indicatorAriaLabel, indicatorStateForItem, rowErrorForStatus } from './rowState';
+  import { indicatorStateForItem, rowErrorWithFallback } from './rowState';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
-
-  const RUNNING_ELAPSED_THRESHOLD_MS = 2_000;
+  import { createRunningElapsed } from './useRunningElapsed.svelte';
 
   let {
     pane,
@@ -101,37 +99,14 @@
       && (effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming'),
   );
 
-  let completionStatus = $derived(deriveCompletionStatus(effectiveStatusItem, { meta: statusMeta }));
   let indicatorState = $derived(indicatorStateForItem(effectiveStatusItem, { meta: statusMeta }));
-  let rowError = $derived.by(() => {
-    if (completionStatus !== 'failure') return null;
-    return rowErrorForStatus(effectiveStatusItem.status, 'Tool call failed') ?? {
-      tone: 'error' as const,
-      msg: 'Tool call failed',
-    };
-  });
-  let shouldTickElapsed = $derived(
-    isRunning && durationLabel === '' && !isBackgroundedLaunch,
+  let rowError = $derived(
+    rowErrorWithFallback(effectiveStatusItem, { meta: statusMeta, fallback: 'Tool call failed' }),
   );
-
-  let now = $state(Date.now());
-  $effect(() => {
-    if (!shouldTickElapsed) return;
-    now = Date.now();
-    const id = setInterval(() => {
-      now = Date.now();
-    }, 1_000);
-    return () => clearInterval(id);
-  });
-
-  let runningElapsedLabel = $derived.by<string>(() => {
-    if (!shouldTickElapsed) return '';
-    const start = item.createdAt;
-    if (!Number.isFinite(start) || start <= 0) return '';
-    const elapsedMs = now - start;
-    if (elapsedMs < RUNNING_ELAPSED_THRESHOLD_MS) return '';
-    return formatElapsedSeconds(Math.floor(elapsedMs / 1_000));
-  });
+  const ticker = createRunningElapsed(
+    () => isRunning && durationLabel === '' && !isBackgroundedLaunch,
+    () => item.createdAt,
+  );
 
   let deferredOutputState = $derived.by(() => {
     if (!itemMeta) return '';
@@ -158,15 +133,6 @@
     () => Boolean(item.payloadId),
   );
 
-  function formatDuration(ms: number): string {
-    if (ms < 1000) return `${ms}ms`;
-    const seconds = ms / 1000;
-    if (seconds < 60) return `${seconds.toFixed(1)}s`;
-    const minutes = Math.floor(seconds / 60);
-    const remSec = Math.round(seconds - minutes * 60);
-    return `${minutes}m ${remSec}s`;
-  }
-
   async function toggle() {
     await expansion.toggle();
   }
@@ -191,7 +157,7 @@
     statusSlotTestId="tool-call-card-status-slot"
     duration={{
       testId: 'tool-call-card-duration',
-      label: durationLabel || (durationMs !== null ? formatDuration(durationMs) : runningElapsedLabel),
+      label: durationLabel || (durationMs !== null ? formatDurationMs(durationMs) : ticker.label),
     }}
     timestamp={showTimestamp
       ? { testId: 'tool-call-card-time', value: effectiveStatusItem.createdAt, label: time }
@@ -199,16 +165,7 @@
     {trailingActions}
   >
     {#snippet status()}
-      {#if indicatorState}
-        <span
-          data-testid="tool-call-card-status"
-          data-status={effectiveStatusItem.status}
-          data-state={indicatorState}
-          aria-label={indicatorAriaLabel(indicatorState)}
-        >
-          <Indicator state={indicatorState} />
-        </span>
-      {/if}
+      <ToolRowStatusIndicator item={effectiveStatusItem} state={indicatorState} testId="tool-call-card-status" />
     {/snippet}
   </ToolHeaderMeta>
 {/snippet}

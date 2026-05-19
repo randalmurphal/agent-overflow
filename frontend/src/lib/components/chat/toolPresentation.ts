@@ -70,6 +70,10 @@ export type ToolPresentation =
       statusItem?: Item;
     }
   | {
+      kind: 'advisor';
+      item: Item;
+    }
+  | {
       kind: 'generic';
       item: Item;
       displayItem?: Item;
@@ -86,6 +90,7 @@ export type TimelineToolPresentation = Extract<
   | { kind: 'tool-result' }
   | { kind: 'command' }
   | { kind: 'agent' }
+  | { kind: 'advisor' }
   | { kind: 'generic' }
 >;
 
@@ -168,6 +173,10 @@ function resolveTimelineToolPresentation(input: ToolPresentationInput): ToolPres
 
   if (isClaudeAgentTool(item)) {
     return { kind: 'agent', item };
+  }
+
+  if (isAdvisorTool(item)) {
+    return { kind: 'advisor', item };
   }
 
   return {
@@ -297,6 +306,10 @@ function isUserInputTool(item: Item): boolean {
 
 function isClaudeAgentTool(item: Item): boolean {
   return item.toolName === 'Agent' || item.toolName === 'Task';
+}
+
+function isAdvisorTool(item: Item): boolean {
+  return item.toolName === 'advisor';
 }
 
 function isCollabControlTool(provider: string | null | undefined, item: Item): boolean {

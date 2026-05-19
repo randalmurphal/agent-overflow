@@ -75,6 +75,22 @@ export function formatElapsedSeconds(seconds: number): string {
 }
 
 /**
+ * Format a completion duration measured in milliseconds for tool-call
+ * row headers. Sub-second values stay as "Nms" so a 12ms cache lookup
+ * is distinguishable from a 1.2s call; ≥1s collapses to one decimal
+ * second; ≥1m drops back to integer-second granularity inside the
+ * minute. Used by AdvisorRow/AgentRow/GenericToolCallRow.
+ */
+export function formatDurationMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remSec = Math.round(seconds - minutes * 60);
+  return `${minutes}m ${remSec}s`;
+}
+
+/**
  * Format a future Unix timestamp (seconds, like Claude's `resetsAt`
  * and Codex's `resets_at`) as a "Resets in Xh Ym" countdown.
  *

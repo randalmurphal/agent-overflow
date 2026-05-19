@@ -46,3 +46,24 @@ export function indicatorAriaLabel(state: IndicatorState): string | undefined {
   if (state === 'declined') return 'Declined';
   return undefined;
 }
+
+/**
+ * Tool-row failure projection used by AgentRow/AdvisorRow. The
+ * `??` fallback collapses two branches that several rows otherwise
+ * duplicate: rowErrorForStatus knows how to project `declined` /
+ * `killed` / `errored` into a tone+message pair, but a tool that
+ * reached `failure` via a non-status signal (deriveCompletionStatus
+ * inspecting payloadMeta.isError, command exitCode>0, etc.) still
+ * needs a generic "X failed" row. Callers pass the per-row
+ * failure copy (`"Agent failed"`, `"Advisor call failed"`).
+ */
+export function rowErrorWithFallback(
+  item: Pick<Item, 'kind' | 'status' | 'isBackground' | 'payloadMeta'>,
+  options: { meta?: Record<string, unknown> | null; fallback: string },
+): RowErrorData | null {
+  if (deriveCompletionStatus(item, { meta: options.meta }) !== 'failure') return null;
+  return rowErrorForStatus(item.status, options.fallback) ?? {
+    tone: 'error',
+    msg: options.fallback,
+  };
+}

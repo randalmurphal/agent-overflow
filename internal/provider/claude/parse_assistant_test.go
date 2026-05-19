@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -314,5 +315,361 @@ func TestErrorEnumToHumanCopy_UnknownEnumFallsBack(t *testing.T) {
 	}
 	if !strings.Contains(got, "future_enum_value") {
 		t.Fatalf("fallback summary should mention the raw enum, got %q", got)
+	}
+}
+
+// TestParseAssistant_AdvisorCallEmitsToolStart pins the wire shape of
+// the `server_tool_use` advisor call: a single content block with
+// `srvtoolu_*` id and `name:"advisor"` becomes one EventToolStart
+// keyed by that id, ItemType="advisor", with `advisor_model` and
+// `assistant_message_id` stamped on the meta.
+func TestParseAssistant_AdvisorCallEmitsToolStart(t *testing.T) {
+	line := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","model":"claude-opus-4-7","content":[{"type":"server_tool_use","id":"srvtoolu_abc","name":"advisor","input":{}}]}}`)
+	events, err := ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var startEvent provider.ProviderEvent
+	for _, e := range events {
+		if e.Kind == provider.EventToolStart {
+			startEvent = e
+			break
+		}
+	}
+	if startEvent.Kind != provider.EventToolStart {
+		t.Fatalf("expected EventToolStart, got %+v", events)
+	}
+	if startEvent.ItemID != "srvtoolu_abc" {
+		t.Fatalf("ItemID: got %q, want srvtoolu_abc", startEvent.ItemID)
+	}
+	if startEvent.ItemType != "advisor" {
+		t.Fatalf("ItemType: got %q, want advisor", startEvent.ItemType)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(startEvent.Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if meta["toolName"] != "advisor" {
+		t.Fatalf("meta.toolName: got %v, want advisor", meta["toolName"])
+	}
+	if meta["advisor_model"] != "claude-opus-4-7" {
+		t.Fatalf("meta.advisor_model: got %v, want claude-opus-4-7", meta["advisor_model"])
+	}
+	if meta["assistant_message_id"] != "msg-adv" {
+		t.Fatalf("meta.assistant_message_id: got %v, want msg-adv", meta["assistant_message_id"])
+	}
+}
+
+// TestParseAssistant_AdvisorResultEmitsToolComplete pins the result
+// block. The block arrives on a SECOND assistant envelope (same
+// message id is irrelevant for parsing; this is a separate NDJSON
+// line) with role=assistant content containing
+// `advisor_tool_result`. We must emit EventToolComplete keyed by
+// tool_use_id with the nested `content.text` as Content.
+//
+// Requires the call to be marked first so the result handler will
+// confirm the id; we feed the call line through the same parser.
+func TestParseAssistant_AdvisorResultEmitsToolComplete(t *testing.T) {
+	parser := NewParser()
+	callLine := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","model":"claude-opus-4-7","content":[{"type":"server_tool_use","id":"srvtoolu_abc","name":"advisor","input":{}}]}}`)
+	if _, err := parser.ParseLine(testThreadProto, callLine); err != nil {
+		t.Fatalf("parse call: %v", err)
+	}
+
+	resultLine := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","model":"claude-opus-4-7","content":[{"type":"advisor_tool_result","tool_use_id":"srvtoolu_abc","content":{"type":"advisor_result","text":"advice body here"}}]}}`)
+	events, err := parser.ParseLine(testThreadProto, resultLine)
+	if err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	var completeEvent provider.ProviderEvent
+	for _, e := range events {
+		if e.Kind == provider.EventToolComplete {
+			completeEvent = e
+			break
+		}
+	}
+	if completeEvent.Kind != provider.EventToolComplete {
+		t.Fatalf("expected EventToolComplete, got %+v", events)
+	}
+	if completeEvent.ItemID != "srvtoolu_abc" {
+		t.Fatalf("ItemID: got %q, want srvtoolu_abc", completeEvent.ItemID)
+	}
+	if completeEvent.Content != "advice body here" {
+		t.Fatalf("Content: got %q, want %q", completeEvent.Content, "advice body here")
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(completeEvent.Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if v, ok := meta["is_error"].(bool); !ok || v {
+		t.Fatalf("meta.is_error: got %v, want false", meta["is_error"])
+	}
+}
+
+// TestParseAssistant_AdvisorResultDropsOrphan covers the defensive
+// branch: an advisor_tool_result whose tool_use_id was never
+// observed (parser restart mid-turn, wire drift) must be dropped
+// rather than synthesise a completion against a non-existent
+// launch row.
+func TestParseAssistant_AdvisorResultDropsOrphan(t *testing.T) {
+	line := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","content":[{"type":"advisor_tool_result","tool_use_id":"srvtoolu_unknown","content":{"type":"advisor_result","text":"x"}}]}}`)
+	events, err := ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, e := range events {
+		if e.Kind == provider.EventToolComplete {
+			t.Fatalf("orphan advisor_tool_result must not emit EventToolComplete: %+v", e)
+		}
+	}
+}
+
+// TestParseAssistant_ServerToolUseDropsUnknownName covers the
+// forward-compat gate at the top of appendServerToolUseEvent: a
+// hypothetical `web_search` or `web_fetch` server tool arriving
+// under the same envelope shape must NOT be classified as advisor
+// (which would stamp advisor_model on its meta and route it to
+// AdvisorRow). The parser refresh that adds the new tool is the
+// right place to recognise it.
+func TestParseAssistant_ServerToolUseDropsUnknownName(t *testing.T) {
+	cases := []struct {
+		name      string
+		toolName  string
+		shouldEmit bool
+	}{
+		{"advisor", "advisor", true},
+		{"web_search dropped", "web_search", false},
+		{"web_fetch dropped", "web_fetch", false},
+		{"empty name dropped", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			line := []byte(`{"type":"assistant","message":{"id":"msg-x","role":"assistant","model":"claude-opus-4-7","content":[{"type":"server_tool_use","id":"srvtoolu_x","name":"` + tc.toolName + `","input":{}}]}}`)
+			events, err := ParseLine(testThreadProto, line)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			var hasStart bool
+			for _, e := range events {
+				if e.Kind == provider.EventToolStart {
+					hasStart = true
+				}
+			}
+			if hasStart != tc.shouldEmit {
+				t.Fatalf("EventToolStart emitted=%v, want=%v (events=%+v)", hasStart, tc.shouldEmit, events)
+			}
+		})
+	}
+}
+
+// TestParseAssistant_ServerToolUseDropsEmptyID covers the other
+// half of the early-return guard on appendServerToolUseEvent.
+func TestParseAssistant_ServerToolUseDropsEmptyID(t *testing.T) {
+	line := []byte(`{"type":"assistant","message":{"id":"msg-x","role":"assistant","content":[{"type":"server_tool_use","id":"","name":"advisor","input":{}}]}}`)
+	events, err := ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, e := range events {
+		if e.Kind == provider.EventToolStart {
+			t.Fatalf("EventToolStart on empty-id server_tool_use: %+v", e)
+		}
+	}
+}
+
+// TestParseAssistant_AdvisorResultDropsEmptyToolUseID covers the
+// orphan-result guard distinct from the unknown-id case: a result
+// with an empty tool_use_id has no row to settle.
+func TestParseAssistant_AdvisorResultDropsEmptyToolUseID(t *testing.T) {
+	line := []byte(`{"type":"assistant","message":{"id":"msg-x","role":"assistant","content":[{"type":"advisor_tool_result","tool_use_id":"","content":{"type":"advisor_result","text":"x"}}]}}`)
+	events, err := ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, e := range events {
+		if e.Kind == provider.EventToolComplete {
+			t.Fatalf("EventToolComplete on empty-tool_use_id result: %+v", e)
+		}
+	}
+}
+
+// TestParseAssistant_AdvisorResultDropsBadInnerType covers
+// extractAdvisorResultText's discriminator check. A wire-drift
+// inner shape (e.g. a future `advisor_error` envelope) must NOT
+// surface its text as if it were a normal advisor response — the
+// completion still fires so the running row settles, but with
+// empty Content.
+func TestParseAssistant_AdvisorResultDropsBadInnerType(t *testing.T) {
+	parser := NewParser()
+	callLine := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_xyz","name":"advisor","input":{}}]}}`)
+	if _, err := parser.ParseLine(testThreadProto, callLine); err != nil {
+		t.Fatalf("parse call: %v", err)
+	}
+	resultLine := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","content":[{"type":"advisor_tool_result","tool_use_id":"srvtoolu_xyz","content":{"type":"advisor_error","text":"do not surface"}}]}}`)
+	events, err := parser.ParseLine(testThreadProto, resultLine)
+	if err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	var completeEvent provider.ProviderEvent
+	for _, e := range events {
+		if e.Kind == provider.EventToolComplete {
+			completeEvent = e
+		}
+	}
+	if completeEvent.Kind != provider.EventToolComplete {
+		t.Fatalf("expected EventToolComplete to fire even on bad inner type, got %+v", events)
+	}
+	if completeEvent.Content != "" {
+		t.Fatalf("Content for unknown inner type: got %q, want empty", completeEvent.Content)
+	}
+}
+
+// TestParseAssistant_AdvisorResultDropsMalformedContent covers the
+// json.Unmarshal failure branch in extractAdvisorResultText. The
+// completion still fires (so the running row settles) with empty
+// Content.
+func TestParseAssistant_AdvisorResultDropsMalformedContent(t *testing.T) {
+	parser := NewParser()
+	callLine := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_mf","name":"advisor","input":{}}]}}`)
+	if _, err := parser.ParseLine(testThreadProto, callLine); err != nil {
+		t.Fatalf("parse call: %v", err)
+	}
+	// content as a bare string instead of the expected object shape.
+	resultLine := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","content":[{"type":"advisor_tool_result","tool_use_id":"srvtoolu_mf","content":"raw string"}]}}`)
+	events, err := parser.ParseLine(testThreadProto, resultLine)
+	if err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	var completeEvent provider.ProviderEvent
+	for _, e := range events {
+		if e.Kind == provider.EventToolComplete {
+			completeEvent = e
+		}
+	}
+	if completeEvent.Kind != provider.EventToolComplete {
+		t.Fatalf("expected EventToolComplete even on malformed content, got %+v", events)
+	}
+	if completeEvent.Content != "" {
+		t.Fatalf("Content for malformed content: got %q, want empty", completeEvent.Content)
+	}
+}
+
+// TestParseAssistant_AdvisorResultDuplicateDropsSecond pins the
+// idempotency contract: a second advisor_tool_result for the same
+// tool_use_id (re-delivery after reconnect, parser-state drift)
+// must not emit a second EventToolComplete. The first result clears
+// the correlation mark, the second falls through the orphan guard.
+func TestParseAssistant_AdvisorResultDuplicateDropsSecond(t *testing.T) {
+	parser := NewParser()
+	callLine := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_dup","name":"advisor","input":{}}]}}`)
+	if _, err := parser.ParseLine(testThreadProto, callLine); err != nil {
+		t.Fatalf("parse call: %v", err)
+	}
+	resultLine := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","content":[{"type":"advisor_tool_result","tool_use_id":"srvtoolu_dup","content":{"type":"advisor_result","text":"first"}}]}}`)
+	first, err := parser.ParseLine(testThreadProto, resultLine)
+	if err != nil {
+		t.Fatalf("parse first result: %v", err)
+	}
+	var firstCount int
+	for _, e := range first {
+		if e.Kind == provider.EventToolComplete {
+			firstCount++
+		}
+	}
+	if firstCount != 1 {
+		t.Fatalf("first result: got %d EventToolComplete events, want 1", firstCount)
+	}
+	second, err := parser.ParseLine(testThreadProto, resultLine)
+	if err != nil {
+		t.Fatalf("parse second result: %v", err)
+	}
+	for _, e := range second {
+		if e.Kind == provider.EventToolComplete {
+			t.Fatalf("duplicate result emitted EventToolComplete: %+v", e)
+		}
+	}
+}
+
+// TestParseAssistant_AdvisorOnlyEnvelopeSuppressesUsage pins the
+// load-bearing claim that the advisor's own context window does
+// not flow onto the parent's context meter. An assistant envelope
+// whose content is exclusively advisor blocks carries `usage` for
+// the ADVISOR's call, not the parent's accumulation; surfacing it
+// would clobber the meter (the fixture-captured envelope's
+// cache_read_input_tokens is ~33k, easily large enough to swap
+// the displayed context-used value visibly).
+func TestParseAssistant_AdvisorOnlyEnvelopeSuppressesUsage(t *testing.T) {
+	line := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","model":"claude-opus-4-7","content":[{"type":"server_tool_use","id":"srvtoolu_u","name":"advisor","input":{}}],"usage":{"input_tokens":6,"cache_creation_input_tokens":305,"cache_read_input_tokens":32999,"output_tokens":8}}}`)
+	events, err := ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, e := range events {
+		if e.Kind == provider.EventTokenUsage {
+			t.Fatalf("advisor-only envelope must not emit EventTokenUsage (would flicker parent's meter): %+v", e)
+		}
+	}
+}
+
+// TestParseAssistant_MixedEnvelopeEmitsUsage pins the negation of
+// the suppression rule: an envelope mixing advisor blocks with
+// regular content (e.g. a `tool_use` or a `thinking` block) keeps
+// usage emission for the non-advisor portion. We don't expect the
+// CLI to ship this shape today, but the gate must not eat parent
+// usage just because an advisor block happens to share the
+// envelope.
+func TestParseAssistant_MixedEnvelopeEmitsUsage(t *testing.T) {
+	line := []byte(`{"type":"assistant","message":{"id":"msg-mix","role":"assistant","model":"claude-opus-4-7","content":[{"type":"server_tool_use","id":"srvtoolu_mix","name":"advisor","input":{}},{"type":"tool_use","id":"toolu_mix","name":"Bash","input":{"command":"true"}}],"usage":{"input_tokens":100,"cache_creation_input_tokens":200,"cache_read_input_tokens":300,"output_tokens":50}}}`)
+	events, err := ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var sawUsage bool
+	for _, e := range events {
+		if e.Kind == provider.EventTokenUsage {
+			sawUsage = true
+		}
+	}
+	if !sawUsage {
+		t.Fatalf("mixed envelope must still emit EventTokenUsage, got %+v", events)
+	}
+}
+
+// TestParseAssistant_AdvisorFixtureRoundTrip drives the captured wire
+// fixture through the parser end-to-end and asserts both the call
+// and the result settle as start + complete on the same id.
+func TestParseAssistant_AdvisorFixtureRoundTrip(t *testing.T) {
+	data, err := os.ReadFile("testdata/advisor_call.ndjson")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	parser := NewParser()
+	var sawStart, sawComplete bool
+	for _, raw := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if raw == "" {
+			continue
+		}
+		events, err := parser.ParseLine(testThreadProto, []byte(raw))
+		if err != nil {
+			t.Fatalf("parse line: %v", err)
+		}
+		for _, e := range events {
+			switch e.Kind {
+			case provider.EventToolStart:
+				if e.ItemID == "srvtoolu_01R7eTAp4mJuZ7VLg5GAAfYU" && e.ItemType == "advisor" {
+					sawStart = true
+				}
+			case provider.EventToolComplete:
+				if e.ItemID == "srvtoolu_01R7eTAp4mJuZ7VLg5GAAfYU" && strings.Contains(e.Content, "UI/integration test call") {
+					sawComplete = true
+				}
+			}
+		}
+	}
+	if !sawStart {
+		t.Fatalf("fixture replay did not produce EventToolStart for advisor call")
+	}
+	if !sawComplete {
+		t.Fatalf("fixture replay did not produce EventToolComplete with advisor body")
 	}
 }

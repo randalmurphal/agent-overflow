@@ -170,6 +170,12 @@ export function classifyToolName(
         label: "plan",
         isSubagent: false,
       };
+    case "advisor":
+      return {
+        icon: "brain",
+        label: "advisor",
+        isSubagent: false,
+      };
   }
 
   return {

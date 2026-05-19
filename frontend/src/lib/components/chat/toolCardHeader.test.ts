@@ -176,4 +176,15 @@ describe("classifyToolName", () => {
     // branch rather than falling to generic.
     expect(classifyToolName("  Bash  ").icon).toBe("terminal");
   });
+
+  it("advisor maps to brain icon, advisor label, not a subagent", () => {
+    // The advisor branch picks its own icon/label; ToolPresentation
+    // routes the row to AdvisorRow rather than the generic body, but
+    // classifyToolName still owns the gutter chip the disclosure
+    // header displays.
+    const out = classifyToolName("advisor");
+    expect(out.icon).toBe("brain");
+    expect(out.label).toBe("advisor");
+    expect(out.isSubagent).toBe(false);
+  });
 });

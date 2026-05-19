@@ -6,6 +6,7 @@
   import type { Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { paneWorkspacePath } from '../../stores/thread.svelte';
+  import AdvisorRow from './AdvisorRow.svelte';
   import AgentRow from './AgentRow.svelte';
   import AskUserQuestionCard from './AskUserQuestionCard.svelte';
   import CollabToolRow from './CollabToolRow.svelte';
@@ -83,6 +84,13 @@
   />
 {:else if presentation.kind === 'agent'}
   <AgentRow {pane} {item} />
+{:else if presentation.kind === 'advisor'}
+  <!-- Claude's server-side `advisor` tool call. Runs inline (not
+       backgrounded) with its own model context window; the response
+       text body is shipped as the tool_call_result payload and the
+       parent envelope's model id is stamped on item.meta.advisor_model
+       (rendered via displayModelLabel). -->
+  <AdvisorRow {pane} {item} />
 {:else}
   <GenericToolCallRow {pane} {item} />
 {/if}
