@@ -314,20 +314,9 @@ func TestSendMessageWithOptionsImplementSwitchesPlanModeToChat(t *testing.T) {
 		t.Errorf("returned thread mode = %q, want chat", updated.Mode)
 	}
 
-	// Phase F: plan acceptance now fires from the wire-driven turn-start
-	// path (handleInit + pending-send). The test's passthrough Claude
-	// binary doesn't emit system/init, so simulate the wire envelope to
-	// drive plan acceptance through the same code path production hits.
-	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventInit,
-		ThreadID:  thread.ID,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("simulate wire init: %v", err)
-	}
-
-	// HasActionableProposedPlan is computed off the persisted plan state
-	// at GetThread time, so re-fetch after the wire-driven mark fires.
+	// applyProposedPlanAcceptance fires synchronously between PersistItem
+	// and sendToProvider, so the implemented mark is durable by the time
+	// SendMessageWithOptions returns. No wire-init simulation is needed.
 	stored, err := app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
@@ -347,12 +336,13 @@ func TestSendMessageWithOptionsImplementSwitchesPlanModeToChat(t *testing.T) {
 	}
 }
 
-// Pins two invariants for a transient provider error after the user
-// message has already landed: (1) plan stays unmarked so the user can
-// retry, (2) mode flip stays committed since the timeline records the
-// implement intent. Also re-asserts (1) after running reconcile so the
-// invariant survives across restart.
-func TestSendMessageWithOptionsImplementSendFailureKeepsPlanRetryable(t *testing.T) {
+// Pins the click-time mark contract: once SendMessageWithOptions
+// persists the user_text row, the plan is implemented even if the
+// downstream sendToProvider call fails. The mark is sticky on
+// failure — the user already committed to the implementation by
+// clicking, and the sibling failed-send error row makes the failure
+// visible for a retry. Also confirms the mode flip stays committed.
+func TestSendMessageWithOptionsImplementSendFailureKeepsPlanAccepted(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-implement-mode-revert")
 	thread.Provider = string(provider.Codex)
@@ -389,12 +379,10 @@ func TestSendMessageWithOptionsImplementSendFailureKeepsPlanRetryable(t *testing
 	}
 
 	// Codex session with no provider: sendToProvider trips
-	// "session has no provider" without a synthesized EventTurnStart,
-	// so this is the exact "send failed, plan must stay retryable"
-	// scenario the old guard (TestSendMessageWithSourcePlanDoesNot
-	// ImplementWhenProviderSendFails) covers — we re-cover it here
-	// alongside the mode-flip assertion to keep both invariants pinned
-	// in one place.
+	// "session has no provider" so the helper-then-send order is
+	// observable — the plan-implemented mark from
+	// applyProposedPlanAcceptance must already be durable when the
+	// provider write fails.
 	app.sessions[thread.ID] = session{provider: string(provider.Codex), token: "no-provider"}
 
 	_, err := app.SendMessageWithOptions(thread.ID, "Implement the plan.", SendMessageOptions{
@@ -418,23 +406,99 @@ func TestSendMessageWithOptionsImplementSendFailureKeepsPlanRetryable(t *testing
 	if !found {
 		t.Fatal("plan state missing")
 	}
-	if state.ImplementedAt != 0 {
-		t.Errorf("ImplementedAt = %d, want 0 (send failure must keep plan retryable)", state.ImplementedAt)
+	if state.ImplementedAt == 0 {
+		t.Error("ImplementedAt = 0, want > 0 (mark is sticky once SendMessageWithOptions persists the user_text — provider failure must not revert)")
+	}
+	// The seeded plan row sits at turnIndex 0, so the implement send
+	// is turnIndex 1 — the persisted user_text row is `user:1`.
+	if state.ImplementedByItemID != "user:1" {
+		t.Errorf("ImplementedByItemID = %q, want %q (the persisted user_text row id)", state.ImplementedByItemID, "user:1")
+	}
+}
+
+// Pins the re-click contract: a second implement-the-plan send against
+// the same plan must NOT overwrite the original attribution. The user
+// might click "implement" twice (network retry, double-click); the
+// mark is gated on `WHERE implemented_at = 0` so the first click owns
+// the badge forever.
+func TestSendMessageWithOptionsImplementOnAlreadyImplementedPlanKeepsFirstAttribution(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-implement-replay")
+	thread.Provider = string(provider.Claude)
+	thread.Mode = "plan"
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	// Post-restart simulation: the failed-send path persists a sibling
-	// error item alongside the orphan user_text. The reconcile's
-	// error-sibling exclusion has to keep the plan unmarked here, or
-	// the user can't click Implement again after closing the app.
-	if err := app.store.ReconcileProposedPlanStateFromAcceptedTurns(time.Now().UnixMilli()); err != nil {
-		t.Fatalf("ReconcileProposedPlanStateFromAcceptedTurns: %v", err)
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItemWithPayload(store.Item{
+		ID:        "plan-item",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "completed",
+		Summary:   "Plan",
+		PayloadID: "plan-payload",
+		ToolName:  "plan",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, store.Payload{
+		ID:        "plan-payload",
+		Kind:      "proposed_plan",
+		Meta:      `{"title":"Plan","preview":"x","lineCount":1,"charCount":1}`,
+		Data:      []byte("# Plan"),
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed plan: %v", err)
 	}
-	stateAfter, _, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
+	if _, err := app.store.EnsureProposedPlanState(thread.ID, "plan-item", now); err != nil {
+		t.Fatalf("ensure plan state: %v", err)
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		func(provider.ProviderEvent) {},
+	)
 	if err != nil {
-		t.Fatalf("GetProposedPlanState (post reconcile): %v", err)
+		t.Fatalf("NewSession() error = %v", err)
 	}
-	if stateAfter.ImplementedAt != 0 {
-		t.Errorf("ImplementedAt after reconcile = %d, want 0 (failed-send sibling error must keep plan retryable across restart)", stateAfter.ImplementedAt)
+	t.Cleanup(func() { _ = sess.Close() })
+	app.sessions[thread.ID] = session{provider: string(provider.Claude), token: "test-token", claude: sess}
+
+	if _, err := app.SendMessageWithOptions(thread.ID, "Implement the plan.", SendMessageOptions{
+		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
+	}); err != nil {
+		t.Fatalf("first SendMessageWithOptions() error = %v", err)
+	}
+
+	first, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
+	if err != nil || !found {
+		t.Fatalf("first GetProposedPlanState err=%v found=%v", err, found)
+	}
+	if first.ImplementedAt == 0 || first.ImplementedByItemID == "" {
+		t.Fatalf("first send did not mark plan: %+v", first)
+	}
+
+	if _, err := app.SendMessageWithOptions(thread.ID, "Implement again.", SendMessageOptions{
+		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
+	}); err != nil {
+		t.Fatalf("second SendMessageWithOptions() error = %v", err)
+	}
+
+	second, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
+	if err != nil || !found {
+		t.Fatalf("second GetProposedPlanState err=%v found=%v", err, found)
+	}
+	if second.ImplementedAt != first.ImplementedAt {
+		t.Errorf("ImplementedAt = %d, want %d (must not be overwritten by re-click)", second.ImplementedAt, first.ImplementedAt)
+	}
+	if second.ImplementedByItemID != first.ImplementedByItemID {
+		t.Errorf("ImplementedByItemID = %q, want %q (re-click must not steal attribution)", second.ImplementedByItemID, first.ImplementedByItemID)
 	}
 }
 
@@ -491,16 +555,6 @@ func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("SendMessageWithOptions() error = %v", err)
-	}
-
-	// Phase F: drive the wire-init that triggers plan acceptance, since
-	// the passthrough Claude binary doesn't emit system/init.
-	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventInit,
-		ThreadID:  thread.ID,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("simulate wire init: %v", err)
 	}
 
 	items, err := app.store.ListItems(thread.ID)
@@ -570,13 +624,6 @@ func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
 		t.Fatalf("second sourceProposedPlan = %+v, want plan-item", secondMeta.SourceProposedPlan)
 	}
 
-	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventInit,
-		ThreadID:  thread.ID,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("simulate second wire init: %v", err)
-	}
 	state, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
 	if err != nil {
 		t.Fatalf("GetProposedPlanState after second send: %v", err)
@@ -655,88 +702,12 @@ func TestSendMessageWithOptionsPersistsCrossThreadSourceProposedPlan(t *testing.
 		t.Fatalf("SendMessageWithOptions() error = %v", err)
 	}
 
-	// Phase F: drive the wire-init that triggers plan acceptance.
-	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventInit,
-		ThreadID:  targetThread.ID,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("simulate wire init: %v", err)
-	}
-
 	state, found, err := app.store.GetProposedPlanState(sourceThread.ID, "plan-item")
 	if err != nil {
 		t.Fatalf("GetProposedPlanState() error = %v", err)
 	}
 	if !found || state.ImplementedByThreadID != targetThread.ID || state.ImplementedByItemID != "user:0" {
 		t.Fatalf("state = %+v, want implemented by target user turn", state)
-	}
-}
-
-func TestSendMessageWithSourcePlanDoesNotImplementWhenProviderSendFails(t *testing.T) {
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-send-source-plan-failure")
-	thread.Provider = string(provider.Codex)
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-	now := time.Now().UnixMilli()
-	if err := app.store.InsertItemWithPayload(store.Item{
-		ID:        "plan-item",
-		ThreadID:  thread.ID,
-		TurnIndex: 0,
-		ItemIndex: 0,
-		Kind:      "tool_call",
-		Role:      "assistant",
-		Status:    "completed",
-		Summary:   "Plan",
-		PayloadID: "plan-payload",
-		ToolName:  "plan",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}, store.Payload{
-		ID:        "plan-payload",
-		Kind:      "proposed_plan",
-		Meta:      `{"title":"Plan","preview":"do it","lineCount":1,"charCount":5}`,
-		Data:      []byte("# Plan\n\nDo it."),
-		CreatedAt: now,
-	}); err != nil {
-		t.Fatalf("seed plan: %v", err)
-	}
-	if _, err := app.store.EnsureProposedPlanState(thread.ID, "plan-item", now); err != nil {
-		t.Fatalf("ensure plan state: %v", err)
-	}
-	app.sessions[thread.ID] = session{provider: string(provider.Codex), token: "broken"}
-
-	_, err := app.SendMessageWithOptions(thread.ID, "Implement the plan.", SendMessageOptions{
-		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "session has no provider") {
-		t.Fatalf("SendMessageWithOptions() error = %v, want provider send failure", err)
-	}
-	state, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
-	if err != nil {
-		t.Fatalf("GetProposedPlanState() error = %v", err)
-	}
-	if !found {
-		t.Fatal("plan state missing")
-	}
-	if state.ImplementedAt != 0 {
-		t.Fatalf("ImplementedAt = %d, want 0 after send failure", state.ImplementedAt)
-	}
-
-	// Pin the post-restart contract: the orphan user_text + sibling
-	// error item must NOT cause reconcile to mark the plan implemented,
-	// or the user can't click Implement again after closing the app.
-	if err := app.store.ReconcileProposedPlanStateFromAcceptedTurns(time.Now().UnixMilli()); err != nil {
-		t.Fatalf("ReconcileProposedPlanStateFromAcceptedTurns: %v", err)
-	}
-	stateAfter, _, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
-	if err != nil {
-		t.Fatalf("GetProposedPlanState (post reconcile): %v", err)
-	}
-	if stateAfter.ImplementedAt != 0 {
-		t.Fatalf("ImplementedAt after reconcile = %d, want 0 (failed-send sibling error must keep plan retryable across restart)", stateAfter.ImplementedAt)
 	}
 }
 

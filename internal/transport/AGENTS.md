@@ -17,6 +17,13 @@ backend.
   In-memory only — the ring is a network jitter buffer, not a history
   store (see root CLAUDE.md principle 3).
 - Ephemeral token authentication (`?token=<value>`).
+- Boot-phase dispatcher ready-gate (`Dispatcher.HoldUntilReady` /
+  `SignalReady`). main.bootTransport holds the gate so /bootstrap.json
+  and the WS upgrade can serve immediately while App.ServiceStartup
+  wires stores/subsystems; RPCs queued during the window park at
+  `InvokeForOrigin` until App signals ready. Resolve runs BEFORE the
+  wait so LocalOnlyMethods refusals stay timing-indistinguishable from
+  unregistered-method probes.
 
 ## What this package does NOT own
 

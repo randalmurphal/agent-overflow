@@ -269,215 +269,12 @@ func (s *Store) MarkProposedPlanImplemented(threadID, itemID, implementationThre
 	return nil
 }
 
-func (s *Store) ReconcileProposedPlanStateFromAcceptedTurns(now int64) error {
-	// LEFT JOIN, not INNER, so a successful implement that crashed
-	// after PersistItem but before EventTurnStart still recovers on
-	// restart. The send-failure path (sendToProvider returns error)
-	// also leaves a user_text with sourceProposedPlan + no turns row,
-	// so we must additionally exclude rows that have a sibling
-	// kind='error' on the same (thread_id, turn_index): those represent
-	// the "implement send failed, user must retry" case where the plan
-	// must stay unimplemented. ORDER BY pins attribution to the
-	// earliest accepted item for a given plan when multiple retries
-	// landed across turns.
-	rows, err := s.db.Query(
-		`SELECT items.id, items.thread_id, items.turn_index, items.meta,
-		        items.created_at,
-		        COALESCE(turns.turn_id, ''),
-		        COALESCE(turns.started_at, 0)
-		   FROM items
-		   LEFT JOIN turns
-		     ON turns.thread_id = items.thread_id
-		    AND turns.turn_index = items.turn_index
-		  WHERE items.kind = 'user_text'
-		    AND (
-		      items.meta LIKE '%"sourceProposedPlan"%'
-		      OR items.meta LIKE '%"revisionSourceCommentIds"%'
-		      OR items.meta LIKE '%"revisionSourceDiffCommentIds"%'
-		    )
-		    AND NOT EXISTS (
-		      SELECT 1
-		        FROM items err
-		       WHERE err.thread_id  = items.thread_id
-		         AND err.turn_index = items.turn_index
-		         AND err.kind       = 'error'
-		    )
-		  ORDER BY items.thread_id, items.turn_index ASC, items.created_at ASC`,
-	)
-	if err != nil {
-		return fmt.Errorf("store: reconcile proposed plan state: %w", err)
-	}
-	defer rows.Close()
-
-	type acceptedTurn struct {
-		userItemID string
-		threadID   string
-		turnIndex  int
-		turnID     string
-		startedAt  int64
-		createdAt  int64
-		meta       proposedPlanUserMessageMeta
-	}
-	var turns []acceptedTurn
-	for rows.Next() {
-		var userItemID string
-		var implementationThreadID string
-		var turnIndex int
-		var metaJSON string
-		var createdAt int64
-		var turnID string
-		var startedAt int64
-		if err := rows.Scan(&userItemID, &implementationThreadID, &turnIndex, &metaJSON, &createdAt, &turnID, &startedAt); err != nil {
-			return fmt.Errorf("store: scan proposed plan accepted turn source: %w", err)
-		}
-		meta, ok := parseProposedPlanUserMessageMeta(metaJSON)
-		if !ok {
-			continue
-		}
-		turns = append(turns, acceptedTurn{
-			userItemID: userItemID,
-			threadID:   implementationThreadID,
-			turnIndex:  turnIndex,
-			turnID:     turnID,
-			startedAt:  startedAt,
-			createdAt:  createdAt,
-			meta:       meta,
-		})
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("store: iterate proposed plan accepted turn sources: %w", err)
-	}
-
-	for _, accepted := range turns {
-		acceptedAt := accepted.startedAt
-		if acceptedAt == 0 {
-			acceptedAt = accepted.createdAt
-		}
-		if acceptedAt == 0 {
-			acceptedAt = now
-		}
-		// Mirror resolveTurnID's Claude fallback so revision-comment
-		// sent_turn_id is stable across reconcile and live-event paths.
-		turnID := accepted.turnID
-		if turnID == "" {
-			turnID = fmt.Sprintf("%s:%d", accepted.threadID, accepted.turnIndex)
-		}
-		if sourceRef := accepted.meta.SourceProposedPlan; sourceRef != nil {
-			source := normalizeProposedPlanSourceRef(*sourceRef, accepted.threadID)
-			if err := s.markAcceptedProposedPlanImplemented(accepted.threadID, accepted.userItemID, source, acceptedAt); err != nil {
-				return err
-			}
-		}
-		if sourceRef := accepted.meta.RevisionSourceProposedPlan; sourceRef != nil && len(accepted.meta.RevisionSourceCommentIDs) > 0 {
-			source := normalizeProposedPlanSourceRef(*sourceRef, accepted.threadID)
-			ids := limitStringIDs(uniqueNonEmptyStrings(accepted.meta.RevisionSourceCommentIDs), MaxProposedPlanRevisionCommentIDs)
-			if err := s.markAcceptedProposedPlanCommentsSent(accepted.threadID, source, ids, acceptedAt, turnID); err != nil {
-				return err
-			}
-		}
-		if sourceRef := accepted.meta.RevisionSourceDiffReview; sourceRef != nil && len(accepted.meta.RevisionSourceDiffCommentIDs) > 0 {
-			source := normalizeDiffReviewSourceRef(*sourceRef, accepted.threadID)
-			ids := limitStringIDs(uniqueNonEmptyStrings(accepted.meta.RevisionSourceDiffCommentIDs), MaxDiffReviewCommentIDs)
-			if err := s.markAcceptedDiffReviewCommentsSent(accepted.threadID, source, ids, acceptedAt, turnID); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func normalizeProposedPlanSourceRef(source ProposedPlanSourceRef, fallbackThreadID string) ProposedPlanSourceRef {
-	source.ThreadID = strings.TrimSpace(source.ThreadID)
-	if source.ThreadID == "" {
-		source.ThreadID = fallbackThreadID
-	}
-	source.ItemID = strings.TrimSpace(source.ItemID)
-	return source
-}
-
-func normalizeDiffReviewSourceRef(source DiffReviewSourceRef, fallbackThreadID string) DiffReviewSourceRef {
-	source.ThreadID = strings.TrimSpace(source.ThreadID)
-	if source.ThreadID == "" {
-		source.ThreadID = fallbackThreadID
-	}
-	source.Scope = strings.TrimSpace(source.Scope)
-	source.SourceKey = strings.TrimSpace(source.SourceKey)
-	return source
-}
-
-func (s *Store) markAcceptedProposedPlanImplemented(implementationThreadID, implementationItemID string, source ProposedPlanSourceRef, implementedAt int64) error {
-	if source.ItemID == "" {
-		return nil
-	}
-	item, found, err := s.GetThreadItem(source.ThreadID, source.ItemID)
-	if err != nil {
-		return fmt.Errorf("store: validate accepted proposed plan %s/%s: %w", source.ThreadID, source.ItemID, err)
-	}
-	if !found || item.Role != "assistant" || item.PayloadKind != "proposed_plan" {
-		return nil
-	}
-	err = s.MarkProposedPlanImplemented(source.ThreadID, source.ItemID, implementationThreadID, implementationItemID, implementedAt)
-	if err == nil || errors.Is(err, ErrProposedPlanAlreadyImplemented) {
-		return nil
-	}
-	return err
-}
-
-func (s *Store) markAcceptedProposedPlanCommentsSent(threadID string, source ProposedPlanSourceRef, commentIDs []string, sentAt int64, sentTurnID string) error {
-	if source.ThreadID != threadID || source.ItemID == "" || len(commentIDs) == 0 {
-		return nil
-	}
-	item, found, err := s.GetThreadItem(source.ThreadID, source.ItemID)
-	if err != nil {
-		return fmt.Errorf("store: validate accepted revision source plan %s/%s: %w", source.ThreadID, source.ItemID, err)
-	}
-	if !found || item.Role != "assistant" || item.PayloadKind != "proposed_plan" {
-		return nil
-	}
-	return s.MarkProposedPlanCommentsSent(threadID, source.ItemID, commentIDs, sentAt, sentTurnID)
-}
-
-func (s *Store) markAcceptedDiffReviewCommentsSent(threadID string, source DiffReviewSourceRef, commentIDs []string, sentAt int64, sentTurnID string) error {
-	if source.ThreadID != threadID || source.Scope == "" || source.SourceKey == "" || len(commentIDs) == 0 {
-		return nil
-	}
-	if _, err := NormalizeDiffReviewScope(source.Scope); err != nil {
-		return nil
-	}
-	if _, err := NormalizeDiffReviewSourceKey(source.SourceKey); err != nil {
-		return nil
-	}
-	return s.MarkDiffReviewCommentsSent(threadID, source.Scope, source.SourceKey, commentIDs, sentAt, sentTurnID)
-}
-
+// RevisionSourceProposedPlanForTurn loads the revision source plan
+// reference stamped onto a turn's user_text meta. Used by triage's
+// payload writer to link a newly-emitted plan to its parent (the plan
+// the user just sent revision comments against), so the new plan can
+// claim the right RevisionParentItemID.
 func (s *Store) RevisionSourceProposedPlanForTurn(threadID string, turnIndex int) (ProposedPlanSourceRef, bool, error) {
-	return s.proposedPlanSourceForTurn(threadID, turnIndex, true)
-}
-
-func (s *Store) RevisionSourceCommentIDsForTurn(threadID string, turnIndex int) ([]string, bool, error) {
-	item, found, err := s.FindTurnItem(threadID, turnIndex, "user_text")
-	if err != nil {
-		return nil, false, err
-	}
-	if !found {
-		return nil, false, nil
-	}
-	meta, ok := parseProposedPlanUserMessageMeta(item.Meta)
-	if !ok || len(meta.RevisionSourceCommentIDs) == 0 {
-		return nil, false, nil
-	}
-	ids := uniqueNonEmptyStrings(meta.RevisionSourceCommentIDs)
-	if len(ids) == 0 {
-		return nil, false, nil
-	}
-	return ids, true, nil
-}
-
-func (s *Store) SourceProposedPlanForTurn(threadID string, turnIndex int) (ProposedPlanSourceRef, bool, error) {
-	return s.proposedPlanSourceForTurn(threadID, turnIndex, false)
-}
-
-func (s *Store) proposedPlanSourceForTurn(threadID string, turnIndex int, revision bool) (ProposedPlanSourceRef, bool, error) {
 	item, found, err := s.FindTurnItem(threadID, turnIndex, "user_text")
 	if err != nil {
 		return ProposedPlanSourceRef{}, false, err
@@ -486,17 +283,13 @@ func (s *Store) proposedPlanSourceForTurn(threadID string, turnIndex int, revisi
 		return ProposedPlanSourceRef{}, false, nil
 	}
 	meta, ok := parseProposedPlanUserMessageMeta(item.Meta)
-	if !ok {
+	if !ok || meta.RevisionSourceProposedPlan == nil {
 		return ProposedPlanSourceRef{}, false, nil
 	}
-	sourceRef := meta.SourceProposedPlan
-	if revision {
-		sourceRef = meta.RevisionSourceProposedPlan
-	}
-	if sourceRef == nil || strings.TrimSpace(sourceRef.ItemID) == "" {
+	source := *meta.RevisionSourceProposedPlan
+	if strings.TrimSpace(source.ItemID) == "" {
 		return ProposedPlanSourceRef{}, false, nil
 	}
-	source := *sourceRef
 	if strings.TrimSpace(source.ThreadID) == "" {
 		source.ThreadID = threadID
 	}
@@ -885,13 +678,6 @@ func uniqueNonEmptyStrings(values []string) []string {
 
 func UniqueNonEmptyStringsForApp(values []string) []string {
 	return uniqueNonEmptyStrings(values)
-}
-
-func limitStringIDs(values []string, max int) []string {
-	if len(values) <= max {
-		return values
-	}
-	return values[:max]
 }
 
 func placeholders(count int) string {

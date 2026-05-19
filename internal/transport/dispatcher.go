@@ -27,6 +27,11 @@ type Dispatcher struct {
 	mu     sync.RWMutex
 	byID   map[uint32]*Method
 	byName map[string]*Method
+
+	// readyMu is separate from mu so flipping the ready-gate doesn't
+	// contend with method lookups on every RPC.
+	readyMu  sync.RWMutex
+	appReady chan struct{}
 }
 
 // Method is the descriptor for a single registered RPC method. The
@@ -69,11 +74,62 @@ var ctxType = reflect.TypeOf((*context.Context)(nil)).Elem()
 var errType = reflect.TypeOf((*error)(nil)).Elem()
 
 // NewDispatcher returns an empty dispatcher. Call Register to populate
-// it from a receiver before serving traffic.
+// it from a receiver before serving traffic. The ready-gate is
+// pre-closed so callers that don't opt in (tests, clientmode) dispatch
+// without waiting.
 func NewDispatcher() *Dispatcher {
+	closedReady := make(chan struct{})
+	close(closedReady)
 	return &Dispatcher{
-		byID:   make(map[uint32]*Method),
-		byName: make(map[string]*Method),
+		byID:     make(map[uint32]*Method),
+		byName:   make(map[string]*Method),
+		appReady: closedReady,
+	}
+}
+
+// HoldUntilReady installs a fresh open ready-gate so subsequent
+// InvokeForOrigin calls park until SignalReady fires (or the call's
+// ctx is cancelled). Production main.bootTransport calls this before
+// the listener accepts traffic, so the boot window between bootstrap
+// publication and App.ServiceStartup completion can't dispatch RPCs
+// against half-initialised stores.
+func (d *Dispatcher) HoldUntilReady() {
+	gate := make(chan struct{})
+	d.readyMu.Lock()
+	d.appReady = gate
+	d.readyMu.Unlock()
+}
+
+// SignalReady closes the current ready-gate, releasing every waiter.
+// Idempotent.
+func (d *Dispatcher) SignalReady() {
+	d.readyMu.RLock()
+	gate := d.appReady
+	d.readyMu.RUnlock()
+	select {
+	case <-gate:
+	default:
+		close(gate)
+	}
+}
+
+// waitReady blocks until the ready-gate closes or ctx is cancelled.
+// The non-blocking first select keeps the ready-state fast path free
+// of the ctx.Done channel allocation overhead inside the select.
+func (d *Dispatcher) waitReady(ctx context.Context) error {
+	d.readyMu.RLock()
+	gate := d.appReady
+	d.readyMu.RUnlock()
+	select {
+	case <-gate:
+		return nil
+	default:
+	}
+	select {
+	case <-gate:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -303,6 +359,17 @@ func (d *Dispatcher) InvokeForOrigin(ctx context.Context, m *Method, params []js
 			}
 		}
 	}()
+
+	// Park until App.ServiceStartup signals ready. ErrCodeInternal on
+	// cancellation: the conn is going away anyway, so the wire message
+	// is bookkeeping.
+	if err := d.waitReady(ctx); err != nil {
+		log.Printf("transport: %s aborted before ready: %v", m.FQN, err)
+		return nil, &FrameError{
+			Code:    ErrCodeInternal,
+			Message: "internal error",
+		}
+	}
 
 	if len(params) > MaxRPCParams {
 		return nil, &FrameError{

@@ -301,3 +301,83 @@ func TestSteerMessageWithOptions_FailureClearsPendingSendAndPersistsErrorRow(t *
 		t.Fatalf("error summary = %q, want \"Failed to steer\" prefix", errorRow.Summary)
 	}
 }
+
+// TestSteerMessageWithOptions_MarksProposedPlanImplemented pins the
+// steer-time parity of the send path's click-time mark: the plan is
+// implemented as soon as the steered user_text persists, before the
+// turn/steer RPC fires. Mirrors app_send_test's source-plan coverage
+// for the mid-turn injection path.
+func TestSteerMessageWithOptions_MarksProposedPlanImplemented(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+
+	thread := testThread("thread-steer-implement-plan")
+	thread.Provider = string(provider.Codex)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItemWithPayload(store.Item{
+		ID:        "plan-item",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "completed",
+		Summary:   "Plan",
+		PayloadID: "plan-payload",
+		ToolName:  "plan",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, store.Payload{
+		ID:        "plan-payload",
+		Kind:      "proposed_plan",
+		Meta:      `{"title":"Steer plan","preview":"do it","lineCount":1,"charCount":5}`,
+		Data:      []byte("# Steer plan\n\nDo it."),
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed plan: %v", err)
+	}
+	if _, err := app.store.EnsureProposedPlanState(thread.ID, "plan-item", now); err != nil {
+		t.Fatalf("ensure plan state: %v", err)
+	}
+
+	// Active turn at index 1 (steer requires one) — distinct from the
+	// plan's turn 0 so the marked-by-item attribution points at the
+	// steered user row, not the seed plan.
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-1",
+		ThreadID:  thread.ID,
+		TurnIndex: 1,
+		StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+
+	sess := installSteerTestSession(t, app, thread, "ok")
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Codex),
+		token:    "steer-token",
+		codex:    sess,
+	}
+
+	if _, err := app.SteerMessageWithOptions(thread.ID, "Implement the plan.", SendMessageOptions{
+		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
+	}); err != nil {
+		t.Fatalf("SteerMessageWithOptions: %v", err)
+	}
+
+	state, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
+	if err != nil {
+		t.Fatalf("GetProposedPlanState: %v", err)
+	}
+	if !found || state.ImplementedAt == 0 {
+		t.Fatalf("plan state = %+v, want implemented_at > 0 after steer click", state)
+	}
+	if !strings.HasPrefix(state.ImplementedByItemID, "user:1:steer:") {
+		t.Errorf("ImplementedByItemID = %q, want steer-suffixed user row id at turn 1", state.ImplementedByItemID)
+	}
+}

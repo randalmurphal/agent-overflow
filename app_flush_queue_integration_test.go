@@ -306,6 +306,98 @@ func TestParserToTriageSeam_QueuedCommandReplay_StampsRow(t *testing.T) {
 	}
 }
 
+// TestDispatchFlush_MarksProposedPlanImplementedAfterDispatch pins the
+// flush-path parity of the send/steer click-time mark: when a queued
+// item carries SourceProposedPlan, the plan is marked implemented as
+// soon as the dispatcher hands it off to the provider — not at the
+// later wire-echo. The mark uses the freshly-allocated `user:N:flush:M`
+// id even though that row is deferred until echo, so the implementing
+// link is stable end-to-end.
+func TestDispatchFlush_MarksProposedPlanImplementedAfterDispatch(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	thread := testThread("flush-implement-plan")
+	thread.Provider = string(provider.Codex)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	// Seed an assistant-emitted proposed plan at turn 0; the queued
+	// implement-click flushes at turn 0's active boundary (set up below)
+	// and the user_text row lands at user:0:flush:1.
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItemWithPayload(store.Item{
+		ID:        "plan-item",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "completed",
+		Summary:   "Plan",
+		PayloadID: "plan-payload",
+		ToolName:  "plan",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, store.Payload{
+		ID:        "plan-payload",
+		Kind:      "proposed_plan",
+		Meta:      `{"title":"Plan","preview":"do","lineCount":1,"charCount":2}`,
+		Data:      []byte("# Plan\n\nDo it."),
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed plan: %v", err)
+	}
+	if _, err := app.store.EnsureProposedPlanState(thread.ID, "plan-item", now); err != nil {
+		t.Fatalf("ensure plan state: %v", err)
+	}
+
+	sess := installSteerTestSession(t, app, thread, "ok")
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Codex),
+		token:    "flush-implement-token",
+		codex:    sess,
+	}
+
+	// Active turn at 0 so dispatchFlushItem attaches at turn 0 and the
+	// flush row uses the user:0:flush:1 id format.
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("EventTurnStart: %v", err)
+	}
+
+	if _, err := app.RegisterQueueItem(thread.ID, "Implement the plan.", SendMessageOptions{
+		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
+	}); err != nil {
+		t.Fatalf("RegisterQueueItem: %v", err)
+	}
+
+	flushed := waitForAtLeastQueueFlushed(t, rec, 1)
+	if len(flushed) != 1 || len(flushed[0].Items) != 1 {
+		t.Fatalf("queue_flushed: got %+v, want one event with one item", flushed)
+	}
+	wantImplementingID := flushed[0].Items[0].UserItemID
+	if wantImplementingID != "user:0:flush:1" {
+		t.Fatalf("flush user item id = %q, want user:0:flush:1", wantImplementingID)
+	}
+
+	state, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
+	if err != nil {
+		t.Fatalf("GetProposedPlanState: %v", err)
+	}
+	if !found || state.ImplementedAt == 0 {
+		t.Fatalf("plan state = %+v, want implemented after dispatch", state)
+	}
+	if state.ImplementedByItemID != wantImplementingID {
+		t.Errorf("ImplementedByItemID = %q, want %q (the deferred user_text id, allocated at dispatch)", state.ImplementedByItemID, wantImplementingID)
+	}
+}
+
 // emittedQueueFlushed returns every QueueFlushedEvent the recorder
 // captured, in emission order. Used to assert "fired exactly once"
 // when the trigger predicate gates the dispatch.

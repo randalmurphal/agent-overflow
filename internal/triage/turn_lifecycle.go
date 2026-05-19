@@ -3,7 +3,6 @@ package triage
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -40,16 +39,12 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 
 	startedAt := eventTimestampMillis(evt)
 	turnID := resolveTurnID(evt, turnIndex)
-	inserted := r.upsertTurnRow(store.Turn{
+	r.upsertTurnRow(store.Turn{
 		TurnID:    turnID,
 		ThreadID:  evt.ThreadID,
 		TurnIndex: turnIndex,
 		StartedAt: startedAt,
 	})
-	if inserted {
-		r.markAcceptedSourceProposedPlan(evt.ThreadID, turnIndex, startedAt)
-		r.markAcceptedRevisionComments(evt.ThreadID, turnIndex, turnID, startedAt)
-	}
 
 	// Open the first wire round for this logical turn. Frontend
 	// idempotency keys on TurnID, so a fresh roundID per round means a
@@ -108,110 +103,6 @@ func (r *Router) resolveTurnIndexOnStart(evt provider.ProviderEvent) int {
 	return turnIndex
 }
 
-func (r *Router) markAcceptedRevisionComments(threadID string, turnIndex int, turnID string, startedAt int64) {
-	commentIDs, found, err := r.store.RevisionSourceCommentIDsForTurn(threadID, turnIndex)
-	if err != nil {
-		log.Printf("triage: revision source comments for turn %s/%d: %v", threadID, turnIndex, err)
-		return
-	}
-	if !found {
-		return
-	}
-	source, sourceFound, err := r.store.RevisionSourceProposedPlanForTurn(threadID, turnIndex)
-	if err != nil {
-		log.Printf("triage: revision source plan for turn %s/%d: %v", threadID, turnIndex, err)
-		return
-	}
-	if !sourceFound || source.ThreadID != threadID {
-		return
-	}
-	r.markAcceptedRevisionCommentsForItem(threadID, source.ItemID, commentIDs, startedAt, turnID)
-}
-
-func (r *Router) markAcceptedSourceProposedPlan(threadID string, turnIndex int, startedAt int64) {
-	source, found, err := r.store.SourceProposedPlanForTurn(threadID, turnIndex)
-	if err != nil {
-		log.Printf("triage: source proposed plan for turn %s/%d: %v", threadID, turnIndex, err)
-		return
-	}
-	if !found {
-		return
-	}
-	implementationItemID := fmt.Sprintf("user:%d", turnIndex)
-	r.markAcceptedSourceProposedPlanForItem(source.ThreadID, source.ItemID, threadID, implementationItemID, startedAt)
-}
-
-// markAcceptedSourceProposedPlanForItem marks the source plan implemented
-// and emits the refreshed plan item. Idempotent against re-fired
-// EventTurnStart — the store dedupes via ErrProposedPlanAlreadyImplemented.
-func (r *Router) markAcceptedSourceProposedPlanForItem(
-	sourceThreadID, sourceItemID,
-	implementationThreadID, implementationItemID string,
-	implementedAt int64,
-) {
-	if sourceItemID == "" {
-		return
-	}
-	item, found, err := r.store.GetThreadItem(sourceThreadID, sourceItemID)
-	if err != nil {
-		log.Printf("triage: validate source proposed plan %s/%s: %v", sourceThreadID, sourceItemID, err)
-		return
-	}
-	if !found || item.Role != "assistant" || item.PayloadKind != "proposed_plan" {
-		log.Printf("triage: refusing invalid source proposed plan %s/%s", sourceThreadID, sourceItemID)
-		return
-	}
-	if err := r.store.MarkProposedPlanImplemented(sourceThreadID, sourceItemID, implementationThreadID, implementationItemID, implementedAt); err != nil {
-		if !errors.Is(err, store.ErrProposedPlanAlreadyImplemented) {
-			log.Printf("triage: mark proposed plan implemented %s/%s: %v", sourceThreadID, sourceItemID, err)
-		}
-		return
-	}
-	plan, found, err := r.store.GetThreadProposedPlanItem(sourceThreadID, sourceItemID)
-	if err != nil {
-		log.Printf("triage: refresh implemented proposed plan %s/%s: %v", sourceThreadID, sourceItemID, err)
-		return
-	}
-	if found {
-		r.emit("provider:item_event", NewItemStreamUpsert(plan))
-	}
-}
-
-// markAcceptedRevisionCommentsForItem stamps the supplied comment
-// IDs as sent against the source plan and emits the refreshed plan item
-// so the frontend's draft/sent counters update. Counterpart helper to
-// markAcceptedSourceProposedPlanForItem.
-func (r *Router) markAcceptedRevisionCommentsForItem(
-	sourceThreadID, sourceItemID string,
-	commentIDs []string,
-	sentAt int64,
-	sentTurnID string,
-) {
-	if sourceItemID == "" || len(commentIDs) == 0 {
-		return
-	}
-	plan, found, err := r.store.GetThreadProposedPlanItem(sourceThreadID, sourceItemID)
-	if err != nil {
-		log.Printf("triage: validate source plan for revision comments %s/%s: %v", sourceThreadID, sourceItemID, err)
-		return
-	}
-	if !found {
-		return
-	}
-	if err := r.store.MarkProposedPlanCommentsSent(sourceThreadID, sourceItemID, commentIDs, sentAt, sentTurnID); err != nil {
-		log.Printf("triage: mark proposed plan comments sent %s/%s: %v", sourceThreadID, sourceItemID, err)
-		return
-	}
-	plan, found, err = r.store.GetThreadProposedPlanItem(sourceThreadID, sourceItemID)
-	if err != nil {
-		log.Printf("triage: refresh proposed plan after comments sent %s/%s: %v", sourceThreadID, sourceItemID, err)
-		return
-	}
-	if found {
-		r.emit("provider:item_event", NewItemStreamUpsert(plan))
-	}
-}
-
 // resolveTurnID builds the `turns` table primary key for the incoming
 // turn. Codex fills evt.TurnID directly from `turn/started`; Claude
 // has no wire-level turn_id so triage synthesizes one from
@@ -226,15 +117,14 @@ func resolveTurnID(evt provider.ProviderEvent, turnIndex int) string {
 }
 
 // upsertTurnRow inserts the turns row for a freshly-opened turn or
-// updates started_at if the provider re-sends EventTurnStart. An
-// existing row means we've seen this turn before (re-init after
+// preserves the existing row if the provider re-sends EventTurnStart.
+// An existing row means we've seen this turn before (re-init after
 // interrupt, recovery replay) and the original started_at is the
-// authoritative wall time — don't overwrite it. A missing row on
-// update (sql.ErrNoRows) means a fresh insert is the right path.
+// authoritative wall time — don't overwrite it.
 // Errors are logged but not propagated: turn-start emission must fire
 // even if persistence hiccups, so the frontend's working indicator
 // still tracks the wire signal.
-func (r *Router) upsertTurnRow(turn store.Turn) bool {
+func (r *Router) upsertTurnRow(turn store.Turn) {
 	_, found, err := r.store.GetTurn(turn.TurnID)
 	if err != nil {
 		log.Printf("triage: turn start get %s: %v", turn.TurnID, err)
@@ -245,13 +135,11 @@ func (r *Router) upsertTurnRow(turn store.Turn) bool {
 		// and completed_at. Refreshing started_at would show a
 		// later clock on the working indicator each time the
 		// provider re-initialises.
-		return false
+		return
 	}
 	if err := r.store.InsertTurn(turn); err != nil {
 		log.Printf("triage: turn start insert %s: %v", turn.TurnID, err)
-		return false
 	}
-	return true
 }
 
 // openTurnSpan begins a turn.lifecycle span for the incoming turn. Any

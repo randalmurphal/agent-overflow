@@ -78,18 +78,9 @@ func TestSendPlanRevisionCommentsSendsDraftsAndMarksSent(t *testing.T) {
 		t.Fatalf("updated mode = %q, want plan", updated.Mode)
 	}
 
-	// Phase F: revision-comment acceptance fires from the wire-driven
-	// turn-start path (handleInit + pending-send → handleTurnStart). The
-	// test's control-passthrough Claude binary doesn't emit system/init,
-	// so simulate the wire envelope to drive the marker through the same
-	// code path production hits.
-	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventInit,
-		ThreadID:  thread.ID,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("simulate wire init: %v", err)
-	}
+	// applyProposedPlanAcceptance fires synchronously inside the send
+	// path, so the comment status flip is durable by the time
+	// SendPlanRevisionComments returns.
 
 	items, err := app.store.ListItems(thread.ID)
 	if err != nil {

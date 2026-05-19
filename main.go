@@ -224,6 +224,14 @@ func runClient(rawURL string) {
 // its arguments, never reads disk on its own.
 func bootTransport(appService *App, listenAddr string, loadPersistedBindAll bool) *transport.Server {
 	dispatcher := transport.NewDispatcher()
+	// Hold inbound RPCs at the dispatcher until App.ServiceStartup
+	// finishes wiring stores / observability / subsystems. The transport
+	// can still bind, publish /bootstrap.json, and upgrade the WS so the
+	// SPA loads in parallel with subsystem init — but any method call
+	// that arrives during the boot window parks at the gate rather than
+	// hitting a half-initialised store. App.ServiceStartup closes the
+	// gate on success via transportServer.SignalReady().
+	dispatcher.HoldUntilReady()
 	methods, err := dispatcher.Register(appService, transport.RegisterOptions{
 		Package:   "main",
 		TypeName:  "App",
@@ -352,6 +360,11 @@ func runDesktop(listenAddr string) {
 // "clean" channel) and fall back to a stdout sentinel when fd 3 isn't
 // open. The Windows-side launcher only knows how to scan stdout, so
 // in practice that fallback path is the daily-driver.
+//
+// Boot order is bootstrap-before-ServiceStartup so the WebView2 can
+// fetch assets and open the WS in parallel with subsystem init. The
+// dispatcher's ready-gate parks any RPC that arrives during that
+// window; App.ServiceStartup releases it on success.
 func runHeadless(listenAddr string, printURLFD int) {
 	appService := NewApp()
 	// Headless mode honors only the explicit --listen flag — the
@@ -364,20 +377,24 @@ func runHeadless(listenAddr string, printURLFD int) {
 	srv := bootTransport(appService, listenAddr, false)
 	log.Printf("transport: headless mode")
 
-	// Boot the App's subsystems directly. Wails normally calls
-	// ServiceStartup with a context that lives until shutdown — we
-	// mirror that with a process-scoped context cancelled on signal.
+	if err := writeBootstrap(printURLFD, srv); err != nil {
+		// Subsystems haven't started yet, so a transport-only teardown
+		// is enough.
+		shutCtx, cancel := context.WithTimeout(context.Background(), transportShutdownTimeout)
+		defer cancel()
+		if shutErr := srv.Shutdown(shutCtx); shutErr != nil {
+			log.Printf("transport: shutdown after bootstrap failure: %v", shutErr)
+		}
+		fatalf("write bootstrap: %v", err)
+	}
+
 	bootCtx, bootCancel := context.WithCancel(context.Background())
 	defer bootCancel()
 	if err := appService.ServiceStartup(bootCtx, application.ServiceOptions{Name: "App"}); err != nil {
-		fatalf("app: service startup: %v", err)
-	}
-
-	if err := writeBootstrap(printURLFD, srv); err != nil {
-		// We've already started subsystems — shut them down before
-		// exiting so SQLite isn't left in a half-flushed state.
+		// Tear down the listener so any RPC waiting at the ready-gate
+		// sees a clean WS close instead of a permanent hang.
 		shutdownHeadless(appService, srv)
-		fatalf("write bootstrap: %v", err)
+		fatalf("app: service startup: %v", err)
 	}
 
 	// After bootstrap, stop writing to stdout so the launcher's

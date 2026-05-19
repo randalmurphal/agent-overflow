@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -198,8 +199,6 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	providerAttachments := resolved.providerAttachments
 	persistedAttachments := resolved.persistedAttachments
 	sourcePlan := resolved.sourcePlan
-	revisionSourceDiff := resolved.revisionSourceDiff
-	revisionDiffCommentIDs := resolved.revisionDiffCommentIDs
 	userMeta := resolved.userMessageMeta
 
 	thread, restoreImplementMode, err := a.beginImplementModeSwitch(threadID, sourcePlan)
@@ -250,6 +249,12 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	}
 	userMsgKept = true
 	a.captureMessageCheckpoint(thread, userItem)
+	// Click-time plan/diff-review acceptance. Sticky: a subsequent
+	// sendToProvider failure does NOT revert the marks — the user
+	// committed to send and the on-screen badge reflects that, while
+	// the failed-send sibling error stays available for retry. See
+	// applyProposedPlanAcceptance.
+	a.applyProposedPlanAcceptance(threadID, userItem, resolved)
 
 	// A thread is session-less until the first message is sent — we don't
 	// spawn the provider subprocess at thread creation. Lazy-start only
@@ -280,17 +285,6 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	// envelope arrives, or cleared on send failure below.
 	a.triage.RegisterPendingSend(threadID, userItem.ID, turnIndex)
 
-	// Plan-implemented marking happens via the wire-driven turn-start
-	// path: Claude's `system/init` (consumed by triage.handleInit when a
-	// pending-send is present, which routes to handleTurnStart) for
-	// Claude, and the native `turn/started` for Codex. Pre-send marking
-	// would hide the Implement button before sendToProvider's outcome
-	// is known, so a transient send failure could not be retried.
-	// Restart durability comes from
-	// ReconcileProposedPlanStateFromAcceptedTurns, which LEFT-JOINs
-	// turns and excludes user_text rows with sibling kind='error' so a
-	// failed-send remains retryable across restarts too.
-
 	if err := sendToProvider(sess, threadID, content, provider.NormalizeInteractionMode(thread.Mode), providerAttachments); err != nil {
 		// Drop the pending-send marker before persisting the error row.
 		// Without this, the marker would still be live when the next AO
@@ -308,11 +302,6 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	// emission here.
 
 	a.maybeGenerateThreadTitleWithAttachments(thread, content, hasPriorItems, persistedAttachments)
-	if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
-		if err := a.store.MarkDiffReviewCommentsSent(threadID, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, time.Now().UnixMilli(), userItem.ID); err != nil {
-			log.Printf("send message: mark diff review comments sent: %v", err)
-		}
-	}
 	return userItem, nil
 }
 
@@ -536,6 +525,79 @@ func (a *App) beginImplementModeSwitch(threadID string, sourcePlan *SourcePropos
 		}
 	}
 	return thread, restore, nil
+}
+
+// applyProposedPlanAcceptance is the click-time mark for every plan or
+// diff-review interaction the user just committed to. The badge flips
+// on the user's click rather than on the model's echo.
+//
+// Call-site timing differs by path:
+//   - Send / steer call it BEFORE the provider write. A subsequent
+//     provider failure does NOT revert the mark — the click itself is
+//     the commitment.
+//   - Flush-queue dispatch calls it AFTER a successful (or ambiguous,
+//     write-but-no-ack) dispatch. A genuine dispatch failure leaves the
+//     queue item retryable and the plan unmarked; marking pre-dispatch
+//     would attribute the implementation to a message that never reached
+//     the provider.
+//
+// MarkProposedPlanImplemented is gated on `WHERE implemented_at = 0`,
+// so a retry / re-click no-ops on the mark and keeps the original
+// implementing-item attribution stable.
+//
+// All three table writes are independent; we log-and-continue per write
+// rather than failing the user message. The plan/comment badge is UI
+// state, not a precondition for the outgoing message.
+func (a *App) applyProposedPlanAcceptance(threadID string, userItem store.Item, resolved resolvedUserMessage) {
+	now := time.Now().UnixMilli()
+	// Group all comments-sent-as-one-click under a stable turn-scoped
+	// id. Matches the legacy resolveTurnID Claude fallback and lets the
+	// frontend filter "comments sent in this turn" without enumerating
+	// per-item ids.
+	sentTurnID := fmt.Sprintf("%s:%d", threadID, userItem.TurnIndex)
+
+	if sp := resolved.sourcePlan; sp != nil && strings.TrimSpace(sp.ItemID) != "" {
+		err := a.store.MarkProposedPlanImplemented(sp.ThreadID, sp.ItemID, threadID, userItem.ID, now)
+		switch {
+		case err == nil:
+			a.refreshProposedPlanItem(sp.ThreadID, sp.ItemID)
+		case errors.Is(err, store.ErrProposedPlanAlreadyImplemented):
+			// Re-click on an already-implemented plan: keep the
+			// existing attribution and skip the emit (nothing changed).
+		default:
+			log.Printf("apply plan acceptance: mark implemented %s/%s: %v", sp.ThreadID, sp.ItemID, err)
+		}
+	}
+
+	if rp := resolved.revisionSourcePlan; rp != nil && strings.TrimSpace(rp.ItemID) != "" && len(resolved.revisionPlanCommentIDs) > 0 {
+		if err := a.store.MarkProposedPlanCommentsSent(rp.ThreadID, rp.ItemID, resolved.revisionPlanCommentIDs, now, sentTurnID); err != nil {
+			log.Printf("apply plan acceptance: mark revision comments sent %s/%s: %v", rp.ThreadID, rp.ItemID, err)
+		} else {
+			a.refreshProposedPlanItem(rp.ThreadID, rp.ItemID)
+		}
+	}
+
+	if rd := resolved.revisionSourceDiff; rd != nil && len(resolved.revisionDiffCommentIDs) > 0 {
+		if err := a.store.MarkDiffReviewCommentsSent(threadID, rd.Scope, rd.SourceKey, resolved.revisionDiffCommentIDs, now, sentTurnID); err != nil {
+			log.Printf("apply plan acceptance: mark diff review comments sent: %v", err)
+		}
+	}
+}
+
+// refreshProposedPlanItem re-reads the decorated plan item and emits
+// the upsert so the frontend's Accepted badge flips without a thread
+// reload. Best-effort: a missing row (plan deleted under us) is logged
+// and ignored so applyProposedPlanAcceptance never blocks the send.
+func (a *App) refreshProposedPlanItem(threadID, itemID string) {
+	plan, found, err := a.store.GetThreadProposedPlanItem(threadID, itemID)
+	if err != nil {
+		log.Printf("apply plan acceptance: refresh proposed plan %s/%s: %v", threadID, itemID, err)
+		return
+	}
+	if !found {
+		return
+	}
+	a.emit("provider:item_event", triage.NewItemStreamUpsert(plan))
 }
 
 // sendToProvider forwards the user content to the active provider

@@ -358,6 +358,13 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 		return err
 	}
 
+	// Release RPCs the dispatcher has been parking at the ready-gate
+	// since main.bootTransport installed it. Test path leaves
+	// transportServer nil.
+	if srv := a.transportServer.Load(); srv != nil {
+		srv.SignalReady()
+	}
+
 	// Probe provider binaries once on boot so the thread-level banner can
 	// surface "claude not found" / "codex too old" before the user opens
 	// settings. Runs in a goroutine because DetectProvider spawns subprocesses
@@ -495,9 +502,6 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	// boundaries and capture message checkpoints once the provider echo
 	// confirms the deferred user row. See app_flush_queue.go.
 	a.configureTriageQueueCallbacks()
-	if err := st.ReconcileProposedPlanStateFromAcceptedTurns(time.Now().UnixMilli()); err != nil {
-		log.Printf("app: reconcile proposed plan state: %v", err)
-	}
 	// Synthesize session_died terminals for backgrounded launches whose
 	// owning Claude session did not survive the previous app instance.
 	// Without this sweep the launches would render as "running" forever

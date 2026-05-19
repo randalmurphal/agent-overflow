@@ -101,8 +101,6 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	}
 	content = resolved.content
 	providerAttachments := resolved.providerAttachments
-	revisionSourceDiff := resolved.revisionSourceDiff
-	revisionDiffCommentIDs := resolved.revisionDiffCommentIDs
 	userMeta := resolved.userMessageMeta
 
 	sess, ok := a.sessionManager().get(threadID)
@@ -153,6 +151,9 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	if err = a.triage.PersistItem(userItem, nil); err != nil {
 		return store.Item{}, fmt.Errorf("steer message: persist user message: %w", err)
 	}
+	// Click-time plan/diff-review acceptance. Same sticky semantics as
+	// the send path — a downstream Steer failure does NOT revert.
+	a.applyProposedPlanAcceptance(threadID, userItem, resolved)
 
 	// Register the pending-send marker BEFORE the steer RPC writes to
 	// stdin — the wire `item/completed userMessage` echo can otherwise
@@ -206,11 +207,6 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 		return store.Item{}, steerErr
 	}
 
-	if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
-		if err := a.store.MarkDiffReviewCommentsSent(threadID, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, time.Now().UnixMilli(), userItem.ID); err != nil {
-			log.Printf("steer message: mark diff review comments sent: %v", err)
-		}
-	}
 	return userItem, nil
 }
 

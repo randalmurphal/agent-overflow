@@ -269,8 +269,6 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 	}
 	content := resolved.content
 	providerAttachments := resolved.providerAttachments
-	revisionSourceDiff := resolved.revisionSourceDiff
-	revisionDiffCommentIDs := resolved.revisionDiffCommentIDs
 	userMeta := resolved.userMessageMeta
 
 	sess, ok := a.sessionManager().get(threadID)
@@ -332,6 +330,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 	if dispatchErr != nil {
 		if codex.IsAmbiguousSteerTimeout(dispatchErr) {
 			log.Printf("flush dispatch: thread=%s item=%s: codex steer timed out after write; leaving pending confirmation for provider echo", threadID, item.ID)
+			a.applyProposedPlanAcceptance(threadID, userItem, resolved)
 			return QueueFlushedItem{QueueItemID: item.ID, UserItemID: userItem.ID, Message: item.Message}, nil
 		}
 		if sess.codex != nil && codex.IsNoActiveTurnRace(dispatchErr) {
@@ -355,23 +354,14 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 				a.persistFlushDispatchError(threadID, turnIndex, sendErr)
 				return QueueFlushedItem{}, sendErr
 			}
-			if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
-				if err := a.store.MarkDiffReviewCommentsSent(threadID, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, time.Now().UnixMilli(), userItem.ID); err != nil {
-					log.Printf("flush queue: mark diff review comments sent: %v", err)
-				}
-			}
+			a.applyProposedPlanAcceptance(threadID, userItem, resolved)
 			return QueueFlushedItem{QueueItemID: item.ID, UserItemID: userItem.ID, Message: item.Message}, nil
 		}
 		a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 		a.persistFlushDispatchError(threadID, turnIndex, dispatchErr)
 		return QueueFlushedItem{}, dispatchErr
 	}
-	if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
-		if err := a.store.MarkDiffReviewCommentsSent(threadID, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, time.Now().UnixMilli(), userItem.ID); err != nil {
-			log.Printf("flush queue: mark diff review comments sent: %v", err)
-		}
-	}
-
+	a.applyProposedPlanAcceptance(threadID, userItem, resolved)
 	return QueueFlushedItem{QueueItemID: item.ID, UserItemID: userItem.ID, Message: item.Message}, nil
 }
 
