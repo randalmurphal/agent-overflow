@@ -184,27 +184,33 @@ Implementation:
    writes the sibling immediately so chat shows the killed badge
    without waiting for a future turn.
 
-### Crash recovery — orphaned background launches
+### Crash recovery — recoverable Claude background launches
 
-If the previous app instance died while a backgrounded launch was
+If the previous app instance died while a Claude backgrounded launch was
 still in `status='running'`, the agent will never observe its
-completion (the owning provider session is gone). Without intervention
+completion (the owning Claude session is gone). Without intervention
 the launch would render as "running" forever in chat and tray.
 
 `Router.RecoverOrphanedBackgroundTasks` runs once during
 `App.ServiceStartup`. It queries
-`Store.ListOrphanedBackgroundLaunches` for every `tool_call` row
-that is `status='running'`, has no completion sibling, and has no
-stash entry. For each one with a `task_id` in its `items.meta`, it
-writes the `tool_completion` sibling directly with
+`Store.ListRecoverableClaudeBackgroundLaunches` for every Claude
+`tool_call` row that is `status='running'`, still live, has no
+completion sibling, and has a `task_id` in `items.meta`. For each one,
+it writes the `tool_completion` sibling directly with
 `source="session_died"`, `status="killed"` — no stash row is staged.
 Writing the sibling is the same terminal step the steady-state
 observation path takes after draining a stash, so the recovery path
 reuses `writeBackgroundCompletionSibling` end-to-end. Idempotent and
 crash-safe: if the process dies mid-sweep, the launch row is still
-`status='running'` with no sibling and no stash, so the next boot's
-sweep finds it again. Launches that never received their
-`task_started` meta merge are skipped (no `task_id` to key on).
+`status='running'` with no sibling, so the next boot's sweep finds it
+again. Launches that never received their `task_started` meta merge are
+excluded because there is no `task_id` to key the synthetic completion.
+
+Codex background projections use a different lifecycle. Inactive Codex
+rows can remain `status='running'` with
+`live_background_active=false`; they are hidden from live-background
+queries and are owned by the Codex ghost-flip/reconcile path, not this
+Claude task recovery sweep.
 
 ### Output
 
@@ -439,8 +445,8 @@ cases only — it must not feed turn detection.
 | Claude inline `tool_result` | `EventToolComplete` | `provider:item_event` upsert | Update `tool_call` to terminal |
 | Claude bg placeholder `tool_result` | `EventToolComplete` | `provider:item_event` upsert | Per-spec: keep `status=running`, record `is_background=true` |
 | Claude `system/task_started` | `EventToolStart` (meta-only) | `provider:item_event` upsert | Merge `task_id` into `items.meta` |
-| Claude `system/task_updated` terminal | `EventBackgroundTaskTerminal` | `provider:item_event` upsert | Idempotent `tool_completion` sibling |
-| Claude TaskOutput `tool_result` | `EventToolComplete` + optional `EventBackgroundTaskTerminal` | `provider:item_event` upsert | Close TaskOutput row; optional sibling enrichment/fallback |
+| Claude `system/task_updated` terminal | `EventBackgroundTaskTerminal` | `provider:background_task_state` exited | Stash terminal in `pending_background_task_terminals`; no chat sibling yet |
+| Claude TaskOutput `tool_result` | `EventToolComplete` + optional `EventBackgroundTaskTerminal` | `provider:item_event` upsert | Close TaskOutput row; drain stash and write/enrich sibling when terminal data is present |
 | Claude `system/task_notification` | — today; future notification event only | — today; future row only | No lifecycle state mutation |
 | Claude `result` | `EventTurnComplete` | `provider:turn_completed` | Update `turns` row, force-close orphans |
 | Codex `item/started` | `EventToolStart` | `provider:item_event` upsert | Upsert item row |

@@ -127,8 +127,7 @@ type TodoStep struct {
 // today:
 //
 //   - "exited"  — host signalled process exit (Claude system/task_updated
-//     stashed; or startup recovery synthesised a session_died stash).
-//     Tray hides the launch row from this point on; no chat row yet.
+//     stashed). Tray hides the launch row from this point on; no chat row yet.
 //   - "drained" — agent observation event consumed the stash and the
 //     tool_completion sibling has been written. Frontend re-queries the
 //     tray (the launch is already filtered out by the stash predicate;

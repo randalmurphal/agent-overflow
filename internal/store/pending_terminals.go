@@ -24,8 +24,8 @@ import (
 // host-side process exit. The startup-recovery path
 // (Router.RecoverOrphanedBackgroundTasks) writes its
 // `tool_completion` sibling directly without staging a stash row,
-// so a crash mid-sweep leaves the launch re-discoverable on next
-// boot.
+// so a crash mid-sweep leaves the recoverable Claude launch
+// re-discoverable on next boot.
 type PendingBackgroundTaskTerminal struct {
 	ThreadID   string
 	TaskID     string
@@ -160,4 +160,3 @@ func nullableInt64(v *int64) interface{} {
 	}
 	return *v
 }
-

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 )
 
 // ErrItemSettled is returned by AppendItemSummary
@@ -1113,36 +1114,45 @@ func (s *Store) GetIncompleteCodexSubagentLaunch(threadID, itemID string) (Item,
 	return Item{}, false, fmt.Errorf("store: get incomplete Codex subagent launch %s on thread %s: %w", itemID, threadID, err)
 }
 
-// ListOrphanedBackgroundLaunches returns every backgrounded tool_call
-// row across all threads that is still running and has no completion
-// sibling. Used by app startup to detect launches whose owning provider
-// session died with the previous app instance — the agent will never
-// observe completion, so the launch would otherwise hang forever in
-// the tray and chat.
+// ListRecoverableClaudeBackgroundLaunches returns Claude backgrounded
+// tool_call rows that startup recovery can safely settle. A recoverable
+// launch is still running, still live, has no completion sibling, and
+// carries meta.task_id so triage can write an idempotent synthetic
+// completion.
+//
+// This intentionally excludes Codex background projection rows. Codex
+// owns those through the ghost-flip/reconcile path, and inactive Codex
+// rows can remain status=running with live_background_active=false after
+// every child has stopped. Treating those as Claude task orphans makes
+// startup scan and log the same unrecoverable rows forever.
 //
 // Launches with a `pending_background_task_terminals` stash entry are
-// included: at boot time no provider session is alive yet, so any
-// stash row is by definition orphaned (the observer that would drain
-// it is dead). The recovery path drains the stash and uses its data
-// when synthesising the completion sibling, so the user sees the real
-// exit state rather than a generic session_died/killed badge.
-func (s *Store) ListOrphanedBackgroundLaunches() ([]Item, error) {
+// included: at boot time no Claude provider session is alive yet, so any
+// stash row is by definition orphaned (the observer that would drain it
+// is dead). The recovery path drains the stash and uses its data when
+// synthesising the completion sibling, so the user sees the real exit
+// state rather than a generic session_died/killed badge.
+func (s *Store) ListRecoverableClaudeBackgroundLaunches() ([]Item, error) {
 	rows, err := s.db.Query(
 		`SELECT ` + itemColumns + `
 		   FROM items
+		   JOIN threads ON threads.id = items.thread_id
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
-		  WHERE items.kind = 'tool_call'
+		  WHERE threads.provider = 'claude'
+		    AND items.kind = 'tool_call'
 		    AND items.status = 'running'
 		    AND items.is_background = 1
+		    AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
+		    AND json_type(items.meta, '$.task_id') = 'text'
+		    AND trim(json_extract(items.meta, '$.task_id')) <> ''
 		    AND NOT EXISTS (
 		      SELECT 1 FROM items c
 		       WHERE c.thread_id = items.thread_id
 		         AND c.completion_of = items.id
-		    )
-		  ORDER BY items.thread_id, items.turn_index, items.item_index`,
+		    )`,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("store: list orphaned background launches: %w", err)
+		return nil, fmt.Errorf("store: list recoverable Claude background launches: %w", err)
 	}
 	defer rows.Close()
 
@@ -1150,11 +1160,23 @@ func (s *Store) ListOrphanedBackgroundLaunches() ([]Item, error) {
 	for rows.Next() {
 		it, err := scanItemRow(rows)
 		if err != nil {
-			return nil, fmt.Errorf("store: scan orphaned bg launch row: %w", err)
+			return nil, fmt.Errorf("store: scan recoverable Claude bg launch row: %w", err)
 		}
 		items = append(items, it)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].ThreadID != items[j].ThreadID {
+			return items[i].ThreadID < items[j].ThreadID
+		}
+		if items[i].TurnIndex != items[j].TurnIndex {
+			return items[i].TurnIndex < items[j].TurnIndex
+		}
+		return items[i].ItemIndex < items[j].ItemIndex
+	})
+	return items, nil
 }
 
 // FlipGhostBackgroundRowsOnStart flips every `status='running' +

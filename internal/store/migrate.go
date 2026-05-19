@@ -1020,8 +1020,8 @@ ALTER TABLE attachments ADD COLUMN thumbnail_mime TEXT;
 		// removed when an observation event (task_notification or TaskOutput
 		// tool_result) drains it and the tool_completion sibling is written.
 		// Tray hides launches while a stash row exists for them. A startup
-		// sweep synthesises a killed sibling for orphaned launches whose
-		// owning session did not resume — see
+		// sweep synthesises a killed sibling for recoverable Claude launches
+		// whose owning session did not resume — see
 		// Router.RecoverOrphanedBackgroundTasks in internal/triage. Recovery
 		// writes the sibling directly without staging a stash row, so a
 		// crash mid-sweep leaves the launch re-discoverable.

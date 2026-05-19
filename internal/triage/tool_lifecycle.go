@@ -614,12 +614,13 @@ func (r *Router) stashBackgroundTaskTerminal(evt provider.ProviderEvent, meta ba
 	return nil
 }
 
-// RecoverOrphanedBackgroundTasks walks every persisted backgrounded
-// tool_call row that is still `running` and has no completion sibling.
-// These are launches whose owning provider session died with the
-// previous app instance — the agent will never observe completion (the
-// session is gone), so we synthesise the observation here by writing
-// the chat-side `tool_completion` sibling directly.
+// RecoverOrphanedBackgroundTasks walks every persisted Claude
+// backgrounded tool_call row that is still `running`, still live, has a
+// task_id, and has no completion sibling. These are launches whose
+// owning provider session died with the previous app instance — the
+// agent will never observe completion (the session is gone), so we
+// synthesise the observation here by writing the chat-side
+// `tool_completion` sibling directly.
 //
 // If a `pending_background_task_terminals` stash row exists for the
 // launch, we drain it and merge its data (status/exit_code/output_file)
@@ -634,29 +635,29 @@ func (r *Router) stashBackgroundTaskTerminal(evt provider.ProviderEvent, meta ba
 // before any provider session can spawn. Idempotent: running this twice
 // is a no-op because the second pass sees the existing sibling and
 // skips the launch via the NOT EXISTS predicate in
-// ListOrphanedBackgroundLaunches. Crash-safe: if the process dies
+// ListRecoverableClaudeBackgroundLaunches. Crash-safe: if the process dies
 // mid-loop before a sibling is written, the launch row is still
 // `running` with no sibling. The stash drain is atomic, so a crash
 // after drain but before sibling write leaves the launch as a stashless
 // orphan that the next boot's sweep recovers with status="killed".
 //
 // Launches whose meta carries no task_id (rare race: tool_use block
-// persisted before the task_started envelope) skip the sibling write —
-// without a task_id we have no idempotency key.
+// persisted before the task_started envelope) are excluded by the store
+// query — without a task_id we have no idempotency key.
 //
 // Returns the count of recovered launches; logs but does not propagate
 // per-launch errors so one bad row can't poison the whole sweep.
 func (r *Router) RecoverOrphanedBackgroundTasks() (int, error) {
-	launches, err := r.store.ListOrphanedBackgroundLaunches()
+	launches, err := r.store.ListRecoverableClaudeBackgroundLaunches()
 	if err != nil {
-		return 0, fmt.Errorf("triage: list orphaned bg launches: %w", err)
+		return 0, fmt.Errorf("triage: list recoverable Claude bg launches: %w", err)
 	}
 	now := time.Now().UnixMilli()
 	recovered := 0
 	for _, launch := range launches {
 		taskID := taskIDFromItemMeta(launch.Meta)
 		if taskID == "" {
-			log.Printf("triage: skip orphan recovery for %s/%s (no task_id meta)",
+			log.Printf("triage: skip Claude background recovery for %s/%s (no task_id meta)",
 				launch.ThreadID, launch.ID)
 			continue
 		}
@@ -673,7 +674,7 @@ func (r *Router) RecoverOrphanedBackgroundTasks() (int, error) {
 		}
 		stash, stashFound, err := r.store.TakePendingBackgroundTerminal(launch.ThreadID, taskID)
 		if err != nil {
-			log.Printf("triage: drain orphan stash %s/%s: %v", launch.ThreadID, taskID, err)
+			log.Printf("triage: drain stranded background-terminal stash %s/%s: %v", launch.ThreadID, taskID, err)
 		}
 		if stashFound {
 			mergeStashIntoTerminalMeta(&meta, stash)
@@ -1454,9 +1455,9 @@ func completionPayload(itemID string, evt provider.ProviderEvent, meta toolCompl
 
 // taskIDFromItemMeta extracts the `task_id` field from a persisted
 // item's meta JSON. Returns "" when the meta is empty, malformed, or
-// missing the field. Used by orphan-recovery to key a synthesized
-// session_died stash by the same task_id the live wire path would
-// have produced.
+// missing the field. Used by startup recovery to key the synthetic
+// completion sibling by the same task_id the live wire path would have
+// produced.
 func taskIDFromItemMeta(metaJSON string) string {
 	if strings.TrimSpace(metaJSON) == "" {
 		return ""

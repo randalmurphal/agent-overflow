@@ -2124,11 +2124,11 @@ func TestHandleEventBackgroundTaskTerminal_DropsWhenNoLaunch(t *testing.T) {
 }
 
 // TestRecoverOrphanedBackgroundTasks pins the startup-recovery
-// contract: an orphaned background launch (running, no completion
-// sibling, no stash entry) gets a synthesized session_died stash plus
-// a `tool_completion` sibling so the tray clears and the chat row
-// shows `killed`. Re-running the recovery is idempotent: the second
-// pass sees the now-existing sibling and skips the launch.
+// contract: a recoverable Claude background launch (running, no
+// completion sibling) gets a synthesized session_died `tool_completion`
+// sibling directly so the tray clears and the chat row shows `killed`.
+// Re-running the recovery is idempotent: the second pass sees the
+// now-existing sibling and skips the launch.
 func TestRecoverOrphanedBackgroundTasks(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -2228,9 +2228,9 @@ func TestRecoverOrphanedBackgroundTasks(t *testing.T) {
 // TestRecoverOrphanedBackgroundTasksSkipsLaunchWithoutTaskID pins the
 // edge case for launches that never received their task_started meta
 // merge before the previous app instance died. Without a task_id we
-// have no idempotency key for the stash, so the row is logged and
-// left alone — better than synthesising a stash keyed by the empty
-// string and corrupting the index.
+// have no idempotency key for the synthetic completion, so the store
+// excludes the row from startup recovery rather than letting triage
+// rediscover and log the same unrecoverable launch on every boot.
 func TestRecoverOrphanedBackgroundTasksSkipsLaunchWithoutTaskID(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -2264,7 +2264,7 @@ func TestRecoverOrphanedBackgroundTasksSkipsLaunchWithoutTaskID(t *testing.T) {
 // the fix, `ListLiveBackgroundTasks` hid stash-affected launches via
 // a NOT EXISTS predicate; that predicate was dropped so the tray
 // could pair the launch with the synthetic completion item. But the
-// orphan recovery sweep also skipped stash-affected launches, which
+// startup recovery sweep also skipped stash-affected launches, which
 // meant a stash row stranded from a prior app session would leave
 // its launch visible as "running" forever on next boot.
 //

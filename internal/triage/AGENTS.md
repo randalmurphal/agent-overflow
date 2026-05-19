@@ -127,11 +127,13 @@ Authoritative mental model:
     process was stopped — there's no "agent will observe later"
     phase to wait for.
   - **Crash recovery** — `Router.RecoverOrphanedBackgroundTasks`
-    runs once at app boot for launches whose owning provider session
-    did not survive the previous app instance. It writes the
-    `tool_completion` sibling directly (with `source="session_died"`
-    on the sibling's meta) without staging a stash row, so a crash
-    mid-sweep leaves the launch re-discoverable on the next boot.
+    runs once at app boot for recoverable Claude launches whose owning
+    provider session did not survive the previous app instance. A row is
+    recoverable only when it still has no completion sibling and carries
+    `items.meta.task_id`. It writes the `tool_completion` sibling
+    directly (with `source="session_died"` on the sibling's meta)
+    without staging a stash row, so a crash mid-sweep leaves the launch
+    re-discoverable on the next boot.
 - **Background-terminal projection (Codex only)** —
   `codex_background.go` tracks unifiedExec items as transient state and
   shows them in the running tray immediately. They only become

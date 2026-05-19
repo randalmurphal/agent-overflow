@@ -1625,6 +1625,66 @@ func TestListRunningBackgroundToolCallsEmptyThread(t *testing.T) {
 	}
 }
 
+func TestListRecoverableClaudeBackgroundLaunchesFiltersToRecoverableRows(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+
+	for _, thread := range []Thread{
+		{ID: "t-claude", ProjectID: defaultTestProjectID, Title: "Claude", Provider: "claude", WorkspacePath: "/tmp", CreatedAt: now, UpdatedAt: now},
+		{ID: "t-codex", ProjectID: defaultTestProjectID, Title: "Codex", Provider: "codex", WorkspacePath: "/tmp", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := s.CreateThread(thread); err != nil {
+			t.Fatalf("create thread %s: %v", thread.ID, err)
+		}
+	}
+
+	seed := func(item Item) {
+		item.TurnIndex = 1
+		item.Kind = "tool_call"
+		item.Role = "assistant"
+		item.Status = "running"
+		item.IsBackground = true
+		item.Summary = item.ID
+		if item.ToolName == "" {
+			item.ToolName = "Bash"
+		}
+		item.CreatedAt = now
+		item.UpdatedAt = now
+		if _, err := s.AppendItem(item); err != nil {
+			t.Fatalf("seed %s: %v", item.ID, err)
+		}
+	}
+
+	seed(Item{ID: "recoverable", ThreadID: "t-claude", Meta: `{"task_id":"task-recoverable"}`})
+	seed(Item{ID: "skip-no-task-id", ThreadID: "t-claude", Meta: `{}`})
+	seed(Item{ID: "skip-empty-task-id", ThreadID: "t-claude", Meta: `{"task_id":"   "}`})
+	seed(Item{ID: "skip-numeric-task-id", ThreadID: "t-claude", Meta: `{"task_id":123}`})
+	seed(Item{ID: "skip-object-task-id", ThreadID: "t-claude", Meta: `{"task_id":{"id":"task-object"}}`})
+	seed(Item{ID: "skip-inactive", ThreadID: "t-claude", Meta: `{"task_id":"task-inactive","live_background_active":false}`})
+	seed(Item{ID: "skip-codex", ThreadID: "t-codex", ToolName: "collab_agent", Meta: `{"task_id":"task-codex"}`})
+	seed(Item{ID: "skip-completed-sibling", ThreadID: "t-claude", Meta: `{"task_id":"task-settled"}`})
+
+	if _, err := s.AppendItem(Item{
+		ID: "skip-completed-sibling-done", ThreadID: "t-claude", TurnIndex: 2,
+		Kind: "tool_completion", Role: "assistant", Status: "completed",
+		IsBackground: true, CompletionOf: "skip-completed-sibling",
+		Summary: "done", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed completion sibling: %v", err)
+	}
+
+	got, err := s.ListRecoverableClaudeBackgroundLaunches()
+	if err != nil {
+		t.Fatalf("ListRecoverableClaudeBackgroundLaunches: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d rows, want 1: %+v", len(got), got)
+	}
+	if got[0].ID != "recoverable" {
+		t.Fatalf("got[0].ID = %q, want recoverable", got[0].ID)
+	}
+}
+
 // TestListTurnItemsSansPayloadSkipsPayloadJoin verifies the narrow
 // sibling of ListTurnItems returns items with PayloadKind / PayloadMeta
 // left empty even when payload rows exist — the caller explicitly
