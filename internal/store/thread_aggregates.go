@@ -92,13 +92,18 @@ func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, 
 // launches plus their completion siblings whose `created_at` is inside
 // the retention window.
 //
-// A background launch stays `status='running'` forever (spec invariant
-// — the sibling completion row carries the final state). The launch
-// and its completion must age out together: returning an orphan launch
-// whose completion was pruned would re-render it as "running"
+// A background process launch stays `status='running'` forever (spec
+// invariant — the sibling completion row carries the final state). The
+// launch and its completion must age out together: returning an orphan
+// launch whose completion was pruned would re-render it as "running"
 // indefinitely. A launch with no completion yet still surfaces unless
 // projection meta explicitly marks it inactive with
 // `live_background_active=false`.
+//
+// Codex subagents are different: the chat-history spawn card is completed
+// immediately while the child thread keeps running. App.ListLiveBackgroundTasks
+// adds those via Store.ListLiveCodexSubagentLaunches and projects the tray copy
+// as running without mutating the stored card.
 //
 // Thread-scoped. Live launches surface regardless of turn_index.
 // Ordering is (turn_index, item_index) so launches precede completions.

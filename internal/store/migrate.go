@@ -1347,6 +1347,24 @@ UPDATE turns
    );
 `,
 	},
+	{
+		Version: 47,
+		Name:    "items_live_codex_subagent_index",
+		// Codex spawn_agent rows are completed transcript cards while
+		// their child threads may continue running. The background tray
+		// and queue-boundary guard project those completed rows as live
+		// work, so keep the candidate scan off the generic thread index.
+		SQL: `
+CREATE INDEX IF NOT EXISTS idx_items_live_codex_subagent
+  ON items(thread_id, turn_index, item_index)
+  WHERE kind = 'tool_call'
+    AND status = 'completed'
+    AND tool_name = 'collab_agent'
+    AND is_background = 1
+    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
+    AND json_extract(meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent');
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

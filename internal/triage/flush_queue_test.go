@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/store"
 )
 
 // recordingDispatcher captures every dispatch call so tests can assert
@@ -55,6 +57,41 @@ func makeQueueItem(id, message string) QueuedFlushItem {
 		Message: message,
 		Payload: json.RawMessage(`{}`),
 	}
+}
+
+func seedCodexThreadWithLiveSubagent(t *testing.T, st *store.Store, threadID string) int64 {
+	t.Helper()
+	ensureTriageProject(t, st)
+	now := time.Now().UnixMilli()
+	if err := st.CreateThread(store.Thread{
+		ID:            threadID,
+		ProjectID:     triageTestProjectID,
+		Title:         "Codex",
+		Provider:      "codex",
+		WorkspacePath: "/tmp",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}); err != nil {
+		t.Fatalf("create Codex thread: %v", err)
+	}
+	if err := st.InsertItem(store.Item{
+		ID:           "spawn-active",
+		ThreadID:     threadID,
+		TurnIndex:    0,
+		ItemIndex:    0,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "completed",
+		Summary:      "spawn_agent",
+		IsBackground: true,
+		ToolName:     "collab_agent",
+		Meta:         `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-1"]}}`,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatalf("seed Codex subagent launch: %v", err)
+	}
+	return now
 }
 
 func TestRegisterQueueItem_AppendsInOrder(t *testing.T) {
@@ -284,6 +321,48 @@ func TestTryFlushQueue_NilDispatcher_DoesNotConsume(t *testing.T) {
 	// to receive the batch, so consuming would lose data.
 	if !router.HasQueuedFlushItems("t1") {
 		t.Errorf("queue drained despite nil dispatcher")
+	}
+}
+
+func TestMaybeFlushQueueAtBoundary_BlocksOnLiveCodexSubagent(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	seedCodexThreadWithLiveSubagent(t, st, "t-codex")
+
+	rec := &recordingDispatcher{}
+	router.SetFlushDispatcher(rec.dispatch)
+	router.RegisterQueueItem("t-codex", makeQueueItem("queue:0", "wait for subagent"))
+
+	if router.maybeFlushQueueAtBoundary("t-codex") {
+		t.Fatal("maybeFlushQueueAtBoundary flushed despite live Codex subagent")
+	}
+	if !router.HasQueuedFlushItems("t-codex") {
+		t.Fatal("queue should remain while Codex subagent is live")
+	}
+	if calls := rec.snapshot(); len(calls) != 0 {
+		t.Fatalf("dispatcher calls: got %+v, want none", calls)
+	}
+}
+
+func TestCleanupThread_MarksLiveCodexSubagentLaunchesInactive(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	seedCodexThreadWithLiveSubagent(t, st, "t-codex")
+
+	active, err := st.HasLiveCodexSubagentLaunch("t-codex")
+	if err != nil {
+		t.Fatalf("has live before cleanup: %v", err)
+	}
+	if !active {
+		t.Fatal("setup: expected live Codex subagent launch")
+	}
+
+	router.CleanupThread("t-codex")
+
+	active, err = st.HasLiveCodexSubagentLaunch("t-codex")
+	if err != nil {
+		t.Fatalf("has live after cleanup: %v", err)
+	}
+	if active {
+		t.Fatal("CleanupThread should mark Codex subagent launches inactive")
 	}
 }
 

@@ -685,6 +685,64 @@ func (s *Store) HasLiveBackgroundToolCall(threadID string) (bool, error) {
 	return exists != 0, nil
 }
 
+func (s *Store) HasLiveCodexSubagentLaunch(threadID string) (bool, error) {
+	var exists int
+	if err := s.db.QueryRow(
+		`SELECT EXISTS(
+		    SELECT 1 FROM items
+		    JOIN threads ON threads.id = items.thread_id
+		     WHERE items.thread_id = ?
+		       AND threads.provider = 'codex'
+		       AND items.kind = 'tool_call'
+		       AND items.status = 'completed'
+		       AND items.tool_name = 'collab_agent'
+		       AND items.is_background = 1
+		       AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
+		       AND json_extract(items.meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
+		       AND NOT EXISTS (
+		         SELECT 1 FROM items c
+		          WHERE c.thread_id = items.thread_id
+		            AND c.completion_of = items.id
+		       )
+		     LIMIT 1
+		)`,
+		threadID,
+	).Scan(&exists); err != nil {
+		return false, fmt.Errorf("store: has live Codex subagent launch for thread %s: %w", threadID, err)
+	}
+	return exists != 0, nil
+}
+
+func (s *Store) MarkLiveCodexSubagentLaunchesInactive(threadID string, updatedAt int64) (int64, error) {
+	result, err := s.db.Exec(
+		`UPDATE items
+		    SET meta = json_set(meta, '$.live_background_active', json('false')),
+		        updated_at = ?
+		  WHERE thread_id = ?
+		    AND kind = 'tool_call'
+		    AND status = 'completed'
+		    AND tool_name = 'collab_agent'
+		    AND is_background = 1
+		    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
+		    AND json_extract(meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
+		    AND NOT EXISTS (
+		      SELECT 1 FROM items c
+		       WHERE c.thread_id = items.thread_id
+		         AND c.completion_of = items.id
+		    )`,
+		updatedAt,
+		threadID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: mark live Codex subagent launches inactive for thread %s: %w", threadID, err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: count inactive Codex subagent launches for thread %s: %w", threadID, err)
+	}
+	return count, nil
+}
+
 func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item, bool, error) {
 	row := s.db.QueryRow(
 		`SELECT `+itemColumns+`
@@ -1108,6 +1166,48 @@ func (s *Store) ListIncompleteCodexSubagentLaunches(threadID string) ([]Item, er
 		it, err := scanItemRow(rows)
 		if err != nil {
 			return nil, fmt.Errorf("store: scan incomplete Codex subagent launch row: %w", err)
+		}
+		items = append(items, it)
+	}
+	return items, rows.Err()
+}
+
+// ListLiveCodexSubagentLaunches returns Codex spawn_agent cards whose child
+// threads are still active. The persisted spawn card is completed on the
+// upstream wire; callers that render a "live work" surface should project the
+// returned copy as running instead of changing the stored timeline row.
+func (s *Store) ListLiveCodexSubagentLaunches(threadID string) ([]Item, error) {
+	rows, err := s.db.Query(
+		`SELECT `+itemColumns+`
+		   FROM items
+		   JOIN threads ON threads.id = items.thread_id
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.thread_id = ?
+		    AND threads.provider = 'codex'
+		    AND items.kind = 'tool_call'
+		    AND items.status = 'completed'
+		    AND items.tool_name = 'collab_agent'
+		    AND items.is_background = 1
+		    AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
+		    AND json_extract(items.meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
+		    AND NOT EXISTS (
+		      SELECT 1 FROM items c
+		       WHERE c.thread_id = items.thread_id
+		         AND c.completion_of = items.id
+		    )
+		  ORDER BY items.turn_index, items.item_index`,
+		threadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list live Codex subagent launches for thread %s: %w", threadID, err)
+	}
+	defer rows.Close()
+
+	var items []Item
+	for rows.Next() {
+		it, err := scanItemRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan live Codex subagent launch row: %w", err)
 		}
 		items = append(items, it)
 	}

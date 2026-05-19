@@ -282,6 +282,13 @@ func (r *Router) hasQueueBlockingWork(threadID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if active {
+		return true, nil
+	}
+	active, err = r.store.HasLiveCodexSubagentLaunch(threadID)
+	if err != nil {
+		return false, err
+	}
 	return active, nil
 }
 

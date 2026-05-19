@@ -1023,8 +1023,9 @@ func (r *Router) WaitForPendingSettles() {
 // or after StopSession unwinds — and is idempotent in either order
 // thanks to claimTurnSettlement.
 func (r *Router) CleanupThread(threadID string) {
+	cleanupAt := time.Now().UnixMilli()
 	if _, ok := r.openTurnIndex(threadID); ok {
-		if err := r.synthesizeTruncatedTurnComplete(threadID, time.Now().UnixMilli()); err != nil {
+		if err := r.synthesizeTruncatedTurnComplete(threadID, cleanupAt); err != nil {
 			log.Printf("triage: synthesize turn-complete on cleanup for thread %s: %v", threadID, err)
 		}
 	}
@@ -1116,6 +1117,14 @@ func (r *Router) CleanupThread(threadID string) {
 		// Closing outside the lock avoids self-deadlock when the tracer's
 		// OnEnd hook reaches for any shared resource.
 		orphanSpan.End()
+	}
+	if r.store != nil {
+		count, err := r.store.MarkLiveCodexSubagentLaunchesInactive(threadID, cleanupAt)
+		if err != nil {
+			log.Printf("triage: cleanup live Codex subagent launches for thread %s: %v", threadID, err)
+		} else if count > 0 {
+			r.emitCodexBackgroundTasksChanged(threadID)
+		}
 	}
 }
 

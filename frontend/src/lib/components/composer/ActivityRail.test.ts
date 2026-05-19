@@ -427,6 +427,43 @@ describe('<ActivityRail>', () => {
     expect(claudeCalls).toBe(0);
   });
 
+  it('shows active Codex subagents in Background without stop controls', async () => {
+    const spawn = backgroundLaunch({
+      id: 'spawn-agent',
+      summary: 'spawn_agent: worker',
+      toolName: 'collab_agent',
+      payloadKind: undefined,
+      payloadId: undefined,
+      payloadMeta: '',
+      meta: JSON.stringify({
+        input: {
+          tool: 'spawn_agent',
+          receiverThreadIds: ['child-1'],
+          newAgentNickname: 'worker',
+        },
+      }),
+    });
+    setBindingMock('ListLiveBackgroundTasks', async () => [spawn]);
+    let codexCalls = 0;
+    setBindingMock('CleanCodexBackgroundTerminals', async () => { codexCalls++; });
+
+    const pane = await buildPane(makeThread({ provider: 'codex' }));
+    const { findByTestId, queryByTestId } = render(ActivityRail, { props: { pane } });
+    await tick();
+    await tick();
+
+    expect(await findByTestId('activity-rail-background-toggle')).toBeInTheDocument();
+    expect((await findByTestId('activity-rail-background-count')).textContent?.trim()).toBe('1');
+
+    await fireEvent.click(await findByTestId('activity-rail-background-toggle'));
+    await tick();
+
+    expect(await findByTestId('background-task-tray-row')).toBeInTheDocument();
+    expect(queryByTestId('activity-rail-background-stop-all')).toBeNull();
+    expect(queryByTestId('background-task-tray-row-stop')).toBeNull();
+    expect(codexCalls).toBe(0);
+  });
+
   it('upserts that are neither background nor a completion do not re-fetch the tray', async () => {
     let fetches = 0;
     const launch = backgroundLaunch();

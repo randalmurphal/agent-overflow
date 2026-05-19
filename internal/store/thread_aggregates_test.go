@@ -114,7 +114,6 @@ func TestEnsureProposedPlanStateWithParentUsesExplicitRevisionSource(t *testing.
 	}
 }
 
-
 func TestListThreadProposedPlans_ExcludesUserAuthored(t *testing.T) {
 	// Regression guard for the `role = 'assistant'` filter: a
 	// user-authored item whose payload.kind happens to be
@@ -249,6 +248,180 @@ func TestListLiveBackgroundTasks_ExcludesInactiveCodexSubagent(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("inactive Codex subagent should be excluded, got %+v", got)
+	}
+}
+
+func TestListLiveCodexSubagentLaunches_ReturnsCompletedActiveSpawn(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "codex")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	activeMeta := `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-1"],"agentsStates":{"child-1":{"status":"running"}}}}`
+	if err := s.InsertItem(Item{
+		ID:           "spawn-active",
+		ThreadID:     "t",
+		TurnIndex:    0,
+		ItemIndex:    0,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "completed",
+		Summary:      "spawn_agent",
+		IsBackground: true,
+		ToolName:     "collab_agent",
+		Meta:         activeMeta,
+		CreatedAt:    1000,
+	}); err != nil {
+		t.Fatalf("seed active spawn: %v", err)
+	}
+
+	got, err := s.ListLiveCodexSubagentLaunches("t")
+	if err != nil {
+		t.Fatalf("list launches: %v", err)
+	}
+	if !equalStringSlice(collectIDs(got), []string{"spawn-active"}) {
+		t.Fatalf("ids: got %v, want [spawn-active]", collectIDs(got))
+	}
+	if got[0].Status != "completed" {
+		t.Fatalf("stored status projection leaked into store query: got %q, want completed", got[0].Status)
+	}
+	if active, err := s.HasLiveCodexSubagentLaunch("t"); err != nil {
+		t.Fatalf("has live Codex subagent launch: %v", err)
+	} else if !active {
+		t.Fatal("HasLiveCodexSubagentLaunch = false, want true")
+	}
+}
+
+func TestListLiveCodexSubagentLaunches_ExcludesInactiveAndCompleted(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "codex")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := s.CreateThread(makeThread("claude-thread", "claude")); err != nil {
+		t.Fatalf("create Claude thread: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID:           "spawn-inactive",
+		ThreadID:     "t",
+		TurnIndex:    0,
+		ItemIndex:    0,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "completed",
+		Summary:      "spawn_agent inactive",
+		IsBackground: true,
+		ToolName:     "collab_agent",
+		Meta:         `{"live_background_active":false,"input":{"tool":"spawn_agent","receiverThreadIds":["child-1"]}}`,
+		CreatedAt:    1000,
+	}); err != nil {
+		t.Fatalf("seed inactive spawn: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID:           "spawn-with-completion",
+		ThreadID:     "t",
+		TurnIndex:    0,
+		ItemIndex:    1,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "completed",
+		Summary:      "spawn_agent completed",
+		IsBackground: true,
+		ToolName:     "collab_agent",
+		Meta:         `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-2"]}}`,
+		CreatedAt:    1001,
+	}); err != nil {
+		t.Fatalf("seed completed spawn: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID:           "spawn-completion",
+		ThreadID:     "t",
+		TurnIndex:    0,
+		ItemIndex:    2,
+		Kind:         "tool_completion",
+		Role:         "assistant",
+		Status:       "completed",
+		Summary:      "spawn_agent done",
+		IsBackground: true,
+		CompletionOf: "spawn-with-completion",
+		CreatedAt:    1002,
+	}); err != nil {
+		t.Fatalf("seed completion: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID:           "spawn-running",
+		ThreadID:     "t",
+		TurnIndex:    0,
+		ItemIndex:    3,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "running",
+		Summary:      "spawn_agent running",
+		IsBackground: true,
+		ToolName:     "collab_agent",
+		Meta:         `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-3"]}}`,
+		CreatedAt:    1003,
+	}); err != nil {
+		t.Fatalf("seed running spawn: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID:           "send-input",
+		ThreadID:     "t",
+		TurnIndex:    0,
+		ItemIndex:    4,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "completed",
+		Summary:      "send_input",
+		IsBackground: true,
+		ToolName:     "collab_agent",
+		Meta:         `{"input":{"tool":"send_input","receiverThreadIds":["child-4"]}}`,
+		CreatedAt:    1004,
+	}); err != nil {
+		t.Fatalf("seed non-spawn collab item: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID:           "claude-spawn-shaped",
+		ThreadID:     "claude-thread",
+		TurnIndex:    0,
+		ItemIndex:    0,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "completed",
+		Summary:      "spawn_agent on Claude thread",
+		IsBackground: true,
+		ToolName:     "collab_agent",
+		Meta:         `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-5"]}}`,
+		CreatedAt:    1005,
+	}); err != nil {
+		t.Fatalf("seed Claude spawn-shaped item: %v", err)
+	}
+
+	got, err := s.ListLiveCodexSubagentLaunches("t")
+	if err != nil {
+		t.Fatalf("list launches: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %v, want no live Codex subagent launches", collectIDs(got))
+	}
+	if active, err := s.HasLiveCodexSubagentLaunch("t"); err != nil {
+		t.Fatalf("has live Codex subagent launch: %v", err)
+	} else if active {
+		t.Fatal("HasLiveCodexSubagentLaunch = true, want false")
+	}
+
+	running, err := s.ListLiveBackgroundTasks("t", 2000)
+	if err != nil {
+		t.Fatalf("list ordinary live background tasks: %v", err)
+	}
+	if !equalStringSlice(collectIDs(running), []string{"spawn-running"}) {
+		t.Fatalf("ordinary live background ids: got %v, want [spawn-running]", collectIDs(running))
+	}
+
+	claudeGot, err := s.ListLiveCodexSubagentLaunches("claude-thread")
+	if err != nil {
+		t.Fatalf("list Claude spawn-shaped items: %v", err)
+	}
+	if len(claudeGot) != 0 {
+		t.Fatalf("Claude spawn-shaped row should not project as Codex live work, got %v", collectIDs(claudeGot))
 	}
 }
 
@@ -502,4 +675,3 @@ func TestListLiveBackgroundTasks_IncludesRunningFromAnyTurn(t *testing.T) {
 		t.Errorf("expected ancient-run regardless of turn depth, got %v", collectIDs(got))
 	}
 }
-

@@ -353,6 +353,65 @@ func TestListLiveBackgroundTasks_RetentionCutoffUsesWallClock(t *testing.T) {
 	}
 }
 
+func TestListLiveBackgroundTasks_ProjectsActiveCodexSubagentAsRunning(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "codex", "/tmp/w-codex-subagent", "gpt-5.3-codex", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "t0",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: 0,
+	}); err != nil {
+		t.Fatalf("insert turn: %v", err)
+	}
+	if err := app.store.InsertItem(store.Item{
+		ID:           "spawn-active",
+		ThreadID:     thread.ID,
+		TurnIndex:    0,
+		ItemIndex:    0,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "completed",
+		Summary:      "spawn_agent",
+		IsBackground: true,
+		ToolName:     "collab_agent",
+		Meta:         `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-1"],"agentsStates":{"child-1":{"status":"running"}}}}`,
+		CreatedAt:    1000,
+		UpdatedAt:    1000,
+	}); err != nil {
+		t.Fatalf("seed spawn: %v", err)
+	}
+
+	tasks, err := app.ListLiveBackgroundTasks(thread.ID)
+	if err != nil {
+		t.Fatalf("ListLiveBackgroundTasks: %v", err)
+	}
+	var projected *store.Item
+	for i := range tasks {
+		if tasks[i].ID == "spawn-active" {
+			projected = &tasks[i]
+			break
+		}
+	}
+	if projected == nil {
+		t.Fatalf("projected Codex subagent missing from live tasks: %+v", tasks)
+	}
+	if projected.Status != "running" {
+		t.Fatalf("projected status = %q, want running", projected.Status)
+	}
+
+	stored, found, err := app.store.GetThreadItem(thread.ID, "spawn-active")
+	if err != nil || !found {
+		t.Fatalf("GetThreadItem: found=%v err=%v", found, err)
+	}
+	if stored.Status != "completed" {
+		t.Fatalf("stored status = %q, want completed", stored.Status)
+	}
+}
+
 func TestGetThreadItem_ReturnsZeroValueForMissingItem(t *testing.T) {
 	// Binding contract: missing item returns `Item{}` (empty id),
 	// not an error. Frontend distinguishes via `item.id !== ''`.

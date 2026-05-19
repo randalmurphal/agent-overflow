@@ -2569,6 +2569,59 @@ func TestMigrationV46SettlesObsoleteInflightTurns(t *testing.T) {
 	}
 }
 
+func TestMigrationV47AddsLiveCodexSubagentIndex(t *testing.T) {
+	s := newTestStore(t)
+
+	var sqlText string
+	if err := s.db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE name = 'idx_items_live_codex_subagent'`,
+	).Scan(&sqlText); err != nil {
+		t.Fatalf("read idx_items_live_codex_subagent sql: %v", err)
+	}
+	for _, want := range []string{
+		"status = 'completed'",
+		"tool_name = 'collab_agent'",
+		"live_background_active",
+		"$.input.tool",
+		"spawn_agent",
+		"spawnAgent",
+	} {
+		if !strings.Contains(sqlText, want) {
+			t.Fatalf("idx_items_live_codex_subagent missing %q in SQL: %s", want, sqlText)
+		}
+	}
+
+	rows, err := s.db.Query(
+		`EXPLAIN QUERY PLAN
+		 SELECT id FROM items
+		  WHERE thread_id = ?
+		    AND kind = 'tool_call'
+		    AND status = 'completed'
+		    AND tool_name = 'collab_agent'
+		    AND is_background = 1
+		    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
+		    AND json_extract(meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')`,
+		"t",
+	)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, notused sql.NullInt64
+		var detail string
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatalf("scan plan: %v", err)
+		}
+		plan.WriteString(detail)
+		plan.WriteString("\n")
+	}
+	if !strings.Contains(plan.String(), "idx_items_live_codex_subagent") {
+		t.Errorf("query plan did not use idx_items_live_codex_subagent: %s", plan.String())
+	}
+}
+
 func findMigration(t *testing.T, version int) Migration {
 	t.Helper()
 	for _, m := range migrations {

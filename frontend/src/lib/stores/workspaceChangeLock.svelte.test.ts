@@ -108,6 +108,32 @@ describe('createWorkspaceChangeLockState', () => {
     });
   });
 
+  it('counts projected running Codex subagent launches as blocking', async () => {
+    setBindingMock('ListLiveBackgroundTasks', async () => [
+      backgroundLaunch({
+        id: 'spawn-agent',
+        status: 'running',
+        toolName: 'collab_agent',
+        meta: JSON.stringify({
+          input: {
+            tool: 'spawn_agent',
+            receiverThreadIds: ['child-1'],
+          },
+        }),
+      }),
+    ]);
+    const pane = await buildPane(makeThread({ provider: 'codex' }));
+
+    const { getByTestId } = render(Harness, { props: { pane } });
+    const state = getByTestId('workspace-change-lock');
+
+    await waitFor(() => {
+      expect(state).toHaveAttribute('data-locked', 'true');
+      expect(state).toHaveAttribute('data-running-background-count', '1');
+      expect(state.getAttribute('data-reason') ?? '').toMatch(/background tasks/);
+    });
+  });
+
   it('does not count completed background launch pairs as blocking', async () => {
     setBindingMock('ListLiveBackgroundTasks', async () => [
       backgroundLaunch({ id: 'bg-1' }),

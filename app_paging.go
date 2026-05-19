@@ -138,16 +138,26 @@ func (a *App) ListThreadProposedPlans(threadID string) ([]store.Item, error) {
 // ListLiveBackgroundTasks returns running launches plus their
 // recently-completed siblings (within the tray retention window) so the
 // BackgroundTaskTray can render without scanning `pane.items`. SQLite
-// rows cover persisted Claude / Codex subagent launches; the triage
-// router appends transient Codex unified-exec tasks that intentionally
-// do not exist in chat history. Pending Codex unifiedExec launches
-// surface here before they are known to be backgrounded.
+// rows cover persisted Claude launches and Codex subagent launches; the
+// latter are projected as running tray rows while the chat-history spawn
+// card remains completed. The triage router appends transient Codex
+// unified-exec tasks that intentionally do not exist in chat history.
+// Pending Codex unifiedExec launches surface here before they are known
+// to be backgrounded.
 func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 	now := time.Now().UnixMilli()
 	cutoff := now - backgroundTaskRetentionMillis
 	items, err := a.store.ListLiveBackgroundTasks(threadID, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("list live background tasks: %w", err)
+	}
+	codexSubagents, err := a.store.ListLiveCodexSubagentLaunches(threadID)
+	if err != nil {
+		return nil, fmt.Errorf("list live Codex subagent launches: %w", err)
+	}
+	for _, item := range codexSubagents {
+		item.Status = "running"
+		items = append(items, item)
 	}
 	if a.triage != nil {
 		items = append(items, a.triage.ListLiveCodexBackgroundTasks(threadID, now, cutoff)...)
@@ -173,4 +183,3 @@ func (a *App) GetThreadItem(threadID, itemID string) (store.Item, error) {
 	}
 	return item, nil
 }
-
