@@ -2238,6 +2238,78 @@ func TestCodexBackgroundProjectorCleanupDropsLiveState(t *testing.T) {
 	}
 }
 
+func TestCodexUnifiedExecSubagentCommandDoesNotEnterMainBackgroundTray(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	parent := store.Item{
+		ID:        "spawn-agent",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      itemKindToolCall,
+		Role:      "assistant",
+		Status:    statusCompleted,
+		Summary:   "spawn_agent",
+		ToolName:  "collab_agent",
+		Meta:      `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-1"]}}`,
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}
+	if err := st.InsertItem(parent); err != nil {
+		t.Fatalf("seed spawn parent: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:            provider.EventToolStart,
+		ThreadID:        "t1",
+		ItemID:          "child-cmd",
+		ItemType:        "commandExecution",
+		TurnID:          "turn-0",
+		ParentToolUseID: "spawn-agent",
+		Meta:            buildUnifiedExecStartMeta(t, "pid-child", "sleep 60"),
+		Timestamp:       time.Now(),
+	}); err != nil {
+		t.Fatalf("child command start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "parent continues",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("text delta: %v", err)
+	}
+
+	live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
+	if len(live) != 0 {
+		t.Fatalf("subagent command leaked into main tray: %+v", live)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:            provider.EventToolComplete,
+		ThreadID:        "t1",
+		ItemID:          "child-cmd",
+		ItemType:        "commandExecution",
+		TurnID:          "turn-0",
+		ParentToolUseID: "spawn-agent",
+		Content:         "done\n",
+		Meta:            buildUnifiedExecCompleteMeta(t, "completed", "pid-child", "sleep 60", 0),
+		Timestamp:       time.Now(),
+	}); err != nil {
+		t.Fatalf("child command complete: %v", err)
+	}
+
+	item, found, err := st.GetThreadItem("t1", "child-cmd")
+	if err != nil || !found {
+		t.Fatalf("child command persisted: found=%v err=%v", found, err)
+	}
+	if item.ParentID != "spawn-agent" {
+		t.Fatalf("child command parent_id = %q, want spawn-agent", item.ParentID)
+	}
+}
+
 func countEvents(emissions []emitted, name string) int {
 	count := 0
 	for _, e := range emissions {

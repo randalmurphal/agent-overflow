@@ -561,6 +561,136 @@ func TestListLiveBackgroundTasks_CrossThreadIsolation(t *testing.T) {
 	}
 }
 
+func TestListLiveBackgroundTasks_ExcludesSubagentScopedBackgroundRows(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	parent := Item{
+		ID:        "spawn-parent",
+		ThreadID:  "t",
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "running",
+		Summary:   "Agent",
+		ToolName:  "Agent",
+		CreatedAt: 100,
+		UpdatedAt: 100,
+	}
+	if err := s.InsertItem(parent); err != nil {
+		t.Fatalf("seed parent: %v", err)
+	}
+	scopedLaunch := Item{
+		ID:           "child-bash",
+		ThreadID:     "t",
+		TurnIndex:    0,
+		ItemIndex:    1,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "running",
+		Summary:      "Bash: sleep 60",
+		ParentID:     "spawn-parent",
+		IsBackground: true,
+		ToolName:     "Bash",
+		CreatedAt:    200,
+		UpdatedAt:    200,
+	}
+	if err := s.InsertItem(scopedLaunch); err != nil {
+		t.Fatalf("seed scoped launch: %v", err)
+	}
+	scopedCompletion := Item{
+		ID:           "child-bash-done",
+		ThreadID:     "t",
+		TurnIndex:    0,
+		ItemIndex:    2,
+		Kind:         "tool_completion",
+		Role:         "assistant",
+		Status:       "completed",
+		Summary:      "Bash: sleep 60 -> done",
+		ParentID:     "spawn-parent",
+		IsBackground: true,
+		CompletionOf: "child-bash",
+		ToolName:     "Bash",
+		CreatedAt:    5000,
+		UpdatedAt:    5000,
+	}
+	if err := s.InsertItem(scopedCompletion); err != nil {
+		t.Fatalf("seed scoped completion: %v", err)
+	}
+
+	seedBackgroundItem(t, s, "t", "top-level-bash", 0, 3, "running", "", 300)
+
+	got, err := s.ListLiveBackgroundTasks("t", 4000)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if !equalStringSlice(collectIDs(got), []string{"top-level-bash"}) {
+		t.Fatalf("ids: got %v, want [top-level-bash]", collectIDs(got))
+	}
+}
+
+func TestHasLiveBackgroundToolCall_ExcludesSubagentScopedBackgroundRows(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	parent := Item{
+		ID:        "spawn-parent",
+		ThreadID:  "t",
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "running",
+		Summary:   "Agent",
+		ToolName:  "Agent",
+		CreatedAt: 100,
+		UpdatedAt: 100,
+	}
+	if err := s.InsertItem(parent); err != nil {
+		t.Fatalf("seed parent: %v", err)
+	}
+	scopedLaunch := Item{
+		ID:           "child-bash",
+		ThreadID:     "t",
+		TurnIndex:    0,
+		ItemIndex:    1,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "running",
+		Summary:      "Bash: sleep 60",
+		ParentID:     "spawn-parent",
+		IsBackground: true,
+		ToolName:     "Bash",
+		CreatedAt:    200,
+		UpdatedAt:    200,
+	}
+	if err := s.InsertItem(scopedLaunch); err != nil {
+		t.Fatalf("seed scoped launch: %v", err)
+	}
+
+	active, err := s.HasLiveBackgroundToolCall("t")
+	if err != nil {
+		t.Fatalf("has live background: %v", err)
+	}
+	if active {
+		t.Fatal("subagent-scoped background row should not block the top-level queue")
+	}
+
+	seedBackgroundItem(t, s, "t", "top-level-bash", 0, 2, "running", "", 300)
+	active, err = s.HasLiveBackgroundToolCall("t")
+	if err != nil {
+		t.Fatalf("has live background after top-level seed: %v", err)
+	}
+	if !active {
+		t.Fatal("top-level background row should block the queue")
+	}
+}
+
 // TestListLiveBackgroundTasks_ErroredCompletionKeepsPairVisible pins
 // that a completion with status='errored' (or any non-'completed'
 // terminal state) still gates launch visibility via its createdAt.

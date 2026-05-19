@@ -1365,6 +1365,22 @@ CREATE INDEX IF NOT EXISTS idx_items_live_codex_subagent
     AND json_extract(meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent');
 `,
 	},
+	{
+		Version: 48,
+		Name:    "top_level_live_background_index",
+		// The composer background tray is a top-level activity surface.
+		// Background work scoped under a subagent parent remains in the
+		// transcript group, but should not pollute the main tray.
+		SQL: `
+DROP INDEX IF EXISTS idx_items_live_background;
+CREATE INDEX idx_items_live_background
+    ON items(thread_id, id)
+ WHERE is_background = 1
+   AND status = 'running'
+   AND parent_id = ''
+   AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0;
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

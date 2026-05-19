@@ -665,6 +665,7 @@ func (s *Store) HasLiveBackgroundToolCall(threadID string) (bool, error) {
 		       AND kind = 'tool_call'
 		       AND status = 'running'
 		       AND is_background = 1
+		       AND parent_id = ''
 		       AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
 		       AND NOT EXISTS (
 		         SELECT 1 FROM pending_background_task_terminals p

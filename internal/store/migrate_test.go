@@ -1761,24 +1761,20 @@ func TestMigrationV26AddsTurnCompletionIndex(t *testing.T) {
 	}
 }
 
-// TestMigrationV21AddsLiveBackgroundIndex pins the partial covering
+// TestLiveBackgroundIndexMatchesTrayLaunchPredicate pins the partial covering
 // index for the BackgroundTaskTray query. The index is both shape-
 // asserted (partial WHERE predicate stays aligned with the SQL's
 // launch-branch filter) and usage-asserted via EXPLAIN — a future
 // refactor that widens the WHERE, or a query-shape drift that stops
 // using it, regresses this test instead of silently degrading to a
 // full thread scan.
-func TestMigrationV21AddsLiveBackgroundIndex(t *testing.T) {
+func TestLiveBackgroundIndexMatchesTrayLaunchPredicate(t *testing.T) {
 	s := newTestStore(t)
 
-	var sqlText string
-	if err := s.db.QueryRow(
-		`SELECT sql FROM sqlite_master WHERE name = 'idx_items_live_background'`,
-	).Scan(&sqlText); err != nil {
-		t.Fatalf("read idx_items_live_background sql: %v", err)
-	}
+	sqlText := readIndexSQL(t, s.db, "idx_items_live_background")
 	if !strings.Contains(sqlText, "is_background = 1") ||
 		!strings.Contains(sqlText, "status = 'running'") ||
+		!strings.Contains(sqlText, "parent_id = ''") ||
 		!strings.Contains(sqlText, "live_background_active") {
 		t.Errorf("expected partial predicate on active running background rows, got: %s", sqlText)
 	}
@@ -1787,12 +1783,30 @@ func TestMigrationV21AddsLiveBackgroundIndex(t *testing.T) {
 	// (thread_id, is_background=1, status='running'). EXPLAIN must
 	// show the planner consults idx_items_live_background — a regression
 	// here lands the query back on the generic idx_items_thread scan.
-	rows, err := s.db.Query(
+	assertLiveBackgroundIndexUsed(t, s.db)
+}
+
+func readIndexSQL(t *testing.T, db *sql.DB, indexName string) string {
+	t.Helper()
+	var sqlText string
+	if err := db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE name = ?`,
+		indexName,
+	).Scan(&sqlText); err != nil {
+		t.Fatalf("read %s sql: %v", indexName, err)
+	}
+	return sqlText
+}
+
+func assertLiveBackgroundIndexUsed(t *testing.T, db *sql.DB) {
+	t.Helper()
+	rows, err := db.Query(
 		`EXPLAIN QUERY PLAN
 		 SELECT id FROM items
 		  WHERE thread_id = ?
 		    AND is_background = 1
 		    AND status = 'running'
+		    AND parent_id = ''
 		    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0`,
 		"t",
 	)
@@ -1813,6 +1827,39 @@ func TestMigrationV21AddsLiveBackgroundIndex(t *testing.T) {
 	if !strings.Contains(plan.String(), "idx_items_live_background") {
 		t.Errorf("query plan did not use idx_items_live_background: %s", plan.String())
 	}
+}
+
+func TestMigrationV48NarrowsLiveBackgroundIndexToTopLevelRows(t *testing.T) {
+	db := openSQLiteDB(t)
+	if err := configureDatabase(db); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if err := ensureMigrationTable(db); err != nil {
+		t.Fatalf("ensure migration table: %v", err)
+	}
+	for _, m := range migrations {
+		if m.Version >= 48 {
+			break
+		}
+		if err := applyMigration(db, m); err != nil {
+			t.Fatalf("apply v%d: %v", m.Version, err)
+		}
+	}
+
+	oldSQL := readIndexSQL(t, db, "idx_items_live_background")
+	if strings.Contains(oldSQL, "parent_id = ''") {
+		t.Fatalf("pre-v48 index already has top-level predicate: %s", oldSQL)
+	}
+
+	if err := applyMigration(db, findMigration(t, 48)); err != nil {
+		t.Fatalf("apply v48: %v", err)
+	}
+
+	sqlText := readIndexSQL(t, db, "idx_items_live_background")
+	if !strings.Contains(sqlText, "parent_id = ''") {
+		t.Fatalf("v48 index missing top-level predicate: %s", sqlText)
+	}
+	assertLiveBackgroundIndexUsed(t, db)
 }
 
 // TestMigrationV22AddsKilledStatus pins the Phase 1 contract for

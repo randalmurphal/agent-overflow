@@ -1027,6 +1027,9 @@ func (r *Router) ListLiveCodexBackgroundTasks(threadID string, _ int64, _ int64)
 
 	items := make([]store.Item, 0, len(trackers))
 	for _, tracker := range trackers {
+		if strings.TrimSpace(tracker.parentID) != "" {
+			continue
+		}
 		launch := store.Item{
 			ID:           tracker.launchID,
 			ThreadID:     threadID,

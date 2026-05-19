@@ -117,6 +117,7 @@ func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis i
 		      (
 		        items.is_background = 1
 		        AND items.status = 'running'
+		        AND items.parent_id = ''
 		        AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
 		        AND (
 		          NOT EXISTS (
@@ -137,7 +138,7 @@ func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis i
 		        AND items.created_at >= ?
 		        AND items.completion_of IN (
 		          SELECT id FROM items
-		           WHERE thread_id = ? AND is_background = 1
+		           WHERE thread_id = ? AND is_background = 1 AND parent_id = ''
 		        )
 		      )
 		    )
