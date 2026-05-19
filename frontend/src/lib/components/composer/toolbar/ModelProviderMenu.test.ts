@@ -195,7 +195,7 @@ describe('<ModelProviderMenu>', () => {
     );
   });
 
-  it('calls UpdateThreadProvider + UpdateThreadModel when switching providers', async () => {
+  it('calls UpdateThreadModelSelection when switching providers', async () => {
     const pane = await buildPane(
       makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),
     );
@@ -205,10 +205,8 @@ describe('<ModelProviderMenu>', () => {
       }
       return [];
     });
-    const providerUpdate = makeThread({ provider: 'codex', model: 'claude-sonnet-4-6' });
     const modelUpdate = makeThread({ provider: 'codex', model: 'gpt-5.4' });
-    setBindingMock('UpdateThreadProvider', async () => providerUpdate);
-    setBindingMock('UpdateThreadModel', async () => modelUpdate);
+    setBindingMock('UpdateThreadModelSelection', async () => modelUpdate);
 
     const { getByTestId, findByRole } = render(ModelProviderMenu, { props: { pane } });
     await fireEvent.click(getByTestId('composer-model-menu-trigger'));
@@ -222,14 +220,13 @@ describe('<ModelProviderMenu>', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(getBindingMock('UpdateThreadProvider')!.mock.calls[0]).toEqual([
+    expect(getBindingMock('UpdateThreadModelSelection')!.mock.calls[0]).toEqual([
       'thread-1',
       'codex',
-    ]);
-    expect(getBindingMock('UpdateThreadModel')!.mock.calls[0]).toEqual([
-      'thread-1',
       'gpt-5.4',
     ]);
+    expect(getBindingMock('UpdateThreadProvider')?.mock.calls.length ?? 0).toBe(0);
+    expect(getBindingMock('UpdateThreadModel')?.mock.calls.length ?? 0).toBe(0);
   });
 
   // Regression: Escape inside a nested submenu must close ONLY the
@@ -293,11 +290,7 @@ describe('<ModelProviderMenu>', () => {
       return [];
     });
     setBindingMock(
-      'UpdateThreadProvider',
-      async () => makeThread({ provider: 'codex', model: 'claude-sonnet-4-6' }),
-    );
-    setBindingMock(
-      'UpdateThreadModel',
+      'UpdateThreadModelSelection',
       async () => makeThread({ provider: 'codex', model: 'gpt-5.4' }),
     );
 
@@ -321,11 +314,13 @@ describe('<ModelProviderMenu>', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(getBindingMock('UpdateThreadProvider')!.mock.calls.length).toBe(1);
-    expect(getBindingMock('UpdateThreadModel')!.mock.calls[0]).toEqual([
+    expect(getBindingMock('UpdateThreadModelSelection')!.mock.calls[0]).toEqual([
       'thread-1',
+      'codex',
       'gpt-5.4',
     ]);
+    expect(getBindingMock('UpdateThreadProvider')?.mock.calls.length ?? 0).toBe(0);
+    expect(getBindingMock('UpdateThreadModel')?.mock.calls.length ?? 0).toBe(0);
   });
 
   // Provider lock: once a thread has been used (any item persisted), the

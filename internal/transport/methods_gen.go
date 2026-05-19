@@ -191,6 +191,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "UpdateThreadFastMode", ID: 4175109385}, // main.App.UpdateThreadFastMode
 	{Name: "UpdateThreadMode", ID: 3609479719}, // main.App.UpdateThreadMode
 	{Name: "UpdateThreadModel", ID: 4179686417}, // main.App.UpdateThreadModel
+	{Name: "UpdateThreadModelSelection", ID: 3140398729}, // main.App.UpdateThreadModelSelection
 	{Name: "UpdateThreadProvider", ID: 665741969}, // main.App.UpdateThreadProvider
 	{Name: "UpdateThreadReasoningEffort", ID: 892204206}, // main.App.UpdateThreadReasoningEffort
 	{Name: "UpdateThreadRuntimeMode", ID: 325190827}, // main.App.UpdateThreadRuntimeMode

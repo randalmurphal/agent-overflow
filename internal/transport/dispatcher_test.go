@@ -668,6 +668,7 @@ func (p *privilegedApp) StartDiscussionByID() string            { return "ok" }
 func (p *privilegedApp) UpdateThreadMode() string               { return "ok" }
 func (p *privilegedApp) UpdateThreadProvider() string           { return "ok" }
 func (p *privilegedApp) UpdateThreadModel() string              { return "ok" }
+func (p *privilegedApp) UpdateThreadModelSelection() string     { return "ok" }
 func (p *privilegedApp) UpdateThreadReasoningEffort() string    { return "ok" }
 func (p *privilegedApp) UpdateThreadFastMode() string           { return "ok" }
 func (p *privilegedApp) UpdateThreadContextWindow() string      { return "ok" }
@@ -676,7 +677,7 @@ func (p *privilegedApp) UpdateThreadRuntimeMode() string        { return "ok" }
 func (p *privilegedApp) UpdateThreadBranch() string             { return "ok" }
 func (p *privilegedApp) UpdateThreadWorkspace() string          { return "ok" }
 func (p *privilegedApp) InterruptTurn() string                  { return "ok" }
-func (p *privilegedApp) InterruptAndRevertIfClean() string       { return "ok" }
+func (p *privilegedApp) InterruptAndRevertIfClean() string      { return "ok" }
 func (p *privilegedApp) ListPendingInteractiveRequests() string { return "ok" }
 func (p *privilegedApp) RespondToApproval() string              { return "ok" }
 func (p *privilegedApp) RespondToUserInput() string             { return "ok" }
@@ -945,4 +946,3 @@ func TestDispatcher_ResolveForOrigin_ConcurrentLoopbackAndNonLoopback(t *testing
 	default:
 	}
 }
-

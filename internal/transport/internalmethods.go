@@ -186,6 +186,7 @@ var LocalOnlyMethods = map[string]bool{
 	"UpdateThreadMode":               true,
 	"UpdateThreadProvider":           true,
 	"UpdateThreadModel":              true,
+	"UpdateThreadModelSelection":     true,
 	"UpdateThreadReasoningEffort":    true,
 	"UpdateThreadFastMode":           true,
 	"UpdateThreadContextWindow":      true,

@@ -718,6 +718,129 @@ func TestUpdateThreadModelSanitizesStaleProfileContext(t *testing.T) {
 	}
 }
 
+func TestUpdateThreadModelSelectionUsesTargetProviderModelProfile(t *testing.T) {
+	app := newTestAppWithStore(t)
+	if err := app.store.UpsertChatModelProfile(store.ChatModelProfile{
+		Provider:        "codex",
+		Model:           "gpt-5.5",
+		ReasoningEffort: "medium",
+		FastMode:        true,
+		ContextWindow:   provider.CodexExtendedContextWindow,
+		RuntimeMode:     "auto-accept-edits",
+	}); err != nil {
+		t.Fatalf("UpsertChatModelProfile: %v", err)
+	}
+	thread, err := createTestThread(t, app, "claude", "/tmp/provider-model-profile", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	thread.ReasoningEffort = "max"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("UpdateThread(max): %v", err)
+	}
+
+	updated, err := app.UpdateThreadModelSelection(thread.ID, "codex", "gpt-5.5")
+	if err != nil {
+		t.Fatalf("UpdateThreadModelSelection: %v", err)
+	}
+	if updated.Provider != "codex" || updated.Model != "gpt-5.5" {
+		t.Fatalf("provider/model = %s/%s, want codex/gpt-5.5", updated.Provider, updated.Model)
+	}
+	if updated.ReasoningEffort != "medium" {
+		t.Fatalf("ReasoningEffort = %q, want medium", updated.ReasoningEffort)
+	}
+	if !updated.FastMode {
+		t.Fatal("FastMode = false, want true from saved profile")
+	}
+	if updated.ContextWindow != provider.CodexExtendedContextWindow {
+		t.Fatalf("ContextWindow = %d, want %d", updated.ContextWindow, provider.CodexExtendedContextWindow)
+	}
+	if updated.RuntimeMode != "auto-accept-edits" {
+		t.Fatalf("RuntimeMode = %q, want auto-accept-edits", updated.RuntimeMode)
+	}
+}
+
+func TestUpdateThreadModelSelectionFallsBackToTargetModelDefaults(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "claude", "/tmp/provider-model-defaults", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	thread.ReasoningEffort = "max"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("UpdateThread(max): %v", err)
+	}
+
+	updated, err := app.UpdateThreadModelSelection(thread.ID, "codex", "gpt-5.5")
+	if err != nil {
+		t.Fatalf("UpdateThreadModelSelection: %v", err)
+	}
+	if updated.Provider != "codex" || updated.Model != "gpt-5.5" {
+		t.Fatalf("provider/model = %s/%s, want codex/gpt-5.5", updated.Provider, updated.Model)
+	}
+	if updated.ReasoningEffort != "medium" {
+		t.Fatalf("ReasoningEffort = %q, want gpt-5.5 default medium", updated.ReasoningEffort)
+	}
+}
+
+func TestUpdateThreadModelSelectionClearsProviderResumeRefs(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "claude", "/tmp/provider-model-refs", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	thread.SessionRef = "claude-session"
+	thread.PendingForkRef = "claude-fork"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("UpdateThread(refs): %v", err)
+	}
+
+	updated, err := app.UpdateThreadModelSelection(thread.ID, "codex", "gpt-5.5")
+	if err != nil {
+		t.Fatalf("UpdateThreadModelSelection: %v", err)
+	}
+	if updated.SessionRef != "" || updated.PendingForkRef != "" {
+		t.Fatalf("refs = session %q pending %q, want both cleared", updated.SessionRef, updated.PendingForkRef)
+	}
+}
+
+func TestUpdateThreadModelSelectionRejectsCrossProviderAfterItems(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "claude", "/tmp/provider-model-locked", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItem(store.Item{
+		ID:        "provider-model-lock-item",
+		ThreadID:  thread.ID,
+		TurnIndex: 1,
+		ItemIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Summary:   "hello",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertItem: %v", err)
+	}
+
+	_, err = app.UpdateThreadModelSelection(thread.ID, "codex", "gpt-5.5")
+	if err == nil {
+		t.Fatal("UpdateThreadModelSelection on used thread error = nil, want lock error")
+	}
+	if !strings.Contains(err.Error(), "locked to claude") {
+		t.Fatalf("UpdateThreadModelSelection error = %v, want locked to claude", err)
+	}
+	after, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if after.Provider != "claude" || after.Model != "claude-sonnet-4-6" {
+		t.Fatalf("provider/model after rejection = %s/%s, want claude/claude-sonnet-4-6", after.Provider, after.Model)
+	}
+}
+
 func TestSwitchThreadSanitizesStaleSparkContext(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "codex", "/tmp/spark-stale-thread", "gpt-5.3-codex-spark", "")

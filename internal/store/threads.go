@@ -71,6 +71,9 @@ var (
 	ErrInvalidAutoCompactPercent = errors.New("store: invalid auto-compact percent")
 	// ErrInvalidProvider is returned for a bad provider value.
 	ErrInvalidProvider = errors.New("store: invalid provider")
+	// ErrThreadProviderLocked is returned when a caller tries to switch a
+	// thread's provider after timeline items have been persisted.
+	ErrThreadProviderLocked = errors.New("store: thread provider locked")
 )
 
 // legalModes maps every valid mode value to struct{}{} so membership
@@ -356,45 +359,108 @@ func (s *Store) ListThreadWorkspaceRefs() ([]ThreadWorkspaceRef, error) {
 	return refs, rows.Err()
 }
 
-func (s *Store) UpdateThread(t Thread) error {
+const updateThreadSetSQL = `UPDATE threads SET project_id=?, title=?, provider=?, model=?,
+    workspace_path=?, worktree_path=?, branch=?, session_ref=?, pending_fork_session_ref=?,
+    mode=?, reasoning_effort=?, fast_mode=?, context_window=?,
+    auto_compact_standard_percent=?, auto_compact_extended_percent=?, runtime_mode=?,
+    discussion_id=?, parent_thread_id=?, forked_from_thread_id=?, last_token_usage=?,
+    archived=?`
+
+func normalizeThreadForUpdate(t Thread) (Thread, error) {
 	t.Mode = normalizeMode(t.Mode)
 	t.RuntimeMode = normalizeRuntimeMode(t.RuntimeMode)
 	t.ReasoningEffort = normalizeEffort(t.ReasoningEffort)
 	if !legalEffortForProvider(t.Provider, t.ReasoningEffort) {
-		return fmt.Errorf("%w: %s/%s", ErrInvalidEffort, t.Provider, t.ReasoningEffort)
+		return Thread{}, fmt.Errorf("%w: %s/%s", ErrInvalidEffort, t.Provider, t.ReasoningEffort)
 	}
 	if t.ContextWindow == 0 {
 		t.ContextWindow = 1000000
 	}
 	if !validContextWindow(t.ContextWindow) {
-		return fmt.Errorf("%w: %d", ErrInvalidContextWindow, t.ContextWindow)
+		return Thread{}, fmt.Errorf("%w: %d", ErrInvalidContextWindow, t.ContextWindow)
 	}
 	if !validAutoCompactPercent(t.AutoCompactStandardPercent) {
-		return fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, t.AutoCompactStandardPercent)
+		return Thread{}, fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, t.AutoCompactStandardPercent)
 	}
 	if !validAutoCompactPercent(t.AutoCompactExtendedPercent) {
-		return fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, t.AutoCompactExtendedPercent)
+		return Thread{}, fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, t.AutoCompactExtendedPercent)
 	}
-	result, err := s.db.Exec(
-		`UPDATE threads SET project_id=?, title=?, provider=?, model=?,
-		    workspace_path=?, worktree_path=?, branch=?, session_ref=?, pending_fork_session_ref=?,
-		    mode=?, reasoning_effort=?, fast_mode=?, context_window=?,
-		    auto_compact_standard_percent=?, auto_compact_extended_percent=?, runtime_mode=?,
-		    discussion_id=?, parent_thread_id=?, forked_from_thread_id=?, last_token_usage=?,
-		    archived=?
-		 WHERE id=?`,
+	return t, nil
+}
+
+func updateThreadArgs(t Thread) []any {
+	return []any{
 		t.ProjectID, t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef),
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
-		boolToInt(t.Archived), t.ID,
+		boolToInt(t.Archived),
+	}
+}
+
+func (s *Store) UpdateThread(t Thread) error {
+	t, err := normalizeThreadForUpdate(t)
+	if err != nil {
+		return err
+	}
+	args := append(updateThreadArgs(t), t.ID)
+	result, err := s.db.Exec(
+		updateThreadSetSQL+` WHERE id=?`,
+		args...,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update thread %s: %w", t.ID, err)
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: update thread %s", t.ID))
+}
+
+func (s *Store) UpdateThreadIfProviderSwitchAllowed(t Thread, previousProvider string) error {
+	t, err := normalizeThreadForUpdate(t)
+	if err != nil {
+		return err
+	}
+	args := append(updateThreadArgs(t), t.ID, previousProvider, t.ID)
+	result, err := s.db.Exec(
+		updateThreadSetSQL+` WHERE id=?
+		 AND provider = ?
+		 AND NOT EXISTS (SELECT 1 FROM items WHERE thread_id = ? LIMIT 1)`,
+		args...,
+	)
+	if err != nil {
+		return fmt.Errorf("store: guarded provider switch for thread %s: %w", t.ID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: guarded provider switch for thread %s: rows affected: %w", t.ID, err)
+	}
+	if rows != 0 {
+		return nil
+	}
+	return s.explainProviderSwitchNoRows(t.ID, previousProvider)
+}
+
+func (s *Store) explainProviderSwitchNoRows(threadID, previousProvider string) error {
+	var currentProvider string
+	var hasItems int
+	err := s.db.QueryRow(
+		`SELECT provider,
+		        EXISTS(SELECT 1 FROM items WHERE thread_id = threads.id LIMIT 1)
+		   FROM threads
+		  WHERE id = ?`,
+		threadID,
+	).Scan(&currentProvider, &hasItems)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("store: guarded provider switch for thread %s: %w", threadID, sql.ErrNoRows)
+		}
+		return fmt.Errorf("store: inspect guarded provider switch for thread %s: %w", threadID, err)
+	}
+	if hasItems != 0 {
+		return fmt.Errorf("%w: %s", ErrThreadProviderLocked, currentProvider)
+	}
+	return fmt.Errorf("store: guarded provider switch for thread %s: %w", threadID, sql.ErrNoRows)
 }
 
 func (s *Store) DeleteThread(id string) error {

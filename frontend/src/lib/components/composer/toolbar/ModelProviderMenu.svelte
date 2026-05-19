@@ -8,8 +8,7 @@
     SetChatBarFavorite,
     StartDiscussionByID,
     GetThread,
-    UpdateThreadModel,
-    UpdateThreadProvider,
+    UpdateThreadModelSelection,
   } from '../../../stores/bindings';
   import {
     asProviderID,
@@ -127,11 +126,7 @@
 
     applying = true;
     try {
-      if (provider !== currentProvider) {
-        const afterProvider = (await UpdateThreadProvider(threadId, provider)) as Thread;
-        syncThread(afterProvider);
-      }
-      const updated = (await UpdateThreadModel(threadId, slug)) as Thread;
+      const updated = (await UpdateThreadModelSelection(threadId, provider, slug)) as Thread;
       syncThread(updated);
     } catch (err) {
       console.error('model/provider update failed:', err);

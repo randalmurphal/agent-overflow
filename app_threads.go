@@ -412,8 +412,8 @@ func (a *App) restartWorkspaceSession(threadID string) error {
 	return a.ReconnectSession(threadID)
 }
 
-// UpdateThreadProvider persists the provider column and restarts the
-// session if one is live so the new provider takes effect.
+// UpdateThreadProvider switches to the provider's latest remembered profile
+// and restarts the session if one is live so the new provider takes effect.
 //
 // A thread is locked to its provider once any item has been persisted:
 // provider sessions are not interchangeable (Codex can't resume a Claude
@@ -428,6 +428,12 @@ func (a *App) UpdateThreadProvider(id, providerName string) (store.Thread, error
 		return store.Thread{}, fmt.Errorf("update provider: store unavailable")
 	}
 	normalized := strings.TrimSpace(providerName)
+	if normalized == "" {
+		return store.Thread{}, fmt.Errorf("thread provider cannot be empty")
+	}
+	if !validThreadProvider(normalized) {
+		return store.Thread{}, fmt.Errorf("%w: %q", store.ErrInvalidProvider, normalized)
+	}
 
 	current, err := a.store.GetThread(id)
 	if err != nil {
@@ -437,22 +443,11 @@ func (a *App) UpdateThreadProvider(id, providerName string) (store.Thread, error
 		return current, nil
 	}
 
-	hasItems, err := a.store.HasItems(id)
-	if err != nil {
-		return store.Thread{}, fmt.Errorf("update provider: check prior items: %w", err)
-	}
-	if hasItems {
-		return store.Thread{}, fmt.Errorf("update provider: thread is locked to %s (start a new thread to use %s)", current.Provider, normalized)
-	}
-
-	if err := a.store.UpdateProvider(id, normalized); err != nil {
-		return store.Thread{}, err
-	}
-	refreshed, err := a.restartSessionIfAffected(id, "provider")
+	profile, err := a.latestProviderProfileForSelection(normalized)
 	if err != nil {
 		return store.Thread{}, err
 	}
-	return refreshed, nil
+	return a.updateThreadFromChatModelProfile(current, profile, "provider")
 }
 
 // UpdateThreadReasoningEffort persists the effort tier and restarts the

@@ -2042,8 +2042,20 @@ export function UpdateThreadModel(threadID: string, model: string): $Cancellable
 }
 
 /**
- * UpdateThreadProvider persists the provider column and restarts the
- * session if one is live so the new provider takes effect.
+ * UpdateThreadModelSelection changes provider + model as one atomic model-menu
+ * selection. The selected provider/model's remembered profile is applied before
+ * the thread row is persisted, so SQLite never sees an invalid intermediate
+ * provider/effort pair such as codex + max.
+ */
+export function UpdateThreadModelSelection(threadID: string, providerName: string, model: string): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(3140398729, threadID, providerName, model).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
+ * UpdateThreadProvider switches to the provider's latest remembered profile
+ * and restarts the session if one is live so the new provider takes effect.
  * 
  * A thread is locked to its provider once any item has been persisted:
  * provider sessions are not interchangeable (Codex can't resume a Claude

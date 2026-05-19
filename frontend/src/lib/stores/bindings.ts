@@ -21,6 +21,7 @@ export {
   SwitchThread,
   UpdateThreadModel,
   UpdateThreadProvider,
+  UpdateThreadModelSelection,
   UpdateThreadMode,
   UpdateThreadReasoningEffort,
   UpdateThreadFastMode,

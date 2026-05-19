@@ -105,6 +105,7 @@ export const CleanCodexBackgroundTerminals = dispatch('CleanCodexBackgroundTermi
 // generated app.js). Tests stub these through setBindingMock by method name.
 export const UpdateThreadModel = dispatch('UpdateThreadModel');
 export const UpdateThreadProvider = dispatch('UpdateThreadProvider');
+export const UpdateThreadModelSelection = dispatch('UpdateThreadModelSelection');
 export const UpdateThreadMode = dispatch('UpdateThreadMode');
 export const UpdateThreadReasoningEffort = dispatch('UpdateThreadReasoningEffort');
 export const UpdateThreadFastMode = dispatch('UpdateThreadFastMode');
