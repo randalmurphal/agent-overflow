@@ -16,7 +16,7 @@ make install    # installs wails3 CLI (via go.mod tool directive) + pnpm deps
 ## Run
 
 ```sh
-make dev        # dev mode with hot reload (wails3 dev)
+make dev        # dev mode with hot reload (local supervisor)
 make build      # production build (wails3 build)
 ```
 

@@ -1029,11 +1029,14 @@ export class ThreadMessageHit {
  * Turn is one row in the turns table — a record of a single user → assistant
  * round-trip on a thread.
  * 
- * CompletedAt is a pointer because NULL is load-bearing: it means
- * "in-flight or crashed mid-turn." We never write a synthetic CompletedAt
- * to dismiss a stuck row. The frontend treats a NULL CompletedAt on
- * rehydration as "interrupted," separate from the live-push
- * "provider:turn_started" path that drives the working indicator.
+ * CompletedAt is a pointer because NULL is load-bearing on the latest
+ * turn row: it means "in-flight or crashed mid-turn." We never write a
+ * synthetic CompletedAt just to dismiss that latest stuck row. Older
+ * NULL rows followed by newer turns are obsolete crash/error residue
+ * and may be repaired by migration. The frontend treats a NULL
+ * CompletedAt on rehydration as "interrupted," separate from the
+ * live-push "provider:turn_started" path that drives the working
+ * indicator.
  * 
  * See docs/architecture/turn-lifecycle.md §Turn lifecycle for the full
  * mental model and docs/architecture/invariants.md #22-24 for the rules

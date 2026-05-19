@@ -25,7 +25,7 @@ endif
 # valid pnpm scripts here.
 WSL_BUILD_MODE ?= build
 
-GO_PACKAGE_ROOTS := . ./internal/... ./build/...
+GO_PACKAGE_ROOTS := . ./cmd/... ./internal/... ./build/...
 
 ifeq ($(shell uname -s),Darwin)
 HOST_ARCH := $(shell uname -m)
@@ -83,7 +83,8 @@ install:
 	cd frontend && pnpm install --frozen-lockfile
 
 dev:
-	AGENT_OVERFLOW_DEBUG=$(AGENT_OVERFLOW_DEBUG) VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) wails3 dev
+	go build -o bin/agent-overflow-dev ./cmd/agent-overflow-dev
+	AGENT_OVERFLOW_DEBUG=$(AGENT_OVERFLOW_DEBUG) VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) bin/agent-overflow-dev
 
 # dev-wsl: cross-compiles the Linux ELF + Windows .exe launcher inside
 # this WSL distro, copies the .exe to a versioned Windows-native path,

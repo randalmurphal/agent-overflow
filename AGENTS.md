@@ -24,7 +24,7 @@ Requires Go 1.25+, Node 24+, and pnpm 10+. On Linux, install
 before `make install`.
 
 - `make install` — installs `wails3` CLI (via `go.mod` tool directive) + pnpm deps
-- `make dev` — dev mode, hot reload (`wails3 dev`)
+- `make dev` — dev mode, hot reload (local supervisor)
 - `make build` — production build (`wails3 build`)
 - `make go-build` — `go build ./...` with repo-standard platform env
 - `make go-test` — `go test ./...` with repo-standard platform env
