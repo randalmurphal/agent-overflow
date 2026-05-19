@@ -28,6 +28,7 @@
   import MenuSectionHeader from '../../primitives/MenuSectionHeader.svelte';
   import Icon from '../../primitives/Icon.svelte';
   import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
+  import { focusPaneComposer } from '../../panes/paneComposerFocus';
 
   interface Props {
     pane: ThreadPane;
@@ -49,9 +50,7 @@
         open = true;
         void ensureModelMetadata();
       },
-      close: () => {
-        open = false;
-      },
+      close: closeMenu,
     });
   });
 
@@ -126,7 +125,12 @@
 
   function closeMenu(): void {
     open = false;
-    triggerEl?.focus();
+    // Composer-toolbar pickers sit just under the textarea; after the
+    // menu closes the user is almost always going to keep typing. Send
+    // focus back to the textarea so Enter / Esc / chord-toggle don't
+    // strand them on a trigger button. `focusPaneComposer` is a no-op
+    // if the textarea is gone (pane unmounted, thread cleared).
+    if (!focusPaneComposer(pane.paneId)) triggerEl?.focus();
   }
 
   async function handleEffort(next: Effort): Promise<void> {

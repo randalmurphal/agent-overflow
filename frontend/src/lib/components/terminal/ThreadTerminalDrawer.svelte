@@ -25,6 +25,15 @@
   let { surface, manual = false }: ThreadTerminalDrawerProps = $props();
 
   let bodyEl: { focus: () => void } | undefined = $state(undefined);
+  // Latch a "focus terminal once it exists" intent. The chord that
+  // first opens the drawer fires FOCUS_TERMINAL_EVENT in the same
+  // frame as `setShowTerminal(true)`, well before `onMount`'s
+  // `OpenTerminal` (async, ~50–200 ms) has resolved — so bodyEl is
+  // undefined when the event lands. We can't focus what doesn't
+  // exist yet; instead set the flag here and have a separate effect
+  // consume it the moment TerminalBody binds. When the drawer is
+  // already open the flag is set and consumed in the same tick.
+  let pendingFocus = $state(false);
 
   // Listen for the smart-toggle's "focus terminal" intent so mod+`
   // can hand DOM focus to the active terminal even when the drawer
@@ -34,12 +43,19 @@
     const handler = (event: Event): void => {
       const detail = (event as CustomEvent<{ paneId?: string }>).detail;
       if (!detail || detail.paneId !== surface.paneId) return;
-      // Defer to next frame so the drawer's first paint completes
-      // before we try to focus into it (covers the just-opened case).
-      requestAnimationFrame(() => bodyEl?.focus());
+      pendingFocus = true;
     };
     window.addEventListener(FOCUS_TERMINAL_EVENT, handler);
     return () => window.removeEventListener(FOCUS_TERMINAL_EVENT, handler);
+  });
+
+  $effect(() => {
+    if (!pendingFocus || !bodyEl) return;
+    const el = bodyEl;
+    pendingFocus = false;
+    // Defer to next frame so the drawer's first paint completes
+    // before we try to focus into the xterm canvas.
+    requestAnimationFrame(() => el.focus());
   });
 
   function initialTerminalStateKey(): string {
