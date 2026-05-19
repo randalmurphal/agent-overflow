@@ -12,7 +12,7 @@ describe('<SidebarSearch>', () => {
     setThreadFilterQuery('');
   });
 
-  it('renders the search input with a ⌘K affordance when empty', () => {
+  it('renders the search input with a keybind affordance when empty', () => {
     const { getByTestId, queryByTestId } = render(SidebarSearch, {
       props: {},
     });
@@ -21,7 +21,19 @@ describe('<SidebarSearch>', () => {
     expect(queryByTestId('sidebar-thread-search-clear')).toBeNull();
   });
 
-  it('swaps the ⌘K affordance for a clear button once the input has content', async () => {
+  it('keybind affordance reflects the configured sidebar.focus-search chord', () => {
+    // Regression guard for the hardcoded-chord bug: the keybindings store is
+    // unpopulated in tests (no Wails backend), so the lookup falls back to
+    // the default chord `mod+/`. Whether the displayed text is `Ctrl+/` or
+    // `⌘/` depends on platform, but `/` is invariant — and the broken state
+    // (hardcoded `mod+k`) would render `K`, not `/`.
+    const { getByTestId } = render(SidebarSearch, { props: {} });
+    const text = getByTestId('sidebar-thread-search-kbd').textContent ?? '';
+    expect(text).toContain('/');
+    expect(text).not.toContain('K');
+  });
+
+  it('swaps the keybind affordance for a clear button once the input has content', async () => {
     const { getByTestId, queryByTestId } = render(SidebarSearch, {
       props: {},
     });

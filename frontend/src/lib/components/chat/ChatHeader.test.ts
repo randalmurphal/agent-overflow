@@ -236,7 +236,7 @@ describe('<ChatHeader>', () => {
     const pane = await buildPane();
     const { getByTestId } = render(ChatHeader, { props: { pane } });
     await tick();
-    expect(getByTestId('terminal-toggle').getAttribute('title')).toBe('Toggle Terminal (Ctrl+J)');
+    expect(getByTestId('terminal-toggle').getAttribute('title')).toBe('Toggle Terminal (Ctrl+`)');
     expect(getByTestId('diff-panel-toggle').getAttribute('title')).toBe('Toggle Diff Panel (Ctrl+Shift+G)');
   });
 

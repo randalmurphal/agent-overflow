@@ -27,7 +27,7 @@
   import { errString } from '../../utils/errors';
   import { getProject } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { formatChord } from '../../stores/keybindings.svelte';
+  import { formatChord, keybindingForCommand } from '../../stores/keybindings.svelte';
   import { resolvePaneAttentionDot } from '../panes/paneAttention';
   import GitActionsControl from '../git/GitActionsControl.svelte';
   import Button from '../primitives/Button.svelte';
@@ -43,6 +43,13 @@
   let titleGlow = $derived(attentionDot?.pill.glowClass ?? '');
   let isFocusedPane = $derived(getFocusedPaneId() === pane.paneId);
   let isDesignThread = $derived(pane.thread?.mode === 'design');
+
+  let terminalToggleChord = $derived(
+    formatChord(keybindingForCommand('terminal.toggle') ?? 'mod+`'),
+  );
+  let diffPanelToggleChord = $derived(
+    formatChord(keybindingForCommand('diff.panel.toggle') ?? 'mod+shift+g'),
+  );
 
   // Inline-rename state. Mirrors the old header's pattern — local string
   // buffer + editing toggle so Svelte's input can treat the field as
@@ -241,7 +248,7 @@
         size="xs"
         pressed={pane.showTerminal}
         ariaLabel="Toggle Terminal"
-        title={`Toggle Terminal (${formatChord('mod+j')})`}
+        title={`Toggle Terminal (${terminalToggleChord})`}
         onclick={() => pane.toggleTerminal()}
         testId="terminal-toggle"
         class="shrink-0 w-6 px-0"
@@ -272,7 +279,7 @@
           size="xs"
           pressed={pane.diffPanel.open}
           ariaLabel="Toggle Diff Panel"
-          title={`Toggle Diff Panel (${formatChord('mod+shift+g')})`}
+          title={`Toggle Diff Panel (${diffPanelToggleChord})`}
           onclick={() => pane.toggleDiffPanel()}
           testId="diff-panel-toggle"
           class="shrink-0 w-6 px-0"
