@@ -147,6 +147,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'thread.new',
     label: 'Thread: New',
     icon: '+',
+    editableReachable: true,
     run: () => openThreadForm(),
   });
 
