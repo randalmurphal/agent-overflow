@@ -1119,7 +1119,24 @@ export function createUseStickToBottomController(
     refreshIsNearBottom();
     const session = gestureSession;
     const hadUserScrollIntent = session !== null;
+    // Momentum-overshoot defense: a 'down' gesture is armed only when the
+    // user is already escaped (handleWheel returns early on deltaY > 0 when
+    // sticky), so its purpose is "I'm trying to recover and re-stick at the
+    // bottom." Leftover upward momentum from a preceding wheel-up can
+    // briefly carry scrollTop BELOW the wheel-down's startScrollTop before
+    // the trajectory reverses. Without this direction gate, the deferred
+    // handler reads that one upward sample as "user moved up," fires
+    // setEscapedFromLock(true) (a no-op — we're already escaped), and
+    // CLEARS the just-armed 'down' session. Subsequent scroll events have
+    // no session, so the re-stick path is unreachable when the trajectory
+    // finally lands at the bottom — the user is stranded escaped. The
+    // production trace at seq 371-374 captured this exact sequence: wheel
+    // (+100) at scrollTop=5511 arms 'down'; next scroll fires at
+    // scrollTop=5506 (momentum still going up); deferred handler kills
+    // the gesture; scrollTop=5559 (at bottom) at seq 438 has no session
+    // to drive re-stick.
     const pendingUserIntentMovedUp = !!session
+      && session.direction !== 'down'
       && movedUpEnoughToEscape(session.startScrollTop, scrollTopAtEvent);
     const tagged = (scrollTopAtEvent === tag || externalTagged) && !pendingUserIntentMovedUp;
     trace('scroll.scrollEvent', () => ({
@@ -1250,9 +1267,19 @@ export function createUseStickToBottomController(
       const scrolledDown = previousObserved < 0
         ? false
         : scrollTopAtEvent > previousObserved;
+      // Momentum-overshoot keep-alive companion to the gate above. A
+      // 'down' gesture means "user is trying to reach the bottom to
+      // re-stick" — keep the session alive on any scroll event that
+      // hasn't yet reached the bottom, even when scrollTopAtEvent is
+      // currently BELOW startScrollTop (leftover upward momentum from a
+      // preceding wheel-up). Without the direction disjunct, the session
+      // is cleared on the first overshoot sample and the trajectory's
+      // eventual bottom-landing has no session to drive re-stick. For
+      // 'up' and 'unknown' directions, the original "scrolled past
+      // startScrollTop on the way down" gate stands.
       const shouldKeepIntentForRestick = !!session
         && escapedFromLockState
-        && scrollTopAtEvent > session.startScrollTop
+        && (session.direction === 'down' || scrollTopAtEvent > session.startScrollTop)
         && distFromBottomAtEvent > AUTO_FOLLOW_BOTTOM_EPSILON_PX;
       const willRestick = scrolledDown
         && hadUserScrollIntent
@@ -1811,6 +1838,61 @@ export function createUseStickToBottomController(
     // (seeded in armUserScrollIntent from the live scrollTop), so
     // attach() no longer needs a module-scope seed.
     refreshIsNearBottom();
+    installStickStateDevHook();
+  }
+
+  // Dev-only window hook so a user reproducing a sticky-scroll bug can
+  // dump the controller's full internal state in one console call.
+  // Active only when uiRenderTrace is enabled (DEBUG=1 build flag) so
+  // production builds carry no surface. Each attach() reinstalls the
+  // hook against the current closure so multiple panes don't fight; the
+  // most recently attached controller wins, which matches the trace
+  // semantics. Returns a structured snapshot — copy/paste-friendly for
+  // pasting into bug reports.
+  function installStickStateDevHook(): void {
+    if (typeof window === 'undefined' || !isUiRenderTraceEnabled()) return;
+    (window as Window & {
+      __stickState?: () => Record<string, unknown>;
+    }).__stickState = () => {
+      const session = gestureSession;
+      const dist = scrollEl
+        ? scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight
+        : null;
+      return {
+        // Core decision flags — these are the gates that determine whether
+        // contentRO positive-delta will pin and whether the spring can start.
+        isAtBottomState,
+        escapedFromLockState,
+        isNearBottomState,
+        pauseDepth,
+        warm,
+        springStopRequested,
+        springToken,
+        // Gesture session — when re-stick fails, this is the prime suspect.
+        // A stuck session.direction === 'up' would block contentRO pin.
+        gestureSession: session
+          ? {
+              source: session.source,
+              direction: session.direction,
+              startScrollTop: Math.round(session.startScrollTop),
+              lastObservedScrollTop: Math.round(session.lastObservedScrollTop),
+            }
+          : null,
+        // Restore-snap consent (consumed by forceStick({reason:'restore'})).
+        restoreSnapArmed,
+        // Geometry snapshot for cross-referencing the trace.
+        scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+        scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+        clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+        distanceFromBottom: dist === null ? null : Math.round(dist),
+        target: scrollEl ? Math.round(targetScrollTop()) : null,
+        // Public getters as the consumer would see them — so the dump
+        // makes "isAtBottom returned the wrong value" diagnoses obvious.
+        publicIsSticky:
+          isAtBottomState && !escapedFromLockState && pauseDepth === 0,
+        publicIsAtBottom: isAtBottomState || isNearBottomState,
+      };
+    };
   }
 
   function detach(): void {

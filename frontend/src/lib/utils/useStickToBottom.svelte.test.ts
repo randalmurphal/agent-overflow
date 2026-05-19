@@ -2611,6 +2611,680 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
   });
 
+  describe('user-reported regression — streaming stops following after send + manual scroll', () => {
+    // Reproduces the post-gentle-mango user report:
+    //
+    //   "i typed a message, it didnt follow i had to scroll manually, and
+    //    then i did, and then every message that comes in it does not
+    //    follow. ... when i scroll up/down after going back to that thread
+    //    it doesnt stick again."
+    //
+    // The flow involves: (1) restore-to-bottom on mount, (2) composer
+    // grow + shrink around send, (3) new user-message contentRO fire,
+    // (4) streaming contentRO chunks, (5) wheel-up then wheel-down
+    // (re-stick), (6) more streaming chunks. Each step must keep the
+    // bottom following.
+    it('full send + streaming + wheel-up + re-stick + streaming flow keeps bottom following', async () => {
+      const ro = getRO();
+      // Mount-time first contentRO fire, warm passes 150ms later.
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+
+      // Simulate restore-to-bottom path (thread switch effect: arm
+      // restore consent, then forceStick). This is the cache-hit path
+      // MessageTimeline takes on every thread switch.
+      controller.armRestoreSnap();
+      controller.forceStick({ reason: 'restore' });
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+
+      // The restore re-armed warm; cross past it again before streaming.
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+
+      // 1. Composer grows during typing — ChatView's composer-RO calls
+      //    notifyContentMaybeGrew with scrollEl padding-bottom larger.
+      geom.scrollHeight = 1050;
+      controller.notifyContentMaybeGrew();
+      expect(geom.scrollTop).toBe(450); // pinned to new bottom
+
+      // 2. User hits Enter. Composer text clears (shrinks); composer-RO
+      //    fires again with smaller height.
+      geom.scrollHeight = 1000;
+      controller.notifyContentMaybeGrew();
+
+      // 3. User message added — virtua mounts the row, contentRO fires
+      //    positive delta. Spring mode is now active.
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+      // Spring should engage; sync-pin would land at 500 immediately.
+      // Either way scrollTop must advance toward the new bottom across
+      // frames.
+      await advanceUntil(() => geom.scrollTop >= 500, 50);
+      expect(controller.escapedFromLock).toBe(false);
+
+      // 4. Streaming chunks (3 in a row).
+      for (let i = 0; i < 3; i++) {
+        geom.scrollHeight += 200;
+        geom.contentHeight += 200;
+        ro.fire(contentEl, geom.contentHeight);
+      }
+      await advanceUntil(() => geom.scrollTop >= geom.scrollHeight - geom.clientHeight - 4, 50);
+      expect(controller.escapedFromLock).toBe(false);
+
+      // 5. User wheels UP to read. Should escape.
+      fireWheel(scrollEl, -50, scrollEl);
+      const beforeWheel = geom.scrollTop;
+      geom.scrollTop = beforeWheel - 100; // browser scrolled up
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // 6. More streaming chunks arrive while escaped. They must NOT
+      //    pin.
+      const afterEscape = geom.scrollTop;
+      geom.scrollHeight += 200;
+      geom.contentHeight += 200;
+      ro.fire(contentEl, geom.contentHeight);
+      for (let i = 0; i < 5; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(afterEscape);
+      expect(controller.escapedFromLock).toBe(true);
+
+      // 7. User wheels DOWN to the bottom (re-stick).
+      fireWheel(scrollEl, 200, scrollEl);
+      // Land exactly at bottom.
+      geom.scrollTop = geom.scrollHeight - geom.clientHeight;
+      fireScroll(scrollEl);
+      await nextTimer();
+      // Re-stick must fire.
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+
+      // 8. More streaming chunks after re-stick. They MUST pin.
+      const beforeMoreStream = geom.scrollHeight;
+      geom.scrollHeight += 200;
+      geom.contentHeight += 200;
+      ro.fire(contentEl, geom.contentHeight);
+      await advanceUntil(
+        () => geom.scrollTop >= geom.scrollHeight - geom.clientHeight - 4,
+        50,
+      );
+      // Final assertion: streaming should follow.
+      expect(geom.scrollTop).toBeGreaterThanOrEqual(beforeMoreStream - geom.clientHeight);
+      expect(controller.escapedFromLock).toBe(false);
+    });
+
+    it('scrollend fires BEFORE the scroll handler deferred — re-stick path still works', async () => {
+      // Production race: native scrollend may fire BEFORE the 1ms
+      // setTimeout in handleScroll's deferred branch. If
+      // handleScrollEnd → expireGestureSession clears the session
+      // before the deferred re-stick check runs, the deferred handler
+      // sees gestureSession===null. The captured `hadUserScrollIntent`
+      // is still true (captured at scroll event time), so re-stick
+      // should still fire.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Establish escape.
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Wheel down to bottom; sync handler captures, then scrollend
+      // fires BEFORE the deferred handler.
+      fireWheel(scrollEl, 200, scrollEl);
+      geom.scrollTop = 400; // at bottom
+      fireScroll(scrollEl); // schedules deferred for 1ms
+
+      // Simulate scrollend racing the deferred handler (fires within
+      // the 1ms window — in real browsers, scrollend can dispatch
+      // immediately when scroll position stabilizes after the wheel).
+      fireScrollEnd(scrollEl);
+
+      // Wait past the deferred handler.
+      await nextTimer();
+
+      // Re-stick should have fired regardless. If the captured
+      // session was the only signal, this would fail.
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('scrollend during a kept-for-restick session does not break the next wheel re-stick', async () => {
+      // Two-step re-stick: user can't make it to bottom in one wheel.
+      // Step 1's deferred keeps the session (shouldKeepIntentForRestick).
+      // Step 2's wheel should re-arm, scroll, and re-stick. The risk:
+      // scrollend from step 1's scroll might clear the kept session,
+      // and step 2's re-arm should still work.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Establish escape.
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Step 1: wheel down by 100. Land 200px from bottom.
+      fireWheel(scrollEl, 100, scrollEl);
+      geom.scrollTop = 200;
+      fireScroll(scrollEl);
+      await nextTimer();
+      // Not at bottom yet; should stay escaped, session kept.
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Scrollend fires after wheel scroll settles.
+      fireScrollEnd(scrollEl);
+
+      // Step 2: wheel down more. Land at bottom.
+      fireWheel(scrollEl, 200, scrollEl);
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+      // Re-stick must fire.
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('scrollend during spring chase mid-stream does not escape', async () => {
+      // Spring writes scrollTop every rAF (60Hz). Some browsers may fire
+      // scrollend between frames if the spring isn't writing fast
+      // enough. handleScrollEnd with gestureSession===null must be a
+      // no-op — never escape.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Start a spring chase with a streaming chunk.
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+      const mid = geom.scrollTop;
+      expect(mid).toBeGreaterThan(400);
+      expect(mid).toBeLessThan(800);
+      expect(controller.escapedFromLock).toBe(false);
+
+      // Scrollend fires mid-spring. Must NOT escape.
+      fireScrollEnd(scrollEl);
+      await nextFrame();
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+
+      // Spring continues to land.
+      await advanceUntil(() => geom.scrollTop === 800);
+    });
+
+    it('continuous wheel-up events (trackpad momentum) keep escape latched', async () => {
+      // Trackpad momentum fires wheel events at high frequency. Each
+      // wheel re-arms gestureSession. The 160ms timer keeps getting
+      // reset. The scrollend at momentum-end finally resolves the
+      // gesture. During this whole window, escape must stay set.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Initial wheel sets escape.
+      fireWheel(scrollEl, -10, scrollEl);
+      geom.scrollTop = 390;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Simulate momentum: 10 more wheels at 16ms intervals (each one
+      // moves up further by 5px).
+      for (let i = 0; i < 10; i++) {
+        fireWheel(scrollEl, -5, scrollEl);
+        geom.scrollTop = Math.max(0, geom.scrollTop - 5);
+        fireScroll(scrollEl);
+        await nextTimer();
+      }
+
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Streaming chunk arrives during momentum. Must NOT pin.
+      const beforeChunk = geom.scrollTop;
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+      for (let i = 0; i < 5; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(beforeChunk);
+    });
+
+    it('composer-RO during active gesture window does not get blocked when gesture is down', async () => {
+      // ChatView's composer-RO calls notifyContentMaybeGrew when the
+      // composer height changes. If the user clicks a scrollbar gutter
+      // (arms 'pointer'/'unknown'), composer-RO should still pin
+      // (direction !== 'up' permits).
+      stubScrollbarGutter(scrollEl);
+
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // User taps scrollbar (no movement yet).
+      scrollEl.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, isPrimary: true, clientX: 195, clientY: 300 }),
+      );
+
+      // Composer grows (typing). notifyContentMaybeGrew should pin.
+      geom.scrollHeight = 1100;
+      controller.notifyContentMaybeGrew();
+      expect(geom.scrollTop).toBe(500);
+    });
+
+    it('scroll-event-then-scrollend with kept session: scrollend clears session, next wheel arms fresh', async () => {
+      // Critical race: user wheel-down to near-bottom (not within 4px).
+      // Deferred keeps session. THEN scrollend fires, clearing session.
+      // User wheels down again to actual bottom. New session armed.
+      // handleScroll deferred re-stick: scrolledDown is computed against
+      // NEW session's lastObservedScrollTop, not the cleared session's
+      // baseline. If the new session's startScrollTop equals the current
+      // scrollTop (per armUserScrollIntent), and the scroll event has
+      // scrollTopAtEvent > startScrollTop, scrolledDown is true.
+      // This is the production-realistic two-wheel re-stick.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Escape.
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Wheel #1: down by 100. Land at 200 (200px from bottom).
+      fireWheel(scrollEl, 100, scrollEl);
+      geom.scrollTop = 200;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Scrollend fires after wheel #1's scroll settles.
+      fireScrollEnd(scrollEl);
+
+      // Wheel #2: down by 200. Land at 400 (at bottom).
+      fireWheel(scrollEl, 200, scrollEl);
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      // Should re-stick.
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+  });
+
+  describe('user-reported regression — re-stick invariants across production-like flows', () => {
+    // Battery of invariants the controller must satisfy in the scenarios
+    // the user reported as broken. Each test exercises a different path
+    // back to the bottom and asserts that re-stick fires. If one of these
+    // fails, it pinpoints the specific path that strands the user.
+    //
+    // User intent (verbatim across reports):
+    //   "by default it should stick to the bottom, if i scroll away at all
+    //    i expect to unstick even if i very slightly scroll away at any
+    //    time, and if i scroll to the bottom i expect for it to stick
+    //    always."
+
+    it('wheel-up + wait (gesture session expires) + wheel-down to absolute bottom re-sticks', async () => {
+      // User wheels up, waits long enough for scrollend / 160ms timer to
+      // expire the session, then wheels down to the absolute bottom.
+      // No momentum interference. Re-stick MUST fire.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Simulate "several seconds" — scrollend fires, gesture session
+      // expires. State settles to escape=true, session=null.
+      fireScrollEnd(scrollEl);
+      await waitMs(200);
+
+      // Fresh wheel-down to absolute bottom (scrollHeight - clientHeight = 400).
+      fireWheel(scrollEl, 200, scrollEl);
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('wheel-up + quick wheel-down with momentum overshoot still re-sticks at bottom', async () => {
+      // The seq 371-374 dump pattern: leftover momentum from wheel-up
+      // carries scrollTop UP after wheel-down arms a 'down' gesture.
+      // Trajectory then reverses and reaches the bottom. Re-stick MUST
+      // fire when scrollTop lands at the absolute bottom.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // User wheels DOWN. armUserScrollIntent reads scrollTop=200 as
+      // startScrollTop. (User wheel-up momentum has already settled at 200.)
+      geom.scrollTop = 200;
+      fireWheel(scrollEl, 100, scrollEl);
+
+      // Leftover upward momentum: first scroll event lands BELOW the
+      // wheel-down's startScrollTop. The deferred handler must NOT treat
+      // this as a fresh escape — the user explicitly signaled DOWN.
+      geom.scrollTop = 195;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      // Trajectory reverses, reaches absolute bottom (400 = max).
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('wheel-up + incremental wheel-downs across scrollend cycles re-stick at bottom', async () => {
+      // User wheels down in multiple separate gestures (each separated by
+      // a scrollend that clears the session). The final gesture reaches
+      // the bottom and MUST re-stick.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 50;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Step 1: small wheel-down, not enough to reach bottom.
+      fireWheel(scrollEl, 100, scrollEl);
+      geom.scrollTop = 150;
+      fireScroll(scrollEl);
+      await nextTimer();
+      fireScrollEnd(scrollEl);
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Step 2: another small wheel-down, still not bottom.
+      fireWheel(scrollEl, 100, scrollEl);
+      geom.scrollTop = 250;
+      fireScroll(scrollEl);
+      await nextTimer();
+      fireScrollEnd(scrollEl);
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Step 3: final wheel-down reaches absolute bottom.
+      fireWheel(scrollEl, 200, scrollEl);
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('forceStick(user) after escape + multiple in-flight scrolls clears all transient state', async () => {
+      // User wheels up + several momentum scroll events, then clicks the
+      // chip. The chip's forceStick MUST clear EVERY transient flag so
+      // subsequent streaming chunks pin correctly (via spring chase in
+      // this describe block's animationMode='spring').
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Wheel up + 5 momentum scroll events going up.
+      fireWheel(scrollEl, -50, scrollEl);
+      for (let i = 0; i < 5; i++) {
+        geom.scrollTop = Math.max(0, geom.scrollTop - 20);
+        fireScroll(scrollEl);
+        await nextTimer();
+      }
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Chip click.
+      controller.forceStick();
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+
+      // Next streaming chunk arrives. The spring should chase to the
+      // new bottom over the next several rAF ticks.
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+
+      // Spring is mode='spring' inside this describe — wait for it to land.
+      await advanceUntil(() => geom.scrollTop >= 500, 100);
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('forceStick(user) + multiple streaming chunks all pin (no leaked block state)', async () => {
+      // Cumulative variant: 5 streaming chunks after a chip click. Each
+      // MUST pin (eventually, via spring) — proves no state leaks between chunks.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Escape, then chip click.
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      controller.forceStick();
+      expect(controller.isSticky).toBe(true);
+
+      // 5 streaming chunks. Each must pin to the new bottom (via spring).
+      for (let i = 0; i < 5; i++) {
+        geom.scrollHeight += 100;
+        geom.contentHeight += 100;
+        ro.fire(contentEl, geom.contentHeight);
+        const expectedTop = geom.scrollHeight - geom.clientHeight;
+        await advanceUntil(() => geom.scrollTop >= expectedTop, 100);
+      }
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('pauseAutoScroll lease released during escape does not strand the user', async () => {
+      // RHS panel mount holds a leaseDuringSettle while the user is
+      // escaped. The lease release MUST NOT silently re-pin the user
+      // to the bottom and MUST NOT leak pauseDepth.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Establish escape.
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // RHS panel mounts: acquires lease, then releases after settle.
+      const release = controller.pauseAutoScroll();
+      release();
+
+      // Escape must hold; scrollTop must not jump.
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(100);
+    });
+
+    it('overlapping pauseAutoScroll leases all release; pauseDepth returns to 0', async () => {
+      // Multiple concurrent RHS / sidebar leases. Each must decrement
+      // pauseDepth independently — none should leak.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Sticky, at bottom.
+      expect(controller.isSticky).toBe(true);
+
+      const r1 = controller.pauseAutoScroll();
+      const r2 = controller.pauseAutoScroll();
+      const r3 = controller.pauseAutoScroll();
+
+      // While leased, contentRO positive delta MUST NOT pin (pauseDepth>0).
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+      expect(geom.scrollTop).toBe(400); // unchanged
+
+      // Release in arbitrary order. r3() re-pins via the lease-release
+      // path (scrollTop = current target = 500).
+      r2();
+      r1();
+      r3();
+      expect(geom.scrollTop).toBe(500);
+
+      // pauseDepth back to 0. Next chunk must pin (eventually, via spring).
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+      await advanceUntil(() => geom.scrollTop >= 600, 100);
+    });
+
+    it('wheel-down trajectory lands at bottom while scrollHeight grew during the scroll (moving-bottom case)', async () => {
+      // Production reality: during the user's wheel-down, a streaming
+      // chunk arrives and grows scrollHeight. The user reaches what
+      // they SAW as the bottom (sync-captured distFromBottomAtEvent),
+      // but distanceFromBottom NOW reports a larger value.
+      // The Bug A fix (distFromBottomAtEvent captured sync) means re-stick
+      // MUST fire based on what the user saw at scroll-event time.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Escape.
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // User wheels down. arms 'down' at startScrollTop=100.
+      fireWheel(scrollEl, 300, scrollEl);
+
+      // Scroll event fires at what is RIGHT NOW the absolute bottom
+      // (scrollHeight=1000, scrollTop=400, distFromBottom=0). Bug A
+      // captures distFromBottomAtEvent = 0 synchronously here.
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+
+      // BEFORE the 1ms deferred handler runs, a streaming chunk grows
+      // scrollHeight by 100. distFromBottom NOW = 100, but the
+      // captured value at scroll time was 0 — re-stick must use the
+      // captured value (Bug A fix), so it MUST fire.
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('wheel-down stops short of bottom by AUTO_FOLLOW_BOTTOM_EPSILON_PX (4px tolerance)', async () => {
+      // Browser scrollTop rounding can land the user 1-3 px short of
+      // the absolute max. The widened epsilon must tolerate this.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      fireWheel(scrollEl, 300, scrollEl);
+      geom.scrollTop = 397; // 3 px short of max (400). Within 4 px epsilon.
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('thread-switch-style reset (armWarmup + armRestoreSnap + forceStick(restore)) clears stuck escape', async () => {
+      // What thread-switch does that chip click does NOT do. If this
+      // path uniquely unblocks the user, the chip-click path is missing
+      // some reset step.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Get user stranded escaped near bottom.
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Thread-switch sequence as MessageTimeline performs it.
+      controller.setEscapedFromLock(true);
+      controller.armWarmup();
+      controller.armRestoreSnap();
+      controller.forceStick({ reason: 'restore' });
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+
+      // Streaming chunk MUST pin (with warm gate open via sync-pin path).
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+      expect(geom.scrollTop).toBe(500);
+    });
+
+    it('repeated wheel-up events without intervening scroll events do not strand a kept session', async () => {
+      // Trackpad sends many wheel events at high frequency. Each wheel
+      // re-arms gestureSession via armUserScrollIntent. The session is
+      // overwritten, and the new startScrollTop should track the live
+      // scrollTop (each re-arm reads scrollEl.scrollTop). If the user
+      // then wheels down to the bottom, re-stick must fire.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Burst of wheel-up + scroll events going up (10 micro-deltas).
+      for (let i = 0; i < 10; i++) {
+        fireWheel(scrollEl, -5, scrollEl);
+        geom.scrollTop = Math.max(0, geom.scrollTop - 5);
+        fireScroll(scrollEl);
+        await nextTimer();
+      }
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Settle: scrollend fires.
+      fireScrollEnd(scrollEl);
+
+      // Now wheel down all the way to bottom.
+      fireWheel(scrollEl, 500, scrollEl);
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+  });
+
   describe('edge cases', () => {
     it('forceStick called twice during warmup keeps the gate closed', async () => {
       // Idempotency: a second forceStick before warm fires must not
