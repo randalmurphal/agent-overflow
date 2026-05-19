@@ -9,6 +9,7 @@ import {
 } from './paneLayout.svelte';
 import { touchProjectActivity } from './projects.svelte';
 import { getThreadById, replaceThread as replaceThreadInRegistry } from './threads.svelte';
+import { REVEAL_PANE_EVENT } from './eventNames';
 
 // Active panes, keyed by pane ID. PaneHost mounts panes from layout order;
 // command routing and sidebar actions resolve explicit pane targets through
@@ -30,7 +31,7 @@ function requestPanePersistence(): void {
 
 function requestPaneReveal(paneId: string): void {
   if (typeof window === 'undefined' || !paneId) return;
-  window.dispatchEvent(new CustomEvent('agent-overflow:reveal-pane', {
+  window.dispatchEvent(new CustomEvent(REVEAL_PANE_EVENT, {
     detail: { paneId },
   }));
 }

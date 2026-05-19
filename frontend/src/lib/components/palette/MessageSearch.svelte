@@ -7,6 +7,7 @@
   import { getProviderDefinition } from '../../providers/catalog';
   import { asProviderID, type ProviderID } from '../../types/providers';
   import { computeHighlightSegments } from '../../utils/highlight';
+  import { PICKER_TOGGLE_INPUT_EVENT } from '../../stores/events';
 
   interface Props {
     open: boolean;
@@ -87,8 +88,8 @@
         searchEl?.select();
       }
     };
-    window.addEventListener('agent-overflow:picker-toggle-input', handler);
-    return () => window.removeEventListener('agent-overflow:picker-toggle-input', handler);
+    window.addEventListener(PICKER_TOGGLE_INPUT_EVENT, handler);
+    return () => window.removeEventListener(PICKER_TOGGLE_INPUT_EVENT, handler);
   });
 
   async function openHit(hit: ThreadMessageHit): Promise<void> {

@@ -61,6 +61,10 @@ import {
   getThreadTerminalState,
 } from '../components/terminal/terminalStore.svelte';
 import { GetThread } from './bindings';
+import {
+  DESIGN_RELOAD_MAIN_EVENT,
+  DESIGN_OPTIONS_UPDATE_EVENT,
+} from './eventNames';
 
 /**
  * Min interval between consecutive `design:reload-main` cache-bust
@@ -80,13 +84,22 @@ interface DesignOptionsUpdatePayload {
   setId: string;
 }
 /**
- * Frontend event names for design-mode UI handlers. The preview panel
- * subscribes to these (not Wails events) so the throttled handler
- * below stays the single fan-out point: each Wails event makes at
- * most one DOM event per thread per throttle window.
+ * Frontend custom DOM event names live in `./eventNames` so consumers
+ * that this file depends on transitively (notably panes.svelte.ts) can
+ * import them without forming an import cycle. Re-exported here so
+ * existing consumers that pull names from `./events` keep working —
+ * new code should prefer the direct `./eventNames` import.
  */
-export const DESIGN_RELOAD_MAIN_EVENT = 'ao-design:reload-main';
-export const DESIGN_OPTIONS_UPDATE_EVENT = 'ao-design:options-update';
+export {
+  DESIGN_RELOAD_MAIN_EVENT,
+  DESIGN_OPTIONS_UPDATE_EVENT,
+  FOCUS_TERMINAL_EVENT,
+  PICKER_TOGGLE_INPUT_EVENT,
+  RENAME_THREAD_EVENT,
+  OPEN_SHIP_CHANGES_EVENT,
+  OPEN_SETTINGS_EVENT,
+  REVEAL_PANE_EVENT,
+} from './eventNames';
 
 function dispatchDomEvent(name: string, detail: unknown): void {
   if (typeof window === 'undefined') return;

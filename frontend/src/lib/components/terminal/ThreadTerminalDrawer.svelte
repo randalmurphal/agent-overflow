@@ -11,6 +11,7 @@
     TerminalSessionSummary,
   } from '../../types/terminal';
   import { addToast } from '../../stores/toast.svelte';
+  import { FOCUS_TERMINAL_EVENT } from '../../stores/events';
   import { errString } from '../../utils/errors';
   import {
     getThreadTerminalState,
@@ -37,8 +38,8 @@
       // before we try to focus into it (covers the just-opened case).
       requestAnimationFrame(() => bodyEl?.focus());
     };
-    window.addEventListener('agent-overflow:focus-terminal', handler);
-    return () => window.removeEventListener('agent-overflow:focus-terminal', handler);
+    window.addEventListener(FOCUS_TERMINAL_EVENT, handler);
+    return () => window.removeEventListener(FOCUS_TERMINAL_EVENT, handler);
   });
 
   function initialTerminalStateKey(): string {

@@ -1,7 +1,12 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { ensureMainPane, getFocusedPaneOrNull, getPane, openThreadFromNavigation } from './lib/stores/panes.svelte';
-  import { setupEventListeners } from './lib/stores/events';
+  import {
+    OPEN_SETTINGS_EVENT,
+    OPEN_SHIP_CHANGES_EVENT,
+    RENAME_THREAD_EVENT,
+    setupEventListeners,
+  } from './lib/stores/events';
   import { getThreads, refreshThreads } from './lib/stores/threads.svelte';
   import {
     installPaneLayoutPersistence,
@@ -32,7 +37,7 @@
     eventMatchesKeybindingCommand,
     loadKeybindings,
   } from './lib/stores/keybindings.svelte';
-  import { clearCommandRegistry, type CommandContext } from './lib/stores/commandRegistry.svelte';
+  import { clearCommandRegistry, listCommands, type CommandContext } from './lib/stores/commandRegistry.svelte';
   import { registerBuiltinCommands, makeCommandContext } from './lib/stores/builtinCommands.svelte';
   import { installUiRenderTraceApi } from './lib/utils/uiRenderTrace';
   import { dispatchTextEditing } from './lib/utils/textEditingKeymap';
@@ -65,54 +70,16 @@
 
   let sidebarPane = $derived(getFocusedPaneOrNull());
   // Commands that fire even when focus sits inside an INPUT / TEXTAREA /
-  // contentEditable. Pane navigation and pane management belong here so
-  // the user can switch / reorder / close panes from the composer
-  // without having to blur it first. The textarea-word-op fallback
-  // (alt+arrow / ctrl+arrow) deliberately yields to these chords when a
-  // keybinding matches — see handleGlobalKeydown below.
-  const EDITABLE_REACHABLE_COMMANDS = new Set([
-    'sidebar.focus-search',
-    'palette.open',
-    'mode.cycle',
-    'rhs.close',
-    'thread.interrupt',
-    'thread.jump.1',
-    'thread.jump.2',
-    'thread.jump.3',
-    'thread.jump.4',
-    'thread.jump.5',
-    'thread.jump.6',
-    'thread.jump.7',
-    'thread.jump.8',
-    'thread.jump.9',
-    'thread.newPane',
-    'pane.close',
-    'pane.focusLeft',
-    'pane.focusRight',
-    'pane.moveLeft',
-    'pane.moveRight',
-    // Sidebar visual cursor — must fire from inside the composer
-    // textarea so users can navigate without blurring first. The
-    // cursor itself never changes DOM focus, so the textarea caret
-    // stays where the user left it.
-    'sidebar.cursor.down',
-    'sidebar.cursor.up',
-    'sidebar.cursor.open',
-    'sidebar.cursor.openInNewPane',
-    // Composer toolbar picker open chords — discoverability from the
-    // textarea is the whole point.
-    'composer.picker.model',
-    'composer.picker.effort',
-    'composer.picker.access',
-    'composer.picker.branch',
-    // Picker input/list toggle stays usable from any input — including
-    // a picker's own search field.
-    'picker.toggleInput',
-    // Terminal smart toggle — reachable from the composer.
-    'terminal.toggle',
-    // Cheat sheet, help.
-    'help.keybindings',
-  ]);
+  // contentEditable. Each command self-declares the flag at registration
+  // (see commandRegistry's `editableReachable`); the set is derived from
+  // the live registry so adding a new editable-reachable command requires
+  // only the per-command flag, not a parallel list here. The
+  // textarea-word-op fallback (alt+arrow / ctrl+arrow) deliberately yields
+  // to these chords when a keybinding matches — see handleGlobalKeydown
+  // below.
+  let EDITABLE_REACHABLE_COMMANDS = $derived(
+    new Set(listCommands().filter((c) => c.editableReachable).map((c) => c.id)),
+  );
 
   function handleStartDiscussion(thread: Thread): void {
     discussionStartFor = thread;
@@ -203,7 +170,7 @@
     // Sidebar currently owns inline rename via ThreadRow. We surface the
     // rename request as a CustomEvent so the (future) rename modal or the
     // sidebar row can pick it up; until then the event is documentation.
-    window.dispatchEvent(new CustomEvent('agent-overflow:rename-thread', { detail: thread }));
+    window.dispatchEvent(new CustomEvent(RENAME_THREAD_EVENT, { detail: thread }));
   }
 
   function requestThreadJump(index: number): void {
@@ -294,7 +261,7 @@
         // The Ship Changes drawer lives inside GitActionsControl (deep in
         // the chat tree). A CustomEvent keeps App.svelte from owning a
         // reference to a component it never renders.
-        window.dispatchEvent(new CustomEvent('agent-overflow:open-ship-changes', {
+        window.dispatchEvent(new CustomEvent(OPEN_SHIP_CHANGES_EVENT, {
           detail: { paneId },
         }));
       },
@@ -312,13 +279,13 @@
       } | undefined;
       openSettings(detail?.section ?? 'general', detail?.contextTarget ?? null);
     };
-    window.addEventListener('agent-overflow:open-settings', handleOpenSettings);
+    window.addEventListener(OPEN_SETTINGS_EVENT, handleOpenSettings);
     window.addEventListener('keydown', handleGlobalKeydown);
 
     return () => {
       cleanupEvents();
       cleanupExternalLinks();
-      window.removeEventListener('agent-overflow:open-settings', handleOpenSettings);
+      window.removeEventListener(OPEN_SETTINGS_EVENT, handleOpenSettings);
     };
   });
 

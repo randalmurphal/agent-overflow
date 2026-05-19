@@ -12,6 +12,7 @@
   import { getMinPaneWidth } from '../../stores/paneDensity.svelte';
   import { getPaneLayoutItems } from '../../stores/paneLayout.svelte';
   import { getPaneWidth, setPaneHostWidth } from '../../stores/layoutMetrics.svelte';
+  import { REVEAL_PANE_EVENT } from '../../stores/events';
   import PaneDivider from './PaneDivider.svelte';
   import PaneAttentionOverlay from './PaneAttentionOverlay.svelte';
   import { resolvePaneAttentionDot } from './paneAttention';
@@ -115,8 +116,8 @@
       const detail = (event as CustomEvent<{ paneId?: string }>).detail;
       if (detail?.paneId) requestPaneScroll(detail.paneId);
     };
-    window.addEventListener('agent-overflow:reveal-pane', handleReveal);
-    return () => window.removeEventListener('agent-overflow:reveal-pane', handleReveal);
+    window.addEventListener(REVEAL_PANE_EVENT, handleReveal);
+    return () => window.removeEventListener(REVEAL_PANE_EVENT, handleReveal);
   });
 
   $effect(() => {

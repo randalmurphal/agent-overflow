@@ -3,6 +3,7 @@
   import type { ContextWindow } from '../../types/events';
   import type { Thread } from '../../types/models';
   import { formatTokens } from '../../utils/format';
+  import { OPEN_SETTINGS_EVENT } from '../../stores/events';
   import SlidersHorizontal from 'lucide-svelte/icons/sliders-horizontal';
   import Icon from '../primitives/Icon.svelte';
   import Popover from '../primitives/Popover.svelte';
@@ -58,7 +59,7 @@
 
   function openContextSettings(): void {
     if (!thread) return;
-    window.dispatchEvent(new CustomEvent('agent-overflow:open-settings', {
+    window.dispatchEvent(new CustomEvent(OPEN_SETTINGS_EVENT, {
       detail: {
         section: 'providers',
         contextTarget: {

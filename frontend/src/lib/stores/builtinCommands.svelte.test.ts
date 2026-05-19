@@ -32,6 +32,7 @@ import {
 } from '../components/terminal/terminalStore.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import type { Thread } from '../types/models';
+import { FOCUS_TERMINAL_EVENT } from './events';
 
 function readyPane(overrides: Partial<Thread> = {}): ReturnType<typeof createThreadPane> {
   setBindingMock('SwitchThread', async (threadId: unknown) => ({
@@ -721,7 +722,7 @@ describe('terminal.toggle command', () => {
     const handler = (e: Event): void => {
       events.push(e as CustomEvent);
     };
-    window.addEventListener('agent-overflow:focus-terminal', handler);
+    window.addEventListener(FOCUS_TERMINAL_EVENT, handler);
     try {
       runCommand('terminal.toggle', makeCommandContext(pane, {}) as CommandContext);
       expect(pane.showTerminal).toBe(true);
@@ -730,7 +731,7 @@ describe('terminal.toggle command', () => {
       expect(events).toHaveLength(1);
       expect(events[0].detail).toEqual({ paneId: pane.paneId });
     } finally {
-      window.removeEventListener('agent-overflow:focus-terminal', handler);
+      window.removeEventListener(FOCUS_TERMINAL_EVENT, handler);
     }
   });
 
@@ -743,13 +744,13 @@ describe('terminal.toggle command', () => {
     const handler = (e: Event): void => {
       events.push(e as CustomEvent);
     };
-    window.addEventListener('agent-overflow:focus-terminal', handler);
+    window.addEventListener(FOCUS_TERMINAL_EVENT, handler);
     try {
       runCommand('terminal.toggle', makeCommandContext(pane, {}) as CommandContext);
       expect(events).toHaveLength(1);
       expect(events[0].detail).toEqual({ paneId: pane.paneId });
     } finally {
-      window.removeEventListener('agent-overflow:focus-terminal', handler);
+      window.removeEventListener(FOCUS_TERMINAL_EVENT, handler);
     }
   });
 
@@ -771,13 +772,13 @@ describe('terminal.toggle command', () => {
     const handler = (e: Event): void => {
       events.push(e as CustomEvent);
     };
-    window.addEventListener('agent-overflow:focus-terminal', handler);
+    window.addEventListener(FOCUS_TERMINAL_EVENT, handler);
     try {
       runCommand('terminal.toggle', makeCommandContext(pane, {}) as CommandContext);
       expect(document.activeElement).toBe(textarea);
       expect(events).toHaveLength(0);
     } finally {
-      window.removeEventListener('agent-overflow:focus-terminal', handler);
+      window.removeEventListener(FOCUS_TERMINAL_EVENT, handler);
       document.body.removeChild(root);
     }
   });

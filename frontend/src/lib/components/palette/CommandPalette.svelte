@@ -10,6 +10,7 @@
   import { enabledCommands, type Command, type CommandContext } from '../../stores/commandRegistry.svelte';
   import { fuzzyFilter } from '../../utils/fuzzy';
   import { formatChord, keybindingForCommand } from '../../stores/keybindings.svelte';
+  import { PICKER_TOGGLE_INPUT_EVENT } from '../../stores/events';
   import Modal from '../primitives/Modal.svelte';
   import PaletteResultRow from './PaletteResultRow.svelte';
 
@@ -55,8 +56,8 @@
         inputEl?.select();
       }
     };
-    window.addEventListener('agent-overflow:picker-toggle-input', handler);
-    return () => window.removeEventListener('agent-overflow:picker-toggle-input', handler);
+    window.addEventListener(PICKER_TOGGLE_INPUT_EVENT, handler);
+    return () => window.removeEventListener(PICKER_TOGGLE_INPUT_EVENT, handler);
   });
 
   interface PaletteRow {

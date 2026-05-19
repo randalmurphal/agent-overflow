@@ -7,6 +7,7 @@ import {
   installAppDefaults,
   resetAppState,
 } from './_helpers';
+import { OPEN_SETTINGS_EVENT } from '../../lib/stores/events';
 
 beforeAll(installAnimateShim);
 
@@ -38,7 +39,7 @@ describe('App integration — settings launcher', () => {
     const rendered = render(App);
     await flush(10);
 
-    window.dispatchEvent(new CustomEvent('agent-overflow:open-settings', {
+    window.dispatchEvent(new CustomEvent(OPEN_SETTINGS_EVENT, {
       detail: { section: 'providers' },
     }));
 
@@ -47,7 +48,7 @@ describe('App integration — settings launcher', () => {
       expect(rendered.getByRole('tab', { name: 'Providers' })).toHaveAttribute('aria-selected', 'true');
     });
 
-    window.dispatchEvent(new CustomEvent('agent-overflow:open-settings', {
+    window.dispatchEvent(new CustomEvent(OPEN_SETTINGS_EVENT, {
       detail: { section: 'observability' },
     }));
 

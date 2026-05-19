@@ -92,6 +92,14 @@ export interface Command {
   icon?: string;
   /** When expression (parsed when the command is registered; see below). */
   when?: string;
+  /**
+   * When true, the command's keybinding fires even when focus sits inside
+   * an INPUT / TEXTAREA / contentEditable element. App.svelte filters
+   * registered commands by this flag and passes the resulting id set to
+   * the keybindings dispatcher's editable-target check. Default false —
+   * editable text inputs swallow chords that don't opt in.
+   */
+  editableReachable?: boolean;
   /** Runs the command. Receives the live context at invocation time. */
   run: (ctx: CommandContext) => void | Promise<void>;
 }

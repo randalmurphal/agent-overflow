@@ -62,6 +62,7 @@ import {
   type ComposerPickerId,
 } from './composerPickerRegistry.svelte';
 import { reportNonBenignInterruptError } from './interruptErrors';
+import { FOCUS_TERMINAL_EVENT, PICKER_TOGGLE_INPUT_EVENT } from './events';
 
 export interface BuiltinCommandHooks {
   openSettings: () => void;
@@ -108,6 +109,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Command Palette: Open',
     description: 'Open the command palette. Pressing the same chord while open closes it.',
     icon: '⌘',
+    editableReachable: true,
     run: (ctx) => {
       if (isPaletteOpen()) closePalette();
       else openPalette(ctx.paneId);
@@ -127,6 +129,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Help: Show Keyboard Shortcuts',
     description: 'Open the cheat sheet of every command and its current binding. Pressing the same chord while open closes it.',
     icon: '?',
+    editableReachable: true,
     run: () => {
       if (isCheatSheetOpen()) closeCheatSheet();
       else openCheatSheet();
@@ -151,6 +154,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'thread.newPane',
     label: 'Thread: New in New Pane',
     icon: '+',
+    editableReachable: true,
     run: () => openThreadFormInNewPane?.(),
   });
 
@@ -159,6 +163,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Pane: Close Focused',
     icon: '×',
     when: '!terminalFocus',
+    editableReachable: true,
     run: () => {
       closeFocusedPane();
       const nextFocused = getFocusedPaneId();
@@ -171,6 +176,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Pane: Focus Left',
     icon: '←',
     when: '!terminalFocus',
+    editableReachable: true,
     run: () => {
       const next = focusAdjacentPane(-1);
       if (next) focusPaneComposerIfEditableActive(next.paneId);
@@ -182,6 +188,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Pane: Focus Right',
     icon: '→',
     when: '!terminalFocus',
+    editableReachable: true,
     run: () => {
       const next = focusAdjacentPane(1);
       if (next) focusPaneComposerIfEditableActive(next.paneId);
@@ -193,6 +200,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Pane: Move Left',
     icon: '⇠',
     when: '!terminalFocus',
+    editableReachable: true,
     run: () => { moveFocusedPane(-1); },
   });
 
@@ -201,6 +209,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Pane: Move Right',
     icon: '⇢',
     when: '!terminalFocus',
+    editableReachable: true,
     run: () => { moveFocusedPane(1); },
   });
 
@@ -209,6 +218,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Right Sidebar: Close',
     icon: '×',
     when: 'activeRhsPanel && !anyModalOpen && !terminalFocus',
+    editableReachable: true,
     run: (ctx) => ctx.pane?.closeRhsPanel(),
   });
 
@@ -333,6 +343,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Thread: Interrupt Turn',
     icon: '■',
     when: 'hasActiveThread && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen',
+    editableReachable: true,
     run: (ctx) => {
       // Industry-pattern interrupt: clear UI state synchronously,
       // dispatch every backend RPC fire-and-forget, let the natural
@@ -409,6 +420,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     description: 'Toggle the active chat thread between chat and plan agent modes. No-op on design / discussion threads — those types are immutable.',
     icon: '⇆',
     when: 'hasActiveThread && !paletteOpen && !anyModalOpen',
+    editableReachable: true,
     run: (ctx) =>
       withActiveThread(ctx, async (t) => {
         // Design and discussion threads have immutable types — silently
@@ -430,6 +442,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
       id: `thread.jump.${i}`,
       label: `Thread: Jump to ${i}`,
       icon: String(i),
+      editableReachable: true,
       run: () => requestThreadJump(index),
     });
   }
@@ -443,6 +456,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Sidebar: Move Cursor Down',
     description: 'Move the sidebar selection cursor down one row.',
     icon: '↓',
+    editableReachable: true,
     run: (ctx) => stepSidebarCursor(1, ctx.pane?.threadId ?? null),
   });
 
@@ -451,6 +465,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Sidebar: Move Cursor Up',
     description: 'Move the sidebar selection cursor up one row.',
     icon: '↑',
+    editableReachable: true,
     run: (ctx) => stepSidebarCursor(-1, ctx.pane?.threadId ?? null),
   });
 
@@ -460,6 +475,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     description: 'Open the thread under the sidebar cursor in the focused pane.',
     icon: '↵',
     when: 'sidebarCursorActive',
+    editableReachable: true,
     run: (ctx) => {
       const id = getSidebarCursorThreadId();
       if (!id) return;
@@ -477,6 +493,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     description: 'Open the thread under the sidebar cursor in a new pane.',
     icon: '↵',
     when: 'sidebarCursorActive',
+    editableReachable: true,
     run: () => {
       const id = getSidebarCursorThreadId();
       if (!id) return;
@@ -503,6 +520,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
       label,
       icon: '⌃',
       when: 'hasActiveThread',
+      editableReachable: true,
       run: (ctx) => {
         toggleComposerPicker(ctx.paneId, pickerId);
       },
@@ -518,9 +536,10 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Picker: Toggle Input Focus',
     description: 'Move focus between the picker search input and its result list.',
     when: 'anyPickerOpen',
+    editableReachable: true,
     run: () => {
       if (typeof window === 'undefined') return;
-      window.dispatchEvent(new CustomEvent('agent-overflow:picker-toggle-input'));
+      window.dispatchEvent(new CustomEvent(PICKER_TOGGLE_INPUT_EVENT));
     },
   });
 
@@ -540,6 +559,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Sidebar: Focus Search',
     description: 'Move focus to the sidebar search input.',
     icon: '⌕',
+    editableReachable: true,
     run: () => focusThreadSearch(),
   });
 
@@ -593,6 +613,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
       'Open the terminal if closed; if open, flip focus between the terminal and the chat composer.',
     icon: '▶',
     when: 'hasActiveThread',
+    editableReachable: true,
     run: (ctx) =>
       withActiveThread(ctx, (_t, pane) => {
         const paneId = pane.paneId;
@@ -600,7 +621,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           pane.setShowTerminal(true);
           requestAnimationFrame(() => {
             window.dispatchEvent(
-              new CustomEvent('agent-overflow:focus-terminal', { detail: { paneId } }),
+              new CustomEvent(FOCUS_TERMINAL_EVENT, { detail: { paneId } }),
             );
           });
           return;
@@ -609,7 +630,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           focusPaneComposer(paneId);
         } else {
           window.dispatchEvent(
-            new CustomEvent('agent-overflow:focus-terminal', { detail: { paneId } }),
+            new CustomEvent(FOCUS_TERMINAL_EVENT, { detail: { paneId } }),
           );
         }
       }),

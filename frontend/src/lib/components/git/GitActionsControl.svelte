@@ -21,7 +21,7 @@
   import type { GitStatus } from '../../types/git';
   import { errString } from '../../utils/errors';
   import { forgeLabels } from '../../utils/forgeLabels';
-  import { wailsEventOn } from '../../stores/events';
+  import { OPEN_SHIP_CHANGES_EVENT, wailsEventOn } from '../../stores/events';
   import { getTransportStatus } from '../../stores/transportStatus.svelte';
   import {
     GetGitStatus,
@@ -100,12 +100,12 @@
   }
 
   onMount(() => {
-    window.addEventListener('agent-overflow:open-ship-changes', handleOpenShip);
+    window.addEventListener(OPEN_SHIP_CHANGES_EVENT, handleOpenShip);
   });
 
   onDestroy(() => {
     if (typeof window !== 'undefined') {
-      window.removeEventListener('agent-overflow:open-ship-changes', handleOpenShip);
+      window.removeEventListener(OPEN_SHIP_CHANGES_EVENT, handleOpenShip);
     }
   });
 
