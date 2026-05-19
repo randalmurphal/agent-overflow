@@ -14,11 +14,11 @@ func (r *Router) handleContentBlockStart(evt provider.ProviderEvent) error {
 }
 
 func (r *Router) handleContentBlockStop(evt provider.ProviderEvent) error {
-	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
+	turnIndex, err := r.turnIndexForEvent(evt)
 	if err != nil {
 		return err
 	}
-	scope := evt.ParentToolUseID
+	scope := eventParentID(evt)
 	// content_block_stop is the freeze hot path: a thinking block ending
 	// or a text block ending fires SQLite-write-heavy settle work that
 	// would otherwise stall the provider read-loop. Async dispatch lets

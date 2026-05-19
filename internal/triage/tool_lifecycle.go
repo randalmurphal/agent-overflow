@@ -1094,7 +1094,14 @@ func (r *Router) rebuildCommandOutputMeta(payloadID string) error {
 
 func (r *Router) turnIndexForEvent(evt provider.ProviderEvent) (int, error) {
 	if evt.ParentToolUseID != "" {
-		parent, found, err := r.store.GetThreadItem(evt.ThreadID, eventParentID(evt))
+		return r.turnIndexForScope(evt.ThreadID, eventParentID(evt))
+	}
+	return r.currentTurnIndex(evt.ThreadID)
+}
+
+func (r *Router) turnIndexForScope(threadID, scope string) (int, error) {
+	if scope != "" {
+		parent, found, err := r.store.GetThreadItem(threadID, strings.TrimSpace(scope))
 		if err != nil {
 			return 0, err
 		}
@@ -1102,7 +1109,7 @@ func (r *Router) turnIndexForEvent(evt provider.ProviderEvent) (int, error) {
 			return parent.TurnIndex, nil
 		}
 	}
-	return r.currentTurnIndex(evt.ThreadID)
+	return r.currentTurnIndex(threadID)
 }
 
 func (r *Router) emitItemUpsert(item store.Item) {

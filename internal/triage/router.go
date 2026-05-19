@@ -451,7 +451,8 @@ func (r *Router) settleStreamingBeforeTimelineBoundary(evt provider.ProviderEven
 	if !r.hasActiveStreamingItem(evt.ThreadID) {
 		return
 	}
-	if strings.TrimSpace(evt.ParentToolUseID) == "" {
+	scope := eventParentID(evt)
+	if scope == "" {
 		turnIndex, err := r.currentTurnIndex(evt.ThreadID)
 		if err != nil {
 			log.Printf("triage: settle streaming before %s: %v", boundary, err)
@@ -462,7 +463,7 @@ func (r *Router) settleStreamingBeforeTimelineBoundary(evt provider.ProviderEven
 		}
 		return
 	}
-	if err := r.settleStreamingScope(evt.ThreadID, evt.ParentToolUseID); err != nil {
+	if err := r.settleStreamingScope(evt.ThreadID, scope); err != nil {
 		log.Printf("triage: settle streaming before %s: %v", boundary, err)
 	}
 }

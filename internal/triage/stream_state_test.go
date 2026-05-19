@@ -808,6 +808,80 @@ func TestProviderItemCompletionCanCreateCompletedAssistantText(t *testing.T) {
 	}
 }
 
+func TestSubagentProviderItemCompletionUpdatesSettledTextWithoutTopLevelDuplicate(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	insertToolCallItem(t, st, "t1", "spawn-1", "Spawned reviewer", "spawn_agent", statusRunning)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", TurnID: "child-turn", ItemID: "child-msg",
+		ParentToolUseID: "spawn-1", Content: "draft child text", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("child text delta: %v", err)
+	}
+	if err := router.settleStreamingScope("t1", "spawn-1"); err != nil {
+		t.Fatalf("settle scope: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: "t1", TurnID: "child-turn", ItemID: "child-msg",
+		ParentToolUseID: "spawn-1", Content: "final child text", ContentPresent: true,
+		Meta: json.RawMessage(`{"blockType":"text"}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("late child content block stop: %v", err)
+	}
+	router.WaitForPendingSettles()
+
+	textItems := findItemsByKind(t, st, "t1", itemKindAssistantText)
+	if len(textItems) != 1 {
+		t.Fatalf("assistant_text rows = %d, want 1: %+v", len(textItems), textItems)
+	}
+	item := textItems[0]
+	if item.ParentID != "spawn-1" {
+		t.Fatalf("parent_id = %q, want spawn-1", item.ParentID)
+	}
+	if item.Summary != "final child text" {
+		t.Fatalf("summary = %q, want final child text", item.Summary)
+	}
+	if strings.TrimSpace(readProviderItemIDFromMeta(json.RawMessage(item.Meta))) != "child-msg" {
+		t.Fatalf("meta.provider_item_id = %q, want child-msg (meta=%s)", readProviderItemIDFromMeta(json.RawMessage(item.Meta)), item.Meta)
+	}
+}
+
+func TestSubagentProviderItemCompletionUsesSpawnTurnIndex(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	insertToolCallItem(t, st, "t1", "spawn-1", "Spawned reviewer", "spawn_agent", statusRunning)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("new parent turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: "t1", TurnID: "child-turn", ItemID: "child-msg",
+		ParentToolUseID: "spawn-1", Content: "final-only child text", ContentPresent: true,
+		Meta: json.RawMessage(`{"blockType":"text"}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("child content block stop: %v", err)
+	}
+
+	item := firstItemByKind(t, st, "t1", itemKindAssistantText)
+	if item.TurnIndex != 0 {
+		t.Fatalf("turn_index = %d, want spawn turn 0", item.TurnIndex)
+	}
+	if item.ParentID != "spawn-1" {
+		t.Fatalf("parent_id = %q, want spawn-1", item.ParentID)
+	}
+}
+
 func TestProviderItemCompletionCanReplaceAssistantTextWithEmptyFinal(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -914,6 +988,56 @@ func TestProviderItemCompletionCanCreateCompletedThinking(t *testing.T) {
 	}
 	if string(data) != "final-only thought" {
 		t.Fatalf("payload = %q, want final-only thought", data)
+	}
+}
+
+func TestSubagentProviderItemCompletionUpdatesSettledThinkingWithoutTopLevelDuplicate(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	insertToolCallItem(t, st, "t1", "spawn-1", "Spawned reviewer", "spawn_agent", statusRunning)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventThinking, ThreadID: "t1", TurnID: "child-turn", ItemID: "child-reasoning",
+		ParentToolUseID: "spawn-1", Content: "draft thought", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("child thinking delta: %v", err)
+	}
+	if err := router.settleStreamingScope("t1", "spawn-1"); err != nil {
+		t.Fatalf("settle scope: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: "t1", TurnID: "child-turn", ItemID: "child-reasoning",
+		ParentToolUseID: "spawn-1", Content: "final thought", ContentPresent: true,
+		Meta: json.RawMessage(`{"blockType":"thinking"}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("late child thinking stop: %v", err)
+	}
+	router.WaitForPendingSettles()
+
+	thinkingItems := findItemsByKind(t, st, "t1", itemKindThinking)
+	if len(thinkingItems) != 1 {
+		t.Fatalf("thinking rows = %d, want 1: %+v", len(thinkingItems), thinkingItems)
+	}
+	item := thinkingItems[0]
+	if item.ParentID != "spawn-1" {
+		t.Fatalf("parent_id = %q, want spawn-1", item.ParentID)
+	}
+	if item.Summary != "final thought" {
+		t.Fatalf("summary = %q, want final thought", item.Summary)
+	}
+	data, err := st.GetPayloadData(item.PayloadID)
+	if err != nil {
+		t.Fatalf("get payload: %v", err)
+	}
+	if string(data) != "final thought" {
+		t.Fatalf("payload = %q, want final thought", data)
 	}
 }
 

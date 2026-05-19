@@ -34,11 +34,11 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 	// projector no-ops when there are no trackers. See invariant 25.
 	r.observeCodexModelContent(evt.ThreadID)
 
-	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
+	turnIndex, err := r.turnIndexForEvent(evt)
 	if err != nil {
 		return fmt.Errorf("text delta turn index: %w", err)
 	}
-	scope := evt.ParentToolUseID
+	scope := eventParentID(evt)
 	firstBlock, itemID := r.ensureTextBlockStarted(evt.ThreadID, turnIndex, scope, evt.ItemID)
 	if firstBlock {
 		defer r.drainInterruptQueueIfIdle(evt.ThreadID)
@@ -58,6 +58,7 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 			Status:    statusStreaming,
 			Summary:   evt.Content,
 			ParentID:  eventParentID(evt),
+			Meta:      withProviderItemMeta(validJSONObjectString(evt.Meta), evt.ItemID),
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
@@ -88,11 +89,11 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 	// while reasoning streams.
 	r.observeCodexModelReasoning(evt.ThreadID)
 
-	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
+	turnIndex, err := r.turnIndexForEvent(evt)
 	if err != nil {
 		return fmt.Errorf("thinking turn index: %w", err)
 	}
-	scope := evt.ParentToolUseID
+	scope := eventParentID(evt)
 	firstBlock, itemID := r.ensureThinkingBlockStarted(evt.ThreadID, turnIndex, scope, evt.ItemID)
 	if firstBlock {
 		defer r.drainInterruptQueueIfIdle(evt.ThreadID)
@@ -120,6 +121,7 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 			Summary:   thinkingSummaryPreview(evt.Content),
 			PayloadID: payloadID,
 			ParentID:  eventParentID(evt),
+			Meta:      withProviderItemMeta(validJSONObjectString(evt.Meta), evt.ItemID),
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
@@ -190,7 +192,7 @@ func thinkingItemID(turnIndex int, scope string, blockIndex int) string {
 // settle's persist. Returns nil always; errors surface via the
 // settle goroutine's log line.
 func (r *Router) settleStreamingScope(threadID, scope string) error {
-	turnIndex, err := r.currentTurnIndex(threadID)
+	turnIndex, err := r.turnIndexForScope(threadID, scope)
 	if err != nil {
 		return err
 	}

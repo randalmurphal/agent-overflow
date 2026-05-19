@@ -347,6 +347,34 @@ func (s *Store) UpsertItem(item Item, payload *Payload) (Item, error) {
 	return s.UpsertItemWithInputPayload(item, payload, nil)
 }
 
+// FindStreamItemByProviderItemID resolves a streamed assistant row from the
+// provider's item id stored in items.meta. It is intentionally a narrow
+// fallback lookup for late completion events; the hot delta path keeps the
+// in-memory item id and never pays this JSON predicate.
+func (s *Store) FindStreamItemByProviderItemID(threadID string, turnIndex int, kind, parentID, providerItemID string) (Item, bool, error) {
+	row := s.db.QueryRow(`
+		SELECT `+itemColumns+`
+		  FROM items
+		  LEFT JOIN payloads ON payloads.id = items.payload_id
+		 WHERE items.thread_id = ?
+		   AND items.turn_index = ?
+		   AND items.kind = ?
+		   AND items.parent_id = ?
+		   AND json_extract(items.meta, '$.provider_item_id') = ?
+		 ORDER BY items.item_index ASC
+		 LIMIT 1`,
+		threadID, turnIndex, kind, parentID, providerItemID,
+	)
+	item, err := scanItemRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Item{}, false, nil
+	}
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: find stream item by provider item id: %w", err)
+	}
+	return item, true, nil
+}
+
 // UpsertItemWithInputPayload is the two-payload sibling of UpsertItem:
 // it accepts an optional `inputPayload` whose id is linked into
 // `items.input_payload_id`. Triage uses it to promote heavy tool-call

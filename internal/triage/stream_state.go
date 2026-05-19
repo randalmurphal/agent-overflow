@@ -32,6 +32,26 @@ func activeStreamKey(threadID string, turnIndex int, scope, providerItemID strin
 	return fmt.Sprintf("%s|%d|%s|provider:%s", threadID, turnIndex, scope, providerItemID)
 }
 
+func providerItemMeta(providerItemID string) string {
+	providerItemID = strings.TrimSpace(providerItemID)
+	if providerItemID == "" {
+		return ""
+	}
+	out, err := json.Marshal(map[string]string{"provider_item_id": providerItemID})
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
+func withProviderItemMeta(existing string, providerItemID string) string {
+	meta := providerItemMeta(providerItemID)
+	if meta == "" {
+		return existing
+	}
+	return mergeItemMetaJSON(existing, json.RawMessage(meta))
+}
+
 func (r *Router) ensureTextBlockStarted(threadID string, turnIndex int, scope, providerItemID string) (bool, string) {
 	key := activeStreamKey(threadID, turnIndex, scope, providerItemID)
 	counterKey := scopeCounterKey(threadID, turnIndex, scope)
@@ -353,7 +373,7 @@ func (r *Router) settleStreamingTextAsync(threadID string, turnIndex int, scope,
 	itemID, active := r.takeActiveTextBlock(threadID, turnIndex, scope, providerItemID)
 	if !active {
 		if finalContentPresent && finalContent != "" {
-			if err := r.persistCompletedTextItem(threadID, turnIndex, scope, finalContent); err != nil {
+			if err := r.persistOrUpdateCompletedTextItem(threadID, turnIndex, scope, providerItemID, finalContent); err != nil {
 				log.Printf("triage: persist completed text %s/%s: %v", threadID, providerItemID, err)
 			}
 		}
@@ -397,7 +417,26 @@ func (r *Router) activeTextKeysForScope(threadID string, turnIndex int, scope st
 	return keys
 }
 
-func (r *Router) persistCompletedTextItem(threadID string, turnIndex int, scope, content string) error {
+func (r *Router) persistOrUpdateCompletedTextItem(threadID string, turnIndex int, scope, providerItemID, content string) error {
+	if providerItemID != "" {
+		r.WaitForPendingSettles()
+		if item, found, err := r.store.FindStreamItemByProviderItemID(threadID, turnIndex, itemKindAssistantText, scope, providerItemID); err != nil {
+			return err
+		} else if found {
+			if item.Status != statusStreaming && item.Status != statusCompleted {
+				return nil
+			}
+			item.Summary = content
+			item.Status = statusCompleted
+			item.UpdatedAt = time.Now().UnixMilli()
+			r.enrichPathRefs(threadID, &item)
+			return r.persistItem(item, nil)
+		}
+	}
+	return r.persistCompletedTextItem(threadID, turnIndex, scope, providerItemID, content)
+}
+
+func (r *Router) persistCompletedTextItem(threadID string, turnIndex int, scope, providerItemID, content string) error {
 	itemID := r.nextTextItemID(threadID, turnIndex, scope)
 	now := time.Now().UnixMilli()
 	item := store.Item{
@@ -408,6 +447,8 @@ func (r *Router) persistCompletedTextItem(threadID string, turnIndex int, scope,
 		Role:      "assistant",
 		Status:    statusCompleted,
 		Summary:   content,
+		ParentID:  scope,
+		Meta:      providerItemMeta(providerItemID),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -647,7 +688,7 @@ func (r *Router) settleStreamingThinkingAsync(threadID string, turnIndex int, sc
 	itemID, active := r.takeActiveThinkingBlock(threadID, turnIndex, scope, providerItemID)
 	if !active {
 		if finalContentPresent && finalContent != "" {
-			if err := r.persistCompletedThinkingItem(threadID, turnIndex, scope, finalContent); err != nil {
+			if err := r.persistOrUpdateCompletedThinkingItem(threadID, turnIndex, scope, providerItemID, finalContent); err != nil {
 				log.Printf("triage: persist completed thinking %s/%s: %v", threadID, providerItemID, err)
 			}
 		}
@@ -691,7 +732,30 @@ func (r *Router) activeThinkingKeysForScope(threadID string, turnIndex int, scop
 	return keys
 }
 
-func (r *Router) persistCompletedThinkingItem(threadID string, turnIndex int, scope, content string) error {
+func (r *Router) persistOrUpdateCompletedThinkingItem(threadID string, turnIndex int, scope, providerItemID, content string) error {
+	if providerItemID != "" {
+		r.WaitForPendingSettles()
+		if item, found, err := r.store.FindStreamItemByProviderItemID(threadID, turnIndex, itemKindThinking, scope, providerItemID); err != nil {
+			return err
+		} else if found {
+			if item.Status != statusStreaming && item.Status != statusCompleted {
+				return nil
+			}
+			item.Summary = thinkingSummaryPreview(content)
+			item.Status = statusCompleted
+			item.UpdatedAt = time.Now().UnixMilli()
+			if item.PayloadID != "" {
+				if err := r.store.ReplacePayloadData(item.PayloadID, []byte(content), item.PayloadMeta, item.UpdatedAt); err != nil {
+					return fmt.Errorf("thinking final replace payload %s: %w", item.PayloadID, err)
+				}
+			}
+			return r.persistItem(item, nil)
+		}
+	}
+	return r.persistCompletedThinkingItem(threadID, turnIndex, scope, providerItemID, content)
+}
+
+func (r *Router) persistCompletedThinkingItem(threadID string, turnIndex int, scope, providerItemID, content string) error {
 	itemID := r.nextThinkingItemID(threadID, turnIndex, scope)
 	payloadID := "thinking:" + itemID
 	now := time.Now().UnixMilli()
@@ -704,6 +768,8 @@ func (r *Router) persistCompletedThinkingItem(threadID string, turnIndex int, sc
 		Status:    statusCompleted,
 		Summary:   thinkingSummaryPreview(content),
 		PayloadID: payloadID,
+		ParentID:  scope,
+		Meta:      providerItemMeta(providerItemID),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
