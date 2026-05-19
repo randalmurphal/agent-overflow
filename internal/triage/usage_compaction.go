@@ -6,13 +6,18 @@
 package triage
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"unicode"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
 )
+
+const maxProviderCompactionIDLength = 420
 
 func decodeContextWindow(raw json.RawMessage) (provider.ContextWindow, bool) {
 	if len(raw) == 0 {
@@ -61,14 +66,19 @@ func (r *Router) handleCompaction(evt provider.ProviderEvent) error {
 		return fmt.Errorf("compaction turn index: %w", err)
 	}
 
+	itemID, err := r.compactionItemID(evt, turnIndex)
+	if err != nil {
+		return err
+	}
 	item := store.Item{
-		ID:        nextCompactionID(turnIndex),
+		ID:        itemID,
 		ThreadID:  evt.ThreadID,
 		TurnIndex: turnIndex,
 		Kind:      "compaction",
 		Role:      "system",
 		Status:    statusCompleted,
 		Summary:   stringsx.FirstNonEmptyTrimmed(evt.Content, "Context compacted"),
+		Meta:      string(evt.Meta),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -87,6 +97,44 @@ func (r *Router) handleCompaction(evt provider.ProviderEvent) error {
 	// would flash a misleading 0% in the brief window between the two
 	// notifications.
 	return nil
+}
+
+func (r *Router) compactionItemID(evt provider.ProviderEvent, turnIndex int) (string, error) {
+	if providerID := normalizeProviderCompactionID(evt.ItemID); providerID != "" {
+		return providerCompactionID(turnIndex, providerID), nil
+	}
+	return r.nextAvailableSequencedCompactionID(evt.ThreadID, turnIndex)
+}
+
+func (r *Router) nextAvailableSequencedCompactionID(threadID string, turnIndex int) (string, error) {
+	for {
+		itemID := sequencedCompactionID(turnIndex, r.nextCompactionSequence(threadID, turnIndex))
+		if _, ok, err := r.store.GetThreadItem(threadID, itemID); err != nil {
+			return "", fmt.Errorf("compaction id lookup %s: %w", itemID, err)
+		} else if !ok {
+			return itemID, nil
+		}
+	}
+}
+
+func providerCompactionID(turnIndex int, providerID string) string {
+	return fmt.Sprintf("compact:%d:provider:%s", turnIndex, providerID)
+}
+
+func sequencedCompactionID(turnIndex, seq int) string {
+	return fmt.Sprintf("compact:%d:seq:%d", turnIndex, seq)
+}
+
+func normalizeProviderCompactionID(providerID string) string {
+	trimmed := strings.TrimSpace(providerID)
+	if trimmed == "" || strings.ContainsFunc(trimmed, unicode.IsControl) {
+		return ""
+	}
+	if len(trimmed) <= maxProviderCompactionIDLength {
+		return trimmed
+	}
+	hash := sha256.Sum256([]byte(trimmed))
+	return fmt.Sprintf("sha256:%x", hash)
 }
 
 func (r *Router) persistAndEmitContextWindow(threadID string, window provider.ContextWindow) error {

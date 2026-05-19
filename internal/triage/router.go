@@ -65,6 +65,7 @@ type Router struct {
 	activeThinkingBlockRefs map[string]activeStreamBlock
 	streamingItemCounts     map[string]int
 	errorSeqByScope         map[string]int
+	compactionSeqByScope    map[string]int
 	notificationSeqByScope  map[string]int
 	// streamPersistBuffers decouple the live UI stream from durable
 	// history writes. Text/thinking deltas emit immediately on ordered
@@ -269,6 +270,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		activeThinkingBlockRefs:    make(map[string]activeStreamBlock),
 		streamingItemCounts:        make(map[string]int),
 		errorSeqByScope:            make(map[string]int),
+		compactionSeqByScope:       make(map[string]int),
 		notificationSeqByScope:     make(map[string]int),
 		streamPersistBuffers:       make(map[string]*streamPersistBuffer),
 		settledTurns:               make(map[string]bool),

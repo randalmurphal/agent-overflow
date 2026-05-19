@@ -226,7 +226,7 @@ func TestParseToolProgressNoContentDropped(t *testing.T) {
 }
 
 func TestParseCompactBoundary(t *testing.T) {
-	line := []byte(`{"type":"system","subtype":"compact_boundary","data":{"context_window":{"used_tokens":50000,"max_tokens":200000,"used_percentage":25,"total_processed":120000}}}`)
+	line := []byte(`{"type":"system","subtype":"compact_boundary","uuid":"compact-1","content":"Conversation compacted","data":{"context_window":{"used_tokens":50000,"max_tokens":200000,"used_percentage":25,"total_processed":120000}}}`)
 
 	events, err := ParseLine(testThread, line)
 	if err != nil {
@@ -243,6 +243,12 @@ func TestParseCompactBoundary(t *testing.T) {
 	if evt.ThreadID != testThread {
 		t.Errorf("threadID: got %q, want %q", evt.ThreadID, testThread)
 	}
+	if evt.ItemID != "compact-1" {
+		t.Errorf("itemID: got %q, want compact-1", evt.ItemID)
+	}
+	if evt.Content != "Conversation compacted" {
+		t.Errorf("content: got %q, want Conversation compacted", evt.Content)
+	}
 
 	var meta provider.ContextWindow
 	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
@@ -256,6 +262,59 @@ func TestParseCompactBoundary(t *testing.T) {
 	}
 	if meta.UsedPercentage != 25 {
 		t.Errorf("UsedPercentage: got %f, want 25", meta.UsedPercentage)
+	}
+}
+
+func TestParseCompactBoundaryPreservesCompactMetadata(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"compact_boundary","uuid":"compact-2","content":"Conversation compacted","compactMetadata":{"trigger":"auto","durationMs":111814}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	evt := events[0]
+	if evt.ItemID != "compact-2" {
+		t.Errorf("itemID: got %q, want compact-2", evt.ItemID)
+	}
+	if evt.Content != "Conversation compacted" {
+		t.Errorf("content: got %q, want Conversation compacted", evt.Content)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["trigger"] != "auto" {
+		t.Fatalf("trigger = %v, want auto", meta["trigger"])
+	}
+	if meta["durationMs"] != float64(111814) {
+		t.Fatalf("durationMs = %v, want 111814", meta["durationMs"])
+	}
+}
+
+func TestParseCompactBoundaryPreservesCompactMetadataWhenDataIsNotContextWindow(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"compact_boundary","uuid":"compact-3","content":"Conversation compacted","data":{"note":"not a context window"},"compactMetadata":{"trigger":"auto","durationMs":222}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["trigger"] != "auto" {
+		t.Fatalf("trigger = %v, want auto", meta["trigger"])
+	}
+	if meta["durationMs"] != float64(222) {
+		t.Fatalf("durationMs = %v, want 222", meta["durationMs"])
 	}
 }
 

@@ -550,6 +550,209 @@ func TestCompactBoundaryAndRateLimitsEmit(t *testing.T) {
 	}
 }
 
+func TestCompactBoundariesInSameTurnPersistDistinctRows(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	for _, evt := range []provider.ProviderEvent{
+		{
+			Kind:      provider.EventCompactBoundary,
+			ThreadID:  "t1",
+			ItemID:    "compact-a",
+			Content:   "Conversation compacted",
+			Meta:      json.RawMessage(`{"trigger":"auto"}`),
+			Timestamp: time.Now(),
+		},
+		{
+			Kind:      provider.EventCompactBoundary,
+			ThreadID:  "t1",
+			ItemID:    "compact-b",
+			Content:   "Conversation compacted",
+			Meta:      json.RawMessage(`{"trigger":"manual"}`),
+			Timestamp: time.Now(),
+		},
+	} {
+		if err := router.Handle(evt); err != nil {
+			t.Fatalf("handle compact %s: %v", evt.ItemID, err)
+		}
+	}
+
+	upserts := filterItemEventUpserts(*emissions)
+	if len(upserts) != 2 {
+		t.Fatalf("expected 2 compaction upserts, got %+v", upserts)
+	}
+	if upserts[0].ID == upserts[1].ID {
+		t.Fatalf("compaction IDs collided: %q", upserts[0].ID)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	compactions := make([]store.Item, 0, 2)
+	for _, item := range items {
+		if item.Kind == "compaction" {
+			compactions = append(compactions, item)
+		}
+	}
+	if len(compactions) != 2 {
+		t.Fatalf("stored compactions = %d, want 2 (%+v)", len(compactions), items)
+	}
+	if compactions[0].ID != "compact:0:provider:compact-a" || compactions[1].ID != "compact:0:provider:compact-b" {
+		t.Fatalf("stored compaction IDs = %q, %q", compactions[0].ID, compactions[1].ID)
+	}
+	if !strings.Contains(compactions[0].Meta, `"trigger":"auto"`) {
+		t.Fatalf("compaction meta not persisted: %q", compactions[0].Meta)
+	}
+}
+
+func TestCompactBoundaryWithSameProviderIDUpdatesExistingRow(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	for _, content := range []string{"First compact", "Second compact"} {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventCompactBoundary,
+			ThreadID:  "t1",
+			ItemID:    "compact-a",
+			Content:   content,
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("handle compact %q: %v", content, err)
+		}
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	var compactions []store.Item
+	for _, item := range items {
+		if item.Kind == "compaction" {
+			compactions = append(compactions, item)
+		}
+	}
+	if len(compactions) != 1 {
+		t.Fatalf("stored compactions = %d, want 1 (%+v)", len(compactions), items)
+	}
+	if compactions[0].Summary != "Second compact" {
+		t.Fatalf("summary = %q, want updated content", compactions[0].Summary)
+	}
+}
+
+func TestCompactBoundaryProviderIDNormalization(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	longID := strings.Repeat("a", maxProviderCompactionIDLength+1)
+	for _, evt := range []provider.ProviderEvent{
+		{
+			Kind:      provider.EventCompactBoundary,
+			ThreadID:  "t1",
+			ItemID:    " compact-a ",
+			Timestamp: time.Now(),
+		},
+		{
+			Kind:      provider.EventCompactBoundary,
+			ThreadID:  "t1",
+			ItemID:    "bad\nid",
+			Timestamp: time.Now(),
+		},
+		{
+			Kind:      provider.EventCompactBoundary,
+			ThreadID:  "t1",
+			ItemID:    longID,
+			Timestamp: time.Now(),
+		},
+	} {
+		if err := router.Handle(evt); err != nil {
+			t.Fatalf("handle compact %q: %v", evt.ItemID, err)
+		}
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	compactions := compactionItems(items)
+	if len(compactions) != 3 {
+		t.Fatalf("stored compactions = %d, want 3 (%+v)", len(compactions), items)
+	}
+	if compactions[0].ID != "compact:0:provider:compact-a" {
+		t.Fatalf("trimmed provider ID = %q", compactions[0].ID)
+	}
+	if compactions[1].ID != "compact:0:seq:0" {
+		t.Fatalf("control-character provider ID should fall back to seq, got %q", compactions[1].ID)
+	}
+	if !strings.HasPrefix(compactions[2].ID, "compact:0:provider:sha256:") {
+		t.Fatalf("long provider ID should be hashed, got %q", compactions[2].ID)
+	}
+	if len(compactions[2].ID) > 512 {
+		t.Fatalf("hashed provider ID too long: %d", len(compactions[2].ID))
+	}
+}
+
+func TestCompactBoundariesWithoutProviderIDUseNextAvailableSequence(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	for i := 0; i < 2; i++ {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventCompactBoundary,
+			ThreadID:  "t1",
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("handle compact %d: %v", i, err)
+		}
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	compactions := compactionItems(items)
+	if len(compactions) != 2 {
+		t.Fatalf("stored compactions = %d, want 2 (%+v)", len(compactions), items)
+	}
+	if compactions[0].ID != "compact:0:seq:0" || compactions[1].ID != "compact:0:seq:1" {
+		t.Fatalf("stored compaction IDs = %q, %q", compactions[0].ID, compactions[1].ID)
+	}
+}
+
+func TestCompactBoundarySequenceSkipsPersistedRowsAfterRouterRestart(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventCompactBoundary,
+		ThreadID:  "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle initial compact: %v", err)
+	}
+
+	router = NewRouter(st, func(string, any) {})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventCompactBoundary,
+		ThreadID:  "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle compact after restart: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	compactions := compactionItems(items)
+	if len(compactions) != 2 {
+		t.Fatalf("stored compactions = %d, want 2 (%+v)", len(compactions), items)
+	}
+	if compactions[0].ID != "compact:0:seq:0" || compactions[1].ID != "compact:0:seq:1" {
+		t.Fatalf("stored compaction IDs = %q, %q", compactions[0].ID, compactions[1].ID)
+	}
+}
+
 func TestCompactBoundaryWithContextWindowEmitsUsageSnapshot(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -1468,6 +1671,16 @@ func filterItemEventUpserts(emissions []emitted) []store.Item {
 			continue
 		}
 		out = append(out, *event.Item)
+	}
+	return out
+}
+
+func compactionItems(items []store.Item) []store.Item {
+	out := make([]store.Item, 0)
+	for _, item := range items {
+		if item.Kind == "compaction" {
+			out = append(out, item)
+		}
 	}
 	return out
 }

@@ -773,6 +773,9 @@ func TestClassifyThreadCompacted(t *testing.T) {
 	if events[0].ThreadID != testThread {
 		t.Errorf("threadID: got %q, want %q", events[0].ThreadID, testThread)
 	}
+	if events[0].ItemID != "c1" {
+		t.Errorf("itemID: got %q, want c1", events[0].ItemID)
+	}
 	if string(events[0].Meta) != string(params) {
 		t.Errorf("meta: got %s, want %s", string(events[0].Meta), string(params))
 	}

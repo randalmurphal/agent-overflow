@@ -741,8 +741,13 @@ func (r *Router) nextErrorSequence(threadID string, turnIndex int, scope string)
 	return seq
 }
 
-func nextCompactionID(turnIndex int) string {
-	return fmt.Sprintf("compact:%d", turnIndex)
+func (r *Router) nextCompactionSequence(threadID string, turnIndex int) int {
+	key := scopeCounterKey(threadID, turnIndex, "compaction")
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	seq := r.compactionSeqByScope[key]
+	r.compactionSeqByScope[key] = seq + 1
+	return seq
 }
 
 func nextToolCompletionID(launchID string) string {

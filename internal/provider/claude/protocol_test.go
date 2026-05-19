@@ -1098,7 +1098,7 @@ func TestParseLine_SystemToolProgressDropped(t *testing.T) {
 }
 
 func TestParseLine_SystemCompactBoundary(t *testing.T) {
-	line := []byte(`{"type":"system","subtype":"compact_boundary","data":{"usedTokens":5000,"maxTokens":200000}}`)
+	line := []byte(`{"type":"system","subtype":"compact_boundary","uuid":"compact-proto","content":"Conversation compacted","data":{"usedTokens":5000,"maxTokens":200000}}`)
 	events, err := ParseLine(testThreadProto, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -1108,5 +1108,11 @@ func TestParseLine_SystemCompactBoundary(t *testing.T) {
 	}
 	if events[0].Kind != provider.EventCompactBoundary {
 		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventCompactBoundary)
+	}
+	if events[0].ItemID != "compact-proto" {
+		t.Errorf("itemID: got %q, want compact-proto", events[0].ItemID)
+	}
+	if events[0].Content != "Conversation compacted" {
+		t.Errorf("content: got %q, want Conversation compacted", events[0].Content)
 	}
 }

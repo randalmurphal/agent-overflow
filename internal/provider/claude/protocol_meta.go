@@ -1,8 +1,7 @@
 // Package claude — protocol meta helpers for system-type NDJSON lines.
-// extractCompactBoundaryMeta normalises context-window metadata emitted
-// alongside compact_boundary / init frames so downstream consumers can
-// rely on a single shape regardless of which CLI version produced the
-// line.
+// extractCompactBoundaryMeta normalises context-window snapshots when
+// compact_boundary frames include them. If no snapshot is present, it
+// preserves compact metadata payloads for triage instead.
 
 package claude
 
@@ -13,7 +12,7 @@ import (
 )
 
 func extractCompactBoundaryMeta(raw map[string]json.RawMessage) json.RawMessage {
-	for _, key := range []string{"data", "content"} {
+	for _, key := range []string{"data", "compactMetadata", "compact_metadata", "content"} {
 		candidate, ok := raw[key]
 		if !ok {
 			continue
@@ -21,7 +20,11 @@ func extractCompactBoundaryMeta(raw map[string]json.RawMessage) json.RawMessage 
 		if meta := normalizeContextWindow(candidate); meta != nil {
 			return meta
 		}
-		return candidate
+	}
+	for _, key := range []string{"compactMetadata", "compact_metadata", "data", "content"} {
+		if candidate, ok := raw[key]; ok {
+			return candidate
+		}
 	}
 	return nil
 }

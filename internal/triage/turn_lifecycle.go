@@ -790,8 +790,9 @@ func (r *Router) ActiveTurnSnapshot(threadID string) (ActiveTurnSnapshot, bool) 
 //     pendingCommandDiffs, pendingApprovals (and siblings). These maps
 //     answer "what's mid-turn right now."
 //   - **Id-allocating counters** (segmentIndexByScope, blockIndexByScope,
-//     errorSeqByScope, terminalInteractionSeq): cleared at CleanupThread,
-//     with a selective re-init reset in setOpenTurn. Wiping HERE would
+//     errorSeqByScope, compactionSeqByScope, terminalInteractionSeq):
+//     cleared at CleanupThread, with a selective re-init reset in
+//     setOpenTurn. Wiping HERE would
 //     cause id collisions when the wire emits two `result` envelopes
 //     for one logical turn (Claude task_notification → CLI-synthesized
 //     `user` envelope → second result, fatal-error synthetic-truncate
@@ -1065,6 +1066,7 @@ func (r *Router) CleanupThread(threadID string) {
 	deleteByPrefix(r.activeTextBlockRefs, prefix)
 	deleteByPrefix(r.activeThinkingBlockRefs, prefix)
 	deleteByPrefix(r.errorSeqByScope, prefix)
+	deleteByPrefix(r.compactionSeqByScope, prefix)
 	deleteByPrefix(r.notificationSeqByScope, prefix)
 	for key := range r.streamPersistBuffers {
 		if strings.HasPrefix(key, prefix) {

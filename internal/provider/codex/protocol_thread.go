@@ -29,6 +29,7 @@ func classifyThreadNotification(threadID, method string, params json.RawMessage,
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventCompactBoundary,
 			ThreadID:  threadID,
+			ItemID:    readTopLevelString(params, "compactionId"),
 			Meta:      params,
 			Timestamp: now,
 		}}, true

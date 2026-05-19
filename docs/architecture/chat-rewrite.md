@@ -141,7 +141,7 @@ Top-level items (parent thread, `parent_id = ""`):
 | `tool_call`       | provider-native id (see adapter contract)     | Claude: `tool_use.id`. Codex: `item.id` from v2 notifications (see adapter) |
 | `tool_completion` | `complete:<tool_call.id>`                     | 1:1 with launch; deterministic so replay upserts, not duplicates            |
 | `error`           | `error:<turn_index>:<error_seq>`              | `error_seq` is a per-turn counter (multiple errors in one turn possible)    |
-| `compaction`      | `compact:<turn_index>`                        | one per compaction event; compaction lands at a turn boundary by definition |
+| `compaction`      | `compact:<turn_index>:provider:<id>` or `compact:<turn_index>:seq:<n>` | one per compaction event; provider ids keep replay idempotent, seq is fallback |
 
 **Child items (inside a subagent card, `parent_id = <card.id>`):**
 id formats append the parent card id before the intra-card counter
@@ -962,6 +962,10 @@ label. Compactions usually land at turn boundaries. If one fires
 mid-turn, items before the divider are NOT marked specially — the
 divider is enough indication.
 
+Provider compaction ids are preserved when present. Without one, triage
+uses a per-turn sequence so multiple same-turn compactions do not overwrite
+each other.
+
 ### Working indicator
 
 A footer component derived purely from `pane.isTurnActive`. Renders:
@@ -992,7 +996,6 @@ meter listens.
 
 **Payload shapes on `provider:usage`:**
 - Context update: `{action: 'usage', threadId, usedTokens, maxTokens, contextPercent}`
-- Compaction reset: `{action: 'reset', threadId}`
 
 **Seed on thread switch:** we need the meter to show something
 immediately when the user switches threads, not stay blank until the
@@ -1002,11 +1005,11 @@ that thread). Router updates it on every EventTokenUsage. On
 switchThread, the frontend reads this directly from the thread row —
 no separate binding.
 
-Compaction with no context snapshot resets `last_token_usage` to an
-empty string (cleared column) at the same transaction as the compaction
-item upsert. If the provider includes a fresh context-window snapshot
-on the compaction boundary, the router persists and emits that snapshot
-instead.
+Compaction with no context snapshot does not emit usage and does not
+clear `last_token_usage`; Codex emits a fresh token-usage update after
+compaction, and the meter should keep the prior reading until that
+arrives. If the provider includes a fresh context-window snapshot on
+the compaction boundary, the router persists and emits that snapshot.
 
 NOT in the chat history. Pure ambient indicator.
 
@@ -1298,7 +1301,7 @@ additionally:
 | `EventCommandOutput`        | find/create the related `tool_call`, attach command output as its payload                             |
 | `EventProposedPlan`         | upsert a `tool_call` with tool_name="plan"; payload carries the plan markdown                        |
 | `EventError`                | upsert `error` item; id = uuid; summary = error message. ALSO: flip any `streaming`/`running` items in this turn to `errored` (live-crash flip) |
-| `EventCompactBoundary`      | upsert `compaction` item; id = uuid; summary = compaction note. ALSO: emit included context snapshot if present, otherwise emit `provider:usage` reset |
+| `EventCompactBoundary`      | upsert `compaction` item; id = provider id or per-turn sequence; summary = compaction note. ALSO: emit included context snapshot if present |
 | `EventTurnStart`            | from provider wire turn-start signal (Claude `system/init` matched to a pending send, Codex `turn/started`); reset `segmentIndexByScope[threadID][turn_index][""]` and `blockIndexByScope[threadID][turn_index][""]`; open turn span; mark turn open; no item |
 | `EventTurnComplete`         | from wire signal or typed synthesis (see Turn lifecycle synthesis); flip `streaming` items in this turn to `completed`; drain `interruptQueue`; close turn span; clear open-turn marker; if `TurnComplete` is `provider.TruncatedTurnCompleteMeta`, flip streaming to `errored` and drain queue as `errored` |
 | `EventApprovalRequest`      | emit `provider:approval` `{action:request, request}`                                                  |

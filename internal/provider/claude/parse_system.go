@@ -57,6 +57,8 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventCompactBoundary,
 			ThreadID:  threadID,
+			ItemID:    readRawString(raw["uuid"]),
+			Content:   readRawString(raw["content"]),
 			Meta:      meta,
 			Timestamp: now,
 		}}, nil
