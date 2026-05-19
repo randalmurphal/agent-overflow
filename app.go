@@ -358,13 +358,6 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 		return err
 	}
 
-	// Release RPCs the dispatcher has been parking at the ready-gate
-	// since main.bootTransport installed it. Test path leaves
-	// transportServer nil.
-	if srv := a.transportServer.Load(); srv != nil {
-		srv.SignalReady()
-	}
-
 	// Probe provider binaries once on boot so the thread-level banner can
 	// surface "claude not found" / "codex too old" before the user opens
 	// settings. Runs in a goroutine because DetectProvider spawns subprocesses

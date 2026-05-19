@@ -453,18 +453,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return shutdownErr
 }
 
-// SignalReady releases any RPCs queued at the dispatcher's ready-gate.
-// Production boot calls this from App.ServiceStartup after stores,
-// observability, and the subsystems are initialised — RPCs the SPA
-// queued during the boot window then flow through. Idempotent; safe
-// to call when the gate is already open (e.g. tests that don't hold).
-func (s *Server) SignalReady() {
-	if s.cfg.Dispatcher == nil {
-		return
-	}
-	s.cfg.Dispatcher.SignalReady()
-}
-
 // SetOriginPatterns rotates the WS origin allow-list without binding a
 // new listener. Useful when a frontend lifecycle event (e.g. user
 // changes the trusted-origins setting) needs to update the policy
