@@ -37,14 +37,6 @@ func ThreadRefPattern(threadID string) string {
 	return fmt.Sprintf("%s/%s/**", RefsPrefix, EncodeThreadID(threadID))
 }
 
-// LegacyTurnRefPattern matches the retired turn-index checkpoint refs. v40
-// rebuilt checkpoint metadata around message refs and drops the DB rows, so
-// startup cleanup uses this pattern to remove hidden snapshots that no longer
-// have an owning row.
-func LegacyTurnRefPattern(threadID string) string {
-	return fmt.Sprintf("%s/%s/turn/**", RefsPrefix, EncodeThreadID(threadID))
-}
-
 // ThreadRefPrefix returns the prefix that each of a thread's refs starts with;
 // useful for filtering output from commands that don't accept globs.
 func ThreadRefPrefix(threadID string) string {

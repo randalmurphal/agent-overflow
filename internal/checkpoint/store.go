@@ -742,29 +742,6 @@ func (s *Store) CleanupThread(ctx context.Context, workspace, threadID string) e
 	return errors.Join(errs...)
 }
 
-// CleanupLegacyTurnRefs deletes retired turn-index checkpoint refs for a
-// thread. Message checkpoints use refs under `message/`; keeping old `turn/`
-// refs after the v40 DB rebuild would leave hidden snapshots with no metadata
-// row left to manage or clean up.
-func (s *Store) CleanupLegacyTurnRefs(ctx context.Context, workspace, threadID string) error {
-	stdout, _, _, err := runGit(ctx, workspace, nil, false,
-		"for-each-ref", "--format=%(refname)", LegacyTurnRefPattern(threadID))
-	if err != nil {
-		return fmt.Errorf("checkpoint: list legacy turn refs: %w", err)
-	}
-	var errs []error
-	for _, ref := range strings.Split(stdout, "\n") {
-		ref = strings.TrimSpace(ref)
-		if ref == "" {
-			continue
-		}
-		if _, _, _, err := runGit(ctx, workspace, nil, true, "update-ref", "-d", ref); err != nil {
-			errs = append(errs, fmt.Errorf("checkpoint: delete legacy ref %s: %w", ref, err))
-		}
-	}
-	return errors.Join(errs...)
-}
-
 // DeleteRef removes a single checkpoint ref. Missing refs are not an error.
 func (s *Store) DeleteRef(ctx context.Context, workspace, ref string) error {
 	if _, _, _, err := runGit(ctx, workspace, nil, true, "update-ref", "-d", ref); err != nil {

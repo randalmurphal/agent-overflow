@@ -419,15 +419,10 @@ func (a *launcherApp) validateDistroName(name string) error {
 func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	ctx := context.Background()
 
-	if err := a.ensurePayloadInstalled(ctx, distro); err != nil {
-		a.window.SetURL("/picker")
-		return fmt.Errorf("install payload: %w", err)
-	}
-
-	binPath, err := wslHomePath(ctx, distro)
+	binPath, err := a.ensurePayloadInstalled(ctx, distro)
 	if err != nil {
 		a.window.SetURL("/picker")
-		return fmt.Errorf("resolve WSL home: %w", err)
+		return fmt.Errorf("install payload: %w", err)
 	}
 
 	l, bs, err := wsllauncher.Launch(ctx, wsllauncher.LaunchOptions{

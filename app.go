@@ -510,7 +510,6 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 		log.Printf("app: recovered %d Claude background launches as session_died", recovered)
 	}
 	a.checkpoints = checkpoint.NewStore()
-	a.cleanupLegacyCheckpointRefs(st)
 	a.registry = discussion.NewRegistry(st)
 	a.channels = discussion.NewChannelService(st)
 	designBase := filepath.Join(dbDir, "design-workdirs")

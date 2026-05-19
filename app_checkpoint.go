@@ -557,23 +557,3 @@ func (a *App) checkpointStore() *checkpoint.Store {
 	}
 	return checkpoint.NewStore()
 }
-
-func (a *App) cleanupLegacyCheckpointRefs(st *store.Store) {
-	refs, err := st.ListThreadWorkspaceRefs()
-	if err != nil {
-		log.Printf("checkpoint: list workspaces for legacy cleanup: %v", err)
-		return
-	}
-	for _, ref := range refs {
-		workspace := ref.WorkspacePath
-		if workspace == "" {
-			workspace = ref.WorktreePath
-		}
-		if workspace == "" || !a.checkpointStore().IsGitRepository(context.Background(), workspace) {
-			continue
-		}
-		if err := a.checkpointStore().CleanupLegacyTurnRefs(context.Background(), workspace, ref.ID); err != nil {
-			log.Printf("checkpoint: cleanup legacy refs thread=%s workspace=%s: %v", ref.ID, workspace, err)
-		}
-	}
-}

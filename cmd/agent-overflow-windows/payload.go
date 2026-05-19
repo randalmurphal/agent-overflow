@@ -22,6 +22,8 @@ import (
 // ensurePayloadInstalled writes the embedded Linux binary into the
 // distro if either (a) we've never installed in this distro or (b)
 // the embedded payload version has changed since the last install.
+// Returns the resolved bin path so the caller can pass it straight to
+// wsllauncher.Launch without paying for a second wsl.exe round-trip.
 //
 // We could also `--version` the on-disk binary and compare against
 // the embed, but the JSON-tracked version is simpler and matches
@@ -31,30 +33,30 @@ import (
 // persistSuccessfulLaunch so a fresh install followed by a Launch
 // failure doesn't trap the user on a saved-but-broken distro on next
 // boot.
-func (a *launcherApp) ensurePayloadInstalled(ctx context.Context, distro string) error {
+func (a *launcherApp) ensurePayloadInstalled(ctx context.Context, distro string) (string, error) {
+	binPath, err := wslHomePath(ctx, distro)
+	if err != nil {
+		return "", err
+	}
+
 	cfg, _ := loadConfig()
 	if cfg == nil {
 		cfg = &wsldistro.Config{}
 	}
 	if cfg.InstalledVer == payloadVersion && cfg.InstalledDistro == distro {
-		return nil
+		return binPath, nil
 	}
 
 	tmp, err := writeEmbeddedPayload()
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer os.Remove(tmp)
 
-	wslPath, err := wslHomePath(ctx, distro)
-	if err != nil {
-		return err
+	if err := wsllauncher.InstallPayload(ctx, distro, tmp, binPath); err != nil {
+		return "", err
 	}
-
-	if err := wsllauncher.InstallPayload(ctx, distro, tmp, wslPath); err != nil {
-		return err
-	}
-	return nil
+	return binPath, nil
 }
 
 // writeEmbeddedPayload drops the //go:embed payload to a temp file
