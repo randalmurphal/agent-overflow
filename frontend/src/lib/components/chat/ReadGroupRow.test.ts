@@ -73,8 +73,9 @@ describe('<ReadGroupRow>', () => {
   it('leaves paths outside the workspace absolute so EditorLink can resolve them', () => {
     // Reads of system files (rare but real — agent surveying a
     // dependency under /usr or a sibling repo) must stay openable.
-    // EditorLink consumes `data-path` directly when it's absolute, so
-    // pinning that value here is the regression guard.
+    // EditorLink consumes `data-path` directly when it's absolute, and
+    // the visible label stays absolute so outside-repo reads are not
+    // confused with same-named project files.
     const group = mkGroup([
       mkReadItem('r1', 'Read: /usr/local/share/foo.go'),
       mkReadItem('r2', 'Read: /home/me/repo/src/bar.ts'),
@@ -87,6 +88,10 @@ describe('<ReadGroupRow>', () => {
     expect(links.map((el) => el.getAttribute('data-path'))).toEqual([
       '/usr/local/share/foo.go',
       'src/bar.ts',
+    ]);
+    expect(links.map((el) => el.textContent?.trim())).toEqual([
+      '/usr/local/share/foo.go',
+      'bar.ts',
     ]);
   });
 
@@ -111,7 +116,7 @@ describe('<ReadGroupRow>', () => {
     );
   });
 
-  it('keeps exact duplicate paths as duplicate basenames', () => {
+  it('dedupes exact duplicate paths', () => {
     const group = mkGroup([
       mkReadItem('r1', 'Read: /home/me/repo/internal/store/paging_test.go'),
       mkReadItem('r2', 'Read: /home/me/repo/internal/store/paging_test.go'),
@@ -123,8 +128,49 @@ describe('<ReadGroupRow>', () => {
 
     expect(getAllByTestId('editor-link').map((el) => el.textContent?.trim())).toEqual([
       'paging_test.go',
-      'paging_test.go',
       'app_paging.go',
+    ]);
+  });
+
+  it('dedupes absolute and relative forms of the same workspace path', () => {
+    const group = mkGroup([
+      mkReadItem('r1', 'Read: /home/me/repo/src/events.ts'),
+      mkReadItem('r2', 'Read: src/events.ts'),
+      mkReadItem('r3', 'Read: /home/me/repo/src/other.ts'),
+    ]);
+    const { getAllByTestId } = render(ReadGroupRow, {
+      props: { pane: paneWithWorkspace('/home/me/repo'), group },
+    });
+
+    const links = getAllByTestId('editor-link');
+    expect(links.map((el) => el.getAttribute('data-path'))).toEqual([
+      'src/events.ts',
+      'src/other.ts',
+    ]);
+    expect(links.map((el) => el.textContent?.trim())).toEqual([
+      'events.ts',
+      'other.ts',
+    ]);
+  });
+
+  it('keeps same-file reads with different line numbers distinct', () => {
+    const group = mkGroup([
+      mkReadItem('r1', 'Read: /home/me/repo/src/events.ts:10'),
+      mkReadItem('r2', 'Read: /home/me/repo/src/events.ts:40'),
+      mkReadItem('r3', 'Read: /home/me/repo/src/events.ts:10'),
+    ]);
+    const { getAllByTestId } = render(ReadGroupRow, {
+      props: { pane: paneWithWorkspace('/home/me/repo'), group },
+    });
+
+    const links = getAllByTestId('editor-link');
+    expect(links.map((el) => el.getAttribute('data-path'))).toEqual([
+      'src/events.ts',
+      'src/events.ts',
+    ]);
+    expect(links.map((el) => el.getAttribute('aria-label'))).toEqual([
+      'Open events.ts:10 in editor',
+      'Open events.ts:40 in editor',
     ]);
   });
 

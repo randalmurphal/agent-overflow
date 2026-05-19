@@ -105,6 +105,40 @@ describe('toolCardInputPreview', () => {
 });
 
 describe('presentToolCardInputPreview', () => {
+  it('prefers structured file_path metadata over a truncated read summary', () => {
+    const item = makeItem({
+      toolName: 'Read',
+      summary: 'Read: frontend/src/lib/components/composer/some/deeply/nested/Compose…',
+      meta: JSON.stringify({
+        input: {
+          file_path: '/home/me/repo/frontend/src/lib/components/composer/some/deeply/nested/Composer.svelte',
+        },
+      }),
+    });
+    const result = presentToolCardInputPreview(item, null, JSON.parse(item.meta!), '/home/me/repo');
+    expect(result.text).toBe('Composer.svelte');
+    expect(result.path).toEqual({
+      path: 'frontend/src/lib/components/composer/some/deeply/nested/Composer.svelte',
+      line: undefined,
+      col: undefined,
+    });
+  });
+
+  it('uses structured notebook_path metadata for notebook edits', () => {
+    const item = makeItem({
+      toolName: 'NotebookEdit',
+      summary: 'NotebookEdit: /home/me/repo/notebooks/analysis.ipynb',
+      meta: JSON.stringify({
+        input: {
+          notebook_path: '/home/me/repo/notebooks/analysis.ipynb',
+        },
+      }),
+    });
+    const result = presentToolCardInputPreview(item, null, JSON.parse(item.meta!), '/home/me/repo');
+    expect(result.text).toBe('analysis.ipynb');
+    expect(result.path?.path).toBe('notebooks/analysis.ipynb');
+  });
+
   it('strips the redundant `<toolName>: ` prefix triage embeds in the summary', () => {
     const item = makeItem({ toolName: 'Read', summary: 'Read: foo.go' });
     expect(presentToolCardInputPreview(item, null, null, '').text).toBe('foo.go');
@@ -139,18 +173,16 @@ describe('presentToolCardInputPreview', () => {
     expect(result.path).toEqual({ path: 'src/foo.ts', line: 42, col: 7 });
   });
 
-  it('collapses paths outside the workspace to basename too while preserving the absolute click target', () => {
+  it('displays paths outside the workspace fully while preserving the absolute click target', () => {
     // The relativizer leaves a non-workspace path alone, but the
-    // basename collapse runs after it — readers don't gain anything
-    // from seeing the full /usr/local/share prefix inline, and the
-    // EditorLink target still carries the absolute path so the click
-    // resolves.
+    // display label must keep the full absolute path so outside-repo
+    // reads are visibly distinct from project files with the same name.
     const item = makeItem({
       toolName: 'Read',
       summary: 'Read: /usr/local/share/foo.go',
     });
     const result = presentToolCardInputPreview(item, null, null, '/home/me/repo');
-    expect(result.text).toBe('foo.go');
+    expect(result.text).toBe('/usr/local/share/foo.go');
     expect(result.path).toEqual({
       path: '/usr/local/share/foo.go',
       line: undefined,
@@ -181,16 +213,15 @@ describe('presentToolCardInputPreview', () => {
     );
   });
 
-  it('still collapses the displayed text to basename when workspacePath is empty', () => {
-    // No workspace means the relativizer is a no-op and the EditorLink
-    // target stays absolute, but the display still collapses to the
-    // basename — readers want the file name, not the directory tree.
+  it('shows absolute paths fully when workspacePath is empty', () => {
+    // No workspace means an absolute path cannot be proven repo-local,
+    // so the UI must show the full path.
     const item = makeItem({
       toolName: 'Read',
       summary: 'Read: /home/me/repo/test.go',
     });
     const result = presentToolCardInputPreview(item, null, null, '');
-    expect(result.text).toBe('test.go');
+    expect(result.text).toBe('/home/me/repo/test.go');
     expect(result.path).toEqual({
       path: '/home/me/repo/test.go',
       line: undefined,
@@ -211,20 +242,80 @@ describe('presentToolCardInputPreview', () => {
     // `/home/me/repository` shares a prefix with `/home/me/repo`. The
     // relativizer must check for a path separator at the root boundary,
     // not just a startsWith match, or it would mangle paths under a
-    // similarly-named sibling repo. The displayed text still collapses
-    // to basename, but `path` must stay absolute so EditorLink doesn't
-    // try to join a mangled relative against the wrong workspace.
+    // similarly-named sibling repo. The displayed text and `path` both
+    // stay absolute so the row does not hide that the read is outside
+    // the workspace.
     const item = makeItem({
       toolName: 'Read',
       summary: 'Read: /home/me/repository/foo.go',
     });
     const result = presentToolCardInputPreview(item, null, null, '/home/me/repo');
-    expect(result.text).toBe('foo.go');
+    expect(result.text).toBe('/home/me/repository/foo.go');
     expect(result.path).toEqual({
       path: '/home/me/repository/foo.go',
       line: undefined,
       col: undefined,
     });
+  });
+
+  it('shows absolute paths fully when lexical normalization escapes the workspace', () => {
+    const item = makeItem({
+      toolName: 'Read',
+      summary: 'Read: /home/me/repo/../outside/secret.txt',
+      meta: JSON.stringify({
+        input: {
+          file_path: '/home/me/repo/../outside/secret.txt',
+        },
+      }),
+    });
+    const result = presentToolCardInputPreview(item, null, JSON.parse(item.meta!), '/home/me/repo');
+    expect(result.text).toBe('/home/me/repo/../outside/secret.txt');
+    expect(result.path?.path).toBe('/home/me/repo/../outside/secret.txt');
+  });
+
+  it('cleans repo-local dot segments before displaying and opening', () => {
+    const item = makeItem({
+      toolName: 'Read',
+      summary: 'Read: /home/me/repo/src/../events.ts',
+      meta: JSON.stringify({
+        input: {
+          file_path: '/home/me/repo/src/../events.ts',
+        },
+      }),
+    });
+    const result = presentToolCardInputPreview(item, null, JSON.parse(item.meta!), '/home/me/repo');
+    expect(result.text).toBe('events.ts');
+    expect(result.path?.path).toBe('events.ts');
+  });
+
+  it('shows relative paths fully when dot segments escape the workspace', () => {
+    const item = makeItem({
+      toolName: 'Read',
+      summary: 'Read: ../outside/secret.txt',
+      meta: JSON.stringify({
+        input: {
+          file_path: '../outside/secret.txt',
+        },
+      }),
+    });
+    const result = presentToolCardInputPreview(item, null, JSON.parse(item.meta!), '/home/me/repo');
+    expect(result.text).toBe('../outside/secret.txt');
+    expect(result.path?.path).toBe('../outside/secret.txt');
+  });
+
+  it('cleans repo-local relative dot segments before displaying and opening', () => {
+    const item = makeItem({
+      toolName: 'Read',
+      summary: 'Read: src/../events.ts',
+      meta: JSON.stringify({
+        input: {
+          file_path: 'src/../events.ts',
+        },
+      }),
+    });
+    const result = presentToolCardInputPreview(item, null, JSON.parse(item.meta!), '/home/me/repo');
+    expect(result.text).toBe('events.ts');
+    expect(result.path?.path).toBe('events.ts');
   });
 
   it('strips Windows-style workspacePath + backslash separator', () => {

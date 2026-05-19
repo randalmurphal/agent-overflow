@@ -3,6 +3,16 @@ import { findPathRanges } from '../../utils/pathLinkify';
 import { waitAgentDisplayReceiverIds } from '../../utils/waitAgentDisplay';
 import { isCommandToolName } from './commandDisplay';
 
+const STRUCTURED_PATH_PREVIEW_TOOLS = new Set([
+  'Read',
+  'Edit',
+  'MultiEdit',
+  'Write',
+  'NotebookEdit',
+  'file_change',
+  'fileChange',
+]);
+
 /**
  * Decoded preview shape. The single-segment plain-text result is the
  * default; when the preview includes a path-like token at the start,
@@ -37,8 +47,10 @@ export function toolCardInputPreview(
 }
 
 /**
- * Pre-rendered tool body preview: starts from
- * `toolCardInputPreview` and applies three strip passes that target
+ * Pre-rendered tool body preview: file-target tools first use
+ * structured `meta.input` paths so display never depends on
+ * triage's capped summary preview. Other tools fall back to
+ * `toolCardInputPreview` and apply three strip passes that target
  * the common redundancies in the triage-built summary string:
  *
  *   1. Strip the leading `${toolName}: ` segment that
@@ -46,14 +58,17 @@ export function toolCardInputPreview(
  *      already renders as the gutter label, so repeating it inside
  *      the body adds noise without information.
  *   2. Relativize a leading workspace-rooted absolute path to its
- *      workspace-relative form. EditorLink's `path` keeps this
+ *      workspace-relative form. The check lexically normalizes `..`
+ *      segments first so outside-workspace paths still render fully.
+ *      EditorLink's `path` keeps this
  *      relative form so click-to-open still resolves through
  *      `workspacePath`.
- *   3. Collapse the displayed text to the basename of the leading
- *      path token (e.g. `src/lib/foo.ts` → `foo.ts`). The relative
- *      path is what gets clicked through; the displayed text is what
- *      a human reads at a glance, and the directory prefix is noise
- *      when every row in a turn is in the same project.
+ *   3. Collapse repo-local or relative displayed paths to the basename
+ *      of the leading path token (e.g. `src/lib/foo.ts` → `foo.ts`).
+ *      Outside-workspace absolute paths render fully. The relative
+ *      path is what gets clicked through; the displayed text is what a
+ *      human reads at a glance, and the directory prefix is noise when
+ *      every row in a turn is in the same project.
  *
  * Stripping only applies to the leading path token to avoid mangling
  * mid-string usage (e.g. `cd /path && ls`). Paths outside the
@@ -75,23 +90,103 @@ export function presentToolCardInputPreview(
   itemMeta: Record<string, unknown> | null,
   workspacePath: string,
 ): ToolCardPreview {
+  const fromStructuredPath = structuredPathPreview(item, itemMeta, workspacePath);
+  if (fromStructuredPath) return fromStructuredPath;
+
   const raw = toolCardInputPreview(item, summaryMeta, itemMeta);
   const afterPrefix = stripToolNamePrefix(raw, item.toolName);
   const decoded = decodeToolCardPreview(afterPrefix);
-  const text = relativizeLeadingWorkspacePath(decoded.text, workspacePath);
+  const text = displayTextForPreview(decoded.text, workspacePath);
   if (!decoded.path) return { text };
-  const relPath = relativizeLeadingWorkspacePath(decoded.path.path, workspacePath);
-  const base = basenameOf(relPath);
-  const displayText = text.startsWith(relPath) ? base + text.slice(relPath.length) : text;
+  const pathDisplay = displayPathForTarget(decoded.path.path, workspacePath);
+  const displayText = text.startsWith(pathDisplay.target)
+    ? pathDisplay.label + text.slice(pathDisplay.target.length)
+    : text;
   return {
     text: displayText,
-    path: { path: relPath, line: decoded.path.line, col: decoded.path.col },
+    path: { path: pathDisplay.target, line: decoded.path.line, col: decoded.path.col },
   };
 }
 
 function basenameOf(path: string): string {
   const lastSep = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
   return lastSep === -1 ? path : path.slice(lastSep + 1);
+}
+
+function structuredPathPreview(
+  item: Item,
+  itemMeta: Record<string, unknown> | null,
+  workspacePath: string,
+): ToolCardPreview | null {
+  const rawPath = primaryStructuredPath(item, itemMeta);
+  if (!rawPath) return null;
+  const decoded = decodeToolCardPreview(rawPath);
+  const path = decoded.path?.path ?? rawPath;
+  const line = decoded.path?.line;
+  const col = decoded.path?.col;
+  const pathDisplay = displayPathForTarget(path, workspacePath);
+  return {
+    text: appendLocation(pathDisplay.label, line, col),
+    path: { path: pathDisplay.target, line, col },
+  };
+}
+
+function primaryStructuredPath(
+  item: Item,
+  itemMeta: Record<string, unknown> | null,
+): string {
+  const rawToolName = (item.toolName ?? '').trim();
+  if (!usesStructuredPathPreview(rawToolName)) return '';
+  const input = itemMeta?.input;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return '';
+  const record = input as Record<string, unknown>;
+  const keys = rawToolName === 'NotebookEdit'
+    ? ['notebook_path', 'file_path', 'path']
+    : ['file_path', 'notebook_path', 'path'];
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+function usesStructuredPathPreview(toolName: string): boolean {
+  return STRUCTURED_PATH_PREVIEW_TOOLS.has(toolName);
+}
+
+function appendLocation(text: string, line: number | undefined, col: number | undefined): string {
+  if (!line || line <= 0) return text;
+  return col && col > 0 ? `${text}:${line}:${col}` : `${text}:${line}`;
+}
+
+interface PathDisplay {
+  target: string;
+  label: string;
+}
+
+function displayPathForTarget(path: string, workspacePath: string): PathDisplay {
+  const target = relativizeLeadingWorkspacePath(path, workspacePath);
+  if (target !== path) {
+    return { target, label: basenameOf(target) };
+  }
+  if (!isAbsolutePath(path)) return displayRelativePath(path);
+  return { target: path, label: path };
+}
+
+function displayRelativePath(path: string): PathDisplay {
+  const normalized = normalizeRelativePath(path);
+  if (normalized.escapesRoot) return { target: path, label: path };
+  return { target: normalized.path, label: basenameOf(normalized.path) };
+}
+
+function displayTextForPreview(text: string, workspacePath: string): string {
+  const relText = relativizeLeadingWorkspacePath(text, workspacePath);
+  if (relText !== text) return relText;
+  return text;
+}
+
+function isAbsolutePath(path: string): boolean {
+  return path.startsWith('/') || path.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(path);
 }
 
 function stripToolNamePrefix(text: string, toolName: string | undefined): string {
@@ -102,21 +197,98 @@ function stripToolNamePrefix(text: string, toolName: string | undefined): string
   return text.startsWith(prefix) ? text.slice(prefix.length) : text;
 }
 
-// Returns `text` unchanged unless it starts with the workspace root
-// followed by a path separator. Refuses to strip the bare root (no
-// separator after) so we never return an empty preview, and matches
-// both `/` and `\` separators so Windows paths sent through Codex on
-// WSL render relatively too.
+// Returns `text` unchanged unless it lexically normalizes to a path under
+// the workspace root. Refuses to strip the bare root (no child path) so
+// we never return an empty preview, and matches both `/` and `\`
+// separators so Windows paths sent through Codex on WSL render relatively
+// too. This is a display/open-target normalization only; backend editor
+// opening still owns real filesystem validation.
 function relativizeLeadingWorkspacePath(text: string, workspacePath: string): string {
-  if (!workspacePath) return text;
-  let root = workspacePath;
-  while (root.endsWith('/') || root.endsWith('\\')) root = root.slice(0, -1);
-  if (!root) return text;
-  if (text.length <= root.length) return text;
-  if (!text.startsWith(root)) return text;
-  const sep = text.charAt(root.length);
-  if (sep !== '/' && sep !== '\\') return text;
-  return text.slice(root.length + 1);
+  const relative = workspaceRelativePath(text, workspacePath);
+  return relative ?? text;
+}
+
+interface NormalizedAbsolutePath {
+  path: string;
+  comparePath: string;
+  separator: '/' | '\\';
+}
+
+function workspaceRelativePath(path: string, workspacePath: string): string | null {
+  const normalizedPath = normalizeAbsolutePath(path);
+  const normalizedRoot = normalizeAbsolutePath(workspacePath);
+  if (!normalizedPath || !normalizedRoot) return null;
+  if (normalizedPath.separator !== normalizedRoot.separator) return null;
+  const root = normalizedRoot.comparePath;
+  const target = normalizedPath.comparePath;
+  if (target.length <= root.length) return null;
+  if (!target.startsWith(root)) return null;
+  const sep = normalizedPath.separator;
+  if (target.charAt(root.length) !== sep) return null;
+  return normalizedPath.path.slice(normalizedRoot.path.length + 1);
+}
+
+function normalizeAbsolutePath(raw: string): NormalizedAbsolutePath | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const windowsDrive = /^([A-Za-z]:)[\\/]/.exec(trimmed);
+  if (windowsDrive) {
+    const drive = windowsDrive[1].toUpperCase();
+    const rest = trimmed.slice(windowsDrive[0].length);
+    const path = `${drive}\\${normalizePathSegments(rest.split(/[\\/]+/)).join('\\')}`;
+    return {
+      path,
+      comparePath: path.toLowerCase(),
+      separator: '\\',
+    };
+  }
+  if (trimmed.startsWith('/')) {
+    const path = `/${normalizePathSegments(trimmed.slice(1).split(/[\\/]+/)).join('/')}`;
+    return {
+      path,
+      comparePath: path,
+      separator: '/',
+    };
+  }
+  return null;
+}
+
+function normalizePathSegments(segments: string[]): string[] {
+  const normalized: string[] = [];
+  for (const segment of segments) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      if (normalized.length > 0) normalized.pop();
+      continue;
+    }
+    normalized.push(segment);
+  }
+  return normalized;
+}
+
+interface NormalizedRelativePath {
+  path: string;
+  escapesRoot: boolean;
+}
+
+function normalizeRelativePath(raw: string): NormalizedRelativePath {
+  const separator = raw.includes('\\') && !raw.includes('/') ? '\\' : '/';
+  const normalized: string[] = [];
+  let escapesRoot = false;
+  for (const segment of raw.split(/[\\/]+/)) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      if (normalized.length === 0) {
+        escapesRoot = true;
+        continue;
+      }
+      normalized.pop();
+      continue;
+    }
+    normalized.push(segment);
+  }
+  const path = normalized.length > 0 ? normalized.join(separator) : raw;
+  return { path, escapesRoot };
 }
 
 /**

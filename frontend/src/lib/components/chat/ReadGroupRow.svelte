@@ -33,9 +33,9 @@
     path: string;
     line: number;
     col: number;
-    /** Text rendered as the link label. Matches `path` whenever the
-     *  presenter could relativize, otherwise falls back to whatever
-     *  `presentToolCardInputPreview` produced for the row's body. */
+    /** Text rendered as the link label. Repo-local paths usually
+     *  collapse to a basename; outside-workspace absolute paths stay
+     *  absolute. */
     display: string;
   }
 
@@ -43,7 +43,7 @@
     label: string;
   }
 
-  let entries = $derived<ReadEntry[]>(group.members.map((item) => entryFor(item, workspacePath)));
+  let entries = $derived<ReadEntry[]>(dedupeEntries(group.members.map((item) => entryFor(item, workspacePath))));
   let displayEntries = $derived<DisplayReadEntry[]>(labelDuplicateBasenames(entries));
 
   function entryFor(item: Item, workspacePath: string): ReadEntry {
@@ -75,6 +75,22 @@
         label: shouldShowPath ? withLocation(entry.path, entry.line, entry.col) : entry.display,
       };
     });
+  }
+
+  function dedupeEntries(entries: ReadEntry[]): ReadEntry[] {
+    const seen = new Set<string>();
+    const unique: ReadEntry[] = [];
+    for (const entry of entries) {
+      const key = readTargetKey(entry);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(entry);
+    }
+    return unique;
+  }
+
+  function readTargetKey(entry: ReadEntry): string {
+    return JSON.stringify([entry.path, entry.line, entry.col]);
   }
 
   function basenameOf(path: string): string {
