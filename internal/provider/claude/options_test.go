@@ -69,6 +69,20 @@ func TestConfigFromOptionsFastModeUnsupportedModelClearsFlag(t *testing.T) {
 	}
 }
 
+func TestConfigFromOptionsCopiesResumeAt(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{
+		Provider: "claude",
+		Resume:   "session-123",
+		ResumeAt: "leaf-456",
+	})
+	if cfg.Resume != "session-123" {
+		t.Fatalf("Resume = %q, want session-123", cfg.Resume)
+	}
+	if cfg.ResumeAt != "leaf-456" {
+		t.Fatalf("ResumeAt = %q, want leaf-456", cfg.ResumeAt)
+	}
+}
+
 func TestConfigFromOptionsEffortUsesNativeFlag(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:        "claude",

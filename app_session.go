@@ -42,6 +42,10 @@ func (a *App) StartSession(threadID string) error {
 // through StartSession / runSessionStart so concurrent start attempts
 // share a single spawn instead of racing.
 func (a *App) startSessionNow(threadID string) error {
+	return a.startSessionNowWithClaudeResumeAt(threadID, "")
+}
+
+func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string) error {
 	t, err := a.store.GetThread(threadID)
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
@@ -84,6 +88,15 @@ func (a *App) startSessionNow(threadID string) error {
 		return fmt.Errorf("start session: resolve design workdir: %w", err)
 	} else if dir != "" {
 		opts.WorkDir = dir
+	}
+	if t.Provider == string(provider.Claude) && opts.Resume != "" && !opts.ForkSession && claudeResumeAt != "" {
+		opts.ResumeAt = claudeResumeAt
+	} else if t.Provider == string(provider.Claude) && opts.Resume != "" && !opts.ForkSession {
+		if state, scanErr := claude.ScanSessionLeaf(opts.Resume, opts.WorkDir); scanErr != nil {
+			log.Printf("start session: scan Claude session leaf %s: %v", opts.Resume, scanErr)
+		} else if state.CanonicalLeafUUID != "" {
+			opts.ResumeAt = state.CanonicalLeafUUID
+		}
 	}
 
 	if err := a.stopExistingSessionLocked(threadID); err != nil {

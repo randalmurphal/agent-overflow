@@ -215,6 +215,9 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
 		a.configureTriageQueueCallbacks()
 	}
+	if err := a.ensureClaudeContextReadyForUserSendLocked(thread); err != nil {
+		return store.Item{}, fmt.Errorf("send message: %w", err)
+	}
 	hasPriorItems, err := a.store.HasItems(threadID)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: check prior items: %w", err)

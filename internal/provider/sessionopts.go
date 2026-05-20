@@ -104,6 +104,12 @@ type SessionOptions struct {
 	// session uuid. Codex: prior thread id. Empty for brand-new starts.
 	Resume string
 
+	// ResumeAt carries a provider-native transcript/message UUID inside
+	// Resume. Claude uses this with --resume-session-at to force a resumed
+	// process onto AO's canonical settled leaf. Empty keeps provider default
+	// resume behaviour.
+	ResumeAt string
+
 	// ForkSession signals that the next start should branch off Resume
 	// instead of treating it as the live session. Claude-specific; Codex
 	// handles forking via a separate app-server request.

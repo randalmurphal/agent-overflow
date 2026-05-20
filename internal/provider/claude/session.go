@@ -41,6 +41,12 @@ var controlResponsePrefix = []byte(`{"type":"control_response"`)
 // prefix gate routes them to a separate cleanup-only handler.
 var controlCancelRequestPrefix = []byte(`{"type":"control_cancel_request"`)
 
+var (
+	leafAssistantPrefix = []byte(`{"type":"assistant"`)
+	leafUserPrefix      = []byte(`{"type":"user"`)
+	leafResultPrefix    = []byte(`{"type":"result"`)
+)
+
 type controlRequestEnvelope struct {
 	Type      string `json:"type"`
 	RequestID string `json:"request_id"`
@@ -68,6 +74,7 @@ type Session struct {
 	proc      *provider.Process
 	threadID  string
 	sessionID string
+	workDir   string
 	model     string
 	onEvent   func(provider.ProviderEvent)
 	cancel    context.CancelFunc
@@ -84,6 +91,17 @@ type Session struct {
 	// pairs can share metadata (e.g. the `is_background` flag) across the
 	// two messages that carry them.
 	parser *Parser
+	// leafTracker tracks the canonical settled top-level Claude transcript
+	// UUID. Unresolved server-side tool-use rows are kept out of this leaf
+	// so a later user send can be forced back onto the real continuation.
+	leafTracker *claudeLeafTracker
+	// replayMu guards the expected parent for the next AO-authored replay
+	// user echo. Claude stream-json gives us no send-time parent override,
+	// so the replay echo is the earliest confirmation that the live process
+	// attached the user message to the expected transcript leaf.
+	replayMu               sync.Mutex
+	expectedReplayParent   string
+	expectedReplayWasRisky bool
 	// approvalsMu guards pendingApprovals, resolvedApprovals, and
 	// approvalsClosed.
 	approvalsMu sync.Mutex
@@ -143,6 +161,7 @@ type Config struct {
 	Model           string
 	WorkDir         string
 	Resume          string // session ID to resume, empty for new
+	ResumeAt        string // transcript UUID to resume at inside Resume
 	ForkSession     bool
 	SystemPrompt    string
 	ReasoningEffort string
@@ -218,11 +237,14 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	s := &Session{
 		proc:                  proc,
 		threadID:              threadID,
+		sessionID:             cfg.Resume,
+		workDir:               cfg.WorkDir,
 		model:                 cfg.Model,
 		onEvent:               onEvent,
 		cancel:                cancel,
 		readDone:              make(chan struct{}),
 		parser:                NewParser(),
+		leafTracker:           newClaudeLeafTracker(cfg.ResumeAt),
 		basePermissionMode:    normalizeClaudePermissionMode(cfg.BasePermissionMode),
 		currentPermissionMode: normalizeClaudePermissionMode(cfg.BasePermissionMode),
 		interactionMode:       cfg.InteractionMode,
@@ -305,6 +327,9 @@ func buildArgs(cfg Config) []string {
 	}
 	if cfg.Resume != "" {
 		args = append(args, "--resume", cfg.Resume)
+	}
+	if cfg.Resume != "" && cfg.ResumeAt != "" {
+		args = append(args, "--resume-session-at", cfg.ResumeAt)
 	}
 	if cfg.ForkSession {
 		args = append(args, "--fork-session")
@@ -438,6 +463,8 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	}
 	message["content"] = blocks
 
+	s.recordExpectedReplayParent()
+
 	msg := map[string]any{
 		"type":    "user",
 		"message": message,
@@ -447,6 +474,7 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		return fmt.Errorf("claude: marshal user message: %w", err)
 	}
 	if err := s.proc.WriteLine(data); err != nil {
+		s.clearExpectedReplayParent()
 		return err
 	}
 	return nil
@@ -891,6 +919,65 @@ func (s *Session) SessionID() string {
 	return s.sessionID
 }
 
+// CanonicalLeafUUID returns the latest settled top-level Claude transcript
+// UUID observed by this live session.
+func (s *Session) CanonicalLeafUUID() string {
+	if s == nil || s.leafTracker == nil {
+		return ""
+	}
+	return s.leafTracker.canonicalLeaf()
+}
+
+// RequiresResumeAtBeforeUserSend reports whether the live Claude process has
+// emitted an unresolved server-side tool-use row after a completed turn. In
+// that state AO must restart Claude with --resume-session-at before writing a
+// new user message, because stream-json stdin has no parent override.
+func (s *Session) RequiresResumeAtBeforeUserSend() bool {
+	if s == nil || s.leafTracker == nil {
+		return false
+	}
+	return s.leafTracker.requiresResumeAtBeforeUserSend()
+}
+
+func (s *Session) recordExpectedReplayParent() {
+	if s == nil {
+		return
+	}
+	var parent string
+	var risky bool
+	if s.leafTracker != nil {
+		parent = s.leafTracker.canonicalLeaf()
+		risky = s.leafTracker.requiresResumeAtBeforeUserSend()
+	}
+	s.replayMu.Lock()
+	s.expectedReplayParent = parent
+	s.expectedReplayWasRisky = risky
+	s.replayMu.Unlock()
+}
+
+func (s *Session) takeExpectedReplayParent() (parent string, wasRisky bool) {
+	if s == nil {
+		return "", false
+	}
+	s.replayMu.Lock()
+	defer s.replayMu.Unlock()
+	parent = s.expectedReplayParent
+	wasRisky = s.expectedReplayWasRisky
+	s.expectedReplayParent = ""
+	s.expectedReplayWasRisky = false
+	return parent, wasRisky
+}
+
+func (s *Session) clearExpectedReplayParent() {
+	if s == nil {
+		return
+	}
+	s.replayMu.Lock()
+	s.expectedReplayParent = ""
+	s.expectedReplayWasRisky = false
+	s.replayMu.Unlock()
+}
+
 // Close shuts down the CLI process gracefully.
 // Closes stdin first for graceful shutdown, then cancels the context as fallback.
 func (s *Session) Close() error {
@@ -965,6 +1052,10 @@ func (s *Session) readLoop() {
 			return
 		}
 
+		if s.leafTracker != nil && shouldTrackClaudeLeafLine(line) {
+			s.leafTracker.ingestLine(line)
+		}
+
 		// Gate control_request pre-handling on a byte-prefix check so
 		// every streaming text_delta line doesn't pay an extra
 		// json.Unmarshal. ParseLine below still handles the line if
@@ -1036,8 +1127,75 @@ func (s *Session) readLoop() {
 				_ = json.Unmarshal(evt.Meta, &request)
 				s.trackPendingApprovalWithQuestions(evt.ItemID, provider.EventUserInputResolved, request.Questions)
 			}
+			if evt.Kind == provider.EventTurnComplete && s.leafTracker != nil {
+				s.leafTracker.markTurnComplete()
+			}
 			s.onEvent(evt)
+			if evt.Kind == provider.EventUserText {
+				s.verifyReplayParent(evt)
+			}
 		}
+	}
+}
+
+func (s *Session) verifyReplayParent(evt provider.ProviderEvent) {
+	expectedParent, wasRisky := s.takeExpectedReplayParent()
+	if expectedParent == "" {
+		return
+	}
+	providerItemID, parentUUID := replayProviderIDs(evt.Meta)
+	if parentUUID == "" && wasRisky && providerItemID != "" && s.sessionID != "" {
+		if parent, found, err := findReplayUserParent(s.sessionID, s.workDir, providerItemID); err != nil {
+			s.emitReplayParentError(fmt.Sprintf("Claude replay omitted parentUuid and AO could not verify the transcript parent: %v", err))
+			return
+		} else if found {
+			parentUUID = parent
+		}
+	}
+	if parentUUID == "" && wasRisky {
+		s.emitReplayParentError("Claude replay omitted parentUuid and AO could not verify the transcript parent")
+		return
+	}
+	if parentUUID == "" || parentUUID == expectedParent {
+		return
+	}
+	s.emitReplayParentError(fmt.Sprintf("Claude attached the user message to transcript parent %s, expected %s", parentUUID, expectedParent))
+}
+
+func shouldTrackClaudeLeafLine(line []byte) bool {
+	return bytes.HasPrefix(line, leafAssistantPrefix) ||
+		bytes.HasPrefix(line, leafUserPrefix) ||
+		bytes.HasPrefix(line, leafResultPrefix)
+}
+
+func replayProviderIDs(meta json.RawMessage) (providerItemID, parentUUID string) {
+	if len(meta) == 0 {
+		return "", ""
+	}
+	var fields struct {
+		ProviderItemID string `json:"provider_item_id"`
+		ParentUUID     string `json:"parent_uuid"`
+	}
+	if err := json.Unmarshal(meta, &fields); err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(fields.ProviderItemID), strings.TrimSpace(fields.ParentUUID)
+}
+
+func (s *Session) emitReplayParentError(message string) {
+	meta, _ := json.Marshal(map[string]any{
+		"fatal": true,
+		"code":  "claude_context_parent_mismatch",
+	})
+	s.onEvent(provider.ProviderEvent{
+		Kind:      provider.EventError,
+		ThreadID:  s.threadID,
+		Content:   message,
+		Meta:      meta,
+		Timestamp: time.Now(),
+	})
+	if s.proc != nil {
+		_ = s.proc.Close()
 	}
 }
 

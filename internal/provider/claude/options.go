@@ -60,6 +60,7 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		Model:              claudeModelForContextWindow(model, contextWindow),
 		WorkDir:            opts.WorkDir,
 		Resume:             opts.Resume,
+		ResumeAt:           opts.ResumeAt,
 		ForkSession:        opts.ForkSession,
 		SystemPrompt:       opts.SystemPrompt,
 		ReasoningEffort:    claudeEffortFromOption(opts.ReasoningEffort),

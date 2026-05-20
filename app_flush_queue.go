@@ -322,11 +322,6 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 	providerAttachments := resolved.providerAttachments
 	userMeta := resolved.userMessageMeta
 
-	sess, ok := a.sessionManager().get(threadID)
-	if !ok {
-		return QueueFlushedItem{}, fmt.Errorf("no active session for thread %s", threadID)
-	}
-
 	if a.triage == nil {
 		// Defensive: production wires triage in initSubsystems
 		// (app.go:332) before any provider events flow. The lazy init
@@ -339,6 +334,13 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return QueueFlushedItem{}, fmt.Errorf("load thread: %w", err)
+	}
+	if err := a.ensureClaudeContextReadyForUserSendLocked(thread); err != nil {
+		return QueueFlushedItem{}, err
+	}
+	sess, ok := a.sessionManager().get(threadID)
+	if !ok {
+		return QueueFlushedItem{}, fmt.Errorf("no active session for thread %s", threadID)
 	}
 
 	turnIndex, activeAtResolution, err := a.resolveFlushTurnPlacement(threadID)

@@ -703,10 +703,50 @@ func TestBuildArgsDefault(t *testing.T) {
 	}
 }
 
+func TestBuildArgsOmitsResumeAtWithoutResume(t *testing.T) {
+	args := buildArgs(Config{ResumeAt: "leaf-456"})
+	for _, arg := range args {
+		if arg == "--resume-session-at" {
+			t.Fatalf("args include --resume-session-at without --resume: %v", args)
+		}
+	}
+}
+
+func TestVerifyReplayParentFailsRiskyReplayWithoutVerifiableParent(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID: "thread-risky",
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+		expectedReplayParent:   "leaf-expected",
+		expectedReplayWasRisky: true,
+	}
+	meta, _ := json.Marshal(map[string]string{
+		"provider_item_id": "user-wire",
+	})
+
+	s.verifyReplayParent(provider.ProviderEvent{
+		Kind: provider.EventUserText,
+		Meta: meta,
+	})
+
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if events[0].Kind != provider.EventError {
+		t.Fatalf("event kind = %q, want error", events[0].Kind)
+	}
+	if !strings.Contains(events[0].Content, "could not verify") {
+		t.Fatalf("error content = %q, want verification failure", events[0].Content)
+	}
+}
+
 func TestBuildArgsWithAllOptions(t *testing.T) {
 	args := buildArgs(Config{
 		Model:           "opus",
 		Resume:          "session-123",
+		ResumeAt:        "leaf-456",
 		ForkSession:     true,
 		SystemPrompt:    "Be helpful",
 		PermissionFlags: []string{"--permission-mode", "acceptEdits"},
@@ -729,6 +769,9 @@ func TestBuildArgsWithAllOptions(t *testing.T) {
 	}
 	if !findFlag("--resume", "session-123") {
 		t.Error("missing --resume session-123")
+	}
+	if !findFlag("--resume-session-at", "leaf-456") {
+		t.Error("missing --resume-session-at leaf-456")
 	}
 	foundForkFlag := false
 	for _, arg := range args {

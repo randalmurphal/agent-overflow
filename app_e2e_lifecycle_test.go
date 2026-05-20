@@ -829,6 +829,69 @@ func TestE2E_SendMessageBeforeSessionStart(t *testing.T) {
 	_ = app.StopSession(thread.ID)
 }
 
+func TestE2E_ClaudeQueuedFlushRepairsRiskyAdvisorContextBeforeSend(t *testing.T) {
+	app, bus := setupE2EApp(t)
+	workspace := t.TempDir()
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	scriptDir := t.TempDir()
+	argsLog := filepath.Join(scriptDir, "args.log")
+	countFile := filepath.Join(scriptDir, "count")
+	script := `#!/bin/bash
+set -e
+count=0
+if [ -f ` + shellQuoteForTest(countFile) + ` ]; then
+  count=$(cat ` + shellQuoteForTest(countFile) + `)
+fi
+count=$((count + 1))
+printf '%s' "$count" > ` + shellQuoteForTest(countFile) + `
+printf '%s\n' "$*" >> ` + shellQuoteForTest(argsLog) + `
+if [ "$count" = "1" ]; then
+  read -r _ || true
+  printf '%s\n' '{"type":"system","subtype":"init","session_id":"risky-sess","model":"claude-opus-4-7","cwd":"/tmp","tools":["advisor"],"claude_code_version":"1.0"}'
+  printf '%s\n' '{"type":"assistant","uuid":"a-advisor","parentUuid":"u1","message":{"id":"msg-advisor","role":"assistant","model":"claude-opus-4-7","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"advisor","input":{}}]}}'
+  printf '%s\n' '{"type":"assistant","uuid":"a-final","parentUuid":"u1","message":{"id":"msg-final","role":"assistant","model":"claude-opus-4-7","content":[{"type":"text","text":"done"}]}}'
+  printf '%s\n' '{"type":"result","subtype":"success","is_error":false}'
+  while read -r _; do :; done
+else
+  read -r _ || true
+  printf '%s\n' '{"type":"system","subtype":"init","session_id":"risky-sess","model":"claude-opus-4-7","cwd":"/tmp","tools":["advisor"],"claude_code_version":"1.0"}'
+  while read -r _; do :; done
+fi
+`
+	binary := filepath.Join(scriptDir, "mock-claude-risky.sh")
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write mock claude: %v", err)
+	}
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+
+	if err := app.SendMessage(thread.ID, "trigger risky advisor", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)
+	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
+
+	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+		ID:      "queue:repair",
+		Message: "queued after risky advisor",
+		Payload: json.RawMessage(`{}`),
+	}})
+
+	argsText := waitForFileText(t, argsLog, func(text string) bool {
+		return strings.Contains(text, "--resume risky-sess") &&
+			strings.Contains(text, "--resume-session-at a-final")
+	})
+	if !strings.Contains(argsText, "--resume-session-at a-final") {
+		t.Fatalf("args log missing resume-at repair: %s", argsText)
+	}
+	_ = app.StopSession(thread.ID)
+}
+
 // TestE2E_ToolCallFullCycle: mock emits a tool_use event (via assistant) and
 // a subsequent tool_result. Verify item ordering + payloads.
 func TestE2E_ToolCallFullCycle(t *testing.T) {
@@ -1499,4 +1562,18 @@ func waitUntil(t *testing.T, d time.Duration, predicate func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("waitUntil: predicate still false after %v", d)
+}
+
+func waitForFileText(t *testing.T, path string, predicate func(string) bool) string {
+	t.Helper()
+	var last string
+	waitUntil(t, 5*time.Second, func() bool {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return false
+		}
+		last = string(data)
+		return predicate(last)
+	})
+	return last
 }
