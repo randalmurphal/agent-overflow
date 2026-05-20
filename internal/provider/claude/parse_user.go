@@ -40,9 +40,9 @@ func (p *Parser) parseUser(threadID string, raw map[string]json.RawMessage, now 
 		return nil, nil
 	}
 
-	// user.message.content can be either a plain string (a user-typed
-	// message echoed back) or an array of blocks. Only the array form
-	// carries tool_result.
+	// user.message.content can be either a plain string or an array of blocks.
+	// User-authored block messages contain text/image blocks; only tool_result
+	// blocks are interesting at this layer.
 	var blocks []map[string]json.RawMessage
 	if err := json.Unmarshal(msg.Content, &blocks); err != nil {
 		return nil, nil

@@ -794,9 +794,14 @@ func TestSendWireFormat(t *testing.T) {
 	// Verify the JSON format matches the Claude CLI input protocol.
 	msg := map[string]any{
 		"type": "user",
-		"message": map[string]string{
-			"role":    "user",
-			"content": "hello",
+		"message": map[string]any{
+			"role": "user",
+			"content": []map[string]string{
+				{
+					"type": "text",
+					"text": "hello",
+				},
+			},
 		},
 	}
 	data, err := json.Marshal(msg)
@@ -817,14 +822,20 @@ func TestSendWireFormat(t *testing.T) {
 
 	var message struct {
 		Role    string `json:"role"`
-		Content string `json:"content"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
 	}
 	json.Unmarshal(parsed["message"], &message)
 	if message.Role != "user" {
 		t.Errorf("role: got %q, want %q", message.Role, "user")
 	}
-	if message.Content != "hello" {
-		t.Errorf("content: got %q, want %q", message.Content, "hello")
+	if len(message.Content) != 1 {
+		t.Fatalf("content blocks: got %d, want 1 (%+v)", len(message.Content), message.Content)
+	}
+	if block := message.Content[0]; block.Type != "text" || block.Text != "hello" {
+		t.Errorf("content block: got %+v, want text block %q", block, "hello")
 	}
 }
 
@@ -1208,9 +1219,49 @@ func TestNewSessionSpawnsAndRunsReadLoop(t *testing.T) {
 }
 
 func TestSessionSend(t *testing.T) {
-	s, _ := newTestClaudeSession(t)
-	if err := s.Send(context.Background(), "hello world", provider.SendOptions{}); err != nil {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "bash",
+		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
+		Env: map[string]string{
+			"CAPTURE": capturePath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn capture process: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Close() })
+
+	s := &Session{proc: proc}
+	const content = "/tmp/agent-overflow/bug-report.jsonl -- please inspect"
+	if err := s.Send(context.Background(), content, provider.SendOptions{}); err != nil {
 		t.Fatalf("Send: %v", err)
+	}
+
+	lines := waitCapturedLines(t, capturePath, 1)
+	var captured struct {
+		Type    string `json:"type"`
+		Message struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &captured); err != nil {
+		t.Fatalf("unmarshal captured line: %v", err)
+	}
+	if captured.Type != "user" || captured.Message.Role != "user" {
+		t.Fatalf("captured line = %+v, want user message", captured)
+	}
+	if len(captured.Message.Content) != 1 {
+		t.Fatalf("content blocks: got %d, want 1 (%+v)", len(captured.Message.Content), captured.Message.Content)
+	}
+	if block := captured.Message.Content[0]; block.Type != "text" || block.Text != content {
+		t.Fatalf("content block = %+v, want exact text block %q", block, content)
 	}
 }
 
@@ -1276,13 +1327,16 @@ done
 		Type    string `json:"type"`
 		Message struct {
 			Role    string `json:"role"`
-			Content string `json:"content"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
 		} `json:"message"`
 	}
 	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil {
 		t.Fatalf("unmarshal second captured line: %v", err)
 	}
-	if second.Type != "user" || second.Message.Role != "user" || second.Message.Content != "draft a plan" {
+	if second.Type != "user" || second.Message.Role != "user" || len(second.Message.Content) != 1 || second.Message.Content[0].Type != "text" || second.Message.Content[0].Text != "draft a plan" {
 		t.Fatalf("second captured line = %+v, want user message", second)
 	}
 	if got := s.getCurrentPermissionMode(); got != "plan" {

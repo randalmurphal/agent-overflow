@@ -413,31 +413,27 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	message := map[string]any{
 		"role": "user",
 	}
-	if len(attachments) == 0 {
-		message["content"] = content
-	} else {
-		blocks := make([]map[string]any, 0, 1+len(attachments))
-		if strings.TrimSpace(content) != "" {
-			blocks = append(blocks, map[string]any{
-				"type": "text",
-				"text": content,
-			})
-		}
-		for _, attachment := range attachments {
-			blocks = append(blocks, map[string]any{
-				"type": "image",
-				"source": map[string]any{
-					"type":       "base64",
-					"media_type": attachment.MimeType,
-					"data":       base64.StdEncoding.EncodeToString(attachment.Data),
-				},
-			})
-		}
-		if len(blocks) == 0 {
-			return fmt.Errorf("claude: user message requires text or image content")
-		}
-		message["content"] = blocks
+	blocks := make([]map[string]any, 0, 1+len(attachments))
+	if len(attachments) == 0 || strings.TrimSpace(content) != "" {
+		blocks = append(blocks, map[string]any{
+			"type": "text",
+			"text": content,
+		})
 	}
+	for _, attachment := range attachments {
+		blocks = append(blocks, map[string]any{
+			"type": "image",
+			"source": map[string]any{
+				"type":       "base64",
+				"media_type": attachment.MimeType,
+				"data":       base64.StdEncoding.EncodeToString(attachment.Data),
+			},
+		})
+	}
+	if len(blocks) == 0 {
+		return fmt.Errorf("claude: user message requires text or image content")
+	}
+	message["content"] = blocks
 
 	msg := map[string]any{
 		"type":    "user",
