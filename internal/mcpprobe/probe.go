@@ -14,18 +14,20 @@ import (
 	"time"
 
 	"agent-overflow/internal/mcp"
-	"agent-overflow/internal/store"
 )
 
 // Result is the projected status the binding layer hands the
 // frontend. ToolCount is best-effort: zero on transports / failures
-// where we can't or don't fetch the tool list.
+// where we can't or don't fetch the tool list. CacheKey ("provider:name")
+// is the wire-stable identifier the frontend uses to attribute results
+// back to a server — the same name can exist for both providers.
 type Result struct {
-	ServerID    string    `json:"serverId"`
+	CacheKey    string    `json:"cacheKey"`
+	Provider    string    `json:"provider"`
+	ServerName  string    `json:"serverName,omitempty"`
 	Status      mcp.Status `json:"status"`
 	Error       string    `json:"error,omitempty"`
 	ProtocolVer string    `json:"protocolVersion,omitempty"`
-	ServerName  string    `json:"serverName,omitempty"`
 	ToolCount   int       `json:"toolCount"`
 	CheckedAt   int64     `json:"checkedAt"`
 }
@@ -42,29 +44,31 @@ const DefaultStdioTimeout = 15 * time.Second
 // blocking the popup for long.
 const DefaultHTTPTimeout = 5 * time.Second
 
-// Probe runs the appropriate handshake for the server's transport and
+// Probe runs the appropriate handshake for the spec's transport and
 // returns the projected result. The context controls the wall-clock
 // budget; callers wrap with their own timeout for back-pressure on
 // the popup.
-func Probe(ctx context.Context, server store.MCPServer) Result {
+func Probe(ctx context.Context, spec mcp.Spec) Result {
 	result := Result{
-		ServerID:  server.ID,
-		Status:    mcp.StatusUnknown,
-		CheckedAt: time.Now().UnixMilli(),
+		CacheKey:   spec.CacheKey(),
+		Provider:   spec.Provider,
+		ServerName: spec.Name,
+		Status:     mcp.StatusUnknown,
+		CheckedAt:  time.Now().UnixMilli(),
 	}
-	if !server.Enabled {
+	if !spec.Enabled {
 		result.Status = mcp.StatusUnknown
-		result.Error = "server disabled in library"
+		result.Error = "server disabled"
 		return result
 	}
-	switch server.Transport {
+	switch spec.Transport {
 	case mcp.TransportStdio:
-		return probeStdio(ctx, server, result)
+		return probeStdio(ctx, spec, result)
 	case mcp.TransportHTTP, mcp.TransportSSE:
-		return probeHTTP(ctx, server, result)
+		return probeHTTP(ctx, spec, result)
 	default:
 		result.Status = mcp.StatusFailed
-		result.Error = fmt.Sprintf("unsupported transport %q", server.Transport)
+		result.Error = fmt.Sprintf("unsupported transport %q", spec.Transport)
 		return result
 	}
 }
@@ -101,7 +105,7 @@ type toolsListResult struct {
 	} `json:"tools"`
 }
 
-func probeStdio(ctx context.Context, server store.MCPServer, result Result) Result {
+func probeStdio(ctx context.Context, spec mcp.Spec, result Result) Result {
 	deadline, ok := ctx.Deadline()
 	if !ok {
 		deadline = time.Now().Add(DefaultStdioTimeout)
@@ -109,8 +113,8 @@ func probeStdio(ctx context.Context, server store.MCPServer, result Result) Resu
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, server.Command, server.Args...)
-	cmd.Env = append(os.Environ(), envFromMap(server.Env)...)
+	cmd := exec.CommandContext(ctx, spec.Command, spec.Args...)
+	cmd.Env = append(os.Environ(), envFromMap(spec.Env)...)
 	cmd.Stderr = io.Discard
 
 	stdin, err := cmd.StdinPipe()
@@ -174,10 +178,10 @@ func probeStdio(ctx context.Context, server store.MCPServer, result Result) Resu
 
 	result.Status = mcp.StatusReady
 	result.ProtocolVer = init.ProtocolVersion
-	result.ServerName = init.ServerInfo.Name
+	if init.ServerInfo.Name != "" {
+		result.ServerName = init.ServerInfo.Name
+	}
 
-	// Best-effort tool count. Ignore errors — we already know the
-	// server is healthy enough to answer initialize.
 	_ = writeLine(stdin, map[string]any{
 		"jsonrpc": "2.0",
 		"method":  "notifications/initialized",
@@ -193,7 +197,7 @@ func probeStdio(ctx context.Context, server store.MCPServer, result Result) Resu
 	return result
 }
 
-func probeHTTP(ctx context.Context, server store.MCPServer, result Result) Result {
+func probeHTTP(ctx context.Context, spec mcp.Spec, result Result) Result {
 	deadline, ok := ctx.Deadline()
 	if !ok {
 		deadline = time.Now().Add(DefaultHTTPTimeout)
@@ -217,7 +221,7 @@ func probeHTTP(ctx context.Context, server store.MCPServer, result Result) Resul
 		result.Error = fmt.Sprintf("marshal init: %v", err)
 		return result
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, bytes.NewReader(buf))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, spec.URL, bytes.NewReader(buf))
 	if err != nil {
 		result.Status = mcp.StatusFailed
 		result.Error = fmt.Sprintf("new request: %v", err)
@@ -225,11 +229,11 @@ func probeHTTP(ctx context.Context, server store.MCPServer, result Result) Resul
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	for k, v := range server.Headers {
+	for k, v := range spec.Headers {
 		req.Header.Set(k, v)
 	}
-	if server.BearerEnv != "" {
-		if token := strings.TrimSpace(os.Getenv(server.BearerEnv)); token != "" {
+	if spec.BearerEnv != "" {
+		if token := strings.TrimSpace(os.Getenv(spec.BearerEnv)); token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
@@ -255,9 +259,6 @@ func probeHTTP(ctx context.Context, server store.MCPServer, result Result) Resul
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 16*1024))
 		var rpc jsonRPCResponse
 		if err := json.Unmarshal(respBody, &rpc); err != nil {
-			// Some HTTP MCP servers reply with SSE; in that case the
-			// stream's first frame is what we want. Treat any 2xx with
-			// a Content-Type starting "text/event-stream" as ready.
 			if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
 				result.Status = mcp.StatusReady
 				return result
@@ -274,7 +275,9 @@ func probeHTTP(ctx context.Context, server store.MCPServer, result Result) Resul
 		var init initResult
 		if err := json.Unmarshal(rpc.Result, &init); err == nil {
 			result.ProtocolVer = init.ProtocolVersion
-			result.ServerName = init.ServerInfo.Name
+			if init.ServerInfo.Name != "" {
+				result.ServerName = init.ServerInfo.Name
+			}
 		}
 		result.Status = mcp.StatusReady
 		return result
@@ -308,12 +311,9 @@ func readResponse(r *bufio.Reader) (*jsonRPCResponse, error) {
 		}
 		var resp jsonRPCResponse
 		if err := json.Unmarshal(line, &resp); err != nil {
-			// Some servers write non-JSON status lines before / after
-			// JSON frames. Skip them quietly.
 			continue
 		}
 		if resp.ID == 0 && resp.Result == nil && resp.Error == nil {
-			// Notification — not the response we asked for.
 			continue
 		}
 		return &resp, nil

@@ -1,10 +1,10 @@
 <script lang="ts">
   // Composer-toolbar entry for MCP server selection. Renders the
   // trigger button (icon + "MCP" + active count) and hosts the
-  // popup that lets the user toggle which library servers are
-  // enabled for this thread. The count badge reads the live
-  // per-thread enable list from the shared store so a thread switch
-  // updates it without re-fetching here.
+  // popup that lets the user toggle which provider-configured
+  // servers are active for this thread. The count reflects the
+  // unified Disabled flag: it counts servers with !disabled for the
+  // current thread's provider.
 
   import Plug from 'lucide-svelte/icons/plug';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
@@ -24,16 +24,17 @@
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
 
+  function loadForThread(): void {
+    if (!pane.thread) return;
+    void mcpServersStore.loadForThread(pane.thread.provider, pane.thread.workspacePath ?? '');
+  }
+
   function openMenu(): void {
     if (!pane.thread) return;
     open = true;
-    // Best-effort prime — the menu also calls ensureInitialized when
-    // it mounts, but firing it here avoids a flash of empty state on
-    // first open.
-    void mcpServersStore.ensureInitialized();
-    if (pane.threadId) {
-      void mcpServersStore.loadThreadServers(pane.threadId);
-    }
+    // Prime the store on open. McpServersMenu also re-loads when it
+    // mounts, but firing here avoids a flash of empty state.
+    loadForThread();
   }
 
   function closeMenu(): void {
@@ -54,9 +55,11 @@
     });
   });
 
-  let threadId = $derived(pane.threadId ?? '');
+  let provider = $derived(pane.thread?.provider ?? '');
   let enabledCount = $derived(
-    threadId ? mcpServersStore.threadServers(threadId).length : 0,
+    provider
+      ? mcpServersStore.serversForProvider(provider).filter((s) => !s.disabled).length
+      : 0,
   );
 </script>
 

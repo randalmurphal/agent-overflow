@@ -1,6 +1,6 @@
 <script lang="ts">
-  // McpServerForm: the add/edit form for an MCP server library row.
-  // Owns input fields + client-side validation + the transport-conditional
+  // McpServerForm: the add/edit form for an MCP server. Owns input
+  // fields + client-side validation + the transport-conditional
   // sections. The parent decides "Add" vs "Save", drives persistence,
   // and stitches the result into the surrounding list.
   //
@@ -17,9 +17,11 @@
     SELECT_CLASS,
   } from './styles';
 
-  type Transport = 'stdio' | 'http' | 'sse';
+  type ProviderKind = 'claude' | 'codex';
+  type Transport = 'stdio' | 'http' | 'sse' | 'streamable_http';
 
   interface InitialValues {
+    provider: ProviderKind;
     name: string;
     transport: Transport;
     command: string;
@@ -27,7 +29,7 @@
     env: Record<string, string>;
     url: string;
     headers: Record<string, string>;
-    bearerEnv: string;
+    bearerTokenEnv: string;
   }
 
   interface SubmitValues extends InitialValues {}
@@ -44,6 +46,7 @@
   const { mode, initial, initialError = null, saving, onSubmit, onCancel }: Props =
     $props();
 
+  let provider = $state<ProviderKind>('claude');
   let name = $state('');
   let transport = $state<Transport>('stdio');
   let command = $state('');
@@ -51,12 +54,15 @@
   let envText = $state('');
   let url = $state('');
   let headersText = $state('');
-  let bearerEnv = $state('');
+  let bearerTokenEnv = $state('');
   let formError = $state<string | null>(null);
 
   // Re-sync local state when initial props change (parent re-uses the
   // form across edit targets). Each $effect runs only when the
   // corresponding prop changes.
+  $effect(() => {
+    provider = initial.provider;
+  });
   $effect(() => {
     name = initial.name;
   });
@@ -79,7 +85,7 @@
     headersText = recordToLines(initial.headers);
   });
   $effect(() => {
-    bearerEnv = initial.bearerEnv;
+    bearerTokenEnv = initial.bearerTokenEnv;
   });
   $effect(() => {
     formError = initialError;
@@ -116,6 +122,16 @@
       out[key] = value;
     }
     return { ok: true, value: out };
+  }
+
+  // Both providers accept the same transport set for stdio. For HTTP
+  // Claude uses "http"/"sse" and Codex uses "streamable_http". Map the
+  // dropdown choice to a provider-native value at submit.
+  function nativeTransport(p: ProviderKind, t: Transport): Transport {
+    if (t === 'stdio') return 'stdio';
+    if (p === 'codex') return 'streamable_http';
+    if (t === 'streamable_http') return 'http';
+    return t;
   }
 
   function validateClient(): string | null {
@@ -160,20 +176,40 @@
     }
     formError = null;
     onSubmit({
+      provider,
       name: name.trim(),
-      transport,
+      transport: nativeTransport(provider, transport),
       command: command.trim(),
       args: parseArgs(argsText),
       env: envParsed.value,
       url: url.trim(),
       headers: headersParsed.value,
-      bearerEnv: bearerEnv.trim(),
+      bearerTokenEnv: bearerTokenEnv.trim(),
     });
   }
+
+  let isHttpish = $derived(transport !== 'stdio');
 </script>
 
 <div class="rounded-[var(--radius-card)] border border-border-subtle bg-surface-1/60 p-4">
   <div class="grid grid-cols-1 gap-3">
+    <label class="flex flex-col gap-1">
+      <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-fg-hint">Provider</span>
+      <select
+        bind:value={provider}
+        class={SELECT_CLASS}
+        disabled={saving || mode === 'edit'}
+        data-testid="mcp-form-provider"
+      >
+        <option value="claude">Claude Code</option>
+        <option value="codex">Codex</option>
+      </select>
+      <span class="text-[11px] text-fg-subtle">
+        Servers are written to the provider's native config file
+        (Claude: <code>~/.claude.json</code>; Codex: <code>~/.codex/config.toml</code>).
+      </span>
+    </label>
+
     <label class="flex flex-col gap-1">
       <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-fg-hint">Name</span>
       <input
@@ -201,8 +237,12 @@
         data-testid="mcp-form-transport"
       >
         <option value="stdio">stdio (local subprocess)</option>
-        <option value="http">http (streamable HTTP)</option>
-        <option value="sse">sse (Server-Sent Events)</option>
+        {#if provider === 'codex'}
+          <option value="streamable_http">streamable_http</option>
+        {:else}
+          <option value="http">http (streamable HTTP)</option>
+          <option value="sse">sse (Server-Sent Events)</option>
+        {/if}
       </select>
     </label>
 
@@ -242,10 +282,10 @@
         ></textarea>
         <span class="text-[11px] text-fg-subtle">
           One per line as <code>KEY=VALUE</code>. Use <code>${'$'}{'{'}VAR{'}'}</code> to
-          reference your shell environment — secrets never touch the database.
+          reference your shell environment — secrets never touch AO storage.
         </span>
       </label>
-    {:else}
+    {:else if isHttpish}
       <label class="flex flex-col gap-1">
         <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-fg-hint">URL</span>
         <input
@@ -273,7 +313,7 @@
         <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-fg-hint">Bearer env var</span>
         <input
           type="text"
-          bind:value={bearerEnv}
+          bind:value={bearerTokenEnv}
           placeholder="GITHUB_TOKEN"
           class={INPUT_CLASS}
           disabled={saving}

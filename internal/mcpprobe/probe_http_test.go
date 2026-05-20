@@ -9,8 +9,17 @@ import (
 	"time"
 
 	"agent-overflow/internal/mcp"
-	"agent-overflow/internal/store"
 )
+
+func httpSpec(url string) mcp.Spec {
+	return mcp.Spec{
+		Provider:  "claude",
+		Name:      "test",
+		Transport: mcp.TransportHTTP,
+		URL:       url,
+		Enabled:   true,
+	}
+}
 
 func TestProbeHTTP_Ready(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -22,7 +31,7 @@ func TestProbeHTTP_Ready(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	got := Probe(ctx, store.MCPServer{ID: "x", Transport: mcp.TransportHTTP, URL: srv.URL, Enabled: true})
+	got := Probe(ctx, httpSpec(srv.URL))
 
 	if got.Status != mcp.StatusReady {
 		t.Fatalf("status = %v, want ready (err=%q)", got.Status, got.Error)
@@ -42,7 +51,7 @@ func TestProbeHTTP_NeedsAuth(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got := Probe(context.Background(), store.MCPServer{ID: "x", Transport: mcp.TransportHTTP, URL: srv.URL, Enabled: true})
+	got := Probe(context.Background(), httpSpec(srv.URL))
 	if got.Status != mcp.StatusNeedsAuth {
 		t.Fatalf("status = %v, want needs-auth", got.Status)
 	}
@@ -57,7 +66,7 @@ func TestProbeHTTP_NeedsAuthWithoutWWWAuthenticate(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got := Probe(context.Background(), store.MCPServer{ID: "x", Transport: mcp.TransportHTTP, URL: srv.URL, Enabled: true})
+	got := Probe(context.Background(), httpSpec(srv.URL))
 	if got.Status != mcp.StatusNeedsAuth {
 		t.Fatalf("status = %v, want needs-auth", got.Status)
 	}
@@ -73,7 +82,7 @@ func TestProbeHTTP_FailedOn500(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got := Probe(context.Background(), store.MCPServer{ID: "x", Transport: mcp.TransportHTTP, URL: srv.URL, Enabled: true})
+	got := Probe(context.Background(), httpSpec(srv.URL))
 	if got.Status != mcp.StatusFailed {
 		t.Fatalf("status = %v, want failed", got.Status)
 	}
@@ -90,7 +99,7 @@ func TestProbeHTTP_FailedOnInvalidJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got := Probe(context.Background(), store.MCPServer{ID: "x", Transport: mcp.TransportHTTP, URL: srv.URL, Enabled: true})
+	got := Probe(context.Background(), httpSpec(srv.URL))
 	if got.Status != mcp.StatusFailed {
 		t.Fatalf("status = %v, want failed", got.Status)
 	}
@@ -104,7 +113,7 @@ func TestProbeHTTP_SSEContentTypeIsReady(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got := Probe(context.Background(), store.MCPServer{ID: "x", Transport: mcp.TransportHTTP, URL: srv.URL, Enabled: true})
+	got := Probe(context.Background(), httpSpec(srv.URL))
 	if got.Status != mcp.StatusReady {
 		t.Fatalf("status = %v, want ready for SSE content-type", got.Status)
 	}
@@ -121,8 +130,9 @@ func TestProbeHTTP_CustomHeaderAndBearerEnv(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_ = Probe(context.Background(), store.MCPServer{
-		ID:        "x",
+	_ = Probe(context.Background(), mcp.Spec{
+		Provider:  "claude",
+		Name:      "test",
 		Transport: mcp.TransportHTTP,
 		URL:       srv.URL,
 		Headers:   map[string]string{"X-Custom": "ok"},
@@ -138,15 +148,19 @@ func TestProbeHTTP_CustomHeaderAndBearerEnv(t *testing.T) {
 }
 
 func TestProbeHTTP_FailedOnUnreachableURL(t *testing.T) {
-	// Bind a listener, immediately close it. The port is now unused; any
-	// connection attempt fails.
 	srv := httptest.NewServer(http.NotFoundHandler())
 	addr := srv.URL
 	srv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	got := Probe(ctx, store.MCPServer{ID: "x", Transport: mcp.TransportHTTP, URL: addr, Enabled: true})
+	got := Probe(ctx, mcp.Spec{
+		Provider:  "claude",
+		Name:      "test",
+		Transport: mcp.TransportHTTP,
+		URL:       addr,
+		Enabled:   true,
+	})
 	if got.Status != mcp.StatusFailed {
 		t.Fatalf("status = %v, want failed", got.Status)
 	}

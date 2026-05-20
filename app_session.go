@@ -111,15 +111,13 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
-	mergedServers, collisions, err := a.mergeMCPServersForThread(threadID, t.Provider, designServers)
-	if err != nil {
-		a.teardownDesignThread(threadID)
-		return fmt.Errorf("start session: %w", err)
-	}
-	if len(collisions) > 0 {
-		log.Printf("mcp: thread %s: user library entries shadowed by design names: %v", threadID, collisions)
-	}
-	designCfg.MCPServers = mergedServers
+	// designServers is non-nil only for design threads; chat/plan
+	// threads leave cfg.MCPServers empty so the provider reads its
+	// native config (Claude → ~/.claude.json mcpServers; Codex →
+	// ~/.codex/config.toml). Design threads keep the explicit
+	// injection so --strict-mcp-config / per-turn overlays lock them
+	// to a deterministic tool surface.
+	designCfg.MCPServers = designServers
 
 	// Flip any persisted `is_background=running` rows for a Codex thread
 	// to errored/lost BEFORE spawning the new subprocess. Those rows

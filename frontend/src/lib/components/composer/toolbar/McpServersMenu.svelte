@@ -1,13 +1,13 @@
 <script lang="ts">
   // The popup behind the composer-toolbar "MCP" trigger. Lists every
-  // library row + per-server status chip + checkbox; the row's
-  // primary onSelect toggles whether that server is enabled for the
-  // current thread. The trailing action button surfaces the most
-  // useful next step for the row's state (Sign in for needs-auth
-  // http/sse, Refresh otherwise). A "Manage…" link in the footer
-  // navigates to the Settings → MCP pane where CRUD lives.
+  // server visible to the thread's provider + per-server status chip
+  // + checkbox; the row's primary onSelect toggles the unified
+  // Disabled flag (Claude: workspace-scoped; Codex: global). The
+  // trailing action button surfaces the most useful next step for
+  // the row's state (Sign in for needs-auth http/sse, Refresh
+  // otherwise). A "Manage…" link in the footer navigates to the
+  // Settings → MCP pane where CRUD lives.
 
-  import { onMount } from 'svelte';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
@@ -19,6 +19,7 @@
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import {
     mcpServersStore,
+    mcpCacheKey,
   } from '../../../stores/mcpServers.svelte';
   import type { MCPServer, MCPProbeResult } from '../../../stores/bindings';
   import { OpenExternalURL } from '../../../stores/bindings';
@@ -35,20 +36,16 @@
 
   let { anchor, open, pane, onClose }: Props = $props();
 
-  onMount(() => {
-    // Idempotent — the store no-ops on repeated calls.
-    void mcpServersStore.ensureInitialized();
-  });
-
   $effect(() => {
-    if (open && pane.threadId) {
-      void mcpServersStore.loadThreadServers(pane.threadId);
+    if (open && pane.thread) {
+      void mcpServersStore.loadForThread(pane.thread.provider, pane.thread.workspacePath ?? '');
+      void mcpServersStore.refreshProbeSnapshot();
     }
   });
 
   type StatusKey = 'ready' | 'needs-auth' | 'failed' | 'unknown' | 'probing';
 
-  function statusKey(server: MCPServer, result: MCPProbeResult | undefined, probing: boolean): StatusKey {
+  function statusKey(result: MCPProbeResult | undefined, probing: boolean): StatusKey {
     if (probing) return 'probing';
     if (!result) return 'unknown';
     const status = result.status as string;
@@ -85,35 +82,27 @@
     return `${transport} · ${detail}`;
   }
 
-  async function toggleServer(server: MCPServer, enabled: boolean): Promise<void> {
+  async function toggleServer(server: MCPServer, enable: boolean): Promise<void> {
     if (!pane.threadId) return;
-    const current = mcpServersStore.threadServers(pane.threadId);
-    let next: string[];
-    if (enabled) {
-      if (current.includes(server.id)) return;
-      next = [...current, server.id];
-    } else {
-      if (!current.includes(server.id)) return;
-      next = current.filter((id) => id !== server.id);
-    }
     try {
-      await mcpServersStore.setThreadServers(pane.threadId, next);
+      await mcpServersStore.setEnabled(pane.threadId, server.name, enable);
+      // Refresh so the unified Disabled flag reflects the new file state.
+      if (pane.thread) {
+        await mcpServersStore.loadForThread(pane.thread.provider, pane.thread.workspacePath ?? '');
+      }
     } catch (err) {
-      addToast('error', `Failed to update MCP servers: ${errString(err)}`);
+      addToast('error', `Failed to update MCP server: ${errString(err)}`);
     }
   }
 
   async function signIn(server: MCPServer): Promise<void> {
     if (!pane.threadId) return;
-    const enabled = mcpServersStore.threadServers(pane.threadId).includes(server.id);
-    if (!enabled) {
-      // The backend enforces the same rule; surfacing it here avoids a
-      // round-trip and keeps the affordance disabled in the obvious case.
+    if (server.disabled) {
       addToast('info', `Enable ${server.name} first, then sign in.`);
       return;
     }
     try {
-      const res = await mcpServersStore.triggerAuth(pane.threadId, server.id);
+      const res = await mcpServersStore.triggerAuth(pane.threadId, server.name);
       if (res?.authUrl) {
         await OpenExternalURL(res.authUrl);
       } else {
@@ -126,7 +115,7 @@
 
   async function refresh(server: MCPServer): Promise<void> {
     try {
-      await mcpServersStore.probeServer(server.id, true);
+      await mcpServersStore.probeServer(server.provider, server.name, true);
     } catch (err) {
       addToast('error', `Probe failed for ${server.name}: ${errString(err)}`);
     }
@@ -139,11 +128,10 @@
     );
   }
 
-  let library = $derived(mcpServersStore.library);
+  let provider = $derived(pane.thread?.provider ?? '');
+  let visible = $derived(provider ? mcpServersStore.serversForProvider(provider) : []);
   let probes = $derived(mcpServersStore.probeResults);
   let inFlight = $derived(mcpServersStore.probesInFlight);
-  let threadId = $derived(pane.threadId ?? '');
-  let enabledSet = $derived(new Set(threadId ? mcpServersStore.threadServers(threadId) : []));
 </script>
 
 <Popover
@@ -154,7 +142,7 @@
   role="none"
 >
   <Menu ariaLabel="MCP servers" {onClose}>
-    {#if library.length === 0}
+    {#if visible.length === 0}
       <div class="px-3 py-4 text-[12px] text-fg-muted">
         <div class="mb-2 font-medium text-fg">No MCP servers configured</div>
         <div class="text-fg-subtle">
@@ -171,12 +159,13 @@
         {/snippet}
       </MenuItem>
     {:else}
-      {#each library as server (server.id)}
-        {@const probing = inFlight.has(server.id)}
-        {@const result = probes.get(server.id)}
-        {@const key = statusKey(server, result, probing)}
-        {@const inSet = enabledSet.has(server.id)}
-        {@const needsAuth = key === 'needs-auth' && (server.transport === 'http' || server.transport === 'sse')}
+      {#each visible as server (mcpCacheKey(server.provider, server.name))}
+        {@const key0 = mcpCacheKey(server.provider, server.name)}
+        {@const probing = inFlight.has(key0)}
+        {@const result = probes.get(key0)}
+        {@const key = statusKey(result, probing)}
+        {@const inSet = !server.disabled}
+        {@const needsAuth = key === 'needs-auth' && (server.transport === 'http' || server.transport === 'sse' || server.transport === 'streamable_http')}
         <MenuItem
           label={server.name}
           description={describe(server, result, key)}

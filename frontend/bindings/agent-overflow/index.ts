@@ -23,6 +23,7 @@ export {
     LiveStateTodo,
     LiveStateTodoStep,
     MCPAuthInitResult,
+    MCPServer,
     PayloadChunk,
     PayloadContent,
     PayloadPreview,

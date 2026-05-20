@@ -731,16 +731,14 @@ func (p *privilegedApp) ListWSLDistros() string         { return "ok" }
 func (p *privilegedApp) GetWSLDistroPreference() string { return "ok" }
 
 // 8. MCP library / per-thread config and probes.
-func (p *privilegedApp) ListMcpServers() string         { return "ok" }
-func (p *privilegedApp) CreateMcpServer() string        { return "ok" }
-func (p *privilegedApp) UpdateMcpServer() string        { return "ok" }
-func (p *privilegedApp) DeleteMcpServer() string        { return "ok" }
-func (p *privilegedApp) GetThreadMcpServers() string    { return "ok" }
-func (p *privilegedApp) UpdateThreadMcpServers() string { return "ok" }
-func (p *privilegedApp) ProbeMcpServer() string         { return "ok" }
-func (p *privilegedApp) GetMcpProbeSnapshot() string    { return "ok" }
-func (p *privilegedApp) TriggerMcpAuth() string         { return "ok" }
-func (p *privilegedApp) GetMcpThreadProfile() string    { return "ok" }
+func (p *privilegedApp) ListMcpServers() string      { return "ok" }
+func (p *privilegedApp) CreateMcpServer() string     { return "ok" }
+func (p *privilegedApp) UpdateMcpServer() string     { return "ok" }
+func (p *privilegedApp) DeleteMcpServer() string     { return "ok" }
+func (p *privilegedApp) SetMcpServerEnabled() string { return "ok" }
+func (p *privilegedApp) ProbeMcpServer() string      { return "ok" }
+func (p *privilegedApp) GetMcpProbeSnapshot() string { return "ok" }
+func (p *privilegedApp) TriggerMcpAuth() string      { return "ok" }
 
 // TestDispatcher_LocalOnlyRefusedFromNonLoopback pins the LAN-bind
 // safety contract on the dispatcher itself. ResolveForOrigin must

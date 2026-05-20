@@ -222,34 +222,6 @@ type ChatModelProfile struct {
 	UpdatedAt                  int64  `json:"updatedAt"`
 }
 
-// MCPServer is the library row for a user-configured MCP server. Args /
-// Env / Headers stay as raw JSON strings in the row but the typed shape
-// is exposed through the accessors in mcp.go. ${VAR} references inside
-// any of those values are intentionally preserved — providers expand
-// them at spawn time so AO never has to handle the secret directly.
-type MCPServer struct {
-	ID        string            `json:"id"`
-	Name      string            `json:"name"`
-	Transport string            `json:"transport"`
-	Command   string            `json:"command,omitempty"`
-	Args      []string          `json:"args,omitempty"`
-	Env       map[string]string `json:"env,omitempty"`
-	URL       string            `json:"url,omitempty"`
-	Headers   map[string]string `json:"headers,omitempty"`
-	BearerEnv string            `json:"bearerEnv,omitempty"`
-	Enabled   bool              `json:"enabled"`
-	CreatedAt int64             `json:"createdAt"`
-	UpdatedAt int64             `json:"updatedAt"`
-}
-
-// MCPThreadProfile is the single-row seed that captures the last
-// enabled set so newly-created threads pick up the same defaults the
-// user picked last time. Identical pattern to ChatModelProfile.
-type MCPThreadProfile struct {
-	ServerIDs []string `json:"serverIds"`
-	UpdatedAt int64    `json:"updatedAt"`
-}
-
 // -- helpers --
 
 func nilIfEmpty(s string) interface{} {

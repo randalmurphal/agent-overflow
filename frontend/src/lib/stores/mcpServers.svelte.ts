@@ -3,12 +3,10 @@ import {
   CreateMcpServer,
   UpdateMcpServer,
   DeleteMcpServer,
-  GetThreadMcpServers,
-  UpdateThreadMcpServers,
+  SetMcpServerEnabled,
   ProbeMcpServer,
   GetMcpProbeSnapshot,
   TriggerMcpAuth,
-  GetMcpThreadProfile,
   MCPServer,
   MCPProbeResult,
   MCPAuthInitResult,
@@ -20,196 +18,195 @@ import { wailsEventOn } from './events';
 // handleCodexMCPOAuthCompleted.
 interface MCPOAuthCompletedPayload {
   threadId: string;
-  serverId: string;
+  provider: string;
   serverName: string;
   success: boolean;
   error?: string;
 }
 
-let library = $state<MCPServer[]>([]);
+// cacheKey is the wire-stable identifier used by the probe cache and
+// by the store's internal maps. Matches the Go side's mcp.Spec.CacheKey().
+export function mcpCacheKey(provider: string, name: string): string {
+  return `${provider}:${name}`;
+}
+
+// servers is the unified library across both providers. Keyed by
+// cacheKey so a Claude entry and a Codex entry with the same name
+// don't collide. The list view consumers filter by provider.
+let servers = $state<MCPServer[]>([]);
 let probeResults = $state(new Map<string, MCPProbeResult>());
 let probesInFlight = $state(new Set<string>());
-let threadServerIds = $state(new Map<string, string[]>());
-let profileIds = $state<string[]>([]);
-let initialized = false;
+let oauthSubscribed = false;
 
-/**
- * mcpServersStore is a tiny façade over the App bindings so components can
- * read reactive state without each one writing their own load+cache logic.
- * State shapes mirror what the backend returns:
- * - library: full list of MCPServer rows, alphabetical by name
- * - probeResults: per-server probe Result snapshots, populated lazily by
- *   probeServer() and seeded once via GetMcpProbeSnapshot()
- * - threadServerIds: per-thread enable set; populated by loadThreadServers
- *   on first read, kept fresh by setThreadServers writes
- * - profileIds: the "last selected" seed list
- */
-
-function setLibrary(next: MCPServer[]): void {
-  library = next ?? [];
+function setServers(next: MCPServer[]): void {
+  servers = next ?? [];
 }
 
-function setThreadIds(threadId: string, ids: string[]): void {
-  const m = new Map(threadServerIds);
-  m.set(threadId, ids);
-  threadServerIds = m;
+function mergeServers(next: MCPServer[], provider: string, workspaceScoped: boolean): void {
+  // Replace every entry that came from the same provider+workspace
+  // scope so a workspace-aware reload doesn't leak stale entries from
+  // a previous thread. The Disabled flag is workspace-scoped for
+  // Claude, so a workspace switch must reset every Claude row to
+  // its current scope's state.
+  const next2 = (next ?? []).filter((s) => s.provider === provider);
+  const others = servers.filter((s) => s.provider !== provider);
+  servers = workspaceScoped ? [...others, ...next2] : [...others, ...next2];
 }
 
-function setProbeResult(serverId: string, res: MCPProbeResult): void {
+function setProbeResult(key: string, res: MCPProbeResult): void {
   const m = new Map(probeResults);
-  m.set(serverId, res);
+  m.set(key, res);
   probeResults = m;
 }
 
-function clearProbeResult(serverId: string): void {
-  if (!probeResults.has(serverId)) return;
+function clearProbeResult(key: string): void {
+  if (!probeResults.has(key)) return;
   const m = new Map(probeResults);
-  m.delete(serverId);
+  m.delete(key);
   probeResults = m;
 }
 
-function setProbeInFlight(serverId: string, inFlight: boolean): void {
+function setProbeInFlight(key: string, inFlight: boolean): void {
   // Treat the Set as immutable so $state reactivity fires on read.
   const next = new Set(probesInFlight);
-  if (inFlight) next.add(serverId);
-  else next.delete(serverId);
+  if (inFlight) next.add(key);
+  else next.delete(key);
   probesInFlight = next;
 }
 
+function subscribeOAuth(): void {
+  if (oauthSubscribed) return;
+  oauthSubscribed = true;
+  wailsEventOn<MCPOAuthCompletedPayload>('mcp:oauth-completed', (payload) => {
+    if (!payload?.serverName || !payload?.provider) return;
+    const key = mcpCacheKey(payload.provider, payload.serverName);
+    clearProbeResult(key);
+    // Speculatively re-probe so users who left the popup open see the new
+    // status without clicking Refresh. Failures are silent: the next
+    // explicit probe surfaces the error.
+    void mcpServersStore.probeServer(payload.provider, payload.serverName, true).catch(
+      () => undefined,
+    );
+  });
+}
+
 export const mcpServersStore = {
-  get library(): readonly MCPServer[] {
-    return library;
+  get servers(): readonly MCPServer[] {
+    return servers;
   },
+
   get probeResults(): ReadonlyMap<string, MCPProbeResult> {
     return probeResults;
   },
+
   get probesInFlight(): ReadonlySet<string> {
     return probesInFlight;
   },
-  get profile(): readonly string[] {
-    return profileIds;
+
+  /**
+   * serversForProvider returns the visible servers for one provider.
+   * For Claude the rows reflect the workspace scope of the last
+   * loadForThread call; for Codex the global enabled flag.
+   */
+  serversForProvider(provider: string): MCPServer[] {
+    return servers.filter((s) => s.provider === provider);
   },
 
-  threadServers(threadId: string): readonly string[] {
-    return threadServerIds.get(threadId) ?? [];
+  /**
+   * loadForThread fetches the provider's MCP library scoped to the
+   * thread's workspace. Used by the composer toolbar popup. Pass an
+   * empty workspacePath for Codex (the flag is global).
+   */
+  async loadForThread(provider: string, workspacePath: string): Promise<MCPServer[]> {
+    subscribeOAuth();
+    const list = (await ListMcpServers(provider, workspacePath)) ?? [];
+    mergeServers(list, provider, true);
+    return list;
   },
 
-  async ensureInitialized(): Promise<void> {
-    if (initialized) return;
-    initialized = true;
-    // First load is best-effort; the popup re-fetches on open anyway.
-    await Promise.allSettled([
-      this.refreshLibrary(),
-      this.refreshProbeSnapshot(),
-      this.refreshProfile(),
+  /**
+   * loadAllProviders fetches both Claude and Codex libraries without
+   * a workspace scope. Used by the Settings library view. The
+   * Disabled flag here reflects "any workspace has disabled it" for
+   * Claude (the adapter returns the cross-workspace library, not a
+   * workspace-scoped projection, when workspacePath is empty).
+   */
+  async loadAllProviders(): Promise<void> {
+    subscribeOAuth();
+    const [claudeList, codexList] = await Promise.all([
+      ListMcpServers('claude', '').catch(() => []),
+      ListMcpServers('codex', '').catch(() => []),
     ]);
-    wailsEventOn<MCPOAuthCompletedPayload>('mcp:oauth-completed', (payload) => {
-      if (!payload?.serverId) return;
-      // Drop the cached probe; the next read (whether triggered by the popup
-      // or any other subscriber) re-runs the handshake against the freshly
-      // authenticated session.
-      clearProbeResult(payload.serverId);
-      // Speculatively re-probe so users who left the popup open see the new
-      // status without clicking Refresh. Failures are silent: the next
-      // explicit probe surfaces the error.
-      void this.probeServer(payload.serverId, true).catch(() => undefined);
-    });
+    setServers([...(claudeList ?? []), ...(codexList ?? [])]);
   },
 
-  async refreshLibrary(): Promise<MCPServer[]> {
-    const next = (await ListMcpServers()) ?? [];
-    setLibrary(next);
-    return next;
-  },
-
+  /**
+   * refreshProbeSnapshot seeds probeResults with whatever the backend
+   * cache already has so the popup renders instant status on first
+   * open. Keyed by cacheKey on the wire.
+   */
   async refreshProbeSnapshot(): Promise<void> {
     const snapshot = (await GetMcpProbeSnapshot()) ?? {};
     const m = new Map<string, MCPProbeResult>();
-    for (const [id, res] of Object.entries(snapshot)) {
-      if (res) m.set(id, res);
+    for (const [key, res] of Object.entries(snapshot)) {
+      if (res) m.set(key, res);
     }
     probeResults = m;
   },
 
-  async refreshProfile(): Promise<string[]> {
-    const profile = await GetMcpThreadProfile();
-    const ids = profile?.serverIds ?? [];
-    profileIds = ids;
-    return ids;
-  },
-
-  async loadThreadServers(threadId: string): Promise<string[]> {
-    if (!threadId) return [];
-    const ids = (await GetThreadMcpServers(threadId)) ?? [];
-    setThreadIds(threadId, ids);
-    return ids;
-  },
-
-  async setThreadServers(threadId: string, ids: string[]): Promise<void> {
-    if (!threadId) return;
-    // Optimistic local update so the popup checkbox feels instant. The
-    // backend may flag a reconcile failure on the thread error rail; that
-    // surfaces independently of this call's success status.
-    setThreadIds(threadId, ids);
-    try {
-      await UpdateThreadMcpServers(threadId, ids);
-    } catch (err) {
-      // Roll back by re-fetching the authoritative set.
-      try {
-        await this.loadThreadServers(threadId);
-      } catch {
-        // Surface the original error; the re-fetch failure is secondary.
-      }
-      throw err;
-    }
-  },
-
   async createServer(input: MCPServer): Promise<MCPServer> {
     const created = await CreateMcpServer(input);
-    await this.refreshLibrary();
-    await this.refreshProfile();
+    // Refresh the library scope the caller is currently rendering.
+    // The settings view calls loadAllProviders; the popup calls
+    // loadForThread. Either way the new row is visible next read.
     return created;
   },
 
   async updateServer(input: MCPServer): Promise<MCPServer> {
     const updated = await UpdateMcpServer(input);
-    clearProbeResult(updated.id);
-    await this.refreshLibrary();
+    clearProbeResult(mcpCacheKey(updated.provider, updated.name));
     return updated;
   },
 
-  async deleteServer(id: string): Promise<void> {
-    await DeleteMcpServer(id);
-    clearProbeResult(id);
-    await Promise.allSettled([this.refreshLibrary(), this.refreshProfile()]);
+  async deleteServer(provider: string, name: string): Promise<void> {
+    await DeleteMcpServer(provider, name);
+    clearProbeResult(mcpCacheKey(provider, name));
   },
 
-  async probeServer(id: string, force = false): Promise<MCPProbeResult> {
-    if (!id) {
-      throw new Error('mcp: probeServer requires a server id');
+  /**
+   * setEnabled toggles the unified Disabled flag for a server in the
+   * scope of the calling thread. Claude: workspace-scoped disabledMcpServers;
+   * Codex: global enabled = false. The backend live-reconciles the
+   * affected provider session.
+   */
+  async setEnabled(threadId: string, name: string, enabled: boolean): Promise<void> {
+    if (!threadId || !name) return;
+    await SetMcpServerEnabled(threadId, name, enabled);
+  },
+
+  async probeServer(provider: string, name: string, force = false): Promise<MCPProbeResult> {
+    if (!provider || !name) {
+      throw new Error('mcp: probeServer requires provider and name');
     }
-    setProbeInFlight(id, true);
+    const key = mcpCacheKey(provider, name);
+    setProbeInFlight(key, true);
     try {
-      const result = await ProbeMcpServer(id, force);
-      if (result) setProbeResult(id, result);
+      const result = await ProbeMcpServer(provider, name, force);
+      if (result) setProbeResult(key, result);
       return result;
     } finally {
-      setProbeInFlight(id, false);
+      setProbeInFlight(key, false);
     }
   },
 
-  async triggerAuth(threadId: string, serverId: string): Promise<MCPAuthInitResult> {
-    return TriggerMcpAuth(threadId, serverId);
+  async triggerAuth(threadId: string, name: string): Promise<MCPAuthInitResult> {
+    return TriggerMcpAuth(threadId, name);
   },
 };
 
-// resetMcpServersForTest clears every cached state slice so tests can build
-// the store fresh between cases. Not part of the production surface.
 export function resetMcpServersForTest(): void {
-  library = [];
+  servers = [];
   probeResults = new Map();
   probesInFlight = new Set();
-  threadServerIds = new Map();
-  profileIds = [];
-  initialized = false;
+  oauthSubscribed = false;
 }

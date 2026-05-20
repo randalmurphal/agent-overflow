@@ -227,17 +227,15 @@ export {
   UnarchiveProject,
   UpdateProjectSortPositions,
 
-  // MCP library + per-thread server selection
+  // MCP library (1:1 sync with ~/.claude.json + ~/.codex/config.toml)
   ListMcpServers,
   CreateMcpServer,
   UpdateMcpServer,
   DeleteMcpServer,
-  GetThreadMcpServers,
-  UpdateThreadMcpServers,
+  SetMcpServerEnabled,
   ProbeMcpServer,
   GetMcpProbeSnapshot,
   TriggerMcpAuth,
-  GetMcpThreadProfile,
 } from '../../../bindings/agent-overflow/app.js';
 
 // Model classes needed for constructing RPC parameters.
@@ -251,13 +249,14 @@ export {
 // Structured response types surfaced to components.
 export {
   ChatBarFavorite,
-  MCPServer,
-  MCPThreadProfile,
   ThreadMessageHit,
 } from '../../../bindings/agent-overflow/internal/store/models.js';
 export {
   Result as MCPProbeResult,
 } from '../../../bindings/agent-overflow/internal/mcpprobe/models.js';
+export {
+  MCPServer,
+} from '../../../bindings/agent-overflow/models.js';
 export {
   EditorSettings,
   RemoteEndpoint,

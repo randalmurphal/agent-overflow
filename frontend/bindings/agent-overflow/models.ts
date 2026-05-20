@@ -640,12 +640,7 @@ export class LiveStateTodoStep {
 }
 
 /**
- * MCPAuthInitResult is the response shape for TriggerMcpAuth. The
- * frontend opens AuthURL via OpenExternalURL; Provider lets the UI
- * pick the right "completing sign-in" copy. RequiresUserAction is
- * always true today (both providers hand back a URL we must surface)
- * but stays on the wire so a future "completed inline" path can
- * arrive without a binding-shape change.
+ * MCPAuthInitResult is the response shape for TriggerMcpAuth.
  */
 export class MCPAuthInitResult {
     "authUrl": string;
@@ -673,6 +668,74 @@ export class MCPAuthInitResult {
     static createFrom($$source: any = {}): MCPAuthInitResult {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new MCPAuthInitResult($$parsedSource as Partial<MCPAuthInitResult>);
+    }
+}
+
+/**
+ * MCPServer is the wire shape every MCP binding speaks. It unifies
+ * claudeconfig.Server (which carries Source + the per-workspace
+ * Disabled flag) and codexconfig.Server (which carries a global
+ * Enabled flag and Codex-specific transport names) into a single shape
+ * the frontend renders without a provider branch. Transport values
+ * stay provider-native ("stdio" | "http" | "sse" for Claude;
+ * "stdio" | "streamable_http" for Codex) so the editor form can pick
+ * the right input set.
+ * 
+ * Disabled is the unified UI flag — true means "this server is not
+ * active in the current scope". For Claude that translates to the
+ * thread's workspace `disabledMcpServers` list; for Codex it
+ * translates to the global `enabled = false` field in
+ * ~/.codex/config.toml.
+ */
+export class MCPServer {
+    "provider": string;
+    "name": string;
+    "source"?: string;
+    "transport": string;
+    "command"?: string;
+    "args"?: string[];
+    "env"?: { [_ in string]?: string };
+    "url"?: string;
+    "headers"?: { [_ in string]?: string };
+    "bearerTokenEnv"?: string;
+    "disabled": boolean;
+
+    /** Creates a new MCPServer instance. */
+    constructor($$source: Partial<MCPServer> = {}) {
+        if (!("provider" in $$source)) {
+            this["provider"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("transport" in $$source)) {
+            this["transport"] = "";
+        }
+        if (!("disabled" in $$source)) {
+            this["disabled"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MCPServer instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MCPServer {
+        const $$createField5_0 = $$createType2;
+        const $$createField6_0 = $$createType10;
+        const $$createField8_0 = $$createType10;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("args" in $$parsedSource) {
+            $$parsedSource["args"] = $$createField5_0($$parsedSource["args"]);
+        }
+        if ("env" in $$parsedSource) {
+            $$parsedSource["env"] = $$createField6_0($$parsedSource["env"]);
+        }
+        if ("headers" in $$parsedSource) {
+            $$parsedSource["headers"] = $$createField8_0($$parsedSource["headers"]);
+        }
+        return new MCPServer($$parsedSource as Partial<MCPServer>);
     }
 }
 
@@ -890,7 +953,7 @@ export class SendMessageOptions {
         const $$createField2_0 = $$createType6;
         const $$createField3_0 = $$createType6;
         const $$createField4_0 = $$createType2;
-        const $$createField5_0 = $$createType11;
+        const $$createField5_0 = $$createType12;
         const $$createField6_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
@@ -999,7 +1062,7 @@ export class TerminalHandle {
      * Creates a new TerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): TerminalHandle {
-        const $$createField2_0 = $$createType12;
+        const $$createField2_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -1106,11 +1169,11 @@ export class ThreadLiveState {
      * Creates a new ThreadLiveState instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadLiveState {
-        const $$createField1_0 = $$createType14;
-        const $$createField2_0 = $$createType16;
-        const $$createField3_0 = $$createType18;
-        const $$createField4_0 = $$createType19;
-        const $$createField5_0 = $$createType21;
+        const $$createField1_0 = $$createType15;
+        const $$createField2_0 = $$createType17;
+        const $$createField3_0 = $$createType19;
+        const $$createField4_0 = $$createType20;
+        const $$createField5_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("activeTurn" in $$parsedSource) {
             $$parsedSource["activeTurn"] = $$createField1_0($$parsedSource["activeTurn"]);
@@ -1193,7 +1256,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType23;
+        const $$createField0_0 = $$createType24;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -1264,17 +1327,18 @@ const $$createType6 = $Create.Nullable($$createType5);
 const $$createType7 = git$0.GitStatus.createFrom;
 const $$createType8 = LiveStateTodoStep.createFrom;
 const $$createType9 = $Create.Array($$createType8);
-const $$createType10 = store$0.DiffReviewSourceRef.createFrom;
-const $$createType11 = $Create.Nullable($$createType10);
-const $$createType12 = terminal$0.SessionSummary.createFrom;
-const $$createType13 = LiveStateActiveTurn.createFrom;
-const $$createType14 = $Create.Nullable($$createType13);
-const $$createType15 = flushqueue$0.QueuedItem.createFrom;
-const $$createType16 = $Create.Array($$createType15);
-const $$createType17 = QueueFlushedItem.createFrom;
-const $$createType18 = $Create.Array($$createType17);
-const $$createType19 = provider$0.PendingInteractiveRequests.createFrom;
-const $$createType20 = LiveStateTodo.createFrom;
-const $$createType21 = $Create.Nullable($$createType20);
-const $$createType22 = workspacefiles$0.WorkspaceFile.createFrom;
-const $$createType23 = $Create.Array($$createType22);
+const $$createType10 = $Create.Map($Create.Any, $Create.Any);
+const $$createType11 = store$0.DiffReviewSourceRef.createFrom;
+const $$createType12 = $Create.Nullable($$createType11);
+const $$createType13 = terminal$0.SessionSummary.createFrom;
+const $$createType14 = LiveStateActiveTurn.createFrom;
+const $$createType15 = $Create.Nullable($$createType14);
+const $$createType16 = flushqueue$0.QueuedItem.createFrom;
+const $$createType17 = $Create.Array($$createType16);
+const $$createType18 = QueueFlushedItem.createFrom;
+const $$createType19 = $Create.Array($$createType18);
+const $$createType20 = provider$0.PendingInteractiveRequests.createFrom;
+const $$createType21 = LiveStateTodo.createFrom;
+const $$createType22 = $Create.Nullable($$createType21);
+const $$createType23 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType24 = $Create.Array($$createType23);

@@ -280,29 +280,26 @@ var LocalOnlyMethods = map[string]bool{
 	//     servers using the user's env-var bearer tokens, so it is an
 	//     external-process invocation (category 1).
 	//   - CreateMcpServer / UpdateMcpServer / DeleteMcpServer mutate
-	//     persistent settings (category 3) and reshape what tools the
-	//     provider can call.
-	//   - UpdateThreadMcpServers reconciles the live provider session
-	//     (category 2): Claude diff-reconciles in-process, Codex
-	//     reconnects, either way the subprocess sees a new tool surface.
-	//   - TriggerMcpAuth writes to ~/.codex/config.toml (category 3),
-	//     starts a session if needed (category 2), and emits the
-	//     authorization URL the desktop user opens locally — a LAN peer
-	//     opening the URL would land on the AO backend's loopback OAuth
-	//     callback, not their own browser.
-	//   - ListMcpServers / GetThreadMcpServers / GetMcpThreadProfile /
-	//     GetMcpProbeSnapshot disclose URLs, env-var bearer references,
-	//     and tool inventory — the same enumeration shape category 6
-	//     locks down. Conservative + consistent: everything goes
-	//     loopback-only.
-	"ListMcpServers":         true,
-	"CreateMcpServer":        true,
-	"UpdateMcpServer":        true,
-	"DeleteMcpServer":        true,
-	"GetThreadMcpServers":    true,
-	"UpdateThreadMcpServers": true,
-	"ProbeMcpServer":         true,
-	"GetMcpProbeSnapshot":    true,
-	"TriggerMcpAuth":         true,
-	"GetMcpThreadProfile":    true,
+	//     ~/.claude.json or ~/.codex/config.toml (category 3) and
+	//     reshape what tools the provider can call.
+	//   - SetMcpServerEnabled toggles the provider-native disable list
+	//     and live-reconciles the affected provider session (category 2);
+	//     Claude diff-reconciles in-process, Codex hot-reloads, either
+	//     way the subprocess sees a new tool surface.
+	//   - TriggerMcpAuth starts a session if needed (category 2) and
+	//     emits the authorization URL the desktop user opens locally — a
+	//     LAN peer opening the URL would land on the AO backend's
+	//     loopback OAuth callback, not their own browser.
+	//   - ListMcpServers / GetMcpProbeSnapshot disclose URLs, env-var
+	//     bearer references, and tool inventory — the same enumeration
+	//     shape category 6 locks down. Conservative + consistent:
+	//     everything goes loopback-only.
+	"ListMcpServers":      true,
+	"CreateMcpServer":     true,
+	"UpdateMcpServer":     true,
+	"DeleteMcpServer":     true,
+	"SetMcpServerEnabled": true,
+	"ProbeMcpServer":      true,
+	"GetMcpProbeSnapshot": true,
+	"TriggerMcpAuth":      true,
 }

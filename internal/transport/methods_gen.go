@@ -65,7 +65,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetGitStatus", ID: 4123560639}, // main.App.GetGitStatus
 	{Name: "GetKeybindings", ID: 3015840904}, // main.App.GetKeybindings
 	{Name: "GetMcpProbeSnapshot", ID: 3698445401}, // main.App.GetMcpProbeSnapshot
-	{Name: "GetMcpThreadProfile", ID: 840413130}, // main.App.GetMcpThreadProfile
 	{Name: "GetMessageCheckpointDiff", ID: 1151360951}, // main.App.GetMessageCheckpointDiff
 	{Name: "GetMessageCheckpointRevertDiff", ID: 1106129437}, // main.App.GetMessageCheckpointRevertDiff
 	{Name: "GetModelsForProvider", ID: 1632984917}, // main.App.GetModelsForProvider
@@ -82,7 +81,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetThread", ID: 1098302047}, // main.App.GetThread
 	{Name: "GetThreadItem", ID: 1969869112}, // main.App.GetThreadItem
 	{Name: "GetThreadLiveState", ID: 70226550}, // main.App.GetThreadLiveState
-	{Name: "GetThreadMcpServers", ID: 2916042219}, // main.App.GetThreadMcpServers
 	{Name: "GetThreadRuntimeMode", ID: 2573491630}, // main.App.GetThreadRuntimeMode
 	{Name: "GetUIRenderTracePath", ID: 1009213933}, // main.App.GetUIRenderTracePath
 	{Name: "GetWSLDistroPreference", ID: 294719565}, // main.App.GetWSLDistroPreference
@@ -172,6 +170,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SendPlanRevisionComments", ID: 1407159655}, // main.App.SendPlanRevisionComments
 	{Name: "SetChatBarFavorite", ID: 2813580982}, // main.App.SetChatBarFavorite
 	{Name: "SetEditorSettings", ID: 3655340267}, // main.App.SetEditorSettings
+	{Name: "SetMcpServerEnabled", ID: 3696908699}, // main.App.SetMcpServerEnabled
 	{Name: "SetNetworkSettings", ID: 3915514446}, // main.App.SetNetworkSettings
 	{Name: "SetThreadRuntimeMode", ID: 1115610690}, // main.App.SetThreadRuntimeMode
 	{Name: "SetWSLDistroPreference", ID: 3978807241}, // main.App.SetWSLDistroPreference
@@ -201,7 +200,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "UpdateThreadContextSettings", ID: 2621473242}, // main.App.UpdateThreadContextSettings
 	{Name: "UpdateThreadContextWindow", ID: 2456875639}, // main.App.UpdateThreadContextWindow
 	{Name: "UpdateThreadFastMode", ID: 4175109385}, // main.App.UpdateThreadFastMode
-	{Name: "UpdateThreadMcpServers", ID: 4096852784}, // main.App.UpdateThreadMcpServers
 	{Name: "UpdateThreadMode", ID: 3609479719}, // main.App.UpdateThreadMode
 	{Name: "UpdateThreadModel", ID: 4179686417}, // main.App.UpdateThreadModel
 	{Name: "UpdateThreadModelSelection", ID: 3140398729}, // main.App.UpdateThreadModelSelection

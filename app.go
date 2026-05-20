@@ -14,6 +14,8 @@ import (
 
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/checkpoint"
+	"agent-overflow/internal/claudeconfig"
+	"agent-overflow/internal/codexconfig"
 	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/design"
 	"agent-overflow/internal/discussion"
@@ -180,12 +182,19 @@ type App struct {
 	// a now-broken config.
 	mcpProbeCacheOnce sync.Once
 	mcpProbeCache     *mcpprobe.Cache
-	// mcpProfileMu serializes read-modify-write of mcp_thread_profile so
-	// concurrent CreateMcpServer / DeleteMcpServer calls can't race the
-	// seed list (last writer would otherwise drop the other's id).
-	// User-driven CRUD makes the collision rare, but the cost of one
-	// mutex round-trip per profile mutation is negligible.
-	mcpProfileMu sync.Mutex
+	// claudeConfigStore / codexConfigStore are the file-backed MCP
+	// library adapters. AO is a 1:1 sync UI over Claude's
+	// ~/.claude.json `mcpServers` and Codex's ~/.codex/config.toml
+	// `[mcp_servers.*]` blocks — no SQLite library, no per-thread
+	// snapshot. Tests inject path-scoped instances directly onto the
+	// struct; production wires through the lazy claudeConfig() /
+	// codexConfig() helpers in app_mcp.go.
+	claudeConfigOnce  sync.Once
+	claudeConfigStore *claudeconfig.Store
+	claudeConfigErr   error
+	codexConfigOnce   sync.Once
+	codexConfigStore  *codexconfig.Store
+	codexConfigErr    error
 	// idleReaperStop signals the idle-session reaper goroutine to exit.
 	// Set by startIdleSessionReaper during ServiceStartup; closed exactly
 	// once by Shutdown before the parallel session close so the reaper

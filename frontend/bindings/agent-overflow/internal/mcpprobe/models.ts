@@ -12,21 +12,27 @@ import * as mcp$0 from "../mcp/models.js";
 /**
  * Result is the projected status the binding layer hands the
  * frontend. ToolCount is best-effort: zero on transports / failures
- * where we can't or don't fetch the tool list.
+ * where we can't or don't fetch the tool list. CacheKey ("provider:name")
+ * is the wire-stable identifier the frontend uses to attribute results
+ * back to a server — the same name can exist for both providers.
  */
 export class Result {
-    "serverId": string;
+    "cacheKey": string;
+    "provider": string;
+    "serverName"?: string;
     "status": mcp$0.Status;
     "error"?: string;
     "protocolVersion"?: string;
-    "serverName"?: string;
     "toolCount": number;
     "checkedAt": number;
 
     /** Creates a new Result instance. */
     constructor($$source: Partial<Result> = {}) {
-        if (!("serverId" in $$source)) {
-            this["serverId"] = "";
+        if (!("cacheKey" in $$source)) {
+            this["cacheKey"] = "";
+        }
+        if (!("provider" in $$source)) {
+            this["provider"] = "";
         }
         if (!("status" in $$source)) {
             this["status"] = mcp$0.Status.$zero;

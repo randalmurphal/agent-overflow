@@ -1422,6 +1422,19 @@ CREATE TABLE mcp_thread_profile (
 );
 `,
 	},
+	{
+		Version: 50,
+		Name:    "drop_mcp_servers",
+		// MCP servers are now read from / written to the provider's own
+		// configuration files (~/.claude.json, ~/.codex/config.toml) so
+		// AO's UI is a 1:1 sync of Claude Code and Codex state. The v49
+		// tables never persisted any user data — drop them.
+		SQL: `
+DROP TABLE IF EXISTS thread_mcp_servers;
+DROP TABLE IF EXISTS mcp_thread_profile;
+DROP TABLE IF EXISTS mcp_servers;
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so
