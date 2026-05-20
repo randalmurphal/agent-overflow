@@ -822,6 +822,14 @@ describe('createUseStickToBottomController', () => {
     });
 
     it('stays escaped when near the bottom visually but outside the auto-follow epsilon', async () => {
+      // A scroll-event trajectory that lands close to the bottom but
+      // outside AUTO_FOLLOW_BOTTOM_EPSILON_PX (4) must not re-stick.
+      // The visual near-bottom band (70px) is wider on purpose — the
+      // chip stays hidden while the user can see the bottom, but
+      // auto-follow only re-engages once they've actually REACHED it
+      // within browser-rounding tolerance. Bug #1 fix removed the
+      // session-required gate; the epsilon is the sole boundary now,
+      // so this test pins that the epsilon itself is respected.
       const ro = getRO();
       ro.fire(contentEl, 800);
 
@@ -831,7 +839,9 @@ describe('createUseStickToBottomController', () => {
       await nextTimer();
       expect(controller.escapedFromLock).toBe(true);
 
-      geom.scrollTop = 399; // distance = 1, visually near-bottom but not auto-follow bottom
+      // distance = 1000 - 395 - 600 = 5. Inside the visual 70px band
+      // but outside the 4px auto-follow epsilon.
+      geom.scrollTop = 395;
       fireScroll(scrollEl);
       await nextTimer();
 
@@ -3282,6 +3292,186 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       expect(controller.escapedFromLock).toBe(false);
       expect(controller.isSticky).toBe(true);
+    });
+
+    it('untagged scroll-event trajectory landing at distFromBottom=0 re-sticks without an active gesture session', async () => {
+      // Bug #1 (bug-report-20260520T005414Z, seq 180-201). After the user
+      // wheel-up gesture expired (scrollend + 160ms timer), production
+      // produced a long burst of untagged scroll events walking scrollTop
+      // monotonically DOWN toward the bottom with no preceding wheel —
+      // trackpad momentum tail after gesture release. Each event had
+      // distFromBottomAtEvent shrinking to 0, but `willRestick` required
+      // `hadUserScrollIntent` (session !== null), so re-stick never fired
+      // and the user was stranded escaped at the geometric bottom.
+      //
+      // Fix: controller-scope `lastObservedScrollTopForRestick` survives
+      // session expiry so `previousObserved` has a baseline even without
+      // an active session. willRestick no longer gates on
+      // hadUserScrollIntent — bailRO is the actual filter for layout-
+      // driven scroll events. The `scrolledDown` requirement still blocks
+      // UP-trajectory escapes, and the AUTO_FOLLOW_BOTTOM_EPSILON_PX (4)
+      // requirement still blocks anywhere-but-bottom re-sticks.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Establish escape.
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Let the gesture session expire — scrollend + settle past 160ms timer.
+      fireScrollEnd(scrollEl);
+      await waitMs(200);
+
+      // Untagged scroll trajectory walking DOWN toward bottom with NO
+      // preceding wheel arming a fresh session. This is what trackpad
+      // momentum tail looks like after gesture release (the browser keeps
+      // dispatching scroll events without firing wheel events).
+      const trajectory = [200, 250, 300, 350, 400];
+      for (const top of trajectory) {
+        geom.scrollTop = top;
+        fireScroll(scrollEl);
+        await nextTimer();
+      }
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('wheel-down at distFromBottom=0 + escaped re-sticks without a follow-up scroll event (clamp-then-wheel lockout)', async () => {
+      // Bug #2 (bug-report-20260520T010930Z, seq 4953-5317). A content
+      // shrink clamped scrollTop to the new max — the clamp's scroll
+      // event fired BEFORE the contentRO microtask, so `resizeDifference`
+      // was still 0 in handleScroll, bailRO didn't catch it, no session
+      // existed, and `willRestick` failed (hadUserScrollIntent=false).
+      // User landed at distFromBottom=0 but escaped. They then wheeled
+      // down to re-engage — but the browser refused to scroll past the
+      // absolute bottom, so ZERO scroll events fired. 180 wheel events
+      // each armed a 'down' gesture session that expired unused; the
+      // re-stick path in the scroll handler is unreachable when no
+      // scroll event ever fires. User stranded.
+      //
+      // Fix: handleWheel detects wheel-down + escaped + at-bottom and
+      // re-sticks synchronously instead of arming a gesture. The wheel
+      // itself is the explicit user consent — no scroll event needed.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Simulate the trapped state directly. Reproducing the full
+      // clamp-from-shrink-then-no-bailRO trap requires precise event
+      // ordering between scroll + contentRO that happy-dom doesn't model;
+      // the bug from the wheel-handler's perspective is exactly: escape
+      // is true, no session, and the user is at distFromBottom <= 4.
+      controller.setEscapedFromLock(true);
+      // geom.scrollTop is already 400 (per beforeEach). distFromBottom =
+      // 1000 - 400 - 600 = 0. Confirm no session armed.
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(400);
+
+      // Wheel down. Browser would refuse to scroll past max → no scroll
+      // event will fire. Re-stick MUST happen from the wheel handler.
+      fireWheel(scrollEl, 100, scrollEl);
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('wheel-down at distFromBottom=0 + escaped re-sticks AND a subsequent streaming chunk pins', async () => {
+      // Bug #2 continuation: after the wheel-handler re-stick, ordinary
+      // streaming must follow. Confirms isAtBottomState + springStopRequested
+      // are correctly reset so the next contentRO positive delta engages
+      // the spring (mode='spring' in this describe block) — the user-visible
+      // signal that re-stick "worked."
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      controller.setEscapedFromLock(true);
+      expect(controller.escapedFromLock).toBe(true);
+
+      fireWheel(scrollEl, 100, scrollEl);
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+
+      // Streaming chunk arrives — spring should chase to new bottom.
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await advanceUntil(() => geom.scrollTop === 800);
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('content shrink that clamps scrollTop DOWN to the bottom does NOT auto-re-stick (no scrolledDown trajectory)', async () => {
+      // Adjacent invariant to bug #2: a content shrink moves scrollTop
+      // DOWN to the new max. scrolledDown is false for any clamp event
+      // (current scrollTop < previous), so willRestick=false even when
+      // distFromBottomAtEvent=0. Layout-driven changes must not yank
+      // an escaped reader to the bottom — only explicit user action
+      // (wheel-at-boundary, chip click, etc.) re-engages.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Escape mid-thread, then scroll DOWN to within the visual band
+      // but above the auto-follow epsilon so a future clamp at the
+      // bottom has a baseline above the clamp value.
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Move forward to scrollTop=395 (baseline=395, distance=5,
+      // outside the 4px auto-follow epsilon — does NOT re-stick yet).
+      geom.scrollTop = 395;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Content shrink: scrollHeight 1000 → 800. Browser clamps
+      // scrollTop from 395 down to new max 200 (800 - 600). distance
+      // is now 0 but scrolledDown = 200 > 395 = FALSE.
+      geom.scrollHeight = 800;
+      geom.contentHeight = 600;
+      geom.scrollTop = 200;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      // No re-stick from the clamp alone. User stays escaped — to
+      // re-engage, they must wheel down (handleWheel re-stick path).
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
+    });
+
+    it('wheel-down at distFromBottom > 4 + escaped arms a gesture (does NOT re-stick from the wheel handler alone)', async () => {
+      // Bug #2 fix scope: the wheel-handler re-stick is ONLY for the
+      // at-bottom-lockout case. If the user is escaped but not at the
+      // bottom, a wheel-down must still arm a gesture so the deferred
+      // scroll handler can run its normal re-stick logic when the
+      // trajectory actually lands at the bottom. Otherwise the fix
+      // would re-stick mid-thread on every downward wheel, defeating
+      // the user's escape.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Escape with scrollTop well above the bottom.
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100; // distFromBottom = 1000 - 100 - 600 = 300
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Wheel down, but still far from bottom. Re-stick MUST NOT fire
+      // from the wheel handler alone — gesture is armed for the next
+      // scroll event to interpret.
+      fireWheel(scrollEl, 50, scrollEl);
+      expect(controller.escapedFromLock).toBe(true);
     });
   });
 

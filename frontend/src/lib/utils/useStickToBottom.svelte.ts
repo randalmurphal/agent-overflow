@@ -402,6 +402,17 @@ export function createUseStickToBottomController(
   let previousHeight: number | undefined;
   let touchStartY: number | null = null;
   let resizeCorrelatedUntaggedScrollBudget = 0;
+  // Controller-scope baseline so `scrolledDown` can be computed for the
+  // re-stick path even when no gesture session is active. The scroll
+  // handler updates this on every event AFTER reading the previous value
+  // into `previousObserved`. Production cause: trackpad momentum tail
+  // continues firing untagged scroll events after the gesture session
+  // expires (scrollend + 160ms), with each event walking scrollTop
+  // monotonically toward the bottom. Without a session-independent
+  // baseline, `previousObserved = -1` permanently and `scrolledDown =
+  // false`, so willRestick never fires even when the trajectory clearly
+  // landed at the bottom (bug-report-20260520T005414Z seq 180-201).
+  let lastObservedScrollTopForRestick = -1;
 
   // ===== Spring chase state =====
   let velocity = 0;
@@ -1093,6 +1104,33 @@ export function createUseStickToBottomController(
     }
     if (cur !== scrollEl) return;
     if (scrollEl.scrollHeight <= scrollEl.clientHeight) return;
+    // Bug #2 fix (bug-report-20260520T010930Z, seq 4953-5317). When the
+    // user is escaped AND geometrically at the bottom, a wheel-down is
+    // the explicit "re-engage" signal. The browser refuses to scroll
+    // past the absolute bottom, so NO scroll event will follow this
+    // wheel — the deferred re-stick path in handleScroll is unreachable.
+    // Re-stick synchronously here; the wheel itself is the consent.
+    // Production trap: a content shrink clamped scrollTop to the new
+    // max, leaving the user at distFromBottom=0 with escape=true and no
+    // session. Their next wheel-down armed 180 gesture sessions that
+    // each expired unused.
+    if (
+      e.deltaY > 0
+      && escapedFromLockState
+      && scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight <= AUTO_FOLLOW_BOTTOM_EPSILON_PX
+    ) {
+      trace('scroll.wheel.restickAtBottom', () => ({
+        deltaY: e.deltaY,
+        scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+        distFromBottom: scrollEl
+          ? Math.round(scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight)
+          : null,
+      }));
+      escapedFromLockState = false;
+      isAtBottomState = true;
+      springStopRequested = false;
+      return;
+    }
     trace('scroll.wheel.armGesture', () => ({
       deltaY: e.deltaY,
       scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
@@ -1205,7 +1243,19 @@ export function createUseStickToBottomController(
     // the wheel handler's just-set escape on the same gesture). The
     // baseline lives on the active gesture session; outside a gesture
     // there is no direction comparison to make.
-    const previousObserved = session?.lastObservedScrollTop ?? -1;
+    // Prefer the session's own baseline when one is active (the start
+    // of THIS gesture is the right reference for direction refinement);
+    // fall back to the controller-scope baseline for the session-less
+    // re-stick path (bug #1 — trackpad momentum tail after gesture
+    // expiry walking scrollTop down to the bottom across many untagged
+    // scroll events). Update unconditionally on every untagged event:
+    // bailed and non-bailed events alike represent the most recent
+    // visual position, which is the right reference for the next
+    // event's direction comparison. Clamps from content shrink always
+    // move scrollTop DOWN (toward the new max), so scrolledDown=FALSE
+    // for any clamp event — willRestick stays false on its own.
+    const previousObserved = session?.lastObservedScrollTop ?? lastObservedScrollTopForRestick;
+    lastObservedScrollTopForRestick = scrollTopAtEvent;
     if (session) {
       session.lastObservedScrollTop = scrollTopAtEvent;
       // Pointer-tap arms with direction='unknown' because the user
@@ -1270,25 +1320,35 @@ export function createUseStickToBottomController(
       }
 
       // Re-stick: user scrolled BACK essentially to the bottom by hand
-      // (wheel, touch, keyboard). Restore intent flag so the
-      // contentRO sync-pin can resume on the next content grow. No
+      // (wheel, touch, keyboard) OR via residual trackpad momentum after
+      // the gesture session has already expired. Restore intent flag so
+      // the contentRO sync-pin can resume on the next content grow. No
       // scrollTop write here — they're already at the bottom.
       //
-      // Three gates:
-      //   1. Input-backed intent. Layout/virtua can also emit untagged
-      //      scroll events while measuring rows; those must not mutate
-      //      follow intent. A wheel/key/touch signal has to precede the
-      //      scroll event.
-      //   2. Direction. The scroll event from a wheel-up gesture is the
-      //      event that confirms escape; if we also re-sticked whenever
-      //      the user happens to land near the bottom, that same event
-      //      would undo the escape. Skip re-stick when scrollTop is
-      //      decreasing (UP direction); only DOWN-direction scrolls
-      //      toward the bottom can re-engage auto-follow.
-      //   3. AUTO_FOLLOW_BOTTOM_EPSILON_PX (4px, widened from 0.5 in
+      // Two gates:
+      //   1. Direction (scrolledDown). The scroll event from a wheel-up
+      //      gesture is the event that confirms escape; if we also
+      //      re-sticked whenever the user happens to land near the
+      //      bottom, that same event would undo the escape. Skip
+      //      re-stick when scrollTop is non-increasing; only events
+      //      that actually moved DOWN can re-engage auto-follow. A
+      //      content shrink that clamps scrollTop is correctly excluded
+      //      (scrollTop decreased), preventing a layout-driven yank of
+      //      a user who was reading mid-thread.
+      //   2. AUTO_FOLLOW_BOTTOM_EPSILON_PX (4px, widened from 0.5 in
       //      Change 1) rather than the looser isNearBottomState (70px).
       //      Even on a DOWN scroll, only the actual bottom (within
       //      browser-rounding tolerance) counts.
+      //
+      // `hadUserScrollIntent` is intentionally NOT a gate here. The
+      // session-required predicate stranded users on the
+      // bug-report-20260520T005414Z (seq 180-201) trajectory where
+      // post-gesture momentum walked scrollTop monotonically down to
+      // distFromBottom=0 across 22 untagged scroll events with no
+      // active session. bailRO above (the `resizeCorrelatedScroll &&
+      // !hadUserScrollIntent` short-circuit) is the actual layout
+      // filter — virtua's applyJump and content-resize-driven clamps
+      // are gated there, before this branch is reached.
       //
       // Bug A fix (Change 1): use `distFromBottomAtEvent` captured
       // synchronously above, NOT a fresh distanceFromBottom() read.
@@ -1314,7 +1374,6 @@ export function createUseStickToBottomController(
         && (session.direction === 'down' || scrollTopAtEvent > session.startScrollTop)
         && distFromBottomAtEvent > AUTO_FOLLOW_BOTTOM_EPSILON_PX;
       const willRestick = scrolledDown
-        && hadUserScrollIntent
         && escapedFromLockState
         && distFromBottomAtEvent <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
       trace('scroll.scrollEvent.deferred', () => ({
@@ -1958,6 +2017,7 @@ export function createUseStickToBottomController(
     resizeCorrelatedUntaggedScrollBudget = 0;
     previousHeight = undefined;
     touchStartY = null;
+    lastObservedScrollTopForRestick = -1;
     // DELIBERATELY leave `restoreSnapArmed` untouched. attach() calls
     // detach() up-front when scrollEl / contentEl change, and on first
     // mount that wipe ran BETWEEN the consumer's $effect.pre arm and

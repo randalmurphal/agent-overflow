@@ -295,6 +295,38 @@ frontend layers on top:
   early-returns on `e.ctrlKey` so Mac trackpad pinch-to-zoom
   (`wheel + ctrlKey=true` per browser convention) doesn't
   spuriously arm a gesture and escape the lock.
+  **Session-less re-stick** (2026-05, bug-report-20260520T005414Z
+  + bug-report-20260520T010930Z): two layered fixes for the user-
+  reported regression "I scrolled to the bottom and it kept going
+  without following." Both pin the user's verbatim intent: "if i
+  scroll to the bottom i expect for it to stick always." (1) The
+  deferred re-stick predicate (`willRestick`) no longer gates on
+  `hadUserScrollIntent` (session !== null). Trackpad momentum
+  tails fire untagged scroll events after the gesture session
+  expires (scrollend + 160ms timer), each walking scrollTop down
+  to the bottom — without a session, the old predicate stranded
+  the user even when their trajectory clearly landed at
+  distFromBottom=0. The controller now keeps a controller-scope
+  `lastObservedScrollTopForRestick` so `scrolledDown` has a
+  baseline across session expiry. The `bailRO` short-circuit
+  (`resizeCorrelatedScroll && !hadUserScrollIntent`) is still the
+  layout filter — virtua's applyJump and content-shrink-driven
+  clamps are caught there, before the willRestick branch is
+  reached. (2) `handleWheel` re-sticks synchronously when
+  `escapedFromLockState && deltaY > 0 && distFromBottom <=
+  AUTO_FOLLOW_BOTTOM_EPSILON_PX`. A content shrink can clamp
+  scrollTop to the new max, leaving the user at distFromBottom=0
+  with escape=true and no session; their wheel-down to re-engage
+  produces ZERO scroll events because the browser refuses to
+  scroll past the absolute bottom, making the deferred re-stick
+  unreachable. The wheel itself is the explicit consent. The
+  fix is intentionally narrow: a content shrink without a
+  user-initiated wheel does NOT re-stick by itself (would yank
+  any user reading mid-thread when content below shrinks); only
+  the explicit wheel-at-boundary signal flips the lock back.
+  Regression coverage lives in `useStickToBottom.svelte.test.ts`
+  under "user-reported regression — re-stick invariants across
+  production-like flows".
   Programmatic scrolls go through `forceStick(opts?)` / `markAtBottom()` /
   `notifyContentMaybeGrew()` / `pauseAutoScroll()` /
   `runExternalScroll()` / `stopScroll()` / `animateScrollTo()` /
