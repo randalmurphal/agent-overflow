@@ -1870,32 +1870,74 @@ describe('createUseStickToBottomController', () => {
       expect(controller.escapedFromLock).toBe(false);
     });
 
-    it('scrollend resolves an in-flight UP gesture without waiting for the 160ms timer', async () => {
+    it('scrollend after wheel + real upward motion resolves the gesture without waiting for the 160ms timer', async () => {
       // Without the scrollend handler an 'up' gesture lives 160ms and
       // blocks every contentRO positive-delta pin in that window —
       // streaming chunks pile up un-pinned. With the handler, the
-      // gesture clears immediately and the next contentRO pins.
+      // gesture clears immediately on motion-bearing gestures and the
+      // next contentRO pins.
+      //
+      // Post-staleNoMotion-guard: handleScrollEnd only resolves a
+      // session that has observed a real (untagged) scroll event
+      // (the bookmark-race fix — bug-report-20260520T022217Z.jsonl).
+      // This test exercises the motion-bearing path. The companion
+      // test "...via the 160ms timer fallback" covers the no-motion
+      // pointer-tap / sub-pixel-wheel-rounded-to-no-op path.
       const ro = getRO();
       ro.fire(contentEl, 800);
 
-      // Arm wheel-UP. Do not fire the scroll event — the deferred
-      // handler would otherwise clear the gesture and the test
-      // wouldn't isolate scrollend's role.
+      // Arm wheel-UP and produce real upward motion before scrollend.
       fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 350;
+      fireScroll(scrollEl); // untagged → sawUntaggedScroll=true
 
-      // Content grows during the gesture window. direction='up'
-      // blocks the pin (Change 3 strict-side).
+      // scrollend fires well before the 160ms timer. handleScrollEnd
+      // sees sawUntaggedScroll=true, then expireGestureSession sees
+      // 50 px of upward motion → setEscapedFromLock(true). The
+      // important property: it happens NOW, not 160ms from now.
+      fireScrollEnd(scrollEl);
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
+
+      // Subsequent contentRO does NOT pin because the user is escaped
+      // — proving the gesture session was cleared (otherwise the
+      // upward direction would still be blocking, but the user would
+      // also still be sticky).
       geom.scrollHeight = 1100;
       geom.contentHeight = 900;
       ro.fire(contentEl, 900);
-      expect(geom.scrollTop).toBe(400); // pin blocked while 'up' gesture is alive
+      expect(geom.scrollTop).toBe(350);
+    });
 
-      // scrollend fires well before the 160ms timer. expireGestureSession
-      // sees no upward movement (we never fired fireScroll) so it
-      // takes the safety-net repin path — distance after the grow is
-      // 100 > 4 px epsilon, so the write fires.
-      fireScrollEnd(scrollEl);
-      expect(geom.scrollTop).toBe(500); // gesture cleared, safety-net repin fired
+    it('wheel-only intent (no scroll event) still resolves via the 160ms timer fallback', async () => {
+      // Pointer-tap with no drag, sub-pixel wheel rounded to a no-op,
+      // or any host environment that drops the scrollend event: no
+      // untagged scroll event ever fires against the gesture. The
+      // staleNoMotion guard in handleScrollEnd will refuse to resolve
+      // such a session (because we can't distinguish it from a stale
+      // scrollend belonging to a prior programmatic write — see
+      // bug-report-20260520T022217Z.jsonl seq 10584-10605). The
+      // 160ms timer fallback in armUserScrollIntent is the safety
+      // net that keeps the controller from indefinitely blocking
+      // pins behind a session that no real motion will ever resolve.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+
+      // Arm wheel-UP. DO NOT fire any scroll event — simulates the
+      // browser rounding the wheel delta to no scrollTop change.
+      fireWheel(scrollEl, -50, scrollEl);
+
+      // Content grows during the gesture window. direction='up'
+      // blocks the pin.
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+      expect(geom.scrollTop).toBe(400); // pin blocked while gesture is alive
+
+      // Past 160ms — the gesture-session timer fires expireGestureSession.
+      // No upward movement → safety-net repin path → scrollTop = 500.
+      await waitRealMs(180);
+      expect(geom.scrollTop).toBe(500);
 
       // Subsequent contentRO pins normally because gestureSession is null.
       geom.scrollHeight = 1200;
@@ -2831,6 +2873,100 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       // Spring continues to land.
       await advanceUntil(() => geom.scrollTop === 800);
+    });
+
+    it('stale scrollend from prior spring write does not kill a fresh wheel-up gesture', async () => {
+      // Encodes the seq 10584-10605 race from
+      // bug-report-20260520T022217Z.jsonl. Production sequence:
+      //   seq 10600: spring.tick wrote scrollTop=6874→6875 (target=6883,
+      //              distance=8). Tag set, scroll event queued.
+      //   seq 10601-10602: user wheel-up arms 'up' gesture at
+      //                    startScrollTop=6875. Spring cancelled.
+      //   seq 10603: TAGGED scroll event drains (from seq 10600's write)
+      //              — handleScroll early-returns on `tagged`.
+      //   seq 10604: NATIVE scrollend fires from the prior spring's
+      //              motion (CSSOM View spec — every scrollTop write
+      //              eventually emits scrollend).
+      //   seq 10605: WITHOUT the staleNoMotion guard,
+      //              expireGestureSession sees no upward movement
+      //              (no untagged scroll has fired against this
+      //              session yet) and runs the safety-net repin —
+      //              writing scrollTop back to 6883 and silently
+      //              killing the user's wheel-up intent. Their REAL
+      //              wheel motion (which arrives one tick later) is
+      //              attributed to a session that no longer exists,
+      //              never escapes, and the next contentRO restarts
+      //              the spring → yank back to bottom.
+      //
+      // With the staleNoMotion guard (sawUntaggedScroll=false →
+      // handleScrollEnd early-returns), the session survives, the
+      // user's REAL scroll motion arms `sawUntaggedScroll=true`, the
+      // deferred re-stick path detects upward motion, and escape is
+      // set correctly.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // settle warm-up gate so spring path engages
+
+      // Content grows during streaming. Spring begins chasing
+      // target=500 (1100-600). One nextFrame advances the spring
+      // tick — scrollTop lands mid-flight, distance > 4 epsilon
+      // (otherwise safety-net repin wouldn't fire and the test
+      // wouldn't isolate the bug).
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+      await nextFrame();
+      const midScrollTop = geom.scrollTop;
+      expect(midScrollTop).toBeGreaterThan(400);
+      expect(midScrollTop).toBeLessThan(500);
+      expect(500 - midScrollTop).toBeGreaterThan(4);
+
+      // User wheel-up arms 'up' gesture at startScrollTop=midScrollTop.
+      // Spring cancelled.
+      fireWheel(scrollEl, -100, scrollEl);
+      expect(controller.escapedFromLock).toBe(false); // gesture window open
+
+      // Tagged scroll event from the prior spring.tick write drains
+      // synchronously. tagged=true → handleScroll early-returns.
+      // sawUntaggedScroll must stay false here — this scroll did not
+      // represent user motion. (The wheel cancelled the spring, so no
+      // further programmatic writes follow until scrollend; a single
+      // tagged scroll is the realistic shape.)
+      fireScroll(scrollEl);
+
+      // Native scrollend fires from the prior spring's motion.
+      // Pre-fix: expireGestureSession kills the session and writes
+      // scrollTop to target=500. Post-fix: handleScrollEnd's
+      // staleNoMotion guard early-returns; the session survives.
+      fireScrollEnd(scrollEl);
+
+      // No spurious safety-net repin — scrollTop stays mid-flight.
+      expect(geom.scrollTop).toBe(midScrollTop);
+
+      // The user's REAL wheel motion now arrives. Browser scrolls up
+      // ~100 px from the wheel input.
+      geom.scrollTop = Math.max(0, midScrollTop - 100);
+      fireScroll(scrollEl); // untagged → sawUntaggedScroll=true
+      await nextTimer();
+
+      // Gesture session's startScrollTop=midScrollTop; scrollTop is
+      // now ~100 px below that. The deferred re-stick check sees
+      // upward motion and sets escape.
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
+
+      // The natural production tail: a second scrollend lands after
+      // the real motion. setEscapedFromLock already cleared the
+      // gesture session and its 160ms timer, so handleScrollEnd
+      // sees session === null and is a no-op. Asserting this guards
+      // against a regression where setEscapedFromLock forgets to
+      // clear the timer and a stale safety-net repin fires at
+      // t+160ms after escape, clobbering the escaped state.
+      const scrollTopAfterEscape = geom.scrollTop;
+      fireScrollEnd(scrollEl);
+      await waitRealMs(180); // past the 160ms gesture timer
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(scrollTopAfterEscape);
     });
 
     it('continuous wheel-up events (trackpad momentum) keep escape latched', async () => {

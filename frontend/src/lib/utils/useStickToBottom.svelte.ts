@@ -396,6 +396,10 @@ export function createUseStickToBottomController(
     startScrollTop: number;
     lastObservedScrollTop: number;
     direction: 'up' | 'down' | 'unknown';
+    // True once a real (untagged) scroll has been observed for this
+    // session. Full rationale lives at the consumer — see
+    // handleScrollEnd's stale-scrollend guard.
+    sawUntaggedScroll: boolean;
   }
   let gestureSession: GestureSession | null = null;
   let gestureSessionTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1060,6 +1064,7 @@ export function createUseStickToBottomController(
       direction,
       startScrollTop: start,
       lastObservedScrollTop: start,
+      sawUntaggedScroll: false,
     };
     gestureSession = session;
     if (gestureSessionTimer) clearTimeout(gestureSessionTimer);
@@ -1232,6 +1237,9 @@ export function createUseStickToBottomController(
     // set synchronously by writeScrollTop, so we already know this event
     // reflects our own write, not user intent.
     if (tagged) return;
+    // First real scroll for this session — clears the stale-scrollend
+    // guard in handleScrollEnd.
+    if (session) session.sawUntaggedScroll = true;
     cancelTargetAnimation();
     const resizeCorrelatedScroll = resizeDifference !== 0 || resizeCorrelatedUntaggedScrollBudget > 0;
     if (resizeCorrelatedUntaggedScrollBudget > 0) resizeCorrelatedUntaggedScrollBudget -= 1;
@@ -1428,6 +1436,24 @@ export function createUseStickToBottomController(
     if (!scrollEl) return;
     const session = gestureSession;
     if (session === null) return;
+    // Stale-scrollend guard. If the freshly-armed session has not yet seen
+    // a real (untagged) scroll event, this scrollend belongs to a prior
+    // programmatic write that overlapped with the arm — not to this
+    // gesture. Resolving the session here would run the safety-net repin
+    // in clearGestureSession and silently kill the user's intent before
+    // their real scroll motion has had a chance to land. The 160ms timer
+    // fallback in armUserScrollIntent still resolves the pointer-tap /
+    // sub-pixel-wheel cases where no scroll event ever fires. See
+    // bug-report-20260520T022217Z.jsonl, seq 10584-10605.
+    if (!session.sawUntaggedScroll) {
+      trace('scroll.scrollend.staleNoMotion', () => ({
+        source: session.source,
+        direction: session.direction,
+        startScrollTop: Math.round(session.startScrollTop),
+        scrollTop: Math.round(scrollEl?.scrollTop ?? 0),
+      }));
+      return;
+    }
     trace('scroll.scrollend.expireGestureSession', () => ({
       source: session.source,
       direction: session.direction,
