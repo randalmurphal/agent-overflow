@@ -123,6 +123,7 @@ async function buildPane(
   // override these before rendering.
   setBindingMock('ListThreadProposedPlans', async () => []);
   setBindingMock('ListLiveBackgroundTasks', async () => []);
+  setBindingMock('CountRunningBackgroundTasks', async () => 0);
   // GitActionsControl calls GetGitStatus on mount; return "not a repo"
   // so the control renders nothing — we don't need a branch chip.
   setBindingMock('GetGitStatus', async () => ({
@@ -208,7 +209,7 @@ describe('<ChatView>', () => {
 +new
 `);
     const draftContent = mockDrafts(new Map([[thread.id, '']]));
-    const revert = setBindingMock('RevertToMessageCheckpoint', async () => {
+    const revert = setBindingMock('RevertToMessageCheckpointWithOptions', async () => {
       draftContent.set(thread.id, userItem.summary);
     });
 
@@ -222,7 +223,9 @@ describe('<ChatView>', () => {
 
     await fireEvent.click(getByTestId(actionTestId));
     await waitFor(() => {
-      expect(revert).toHaveBeenCalledWith(thread.id, userItem.id, mode);
+      expect(revert).toHaveBeenCalledWith(thread.id, userItem.id, mode, {
+        killRunningBackgroundTasks: false,
+      });
       expect(getByLabelText('Message Input')).toHaveValue(userItem.summary);
     });
   });
@@ -311,7 +314,7 @@ describe('<ChatView>', () => {
       if (itemId === firstItem.id) return 'diff --git a/first.txt b/first.txt\n';
       return secondPreview;
     });
-    const revert = setBindingMock('RevertToMessageCheckpoint', async () => {});
+    const revert = setBindingMock('RevertToMessageCheckpointWithOptions', async () => {});
 
     const { getAllByLabelText, findByTestId, queryByTestId } = render(ChatView, { props: { pane } });
     const revertButtons = getAllByLabelText('Revert to this message');
@@ -354,7 +357,7 @@ describe('<ChatView>', () => {
       capturedAt: 1,
     }]);
     setBindingMock('GetMessageCheckpointRevertDiff', async () => 'diff --git a/scratch.txt b/scratch.txt\n');
-    const revert = setBindingMock('RevertToMessageCheckpoint', async () => {});
+    const revert = setBindingMock('RevertToMessageCheckpointWithOptions', async () => {});
 
     const { getByLabelText, findByTestId, queryByTestId } = render(ChatView, { props: { pane } });
     await fireEvent.click(getByLabelText('Revert to this message'));
@@ -365,6 +368,47 @@ describe('<ChatView>', () => {
 
     expect(queryByTestId('user-message-revert-popover')).toBeNull();
     expect(revert).not.toHaveBeenCalled();
+  });
+
+  it('confirms before reverting when background tray tasks are running', async () => {
+    const thread = seedThread();
+    const userItem = makeItem({
+      id: 'user:1',
+      threadId: thread.id,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'Update one of the lines',
+    });
+    const pane = await buildPane(thread, [userItem]);
+    pane.diffPanel.setCheckpoints([{
+      id: 'checkpoint-1',
+      threadId: thread.id,
+      userItemId: userItem.id,
+      turnIndex: userItem.turnIndex,
+      status: 'ready',
+      files: [],
+      capturedAt: 1,
+    }]);
+    setBindingMock('GetMessageCheckpointRevertDiff', async () => 'diff --git a/scratch.txt b/scratch.txt\n');
+    setBindingMock('CountRunningBackgroundTasks', async () => 1);
+    const revert = setBindingMock('RevertToMessageCheckpointWithOptions', async () => {});
+
+    const { getByLabelText, getByRole, getByTestId, findByText } = render(ChatView, { props: { pane } });
+    await fireEvent.click(getByLabelText('Revert to this message'));
+    expect(getByTestId('revert-conversation-only')).toBeInTheDocument();
+
+    await fireEvent.click(getByTestId('revert-conversation-only'));
+    expect(await findByText('This will kill 1 running background task, then revert the conversation. This cannot be undone.')).toBeInTheDocument();
+    expect(revert).not.toHaveBeenCalled();
+
+    await fireEvent.click(getByRole('button', { name: 'Kill and revert' }));
+    await waitFor(() => {
+      expect(revert).toHaveBeenCalledWith(thread.id, userItem.id, 'conversation-only', {
+        killRunningBackgroundTasks: true,
+      });
+    });
   });
 
   it('forks from a user-message action through the chat-level handler', async () => {

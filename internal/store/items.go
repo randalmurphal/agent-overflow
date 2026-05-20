@@ -686,6 +686,29 @@ func (s *Store) HasLiveBackgroundToolCall(threadID string) (bool, error) {
 	return exists != 0, nil
 }
 
+func (s *Store) CountLiveRunningBackgroundToolCalls(threadID string) (int, error) {
+	var count int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*)
+		   FROM items
+		  WHERE thread_id = ?
+		    AND kind = 'tool_call'
+		    AND status = 'running'
+		    AND is_background = 1
+		    AND parent_id = ''
+		    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
+		    AND NOT EXISTS (
+		      SELECT 1 FROM items c
+		       WHERE c.thread_id = items.thread_id
+		         AND c.completion_of = items.id
+		    )`,
+		threadID,
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("store: count live running background tool calls for thread %s: %w", threadID, err)
+	}
+	return count, nil
+}
+
 func (s *Store) HasLiveCodexSubagentLaunch(threadID string) (bool, error) {
 	var exists int
 	if err := s.db.QueryRow(
@@ -714,6 +737,32 @@ func (s *Store) HasLiveCodexSubagentLaunch(threadID string) (bool, error) {
 	return exists != 0, nil
 }
 
+func (s *Store) CountLiveCodexSubagentLaunches(threadID string) (int, error) {
+	var count int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*)
+		   FROM items
+		   JOIN threads ON threads.id = items.thread_id
+		  WHERE items.thread_id = ?
+		    AND threads.provider = 'codex'
+		    AND items.kind = 'tool_call'
+		    AND items.status = 'completed'
+		    AND items.tool_name = 'collab_agent'
+		    AND items.is_background = 1
+		    AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
+		    AND json_extract(items.meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
+		    AND NOT EXISTS (
+		      SELECT 1 FROM items c
+		       WHERE c.thread_id = items.thread_id
+		         AND c.completion_of = items.id
+		    )`,
+		threadID,
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("store: count live Codex subagent launches for thread %s: %w", threadID, err)
+	}
+	return count, nil
+}
+
 func (s *Store) MarkLiveCodexSubagentLaunchesInactive(threadID string, updatedAt int64) (int64, error) {
 	result, err := s.db.Exec(
 		`UPDATE items
@@ -740,6 +789,44 @@ func (s *Store) MarkLiveCodexSubagentLaunchesInactive(threadID string, updatedAt
 	count, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("store: count inactive Codex subagent launches for thread %s: %w", threadID, err)
+	}
+	return count, nil
+}
+
+// MarkLiveBackgroundToolCallsInactive hides top-level running background
+// tool_call rows whose owning provider session was intentionally closed.
+// The rows are no longer live once the provider process group is gone, and
+// the tray must stop advertising them as running. The launch row keeps its
+// lifecycle status; terminal states belong to completion siblings.
+func (s *Store) MarkLiveBackgroundToolCallsInactive(threadID string, updatedAt int64) (int64, error) {
+	result, err := s.db.Exec(
+		`UPDATE items
+		    SET meta = json_set(
+		          CASE WHEN json_valid(meta) THEN meta ELSE '{}' END,
+		          '$.live_background_active',
+		          json('false')
+		        ),
+		        updated_at = ?
+		  WHERE thread_id = ?
+		    AND kind = 'tool_call'
+		    AND status = 'running'
+		    AND is_background = 1
+		    AND parent_id = ''
+		    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
+		    AND NOT EXISTS (
+		      SELECT 1 FROM items c
+		       WHERE c.thread_id = items.thread_id
+		         AND c.completion_of = items.id
+		    )`,
+		updatedAt,
+		threadID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: mark live background tool calls inactive for thread %s: %w", threadID, err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: count inactive background tool calls for thread %s: %w", threadID, err)
 	}
 	return count, nil
 }

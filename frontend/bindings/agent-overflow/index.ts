@@ -29,6 +29,7 @@ export {
     QueueFlushedItem,
     QueuedItem,
     RemoteEndpointSummary,
+    RevertToMessageCheckpointOptions,
     SendMessageOptions,
     SourceDiffReview,
     SourceProposedPlan,

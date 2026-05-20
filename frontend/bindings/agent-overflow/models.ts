@@ -841,6 +841,24 @@ export const RemoteEndpointSummary = settings$0.RemoteEndpointSummary;
  */
 export type RemoteEndpointSummary = settings$0.RemoteEndpointSummary;
 
+export class RevertToMessageCheckpointOptions {
+    "killRunningBackgroundTasks"?: boolean;
+
+    /** Creates a new RevertToMessageCheckpointOptions instance. */
+    constructor($$source: Partial<RevertToMessageCheckpointOptions> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RevertToMessageCheckpointOptions instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RevertToMessageCheckpointOptions {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RevertToMessageCheckpointOptions($$parsedSource as Partial<RevertToMessageCheckpointOptions>);
+    }
+}
+
 /**
  * SendMessageOptions carries send-time composer settings. AttachmentIDs is the
  * current attachment payload; RuntimeMode is an optional draft override applied

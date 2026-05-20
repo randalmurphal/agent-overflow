@@ -238,6 +238,54 @@ func TestEvaluateInterruptRevertPredicateRejectsInflightFlushDispatch(t *testing
 	}
 }
 
+func TestEvaluateInterruptRevertPredicateRejectsRunningBackgroundTasks(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	thread := createCheckpointTestThread(t, app, "pred-background", "claude", t.TempDir())
+	insertRunningBackgroundToolCall(t, app.store, thread.ID, "bg:0", 0, 0)
+	insertUserItem(t, app.store, thread.ID, "u:1", 1, "hello")
+
+	ok, _, reason, err := app.evaluateInterruptRevertPredicate(thread.ID)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if ok {
+		t.Fatal("expected predicate false, got true")
+	}
+	if reason != "running background tasks" {
+		t.Fatalf("reason = %q, want \"running background tasks\"", reason)
+	}
+}
+
+func TestEvaluateInterruptRevertPredicateRejectsStashedBackgroundTasks(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	thread := createCheckpointTestThread(t, app, "pred-stashed-background", "claude", t.TempDir())
+	insertRunningBackgroundToolCall(t, app.store, thread.ID, "bg:0", 0, 0)
+	if err := app.store.UpsertPendingBackgroundTerminal(store.PendingBackgroundTaskTerminal{
+		ThreadID:  thread.ID,
+		TaskID:    "task-bg-0",
+		ToolUseID: "bg:0",
+		Status:    "completed",
+		Source:    "task_updated",
+		CreatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("upsert pending terminal: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "u:1", 1, "hello")
+
+	ok, _, reason, err := app.evaluateInterruptRevertPredicate(thread.ID)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if ok {
+		t.Fatal("expected predicate false, got true")
+	}
+	if reason != "running background tasks" {
+		t.Fatalf("reason = %q, want \"running background tasks\"", reason)
+	}
+}
+
 // TestResolveRevertCheckpointReturnsPersisted is the simple lookup case
 // when the at-send checkpoint capture wrote a row keyed by the user
 // item id and matching turn index.

@@ -14,14 +14,16 @@
   import RhsSidebarShell from './RhsSidebarShell.svelte';
   import ChatHeader from './ChatHeader.svelte';
   import ExpandedImageDialog from './ExpandedImageDialog.svelte';
+  import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
   import {
     ForkThreadFromMessage,
+    CountRunningBackgroundTasks,
     GetMessageCheckpointRevertDiff,
     MarkThreadRead,
-    RevertToMessageCheckpoint,
+    RevertToMessageCheckpointWithOptions,
   } from '../../stores/bindings';
   import { prependThread, updateThreadReadState } from '../../stores/threads.svelte';
   import { focusPane, getFocusedPaneId, openThreadInPane } from '../../stores/panes.svelte';
@@ -87,6 +89,9 @@
   let revertPreviewItemId: string | null = $state(null);
   let revertPreviewRequestId = 0;
   let revertingMessage = $state(false);
+  let pendingBackgroundRevert:
+    | { target: RevertMessageTarget; mode: RevertMode; runningCount: number }
+    | null = $state(null);
   let forkingMessageItemId: string | null = $state(null);
   const activeRevertTargetItemId = $derived.by(() => {
     const target = revertMessageTarget;
@@ -409,21 +414,50 @@
   async function revertToUserMessage(mode: RevertMode): Promise<void> {
     const target = revertMessageTarget;
     if (!target || revertingMessage) return;
+    if (!canRunRevertForTarget(target)) return;
+
+    try {
+      const runningCount = Number(await CountRunningBackgroundTasks(target.thread.id));
+      if (runningCount > 0) {
+        pendingBackgroundRevert = { target, mode, runningCount };
+        return;
+      }
+    } catch (err) {
+      addToast('error', `Failed to check background tasks: ${userFacingError(err)}`);
+      return;
+    }
+
+    await executeRevertToUserMessage(target, mode, false);
+  }
+
+  function canRunRevertForTarget(target: RevertMessageTarget): boolean {
     if (pane.thread?.id !== target.thread.id) {
       cancelUserMessageRevert();
-      return;
+      return false;
     }
     if (getActiveTurn(target.thread.id) !== null) {
       cancelUserMessageRevert();
       addToast('error', 'Interrupt or wait for the current turn before reverting.');
-      return;
+      return false;
     }
+    return true;
+  }
+
+  async function executeRevertToUserMessage(
+    target: RevertMessageTarget,
+    mode: RevertMode,
+    killRunningBackgroundTasks: boolean,
+  ): Promise<void> {
+    if (!canRunRevertForTarget(target)) return;
     revertingMessage = true;
     try {
       await draft.prepareForExternalDraftReplace(target.thread.id);
-      await RevertToMessageCheckpoint(target.thread.id, target.itemId, mode);
+      await RevertToMessageCheckpointWithOptions(target.thread.id, target.itemId, mode, {
+        killRunningBackgroundTasks,
+      });
       revertMessageTarget = null;
       revertAffectedFiles = [];
+      pendingBackgroundRevert = null;
       addToast('success', mode === 'conversation-only' ? 'Conversation reverted' : 'Conversation and files reverted');
       await pane.switchThread(target.thread);
       await draft.reloadFromBackend(target.thread.id);
@@ -434,8 +468,20 @@
     }
   }
 
+  function confirmBackgroundRevert(): void {
+    const pending = pendingBackgroundRevert;
+    if (!pending || revertingMessage) return;
+    void executeRevertToUserMessage(pending.target, pending.mode, true);
+  }
+
+  function cancelBackgroundRevert(): void {
+    if (revertingMessage) return;
+    pendingBackgroundRevert = null;
+  }
+
   function cancelUserMessageRevert(): void {
     if (revertingMessage) return;
+    pendingBackgroundRevert = null;
     revertPreviewRequestId++;
     revertPreviewItemId = null;
     revertMessageTarget = null;
@@ -465,6 +511,9 @@
     if (revertMessageTarget && currentThreadId !== revertMessageTarget.thread.id && !revertingMessage) {
       cancelUserMessageRevert();
     }
+    if (pendingBackgroundRevert && currentThreadId !== pendingBackgroundRevert.target.thread.id && !revertingMessage) {
+      pendingBackgroundRevert = null;
+    }
   });
 
   $effect(() => {
@@ -473,6 +522,12 @@
     if (getActiveTurn(target.thread.id) !== null) {
       cancelUserMessageRevert();
     }
+  });
+
+  const pendingBackgroundRevertDescription = $derived.by(() => {
+    const count = pendingBackgroundRevert?.runningCount ?? 0;
+    const noun = count === 1 ? 'background task' : 'background tasks';
+    return `This will kill ${count} running ${noun}, then revert the conversation. This cannot be undone.`;
   });
 
   onDestroy(() => {
@@ -572,6 +627,15 @@
     {#if expandedImagePreview}
       <ExpandedImageDialog preview={expandedImagePreview} onClose={closeImagePreview} />
     {/if}
+    <ConfirmDialog
+      open={pendingBackgroundRevert !== null}
+      title="Kill background tasks?"
+      description={pendingBackgroundRevertDescription}
+      confirmLabel="Kill and revert"
+      destructive={true}
+      onConfirm={confirmBackgroundRevert}
+      onCancel={cancelBackgroundRevert}
+    />
   </div>
 {:else}
   <!-- No thread loaded → no project context. Per the design-mode spec

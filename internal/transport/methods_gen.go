@@ -33,6 +33,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "CleanCodexBackgroundTerminals", ID: 16360282}, // main.App.CleanCodexBackgroundTerminals
 	{Name: "ClearDraft", ID: 296814681}, // main.App.ClearDraft
 	{Name: "CloseTerminal", ID: 2702963191}, // main.App.CloseTerminal
+	{Name: "CountRunningBackgroundTasks", ID: 2617952423}, // main.App.CountRunningBackgroundTasks
 	{Name: "CreateDiffReviewComment", ID: 565306783}, // main.App.CreateDiffReviewComment
 	{Name: "CreateDiscussion", ID: 757689265}, // main.App.CreateDiscussion
 	{Name: "CreateMcpServer", ID: 3722089728}, // main.App.CreateMcpServer
@@ -160,6 +161,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RespondToUserInput", ID: 1071592868}, // main.App.RespondToUserInput
 	{Name: "RestartTerminal", ID: 4152403588}, // main.App.RestartTerminal
 	{Name: "RevertToMessageCheckpoint", ID: 263750815}, // main.App.RevertToMessageCheckpoint
+	{Name: "RevertToMessageCheckpointWithOptions", ID: 4144907731}, // main.App.RevertToMessageCheckpointWithOptions
 	{Name: "SaveDraft", ID: 3025273299}, // main.App.SaveDraft
 	{Name: "SavePayloadToFile", ID: 3576148797}, // main.App.SavePayloadToFile
 	{Name: "SearchThreadMessages", ID: 3644945077}, // main.App.SearchThreadMessages

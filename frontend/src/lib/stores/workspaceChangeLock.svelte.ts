@@ -5,33 +5,13 @@ import { getActiveTurn } from './threadStatuses.svelte';
 import type { BackgroundTaskStateEvent, BackgroundTasksChangedEvent } from '../types/events';
 import type { Item } from '../types/models';
 import { debounce } from '../utils/debounce';
+import { countRunningTrayTasks } from '../utils/backgroundTray';
 
 export interface WorkspaceChangeLockState {
   readonly locked: boolean;
   readonly reason: string;
   readonly runningBackgroundCount: number;
   refresh(): Promise<void>;
-}
-
-function countBlockingBackgroundTasks(items: readonly Item[]): number {
-  const completedLaunches = new Set<string>();
-  for (const item of items) {
-    if (item.completionOf) completedLaunches.add(item.completionOf);
-  }
-
-  let count = 0;
-  for (const item of items) {
-    if (
-      item.kind === 'tool_call' &&
-      item.status === 'running' &&
-      item.isBackground === true &&
-      !item.completionOf &&
-      !completedLaunches.has(item.id)
-    ) {
-      count += 1;
-    }
-  }
-  return count;
 }
 
 export function createWorkspaceChangeLockState(getPane: () => ThreadPane): WorkspaceChangeLockState {
@@ -56,7 +36,7 @@ export function createWorkspaceChangeLockState(getPane: () => ThreadPane): Works
     try {
       const items = (await ListLiveBackgroundTasks(id)) as Item[] | null;
       if (seq !== fetchSeq || id !== threadId) return;
-      runningBackgroundCount = countBlockingBackgroundTasks(items ?? []);
+      runningBackgroundCount = countRunningTrayTasks(items ?? []);
       checkedThreadId = id;
     } catch (err) {
       if (seq !== fetchSeq || id !== threadId) return;

@@ -2238,6 +2238,39 @@ func TestCodexBackgroundProjectorCleanupDropsLiveState(t *testing.T) {
 	}
 }
 
+func TestClearLiveCodexBackgroundTasksDropsTransientTrayRows(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-clear",
+		ItemType: "commandExecution", TurnID: "turn-0",
+		Meta:      buildUnifiedExecStartMeta(t, "pid-clear", "sleep 60"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", Content: "continuing",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("text delta: %v", err)
+	}
+	if count := router.CountLiveCodexBackgroundTasks("t1"); count != 1 {
+		t.Fatalf("count before clear = %d, want 1", count)
+	}
+
+	router.ClearLiveCodexBackgroundTasks("t1")
+
+	if count := router.CountLiveCodexBackgroundTasks("t1"); count != 0 {
+		t.Fatalf("count after clear = %d, want 0", count)
+	}
+	if live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0); len(live) != 0 {
+		t.Fatalf("live tracker survived clear: %+v", live)
+	}
+}
+
 func TestCodexUnifiedExecSubagentCommandDoesNotEnterMainBackgroundTray(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")

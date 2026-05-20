@@ -111,6 +111,109 @@ func TestRevertToMessageCheckpointRestoresDraftAttachments(t *testing.T) {
 	}
 }
 
+func TestRevertToMessageCheckpointRejectsRunningBackgroundTasks(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	thread := createCheckpointTestThread(t, app, "t-running-background-reject", "claude", t.TempDir())
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertRunningBackgroundToolCall(t, app.store, thread.ID, "bg:0", 0, 1)
+
+	err := app.RevertToMessageCheckpoint(thread.ID, "user:0", RevertModeConversationOnly)
+	if err == nil {
+		t.Fatal("revert succeeded, want running background task guard")
+	}
+	if !strings.Contains(err.Error(), "running background tasks must be killed") {
+		t.Fatalf("error = %q, want running background tasks guard", err)
+	}
+}
+
+func TestRevertToMessageCheckpointRejectsStashedBackgroundTasks(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	thread := createCheckpointTestThread(t, app, "t-stashed-background-reject", "claude", t.TempDir())
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertRunningBackgroundToolCall(t, app.store, thread.ID, "bg:0", 0, 1)
+	if err := app.store.UpsertPendingBackgroundTerminal(store.PendingBackgroundTaskTerminal{
+		ThreadID:  thread.ID,
+		TaskID:    "task-bg-0",
+		ToolUseID: "bg:0",
+		Status:    "completed",
+		Source:    "task_updated",
+		CreatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("upsert pending terminal: %v", err)
+	}
+
+	err := app.RevertToMessageCheckpoint(thread.ID, "user:0", RevertModeConversationOnly)
+	if err == nil {
+		t.Fatal("revert succeeded, want stashed background task guard")
+	}
+	if !strings.Contains(err.Error(), "running background tasks must be killed") {
+		t.Fatalf("error = %q, want running background tasks guard", err)
+	}
+}
+
+func TestRevertToMessageCheckpointWithOptionsClearsRunningBackgroundTasks(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := t.TempDir()
+	const sessionID = "background-revert-session"
+	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"background-revert-session","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"background-revert-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+{"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"background-revert-session","message":{"role":"user","content":"second"}}
+`)
+	thread := createCheckpointTestThread(t, app, "t-running-background-confirm", "claude", workspace)
+	thread.SessionRef = sessionID
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertRunningBackgroundToolCall(t, app.store, thread.ID, "bg:0", 0, 1)
+	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	if err := app.store.SaveCheckpoint(store.Checkpoint{
+		ID:                    "chk-background-confirm",
+		ThreadID:              thread.ID,
+		UserItemID:            "user:1",
+		TurnIndex:             1,
+		ProviderUserMessageID: "u1",
+		RefName:               checkpoint.ThreadRefPrefix(thread.ID) + "message/background-confirm",
+		CapturedAt:            time.Now().UnixMilli(),
+		WorkspacePath:         workspace,
+	}); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+
+	err := app.RevertToMessageCheckpointWithOptions(thread.ID, "user:1", RevertModeConversationOnly, RevertToMessageCheckpointOptions{
+		KillRunningBackgroundTasks: true,
+	})
+	if err != nil {
+		t.Fatalf("revert with background confirmation: %v", err)
+	}
+
+	live, err := app.store.ListLiveBackgroundTasks(thread.ID, 0)
+	if err != nil {
+		t.Fatalf("list live background tasks: %v", err)
+	}
+	if len(live) != 0 {
+		t.Fatalf("live background tasks after confirmed revert = %+v, want none", live)
+	}
+	bg, ok, err := app.store.GetItem("bg:0")
+	if err != nil {
+		t.Fatalf("get background item: %v", err)
+	}
+	if !ok {
+		t.Fatal("background item missing")
+	}
+	if bg.Status != "running" {
+		t.Fatalf("background status = %q, want running", bg.Status)
+	}
+	if !strings.Contains(bg.Meta, `"live_background_active":false`) {
+		t.Fatalf("background meta = %q, want live_background_active=false", bg.Meta)
+	}
+}
+
 func TestRevertToMessageCheckpointRestoresTrackedFiles(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
@@ -729,5 +832,26 @@ func insertUserItemWithMeta(t *testing.T, st *store.Store, threadID, id string, 
 		UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("append user item: %v", err)
+	}
+}
+
+func insertRunningBackgroundToolCall(t *testing.T, st *store.Store, threadID, id string, turnIndex, itemIndex int) {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	if _, err := st.AppendItem(store.Item{
+		ID:           id,
+		ThreadID:     threadID,
+		TurnIndex:    turnIndex,
+		ItemIndex:    itemIndex,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "running",
+		Summary:      "Background task",
+		IsBackground: true,
+		Meta:         `{"live_background_active":true}`,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatalf("append running background tool call: %v", err)
 	}
 }

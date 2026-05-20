@@ -195,6 +195,10 @@ export function CloseTerminal(terminalID: string): $CancellablePromise<void> {
     return $Call.ByID(2702963191, terminalID);
 }
 
+export function CountRunningBackgroundTasks(threadID: string): $CancellablePromise<number> {
+    return $Call.ByID(2617952423, threadID);
+}
+
 export function CreateDiffReviewComment(threadID: string, input: store$0.DiffReviewCommentInput): $CancellablePromise<store$0.DiffReviewComment> {
     return $Call.ByID(565306783, threadID, input).then(($result: any) => {
         return $$createType3($result);
@@ -1690,6 +1694,10 @@ export function RestartTerminal(terminalID: string): $CancellablePromise<$models
 
 export function RevertToMessageCheckpoint(threadID: string, userItemID: string, mode: string): $CancellablePromise<void> {
     return $Call.ByID(263750815, threadID, userItemID, mode);
+}
+
+export function RevertToMessageCheckpointWithOptions(threadID: string, userItemID: string, mode: string, opts: $models.RevertToMessageCheckpointOptions): $CancellablePromise<void> {
+    return $Call.ByID(4144907731, threadID, userItemID, mode, opts);
 }
 
 /**

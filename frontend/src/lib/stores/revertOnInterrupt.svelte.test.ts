@@ -225,7 +225,14 @@ describe('canRevertEarlyInterrupt', () => {
 describe('runInterruptOrRevert', () => {
   beforeEach(() => {
     replaceQueueForThread('thread-1', []);
+    setBindingMock('CountRunningBackgroundTasks', async () => 0);
   });
+
+  async function flushInterruptFlow(): Promise<void> {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  }
 
   it('dispatches InterruptAndRevertIfClean and leaves the row removed on success', async () => {
     const pane = readyPane();
@@ -245,20 +252,17 @@ describe('runInterruptOrRevert', () => {
     });
 
     runInterruptOrRevert(pane, EMPTY_DRAFT);
-    // Optimistic remove must be synchronous so the click handler can
-    // paint instant state.
+    await Promise.resolve();
     expect(pane.items.find((i) => i.id === 'u:0')).toBeUndefined();
     resolveRevert?.();
-    // Flush pending then microtasks so the .then() runs.
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushInterruptFlow();
 
     expect(revertCalls).toEqual(['thread-1']);
     // Row stays removed on Reverted=true (event handler refreshes draft).
     expect(pane.items.find((i) => i.id === 'u:0')).toBeUndefined();
   });
 
-  it('restores the interrupted user message into the draft synchronously', async () => {
+  it('restores the interrupted user message into the draft after the background preflight', async () => {
     const pane = readyPane();
     pane.upsertItem(userItem('u:0', 0));
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
@@ -271,6 +275,7 @@ describe('runInterruptOrRevert', () => {
     }));
 
     runInterruptOrRevert(pane, draft);
+    await flushInterruptFlow();
 
     expect(pane.items.find((i) => i.id === 'u:0')).toBeUndefined();
     expect(draft.applied?.content).toBe('hello');
@@ -310,6 +315,7 @@ describe('runInterruptOrRevert', () => {
     }));
 
     runInterruptOrRevert(pane, draft);
+    await flushInterruptFlow();
 
     expect(draft.applied?.content).toBe('implement this [Image #1]');
     expect(draft.applied?.attachments).toEqual([
@@ -352,6 +358,7 @@ describe('runInterruptOrRevert', () => {
     }));
 
     runInterruptOrRevert(pane, draft);
+    await flushInterruptFlow();
 
     expect(draft.applied?.attachments.map((attachment) => attachment.id)).toEqual(['att-1']);
   });
@@ -367,11 +374,11 @@ describe('runInterruptOrRevert', () => {
     }));
 
     runInterruptOrRevert(pane, EMPTY_DRAFT);
-    // Optimistic remove still happens immediately; the test exercises
+    await Promise.resolve();
+    // Optimistic remove still happens after the background preflight; the test exercises
     // the rollback that lands after the RPC resolves with Reverted=false.
     expect(pane.items.find((i) => i.id === 'u:0')).toBeUndefined();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushInterruptFlow();
 
     expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
   });
@@ -388,8 +395,7 @@ describe('runInterruptOrRevert', () => {
     }));
 
     runInterruptOrRevert(pane, draft);
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushInterruptFlow();
 
     expect(draft.applied?.content).toBe('hello');
     expect(draft.cleared).toEqual(draft.applied);
@@ -410,8 +416,7 @@ describe('runInterruptOrRevert', () => {
     });
 
     runInterruptOrRevert(pane, EMPTY_DRAFT);
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushInterruptFlow();
 
     expect(interruptCalls).toEqual(['thread-1']);
     // The user_text + assistant_text rows are untouched on the
@@ -430,9 +435,9 @@ describe('runInterruptOrRevert', () => {
     });
 
     runInterruptOrRevert(pane, EMPTY_DRAFT);
+    await Promise.resolve();
     expect(pane.items.find((i) => i.id === 'u:0')).toBeUndefined();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushInterruptFlow();
 
     expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
     // userFacingError rewrites the raw "boom" message into a friendlier
@@ -452,8 +457,7 @@ describe('runInterruptOrRevert', () => {
     });
 
     runInterruptOrRevert(pane, draft);
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushInterruptFlow();
 
     expect(draft.applied?.content).toBe('hello');
     expect(draft.cleared).toEqual(draft.applied);
@@ -478,6 +482,7 @@ describe('runInterruptOrRevert', () => {
     }));
 
     runInterruptOrRevert(pane, EMPTY_DRAFT);
+    await flushInterruptFlow();
 
     expect(pane.items.find((i) => i.id === 'u:0')).toBeUndefined();
     expect(pane.items.find((i) => i.id === 'think:0:0')).toBeUndefined();
@@ -495,10 +500,10 @@ describe('runInterruptOrRevert', () => {
     }));
 
     runInterruptOrRevert(pane, EMPTY_DRAFT);
+    await Promise.resolve();
     expect(pane.items.find((i) => i.id === 'u:0')).toBeUndefined();
     expect(pane.items.find((i) => i.id === 'think:0:0')).toBeUndefined();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushInterruptFlow();
 
     expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
     expect(pane.items.find((i) => i.id === 'think:0:0')).toBeDefined();
@@ -521,10 +526,34 @@ describe('runInterruptOrRevert', () => {
     }));
 
     runInterruptOrRevert(pane, EMPTY_DRAFT);
+    await flushInterruptFlow();
 
     expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
     expect(pane.items.find((i) => i.id === 'a:0')).toBeDefined();
     expect(pane.items.find((i) => i.id === 'u:1')).toBeUndefined();
     expect(pane.items.find((i) => i.id === 'think:1:0')).toBeUndefined();
+  });
+
+  it('falls back to InterruptTurn without reverting when a tray task is running', async () => {
+    const pane = readyPane();
+    pane.upsertItem(userItem('u:0', 0));
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    setBindingMock('CountRunningBackgroundTasks', async () => 1);
+    const interruptCalls: string[] = [];
+    setBindingMock('InterruptTurn', async (id: unknown) => {
+      interruptCalls.push(id as string);
+    });
+    const revert = setBindingMock('InterruptAndRevertIfClean', async () => ({
+      reverted: true,
+      userItemId: 'u:0',
+      turnIndex: 0,
+    }));
+
+    runInterruptOrRevert(pane, EMPTY_DRAFT);
+    await flushInterruptFlow();
+
+    expect(interruptCalls).toEqual(['thread-1']);
+    expect(revert).not.toHaveBeenCalled();
+    expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
   });
 });

@@ -1051,6 +1051,28 @@ func (r *Router) ListLiveCodexBackgroundTasks(threadID string, _ int64, _ int64)
 	return items
 }
 
+func (r *Router) CountLiveCodexBackgroundTasks(threadID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.codexBackground[threadID]
+	if state == nil {
+		return 0
+	}
+	count := 0
+	for _, tracker := range state.unifiedExec {
+		if tracker != nil && strings.TrimSpace(tracker.parentID) == "" {
+			count++
+		}
+	}
+	return count
+}
+
+func (r *Router) ClearLiveCodexBackgroundTasks(threadID string) {
+	r.mu.Lock()
+	delete(r.codexBackground, threadID)
+	r.mu.Unlock()
+}
+
 // observeCodexToolComplete handles spawn_agent and wait_agent completion:
 //
 //  1. A spawn_agent item closed — the spawn row itself is `completed`

@@ -178,6 +178,7 @@ export {
   GetSessionAgentDiff,
   GetWorkspaceCurrentDiff,
   RevertToMessageCheckpoint,
+  RevertToMessageCheckpointWithOptions,
   ListThreadCheckpoints,
 
   // Thread runtime mode (three-tier approval axis)
@@ -204,6 +205,7 @@ export {
   ListItemsBeforeTurn,
   ListThreadProposedPlans,
   ListProposedPlanComments,
+  CountRunningBackgroundTasks,
   CreateProposedPlanComment,
   UpdateProposedPlanComment,
   DeleteProposedPlanComment,

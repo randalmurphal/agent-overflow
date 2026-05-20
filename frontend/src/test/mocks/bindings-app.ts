@@ -312,6 +312,7 @@ export const GetMessageCheckpointRevertDiff = dispatch('GetMessageCheckpointReve
 export const GetSessionAgentDiff = dispatch('GetSessionAgentDiff');
 export const GetWorkspaceCurrentDiff = dispatch('GetWorkspaceCurrentDiff');
 export const RevertToMessageCheckpoint = dispatch('RevertToMessageCheckpoint');
+export const RevertToMessageCheckpointWithOptions = dispatch('RevertToMessageCheckpointWithOptions');
 export const ForkThreadFromMessage = dispatch('ForkThreadFromMessage');
 export const ListThreadCheckpoints = dispatch('ListThreadCheckpoints');
 
@@ -359,6 +360,7 @@ export const CreateDiffReviewComment = dispatch('CreateDiffReviewComment');
 export const UpdateDiffReviewComment = dispatch('UpdateDiffReviewComment');
 export const DeleteDiffReviewComment = dispatch('DeleteDiffReviewComment');
 export const SendDiffReviewComments = dispatch('SendDiffReviewComments');
+export const CountRunningBackgroundTasks = dispatch('CountRunningBackgroundTasks');
 export const ListLiveBackgroundTasks = dispatch('ListLiveBackgroundTasks');
 export const GetThreadItem = dispatch('GetThreadItem');
 

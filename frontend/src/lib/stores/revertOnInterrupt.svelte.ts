@@ -13,10 +13,11 @@
 //   - Backend re-checks under the per-thread lock (SQLite + flush
 //     queue) so a Send→Stop race resolves correctly. Result.reverted
 //     tells the frontend which path the backend actually took.
-//   - The draft is restored locally in the same tick as the optimistic
-//     timeline truncate. Backend success later confirms the durable draft;
-//     backend decline/error clears the optimistic restore if the user has
-//     not already edited it.
+//   - The tray preflight runs before any optimistic timeline mutation
+//     because reverting a provider session would kill background work.
+//     Backend success later confirms the durable draft; backend
+//     decline/error clears the optimistic restore if the user has not
+//     already edited it.
 //
 // References:
 //   - claude-code-source-code/src/components/REPL.tsx — the TUI's
@@ -35,6 +36,7 @@ import { getActiveTurn } from './threadStatuses.svelte';
 import { getQueueForThread } from './sendQueue.svelte';
 import { reportNonBenignInterruptError } from './interruptErrors';
 import {
+  CountRunningBackgroundTasks,
   InterruptAndRevertIfClean,
   InterruptTurn,
 } from './bindings';
@@ -115,14 +117,14 @@ export function canRevertEarlyInterrupt(
 /**
  * Unified Stop entry point shared by the Composer Stop button and the
  * `thread.interrupt` keybinding. Decides between revert-on-interrupt
- * and the plain-interrupt fallback, paints optimistic UI immediately,
- * and dispatches the matching backend RPC fire-and-forget. The plain-
+ * and the plain-interrupt fallback, then dispatches the matching
+ * backend RPC fire-and-forget. The plain-
  * interrupt branch matches the legacy `dispatchInterrupt` behavior;
- * the revert branch additionally truncates the active turn from the
- * timeline (matching the backend's `DeleteConversationFromTurn` —
- * inclusive at turnIndex — so synthetic siblings like thinking /
- * api_retry / error rows go with the user row) and rolls everything
- * back on rollback / error.
+ * the revert branch first checks the live background tray, then
+ * truncates the active turn from the timeline (matching the backend's
+ * `DeleteConversationFromTurn` — inclusive at turnIndex — so synthetic
+ * siblings like thinking / api_retry / error rows go with the user row)
+ * and rolls everything back on rollback / error.
  *
  * The pane's active-turn and send-in-flight flags ARE NOT cleared here.
  * Callers (builtin command, Composer.interrupt) own that decision so
@@ -145,39 +147,64 @@ export function runInterruptOrRevert(
     return;
   }
 
+  void runInterruptOrRevertAfterBackgroundPreflight(pane, draft, threadId, eligibility.userItem);
+}
+
+async function runInterruptOrRevertAfterBackgroundPreflight(
+  pane: ThreadPane,
+  draft: DraftSnapshotInputs,
+  threadId: string,
+  userItem: Item,
+): Promise<void> {
+  let backgroundCount = 0;
+  try {
+    backgroundCount = Number(await CountRunningBackgroundTasks(threadId));
+  } catch (err) {
+    reportNonBenignInterruptError(pane, err);
+    await InterruptTurn(threadId).catch((interruptErr) =>
+      reportNonBenignInterruptError(pane, interruptErr),
+    );
+    return;
+  }
+  if (backgroundCount > 0) {
+    await InterruptTurn(threadId).catch((err) =>
+      reportNonBenignInterruptError(pane, err),
+    );
+    return;
+  }
+
   // Match the backend truncate: remove EVERY item on the active turn,
   // not just the user_text. Stranded thinking / api_retry / error rows
   // are the visible symptom of doing this piecewise. The rollback path
   // restores the full set via `upsertItems` when the backend refuses
   // the revert (predicate raced).
-  const removedItems = pane.removeItemsFromTurn(eligibility.userItem.turnIndex);
+  const removedItems = pane.removeItemsFromTurn(userItem.turnIndex);
   const shouldRestoreDraft = Boolean(
     draft.applyOptimisticRestoredDraft || draft.clearOptimisticRestoredDraft,
   );
   const restoredDraft = shouldRestoreDraft
-    ? restoredDraftSnapshotFromUserItem(eligibility.userItem)
+    ? restoredDraftSnapshotFromUserItem(userItem)
     : null;
   if (restoredDraft) {
     draft.applyOptimisticRestoredDraft?.(threadId, restoredDraft);
   }
 
-  void InterruptAndRevertIfClean(threadId)
-    .then((result) => {
-      if (!result.reverted) {
-        if (removedItems.length > 0) pane.upsertItems(removedItems);
-        if (restoredDraft) {
-          draft.clearOptimisticRestoredDraft?.(threadId, restoredDraft);
-        }
-      }
-      // Reverted=true: backend will emit `user_message:reverted` which
-      // confirms the removal (idempotent) and refreshes the composer draft
-      // if the user has not already edited the optimistic restore.
-    })
-    .catch((err) => {
+  try {
+    const result = await InterruptAndRevertIfClean(threadId);
+    if (!result.reverted) {
       if (removedItems.length > 0) pane.upsertItems(removedItems);
       if (restoredDraft) {
         draft.clearOptimisticRestoredDraft?.(threadId, restoredDraft);
       }
-      reportNonBenignInterruptError(pane, err);
-    });
+    }
+    // Reverted=true: backend will emit `user_message:reverted` which
+    // confirms the removal (idempotent) and refreshes the composer draft
+    // if the user has not already edited the optimistic restore.
+  } catch (err) {
+    if (removedItems.length > 0) pane.upsertItems(removedItems);
+    if (restoredDraft) {
+      draft.clearOptimisticRestoredDraft?.(threadId, restoredDraft);
+    }
+    reportNonBenignInterruptError(pane, err);
+  }
 }

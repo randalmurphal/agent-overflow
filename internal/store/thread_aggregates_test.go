@@ -219,6 +219,104 @@ func TestListLiveBackgroundTasks_RunningOnly(t *testing.T) {
 	}
 }
 
+func TestMarkLiveBackgroundToolCallsInactiveClearsOnlyLiveTopLevelLaunches(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	seedBackgroundItem(t, s, "t", "run", 0, 0, "running", "", 1000)
+	seedBackgroundItem(t, s, "t", "completed-launch", 0, 1, "running", "", 1000)
+	seedBackgroundItem(t, s, "t", "completed-row", 0, 2, "completed", "completed-launch", 2000)
+	if err := s.InsertItem(Item{
+		ID:           "child",
+		ThreadID:     "t",
+		TurnIndex:    0,
+		ItemIndex:    3,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "running",
+		Summary:      "child",
+		IsBackground: true,
+		ParentID:     "parent",
+		Meta:         `{"live_background_active":true}`,
+		CreatedAt:    1000,
+	}); err != nil {
+		t.Fatalf("seed child: %v", err)
+	}
+
+	count, err := s.MarkLiveBackgroundToolCallsInactive("t", 3000)
+	if err != nil {
+		t.Fatalf("mark inactive: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("rows affected = %d, want 1", count)
+	}
+
+	run, ok, err := s.GetItem("run")
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if !ok {
+		t.Fatal("run item missing")
+	}
+	if run.Status != "running" {
+		t.Fatalf("run status = %q, want running", run.Status)
+	}
+	if !strings.Contains(run.Meta, `"live_background_active":false`) {
+		t.Fatalf("run meta = %q, want live_background_active=false", run.Meta)
+	}
+
+	completedLaunch, _, err := s.GetItem("completed-launch")
+	if err != nil {
+		t.Fatalf("get completed launch: %v", err)
+	}
+	if completedLaunch.Status != "running" {
+		t.Fatalf("completed launch status = %q, want running", completedLaunch.Status)
+	}
+	child, _, err := s.GetItem("child")
+	if err != nil {
+		t.Fatalf("get child: %v", err)
+	}
+	if child.Status != "running" {
+		t.Fatalf("child status = %q, want running", child.Status)
+	}
+
+	live, err := s.ListLiveBackgroundTasks("t", 0)
+	if err != nil {
+		t.Fatalf("list live background tasks: %v", err)
+	}
+	if ids := collectIDs(live); !equalStringSlice(ids, []string{"completed-launch", "completed-row"}) {
+		t.Fatalf("live ids = %v, want completed launch pair only", ids)
+	}
+}
+
+func TestCountLiveRunningBackgroundToolCallsIncludesStashedLaunches(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	seedBackgroundItem(t, s, "t", "exited", 0, 0, "running", "", 100)
+	if err := s.UpsertPendingBackgroundTerminal(PendingBackgroundTaskTerminal{
+		ThreadID:  "t",
+		TaskID:    "task-x",
+		ToolUseID: "exited",
+		Status:    "completed",
+		Source:    "task_updated",
+		CreatedAt: 500,
+	}); err != nil {
+		t.Fatalf("upsert stash: %v", err)
+	}
+
+	count, err := s.CountLiveRunningBackgroundToolCalls("t")
+	if err != nil {
+		t.Fatalf("count live background tasks: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+}
+
 func TestListLiveBackgroundTasks_ExcludesInactiveCodexSubagent(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "codex")); err != nil {

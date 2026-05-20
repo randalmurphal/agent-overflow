@@ -33,6 +33,10 @@ const (
 // namespace the frontend imports from.
 type CheckpointView = checkpoint.View
 
+type RevertToMessageCheckpointOptions struct {
+	KillRunningBackgroundTasks bool `json:"killRunningBackgroundTasks,omitempty"`
+}
+
 func (a *App) captureMessageCheckpoint(thread store.Thread, userItem store.Item) {
 	cap := a.checkpointStore()
 	workspace := thread.WorkspacePath
@@ -238,6 +242,24 @@ func (a *App) GetWorkspaceCurrentDiff(threadID string) (string, error) {
 }
 
 func (a *App) RevertToMessageCheckpoint(threadID string, userItemID string, mode string) error {
+	return a.revertToMessageCheckpoint(threadID, userItemID, mode, RevertToMessageCheckpointOptions{})
+}
+
+func (a *App) RevertToMessageCheckpointWithOptions(
+	threadID string,
+	userItemID string,
+	mode string,
+	opts RevertToMessageCheckpointOptions,
+) error {
+	return a.revertToMessageCheckpoint(threadID, userItemID, mode, opts)
+}
+
+func (a *App) revertToMessageCheckpoint(
+	threadID string,
+	userItemID string,
+	mode string,
+	opts RevertToMessageCheckpointOptions,
+) error {
 	if strings.TrimSpace(userItemID) == "" {
 		return errors.New("revert checkpoint: user item id is required")
 	}
@@ -252,6 +274,11 @@ func (a *App) RevertToMessageCheckpoint(threadID string, userItemID string, mode
 		return fmt.Errorf("revert checkpoint: active turn check: %w", err)
 	} else if active {
 		return errors.New("revert checkpoint: interrupt the current turn before reverting")
+	}
+	if running, err := a.hasRunningBackgroundTasks(threadID); err != nil {
+		return fmt.Errorf("revert checkpoint: check background tasks: %w", err)
+	} else if running && !opts.KillRunningBackgroundTasks {
+		return errors.New("revert checkpoint: running background tasks must be killed before reverting")
 	}
 
 	thread, err := a.store.GetThread(threadID)
@@ -291,13 +318,14 @@ func (a *App) RevertToMessageCheckpoint(threadID string, userItemID string, mode
 	}
 
 	if err := a.revertConversationLocked(revertConversationLockedArgs{
-		thread:       thread,
-		userItem:     userItem,
-		record:       record,
-		mode:         mode,
-		promptDraft:  promptDraft,
-		errorPrefix:  "revert checkpoint",
-		markReverted: false,
+		thread:                      thread,
+		userItem:                    userItem,
+		record:                      record,
+		mode:                        mode,
+		promptDraft:                 promptDraft,
+		errorPrefix:                 "revert checkpoint",
+		markReverted:                false,
+		clearRunningBackgroundTasks: opts.KillRunningBackgroundTasks,
 	}); err != nil {
 		return err
 	}
@@ -313,8 +341,8 @@ func (a *App) RevertToMessageCheckpoint(threadID string, userItemID string, mode
 // revertConversationLockedArgs bundles the parameters for the shared
 // revert tail. Callers prepare the thread, user item, checkpoint, and
 // composer draft, then hand off to revertConversationLocked which owns
-// the destructive sequence (provider rollback → SQLite truncate → draft
-// upsert). Event emission stays with the caller so each surface
+// the destructive sequence (provider cleanup/rollback → SQLite truncate
+// → draft upsert). Event emission stays with the caller so each surface
 // (explicit revert vs revert-on-interrupt) can pick its own payload shape.
 type revertConversationLockedArgs struct {
 	thread      store.Thread
@@ -332,6 +360,12 @@ type revertConversationLockedArgs struct {
 	// explicit revert path requires no active turn, so there is no
 	// in-flight turn-complete to flag.
 	markReverted bool
+	// clearRunningBackgroundTasks hides any still-running background
+	// tray rows after provider-owned work has been terminated. Claude
+	// relies on stopSession's process-group close; Codex uses its
+	// thread-wide background-terminal clean RPC before rollback when a
+	// live app-server session exists.
+	clearRunningBackgroundTasks bool
 }
 
 // revertConversationLocked is the destructive tail of any conversation
@@ -346,23 +380,37 @@ type revertConversationLockedArgs struct {
 //     turn-complete fired by CleanupThread (during stopSession)
 //     carries RevertedUserMessage=true. Skip when no active turn is
 //     in flight (markReverted=false).
-//  2. Provider rollback:
+//  2. Optional background cleanup, when the user explicitly confirmed it.
+//  3. Optional tray-state cleanup immediately after provider-owned work
+//     is terminated. This runs before rollback/truncation so killed work
+//     does not stay advertised as running if a later step fails.
+//  4. Provider rollback:
 //     - Codex uses a live/resumed app-server session and validates the
 //     thread/rollback response before local state changes.
 //     - Claude stops the provider subprocess first, then writes a sliced
 //     session file.
-//  3. Conversation-and-files mode only: ListTrackedFilesFromTurn +
+//  5. Conversation-and-files mode only: ListTrackedFilesFromTurn +
 //     RestoreWorktreePaths + workspaceFiles.Invalidate.
-//  4. DeleteCheckpointsFromTurn + DeleteConversationFromTurn truncate
+//  6. DeleteCheckpointsFromTurn + DeleteConversationFromTurn truncate
 //     SQLite at the user-item's turnIndex (inclusive).
-//  5. deleteCheckpointRefs removes the matching git refs.
-//  6. UpsertThreadDraft restores the composer draft.
+//  7. deleteCheckpointRefs removes the matching git refs.
+//  8. UpsertThreadDraft restores the composer draft.
 func (a *App) revertConversationLocked(args revertConversationLockedArgs) error {
 	if args.markReverted && a.triage != nil {
 		a.triage.MarkTurnReverted(args.thread.ID)
 	}
 
+	if args.clearRunningBackgroundTasks {
+		if err := a.cleanRunningBackgroundTasksBeforeProviderRevert(args.thread, args.errorPrefix); err != nil {
+			return err
+		}
+	}
 	if args.thread.Provider == string(provider.Codex) {
+		if args.clearRunningBackgroundTasks {
+			if err := a.markConfirmedBackgroundTasksInactiveAfterProviderCleanup(args.thread.ID, args.errorPrefix); err != nil {
+				return err
+			}
+		}
 		result, err := a.revertCodexConversationToMessage(args.thread, args.record, args.userItem.TurnIndex, args.markReverted)
 		if err != nil {
 			return fmt.Errorf("%s: %w", args.errorPrefix, err)
@@ -373,6 +421,11 @@ func (a *App) revertConversationLocked(args revertConversationLockedArgs) error 
 	} else {
 		if err := a.stopSession(args.thread.ID); err != nil {
 			return fmt.Errorf("%s: stop session: %w", args.errorPrefix, err)
+		}
+		if args.clearRunningBackgroundTasks {
+			if err := a.markConfirmedBackgroundTasksInactiveAfterProviderCleanup(args.thread.ID, args.errorPrefix); err != nil {
+				return err
+			}
 		}
 		if err := a.revertProviderConversationToMessage(args.thread, args.record); err != nil {
 			return fmt.Errorf("%s: %w", args.errorPrefix, err)

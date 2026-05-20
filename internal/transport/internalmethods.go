@@ -123,7 +123,8 @@ var LocalOnlyMethods = map[string]bool{
 	"AttachThreadWorktree": true,
 	// RevertToMessageCheckpoint mutates the local working tree (git restore
 	// checkout into the workspace). Same class.
-	"RevertToMessageCheckpoint": true,
+	"RevertToMessageCheckpoint":            true,
+	"RevertToMessageCheckpointWithOptions": true,
 	// Diff-returning bindings expose bulk file content in a single wire
 	// call. The threat shape matches the credential / endpoint
 	// enumeration class below: a token-holder gets the user's
@@ -294,14 +295,14 @@ var LocalOnlyMethods = map[string]bool{
 	//     and tool inventory — the same enumeration shape category 6
 	//     locks down. Conservative + consistent: everything goes
 	//     loopback-only.
-	"ListMcpServers":          true,
-	"CreateMcpServer":         true,
-	"UpdateMcpServer":         true,
-	"DeleteMcpServer":         true,
-	"GetThreadMcpServers":     true,
-	"UpdateThreadMcpServers":  true,
-	"ProbeMcpServer":          true,
-	"GetMcpProbeSnapshot":     true,
-	"TriggerMcpAuth":          true,
-	"GetMcpThreadProfile":     true,
+	"ListMcpServers":         true,
+	"CreateMcpServer":        true,
+	"UpdateMcpServer":        true,
+	"DeleteMcpServer":        true,
+	"GetThreadMcpServers":    true,
+	"UpdateThreadMcpServers": true,
+	"ProbeMcpServer":         true,
+	"GetMcpProbeSnapshot":    true,
+	"TriggerMcpAuth":         true,
+	"GetMcpThreadProfile":    true,
 }

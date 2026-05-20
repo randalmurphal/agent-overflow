@@ -166,6 +166,9 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 //   - The triage flush queue is empty for the thread (a queued
 //     follow-up means Stop should let the queue drain through, not
 //     discard everything).
+//   - No background task is running in the tray. Reverting would close
+//     the provider session, which kills background work; early Stop
+//     should preserve that work and fall back to a plain interrupt.
 //
 // Thinking blocks, error rows, and other synthetic kinds DO NOT block
 // the revert (matches Claude Code's `messagesAfterAreOnlySynthetic`).
@@ -212,6 +215,11 @@ func (a *App) evaluateInterruptRevertPredicate(threadID string) (bool, store.Ite
 	}
 	if a.pendingFlushWorkCount(threadID) > 0 {
 		return false, store.Item{}, "queued follow-up messages", nil
+	}
+	if running, err := a.hasRunningBackgroundTasks(threadID); err != nil {
+		return false, store.Item{}, "", fmt.Errorf("check background tasks: %w", err)
+	} else if running {
+		return false, store.Item{}, "running background tasks", nil
 	}
 	return true, userItem, "", nil
 }
