@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   clearUiRenderTrace,
   flushUiRenderTrace,
@@ -71,5 +71,41 @@ describe('uiRenderTrace', () => {
 
     window.__agentOverflowUiTrace?.disable();
     expect(isUiRenderTraceEnabled()).toBe(false);
+  });
+
+  it('Ctrl+Shift+B writes a user.bugReport marker and copies the file path', async () => {
+    setBindingMock('AppendUIRenderTraceBatch', async () => '/tmp/ui-render.jsonl');
+    let clipboardText = '';
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn(async (text: string) => { clipboardText = text; }) },
+    });
+    installUiRenderTraceApi();
+    window.__agentOverflowUiTrace?.enable();
+
+    // Stub the stick-state hook so the marker carries something
+    // distinctive.
+    (window as Window & { __stickState?: () => Record<string, unknown> })
+      .__stickState = () => ({ marker: 'sentinel' });
+
+    // Synthesize Ctrl+Shift+B.
+    const event = new KeyboardEvent('keydown', {
+      ctrlKey: true,
+      shiftKey: true,
+      code: 'KeyB',
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(event);
+
+    // The handler is async (flush + clipboard write); wait a tick.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    const records = getUiRenderTraceRecords();
+    const marker = records.find((r) => r.label === 'user.bugReport');
+    expect(marker).toBeDefined();
+    expect((marker?.data as { stickState: { marker: string } }).stickState.marker)
+      .toBe('sentinel');
+    expect(clipboardText).toBe('/tmp/ui-render.jsonl');
   });
 });

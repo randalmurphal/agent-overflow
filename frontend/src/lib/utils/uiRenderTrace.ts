@@ -142,6 +142,51 @@ export function installUiRenderTraceApi(): void {
     flush: flushUiRenderTrace,
     filePath: () => lastTraceFilePath,
   };
+  installBugReportHotkey();
+}
+
+// Ctrl+Shift+B drops a `user.bugReport` marker into the trace, force-
+// flushes it to disk, and copies the trace file path to the clipboard.
+// The user pastes the path; whoever's reading the report greps for
+// `user.bugReport` to land on the bug moment with full surrounding
+// context. Active only in DEBUG=1 builds.
+function installBugReportHotkey(): void {
+  if (!UI_TRACE_BUILD_GATE || typeof window === 'undefined') return;
+  window.addEventListener('keydown', (e) => {
+    // Match the lowercase key code so the binding works regardless of
+    // shift's effect on `e.key`. `code` is the physical key.
+    if (!(e.ctrlKey && e.shiftKey && e.code === 'KeyB')) return;
+    e.preventDefault();
+    void captureBugReport();
+  });
+}
+
+async function captureBugReport(): Promise<void> {
+  const win = window as Window & {
+    __stickState?: () => Record<string, unknown>;
+  };
+  const stickState = win.__stickState?.() ?? null;
+  // Marker trace event — searchable via `grep user.bugReport` on the
+  // file. Includes the full stick state so the bug moment is
+  // self-describing even without scanning surrounding events.
+  recordUiTrace('user.bugReport', {
+    capturedAt: Date.now(),
+    href: typeof location !== 'undefined' ? location.href : '',
+    stickState,
+  });
+  // Force flush so the marker is on disk before we copy the path.
+  const path = await flushUiRenderTrace();
+  const message = path
+    ? `[BugReport] Saved. Path copied to clipboard:\n${path}`
+    : '[BugReport] Saved marker but no trace file path is available yet.';
+  if (path && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(path);
+    } catch (err) {
+      console.warn('[BugReport] Failed to copy path to clipboard:', err);
+    }
+  }
+  console.log(message);
 }
 
 export async function flushUiRenderTrace(): Promise<string | null> {
