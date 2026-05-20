@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
-  import { fade } from 'svelte/transition';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import MessageTimeline from './MessageTimeline.svelte';
   import Composer from '../composer/Composer.svelte';
@@ -49,14 +48,6 @@
   }
 
   let { pane, onPaneDragStart }: Props = $props();
-
-  // Wire-side prompts (approval / user-input) draw a backdrop scrim over
-  // the timeline so the actionable panel above the composer is the
-  // unmissable focal point. Mirrors the ComposerPendingApprovalPanel /
-  // ComposerPendingUserInputPanel render gate inside Composer.svelte.
-  const hasPendingPrompt = $derived(
-    pane.pendingApprovals.length > 0 || pane.pendingUserInputs.length > 0,
-  );
 
   const draft = createComposerDraftStore();
   let releaseComposerDraft: (() => void) | null = null;
@@ -573,14 +564,6 @@
         onImageExpand={openImagePreview}
         {userMessageActions}
       />
-      {#if hasPendingPrompt}
-        <div
-          class="pointer-events-none absolute inset-0 z-10 bg-surface-0/40 backdrop-blur-[1px]"
-          transition:fade={{ duration: 150 }}
-          aria-hidden="true"
-          data-testid="pending-prompt-scrim"
-        ></div>
-      {/if}
       <div
         bind:this={composerOverlay}
         class="absolute inset-x-0 bottom-0 z-20 pointer-events-none"

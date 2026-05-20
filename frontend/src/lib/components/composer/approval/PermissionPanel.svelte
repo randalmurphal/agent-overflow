@@ -1,8 +1,17 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import type { ApprovalRequest } from '../../../types/events';
   import { ApprovalResponse, PermissionProfile } from '../../../stores/bindings';
   import { errString } from '../../../utils/errors';
   import Button from '../../primitives/Button.svelte';
+  import {
+    composerRootFor,
+    composerTextareaHasFocus,
+  } from '../composerFocus';
+  import {
+    focusApprovalActionFromKey,
+    focusApprovalActionContainer,
+  } from './approvalActionKeyboard';
 
   interface Props {
     approval: ApprovalRequest;
@@ -12,6 +21,7 @@
   }
 
   let { approval, onResolve, onError, responding = false }: Props = $props();
+  let actionRow: HTMLDivElement | undefined = $state(undefined);
 
   async function grant(scope: 'turn' | 'session') {
     const perms = new PermissionProfile(
@@ -39,6 +49,12 @@
       onError?.(`Failed to respond to approval: ${errString(err)}`);
     }
   }
+
+  onMount(() => {
+    if (composerTextareaHasFocus(composerRootFor(actionRow))) {
+      queueMicrotask(() => focusApprovalActionContainer(actionRow));
+    }
+  });
 </script>
 
 {#if approval.permissions}
@@ -58,7 +74,14 @@
   </div>
 {/if}
 
-<div class="flex flex-wrap gap-2 mt-2.5 justify-end">
+<div
+  bind:this={actionRow}
+  class="flex flex-wrap gap-2 mt-2.5 justify-end"
+  role="toolbar"
+  aria-label="Permission actions"
+  tabindex="0"
+  onkeydown={(event) => focusApprovalActionFromKey(event, actionRow)}
+>
   <Button variant="danger-ghost" size="sm" onclick={() => respond('cancel')} testId="permission-cancel" disabled={responding}>
     {#snippet children()}Cancel turn{/snippet}
   </Button>

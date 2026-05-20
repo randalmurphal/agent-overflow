@@ -563,6 +563,25 @@ describe('<ChatView>', () => {
     expect(shell).not.toContainElement(picker);
   });
 
+  it('does not blur or dim the timeline for pending composer prompts', async () => {
+    const pane = await buildPane(seedThread());
+    pane.addApproval({
+      requestId: 'approval-1',
+      threadId: pane.threadId ?? 'thread-1',
+      kind: 'command',
+      toolName: 'Bash',
+      title: 'Approve command',
+      description: 'Allow bash?',
+      input: { command: 'pwd' },
+    });
+
+    const { getByTestId, queryByTestId } = render(ChatView, { props: { pane } });
+    await tick();
+
+    expect(getByTestId('composer-pending-approval')).toBeInTheDocument();
+    expect(queryByTestId('pending-prompt-scrim')).toBeNull();
+  });
+
   it('does not render interaction-mode / runtime-mode / branch pickers in the header', async () => {
     const pane = await buildPane();
     const { queryByTestId } = render(ChatView, { props: { pane } });

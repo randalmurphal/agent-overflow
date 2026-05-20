@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import ComposerPendingUserInputPanel from './ComposerPendingUserInputPanel.svelte';
 import type { UserInputRequest } from '../../types/events';
 import type { UserInputResponse } from '../../stores/bindings';
@@ -94,6 +94,31 @@ describe('<ComposerPendingUserInputPanel>', () => {
     });
 
     await fireEvent.keyDown(window, { key: '2' });
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(onResolve).toHaveBeenCalledTimes(1);
+    expect(onResolve.mock.calls[0][0].answers).toEqual({ framework: 'Svelte' });
+    vi.useRealTimers();
+  });
+
+  it('auto-submits when Enter selects a focused option', async () => {
+    vi.useFakeTimers();
+    const onResolve = vi.fn<(response: UserInputResponse) => Promise<void>>(async () => {});
+    const { getByTestId } = render(ComposerPendingUserInputPanel, {
+      props: {
+        request: request(),
+        customAnswer: '',
+        submitSignal: 0,
+        setCustomAnswerText: vi.fn(),
+        onResolve,
+        onResolved: vi.fn(),
+        onError: vi.fn(),
+      },
+    });
+
+    const option = getByTestId('user-input-option-2') as HTMLButtonElement;
+    option.focus();
+    await fireEvent.keyDown(option, { key: 'Enter' });
     await vi.advanceTimersByTimeAsync(200);
 
     expect(onResolve).toHaveBeenCalledTimes(1);
@@ -262,5 +287,83 @@ describe('<ComposerPendingUserInputPanel>', () => {
     // Clamps at top — does not wrap.
     await fireEvent.keyDown(window, { key: 'ArrowUp' });
     expect(getByTestId('user-input-preview').textContent ?? '').toContain('first preview');
+  });
+
+  it('moves DOM focus through options with j/k and down into the composer textarea', async () => {
+    const root = document.createElement('div');
+    root.setAttribute('data-testid', 'composer-root');
+    const textarea = document.createElement('textarea');
+    textarea.setAttribute('aria-label', 'Message Input');
+    const target = document.createElement('div');
+    root.appendChild(textarea);
+    root.appendChild(target);
+    document.body.appendChild(root);
+    textarea.focus();
+
+    const { getByTestId, unmount } = render(ComposerPendingUserInputPanel, {
+      target,
+      props: {
+        request: request(),
+        customAnswer: '',
+        submitSignal: 0,
+        setCustomAnswerText: vi.fn(),
+        onResolve: vi.fn(),
+        onResolved: vi.fn(),
+        onError: vi.fn(),
+      },
+    });
+
+    const first = getByTestId('user-input-option-1') as HTMLButtonElement;
+    const second = getByTestId('user-input-option-2') as HTMLButtonElement;
+    await waitFor(() => expect(document.activeElement).toBe(first));
+
+    await fireEvent.keyDown(first, { key: 'j' });
+    expect(document.activeElement).toBe(second);
+
+    await fireEvent.keyDown(second, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(textarea);
+
+    second.focus();
+    await fireEvent.keyDown(second, { key: 'k' });
+    expect(document.activeElement).toBe(first);
+
+    unmount();
+    root.remove();
+  });
+
+  it('moves between questions from the header with h/l and arrow keys', async () => {
+    const { getByTestId, getByText } = render(ComposerPendingUserInputPanel, {
+      props: {
+        request: request({
+          questions: [
+            {
+              id: 'framework',
+              header: 'Framework',
+              question: 'Pick one',
+              options: [{ label: 'Svelte', description: '' }],
+            },
+            {
+              id: 'scope',
+              header: 'Scope',
+              question: 'Pick scope',
+              options: [{ label: 'This turn', description: '' }],
+            },
+          ],
+        }),
+        customAnswer: '',
+        submitSignal: 0,
+        setCustomAnswerText: vi.fn(),
+        onResolve: vi.fn(),
+        onResolved: vi.fn(),
+        onError: vi.fn(),
+      },
+    });
+
+    const header = getByTestId('user-input-question-header') as HTMLElement;
+    header.focus();
+    await fireEvent.keyDown(header, { key: 'l' });
+    expect(getByText('Pick scope')).toBeTruthy();
+    await fireEvent.keyDown(header, { key: 'ArrowLeft' });
+    expect(getByText('Pick one')).toBeTruthy();
   });
 });

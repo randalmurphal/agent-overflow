@@ -44,6 +44,7 @@
     onSendWithoutPlanComments?: () => void;
     onSendInNewThread?: () => void;
     onInterrupt: () => void;
+    hideSendButton?: boolean;
   }
 
   let {
@@ -59,6 +60,7 @@
     onSendWithoutPlanComments,
     onSendInNewThread,
     onInterrupt,
+    hideSendButton = false,
   }: Props = $props();
 
   // Mode-toggle slot rules (immutable thread type policy):
@@ -163,18 +165,20 @@
         <ContextWindowMeter data={pane.contextWindow} thread={pane.thread} />
       </div>
     {/if}
-    <SendButton
-      {canSend}
-      {isTurnActive}
-      {sendInFlight}
-      action={sendAction}
-      label={sendLabel}
-      {planCommentCount}
-      {onSend}
-      {onSendWithoutPlanComments}
-      {onSendInNewThread}
-      {onInterrupt}
-    />
+    {#if !hideSendButton}
+      <SendButton
+        {canSend}
+        {isTurnActive}
+        {sendInFlight}
+        action={sendAction}
+        label={sendLabel}
+        {planCommentCount}
+        {onSend}
+        {onSendWithoutPlanComments}
+        {onSendInNewThread}
+        {onInterrupt}
+      />
+    {/if}
   </div>
 </div>
 

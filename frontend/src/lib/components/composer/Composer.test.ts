@@ -1791,6 +1791,40 @@ describe('<Composer>', () => {
     ]);
   });
 
+  it('keeps composer toolbar chrome visible and hides send during pending user input', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+
+    const { getByLabelText, getByTestId, queryByTestId } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+    textarea.focus();
+
+    pane.addUserInput({
+      requestId: 'req-input',
+      threadId: 'thread-1',
+      toolName: 'AskUserQuestion',
+      title: 'Input requested',
+      questions: [{
+        id: 'framework',
+        header: 'Framework',
+        question: 'Pick one',
+        options: [
+          { label: 'React', description: '' },
+          { label: 'Svelte', description: '' },
+        ],
+      }],
+    });
+    await tick();
+
+    expect(getByTestId('composer-toolbar')).toBeInTheDocument();
+    expect(getByTestId('composer-model-menu-trigger')).toBeInTheDocument();
+    expect(queryByTestId('composer-send')).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(getByTestId('user-input-option-1')));
+
+    await fireEvent.keyDown(textarea, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(getByTestId('user-input-option-2'));
+  });
+
   it('focuses the textarea after draft hydrates with cursor at end of resumed content', async () => {
     setBindingMock('GetDraft', async (threadId: string) => ({
       threadId,

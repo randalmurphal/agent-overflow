@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import type { ApprovalRequest } from '../../../types/events';
   import { ApprovalResponse, ElicitationResolution } from '../../../stores/bindings';
   import { parseElicitationSchema, type ElicitationField } from '../../../utils/elicitationSchema';
@@ -6,6 +7,14 @@
   import { handleExternalURL, safeExternalURL } from '../../../utils/externalLinks';
   import McpElicitationField from './McpElicitationField.svelte';
   import Button from '../../primitives/Button.svelte';
+  import {
+    composerRootFor,
+    composerTextareaHasFocus,
+  } from '../composerFocus';
+  import {
+    focusApprovalActionFromKey,
+    focusApprovalActionContainer,
+  } from './approvalActionKeyboard';
 
   interface Props {
     approval: ApprovalRequest;
@@ -15,6 +24,7 @@
   }
 
   let { approval, onResolve, onError, responding = false }: Props = $props();
+  let actionRow: HTMLDivElement | undefined = $state(undefined);
 
   // Schema arrives once per approval — parse once up front and reuse.
   const fields: ElicitationField[] = $derived(
@@ -205,6 +215,12 @@
     }
     void handleExternalURL(safeURL);
   }
+
+  onMount(() => {
+    if (composerTextareaHasFocus(composerRootFor(actionRow))) {
+      queueMicrotask(() => focusApprovalActionContainer(actionRow));
+    }
+  });
 </script>
 
 {#if approval.elicitation}
@@ -264,7 +280,14 @@
     {/if}
   </div>
 
-  <div class="flex flex-wrap gap-2 mt-2.5 justify-end">
+  <div
+    bind:this={actionRow}
+    class="flex flex-wrap gap-2 mt-2.5 justify-end"
+    role="toolbar"
+    aria-label="MCP approval actions"
+    tabindex="0"
+    onkeydown={(event) => focusApprovalActionFromKey(event, actionRow)}
+  >
     <Button variant="secondary" size="sm" onclick={cancel} testId="elicitation-cancel" disabled={responding}>
       {#snippet children()}Cancel{/snippet}
     </Button>

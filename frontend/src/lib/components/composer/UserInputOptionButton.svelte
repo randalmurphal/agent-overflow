@@ -9,8 +9,10 @@
     selected: boolean;
     focused: boolean;
     disabled: boolean;
+    tabIndex?: number;
     onSelect: () => void;
     onFocus: () => void;
+    onKeydown?: (event: KeyboardEvent) => void;
   }
 
   let {
@@ -20,8 +22,10 @@
     selected,
     focused,
     disabled,
+    tabIndex = -1,
     onSelect,
     onFocus,
+    onKeydown,
   }: Props = $props();
 </script>
 
@@ -38,11 +42,14 @@
         : 'border-border-subtle bg-surface-0/40 text-fg-muted hover:border-border hover:text-fg',
   ].join(' ')}
   data-testid={`user-input-option-${optionIndex + 1}`}
+  data-user-input-option
   aria-pressed={selected ? 'true' : 'false'}
+  tabindex={tabIndex}
   {disabled}
   onclick={onSelect}
   onmouseenter={onFocus}
   onfocus={onFocus}
+  onkeydown={onKeydown}
 >
   <span class="mt-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded border border-border-subtle text-[10px] text-fg-muted">
     {optionIndex + 1}

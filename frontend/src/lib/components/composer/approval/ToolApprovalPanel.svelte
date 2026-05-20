@@ -1,8 +1,17 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import type { ApprovalRequest } from '../../../types/events';
   import { ApprovalResponse } from '../../../stores/bindings';
   import { errString } from '../../../utils/errors';
   import Button from '../../primitives/Button.svelte';
+  import {
+    composerRootFor,
+    composerTextareaHasFocus,
+  } from '../composerFocus';
+  import {
+    focusApprovalActionFromKey,
+    focusApprovalActionContainer,
+  } from './approvalActionKeyboard';
 
   interface Props {
     approval: ApprovalRequest;
@@ -12,6 +21,7 @@
   }
 
   let { approval, onResolve, onError, responding = false }: Props = $props();
+  let actionRow: HTMLDivElement | undefined = $state(undefined);
 
   // ---- Edit-input-before-approve state (Claude CanUseTool UpdatedInput) ----
   //
@@ -105,6 +115,12 @@
       onError?.(`Failed to respond to approval: ${errString(err)}`);
     }
   }
+
+  onMount(() => {
+    if (composerTextareaHasFocus(composerRootFor(actionRow))) {
+      queueMicrotask(() => focusApprovalActionContainer(actionRow));
+    }
+  });
 </script>
 
 {#if !editing && preview}
@@ -142,7 +158,14 @@
   </div>
 {/if}
 
-<div class="flex flex-wrap gap-2 mt-2.5 justify-end">
+<div
+  bind:this={actionRow}
+  class="flex flex-wrap gap-2 mt-2.5 justify-end"
+  role="toolbar"
+  aria-label="Approval actions"
+  tabindex="0"
+  onkeydown={(event) => focusApprovalActionFromKey(event, actionRow)}
+>
   {#if editable && !editing}
     <Button variant="secondary" size="sm" onclick={openEdit} testId="approval-edit-toggle" disabled={responding}>
       {#snippet children()}Edit input…{/snippet}

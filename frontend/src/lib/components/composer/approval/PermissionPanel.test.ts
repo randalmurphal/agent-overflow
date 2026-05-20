@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import PermissionPanel from './PermissionPanel.svelte';
 import { ApprovalResponse } from '../../../stores/bindings';
 import type { ApprovalRequest } from '../../../types/events';
@@ -126,5 +126,61 @@ describe('<PermissionPanel>', () => {
     await Promise.resolve();
     expect(onError).toHaveBeenCalled();
     expect(onError.mock.calls[0][0]).toMatch(/Failed to grant permission/i);
+  });
+
+  it('moves focus across actions with j/k and arrow keys', async () => {
+    const { getByTestId } = render(PermissionPanel, {
+      props: {
+        approval: baseApproval(),
+        onResolve: makeResolver(),
+        onError: vi.fn(),
+      },
+    });
+    const cancel = getByTestId('permission-cancel') as HTMLButtonElement;
+    const deny = getByTestId('permission-deny') as HTMLButtonElement;
+    const session = getByTestId('permission-grant-session') as HTMLButtonElement;
+
+    cancel.focus();
+    await fireEvent.keyDown(cancel, { key: 'j' });
+    expect(document.activeElement).toBe(deny);
+    await fireEvent.keyDown(deny, { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(session);
+    await fireEvent.keyDown(session, { key: 'k' });
+    expect(document.activeElement).toBe(deny);
+  });
+
+  it('focuses the action row on mount without activating an approval action', async () => {
+    const root = document.createElement('div');
+    root.setAttribute('data-testid', 'composer-root');
+    const textarea = document.createElement('textarea');
+    textarea.setAttribute('aria-label', 'Message Input');
+    const target = document.createElement('div');
+    root.appendChild(textarea);
+    root.appendChild(target);
+    document.body.appendChild(root);
+    textarea.focus();
+
+    const onResolve = makeResolver();
+    const { getByRole, getByTestId, unmount } = render(PermissionPanel, {
+      target,
+      props: {
+        approval: baseApproval(),
+        onResolve,
+        onError: vi.fn(),
+      },
+    });
+
+    const toolbar = getByRole('toolbar', { name: 'Permission actions' });
+    await waitFor(() => expect(document.activeElement).toBe(toolbar));
+
+    await fireEvent.keyDown(toolbar, { key: 'Enter' });
+    await fireEvent.keyDown(toolbar, { key: ' ' });
+    expect(onResolve).not.toHaveBeenCalled();
+
+    await fireEvent.keyDown(toolbar, { key: 'j' });
+    expect(document.activeElement).toBe(getByTestId('permission-cancel'));
+
+    unmount();
+    root.remove();
   });
 });

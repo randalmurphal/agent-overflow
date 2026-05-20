@@ -64,6 +64,7 @@
   let { pane, draft, onImageExpand }: Props = $props();
 
   let textarea: HTMLTextAreaElement | undefined = $state(undefined);
+  let composerRoot: HTMLDivElement | undefined = $state(undefined);
   let expandedChips = new Set<string>();
   let expandedVersion = $state(0);
   let lastAutosizedTextarea: HTMLTextAreaElement | undefined;
@@ -491,6 +492,16 @@
   }
 
   async function handleKeydown(e: KeyboardEvent) {
+    if (hasUserInputPrompt && e.key === 'ArrowUp' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const optionButtons = composerRoot?.querySelectorAll<HTMLButtonElement>('[data-user-input-option]');
+      const lastOption = optionButtons?.[optionButtons.length - 1];
+      if (lastOption) {
+        e.preventDefault();
+        lastOption.focus();
+        return;
+      }
+    }
+
     // Shift+Tab is owned by the global keydown handler (`mode.cycle`).
     // Yield without preventDefault — the global handler bails on
     // `defaultPrevented`, so consuming the chord here would cancel
@@ -628,6 +639,7 @@
 
 <div class="relative px-6 pb-4 pt-1 pointer-events-none">
   <div
+    bind:this={composerRoot}
     class="pointer-events-auto mx-auto w-full max-w-[68rem] rounded-[var(--radius-composer)] border border-border-subtle bg-card shadow-sheet overflow-hidden
            focus-within:border-border focus-within:shadow-menu transition-[border-color,box-shadow] duration-200"
     role="region"
@@ -727,31 +739,30 @@
 
     </div>
 
-    {#if !hasInteractivePrompt}
-      {#if preparingWorktree}
-        <div
-          class="px-4 pb-1 text-[11px] text-text-secondary/70"
-          aria-live="polite"
-          data-testid="composer-worktree-preparing"
-        >
-          Preparing worktree...
-        </div>
-      {/if}
-      <ComposerToolbar
-        {pane}
-        {canSend}
-        {isTurnActive}
-        sendInFlight={isSendInFlight(pane.threadId, pane.sendInFlight)}
-        {sendAction}
-        {sendLabel}
-        hasCurrentPlan={Boolean(latestPlanItem)}
-        planCommentCount={hasDraftDiffReviewComments ? activeDiffReviewDraftComments.length : latestPlanDraftComments.length}
-        onSend={() => send()}
-        onSendWithoutPlanComments={(hasDraftPlanComments || hasDraftDiffReviewComments) && hasDraftContent ? () => send(false) : undefined}
-        onSendInNewThread={hasPlanImplementAction ? sendPlanToNewThread : undefined}
-        onInterrupt={interrupt}
-      />
+    {#if !hasInteractivePrompt && preparingWorktree}
+      <div
+        class="px-4 pb-1 text-[11px] text-text-secondary/70"
+        aria-live="polite"
+        data-testid="composer-worktree-preparing"
+      >
+        Preparing worktree...
+      </div>
     {/if}
+    <ComposerToolbar
+      {pane}
+      {canSend}
+      {isTurnActive}
+      sendInFlight={isSendInFlight(pane.threadId, pane.sendInFlight)}
+      {sendAction}
+      {sendLabel}
+      hasCurrentPlan={Boolean(latestPlanItem)}
+      planCommentCount={hasDraftDiffReviewComments ? activeDiffReviewDraftComments.length : latestPlanDraftComments.length}
+      hideSendButton={hasInteractivePrompt}
+      onSend={() => send()}
+      onSendWithoutPlanComments={(hasDraftPlanComments || hasDraftDiffReviewComments) && hasDraftContent ? () => send(false) : undefined}
+      onSendInNewThread={hasPlanImplementAction ? sendPlanToNewThread : undefined}
+      onInterrupt={interrupt}
+    />
     <ComposerWorkspaceStrip {pane} />
   </div>
 </div>

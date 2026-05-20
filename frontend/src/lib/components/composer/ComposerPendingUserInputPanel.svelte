@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount, untrack } from 'svelte';
+  import { onDestroy, onMount, tick, untrack } from 'svelte';
   import { scale } from 'svelte/transition';
   import type { UserInputQuestion, UserInputRequest } from '../../types/events';
   import { UserInputResponse } from '../../stores/bindings';
@@ -7,6 +7,11 @@
   import Button from '../primitives/Button.svelte';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import UserInputOptionButton from './UserInputOptionButton.svelte';
+  import {
+    composerRootFor,
+    composerTextareaHasFocus,
+    composerTextareaIn,
+  } from './composerFocus';
   import {
     createUserInputAnswers,
     firstUnansweredIndex,
@@ -45,6 +50,7 @@
 
   let index = $state(0);
   let focusedOptionIndex = $state(0);
+  let panelRoot: HTMLElement | undefined = $state(undefined);
   let answers: UserInputAnswers = $state(createUserInputAnswers());
   let customAnswers: Record<string, string> = $state(Object.create(null));
   let responding = $state(false);
@@ -55,6 +61,7 @@
   const progressLabel = $derived(`${Math.min(index + 1, request.questions.length)}/${request.questions.length}`);
   const complete = $derived(isRequestComplete(request, answers));
   const canGoPrevious = $derived(index > 0 && !responding);
+  const canShowNext = $derived(index < request.questions.length - 1 && !responding);
   const canGoNext = $derived(Boolean(question) && index < request.questions.length - 1 && hasAnswer(answers, question) && !responding);
   const canSubmit = $derived(complete && !responding);
 
@@ -105,6 +112,90 @@
     setCustomAnswerText(nextQuestion ? customAnswers[nextQuestion.id] ?? '' : '');
   }
 
+  function optionButtons(): HTMLButtonElement[] {
+    return Array.from(panelRoot?.querySelectorAll<HTMLButtonElement>('[data-user-input-option]') ?? []);
+  }
+
+  async function focusOption(optionIndex: number): Promise<void> {
+    await tick();
+    const buttons = optionButtons();
+    const button = buttons[Math.min(Math.max(optionIndex, 0), buttons.length - 1)];
+    button?.focus();
+  }
+
+  function focusComposerTextarea(): void {
+    composerTextareaIn(composerRootFor(panelRoot))?.focus();
+  }
+
+  function shouldHandlePlainNavigation(event: KeyboardEvent): boolean {
+    return !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
+  }
+
+  function isForwardOptionKey(event: KeyboardEvent): boolean {
+    return event.key === 'ArrowDown' || event.key === 'j';
+  }
+
+  function isBackwardOptionKey(event: KeyboardEvent): boolean {
+    return event.key === 'ArrowUp' || event.key === 'k';
+  }
+
+  function isForwardQuestionKey(event: KeyboardEvent): boolean {
+    return event.key === 'ArrowRight' || event.key === 'l';
+  }
+
+  function isBackwardQuestionKey(event: KeyboardEvent): boolean {
+    return event.key === 'ArrowLeft' || event.key === 'h';
+  }
+
+  function moveOptionFocus(delta: number): void {
+    const count = question?.options?.length ?? 0;
+    if (count === 0) return;
+    const next = focusedOptionIndex + delta;
+    if (next >= count) {
+      focusComposerTextarea();
+      return;
+    }
+    const clamped = Math.max(next, 0);
+    focusedOptionIndex = clamped;
+    void focusOption(clamped);
+  }
+
+  function handleOptionKeydown(event: KeyboardEvent, activeQuestion: UserInputQuestion, label: string): void {
+    if (!shouldHandlePlainNavigation(event) || responding) return;
+    if (isForwardOptionKey(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+      moveOptionFocus(1);
+      return;
+    }
+    if (isBackwardOptionKey(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+      moveOptionFocus(-1);
+      return;
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      event.stopPropagation();
+      selectOption(activeQuestion, label, 'keyboard');
+    }
+  }
+
+  function handleQuestionHeaderKeydown(event: KeyboardEvent): void {
+    if (!shouldHandlePlainNavigation(event) || responding) return;
+    if (isForwardQuestionKey(event) && canShowNext) {
+      event.preventDefault();
+      event.stopPropagation();
+      showQuestion(index + 1);
+      return;
+    }
+    if (isBackwardQuestionKey(event) && canGoPrevious) {
+      event.preventDefault();
+      event.stopPropagation();
+      showQuestion(index - 1);
+    }
+  }
+
   /**
    * Selects (or toggles) an option for the active question.
    *
@@ -141,6 +232,7 @@
     autoAdvanceTimer = setTimeout(() => {
       if (index < request.questions.length - 1) {
         showQuestion(index + 1);
+        void focusOption(0);
         return;
       }
       if (isRequestComplete(request, nextAnswers)) {
@@ -171,6 +263,7 @@
     if (!question || responding || !hasAnswer(answers, question)) return;
     if (index < request.questions.length - 1) {
       showQuestion(index + 1);
+      void focusOption(0);
       return;
     }
     await submit();
@@ -185,6 +278,9 @@
     // the focused-input bypass works in production without exploding in
     // happy-dom.
     const targetEl = event.target instanceof Element ? event.target : null;
+    const optionIndex = Number.parseInt(event.key, 10) - 1;
+    const isNumberShortcut = Number.isInteger(optionIndex) && optionIndex >= 0;
+    if (targetEl?.closest('[data-user-input-option], [data-testid="user-input-question-header"]') && !isNumberShortcut) return;
     if (targetEl?.matches('textarea, input, select, [contenteditable="true"]')) return;
     if (targetEl?.closest('[contenteditable]:not([contenteditable="false"])')) return;
 
@@ -195,16 +291,15 @@
     // wrap-around so the user gets a clear edge feel.
     if (event.key === 'ArrowDown' && optionCount > 0) {
       event.preventDefault();
-      focusedOptionIndex = Math.min(focusedOptionIndex + 1, optionCount - 1);
+      moveOptionFocus(1);
       return;
     }
     if (event.key === 'ArrowUp' && optionCount > 0) {
       event.preventDefault();
-      focusedOptionIndex = Math.max(focusedOptionIndex - 1, 0);
+      moveOptionFocus(-1);
       return;
     }
 
-    const optionIndex = Number.parseInt(event.key, 10) - 1;
     if (!Number.isInteger(optionIndex) || optionIndex < 0) return;
     const option = question.options?.[optionIndex];
     if (!option) return;
@@ -216,6 +311,9 @@
     const first = firstUnansweredIndex(request, answers);
     index = first;
     focusedOptionIndex = 0;
+    if (composerTextareaHasFocus(composerRootFor(panelRoot))) {
+      void focusOption(0);
+    }
     window.addEventListener('keydown', handleWindowKeydown);
   });
 
@@ -226,12 +324,15 @@
 </script>
 
 <section
+  bind:this={panelRoot}
   class="border-b-2 border-accent/60 px-4 py-4 shadow-[inset_0_2px_0_oklch(from_var(--accent)_l_c_h/0.18)]"
   data-testid="composer-pending-user-input"
   aria-live="assertive"
   in:scale={{ duration: 200, start: 0.96, opacity: 0 }}
 >
-  <div class="flex items-start justify-between gap-3">
+  <div
+    class="flex items-start justify-between gap-3"
+  >
     <div class="min-w-0">
       <div class="flex items-center gap-2">
         <p class="text-[11px] font-bold uppercase tracking-[0.08em] text-accent">
@@ -248,6 +349,23 @@
         <p class="mt-0.5 text-xs text-fg-muted">{question.question}</p>
       {/if}
     </div>
+    {#if request.questions.length > 1}
+      <div
+        class="flex shrink-0 flex-wrap justify-end gap-1.5"
+        role="toolbar"
+        aria-label="Question navigation"
+        tabindex="0"
+        onkeydown={handleQuestionHeaderKeydown}
+        data-testid="user-input-question-header"
+      >
+        <Button variant="secondary" size="sm" onclick={() => showQuestion(index - 1)} testId="user-input-header-previous" disabled={!canGoPrevious}>
+          {#snippet children()}Previous{/snippet}
+        </Button>
+        <Button variant="primary" size="sm" onclick={() => showQuestion(index + 1)} testId="user-input-header-next" disabled={!canShowNext}>
+          {#snippet children()}Next{/snippet}
+        </Button>
+      </div>
+    {/if}
   </div>
 
   {#if question?.options?.length}
@@ -270,8 +388,10 @@
               {selected}
               focused={focusedOptionIndex === optionIndex}
               disabled={responding}
+              tabIndex={focusedOptionIndex === optionIndex ? 0 : -1}
               onSelect={() => selectOption(question, option.label, 'mouse')}
               onFocus={() => (focusedOptionIndex = optionIndex)}
+              onKeydown={(event) => handleOptionKeydown(event, question, option.label)}
             />
           {/each}
         </div>
@@ -297,8 +417,10 @@
             {selected}
             focused={focusedOptionIndex === optionIndex}
             disabled={responding}
+            tabIndex={focusedOptionIndex === optionIndex ? 0 : -1}
             onSelect={() => selectOption(question, option.label, 'mouse')}
             onFocus={() => (focusedOptionIndex = optionIndex)}
+            onKeydown={(event) => handleOptionKeydown(event, question, option.label)}
           />
         {/each}
       </div>
