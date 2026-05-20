@@ -18,6 +18,10 @@ func (s *Session) dispatchNotification(method string, params json.RawMessage) {
 		s.dispatchMCPOAuthCompletion(params)
 		return
 	}
+	if method == "mcpServer/startupStatus/updated" {
+		s.dispatchMCPStartupUpdate(params)
+		return
+	}
 	params = s.observeRawResponseItem(method, params)
 	providerThreadID := providerThreadIDFromParams(params)
 	parentToolUseID := s.parentToolUseForProviderThread(providerThreadID)
@@ -136,6 +140,35 @@ func hasProviderEventKind(events []provider.ProviderEvent, kind provider.EventKi
 		}
 	}
 	return false
+}
+
+// dispatchMCPStartupUpdate decodes `mcpServer/startupStatus/updated`
+// and forwards to the registered handler. Per-thread-only emission;
+// AO routes these into the app-level mcpstatus cache so the popup
+// reflects the live provider state without a refetch. Missing
+// serverName is logged and dropped (defensive — Codex source
+// guarantees the field is set).
+func (s *Session) dispatchMCPStartupUpdate(params json.RawMessage) {
+	s.mu.Lock()
+	handler := s.mcpStartupUpdateHandler
+	s.mu.Unlock()
+	if handler == nil {
+		return
+	}
+	var parsed struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
+		Error  string `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(params, &parsed); err != nil {
+		log.Printf("codex: decode mcpServer/startupStatus/updated: %v", err)
+		return
+	}
+	if strings.TrimSpace(parsed.Name) == "" {
+		log.Printf("codex: mcpServer/startupStatus/updated: missing name")
+		return
+	}
+	handler(MCPStartupUpdate{Name: parsed.Name, State: parsed.Status, Error: parsed.Error})
 }
 
 func (s *Session) dispatchMCPOAuthCompletion(params json.RawMessage) {

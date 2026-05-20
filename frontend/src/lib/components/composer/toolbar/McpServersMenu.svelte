@@ -19,9 +19,9 @@
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import {
     mcpServersStore,
-    mcpCacheKey,
+    mcpStatusKey,
   } from '../../../stores/mcpServers.svelte';
-  import type { MCPServer, MCPProbeResult } from '../../../stores/bindings';
+  import type { MCPServer, MCPServerStatus } from '../../../stores/bindings';
   import { OpenExternalURL } from '../../../stores/bindings';
   import { OPEN_SETTINGS_EVENT } from '../../../stores/eventNames';
   import { addToast } from '../../../stores/toast.svelte';
@@ -36,48 +36,80 @@
 
   let { anchor, open, pane, onClose }: Props = $props();
 
+  // Derive the two fields the load effect actually depends on. The
+  // raw `pane.thread` reference is replaced on every usage event /
+  // item upsert / durable-status patch, so reading it inside the
+  // effect would re-trigger the loader on every Codex streaming
+  // token while the popup is mounted. Deriving provider/workspacePath
+  // narrows the dependency set to the values that actually matter.
+  let loadProvider = $derived(pane.thread?.provider ?? '');
+  let loadWorkspacePath = $derived(pane.thread?.workspacePath ?? '');
+
   $effect(() => {
-    if (open && pane.thread) {
-      void mcpServersStore.loadForThread(pane.thread.provider, pane.thread.workspacePath ?? '');
-      void mcpServersStore.refreshProbeSnapshot();
-    }
+    if (!(open && loadProvider)) return;
+    const provider = loadProvider;
+    const workspacePath = loadWorkspacePath;
+    void (async () => {
+      const [library] = await Promise.all([
+        mcpServersStore.loadForThread(provider, workspacePath),
+        mcpServersStore.loadStatuses(provider),
+      ]);
+      // Live sessions feed the cache continuously, so a thread that
+      // has been active in this app session already has every row
+      // populated. For inactive threads (or first open of the day)
+      // the snapshot is missing entries — trigger an ephemeral
+      // refresh so rows don't sit at "Not checked" until the user
+      // clicks Refresh manually. refreshStatuses single-flights, so
+      // concurrent opens collapse to one underlying CLI call.
+      const snapshot = mcpServersStore.statuses;
+      const missing = library.some(
+        (s) => s.provider === provider && !snapshot.has(mcpStatusKey(s.provider, s.name)),
+      );
+      if (missing) {
+        await mcpServersStore.refreshStatuses(provider).catch(() => undefined);
+      }
+    })();
   });
 
-  type StatusKey = 'ready' | 'needs-auth' | 'failed' | 'unknown' | 'probing';
+  type StatusKey = 'connected' | 'starting' | 'needs-auth' | 'failed' | 'unknown' | 'refreshing';
 
-  function statusKey(result: MCPProbeResult | undefined, probing: boolean): StatusKey {
-    if (probing) return 'probing';
-    if (!result) return 'unknown';
-    const status = result.status as string;
-    if (status === 'ready') return 'ready';
-    if (status === 'needs-auth') return 'needs-auth';
-    if (status === 'failed') return 'failed';
+  function statusKey(status: MCPServerStatus | undefined, refreshing: boolean): StatusKey {
+    if (refreshing && !status) return 'refreshing';
+    if (!status) return 'unknown';
+    const s = status.status as string;
+    if (s === 'connected') return 'connected';
+    if (s === 'starting') return 'starting';
+    if (s === 'needs-auth') return 'needs-auth';
+    if (s === 'failed') return 'failed';
     return 'unknown';
   }
 
   const STATUS_DOT: Record<StatusKey, string> = {
-    ready: 'bg-success',
+    connected: 'bg-success',
+    starting: 'bg-accent/60 animate-pulse',
     'needs-auth': 'bg-warning',
     failed: 'bg-error',
     unknown: 'bg-fg-subtle/40',
-    probing: 'bg-accent/60 animate-pulse',
+    refreshing: 'bg-accent/60 animate-pulse',
   };
 
   const STATUS_LABEL: Record<StatusKey, string> = {
-    ready: 'Ready',
+    connected: 'Connected',
+    starting: 'Starting…',
     'needs-auth': 'Needs sign-in',
     failed: 'Failed',
     unknown: 'Not checked',
-    probing: 'Checking…',
+    refreshing: 'Checking…',
   };
 
-  function describe(server: MCPServer, result: MCPProbeResult | undefined, key: StatusKey): string {
+  function describe(server: MCPServer, status: MCPServerStatus | undefined, key: StatusKey): string {
     const transport = server.transport ?? 'stdio';
     let detail = STATUS_LABEL[key];
-    if (key === 'ready' && result && result.toolCount > 0) {
-      detail = `Ready · ${result.toolCount} tool${result.toolCount === 1 ? '' : 's'}`;
-    } else if (key === 'failed' && result?.error) {
-      detail = `Failed · ${result.error.slice(0, 80)}`;
+    if (key === 'connected' && status && (status.toolCount ?? 0) > 0) {
+      const n = status.toolCount ?? 0;
+      detail = `Connected · ${n} tool${n === 1 ? '' : 's'}`;
+    } else if (key === 'failed' && status?.error) {
+      detail = `Failed · ${status.error.slice(0, 80)}`;
     }
     return `${transport} · ${detail}`;
   }
@@ -115,9 +147,9 @@
 
   async function refresh(server: MCPServer): Promise<void> {
     try {
-      await mcpServersStore.probeServer(server.provider, server.name, true);
+      await mcpServersStore.fetchStatus(server.provider, server.name, true);
     } catch (err) {
-      addToast('error', `Probe failed for ${server.name}: ${errString(err)}`);
+      addToast('error', `Status check failed for ${server.name}: ${errString(err)}`);
     }
   }
 
@@ -130,8 +162,9 @@
 
   let provider = $derived(pane.thread?.provider ?? '');
   let visible = $derived(provider ? mcpServersStore.serversForProvider(provider) : []);
-  let probes = $derived(mcpServersStore.probeResults);
-  let inFlight = $derived(mcpServersStore.probesInFlight);
+  let allStatuses = $derived(mcpServersStore.statuses);
+  let refreshingProviders = $derived(mcpServersStore.refreshingProvider);
+  let providerRefreshing = $derived(provider ? refreshingProviders.has(provider) : false);
 </script>
 
 <Popover
@@ -159,21 +192,20 @@
         {/snippet}
       </MenuItem>
     {:else}
-      {#each visible as server (mcpCacheKey(server.provider, server.name))}
-        {@const key0 = mcpCacheKey(server.provider, server.name)}
-        {@const probing = inFlight.has(key0)}
-        {@const result = probes.get(key0)}
-        {@const key = statusKey(result, probing)}
+      {#each visible as server (mcpStatusKey(server.provider, server.name))}
+        {@const key0 = mcpStatusKey(server.provider, server.name)}
+        {@const status = allStatuses.get(key0)}
+        {@const key = statusKey(status, providerRefreshing)}
         {@const inSet = !server.disabled}
         {@const needsAuth = key === 'needs-auth' && (server.transport === 'http' || server.transport === 'sse' || server.transport === 'streamable_http')}
         <MenuItem
           label={server.name}
-          description={describe(server, result, key)}
+          description={describe(server, status, key)}
           checked={inSet}
           onSelect={() => void toggleServer(server, !inSet)}
           actionLabel={needsAuth ? 'Sign in' : 'Refresh'}
           actionTitle={needsAuth ? `Sign in to ${server.name}` : `Re-check ${server.name}`}
-          actionDisabled={probing || (needsAuth && !inSet)}
+          actionDisabled={providerRefreshing || (needsAuth && !inSet)}
           onAction={() => {
             if (needsAuth) void signIn(server);
             else void refresh(server);
@@ -191,7 +223,7 @@
               icon={needsAuth ? LogIn : RefreshCw}
               size={12}
               strokeWidth={1.75}
-              class={probing ? 'animate-spin' : ''}
+              class={providerRefreshing ? 'animate-spin' : ''}
             />
           {/snippet}
         </MenuItem>

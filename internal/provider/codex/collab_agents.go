@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/ctxutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/stringsx"
 )
@@ -599,7 +600,7 @@ func (s *Session) readChildThreadMetadataWithRetry(ctx context.Context, provider
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		if attempt > 0 {
-			if !sleepWithContext(ctx, time.Duration(attempt)*100*time.Millisecond) {
+			if !ctxutil.Sleep(ctx, time.Duration(attempt)*100*time.Millisecond) {
 				return collabReceiverMeta{}, false, nil
 			}
 		}
@@ -644,20 +645,6 @@ func (s *Session) readChildThreadMetadataOnce(ctx context.Context, providerThrea
 		return meta, false, nil
 	}
 	return meta, true, nil
-}
-
-func sleepWithContext(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		return true
-	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return true
-	case <-ctx.Done():
-		return false
-	}
 }
 
 func (s *Session) rememberCollabReceiverMeta(meta collabReceiverMeta) {

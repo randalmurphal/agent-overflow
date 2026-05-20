@@ -113,6 +113,64 @@ func (s *Session) AuthenticateMCP(ctx context.Context, serverName string) (*MCPA
 	return out, nil
 }
 
+// MCPServerStatus is a slim projection of a single entry in the
+// `control_response.response.mcpServers[]` array Claude returns for
+// `control_request{subtype:"mcp_status"}`. We decode only the fields
+// AO needs (name + raw status + optional error). The CLI also returns
+// `serverInfo`, `config`, `tools[]` per entry — those are skipped on
+// purpose because we already have AO-side renderings of all three and
+// the popup consumes them through the `mcp:status` channel projection.
+//
+// Use [MCPStatusFromRaw] to project Status onto the unified
+// `mcpstatus.Status` enum.
+type MCPServerStatus struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+// QueryMCPStatus sends `control_request{subtype:"mcp_status"}` and
+// returns the current MCP server status as the CLI sees it. The
+// response is built from three in-memory client pools
+// (`currentMcpClients`, `sdkClients`, `dynamicMcpState.clients`);
+// servers that were configured but never attempted may be absent.
+// Callers that need to detect "still pending" should treat a missing
+// entry as a keep-retrying signal, not a terminal state.
+//
+// Used by the OAuth-completion poller in `app_mcp_bindings.go`: after
+// `AuthenticateMCP` returns the auth URL and the user finishes the
+// browser hop, AO polls this synchronously until the named server
+// flips out of `needs-auth`. The handler runs entirely against the
+// CLI's local state — no API call, no token cost.
+//
+// Wire shape verified against Claude CLI 2.1.139 (May 2026 spike);
+// see `docs/references/claude-wire.md#control_request` for the
+// canonical response example.
+func (s *Session) QueryMCPStatus(ctx context.Context) ([]MCPServerStatus, error) {
+	res, err := s.sendControlRequest(ctx, "mcp_status", map[string]any{
+		"subtype": "mcp_status",
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !res.ok {
+		if res.errMsg == "" {
+			return nil, fmt.Errorf("claude: mcp_status: provider returned unspecified error")
+		}
+		return nil, fmt.Errorf("claude: mcp_status: %s", res.errMsg)
+	}
+	if len(res.payload) == 0 {
+		return nil, nil
+	}
+	var decoded struct {
+		MCPServers []MCPServerStatus `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(res.payload, &decoded); err != nil {
+		return nil, fmt.Errorf("claude: mcp_status: decode response: %w", err)
+	}
+	return decoded.MCPServers, nil
+}
+
 // CompleteMCPOAuth posts the captured callback URL back to the CLI to
 // finish the OAuth handshake when the browser landed somewhere other
 // than the local loopback listener. The CLI parses `code` + `state`

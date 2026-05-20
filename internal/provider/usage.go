@@ -23,11 +23,22 @@ type UsageEvent struct {
 
 // SessionInfo contains metadata from the provider init/handshake.
 type SessionInfo struct {
-	SessionID string   `json:"sessionId"`
-	Model     string   `json:"model"`
-	CWD       string   `json:"cwd"`
-	Tools     []string `json:"tools,omitempty"`
-	Version   string   `json:"version,omitempty"`
+	SessionID  string      `json:"sessionId"`
+	Model      string      `json:"model"`
+	CWD        string      `json:"cwd"`
+	Tools      []string    `json:"tools,omitempty"`
+	Version    string      `json:"version,omitempty"`
+	MCPServers []MCPServer `json:"mcpServers,omitempty"`
+}
+
+// MCPServer reports an MCP server's name and provider-reported
+// connection state at session init time. Claude emits this via
+// `system/init.mcp_servers`; Codex equivalents land on a different
+// event (mcpServerStatus). Status is the raw provider string —
+// triage/app projects it onto the shared mcpstatus.Status enum.
+type MCPServer struct {
+	Name   string `json:"name"`
+	Status string `json:"status,omitempty"`
 }
 
 // AccountInfo describes the authenticated provider account surfaced

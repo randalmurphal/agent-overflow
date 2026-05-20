@@ -24,7 +24,7 @@ import (
 	"agent-overflow/internal/gitwatch"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/logging"
-	"agent-overflow/internal/mcpprobe"
+	"agent-overflow/internal/mcpstatus"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/provider"
@@ -173,15 +173,16 @@ type App struct {
 	// build an *App via &App{...} don't have to pre-wire it.
 	codexModelCatalogOnce sync.Once
 	codexModelCatalog     *codexmodels.Cache
-	// mcpProbeCache is the per-server pre-flight handshake cache backing
-	// the composer toolbar popup and the Settings test-connection button.
-	// Lazy-init through mcpProbe() so tests building a bare App{} don't
-	// have to wire it. TTLs default to mcpprobe.DefaultStdioTTL /
-	// DefaultHTTPTTL; explicit Invalidate happens on every CRUD edit and
-	// on OAuth completion so the popup never shows stale "ready" against
-	// a now-broken config.
-	mcpProbeCacheOnce sync.Once
-	mcpProbeCache     *mcpprobe.Cache
+	// mcpStatusCache is the provider-derived MCP status cache. Live
+	// thread sessions push into it from their init/notification
+	// events; the popup/settings pull from it and refresh via the
+	// ephemeral fetchers (`claude mcp list` / Codex
+	// `mcpServerStatus/list`) when no live session can feed it.
+	// Lazy-init through mcpStatus() so tests building a bare App{}
+	// don't have to wire it; explicit Invalidate happens on CRUD
+	// edits and on OAuth completion.
+	mcpStatusCacheOnce sync.Once
+	mcpStatusCache     *mcpstatus.Cache
 	// claudeConfigStore / codexConfigStore are the file-backed MCP
 	// library adapters. AO is a 1:1 sync UI over Claude's
 	// ~/.claude.json `mcpServers` and Codex's ~/.codex/config.toml
@@ -195,6 +196,17 @@ type App struct {
 	codexConfigOnce   sync.Once
 	codexConfigStore  *codexconfig.Store
 	codexConfigErr    error
+	// claudeMCPOAuthPolls dedups in-flight OAuth-completion pollers
+	// per server name. Re-triggering OAuth for the same server
+	// cancels the prior poll so only the most recent click drives
+	// status updates and emits a single mcp:oauth-completed event.
+	// Claude-only because Codex receives a native
+	// `mcpServer/oauthLogin/completed` notification and doesn't
+	// poll. Tracks the poll's identity (not the cancel func directly)
+	// so a stale defer can compare pointers and avoid wiping a newer
+	// poller's entry on its way out.
+	claudeMCPOAuthPollsMu sync.Mutex
+	claudeMCPOAuthPolls   map[string]*claudeMCPOAuthPoll
 	// idleReaperStop signals the idle-session reaper goroutine to exit.
 	// Set by startIdleSessionReaper during ServiceStartup; closed exactly
 	// once by Shutdown before the parallel session close so the reaper

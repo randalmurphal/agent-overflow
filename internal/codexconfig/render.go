@@ -2,8 +2,6 @@ package codexconfig
 
 import (
 	"fmt"
-
-	"agent-overflow/internal/mcp"
 )
 
 // RenderForOverlay projects a Server into the JSON shape Codex's
@@ -45,28 +43,6 @@ func (s Server) RenderForOverlay() (map[string]any, error) {
 		out["enabled"] = false
 	}
 	return out, nil
-}
-
-// ToSpec returns the mcp.Spec the probe layer consumes. Codex's
-// "streamable_http" maps to the probe's TransportHTTP since the
-// handshake is identical (POST initialize, parse 2xx/401).
-func (s Server) ToSpec() mcp.Spec {
-	probeTransport := mcp.TransportStdio
-	if s.Transport == TransportStreamable {
-		probeTransport = mcp.TransportHTTP
-	}
-	return mcp.Spec{
-		Provider:  "codex",
-		Name:      s.Name,
-		Transport: probeTransport,
-		Enabled:   s.Enabled,
-		Command:   s.Command,
-		Args:      append([]string{}, s.Args...),
-		Env:       copyStringMap(s.Env),
-		URL:       s.URL,
-		Headers:   copyStringMap(s.HTTPHeaders),
-		BearerEnv: s.BearerTokenEnv,
-	}
 }
 
 func copyStringMap(in map[string]string) map[string]string {

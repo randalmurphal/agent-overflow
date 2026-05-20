@@ -1,17 +1,20 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/codexconfig"
-	"agent-overflow/internal/mcp"
-	"agent-overflow/internal/mcpprobe"
+	"agent-overflow/internal/mcpstatus"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 )
 
 // newMCPTestApp returns an App wired to temp Claude/Codex config
@@ -225,26 +228,24 @@ func TestCreateMcpServer_UnsupportedProvider(t *testing.T) {
 	}
 }
 
-// TestUpdateMcpServer_InvalidatesProbeCache pins the contract: after
-// editing an entry, the matching probe-cache slot is dropped so the
-// UI doesn't show stale "ready" against a now-broken config. Uses the
-// mcpprobe SeedForTest seam to pre-populate the cache without
-// running a real probe.
-func TestUpdateMcpServer_InvalidatesProbeCache(t *testing.T) {
+// TestUpdateMcpServer_InvalidatesStatusCache pins the contract: after
+// editing an entry, the matching status-cache slot is dropped so the
+// UI doesn't show a stale "connected" against a now-broken config.
+// Seeds the cache via Put then asserts the update path Invalidates.
+func TestUpdateMcpServer_InvalidatesStatusCache(t *testing.T) {
 	app, claudePath, _ := newMCPTestApp(t)
 	writeClaudeConfig(t, claudePath, `{
   "mcpServers": {
     "fs": {"type": "stdio", "command": "fs-bin"}
   }
 }`)
-	spec := mcp.Spec{Provider: "claude", Name: "fs", Transport: mcp.TransportStdio}
-	app.mcpProbe().SeedForTest(spec, mcpprobe.Result{
-		CacheKey:   spec.CacheKey(),
-		Provider:   spec.Provider,
-		ServerName: spec.Name,
-		Status:     mcp.StatusReady,
+	key := mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "fs"}
+	app.mcpStatus().Put(mcpstatus.ServerStatus{
+		Key:    key,
+		Status: mcpstatus.StatusConnected,
+		Source: mcpstatus.SourceLiveSession,
 	})
-	if _, ok := app.mcpProbe().Snapshot()[spec.CacheKey()]; !ok {
+	if _, ok := app.mcpStatus().Get(key); !ok {
 		t.Fatalf("preflight: cache should contain seed")
 	}
 	if _, err := app.UpdateMcpServer(MCPServer{
@@ -255,8 +256,8 @@ func TestUpdateMcpServer_InvalidatesProbeCache(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpdateMcpServer: %v", err)
 	}
-	if _, ok := app.mcpProbe().Snapshot()[spec.CacheKey()]; ok {
-		t.Errorf("cache should be invalidated for %s after update", spec.CacheKey())
+	if _, ok := app.mcpStatus().Get(key); ok {
+		t.Errorf("cache should be invalidated for %+v after update", key)
 	}
 }
 
@@ -359,27 +360,26 @@ command = "gh-mcp"
 	}
 }
 
-// TestProbeCache_CrossProviderNamesDoNotCollide pins the cache-key
-// scheme (`provider:name`). Same-name servers across providers must
-// not share a cache slot — otherwise a Claude probe failure would
-// shadow a Codex success and vice versa.
-func TestProbeCache_CrossProviderNamesDoNotCollide(t *testing.T) {
+// TestStatusCache_CrossProviderNamesDoNotCollide pins the cache-key
+// scheme. Same-name servers across providers must not share a cache
+// slot — otherwise a Claude failure would shadow a Codex connected
+// status and vice versa.
+func TestStatusCache_CrossProviderNamesDoNotCollide(t *testing.T) {
 	app, _, _ := newMCPTestApp(t)
-	cache := app.mcpProbe()
-	claudeSpec := mcp.Spec{Provider: "claude", Name: "common", Transport: mcp.TransportStdio}
-	codexSpec := mcp.Spec{Provider: "codex", Name: "common", Transport: mcp.TransportStdio}
-	if claudeSpec.CacheKey() == codexSpec.CacheKey() {
+	cache := app.mcpStatus()
+	claudeKey := mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "common"}
+	codexKey := mcpstatus.Key{Provider: mcpstatus.ProviderCodex, Name: "common"}
+	if claudeKey == codexKey {
 		t.Fatalf("expected distinct cache keys")
 	}
-	cache.SeedForTest(claudeSpec, mcpprobe.Result{CacheKey: claudeSpec.CacheKey(), Status: mcp.StatusReady})
-	cache.SeedForTest(codexSpec, mcpprobe.Result{CacheKey: codexSpec.CacheKey(), Status: mcp.StatusFailed})
+	cache.Put(mcpstatus.ServerStatus{Key: claudeKey, Status: mcpstatus.StatusConnected, Source: mcpstatus.SourceLiveSession})
+	cache.Put(mcpstatus.ServerStatus{Key: codexKey, Status: mcpstatus.StatusFailed, Source: mcpstatus.SourceLiveSession})
 
-	cache.Invalidate(claudeSpec.CacheKey())
-	snap := cache.Snapshot()
-	if _, ok := snap[claudeSpec.CacheKey()]; ok {
+	cache.Invalidate(claudeKey)
+	if _, ok := cache.Get(claudeKey); ok {
 		t.Errorf("claude key should be invalidated")
 	}
-	if _, ok := snap[codexSpec.CacheKey()]; !ok {
+	if _, ok := cache.Get(codexKey); !ok {
 		t.Errorf("codex key should survive a claude-scoped Invalidate")
 	}
 }
@@ -403,6 +403,133 @@ func TestSetMcpServerEnabled_NoSession_Succeeds(t *testing.T) {
 	}
 }
 
+// TestHandleCodexMCPOAuthCompleted_SuccessInvalidatesAndEmits pins the
+// happy-path contract: a successful OAuth completion drops the cached
+// entry for that key (so the popup shows "Not checked" until the
+// frontend's mcp:oauth-completed listener kicks off a refresh), emits
+// exactly one mcp:status (the Invalidate sentinel) and one
+// mcp:oauth-completed wire payload, and does NOT surface an
+// error-toast event. The failure-path test below pins the opposite
+// behavior for errMsg != "".
+func TestHandleCodexMCPOAuthCompleted_SuccessInvalidatesAndEmits(t *testing.T) {
+	app, _, _ := newMCPTestApp(t)
+	thread, err := createTestThread(t, app, string(provider.Codex), "/workspace/a", "gpt-5.2", "chat")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+
+	key := mcpstatus.Key{Provider: mcpstatus.ProviderCodex, Name: "linear"}
+	app.mcpStatus().Put(mcpstatus.ServerStatus{
+		Key:    key,
+		Status: mcpstatus.StatusNeedsAuth,
+		Source: mcpstatus.SourceLiveSession,
+	})
+
+	type captured struct {
+		name string
+		data any
+	}
+	var (
+		mu     sync.Mutex
+		events []captured
+	)
+	app.testEmitHook = func(name string, data any) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, captured{name: name, data: data})
+	}
+
+	app.handleCodexMCPOAuthCompleted(thread.ID, "linear", true, "")
+
+	if _, ok := app.mcpStatus().Get(key); ok {
+		t.Errorf("cache should be invalidated after OAuth completion")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var oauthCount, statusCount, errorCount int
+	for _, e := range events {
+		switch e.name {
+		case "mcp:oauth-completed":
+			oauthCount++
+			payload, ok := e.data.(map[string]any)
+			if !ok {
+				t.Fatalf("oauth-completed payload type %T", e.data)
+			}
+			if payload["serverName"] != "linear" || payload["success"] != true {
+				t.Errorf("unexpected payload: %+v", payload)
+			}
+		case "mcp:status":
+			statusCount++
+		case "error":
+			errorCount++
+		}
+	}
+	if oauthCount != 1 {
+		t.Errorf("expected 1 mcp:oauth-completed emission, got %d", oauthCount)
+	}
+	if statusCount != 1 {
+		t.Errorf("expected 1 mcp:status emission (the invalidate sentinel), got %d", statusCount)
+	}
+	if errorCount != 0 {
+		t.Errorf("expected no error emissions on success path, got %d", errorCount)
+	}
+}
+
+// TestHandleCodexMCPOAuthCompleted_FailurePayloadCarriesError pins
+// the failure path: cache is still invalidated (the stale needs-auth
+// entry no longer reflects truth), and the mcp:oauth-completed wire
+// payload carries success=false plus the verbatim error string the
+// frontend renders. The per-thread error toast emitted via
+// emitErrorToThread routes through triage; in tests triage is nil so
+// that branch logs instead of emitting, which is verified by
+// triage-wired integration coverage elsewhere.
+func TestHandleCodexMCPOAuthCompleted_FailurePayloadCarriesError(t *testing.T) {
+	app, _, _ := newMCPTestApp(t)
+	thread, err := createTestThread(t, app, string(provider.Codex), "/workspace/a", "gpt-5.2", "chat")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	key := mcpstatus.Key{Provider: mcpstatus.ProviderCodex, Name: "linear"}
+	app.mcpStatus().Put(mcpstatus.ServerStatus{Key: key, Status: mcpstatus.StatusNeedsAuth, Source: mcpstatus.SourceLiveSession})
+
+	var (
+		mu       sync.Mutex
+		captured map[string]any
+	)
+	app.testEmitHook = func(name string, data any) {
+		if name != "mcp:oauth-completed" {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if payload, ok := data.(map[string]any); ok {
+			captured = payload
+		}
+	}
+
+	app.handleCodexMCPOAuthCompleted(thread.ID, "linear", false, "browser closed before redirect")
+
+	if _, ok := app.mcpStatus().Get(key); ok {
+		t.Errorf("cache should be invalidated even on OAuth failure")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if captured == nil {
+		t.Fatal("expected an mcp:oauth-completed emission")
+	}
+	if captured["success"] != false {
+		t.Errorf("expected success=false in payload, got %v", captured["success"])
+	}
+	if captured["error"] != "browser closed before redirect" {
+		t.Errorf("expected verbatim error message, got %q", captured["error"])
+	}
+	if captured["serverName"] != "linear" {
+		t.Errorf("expected serverName=linear, got %v", captured["serverName"])
+	}
+}
+
 // findServer is a tiny test helper that scans for an MCPServer by
 // name. Returns the zero value if missing.
 func findServer(in []MCPServer, name string) MCPServer {
@@ -412,4 +539,605 @@ func findServer(in []MCPServer, name string) MCPServer {
 		}
 	}
 	return MCPServer{}
+}
+
+// scriptedQuerier returns a claudeMCPStatusQuerier whose i-th call
+// returns the i-th element of `responses`. Callers exceeding the
+// length get the last element repeated (so a steady-state response
+// can be expressed as `[1]response`).
+func scriptedQuerier(responses [][]claude.MCPServerStatus, errs []error) func() claudeMCPStatusQuerier {
+	var calls int
+	return func() claudeMCPStatusQuerier {
+		return func(ctx context.Context) ([]claude.MCPServerStatus, error) {
+			i := calls
+			if i >= len(responses) {
+				i = len(responses) - 1
+			}
+			calls++
+			var err error
+			if i < len(errs) {
+				err = errs[i]
+			}
+			return responses[i], err
+		}
+	}
+}
+
+// zeroIntervals returns n zero-duration sleeps so the poll loop runs
+// instantly without changing its tick count.
+func zeroIntervals(n int) []time.Duration {
+	out := make([]time.Duration, n)
+	return out
+}
+
+// captureOrderedEmissions installs a testEmitHook that filters for the given
+// event names and returns a snapshot fn for the test to read.
+func captureOrderedEmissions(a *App, names ...string) func() []capturedEmission {
+	wanted := map[string]struct{}{}
+	for _, n := range names {
+		wanted[n] = struct{}{}
+	}
+	var (
+		mu       sync.Mutex
+		captured []capturedEmission
+	)
+	a.testEmitHook = func(name string, data any) {
+		if _, ok := wanted[name]; !ok {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		captured = append(captured, capturedEmission{name: name, data: data})
+	}
+	return func() []capturedEmission {
+		mu.Lock()
+		defer mu.Unlock()
+		out := make([]capturedEmission, len(captured))
+		copy(out, captured)
+		return out
+	}
+}
+
+type capturedEmission struct {
+	name string
+	data any
+}
+
+// TestPollClaudeMCPAfterOAuth_ConnectedFlipPutsCacheAndEmits asserts
+// the happy path: the poller sees needs-auth on tick 1 and connected
+// on tick 2, then Puts an authoritative live-session entry, emits
+// mcp:oauth-completed{success:true}, and exits before the remaining
+// intervals fire.
+func TestPollClaudeMCPAfterOAuth_ConnectedFlipPutsCacheAndEmits(t *testing.T) {
+	app := newTestAppWithStore(t)
+	snapshot := captureOrderedEmissions(app, "mcp:status", "mcp:oauth-completed")
+
+	getQuerier := scriptedQuerier(
+		[][]claude.MCPServerStatus{
+			{{Name: "sentry", Status: "needs-auth"}},
+			{{Name: "sentry", Status: "connected"}},
+		},
+		nil,
+	)
+
+	app.pollClaudeMCPAfterOAuth(
+		context.Background(),
+		"thread-1",
+		"sentry",
+		zeroIntervals(6),
+		getQuerier,
+	)
+
+	cached, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "sentry"})
+	if !ok {
+		t.Fatal("expected sentry entry in cache after connected flip")
+	}
+	if cached.Status != mcpstatus.StatusConnected {
+		t.Errorf("status = %q, want %q", cached.Status, mcpstatus.StatusConnected)
+	}
+	if cached.Source != mcpstatus.SourceLiveSession {
+		t.Errorf("source = %q, want %q", cached.Source, mcpstatus.SourceLiveSession)
+	}
+
+	emissions := snapshot()
+	var oauthEvent map[string]any
+	for _, e := range emissions {
+		if e.name == "mcp:oauth-completed" {
+			oauthEvent, _ = e.data.(map[string]any)
+		}
+	}
+	if oauthEvent == nil {
+		t.Fatal("expected mcp:oauth-completed emission")
+	}
+	if oauthEvent["success"] != true {
+		t.Errorf("success = %v, want true", oauthEvent["success"])
+	}
+	if oauthEvent["provider"] != "claude" {
+		t.Errorf("provider = %v, want claude", oauthEvent["provider"])
+	}
+	if oauthEvent["serverName"] != "sentry" {
+		t.Errorf("serverName = %v, want sentry", oauthEvent["serverName"])
+	}
+	if oauthEvent["threadId"] != "thread-1" {
+		t.Errorf("threadId = %v, want thread-1", oauthEvent["threadId"])
+	}
+}
+
+// TestPollClaudeMCPAfterOAuth_FailedFlipEmitsFailure asserts the
+// failure path: the poller sees failed on the first tick, Puts the
+// failure into the cache, and emits mcp:oauth-completed{success:false}
+// carrying the verbatim error string from the provider.
+// emitErrorToThread routes through triage (nil in this test) and is
+// asserted separately by triage-wired coverage; here we pin the wire
+// payload only.
+func TestPollClaudeMCPAfterOAuth_FailedFlipEmitsFailure(t *testing.T) {
+	app := newTestAppWithStore(t)
+	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
+
+	getQuerier := scriptedQuerier(
+		[][]claude.MCPServerStatus{
+			{{Name: "broken", Status: "failed", Error: "connection refused"}},
+		},
+		nil,
+	)
+
+	app.pollClaudeMCPAfterOAuth(
+		context.Background(),
+		"thread-1",
+		"broken",
+		zeroIntervals(6),
+		getQuerier,
+	)
+
+	cached, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "broken"})
+	if !ok {
+		t.Fatal("expected broken entry in cache after failed flip")
+	}
+	if cached.Status != mcpstatus.StatusFailed {
+		t.Errorf("status = %q, want %q", cached.Status, mcpstatus.StatusFailed)
+	}
+	if cached.Error != "connection refused" {
+		t.Errorf("error = %q, want %q", cached.Error, "connection refused")
+	}
+
+	emissions := snapshot()
+	if len(emissions) != 1 {
+		t.Fatalf("expected 1 mcp:oauth-completed, got %d: %+v", len(emissions), emissions)
+	}
+	payload, _ := emissions[0].data.(map[string]any)
+	if payload["success"] != false {
+		t.Errorf("success = %v, want false", payload["success"])
+	}
+	if payload["error"] != "connection refused" {
+		t.Errorf("error = %v, want connection refused", payload["error"])
+	}
+}
+
+// TestPollClaudeMCPAfterOAuth_PendingThenConnected confirms that
+// pending/starting states are intermediate (keep polling) — not
+// terminal. The CLI may briefly emit "pending" after OAuth completes
+// while the now-credentialed client warms up; an over-eager exit
+// condition (anything except needs-auth) would miss the actual
+// connected flip.
+func TestPollClaudeMCPAfterOAuth_PendingThenConnected(t *testing.T) {
+	app := newTestAppWithStore(t)
+	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
+
+	getQuerier := scriptedQuerier(
+		[][]claude.MCPServerStatus{
+			{{Name: "github", Status: "pending"}},
+			{{Name: "github", Status: "starting"}},
+			{{Name: "github", Status: "connected"}},
+		},
+		nil,
+	)
+
+	app.pollClaudeMCPAfterOAuth(
+		context.Background(),
+		"thread-1",
+		"github",
+		zeroIntervals(6),
+		getQuerier,
+	)
+
+	cached, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "github"})
+	if !ok || cached.Status != mcpstatus.StatusConnected {
+		t.Fatalf("expected connected, got cached=%+v ok=%v", cached, ok)
+	}
+	if len(snapshot()) != 1 {
+		t.Errorf("expected one mcp:oauth-completed emission, got %d", len(snapshot()))
+	}
+}
+
+// TestPollClaudeMCPAfterOAuth_MissingEntryKeepsPolling asserts that a
+// server absent from the response is treated as "wait and retry," not
+// a terminal state. The Claude CLI builds mcp_status from three
+// in-memory client pools; a server configured but not yet attempted
+// can be missing.
+func TestPollClaudeMCPAfterOAuth_MissingEntryKeepsPolling(t *testing.T) {
+	app := newTestAppWithStore(t)
+	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
+
+	getQuerier := scriptedQuerier(
+		[][]claude.MCPServerStatus{
+			{}, // empty
+			{{Name: "other", Status: "connected"}}, // ours still absent
+			{{Name: "linear", Status: "connected"}},
+		},
+		nil,
+	)
+
+	app.pollClaudeMCPAfterOAuth(
+		context.Background(),
+		"thread-1",
+		"linear",
+		zeroIntervals(6),
+		getQuerier,
+	)
+
+	cached, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "linear"})
+	if !ok || cached.Status != mcpstatus.StatusConnected {
+		t.Fatalf("expected connected on third tick, got cached=%+v ok=%v", cached, ok)
+	}
+	if len(snapshot()) != 1 {
+		t.Errorf("expected one mcp:oauth-completed emission, got %d", len(snapshot()))
+	}
+}
+
+// TestPollClaudeMCPAfterOAuth_TimeoutNoEmission asserts the budget-
+// exhausted path: every tick returns needs-auth, the loop walks the
+// full interval list, no mcp:oauth-completed fires, no cache write.
+// The prior cache entry (whatever it was) stays intact — the user can
+// hit Refresh manually.
+func TestPollClaudeMCPAfterOAuth_TimeoutNoEmission(t *testing.T) {
+	app := newTestAppWithStore(t)
+	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed", "mcp:status")
+
+	getQuerier := scriptedQuerier(
+		[][]claude.MCPServerStatus{
+			{{Name: "stuck", Status: "needs-auth"}},
+		},
+		nil,
+	)
+
+	app.pollClaudeMCPAfterOAuth(
+		context.Background(),
+		"thread-1",
+		"stuck",
+		zeroIntervals(6),
+		getQuerier,
+	)
+
+	if _, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "stuck"}); ok {
+		t.Error("cache should not be populated when poll budget exhausts on needs-auth")
+	}
+	var oauthEvents int
+	for _, e := range snapshot() {
+		if e.name == "mcp:oauth-completed" {
+			oauthEvents++
+		}
+	}
+	if oauthEvents != 0 {
+		t.Errorf("expected no mcp:oauth-completed on timeout, got %d", oauthEvents)
+	}
+}
+
+// TestPollClaudeMCPAfterOAuth_QueryErrorKeepsPolling asserts that a
+// transient query error (CLI unreachable, decode failure, timeout
+// mid-poll) is non-fatal: the loop continues to the next tick and
+// can still observe the flip if it succeeds.
+func TestPollClaudeMCPAfterOAuth_QueryErrorKeepsPolling(t *testing.T) {
+	app := newTestAppWithStore(t)
+	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
+
+	getQuerier := scriptedQuerier(
+		[][]claude.MCPServerStatus{
+			nil,
+			{{Name: "github", Status: "connected"}},
+		},
+		[]error{errors.New("transient: control_request timeout"), nil},
+	)
+
+	app.pollClaudeMCPAfterOAuth(
+		context.Background(),
+		"thread-1",
+		"github",
+		zeroIntervals(6),
+		getQuerier,
+	)
+
+	cached, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "github"})
+	if !ok || cached.Status != mcpstatus.StatusConnected {
+		t.Fatalf("expected connected after recovering from transient error, got cached=%+v ok=%v", cached, ok)
+	}
+	if len(snapshot()) != 1 {
+		t.Errorf("expected one mcp:oauth-completed, got %d", len(snapshot()))
+	}
+}
+
+// TestPollClaudeMCPAfterOAuth_SessionGoneExitsCleanly asserts that the
+// getQuerier closure returning nil (live session torn down between
+// TriggerMcpAuth and the first poll tick) terminates the loop without
+// emissions or cache writes.
+func TestPollClaudeMCPAfterOAuth_SessionGoneExitsCleanly(t *testing.T) {
+	app := newTestAppWithStore(t)
+	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed", "mcp:status")
+
+	app.pollClaudeMCPAfterOAuth(
+		context.Background(),
+		"thread-1",
+		"sentry",
+		zeroIntervals(6),
+		func() claudeMCPStatusQuerier { return nil },
+	)
+
+	if _, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "sentry"}); ok {
+		t.Error("cache should not be touched when session is gone")
+	}
+	if got := len(snapshot()); got != 0 {
+		t.Errorf("expected no emissions, got %d", got)
+	}
+}
+
+// TestPollClaudeMCPAfterOAuth_UnknownRawStatusKeepsPolling pins
+// future-CLI-status-string drift behavior: if the projector returns
+// StatusUnknown (a raw status the projector doesn't recognise),
+// the loop must NOT treat that as terminal — keep polling. A
+// regression that added StatusUnknown to the terminal switch would
+// silently break OAuth detection any time the CLI added a new
+// raw status value.
+func TestPollClaudeMCPAfterOAuth_UnknownRawStatusKeepsPolling(t *testing.T) {
+	app := newTestAppWithStore(t)
+	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
+
+	getQuerier := scriptedQuerier(
+		[][]claude.MCPServerStatus{
+			{{Name: "future", Status: "weird-future-state"}},
+			{{Name: "future", Status: "connected"}},
+		},
+		nil,
+	)
+
+	app.pollClaudeMCPAfterOAuth(
+		context.Background(),
+		"thread-1",
+		"future",
+		zeroIntervals(6),
+		getQuerier,
+	)
+
+	cached, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "future"})
+	if !ok || cached.Status != mcpstatus.StatusConnected {
+		t.Fatalf("expected connected on tick 2, got cached=%+v ok=%v", cached, ok)
+	}
+	if len(snapshot()) != 1 {
+		t.Errorf("expected one mcp:oauth-completed (only on connected tick), got %d", len(snapshot()))
+	}
+}
+
+// TestPollClaudeMCPAfterOAuth_QuerierRebindsBetweenTicks pins the
+// closure contract: getQuerier is re-invoked every tick so a
+// session that dies AND a new session that takes its place between
+// ticks can each be observed. A regression that captured the
+// querier once at entry would not survive a mid-poll session swap.
+func TestPollClaudeMCPAfterOAuth_QuerierRebindsBetweenTicks(t *testing.T) {
+	app := newTestAppWithStore(t)
+	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
+
+	// First call returns an "old session that errored." Second call
+	// (after the rebind) returns a "fresh session that sees
+	// connected." If the closure captured only the first querier,
+	// the second tick would still error and the poll would never
+	// detect the flip.
+	var calls int
+	getQuerier := func() claudeMCPStatusQuerier {
+		calls++
+		switch calls {
+		case 1:
+			return func(ctx context.Context) ([]claude.MCPServerStatus, error) {
+				return nil, errors.New("old session reset by peer")
+			}
+		default:
+			return func(ctx context.Context) ([]claude.MCPServerStatus, error) {
+				return []claude.MCPServerStatus{{Name: "rebound", Status: "connected"}}, nil
+			}
+		}
+	}
+
+	app.pollClaudeMCPAfterOAuth(
+		context.Background(),
+		"thread-1",
+		"rebound",
+		zeroIntervals(6),
+		getQuerier,
+	)
+
+	cached, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "rebound"})
+	if !ok || cached.Status != mcpstatus.StatusConnected {
+		t.Fatalf("expected connected after session rebind, got cached=%+v ok=%v", cached, ok)
+	}
+	if len(snapshot()) != 1 {
+		t.Errorf("expected one mcp:oauth-completed, got %d", len(snapshot()))
+	}
+	if calls < 2 {
+		t.Errorf("expected getQuerier called at least twice, got %d", calls)
+	}
+}
+
+// TestPollClaudeMCPAfterOAuth_ShutdownGuardSuppressesTerminal pins
+// the drainTriage race fix: when shuttingDown flips true mid-poll,
+// the terminal-state branch must NOT Put into the cache, emit
+// mcp:oauth-completed, or call emitErrorToThread — those routes
+// touch a SQLite store that's about to close. The poll exits
+// cleanly without side effects.
+func TestPollClaudeMCPAfterOAuth_ShutdownGuardSuppressesTerminal(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.shuttingDown.Store(true)
+	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed", "mcp:status")
+
+	getQuerier := scriptedQuerier(
+		[][]claude.MCPServerStatus{
+			{{Name: "late", Status: "connected"}},
+		},
+		nil,
+	)
+
+	app.pollClaudeMCPAfterOAuth(
+		context.Background(),
+		"thread-1",
+		"late",
+		zeroIntervals(6),
+		getQuerier,
+	)
+
+	if _, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "late"}); ok {
+		t.Error("cache must not be populated after shutdown has flipped")
+	}
+	if got := len(snapshot()); got != 0 {
+		t.Errorf("expected zero emissions during shutdown, got %d", got)
+	}
+}
+
+// TestPollClaudeMCPAfterOAuth_ErrorIsSanitized pins the security
+// fix: a CLI error string longer than the 256B limit, or one
+// carrying embedded newlines, is bounded + flattened before it
+// reaches the wire payload. A regression that removed
+// sanitizeMCPError would expose unfiltered child-process output
+// (potentially leaking env / credentials in a CLI panic) to
+// LAN-attached subscribers since mcp:oauth-completed is not in the
+// loopback-only channel list.
+func TestPollClaudeMCPAfterOAuth_ErrorIsSanitized(t *testing.T) {
+	app := newTestAppWithStore(t)
+	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
+
+	longErr := "boom\nline2\rline3 " + strings.Repeat("x", 300)
+	getQuerier := scriptedQuerier(
+		[][]claude.MCPServerStatus{
+			{{Name: "noisy", Status: "failed", Error: longErr}},
+		},
+		nil,
+	)
+
+	app.pollClaudeMCPAfterOAuth(
+		context.Background(),
+		"thread-1",
+		"noisy",
+		zeroIntervals(6),
+		getQuerier,
+	)
+
+	events := snapshot()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 mcp:oauth-completed, got %d", len(events))
+	}
+	payload, _ := events[0].data.(map[string]any)
+	gotErr, _ := payload["error"].(string)
+	if strings.ContainsAny(gotErr, "\n\r") {
+		t.Errorf("sanitized error must not contain newlines, got %q", gotErr)
+	}
+	if len(gotErr) > 300 {
+		t.Errorf("sanitized error must be bounded (~256 + ellipsis), got %d bytes", len(gotErr))
+	}
+	if !strings.HasSuffix(gotErr, "…(truncated)") {
+		t.Errorf("sanitized long error must end with truncation marker, got %q", gotErr)
+	}
+
+	cached, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "noisy"})
+	if !ok {
+		t.Fatal("expected cache entry after failed terminal")
+	}
+	if cached.Error != gotErr {
+		t.Errorf("cache Error must match wire payload: cache=%q wire=%q", cached.Error, gotErr)
+	}
+}
+
+// TestStartClaudeMCPOAuthPoll_DedupCancelsPrior pins the dedup
+// contract: spam-clicking Sign In on the same server only ever
+// keeps the most recent poller alive. The prior call's goroutine
+// is cancelled — verified via its registered cancel func — and
+// only the latest goroutine remains registered in the dedup map.
+// Without the dedup, two concurrent polls would each Put + emit
+// independently when the OAuth eventually flips, producing dupe
+// events on the mcp:oauth-completed channel.
+func TestStartClaudeMCPOAuthPoll_DedupCancelsPrior(t *testing.T) {
+	app := newTestAppWithStore(t)
+	// Sentinel session that never returns a terminal status — the
+	// session has no live claude session so getQuerier returns nil
+	// and the poll exits on the first tick. We don't care about the
+	// poll result here; we care about the cancellation of the prior
+	// registration. To get a long-running poll, install a stub:
+	// since we can't easily fake the closure path through
+	// startClaudeMCPOAuthPoll, drive pollClaudeMCPAfterOAuth
+	// directly through the registration helper by calling
+	// startClaudeMCPOAuthPoll twice in quick succession against
+	// a never-completing thread.
+
+	peek := func(name string) *claudeMCPOAuthPoll {
+		app.claudeMCPOAuthPollsMu.Lock()
+		defer app.claudeMCPOAuthPollsMu.Unlock()
+		return app.claudeMCPOAuthPolls[name]
+	}
+
+	// Twice for "linear":
+	app.startClaudeMCPOAuthPoll("thread-1", "linear")
+	first := peek("linear")
+	if first == nil {
+		t.Fatal("first call must register the poll")
+	}
+	firstCancelFired := make(chan struct{})
+	originalCancel := first.cancel
+	// Wrapping the cancel func under the same lock guards the read
+	// the second startClaudeMCPOAuthPoll will perform a moment later.
+	app.claudeMCPOAuthPollsMu.Lock()
+	first.cancel = func() {
+		close(firstCancelFired)
+		originalCancel()
+	}
+	app.claudeMCPOAuthPollsMu.Unlock()
+
+	app.startClaudeMCPOAuthPoll("thread-1", "linear")
+
+	select {
+	case <-firstCancelFired:
+	case <-time.After(time.Second):
+		t.Fatal("prior poll's cancel must fire when a second startClaudeMCPOAuthPoll lands for the same name")
+	}
+
+	second := peek("linear")
+	if second == nil {
+		t.Fatal("second call must register a fresh poll under the same key")
+	}
+	if second == first {
+		t.Error("second registration must be a fresh poll instance, not the prior one")
+	}
+}
+
+// TestPollClaudeMCPAfterOAuth_ContextCancelExitsImmediately asserts
+// that a canceled ctx is honored across the sleepCtx tick — important
+// for app shutdown where the goroutine should not block on the last
+// 13s interval.
+func TestPollClaudeMCPAfterOAuth_ContextCancelExitsImmediately(t *testing.T) {
+	app := newTestAppWithStore(t)
+	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-canceled
+
+	app.pollClaudeMCPAfterOAuth(
+		ctx,
+		"thread-1",
+		"any",
+		// Non-zero intervals so a missing ctx-check would block here.
+		[]time.Duration{500 * time.Millisecond, 500 * time.Millisecond},
+		func() claudeMCPStatusQuerier {
+			return func(ctx context.Context) ([]claude.MCPServerStatus, error) {
+				t.Fatal("query should not be called after ctx cancel")
+				return nil, nil
+			}
+		},
+	)
+
+	if got := len(snapshot()); got != 0 {
+		t.Errorf("expected no emissions on canceled ctx, got %d", got)
+	}
 }

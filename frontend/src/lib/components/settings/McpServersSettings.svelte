@@ -4,7 +4,7 @@
   // binding RPCs that mutate each provider's native config file.
   // Per-row form lives in McpServerForm.
   //
-  // Test-connection runs through the shared store's probeServer
+  // Test-connection runs through the shared store's fetchStatus
   // helper so the composer popup picks up cached results the moment
   // they land here (and vice versa).
 
@@ -20,8 +20,8 @@
     PRIMARY_BUTTON_CLASS,
     GHOST_BUTTON_CLASS,
   } from './styles';
-  import { mcpServersStore, mcpCacheKey } from '../../stores/mcpServers.svelte';
-  import type { MCPServer, MCPProbeResult } from '../../stores/bindings';
+  import { mcpServersStore, mcpStatusKey } from '../../stores/mcpServers.svelte';
+  import type { MCPServer, MCPServerStatus } from '../../stores/bindings';
   import { MCPServer as MCPServerCtor } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
@@ -56,7 +56,10 @@
     loading = true;
     try {
       await mcpServersStore.loadAllProviders();
-      await mcpServersStore.refreshProbeSnapshot();
+      await Promise.all([
+        mcpServersStore.loadStatuses('claude'),
+        mcpServersStore.loadStatuses('codex'),
+      ]);
     } catch (err) {
       addToast('error', `Failed to load MCP servers: ${errString(err)}`);
     } finally {
@@ -164,35 +167,36 @@
     }
   }
 
-  async function handleProbe(server: MCPServer): Promise<void> {
+  async function handleTest(server: MCPServer): Promise<void> {
     try {
-      await mcpServersStore.probeServer(server.provider, server.name, true);
+      await mcpServersStore.fetchStatus(server.provider, server.name, true);
     } catch (err) {
-      addToast('error', `Probe failed for ${server.name}: ${errString(err)}`);
+      addToast('error', `Status check failed for ${server.name}: ${errString(err)}`);
     }
   }
 
-  function statusLabel(result: MCPProbeResult | undefined, probing: boolean): string {
-    if (probing) return 'Checking…';
-    if (!result) return 'Not checked';
-    const status = result.status as string;
-    if (status === 'ready') {
-      return result.toolCount > 0
-        ? `Ready · ${result.toolCount} tool${result.toolCount === 1 ? '' : 's'}`
-        : 'Ready';
+  function statusLabel(status: MCPServerStatus | undefined, refreshing: boolean): string {
+    if (refreshing && !status) return 'Checking…';
+    if (!status) return 'Not checked';
+    const s = status.status as string;
+    if (s === 'connected') {
+      const n = status.toolCount ?? 0;
+      return n > 0 ? `Connected · ${n} tool${n === 1 ? '' : 's'}` : 'Connected';
     }
-    if (status === 'needs-auth') return 'Needs sign-in';
-    if (status === 'failed') return `Failed${result.error ? ` · ${result.error}` : ''}`;
+    if (s === 'starting') return 'Starting…';
+    if (s === 'needs-auth') return 'Needs sign-in';
+    if (s === 'failed') return `Failed${status.error ? ` · ${status.error}` : ''}`;
     return 'Unknown';
   }
 
-  function statusClass(result: MCPProbeResult | undefined, probing: boolean): string {
-    if (probing) return 'bg-accent/60 animate-pulse';
-    if (!result) return 'bg-fg-subtle/40';
-    const status = result.status as string;
-    if (status === 'ready') return 'bg-success';
-    if (status === 'needs-auth') return 'bg-warning';
-    if (status === 'failed') return 'bg-error';
+  function statusClass(status: MCPServerStatus | undefined, refreshing: boolean): string {
+    if (refreshing && !status) return 'bg-accent/60 animate-pulse';
+    if (!status) return 'bg-fg-subtle/40';
+    const s = status.status as string;
+    if (s === 'connected') return 'bg-success';
+    if (s === 'starting') return 'bg-accent/60 animate-pulse';
+    if (s === 'needs-auth') return 'bg-warning';
+    if (s === 'failed') return 'bg-error';
     return 'bg-fg-subtle/40';
   }
 
@@ -211,8 +215,8 @@
   }
 
   let library = $derived(mcpServersStore.servers);
-  let probes = $derived(mcpServersStore.probeResults);
-  let inFlight = $derived(mcpServersStore.probesInFlight);
+  let allStatuses = $derived(mcpServersStore.statuses);
+  let refreshingProviders = $derived(mcpServersStore.refreshingProvider);
 </script>
 
 <section class="flex flex-col gap-5" data-testid="settings-mcp-section">
@@ -265,15 +269,15 @@
     </p>
   {:else}
     <ul class="flex flex-col gap-2">
-      {#each library as server (mcpCacheKey(server.provider, server.name))}
-        {@const key0 = mcpCacheKey(server.provider, server.name)}
-        {@const probing = inFlight.has(key0)}
-        {@const result = probes.get(key0)}
+      {#each library as server (mcpStatusKey(server.provider, server.name))}
+        {@const key0 = mcpStatusKey(server.provider, server.name)}
+        {@const refreshing = refreshingProviders.has(server.provider)}
+        {@const status = allStatuses.get(key0)}
         {@const readOnly = isReadOnly(server)}
         <li class="rounded-[var(--radius-card)] border border-border-subtle bg-surface-1/40">
           <div class="flex items-start gap-3 px-4 py-3">
             <span
-              class={['mt-1 inline-block h-[8px] w-[8px] shrink-0 rounded-full', statusClass(result, probing)].join(' ')}
+              class={['mt-1 inline-block h-[8px] w-[8px] shrink-0 rounded-full', statusClass(status, refreshing)].join(' ')}
               aria-hidden="true"
             ></span>
             <div class="min-w-0 flex-1">
@@ -292,7 +296,7 @@
                 {/if}
               </div>
               <p class="mt-0.5 text-[11.5px] text-fg-muted">
-                {statusLabel(result, probing)}
+                {statusLabel(status, refreshing)}
               </p>
               {#if server.transport === 'stdio' && server.command}
                 <p class="mt-1 truncate font-mono text-[11px] text-fg-subtle">
@@ -307,12 +311,12 @@
                 type="button"
                 title="Test connection"
                 aria-label="Test connection"
-                onclick={() => void handleProbe(server)}
+                onclick={() => void handleTest(server)}
                 class={GHOST_BUTTON_CLASS}
-                disabled={probing}
-                data-testid="mcp-probe-{server.provider}-{server.name}"
+                disabled={refreshing}
+                data-testid="mcp-status-{server.provider}-{server.name}"
               >
-                <Icon icon={RefreshCw} size={12} strokeWidth={1.75} class={probing ? 'animate-spin' : ''} />
+                <Icon icon={RefreshCw} size={12} strokeWidth={1.75} class={refreshing ? 'animate-spin' : ''} />
               </button>
               {#if !readOnly}
                 <button

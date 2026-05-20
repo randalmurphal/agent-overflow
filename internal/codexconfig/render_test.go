@@ -3,8 +3,6 @@ package codexconfig
 import (
 	"reflect"
 	"testing"
-
-	"agent-overflow/internal/mcp"
 )
 
 func TestRenderForOverlayStdio(t *testing.T) {
@@ -83,16 +81,3 @@ func TestRenderForOverlayErrors(t *testing.T) {
 	}
 }
 
-func TestToSpecMapsStreamableToHTTPProbeTransport(t *testing.T) {
-	srv := Server{Name: "github", Transport: TransportStreamable, URL: "https://e", Enabled: true}
-	spec := srv.ToSpec()
-	if spec.Transport != mcp.TransportHTTP {
-		t.Errorf("ToSpec transport for streamable_http = %q, want %q", spec.Transport, mcp.TransportHTTP)
-	}
-	if spec.Provider != "codex" {
-		t.Errorf("ToSpec provider = %q", spec.Provider)
-	}
-	if spec.CacheKey() != "codex:github" {
-		t.Errorf("ToSpec cache key = %q", spec.CacheKey())
-	}
-}

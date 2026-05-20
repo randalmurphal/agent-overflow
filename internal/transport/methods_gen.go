@@ -64,7 +64,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetEditorSettings", ID: 1655853383}, // main.App.GetEditorSettings
 	{Name: "GetGitStatus", ID: 4123560639}, // main.App.GetGitStatus
 	{Name: "GetKeybindings", ID: 3015840904}, // main.App.GetKeybindings
-	{Name: "GetMcpProbeSnapshot", ID: 3698445401}, // main.App.GetMcpProbeSnapshot
+	{Name: "GetMcpServerStatus", ID: 4139359668}, // main.App.GetMcpServerStatus
 	{Name: "GetMessageCheckpointDiff", ID: 1151360951}, // main.App.GetMessageCheckpointDiff
 	{Name: "GetMessageCheckpointRevertDiff", ID: 1106129437}, // main.App.GetMessageCheckpointRevertDiff
 	{Name: "GetModelsForProvider", ID: 1632984917}, // main.App.GetModelsForProvider
@@ -119,6 +119,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListItems", ID: 2158085763}, // main.App.ListItems
 	{Name: "ListItemsBeforeTurn", ID: 2147361923}, // main.App.ListItemsBeforeTurn
 	{Name: "ListLiveBackgroundTasks", ID: 320784263}, // main.App.ListLiveBackgroundTasks
+	{Name: "ListMcpServerStatuses", ID: 2582096622}, // main.App.ListMcpServerStatuses
 	{Name: "ListMcpServers", ID: 1105613677}, // main.App.ListMcpServers
 	{Name: "ListPayloadMetas", ID: 1007133701}, // main.App.ListPayloadMetas
 	{Name: "ListPendingInteractiveRequests", ID: 4186874978}, // main.App.ListPendingInteractiveRequests
@@ -143,11 +144,11 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "PrepareThreadWorktree", ID: 2870364785}, // main.App.PrepareThreadWorktree
 	{Name: "ProbeClaudeAccount", ID: 1313986574}, // main.App.ProbeClaudeAccount
 	{Name: "ProbeCodexAccount", ID: 2614227175}, // main.App.ProbeCodexAccount
-	{Name: "ProbeMcpServer", ID: 676822908}, // main.App.ProbeMcpServer
 	{Name: "RecheckClaudeAccount", ID: 2274850917}, // main.App.RecheckClaudeAccount
 	{Name: "RecheckCodexAccount", ID: 227978482}, // main.App.RecheckCodexAccount
 	{Name: "ReconfigureObservability", ID: 225050321}, // main.App.ReconfigureObservability
 	{Name: "ReconnectSession", ID: 1420075138}, // main.App.ReconnectSession
+	{Name: "RefreshMcpServerStatus", ID: 2215279661}, // main.App.RefreshMcpServerStatus
 	{Name: "RegisterQueueItem", ID: 1034543696}, // main.App.RegisterQueueItem
 	{Name: "RemoveOtherWorktree", ID: 2899196344}, // main.App.RemoveOtherWorktree
 	{Name: "RenameProject", ID: 3728890856}, // main.App.RenameProject

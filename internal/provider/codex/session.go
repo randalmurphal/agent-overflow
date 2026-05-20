@@ -133,6 +133,14 @@ type Session struct {
 	// `needs-auth`. Guarded by mu; nil when no observer is registered
 	// (the only production registrant is app_session.go and tests).
 	mcpOAuthCompletedHandler MCPOAuthCompletedHandler
+	// mcpStartupUpdateHandler fires when Codex emits an
+	// `mcpServer/startupStatus/updated` notification — a per-server
+	// state delta during/after thread/start (status ∈ starting | ready |
+	// failed | cancelled). The App layer feeds these into the mcpstatus
+	// cache so the popup reflects the running provider's view without
+	// a refetch. Per-thread-only emission — there's no app-server-wide
+	// stream. Guarded by mu; nil when no observer is registered.
+	mcpStartupUpdateHandler MCPStartupUpdateHandler
 }
 
 // MCPOAuthCompletedHandler observes the wire-level completion of an
@@ -141,6 +149,21 @@ type Session struct {
 // without further normalisation so the App can decide whether to
 // surface the failure to the thread.
 type MCPOAuthCompletedHandler func(serverName string, success bool, errorMessage string)
+
+// MCPStartupUpdate is the normalized payload carried by Codex's
+// `mcpServer/startupStatus/updated` notification. State values
+// per wire: "starting" | "ready" | "failed" | "cancelled".
+type MCPStartupUpdate struct {
+	Name  string
+	State string
+	Error string
+}
+
+// MCPStartupUpdateHandler observes `mcpServer/startupStatus/updated`
+// notifications. Registered by app_session.go after NewSession
+// returns — Codex only emits these post-thread/start, so registering
+// after the handshake is safe.
+type MCPStartupUpdateHandler func(update MCPStartupUpdate)
 
 // Config for creating a Codex session.
 type Config struct {
@@ -444,6 +467,17 @@ func (s *Session) SetMCPOAuthCompletedHandler(h MCPOAuthCompletedHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.mcpOAuthCompletedHandler = h
+}
+
+// SetMCPStartupUpdateHandler installs an observer for the
+// `mcpServer/startupStatus/updated` notification. Codex emits these
+// only post-thread/start, so registering immediately after NewSession
+// is safe — the first update can't fire before the handler is in
+// place.
+func (s *Session) SetMCPStartupUpdateHandler(h MCPStartupUpdateHandler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mcpStartupUpdateHandler = h
 }
 
 // Close shuts down the app-server process.

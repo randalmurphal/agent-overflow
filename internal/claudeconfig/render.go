@@ -2,8 +2,6 @@ package claudeconfig
 
 import (
 	"fmt"
-
-	"agent-overflow/internal/mcp"
 )
 
 // RenderForCLI projects a Server into the JSON shape Claude accepts
@@ -39,28 +37,6 @@ func (s Server) RenderForCLI() (map[string]any, error) {
 		return nil, fmt.Errorf("claudeconfig: unsupported transport %q for %s", s.Transport, s.Name)
 	}
 	return out, nil
-}
-
-// ToSpec returns the mcp.Spec the probe layer consumes. Probe
-// transport collapses to the stdio / http handshake — Claude's "sse"
-// and "http" both route through probeHTTP so they're reported as
-// TransportHTTP regardless of which one Claude emits to the agent.
-func (s Server) ToSpec() mcp.Spec {
-	probeTransport := s.Transport
-	if probeTransport == TransportSSE {
-		probeTransport = mcp.TransportHTTP
-	}
-	return mcp.Spec{
-		Provider:  "claude",
-		Name:      s.Name,
-		Transport: probeTransport,
-		Enabled:   !s.Disabled,
-		Command:   s.Command,
-		Args:      append([]string{}, s.Args...),
-		Env:       copyStringMap(s.Env),
-		URL:       s.URL,
-		Headers:   copyStringMap(s.Headers),
-	}
 }
 
 func copyStringMap(in map[string]string) map[string]string {

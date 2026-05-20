@@ -26,6 +26,64 @@ func requireWireTurnComplete(t *testing.T, events []provider.ProviderEvent) prov
 	return provider.WireTurnCompleteMeta{}
 }
 
+func TestParseSystem_InitCarriesMCPServers(t *testing.T) {
+	// Real-shape `system/init` payload captured from the Claude CLI. The
+	// parser must promote `mcp_servers` into SessionInfo so the app
+	// layer can feed mcpstatus without re-parsing the wire.
+	line := []byte(`{"type":"system","subtype":"init","session_id":"sess1","cwd":"/tmp","tools":["Read","Bash"],"model":"claude-opus-4-7[1m]","mcp_servers":[{"name":"github","status":"connected"},{"name":"linear","status":"needs-auth"},{"name":"slow-starter","status":"pending"}],"claude_code_version":"2.1.139","uuid":"u1"}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 || events[0].Kind != provider.EventInit {
+		t.Fatalf("events = %+v, want one EventInit", events)
+	}
+
+	var info provider.SessionInfo
+	if err := json.Unmarshal(events[0].Meta, &info); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if len(info.MCPServers) != 3 {
+		t.Fatalf("MCPServers len = %d, want 3 (got %+v)", len(info.MCPServers), info.MCPServers)
+	}
+	wantStatuses := map[string]string{
+		"github":       "connected",
+		"linear":       "needs-auth",
+		"slow-starter": "pending",
+	}
+	for _, s := range info.MCPServers {
+		want, ok := wantStatuses[s.Name]
+		if !ok {
+			t.Errorf("unexpected server: %q", s.Name)
+			continue
+		}
+		if s.Status != want {
+			t.Errorf("%q: status = %q, want %q", s.Name, s.Status, want)
+		}
+	}
+}
+
+func TestParseSystem_InitWithoutMCPServersIsBenign(t *testing.T) {
+	// `mcp_servers` is absent when the user has no MCPs configured;
+	// the parser must not blow up or invent entries.
+	line := []byte(`{"type":"system","subtype":"init","session_id":"sess1","cwd":"/tmp","model":"claude-opus-4-7[1m]","uuid":"u1"}`)
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %+v", events)
+	}
+	var info provider.SessionInfo
+	if err := json.Unmarshal(events[0].Meta, &info); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if len(info.MCPServers) != 0 {
+		t.Fatalf("MCPServers should be empty, got %+v", info.MCPServers)
+	}
+}
+
 func TestParseSystem_APIRetryTopLevelPayload(t *testing.T) {
 	line := []byte(`{"type":"system","subtype":"api_retry","attempt":10,"max_retries":10,"retry_delay_ms":35073.75745568816,"error_status":529,"error":"rate_limit","session_id":"s1","uuid":"u1"}`)
 

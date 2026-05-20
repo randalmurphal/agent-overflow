@@ -233,8 +233,9 @@ export {
   UpdateMcpServer,
   DeleteMcpServer,
   SetMcpServerEnabled,
-  ProbeMcpServer,
-  GetMcpProbeSnapshot,
+  GetMcpServerStatus,
+  ListMcpServerStatuses,
+  RefreshMcpServerStatus,
   TriggerMcpAuth,
 } from '../../../bindings/agent-overflow/app.js';
 
@@ -252,8 +253,11 @@ export {
   ThreadMessageHit,
 } from '../../../bindings/agent-overflow/internal/store/models.js';
 export {
-  Result as MCPProbeResult,
-} from '../../../bindings/agent-overflow/internal/mcpprobe/models.js';
+  ServerStatus as MCPServerStatus,
+  Provider as MCPStatusProvider,
+  Status as MCPStatus,
+  Source as MCPStatusSource,
+} from '../../../bindings/agent-overflow/internal/mcpstatus/models.js';
 export {
   MCPServer,
 } from '../../../bindings/agent-overflow/models.js';

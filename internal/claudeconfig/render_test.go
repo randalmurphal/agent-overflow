@@ -3,8 +3,6 @@ package claudeconfig
 import (
 	"reflect"
 	"testing"
-
-	"agent-overflow/internal/mcp"
 )
 
 func TestRenderForCLIStdio(t *testing.T) {
@@ -88,27 +86,3 @@ func TestRenderForCLIErrors(t *testing.T) {
 	}
 }
 
-func TestToSpecMapsSSEToHTTPProbeTransport(t *testing.T) {
-	srv := Server{Name: "events", Transport: TransportSSE, URL: "https://e"}
-	spec := srv.ToSpec()
-	if spec.Transport != mcp.TransportHTTP {
-		t.Errorf("ToSpec transport for SSE = %q, want %q", spec.Transport, mcp.TransportHTTP)
-	}
-	if spec.Provider != "claude" {
-		t.Errorf("ToSpec provider = %q", spec.Provider)
-	}
-	if spec.CacheKey() != "claude:events" {
-		t.Errorf("ToSpec cache key = %q", spec.CacheKey())
-	}
-}
-
-func TestToSpecEnabledMirrorsDisabledFlag(t *testing.T) {
-	off := Server{Name: "off", Transport: TransportStdio, Command: "x", Disabled: true}.ToSpec()
-	if off.Enabled {
-		t.Errorf("Disabled server should produce Enabled=false spec")
-	}
-	on := Server{Name: "on", Transport: TransportStdio, Command: "x"}.ToSpec()
-	if !on.Enabled {
-		t.Errorf("Non-disabled server should produce Enabled=true spec")
-	}
-}

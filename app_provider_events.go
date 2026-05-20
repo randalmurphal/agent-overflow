@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/mcpstatus"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 )
 
 func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) func(provider.ProviderEvent) {
@@ -19,6 +22,16 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// No event-side dispatch is required.
 
 		a.recordSessionActivity(threadID, sessionToken, evt.Kind, evt.Content)
+
+		// EventInit carries Claude's `system/init.mcp_servers` array
+		// via the SessionInfo meta. Feed each entry into the status
+		// cache so the popup shows authoritative provider state
+		// (with the provider's own credentials) without a separate
+		// fetch. Codex equivalents are wired in app_session.go via
+		// the dedicated startup-update handler.
+		if evt.Kind == provider.EventInit && providerType == string(provider.Claude) {
+			a.ingestClaudeInitMCPStatus(evt.Meta)
+		}
 
 		if a.triage != nil {
 			if err := a.triage.Handle(evt); err != nil {
@@ -95,6 +108,45 @@ func decrementActiveTurnsClamped(turns *atomic.Int32) {
 		if turns.CompareAndSwap(cur, cur-1) {
 			return
 		}
+	}
+}
+
+// ingestClaudeInitMCPStatus decodes the SessionInfo carried on an
+// EventInit Meta and pushes each mcp_servers entry into the
+// mcpstatus cache. Source is stamped as live-session so the UI can
+// disclose freshness; the raw provider status string is preserved
+// for forensics.
+//
+// Silently no-ops on decode failure or empty list — init is also
+// emitted by Codex (via its own session.go) and other future
+// providers where the field may not be populated. Cache feeds are
+// best-effort; the popup falls back to ephemeral fetch when no
+// live entry exists.
+func (a *App) ingestClaudeInitMCPStatus(meta json.RawMessage) {
+	if len(meta) == 0 {
+		return
+	}
+	var info provider.SessionInfo
+	if err := json.Unmarshal(meta, &info); err != nil {
+		return
+	}
+	if len(info.MCPServers) == 0 {
+		return
+	}
+	cache := a.mcpStatus()
+	now := time.Now()
+	for _, s := range info.MCPServers {
+		name := s.Name
+		if name == "" {
+			continue
+		}
+		cache.Put(mcpstatus.ServerStatus{
+			Key:       mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: name},
+			Status:    claude.MCPStatusFromRaw(s.Status),
+			Raw:       s.Status,
+			Source:    mcpstatus.SourceLiveSession,
+			CheckedAt: now,
+		})
 	}
 }
 

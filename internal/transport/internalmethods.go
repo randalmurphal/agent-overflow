@@ -274,11 +274,13 @@ var LocalOnlyMethods = map[string]bool{
 	"ListWSLDistros":         true,
 	"GetWSLDistroPreference": true,
 
-	// 8. MCP library / per-thread config and probes. The whole surface
+	// 8. MCP library / per-thread config and status. The whole surface
 	// is local-only:
-	//   - ProbeMcpServer spawns stdio MCP subprocesses and dials HTTP
-	//     servers using the user's env-var bearer tokens, so it is an
-	//     external-process invocation (category 1).
+	//   - GetMcpServerStatus / RefreshMcpServerStatus spawn the
+	//     provider's own CLI (`claude mcp list`, `codex app-server`)
+	//     as a short-lived subprocess to read the live server list
+	//     using the user's env-var bearer tokens — external-process
+	//     invocation (category 1).
 	//   - CreateMcpServer / UpdateMcpServer / DeleteMcpServer mutate
 	//     ~/.claude.json or ~/.codex/config.toml (category 3) and
 	//     reshape what tools the provider can call.
@@ -290,16 +292,17 @@ var LocalOnlyMethods = map[string]bool{
 	//     emits the authorization URL the desktop user opens locally — a
 	//     LAN peer opening the URL would land on the AO backend's
 	//     loopback OAuth callback, not their own browser.
-	//   - ListMcpServers / GetMcpProbeSnapshot disclose URLs, env-var
+	//   - ListMcpServers / ListMcpServerStatuses disclose URLs, env-var
 	//     bearer references, and tool inventory — the same enumeration
 	//     shape category 6 locks down. Conservative + consistent:
 	//     everything goes loopback-only.
-	"ListMcpServers":      true,
-	"CreateMcpServer":     true,
-	"UpdateMcpServer":     true,
-	"DeleteMcpServer":     true,
-	"SetMcpServerEnabled": true,
-	"ProbeMcpServer":      true,
-	"GetMcpProbeSnapshot": true,
-	"TriggerMcpAuth":      true,
+	"ListMcpServers":          true,
+	"CreateMcpServer":         true,
+	"UpdateMcpServer":         true,
+	"DeleteMcpServer":         true,
+	"SetMcpServerEnabled":     true,
+	"GetMcpServerStatus":      true,
+	"ListMcpServerStatuses":   true,
+	"RefreshMcpServerStatus":  true,
+	"TriggerMcpAuth":          true,
 }

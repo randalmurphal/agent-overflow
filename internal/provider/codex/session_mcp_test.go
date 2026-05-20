@@ -80,6 +80,74 @@ func TestDispatchMCPOAuthCompletion_NoHandlerIsNoop(t *testing.T) {
 	s.dispatchLine(line)
 }
 
+func TestDispatchMCPStartupUpdate_FiresHandler(t *testing.T) {
+	var got []MCPStartupUpdate
+	s := &Session{
+		threadID:               "thread-1",
+		pending:                make(map[int64]chan json.RawMessage),
+		childParentByThread:    map[string]string{},
+		childParentByAgentPath: map[string]string{},
+		agentPathByThread:      map[string]string{},
+		onEvent: func(evt provider.ProviderEvent) {
+			t.Fatalf("startup-update should not flow through onEvent; got %+v", evt)
+		},
+	}
+	s.SetMCPStartupUpdateHandler(func(u MCPStartupUpdate) {
+		got = append(got, u)
+	})
+
+	cases := []string{
+		`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"github","status":"ready","error":null}}`,
+		`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"broken","status":"failed","error":"timeout"}}`,
+	}
+	for _, line := range cases {
+		s.dispatchLine([]byte(line))
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("handler fired %d times, want 2", len(got))
+	}
+	if got[0].Name != "github" || got[0].State != "ready" {
+		t.Errorf("first call: %+v", got[0])
+	}
+	if got[1].Name != "broken" || got[1].State != "failed" || got[1].Error != "timeout" {
+		t.Errorf("second call: %+v", got[1])
+	}
+}
+
+func TestDispatchMCPStartupUpdate_NoHandlerIsNoop(t *testing.T) {
+	s := &Session{
+		threadID:               "thread-1",
+		pending:                make(map[int64]chan json.RawMessage),
+		childParentByThread:    map[string]string{},
+		childParentByAgentPath: map[string]string{},
+		agentPathByThread:      map[string]string{},
+		onEvent: func(evt provider.ProviderEvent) {
+			t.Fatalf("no event should be emitted; got %+v", evt)
+		},
+	}
+	line := []byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"github","status":"ready"}}`)
+	s.dispatchLine(line)
+}
+
+func TestDispatchMCPStartupUpdate_MissingNameIsDropped(t *testing.T) {
+	called := false
+	s := &Session{
+		threadID:               "thread-1",
+		pending:                make(map[int64]chan json.RawMessage),
+		childParentByThread:    map[string]string{},
+		childParentByAgentPath: map[string]string{},
+		agentPathByThread:      map[string]string{},
+		onEvent:                func(provider.ProviderEvent) {},
+	}
+	s.SetMCPStartupUpdateHandler(func(MCPStartupUpdate) { called = true })
+	line := []byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"status":"ready"}}`)
+	s.dispatchLine(line)
+	if called {
+		t.Fatalf("handler must not fire when name is missing")
+	}
+}
+
 func TestDispatchMCPOAuthCompletion_MissingServerNameIsDropped(t *testing.T) {
 	called := false
 	s := &Session{

@@ -384,6 +384,12 @@ func extractSessionInfo(raw map[string]json.RawMessage) provider.SessionInfo {
 	if v, ok := raw["claude_code_version"]; ok {
 		json.Unmarshal(v, &info.Version)
 	}
+	if v, ok := raw["mcp_servers"]; ok {
+		var list []provider.MCPServer
+		if json.Unmarshal(v, &list) == nil {
+			info.MCPServers = list
+		}
+	}
 
 	return info
 }

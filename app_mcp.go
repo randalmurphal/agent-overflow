@@ -6,28 +6,42 @@ import (
 
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/codexconfig"
-	"agent-overflow/internal/mcpprobe"
+	"agent-overflow/internal/mcpstatus"
 )
 
-// MCP probe cache TTLs. Stdio entries take longer to refresh
-// (subprocess fan-out) so we keep them around for 10 minutes; HTTP/SSE
-// entries are cheap to re-check (sub-ms in the spike) but their status
-// can change behind a kicked OAuth token, so 60s. Explicit Invalidate
-// on CRUD + OAuth completion is what keeps the popup honest; TTL is
-// the safety net.
-const (
-	mcpProbeStdioTTL = 10 * time.Minute
-	mcpProbeHTTPTTL  = 60 * time.Second
-)
+// mcpStatusCacheTTL bounds how long a provider-derived status entry
+// stays "fresh" before the popup will hit the ephemeral fetcher on
+// next read. Live thread sessions overwrite entries continuously
+// (free path), so this only matters for inactive-thread reads. 30s
+// keeps the popup snappy on rapid open/close without re-spawning the
+// CLI every time, while ensuring a stale "needs-auth" after a real
+// sign-in flips within a popup-open of the OAuth invalidate firing.
+const mcpStatusCacheTTL = 30 * time.Second
 
-// mcpProbe returns the lazy-init probe cache. Tests building a bare
-// *App via &App{...} get a working cache on first call without
+// mcpStatus returns the lazy-init status cache. Tests building a
+// bare *App via &App{...} get a working cache on first call without
 // pre-wiring; production wiring doesn't need an explicit init.
-func (a *App) mcpProbe() *mcpprobe.Cache {
-	a.mcpProbeCacheOnce.Do(func() {
-		a.mcpProbeCache = mcpprobe.NewCache(mcpProbeStdioTTL, mcpProbeHTTPTTL)
+func (a *App) mcpStatus() *mcpstatus.Cache {
+	a.mcpStatusCacheOnce.Do(func() {
+		a.mcpStatusCache = mcpstatus.NewCache(mcpStatusCacheTTL, &appMCPStatusBus{app: a})
 	})
-	return a.mcpProbeCache
+	return a.mcpStatusCache
+}
+
+// appMCPStatusBus wires every cache Put / Invalidate into the
+// `mcp:status` event channel so the frontend store can update
+// reactively without polling. Failure to emit (transport not yet
+// wired during early startup) is silent — the cache state still
+// stands; the UI hydrates on the next ListMcpServerStatuses call.
+type appMCPStatusBus struct {
+	app *App
+}
+
+func (b *appMCPStatusBus) Emit(s mcpstatus.ServerStatus) {
+	if b.app == nil {
+		return
+	}
+	b.app.emit("mcp:status", s)
 }
 
 // claudeConfig returns the lazy-init Claude config-file adapter bound

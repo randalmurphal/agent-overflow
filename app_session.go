@@ -267,6 +267,13 @@ func (a *App) spawnProviderSession(
 		sess.SetMCPOAuthCompletedHandler(func(serverName string, success bool, errMsg string) {
 			a.handleCodexMCPOAuthCompleted(threadID, serverName, success, errMsg)
 		})
+		// `mcpServer/startupStatus/updated` carries per-server live
+		// state during/after thread/start. Feed it into the mcpstatus
+		// cache so the popup reflects the running provider's view
+		// without an ephemeral refetch.
+		sess.SetMCPStartupUpdateHandler(func(u codex.MCPStartupUpdate) {
+			a.handleCodexMCPStartupUpdate(u)
+		})
 		return session{
 			provider: string(provider.Codex),
 			token:    sessionToken,

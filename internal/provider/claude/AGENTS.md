@@ -56,6 +56,12 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   response headers into a `RateLimitsSnapshot`. Triggered from
   `app_claude_ratelimits.go` (startup, periodic, turn-complete);
   emits go through the standard `provider:usage` channel.
+- `mcpstatus.go` — ephemeral MCP status fetcher (`MCPStatusFetcher`,
+  driven by `claude mcp list`) plus the `system/init` → unified status
+  projectors (`MCPStatusFromRaw`, `MCPStatusFromListLine`) consumed by
+  `internal/mcpstatus` via the shared `Fetcher` interface.
+  `sanitizeChildStderr` lives here too for bounding child-process
+  stderr in user-facing errors.
 
 Parser state method names are part of the contract:
 
@@ -117,17 +123,24 @@ Summary of what `ParseLine` dispatches:
   `exit_plan_mode`. Outbound from us carries `interrupt` (abort the
   current turn — `Session.Interrupt`), `stop_task` (kill a
   backgrounded Bash / Task subagent by `task_id` —
-  `Session.StopTask`), and `set_permission_mode`. All three share a
-  single `sendControlRequest` helper that owns the
-  allocate/register/marshal/write/await-response state machine; each
-  caller adds its own response interpretation (or per-success side
-  effect, in `setPermissionMode`'s case). Failure to ack within the
-  timeout surfaces as a wrapped error — we do NOT kill the session as
-  a fallback (a kill would also reap backgrounded tasks, inverting
-  the documented foreground-only interrupt behaviour and silently
-  masking a CLI bug). See
+  `Session.StopTask`), `set_permission_mode`, the four MCP control
+  subtypes (`mcp_set_servers` / `mcp_authenticate` /
+  `mcp_oauth_callback_url` / `mcp_status`, all in `mcp.go`), and
+  more. Every outbound subtype shares a single `sendControlRequest`
+  helper that owns the allocate/register/marshal/write/await-response
+  state machine; each caller adds its own response interpretation
+  (or per-success side effect, in `setPermissionMode`'s case).
+  Failure to ack within the timeout surfaces as a wrapped error — we
+  do NOT kill the session as a fallback (a kill would also reap
+  backgrounded tasks, inverting the documented foreground-only
+  interrupt behaviour and silently masking a CLI bug). The
+  `mcp_status` subtype is the read-only poll Claude exposes for
+  post-OAuth state — used by `app_mcp_bindings.go:pollClaudeMCPAfterOAuth`
+  to mirror Codex's `mcpServer/oauthLogin/completed` notification on
+  Claude. See
   [`claude-wire.md §control_request`](../../../docs/references/claude-wire.md#control_request)
-  for the full schema and the verified `stop_task` flow.
+  for the full schema and the verified `stop_task` / `mcp_status`
+  flows.
 - `rate_limit_event` — rate-limit state.
 
 `parent_tool_use_id` on tool events correlates subagent (`Task`) work

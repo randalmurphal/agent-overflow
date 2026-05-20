@@ -43,7 +43,7 @@ The CLI emits newline-delimited JSON. Every line has a top-level
 | `user` | `parseUser` | `tool_result` blocks echoed back after tool execution. |
 | `stream_event` | `parseStreamEvent` | Incremental deltas (requires `include_partial_messages:true`). |
 | `result` | `parseResult` | **Turn-complete signal.** One per CLI turn. |
-| `control_request` | `parseControlRequest` | Bidirectional. Inbound: `can_use_tool`, `exit_plan_mode`. Outbound (client → CLI): `interrupt`, `stop_task`. |
+| `control_request` | `parseControlRequest` | Bidirectional. Inbound: `can_use_tool`, `exit_plan_mode`. Outbound (client → CLI): `interrupt`, `stop_task`, `set_permission_mode`, `mcp_set_servers`, `mcp_authenticate`, `mcp_oauth_callback_url`, `mcp_status`. |
 | `rate_limit_event` | `parseRateLimitEvent` | Rate limit state changes. |
 
 Unknown `type` values are dropped silently by the dispatcher, logged
@@ -938,6 +938,21 @@ CLI binary; the subtypes we use or plan to use:
 - `subtype: "stop_task"` — kill a specific backgrounded task (Bash with
   `run_in_background:true` OR Task subagent). Takes `task_id` (the id
   from `system/task_started`). See [§stop_task](#stop_task) below.
+- `subtype: "set_permission_mode"` — switch the live session's permission
+  mode (Plan ↔ chat ↔ accept-edits ↔ bypass). Takes `mode`.
+- `subtype: "mcp_set_servers"` — in-process diff-reconcile of the
+  live MCP server set against `servers`. Returns
+  `{added, removed, errors}`. Used by AO to sync per-thread MCP
+  toggles without respawning the session.
+- `subtype: "mcp_authenticate"` — start the OAuth handshake for an
+  http/sse MCP server. Takes `server_name`. Returns `{authUrl,
+  requiresUserAction}`.
+- `subtype: "mcp_oauth_callback_url"` — post the captured callback
+  URL back to the CLI to finish OAuth when the browser landed
+  somewhere other than the CLI's loopback listener. Takes
+  `server_name` and `callback_url`.
+- `subtype: "mcp_status"` — read-only snapshot of current MCP server
+  state. No additional params. See [§mcp_status](#mcp_status) below.
 
 ### Response envelope
 
@@ -1012,6 +1027,88 @@ request above to stdin. Response lands immediately; `task_updated`
 with `status:killed` follows within a few ms. This is the primitive
 that powers per-item stop and "Stop all" for Claude background
 tasks in the [BackgroundTaskTray](../architecture/chat-rewrite.md).
+
+### mcp_status
+
+Read-only snapshot of every MCP server the live session has loaded.
+No state mutation, no API call, no token cost — the CLI just walks
+its three in-memory client pools (`currentMcpClients`, `sdkClients`,
+`dynamicMcpState.clients`) and returns each entry's status / config /
+tools.
+
+**Wire shape (request):**
+
+```json
+{
+  "type": "control_request",
+  "request_id": "caller-unique-id",
+  "request": {
+    "subtype": "mcp_status"
+  }
+}
+```
+
+**Wire shape (response):**
+
+```json
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "caller-unique-id",
+    "response": {
+      "mcpServers": [
+        {
+          "name": "github",
+          "status": "connected",
+          "serverInfo": {"name": "github", "version": "1.0"},
+          "config": {"type": "stdio", "command": "npx", "args": ["..."]},
+          "scope": "user",
+          "tools": [{"name": "get_repo", "annotations": {"readOnly": true}}]
+        },
+        {
+          "name": "sentry",
+          "status": "needs-auth",
+          "config": {"type": "http", "url": "https://example/mcp"},
+          "scope": "user"
+        },
+        {
+          "name": "broken",
+          "status": "failed",
+          "error": "connection refused"
+        }
+      ]
+    }
+  }
+}
+```
+
+`status` is one of `connected | failed | needs-auth | pending | disabled`.
+The five-value enum matches `mcpstatus.Status` projection via
+`MCPStatusFromRaw` in `internal/provider/claude/mcpstatus.go`.
+
+**Important caveat:** the response is built from in-memory client
+pools only. A server that's configured (e.g., in `~/.claude.json`)
+but the CLI has never attempted to connect to may be missing from
+the array. Polling callers should treat "missing entry" as
+"keep retrying," not as a terminal state.
+
+**Used by AO** in the OAuth-completion poller at
+`app_mcp_bindings.go:pollClaudeMCPAfterOAuth`. Claude emits no
+spontaneous post-OAuth wire envelope (`reconnectMcpServerImpl`
+runs inline in `print.ts` and updates state in-process), so AO
+polls `mcp_status` after `TriggerMcpAuth` with a 1+2+3+5+8+13s
+backoff to detect the `needs-auth → {connected, failed}` flip.
+Codex provides the equivalent signal via the
+`mcpServer/oauthLogin/completed` notification on its own
+session channel — the AO surface (`mcp:oauth-completed` event)
+is identical between providers.
+
+**Verified via spike on Claude CLI 2.1.139** — spawn with
+`--print --input-format stream-json --output-format stream-json`,
+send the request above on stdin BEFORE any user message. The
+control_response lands directly without spinning up a turn (no
+API call billed). Response shape per the example above.
 
 ---
 

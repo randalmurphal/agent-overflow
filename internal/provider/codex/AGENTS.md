@@ -53,6 +53,13 @@ over stdio.
   for detached-child-agent terminal signals injected into the next
   user-message. Pure parsing (regex + JSON decode), no Session state.
 - `options.go` — `SessionOptions → Config` hydration, binary probe.
+- `mcpstatus.go` — ephemeral MCP status fetcher (`MCPStatusFetcher`,
+  drives `mcpServerStatus/list` via an inline JSON-RPC client) plus
+  the wire-shape projectors (`MCPStatusFromList`,
+  `MCPStatusFromNotif`) consumed by `internal/mcpstatus` via the
+  shared `Fetcher` interface. Backs both the inactive-thread fallback
+  and the `mcpServer/startupStatus/updated` /
+  `mcpServer/oauthLogin/completed` notification paths.
 
 ## Methods we call
 
