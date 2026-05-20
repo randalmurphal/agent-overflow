@@ -7,9 +7,6 @@
 // path easy to trace from the click handler all the way to SendMessage.
 
 import {
-  AttachThreadWorktree,
-  GitCreateBranchFrom,
-  PrepareThreadWorktree,
   SendMessageWithOptions,
 } from '../../stores/bindings';
 import type { Attachment } from '../../types/attachment';
@@ -35,11 +32,7 @@ import {
   hasRuntimeModeDraft,
   runtimeModeForThread,
 } from '../../stores/runtimeModeDraft.svelte';
-import {
-  clearWorktreeIntent,
-  resolveBaseForWire,
-  worktreeIntentForThread,
-} from '../../stores/worktreeIntent.svelte';
+import { prepareThreadWorktreeIntent } from '../../stores/worktreeIntentMaterialize';
 import { buildSendOptions } from '../../utils/sendOptions';
 
 export interface SendOptions {
@@ -90,64 +83,14 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
   let sendStarted = false;
   try {
     let threadForSend = opts.currentThread;
-    const worktreeIntent = worktreeIntentForThread(threadForSend);
     if (threadForSend) {
-      const needsWorkspaceWork =
-        worktreeIntent.mode === 'new-worktree' || worktreeIntent.creatingBranch;
-      if (needsWorkspaceWork) {
-        opts.onWorktreePrepareStarted?.();
-        let updated: Thread | null = null;
-        try {
-          if (worktreeIntent.mode === 'new-worktree' && worktreeIntent.creatingBranch) {
-            // New worktree off a brand-new branch (today's existing
-            // path). LOCAL sentinel resolves via resolveBaseForWire to
-            // (currentBranch, carry=true) so the backend stash-carry
-            // path engages.
-            const wire = resolveBaseForWire(
-              worktreeIntent.newBranchBase,
-              threadForSend.branch ?? '',
-            );
-            updated = (await PrepareThreadWorktree(
-              opts.threadId,
-              wire.baseBranch,
-              worktreeIntent.newBranchName,
-              wire.carryLocalChanges,
-            )) as Thread;
-          } else if (
-            worktreeIntent.mode === 'new-worktree' &&
-            !worktreeIntent.creatingBranch
-          ) {
-            // New worktree pointing at an existing branch. The
-            // BranchPicker's dedup gate already caught
-            // already-checked-out branches; if the attach still fails,
-            // git's invariant kicks in and the error surfaces below.
-            const branch = worktreeIntent.attachBranch || (threadForSend.branch ?? '');
-            updated = (await AttachThreadWorktree(opts.threadId, branch)) as Thread;
-          } else if (
-            worktreeIntent.mode === 'local' &&
-            worktreeIntent.creatingBranch
-          ) {
-            // Stay in the current workspace, create a new branch off
-            // the picked base, and check it out.
-            const wire = resolveBaseForWire(
-              worktreeIntent.newBranchBase,
-              threadForSend.branch ?? '',
-            );
-            updated = (await GitCreateBranchFrom(
-              opts.threadId,
-              worktreeIntent.newBranchName,
-              wire.baseBranch,
-              wire.carryLocalChanges,
-            )) as Thread;
-          }
-        } finally {
-          opts.onWorktreePrepareFinished?.();
-        }
-        if (updated) {
-          threadForSend = updated;
-          syncThread(updated);
-        }
-        clearWorktreeIntent(opts.threadId);
+      const updated = await prepareThreadWorktreeIntent({
+        thread: threadForSend,
+        onWorktreePrepareStarted: opts.onWorktreePrepareStarted,
+        onWorktreePrepareFinished: opts.onWorktreePrepareFinished,
+      });
+      if (updated) {
+        threadForSend = updated;
       }
     }
 
@@ -214,4 +157,3 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
     }
   }
 }
-

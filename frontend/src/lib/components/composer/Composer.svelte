@@ -311,7 +311,18 @@
     if (planSourceForImplement && !hasDraftContent && !hasDraftPlanComments && !hasDraftDiffReviewComments) {
       sending = true;
       try {
-        const implemented = await implementProposedPlan(pane, planSourceForImplement);
+        const implemented = await implementProposedPlan(
+          pane,
+          planSourceForImplement,
+          {
+            onWorktreePrepareStarted: () => {
+              preparingWorktree = true;
+            },
+            onWorktreePrepareFinished: () => {
+              preparingWorktree = false;
+            },
+          },
+        );
         if (implemented) {
           locallyImplementedPlanIds = new Set([...locallyImplementedPlanIds, planSourceForImplement.itemId]);
         }
@@ -438,8 +449,16 @@
     if (!latestPlanSource || sending || isTurnActive) return;
     sending = true;
     try {
-      await implementProposedPlanInNewThread(pane, latestPlanSource);
+      await implementProposedPlanInNewThread(pane, latestPlanSource, {
+        onWorktreePrepareStarted: () => {
+          preparingWorktree = true;
+        },
+        onWorktreePrepareFinished: () => {
+          preparingWorktree = false;
+        },
+      });
     } finally {
+      preparingWorktree = false;
       sending = false;
     }
   }

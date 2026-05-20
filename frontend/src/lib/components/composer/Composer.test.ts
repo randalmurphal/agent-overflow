@@ -35,6 +35,7 @@ import {
   setNewBranchBase,
   setNewBranchName,
   setThreadEnvMode,
+  worktreeIntentForThread,
 } from '../../stores/worktreeIntent.svelte';
 import {
   getProjectDraft,
@@ -337,8 +338,10 @@ describe('<Composer>', () => {
     await fireEvent.input(textarea, { target: { value: 'hello world' } });
     await fireEvent.click(getByTestId('composer-send'));
 
-    expect(send).toHaveBeenCalledWith('thread-1', 'hello world', {
-      attachmentIds: [],
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith('thread-1', 'hello world', {
+        attachmentIds: [],
+      });
     });
     expect(draft.content).toBe('');
   });
@@ -375,20 +378,22 @@ describe('<Composer>', () => {
     await findByText('Send comments');
     await fireEvent.click(getByTestId('composer-send'));
 
-    expect(send).toHaveBeenCalledWith(
-      'thread-1',
-      'Please revise.',
-      expect.objectContaining({
-        attachmentIds: [],
-        revisionSourceProposedPlan: expect.objectContaining({
-          threadId: 'thread-1',
-          itemId: 'plan-1',
-          payloadId: 'payload-1',
-          title: 'Plan',
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(
+        'thread-1',
+        'Please revise.',
+        expect.objectContaining({
+          attachmentIds: [],
+          revisionSourceProposedPlan: expect.objectContaining({
+            threadId: 'thread-1',
+            itemId: 'plan-1',
+            payloadId: 'payload-1',
+            title: 'Plan',
+          }),
+          revisionSourceCommentIds: ['comment-1'],
         }),
-        revisionSourceCommentIds: ['comment-1'],
-      }),
-    );
+      );
+    });
   });
 
   it('sends typed plan comments when Enter is pressed', async () => {
@@ -468,15 +473,17 @@ describe('<Composer>', () => {
     await fireEvent.click(getByTestId('composer-send-menu'));
     await fireEvent.click(await findByText('Send without comments'));
 
-    expect(send).toHaveBeenCalledWith('thread-1', 'Please revise.', expect.objectContaining({
-      attachmentIds: [],
-      revisionSourceProposedPlan: expect.objectContaining({
-        threadId: 'thread-1',
-        itemId: 'plan-1',
-        payloadId: 'payload-1',
-        title: 'Plan',
-      }),
-    }));
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith('thread-1', 'Please revise.', expect.objectContaining({
+        attachmentIds: [],
+        revisionSourceProposedPlan: expect.objectContaining({
+          threadId: 'thread-1',
+          itemId: 'plan-1',
+          payloadId: 'payload-1',
+          title: 'Plan',
+        }),
+      }));
+    });
   });
 
   it('labels typed plan feedback without draft comments as refine', async () => {
@@ -500,14 +507,16 @@ describe('<Composer>', () => {
     await findByText('Refine');
     await fireEvent.click(getByTestId('composer-send'));
 
-    expect(send).toHaveBeenCalledWith(
-      'thread-1',
-      'Revise this plan.',
-      expect.objectContaining({
-        attachmentIds: [],
-        revisionSourceProposedPlan: expect.objectContaining({ itemId: 'plan-1' }),
-      }),
-    );
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(
+        'thread-1',
+        'Revise this plan.',
+        expect.objectContaining({
+          attachmentIds: [],
+          revisionSourceProposedPlan: expect.objectContaining({ itemId: 'plan-1' }),
+        }),
+      );
+    });
     const sendOptions = send.mock.calls[0]?.[2] as { revisionSourceCommentIds?: string[] };
     expect(sendOptions.revisionSourceCommentIds).toBeUndefined();
   });
@@ -543,20 +552,22 @@ describe('<Composer>', () => {
     await findByText('Send comments');
     await fireEvent.click(getByTestId('composer-send'));
 
-    expect(send).toHaveBeenCalledWith(
-      'thread-1',
-      '',
-      expect.objectContaining({
-        attachmentIds: [],
-        revisionSourceProposedPlan: expect.objectContaining({
-          threadId: 'thread-1',
-          itemId: 'plan-1',
-          payloadId: 'payload-1',
-          title: 'Plan',
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(
+        'thread-1',
+        '',
+        expect.objectContaining({
+          attachmentIds: [],
+          revisionSourceProposedPlan: expect.objectContaining({
+            threadId: 'thread-1',
+            itemId: 'plan-1',
+            payloadId: 'payload-1',
+            title: 'Plan',
+          }),
+          revisionSourceCommentIds: ['comment-1'],
         }),
-        revisionSourceCommentIds: ['comment-1'],
-      }),
-    );
+      );
+    });
   });
 
   it('shows implement for the latest plan even when later assistant text exists', async () => {
@@ -598,6 +609,53 @@ describe('<Composer>', () => {
         payloadId: 'payload-1',
       }),
     });
+  });
+
+  it('prepares a pending worktree before implementing the current plan', async () => {
+    const initialThread = makeTestThread({ branch: 'main' });
+    const worktreeThread = makeTestThread({
+      branch: 'feature/custom',
+      workspacePath: '/tmp/wt-feature',
+      worktreePath: '/tmp/wt-feature',
+    });
+    const pane = await buildPane(initialThread, [
+      makeItem({
+        id: 'plan-1',
+        kind: 'tool_call',
+        payloadKind: 'proposed_plan',
+        payloadId: 'payload-1',
+        payloadMeta: JSON.stringify({ title: 'Plan', preview: '# Plan' }),
+        turnIndex: 0,
+        itemIndex: 0,
+        updatedAt: 1,
+      }),
+    ]);
+    const draft = await buildDraft();
+    if (!pane.thread) throw new Error('missing test thread');
+    setThreadEnvMode(pane.thread, 'new-worktree');
+    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    setNewBranchBase(pane.thread, 'release');
+    setNewBranchName(pane.thread, 'feature/custom');
+    setBindingMock('ListProposedPlanComments', async () => []);
+    const prepare = setBindingMock('PrepareThreadWorktree', async () => worktreeThread);
+    const send = setBindingMock('SendMessageWithOptions', async () => worktreeThread);
+
+    const { getByTestId, findByText } = render(Composer, { props: { pane, draft } });
+    await findByText('Implement');
+    await fireEvent.click(getByTestId('composer-send'));
+
+    expect(prepare).toHaveBeenCalledWith('thread-1', 'release', 'feature/custom', false);
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith('thread-1', 'Implement the plan.', {
+        attachmentIds: [],
+        sourceProposedPlan: expect.objectContaining({
+          itemId: 'plan-1',
+          payloadId: 'payload-1',
+        }),
+      });
+    });
+    expect(prepare.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
+    expect(pane.thread?.worktreePath).toBe('/tmp/wt-feature');
   });
 
   it('does not reread a cleared plan source after implement send resolves', async () => {
@@ -772,6 +830,82 @@ describe('<Composer>', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it('materializes staged worktree intent on the implementation thread only', async () => {
+    const sourceThread = makeTestThread({
+      branch: 'main',
+      projectId: 'project-1',
+      workspacePath: '/repo',
+    });
+    const pane = await buildPane(sourceThread, [
+      makeItem({
+        id: 'plan-1',
+        kind: 'tool_call',
+        payloadKind: 'proposed_plan',
+        payloadId: 'payload-1',
+        payloadMeta: JSON.stringify({ title: 'Ship feature', preview: '# Ship feature' }),
+        turnIndex: 0,
+        itemIndex: 0,
+        updatedAt: 1,
+      }),
+    ]);
+    const draft = await buildDraft();
+    if (!pane.thread) throw new Error('missing test thread');
+    setThreadEnvMode(pane.thread, 'new-worktree');
+    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    setNewBranchBase(pane.thread, 'release');
+    setNewBranchName(pane.thread, 'feature/custom');
+    setBindingMock('ListProposedPlanComments', async () => []);
+    setBindingMock('GetPayloadData', async () => ({
+      data: '# Ship feature\n\n- step one\n- step two\n',
+      kind: 'proposed_plan',
+    }));
+    const childBeforeWorktree = makeTestThread({
+      id: 'thread-2',
+      branch: 'main',
+      projectId: 'project-1',
+      workspacePath: '/repo',
+    });
+    const childAfterWorktree = makeTestThread({
+      id: 'thread-2',
+      branch: 'feature/custom',
+      projectId: 'project-1',
+      workspacePath: '/tmp/wt-feature',
+      worktreePath: '/tmp/wt-feature',
+    });
+    const create = setBindingMock('CreateThread', async () => childBeforeWorktree);
+    const prepare = setBindingMock('PrepareThreadWorktree', async () => childAfterWorktree);
+    const save = setBindingMock('SaveDraft', async () => {});
+    const send = setBindingMock('SendMessageWithOptions', async () => childAfterWorktree);
+
+    const { getByTestId, findByText } = render(Composer, { props: { pane, draft } });
+    await findByText('Implement');
+    await fireEvent.click(getByTestId('composer-send-menu'));
+    await fireEvent.click(await findByText('Implement in new thread'));
+
+    await waitFor(() => {
+      expect(save).toHaveBeenCalled();
+    });
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-1',
+      workspaceOverride: '/repo',
+      branch: 'main',
+    }));
+    expect(prepare).toHaveBeenCalledWith('thread-2', 'release', 'feature/custom', false);
+    expect(create.mock.invocationCallOrder[0]).toBeLessThan(prepare.mock.invocationCallOrder[0]);
+    expect(prepare.mock.invocationCallOrder[0]).toBeLessThan(save.mock.invocationCallOrder[0]);
+    expect(save).toHaveBeenCalledWith(
+      'thread-2',
+      expect.stringContaining('PLEASE IMPLEMENT THIS PLAN:'),
+      [],
+      [],
+      expect.objectContaining({ threadId: 'thread-1', itemId: 'plan-1', payloadId: 'payload-1' }),
+    );
+    expect(send).not.toHaveBeenCalled();
+    expect(pane.thread?.id).toBe('thread-2');
+    expect(pane.thread?.worktreePath).toBe('/tmp/wt-feature');
+    expect(worktreeIntentForThread(sourceThread).mode).toBe('local');
+  });
+
   it('cleans up the orphan thread when seeding the implementation draft fails', async () => {
     const pane = await buildPane(makeTestThread({ projectId: 'project-1', workspacePath: '/repo' }), [
       makeItem({
@@ -805,6 +939,117 @@ describe('<Composer>', () => {
     await waitFor(() => {
       expect(deleted).toHaveBeenCalledWith('thread-2');
     });
+  });
+
+  it('cleans up the child worktree when seeding the implementation draft fails', async () => {
+    const sourceThread = makeTestThread({
+      branch: 'main',
+      projectId: 'project-1',
+      workspacePath: '/repo',
+    });
+    const pane = await buildPane(sourceThread, [
+      makeItem({
+        id: 'plan-1',
+        kind: 'tool_call',
+        payloadKind: 'proposed_plan',
+        payloadId: 'payload-1',
+        payloadMeta: JSON.stringify({ title: 'Plan', preview: '# Plan' }),
+        turnIndex: 0,
+        itemIndex: 0,
+        updatedAt: 1,
+      }),
+    ]);
+    const draft = await buildDraft();
+    if (!pane.thread) throw new Error('missing test thread');
+    setThreadEnvMode(pane.thread, 'new-worktree');
+    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    setNewBranchBase(pane.thread, 'release');
+    setNewBranchName(pane.thread, 'feature/custom');
+    setBindingMock('ListProposedPlanComments', async () => []);
+    setBindingMock('GetPayloadData', async () => ({ data: '# Plan\n\n- step', kind: 'proposed_plan' }));
+    setBindingMock('CreateThread', async () => makeTestThread({
+      id: 'thread-2',
+      branch: 'main',
+      projectId: 'project-1',
+      workspacePath: '/repo',
+    }));
+    setBindingMock('PrepareThreadWorktree', async () => makeTestThread({
+      id: 'thread-2',
+      branch: 'feature/custom',
+      projectId: 'project-1',
+      workspacePath: '/tmp/wt-feature',
+      worktreePath: '/tmp/wt-feature',
+    }));
+    setBindingMock('SaveDraft', async () => {
+      throw new Error('disk full');
+    });
+    const removeWorktree = setBindingMock('GitRemoveWorktree', async () => {});
+    const deleted = setBindingMock('DeleteThread', async () => {});
+
+    const { getByTestId, findByText } = render(Composer, { props: { pane, draft } });
+    await findByText('Implement');
+    await fireEvent.click(getByTestId('composer-send-menu'));
+    await fireEvent.click(await findByText('Implement in new thread'));
+
+    await waitFor(() => {
+      expect(removeWorktree).toHaveBeenCalledWith('thread-2');
+      expect(deleted).toHaveBeenCalledWith('thread-2');
+    });
+    expect(removeWorktree.mock.invocationCallOrder[0]).toBeLessThan(
+      deleted.mock.invocationCallOrder[0],
+    );
+    expect(pane.thread?.id).toBe('thread-1');
+    expect(worktreeIntentForThread(sourceThread).mode).toBe('new-worktree');
+  });
+
+  it('cleans up the implementation thread when child worktree preparation fails', async () => {
+    const sourceThread = makeTestThread({
+      branch: 'main',
+      projectId: 'project-1',
+      workspacePath: '/repo',
+    });
+    const pane = await buildPane(sourceThread, [
+      makeItem({
+        id: 'plan-1',
+        kind: 'tool_call',
+        payloadKind: 'proposed_plan',
+        payloadId: 'payload-1',
+        payloadMeta: JSON.stringify({ title: 'Plan', preview: '# Plan' }),
+        turnIndex: 0,
+        itemIndex: 0,
+        updatedAt: 1,
+      }),
+    ]);
+    const draft = await buildDraft();
+    if (!pane.thread) throw new Error('missing test thread');
+    setThreadEnvMode(pane.thread, 'new-worktree');
+    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    setNewBranchBase(pane.thread, 'release');
+    setNewBranchName(pane.thread, 'feature/custom');
+    setBindingMock('ListProposedPlanComments', async () => []);
+    setBindingMock('GetPayloadData', async () => ({ data: '# Plan\n\n- step', kind: 'proposed_plan' }));
+    setBindingMock('CreateThread', async () => makeTestThread({
+      id: 'thread-2',
+      branch: 'main',
+      projectId: 'project-1',
+      workspacePath: '/repo',
+    }));
+    setBindingMock('PrepareThreadWorktree', async () => {
+      throw new Error('branch exists');
+    });
+    const save = setBindingMock('SaveDraft', async () => {});
+    const deleted = setBindingMock('DeleteThread', async () => {});
+
+    const { getByTestId, findByText } = render(Composer, { props: { pane, draft } });
+    await findByText('Implement');
+    await fireEvent.click(getByTestId('composer-send-menu'));
+    await fireEvent.click(await findByText('Implement in new thread'));
+
+    await waitFor(() => {
+      expect(deleted).toHaveBeenCalledWith('thread-2');
+    });
+    expect(save).not.toHaveBeenCalled();
+    expect(pane.thread?.id).toBe('thread-1');
   });
 
   it('forwards the draft sourceProposedPlan on send when no in-thread plan is active', async () => {
@@ -892,11 +1137,15 @@ describe('<Composer>', () => {
     await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'use this access' } });
     await fireEvent.click(getByTestId('composer-send'));
 
-    expect(send).toHaveBeenCalledWith('thread-1', 'use this access', {
-      attachmentIds: [],
-      runtimeMode: 'auto-accept-edits',
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith('thread-1', 'use this access', {
+        attachmentIds: [],
+        runtimeMode: 'auto-accept-edits',
+      });
     });
-    expect(hasRuntimeModeDraft(pane.thread)).toBe(false);
+    await waitFor(() => {
+      expect(hasRuntimeModeDraft(pane.thread)).toBe(false);
+    });
   });
 
   it('does not synthesize a runtime override from a missing thread value', async () => {
@@ -909,8 +1158,10 @@ describe('<Composer>', () => {
     await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'use persisted mode' } });
     await fireEvent.click(getByTestId('composer-send'));
 
-    expect(send).toHaveBeenCalledWith('thread-1', 'use persisted mode', {
-      attachmentIds: [],
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith('thread-1', 'use persisted mode', {
+        attachmentIds: [],
+      });
     });
   });
 
@@ -937,8 +1188,10 @@ describe('<Composer>', () => {
     await fireEvent.click(getByTestId('composer-send'));
 
     expect(prepare).toHaveBeenCalledWith('thread-1', 'release', 'feature/custom', false);
-    expect(send).toHaveBeenCalledWith('thread-1', 'work there', {
-      attachmentIds: [],
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith('thread-1', 'work there', {
+        attachmentIds: [],
+      });
     });
     expect(prepare.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
     expect(pane.thread?.worktreePath).toBe('/tmp/wt-feature');
@@ -1028,8 +1281,10 @@ describe('<Composer>', () => {
     const { getByTestId } = render(Composer, { props: { pane, draft } });
     await fireEvent.click(getByTestId('composer-send'));
 
-    expect(send).toHaveBeenCalledWith('thread-1', '[Image #1]', {
-      attachmentIds: ['att-1'],
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith('thread-1', '[Image #1]', {
+        attachmentIds: ['att-1'],
+      });
     });
   });
 
@@ -1064,8 +1319,10 @@ describe('<Composer>', () => {
     expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['att-1', 'att-2']);
 
     await fireEvent.click(getByTestId('composer-send'));
-    expect(send).toHaveBeenCalledWith('thread-1', 'please inspect [Image #1] [Image #2]', {
-      attachmentIds: ['att-1', 'att-2'],
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith('thread-1', 'please inspect [Image #1] [Image #2]', {
+        attachmentIds: ['att-1', 'att-2'],
+      });
     });
   });
 
