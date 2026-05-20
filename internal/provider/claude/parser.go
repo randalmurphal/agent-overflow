@@ -74,6 +74,19 @@ type Parser struct {
 	// (parent_tool_use_id,index) so a later content_block_stop can identify
 	// which streaming block closed.
 	streamBlockTypes map[string]string
+	// streamMessageHasAdvisor tracks whether the in-flight SSE message
+	// (keyed by parent_tool_use_id) has carried any advisor content
+	// block (`server_tool_use` / `advisor_tool_result`). The trailing
+	// `message_delta` carries CUMULATIVE usage across every API call
+	// the message generated, including the advisor's separate API call
+	// — that inflates cache_read by ~the parent's context again,
+	// roughly doubling the reported window. Suppressing the
+	// message_delta usage when an advisor block fired keeps the
+	// parent's context meter from being clobbered; the parent's actual
+	// per-block usage is still emitted from the non-advisor assistant
+	// envelopes inside the same SSE message. Reset on `message_start`
+	// (new message boundary).
+	streamMessageHasAdvisor map[string]bool
 	// model is the latest model id observed on this session. Seeded from
 	// the system/init line and used to price result usage so triage
 	// doesn't have to reach back into the store for pricing. When
@@ -134,6 +147,7 @@ func (p *Parser) Close() {
 	p.taskToolUses = nil
 	p.subagentModelStamped = nil
 	p.streamBlockTypes = nil
+	p.streamMessageHasAdvisor = nil
 	p.lastAssistantMessageID = ""
 }
 
@@ -333,6 +347,41 @@ func (p *Parser) clearAdvisor(toolUseID string) {
 		return
 	}
 	delete(p.advisorToolUses, toolUseID)
+}
+
+// markStreamMessageHasAdvisor records that the in-flight SSE message
+// (keyed by parent_tool_use_id) has carried an advisor content block.
+// Used by the message_delta usage gate to skip pushing the cumulative
+// (advisor-inflated) usage onto the parent context meter. Cleared
+// explicitly on `message_start` for the next message; the bounded-map
+// reset is the same wholesale pattern other parser correlation maps
+// use — leaking a flag at the cap boundary just loses one suppression
+// for a stale parent_tool_use_id, which is benign.
+func (p *Parser) markStreamMessageHasAdvisor(parentToolUseID string) {
+	if p == nil {
+		return
+	}
+	if p.streamMessageHasAdvisor == nil {
+		p.streamMessageHasAdvisor = make(map[string]bool)
+	}
+	if len(p.streamMessageHasAdvisor) >= parserTaskMapCap {
+		p.streamMessageHasAdvisor = make(map[string]bool)
+	}
+	p.streamMessageHasAdvisor[parentToolUseID] = true
+}
+
+func (p *Parser) streamMessageHasAdvisorBlock(parentToolUseID string) bool {
+	if p == nil || p.streamMessageHasAdvisor == nil {
+		return false
+	}
+	return p.streamMessageHasAdvisor[parentToolUseID]
+}
+
+func (p *Parser) resetStreamMessageHasAdvisor(parentToolUseID string) {
+	if p == nil || p.streamMessageHasAdvisor == nil {
+		return
+	}
+	delete(p.streamMessageHasAdvisor, parentToolUseID)
 }
 
 // parserTaskMapCap bounds parser correlation maps such as
