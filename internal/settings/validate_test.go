@@ -34,6 +34,10 @@ func TestUpdateRejectsInvalidEnumeratedValues(t *testing.T) {
 			patch: map[string]any{"defaultThreadEnvMode": "remote"},
 		},
 		{
+			name:  "paneDensity",
+			patch: map[string]any{"paneDensity": "wide"},
+		},
+		{
 			name:  "worktreeBranchPrefixSlash",
 			patch: map[string]any{"worktreeBranchPrefix": "ao/"},
 		},
@@ -75,6 +79,7 @@ func TestGetSanitizesInvalidLoadedValues(t *testing.T) {
   "claudeBinaryPath": " /custom/claude ",
   "codexBinaryPath": "   ",
   "defaultThreadEnvMode": "remote",
+  "paneDensity": "wide",
   "worktreeBranchPrefix": "bad/prefix",
   "recentWorkspaces": ["", " /tmp/one ", "/tmp/one", "/tmp/two"]
 }
@@ -105,6 +110,9 @@ func TestGetSanitizesInvalidLoadedValues(t *testing.T) {
 	}
 	if got.DefaultThreadEnvMode != DefaultSettings.DefaultThreadEnvMode {
 		t.Fatalf("DefaultThreadEnvMode = %q, want %q", got.DefaultThreadEnvMode, DefaultSettings.DefaultThreadEnvMode)
+	}
+	if got.PaneDensity != DefaultSettings.PaneDensity {
+		t.Fatalf("PaneDensity = %q, want %q", got.PaneDensity, DefaultSettings.PaneDensity)
 	}
 	if got.WorktreeBranchPrefix != DefaultSettings.WorktreeBranchPrefix {
 		t.Fatalf("WorktreeBranchPrefix = %q, want %q", got.WorktreeBranchPrefix, DefaultSettings.WorktreeBranchPrefix)

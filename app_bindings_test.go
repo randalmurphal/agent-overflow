@@ -38,17 +38,26 @@ func TestUpdateSettingsPersistsPatch(t *testing.T) {
 	dir := t.TempDir()
 	app := &App{settings: settings.NewService(dir)}
 
-	got, err := app.UpdateSettings(map[string]any{"theme": "dark"})
+	got, err := app.UpdateSettings(map[string]any{
+		"theme":       "dark",
+		"paneDensity": "spacious",
+	})
 	if err != nil {
 		t.Fatalf("UpdateSettings() error = %v", err)
 	}
 	if got.Theme != "dark" {
 		t.Fatalf("Theme = %q, want dark", got.Theme)
 	}
+	if got.PaneDensity != "spacious" {
+		t.Fatalf("PaneDensity = %q, want spacious", got.PaneDensity)
+	}
 
 	reloaded := settings.NewService(dir).Get()
 	if reloaded.Theme != "dark" {
 		t.Fatalf("reloaded Theme = %q, want dark", reloaded.Theme)
+	}
+	if reloaded.PaneDensity != "spacious" {
+		t.Fatalf("reloaded PaneDensity = %q, want spacious", reloaded.PaneDensity)
 	}
 }
 

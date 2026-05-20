@@ -48,6 +48,11 @@ var (
 		"local":    {},
 		"worktree": {},
 	}
+	allowedPaneDensities = map[string]struct{}{
+		"compact":     {},
+		"comfortable": {},
+		"spacious":    {},
+	}
 	// allowedFonts enumerates the typefaces selectable for --font-sans
 	// and --font-mono. "geist" is the eager default, "hack-nerd" lazy-
 	// loads, and "system" uses the OS fallback chain.
@@ -96,6 +101,11 @@ func validateSettings(current Settings) (Settings, error) {
 	var err error
 	current.WorktreeBranchPrefix, err = validateWorktreeBranchPrefix(current.WorktreeBranchPrefix)
 	if err != nil {
+		return Settings{}, err
+	}
+
+	current.PaneDensity = strings.TrimSpace(current.PaneDensity)
+	if err := validateOption("paneDensity", current.PaneDensity, allowedPaneDensities); err != nil {
 		return Settings{}, err
 	}
 
@@ -196,6 +206,12 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		allowedThreadEnvModes,
 	)
 	current.WorktreeBranchPrefix = sanitizeWorktreeBranchPrefix(current.WorktreeBranchPrefix)
+	current.PaneDensity = sanitizeOption(
+		"paneDensity",
+		current.PaneDensity,
+		DefaultSettings.PaneDensity,
+		allowedPaneDensities,
+	)
 
 	current.TextGenerationProvider = sanitizeOption(
 		"textGenerationProvider",

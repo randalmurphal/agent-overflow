@@ -86,6 +86,11 @@ type Settings struct {
 	// read like normal feature branches.
 	WorktreeBranchPrefix string `json:"worktreeBranchPrefix"`
 
+	// PaneDensity controls the minimum workspace pane width before the pane
+	// host starts horizontal scrolling. One of {"compact", "comfortable",
+	// "spacious"}.
+	PaneDensity string `json:"paneDensity"`
+
 	// TextGenerationProvider selects which CLI drives non-chat text
 	// generation (commit messages today; PR bodies and thread titles
 	// eventually). Mirrors t3-code's RoutingTextGeneration: one of
@@ -183,6 +188,7 @@ var DefaultSettings = Settings{
 	CodexEnabled:         true,
 	DefaultThreadEnvMode: "local",
 	WorktreeBranchPrefix: "ao-",
+	PaneDensity:          "compact",
 	// Text-generation defaults: Codex is cheap + fast for short JSON
 	// responses, so it's the sensible default. The model stays empty
 	// so the call site picks the per-provider default; if the user

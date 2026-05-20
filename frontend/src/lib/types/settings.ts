@@ -35,6 +35,7 @@ export type ThreadEnvMode = "local" | "worktree";
 
 export type SansFont = "geist" | "hack-nerd" | "system";
 export type MonoFont = "geist" | "hack-nerd" | "system";
+export type PaneDensityMode = "compact" | "comfortable" | "spacious";
 
 export interface Settings {
   theme: "system" | "light" | "dark";
@@ -63,6 +64,8 @@ export interface Settings {
   defaultThreadEnvMode: ThreadEnvMode;
   /** Prefix used for auto-generated worktree branch names. */
   worktreeBranchPrefix: string;
+  /** Minimum pane width preset used by the workspace pane host. */
+  paneDensity: PaneDensityMode;
   /**
    * Text generation: which CLI writes commit messages / PR bodies /
    * thread titles. Independent of the chat provider so a user on Claude

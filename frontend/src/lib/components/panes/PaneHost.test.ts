@@ -23,10 +23,12 @@ import {
   resetPaneLayoutForTest,
   setPaneLayoutItemsForTest,
 } from '../../stores/paneLayout.svelte';
-import { resetPaneDensityForTest, setPaneDensityMode } from '../../stores/paneDensity.svelte';
+import { setPaneDensityMode } from '../../stores/paneDensity.svelte';
+import { resetSettingsForTest } from '../../stores/settings.svelte';
 import { makeThread } from '../../../test/helpers/chat';
 import { prependThread } from '../../stores/threads.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { makeSettings } from '../../../test/helpers/settings';
 import {
   encodeThreadDragPayload,
   PANE_REORDER_DRAG_MIME,
@@ -78,7 +80,11 @@ describe('PaneHost', () => {
     resetLayoutMetricsForTest();
     resetPanesForTest();
     resetPaneLayoutForTest();
-    resetPaneDensityForTest();
+    resetSettingsForTest();
+    setBindingMock('UpdateSettings', async (patch: unknown) => ({
+      ...makeSettings(),
+      ...(patch as Partial<ReturnType<typeof makeSettings>>),
+    }));
   });
 
   afterEach(() => {
@@ -93,7 +99,7 @@ describe('PaneHost', () => {
     resetLayoutMetricsForTest();
     resetPanesForTest();
     resetPaneLayoutForTest();
-    resetPaneDensityForTest();
+    resetSettingsForTest();
   });
 
   function installThreadSwitchMocks(thread = makeThread()): void {
@@ -189,8 +195,8 @@ describe('PaneHost', () => {
     );
   });
 
-  it('uses density min width and layout ratios on pane sections', () => {
-    setPaneDensityMode('comfortable');
+  it('uses density min width and layout ratios on pane sections', async () => {
+    await setPaneDensityMode('comfortable');
     registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
     registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
     setPaneLayoutItemsForTest([

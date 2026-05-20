@@ -22,6 +22,7 @@ const BASE_SETTINGS: Settings = {
   codexEnabled: true,
   defaultThreadEnvMode: 'local',
   worktreeBranchPrefix: 'ao-',
+  paneDensity: 'compact',
   textGenerationProvider: 'codex',
   textGenerationModel: '',
   textGenerationReasoningEffort: 'low',

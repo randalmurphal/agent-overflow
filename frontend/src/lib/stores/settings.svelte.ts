@@ -18,6 +18,7 @@ const DEFAULT_SETTINGS: Settings = {
   codexEnabled: true,
   defaultThreadEnvMode: "local",
   worktreeBranchPrefix: "ao-",
+  paneDensity: "compact",
   // Text generation defaults mirror internal/settings.DefaultSettings.
   textGenerationProvider: "codex",
   textGenerationModel: "",

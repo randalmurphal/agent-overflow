@@ -4,38 +4,10 @@ import GeneralSettings from './GeneralSettings.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import type { Settings } from '../../types/settings';
-
-const BASE_SETTINGS: Settings = {
-  theme: 'system',
-  timestampFormat: 'locale',
-  sansFont: 'geist',
-  monoFont: 'geist',
-  recentWorkspaces: [],
-  diffWordWrap: false,
-  streamingEnabled: true,
-  confirmArchive: true,
-  confirmDelete: true,
-  claudeBinaryPath: 'claude',
-  codexBinaryPath: 'codex',
-  claudeEnabled: true,
-  codexEnabled: true,
-  defaultThreadEnvMode: 'local',
-  worktreeBranchPrefix: 'ao-',
-  textGenerationProvider: 'codex',
-  textGenerationModel: '',
-  textGenerationReasoningEffort: 'low',
-  claudeAutoCompactStandardPercent: 90,
-  claudeAutoCompactExtendedPercent: 90,
-  codexAutoCompactStandardPercent: 90,
-  codexAutoCompactExtendedPercent: 90,
-  observabilityTracingEnabled: false,
-  observabilityOtlpEndpoint: '',
-  observabilityEventLogEnabled: false,
-  network: { bindAll: false },
-};
+import { makeSettings } from '../../../test/helpers/settings';
 
 async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
-  const merged: Settings = { ...BASE_SETTINGS, ...overrides };
+  const merged = makeSettings(overrides);
   setBindingMock('GetSettings', async () => merged);
   setBindingMock('UpdateSettings', async (patch: unknown) => {
     const p = (patch as Record<string, unknown>) ?? {};
@@ -77,6 +49,23 @@ describe('<GeneralSettings> — Thread defaults section', () => {
     const mock = getBindingMock('UpdateSettings');
     expect(mock).toBeDefined();
     expect(mock!.mock.calls[0][0]).toEqual({ worktreeBranchPrefix: 'task-' });
+  });
+});
+
+describe('<GeneralSettings> — Pane density', () => {
+  beforeEach(async () => {
+    await seed();
+  });
+
+  it('dispatches paneDensity patch on change', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    const option = getByTestId('pane-density-option-spacious');
+    const input = option.querySelector('input[type="radio"]') as HTMLInputElement;
+    await fireEvent.click(input);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls[0][0]).toEqual({ paneDensity: 'spacious' });
   });
 });
 

@@ -19,6 +19,7 @@ const FULL_SETTINGS: Settings = {
   codexEnabled: false,
   defaultThreadEnvMode: 'local',
   worktreeBranchPrefix: 'ao-',
+  paneDensity: 'compact',
   textGenerationProvider: 'codex',
   textGenerationModel: '',
   textGenerationReasoningEffort: 'low',

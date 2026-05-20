@@ -60,7 +60,7 @@
           name="pane-density"
           value={option.mode}
           checked={checked}
-          onchange={() => setPaneDensityMode(option.mode)}
+          onchange={() => void setPaneDensityMode(option.mode)}
           class="mt-1 h-3.5 w-3.5 accent-accent"
         />
         <span class="min-w-0">

@@ -1,0 +1,34 @@
+import type { Settings } from '../../lib/types/settings';
+
+export function makeSettings(overrides: Partial<Settings> = {}): Settings {
+  return {
+    theme: 'system',
+    timestampFormat: 'locale',
+    sansFont: 'geist',
+    monoFont: 'geist',
+    recentWorkspaces: [],
+    diffWordWrap: false,
+    streamingEnabled: true,
+    confirmArchive: true,
+    confirmDelete: true,
+    claudeBinaryPath: 'claude',
+    codexBinaryPath: 'codex',
+    claudeEnabled: true,
+    codexEnabled: true,
+    defaultThreadEnvMode: 'local',
+    worktreeBranchPrefix: 'ao-',
+    paneDensity: 'compact',
+    textGenerationProvider: 'codex',
+    textGenerationModel: '',
+    textGenerationReasoningEffort: 'low',
+    claudeAutoCompactStandardPercent: 90,
+    claudeAutoCompactExtendedPercent: 90,
+    codexAutoCompactStandardPercent: 90,
+    codexAutoCompactExtendedPercent: 90,
+    observabilityTracingEnabled: false,
+    observabilityOtlpEndpoint: '',
+    observabilityEventLogEnabled: false,
+    network: { bindAll: false },
+    ...overrides,
+  };
+}

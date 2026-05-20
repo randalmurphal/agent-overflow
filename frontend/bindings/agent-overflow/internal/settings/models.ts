@@ -220,6 +220,13 @@ export class Settings {
     "worktreeBranchPrefix": string;
 
     /**
+     * PaneDensity controls the minimum workspace pane width before the pane
+     * host starts horizontal scrolling. One of {"compact", "comfortable",
+     * "spacious"}.
+     */
+    "paneDensity": string;
+
+    /**
      * TextGenerationProvider selects which CLI drives non-chat text
      * generation (commit messages today; PR bodies and thread titles
      * eventually). Mirrors t3-code's RoutingTextGeneration: one of
@@ -362,6 +369,9 @@ export class Settings {
         if (!("worktreeBranchPrefix" in $$source)) {
             this["worktreeBranchPrefix"] = "";
         }
+        if (!("paneDensity" in $$source)) {
+            this["paneDensity"] = "";
+        }
         if (!("textGenerationProvider" in $$source)) {
             this["textGenerationProvider"] = "";
         }
@@ -407,21 +417,21 @@ export class Settings {
      */
     static createFrom($$source: any = {}): Settings {
         const $$createField5_0 = $$createType0;
-        const $$createField26_0 = $$createType1;
-        const $$createField27_0 = $$createType2;
-        const $$createField28_0 = $$createType4;
+        const $$createField27_0 = $$createType1;
+        const $$createField28_0 = $$createType2;
+        const $$createField29_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
         }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField26_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField27_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField27_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField28_0($$parsedSource["editor"]);
         }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField28_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField29_0($$parsedSource["remoteEndpoints"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }
