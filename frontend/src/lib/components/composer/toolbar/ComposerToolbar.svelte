@@ -1,7 +1,7 @@
 <script lang="ts">
-  // Bottom row of the composer card. Pure layout — every child owns its
-  // own binding calls, so this file's only job is to arrange them
-  // left-to-right and surface the send button on the right edge.
+  // Bottom row of the composer card. Children still own their binding
+  // calls; this file owns their layout and the measured compact mode that
+  // hides low-value labels when the full toolbar would overflow.
   //
   // The toolbar now sits inside the composer card (no border-t, no
   // bg-surface-1 of its own) so the whole composer reads as one
@@ -9,6 +9,7 @@
   // rule so the model, effort, mode, access, and plan actions read as
   // one stable control cluster.
 
+  import { onMount } from 'svelte';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import ModelProviderMenu from './ModelProviderMenu.svelte';
   import EffortMenu from './EffortMenu.svelte';
@@ -22,6 +23,7 @@
   import RateLimitMeter from '../../chat/RateLimitMeter.svelte';
   import type { SendButtonAction } from './sendButtonTypes';
   import { asProviderID } from '../../../types/providers';
+  import { measureComposerToolbarCompact } from './composerToolbarDensity';
 
   interface Props {
     pane: ThreadPane;
@@ -76,10 +78,57 @@
   let showLimitRings = $derived(pane.isLocked && !!pane.thread?.provider);
   let providerID = $derived(asProviderID(pane.thread?.provider));
   let hasPersistedThread = $derived(Boolean(pane.threadId));
+  let toolbarEl: HTMLDivElement | undefined = $state(undefined);
+  let compactToolbar = $state(true);
+  let measureFrame = 0;
+
+  function measureToolbarDensity(): void {
+    if (!toolbarEl) return;
+    compactToolbar = measureComposerToolbarCompact(toolbarEl);
+  }
+
+  function scheduleToolbarDensityMeasure(): void {
+    const el = toolbarEl;
+    if (!el) return;
+    if (typeof requestAnimationFrame === 'undefined') {
+      measureToolbarDensity();
+      return;
+    }
+    if (measureFrame) return;
+    measureFrame = requestAnimationFrame(() => {
+      measureFrame = 0;
+      if (toolbarEl !== el) return;
+      measureToolbarDensity();
+    });
+  }
+
+  onMount(() => {
+    const el = toolbarEl;
+    if (!el) return;
+    scheduleToolbarDensityMeasure();
+    const resizeObserver = new ResizeObserver(() => scheduleToolbarDensityMeasure());
+    resizeObserver.observe(el);
+    const mutationObserver = typeof MutationObserver === 'undefined'
+      ? undefined
+      : new MutationObserver(() => scheduleToolbarDensityMeasure());
+    mutationObserver?.observe(el, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+    return () => {
+      resizeObserver.disconnect();
+      mutationObserver?.disconnect();
+      if (measureFrame) cancelAnimationFrame(measureFrame);
+    };
+  });
 </script>
 
 <div
-  class="@container flex items-center gap-0.5 px-2.5 pb-2 pt-1"
+  bind:this={toolbarEl}
+  class="flex items-center gap-0.5 px-2.5 pb-2 pt-1"
+  data-compact={compactToolbar ? 'true' : 'false'}
+  data-composer-toolbar
   data-testid="composer-toolbar"
 >
   {#if hasPersistedThread}
@@ -128,3 +177,9 @@
     />
   </div>
 </div>
+
+<style>
+  :global([data-composer-toolbar][data-compact="true"] [data-composer-toolbar-label="collapsible"]) {
+    display: none;
+  }
+</style>

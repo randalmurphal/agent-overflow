@@ -111,7 +111,7 @@
   disabled={!pane.thread}
   aria-haspopup="menu"
   aria-expanded={open}
-  aria-label="Runtime Access Mode"
+  aria-label={`Runtime Access Mode: ${currentMeta.label}`}
   data-testid="composer-access-toggle"
   data-mode={current}
   data-staged={staged}
@@ -126,7 +126,7 @@
   ].join(' ')}
 >
   <Icon icon={currentMeta.icon} size={13} strokeWidth={1.75} class="opacity-80" />
-  <span class="@max-[519px]:hidden">{currentMeta.label}</span>
+  <span data-composer-toolbar-label="collapsible">{currentMeta.label}</span>
   <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
 </button>
 

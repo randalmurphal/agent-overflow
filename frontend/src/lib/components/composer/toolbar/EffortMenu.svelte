@@ -189,6 +189,8 @@
   disabled={!pane.thread}
   aria-haspopup="menu"
   aria-expanded={open}
+  aria-label={`Effort: ${triggerLabel}`}
+  title={triggerLabel}
   data-testid="composer-effort-trigger"
   class={[
     'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
@@ -200,7 +202,7 @@
   ].join(' ')}
 >
   <Icon icon={Gauge} size={13} strokeWidth={1.75} class="opacity-80" />
-  <span class="@max-[519px]:hidden">{triggerLabel}</span>
+  <span data-composer-toolbar-label="collapsible">{triggerLabel}</span>
   <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
 </button>
 

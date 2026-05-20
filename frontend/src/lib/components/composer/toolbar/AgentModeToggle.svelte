@@ -61,7 +61,7 @@
   onclick={handleClick}
   disabled={applying || !pane.thread}
   data-testid="composer-agent-mode-toggle"
-  aria-label="Toggle Agent Mode (Shift+Tab)"
+  aria-label={`Agent mode: ${modeLabel}. Toggle with Shift+Tab`}
   title={`Agent mode: ${modeLabel} — Shift+Tab to toggle`}
   class={[
     'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
@@ -73,5 +73,5 @@
   ].join(' ')}
 >
   <Icon icon={Bot} size={13} strokeWidth={1.75} class="opacity-80" />
-  <span>{modeLabel}</span>
+  <span data-composer-toolbar-label="collapsible">{modeLabel}</span>
 </button>

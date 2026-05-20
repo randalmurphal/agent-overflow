@@ -84,7 +84,7 @@
   ].join(' ')}
 >
   <Icon icon={Plug} size={13} strokeWidth={1.75} class="opacity-80" />
-  <span class="@max-[519px]:hidden">MCP</span>
+  <span data-composer-toolbar-label="collapsible">MCP</span>
   {#if enabledCount > 0}
     <span
       class="inline-flex min-w-[16px] items-center justify-center rounded-full bg-accent/20 px-1 text-[10px] font-semibold leading-tight text-fg"

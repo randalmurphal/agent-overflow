@@ -29,6 +29,6 @@
     ].join(' ')}
   >
     <Icon icon={ListTodo} size={13} strokeWidth={1.75} class="opacity-80" />
-    <span class="@max-[519px]:hidden">Plan</span>
+    <span data-composer-toolbar-label="collapsible">Plan</span>
   </button>
 {/if}
