@@ -282,7 +282,7 @@ function evictEmptyTerminalStates(): void {
 // chords. TerminalBody registers/deregisters via notifyTerminalFocus — the
 // counter tolerates multiple mounts (e.g. keyed remount when swapping active
 // tab) without flipping the flag prematurely.
-let focusedTerminals = $state(0);
+let focusedTerminals = 0;
 
 export function getTerminalFocused(): boolean {
   return focusedTerminals > 0;
