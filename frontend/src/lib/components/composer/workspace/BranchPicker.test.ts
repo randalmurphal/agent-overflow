@@ -12,6 +12,7 @@ import {
 import {
   enterCreateBranchMode,
   resetForTest as resetWorktreeIntent,
+  setNewBranchName,
   setThreadEnvMode,
   worktreeIntentForThread,
 } from '../../../stores/worktreeIntent.svelte';
@@ -419,6 +420,34 @@ describe('<BranchPicker>', () => {
       expect(queryByRole('menu')).toBeNull();
     });
     expect(worktreeIntentForThread(pane.thread).creatingBranch).toBe(true);
+  });
+
+  it('replaces the new-branch popup entry with a cancel action while creating', async () => {
+    const pane = await buildPane('main');
+    if (!pane.thread) throw new Error('missing test thread');
+    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    setNewBranchName(pane.thread, 'feat/new');
+    setBindingMock('GitListBranches', async () => [
+      { name: 'main', isCurrent: true, isDefault: true },
+    ]);
+
+    const { getByTestId, findByRole, queryByRole } = render(BranchPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+
+    expect(queryByRole('menuitem', { name: /New branch/ })).toBeNull();
+    const cancelRow = await findByRole('menuitem', { name: /Cancel new branch/ });
+    await fireEvent.click(cancelRow);
+
+    await waitFor(() => {
+      expect(queryByRole('menu')).toBeNull();
+    });
+    const intent = worktreeIntentForThread(pane.thread);
+    expect(intent.creatingBranch).toBe(false);
+    expect(intent.newBranchName).toBe('');
+    expect(intent.newBranchBase).toBe('');
+    expect(getBindingMock('GitCheckout')).toBeUndefined();
   });
 
   it('flips the new-branch base to the Local sentinel when picking the Local row while creating', async () => {

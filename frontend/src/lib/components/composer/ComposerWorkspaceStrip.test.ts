@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
 import ComposerWorkspaceStrip from './ComposerWorkspaceStrip.svelte';
@@ -9,6 +9,7 @@ import {
   enterCreateBranchMode,
   resetForTest as resetWorktreeIntent,
   setThreadEnvMode,
+  worktreeIntentForThread,
 } from '../../stores/worktreeIntent.svelte';
 
 describe('<ComposerWorkspaceStrip>', () => {
@@ -64,6 +65,28 @@ describe('<ComposerWorkspaceStrip>', () => {
     enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
     await tick();
     expect(await findByTestId('worktree-branch-name-input')).toBeInTheDocument();
+    expect(await findByTestId('cancel-new-branch-button')).toBeInTheDocument();
     expect(queryByTestId('new-branch-toggle')).toBeNull();
+  });
+
+  it('exits new-branch mode from the input x button and Escape key', async () => {
+    const thread = makeThread();
+    const pane = await buildPane(thread);
+    const { findByTestId, queryByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
+
+    setThreadEnvMode(thread, 'new-worktree');
+    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
+    await tick();
+
+    await fireEvent.click(await findByTestId('cancel-new-branch-button'));
+    expect(worktreeIntentForThread(thread).creatingBranch).toBe(false);
+    expect(queryByTestId('worktree-branch-name-input')).toBeNull();
+
+    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
+    await tick();
+
+    await fireEvent.keyDown(await findByTestId('worktree-branch-name-input'), { key: 'Escape' });
+    expect(worktreeIntentForThread(thread).creatingBranch).toBe(false);
+    expect(queryByTestId('worktree-branch-name-input')).toBeNull();
   });
 });

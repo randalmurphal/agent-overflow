@@ -12,10 +12,12 @@
   // dropdown's "+ New branch…" entry instead, so no button shows here.
 
   import Plus from 'lucide-svelte/icons/plus';
+  import X from 'lucide-svelte/icons/x';
   import Icon from '../../primitives/Icon.svelte';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import {
     enterCreateBranchMode,
+    exitCreateBranchMode,
     setNewBranchName,
     worktreeIntentForThread,
   } from '../../../stores/worktreeIntent.svelte';
@@ -24,10 +26,9 @@
     pane: ThreadPane;
     workspaceDirty: boolean;
     onSubmit?: () => void;
-    onCancel?: () => void;
   }
 
-  let { pane, workspaceDirty, onSubmit, onCancel }: Props = $props();
+  let { pane, workspaceDirty, onSubmit }: Props = $props();
 
   let intent = $derived(worktreeIntentForThread(pane.thread));
   let inputId = $derived(`new-branch-name-${pane.thread?.id ?? 'none'}`);
@@ -40,13 +41,18 @@
     setNewBranchName(pane.thread, value);
   }
 
+  function cancelCreate(): void {
+    if (!pane.thread) return;
+    exitCreateBranchMode(pane.thread);
+  }
+
   function handleKeydown(event: KeyboardEvent): void {
     if (event.key === 'Enter') {
       event.preventDefault();
       onSubmit?.();
     } else if (event.key === 'Escape') {
       event.preventDefault();
-      onCancel?.();
+      cancelCreate();
     }
   }
 
@@ -57,21 +63,37 @@
 </script>
 
 {#if showInput}
-  <label class="sr-only" for={inputId}>New branch name</label>
-  <input
-    id={inputId}
-    data-testid="worktree-branch-name-input"
-    type="text"
-    value={intent.newBranchName}
-    placeholder="Branch Name"
-    oninput={(e) => updateBranchName((e.target as HTMLInputElement).value)}
-    onkeydown={handleKeydown}
-    class={[
-      'h-6 w-[11rem] min-w-0 rounded border border-border bg-transparent',
-      'px-2 text-[11px] text-text-primary placeholder:text-fg-hint',
-      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
-    ].join(' ')}
-  />
+  <div class="inline-flex min-w-0 items-center gap-1">
+    <label class="sr-only" for={inputId}>New branch name</label>
+    <input
+      id={inputId}
+      data-testid="worktree-branch-name-input"
+      type="text"
+      value={intent.newBranchName}
+      placeholder="Branch Name"
+      oninput={(e) => updateBranchName((e.target as HTMLInputElement).value)}
+      onkeydown={handleKeydown}
+      class={[
+        'h-6 w-[11rem] min-w-0 rounded border border-border bg-transparent',
+        'px-2 text-[11px] text-text-primary placeholder:text-fg-hint',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+      ].join(' ')}
+    />
+    <button
+      type="button"
+      aria-label="Cancel new branch"
+      title="Cancel new branch"
+      data-testid="cancel-new-branch-button"
+      onclick={cancelCreate}
+      class={[
+        'inline-flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border bg-transparent',
+        'text-fg-muted hover:border-border-strong hover:text-fg',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+      ].join(' ')}
+    >
+      <Icon icon={X} size={11} strokeWidth={2} />
+    </button>
+  </div>
 {:else if showButton}
   <button
     type="button"

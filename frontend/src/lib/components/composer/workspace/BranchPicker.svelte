@@ -23,6 +23,7 @@
   import Plus from 'lucide-svelte/icons/plus';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import Trash2 from 'lucide-svelte/icons/trash-2';
+  import X from 'lucide-svelte/icons/x';
   import Icon from '../../primitives/Icon.svelte';
   import { composerTriggerClasses } from '../triggerClasses';
   import type { ThreadPane } from '../../../stores/thread.svelte';
@@ -44,6 +45,7 @@
   import { sameNormalizedPath } from '../../../utils/path';
   import {
     enterCreateBranchMode,
+    exitCreateBranchMode,
     isLocalBase,
     LOCAL_BASE_SENTINEL,
     setAttachBranch,
@@ -331,6 +333,12 @@
     closeMenu();
   }
 
+  function cancelCreate(): void {
+    if (!pane.thread) return;
+    exitCreateBranchMode(pane.thread);
+    closeMenu();
+  }
+
   function selectLocalRow(): void {
     if (!pane.thread) return;
     if (!intent.creatingBranch) return;
@@ -445,16 +453,27 @@
   role="none"
 >
   <Menu ariaLabel="Branches" onClose={closeMenu}>
-    <MenuItem
-      label="New branch…"
-      disabled={workspaceChangingDisabled}
-      title={workspaceChangingDisabled ? disabledReason : undefined}
-      onSelect={startCreate}
-    >
-      {#snippet icon()}
-        <Icon icon={Plus} size={12} strokeWidth={2} />
-      {/snippet}
-    </MenuItem>
+    {#if intent.creatingBranch}
+      <MenuItem
+        label="Cancel new branch"
+        onSelect={cancelCreate}
+      >
+        {#snippet icon()}
+          <Icon icon={X} size={12} strokeWidth={2} />
+        {/snippet}
+      </MenuItem>
+    {:else}
+      <MenuItem
+        label="New branch…"
+        disabled={workspaceChangingDisabled}
+        title={workspaceChangingDisabled ? disabledReason : undefined}
+        onSelect={startCreate}
+      >
+        {#snippet icon()}
+          <Icon icon={Plus} size={12} strokeWidth={2} />
+        {/snippet}
+      </MenuItem>
+    {/if}
     <MenuItem
       label={pruning ? 'Pruning…' : 'Prune stale branches'}
       disabled={pruning}
