@@ -111,6 +111,48 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     }
   });
 
+  it('saves an anchor snapshot after escape even inside the near-bottom band', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'first' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'second' }),
+    ]);
+    pane.thread!.id = 'thread-escaped-near-bottom';
+
+    const { getByTestId } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await tick();
+
+    const scroll = getByTestId('message-timeline-scroll') as HTMLElement;
+    let scrollTop = 350;
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, get: () => 1000 });
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, get: () => 600 });
+    Object.defineProperty(scroll, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (next: number) => { scrollTop = next; },
+    });
+
+    const ctrl = pane.scrollController as
+      | (PaneScrollController & {
+        setEscapedFromLock(next: boolean): void;
+        isAtBottom: boolean;
+      })
+      | null;
+    expect(ctrl).not.toBeNull();
+    if (!ctrl) return;
+
+    clearThreadScrollSnapshotsForTest();
+    ctrl.setEscapedFromLock(true);
+    await fireEvent.scroll(scroll);
+    await waitForScrollIntent();
+
+    expect(ctrl.isAtBottom).toBe(false);
+    const snap = getThreadScrollSnapshot('thread-escaped-near-bottom');
+    expect(snap?.kind).toBe('anchor');
+    if (snap?.kind === 'anchor') expect(['a', 'b']).toContain(snap.itemId);
+  });
+
   it('attempts to load the anchor item when restoring a {kind:"anchor"} snapshot', async () => {
     setThreadScrollSnapshot('thread-restore-anchor', {
       kind: 'anchor',

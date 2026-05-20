@@ -364,6 +364,100 @@ describe('createUseStickToBottomController', () => {
       expect(controller.isSticky).toBe(false);
     });
 
+    it('scrollbar drag down to the bottom re-sticks', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      stubScrollbarGutter(scrollEl);
+      scrollEl.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, isPrimary: true, clientX: 195, clientY: 300 }),
+      );
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('scrollbar drag final scroll can re-stick after pointerup but before the deferred check', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      stubScrollbarGutter(scrollEl);
+      scrollEl.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, isPrimary: true, clientX: 195, clientY: 300 }),
+      );
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, isPrimary: true }));
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('scrollbar drag upward escapes after an earlier drag-to-bottom re-stick', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      stubScrollbarGutter(scrollEl);
+      scrollEl.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, isPrimary: true, clientX: 195, clientY: 300 }),
+      );
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(false);
+
+      geom.scrollTop = 300;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
+    });
+
+    it.each(['pointerup', 'pointercancel'])(
+      '%s ends scrollbar drag restick consent for later bottom scrolls',
+      async (eventName) => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        fireWheel(scrollEl, -50, scrollEl);
+        geom.scrollTop = 300;
+        fireScroll(scrollEl);
+        await nextTimer();
+        expect(controller.escapedFromLock).toBe(true);
+
+        stubScrollbarGutter(scrollEl);
+        scrollEl.dispatchEvent(
+          new PointerEvent('pointerdown', { bubbles: true, isPrimary: true, clientX: 195, clientY: 300 }),
+        );
+        document.dispatchEvent(new PointerEvent(eventName, { bubbles: true, isPrimary: true }));
+
+        geom.scrollTop = 400;
+        fireScroll(scrollEl);
+        await nextTimer();
+
+        expect(controller.escapedFromLock).toBe(true);
+        expect(controller.isSticky).toBe(false);
+      },
+    );
+
     it('middle-button autoscroll pointer input escapes immediately', () => {
       scrollEl.dispatchEvent(
         new PointerEvent('pointerdown', { bubbles: true, button: 1, isPrimary: true, clientX: 80, clientY: 300 }),

@@ -81,6 +81,7 @@ const RESIZE_CLEAR_PADDING_MS = 1;
 const DEFAULT_PROGRAMMATIC_SCROLL_DURATION_MS = 420;
 const PROGRAMMATIC_SCROLL_DISTANCE_THRESHOLD_PX = 1;
 const RECENT_DOWN_INTENT_WINDOW_MS = 250;
+const SCROLLBAR_DRAG_SESSION_FAILSAFE_MS = 30_000;
 const EXTERNAL_SCROLL_TAG_CLEAR_MS = 100;
 
 // ===== Spring chase tuning =====
@@ -384,6 +385,10 @@ export function createUseStickToBottomController(
   let recentDownIntentUntil = 0;
   let recentDownIntentVersion = 0;
   let recentDownIntentClearTimer: ReturnType<typeof setTimeout> | null = null;
+  let scrollbarDragSessionActive = false;
+  let scrollbarDragSessionVersion = 0;
+  let scrollbarDragSessionFailsafeTimer: ReturnType<typeof setTimeout> | null = null;
+  let detachScrollbarDragEnd: (() => void) | undefined;
   let previousHeight: number | undefined;
   let touchStartY: number | null = null;
   let resizeCorrelatedUntaggedScrollBudget = 0;
@@ -500,15 +505,16 @@ export function createUseStickToBottomController(
     if (!scrollEl) return 0;
     return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
   }
-  function refreshIsNearBottom(): void {
+  function refreshIsNearBottom(): number {
     const dist = distanceFromBottom();
     const next = dist <= STICK_TO_BOTTOM_OFFSET_PX;
     if (next !== isNearBottomState) isNearBottomState = next;
+    return dist;
   }
 
-  function clearRecentDownIntent(): void {
+  function clearRecentDownIntent(opts: { bumpVersion?: boolean } = {}): void {
     recentDownIntentUntil = 0;
-    recentDownIntentVersion += 1;
+    if (opts.bumpVersion ?? true) recentDownIntentVersion += 1;
     if (recentDownIntentClearTimer) {
       clearTimeout(recentDownIntentClearTimer);
       recentDownIntentClearTimer = null;
@@ -519,8 +525,41 @@ export function createUseStickToBottomController(
     return recentDownIntentUntil > nowMs();
   }
 
+  function clearScrollbarDragSession(opts: { invalidateCapturedScrolls?: boolean } = {}): void {
+    scrollbarDragSessionActive = false;
+    if (opts.invalidateCapturedScrolls ?? true) scrollbarDragSessionVersion += 1;
+    detachScrollbarDragEnd?.();
+    detachScrollbarDragEnd = undefined;
+    if (scrollbarDragSessionFailsafeTimer) {
+      clearTimeout(scrollbarDragSessionFailsafeTimer);
+      scrollbarDragSessionFailsafeTimer = null;
+    }
+  }
+
+  function handleScrollbarDragEnd(): void {
+    clearScrollbarDragSession({ invalidateCapturedScrolls: false });
+  }
+
+  function armScrollbarDragSession(): void {
+    clearScrollbarDragSession({ invalidateCapturedScrolls: false });
+    scrollbarDragSessionActive = true;
+    scrollbarDragSessionVersion += 1;
+    document.addEventListener('pointerup', handleScrollbarDragEnd, { capture: true });
+    document.addEventListener('pointercancel', handleScrollbarDragEnd, { capture: true });
+    window.addEventListener('blur', handleScrollbarDragEnd, { capture: true });
+    detachScrollbarDragEnd = () => {
+      document.removeEventListener('pointerup', handleScrollbarDragEnd, { capture: true });
+      document.removeEventListener('pointercancel', handleScrollbarDragEnd, { capture: true });
+      window.removeEventListener('blur', handleScrollbarDragEnd, { capture: true });
+    };
+    scrollbarDragSessionFailsafeTimer = setTimeout(
+      handleScrollbarDragEnd,
+      SCROLLBAR_DRAG_SESSION_FAILSAFE_MS,
+    );
+  }
+
   function restickFromUserInput(source: 'wheel' | 'key' | 'touch' | 'scroll'): void {
-    clearRecentDownIntent();
+    clearRecentDownIntent({ bumpVersion: false });
     escapedFromLockState = false;
     isAtBottomState = true;
     springStopRequested = false;
@@ -1009,13 +1048,16 @@ export function createUseStickToBottomController(
 
   function escapeFromUserInput(source: 'wheel' | 'key' | 'touch' | 'pointer'): void {
     if (!scrollEl) return;
+    if (source !== 'pointer') clearScrollbarDragSession();
     const targetScrollEl = scrollEl;
-    trace('scroll.intent.escape', () => ({
-      source,
-      scrollTop: Math.round(targetScrollEl.scrollTop),
-      isAtBottomState,
-      escapedFromLockState,
-    }));
+    if (!escapedFromLockState) {
+      trace('scroll.intent.escape', () => ({
+        source,
+        scrollTop: Math.round(targetScrollEl.scrollTop),
+        isAtBottomState,
+        escapedFromLockState,
+      }));
+    }
     setEscapedFromLock(true);
   }
 
@@ -1063,6 +1105,7 @@ export function createUseStickToBottomController(
       escapedFromLockState,
     }));
     escapeFromUserInput('pointer');
+    armScrollbarDragSession();
   }
 
   // ===== Scroll handler =====
@@ -1077,15 +1120,13 @@ export function createUseStickToBottomController(
     // and pushed the user past the re-stick epsilon, producing a false
     // negative (the user reached the bottom but the bottom moved away
     // in the 1ms window). This was Bug A in long Opus threads.
-    const distFromBottomAtEvent =
-      scrollEl.scrollHeight - scrollTopAtEvent - scrollEl.clientHeight;
     // Capture and consume the programmatic-write tag synchronously so
     // it only suppresses ONE scroll event. Otherwise a later genuine
     // user scroll back to the same scrollTop value would be ignored.
     const tag = ignoreScrollToTop;
     ignoreScrollToTop = -1;
     const externalTagged = externalScrollIgnoreUntil > nowMs();
-    refreshIsNearBottom();
+    const distFromBottomAtEvent = refreshIsNearBottom();
     const tagged = scrollTopAtEvent === tag || externalTagged;
     trace('scroll.scrollEvent', () => ({
       scrollTop: Math.round(scrollTopAtEvent),
@@ -1109,16 +1150,35 @@ export function createUseStickToBottomController(
     // set synchronously by writeScrollTop, so we already know this event
     // reflects our own write, not user intent.
     if (tagged) return;
-    cancelTargetAnimation();
     const resizeCorrelatedScroll = resizeDifference !== 0 || resizeCorrelatedUntaggedScrollBudget > 0;
     if (resizeCorrelatedUntaggedScrollBudget > 0) resizeCorrelatedUntaggedScrollBudget -= 1;
     const previousObserved = lastObservedScrollTopForRestick;
     const downIntentVersionAtEvent = recentDownIntentVersion;
+    const scrollbarDragSessionAtEvent = scrollbarDragSessionActive;
+    const scrollbarDragSessionVersionAtEvent = scrollbarDragSessionVersion;
+    const scrolledDown = previousObserved < 0
+      ? false
+      : scrollTopAtEvent > previousObserved;
+    const scrolledUp = previousObserved < 0
+      ? false
+      : scrollTopAtEvent < previousObserved;
     lastObservedScrollTopForRestick = scrollTopAtEvent;
+    const shouldRunDeferredScrollIntentCheck =
+      escapedFromLockState
+      || mouseDown
+      || scrollbarDragSessionActive;
+    if (!shouldRunDeferredScrollIntentCheck) return;
+    cancelTargetAnimation();
     // Defer 1ms so a concurrent RO callback can update resizeDifference
     // before we interpret direction. Mirrors upstream.
     setTimeout(() => {
       if (!scrollEl) return;
+      const eventCameFromCurrentScrollbarDrag =
+        scrollbarDragSessionAtEvent
+        && scrollbarDragSessionVersionAtEvent === scrollbarDragSessionVersion;
+      if (eventCameFromCurrentScrollbarDrag && scrolledUp) {
+        escapeFromUserInput('pointer');
+      }
 
       // RO race — content just resized; the scroll event reflects layout,
       // not user intent. Most importantly: virtua's $fixScrollJump can
@@ -1132,9 +1192,13 @@ export function createUseStickToBottomController(
       // A recent down-intent is proof the user is actively trying to
       // re-stick, so let that bottom-landing through even during a
       // measurement cascade. Without recent down intent, layout wins.
-      const hasLiveDownIntent =
+      const hasLiveRecentDownIntent =
         hasRecentDownIntent()
         && recentDownIntentVersion === downIntentVersionAtEvent;
+      const hasLiveScrollbarDragRestickIntent =
+        eventCameFromCurrentScrollbarDrag
+        && scrolledDown;
+      const hasLiveDownIntent = hasLiveRecentDownIntent || hasLiveScrollbarDragRestickIntent;
       if (resizeCorrelatedScroll && !hasLiveDownIntent) {
         trace('scroll.scrollEvent.deferred.bailRO', () => ({
           resizeDifference: Math.round(resizeDifference),
@@ -1153,9 +1217,6 @@ export function createUseStickToBottomController(
         return;
       }
 
-      const scrolledDown = previousObserved < 0
-        ? false
-        : scrollTopAtEvent > previousObserved;
       const willRestick = hasLiveDownIntent
         && scrolledDown
         && escapedFromLockState
@@ -1164,6 +1225,8 @@ export function createUseStickToBottomController(
         scrollTop: Math.round(scrollTopAtEvent),
         previousObserved: Math.round(previousObserved),
         scrolledDown,
+        hasLiveRecentDownIntent,
+        hasLiveScrollbarDragRestickIntent,
         hasLiveDownIntent,
         distFromBottomAtEvent: Math.round(distFromBottomAtEvent),
         distFromBottomNow: scrollEl ? Math.round(distanceFromBottom()) : null,
@@ -1203,6 +1266,7 @@ export function createUseStickToBottomController(
 
   // ===== Public actions =====
   function setEscapedFromLock(next: boolean): void {
+    if (!next && !scrollbarDragSessionActive) clearScrollbarDragSession();
     if (next) {
       clearRecentDownIntent();
       cancelTargetAnimation();
@@ -1249,6 +1313,7 @@ export function createUseStickToBottomController(
 
   function stopScroll(): void {
     clearRecentDownIntent();
+    clearScrollbarDragSession();
     setEscapedFromLock(true);
   }
 
@@ -1397,6 +1462,7 @@ export function createUseStickToBottomController(
     }
     restoreSnapArmed = false;
     clearRecentDownIntent();
+    clearScrollbarDragSession();
     trace('scroll.forceStick.entry', () => ({
       reason,
       isAtBottomState,
@@ -1444,6 +1510,7 @@ export function createUseStickToBottomController(
     }));
     restoreSnapArmed = false;
     clearRecentDownIntent();
+    clearScrollbarDragSession();
     setEscapedFromLock(false);
     isAtBottomState = true;
     refreshIsNearBottom();
@@ -1655,6 +1722,8 @@ export function createUseStickToBottomController(
         springToken,
         recentDownIntentActive: hasRecentDownIntent(),
         recentDownIntentUntil: Math.round(recentDownIntentUntil),
+        scrollbarDragSessionActive,
+        scrollbarDragSessionVersion,
         // Restore-snap consent (consumed by forceStick({reason:'restore'})).
         restoreSnapArmed,
         // Geometry snapshot for cross-referencing the trace.
@@ -1693,6 +1762,7 @@ export function createUseStickToBottomController(
     }
     externalScrollIgnoreUntil = 0;
     clearRecentDownIntent();
+    clearScrollbarDragSession();
     cancelTargetAnimation();
     cancelSpring();
     springStopRequested = false;
