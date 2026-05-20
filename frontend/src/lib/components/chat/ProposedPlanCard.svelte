@@ -14,8 +14,6 @@
   import ProposedPlanActions from './ProposedPlanActions.svelte';
   import ProposedPlanBody from './ProposedPlanBody.svelte';
   import ProposedPlanSaveModal from './ProposedPlanSaveModal.svelte';
-  import ToolKindIcon from './ToolKindIcon.svelte';
-  import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
 
   let {
     pane,
@@ -44,7 +42,6 @@
     },
   }));
 
-  const title = $derived(meta.title || 'Proposed plan');
   const itemMeta = $derived(parseProposedPlanItemMeta(item));
   const isAccepted = $derived(Boolean(itemMeta.planImplementedAt));
   const currentPlan = $derived(getThreadCurrentProposedPlan(pane.threadId));
@@ -82,33 +79,21 @@
   }
 </script>
 
-<div class="group/proposed-plan px-1 py-1" data-testid="proposed-plan-card">
-  <TranscriptDisclosureHeader
-    expanded={false}
-    expandable={false}
-    testId="proposed-plan-header"
-    class="rounded-[var(--radius-control)] py-1"
-    buttonClass="text-[12px] text-fg-muted"
+<div class="group/proposed-plan relative px-1 py-1" data-testid="proposed-plan-card">
+  <div
+    class="pointer-events-none absolute right-1 top-1 z-10 opacity-0 transition-opacity duration-150 group-hover/proposed-plan:pointer-events-auto group-hover/proposed-plan:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100"
+    data-testid="proposed-plan-actions"
   >
-    {#snippet icon()}<ToolKindIcon kind="checklist" ariaLabel="Proposed plan" />{/snippet}
-    {#snippet label()}<span data-testid="proposed-plan-label">plan</span>{/snippet}
-    {#snippet body()}
-      <span class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75">
-        {title}{#if isAccepted}<span class="ml-1 text-fg-hint">(accepted)</span>{/if}
-      </span>
-    {/snippet}
-    {#snippet actions()}
-      <div class="opacity-50 transition-opacity group-hover/proposed-plan:opacity-100 focus-within:opacity-100">
+    <div class="rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/95 px-1 py-0.5 shadow-sm backdrop-blur">
       <ProposedPlanActions
         getCopyText={planExport.getCopyableMarkdown}
         onSave={planExport.openSaveDialog}
         onOpenInSidebar={canOpenCurrentPlanSidebar ? openInSidebar : undefined}
       />
-      </div>
-    {/snippet}
-  </TranscriptDisclosureHeader>
+    </div>
+  </div>
 
-  <div class="ml-[5.25rem] px-3">
+  <div class="pr-24 sm:pr-28" data-testid="proposed-plan-body-shell">
     <ProposedPlanBody
       markdown={displayedMarkdown}
       capped={cappedBody}
@@ -116,6 +101,11 @@
       error={expansion.error}
       workspacePath={paneWorkspacePath(pane)}
     />
+    {#if isAccepted}
+      <p class="mt-2 text-[11px] text-fg-hint" data-testid="proposed-plan-accepted">
+        Accepted
+      </p>
+    {/if}
   </div>
 </div>
 

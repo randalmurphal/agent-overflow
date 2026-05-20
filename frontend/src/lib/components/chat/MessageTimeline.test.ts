@@ -601,13 +601,11 @@ describe('<MessageTimeline>', () => {
   });
 
   it('keeps proposed-plan rows out of the continuous left rail', async () => {
-    // Proposed plans render as a full-width structured card
-    // (ProposedPlanCard's TranscriptDisclosureHeader + ProposedPlanBody),
-    // not the compact chev/icon/label/preview pattern other tool rows
-    // share. The rail running alongside that body looks like it
-    // belongs with the tool gutter even though the card spans the
-    // whole row, so plan rows opt out of `data-rail` and the
-    // border-l/ml/pl shell.
+    // Proposed plans render as standalone markdown sections, not the
+    // compact chev/icon/label/preview pattern other tool rows share.
+    // The rail running alongside that body would make the plan look
+    // nested under the tool gutter, so plan rows opt out of `data-rail`
+    // and the border-l/ml/pl shell.
     setBindingMock('GetPayloadData', async () => ({ data: '# Ship it' }));
     const pane = await buildPane(undefined, [
       makeItem({

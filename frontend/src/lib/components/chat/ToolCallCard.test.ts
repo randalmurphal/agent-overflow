@@ -1151,7 +1151,8 @@ describe("<ToolCallCard> header dispatcher", () => {
   });
 
   it("delegates to ProposedPlanCard when payloadKind=proposed_plan", async () => {
-    const pane = await buildPane();
+    const planMarkdown = "# plan with a long first heading that needs action clearance";
+    setBindingMock("GetPayloadData", async () => ({ data: planMarkdown }));
     const item = makeItem({
       id: "plan",
       kind: "tool_call",
@@ -1163,19 +1164,30 @@ describe("<ToolCallCard> header dispatcher", () => {
         title: "Deploy thing",
         lineCount: 3,
         charCount: 120,
-        preview: "# plan",
+        preview: planMarkdown,
       }),
     });
+    const pane = await buildPane(makeThread(), [item]);
 
-    const { queryByTestId, container } = render(ToolCallCard, {
+    const { getByLabelText, getByTestId, queryByTestId, queryByText } = render(ToolCallCard, {
       props: { pane, item },
     });
 
     // The generic fallback card must NOT render when a structured payload
     // renderer takes over.
     expect(queryByTestId("tool-call-card")).toBeNull();
-    // ProposedPlanCard puts the title in a heading; sanity-check a fragment.
-    expect(container.textContent).toContain("Deploy thing");
+    expect(getByTestId("proposed-plan-card")).toBeInTheDocument();
+    expect(getByTestId("proposed-plan-body-shell").textContent).toContain("long first heading");
+    expect(getByTestId("proposed-plan-body-shell").className).toContain("pr-24");
+    expect(getByTestId("proposed-plan-body-shell").className).not.toContain("ml-[5.25rem]");
+    expect(getByTestId("proposed-plan-body-shell").className).not.toContain("px-3");
+    expect(getByTestId("proposed-plan-actions")).toBeInTheDocument();
+    expect(getByLabelText("Copy full plan")).toBeInTheDocument();
+    expect(getByLabelText("Save plan")).toBeInTheDocument();
+    expect(getByLabelText("Open in plan sidebar")).toBeInTheDocument();
+    expect(queryByTestId("proposed-plan-header")).toBeNull();
+    expect(queryByTestId("proposed-plan-label")).toBeNull();
+    expect(queryByText("Deploy thing")).toBeNull();
   });
 
   it("does not show the plan-sidebar action on an older proposed plan", async () => {
