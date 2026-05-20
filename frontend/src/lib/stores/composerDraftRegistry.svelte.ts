@@ -1,4 +1,3 @@
-import type { TerminalChip } from '../types/draft';
 import type { ComposerDraftStore } from './composerDraft.svelte';
 
 const draftsByPane = new Map<string, ComposerDraftStore>();
@@ -13,13 +12,6 @@ export function registerComposerDraft(
       draftsByPane.delete(paneId);
     }
   };
-}
-
-export function addTerminalChipToPaneDraft(paneId: string, chip: TerminalChip): boolean {
-  const draft = draftsByPane.get(paneId);
-  if (!draft) return false;
-  draft.addTerminalChip(chip);
-  return true;
 }
 
 /**

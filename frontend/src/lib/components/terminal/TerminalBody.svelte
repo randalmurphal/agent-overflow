@@ -17,23 +17,12 @@
     type ThreadTerminalStateHandle,
   } from './terminalStore.svelte';
 
-  interface SendToComposerChip {
-    id: string;
-    label: string;
-    preview: string;
-    content: string;
-    createdAt: number;
-  }
-
   interface Props {
     handle: ThreadTerminalStateHandle;
     terminalID: string;
-    onSendToComposer?: (chip: SendToComposerChip) => void;
   }
 
-  let { handle, terminalID, onSendToComposer }: Props = $props();
-
-  let selection = $state<string>('');
+  let { handle, terminalID }: Props = $props();
 
   let mountEl: HTMLDivElement | undefined = $state();
   let term: Terminal | null = null;
@@ -44,6 +33,8 @@
   // Track whether we've already told the focus registry we're focused so
   // we don't double-decrement on teardown.
   let focusCounted = false;
+  let pendingFocus = false;
+  let focusFramePending = false;
 
   function handleFocusIn(): void {
     if (focusCounted) return;
@@ -105,25 +96,12 @@
       });
     });
 
-    term.onSelectionChange(() => {
-      selection = term?.getSelection() ?? '';
-    });
-
     attachResizeObserver();
     scheduleFit();
-  }
 
-  function handleSendSelection() {
-    const text = selection.trim();
-    if (!text || !onSendToComposer) return;
-    const preview = text.split('\n')[0]?.slice(0, 60) ?? text.slice(0, 60);
-    onSendToComposer({
-      id: `chip-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
-      label: `terminal ${terminalID.slice(0, 8)}`,
-      preview,
-      content: text,
-      createdAt: Date.now(),
-    });
+    if (pendingFocus) {
+      focus();
+    }
   }
 
   function attachResizeObserver() {
@@ -195,24 +173,18 @@
   });
 
   export function focus() {
-    term?.focus();
+    pendingFocus = true;
+    if (focusFramePending) return;
+    focusFramePending = true;
+    requestAnimationFrame(() => {
+      focusFramePending = false;
+      if (destroyed || !term) return;
+      pendingFocus = false;
+      term.focus();
+    });
   }
 </script>
 
-<div class="flex-1 min-h-0 flex flex-col bg-surface-0" data-testid={`terminal-body-${terminalID}`}>
-  {#if onSendToComposer}
-    <div class="flex items-center justify-end border-b border-border/30 bg-surface-2/60 px-2 py-1 text-xs">
-      <button
-        type="button"
-        disabled={!selection.trim()}
-        onclick={handleSendSelection}
-        aria-label="Send Selection to Composer"
-        data-testid="terminal-send-to-composer"
-        class="rounded px-2 py-0.5 font-medium text-text-primary hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-      >
-        Send Selection to Composer
-      </button>
-    </div>
-  {/if}
-  <div bind:this={mountEl} class="flex-1 min-h-0"></div>
+<div class="flex-1 min-h-0 flex flex-col bg-terminal-bg" data-testid={`terminal-body-${terminalID}`}>
+  <div bind:this={mountEl} class="flex-1 min-h-0 bg-terminal-bg"></div>
 </div>

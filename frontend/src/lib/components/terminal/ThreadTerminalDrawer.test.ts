@@ -102,7 +102,6 @@ function makeSurface() {
     get workspacePath() { return thread.workspacePath; },
     setVisible: vi.fn(),
     acquireResizeLease: vi.fn(() => null),
-    sendTerminalChip: vi.fn(),
   };
 }
 
@@ -183,6 +182,24 @@ describe('ThreadTerminalDrawer', () => {
     expect(openCalls).toHaveLength(1);
     expect(openCalls[0]!.args[0]).toBe('thread-A');
     expect(getByTestId('terminal-tab-t1')).toBeDefined();
+  });
+
+  it('renders terminal body without the old send-selection header', async () => {
+    const pane = makeSurface();
+    const { getByTestId, queryByTestId, queryByLabelText } = render(ThreadTerminalDrawer, {
+      surface: pane as never,
+      manual: true,
+    });
+    await tick();
+
+    getByTestId('terminal-open').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await tick();
+
+    expect(getByTestId('terminal-body-t1')).toBeDefined();
+    expect(queryByTestId('terminal-send-to-composer')).toBeNull();
+    expect(queryByLabelText('Send Selection to Composer')).toBeNull();
   });
 
   it('closes a terminal and clears its tab', async () => {

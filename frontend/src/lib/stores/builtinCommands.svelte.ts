@@ -28,6 +28,7 @@ import {
 import {
   focusPaneComposer,
   focusPaneComposerIfEditableActive,
+  isPaneComposerFocused,
 } from '../components/panes/paneComposerFocus';
 import { getThreadById, removeThread } from './threads.svelte';
 import { forkThreadAction } from '../components/sidebar/threadRowActions';
@@ -627,7 +628,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           });
           return;
         }
-        if (getTerminalFocused()) {
+        if (getTerminalFocused() && !isPaneComposerFocused(paneId)) {
           focusPaneComposer(paneId);
         } else {
           window.dispatchEvent(

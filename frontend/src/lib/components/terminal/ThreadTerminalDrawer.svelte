@@ -175,7 +175,6 @@
             bind:this={bodyEl}
             {handle}
             terminalID={handle.activeTerminalID}
-            onSendToComposer={surface.sendTerminalChip}
           />
         {/key}
       {:else}

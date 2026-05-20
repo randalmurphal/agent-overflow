@@ -69,6 +69,23 @@ function readyPane(overrides: Partial<Thread> = {}): ReturnType<typeof createThr
   return pane;
 }
 
+function mountComposerForPane(paneId: string): {
+  textarea: HTMLTextAreaElement;
+  cleanup: () => void;
+} {
+  const root = document.createElement('div');
+  root.setAttribute('data-pane-id', paneId);
+  const textarea = document.createElement('textarea');
+  textarea.setAttribute('aria-label', 'Message Input');
+  root.appendChild(textarea);
+  document.body.appendChild(root);
+
+  return {
+    textarea,
+    cleanup: () => document.body.removeChild(root),
+  };
+}
+
 describe('makeCommandContext', () => {
   beforeEach(() => {
     resetTerminalFocusForTest();
@@ -754,19 +771,39 @@ describe('terminal.toggle command', () => {
     }
   });
 
+  it('dispatches focus-terminal when drawer is open and composer is focused even if terminal focus is stale', () => {
+    const pane = readyPane();
+    pane.setShowTerminal(true);
+    notifyTerminalFocus(true);
+    registerFixtureCommands(pane);
+
+    const composer = mountComposerForPane(pane.paneId);
+    const { textarea } = composer;
+    textarea.focus();
+
+    const events: CustomEvent[] = [];
+    const handler = (e: Event): void => {
+      events.push(e as CustomEvent);
+    };
+    window.addEventListener(FOCUS_TERMINAL_EVENT, handler);
+    try {
+      runCommand('terminal.toggle', makeCommandContext(pane, {}) as CommandContext);
+      expect(events).toHaveLength(1);
+      expect(events[0].detail).toEqual({ paneId: pane.paneId });
+    } finally {
+      window.removeEventListener(FOCUS_TERMINAL_EVENT, handler);
+      composer.cleanup();
+    }
+  });
+
   it('focuses the chat composer when drawer is open and terminal is focused', () => {
     const pane = readyPane();
     pane.setShowTerminal(true);
     notifyTerminalFocus(true);
     registerFixtureCommands(pane);
 
-    // Stand up a composer textarea so focusPaneComposer can find it.
-    const root = document.createElement('div');
-    root.setAttribute('data-pane-id', pane.paneId);
-    const textarea = document.createElement('textarea');
-    textarea.setAttribute('aria-label', 'Message Input');
-    root.appendChild(textarea);
-    document.body.appendChild(root);
+    const composer = mountComposerForPane(pane.paneId);
+    const { textarea } = composer;
 
     const events: CustomEvent[] = [];
     const handler = (e: Event): void => {
@@ -779,7 +816,7 @@ describe('terminal.toggle command', () => {
       expect(events).toHaveLength(0);
     } finally {
       window.removeEventListener(FOCUS_TERMINAL_EVENT, handler);
-      document.body.removeChild(root);
+      composer.cleanup();
     }
   });
 });

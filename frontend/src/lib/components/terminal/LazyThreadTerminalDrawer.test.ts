@@ -21,7 +21,6 @@ function makeSurface() {
     workspacePath: '/workspace',
     setVisible: vi.fn(),
     acquireResizeLease: vi.fn(() => null),
-    sendTerminalChip: vi.fn(),
   };
 }
 

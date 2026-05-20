@@ -5,6 +5,7 @@
   --surface-0: oklch(0.145 0.014 285.82);
   --surface-1: oklch(0.178 0.014 285.82);
   --surface-2: oklch(0.215 0.014 285.82);
+  --terminal-bg: #000000;
   --code-inline-bg: oklch(0.275 0.014 285.82);
   --border: oklch(0.3 0.014 285.82);
   --text-primary: oklch(0.95 0.006 285.82);
@@ -77,6 +78,7 @@ html.light {
   --surface-0: oklch(0.985 0.004 255);
   --surface-1: oklch(0.955 0.008 255);
   --surface-2: oklch(0.915 0.012 255);
+  --terminal-bg: #fafafb;
   --code-inline-bg: oklch(0.9 0.012 255);
   --border: oklch(0.84 0.014 255);
   --text-primary: oklch(0.23 0.014 255);
@@ -150,6 +152,7 @@ html.light {
   --color-surface-0: var(--surface-0);
   --color-surface-1: var(--surface-1);
   --color-surface-2: var(--surface-2);
+  --color-terminal-bg: var(--terminal-bg);
   --color-border: var(--border);
   --color-text-primary: var(--text-primary);
   --color-text-secondary: var(--text-secondary);

@@ -14,10 +14,10 @@ import type { ITheme } from '@xterm/xterm';
 import type { ResolvedTheme } from '../../stores/themeMode.svelte';
 
 const DARK = {
-  background: '#1c1d24',           // ≈ --surface-0 dark
+  background: '#000000',
   foreground: '#eeeef0',           // ≈ --text-primary dark
   cursor: '#eeeef0',
-  cursorAccent: '#1c1d24',
+  cursorAccent: '#000000',
   selectionBackground: '#3a3a48',
   selectionForeground: '#eeeef0',
   black: '#4b5563',

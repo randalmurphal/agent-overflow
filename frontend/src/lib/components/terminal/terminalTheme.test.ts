@@ -15,7 +15,7 @@ describe('getXtermTheme', () => {
     for (const k of REQUIRED_KEYS) {
       expect(t[k]).toMatch(/^#[0-9a-fA-F]{3,8}$/);
     }
-    expect(t.background).toBe('#1c1d24');
+    expect(t.background).toBe('#000000');
     expect(t.foreground).toBe('#eeeef0');
     expect(t.brightWhite).toBe('#ffffff');
   });

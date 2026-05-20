@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { addTerminalChipToPaneDraft } from '../../stores/composerDraftRegistry.svelte';
   import LazyThreadTerminalDrawer from './LazyThreadTerminalDrawer.svelte';
   import type { ThreadTerminalSurfaceContext } from './terminalDrawerTypes';
 
@@ -19,9 +18,6 @@
     },
     acquireResizeLease() {
       return pane.scrollController?.pauseAutoScroll() ?? null;
-    },
-    sendTerminalChip(chip) {
-      addTerminalChipToPaneDraft(pane.paneId, chip);
     },
   });
 </script>
