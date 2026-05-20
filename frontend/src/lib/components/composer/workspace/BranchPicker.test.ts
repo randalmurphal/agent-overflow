@@ -89,6 +89,31 @@ describe('<BranchPicker>', () => {
     expect(row).toBeTruthy();
   });
 
+  it('pins the default branch above other fetched branches', async () => {
+    const pane = await buildPane('gpui-spike');
+    setBindingMock('GitListBranches', async () => [
+      { name: 'gpui-spike', isCurrent: true, isDefault: false },
+      { name: 'keybinding-overhaul', isCurrent: false, isDefault: false },
+      { name: 'main', isCurrent: false, isDefault: true },
+      { name: 'multi-pane', isCurrent: false, isDefault: false },
+    ]);
+
+    const { getAllByRole, getByTestId, findByRole } = render(BranchPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    await findByRole('menuitem', { name: /main/ });
+
+    const rowLabels = getAllByRole('menuitem').map((row) => row.textContent ?? '');
+    const mainIndex = rowLabels.findIndex((label) => label.includes('main'));
+    const gpuiIndex = rowLabels.findIndex((label) => label.includes('gpui-spike'));
+    const keybindingIndex = rowLabels.findIndex((label) => label.includes('keybinding-overhaul'));
+
+    expect(mainIndex).toBeGreaterThanOrEqual(0);
+    expect(mainIndex).toBeLessThan(gpuiIndex);
+    expect(mainIndex).toBeLessThan(keybindingIndex);
+  });
+
   it('refreshes the open branch list when the current branch changes externally', async () => {
     const pane = await buildPane('main');
     let listCallCount = 0;

@@ -102,10 +102,24 @@
   let disabledReason = $derived(workspaceLock.reason);
   let workspaceChangingDisabled = $derived(workspaceLock.locked);
 
+  function orderBranchesForDisplay(sourceBranches: GitBranch[]): GitBranch[] {
+    return sourceBranches
+      .map((branch, index) => ({ branch, index }))
+      .sort((left, right) => {
+        if (left.branch.isDefault !== right.branch.isDefault) {
+          return left.branch.isDefault ? -1 : 1;
+        }
+        return left.index - right.index;
+      })
+      .map(({ branch }) => branch);
+  }
+
+  let orderedBranches = $derived(orderBranchesForDisplay(branches));
+
   let filteredBranches = $derived.by(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return branches;
-    return branches.filter((branch) => branch.name.toLowerCase().includes(needle));
+    if (!needle) return orderedBranches;
+    return orderedBranches.filter((branch) => branch.name.toLowerCase().includes(needle));
   });
 
   // Local-row only makes sense as a base picker — the user is choosing
