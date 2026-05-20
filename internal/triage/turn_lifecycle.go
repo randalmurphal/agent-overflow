@@ -586,6 +586,10 @@ func (r *Router) buildRoundCompletedEvent(
 //     round overwrites so the persisted column is the FINAL
 //     assistant message of the turn — what
 //     `SettledTurn.assistantMessageId` is documented to be.
+//   - stop_reason / error_message: late error wins. A soft
+//     message_delta close can settle a turn as `end_turn` before the
+//     trailing wire `result{is_error:true}` arrives; the error must
+//     still be visible in persisted history.
 //
 // Folded as a single UPDATE so the common case (both fields arrive
 // on the trailing `result`) pays one autocommit boundary.
@@ -596,15 +600,25 @@ func (r *Router) persistLateTurnPayload(evt provider.ProviderEvent, turnIndex in
 		usageJSON = string(meta.Usage)
 	}
 	amid := meta.AssistantMessageID
-	if usageJSON == "" && amid == "" {
+	stopReason, errorMessage := lateErrorTurnPayload(meta)
+	if usageJSON == "" && amid == "" && stopReason == "" && errorMessage == "" {
 		return
 	}
 	if err := r.store.UpdateTurnLatePayload(turnID, store.LateTurnPayload{
 		TokenUsageJSONIfEmpty:       usageJSON,
 		AssistantMessageIDOverwrite: amid,
+		StopReasonOverwrite:         stopReason,
+		ErrorMessageOverwrite:       errorMessage,
 	}); err != nil {
 		log.Printf("triage: update turn %s late payload: %v", turnID, err)
 	}
+}
+
+func lateErrorTurnPayload(meta turnCompleteMeta) (string, string) {
+	if canonicalStopReason(meta) != "error" && meta.Error == "" {
+		return "", ""
+	}
+	return "error", meta.Error
 }
 
 // closeTurnSpan ends the live turn span for the thread, flagging it as

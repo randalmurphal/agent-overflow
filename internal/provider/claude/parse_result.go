@@ -66,12 +66,12 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 	// asked for the abort) — leave the error path alone in that case.
 	var errorMessage string
 	if !aborted && (isErrorSubtype(subtype) || (subtype == "success" && isError)) {
-		errorMessage = joinErrors(raw["errors"])
+		errorMessage = firstNonEmpty(joinErrors(raw["errors"]), boundedProviderErrorMessage(readRawString(raw["result"])))
 	}
 
 	if aborted {
 		stopReason = "interrupted"
-	} else if errorMessage != "" {
+	} else if errorMessage != "" || (subtype == "success" && isError) {
 		stopReason = "error"
 	}
 
@@ -148,13 +148,18 @@ func joinErrors(raw json.RawMessage) string {
 			joined = joinNonEmpty(out, "; ")
 		}
 	}
-	if r := []rune(joined); len(r) > maxJoinedErrorChars {
-		return string(r[:maxJoinedErrorChars]) + "..."
-	}
-	return joined
+	return boundedProviderErrorMessage(joined)
 }
 
 const maxJoinedErrorChars = 512
+
+func boundedProviderErrorMessage(s string) string {
+	s = strings.TrimSpace(s)
+	if r := []rune(s); len(r) > maxJoinedErrorChars {
+		return string(r[:maxJoinedErrorChars]) + "..."
+	}
+	return s
+}
 
 func joinNonEmpty(parts []string, sep string) string {
 	out := make([]string, 0, len(parts))

@@ -26,6 +26,32 @@ func requireWireTurnComplete(t *testing.T, events []provider.ProviderEvent) prov
 	return provider.WireTurnCompleteMeta{}
 }
 
+func TestParseSystem_APIRetryTopLevelPayload(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"api_retry","attempt":10,"max_retries":10,"retry_delay_ms":35073.75745568816,"error_status":529,"error":"rate_limit","session_id":"s1","uuid":"u1"}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 || events[0].Kind != provider.EventAPIRetry {
+		t.Fatalf("events = %+v, want one api_retry", events)
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if meta["attempt"] != float64(10) {
+		t.Fatalf("attempt = %v, want 10", meta["attempt"])
+	}
+	if meta["max_retries"] != float64(10) {
+		t.Fatalf("max_retries = %v, want 10", meta["max_retries"])
+	}
+	if meta["error"] != "rate_limit" {
+		t.Fatalf("error = %v, want rate_limit", meta["error"])
+	}
+}
+
 // TestParseTaskLifecycleEvent_CompletedPatchEmitsBackgroundTerminal is
 // the basic happy-path assertion: a task_updated envelope with
 // `patch.status=completed` emits exactly one

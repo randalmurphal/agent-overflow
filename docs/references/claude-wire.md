@@ -641,6 +641,17 @@ must emit them in roughly this order; the parser pins the surfaces
 so a future SDK schema change is a visible code change rather than a
 silent UI freeze.
 
+### `system.api_retry` - retry progress
+
+While Claude retries an overloaded or transiently-failed provider
+request, it emits `system` envelopes with `subtype:"api_retry"`.
+Current Claude Code builds put retry fields at the top level:
+`attempt`, `max_retries`, `retry_delay_ms`, `error_status`, `error`,
+`session_id`, and `uuid`. Older/alternate builds wrapped equivalent
+fields under `data`. Agent Overflow normalizes both shapes into
+`EventAPIRetry` metadata so the timeline row can render the latest
+retry attempt and status.
+
 ### `assistant.error` — closed-set enum on the assistant envelope
 
 When the API rejects a prompt mid-turn, the SDK populates the
@@ -657,6 +668,10 @@ agent SDK:
 | `server_error` | 5xx from the Anthropic API |
 | `max_output_tokens` | The model emitted enough tokens to hit the cap |
 | `unknown` | SDK fallback for anything outside the closed set |
+
+Older/alternate SDK shapes may put the same enum under
+`message.error`; the parser treats that as a compatibility fallback
+while preferring the documented top-level field.
 
 Per the agent SDK source, `assistant.error` is followed by a
 `result{is_error:true}` envelope that closes the turn through the

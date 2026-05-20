@@ -175,22 +175,24 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	}
 
 	// `assistant.error` (e.g. `rate_limit`, `authentication_failed`) is
-	// surfaced as a fatal EventError. Per the agent SDK, the CLI follows
+	// surfaced as a fatal EventError. Claude has emitted this enum in two
+	// places across versions: under `message.error`, and as a top-level
+	// envelope field next to `message`. Per the agent SDK, the CLI follows
 	// this with a real `result{is_error:true}` envelope which closes the
 	// turn through the wire path; the `expect_turn_complete:true` flag
 	// tells the triage router not to synthesize a duplicate TurnComplete.
 	// Subagent assistant errors (parent_tool_use_id != "") use the parent
 	// thread's open turn; the failure still closes the parent turn.
-	if msg.Error != "" {
+	if errorEnum := assistantErrorEnum(raw, msg); errorEnum != "" {
 		errMeta, _ := json.Marshal(map[string]any{
-			"error":                msg.Error,
+			"error":                errorEnum,
 			"fatal":                true,
 			"expect_turn_complete": true,
 		})
 		events = append(events, provider.ProviderEvent{
 			Kind:            provider.EventError,
 			ThreadID:        threadID,
-			Content:         errorEnumToHumanCopy(msg.Error),
+			Content:         assistantErrorSummary(msg, errorEnum),
 			Meta:            errMeta,
 			ParentToolUseID: parentToolUseID,
 			Timestamp:       now,
@@ -198,6 +200,25 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	}
 
 	return events, nil
+}
+
+func assistantErrorEnum(raw map[string]json.RawMessage, msg assistantMessage) string {
+	if enum := strings.TrimSpace(msg.Error); enum != "" {
+		return enum
+	}
+	return strings.TrimSpace(readRawString(raw["error"]))
+}
+
+func assistantErrorSummary(msg assistantMessage, enum string) string {
+	for _, block := range msg.Content {
+		if block.Type != "text" {
+			continue
+		}
+		if text := boundedProviderErrorMessage(block.Text); text != "" {
+			return text
+		}
+	}
+	return errorEnumToHumanCopy(enum)
 }
 
 // errorEnumToHumanCopy maps an `assistant.error` enum value to a

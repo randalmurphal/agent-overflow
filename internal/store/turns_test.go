@@ -338,6 +338,23 @@ func TestUpdateTurnLatePayload(t *testing.T) {
 	if got.TokenUsageJSON != `{"inputTokens":1}` {
 		t.Fatalf("amid-only fold disturbed usage: got %q", got.TokenUsageJSON)
 	}
+
+	// A late real result can report failure after a soft message_delta
+	// already settled the turn as end_turn. The error fields overwrite
+	// so history reflects the final provider outcome.
+	if err := s.UpdateTurnLatePayload("turn-late", LateTurnPayload{
+		StopReasonOverwrite:   "error",
+		ErrorMessageOverwrite: "API Error: 529 Overloaded.",
+	}); err != nil {
+		t.Fatalf("error fold: %v", err)
+	}
+	got, _, _ = s.GetTurn("turn-late")
+	if got.StopReason != "error" {
+		t.Fatalf("late error did not overwrite stop_reason: got %q", got.StopReason)
+	}
+	if got.ErrorMessage != "API Error: 529 Overloaded." {
+		t.Fatalf("late error did not overwrite error_message: got %q", got.ErrorMessage)
+	}
 }
 
 func TestUpdateTurnCompletedRejectsUnknownTurn(t *testing.T) {

@@ -3,6 +3,7 @@ package claude
 import (
 	"encoding/json"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -93,6 +94,61 @@ func TestParseAssistant_ErrorWithToolUseBlock(t *testing.T) {
 	}
 	if !sawError {
 		t.Fatalf("expected EventError to fire on assistant.error alongside tool_use, got %+v", events)
+	}
+}
+
+func TestParseAssistant_TopLevelErrorUsesTextContent(t *testing.T) {
+	const errorText = "API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment. If it persists, check status.claude.com."
+	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":` + strconv.Quote(errorText) + `}]},"error":"server_error"}`)
+	events, err := ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var errEvent provider.ProviderEvent
+	for _, e := range events {
+		if e.Kind == provider.EventError {
+			errEvent = e
+			break
+		}
+	}
+	if errEvent.Kind != provider.EventError {
+		t.Fatalf("expected EventError, got %+v", events)
+	}
+	if errEvent.Content != errorText {
+		t.Fatalf("Content: got %q, want %q", errEvent.Content, errorText)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(errEvent.Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if meta["error"] != "server_error" {
+		t.Fatalf("meta.error: got %v, want server_error", meta["error"])
+	}
+	if v, ok := meta["expect_turn_complete"].(bool); !ok || !v {
+		t.Fatalf("meta.expect_turn_complete: got %v, want true", meta["expect_turn_complete"])
+	}
+}
+
+func TestParseAssistant_ErrorTextIsBounded(t *testing.T) {
+	message := strings.Repeat("x", maxJoinedErrorChars+10)
+	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":` + strconv.Quote(message) + `}]},"error":"server_error"}`)
+	events, err := ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var errEvent provider.ProviderEvent
+	for _, e := range events {
+		if e.Kind == provider.EventError {
+			errEvent = e
+			break
+		}
+	}
+	if errEvent.Kind != provider.EventError {
+		t.Fatalf("expected EventError, got %+v", events)
+	}
+	want := strings.Repeat("x", maxJoinedErrorChars) + "..."
+	if errEvent.Content != want {
+		t.Fatalf("Content length/content mismatch: got len=%d want len=%d", len(errEvent.Content), len(want))
 	}
 }
 
@@ -433,8 +489,8 @@ func TestParseAssistant_AdvisorResultDropsOrphan(t *testing.T) {
 // right place to recognise it.
 func TestParseAssistant_ServerToolUseDropsUnknownName(t *testing.T) {
 	cases := []struct {
-		name      string
-		toolName  string
+		name       string
+		toolName   string
 		shouldEmit bool
 	}{
 		{"advisor", "advisor", true},

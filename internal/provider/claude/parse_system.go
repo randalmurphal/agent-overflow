@@ -69,7 +69,7 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		// string. Triage uses these to render the timeline retry row
 		// (hiding attempts < 4, mirroring Claude Code's TUI). The raw
 		// `data` is preserved under `wire` for forensics.
-		retryMeta := buildClaudeAPIRetryMeta(raw["data"])
+		retryMeta := buildClaudeAPIRetryMeta(apiRetryPayload(raw))
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventAPIRetry,
 			ThreadID:  threadID,
@@ -131,6 +131,17 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		// Unknown system subtype — skip.
 		return nil, nil
 	}
+}
+
+func apiRetryPayload(raw map[string]json.RawMessage) json.RawMessage {
+	if len(raw["data"]) > 0 {
+		return raw["data"]
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	return encoded
 }
 
 // parseTaskLifecycleEvent handles `system/task_updated`. A terminal
@@ -297,11 +308,12 @@ func normalizeTaskTerminalStatus(status string) string {
 	}
 }
 
-// buildClaudeAPIRetryMeta normalizes a `system.api_retry.data` payload
-// into the shared {attempt, max_retries, error} EventAPIRetry meta
-// shape. The SDK's `data.error` is an object whose `.message` field
-// carries the human-readable copy; we pull the message string up so
-// triage can pass it to the row summary verbatim. Missing fields stay
+// buildClaudeAPIRetryMeta normalizes a `system.api_retry` payload into
+// the shared {attempt, max_retries, error} EventAPIRetry meta shape.
+// Claude has emitted both a nested `data` object and top-level retry
+// fields across versions. The SDK's nested `data.error` is an object
+// whose `.message` field carries the human-readable copy; newer top-level
+// payloads can carry `error` as a flat string. Missing fields stay
 // zero-valued so the triage handler treats them as "unknown" rather
 // than fabricating a label.
 func buildClaudeAPIRetryMeta(rawData json.RawMessage) json.RawMessage {
@@ -334,10 +346,9 @@ func buildClaudeAPIRetryMeta(rawData json.RawMessage) json.RawMessage {
 }
 
 // readNestedErrorMessage pulls the human copy out of a Claude
-// `system.api_retry.data.error` field. The wire shape we've observed
-// is `error: { message: string, name?: string }` — so we look for
-// `.message` first, then fall through to a flat string in case the
-// SDK ever switches to that shape.
+// `system.api_retry` error field. Nested payloads use
+// `error:{message:string,name?:string}`; top-level payloads observed in
+// Claude 2.1.139 use a flat `error` string.
 func readNestedErrorMessage(data map[string]json.RawMessage) string {
 	raw, ok := data["error"]
 	if !ok {

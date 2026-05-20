@@ -1003,10 +1003,14 @@ func TestAssistantErrorThenResultSettlesExactlyOnce(t *testing.T) {
 	// Real wire result{is_error:true} arrives as EventTurnComplete,
 	// settling the turn for real. With expect_turn_complete:true on
 	// the prior fatal there is no synthesis to race against.
+	const apiError = "API Error: 529 Overloaded. This is a server-side issue, usually temporary - try again in a moment. If it persists, check status.claude.com."
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		TurnComplete: normalTurnCompleteMeta(),
-		Timestamp:    time.Now(),
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason:   "error",
+			ErrorMessage: apiError,
+		},
+		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("real turn complete: %v", err)
 	}
@@ -1014,6 +1018,16 @@ func TestAssistantErrorThenResultSettlesExactlyOnce(t *testing.T) {
 	completed := filterEmissions(*emissions, "provider:turn_completed")
 	if len(completed) != 1 {
 		t.Fatalf("expected exactly 1 provider:turn_completed, got %d", len(completed))
+	}
+	payload, ok := completed[0].data.(TurnCompletedEvent)
+	if !ok {
+		t.Fatalf("completed payload type = %T, want TurnCompletedEvent", completed[0].data)
+	}
+	if payload.StopReason != "error" {
+		t.Fatalf("completed stopReason = %q, want error", payload.StopReason)
+	}
+	if payload.ErrorMessage != apiError {
+		t.Fatalf("completed errorMessage = %q, want %q", payload.ErrorMessage, apiError)
 	}
 
 	items, err := st.ListItems("t1")
@@ -1028,6 +1042,16 @@ func TestAssistantErrorThenResultSettlesExactlyOnce(t *testing.T) {
 	}
 	if apiErrors != 1 {
 		t.Fatalf("expected exactly 1 api_error row, got %d (%+v)", apiErrors, items)
+	}
+	turn, found, err := st.GetTurn("t1:0")
+	if err != nil || !found {
+		t.Fatalf("get turn: found=%v err=%v", found, err)
+	}
+	if turn.StopReason != "error" {
+		t.Fatalf("turn stopReason = %q, want error", turn.StopReason)
+	}
+	if turn.ErrorMessage != apiError {
+		t.Fatalf("turn errorMessage = %q, want %q", turn.ErrorMessage, apiError)
 	}
 }
 
@@ -1128,6 +1152,69 @@ func TestSoftThenRealTurnComplete_RealisticCascade(t *testing.T) {
 	}
 	if !strings.Contains(turn.TokenUsageJSON, `"inputTokens":6`) {
 		t.Errorf("token_usage_json after real = %q, want fold-in of inputTokens=6", turn.TokenUsageJSON)
+	}
+}
+
+func TestSoftThenRealTurnComplete_LateResultErrorUpdatesSettledTurn(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: &provider.SoftRoundCloseMeta{
+			StopReason:         "end_turn",
+			AssistantMessageID: "msg_softA",
+		},
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("soft turn complete: %v", err)
+	}
+
+	const apiError = "API Error: 529 Overloaded. This is a server-side issue, usually temporary - try again in a moment. If it persists, check status.claude.com."
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason:         "error",
+			AssistantMessageID: "msg_softA",
+			ErrorMessage:       apiError,
+			Usage:              &provider.TokenUsage{InputTokens: 6, OutputTokens: 34},
+		},
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("late error result: %v", err)
+	}
+
+	completed := filterEmissions(*emissions, "provider:turn_completed")
+	if len(completed) != 1 {
+		t.Fatalf("expected only the soft provider:turn_completed emission, got %d", len(completed))
+	}
+	payload, ok := completed[0].data.(TurnCompletedEvent)
+	if !ok {
+		t.Fatalf("completed payload type = %T, want TurnCompletedEvent", completed[0].data)
+	}
+	if payload.StopReason != "end_turn" || payload.ErrorMessage != "" {
+		t.Fatalf("soft payload = (%q, %q), want initial non-error close", payload.StopReason, payload.ErrorMessage)
+	}
+
+	turn, found, err := st.GetTurn("t1:0")
+	if err != nil || !found {
+		t.Fatalf("get turn after late error: found=%v err=%v", found, err)
+	}
+	if turn.StopReason != "error" {
+		t.Fatalf("stop_reason after late error = %q, want error", turn.StopReason)
+	}
+	if turn.ErrorMessage != apiError {
+		t.Fatalf("error_message after late error = %q, want %q", turn.ErrorMessage, apiError)
+	}
+	if !strings.Contains(turn.TokenUsageJSON, `"inputTokens":6`) {
+		t.Fatalf("token_usage_json after late error = %q, want fold-in of inputTokens=6", turn.TokenUsageJSON)
 	}
 }
 

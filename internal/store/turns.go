@@ -122,6 +122,8 @@ func (s *Store) UpdateTurnCompleted(
 type LateTurnPayload struct {
 	TokenUsageJSONIfEmpty       string
 	AssistantMessageIDOverwrite string
+	StopReasonOverwrite         string
+	ErrorMessageOverwrite       string
 }
 
 // UpdateTurnLatePayload folds late-arriving payload onto an
@@ -139,8 +141,12 @@ type LateTurnPayload struct {
 //     documented contract on `SettledTurn.assistantMessageId` and
 //     `TurnCompletedEvent.assistantMessageId`. An empty input is a
 //     no-op (preserves whatever the row already has).
+//   - `stop_reason` / `error_message`: late error wins when the caller
+//     passes non-empty values. A soft message_delta close can settle the row
+//     before the trailing `result{is_error:true}` arrives; the late real
+//     result must still mark the persisted turn as failed.
 //
-// Passing both payload fields empty is a silent no-op (no SQL roundtrip).
+// Passing every payload field empty is a silent no-op (no SQL roundtrip).
 //
 // The first settlement may have come from the parser's soft
 // round-close (which fires from message_delta — usage may not be on
@@ -152,7 +158,10 @@ func (s *Store) UpdateTurnLatePayload(turnID string, payload LateTurnPayload) er
 	if turnID == "" {
 		return fmt.Errorf("store: update turn late payload: turn id is required")
 	}
-	if payload.TokenUsageJSONIfEmpty == "" && payload.AssistantMessageIDOverwrite == "" {
+	if payload.TokenUsageJSONIfEmpty == "" &&
+		payload.AssistantMessageIDOverwrite == "" &&
+		payload.StopReasonOverwrite == "" &&
+		payload.ErrorMessageOverwrite == "" {
 		return nil
 	}
 	_, err := s.db.Exec(
@@ -164,10 +173,20 @@ func (s *Store) UpdateTurnLatePayload(turnID string, payload LateTurnPayload) er
 		        assistant_message_id = CASE
 		          WHEN ? != '' THEN ?
 		          ELSE assistant_message_id
+		        END,
+		        stop_reason = CASE
+		          WHEN ? != '' THEN ?
+		          ELSE stop_reason
+		        END,
+		        error_message = CASE
+		          WHEN ? != '' THEN ?
+		          ELSE error_message
 		        END
 		  WHERE turn_id = ?`,
 		payload.TokenUsageJSONIfEmpty, payload.TokenUsageJSONIfEmpty,
 		payload.AssistantMessageIDOverwrite, payload.AssistantMessageIDOverwrite,
+		payload.StopReasonOverwrite, payload.StopReasonOverwrite,
+		payload.ErrorMessageOverwrite, payload.ErrorMessageOverwrite,
 		turnID,
 	)
 	if err != nil {
