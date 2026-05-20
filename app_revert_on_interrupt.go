@@ -98,12 +98,17 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 		return InterruptAndRevertResult{}, fmt.Errorf("interrupt-and-revert: build prompt draft: %w", err)
 	}
 
+	markedReverted := false
+	if a.triage != nil {
+		a.triage.MarkTurnReverted(threadID)
+		markedReverted = true
+	}
+
 	// Best-effort provider interrupt before tearing down. For Claude
 	// this aborts the in-flight model call; for Codex it cancels the
-	// turn at the app-server. Errors are logged but not fatal — the
-	// upcoming stopSession + provider rollback will reset state either
-	// way, and we'd rather surface the predicate-eligible revert than
-	// fail the whole flow because the CLI didn't ack a stop in time.
+	// turn at the app-server. MarkTurnReverted happens before this call
+	// because Codex can synchronously emit turn/completed while handling
+	// the interrupt response; that completion must be tagged as a revert.
 	if sess, ok := a.sessionManager().get(threadID); ok {
 		if providerSess := sess.providerSession(); providerSess != nil {
 			if err := providerSess.Interrupt(context.Background()); err != nil {
@@ -125,9 +130,12 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 		mode:         RevertModeConversationOnly,
 		promptDraft:  promptDraft,
 		errorPrefix:  "interrupt-and-revert",
-		markReverted: true,
+		markReverted: false,
 	})
 	if err != nil {
+		if markedReverted {
+			a.triage.ClearTurnReverted(threadID)
+		}
 		return InterruptAndRevertResult{}, err
 	}
 
@@ -202,10 +210,19 @@ func (a *App) evaluateInterruptRevertPredicate(threadID string) (bool, store.Ite
 			return false, store.Item{}, "agent content present", nil
 		}
 	}
-	if a.triage != nil && a.triage.HasQueuedFlushItems(threadID) {
+	if a.pendingFlushWorkCount(threadID) > 0 {
 		return false, store.Item{}, "queued follow-up messages", nil
 	}
 	return true, userItem, "", nil
+}
+
+func (a *App) pendingFlushWorkCount(threadID string) int {
+	total := a.flushDispatchItemCount(threadID)
+	if a.triage != nil {
+		total += a.triage.QueuedFlushItemCount(threadID)
+		total += a.triage.DeferredPendingFlushItemCount(threadID)
+	}
+	return total
 }
 
 // resolveRevertCheckpoint returns the persisted checkpoint for the

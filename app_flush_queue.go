@@ -36,7 +36,8 @@ type QueueStateChangedEvent struct {
 }
 
 type flushDispatchBatch struct {
-	items []triage.QueuedFlushItem
+	items      []triage.QueuedFlushItem
+	generation uint64
 }
 
 // QueueFlushedEvent is emitted by `dispatchFlush` at the start of a
@@ -89,13 +90,11 @@ func (a *App) enqueueFlushDispatch(threadID string, items []triage.QueuedFlushIt
 	copy(batch, items)
 
 	a.flushDispatchMu.Lock()
-	if a.flushDispatchQueues == nil {
-		a.flushDispatchQueues = make(map[string][]flushDispatchBatch)
-		a.flushDispatchRunning = make(map[string]bool)
-		a.flushDispatchInflightItems = make(map[string]int)
-	}
+	a.ensureFlushDispatchMapsLocked()
+	generation := a.flushDispatchGeneration[threadID]
 	a.flushDispatchQueues[threadID] = append(a.flushDispatchQueues[threadID], flushDispatchBatch{
-		items: batch,
+		items:      batch,
+		generation: generation,
 	})
 	a.flushDispatchInflightItems[threadID] += len(batch)
 	if a.flushDispatchRunning[threadID] {
@@ -128,12 +127,14 @@ func (a *App) runFlushDispatchWorker(threadID string) {
 		}
 		a.flushDispatchMu.Unlock()
 
-		a.dispatchFlush(threadID, batch.items)
+		a.dispatchFlushWithGeneration(threadID, batch.items, batch.generation)
 
 		a.flushDispatchMu.Lock()
-		a.flushDispatchInflightItems[threadID] -= len(batch.items)
-		if a.flushDispatchInflightItems[threadID] <= 0 {
-			delete(a.flushDispatchInflightItems, threadID)
+		if a.flushDispatchGeneration[threadID] == batch.generation {
+			a.flushDispatchInflightItems[threadID] -= len(batch.items)
+			if a.flushDispatchInflightItems[threadID] <= 0 {
+				delete(a.flushDispatchInflightItems, threadID)
+			}
 		}
 		a.flushDispatchMu.Unlock()
 	}
@@ -143,6 +144,43 @@ func (a *App) flushDispatchItemCount(threadID string) int {
 	a.flushDispatchMu.Lock()
 	defer a.flushDispatchMu.Unlock()
 	return a.flushDispatchInflightItems[threadID]
+}
+
+func (a *App) ensureFlushDispatchMapsLocked() {
+	if a.flushDispatchQueues == nil {
+		a.flushDispatchQueues = make(map[string][]flushDispatchBatch)
+	}
+	if a.flushDispatchRunning == nil {
+		a.flushDispatchRunning = make(map[string]bool)
+	}
+	if a.flushDispatchInflightItems == nil {
+		a.flushDispatchInflightItems = make(map[string]int)
+	}
+	if a.flushDispatchGeneration == nil {
+		a.flushDispatchGeneration = make(map[string]uint64)
+	}
+}
+
+func (a *App) clearFlushDispatchForRollback(threadID string) {
+	a.flushDispatchMu.Lock()
+	a.ensureFlushDispatchMapsLocked()
+	a.flushDispatchGeneration[threadID]++
+	delete(a.flushDispatchQueues, threadID)
+	delete(a.flushDispatchInflightItems, threadID)
+	a.flushDispatchMu.Unlock()
+}
+
+func (a *App) currentFlushDispatchGeneration(threadID string) uint64 {
+	a.flushDispatchMu.Lock()
+	defer a.flushDispatchMu.Unlock()
+	if a.flushDispatchGeneration == nil {
+		return 0
+	}
+	return a.flushDispatchGeneration[threadID]
+}
+
+func (a *App) isFlushDispatchGenerationCurrent(threadID string, generation uint64) bool {
+	return a.currentFlushDispatchGeneration(threadID) == generation
 }
 
 func (a *App) drainFlushDispatch(ctx context.Context, timeout time.Duration) error {
@@ -219,17 +257,30 @@ type flushQueuePayload = flushqueue.Payload
 // Failed or unattempted items never enter Zone 2, so the frontend cannot get
 // stuck waiting for a provider confirmation that will never arrive.
 func (a *App) dispatchFlush(threadID string, items []triage.QueuedFlushItem) {
+	a.dispatchFlushWithGeneration(threadID, items, a.currentFlushDispatchGeneration(threadID))
+}
+
+func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.QueuedFlushItem, generation uint64) {
 	if len(items) == 0 {
 		return
 	}
 
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
+	if !a.isFlushDispatchGenerationCurrent(threadID, generation) {
+		return
+	}
 
 	for i, item := range items {
+		if !a.isFlushDispatchGenerationCurrent(threadID, generation) {
+			return
+		}
 		flushedItem, err := a.dispatchFlushItem(threadID, item)
 		if err != nil {
 			log.Printf("flush dispatch: thread=%s item=%s: %v", threadID, item.ID, err)
+			if !a.isFlushDispatchGenerationCurrent(threadID, generation) {
+				return
+			}
 			for _, unattempted := range items[i+1:] {
 				a.triage.RegisterQueueItem(threadID, unattempted)
 			}

@@ -801,6 +801,32 @@ func TestEnqueueFlushDispatch_SerializesBatchesForOneThread(t *testing.T) {
 	}
 }
 
+func TestDispatchFlush_StaleGenerationAfterRollbackDropsBatch(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+
+	thread := testThread("flush-stale-generation")
+	thread.Provider = string(provider.Codex)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	staleGeneration := app.currentFlushDispatchGeneration(thread.ID)
+	app.clearFlushDispatchForRollback(thread.ID)
+
+	app.dispatchFlushWithGeneration(thread.ID, []triage.QueuedFlushItem{
+		{ID: "queue:stale", Message: "stale queued prompt"},
+	}, staleGeneration)
+
+	if app.triage.HasQueuedFlushItems(thread.ID) {
+		t.Fatal("stale flush batch was re-queued after rollback")
+	}
+	if got := app.flushDispatchItemCount(thread.ID); got != 0 {
+		t.Fatalf("flush dispatch item count = %d, want 0", got)
+	}
+}
+
 // TestNextFlushUserItemID_NeverCollidesWithSeedOrSteer pins the id
 // allocation: flush ids count from 1, share the prefix with steer
 // ids but in a different namespace, and never collide with the seed

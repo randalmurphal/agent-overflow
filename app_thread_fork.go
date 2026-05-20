@@ -411,7 +411,11 @@ func (a *App) forkCodexThread(source store.Thread, atTurnIndex *int) (string, er
 			return "", fmt.Errorf("%s: %w", op, err)
 		}
 		if numRollback > 0 {
-			if err := activeSession.RollbackThread(context.Background(), forkedID, numRollback); err != nil {
+			result, err := activeSession.RollbackThread(context.Background(), forkedID, numRollback)
+			if err != nil {
+				return "", fmt.Errorf("%s: truncate fork: %w", op, err)
+			}
+			if err := a.validateCodexRollbackSurvivors(source.ID, op, result, *atTurnIndex+1); err != nil {
 				return "", fmt.Errorf("%s: truncate fork: %w", op, err)
 			}
 		}
@@ -437,7 +441,11 @@ func (a *App) forkCodexThread(source store.Thread, atTurnIndex *int) (string, er
 	if numRollback > 0 {
 		// Same stdio session — Codex's app-server routes thread/rollback
 		// by threadId to the fork's rollout. See spike for verification.
-		if err := tempSession.RollbackThread(context.Background(), forkedID, numRollback); err != nil {
+		result, err := tempSession.RollbackThread(context.Background(), forkedID, numRollback)
+		if err != nil {
+			return "", fmt.Errorf("%s: truncate fork: %w", op, err)
+		}
+		if err := a.validateCodexRollbackSurvivors(source.ID, op, result, *atTurnIndex+1); err != nil {
 			return "", fmt.Errorf("%s: truncate fork: %w", op, err)
 		}
 	}

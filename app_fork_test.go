@@ -184,6 +184,33 @@ func TestForkThreadUsesActiveCodexSession(t *testing.T) {
 	}
 }
 
+func TestForkThreadCodexRejectsRollbackSurvivorMismatch(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	if _, err := app.settings.Update(map[string]any{
+		"codexBinaryPath": writeCodexForkRollbackBinary(t, "resume-provider-thread", "fork-provider-thread", 3),
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	source := testThread("thread-codex-fork-mismatch")
+	source.Provider = string(provider.Codex)
+	source.SessionRef = "resume-provider-thread"
+	source.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(source); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	insertUserItemWithMeta(t, app.store, source.ID, "user:0", 0, "first", `{"provider_item_id":"provider-user-0"}`)
+	insertUserItemWithMeta(t, app.store, source.ID, "user:1", 1, "second", `{"provider_item_id":"provider-user-1"}`)
+	insertUserItemWithMeta(t, app.store, source.ID, "user:2", 2, "third", `{"provider_item_id":"provider-user-2"}`)
+
+	atTurn := 1
+	_, err := app.ForkThread(source.ID, &atTurn)
+	if err == nil || !strings.Contains(err.Error(), "surviving turns") {
+		t.Fatalf("ForkThread() error = %v, want surviving-turn mismatch", err)
+	}
+}
+
 // TestForkThreadClaudeAtTurnSlicesSessionJSONL exercises the fork-at-point
 // path: a Claude source with a real on-disk session JSONL, forked at a
 // specific user-prompt UUID. The new fork must:
@@ -765,6 +792,46 @@ done
 `, resumedThreadID, resumedThreadID, forkedThreadID)
 
 	path := filepath.Join(t.TempDir(), "codex-fork.sh")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
+}
+
+func writeCodexForkRollbackBinary(t *testing.T, resumedThreadID string, forkedThreadID string, survivingTurns int) string {
+	t.Helper()
+	turns := make([]string, 0, survivingTurns)
+	for i := 0; i < survivingTurns; i++ {
+		turns = append(turns, fmt.Sprintf(`{"id":"turn-%d"}`, i))
+	}
+	turnsJSON := "[" + strings.Join(turns, ",") + "]"
+
+	script := fmt.Sprintf(`#!/bin/sh
+while IFS= read -r line; do
+    id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
+    if [ -z "$id" ]; then
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/resume"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s"}}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/fork"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s"}}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/rollback"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s","turns":%s}}}\n' "$id"
+        continue
+    fi
+done
+`, resumedThreadID, forkedThreadID, forkedThreadID, turnsJSON)
+
+	path := filepath.Join(t.TempDir(), "codex-fork-rollback.sh")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}

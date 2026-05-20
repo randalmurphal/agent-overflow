@@ -11,6 +11,7 @@ import (
 
 	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/provider/claude/sessionfork"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 )
 
@@ -669,6 +670,7 @@ func newTestApp(t *testing.T) (*App, func()) {
 	app := &App{
 		store:       st,
 		checkpoints: checkpoint.NewStore(),
+		settings:    settings.NewService(t.TempDir()),
 		sessions:    make(map[string]session),
 	}
 	return app, func() { st.Close() }

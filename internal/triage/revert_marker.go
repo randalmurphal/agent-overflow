@@ -27,6 +27,17 @@ func (r *Router) MarkTurnReverted(threadID string) {
 	r.mu.Unlock()
 }
 
+// ClearTurnReverted drops a pending revert marker when the App aborts a
+// revert after marking but before any turn-completed emission consumes it.
+func (r *Router) ClearTurnReverted(threadID string) {
+	if threadID == "" {
+		return
+	}
+	r.mu.Lock()
+	delete(r.revertedTurns, threadID)
+	r.mu.Unlock()
+}
+
 // consumeRevertedTurn returns true and clears the marker when the
 // thread is flagged for revert. Safe to call when no marker is set
 // (returns false). Called by buildRoundCompletedEvent so the wire

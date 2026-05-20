@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 
 	"github.com/google/uuid"
 )
@@ -312,10 +313,9 @@ func (a *App) RevertToMessageCheckpoint(threadID string, userItemID string, mode
 // revertConversationLockedArgs bundles the parameters for the shared
 // revert tail. Callers prepare the thread, user item, checkpoint, and
 // composer draft, then hand off to revertConversationLocked which owns
-// the destructive sequence (stop session → provider rollback → SQLite
-// truncate → draft upsert). Event emission stays with the caller so
-// each surface (explicit revert vs revert-on-interrupt) can pick its
-// own payload shape.
+// the destructive sequence (provider rollback → SQLite truncate → draft
+// upsert). Event emission stays with the caller so each surface
+// (explicit revert vs revert-on-interrupt) can pick its own payload shape.
 type revertConversationLockedArgs struct {
 	thread      store.Thread
 	userItem    store.Item
@@ -346,28 +346,37 @@ type revertConversationLockedArgs struct {
 //     turn-complete fired by CleanupThread (during stopSession)
 //     carries RevertedUserMessage=true. Skip when no active turn is
 //     in flight (markReverted=false).
-//  2. stopSession — closes the provider subprocess and runs
-//     triage.CleanupThread which drains pending-send FIFO, wire-only
-//     dedup, flush queue, and synthesizes a truncated turn-complete
-//     for any open turn.
-//  3. revertProviderConversationToMessage — Claude JSONL fork or
-//     Codex thread/rollback. For Claude this REQUIRES the session
-//     to be stopped (file rewrite).
-//  4. Conversation-and-files mode only: ListTrackedFilesFromTurn +
+//  2. Provider rollback:
+//     - Codex uses a live/resumed app-server session and validates the
+//     thread/rollback response before local state changes.
+//     - Claude stops the provider subprocess first, then writes a sliced
+//     session file.
+//  3. Conversation-and-files mode only: ListTrackedFilesFromTurn +
 //     RestoreWorktreePaths + workspaceFiles.Invalidate.
-//  5. DeleteCheckpointsFromTurn + DeleteConversationFromTurn truncate
+//  4. DeleteCheckpointsFromTurn + DeleteConversationFromTurn truncate
 //     SQLite at the user-item's turnIndex (inclusive).
-//  6. deleteCheckpointRefs removes the matching git refs.
-//  7. UpsertThreadDraft restores the composer draft.
+//  5. deleteCheckpointRefs removes the matching git refs.
+//  6. UpsertThreadDraft restores the composer draft.
 func (a *App) revertConversationLocked(args revertConversationLockedArgs) error {
 	if args.markReverted && a.triage != nil {
 		a.triage.MarkTurnReverted(args.thread.ID)
 	}
-	if err := a.stopSession(args.thread.ID); err != nil {
-		return fmt.Errorf("%s: stop session: %w", args.errorPrefix, err)
-	}
-	if err := a.revertProviderConversationToMessage(args.thread, args.record); err != nil {
-		return fmt.Errorf("%s: %w", args.errorPrefix, err)
+
+	if args.thread.Provider == string(provider.Codex) {
+		result, err := a.revertCodexConversationToMessage(args.thread, args.record, args.userItem.TurnIndex, args.markReverted)
+		if err != nil {
+			return fmt.Errorf("%s: %w", args.errorPrefix, err)
+		}
+		if result != nil {
+			a.resetLiveCodexRollbackState(args.thread.ID)
+		}
+	} else {
+		if err := a.stopSession(args.thread.ID); err != nil {
+			return fmt.Errorf("%s: stop session: %w", args.errorPrefix, err)
+		}
+		if err := a.revertProviderConversationToMessage(args.thread, args.record); err != nil {
+			return fmt.Errorf("%s: %w", args.errorPrefix, err)
+		}
 	}
 
 	workspace := args.thread.WorkspacePath
@@ -409,15 +418,7 @@ func (a *App) revertConversationLocked(args revertConversationLockedArgs) error 
 func (a *App) revertProviderConversationToMessage(thread store.Thread, checkpoint store.Checkpoint) error {
 	switch thread.Provider {
 	case string(provider.Codex):
-		lastTurn, err := a.store.LastTurnIndex(thread.ID)
-		if err != nil {
-			return fmt.Errorf("determine last turn: %w", err)
-		}
-		numTurns := lastTurn - checkpoint.TurnIndex + 1
-		if numTurns < 1 {
-			return nil
-		}
-		return a.rollbackCodexThread(thread, numTurns)
+		return fmt.Errorf("codex rollback requires a live or resumed app-server session")
 	case string(provider.Claude):
 		return a.revertClaudeThreadToMessage(thread, checkpoint)
 	default:
@@ -518,25 +519,102 @@ func (a *App) deleteCheckpointRefs(ctx context.Context, threadID, action string,
 	return nil
 }
 
-func (a *App) rollbackCodexThread(thread store.Thread, numTurns int) error {
+func (a *App) revertCodexConversationToMessage(thread store.Thread, checkpoint store.Checkpoint, targetTurnIndex int, waitForIdle bool) (*codex.ThreadRollbackResult, error) {
+	lastTurn, err := a.store.LastTurnIndex(thread.ID)
+	if err != nil {
+		return nil, fmt.Errorf("determine last turn: %w", err)
+	}
+	numTurns := lastTurn - checkpoint.TurnIndex + 1
+	if numTurns < 1 {
+		return nil, nil
+	}
+	if waitForIdle {
+		if err := a.waitForNoActiveTurn(thread.ID, 5*time.Second); err != nil {
+			return nil, fmt.Errorf("codex rollback: wait for active turn: %w", err)
+		}
+	}
+	result, err := a.rollbackCodexThread(thread, numTurns)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.validateCodexRollbackSurvivors(thread.ID, "codex rollback", result, targetTurnIndex); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (a *App) validateCodexRollbackSurvivors(threadID, action string, result codex.ThreadRollbackResult, maxSurvivingTurns int) error {
+	if result.TurnCount > maxSurvivingTurns {
+		return fmt.Errorf("%s returned %d surviving turns, expected at most %d", action, result.TurnCount, maxSurvivingTurns)
+	}
+	minKnownSurvivors, err := a.knownCodexProviderTurnCountBefore(threadID, maxSurvivingTurns)
+	if err != nil {
+		return fmt.Errorf("%s: count provider-backed turns: %w", action, err)
+	}
+	if result.TurnCount < minKnownSurvivors {
+		return fmt.Errorf("%s returned %d surviving turns, expected at least %d known provider-backed turns", action, result.TurnCount, minKnownSurvivors)
+	}
+	return nil
+}
+
+func (a *App) knownCodexProviderTurnCountBefore(threadID string, beforeTurnIndex int) (int, error) {
+	items, err := a.store.ListItems(threadID)
+	if err != nil {
+		return 0, err
+	}
+	turns := make(map[int]struct{})
+	for _, item := range items {
+		if item.TurnIndex >= beforeTurnIndex {
+			continue
+		}
+		if item.Kind != "user_text" || item.Role != "user" || checkpoint.IsWireOnlyUserItem(item) {
+			continue
+		}
+		if usermessage.ReadProviderItemID(item.Meta) == "" {
+			continue
+		}
+		turns[item.TurnIndex] = struct{}{}
+	}
+	return len(turns), nil
+}
+
+func (a *App) rollbackCodexThread(thread store.Thread, numTurns int) (codex.ThreadRollbackResult, error) {
 	if active, ok := a.activeCodexSession(thread.ID); ok {
 		return active.Rollback(context.Background(), numTurns)
 	}
 	if thread.SessionRef == "" {
-		return fmt.Errorf("codex rollback: thread %q is missing a Codex thread reference", thread.ID)
+		return codex.ThreadRollbackResult{}, fmt.Errorf("codex rollback: thread %q is missing a Codex thread reference", thread.ID)
 	}
-	tempSession, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
-		Binary:         a.providerBinaryPath(thread.Provider),
-		Model:          thread.Model,
-		WorkDir:        thread.WorkspacePath,
-		ResumeThreadID: thread.SessionRef,
-		EventLogger:    a.logger,
-	}, func(provider.ProviderEvent) {})
-	if err != nil {
-		return fmt.Errorf("codex rollback: resume session: %w", err)
+	if err := a.startSession(thread.ID); err != nil {
+		return codex.ThreadRollbackResult{}, fmt.Errorf("codex rollback: resume session: %w", err)
 	}
-	defer tempSession.Close()
-	return tempSession.Rollback(context.Background(), numTurns)
+	active, ok := a.activeCodexSession(thread.ID)
+	if !ok {
+		return codex.ThreadRollbackResult{}, fmt.Errorf("codex rollback: resumed session unavailable for thread %q", thread.ID)
+	}
+	return active.Rollback(context.Background(), numTurns)
+}
+
+func (a *App) resetLiveCodexRollbackState(threadID string) {
+	if a.triage != nil {
+		a.triage.ResetThreadForRollback(threadID)
+	}
+	a.clearFlushDispatchForRollback(threadID)
+}
+
+func (a *App) waitForNoActiveTurn(threadID string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, active, err := a.store.GetActiveTurn(threadID); err != nil {
+			return err
+		} else if !active {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out after %s", timeout)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func (a *App) ListThreadCheckpoints(threadID string) ([]CheckpointView, error) {

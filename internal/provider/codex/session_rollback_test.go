@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 
@@ -11,9 +12,26 @@ import (
 func TestSessionRollbackRejectsZeroOrNegativeTurns(t *testing.T) {
 	s := &Session{}
 	for _, n := range []int{0, -1, -5} {
-		if err := s.Rollback(context.Background(), n); err == nil {
+		if _, err := s.Rollback(context.Background(), n); err == nil {
 			t.Errorf("Rollback(%d) expected error, got nil", n)
 		}
+	}
+}
+
+func TestParseThreadRollbackResponseRejectsMissingTurns(t *testing.T) {
+	_, err := parseThreadRollbackResponse(json.RawMessage(`{"thread":{"id":"thread-1"}}`))
+	if err == nil {
+		t.Fatal("expected missing turns to fail")
+	}
+}
+
+func TestParseThreadRollbackResponseCountsTurns(t *testing.T) {
+	result, err := parseThreadRollbackResponse(json.RawMessage(`{"thread":{"id":"thread-1","turns":[{"id":"a"},{"id":"b"}]}}`))
+	if err != nil {
+		t.Fatalf("parse rollback response: %v", err)
+	}
+	if result.ThreadID != "thread-1" || result.TurnCount != 2 {
+		t.Fatalf("result = %+v, want thread-1 with 2 turns", result)
 	}
 }
 
@@ -57,7 +75,14 @@ done
 	}
 	defer s.Close()
 
-	if err := s.Rollback(context.Background(), 2); err != nil {
+	result, err := s.Rollback(context.Background(), 2)
+	if err != nil {
 		t.Fatalf("Rollback(2) error = %v", err)
+	}
+	if result.ThreadID != "mock-thread-123" {
+		t.Fatalf("Rollback(2) thread id = %q, want mock-thread-123", result.ThreadID)
+	}
+	if result.TurnCount != 0 {
+		t.Fatalf("Rollback(2) turn count = %d, want 0", result.TurnCount)
 	}
 }

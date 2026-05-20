@@ -2,8 +2,16 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 )
+
+// ThreadRollbackResult is the subset of Codex's ThreadRollbackResponse that
+// Agent Overflow needs to align local state after a successful rollback.
+type ThreadRollbackResult struct {
+	ThreadID  string
+	TurnCount int
+}
 
 // Rollback asks the Codex app-server to drop the last numTurns from the active
 // thread's conversation history and persist a rollback marker in the rollout
@@ -16,7 +24,7 @@ import (
 //
 // Wire contract is owned by the Codex source of truth:
 // /home/rmurphy/repos/codex/codex-rs/app-server-protocol/schema/typescript/v2/ThreadRollbackParams.ts
-func (s *Session) Rollback(ctx context.Context, numTurns int) error {
+func (s *Session) Rollback(ctx context.Context, numTurns int) (ThreadRollbackResult, error) {
 	return s.RollbackThread(ctx, s.codexThreadID, numTurns)
 }
 
@@ -27,18 +35,48 @@ func (s *Session) Rollback(ctx context.Context, numTurns int) error {
 // app-server routes per-threadID via its in-memory thread_manager
 // (verified by spike at /tmp/spike-codex-fork/), so this writes the
 // `ThreadRolledBack` marker into the FORK's rollout, not the source's.
-func (s *Session) RollbackThread(ctx context.Context, threadID string, numTurns int) error {
+func (s *Session) RollbackThread(ctx context.Context, threadID string, numTurns int) (ThreadRollbackResult, error) {
 	if threadID == "" {
-		return fmt.Errorf("codex: thread/rollback: threadID is empty")
+		return ThreadRollbackResult{}, fmt.Errorf("codex: thread/rollback: threadID is empty")
 	}
 	if numTurns < 1 {
-		return fmt.Errorf("codex: thread/rollback: numTurns must be >= 1, got %d", numTurns)
+		return ThreadRollbackResult{}, fmt.Errorf("codex: thread/rollback: numTurns must be >= 1, got %d", numTurns)
 	}
-	if _, err := s.sendRequest(ctx, "thread/rollback", map[string]any{
+	resp, err := s.sendRequest(ctx, "thread/rollback", map[string]any{
 		"threadId": threadID,
 		"numTurns": numTurns,
-	}); err != nil {
-		return fmt.Errorf("codex: thread/rollback: %w", err)
+	})
+	if err != nil {
+		return ThreadRollbackResult{}, fmt.Errorf("codex: thread/rollback: %w", err)
 	}
-	return nil
+	result, err := parseThreadRollbackResponse(resp)
+	if err != nil {
+		return ThreadRollbackResult{}, fmt.Errorf("codex: thread/rollback: %w", err)
+	}
+	if result.ThreadID != threadID {
+		return ThreadRollbackResult{}, fmt.Errorf("codex: thread/rollback: response thread id %q does not match target %q", result.ThreadID, threadID)
+	}
+	return result, nil
+}
+
+func parseThreadRollbackResponse(data json.RawMessage) (ThreadRollbackResult, error) {
+	var response struct {
+		Thread struct {
+			ID    string     `json:"id"`
+			Turns []struct{} `json:"turns"`
+		} `json:"thread"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return ThreadRollbackResult{}, fmt.Errorf("decode response: %w", err)
+	}
+	if response.Thread.ID == "" {
+		return ThreadRollbackResult{}, fmt.Errorf("response missing thread.id")
+	}
+	if response.Thread.Turns == nil {
+		return ThreadRollbackResult{}, fmt.Errorf("response missing thread.turns")
+	}
+	return ThreadRollbackResult{
+		ThreadID:  response.Thread.ID,
+		TurnCount: len(response.Thread.Turns),
+	}, nil
 }

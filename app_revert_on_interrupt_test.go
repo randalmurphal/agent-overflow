@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/checkpoint"
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
@@ -197,6 +202,29 @@ func TestEvaluateInterruptRevertPredicateRejectsQueuedFlush(t *testing.T) {
 		ID:      "queue:1",
 		Message: "follow-up message",
 	})
+
+	ok, _, reason, err := app.evaluateInterruptRevertPredicate(thread.ID)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected predicate false, got true")
+	}
+	if reason != "queued follow-up messages" {
+		t.Fatalf("reason = %q, want \"queued follow-up messages\"", reason)
+	}
+}
+
+func TestEvaluateInterruptRevertPredicateRejectsInflightFlushDispatch(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	thread := createCheckpointTestThread(t, app, "pred-dispatch", "codex", t.TempDir())
+	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.flushDispatchMu.Lock()
+	app.ensureFlushDispatchMapsLocked()
+	app.flushDispatchInflightItems[thread.ID] = 1
+	app.flushDispatchMu.Unlock()
 
 	ok, _, reason, err := app.evaluateInterruptRevertPredicate(thread.ID)
 	if err != nil {
@@ -443,6 +471,141 @@ func TestInterruptAndRevertIfCleanRevertsWithSynthesizedCheckpoint(t *testing.T)
 	}
 }
 
+func TestInterruptAndRevertIfCleanCodexWaitsForActiveTurnAndRollsBackLiveSession(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	workspace := t.TempDir()
+	thread := createCheckpointTestThread(t, app, "codex-interrupt-revert", "codex", workspace)
+	thread.SessionRef = "provider-codex-interrupt"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-active",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("insert active turn: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "u:0", 0, "codex prompt")
+
+	binary := writeCodexRollbackBinary(t, "provider-codex-interrupt", 0)
+	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+		Binary:         binary,
+		Model:          "test-model",
+		WorkDir:        workspace,
+		ResumeThreadID: thread.SessionRef,
+	}, func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	app.sessionManager().put(thread.ID, session{
+		provider: string(provider.Codex),
+		token:    "codex-interrupt-token",
+		codex:    sess,
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(75 * time.Millisecond)
+		_ = app.store.UpdateTurnCompleted("turn-active", time.Now().UnixMilli(), "interrupt", "", "", "")
+	}()
+
+	result, err := app.InterruptAndRevertIfClean(thread.ID)
+	if err != nil {
+		t.Fatalf("interrupt-and-revert: %v", err)
+	}
+	<-done
+	if !result.Reverted {
+		t.Fatalf("expected Reverted=true, got Reverted=false reason=%q", result.Reason)
+	}
+	if result.UserItemID != "u:0" || result.TurnIndex != 0 {
+		t.Fatalf("result = %+v, want reverted u:0 turn 0", result)
+	}
+	if _, ok := app.activeCodexSession(thread.ID); !ok {
+		t.Fatal("active Codex session missing after interrupt rollback")
+	}
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("items after revert = %+v, want empty", items)
+	}
+	draft, ok, err := app.store.GetThreadDraft(thread.ID)
+	if err != nil {
+		t.Fatalf("get draft: %v", err)
+	}
+	if !ok || draft.Content != "codex prompt" {
+		t.Fatalf("draft = %+v ok=%v, want restored codex prompt", draft, ok)
+	}
+}
+
+func TestInterruptAndRevertIfCleanCodexMarksCompletionDuringInterruptAsReverted(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	app.triage = triage.NewRouter(app.store, app.emit)
+	workspace := t.TempDir()
+	thread := createCheckpointTestThread(t, app, "codex-interrupt-marker", "codex", workspace)
+	thread.SessionRef = "provider-codex-marker"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "u:0", 0, "codex prompt")
+
+	var completions []triage.TurnCompletedEvent
+	app.testEmitHook = func(name string, data any) {
+		if name != "provider:turn_completed" {
+			return
+		}
+		if evt, ok := data.(triage.TurnCompletedEvent); ok {
+			completions = append(completions, evt)
+		}
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  thread.ID,
+		TurnID:    "turn-active",
+		TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	binary := writeCodexRollbackBinaryWithInterruptComplete(t, "provider-codex-marker", "turn-active", 0)
+	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+		Binary:         binary,
+		Model:          "test-model",
+		WorkDir:        workspace,
+		ResumeThreadID: thread.SessionRef,
+	}, func(evt provider.ProviderEvent) {
+		_ = app.triage.Handle(evt)
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	app.sessionManager().put(thread.ID, session{
+		provider: string(provider.Codex),
+		token:    "codex-marker-token",
+		codex:    sess,
+	})
+
+	if _, err := app.InterruptAndRevertIfClean(thread.ID); err != nil {
+		t.Fatalf("interrupt-and-revert: %v", err)
+	}
+	if len(completions) == 0 {
+		t.Fatal("expected provider:turn_completed emission")
+	}
+	if !completions[0].RevertedUserMessage {
+		t.Fatalf("RevertedUserMessage = false, want true: %+v", completions[0])
+	}
+}
+
 // TestInterruptAndRevertIfCleanSurvivesCompactBoundary is the
 // interrupt-revert counterpart to TestRevertToMessageCheckpointSurvivesCompactBoundary.
 // The "synthesize a checkpoint when none was captured" branch
@@ -533,3 +696,42 @@ func TestResolveRevertCheckpointSynthesizesProviderUserMessageID(t *testing.T) {
 	}
 }
 
+func writeCodexRollbackBinaryWithInterruptComplete(t *testing.T, threadID, turnID string, survivingTurns int) string {
+	t.Helper()
+	turns := make([]string, 0, survivingTurns)
+	for i := 0; i < survivingTurns; i++ {
+		turns = append(turns, fmt.Sprintf(`{"id":"turn-%d"}`, i))
+	}
+	turnsJSON := "[" + strings.Join(turns, ",") + "]"
+	script := fmt.Sprintf(`#!/bin/sh
+while IFS= read -r line; do
+    id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
+    if [ -z "$id" ]; then
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/resume"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s","turns":[]}}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"turn/interrupt"'; then
+        printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed"}}}\n'
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/rollback"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s","turns":%s}}}\n' "$id"
+        continue
+    fi
+done
+`, threadID, threadID, turnID, threadID, turnsJSON)
+
+	path := filepath.Join(t.TempDir(), "codex-rollback-interrupt-complete.sh")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write mock codex binary: %v", err)
+	}
+	return path
+}

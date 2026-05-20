@@ -1,7 +1,17 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"agent-overflow/internal/checkpoint"
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/store"
 )
 
 // TestCodexRollbackMathIgnoresCompactionAndSteer is the regression
@@ -125,4 +135,212 @@ func TestCodexRollbackMathAfterSendFailureStaysSelfConsistent(t *testing.T) {
 	if got := lastTurn - 0 + 1; got != 3 {
 		t.Fatalf("numTurns(checkpoint=0) = %d, want 3 (lastTurn=2 includes failed turn)", got)
 	}
+}
+
+func TestRevertToMessageCheckpointCodexUsesActiveSessionAndKeepsItAlive(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	workspace := t.TempDir()
+	thread := createCheckpointTestThread(t, app, "codex-active-revert", "codex", workspace)
+	thread.SessionRef = "provider-active-revert"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	saveCodexCheckpoint(t, app.store, thread, "chk-active", "user:1", 1)
+
+	binary := writeCodexRollbackBinary(t, "provider-active-revert", 1)
+	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+		Binary:         binary,
+		Model:          "test-model",
+		WorkDir:        workspace,
+		ResumeThreadID: thread.SessionRef,
+	}, func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	app.sessionManager().put(thread.ID, session{
+		provider: string(provider.Codex),
+		token:    "active-revert-token",
+		codex:    sess,
+	})
+	stopCalls := 0
+	app.stopSessionFn = func(string) error {
+		stopCalls++
+		return nil
+	}
+
+	if err := app.RevertToMessageCheckpoint(thread.ID, "user:1", RevertModeConversationOnly); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	if stopCalls != 0 {
+		t.Fatalf("stopSession calls = %d, want 0", stopCalls)
+	}
+	if _, ok := app.activeCodexSession(thread.ID); !ok {
+		t.Fatal("active Codex session missing after rollback")
+	}
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "user:0" {
+		t.Fatalf("items after revert = %+v", items)
+	}
+}
+
+func TestRevertToMessageCheckpointCodexStartsStoppedSessionAndKeepsItAlive(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	workspace := t.TempDir()
+	thread := createCheckpointTestThread(t, app, "codex-stopped-revert", "codex", workspace)
+	thread.SessionRef = "provider-stopped-revert"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	saveCodexCheckpoint(t, app.store, thread, "chk-stopped", "user:1", 1)
+
+	binary := writeCodexRollbackBinary(t, "provider-stopped-revert", 1)
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+
+	if err := app.RevertToMessageCheckpoint(thread.ID, "user:1", RevertModeConversationOnly); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	defer app.StopSession(thread.ID)
+	if _, ok := app.activeCodexSession(thread.ID); !ok {
+		t.Fatal("active Codex session missing after rollback")
+	}
+}
+
+func TestRevertToMessageCheckpointCodexRejectsRollbackTurnCountMismatch(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	workspace := t.TempDir()
+	thread := createCheckpointTestThread(t, app, "codex-mismatch-revert", "codex", workspace)
+	thread.SessionRef = "provider-mismatch-revert"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItemWithMeta(t, app.store, thread.ID, "user:0", 0, "first", `{"provider_item_id":"provider-user-0"}`)
+	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	saveCodexCheckpoint(t, app.store, thread, "chk-mismatch", "user:1", 1)
+
+	binary := writeCodexRollbackBinary(t, "provider-mismatch-revert", 0)
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+
+	err := app.RevertToMessageCheckpoint(thread.ID, "user:1", RevertModeConversationOnly)
+	defer app.StopSession(thread.ID)
+	if err == nil || !strings.Contains(err.Error(), "surviving turns") {
+		t.Fatalf("revert error = %v, want surviving-turn mismatch", err)
+	}
+	items, listErr := app.store.ListItems(thread.ID)
+	if listErr != nil {
+		t.Fatalf("list items: %v", listErr)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items after failed revert = %+v, want original rows preserved", items)
+	}
+}
+
+func TestRevertToMessageCheckpointCodexAllowsLocalOnlyFailedTurnBeforeTarget(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	workspace := t.TempDir()
+	thread := createCheckpointTestThread(t, app, "codex-local-only-revert", "codex", workspace)
+	thread.SessionRef = "provider-local-only-revert"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItemWithMeta(t, app.store, thread.ID, "user:0", 0, "first", `{"provider_item_id":"provider-user-0"}`)
+	insertUserItem(t, app.store, thread.ID, "user:1-failed-local", 1, "failed before provider")
+	insertUserItemWithMeta(t, app.store, thread.ID, "user:2", 2, "third", `{"provider_item_id":"provider-user-2"}`)
+	saveCodexCheckpoint(t, app.store, thread, "chk-local-only", "user:2", 2)
+
+	binary := writeCodexRollbackBinary(t, "provider-local-only-revert", 1)
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+
+	if err := app.RevertToMessageCheckpoint(thread.ID, "user:2", RevertModeConversationOnly); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	defer app.StopSession(thread.ID)
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 2 || items[0].ID != "user:0" || items[1].ID != "user:1-failed-local" {
+		t.Fatalf("items after revert = %+v, want provider turn plus local-only failed turn", items)
+	}
+}
+
+func saveCodexCheckpoint(t *testing.T, st *store.Store, thread store.Thread, id, userItemID string, turnIndex int) {
+	t.Helper()
+	if err := st.SaveCheckpoint(store.Checkpoint{
+		ID:         id,
+		ThreadID:   thread.ID,
+		UserItemID: userItemID,
+		TurnIndex:  turnIndex,
+		RefName:    checkpoint.ThreadRefPrefix(thread.ID) + "message/" + id,
+		CapturedAt: 1,
+		// Codex rollback uses turn index, not provider user message id, but
+		// the checkpoint still carries the workspace for shared validation.
+		WorkspacePath: thread.WorkspacePath,
+	}); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+}
+
+func writeCodexRollbackBinary(t *testing.T, threadID string, survivingTurns int) string {
+	t.Helper()
+	turns := make([]string, 0, survivingTurns)
+	for i := 0; i < survivingTurns; i++ {
+		turns = append(turns, fmt.Sprintf(`{"id":"turn-%d"}`, i))
+	}
+	turnsJSON := "[" + strings.Join(turns, ",") + "]"
+	script := fmt.Sprintf(`#!/bin/sh
+while IFS= read -r line; do
+    id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
+    if [ -z "$id" ]; then
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/resume"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s","turns":[]}}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/start"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s","turns":[]}}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/read"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"status":{"type":"idle"}}}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"turn/interrupt"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/rollback"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s","turns":%s}}}\n' "$id"
+        continue
+    fi
+done
+`, threadID, threadID, threadID, turnsJSON)
+
+	path := filepath.Join(t.TempDir(), "codex-rollback.sh")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write mock codex binary: %v", err)
+	}
+	return path
 }

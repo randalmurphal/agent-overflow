@@ -144,6 +144,7 @@ type App struct {
 	flushDispatchQueues        map[string][]flushDispatchBatch
 	flushDispatchRunning       map[string]bool
 	flushDispatchInflightItems map[string]int
+	flushDispatchGeneration    map[string]uint64
 	flushDispatchWG            sync.WaitGroup
 	// threadID → in-flight session start. Concurrent callers wait for the
 	// first start attempt instead of spawning duplicate provider runtimes.
