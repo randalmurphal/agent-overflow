@@ -114,10 +114,6 @@ function fireTouchMove(el: HTMLElement, clientY: number): void {
 function fireScroll(el: HTMLElement): void {
   el.dispatchEvent(new Event('scroll'));
 }
-// happy-dom 20.9 reflects `onscrollend` properties so feature detection
-// in the controller succeeds, but it never dispatches the event natively.
-// Tests synthesize the event explicitly to exercise the scrollend handler
-// (Change 5 — gesture-termination signal that beats the 160ms timer).
 function fireScrollEnd(el: HTMLElement): void {
   el.dispatchEvent(new Event('scrollend'));
 }
@@ -231,25 +227,14 @@ describe('createUseStickToBottomController', () => {
   });
 
   describe('wheel handler', () => {
-    it('wheel up on outer scrollEl escapes only after the outer scrollTop decreases', async () => {
+    it('wheel up on outer scrollEl escapes immediately', async () => {
       fireWheel(scrollEl, -50, scrollEl);
-      expect(controller.escapedFromLock).toBe(false);
-      await waitRealMs(180);
-      expect(controller.escapedFromLock).toBe(false);
-
-      fireWheel(scrollEl, -50, scrollEl);
-      geom.scrollTop = 399;
-      fireScroll(scrollEl);
-      await nextTimer();
-
       expect(controller.escapedFromLock).toBe(true);
       expect(controller.isSticky).toBe(false);
-      // Note: public isAtBottom may still be true if geometrically near
-      // the bottom — that's the loose `intent || geometry` semantic the
-      // ScrollToBottomButton wants.
+      expect(controller.isAtBottom).toBe(false);
     });
 
-    it('keeps bottom lock when an outer wheel intent never moves the chat scroller', async () => {
+    it('wheel-up escape blocks same-frame content growth even when the chat scroller never moves', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
 
@@ -258,16 +243,16 @@ describe('createUseStickToBottomController', () => {
       geom.contentHeight = 1000;
       ro.fire(contentEl, 1000);
 
-      // Pending intent pauses contentRO pinning until the browser proves
-      // the outer scroller moved upward.
+      // Escape is synchronous, so the streaming/contentRO growth that
+      // lands in the same frame must not pin.
       expect(geom.scrollTop).toBe(400);
-      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.escapedFromLock).toBe(true);
 
       await waitRealMs(180);
 
-      expect(controller.escapedFromLock).toBe(false);
-      expect(geom.scrollTop).toBe(600);
-      expect(controller.isSticky).toBe(true);
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(400);
+      expect(controller.isSticky).toBe(false);
     });
 
     it('keeps bottom lock when a resize-correlated upward jump has no user scroll movement', async () => {
@@ -329,7 +314,7 @@ describe('createUseStickToBottomController', () => {
       expect(geom.scrollTop).toBe(399);
     });
 
-    it('wheel up inside a nested overflow scroller does NOT escape', () => {
+    it('wheel up inside a nested overflow scroller escapes outer auto-follow', () => {
       const nested = document.createElement('div');
       nested.style.cssText = 'overflow-y: auto;';
       Object.defineProperty(nested, 'scrollHeight', { configurable: true, get: () => 200 });
@@ -337,10 +322,21 @@ describe('createUseStickToBottomController', () => {
       Object.defineProperty(nested, 'scrollTop', { configurable: true, get: () => 50 });
       contentEl.appendChild(nested);
       fireWheel(scrollEl, -50, nested);
-      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.escapedFromLock).toBe(true);
     });
 
-    it('wheel up inside a nested scroller at its top escapes after the chat consumes it', async () => {
+    it('wheel outside the scroll element does not escape', () => {
+      const outside = document.createElement('div');
+      document.body.appendChild(outside);
+      try {
+        fireWheel(scrollEl, -50, outside);
+        expect(controller.escapedFromLock).toBe(false);
+      } finally {
+        outside.remove();
+      }
+    });
+
+    it('wheel up inside a nested scroller at its top escapes immediately', async () => {
       const nested = document.createElement('div');
       nested.style.cssText = 'overflow-y: auto;';
       Object.defineProperty(nested, 'scrollHeight', { configurable: true, get: () => 200 });
@@ -349,11 +345,6 @@ describe('createUseStickToBottomController', () => {
       contentEl.appendChild(nested);
 
       fireWheel(scrollEl, -50, nested);
-      expect(controller.escapedFromLock).toBe(false);
-      geom.scrollTop = 350;
-      fireScroll(scrollEl);
-      await nextTimer();
-
       expect(controller.escapedFromLock).toBe(true);
       expect(controller.isSticky).toBe(false);
     });
@@ -363,15 +354,20 @@ describe('createUseStickToBottomController', () => {
       expect(controller.escapedFromLock).toBe(false);
     });
 
-    it('scrollbar pointer drag escapes after the outer scrollTop decreases', async () => {
+    it('scrollbar pointer interaction escapes immediately', async () => {
       stubScrollbarGutter(scrollEl);
 
       scrollEl.dispatchEvent(
         new PointerEvent('pointerdown', { bubbles: true, isPrimary: true, clientX: 195, clientY: 300 }),
       );
-      geom.scrollTop = 399;
-      fireScroll(scrollEl);
-      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
+    });
+
+    it('middle-button autoscroll pointer input escapes immediately', () => {
+      scrollEl.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, button: 1, isPrimary: true, clientX: 80, clientY: 300 }),
+      );
 
       expect(controller.escapedFromLock).toBe(true);
       expect(controller.isSticky).toBe(false);
@@ -385,12 +381,8 @@ describe('createUseStickToBottomController', () => {
   });
 
   describe('keyboard handler', () => {
-    it.each(['ArrowUp', 'PageUp', 'Home'])('%s escapes only after the outer scrollTop decreases', async (key) => {
+    it.each(['ArrowUp', 'PageUp', 'Home'])('%s escapes immediately', async (key) => {
       fireKey(scrollEl, key);
-      expect(controller.escapedFromLock).toBe(false);
-      geom.scrollTop = 350;
-      fireScroll(scrollEl);
-      await nextTimer();
       expect(controller.escapedFromLock).toBe(true);
     });
 
@@ -401,13 +393,9 @@ describe('createUseStickToBottomController', () => {
   });
 
   describe('touch handler', () => {
-    it('finger moves down (dy > 1) escapes only after the outer scrollTop decreases', async () => {
+    it('finger moves down (dy > 1) escapes immediately', async () => {
       fireTouchStart(scrollEl, 100);
       fireTouchMove(scrollEl, 130); // dy = +30
-      expect(controller.escapedFromLock).toBe(false);
-      geom.scrollTop = 350;
-      fireScroll(scrollEl);
-      await nextTimer();
       expect(controller.escapedFromLock).toBe(true);
     });
 
@@ -780,15 +768,12 @@ describe('createUseStickToBottomController', () => {
       // it was too broad — it also blocked input-backed scroll events
       // that happened to land while the cascade was active, leaving
       // escapedFromLock stuck true even when the user manually wheeled
-      // back to the bottom. The fix gates the bail on
-      // `!hadUserScrollIntent` so a real user gesture is allowed
-      // through to the re-stick check.
+      // back to the bottom. The fix lets a fresh recent down intent
+      // through to the re-stick check while layout-only scrolls still
+      // bail.
       //
-      // Covers wheel; key / touch / pointer arming go through the
-      // same `gestureSession` and the deferred reads it
-      // source-agnostically, so wheel exercises the shared gate.
-      // Per-source arming has its own coverage in the keyboard /
-      // touch / scrollbar-drag describe blocks above.
+      // Covers wheel; key and touch down-input share the same recent
+      // down-intent window and have source-specific coverage above.
       const ro = getRO();
       ro.fire(contentEl, 800);
       fireScroll(scrollEl); // consume first-fire programmatic-write tag
@@ -814,7 +799,7 @@ describe('createUseStickToBottomController', () => {
       fireScroll(scrollEl);
       await nextTimer();
 
-      // The user's down-gesture landing at bottom must re-stick.
+      // The user's down-input landing at bottom must re-stick.
       // Without the fix, resizeCorrelatedScroll=true bails the
       // deferred before willRestick runs and escape stays true.
       expect(controller.escapedFromLock).toBe(false);
@@ -824,12 +809,10 @@ describe('createUseStickToBottomController', () => {
     it('stays escaped when near the bottom visually but outside the auto-follow epsilon', async () => {
       // A scroll-event trajectory that lands close to the bottom but
       // outside AUTO_FOLLOW_BOTTOM_EPSILON_PX (4) must not re-stick.
-      // The visual near-bottom band (70px) is wider on purpose — the
-      // chip stays hidden while the user can see the bottom, but
-      // auto-follow only re-engages once they've actually REACHED it
-      // within browser-rounding tolerance. Bug #1 fix removed the
-      // session-required gate; the epsilon is the sole boundary now,
-      // so this test pins that the epsilon itself is respected.
+      // The visual near-bottom band (70px) is wider on purpose, but
+      // explicit escape wins over that band. Auto-follow only re-engages
+      // once the user has recent down intent and actually REACHED the
+      // bottom within browser-rounding tolerance.
       const ro = getRO();
       ro.fire(contentEl, 800);
 
@@ -847,7 +830,7 @@ describe('createUseStickToBottomController', () => {
 
       expect(controller.escapedFromLock).toBe(true);
       expect(controller.isSticky).toBe(false);
-      expect(controller.isAtBottom).toBe(true);
+      expect(controller.isAtBottom).toBe(false);
     });
 
     it('a small wheel-up that lands within the geometric near-bottom band but outside the auto-follow epsilon stays escaped', async () => {
@@ -880,8 +863,8 @@ describe('createUseStickToBottomController', () => {
     it('wheel-up gesture is NOT undone by its own scroll event landing near bottom', async () => {
       // Regression for "scroll up one notch yanks back to bottom while
       // streaming". A sticky user who wheels up by exactly 1px should
-      // break auto-follow even though the public near-bottom flag still
-      // hides the chip.
+      // break auto-follow and surface the chip even inside the old
+      // near-bottom visual band.
       const ro = getRO();
       ro.fire(contentEl, 800); // initial, scrollTop=400, sticky
       fireScroll(scrollEl); // consumes tag
@@ -895,7 +878,7 @@ describe('createUseStickToBottomController', () => {
 
       expect(controller.escapedFromLock).toBe(true);
       expect(controller.isSticky).toBe(false);
-      expect(controller.isAtBottom).toBe(true);
+      expect(controller.isAtBottom).toBe(false);
     });
 
     it('plain untagged upward scroll without input preserves bottom-follow intent', async () => {
@@ -1594,7 +1577,7 @@ describe('createUseStickToBottomController', () => {
   describe('architectural invariants', () => {
     // These tests lock in the design choice that distinguishes the
     // unified controller from its predecessors: intent (escapedFromLock,
-    // isAtBottomState) is mutated only by explicit signals — gestures,
+    // isAtBottomState) is mutated only by explicit signals — input events,
     // forceStick, stopScroll, and input-backed scroll-handler paths.
     // Pure geometry mutation does not cross the boundary. If a future
     // change reintroduces a bare "scrollTop direction" inference, these
@@ -1654,9 +1637,9 @@ describe('createUseStickToBottomController', () => {
       expect(controller.escapedFromLock).toBe(true);
 
       // Simulate the user actually moving away and then back to bottom.
-      // The re-stick path's direction gate requires scrollTop to be
-      // INCREASING (DOWN gesture) — same-scrollTop scrolls or UP
-      // scrolls don't trigger it.
+      // The re-stick path requires scrollTop to be INCREASING after
+      // recent down intent — same-scrollTop scrolls or UP scrolls
+      // don't trigger it.
       geom.scrollTop = 100;
       fireScroll(scrollEl);
       await nextTimer();
@@ -1672,7 +1655,7 @@ describe('createUseStickToBottomController', () => {
     });
   });
 
-  describe('scroll-intent regressions — Bug A / B / C / trackpad / scrollend', () => {
+  describe('scroll-intent regressions — immediate escape and recent-down re-stick', () => {
     // Pins the controller refinement from the 2026-05 gentle-mango
     // plan. Headers below mark which change each test guards; the
     // describe-block name is the anchor referenced from
@@ -1681,10 +1664,10 @@ describe('createUseStickToBottomController', () => {
     //
     //   - Change 1: distFromBottom captured at scroll-event time +
     //     widened auto-follow epsilon (0.5 → 4 px). Bug A defense.
-    //   - Change 2: USER_SCROLL_ESCAPE_THRESHOLD_PX lowered 1 → 0.
-    //   - Change 3: direction-aware pin gating. Only UP intent blocks
-    //     the pin; DOWN and 'unknown' permit it. Bug B / Bug C defense.
-    //   - Change 5: scrollend short-circuits the 160ms expire timer.
+    //   - Change 2: upward input escapes synchronously instead of
+    //     waiting for browser-confirmed scrollTop movement.
+    //   - Change 3: recent down intent is the only re-stick consent;
+    //     layout/applyJump/clamp scrolls cannot re-stick by themselves.
     //   - Change 6: pinch-zoom (wheel + ctrlKey) does not arm intent.
 
     it('re-stick succeeds when a streaming chunk grows scrollHeight between the scroll event and the deferred check', async () => {
@@ -1764,18 +1747,7 @@ describe('createUseStickToBottomController', () => {
       expect(controller.isSticky).toBe(false);
     });
 
-    it('pointer-tap on the scrollbar without drag does not snap viewport at intent expiry', async () => {
-      // Pointer-tap on the scrollbar gutter arms a 'pointer' / 'unknown'
-      // gesture. No scroll event follows (user clicked but never
-      // dragged). When the 160ms timer expires, expireGestureSession
-      // falls through to clearGestureSession({repinIfStillSticky:true}).
-      // Pre-Bug-C-fix the contentRO pin was blocked (strict gate), so
-      // the safety-net wrote target=500 at expiry — user-visible snap.
-      // Post-fix the pin already landed at 500 because 'unknown' permits
-      // it, so the safety-net's dist>epsilon guard suppresses the write.
-      // This test verifies *no extra scrollTop write* happens at expiry,
-      // not just that scrollTop's final value is 500 (which passes either
-      // way for opposite reasons).
+    it('pointer-tap on the scrollbar escapes immediately and does not safety-net repin', async () => {
       stubScrollbarGutter(scrollEl);
 
       const ro = getRO();
@@ -1788,10 +1760,9 @@ describe('createUseStickToBottomController', () => {
       geom.scrollHeight = 1100;
       geom.contentHeight = 900;
       ro.fire(contentEl, 900);
-      expect(geom.scrollTop).toBe(500); // direction-aware pin landed target (Bug C)
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(400);
 
-      // Replace the setter with a counting wrapper. Any write during the
-      // expiry window is a snap-back motion to the user.
       let writesAfterPin = 0;
       Object.defineProperty(scrollEl, 'scrollTop', {
         configurable: true,
@@ -1804,13 +1775,11 @@ describe('createUseStickToBottomController', () => {
 
       await waitRealMs(180);
 
-      expect(writesAfterPin).toBe(0); // Bug B: safety-net repin write suppressed
-      expect(geom.scrollTop).toBe(500);
+      expect(writesAfterPin).toBe(0);
+      expect(geom.scrollTop).toBe(400);
     });
 
-    it('contentRO positive-delta pin runs when gesture direction is `unknown` (pointer-tap)', async () => {
-      // Bug C defense: pointer-tap on the scrollbar gutter must not
-      // black out streaming pins for the 160ms window.
+    it('contentRO positive-delta does not pin after scrollbar pointer escape', async () => {
       stubScrollbarGutter(scrollEl);
 
       const ro = getRO();
@@ -1823,14 +1792,11 @@ describe('createUseStickToBottomController', () => {
       geom.scrollHeight = 1200;
       geom.contentHeight = 1000;
       ro.fire(contentEl, 1000);
-      expect(geom.scrollTop).toBe(600);
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(400);
     });
 
-    it('notifyLiveContentMaybeGrew pins when gesture direction is `unknown`', async () => {
-      // The Change 3 direction-aware gate must also apply to
-      // notifyContentMaybeGrew / notifyLiveContentMaybeGrew
-      // (`readNotifyContentGate`). composer-grow during a pointer-tap
-      // intent window would otherwise leave the bottom drifting away.
+    it('notifyContentMaybeGrew does not pin after scrollbar pointer escape', async () => {
       stubScrollbarGutter(scrollEl);
 
       const ro = getRO();
@@ -1840,19 +1806,16 @@ describe('createUseStickToBottomController', () => {
         new PointerEvent('pointerdown', { bubbles: true, isPrimary: true, clientX: 195, clientY: 300 }),
       );
 
-      // Composer/banner grows scrollHeight (RO doesn't fire because
-      // padding-only changes don't trigger contentRO per W3C spec;
-      // ChatView's composer RO calls notifyContentMaybeGrew to
-      // re-pin). The direction-aware gate must permit 'unknown'.
       geom.scrollHeight = 1100;
       controller.notifyContentMaybeGrew();
-      expect(geom.scrollTop).toBe(500);
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(400);
     });
 
-    it('sub-pixel upward scroll movement escapes (0 px threshold)', async () => {
-      // Pre-Change-2 the threshold was `>= 1`, so a 0.5 px wheel-up
-      // stayed sticky. Post-fix uses strict `>` against threshold 0
-      // — any non-zero upward movement escapes.
+    it('sub-pixel upward input escapes before browser scroll movement confirms it', async () => {
+      // The controller treats the upward wheel itself as intent, so
+      // small trackpad deltas do not need to cross a pixel boundary
+      // before auto-follow breaks.
       fireWheel(scrollEl, -50, scrollEl);
       geom.scrollTop = 399.5; // sub-pixel trackpad nudge
       fireScroll(scrollEl);
@@ -1860,97 +1823,59 @@ describe('createUseStickToBottomController', () => {
       expect(controller.escapedFromLock).toBe(true);
     });
 
-    it('zero-movement scroll event during intent does not spuriously escape', async () => {
-      // Boundary lock: strict `>` against threshold 0 means zero
-      // movement does not escape. Catches a `>=` mis-implementation
-      // that would escape on no movement.
+    it('zero-movement wheel-up escapes immediately', async () => {
       fireWheel(scrollEl, -50, scrollEl);
       fireScroll(scrollEl); // no scrollTop change
       await nextTimer();
-      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.escapedFromLock).toBe(true);
     });
 
-    it('scrollend after wheel + real upward motion resolves the gesture without waiting for the 160ms timer', async () => {
-      // Without the scrollend handler an 'up' gesture lives 160ms and
-      // blocks every contentRO positive-delta pin in that window —
-      // streaming chunks pile up un-pinned. With the handler, the
-      // gesture clears immediately on motion-bearing gestures and the
-      // next contentRO pins.
-      //
-      // Post-staleNoMotion-guard: handleScrollEnd only resolves a
-      // session that has observed a real (untagged) scroll event
-      // (the bookmark-race fix — bug-report-20260520T022217Z.jsonl).
-      // This test exercises the motion-bearing path. The companion
-      // test "...via the 160ms timer fallback" covers the no-motion
-      // pointer-tap / sub-pixel-wheel-rounded-to-no-op path.
+    it('native scrollend after wheel-up is ignored after immediate escape', async () => {
+      // The controller no longer installs a scrollend listener. A stale
+      // native scrollend from prior browser/programmatic motion must not
+      // undo or modify the synchronous escape.
       const ro = getRO();
       ro.fire(contentEl, 800);
 
-      // Arm wheel-UP and produce real upward motion before scrollend.
       fireWheel(scrollEl, -50, scrollEl);
       geom.scrollTop = 350;
-      fireScroll(scrollEl); // untagged → sawUntaggedScroll=true
-
-      // scrollend fires well before the 160ms timer. handleScrollEnd
-      // sees sawUntaggedScroll=true, then expireGestureSession sees
-      // 50 px of upward motion → setEscapedFromLock(true). The
-      // important property: it happens NOW, not 160ms from now.
+      fireScroll(scrollEl);
       fireScrollEnd(scrollEl);
       expect(controller.escapedFromLock).toBe(true);
       expect(controller.isSticky).toBe(false);
 
-      // Subsequent contentRO does NOT pin because the user is escaped
-      // — proving the gesture session was cleared (otherwise the
-      // upward direction would still be blocking, but the user would
-      // also still be sticky).
+      // Subsequent contentRO does NOT pin because the user is escaped.
       geom.scrollHeight = 1100;
       geom.contentHeight = 900;
       ro.fire(contentEl, 900);
       expect(geom.scrollTop).toBe(350);
     });
 
-    it('wheel-only intent (no scroll event) still resolves via the 160ms timer fallback', async () => {
-      // Pointer-tap with no drag, sub-pixel wheel rounded to a no-op,
-      // or any host environment that drops the scrollend event: no
-      // untagged scroll event ever fires against the gesture. The
-      // staleNoMotion guard in handleScrollEnd will refuse to resolve
-      // such a session (because we can't distinguish it from a stale
-      // scrollend belonging to a prior programmatic write — see
-      // bug-report-20260520T022217Z.jsonl seq 10584-10605). The
-      // 160ms timer fallback in armUserScrollIntent is the safety
-      // net that keeps the controller from indefinitely blocking
-      // pins behind a session that no real motion will ever resolve.
+    it('wheel-only escape blocks content growth without a fallback repin', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
 
-      // Arm wheel-UP. DO NOT fire any scroll event — simulates the
-      // browser rounding the wheel delta to no scrollTop change.
       fireWheel(scrollEl, -50, scrollEl);
 
-      // Content grows during the gesture window. direction='up'
-      // blocks the pin.
       geom.scrollHeight = 1100;
       geom.contentHeight = 900;
       ro.fire(contentEl, 900);
-      expect(geom.scrollTop).toBe(400); // pin blocked while gesture is alive
+      expect(geom.scrollTop).toBe(400);
 
-      // Past 160ms — the gesture-session timer fires expireGestureSession.
-      // No upward movement → safety-net repin path → scrollTop = 500.
       await waitRealMs(180);
-      expect(geom.scrollTop).toBe(500);
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(400);
 
-      // Subsequent contentRO pins normally because gestureSession is null.
       geom.scrollHeight = 1200;
       geom.contentHeight = 1000;
       ro.fire(contentEl, 1000);
-      expect(geom.scrollTop).toBe(600);
+      expect(geom.scrollTop).toBe(400);
     });
 
-    it('scrollend with no active gesture is a no-op', () => {
+    it('native scrollend dispatch is ignored', () => {
       // Programmatic writes (spring chase, sync-pin, animateScrollTo)
-      // fire native scrollend per CSSOM View spec. The handler must
-      // early-return on gestureSession===null so it doesn't run
-      // gesture bookkeeping for controller-owned writes.
+      // can fire native scrollend per CSSOM View spec. The controller
+      // has no scrollend listener, so the event is inert.
       const before = geom.scrollTop;
       fireScrollEnd(scrollEl);
       expect(geom.scrollTop).toBe(before);
@@ -1970,9 +1895,8 @@ describe('createUseStickToBottomController', () => {
       Object.defineProperty(event, 'ctrlKey', { value: true });
       scrollEl.dispatchEvent(event);
 
-      // No gesture armed: a follow-up scroll event with movement does
-      // not escape because there's no pending intent for the deferred
-      // handler to attribute the movement to.
+      // No escape intent recorded: a follow-up scroll event with
+      // movement does not escape.
       geom.scrollTop = 350;
       fireScroll(scrollEl);
       await nextTimer();
@@ -2769,14 +2693,11 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.escapedFromLock).toBe(false);
     });
 
-    it('scrollend fires BEFORE the scroll handler deferred — re-stick path still works', async () => {
-      // Production race: native scrollend may fire BEFORE the 1ms
-      // setTimeout in handleScroll's deferred branch. If
-      // handleScrollEnd → expireGestureSession clears the session
-      // before the deferred re-stick check runs, the deferred handler
-      // sees gestureSession===null. The captured `hadUserScrollIntent`
-      // is still true (captured at scroll event time), so re-stick
-      // should still fire.
+    it('native scrollend before the deferred scroll handler does not clear down intent', async () => {
+      // Native scrollend may fire before handleScroll's 1ms deferred
+      // branch. Since the controller no longer listens to scrollend,
+      // the recent down-intent captured at wheel time must survive
+      // until the deferred re-stick check runs.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -2788,8 +2709,8 @@ describe('createUseStickToBottomController — spring chase', () => {
       await nextTimer();
       expect(controller.escapedFromLock).toBe(true);
 
-      // Wheel down to bottom; sync handler captures, then scrollend
-      // fires BEFORE the deferred handler.
+      // Wheel down to bottom; recent down intent is recorded, then
+      // scrollend fires BEFORE the deferred handler.
       fireWheel(scrollEl, 200, scrollEl);
       geom.scrollTop = 400; // at bottom
       fireScroll(scrollEl); // schedules deferred for 1ms
@@ -2802,18 +2723,16 @@ describe('createUseStickToBottomController — spring chase', () => {
       // Wait past the deferred handler.
       await nextTimer();
 
-      // Re-stick should have fired regardless. If the captured
-      // session was the only signal, this would fail.
+      // Re-stick should have fired regardless.
       expect(controller.escapedFromLock).toBe(false);
       expect(controller.isSticky).toBe(true);
     });
 
-    it('scrollend during a kept-for-restick session does not break the next wheel re-stick', async () => {
+    it('separate wheel-down steps across native scrollend re-stick at bottom', async () => {
       // Two-step re-stick: user can't make it to bottom in one wheel.
-      // Step 1's deferred keeps the session (shouldKeepIntentForRestick).
-      // Step 2's wheel should re-arm, scroll, and re-stick. The risk:
-      // scrollend from step 1's scroll might clear the kept session,
-      // and step 2's re-arm should still work.
+      // Step 1 remains escaped. Step 2 records fresh down intent,
+      // scrolls to bottom, and re-sticks. The native scrollend between
+      // steps must not change either outcome.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -2830,7 +2749,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       geom.scrollTop = 200;
       fireScroll(scrollEl);
       await nextTimer();
-      // Not at bottom yet; should stay escaped, session kept.
+      // Not at bottom yet; should stay escaped.
       expect(controller.escapedFromLock).toBe(true);
 
       // Scrollend fires after wheel scroll settles.
@@ -2846,11 +2765,11 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.isSticky).toBe(true);
     });
 
-    it('scrollend during spring chase mid-stream does not escape', async () => {
+    it('native scrollend during spring chase mid-stream does not escape', async () => {
       // Spring writes scrollTop every rAF (60Hz). Some browsers may fire
       // scrollend between frames if the spring isn't writing fast
-      // enough. handleScrollEnd with gestureSession===null must be a
-      // no-op — never escape.
+      // enough. The event is not observed by the controller and must
+      // never escape.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -2875,34 +2794,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       await advanceUntil(() => geom.scrollTop === 800);
     });
 
-    it('stale scrollend from prior spring write does not kill a fresh wheel-up gesture', async () => {
-      // Encodes the seq 10584-10605 race from
-      // bug-report-20260520T022217Z.jsonl. Production sequence:
-      //   seq 10600: spring.tick wrote scrollTop=6874→6875 (target=6883,
-      //              distance=8). Tag set, scroll event queued.
-      //   seq 10601-10602: user wheel-up arms 'up' gesture at
-      //                    startScrollTop=6875. Spring cancelled.
-      //   seq 10603: TAGGED scroll event drains (from seq 10600's write)
-      //              — handleScroll early-returns on `tagged`.
-      //   seq 10604: NATIVE scrollend fires from the prior spring's
-      //              motion (CSSOM View spec — every scrollTop write
-      //              eventually emits scrollend).
-      //   seq 10605: WITHOUT the staleNoMotion guard,
-      //              expireGestureSession sees no upward movement
-      //              (no untagged scroll has fired against this
-      //              session yet) and runs the safety-net repin —
-      //              writing scrollTop back to 6883 and silently
-      //              killing the user's wheel-up intent. Their REAL
-      //              wheel motion (which arrives one tick later) is
-      //              attributed to a session that no longer exists,
-      //              never escapes, and the next contentRO restarts
-      //              the spring → yank back to bottom.
-      //
-      // With the staleNoMotion guard (sawUntaggedScroll=false →
-      // handleScrollEnd early-returns), the session survives, the
-      // user's REAL scroll motion arms `sawUntaggedScroll=true`, the
-      // deferred re-stick path detects upward motion, and escape is
-      // set correctly.
+    it('stale native scrollend from prior spring write does not affect immediate wheel-up escape', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150); // settle warm-up gate so spring path engages
@@ -2921,59 +2813,33 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(midScrollTop).toBeLessThan(500);
       expect(500 - midScrollTop).toBeGreaterThan(4);
 
-      // User wheel-up arms 'up' gesture at startScrollTop=midScrollTop.
-      // Spring cancelled.
       fireWheel(scrollEl, -100, scrollEl);
-      expect(controller.escapedFromLock).toBe(false); // gesture window open
+      expect(controller.escapedFromLock).toBe(true);
 
-      // Tagged scroll event from the prior spring.tick write drains
-      // synchronously. tagged=true → handleScroll early-returns.
-      // sawUntaggedScroll must stay false here — this scroll did not
-      // represent user motion. (The wheel cancelled the spring, so no
-      // further programmatic writes follow until scrollend; a single
-      // tagged scroll is the realistic shape.)
       fireScroll(scrollEl);
 
-      // Native scrollend fires from the prior spring's motion.
-      // Pre-fix: expireGestureSession kills the session and writes
-      // scrollTop to target=500. Post-fix: handleScrollEnd's
-      // staleNoMotion guard early-returns; the session survives.
       fireScrollEnd(scrollEl);
 
-      // No spurious safety-net repin — scrollTop stays mid-flight.
       expect(geom.scrollTop).toBe(midScrollTop);
 
-      // The user's REAL wheel motion now arrives. Browser scrolls up
-      // ~100 px from the wheel input.
       geom.scrollTop = Math.max(0, midScrollTop - 100);
-      fireScroll(scrollEl); // untagged → sawUntaggedScroll=true
+      fireScroll(scrollEl);
       await nextTimer();
 
-      // Gesture session's startScrollTop=midScrollTop; scrollTop is
-      // now ~100 px below that. The deferred re-stick check sees
-      // upward motion and sets escape.
       expect(controller.escapedFromLock).toBe(true);
       expect(controller.isSticky).toBe(false);
 
-      // The natural production tail: a second scrollend lands after
-      // the real motion. setEscapedFromLock already cleared the
-      // gesture session and its 160ms timer, so handleScrollEnd
-      // sees session === null and is a no-op. Asserting this guards
-      // against a regression where setEscapedFromLock forgets to
-      // clear the timer and a stale safety-net repin fires at
-      // t+160ms after escape, clobbering the escaped state.
       const scrollTopAfterEscape = geom.scrollTop;
       fireScrollEnd(scrollEl);
-      await waitRealMs(180); // past the 160ms gesture timer
+      await waitRealMs(180);
       expect(controller.escapedFromLock).toBe(true);
       expect(geom.scrollTop).toBe(scrollTopAfterEscape);
     });
 
     it('continuous wheel-up events (trackpad momentum) keep escape latched', async () => {
       // Trackpad momentum fires wheel events at high frequency. Each
-      // wheel re-arms gestureSession. The 160ms timer keeps getting
-      // reset. The scrollend at momentum-end finally resolves the
-      // gesture. During this whole window, escape must stay set.
+      // upward wheel is an escape input. During this whole window,
+      // escape must stay set.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -3005,38 +2871,28 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(beforeChunk);
     });
 
-    it('composer-RO during active gesture window does not get blocked when gesture is down', async () => {
-      // ChatView's composer-RO calls notifyContentMaybeGrew when the
-      // composer height changes. If the user clicks a scrollbar gutter
-      // (arms 'pointer'/'unknown'), composer-RO should still pin
-      // (direction !== 'up' permits).
+    it('composer-RO after scrollbar pointer escape does not pin', async () => {
       stubScrollbarGutter(scrollEl);
 
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
 
-      // User taps scrollbar (no movement yet).
       scrollEl.dispatchEvent(
         new PointerEvent('pointerdown', { bubbles: true, isPrimary: true, clientX: 195, clientY: 300 }),
       );
 
-      // Composer grows (typing). notifyContentMaybeGrew should pin.
       geom.scrollHeight = 1100;
       controller.notifyContentMaybeGrew();
-      expect(geom.scrollTop).toBe(500);
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(400);
     });
 
-    it('scroll-event-then-scrollend with kept session: scrollend clears session, next wheel arms fresh', async () => {
-      // Critical race: user wheel-down to near-bottom (not within 4px).
-      // Deferred keeps session. THEN scrollend fires, clearing session.
-      // User wheels down again to actual bottom. New session armed.
-      // handleScroll deferred re-stick: scrolledDown is computed against
-      // NEW session's lastObservedScrollTop, not the cleared session's
-      // baseline. If the new session's startScrollTop equals the current
-      // scrollTop (per armUserScrollIntent), and the scroll event has
-      // scrollTopAtEvent > startScrollTop, scrolledDown is true.
-      // This is the production-realistic two-wheel re-stick.
+    it('two wheel-down steps across native scrollend use fresh down intent and re-stick', async () => {
+      // User wheel-down lands near-bottom but outside the 4px epsilon,
+      // then a later wheel-down reaches the actual bottom. Re-stick is
+      // driven by the second wheel's fresh down intent plus downward
+      // scroll movement from the controller-scope baseline.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -3082,10 +2938,10 @@ describe('createUseStickToBottomController — spring chase', () => {
     //    time, and if i scroll to the bottom i expect for it to stick
     //    always."
 
-    it('wheel-up + wait (gesture session expires) + wheel-down to absolute bottom re-sticks', async () => {
-      // User wheels up, waits long enough for scrollend / 160ms timer to
-      // expire the session, then wheels down to the absolute bottom.
-      // No momentum interference. Re-stick MUST fire.
+    it('wheel-up + wait + wheel-down to absolute bottom re-sticks', async () => {
+      // User wheels up, waits, then wheels down to the absolute bottom.
+      // No momentum interference. Re-stick MUST fire from the fresh
+      // down intent.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -3096,9 +2952,6 @@ describe('createUseStickToBottomController — spring chase', () => {
       await nextTimer();
       expect(controller.escapedFromLock).toBe(true);
 
-      // Simulate "several seconds" — scrollend fires, gesture session
-      // expires. State settles to escape=true, session=null.
-      fireScrollEnd(scrollEl);
       await waitMs(200);
 
       // Fresh wheel-down to absolute bottom (scrollHeight - clientHeight = 400).
@@ -3113,9 +2966,9 @@ describe('createUseStickToBottomController — spring chase', () => {
 
     it('wheel-up + quick wheel-down with momentum overshoot still re-sticks at bottom', async () => {
       // The seq 371-374 dump pattern: leftover momentum from wheel-up
-      // carries scrollTop UP after wheel-down arms a 'down' gesture.
-      // Trajectory then reverses and reaches the bottom. Re-stick MUST
-      // fire when scrollTop lands at the absolute bottom.
+      // carries scrollTop UP after wheel-down records down intent.
+      // Trajectory then reverses and reaches the bottom inside the
+      // recent intent window. Re-stick MUST fire.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -3126,8 +2979,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       await nextTimer();
       expect(controller.escapedFromLock).toBe(true);
 
-      // User wheels DOWN. armUserScrollIntent reads scrollTop=200 as
-      // startScrollTop. (User wheel-up momentum has already settled at 200.)
+      // User wheels DOWN from scrollTop=200.
       geom.scrollTop = 200;
       fireWheel(scrollEl, 100, scrollEl);
 
@@ -3147,10 +2999,9 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.isSticky).toBe(true);
     });
 
-    it('wheel-up + incremental wheel-downs across scrollend cycles re-stick at bottom', async () => {
-      // User wheels down in multiple separate gestures (each separated by
-      // a scrollend that clears the session). The final gesture reaches
-      // the bottom and MUST re-stick.
+    it('wheel-up + incremental wheel-downs re-stick at bottom', async () => {
+      // User wheels down in multiple separate steps. The final wheel
+      // reaches the bottom and MUST re-stick.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -3166,7 +3017,6 @@ describe('createUseStickToBottomController — spring chase', () => {
       geom.scrollTop = 150;
       fireScroll(scrollEl);
       await nextTimer();
-      fireScrollEnd(scrollEl);
       expect(controller.escapedFromLock).toBe(true);
 
       // Step 2: another small wheel-down, still not bottom.
@@ -3174,7 +3024,6 @@ describe('createUseStickToBottomController — spring chase', () => {
       geom.scrollTop = 250;
       fireScroll(scrollEl);
       await nextTimer();
-      fireScrollEnd(scrollEl);
       expect(controller.escapedFromLock).toBe(true);
 
       // Step 3: final wheel-down reaches absolute bottom.
@@ -3398,12 +3247,10 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(500);
     });
 
-    it('repeated wheel-up events without intervening scroll events do not strand a kept session', async () => {
-      // Trackpad sends many wheel events at high frequency. Each wheel
-      // re-arms gestureSession via armUserScrollIntent. The session is
-      // overwritten, and the new startScrollTop should track the live
-      // scrollTop (each re-arm reads scrollEl.scrollTop). If the user
-      // then wheels down to the bottom, re-stick must fire.
+    it('repeated wheel-up events without intervening scroll events still allow later re-stick', async () => {
+      // Trackpad sends many wheel events at high frequency. Upward
+      // inputs keep escape latched. A later down wheel to the bottom
+      // must still re-stick.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -3417,9 +3264,6 @@ describe('createUseStickToBottomController — spring chase', () => {
       }
       expect(controller.escapedFromLock).toBe(true);
 
-      // Settle: scrollend fires.
-      fireScrollEnd(scrollEl);
-
       // Now wheel down all the way to bottom.
       fireWheel(scrollEl, 500, scrollEl);
       geom.scrollTop = 400;
@@ -3430,23 +3274,11 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.isSticky).toBe(true);
     });
 
-    it('untagged scroll-event trajectory landing at distFromBottom=0 re-sticks without an active gesture session', async () => {
-      // Bug #1 (bug-report-20260520T005414Z, seq 180-201). After the user
-      // wheel-up gesture expired (scrollend + 160ms timer), production
-      // produced a long burst of untagged scroll events walking scrollTop
-      // monotonically DOWN toward the bottom with no preceding wheel —
-      // trackpad momentum tail after gesture release. Each event had
-      // distFromBottomAtEvent shrinking to 0, but `willRestick` required
-      // `hadUserScrollIntent` (session !== null), so re-stick never fired
-      // and the user was stranded escaped at the geometric bottom.
-      //
-      // Fix: controller-scope `lastObservedScrollTopForRestick` survives
-      // session expiry so `previousObserved` has a baseline even without
-      // an active session. willRestick no longer gates on
-      // hadUserScrollIntent — bailRO is the actual filter for layout-
-      // driven scroll events. The `scrolledDown` requirement still blocks
-      // UP-trajectory escapes, and the AUTO_FOLLOW_BOTTOM_EPSILON_PX (4)
-      // requirement still blocks anywhere-but-bottom re-sticks.
+    it('untagged scroll-event trajectory landing at distFromBottom=0 does not re-stick without recent down intent', async () => {
+      // The rewritten intent model requires a current down input before
+      // a bottom-landing scroll event can re-engage auto-follow. That
+      // keeps layout/applyJump/clamp scrolls from silently clearing an
+      // escaped reader.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -3458,14 +3290,8 @@ describe('createUseStickToBottomController — spring chase', () => {
       await nextTimer();
       expect(controller.escapedFromLock).toBe(true);
 
-      // Let the gesture session expire — scrollend + settle past 160ms timer.
-      fireScrollEnd(scrollEl);
       await waitMs(200);
 
-      // Untagged scroll trajectory walking DOWN toward bottom with NO
-      // preceding wheel arming a fresh session. This is what trackpad
-      // momentum tail looks like after gesture release (the browser keeps
-      // dispatching scroll events without firing wheel events).
       const trajectory = [200, 250, 300, 350, 400];
       for (const top of trajectory) {
         geom.scrollTop = top;
@@ -3473,26 +3299,23 @@ describe('createUseStickToBottomController — spring chase', () => {
         await nextTimer();
       }
 
-      expect(controller.escapedFromLock).toBe(false);
-      expect(controller.isSticky).toBe(true);
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
     });
 
     it('wheel-down at distFromBottom=0 + escaped re-sticks without a follow-up scroll event (clamp-then-wheel lockout)', async () => {
       // Bug #2 (bug-report-20260520T010930Z, seq 4953-5317). A content
       // shrink clamped scrollTop to the new max — the clamp's scroll
       // event fired BEFORE the contentRO microtask, so `resizeDifference`
-      // was still 0 in handleScroll, bailRO didn't catch it, no session
-      // existed, and `willRestick` failed (hadUserScrollIntent=false).
+      // was still 0 in handleScroll and there was no recent down intent.
       // User landed at distFromBottom=0 but escaped. They then wheeled
       // down to re-engage — but the browser refused to scroll past the
       // absolute bottom, so ZERO scroll events fired. 180 wheel events
-      // each armed a 'down' gesture session that expired unused; the
-      // re-stick path in the scroll handler is unreachable when no
-      // scroll event ever fires. User stranded.
+      // could not reach the scroll-handler re-stick path. User stranded.
       //
       // Fix: handleWheel detects wheel-down + escaped + at-bottom and
-      // re-sticks synchronously instead of arming a gesture. The wheel
-      // itself is the explicit user consent — no scroll event needed.
+      // re-sticks synchronously. The wheel itself is the explicit user
+      // consent — no scroll event needed.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -3501,10 +3324,10 @@ describe('createUseStickToBottomController — spring chase', () => {
       // clamp-from-shrink-then-no-bailRO trap requires precise event
       // ordering between scroll + contentRO that happy-dom doesn't model;
       // the bug from the wheel-handler's perspective is exactly: escape
-      // is true, no session, and the user is at distFromBottom <= 4.
+      // is true and the user is at distFromBottom <= 4.
       controller.setEscapedFromLock(true);
       // geom.scrollTop is already 400 (per beforeEach). distFromBottom =
-      // 1000 - 400 - 600 = 0. Confirm no session armed.
+      // 1000 - 400 - 600 = 0.
       expect(controller.escapedFromLock).toBe(true);
       expect(geom.scrollTop).toBe(400);
 
@@ -3584,10 +3407,10 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.isSticky).toBe(false);
     });
 
-    it('wheel-down at distFromBottom > 4 + escaped arms a gesture (does NOT re-stick from the wheel handler alone)', async () => {
+    it('wheel-down at distFromBottom > 4 + escaped records down intent without immediate re-stick', async () => {
       // Bug #2 fix scope: the wheel-handler re-stick is ONLY for the
       // at-bottom-lockout case. If the user is escaped but not at the
-      // bottom, a wheel-down must still arm a gesture so the deferred
+      // bottom, a wheel-down must record down intent so the deferred
       // scroll handler can run its normal re-stick logic when the
       // trajectory actually lands at the bottom. Otherwise the fix
       // would re-stick mid-thread on every downward wheel, defeating
@@ -3604,10 +3427,79 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.escapedFromLock).toBe(true);
 
       // Wheel down, but still far from bottom. Re-stick MUST NOT fire
-      // from the wheel handler alone — gesture is armed for the next
-      // scroll event to interpret.
+      // from the wheel handler alone — recent down intent is reserved
+      // for the next scroll event to interpret.
       fireWheel(scrollEl, 50, scrollEl);
       expect(controller.escapedFromLock).toBe(true);
+    });
+
+    it('recent down intent expires before a later bottom-landing scroll', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      fireWheel(scrollEl, 50, scrollEl);
+      await waitMs(300);
+
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
+    });
+
+    it('up input clears recent down intent before a bottom-landing scroll', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      fireWheel(scrollEl, 50, scrollEl);
+      fireWheel(scrollEl, -10, scrollEl);
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
+    });
+
+    it('up input before the deferred scroll handler prevents stale down-intent re-stick', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      fireWheel(scrollEl, 50, scrollEl);
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+
+      // The browser has queued the bottom-landing scroll event's
+      // deferred handler, but the user immediately scrolls up again.
+      // That fresh up input must clear the down-intent version so the
+      // pending callback cannot re-stick from stale consent.
+      fireWheel(scrollEl, -10, scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
     });
   });
 

@@ -80,11 +80,7 @@ const AUTO_FOLLOW_BOTTOM_EPSILON_PX = 4;
 const RESIZE_CLEAR_PADDING_MS = 1;
 const DEFAULT_PROGRAMMATIC_SCROLL_DURATION_MS = 420;
 const PROGRAMMATIC_SCROLL_DISTANCE_THRESHOLD_PX = 1;
-const USER_SCROLL_INTENT_WINDOW_MS = 160;
-// Escape threshold: any non-zero upward movement during a gesture
-// window escapes. Strict `>` against 0 so zero-movement scrolls (sub-
-// pixel wheels rounded by the browser) don't spuriously escape.
-const USER_SCROLL_ESCAPE_THRESHOLD_PX = 0;
+const RECENT_DOWN_INTENT_WINDOW_MS = 250;
 const EXTERNAL_SCROLL_TAG_CLEAR_MS = 100;
 
 // ===== Spring chase tuning =====
@@ -182,9 +178,9 @@ export interface UseStickToBottomController {
   /** True when sticky AND no lease is held. Drives auto-follow gating. */
   readonly isSticky: boolean;
   /**
-   * True when sticky-by-intent OR within STICK_TO_BOTTOM_OFFSET_PX of
-   * the geometric bottom — i.e., any reason the ScrollToBottomButton
-   * should be hidden. Mirrors upstream `use-stick-to-bottom`'s return.
+   * True when the timeline should hide the ScrollToBottomButton: sticky
+   * by intent, or geometrically near bottom while not explicitly escaped.
+   * User escape wins over the near-bottom band.
    */
   readonly isAtBottom: boolean;
   /** True when the user has explicitly moved the outer scroller away from bottom. */
@@ -254,7 +250,7 @@ export interface UseStickToBottomController {
    * `$effect.pre`, ChannelView's initial-poll path) immediately
    * before the restore $effect runs. Auto-clears on consume by the
    * next restore-forceStick call, on outer-scroll escape intent
-   * (wheel / key / touch that can reach the chat scroller),
+   * (wheel / key / touch / pointer that can reach the chat scroller),
    * animateScrollTo, stopScroll, and on any
    * user-reason `forceStick()`. This is
    * the load-bearing distinguisher between "the user is explicitly
@@ -362,8 +358,8 @@ export function createUseStickToBottomController(
   let isAtBottomState = $state(true);
   // Geometric ≤70px-from-bottom flag. Updated by refreshIsNearBottom on
   // every scroll event and after every programmatic write. The public
-  // `isAtBottom` getter returns intent OR geometry — both are reasons to
-  // hide the ScrollToBottomButton.
+  // `isAtBottom` getter returns false while escaped even inside this
+  // visual band so the ScrollToBottomButton reflects user intent.
   let isNearBottomState = $state(true);
   let escapedFromLockState = $state(false);
   let pauseDepth = $state(0);
@@ -385,37 +381,16 @@ export function createUseStickToBottomController(
   let ignoreScrollToTop = -1;
   let externalScrollIgnoreUntil = 0;
   let externalScrollClearTimer: ReturnType<typeof setTimeout> | null = null;
-  // Per-gesture state read by the direction-aware pin gates and the
-  // gesture-expire path. `direction` is set from the input signal
-  // (wheel/key/touch from sign; pointer starts 'unknown' and refines
-  // on the next scroll event) and gates contentRO / notifyContent /
-  // spring pins so only UP intent blocks. `lastObservedScrollTop`
-  // anchors the direction-refinement for 'unknown'.
-  interface GestureSession {
-    source: 'wheel' | 'key' | 'touch' | 'pointer';
-    startScrollTop: number;
-    lastObservedScrollTop: number;
-    direction: 'up' | 'down' | 'unknown';
-    // True once a real (untagged) scroll has been observed for this
-    // session. Full rationale lives at the consumer — see
-    // handleScrollEnd's stale-scrollend guard.
-    sawUntaggedScroll: boolean;
-  }
-  let gestureSession: GestureSession | null = null;
-  let gestureSessionTimer: ReturnType<typeof setTimeout> | null = null;
+  let recentDownIntentUntil = 0;
+  let recentDownIntentVersion = 0;
+  let recentDownIntentClearTimer: ReturnType<typeof setTimeout> | null = null;
   let previousHeight: number | undefined;
   let touchStartY: number | null = null;
   let resizeCorrelatedUntaggedScrollBudget = 0;
   // Controller-scope baseline so `scrolledDown` can be computed for the
-  // re-stick path even when no gesture session is active. The scroll
-  // handler updates this on every event AFTER reading the previous value
-  // into `previousObserved`. Production cause: trackpad momentum tail
-  // continues firing untagged scroll events after the gesture session
-  // expires (scrollend + 160ms), with each event walking scrollTop
-  // monotonically toward the bottom. Without a session-independent
-  // baseline, `previousObserved = -1` permanently and `scrolledDown =
-  // false`, so willRestick never fires even when the trajectory clearly
-  // landed at the bottom (bug-report-20260520T005414Z seq 180-201).
+  // re-stick path. Re-stick requires both recent down input and a real
+  // downward scroll event landing at the bottom; this baseline keeps
+  // layout clamps from masquerading as user-driven down motion.
   let lastObservedScrollTopForRestick = -1;
 
   // ===== Spring chase state =====
@@ -435,7 +410,7 @@ export function createUseStickToBottomController(
   // the restore $effect runs (after the defensive `setEscapedFromLock`).
   // `forceStick({reason: 'restore'})` consumes the flag and proceeds;
   // when the flag is unset, that call NO-OPs. Any outer-scroll escape
-  // intent (wheel / key / touch that can reach the scroll element), plus
+  // intent (wheel / key / touch / pointer that can reach the scroll element), plus
   // selection, animateScrollTo, stopScroll, or explicit user-reason forceStick,
   // also clears the flag, so a stale restore $effect that fires after
   // a user escape cannot clobber it. This is
@@ -525,17 +500,66 @@ export function createUseStickToBottomController(
     if (!scrollEl) return 0;
     return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
   }
-  function movedUpEnoughToEscape(startScrollTop: number, nextScrollTop: number): boolean {
-    // Strict `>` against threshold 0: any actual upward movement escapes;
-    // a zero-movement scroll event (sub-pixel wheel rounded to 0 by the
-    // browser) does not, so the gesture resolves via the 160ms timer /
-    // scrollend instead of escaping spuriously.
-    return startScrollTop - nextScrollTop > USER_SCROLL_ESCAPE_THRESHOLD_PX;
-  }
   function refreshIsNearBottom(): void {
     const dist = distanceFromBottom();
     const next = dist <= STICK_TO_BOTTOM_OFFSET_PX;
     if (next !== isNearBottomState) isNearBottomState = next;
+  }
+
+  function clearRecentDownIntent(): void {
+    recentDownIntentUntil = 0;
+    recentDownIntentVersion += 1;
+    if (recentDownIntentClearTimer) {
+      clearTimeout(recentDownIntentClearTimer);
+      recentDownIntentClearTimer = null;
+    }
+  }
+
+  function hasRecentDownIntent(): boolean {
+    return recentDownIntentUntil > nowMs();
+  }
+
+  function restickFromUserInput(source: 'wheel' | 'key' | 'touch' | 'scroll'): void {
+    clearRecentDownIntent();
+    escapedFromLockState = false;
+    isAtBottomState = true;
+    springStopRequested = false;
+    trace('scroll.restick.input', () => ({
+      source,
+      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+      distFromBottom: scrollEl ? Math.round(distanceFromBottom()) : null,
+    }));
+  }
+
+  function recordRecentDownIntent(source: 'wheel' | 'key' | 'touch'): void {
+    if (!escapedFromLockState) return;
+    cancelTargetAnimation();
+    restoreSnapArmed = false;
+    recentDownIntentUntil = nowMs() + RECENT_DOWN_INTENT_WINDOW_MS;
+    recentDownIntentVersion += 1;
+    if (recentDownIntentClearTimer) clearTimeout(recentDownIntentClearTimer);
+    const expiresAt = recentDownIntentUntil;
+    const version = recentDownIntentVersion;
+    recentDownIntentClearTimer = setTimeout(() => {
+      if (
+        recentDownIntentVersion === version
+        && recentDownIntentUntil === expiresAt
+      ) clearRecentDownIntent();
+    }, RECENT_DOWN_INTENT_WINDOW_MS);
+    trace('scroll.intent.down', () => ({
+      source,
+      recentDownIntentUntil: Math.round(recentDownIntentUntil),
+      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+      distFromBottom: scrollEl ? Math.round(distanceFromBottom()) : null,
+      escapedFromLockState,
+    }));
+    if (
+      scrollEl
+      && escapedFromLockState
+      && distanceFromBottom() <= AUTO_FOLLOW_BOTTOM_EPSILON_PX
+    ) {
+      restickFromUserInput(source);
+    }
   }
 
   // ===== Programmatic scroll write =====
@@ -566,12 +590,7 @@ export function createUseStickToBottomController(
     // Tag using the BROWSER-rounded read so the scroll handler's
     // `scrollTop === ignoreScrollToTop` check matches.
     ignoreScrollToTop = scrollEl.scrollTop;
-    // Tagged programmatic scroll events intentionally return before the
-    // user-direction path, so keep the active gesture's direction
-    // baseline current here. Otherwise a later plain scrollbar/native
-    // scroll could compare against the previous bottom and fail to
-    // register a small escape.
-    if (gestureSession) gestureSession.lastObservedScrollTop = scrollEl.scrollTop;
+    lastObservedScrollTopForRestick = scrollEl.scrollTop;
     refreshIsNearBottom();
     let recordTrace = true;
     if (writeCaller === 'spring.tick') {
@@ -694,15 +713,8 @@ export function createUseStickToBottomController(
   // omitted here — startSpringIfNeeded is called from inside the
   // already-warm branch of contentRO; warm-checking inside it would
   // double-gate and confuse the read.
-  //
-  // Direction-aware pending-intent gate (Change 3): only an UP gesture
-  // blocks the spring. 'down' and 'unknown' intents (pointer-tap on the
-  // scrollbar before drag, sub-pixel wheel rounded to 0, a wheel-down
-  // toward the bottom) MUST allow the spring to keep following so the
-  // user doesn't experience the 160ms blackout described in Bug C.
   function springGateOpen(): boolean {
     return !springStopRequested
-      && gestureSession?.direction !== 'up'
       && pauseDepth === 0
       && isAtBottomState
       && !escapedFromLockState
@@ -805,7 +817,7 @@ export function createUseStickToBottomController(
         // First fire: snap to bottom synchronously so the initial paint
         // lands at the right place. Matches upstream's `initial` behavior
         // when isAtBottom starts true.
-        const willPin = isAtBottomState && !escapedFromLockState && gestureSession === null;
+        const willPin = isAtBottomState && !escapedFromLockState;
         trace('scroll.contentRO.firstFire', () => ({
           nextHeight: Math.round(nextHeight),
           willPin,
@@ -844,21 +856,13 @@ export function createUseStickToBottomController(
       // the same `isNearBottomState` and the IIFE disappears.
       refreshIsNearBottom();
       const overshoot = scrollEl.scrollTop > targetScrollTop();
-      // Direction-aware pending-intent gate (Change 3): block ONLY an
-      // active UP gesture. 'down' / 'unknown' intents still permit the
-      // pin — that's Bug C's fix (sticky users tap the scrollbar or
-      // make a sub-pixel trackpad nudge during streaming and the
-      // bottom drifts away for the 160ms timer window). The strict
-      // restore gate in forceStick({reason:'restore'}) stays unchanged.
       const positiveWillPin = delta > 0
         && isAtBottomState
         && !escapedFromLockState
-        && gestureSession?.direction !== 'up'
         && pauseDepth === 0;
       const negativeWillPin = delta < 0
         && (isAtBottomState || isNearBottomState)
         && !escapedFromLockState
-        && gestureSession === null
         && pauseDepth === 0;
       trace('scroll.contentRO', () => ({
         prev: Math.round(prev),
@@ -889,7 +893,6 @@ export function createUseStickToBottomController(
       if (
         overshoot
         && !escapedFromLockState
-        && gestureSession === null
         && pauseDepth === 0
       ) {
         writeCaller = 'contentRO.overshoot';
@@ -994,161 +997,54 @@ export function createUseStickToBottomController(
   }
 
   // ===== Wheel handler =====
-  function isOverflowAncestor(el: Element): boolean {
-    if (!(el instanceof HTMLElement)) return false;
-    const cs = window.getComputedStyle(el);
-    return /(auto|scroll)/.test(cs.overflowY) || /(auto|scroll)/.test(cs.overflow);
-  }
-
-  function canConsumeWheelDelta(el: HTMLElement, deltaY: number): boolean {
-    if (deltaY < 0) return el.scrollTop > 0;
-    if (deltaY > 0) return el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+  function targetIsInsideScrollEl(e: Event): boolean {
+    if (!scrollEl) return false;
+    let cur: Element | null = e.target instanceof Element ? e.target : null;
+    while (cur) {
+      if (cur === scrollEl) return true;
+      cur = cur.parentElement;
+    }
     return false;
   }
 
-  function clearGestureSession(
-    session: GestureSession | null = gestureSession,
-    opts: { repinIfStillSticky?: boolean } = {},
-  ): void {
-    if (session && gestureSession !== session) return;
-    gestureSession = null;
-    if (gestureSessionTimer) {
-      clearTimeout(gestureSessionTimer);
-      gestureSessionTimer = null;
-    }
-    if (!escapedFromLockState && isAtBottomState) {
-      springStopRequested = false;
-      // Rare-case safety net: intent armed but no scroll event fired (a
-      // pointer-tap with no drag, a sub-pixel wheel rounded to 0) AND
-      // content grew during the window AND the pin couldn't run because
-      // the gate was pending. With Change 3's direction-aware gate this
-      // is a no-op in the common case (the pin keeps firing for 'down'
-      // / 'unknown' intent), but it remains correct for the edge cases.
-      if (opts.repinIfStillSticky && scrollEl && distanceFromBottom() > AUTO_FOLLOW_BOTTOM_EPSILON_PX) {
-        writeCaller = 'gestureSession.expire';
-        writeScrollTop(targetScrollTop());
-      }
-    }
-  }
-
-  function expireGestureSession(session: GestureSession): void {
-    if (gestureSession !== session) return;
-    if (scrollEl && movedUpEnoughToEscape(session.startScrollTop, scrollEl.scrollTop)) {
-      trace('scroll.gestureSession.expireEscape', () => ({
-        source: session.source,
-        direction: session.direction,
-        startScrollTop: Math.round(session.startScrollTop),
-        scrollTop: Math.round(scrollEl?.scrollTop ?? 0),
-        isAtBottomState,
-        escapedFromLockState,
-      }));
-      clearGestureSession(session);
-      setEscapedFromLock(true);
-      return;
-    }
-    clearGestureSession(session, { repinIfStillSticky: true });
-  }
-
-  function armUserScrollIntent(
-    source: 'wheel' | 'key' | 'touch' | 'pointer',
-    direction: 'up' | 'down' | 'unknown',
-  ): void {
+  function escapeFromUserInput(source: 'wheel' | 'key' | 'touch' | 'pointer'): void {
     if (!scrollEl) return;
-    cancelTargetAnimation();
-    cancelSpring();
-    springStopRequested = true;
-    restoreSnapArmed = false;
-    const start = scrollEl.scrollTop;
-    const session: GestureSession = {
+    const targetScrollEl = scrollEl;
+    trace('scroll.intent.escape', () => ({
       source,
-      direction,
-      startScrollTop: start,
-      lastObservedScrollTop: start,
-      sawUntaggedScroll: false,
-    };
-    gestureSession = session;
-    if (gestureSessionTimer) clearTimeout(gestureSessionTimer);
-    gestureSessionTimer = setTimeout(() => {
-      expireGestureSession(session);
-    }, USER_SCROLL_INTENT_WINDOW_MS);
-    trace('scroll.gestureSession.arm', () => ({
-      source,
-      direction,
-      startScrollTop: Math.round(session.startScrollTop),
+      scrollTop: Math.round(targetScrollEl.scrollTop),
       isAtBottomState,
       escapedFromLockState,
     }));
+    setEscapedFromLock(true);
   }
 
   function handleWheel(e: WheelEvent): void {
     if (!scrollEl) return;
-    // Pinch-to-zoom on Mac trackpads arrives as `wheel + ctrlKey=true`
-    // (Change 6). Without this filter, a zoom gesture at the bottom of
-    // a streaming thread would spuriously arm a wheel intent and could
-    // escape the lock once any subsequent scroll event landed.
     if (e.ctrlKey) return;
     if (e.deltaY === 0) return;
-    if (e.deltaY > 0 && !escapedFromLockState) return;
-    // Walk parents from event target; if first overflow ancestor is the
-    // scroll element, the wheel landed on us. If a nested scroller can
-    // consume this delta, ignore — the user is scrolling that nested
-    // element, not us. If the nested scroller is already at its boundary,
-    // the wheel can chain to the chat scroll element, so this is real
-    // outer-timeline scroll intent.
-    let cur: Element | null = e.target instanceof Element ? e.target : null;
-    while (cur && cur !== scrollEl) {
-      if (
-        isOverflowAncestor(cur)
-        && cur instanceof HTMLElement
-        && cur.scrollHeight > cur.clientHeight
-        && canConsumeWheelDelta(cur, e.deltaY)
-      ) {
-        return;
-      }
-      cur = cur.parentElement;
-    }
-    if (cur !== scrollEl) return;
+    if (!targetIsInsideScrollEl(e)) return;
     if (scrollEl.scrollHeight <= scrollEl.clientHeight) return;
-    // Bug #2 fix (bug-report-20260520T010930Z, seq 4953-5317). When the
-    // user is escaped AND geometrically at the bottom, a wheel-down is
-    // the explicit "re-engage" signal. The browser refuses to scroll
-    // past the absolute bottom, so NO scroll event will follow this
-    // wheel — the deferred re-stick path in handleScroll is unreachable.
-    // Re-stick synchronously here; the wheel itself is the consent.
-    // Production trap: a content shrink clamped scrollTop to the new
-    // max, leaving the user at distFromBottom=0 with escape=true and no
-    // session. Their next wheel-down armed 180 gesture sessions that
-    // each expired unused.
-    if (
-      e.deltaY > 0
-      && escapedFromLockState
-      && scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight <= AUTO_FOLLOW_BOTTOM_EPSILON_PX
-    ) {
-      trace('scroll.wheel.restickAtBottom', () => ({
-        deltaY: e.deltaY,
-        scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-        distFromBottom: scrollEl
-          ? Math.round(scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight)
-          : null,
-      }));
-      escapedFromLockState = false;
-      isAtBottomState = true;
-      springStopRequested = false;
+
+    if (e.deltaY < 0) {
+      escapeFromUserInput('wheel');
       return;
     }
-    trace('scroll.wheel.armGesture', () => ({
-      deltaY: e.deltaY,
-      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-      isAtBottomState,
-      escapedFromLockState,
-    }));
-    armUserScrollIntent('wheel', e.deltaY < 0 ? 'up' : 'down');
+
+    recordRecentDownIntent('wheel');
   }
 
   function handlePointerDown(e: PointerEvent): void {
     if (!scrollEl) return;
-    if (e.isPrimary === false) return;
     if (scrollEl.scrollHeight <= scrollEl.clientHeight) return;
+    if (!targetIsInsideScrollEl(e)) return;
+
+    if (e.button === 1) {
+      escapeFromUserInput('pointer');
+      return;
+    }
+
+    if (e.isPrimary === false) return;
 
     const scrollbarWidth = scrollEl.offsetWidth - scrollEl.clientWidth;
     if (scrollbarWidth <= 0) return;
@@ -1159,16 +1055,14 @@ export function createUseStickToBottomController(
     const inLeftGutter = style.direction === 'rtl' && e.clientX <= rect.left + scrollbarWidth;
     if (!inRightGutter && !inLeftGutter) return;
 
-    trace('scroll.pointer.armGesture', () => ({
+    trace('scroll.pointer.intent', () => ({
       clientX: Math.round(e.clientX),
       scrollbarWidth: Math.round(scrollbarWidth),
       scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
       isAtBottomState,
       escapedFromLockState,
     }));
-    // Scrollbar tap with no drag yet — direction will be refined on the
-    // first scroll event that follows.
-    armUserScrollIntent('pointer', 'unknown');
+    escapeFromUserInput('pointer');
   }
 
   // ===== Scroll handler =====
@@ -1192,34 +1086,12 @@ export function createUseStickToBottomController(
     ignoreScrollToTop = -1;
     const externalTagged = externalScrollIgnoreUntil > nowMs();
     refreshIsNearBottom();
-    const session = gestureSession;
-    const hadUserScrollIntent = session !== null;
-    // Momentum-overshoot defense: a 'down' gesture is armed only when the
-    // user is already escaped (handleWheel returns early on deltaY > 0 when
-    // sticky), so its purpose is "I'm trying to recover and re-stick at the
-    // bottom." Leftover upward momentum from a preceding wheel-up can
-    // briefly carry scrollTop BELOW the wheel-down's startScrollTop before
-    // the trajectory reverses. Without this direction gate, the deferred
-    // handler reads that one upward sample as "user moved up," fires
-    // setEscapedFromLock(true) (a no-op — we're already escaped), and
-    // CLEARS the just-armed 'down' session. Subsequent scroll events have
-    // no session, so the re-stick path is unreachable when the trajectory
-    // finally lands at the bottom — the user is stranded escaped. The
-    // production trace at seq 371-374 captured this exact sequence: wheel
-    // (+100) at scrollTop=5511 arms 'down'; next scroll fires at
-    // scrollTop=5506 (momentum still going up); deferred handler kills
-    // the gesture; scrollTop=5559 (at bottom) at seq 438 has no session
-    // to drive re-stick.
-    const pendingUserIntentMovedUp = !!session
-      && session.direction !== 'down'
-      && movedUpEnoughToEscape(session.startScrollTop, scrollTopAtEvent);
-    const tagged = (scrollTopAtEvent === tag || externalTagged) && !pendingUserIntentMovedUp;
+    const tagged = scrollTopAtEvent === tag || externalTagged;
     trace('scroll.scrollEvent', () => ({
       scrollTop: Math.round(scrollTopAtEvent),
       tag: Math.round(tag),
       externalTagged,
       tagged,
-      pendingUserIntentMovedUp,
       scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
       clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
       resizeDifference: Math.round(resizeDifference),
@@ -1237,83 +1109,37 @@ export function createUseStickToBottomController(
     // set synchronously by writeScrollTop, so we already know this event
     // reflects our own write, not user intent.
     if (tagged) return;
-    // First real scroll for this session — clears the stale-scrollend
-    // guard in handleScrollEnd.
-    if (session) session.sawUntaggedScroll = true;
     cancelTargetAnimation();
     const resizeCorrelatedScroll = resizeDifference !== 0 || resizeCorrelatedUntaggedScrollBudget > 0;
     if (resizeCorrelatedUntaggedScrollBudget > 0) resizeCorrelatedUntaggedScrollBudget -= 1;
-    // Capture direction baseline BEFORE the deferral. We're inside the
-    // synchronous handler for the current scroll event; this scrollTop
-    // is what the user just produced. Used by the deferred re-stick
-    // check to distinguish "user scrolled DOWN toward bottom" (re-stick
-    // candidate) from "user scrolled UP" (must NOT re-stick — undoing
-    // the wheel handler's just-set escape on the same gesture). The
-    // baseline lives on the active gesture session; outside a gesture
-    // there is no direction comparison to make.
-    // Prefer the session's own baseline when one is active (the start
-    // of THIS gesture is the right reference for direction refinement);
-    // fall back to the controller-scope baseline for the session-less
-    // re-stick path (bug #1 — trackpad momentum tail after gesture
-    // expiry walking scrollTop down to the bottom across many untagged
-    // scroll events). Update unconditionally on every untagged event:
-    // bailed and non-bailed events alike represent the most recent
-    // visual position, which is the right reference for the next
-    // event's direction comparison. Clamps from content shrink always
-    // move scrollTop DOWN (toward the new max), so scrolledDown=FALSE
-    // for any clamp event — willRestick stays false on its own.
-    const previousObserved = session?.lastObservedScrollTop ?? lastObservedScrollTopForRestick;
+    const previousObserved = lastObservedScrollTopForRestick;
+    const downIntentVersionAtEvent = recentDownIntentVersion;
     lastObservedScrollTopForRestick = scrollTopAtEvent;
-    if (session) {
-      session.lastObservedScrollTop = scrollTopAtEvent;
-      // Pointer-tap arms with direction='unknown' because the user
-      // hasn't moved yet. The first scroll event refines that to a
-      // concrete direction so the pin gates (Change 3) can read it.
-      if (session.direction === 'unknown' && previousObserved >= 0) {
-        if (scrollTopAtEvent > previousObserved) session.direction = 'down';
-        else if (scrollTopAtEvent < previousObserved) session.direction = 'up';
-      }
-    }
     // Defer 1ms so a concurrent RO callback can update resizeDifference
     // before we interpret direction. Mirrors upstream.
     setTimeout(() => {
       if (!scrollEl) return;
-      if (session && pendingUserIntentMovedUp) {
-        trace('scroll.scrollEvent.deferred.escapeUserScroll', () => ({
-          source: session.source,
-          direction: session.direction,
-          startScrollTop: Math.round(session.startScrollTop),
-          scrollTop: Math.round(scrollTopAtEvent),
-          resizeDifference: Math.round(resizeDifference),
-        }));
-        clearGestureSession(session);
-        setEscapedFromLock(true);
-        return;
-      }
 
       // RO race — content just resized; the scroll event reflects layout,
       // not user intent. Most importantly: virtua's $fixScrollJump can
       // adjust scrollTop to keep above-viewport rows stable, which would
-      // otherwise look like an up-gesture. For non-virtua consumers
+      // otherwise look like user scroll movement. For non-virtua consumers
       // (Discussion's ChannelView) this gate is a 1ms suppression window
       // after each content-RO fire — vanishingly unlikely to swallow a
       // real user gesture, since the window only opens immediately after
       // a layout change.
       //
-      // Gate on `!hadUserScrollIntent`: virtua's applyJump and other
-      // layout-driven scroll writes can't produce wheel / key / touch /
-      // pointer signals, so a pending intent is proof the scroll event
-      // reflects a real user gesture, not the cascade. Without this
-      // guard the bail also swallowed input-backed re-stick gestures
-      // on heavy threads where the contentRO seam fires continuously
-      // (virtua remeasurement + Streamdown async typesetting), leaving
-      // escape stuck true after the user manually wheeled back to the
-      // bottom.
-      if (resizeCorrelatedScroll && !hadUserScrollIntent) {
+      // A recent down-intent is proof the user is actively trying to
+      // re-stick, so let that bottom-landing through even during a
+      // measurement cascade. Without recent down intent, layout wins.
+      const hasLiveDownIntent =
+        hasRecentDownIntent()
+        && recentDownIntentVersion === downIntentVersionAtEvent;
+      if (resizeCorrelatedScroll && !hasLiveDownIntent) {
         trace('scroll.scrollEvent.deferred.bailRO', () => ({
           resizeDifference: Math.round(resizeDifference),
           resizeCorrelatedScroll,
-          hadUserScrollIntent,
+          hasLiveDownIntent,
           scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
         }));
         return;
@@ -1327,70 +1153,18 @@ export function createUseStickToBottomController(
         return;
       }
 
-      // Re-stick: user scrolled BACK essentially to the bottom by hand
-      // (wheel, touch, keyboard) OR via residual trackpad momentum after
-      // the gesture session has already expired. Restore intent flag so
-      // the contentRO sync-pin can resume on the next content grow. No
-      // scrollTop write here — they're already at the bottom.
-      //
-      // Two gates:
-      //   1. Direction (scrolledDown). The scroll event from a wheel-up
-      //      gesture is the event that confirms escape; if we also
-      //      re-sticked whenever the user happens to land near the
-      //      bottom, that same event would undo the escape. Skip
-      //      re-stick when scrollTop is non-increasing; only events
-      //      that actually moved DOWN can re-engage auto-follow. A
-      //      content shrink that clamps scrollTop is correctly excluded
-      //      (scrollTop decreased), preventing a layout-driven yank of
-      //      a user who was reading mid-thread.
-      //   2. AUTO_FOLLOW_BOTTOM_EPSILON_PX (4px, widened from 0.5 in
-      //      Change 1) rather than the looser isNearBottomState (70px).
-      //      Even on a DOWN scroll, only the actual bottom (within
-      //      browser-rounding tolerance) counts.
-      //
-      // `hadUserScrollIntent` is intentionally NOT a gate here. The
-      // session-required predicate stranded users on the
-      // bug-report-20260520T005414Z (seq 180-201) trajectory where
-      // post-gesture momentum walked scrollTop monotonically down to
-      // distFromBottom=0 across 22 untagged scroll events with no
-      // active session. bailRO above (the `resizeCorrelatedScroll &&
-      // !hadUserScrollIntent` short-circuit) is the actual layout
-      // filter — virtua's applyJump and content-resize-driven clamps
-      // are gated there, before this branch is reached.
-      //
-      // Bug A fix (Change 1): use `distFromBottomAtEvent` captured
-      // synchronously above, NOT a fresh distanceFromBottom() read.
-      // A concurrent streaming chunk may have grown scrollHeight in
-      // the 1ms timer window; the user's scrollTop is unchanged but
-      // the bottom moved away. The captured value reflects what the
-      // user actually saw when they scrolled.
       const scrolledDown = previousObserved < 0
         ? false
         : scrollTopAtEvent > previousObserved;
-      // Momentum-overshoot keep-alive companion to the gate above. A
-      // 'down' gesture means "user is trying to reach the bottom to
-      // re-stick" — keep the session alive on any scroll event that
-      // hasn't yet reached the bottom, even when scrollTopAtEvent is
-      // currently BELOW startScrollTop (leftover upward momentum from a
-      // preceding wheel-up). Without the direction disjunct, the session
-      // is cleared on the first overshoot sample and the trajectory's
-      // eventual bottom-landing has no session to drive re-stick. For
-      // 'up' and 'unknown' directions, the original "scrolled past
-      // startScrollTop on the way down" gate stands.
-      const shouldKeepIntentForRestick = !!session
-        && escapedFromLockState
-        && (session.direction === 'down' || scrollTopAtEvent > session.startScrollTop)
-        && distFromBottomAtEvent > AUTO_FOLLOW_BOTTOM_EPSILON_PX;
-      const willRestick = scrolledDown
+      const willRestick = hasLiveDownIntent
+        && scrolledDown
         && escapedFromLockState
         && distFromBottomAtEvent <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
       trace('scroll.scrollEvent.deferred', () => ({
         scrollTop: Math.round(scrollTopAtEvent),
         previousObserved: Math.round(previousObserved),
         scrolledDown,
-        hadUserScrollIntent,
-        sessionDirection: session?.direction ?? null,
-        shouldKeepIntentForRestick,
+        hasLiveDownIntent,
         distFromBottomAtEvent: Math.round(distFromBottomAtEvent),
         distFromBottomNow: scrollEl ? Math.round(distanceFromBottom()) : null,
         willRestick,
@@ -1398,75 +1172,15 @@ export function createUseStickToBottomController(
         escapedFromLockState,
       }));
       if (willRestick) {
-        if (session) clearGestureSession(session);
-        escapedFromLockState = false;
-        isAtBottomState = true;
-        // Re-arm the spring after user gestures back to the bottom —
-        // setEscapedFromLock(true) set springStopRequested on the
-        // escape that started this round, and the re-stick is the
-        // user's "I want to follow again" signal. Without this, future
-        // streaming chunks would sync-pin instead of spring-chase.
-        springStopRequested = false;
-      } else if (session && !shouldKeepIntentForRestick) {
-        clearGestureSession(session);
+        restickFromUserInput('scroll');
       }
     }, RESIZE_CLEAR_PADDING_MS);
   }
 
-  // ===== scrollend handler (gesture-termination signal, Change 5) =====
-  //
-  // The native scrollend event fires when the scrolling stops — after
-  // wheel-momentum settles, after a scrollbar drag releases, after a
-  // keystroke completes. For laptop trackpads where momentum routinely
-  // tails 200-500ms past fingertip release, this is a strictly better
-  // gesture-termination signal than the 160ms wall-clock timer in
-  // armUserScrollIntent. Baseline since Safari 26.2 (Dec 2025); all
-  // desktop Wails targets meet it.
-  //
-  // Programmatic writes (sync-pin, spring chase, animateScrollTo) DO
-  // fire scrollend per spec, but the gestureSession === null gate
-  // below silently drops them — controller-owned writes never arm a
-  // gesture, so there's nothing to resolve.
-  //
-  // The 160ms timer remains as the fallback for pointer-tap without
-  // subsequent motion, sub-pixel wheel rounded to no-op, and any
-  // environment that drops the event. Both paths funnel through
-  // expireGestureSession's idempotent guard so dual-firing is safe.
-  function handleScrollEnd(): void {
-    if (!scrollEl) return;
-    const session = gestureSession;
-    if (session === null) return;
-    // Stale-scrollend guard. If the freshly-armed session has not yet seen
-    // a real (untagged) scroll event, this scrollend belongs to a prior
-    // programmatic write that overlapped with the arm — not to this
-    // gesture. Resolving the session here would run the safety-net repin
-    // in clearGestureSession and silently kill the user's intent before
-    // their real scroll motion has had a chance to land. The 160ms timer
-    // fallback in armUserScrollIntent still resolves the pointer-tap /
-    // sub-pixel-wheel cases where no scroll event ever fires. See
-    // bug-report-20260520T022217Z.jsonl, seq 10584-10605.
-    if (!session.sawUntaggedScroll) {
-      trace('scroll.scrollend.staleNoMotion', () => ({
-        source: session.source,
-        direction: session.direction,
-        startScrollTop: Math.round(session.startScrollTop),
-        scrollTop: Math.round(scrollEl?.scrollTop ?? 0),
-      }));
-      return;
-    }
-    trace('scroll.scrollend.expireGestureSession', () => ({
-      source: session.source,
-      direction: session.direction,
-      startScrollTop: Math.round(session.startScrollTop),
-      scrollTop: Math.round(scrollEl?.scrollTop ?? 0),
-    }));
-    expireGestureSession(session);
-  }
-
   // ===== Keydown / touch handlers (intent signals) =====
   function handleKeydown(e: KeyboardEvent): void {
-    if (UP_KEYS.has(e.key)) armUserScrollIntent('key', 'up');
-    if (escapedFromLockState && DOWN_KEYS.has(e.key)) armUserScrollIntent('key', 'down');
+    if (UP_KEYS.has(e.key)) escapeFromUserInput('key');
+    if (DOWN_KEYS.has(e.key)) recordRecentDownIntent('key');
   }
   function handleTouchStart(e: TouchEvent): void {
     touchStartY = e.touches[0]?.clientY ?? null;
@@ -1480,8 +1194,8 @@ export function createUseStickToBottomController(
     // → user wants to see content above → escape (UP intent). Finger
     // moves UP while already escaped is the matching "scroll back toward
     // bottom" input signal (DOWN intent).
-    if (dy > 1) armUserScrollIntent('touch', 'up');
-    if (dy < -1 && escapedFromLockState) armUserScrollIntent('touch', 'down');
+    if (dy > 1) escapeFromUserInput('touch');
+    if (dy < -1) recordRecentDownIntent('touch');
   }
   function handleTouchEnd(): void {
     touchStartY = null;
@@ -1489,8 +1203,8 @@ export function createUseStickToBottomController(
 
   // ===== Public actions =====
   function setEscapedFromLock(next: boolean): void {
-    clearGestureSession();
     if (next) {
+      clearRecentDownIntent();
       cancelTargetAnimation();
       // User explicitly broke from auto-follow — bail any in-flight
       // spring chase. The tick observes springStopRequested + new
@@ -1534,6 +1248,7 @@ export function createUseStickToBottomController(
   }
 
   function stopScroll(): void {
+    clearRecentDownIntent();
     setEscapedFromLock(true);
   }
 
@@ -1549,10 +1264,7 @@ export function createUseStickToBottomController(
     }, EXTERNAL_SCROLL_TAG_CLEAR_MS);
     action();
     if (scrollEl) {
-      // Active gesture keeps its baseline aligned with the post-write
-      // position so the next user scroll's direction inference compares
-      // against the new top.
-      if (gestureSession) gestureSession.lastObservedScrollTop = scrollEl.scrollTop;
+      lastObservedScrollTopForRestick = scrollEl.scrollTop;
       refreshIsNearBottom();
     }
   }
@@ -1683,26 +1395,8 @@ export function createUseStickToBottomController(
       }));
       return;
     }
-    // DO NOT relax this gate to be direction-aware (cf. Change 3).
-    // Restore-snap MUST NO-OP on any pending intent regardless of
-    // direction — this is the seq-509 trace bug defense: a stale
-    // restore $effect racing a user gesture mid-stream would otherwise
-    // slam the user to bottom on any 'down' or 'unknown' intent.
-    const activeSession = gestureSession;
-    if (reason === 'restore' && activeSession !== null) {
-      trace('scroll.forceStick.skipGestureSession', () => ({
-        reason,
-        source: activeSession.source,
-        direction: activeSession.direction,
-        startScrollTop: Math.round(activeSession.startScrollTop),
-        isAtBottomState,
-        escapedFromLockState,
-        pauseDepth,
-        scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-      }));
-      return;
-    }
     restoreSnapArmed = false;
+    clearRecentDownIntent();
     trace('scroll.forceStick.entry', () => ({
       reason,
       isAtBottomState,
@@ -1749,6 +1443,7 @@ export function createUseStickToBottomController(
       clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
     }));
     restoreSnapArmed = false;
+    clearRecentDownIntent();
     setEscapedFromLock(false);
     isAtBottomState = true;
     refreshIsNearBottom();
@@ -1757,32 +1452,22 @@ export function createUseStickToBottomController(
   function readNotifyContentGate(): {
     gateScrollEl: boolean;
     gateEscape: boolean;
-    gatePendingUserIntent: boolean;
     gatePause: boolean;
     gateNotAtBottom: boolean;
     canPin: boolean;
   } {
     const gateScrollEl = scrollEl !== undefined;
     const gateEscape = escapedFromLockState;
-    // Direction-aware pending-intent gate (Change 3): block ONLY an
-    // active UP gesture. 'down' / 'unknown' intents still permit
-    // composer-height / live-content pins so the bottom doesn't drift
-    // away from a user who tapped the scrollbar or made a no-op
-    // trackpad nudge during streaming. The strict restore gate in
-    // forceStick({reason:'restore'}) stays unchanged.
-    const gatePendingUserIntent = gestureSession?.direction === 'up';
     const gatePause = pauseDepth > 0;
     const gateNotAtBottom = !isAtBottomState;
     const canPin = gateScrollEl
       && !gateEscape
-      && !gatePendingUserIntent
       && !gatePause
       && !gateNotAtBottom;
 
     return {
       gateScrollEl,
       gateEscape,
-      gatePendingUserIntent,
       gatePause,
       gateNotAtBottom,
       canPin,
@@ -1814,7 +1499,6 @@ export function createUseStickToBottomController(
       willPin: gate.canPin,
       gateScrollEl: gate.gateScrollEl,
       gateEscape: gate.gateEscape,
-      gatePendingUserIntent: gate.gatePendingUserIntent,
       gatePause: gate.gatePause,
       gateNotAtBottom: gate.gateNotAtBottom,
       pauseDepth,
@@ -1836,7 +1520,6 @@ export function createUseStickToBottomController(
       willSpring,
       gateScrollEl: gate.gateScrollEl,
       gateEscape: gate.gateEscape,
-      gatePendingUserIntent: gate.gatePendingUserIntent,
       gatePause: gate.gatePause,
       gateNotAtBottom: gate.gateNotAtBottom,
       pauseDepth,
@@ -1876,7 +1559,6 @@ export function createUseStickToBottomController(
       pauseDepth = Math.max(0, pauseDepth - 1);
       const willRepin = pauseDepth === 0
         && !escapedFromLockState
-        && gestureSession === null
         && isAtBottomState;
       trace('scroll.pause.release', () => ({
         pauseDepth,
@@ -1930,14 +1612,6 @@ export function createUseStickToBottomController(
     nextScrollEl.addEventListener('touchmove', handleTouchMove, { passive: true });
     nextScrollEl.addEventListener('touchend', handleTouchEnd, { passive: true });
     nextScrollEl.addEventListener('touchcancel', handleTouchEnd, { passive: true });
-    // scrollend: Baseline since Safari 26.2 (Dec 2025). Feature-detect
-    // on the window because not every host (older Wails webviews on
-    // long-tail Linux distros) ships it; missing it falls back to the
-    // 160ms timer, which is what shipped before Change 5.
-    const scrollEndSupported = typeof window !== 'undefined' && 'onscrollend' in window;
-    if (scrollEndSupported) {
-      nextScrollEl.addEventListener('scrollend', handleScrollEnd, { passive: true });
-    }
     detachWheel = () => nextScrollEl.removeEventListener('wheel', handleWheel);
     detachScroll = () => nextScrollEl.removeEventListener('scroll', handleScroll);
     detachPointer = () => nextScrollEl.removeEventListener('pointerdown', handlePointerDown);
@@ -1947,13 +1621,8 @@ export function createUseStickToBottomController(
       nextScrollEl.removeEventListener('touchmove', handleTouchMove);
       nextScrollEl.removeEventListener('touchend', handleTouchEnd);
       nextScrollEl.removeEventListener('touchcancel', handleTouchEnd);
-      if (scrollEndSupported) {
-        nextScrollEl.removeEventListener('scrollend', handleScrollEnd);
-      }
     };
-    // Direction baseline now lives on the active gesture session
-    // (seeded in armUserScrollIntent from the live scrollTop), so
-    // attach() no longer needs a module-scope seed.
+    lastObservedScrollTopForRestick = nextScrollEl.scrollTop;
     refreshIsNearBottom();
     installStickStateDevHook();
   }
@@ -1971,7 +1640,6 @@ export function createUseStickToBottomController(
     (window as Window & {
       __stickState?: () => Record<string, unknown>;
     }).__stickState = () => {
-      const session = gestureSession;
       const dist = scrollEl
         ? scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight
         : null;
@@ -1985,16 +1653,8 @@ export function createUseStickToBottomController(
         warm,
         springStopRequested,
         springToken,
-        // Gesture session — when re-stick fails, this is the prime suspect.
-        // A stuck session.direction === 'up' would block contentRO pin.
-        gestureSession: session
-          ? {
-              source: session.source,
-              direction: session.direction,
-              startScrollTop: Math.round(session.startScrollTop),
-              lastObservedScrollTop: Math.round(session.lastObservedScrollTop),
-            }
-          : null,
+        recentDownIntentActive: hasRecentDownIntent(),
+        recentDownIntentUntil: Math.round(recentDownIntentUntil),
         // Restore-snap consent (consumed by forceStick({reason:'restore'})).
         restoreSnapArmed,
         // Geometry snapshot for cross-referencing the trace.
@@ -2007,7 +1667,7 @@ export function createUseStickToBottomController(
         // makes "isAtBottom returned the wrong value" diagnoses obvious.
         publicIsSticky:
           isAtBottomState && !escapedFromLockState && pauseDepth === 0,
-        publicIsAtBottom: isAtBottomState || isNearBottomState,
+        publicIsAtBottom: !escapedFromLockState && (isAtBottomState || isNearBottomState),
       };
     };
   }
@@ -2032,7 +1692,7 @@ export function createUseStickToBottomController(
       externalScrollClearTimer = null;
     }
     externalScrollIgnoreUntil = 0;
-    clearGestureSession();
+    clearRecentDownIntent();
     cancelTargetAnimation();
     cancelSpring();
     springStopRequested = false;
@@ -2050,7 +1710,7 @@ export function createUseStickToBottomController(
     // the restore $effect's forceStick({reason:'restore'}), making
     // the consent effectively unusable for the initial-mount path.
     // The flag is invalidated by outer-scroll escape intent (wheel / key /
-    // touch that can reach the scroll element), selection, animateScrollTo /
+    // touch / pointer that can reach the scroll element), selection, animateScrollTo /
     // stopScroll, explicit user-reason forceStick, and the
     // consume-on-restore path itself — that's
     // enough to keep it from leaking stale consent across legitimate
@@ -2065,9 +1725,7 @@ export function createUseStickToBottomController(
       return isAtBottomState && !escapedFromLockState && pauseDepth === 0;
     },
     get isAtBottom() {
-      // Intent OR geometry — both are reasons to hide ScrollToBottomButton.
-      // Mirrors upstream's `isAtBottom: isAtBottom || isNearBottom` return.
-      return isAtBottomState || isNearBottomState;
+      return !escapedFromLockState && (isAtBottomState || isNearBottomState);
     },
     get escapedFromLock() {
       return escapedFromLockState;

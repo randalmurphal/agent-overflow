@@ -8,7 +8,7 @@
 //     library (see /inokawa/virtua tests upstream); duplicating those
 //     assertions in a happy-dom env that lacks real layout would be
 //     fiction.
-//   - Pure controller behavior (sync-pin, content RO, gesture
+//   - Pure controller behavior (sync-pin, content RO, input-intent
 //     handlers, pause-lease semantics) — covered exhaustively in
 //     `useStickToBottom.svelte.test.ts`.
 //
@@ -495,7 +495,7 @@ describe('scroll integration — load older', () => {
   // floor-progress predicate cleared the moment `oldestLoadedTurnIndex`
   // advanced, so the anchor-restore programmatic scroll that followed
   // `pane.loadOlder()` re-fired the gate on the next tick. With the
-  // gesture-armed gate, a successive button click loads exactly one
+  // user-input-armed gate, a successive button click loads exactly one
   // section per click (and never auto-cascades without a real user
   // wheel/touch/keydown gesture in between).
   it('does not cascade — clicking Load Older twice in a row loads one batch per click', async () => {
@@ -808,7 +808,7 @@ describe('scroll integration — banner reserved slot stability', () => {
 
 describe('scroll integration — auto-follow + button', () => {
   // virtua-internal scroll math isn't testable in happy-dom (zero
-  // viewport geometry). We verify integration seams: the gesture path
+  // viewport geometry). We verify integration seams: the input-intent path
   // surfaces the scroll-to-bottom chip, and clicking it flips intent
   // back to sticky.
 
@@ -837,8 +837,8 @@ describe('scroll integration — auto-follow + button', () => {
     // the container isn't scrollable (`scrollHeight <= clientHeight`).
     // happy-dom returns 0 for both unless we override, so the test
     // wheel would otherwise be ignored. Stub geometry so the wheel
-    // handler can arm escape — and so the scroll
-    // event fired below refreshes `isNearBottomState` to false (we want
+    // handler can escape — and so the scroll event fired below refreshes
+    // `isNearBottomState` to false (we want
     // `isAtBottom` to be false after escape, which requires both intent
     // and geometry to be away from the bottom).
     let scrollTop = 400;
@@ -853,14 +853,14 @@ describe('scroll integration — auto-follow + button', () => {
     Object.defineProperty(wheel, 'target', { value: wrapper });
     wrapper.dispatchEvent(wheel);
     scrollTop = 0;
-    // Fire a scroll event so the controller confirms the outer scroller
-    // moved up, then refreshes isNearBottomState from the new geometry.
+    // Fire a scroll event so the controller refreshes isNearBottomState
+    // from the new geometry.
     wrapper.dispatchEvent(new Event('scroll', { bubbles: true }));
     await waitForScrollIntent();
     await tick();
     await tick();
 
-    // After the gesture the chip's button is in the DOM (it may still
+    // After the input the chip's button is in the DOM (it may still
     // be in a fade-in transition; what matters is presence as a
     // signal that the user is no longer at-or-near the bottom).
     const ctrl = pane.scrollController as
@@ -907,9 +907,10 @@ describe('scroll integration — auto-follow + button', () => {
       | null;
     expect(ctrl?.escapedFromLock).toBe(true);
     expect(ctrl?.isSticky).toBe(false);
-    // The chip can stay hidden in the visual near-bottom band, but
-    // auto-follow must be broken.
-    expect(ctrl?.isAtBottom).toBe(true);
+    // Escape wins over the visual near-bottom band, so the chip appears
+    // and auto-follow stays broken.
+    expect(ctrl?.isAtBottom).toBe(false);
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull();
 
     Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 1200 });
     pane.scrollController?.notifyContentMaybeGrew();
@@ -1023,7 +1024,7 @@ describe('scroll integration — auto-follow + button', () => {
     const scrollEl = container.querySelector('[data-testid="message-timeline-scroll"]') as HTMLElement;
     expect(scrollEl).not.toBeNull();
     // Force the chip visible: stub scrollable geometry, fire a wheel-up
-    // gesture, then a scroll event so isNearBottomState refreshes to
+    // input, then a scroll event so isNearBottomState refreshes to
     // false (intent + geometry both away from bottom → chip visible).
     let scrollTop = 400;
     Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 1000 });
@@ -1105,7 +1106,7 @@ describe('scroll integration — auto-follow + button', () => {
       | null;
     expect(ctrl?.escapedFromLock).toBe(true);
 
-    // 2. User wheel-down — DOWN gesture, browser scrolls to 397 (3 px
+    // 2. User wheel-down — DOWN intent, browser scrolls to 397 (3 px
     //    above the actual bottom = 400 because scrollHeight=1000,
     //    clientHeight=600). Within the new 4 px epsilon (Change 1).
     const wheelDown = new WheelEvent('wheel', { deltaY: 100, bubbles: true });
@@ -1316,7 +1317,7 @@ describe('scroll integration — auto-load-older trigger', () => {
 // below.
 
 describe('scroll integration — useStickToBottom wiring', () => {
-  // Controller-internal behavior (sync-pin, content-RO, gesture
+  // Controller-internal behavior (sync-pin, content-RO, input-intent
   // handlers, pause-lease semantics, programmatic-write tagging) is
   // covered exhaustively in `useStickToBottom.svelte.test.ts` against
   // raw scrollEl/contentEl divs with stubbed geometry.
@@ -1437,7 +1438,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     // Replaces the deleted visibility-mask test that asserted appending
     // a child to a running inline subagent doesn't flicker. Under the new
     // architecture there is no mask — the guarantee is structural: the
-    // controller does NOT infer up-gesture from scrollTop direction
+    // controller does NOT infer up intent from scrollTop direction
     // (R4 mitigation), so virtua's $fixScrollJump or any per-row resize
     // that nudges scrollTop cannot flip escapedFromLock. Mid-stream
     // upserts therefore leave intent/stickiness untouched.
@@ -1451,7 +1452,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     // The pane interface only exposes pauseAutoScroll / notifyContentMaybeGrew
     // (PaneScrollController is narrow by design — see thread.svelte.ts);
     // peek at the underlying controller's intent state to verify
-    // stickiness survives the upsert without inferring up-gesture from
+    // stickiness survives the upsert without inferring up intent from
     // scrollTop direction.
     const ctrl = pane.scrollController as
       | (PaneScrollController & { isSticky: boolean; escapedFromLock: boolean })
@@ -1469,7 +1470,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await tick();
 
     // The upsert path must not have flipped escape or torn the lease.
-    // If a future regression infers up-gesture from a virtua jump-correction
+    // If a future regression infers up intent from a virtua jump-correction
     // write, this assertion fails.
     expect(ctrl.isSticky).toBe(true);
     expect(ctrl.escapedFromLock).toBe(false);

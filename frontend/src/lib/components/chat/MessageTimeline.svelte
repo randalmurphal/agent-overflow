@@ -1139,12 +1139,11 @@
     {/if}
   </div>
 
-  <!-- Visible when NOT at bottom (intent-or-geometry); the chip is the
-       user's escape hatch when they've drifted away. Wiring this to
-       `!isSticky` would also pop the chip during sidebar/drawer resize
-       leases (pauseDepth > 0) even though the user is geometrically
-       glued to the bottom — clearly not desired. Anchored to the outer
-       wrapper (which does not scroll), so the chip stays fixed in the
-       visible area regardless of transcript scrollTop. -->
+  <!-- Visible when the user has escaped or is no longer near the bottom.
+       Wiring this to `!isSticky` would also pop the chip during sidebar/
+       drawer resize leases (pauseDepth > 0) even though the user is
+       geometrically glued to the bottom. Anchored to the outer wrapper
+       (which does not scroll), so the chip stays fixed in the visible
+       area regardless of transcript scrollTop. -->
   <ScrollToBottomButton visible={!stick.isAtBottom} onClick={() => stick.forceStick()} />
 </div>

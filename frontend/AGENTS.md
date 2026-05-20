@@ -184,8 +184,8 @@ frontend layers on top:
     smooth scroll-follow. Used by chat MessageTimeline while a turn
     is in flight (`getActiveTurn(threadId) != null`) so streaming
     chunks flow in with the familiar "viewport follows the text" UX.
-    Spring defaults to upstream's tuning (`damping: 0.7,
-    stiffness: 0.05, mass: 1.25`); override via `{ spring: {...} }`.
+    Spring uses upstream's tuning (`damping: 0.7, stiffness: 0.05,
+    mass: 1.25`).
   Both paths share a **warm-up gate** that defends against the
   e00723f regression (mount-time virtua remeasurement + Streamdown
   async typesetting would spring-chase a thread restore visibly).
@@ -222,36 +222,55 @@ frontend layers on top:
   contentEl are unchanged across a thread switch — MessageTimeline
   isn't keyed on threadId so those refs are stable, and `attach()`'s
   early-return path is hit on every switch.
-  **Three-band geometry** governs the three different "near the bottom"
-  decisions the controller makes; widening any one of them affects a
-  separate UX surface:
+  **Bottom geometry and intent** are deliberately separate. Geometry
+  answers "where is the viewport?"; intent answers "should new content
+  follow?" The public `isAtBottom` getter returns false while escaped
+  even if the viewport is still within the visual near-bottom band, so
+  the scroll-to-bottom chip appears as soon as the user opts out.
   - `STICK_TO_BOTTOM_OFFSET_PX = 70` — VISUAL band for the
-    scroll-to-bottom chip. The chip is hidden while the user is within
-    70px of the geometric bottom because that's "essentially in view"
-    and the chip would be noise. Drives `isAtBottom` (the public
-    getter) and the negative-delta re-pin's geometric branch.
+    scroll-to-bottom chip when the user has not escaped. The chip is
+    hidden while a sticky user is within 70px of the geometric bottom
+    because that's "essentially in view" and the chip would be noise.
+    Explicit escape wins over this band.
   - `AUTO_FOLLOW_BOTTOM_EPSILON_PX = 4` — RE-STICK band for the
-    scroll handler's "user scrolled back" path. A DOWN-direction
-    scroll that lands within 4px of the bottom flips the user back
-    to sticky. Widened from 0.5 in the 2026-05 gentle-mango plan
+    "user scrolled back" path. A down-direction input followed by a
+    real downward scroll that lands within 4px of the bottom flips the
+    user back to sticky. Widened from 0.5 in the 2026-05 gentle-mango plan
     (matches react-virtuoso's `atBottomThreshold` default) so that
     virtua row-height estimation + browser scrollTop rounding (which
     routinely land 1–3px short of the actual bottom on Opus-cadence
     streams) don't strand the user. Tighter than the visual band on
     purpose: the chip hides while you can SEE the bottom; auto-follow
     only re-engages once you've actually REACHED it.
-  - `USER_SCROLL_ESCAPE_THRESHOLD_PX = 0` — ESCAPE band for the
-    "user scrolled away" path. Any non-zero upward movement during a
-    gesture window escapes ("if I scroll away at all I expect to
-    unstick"). Lowered from 1 in the 2026-05 plan. Strict `>` on the
-    threshold so zero-movement scrolls (sub-pixel wheels rounded by
-    the browser) don't spuriously escape.
-  The asymmetry is load-bearing: re-stick has to TOLERATE jitter
-  (otherwise streaming threads can't re-engage); escape has to be
-  STRICT (otherwise user intent is silently ignored). Don't unify
-  these thresholds without first reading the regression tests in
-  `useStickToBottom.svelte.test.ts` under "scroll-intent regressions
-  — Bug A / B / C / trackpad / scrollend".
+  Escape is not geometry-confirmed. A wheel-up, PageUp/ArrowUp/Home,
+  touch movement that means "scroll up", middle-button autoscroll
+  pointer, or scrollbar-gutter pointer inside the timeline escapes
+  synchronously. This is intentional: a sub-pixel trackpad nudge that
+  the browser rounds to no scrollTop movement is still user intent to
+  stop following. The outer target guard remains load-bearing: input
+  must target the timeline scroll element or one of its descendants,
+  so wheels in the composer, sidebar, or outside the timeline do not
+  escape chat. Nested overflow rows no longer consume the intent for
+  the outer controller; upward wheel intent inside them still escapes
+  chat auto-follow.
+  **Recent down intent** is the only user-consent window for re-stick.
+  Down input records a 250ms window (`RECENT_DOWN_INTENT_WINDOW_MS`),
+  cleared on any up input, successful re-stick, explicit escape,
+  `forceStick`, `stopScroll`, `animateScrollTo`, detach, or expiry.
+  If escape is true and the viewport is already within the 4px epsilon,
+  the down input re-sticks synchronously because no browser scroll event
+  may follow at the hard bottom. Otherwise, the deferred scroll handler
+  may re-stick only when the window is still active, the observed
+  scrollTop moved down, escape is true, and the event-time distance is
+  within the 4px epsilon. This keeps PageDown/PageDown/End sequences
+  working without letting a stale PageDown re-stick after a later virtua
+  `applyJump` or content-shrink clamp.
+  The asymmetry is load-bearing: re-stick has to tolerate jitter while
+  proving fresh down intent; escape has to honor intent immediately.
+  Don't unify these paths without first reading the regression tests in
+  `useStickToBottom.svelte.test.ts` under "scroll-intent regressions"
+  and "user-reported regression — re-stick invariants across
+  production-like flows".
   **Sync-captured `distFromBottomAtEvent`** (2026-05, Change 1) is
   the partner to the widened epsilon. The deferred re-stick check
   (1ms after the scroll event) uses the distance value captured at
@@ -260,73 +279,10 @@ frontend layers on top:
   push the user past the epsilon in the read, even though the user
   themselves never moved. The captured value reflects what they
   actually saw.
-  **Direction-aware pin gating** (2026-05, Bug C fix) means the
-  contentRO positive-delta `positiveWillPin`, the
-  `notifyContentMaybeGrew` / `notifyLiveContentMaybeGrew` gates
-  (`readNotifyContentGate`), and the `springGateOpen` predicate all
-  block ONLY when the active `gestureSession.direction` is `'up'`.
-  `'down'` and `'unknown'` (pointer-tap on the scrollbar before any
-  drag, sub-pixel trackpad nudge rounded to no-op) BOTH permit
-  pinning — that's what stops the bottom from drifting away from a
-  sticky user who taps the scrollbar during streaming. The strict
-  `gestureSession === null` gate is preserved at four sites by
-  design: the contentRO `firstFire` willPin, the `negativeWillPin`
-  branch, the overshoot guard, and the `pauseAutoScroll.release`
-  repin. Most importantly, `forceStick({reason: 'restore'})` ALSO
-  keeps the strict gate regardless of direction — restore-snap MUST
-  NO-OP on any pending intent (the seq-509 trace bug defense: a
-  stale restore $effect racing a user gesture mid-stream would slam
-  the user to the bottom on any `'down'` or `'unknown'` intent if
-  the gate were relaxed).
-  **`scrollend` event** (2026-05, Change 5) is wired alongside the
-  160ms intent timer in `attach()` when `'onscrollend' in window`
-  feature-detects truthy. `scrollend` is Baseline since Safari 26.2
-  (Dec 2025) and is a strictly better gesture-termination signal
-  for laptop trackpads where momentum routinely tails 200–500ms
-  past fingertip release. The `handleScrollEnd` handler
-  early-returns on `gestureSession === null` so controller-owned
-  writes (sync-pin, spring chase, animateScrollTo, restore-stick)
-  don't trigger gesture bookkeeping. The 160ms `setTimeout`
-  fallback remains for pointer-tap-without-motion, sub-pixel wheel
-  rounded to a no-op, and any host environment that drops the
-  event. Both paths funnel through `expireGestureSession`'s
-  idempotent guard so dual-firing is safe.
   **Pinch-zoom filter** (2026-05, Change 6): `handleWheel`
   early-returns on `e.ctrlKey` so Mac trackpad pinch-to-zoom
   (`wheel + ctrlKey=true` per browser convention) doesn't
-  spuriously arm a gesture and escape the lock.
-  **Session-less re-stick** (2026-05, bug-report-20260520T005414Z
-  + bug-report-20260520T010930Z): two layered fixes for the user-
-  reported regression "I scrolled to the bottom and it kept going
-  without following." Both pin the user's verbatim intent: "if i
-  scroll to the bottom i expect for it to stick always." (1) The
-  deferred re-stick predicate (`willRestick`) no longer gates on
-  `hadUserScrollIntent` (session !== null). Trackpad momentum
-  tails fire untagged scroll events after the gesture session
-  expires (scrollend + 160ms timer), each walking scrollTop down
-  to the bottom — without a session, the old predicate stranded
-  the user even when their trajectory clearly landed at
-  distFromBottom=0. The controller now keeps a controller-scope
-  `lastObservedScrollTopForRestick` so `scrolledDown` has a
-  baseline across session expiry. The `bailRO` short-circuit
-  (`resizeCorrelatedScroll && !hadUserScrollIntent`) is still the
-  layout filter — virtua's applyJump and content-shrink-driven
-  clamps are caught there, before the willRestick branch is
-  reached. (2) `handleWheel` re-sticks synchronously when
-  `escapedFromLockState && deltaY > 0 && distFromBottom <=
-  AUTO_FOLLOW_BOTTOM_EPSILON_PX`. A content shrink can clamp
-  scrollTop to the new max, leaving the user at distFromBottom=0
-  with escape=true and no session; their wheel-down to re-engage
-  produces ZERO scroll events because the browser refuses to
-  scroll past the absolute bottom, making the deferred re-stick
-  unreachable. The wheel itself is the explicit consent. The
-  fix is intentionally narrow: a content shrink without a
-  user-initiated wheel does NOT re-stick by itself (would yank
-  any user reading mid-thread when content below shrinks); only
-  the explicit wheel-at-boundary signal flips the lock back.
-  Regression coverage lives in `useStickToBottom.svelte.test.ts`
-  under "user-reported regression — re-stick invariants across
-  production-like flows".
+  spuriously escape the lock.
   Programmatic scrolls go through `forceStick(opts?)` / `markAtBottom()` /
   `notifyContentMaybeGrew()` / `pauseAutoScroll()` /
   `runExternalScroll()` / `stopScroll()` / `animateScrollTo()` /
@@ -352,7 +308,7 @@ frontend layers on top:
       from clobbering an existing user escape with a snap they didn't
       ask for (the seq-509 trace bug). Consent is also cleared by any
       outer-scroll escape intent that can reach the chat scroller
-      (wheel / key / touch), by selection,
+      (wheel / key / touch / pointer), by selection,
       `stopScroll`, `animateScrollTo`, user-reason `forceStick`, and
       the consume path itself.
     Used by the scroll-to-bottom chip (`'user'`), by chat's
@@ -396,10 +352,12 @@ frontend layers on top:
   surfaces (sidebar resizers, resizable drawers) acquire
   `pauseAutoScroll()` during their drag to keep auto-follow from
   yanking the user mid-gesture. The lease is depth-counted and
-  idempotent. The pane only knows the minimal `PaneScrollController`
-  interface (`pauseAutoScroll(): () => void` +
-  `notifyContentMaybeGrew(): void`), so a single set of resizer/drawer
-  hooks works on both surfaces.
+  idempotent. The pane only knows the `PaneScrollController` surface:
+  required `pauseAutoScroll()` / `notifyContentMaybeGrew()`, plus
+  optional `notifyHostLayoutSettled()`, `preserveScrollAnchor()`, and
+  `isAtBottom` for consumers that need them. That keeps shared
+  resizer/drawer hooks working on both chat and discussion without
+  reaching into component internals.
 - **`threadScrollSnapshots.ts`** — per-thread LRU of
   `{kind:'bottom'} | {kind:'anchor', itemId, offsetTop}`. Snapshots are
   semantic (item id + offset), not virtua's internal cache shape, so

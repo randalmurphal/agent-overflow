@@ -262,15 +262,16 @@ export interface PaneScrollController {
    */
   preserveScrollAnchor?(anchor: HTMLElement, action: () => void | Promise<void>): Promise<void>;
   /**
-   * Optional. True when the user is sticky-pinned to (or geometrically
-   * near) the bottom of the timeline. Lifecycle-aware rows read this
-   * before transitioning their own height on settle — e.g. ThinkingBlock
-   * auto-collapses its body on the streaming → settled boundary only
-   * when the user is at the bottom, so a user mid-read of the streamed
-   * thinking text doesn't have content yanked out from under them.
-   * Optional so test mocks that don't care about lifecycle transitions
-   * can omit it; rows treat `undefined` as "at bottom" (the common
-   * sticky-mode default).
+   * Optional. True when the timeline should behave as bottom-present:
+   * sticky by intent, or geometrically near the bottom while not escaped.
+   * Explicit user escape returns false even inside the near-bottom band.
+   * Lifecycle-aware rows read this before transitioning their own height
+   * on settle — e.g. ThinkingBlock auto-collapses its body on the
+   * streaming -> settled boundary only when the user is at the bottom,
+   * so a user mid-read of the streamed thinking text doesn't have content
+   * yanked out from under them. Optional so test mocks that don't care
+   * about lifecycle transitions can omit it; rows treat `undefined` as
+   * "at bottom" (the common sticky-mode default).
    */
   readonly isAtBottom?: boolean;
 }

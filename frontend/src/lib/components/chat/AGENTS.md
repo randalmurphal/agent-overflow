@@ -34,7 +34,7 @@ shape. Operational rules for code in this directory:
   restore $effect fires. MessageTimeline's `$effect.pre` calls
   `stick.armRestoreSnap()` after the defensive
   `setEscapedFromLock(true)` so the upcoming restoreToBottom's
-  `forceStick({reason:'restore'})` is honored; any wheel/key/touch
+  `forceStick({reason:'restore'})` is honored; any wheel/key/touch/pointer
   intent that can reach the chat scroller between arm and consume
   re-clears the arm and the restore NO-OPs.
   Don't call `forceStick({reason:'restore'})` from a restore path
@@ -62,8 +62,7 @@ shape. Operational rules for code in this directory:
   sizes one frame after mount, and the first burst of Streamdown async
   typesetting (shiki / KaTeX / mermaid / parseIncompleteMarkdown
   rebalance). The trailing pin is escape-aware (`notifyContentMaybeGrew`
-  bails on `escapedFromLockState || pending outer-scroll intent ||
-  pauseDepth>0 || !isAtBottomState`)
+  bails on `escapedFromLockState || pauseDepth>0 || !isAtBottomState`)
   so a user wheel-up between frames cancels it; thread-switch is also
   guarded explicitly via a captured-`restoredThreadId` check inside
   the rAF. Subsequent contentEl growth gets handled by the controller's
@@ -413,8 +412,8 @@ sees the default `undefined`, leaving virtua free to virtualize.
 `useStickToBottom.svelte.test.ts` covers the controller's full state
 machine in isolation: forceStick / markAtBottom / animateScrollTo,
 content-RO positive/negative deltas (sync-pin gating on
-escapedFromLockState / pauseDepth), wheel/scroll/keydown/touchmove
-gesture handlers, programmatic-write tagging (`ignoreScrollToTop`),
+escapedFromLockState / pauseDepth), wheel/scroll/keydown/touch/pointer
+intent handlers, programmatic-write tagging (`ignoreScrollToTop`),
 pause-lease depth-counting, and lifecycle (re-attach detaches old
 listeners; detach clears all timers). Geometry is stubbed per-test via
 `Object.defineProperty` on `scrollHeight`/`clientHeight`/`scrollTop`,

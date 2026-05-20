@@ -39,6 +39,7 @@ import {
 } from '../../lib/stores/sendQueue.svelte';
 import { getThreads } from '../../lib/stores/threads.svelte';
 import { resetThreadTerminalStatesForTest } from '../../lib/components/terminal/terminalStore.svelte';
+import { clearThreadScrollSnapshotsForTest } from '../../lib/utils/threadScrollSnapshots';
 
 // Drain microtasks + Svelte reactions so $effects and async mounts settle.
 // `n` should be generous for integration tests that depend on $effects
@@ -77,6 +78,7 @@ export function resetAppState(): void {
   // next test's first SendMessage call.
   resetSendQueueForTest();
   resetThreadTerminalStatesForTest();
+  clearThreadScrollSnapshotsForTest();
 }
 
 // Every binding that App (or anything App mounts during bootstrap) calls on
