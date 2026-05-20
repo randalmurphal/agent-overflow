@@ -256,7 +256,7 @@ describe('<ActivityRail>', () => {
     expect(labels).toEqual(['three', 'two', 'five', 'one', 'four']);
   });
 
-  it('truncates the todo list at 5 entries and reveals the rest via show-more', async () => {
+  it('truncates the todo list at 5 entries and toggles the rest via show-more/show-less', async () => {
     const pane = await buildPane();
     pane.setLiveTodo([
       { step: 's1', status: 'pending' },
@@ -279,8 +279,16 @@ describe('<ActivityRail>', () => {
 
     await fireEvent.click(showMore);
     await tick();
-    expect(list.querySelectorAll('li').length).toBe(7);
+    expect(list.querySelectorAll('li').length).toBe(7 + 1); // 7 steps + show-less row
     expect(queryByTestId('activity-rail-todos-show-more')).toBeNull();
+    const showLess = await findByTestId('activity-rail-todos-show-less');
+    expect(showLess.textContent?.trim()).toBe('Show less');
+
+    await fireEvent.click(showLess);
+    await tick();
+    expect(list.querySelectorAll('li').length).toBe(5 + 1); // 5 steps + show-more row
+    expect(queryByTestId('activity-rail-todos-show-less')).toBeNull();
+    expect((await findByTestId('activity-rail-todos-show-more')).textContent?.trim()).toBe('Show 2 more…');
   });
 
   it('renders the in-progress preview alongside the Todos toggle', async () => {

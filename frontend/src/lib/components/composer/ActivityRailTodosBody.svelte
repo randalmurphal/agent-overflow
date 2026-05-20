@@ -25,6 +25,7 @@
     pending: 1,
     completed: 2,
   };
+  const revealButtonClass = 'ml-[18px] mt-0.5 inline-flex rounded px-1 py-0.5 text-[11px] text-fg-hint/65 transition-colors hover:bg-surface-2/40 hover:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35';
 
   type SortedEntry = { step: TodoStep; originalIndex: number };
 
@@ -43,6 +44,7 @@
     showAll ? sortedSteps : sortedSteps.slice(0, TODO_TRUNCATION_LIMIT),
   );
   let hiddenCount = $derived(Math.max(0, sortedSteps.length - visibleSteps.length));
+  let hasOverflow = $derived(sortedSteps.length > TODO_TRUNCATION_LIMIT);
 
   let counts = $derived.by(() => {
     let inProgress = 0;
@@ -99,15 +101,27 @@
         <span class={statusClass(entry.step.status)}>{entry.step.step}</span>
       </li>
     {/each}
-    {#if hiddenCount > 0}
+    {#if !showAll && hiddenCount > 0}
       <li>
         <button
           type="button"
-          class="ml-[18px] mt-0.5 inline-flex rounded px-1 py-0.5 text-[11px] text-fg-hint/65 transition-colors hover:bg-surface-2/40 hover:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35"
+          class={revealButtonClass}
           onclick={() => pane.toggleLiveTodoShowAll()}
           data-testid="activity-rail-todos-show-more"
         >
           Show {hiddenCount} more…
+        </button>
+      </li>
+    {/if}
+    {#if showAll && hasOverflow}
+      <li>
+        <button
+          type="button"
+          class={revealButtonClass}
+          onclick={() => pane.toggleLiveTodoShowAll()}
+          data-testid="activity-rail-todos-show-less"
+        >
+          Show less
         </button>
       </li>
     {/if}
