@@ -22,6 +22,7 @@ import (
 	"agent-overflow/internal/gitwatch"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/logging"
+	"agent-overflow/internal/mcpprobe"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/provider"
@@ -169,6 +170,21 @@ type App struct {
 	// build an *App via &App{...} don't have to pre-wire it.
 	codexModelCatalogOnce sync.Once
 	codexModelCatalog     *codexmodels.Cache
+	// mcpProbeCache is the per-server pre-flight handshake cache backing
+	// the composer toolbar popup and the Settings test-connection button.
+	// Lazy-init through mcpProbe() so tests building a bare App{} don't
+	// have to wire it. TTLs default to mcpprobe.DefaultStdioTTL /
+	// DefaultHTTPTTL; explicit Invalidate happens on every CRUD edit and
+	// on OAuth completion so the popup never shows stale "ready" against
+	// a now-broken config.
+	mcpProbeCacheOnce sync.Once
+	mcpProbeCache     *mcpprobe.Cache
+	// mcpProfileMu serializes read-modify-write of mcp_thread_profile so
+	// concurrent CreateMcpServer / DeleteMcpServer calls can't race the
+	// seed list (last writer would otherwise drop the other's id).
+	// User-driven CRUD makes the collision rare, but the cost of one
+	// mutex round-trip per profile mutation is negligible.
+	mcpProfileMu sync.Mutex
 	// idleReaperStop signals the idle-session reaper goroutine to exit.
 	// Set by startIdleSessionReaper during ServiceStartup; closed exactly
 	// once by Shutdown before the parallel session close so the reaper

@@ -227,6 +227,7 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		return store.Thread{}, err
 	}
 	a.rememberChatModelProfile(t)
+	a.seedThreadMCPServersFromProfile(t.ID)
 	if a.settings != nil {
 		a.settings.AddRecentWorkspace(workspace)
 	}
@@ -350,6 +351,16 @@ func (a *App) UnpinThread(id string) (store.Thread, error) {
 // changed, require a provider-session restart to take effect. The
 // centralized restartSessionIfAffected helper consults this list so
 // every per-field binding participates in the same restart policy.
+//
+// `mcpServers` deliberately does NOT live here. Restart policy splits
+// per provider: Claude supports live diff-reconcile through
+// `mcp_set_servers` so a session restart would be wasteful; Codex
+// only consumes `configOverrides["mcp_servers"]` at `thread/start`,
+// so the next session start picks up new values automatically. The
+// per-provider live operation lives in `UpdateThreadMcpServers`,
+// which calls `Session.SetMCPServers` (Claude) or `ReconnectSession`
+// (Codex) directly instead of going through
+// restartSessionIfAffected's generic full-restart path.
 var sessionAffectingFields = map[string]struct{}{
 	"provider":        {},
 	"model":           {},

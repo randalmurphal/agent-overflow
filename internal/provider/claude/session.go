@@ -120,10 +120,13 @@ type Session struct {
 // round-trip from the read loop back to the waiting caller. Exactly one of
 // errMsg or ok is set: ok=true on subtype=success, errMsg populated on
 // subtype=error. A nil pointer means the session closed before the response
-// arrived.
+// arrived. payload carries the inner `response.response` object — set for
+// subtype=success when the request shape returns structured data (e.g.
+// mcp_authenticate's {authUrl, requiresUserAction}); empty otherwise.
 type controlResponseResult struct {
-	ok     bool
-	errMsg string
+	ok      bool
+	errMsg  string
+	payload json.RawMessage
 }
 
 // pendingApproval tracks a single in-flight interactive request so user
@@ -1155,9 +1158,10 @@ func (s *Session) handleControlResponseLine(line []byte) {
 	var raw struct {
 		Type     string `json:"type"`
 		Response struct {
-			Subtype   string `json:"subtype"`
-			RequestID string `json:"request_id"`
-			Error     string `json:"error"`
+			Subtype   string          `json:"subtype"`
+			RequestID string          `json:"request_id"`
+			Error     string          `json:"error"`
+			Response  json.RawMessage `json:"response"`
 		} `json:"response"`
 	}
 	if err := json.Unmarshal(line, &raw); err != nil {
@@ -1181,6 +1185,7 @@ func (s *Session) handleControlResponseLine(line []byte) {
 	switch raw.Response.Subtype {
 	case "success":
 		res.ok = true
+		res.payload = raw.Response.Response
 	case "error":
 		res.errMsg = raw.Response.Error
 	default:

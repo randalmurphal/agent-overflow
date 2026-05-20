@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+	"log"
 	"strings"
 	"time"
 
@@ -9,6 +10,14 @@ import (
 )
 
 func (s *Session) dispatchNotification(method string, params json.RawMessage) {
+	// mcpServer/oauthLogin/completed is a side-channel signal directed
+	// at the App's probe-cache, not a transcript event. Handle it
+	// upstream of the general classifier so it never gets normalised
+	// into a ProviderEvent the rest of the pipeline has to ignore.
+	if method == "mcpServer/oauthLogin/completed" {
+		s.dispatchMCPOAuthCompletion(params)
+		return
+	}
 	params = s.observeRawResponseItem(method, params)
 	providerThreadID := providerThreadIDFromParams(params)
 	parentToolUseID := s.parentToolUseForProviderThread(providerThreadID)
@@ -127,4 +136,27 @@ func hasProviderEventKind(events []provider.ProviderEvent, kind provider.EventKi
 		}
 	}
 	return false
+}
+
+func (s *Session) dispatchMCPOAuthCompletion(params json.RawMessage) {
+	s.mu.Lock()
+	handler := s.mcpOAuthCompletedHandler
+	s.mu.Unlock()
+	if handler == nil {
+		return
+	}
+	var parsed struct {
+		ServerName string `json:"serverName"`
+		Success    bool   `json:"success"`
+		Error      string `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(params, &parsed); err != nil {
+		log.Printf("codex: decode mcpServer/oauthLogin/completed: %v", err)
+		return
+	}
+	if parsed.ServerName == "" {
+		log.Printf("codex: mcpServer/oauthLogin/completed: missing serverName")
+		return
+	}
+	handler(parsed.ServerName, parsed.Success, parsed.Error)
 }

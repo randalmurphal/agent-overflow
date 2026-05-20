@@ -13,6 +13,8 @@ export {
     DiscussionParticipant,
     DiscussionSettings,
     Item,
+    MCPServer,
+    MCPThreadProfile,
     PagedItems,
     PayloadMeta,
     Project,

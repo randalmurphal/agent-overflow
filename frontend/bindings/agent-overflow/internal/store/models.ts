@@ -486,6 +486,106 @@ export class Item {
 }
 
 /**
+ * MCPServer is the library row for a user-configured MCP server. Args /
+ * Env / Headers stay as raw JSON strings in the row but the typed shape
+ * is exposed through the accessors in mcp.go. ${VAR} references inside
+ * any of those values are intentionally preserved — providers expand
+ * them at spawn time so AO never has to handle the secret directly.
+ */
+export class MCPServer {
+    "id": string;
+    "name": string;
+    "transport": string;
+    "command"?: string;
+    "args"?: string[];
+    "env"?: { [_ in string]?: string };
+    "url"?: string;
+    "headers"?: { [_ in string]?: string };
+    "bearerEnv"?: string;
+    "enabled": boolean;
+    "createdAt": number;
+    "updatedAt": number;
+
+    /** Creates a new MCPServer instance. */
+    constructor($$source: Partial<MCPServer> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("transport" in $$source)) {
+            this["transport"] = "";
+        }
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = 0;
+        }
+        if (!("updatedAt" in $$source)) {
+            this["updatedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MCPServer instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MCPServer {
+        const $$createField4_0 = $$createType3;
+        const $$createField5_0 = $$createType4;
+        const $$createField7_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("args" in $$parsedSource) {
+            $$parsedSource["args"] = $$createField4_0($$parsedSource["args"]);
+        }
+        if ("env" in $$parsedSource) {
+            $$parsedSource["env"] = $$createField5_0($$parsedSource["env"]);
+        }
+        if ("headers" in $$parsedSource) {
+            $$parsedSource["headers"] = $$createField7_0($$parsedSource["headers"]);
+        }
+        return new MCPServer($$parsedSource as Partial<MCPServer>);
+    }
+}
+
+/**
+ * MCPThreadProfile is the single-row seed that captures the last
+ * enabled set so newly-created threads pick up the same defaults the
+ * user picked last time. Identical pattern to ChatModelProfile.
+ */
+export class MCPThreadProfile {
+    "serverIds": string[];
+    "updatedAt": number;
+
+    /** Creates a new MCPThreadProfile instance. */
+    constructor($$source: Partial<MCPThreadProfile> = {}) {
+        if (!("serverIds" in $$source)) {
+            this["serverIds"] = [];
+        }
+        if (!("updatedAt" in $$source)) {
+            this["updatedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MCPThreadProfile instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MCPThreadProfile {
+        const $$createField0_0 = $$createType3;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("serverIds" in $$parsedSource) {
+            $$parsedSource["serverIds"] = $$createField0_0($$parsedSource["serverIds"]);
+        }
+        return new MCPThreadProfile($$parsedSource as Partial<MCPThreadProfile>);
+    }
+}
+
+/**
  * PagedItems is the return shape for windowed item loads. `Items` is sorted
  * by (turn_index, item_index) ASC so callers can append the slice directly
  * to a timeline. `OldestTurnIndex` is the inclusive floor of the returned
@@ -518,7 +618,7 @@ export class PagedItems {
      * Creates a new PagedItems instance from a string or object.
      */
     static createFrom($$source: any = {}): PagedItems {
-        const $$createField0_0 = $$createType4;
+        const $$createField0_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("items" in $$parsedSource) {
             $$parsedSource["items"] = $$createField0_0($$parsedSource["items"]);
@@ -641,7 +741,7 @@ export class ProjectWithCounts {
      * Creates a new ProjectWithCounts instance from a string or object.
      */
     static createFrom($$source: any = {}): ProjectWithCounts {
-        const $$createField0_0 = $$createType5;
+        const $$createField0_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("project" in $$parsedSource) {
             $$parsedSource["project"] = $$createField0_0($$parsedSource["project"]);
@@ -1084,6 +1184,8 @@ export class Turn {
 const $$createType0 = DiscussionParticipant.createFrom;
 const $$createType1 = $Create.Array($$createType0);
 const $$createType2 = DiscussionSettings.createFrom;
-const $$createType3 = Item.createFrom;
-const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = Project.createFrom;
+const $$createType3 = $Create.Array($Create.Any);
+const $$createType4 = $Create.Map($Create.Any, $Create.Any);
+const $$createType5 = Item.createFrom;
+const $$createType6 = $Create.Array($$createType5);
+const $$createType7 = Project.createFrom;

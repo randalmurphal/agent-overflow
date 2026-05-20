@@ -35,6 +35,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "CloseTerminal", ID: 2702963191}, // main.App.CloseTerminal
 	{Name: "CreateDiffReviewComment", ID: 565306783}, // main.App.CreateDiffReviewComment
 	{Name: "CreateDiscussion", ID: 757689265}, // main.App.CreateDiscussion
+	{Name: "CreateMcpServer", ID: 3722089728}, // main.App.CreateMcpServer
 	{Name: "CreateProject", ID: 969543070}, // main.App.CreateProject
 	{Name: "CreateProposedPlanComment", ID: 4246792665}, // main.App.CreateProposedPlanComment
 	{Name: "CreateThread", ID: 2579322833}, // main.App.CreateThread
@@ -42,6 +43,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "DeleteAttachment", ID: 2428457759}, // main.App.DeleteAttachment
 	{Name: "DeleteDiffReviewComment", ID: 1303317790}, // main.App.DeleteDiffReviewComment
 	{Name: "DeleteDiscussion", ID: 302062730}, // main.App.DeleteDiscussion
+	{Name: "DeleteMcpServer", ID: 4263017529}, // main.App.DeleteMcpServer
 	{Name: "DeleteProject", ID: 3379369923}, // main.App.DeleteProject
 	{Name: "DeleteProposedPlanComment", ID: 554913120}, // main.App.DeleteProposedPlanComment
 	{Name: "DeleteRemoteEndpoint", ID: 3667944297}, // main.App.DeleteRemoteEndpoint
@@ -61,6 +63,8 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetEditorSettings", ID: 1655853383}, // main.App.GetEditorSettings
 	{Name: "GetGitStatus", ID: 4123560639}, // main.App.GetGitStatus
 	{Name: "GetKeybindings", ID: 3015840904}, // main.App.GetKeybindings
+	{Name: "GetMcpProbeSnapshot", ID: 3698445401}, // main.App.GetMcpProbeSnapshot
+	{Name: "GetMcpThreadProfile", ID: 840413130}, // main.App.GetMcpThreadProfile
 	{Name: "GetMessageCheckpointDiff", ID: 1151360951}, // main.App.GetMessageCheckpointDiff
 	{Name: "GetMessageCheckpointRevertDiff", ID: 1106129437}, // main.App.GetMessageCheckpointRevertDiff
 	{Name: "GetModelsForProvider", ID: 1632984917}, // main.App.GetModelsForProvider
@@ -77,6 +81,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetThread", ID: 1098302047}, // main.App.GetThread
 	{Name: "GetThreadItem", ID: 1969869112}, // main.App.GetThreadItem
 	{Name: "GetThreadLiveState", ID: 70226550}, // main.App.GetThreadLiveState
+	{Name: "GetThreadMcpServers", ID: 2916042219}, // main.App.GetThreadMcpServers
 	{Name: "GetThreadRuntimeMode", ID: 2573491630}, // main.App.GetThreadRuntimeMode
 	{Name: "GetUIRenderTracePath", ID: 1009213933}, // main.App.GetUIRenderTracePath
 	{Name: "GetWSLDistroPreference", ID: 294719565}, // main.App.GetWSLDistroPreference
@@ -115,6 +120,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListItems", ID: 2158085763}, // main.App.ListItems
 	{Name: "ListItemsBeforeTurn", ID: 2147361923}, // main.App.ListItemsBeforeTurn
 	{Name: "ListLiveBackgroundTasks", ID: 320784263}, // main.App.ListLiveBackgroundTasks
+	{Name: "ListMcpServers", ID: 1105613677}, // main.App.ListMcpServers
 	{Name: "ListPayloadMetas", ID: 1007133701}, // main.App.ListPayloadMetas
 	{Name: "ListPendingInteractiveRequests", ID: 4186874978}, // main.App.ListPendingInteractiveRequests
 	{Name: "ListProjects", ID: 2721360259}, // main.App.ListProjects
@@ -138,6 +144,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "PrepareThreadWorktree", ID: 2870364785}, // main.App.PrepareThreadWorktree
 	{Name: "ProbeClaudeAccount", ID: 1313986574}, // main.App.ProbeClaudeAccount
 	{Name: "ProbeCodexAccount", ID: 2614227175}, // main.App.ProbeCodexAccount
+	{Name: "ProbeMcpServer", ID: 676822908}, // main.App.ProbeMcpServer
 	{Name: "RecheckClaudeAccount", ID: 2274850917}, // main.App.RecheckClaudeAccount
 	{Name: "RecheckCodexAccount", ID: 227978482}, // main.App.RecheckCodexAccount
 	{Name: "ReconfigureObservability", ID: 225050321}, // main.App.ReconfigureObservability
@@ -175,6 +182,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SwitchThread", ID: 3897387725}, // main.App.SwitchThread
 	{Name: "Telemetry", ID: 669486408}, // main.App.Telemetry
 	{Name: "TouchRemoteEndpoint", ID: 2647456459}, // main.App.TouchRemoteEndpoint
+	{Name: "TriggerMcpAuth", ID: 1291217507}, // main.App.TriggerMcpAuth
 	{Name: "UnarchiveProject", ID: 2561521885}, // main.App.UnarchiveProject
 	{Name: "UnarchiveThread", ID: 3655125512}, // main.App.UnarchiveThread
 	{Name: "UnpinThread", ID: 3175043037}, // main.App.UnpinThread
@@ -182,6 +190,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "UpdateDiffReviewComment", ID: 2452201652}, // main.App.UpdateDiffReviewComment
 	{Name: "UpdateDiscussion", ID: 1706395020}, // main.App.UpdateDiscussion
 	{Name: "UpdateKeybindings", ID: 3490094229}, // main.App.UpdateKeybindings
+	{Name: "UpdateMcpServer", ID: 4282105115}, // main.App.UpdateMcpServer
 	{Name: "UpdateProjectSortPositions", ID: 3717363955}, // main.App.UpdateProjectSortPositions
 	{Name: "UpdateProposedPlanComment", ID: 2747956806}, // main.App.UpdateProposedPlanComment
 	{Name: "UpdateRemoteEndpoint", ID: 4268476031}, // main.App.UpdateRemoteEndpoint
@@ -190,6 +199,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "UpdateThreadContextSettings", ID: 2621473242}, // main.App.UpdateThreadContextSettings
 	{Name: "UpdateThreadContextWindow", ID: 2456875639}, // main.App.UpdateThreadContextWindow
 	{Name: "UpdateThreadFastMode", ID: 4175109385}, // main.App.UpdateThreadFastMode
+	{Name: "UpdateThreadMcpServers", ID: 4096852784}, // main.App.UpdateThreadMcpServers
 	{Name: "UpdateThreadMode", ID: 3609479719}, // main.App.UpdateThreadMode
 	{Name: "UpdateThreadModel", ID: 4179686417}, // main.App.UpdateThreadModel
 	{Name: "UpdateThreadModelSelection", ID: 3140398729}, // main.App.UpdateThreadModelSelection

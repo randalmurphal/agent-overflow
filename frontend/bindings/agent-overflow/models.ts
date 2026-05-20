@@ -639,6 +639,43 @@ export class LiveStateTodoStep {
     }
 }
 
+/**
+ * MCPAuthInitResult is the response shape for TriggerMcpAuth. The
+ * frontend opens AuthURL via OpenExternalURL; Provider lets the UI
+ * pick the right "completing sign-in" copy. RequiresUserAction is
+ * always true today (both providers hand back a URL we must surface)
+ * but stays on the wire so a future "completed inline" path can
+ * arrive without a binding-shape change.
+ */
+export class MCPAuthInitResult {
+    "authUrl": string;
+    "provider": string;
+    "requiresUserAction": boolean;
+
+    /** Creates a new MCPAuthInitResult instance. */
+    constructor($$source: Partial<MCPAuthInitResult> = {}) {
+        if (!("authUrl" in $$source)) {
+            this["authUrl"] = "";
+        }
+        if (!("provider" in $$source)) {
+            this["provider"] = "";
+        }
+        if (!("requiresUserAction" in $$source)) {
+            this["requiresUserAction"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MCPAuthInitResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MCPAuthInitResult {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new MCPAuthInitResult($$parsedSource as Partial<MCPAuthInitResult>);
+    }
+}
+
 export class PayloadChunk {
     "data": string;
     "offset": number;

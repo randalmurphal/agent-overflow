@@ -11,7 +11,7 @@
 // composer with its own picker instances, and the same chord routes
 // to whichever pane is currently focused.
 
-export type ComposerPickerId = 'model' | 'effort' | 'access' | 'branch';
+export type ComposerPickerId = 'model' | 'effort' | 'access' | 'mcp' | 'branch';
 
 export interface ComposerPickerHandle {
   isOpen: () => boolean;

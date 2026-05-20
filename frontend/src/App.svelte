@@ -49,7 +49,7 @@
   import { addToast } from './lib/stores/toast.svelte';
   import { userFacingError } from './lib/utils/userFacingError';
 
-  type SettingsSection = 'general' | 'providers' | 'editor' | 'network' | 'discussions' | 'keybindings' | 'observability' | 'archived';
+  type SettingsSection = 'general' | 'providers' | 'editor' | 'network' | 'discussions' | 'keybindings' | 'mcp' | 'observability' | 'archived';
   type SettingsContextTarget = {
     threadId?: string;
     provider: string;

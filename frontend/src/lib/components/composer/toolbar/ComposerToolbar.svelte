@@ -15,6 +15,7 @@
   import AgentModeToggle from './AgentModeToggle.svelte';
   import DesignLockPill from './DesignLockPill.svelte';
   import AccessToggle from './AccessToggle.svelte';
+  import McpServersTrigger from './McpServersTrigger.svelte';
   import PlanSidebarToggleButton from './PlanSidebarToggleButton.svelte';
   import SendButton from './SendButton.svelte';
   import ContextWindowMeter from '../../chat/ContextWindowMeter.svelte';
@@ -90,6 +91,7 @@
       <AgentModeToggle {pane} />
     {/if}
     <AccessToggle {pane} />
+    <McpServersTrigger {pane} />
     <PlanSidebarToggleButton {pane} {hasCurrentPlan} />
   {/if}
   <div class="ml-auto flex items-center gap-1.5">

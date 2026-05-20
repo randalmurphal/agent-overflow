@@ -124,7 +124,23 @@ type Session struct {
 	// verify the binding wires through to a Codex session without
 	// spinning up a real app-server. Production NewSession never sets it.
 	cleanBackgroundTerminalsFn func(ctx context.Context) error
+	// mcpOAuthCompletedHandler fires when Codex emits an
+	// `mcpServer/oauthLogin/completed` notification after the user
+	// finishes the browser hop on a previously-issued
+	// `mcpServer/oauth/login` request. The App layer uses it to
+	// invalidate the MCP probe cache so the next status read reflects
+	// the freshly authenticated state instead of a cached
+	// `needs-auth`. Guarded by mu; nil when no observer is registered
+	// (the only production registrant is app_session.go and tests).
+	mcpOAuthCompletedHandler MCPOAuthCompletedHandler
 }
+
+// MCPOAuthCompletedHandler observes the wire-level completion of an
+// MCP server OAuth flow on a live Codex session. ServerName matches
+// the AO library row's `name`; success/error reflect Codex's payload
+// without further normalisation so the App can decide whether to
+// surface the failure to the thread.
+type MCPOAuthCompletedHandler func(serverName string, success bool, errorMessage string)
 
 // Config for creating a Codex session.
 type Config struct {
@@ -417,6 +433,17 @@ func (s *Session) SetDynamicToolHandler(h DynamicToolHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dynamicToolHandler = h
+}
+
+// SetMCPOAuthCompletedHandler installs an observer for the
+// `mcpServer/oauthLogin/completed` notification. Safe to register after
+// NewSession: Codex only emits the notification after a successful
+// `mcpServer/oauth/login` request, so the handler is in place before
+// the wire signal can fire.
+func (s *Session) SetMCPOAuthCompletedHandler(h MCPOAuthCompletedHandler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mcpOAuthCompletedHandler = h
 }
 
 // Close shuts down the app-server process.

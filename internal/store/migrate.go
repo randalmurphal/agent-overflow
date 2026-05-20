@@ -1381,6 +1381,47 @@ CREATE INDEX idx_items_live_background
    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0;
 `,
 	},
+	{
+		Version: 49,
+		Name:    "mcp_servers",
+		// User MCP servers: a library of named servers (stdio / http / sse)
+		// that users can enable per-thread. `thread_mcp_servers` is the
+		// per-thread enable list (presence = enabled). `mcp_thread_profile`
+		// is a single-row seed of "what was last selected" for new threads.
+		// Secrets aren't stored: stdio command/args/env and http URL/headers
+		// may contain ${VAR} references the provider expands at spawn.
+		SQL: `
+CREATE TABLE mcp_servers (
+    id            TEXT    PRIMARY KEY,
+    name          TEXT    NOT NULL UNIQUE,
+    transport     TEXT    NOT NULL CHECK(transport IN ('stdio','http','sse')),
+    command       TEXT    NOT NULL DEFAULT '',
+    args_json     TEXT    NOT NULL DEFAULT '[]',
+    env_json      TEXT    NOT NULL DEFAULT '{}',
+    url           TEXT    NOT NULL DEFAULT '',
+    headers_json  TEXT    NOT NULL DEFAULT '{}',
+    bearer_env    TEXT    NOT NULL DEFAULT '',
+    enabled       INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
+);
+CREATE INDEX idx_mcp_servers_name ON mcp_servers(name);
+
+CREATE TABLE thread_mcp_servers (
+    thread_id  TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    server_id  TEXT NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (thread_id, server_id)
+);
+CREATE INDEX idx_thread_mcp_servers_thread ON thread_mcp_servers(thread_id);
+
+CREATE TABLE mcp_thread_profile (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    server_ids_json TEXT    NOT NULL DEFAULT '[]',
+    updated_at      INTEGER NOT NULL
+);
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

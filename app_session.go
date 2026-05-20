@@ -94,11 +94,19 @@ func (a *App) startSessionNow(threadID string) error {
 	// teardown of any prior session for the same thread doesn't stop
 	// resources we just allocated. teardownDesignThread on the failure
 	// paths below cleans up anything activate created.
-	mcpServers, err := a.activateDesignSession(t)
+	designServers, err := a.activateDesignSession(t)
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
-	designCfg.MCPServers = mcpServers
+	mergedServers, collisions, err := a.mergeMCPServersForThread(threadID, t.Provider, designServers)
+	if err != nil {
+		a.teardownDesignThread(threadID)
+		return fmt.Errorf("start session: %w", err)
+	}
+	if len(collisions) > 0 {
+		log.Printf("mcp: thread %s: user library entries shadowed by design names: %v", threadID, collisions)
+	}
+	designCfg.MCPServers = mergedServers
 
 	// Flip any persisted `is_background=running` rows for a Codex thread
 	// to errored/lost BEFORE spawning the new subprocess. Those rows
@@ -240,6 +248,14 @@ func (a *App) spawnProviderSession(
 		if err != nil {
 			return session{}, err
 		}
+		// Wire the OAuth-completion observer before any RPC can fly so
+		// the first `mcpServer/oauthLogin/completed` notification has a
+		// handler ready. Claude has no equivalent wire signal — its
+		// completion is internal to the CLI's loopback listener and the
+		// popup's "Refresh" path covers that side.
+		sess.SetMCPOAuthCompletedHandler(func(serverName string, success bool, errMsg string) {
+			a.handleCodexMCPOAuthCompleted(threadID, serverName, success, errMsg)
+		})
 		return session{
 			provider: string(provider.Codex),
 			token:    sessionToken,

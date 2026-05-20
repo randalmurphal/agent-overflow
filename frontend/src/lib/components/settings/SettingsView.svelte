@@ -11,6 +11,7 @@
   import DiscussionsSettings from './DiscussionsSettings.svelte';
   import EditorSection from './EditorSection.svelte';
   import KeybindingsSettings from './KeybindingsSettings.svelte';
+  import McpServersSettings from './McpServersSettings.svelte';
   import ObservabilitySettings from './ObservabilitySettings.svelte';
 
   type Section =
@@ -20,6 +21,7 @@
     | 'network'
     | 'discussions'
     | 'keybindings'
+    | 'mcp'
     | 'observability'
     | 'archived';
   type ContextSettingsTarget = {
@@ -47,6 +49,7 @@
     { id: 'general', label: 'General' },
     { id: 'providers', label: 'Providers' },
     { id: 'editor', label: 'Editor' },
+    { id: 'mcp', label: 'MCP Servers' },
     { id: 'network', label: 'Network' },
     { id: 'discussions', label: 'Discussions' },
     { id: 'keybindings', label: 'Keybindings' },
@@ -159,6 +162,8 @@
           </div>
         {:else if activeSection === 'discussions'}
           <DiscussionsSettings />
+        {:else if activeSection === 'mcp'}
+          <McpServersSettings />
         {:else if activeSection === 'keybindings'}
           <KeybindingsSettings />
         {:else if activeSection === 'observability'}

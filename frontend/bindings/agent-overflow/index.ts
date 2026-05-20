@@ -22,6 +22,7 @@ export {
     LiveStateActiveTurn,
     LiveStateTodo,
     LiveStateTodoStep,
+    MCPAuthInitResult,
     PayloadChunk,
     PayloadContent,
     PayloadPreview,
