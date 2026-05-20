@@ -607,19 +607,17 @@
   });
 </script>
 
-<div
-  class="relative px-6 pb-4 pt-1"
-  ondragenter={handleDragEnter}
-  ondragover={handleDragOver}
-  ondragleave={uploads.handleDragLeave}
-  ondrop={handleDrop}
-  role="region"
-  aria-label="Message Composer"
-  data-testid="composer-root"
->
+<div class="relative px-6 pb-4 pt-1 pointer-events-none">
   <div
-    class="mx-auto w-full max-w-[68rem] rounded-[var(--radius-composer)] border border-border-subtle bg-card shadow-sheet overflow-hidden
+    class="pointer-events-auto mx-auto w-full max-w-[68rem] rounded-[var(--radius-composer)] border border-border-subtle bg-card shadow-sheet overflow-hidden
            focus-within:border-border focus-within:shadow-menu transition-[border-color,box-shadow] duration-200"
+    role="region"
+    aria-label="Message Composer"
+    data-testid="composer-root"
+    ondragenter={handleDragEnter}
+    ondragover={handleDragOver}
+    ondragleave={uploads.handleDragLeave}
+    ondrop={handleDrop}
   >
     <ActivityRail {pane} />
 

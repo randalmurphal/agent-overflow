@@ -1186,6 +1186,49 @@ describe('<Composer>', () => {
     expect(rail.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it('scopes pointer-events and drag-and-drop to the visible card', async () => {
+    // The outer wrapper is pointer-events-none so the transparent
+    // moat around the visible card is click-through. Clicks on the
+    // scrollbar gutter and on transcript rows visible through the
+    // moat hit the timeline behind, instead of being silently
+    // absorbed. Drag-and-drop handlers move to the card itself for
+    // the same reason — users drop where they see the composer.
+    const pane = await buildPane();
+    const draft = await buildDraft();
+
+    const { getByTestId, queryByText } = render(Composer, { props: { pane, draft } });
+    await tick();
+
+    const card = getByTestId('composer-root');
+    expect(card.className).toContain('pointer-events-auto');
+
+    const outer = card.parentElement as HTMLElement | null;
+    expect(outer).not.toBeNull();
+    expect(outer!.className).toContain('pointer-events-none');
+
+    // No drop hint before any drag activity.
+    expect(queryByText('Drop an image to attach')).toBeNull();
+
+    const fileDataTransfer = {
+      types: ['Files'],
+      dropEffect: 'none',
+      effectAllowed: 'copy',
+      files: [],
+      items: [],
+      getData: () => '',
+      setData: () => {},
+      setDragImage: () => {},
+    } as unknown as DataTransfer;
+
+    // Dispatch dragenter on the card — the new handler home. The
+    // drop hint becomes visible (rendered by ComposerAttachmentRow
+    // when uploads.dragActive flips true), proving the handler
+    // moved off the outer wrapper.
+    await fireEvent.dragEnter(card, { dataTransfer: fileDataTransfer });
+    await tick();
+    expect(queryByText('Drop an image to attach')).not.toBeNull();
+  });
+
   it('enqueues mid-turn instead of dispatching SendMessage (Enter key)', async () => {
     // Mid-round behaviour matches both reference UIs (Claude Code's
     // commandQueue, Codex's VecDeque<QueuedUserMessage>): the user

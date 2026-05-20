@@ -7,14 +7,17 @@
   // primitive."
   //
   // Positioning: the chip floats just above the composer overlay. The
-  // composer is absolutely positioned at `bottom-0` of the timeline's
-  // relative parent and grows upward with content (attachment tray,
-  // multi-line input, approval panel). Without lifting the chip by
-  // `--composer-height`, the chip would sit *behind* the composer
-  // (composer is z-20 with `pointer-events-auto` children) and clicks
-  // would land on the composer instead. Putting the chip at z-30 +
-  // bottom = composer-height + 1rem keeps it visible and clickable
-  // regardless of composer growth.
+  // composer's visible card is absolutely positioned at `bottom-0` of
+  // the timeline's relative parent and grows upward with content
+  // (attachment tray, multi-line input, approval panel). Without
+  // lifting the chip by `--composer-height`, the chip would sit
+  // *visually behind* the opaque composer card and be invisible. The
+  // z-30 stacking keeps clicks reaching the chip, but the user can't
+  // see it without the lift. Putting the chip at z-30 + bottom =
+  // composer-height + 1rem keeps it visible regardless of composer
+  // growth. (Pointer-events on the composer overlay itself are scoped
+  // to the card via `pointer-events-none` on the outer wrapper —
+  // moat clicks fall through to the timeline below.)
   //
   // ChatView writes `--composer-height` from a ResizeObserver on the
   // overlay. Discussion (ChannelView) intentionally does NOT — its

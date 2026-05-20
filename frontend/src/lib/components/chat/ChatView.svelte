@@ -596,9 +596,7 @@
             </div>
           </div>
         {/if}
-        <div class="pointer-events-auto">
-          <Composer {pane} {draft} onImageExpand={openImagePreview} />
-        </div>
+        <Composer {pane} {draft} onImageExpand={openImagePreview} />
       </div>
     </div>
     <ThreadTerminalPlacement {pane} />
