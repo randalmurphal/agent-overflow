@@ -4,22 +4,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Layout, batch, and rotation limits. The frontend depends on the path
 // shape (DirName/FileName) and the JSONL format, so changing either is a
 // breaking change for any tool that tails the file.
 const (
-	DirName       = "ui-trace"
-	FileName      = "ui-render.jsonl"
-	MaxBatchLines = 1000
-	MaxBatchBytes = 2 * 1024 * 1024
-	MaxLineBytes  = 64 * 1024
-	MaxFileBytes  = 10 * 1024 * 1024
+	DirName        = "ui-trace"
+	BookmarkSubdir = "bookmarks"
+	FileName       = "ui-render.jsonl"
+	MaxBatchLines  = 1000
+	MaxBatchBytes  = 2 * 1024 * 1024
+	MaxLineBytes   = 64 * 1024
+	MaxFileBytes   = 10 * 1024 * 1024
 )
 
 // Tracer appends compact dev-only UI render trace records to a JSONL
@@ -91,6 +94,70 @@ func (t *Tracer) Append(lines []string) (string, error) {
 		}
 	}
 	return t.path, nil
+}
+
+// Bookmark copies the current trace file and any rotated `.1` predecessor
+// into a non-rotating bookmark file. The frontend invokes this from the
+// Ctrl+Shift+B handler so the bug-moment context survives the next
+// rotation triggered by ongoing render activity. Returns the bookmark
+// path on success; if no trace file exists yet, returns the empty path
+// without error so the caller can treat it as a no-op.
+//
+// The bookmark name is timestamped at second precision so concurrent
+// repro attempts (each pressing Ctrl+Shift+B within the same second)
+// collide intentionally — losing a duplicate bookmark to the second
+// presser is preferable to growing a fan-out of near-identical 20 MB
+// copies on the user's disk.
+func (t *Tracer) Bookmark(now time.Time) (string, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	bookmarkDir := filepath.Join(filepath.Dir(t.path), BookmarkSubdir)
+	if err := os.MkdirAll(bookmarkDir, 0755); err != nil {
+		return "", fmt.Errorf("create ui trace bookmark directory: %w", err)
+	}
+	name := fmt.Sprintf("bug-report-%s.jsonl", now.UTC().Format("20060102T150405Z"))
+	dest := filepath.Join(bookmarkDir, name)
+
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	if err != nil {
+		return "", fmt.Errorf("create ui trace bookmark file: %w", err)
+	}
+	defer out.Close()
+
+	// Concatenate `.1` (older history) before the current file so a
+	// linear read of the bookmark goes earliest-first, matching the
+	// JSONL append order any tooling already expects.
+	wroteAny := false
+	for _, src := range []string{t.path + ".1", t.path} {
+		appended, err := appendFile(out, src)
+		if err != nil {
+			return "", err
+		}
+		wroteAny = wroteAny || appended
+	}
+	if !wroteAny {
+		// No trace data exists yet — clean up the empty file so the
+		// directory listing isn't polluted by zero-byte bookmarks.
+		_ = os.Remove(dest)
+		return "", nil
+	}
+	return dest, nil
+}
+
+func appendFile(dst io.Writer, srcPath string) (bool, error) {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("open ui trace source %s: %w", srcPath, err)
+	}
+	defer src.Close()
+	if _, err := io.Copy(dst, src); err != nil {
+		return false, fmt.Errorf("copy ui trace source %s: %w", srcPath, err)
+	}
+	return true, nil
 }
 
 func validateLines(lines []string) ([]string, int, error) {

@@ -254,6 +254,7 @@ var LocalOnlyMethods = map[string]bool{
 
 	// 5. Local-FS bookkeeping.
 	"AppendUIRenderTraceBatch": true,
+	"BookmarkUIRenderTrace":    true,
 
 	// 6. Credential retrieval / endpoint enumeration. Plaintext token
 	// retrieval is a single-call credential leak; bulk listing reveals

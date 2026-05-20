@@ -73,8 +73,10 @@ describe('uiRenderTrace', () => {
     expect(isUiRenderTraceEnabled()).toBe(false);
   });
 
-  it('Ctrl+Shift+B writes a user.bugReport marker and copies the file path', async () => {
+  it('Ctrl+Shift+B writes a user.bugReport marker, bookmarks the trace, and copies the bookmark path', async () => {
     setBindingMock('AppendUIRenderTraceBatch', async () => '/tmp/ui-render.jsonl');
+    const bookmarkPath = '/tmp/ui-trace/bookmarks/bug-report-20260519T000000Z.jsonl';
+    setBindingMock('BookmarkUIRenderTrace', async () => bookmarkPath);
     let clipboardText = '';
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -98,7 +100,7 @@ describe('uiRenderTrace', () => {
     });
     window.dispatchEvent(event);
 
-    // The handler is async (flush + clipboard write); wait a tick.
+    // The handler is async (flush + bookmark + clipboard); wait a tick.
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
     const records = getUiRenderTraceRecords();
@@ -106,6 +108,35 @@ describe('uiRenderTrace', () => {
     expect(marker).toBeDefined();
     expect((marker?.data as { stickState: { marker: string } }).stickState.marker)
       .toBe('sentinel');
+    expect(clipboardText).toBe(bookmarkPath);
+  });
+
+  it('Ctrl+Shift+B falls back to the live trace path when bookmarking fails', async () => {
+    setBindingMock('AppendUIRenderTraceBatch', async () => '/tmp/ui-render.jsonl');
+    setBindingMock('BookmarkUIRenderTrace', async () => {
+      throw new Error('disk full');
+    });
+    let clipboardText = '';
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn(async (text: string) => { clipboardText = text; }) },
+    });
+    installUiRenderTraceApi();
+    window.__agentOverflowUiTrace?.enable();
+
+    const event = new KeyboardEvent('keydown', {
+      ctrlKey: true,
+      shiftKey: true,
+      code: 'KeyB',
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(event);
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    // Falls back to the live trace path so the user can still locate
+    // the marker even if the bookmark copy failed.
     expect(clipboardText).toBe('/tmp/ui-render.jsonl');
   });
 });

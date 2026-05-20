@@ -1,6 +1,10 @@
 package main
 
-import "agent-overflow/internal/uitrace"
+import (
+	"time"
+
+	"agent-overflow/internal/uitrace"
+)
 
 // uiTrace returns the lazy-initialized Tracer keyed on a.configDir.
 // Construction is one-shot so subsequent calls reuse the same Tracer
@@ -35,4 +39,18 @@ func (a *App) AppendUIRenderTraceBatch(lines []string) (string, error) {
 		return "", err
 	}
 	return t.Append(lines)
+}
+
+// BookmarkUIRenderTrace freezes the current trace contents (and any
+// rotated `.1` predecessor) into a non-rotating bookmark file under
+// `<configDir>/ui-trace/bookmarks/`. The frontend invokes this from
+// Ctrl+Shift+B so the bug-moment context survives the next rotation
+// triggered by ongoing render activity. Returns the bookmark path
+// (empty string if no trace data exists yet).
+func (a *App) BookmarkUIRenderTrace() (string, error) {
+	t, err := a.uiTrace()
+	if err != nil {
+		return "", err
+	}
+	return t.Bookmark(time.Now())
 }

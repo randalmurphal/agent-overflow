@@ -719,6 +719,7 @@ func (p *privilegedApp) GetDesignWorkdirInfo() string   { return "ok" }
 
 // 5. Local-FS bookkeeping.
 func (p *privilegedApp) AppendUIRenderTraceBatch() string { return "ok" }
+func (p *privilegedApp) BookmarkUIRenderTrace() string    { return "ok" }
 
 // 6. Credential retrieval / endpoint enumeration.
 func (p *privilegedApp) GetRemoteEndpointToken() string { return "ok" }

@@ -102,6 +102,13 @@ const RETAIN_ANIMATION_DURATION_MS = 350;
 // below 0.5 px-per-60fps-frame means we've effectively settled.
 const ARRIVAL_DISTANCE_PX = 1;
 const ARRIVAL_VELOCITY_THRESHOLD = 0.5;
+// Spring tick writes fire at 60Hz during a chase. Sample so the
+// dev-only trace file isn't dominated by predictable +1px increments.
+// 12 ≈ 5Hz, which is enough to see the spring is running without
+// crowding the rare gesture/escape events that diagnose scroll
+// regressions. First and last ticks of every chase are always
+// recorded via the springTickSinceLastTrace reset at chase boundaries.
+const SPRING_TICK_TRACE_SAMPLE = 12;
 
 // ===== Warm-up (quiescence) gate =====
 // After attach() or forceStick(), the controller stays in sync-pin mode
@@ -524,6 +531,17 @@ export function createUseStickToBottomController(
   // origin. No semantic effect; production builds short-circuit at the
   // `isUiRenderTraceEnabled` check inside `trace()`.
   let writeCaller: string = 'unknown';
+  // Spring-tick writes fire at 60Hz during a chase — predictable
+  // increment-by-1px from the spring solver, and each record is
+  // ~300 bytes. Without sampling, they were 5% of the 10 MB rotation
+  // file and crowded out the rare gesture/escape events that actually
+  // matter for diagnosing scroll regressions. We trace one in every
+  // SPRING_TICK_TRACE_SAMPLE writes (~5Hz) plus the very first tick
+  // of each chase via the `springTickSinceLastTrace` reset in
+  // `startSpringIfNeeded`. Starts at `SAMPLE - 1` so the first write
+  // is recorded (the gating predicate is `<`, so equal-or-greater
+  // values record and reset).
+  let springTickSinceLastTrace = SPRING_TICK_TRACE_SAMPLE - 1;
   function writeProgrammaticScrollTop(value: number): void {
     if (!scrollEl) return;
     const beforeTop = scrollEl.scrollTop;
@@ -540,20 +558,31 @@ export function createUseStickToBottomController(
     // register a small escape.
     if (gestureSession) gestureSession.lastObservedScrollTop = scrollEl.scrollTop;
     refreshIsNearBottom();
-    trace('scroll.write', () => ({
-      caller: writeCaller,
-      requested: Math.round(value),
-      beforeTop: Math.round(beforeTop),
-      afterTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-      scrollHeight: Math.round(beforeHeight),
-      clientHeight: Math.round(beforeClient),
-      maxTarget: Math.round(Math.max(0, beforeHeight - beforeClient)),
-      ignoreScrollToTop,
-      isAtBottomState,
-      escapedFromLockState,
-      pauseDepth,
-      isNearBottomState,
-    }));
+    let recordTrace = true;
+    if (writeCaller === 'spring.tick') {
+      if (springTickSinceLastTrace < SPRING_TICK_TRACE_SAMPLE - 1) {
+        springTickSinceLastTrace += 1;
+        recordTrace = false;
+      } else {
+        springTickSinceLastTrace = 0;
+      }
+    }
+    if (recordTrace) {
+      trace('scroll.write', () => ({
+        caller: writeCaller,
+        requested: Math.round(value),
+        beforeTop: Math.round(beforeTop),
+        afterTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+        scrollHeight: Math.round(beforeHeight),
+        clientHeight: Math.round(beforeClient),
+        maxTarget: Math.round(Math.max(0, beforeHeight - beforeClient)),
+        ignoreScrollToTop,
+        isAtBottomState,
+        escapedFromLockState,
+        pauseDepth,
+        isNearBottomState,
+      }));
+    }
   }
 
   function writeScrollTop(value: number): void {
@@ -672,6 +701,9 @@ export function createUseStickToBottomController(
     const myToken = ++springGen;
     springToken = myToken;
     lastTickAt = null;
+    // Force the first tick of this chase to record so the trace shows
+    // every chase boundary, not just every ~12th sampled write.
+    springTickSinceLastTrace = SPRING_TICK_TRACE_SAMPLE - 1;
 
     const tick = (now: number): void => {
       springFrameHandle = null;

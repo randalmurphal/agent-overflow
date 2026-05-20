@@ -10,7 +10,6 @@ import {
   isUiRenderTraceEnabled,
   recordUiTrace,
   scheduleDomUiTrace,
-  summarizeItemsForTrace,
 } from '../../utils/uiRenderTrace';
 
 const MAX_TRACE_NODES = 120;
@@ -29,22 +28,28 @@ export function recordTimelineRenderTrace(
     itemCount: pane.items.length,
     timelineRevision: pane.timelineRevision,
     groupedNodeCount: groupedNodes.length,
+    // Per-node thread ids are redundant with the top-level `threadId`
+    // and omitting them shaves ~60 bytes per node (`itemThreadId` is a
+    // 38-char UUID repeated for every leaf). Cross-thread inline rows
+    // are the only case where the per-node thread id would differ — we
+    // accept losing that distinction in the trace to keep the
+    // post-shrink retention budget intact. `orphan` is omitted when
+    // false (the common case) for the same reason.
     nodes: groupedNodes.slice(0, MAX_TRACE_NODES).map((node) => {
       if (node.kind === 'leaf') {
-        return {
+        const out: Record<string, unknown> = {
           kind: 'leaf',
           itemId: node.item.id,
-          itemThreadId: node.item.threadId,
           itemKind: node.item.kind,
           turnIndex: node.item.turnIndex,
-          orphan: node.orphan === true,
         };
+        if (node.orphan === true) out.orphan = true;
+        return out;
       }
       if (node.kind === 'group') {
         return {
           kind: 'group',
           parentId: node.parent.id,
-          parentThreadId: node.parent.threadId,
           childCount: node.children.length,
           turnIndex: node.parent.turnIndex,
         };
@@ -53,7 +58,6 @@ export function recordTimelineRenderTrace(
         return {
           kind: 'wait_group',
           parentId: node.parent.id,
-          parentThreadId: node.parent.threadId,
           childCount: node.children.length,
           turnIndex: node.parent.turnIndex,
         };
@@ -62,7 +66,6 @@ export function recordTimelineRenderTrace(
         return {
           kind: 'read_group',
           groupKey: node.groupKey,
-          threadId: node.threadId,
           memberCount: node.members.length,
           turnIndex: node.members[0]?.turnIndex ?? 0,
         };
@@ -70,13 +73,17 @@ export function recordTimelineRenderTrace(
       return {
         kind: 'inline_subagent_group',
         groupKey: node.groupKey,
-        threadId: node.threadId,
         memberCount: node.memberCount,
         childCount: node.members.length,
         turnIndex: node.members[0]?.parent.turnIndex ?? 0,
       };
     }),
-    items: summarizeItemsForTrace(pane.items),
+    // The items array used to live here. It dominated trace file bytes
+    // (single timeline.state snapshot averaged ~63 KB on a 228-item
+    // thread, burning ~57% of the 10 MB rotation cap on data that
+    // barely changes between consecutive emissions). The DOM trace
+    // (timeline.dom, scheduled below) captures the rendered rows with
+    // text previews; the kind/turn information is in `nodes` above.
   });
   scheduleDomUiTrace('timeline', 'timeline.dom', () => ({
     threadId: pane.threadId,

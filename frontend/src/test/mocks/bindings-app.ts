@@ -321,6 +321,7 @@ export const SetThreadRuntimeMode = dispatch('SetThreadRuntimeMode');
 
 // Dev-only UI render tracing
 export const AppendUIRenderTraceBatch = dispatch('AppendUIRenderTraceBatch');
+export const BookmarkUIRenderTrace = dispatch('BookmarkUIRenderTrace');
 export const GetUIRenderTracePath = dispatch('GetUIRenderTracePath');
 
 // PR-based thread creation

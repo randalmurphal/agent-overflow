@@ -186,6 +186,7 @@ export {
 
   // Dev-only UI render tracing
   AppendUIRenderTraceBatch,
+  BookmarkUIRenderTrace,
   GetUIRenderTracePath,
 
   // PR-based thread creation

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAppendWritesJSONLines(t *testing.T) {
@@ -249,5 +250,93 @@ func TestPathLayout(t *testing.T) {
 	want := filepath.Join(dir, DirName, FileName)
 	if tr.Path() != want {
 		t.Fatalf("Path() = %q, want %q", tr.Path(), want)
+	}
+}
+
+func TestBookmarkConcatenatesRotationAndCurrent(t *testing.T) {
+	dir := t.TempDir()
+	tr, err := New(dir)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, DirName), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Pre-seed rotation + current with distinct content so the bookmark
+	// concatenation order is observable (older history first).
+	if err := os.WriteFile(tr.Path()+".1", []byte(`{"seq":1}`+"\n"), 0644); err != nil {
+		t.Fatalf("seed rotation: %v", err)
+	}
+	if err := os.WriteFile(tr.Path(), []byte(`{"seq":2}`+"\n"), 0644); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+
+	bookmark, err := tr.Bookmark(time.Date(2026, 5, 19, 20, 30, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Bookmark returned error: %v", err)
+	}
+	want := filepath.Join(dir, DirName, BookmarkSubdir, "bug-report-20260519T203000Z.jsonl")
+	if bookmark != want {
+		t.Fatalf("bookmark path = %q, want %q", bookmark, want)
+	}
+
+	data, err := os.ReadFile(bookmark)
+	if err != nil {
+		t.Fatalf("read bookmark: %v", err)
+	}
+	wantContent := `{"seq":1}` + "\n" + `{"seq":2}` + "\n"
+	if string(data) != wantContent {
+		t.Fatalf("bookmark content = %q, want %q", data, wantContent)
+	}
+}
+
+func TestBookmarkWhenOnlyCurrentExists(t *testing.T) {
+	dir := t.TempDir()
+	tr, err := New(dir)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, DirName), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(tr.Path(), []byte(`{"seq":1}`+"\n"), 0644); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+
+	bookmark, err := tr.Bookmark(time.Date(2026, 5, 19, 21, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Bookmark returned error: %v", err)
+	}
+	data, err := os.ReadFile(bookmark)
+	if err != nil {
+		t.Fatalf("read bookmark: %v", err)
+	}
+	if string(data) != `{"seq":1}`+"\n" {
+		t.Fatalf("bookmark content = %q, want single line", data)
+	}
+}
+
+func TestBookmarkWhenNoTraceExistsReturnsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	tr, err := New(dir)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	bookmark, err := tr.Bookmark(time.Date(2026, 5, 19, 22, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Bookmark returned error: %v", err)
+	}
+	if bookmark != "" {
+		t.Fatalf("bookmark path = %q, want empty string when no trace data exists", bookmark)
+	}
+	// No empty file should be left behind to pollute the bookmarks dir.
+	bookmarkDir := filepath.Join(dir, DirName, BookmarkSubdir)
+	entries, err := os.ReadDir(bookmarkDir)
+	if err != nil {
+		t.Fatalf("read bookmark dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("bookmark dir has %d entries, want 0", len(entries))
 	}
 }

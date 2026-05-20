@@ -125,6 +125,18 @@ export function AutoResumeThread(threadID: string): $CancellablePromise<void> {
 }
 
 /**
+ * BookmarkUIRenderTrace freezes the current trace contents (and any
+ * rotated `.1` predecessor) into a non-rotating bookmark file under
+ * `<configDir>/ui-trace/bookmarks/`. The frontend invokes this from
+ * Ctrl+Shift+B so the bug-moment context survives the next rotation
+ * triggered by ongoing render activity. Returns the bookmark path
+ * (empty string if no trace data exists yet).
+ */
+export function BookmarkUIRenderTrace(): $CancellablePromise<string> {
+    return $Call.ByID(1374242488);
+}
+
+/**
  * BrowseDirectory lists the contents of path for the project-picker
  * UI. The full contract (path normalisation, ordering, .git-marker
  * detection, EntryLimit truncation) lives in internal/dirbrowse.
@@ -1094,10 +1106,12 @@ export function ListItemsBeforeTurn(threadID: string, beforeTurnIndex: number, i
  * ListLiveBackgroundTasks returns running launches plus their
  * recently-completed siblings (within the tray retention window) so the
  * BackgroundTaskTray can render without scanning `pane.items`. SQLite
- * rows cover persisted Claude / Codex subagent launches; the triage
- * router appends transient Codex unified-exec tasks that intentionally
- * do not exist in chat history. Pending Codex unifiedExec launches
- * surface here before they are known to be backgrounded.
+ * rows cover persisted Claude launches and Codex subagent launches; the
+ * latter are projected as running tray rows while the chat-history spawn
+ * card remains completed. The triage router appends transient Codex
+ * unified-exec tasks that intentionally do not exist in chat history.
+ * Pending Codex unifiedExec launches surface here before they are known
+ * to be backgrounded.
  */
 export function ListLiveBackgroundTasks(threadID: string): $CancellablePromise<store$0.Item[]> {
     return $Call.ByID(320784263, threadID).then(($result: any) => {

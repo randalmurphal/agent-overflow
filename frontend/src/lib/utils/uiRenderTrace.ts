@@ -1,7 +1,6 @@
-import { AppendUIRenderTraceBatch } from '../stores/bindings';
+import { AppendUIRenderTraceBatch, BookmarkUIRenderTrace } from '../stores/bindings';
 import { getActiveTurn } from '../stores/threadStatuses.svelte';
 import type { ThreadPane } from '../stores/thread.svelte';
-import type { Item } from '../types/models';
 
 // The trace surface is opt-in at build time via VITE_AGENT_OVERFLOW_UI_TRACE
 // (set by `make dev DEBUG=1` / `make dev-wsl DEBUG=1`). Vite inlines the
@@ -25,7 +24,6 @@ const MAX_PENDING_FILE_LINES = 200;
 // to keep small per-event diagnostic traces from being collateral
 // damage when a snapshot trace (chat.dom / chat.state) blows the cap.
 const MAX_LINE_BYTES = 64 * 1024;
-const MAX_ITEMS = 120;
 const MAX_DOM_ROWS = 160;
 const PREVIEW_CHARS = 120;
 const FILE_FLUSH_DELAY_MS = 500;
@@ -174,18 +172,35 @@ async function captureBugReport(): Promise<void> {
     href: typeof location !== 'undefined' ? location.href : '',
     stickState,
   });
-  // Force flush so the marker is on disk before we copy the path.
-  const path = await flushUiRenderTrace();
-  const message = path
-    ? `[BugReport] Saved. Path copied to clipboard:\n${path}`
-    : '[BugReport] Saved marker but no trace file path is available yet.';
-  if (path && navigator.clipboard?.writeText) {
+  // Force-flush before bookmarking so the marker is on disk and the
+  // bookmark file captures it. Without this, the in-memory pending
+  // lines would copy-out only after the next scheduled flush and the
+  // marker could miss the bookmark.
+  await flushUiRenderTrace();
+  // Take a frozen snapshot of the current trace file (plus any rotated
+  // `.1` predecessor) so the bug-moment context survives the next
+  // rotation triggered by ongoing render activity. The live trace can
+  // turn over in minutes during a streaming session, but the bookmark
+  // doesn't rotate — analysis can happen hours later.
+  let bookmarkPath: string | null = null;
+  try {
+    bookmarkPath = await BookmarkUIRenderTrace();
+  } catch (err) {
+    console.warn('[BugReport] Failed to bookmark trace:', err);
+  }
+  const copyPath = bookmarkPath || lastTraceFilePath;
+  if (copyPath && navigator.clipboard?.writeText) {
     try {
-      await navigator.clipboard.writeText(path);
+      await navigator.clipboard.writeText(copyPath);
     } catch (err) {
       console.warn('[BugReport] Failed to copy path to clipboard:', err);
     }
   }
+  const message = bookmarkPath
+    ? `[BugReport] Bookmark saved. Path copied to clipboard:\n${bookmarkPath}`
+    : lastTraceFilePath
+      ? `[BugReport] Bookmark unavailable; live trace path copied to clipboard:\n${lastTraceFilePath}`
+      : '[BugReport] Saved marker but no trace file path is available yet.';
   console.log(message);
 }
 
@@ -292,25 +307,14 @@ export function summarizePaneForTrace(pane: ThreadPane): Record<string, unknown>
     diffPanelOpen: pane.diffPanel.open,
     diffSidebarPayloadId: pane.activeDiffPayload?.payloadId ?? null,
     diffSidebarFilePath: pane.activeDiffPayload?.filePath ?? null,
-    items: summarizeItemsForTrace(pane.items),
+    // The items array used to live here. It dominated the trace file
+    // (single chat.state snapshot averaged ~45 KB on a 228-item thread,
+    // burning ~25% of the 10 MB rotation cap on data that changes very
+    // slowly between consecutive emissions). The DOM trace
+    // (chat.dom / timeline.dom) already captures the rendered rows
+    // with text previews; that's the relevant signal for visual /
+    // scroll regressions.
   };
-}
-
-export function summarizeItemsForTrace(items: Item[]): Array<Record<string, unknown>> {
-  return items.slice(0, MAX_ITEMS).map((item) => ({
-    id: item.id,
-    threadId: item.threadId,
-    turnIndex: item.turnIndex,
-    itemIndex: item.itemIndex,
-    kind: item.kind,
-    role: item.role,
-    status: item.status,
-    parentId: item.parentId ?? '',
-    completionOf: item.completionOf ?? '',
-    payloadKind: item.payloadKind ?? '',
-    isBackground: item.isBackground ?? false,
-    summaryPreview: preview(item.summary),
-  }));
 }
 
 export function snapshotChatDomForTrace(root: HTMLElement | undefined): Record<string, unknown> {
