@@ -338,8 +338,8 @@ pre, code, kbd, samp, .ansi-body {
   border-collapse: collapse;
   margin: 0.5rem 0;
   font-size: 0.8125rem;
-  display: block;
-  overflow-x: auto;
+  table-layout: fixed;
+  width: 100%;
   max-width: 100%;
 }
 .markdown-body th,
@@ -348,6 +348,8 @@ pre, code, kbd, samp, .ansi-body {
   padding: 0.35rem 0.625rem;
   text-align: left;
   vertical-align: top;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .markdown-body thead th {
   background: var(--surface-0);
@@ -358,15 +360,21 @@ pre, code, kbd, samp, .ansi-body {
 }
 
 /*
- * Streamdown already wraps tables in a dedicated horizontal scroller
- * (`[data-streamdown-table]`). Keep the inner table as a real table so
- * cell contents and outside list markers are not clipped by a second
- * nested overflow box inherited from the legacy markdown table rules.
+ * Streamdown wraps tables in a dedicated container (`[data-streamdown-table]`).
+ * Keep it constrained to the markdown width and wrap cell contents instead of
+ * introducing a nested horizontal scroller.
  */
+.markdown-body [data-streamdown-table] {
+  max-width: 100%;
+  overflow-x: visible;
+}
+
 .markdown-body [data-streamdown-table] table {
   display: table;
   overflow: visible;
-  max-width: none;
+  table-layout: fixed;
+  width: 100%;
+  max-width: 100%;
   margin: 0;
 }
 
