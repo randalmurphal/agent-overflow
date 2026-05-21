@@ -11,10 +11,10 @@
 // Sort order (highest first):
 //   1. Pinned tier (Thread.pinnedAt set) — within tier: pinnedAt desc.
 //   2. needs-attention (error / pending-approval / awaiting-input / plan-ready / interrupted).
-//   3. running (any mode — Working / Planning / Designing / Discussing).
+//   3. running (any mode — Working / Planning / Designing / Discussing)
+//      and completed (idle + unread).
 //   4. paused (reserved for future; no current source emits it).
-//   5. completed (idle + unread).
-//   6. idle + read (no pill).
+//   5. idle + read (no pill).
 // Within each tier (after pinned): latestActivityAt desc, then thread.id
 // localeCompare for stability.
 //
@@ -43,20 +43,19 @@ export type ThreadStatusSortGroup =
   | 'needs-attention'
   | 'running'
   | 'paused'
-  | 'completed';
+  | 'completed'
+  | 'idle';
 
-// Mirrors forge's flat priority for non-blocking tiers — running, paused,
-// and completed share priority so within-tier sort is by activity time
-// alone. Splitting them would force a hard hierarchy where a running
-// thread always outranks an idle one regardless of recency, which isn't
-// the design intent (a freshly-touched idle thread should still surface
-// over an old running one).
+// Running and completed rows share the non-blocking activity tier so
+// their relative order stays activity-driven. Plain idle/read rows sit
+// below them because they have no status indicator worth surfacing.
 export const SORT_GROUP_PRIORITY: Record<ThreadStatusSortGroup, number> = {
   pinned: 3,
   'needs-attention': 2,
   running: 1,
   paused: 1,
   completed: 1,
+  idle: 0,
 };
 
 // Within-group ordering of live statuses. Used by displayStatus bubbling
@@ -122,7 +121,11 @@ function statusPriority(status: ThreadLiveStatus): number {
   return STATUS_PRIORITY[status] ?? 0;
 }
 
-function getStatusSortGroup(thread: Thread, liveStatus: ThreadLiveStatus): ThreadStatusSortGroup {
+function getStatusSortGroup(
+  thread: Thread,
+  liveStatus: ThreadLiveStatus,
+  status: ThreadStatusPill | null,
+): ThreadStatusSortGroup {
   if (thread.pinnedAt != null) return 'pinned';
   switch (liveStatus) {
     case 'error':
@@ -134,12 +137,12 @@ function getStatusSortGroup(thread: Thread, liveStatus: ThreadLiveStatus): Threa
     case 'running':
       return 'running';
     case 'idle':
-      return 'completed';
+      return status === null ? 'idle' : 'completed';
     default:
       // Defensive fallback — a future ThreadLiveStatus enum member
-      // should not silently land in `undefined`. Tiering as completed
-      // keeps it visible without claiming attention it hasn't earned.
-      return 'completed';
+      // should not silently land in `undefined`. Tiering as idle keeps
+      // it visible without claiming attention it hasn't earned.
+      return 'idle';
   }
 }
 
@@ -155,7 +158,7 @@ function resolveLatestActivityAt(thread: Thread, children: readonly SidebarTreeN
  * Pick the displayed status for a parent row given its own status and
  * its children. Mirrors forge:resolveDisplayStatus — the parent keeps
  * its own status when it has a strictly higher group priority AND it's
- * not in paused/completed (so a "completed" parent surfaces a "running"
+ * not in passive rows (so an idle/read parent surfaces a "running"
  * child instead of dominating it). Otherwise the most-important child
  * status wins, including the contributing child's pill verbatim.
  */
@@ -169,13 +172,16 @@ function resolveDisplay(
     return { displayLiveStatus: ownLiveStatus, displayStatus: ownPill };
   }
 
-  // Single-pass max — equivalent to sorting by statusPriority and
-  // taking [0] but allocates nothing.
+  // Single-pass max — highest sort tier first, then highest live-status
+  // priority within that tier, without allocating a sorted copy.
   let topChild: SidebarTreeNode | null = null;
+  let topGroupPriority = -1;
   let topPriority = -1;
   for (const child of children) {
+    const groupPriority = SORT_GROUP_PRIORITY[child.sortGroup];
     const priority = statusPriority(child.displayLiveStatus);
-    if (priority > topPriority) {
+    if (groupPriority > topGroupPriority || (groupPriority === topGroupPriority && priority > topPriority)) {
+      topGroupPriority = groupPriority;
       topPriority = priority;
       topChild = child;
     }
@@ -185,7 +191,7 @@ function resolveDisplay(
   }
 
   const childGroup = topChild.sortGroup;
-  const ownIsPassive = ownGroup === 'paused' || ownGroup === 'completed';
+  const ownIsPassive = ownGroup === 'paused' || ownGroup === 'completed' || ownGroup === 'idle';
   if (SORT_GROUP_PRIORITY[ownGroup] > SORT_GROUP_PRIORITY[childGroup] && !ownIsPassive) {
     return { displayLiveStatus: ownLiveStatus, displayStatus: ownPill };
   }
@@ -257,7 +263,7 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
       ? input.statusOf(thread)
       : resolveEffectiveThreadStatus(thread, input.liveStatusOf?.(thread.id) ?? 'idle');
     const ownPill = resolveThreadStatusPill(thread, ownLiveStatus);
-    const ownGroup = getStatusSortGroup(thread, ownLiveStatus);
+    const ownGroup = getStatusSortGroup(thread, ownLiveStatus, ownPill);
     const display = resolveDisplay(ownLiveStatus, ownPill, ownGroup, children);
     const latestActivityAt = resolveLatestActivityAt(thread, children);
 
@@ -269,7 +275,7 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
       ownStatus: ownPill,
       displayLiveStatus: display.displayLiveStatus,
       displayStatus: display.displayStatus,
-      sortGroup: getStatusSortGroup(thread, display.displayLiveStatus),
+      sortGroup: getStatusSortGroup(thread, display.displayLiveStatus, display.displayStatus),
       latestActivityAt,
     };
   };

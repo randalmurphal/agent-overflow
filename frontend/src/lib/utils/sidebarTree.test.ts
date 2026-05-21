@@ -53,6 +53,51 @@ describe('buildSidebarThreadTree', () => {
     expect(tree.map((n) => n.thread.id)).toEqual(['newer', 'older']);
   });
 
+  it('puts running threads above plain idle/read threads regardless of activity time', () => {
+    const running = mkThread('running', { updatedAt: 1000 });
+    const plain = mkThread('plain', { updatedAt: 9000 });
+    const tree = buildSidebarThreadTree({
+      threads: [plain, running],
+      liveStatusOf: liveStatusMap({ running: 'running' }),
+    });
+
+    expect(tree.map((n) => n.thread.id)).toEqual(['running', 'plain']);
+    expect(tree[0].sortGroup).toBe('running');
+    expect(tree[1].sortGroup).toBe('idle');
+  });
+
+  it('keeps running and unread completed threads in the same activity tier', () => {
+    const running = mkThread('running', { updatedAt: 1000 });
+    const completed = mkThread('completed', {
+      updatedAt: 9000,
+      latestTurnCompletedAt: 9000,
+      lastReadAt: 1000,
+    });
+    const tree = buildSidebarThreadTree({
+      threads: [running, completed],
+      liveStatusOf: liveStatusMap({ running: 'running' }),
+    });
+
+    expect(tree.map((n) => n.thread.id)).toEqual(['completed', 'running']);
+    expect(tree[0].sortGroup).toBe('completed');
+    expect(tree[1].sortGroup).toBe('running');
+  });
+
+  it('uses the running tier for every running thread mode', () => {
+    const modes: Array<NonNullable<Thread['mode']>> = ['chat', 'plan', 'design', 'discussion'];
+    const tree = buildSidebarThreadTree({
+      threads: modes.map((mode, index) => mkThread(mode, { mode, updatedAt: index + 1 })),
+      liveStatusOf: liveStatusMap({
+        chat: 'running',
+        plan: 'running',
+        design: 'running',
+        discussion: 'running',
+      }),
+    });
+
+    expect(tree.map((n) => n.sortGroup)).toEqual(['running', 'running', 'running', 'running']);
+  });
+
   it('puts durable interrupted and plan-ready rows in the needs-attention tier', () => {
     const interrupted = mkThread('interrupted', { updatedAt: 1000, hasIncompleteTurn: true });
     const planReady = mkThread('plan-ready', { updatedAt: 2000, hasActionableProposedPlan: true });
@@ -138,6 +183,60 @@ describe('buildSidebarThreadTree', () => {
     });
     expect(tree[0].displayLiveStatus).toBe('running');
     expect(tree[0].sortGroup).toBe('running');
+  });
+
+  it("sorts a parent with a running child above a newer plain idle/read sibling", () => {
+    const parent = mkThread('parent', { updatedAt: 1000 });
+    const child = mkThread('child', { parentThreadId: 'parent', updatedAt: 1000 });
+    const plain = mkThread('plain', { updatedAt: 9000 });
+    const tree = buildSidebarThreadTree({
+      threads: [plain, parent, child],
+      liveStatusOf: liveStatusMap({ child: 'running' }),
+    });
+
+    expect(tree.map((n) => n.thread.id)).toEqual(['parent', 'plain']);
+    expect(tree[0].displayLiveStatus).toBe('running');
+    expect(tree[0].sortGroup).toBe('running');
+  });
+
+  it("keeps a parent with an unread completed child above a plain idle/read sibling", () => {
+    const parent = mkThread('parent', { updatedAt: 1000 });
+    const child = mkThread('child', {
+      parentThreadId: 'parent',
+      updatedAt: 1000,
+      latestTurnCompletedAt: 1000,
+      lastReadAt: 0,
+    });
+    const plain = mkThread('plain', { updatedAt: 9000 });
+    const tree = buildSidebarThreadTree({
+      threads: [plain, parent, child],
+      liveStatusOf: liveStatusMap({}),
+    });
+
+    expect(tree.map((n) => n.thread.id)).toEqual(['parent', 'plain']);
+    expect(tree[0].displayStatus?.label).toBe('Completed');
+    expect(tree[0].sortGroup).toBe('completed');
+  });
+
+  it("bubbles a needs-attention child above a running child", () => {
+    const parent = mkThread('parent', { updatedAt: 1000 });
+    const runningChild = mkThread('running-child', {
+      parentThreadId: 'parent',
+      updatedAt: 9000,
+    });
+    const interruptedChild = mkThread('interrupted-child', {
+      parentThreadId: 'parent',
+      updatedAt: 1000,
+      hasIncompleteTurn: true,
+    });
+    const tree = buildSidebarThreadTree({
+      threads: [parent, runningChild, interruptedChild],
+      liveStatusOf: liveStatusMap({ 'running-child': 'running' }),
+    });
+
+    expect(tree[0].displayLiveStatus).toBe('interrupted');
+    expect(tree[0].displayStatus?.label).toBe('Interrupted');
+    expect(tree[0].sortGroup).toBe('needs-attention');
   });
 
   it("bubbles a child's durable interrupted status to a passive parent", () => {
