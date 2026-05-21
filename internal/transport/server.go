@@ -109,6 +109,13 @@ type Config struct {
 	// toggle) populates this with the configured remote origins.
 	OriginPatterns []string
 
+	// RequireReadyForBootstrap makes /bootstrap.json return 503 until
+	// MarkReady is called. Default false preserves the normal desktop
+	// path, where the frontend may connect while Wails is still running
+	// ServiceStartup. Headless launchers use this to publish the port
+	// early but hold navigation until the backend is actually ready.
+	RequireReadyForBootstrap bool
+
 	// HTTPReadHeaderTimeout, HTTPReadTimeout, HTTPWriteTimeout,
 	// HTTPIdleTimeout map onto net/http.Server fields. Zero values
 	// pick safe defaults documented in New().
@@ -181,6 +188,10 @@ type Server struct {
 	// a rebind racing a concurrent Shutdown drops cleanly rather than
 	// installing a fresh listener that nobody will ever close.
 	shutDown atomic.Bool
+
+	ready atomic.Bool
+
+	startupFailed atomic.Bool
 }
 
 // New constructs a Server. Generates a token if one wasn't provided.
@@ -223,12 +234,16 @@ func New(cfg Config) (*Server, error) {
 	if len(cfg.OriginPatterns) > 0 {
 		originPatterns = append(originPatterns, cfg.OriginPatterns...)
 	}
-	return &Server{
+	s := &Server{
 		cfg:            cfg,
 		token:          token,
 		originPatterns: originPatterns,
 		serveErr:       make(chan error, 1),
-	}, nil
+	}
+	if !cfg.RequireReadyForBootstrap {
+		s.ready.Store(true)
+	}
+	return s, nil
 }
 
 // Start begins listening. Returns when the listener is bound — caller
@@ -493,6 +508,17 @@ func (s *Server) Addr() string {
 // Token returns the auth token in use.
 func (s *Server) Token() string { return s.token }
 
+// MarkReady releases a readiness-gated bootstrap endpoint.
+func (s *Server) MarkReady() { s.ready.Store(true) }
+
+// MarkStartupFailed makes a readiness-gated bootstrap endpoint return
+// a terminal startup failure instead of "still booting".
+func (s *Server) MarkStartupFailed() { s.startupFailed.Store(true) }
+
+// Ready reports whether /bootstrap.json is allowed to return the
+// manifest. Servers without RequireReadyForBootstrap start ready.
+func (s *Server) Ready() bool { return s.ready.Load() }
+
 // AppURL returns the HTTP URL the webview should load. The query
 // parameter primes the bootstrap fetch — the SPA reads ?t= and presents
 // it to the WS upgrade.
@@ -556,6 +582,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+
 	// CORS not strictly needed (same origin), but emit no-cache so a
 	// stale token never gets reused after a server restart. Security
 	// headers match the asset handler's so the bootstrap response can't
@@ -563,6 +590,16 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("Cache-Control", "no-store, max-age=0")
 	WriteSecurityHeaders(h)
+	if s.startupFailed.Load() {
+		h.Set("Content-Type", "text/plain; charset=utf-8")
+		http.Error(w, "backend startup failed", http.StatusInternalServerError)
+		return
+	}
+	if !s.Ready() {
+		h.Set("Content-Type", "text/plain; charset=utf-8")
+		http.Error(w, "backend not ready", http.StatusServiceUnavailable)
+		return
+	}
 	h.Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(Bootstrap{
 		// Build the wsUrl from the request's Host header so a LAN

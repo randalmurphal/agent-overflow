@@ -179,6 +179,101 @@ func TestServer_BootstrapEndpoint(t *testing.T) {
 	}
 }
 
+func TestServer_BootstrapReadinessGate(t *testing.T) {
+	d := NewDispatcher()
+	bus := NewEventBus(20)
+	srv, err := New(Config{
+		Dispatcher:               d,
+		EventBus:                 bus,
+		Token:                    "test-token",
+		RequireReadyForBootstrap: true,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
+		defer c()
+		_ = srv.Shutdown(shutCtx)
+	})
+
+	resp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=test-token", srv.Addr()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("bootstrap status before ready = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+	if srv.Ready() {
+		t.Fatal("server reported ready before MarkReady")
+	}
+
+	badTokenResp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=wrong", srv.Addr()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = badTokenResp.Body.Close()
+	if badTokenResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("bad token status before ready = %d, want %d", badTokenResp.StatusCode, http.StatusNotFound)
+	}
+
+	srv.MarkReady()
+	if !srv.Ready() {
+		t.Fatal("server did not report ready after MarkReady")
+	}
+	resp, err = http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=test-token", srv.Addr()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("bootstrap status after ready = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var b Bootstrap
+	if err := json.NewDecoder(resp.Body).Decode(&b); err != nil {
+		t.Fatal(err)
+	}
+	if b.Token != "test-token" {
+		t.Fatalf("bootstrap token wrong: %s", b.Token)
+	}
+}
+
+func TestServer_BootstrapStartupFailureBeatsReadinessGate(t *testing.T) {
+	d := NewDispatcher()
+	bus := NewEventBus(20)
+	srv, err := New(Config{
+		Dispatcher:               d,
+		EventBus:                 bus,
+		Token:                    "test-token",
+		RequireReadyForBootstrap: true,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
+		defer c()
+		_ = srv.Shutdown(shutCtx)
+	})
+
+	srv.MarkStartupFailed()
+	resp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=test-token", srv.Addr()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("bootstrap status after startup failure = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+}
+
 func TestServer_BootstrapRejectsBadToken(t *testing.T) {
 	f := newServerFixture(t)
 	resp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=wrong", f.srv.Addr()))

@@ -9,11 +9,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"agent-overflow/internal/wsldistro"
 	"agent-overflow/internal/wsllauncher"
@@ -34,28 +36,41 @@ import (
 // failure doesn't trap the user on a saved-but-broken distro on next
 // boot.
 func (a *launcherApp) ensurePayloadInstalled(ctx context.Context, distro string) (string, error) {
+	started := time.Now()
+	defer logBootPhase("launcher.payload.total", started)
+
+	phaseStarted := time.Now()
 	binPath, err := wslHomePath(ctx, distro)
+	logBootPhase("launcher.payload.wsl_home", phaseStarted)
 	if err != nil {
 		return "", err
 	}
 
+	phaseStarted = time.Now()
 	cfg, _ := loadConfig()
 	if cfg == nil {
 		cfg = &wsldistro.Config{}
 	}
+	logBootPhase("launcher.payload.load_config", phaseStarted)
 	if cfg.InstalledVer == payloadVersion && cfg.InstalledDistro == distro {
+		log.Printf("boot: phase=launcher.payload.install skipped=true version=%q distro=%q", payloadVersion, distro)
 		return binPath, nil
 	}
 
+	phaseStarted = time.Now()
 	tmp, err := writeEmbeddedPayload()
+	logBootPhase("launcher.payload.write_embedded", phaseStarted)
 	if err != nil {
 		return "", err
 	}
 	defer os.Remove(tmp)
 
+	phaseStarted = time.Now()
 	if err := wsllauncher.InstallPayload(ctx, distro, tmp, binPath); err != nil {
+		logBootPhase("launcher.payload.install", phaseStarted)
 		return "", err
 	}
+	logBootPhase("launcher.payload.install", phaseStarted)
 	return binPath, nil
 }
 

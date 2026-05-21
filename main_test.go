@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/wsllauncher"
 )
@@ -105,6 +106,32 @@ func TestParseFlagsConnectAndPrintURLFDRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--connect") || !strings.Contains(err.Error(), "--print-url-fd") {
 		t.Fatalf("error %q does not mention both flags", err)
+	}
+}
+
+func TestShouldSyncShellEnv(t *testing.T) {
+	if shouldSyncShellEnv(cliFlags{connect: "ws://host:1234?token=t"}) {
+		t.Fatal("connect mode should skip shellenv sync")
+	}
+	if !shouldSyncShellEnv(cliFlags{}) {
+		t.Fatal("desktop mode should sync shellenv")
+	}
+	if !shouldSyncShellEnv(cliFlags{headless: true, printURLFD: 3}) {
+		t.Fatal("headless mode should sync shellenv")
+	}
+}
+
+func TestSingleInstanceIDs(t *testing.T) {
+	dev := appidentity.SingleInstanceID("desktop", "dev")
+	prod := appidentity.SingleInstanceID("desktop", "prod")
+	if dev == prod {
+		t.Fatal("dev and prod single-instance IDs must differ")
+	}
+	if dev != "com.agentoverflow.desktop.dev" {
+		t.Fatalf("dev single-instance ID = %q", dev)
+	}
+	if prod != "com.agentoverflow.desktop" {
+		t.Fatalf("prod single-instance ID = %q", prod)
 	}
 }
 

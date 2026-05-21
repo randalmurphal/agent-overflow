@@ -36,18 +36,22 @@ package main
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/uikeys"
 	"agent-overflow/internal/wsldistro"
 	"agent-overflow/internal/wsllauncher"
@@ -68,6 +72,12 @@ var linuxPayload []byte
 // `-ldflags="-X main.payloadVersion=..."`.
 var payloadVersion = "dev"
 
+// launcherMode is stamped by the WSL build task as "dev" for
+// make dev-wsl and "prod" for distribution builds. It deliberately
+// does not infer from payloadVersion: production builds may omit a
+// version string, but they still need the production single-instance ID.
+var launcherMode = "prod"
+
 // shutdownTimeout caps how long the launcher waits for the WSL-side
 // backend to drain before tearing the Job Object down.
 const shutdownTimeout = 5 * time.Second
@@ -87,11 +97,10 @@ const bootstrapProbeAttemptTimeout = 1 * time.Second
 // but the launcher's first probe lands inside that window and gets
 // "actively refused" by Windows even though the backend is healthy.
 // Polling past the install bumps every cold boot through the race
-// without flapping. 15 s matches the upper bound we've seen on slow
-// WSL2 hosts (faster than forge's 30 s daemon-readiness window because
-// our backend has already finished bootstrap by the time we probe —
-// only the forwarder is potentially still pending).
-const bootstrapProbeDeadline = 15 * time.Second
+// without flapping. The probe now covers both localhost-forwarding
+// setup and the backend's readiness-gated ServiceStartup window, so
+// it uses the same 30 s shape as forge's daemon-readiness loop.
+const bootstrapProbeDeadline = 30 * time.Second
 
 // bootstrapProbePollInterval is the gap between failed-probe retries.
 // 250 ms matches forge/apps/desktop/src/main.ts's connectViaWsl loop
@@ -101,6 +110,7 @@ const bootstrapProbeDeadline = 15 * time.Second
 const bootstrapProbePollInterval = 250 * time.Millisecond
 
 func main() {
+	bootStarted := time.Now()
 	logFile, err := openLog()
 	if err == nil {
 		// io.MultiWriter aborts the whole chain on the first writer's
@@ -148,7 +158,9 @@ func main() {
 	// and for end users who set the env var in their Windows shell.
 	forwardDebugEnvToWSL()
 
+	phaseStarted := time.Now()
 	distros, err := wsllauncher.ListDistros(context.Background())
+	logBootPhase("launcher.list_distros", phaseStarted)
 	if err != nil {
 		log.Printf("list distros: %v", err)
 	}
@@ -179,6 +191,7 @@ func main() {
 	}
 
 	app := buildApp(distros, initialURL, transient)
+	logBootPhase("launcher.before_run", bootStarted)
 
 	if chosen != "" {
 		// We already know which distro; skip the picker and go
@@ -419,16 +432,23 @@ func (a *launcherApp) validateDistroName(name string) error {
 func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	ctx := context.Background()
 
+	started := time.Now()
+	defer logBootPhase("launcher.launch_and_show.total", started)
+
+	phaseStarted := time.Now()
 	binPath, err := a.ensurePayloadInstalled(ctx, distro)
+	logBootPhase("launcher.ensure_payload", phaseStarted)
 	if err != nil {
 		a.window.SetURL("/picker")
 		return fmt.Errorf("install payload: %w", err)
 	}
 
+	phaseStarted = time.Now()
 	l, bs, err := wsllauncher.Launch(ctx, wsllauncher.LaunchOptions{
 		Distro:     distro,
 		BinaryPath: binPath,
 	})
+	logBootPhase("launcher.wsl_launch", phaseStarted)
 	if err != nil {
 		a.window.SetURL("/picker")
 		return fmt.Errorf("launch backend: %w", err)
@@ -447,11 +467,19 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	// boot fine (it's serving inside the distro) but the Windows
 	// WebView2 silently fails to connect. Without this probe the
 	// WebView would just blank-screen with no actionable feedback.
+	phaseStarted = time.Now()
 	if err := probeBootstrap(bs.Port, bs.Token); err != nil {
+		logBootPhase("launcher.probe_bootstrap", phaseStarted)
 		log.Printf("connectivity probe failed: %v", err)
+		var httpErr bootstrapHTTPError
+		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusInternalServerError {
+			a.window.SetURL("/startup-error")
+			return fmt.Errorf("backend failed during startup: %w", err)
+		}
 		a.window.SetURL("/connectivity-error")
 		return fmt.Errorf("backend booted but unreachable from Windows: %w", err)
 	}
+	logBootPhase("launcher.probe_bootstrap", phaseStarted)
 
 	// Persist the chosen distro + installed version only after the
 	// backend has booted successfully. This pairs with PickDistro's
@@ -486,7 +514,9 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	// Publish the URL before SetURL so a reload that lands between
 	// SetURL and the SPA's first bootstrap fetch still finds the token.
 	a.backendURL.Store(&url)
+	phaseStarted = time.Now()
 	a.window.SetURL(url)
+	logBootPhase("launcher.window_set_url", phaseStarted)
 	return nil
 }
 
@@ -538,6 +568,39 @@ func (t tolerantWriters) Write(p []byte) (int, error) {
 // surface as failure so the user sees actionable feedback rather than
 // a blank WebView.
 func probeBootstrap(port int, token string) error {
+	return probeBootstrapWithConfig(port, token, bootstrapProbeConfig{
+		AttemptTimeout: bootstrapProbeAttemptTimeout,
+		Deadline:       bootstrapProbeDeadline,
+		PollInterval:   bootstrapProbePollInterval,
+	})
+}
+
+type bootstrapProbeConfig struct {
+	AttemptTimeout time.Duration
+	Deadline       time.Duration
+	PollInterval   time.Duration
+}
+
+type bootstrapHTTPError struct {
+	StatusCode int
+	URL        string
+}
+
+func (e bootstrapHTTPError) Error() string {
+	return fmt.Sprintf("GET %s: status %d", e.URL, e.StatusCode)
+}
+
+func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) error {
+	if cfg.AttemptTimeout <= 0 {
+		cfg.AttemptTimeout = bootstrapProbeAttemptTimeout
+	}
+	if cfg.Deadline <= 0 {
+		cfg.Deadline = bootstrapProbeDeadline
+	}
+	if cfg.PollInterval <= 0 {
+		cfg.PollInterval = bootstrapProbePollInterval
+	}
+
 	// 127.0.0.1, not "localhost": Windows resolves "localhost" to both
 	// ::1 and 127.0.0.1, and Go's dialer races them. WSL2's
 	// localhostForwarding only proxies IPv4, so a ::1 attempt hits
@@ -560,17 +623,17 @@ func probeBootstrap(port int, token string) error {
 	// connectivity-error page even though the backend is healthy and
 	// the forwarder is about to catch up. forge's connectViaWsl
 	// (apps/desktop/src/main.ts) handles this with a 250 ms / 30 s
-	// loop; we use the same shape, tighter total budget because our
-	// backend has already finished its own bootstrap before we probe.
+	// loop; we use the same shape because the backend may now publish
+	// its bootstrap port before ServiceStartup has released readiness.
 	//
 	// Transport errors (refused / timeout / DNS failure) are
 	// transient and trigger a retry. An HTTP-level response (any
 	// status code) means the request reached our handler and we
-	// decide right there: 200 = ready, anything else (token mismatch,
-	// host guard reject) is terminal — retrying won't change the
-	// answer.
-	client := &http.Client{Timeout: bootstrapProbeAttemptTimeout}
-	deadline := time.Now().Add(bootstrapProbeDeadline)
+	// decide right there: 200 = ready, 503 = backend still booting and
+	// worth retrying, anything else (token mismatch, host guard reject)
+	// is terminal.
+	client := &http.Client{Timeout: cfg.AttemptTimeout}
+	deadline := time.Now().Add(cfg.Deadline)
 	var lastErr error
 	attempt := 0
 	for {
@@ -580,24 +643,67 @@ func probeBootstrap(port int, token string) error {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
+				if err := validateBootstrapResponse(body, port, token); err != nil {
+					log.Printf("probe: invalid bootstrap response: %v", err)
+					return err
+				}
 				if attempt > 1 {
 					log.Printf("probe: ok after %d attempts", attempt)
 				}
 				return nil
 			}
+			if resp.StatusCode == http.StatusServiceUnavailable {
+				lastErr = fmt.Errorf("GET %s: status %d", redacted, resp.StatusCode)
+				if time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(cfg.PollInterval)
+				continue
+			}
 			// Server is reachable but rejected. Surface the response
 			// shape (status + first bytes of body) so a future
 			// regression in handleBootstrap shows up clearly.
 			log.Printf("probe: status=%d host-resp=%q", resp.StatusCode, string(body))
-			return fmt.Errorf("GET %s: status %d", redacted, resp.StatusCode)
+			return bootstrapHTTPError{StatusCode: resp.StatusCode, URL: redacted}
 		}
 		lastErr = err
 		if time.Now().After(deadline) {
 			break
 		}
-		time.Sleep(bootstrapProbePollInterval)
+		time.Sleep(cfg.PollInterval)
 	}
 	return fmt.Errorf("GET %s: timed out after %d attempts: %w", redacted, attempt, lastErr)
+}
+
+func validateBootstrapResponse(body []byte, port int, token string) error {
+	var bootstrap struct {
+		WSURL string `json:"wsUrl"`
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &bootstrap); err != nil {
+		return fmt.Errorf("decode bootstrap response: %w", err)
+	}
+	if bootstrap.Token != token {
+		return errors.New("bootstrap response token mismatch")
+	}
+	parsed, err := url.Parse(bootstrap.WSURL)
+	if err != nil {
+		return fmt.Errorf("parse bootstrap wsUrl: %w", err)
+	}
+	if parsed.Scheme != "ws" || parsed.Path != "/ws" {
+		return fmt.Errorf("bootstrap wsUrl has unexpected shape: %q", bootstrap.WSURL)
+	}
+	host, portString, err := net.SplitHostPort(parsed.Host)
+	if err != nil {
+		return fmt.Errorf("split bootstrap wsUrl host: %w", err)
+	}
+	if host != "127.0.0.1" {
+		return fmt.Errorf("bootstrap wsUrl host = %q, want 127.0.0.1", host)
+	}
+	if portString != fmt.Sprintf("%d", port) {
+		return fmt.Errorf("bootstrap wsUrl port = %q, want %d", portString, port)
+	}
+	return nil
 }
 
 // persistSuccessfulLaunch writes the {distro, installed_version} pair
@@ -638,7 +744,8 @@ func buildApp(distros []wsllauncher.Distro, initialURL string, devMode bool) *la
 	a := &launcherApp{distros: distros}
 
 	app := application.New(application.Options{
-		Name: "Agent Overflow",
+		Name:           "Agent Overflow",
+		SingleInstance: wslSingleInstanceOptions(func() *application.WebviewWindow { return a.window }),
 		Services: []application.Service{
 			application.NewService(a),
 		},
@@ -690,6 +797,26 @@ func buildApp(distros []wsllauncher.Distro, initialURL string, devMode bool) *la
 	})
 
 	return a
+}
+
+func wslSingleInstanceOptions(window func() *application.WebviewWindow) *application.SingleInstanceOptions {
+	return &application.SingleInstanceOptions{
+		UniqueID: appidentity.SingleInstanceID("wsl", wslSingleInstanceMode()),
+		OnSecondInstanceLaunch: func(_ application.SecondInstanceData) {
+			if w := window(); w != nil {
+				w.Show()
+				w.Restore()
+				w.Focus()
+			}
+		},
+	}
+}
+
+func wslSingleInstanceMode() string {
+	if launcherMode == "dev" {
+		return "dev"
+	}
+	return "prod"
 }
 
 // browserArgs returns the Chromium command-line flags forwarded to
@@ -761,4 +888,8 @@ func (a *launcherApp) run() {
 		case <-time.After(shutdownTimeout):
 		}
 	}
+}
+
+func logBootPhase(phase string, started time.Time) {
+	log.Printf("boot: phase=%s duration=%s", phase, time.Since(started).Round(time.Millisecond))
 }

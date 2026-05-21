@@ -166,7 +166,7 @@ tasks:
       # embed-dir copy and which never gets clobbered, is the cheap
       # always-correct restore.
       - cp {{.BIN_DIR | default "bin"}}/agent-overflow-linux cmd/agent-overflow-windows/payload/agent-overflow-linux
-      - GOOS=windows GOARCH={{.ARCH}} CGO_ENABLED=0 go build -trimpath -ldflags "-H windowsgui -X main.payloadVersion={{.VERSION | default "dev"}}" -o {{.BIN_DIR | default "bin"}}/{{.APP_NAME | default "agent-overflow"}}.exe ./cmd/agent-overflow-windows
+      - GOOS=windows GOARCH={{.ARCH}} CGO_ENABLED=0 go build -trimpath -ldflags "-H windowsgui -X main.payloadVersion={{.VERSION | default "dev"}} -X main.launcherMode={{.WSL_LAUNCHER_MODE | default "prod"}}" -o {{.BIN_DIR | default "bin"}}/{{.APP_NAME | default "agent-overflow"}}.exe ./cmd/agent-overflow-windows
     sources:
       - "cmd/agent-overflow-windows/**/*"
       - "internal/wsllauncher/**/*"

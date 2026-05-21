@@ -3,10 +3,19 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/wsldistro"
 	"agent-overflow/internal/wsllauncher"
 )
@@ -146,6 +155,171 @@ func TestBrowserArgs(t *testing.T) {
 			t.Errorf("prod must not include %q — CDP port is unauthenticated", a)
 		}
 	}
+}
+
+func TestWSLSingleInstanceModeUsesLauncherMode(t *testing.T) {
+	orig := launcherMode
+	t.Cleanup(func() { launcherMode = orig })
+
+	launcherMode = "dev"
+	if got := wslSingleInstanceMode(); got != "dev" {
+		t.Fatalf("dev launcher mode = %q", got)
+	}
+	launcherMode = "prod"
+	if got := wslSingleInstanceMode(); got != "prod" {
+		t.Fatalf("prod launcher mode = %q", got)
+	}
+	launcherMode = ""
+	if got := wslSingleInstanceMode(); got != "prod" {
+		t.Fatalf("empty launcher mode = %q, want prod", got)
+	}
+}
+
+func TestSingleInstanceIDs(t *testing.T) {
+	dev := appidentity.SingleInstanceID("wsl", "dev")
+	prod := appidentity.SingleInstanceID("wsl", "prod")
+	if dev == prod {
+		t.Fatal("dev and prod single-instance IDs must differ")
+	}
+	if dev != "com.agentoverflow.wsl.dev" {
+		t.Fatalf("dev single-instance ID = %q", dev)
+	}
+	if prod != "com.agentoverflow.wsl" {
+		t.Fatalf("prod single-instance ID = %q", prod)
+	}
+}
+
+func TestProbeBootstrapRetriesServiceUnavailable(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) < 3 {
+			http.Error(w, "backend not ready", http.StatusServiceUnavailable)
+			return
+		}
+		writeProbeBootstrap(t, w, r, "test-token")
+	}))
+	defer server.Close()
+
+	_, portStr, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split test server addr: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse test server port: %v", err)
+	}
+
+	err = probeBootstrapWithConfig(port, "test-token", bootstrapProbeConfig{
+		AttemptTimeout: 100 * time.Millisecond,
+		Deadline:       time.Second,
+		PollInterval:   time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("probeBootstrapWithConfig: %v", err)
+	}
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("attempts = %d, want 3", got)
+	}
+}
+
+func TestProbeBootstrapTreatsNonReadyHTTPErrorAsTerminal(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	_, portStr, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split test server addr: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse test server port: %v", err)
+	}
+
+	err = probeBootstrapWithConfig(port, "test-token", bootstrapProbeConfig{
+		AttemptTimeout: 100 * time.Millisecond,
+		Deadline:       time.Second,
+		PollInterval:   time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("probeBootstrapWithConfig accepted 404, want error")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want terminal response after 1 attempt", got)
+	}
+}
+
+func TestProbeBootstrapReturnsTypedStartupFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "backend startup failed", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	_, portStr, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split test server addr: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse test server port: %v", err)
+	}
+
+	err = probeBootstrapWithConfig(port, "test-token", bootstrapProbeConfig{
+		AttemptTimeout: 100 * time.Millisecond,
+		Deadline:       time.Second,
+		PollInterval:   time.Millisecond,
+	})
+	var httpErr bootstrapHTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("error = %v, want bootstrapHTTPError", err)
+	}
+	if httpErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", httpErr.StatusCode, http.StatusInternalServerError)
+	}
+}
+
+func TestProbeBootstrapRejectsInvalidSuccessBody(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"wsUrl":"ws://127.0.0.1:1/ws","token":"wrong"}`))
+	}))
+	defer server.Close()
+
+	_, portStr, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split test server addr: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse test server port: %v", err)
+	}
+
+	err = probeBootstrapWithConfig(port, "test-token", bootstrapProbeConfig{
+		AttemptTimeout: 100 * time.Millisecond,
+		Deadline:       time.Second,
+		PollInterval:   time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("probeBootstrapWithConfig accepted invalid success body, want error")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want invalid 200 to be terminal", got)
+	}
+}
+
+func writeProbeBootstrap(t *testing.T, w http.ResponseWriter, r *http.Request, token string) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	_, port, err := net.SplitHostPort(r.Host)
+	if err != nil {
+		t.Fatalf("split request host: %v", err)
+	}
+	_, _ = fmt.Fprintf(w, `{"wsUrl":"ws://127.0.0.1:%s/ws","token":%q}`, port, token)
 }
 
 func TestResolveChosenDistro(t *testing.T) {

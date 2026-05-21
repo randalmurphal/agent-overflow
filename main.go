@@ -17,9 +17,11 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
+	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/clientmode"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/shellenv"
@@ -58,16 +60,8 @@ func main() {
 		fatalf("%v", err)
 	}
 
-	// Sync PATH from the user's login shell before any subsystem
-	// resolves a binary. Without this, the WSL backend (spawned by
-	// `wsl.exe -d <distro> -- <bin>`, no shell init) and a Finder-
-	// launched .app on macOS both see only the OS's default PATH —
-	// missing nvm / asdf / ~/.local/bin / ~/.npm-global/bin and
-	// everything else the user's rc files put on PATH. The probe is
-	// best-effort: a failure here just leaves PATH untouched and the
-	// downstream "binary not found" status banner takes over.
-	if err := shellenv.Sync(context.Background()); err != nil {
-		log.Printf("shellenv: %v", err)
+	if shouldSyncShellEnv(flags) {
+		syncShellEnvForBoot()
 	}
 
 	switch {
@@ -78,6 +72,26 @@ func main() {
 	default:
 		runDesktop(flags.listenAddr)
 	}
+}
+
+func shouldSyncShellEnv(flags cliFlags) bool {
+	return flags.connect == ""
+}
+
+func syncShellEnvForBoot() {
+	// Sync PATH from the user's login shell before any subsystem
+	// resolves a binary. Without this, the WSL backend (spawned by
+	// `wsl.exe -d <distro> -- <bin>`, no shell init) and a Finder-
+	// launched .app on macOS both see only the OS's default PATH —
+	// missing nvm / asdf / ~/.local/bin / ~/.npm-global/bin and
+	// everything else the user's rc files put on PATH. The probe is
+	// best-effort: a failure here just leaves PATH untouched and the
+	// downstream "binary not found" status banner takes over.
+	started := time.Now()
+	if err := shellenv.Sync(context.Background()); err != nil {
+		log.Printf("shellenv: %v", err)
+	}
+	logBootPhase("shellenv.sync", started)
 }
 
 // cliFlags carries the parsed command-line state. Three modes are
@@ -222,7 +236,16 @@ func runClient(rawURL string) {
 // it passes false here. Pulling the load out of the helper keeps the
 // boot graph linear: this function makes deterministic decisions from
 // its arguments, never reads disk on its own.
-func bootTransport(appService *App, listenAddr string, loadPersistedBindAll bool) *transport.Server {
+type bootTransportOptions struct {
+	LoadPersistedBindAll     bool
+	RequireReadyForBootstrap bool
+}
+
+func bootTransport(appService *App, listenAddr string, opts bootTransportOptions) *transport.Server {
+	started := time.Now()
+	defer logBootPhase("transport.total", started)
+
+	phaseStarted := time.Now()
 	dispatcher := transport.NewDispatcher()
 	methods, err := dispatcher.Register(appService, transport.RegisterOptions{
 		Package:   "main",
@@ -233,19 +256,23 @@ func bootTransport(appService *App, listenAddr string, loadPersistedBindAll bool
 		fatalf("transport: register App methods: %v", err)
 	}
 	log.Printf("transport: registered %d methods", len(methods))
+	logBootPhase("transport.register", phaseStarted)
 
 	bus := transport.NewEventBus(0)
 	appService.SetEventBus(bus)
 
+	phaseStarted = time.Now()
 	assetHandler, err := buildAssetHandler(assets)
 	if err != nil {
 		fatalf("transport: build asset handler: %v", err)
 	}
+	logBootPhase("transport.assets", phaseStarted)
 
 	cfg := transport.Config{
-		Dispatcher:   dispatcher,
-		EventBus:     bus,
-		AssetHandler: assetHandler,
+		Dispatcher:               dispatcher,
+		EventBus:                 bus,
+		AssetHandler:             assetHandler,
+		RequireReadyForBootstrap: opts.RequireReadyForBootstrap,
 		// Late-bound: appService.DesignServer is a bound method value,
 		// not the result of calling it. The transport server consults
 		// this getter per-request so the /design/ route registers
@@ -261,7 +288,7 @@ func bootTransport(appService *App, listenAddr string, loadPersistedBindAll bool
 		host, port := splitListenAddr(listenAddr)
 		cfg.BindAddr = host
 		cfg.Port = port
-	} else if loadPersistedBindAll {
+	} else if opts.LoadPersistedBindAll {
 		// Honor the persisted Phase E LAN-bind preference at boot so a
 		// user who toggled "Allow remote access" in a previous session
 		// doesn't see the server snap back to loopback after restart.
@@ -271,15 +298,20 @@ func bootTransport(appService *App, listenAddr string, loadPersistedBindAll bool
 		}
 	}
 
+	phaseStarted = time.Now()
 	srv, err := transport.New(cfg)
 	if err != nil {
 		fatalf("transport: construct server: %v", err)
 	}
 	appService.SetTransportServer(srv)
+	logBootPhase("transport.construct", phaseStarted)
+
+	phaseStarted = time.Now()
 	if err := srv.Start(); err != nil {
 		fatalf("transport: start server: %v", err)
 	}
 	log.Printf("transport: serving on %s", srv.Addr())
+	logBootPhase("transport.start", phaseStarted)
 	return srv
 }
 
@@ -288,7 +320,16 @@ func bootTransport(appService *App, listenAddr string, loadPersistedBindAll bool
 // into WSL is a separate cmd/ — see cmd/agent-overflow-windows.
 func runDesktop(listenAddr string) {
 	appService := NewApp()
-	srv := bootTransport(appService, listenAddr, true)
+	var window *application.WebviewWindow
+	app := application.New(application.Options{
+		Name:           "Agent Overflow",
+		SingleInstance: desktopSingleInstanceOptions(func() *application.WebviewWindow { return window }),
+		Services: []application.Service{
+			application.NewService(appService),
+		},
+	})
+
+	srv := bootTransport(appService, listenAddr, bootTransportOptions{LoadPersistedBindAll: true})
 
 	// Assert non-empty before constructing the WebviewWindowOptions.
 	// Wails maps URL "" back to its built-in scheme, which would expose
@@ -302,14 +343,7 @@ func runDesktop(listenAddr string) {
 		fatalf("transport: AppURL is empty after Start (server addr = %q); refusing to fall through to Wails IPC scheme", srv.Addr())
 	}
 
-	app := application.New(application.Options{
-		Name: "Agent Overflow",
-		Services: []application.Service{
-			application.NewService(appService),
-		},
-	})
-
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
+	window = app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            "Agent Overflow",
 		Width:            1280,
 		Height:           800,
@@ -353,10 +387,11 @@ func runDesktop(listenAddr string) {
 // open. The Windows-side launcher only knows how to scan stdout, so
 // in practice that fallback path is the daily-driver.
 //
-// Boot order is ServiceStartup-before-writeBootstrap: the launcher
-// doesn't see the {port,token} until subsystems are wired, so the
-// WebView2 opens against a backend that's fully populated rather than
-// rendering an empty shell that fills in over the next couple seconds.
+// Boot order is writeBootstrap-before-ServiceStartup with a readiness
+// gate: the launcher receives the {port,token} as soon as transport is
+// bound, but /bootstrap.json returns 503 until ServiceStartup finishes
+// and MarkReady releases the WebView navigation. That separates "WSL
+// process has published a port" from "backend is ready to render."
 func runHeadless(listenAddr string, printURLFD int) {
 	appService := NewApp()
 	// Headless mode honors only the explicit --listen flag — the
@@ -366,24 +401,19 @@ func runHeadless(listenAddr string, printURLFD int) {
 	// but the SPA bundle the WebView2 *displays* lives in the
 	// Windows binary's embed; the transport just needs an asset
 	// handler so non-RPC paths return 404 cleanly.
-	srv := bootTransport(appService, listenAddr, false)
+	srv := bootTransport(appService, listenAddr, bootTransportOptions{RequireReadyForBootstrap: true})
 	log.Printf("transport: headless mode")
 
-	// Boot the App's subsystems directly. Wails normally calls
-	// ServiceStartup with a context that lives until shutdown — we
-	// mirror that with a process-scoped context cancelled on signal.
-	bootCtx, bootCancel := context.WithCancel(context.Background())
-	defer bootCancel()
-	if err := appService.ServiceStartup(bootCtx, application.ServiceOptions{Name: "App"}); err != nil {
-		fatalf("app: service startup: %v", err)
-	}
-
+	phaseStarted := time.Now()
 	if err := writeBootstrap(printURLFD, srv); err != nil {
-		// We've already started subsystems — shut them down before
-		// exiting so SQLite isn't left in a half-flushed state.
-		shutdownHeadless(appService, srv)
+		shutCtx, cancel := context.WithTimeout(context.Background(), transportShutdownTimeout)
+		defer cancel()
+		if shutdownErr := srv.Shutdown(shutCtx); shutdownErr != nil {
+			log.Printf("transport: shutdown after bootstrap failure: %v", shutdownErr)
+		}
 		fatalf("write bootstrap: %v", err)
 	}
+	logBootPhase("headless.write_bootstrap", phaseStarted)
 
 	// After bootstrap, stop writing to stdout so the launcher's
 	// readBootstrapLine pipe doesn't accumulate logs (and can't be
@@ -395,10 +425,35 @@ func runHeadless(listenAddr string, printURLFD int) {
 	os.Stdout = os.Stderr
 	log.SetOutput(os.Stderr)
 
+	// Boot the App's subsystems directly. Wails normally calls
+	// ServiceStartup with a context that lives until shutdown — we
+	// mirror that with a process-scoped context cancelled on signal.
+	bootCtx, bootCancel := context.WithCancel(context.Background())
+	defer bootCancel()
+	phaseStarted = time.Now()
+	if err := appService.ServiceStartup(bootCtx, application.ServiceOptions{Name: "App"}); err != nil {
+		logBootPhase("headless.service_startup", phaseStarted)
+		log.Printf("app: service startup: %v", err)
+		srv.MarkStartupFailed()
+		log.Printf("headless: startup failed; serving terminal bootstrap failure until shutdown")
+		waitForHeadlessShutdown(appService, srv)
+		return
+	}
+	logBootPhase("headless.service_startup", phaseStarted)
+
+	phaseStarted = time.Now()
+	srv.MarkReady()
+	logBootPhase("headless.mark_ready", phaseStarted)
+
+	waitForHeadlessShutdown(appService, srv)
+}
+
+func waitForHeadlessShutdown(appService *App, srv *transport.Server) {
 	// Wait for SIGINT / SIGTERM. Wails' Run() handles this for us in
 	// the desktop path; here we own the loop directly.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 	sig := <-sigCh
 	log.Printf("headless: received %s, shutting down", sig)
 
@@ -503,6 +558,30 @@ func splitListenAddr(addr string) (string, int) {
 		return host, 0
 	}
 	return host, port
+}
+
+func desktopSingleInstanceOptions(window func() *application.WebviewWindow) *application.SingleInstanceOptions {
+	return &application.SingleInstanceOptions{
+		UniqueID: appidentity.SingleInstanceID("desktop", nativeSingleInstanceMode()),
+		OnSecondInstanceLaunch: func(_ application.SecondInstanceData) {
+			if w := window(); w != nil {
+				w.Show()
+				w.Restore()
+				w.Focus()
+			}
+		},
+	}
+}
+
+func nativeSingleInstanceMode() string {
+	if os.Getenv("FRONTEND_DEVSERVER_URL") != "" || strings.Contains(filepath.Base(os.Args[0]), "agent-overflow-dev") {
+		return "dev"
+	}
+	return "prod"
+}
+
+func logBootPhase(phase string, started time.Time) {
+	log.Printf("boot: phase=%s duration=%s", phase, time.Since(started).Round(time.Millisecond))
 }
 
 // fatalf prints the formatted message to stderr and exits 1. Used at

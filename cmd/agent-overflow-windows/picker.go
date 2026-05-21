@@ -2,7 +2,7 @@
 
 // picker.go owns the static HTML the WebView2 renders before / during
 // backend boot — the distro picker, the post-pick loading spinner, and
-// the connectivity-error guidance for misconfigured WSL2 setups.
+// the startup/connectivity-error guidance for failed WSL boots.
 package main
 
 import (
@@ -118,13 +118,41 @@ localhostForwarding=true</pre>
 </body>
 </html>`
 
+// startupErrorPage is shown when the WSL backend published its
+// bootstrap port but failed before ServiceStartup completed. This is
+// distinct from connectivity-error: localhost forwarding works, but
+// the backend itself failed and the actionable artifact is the log.
+const startupErrorPage = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Agent Overflow — backend failed</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #16161e; color: #fff; }
+    body { display: flex; align-items: center; justify-content: center; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 32px; box-sizing: border-box; }
+    .card { max-width: 640px; }
+    .title { font-size: 18px; font-weight: 600; color: #f7768e; margin-bottom: 16px; }
+    .body { font-size: 14px; line-height: 1.6; color: #c0caf5; }
+    code { background: #1a1b26; color: #7dcfff; padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="title">Backend failed while starting.</div>
+    <div class="body">
+      <p>Windows reached the backend inside WSL, but the backend failed before it was ready to serve the app.</p>
+      <p>Open <code>%APPDATA%\agent-overflow\launcher.log</code> for the startup phase timings and the backend error.</p>
+    </div>
+  </div>
+</body>
+</html>`
+
 // pickerAssetHandler serves the static picker HTML for /picker, the
 // loading HTML for /loading, the WSL-not-installed page for
-// /wsl-not-installed, and the connectivity error page for
-// /connectivity-error. Anything else falls back to the picker so a
-// stale URL doesn't blank-screen the WebView. The distro list is
-// template-injected into a global JS variable so the page renders
-// without an RPC round-trip.
+// /wsl-not-installed, and the startup/connectivity error pages. Anything
+// else falls back to the picker so a stale URL doesn't blank-screen the
+// WebView. The distro list is template-injected into a global JS variable
+// so the page renders without an RPC round-trip.
 func pickerAssetHandler(distros []wsllauncher.Distro) http.Handler {
 	rendered, err := renderPicker(distros)
 	if err != nil {
@@ -136,6 +164,7 @@ func pickerAssetHandler(distros []wsllauncher.Distro) http.Handler {
 	}
 	loadingHTML := []byte(loadingPage)
 	connectivityHTML := []byte(connectivityErrorPage)
+	startupErrorHTML := []byte(startupErrorPage)
 	wslMissingHTML := []byte(wslNotInstalledPage)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -146,6 +175,8 @@ func pickerAssetHandler(distros []wsllauncher.Distro) http.Handler {
 			_, _ = w.Write(loadingHTML)
 		case "/connectivity-error":
 			_, _ = w.Write(connectivityHTML)
+		case "/startup-error":
+			_, _ = w.Write(startupErrorHTML)
 		case "/wsl-not-installed":
 			_, _ = w.Write(wslMissingHTML)
 		default:

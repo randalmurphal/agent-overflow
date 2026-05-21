@@ -164,7 +164,7 @@ build-wsl:
 	@case "$(WSL_BUILD_MODE)" in build|build:dev) ;; *) echo "ERROR: WSL_BUILD_MODE must be 'build' or 'build:dev', got '$(WSL_BUILD_MODE)'" >&2; exit 1;; esac
 	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) pnpm run $(WSL_BUILD_MODE)
 	@if [ -n "$(WSL_FORCE_RELINK)" ]; then rm -f bin/agent-overflow.exe bin/agent-overflow-linux; fi
-	VERSION="$(WSL_VERSION)" wails3 task windows:build:wsl
+	WSL_LAUNCHER_MODE="$$(case "$(WSL_BUILD_MODE)" in build:dev) echo dev ;; *) echo prod ;; esac)" VERSION="$(WSL_VERSION)" wails3 task windows:build:wsl
 
 build:
 	wails3 build

@@ -145,8 +145,8 @@ type App struct {
 	// ServiceStartup; tests build it directly via newTestApp.
 	appCtx    context.Context
 	appCancel context.CancelFunc
-	mu           sync.Mutex
-	sessions     map[string]session // threadID → active session
+	mu        sync.Mutex
+	sessions  map[string]session // threadID → active session
 	// threadActionLocks serializes per-thread workflows that must observe a
 	// stable thread timeline or workspace while they run.
 	threadActionLocksOnce sync.Once
@@ -396,6 +396,9 @@ func (a *App) SetTransportServer(s *transport.Server) {
 // checkpoints, discussion, design, terminals, attachments, workspace
 // search) boot last once their inputs are ready.
 func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
+	started := time.Now()
+	defer logBootPhase("app.service_startup.total", started)
+
 	a.app = application.Get()
 
 	// Initialise the App-lifetime ctx before any goroutine spawn so the
@@ -404,16 +407,24 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	// instead of context.Background.
 	a.appCtx, a.appCancel = context.WithCancel(context.Background())
 
+	phaseStarted := time.Now()
 	dbDir, st, err := a.initStores()
+	logBootPhase("app.init_stores", phaseStarted)
 	if err != nil {
 		return err
 	}
+	phaseStarted = time.Now()
 	if err := a.initObservability(ctx, dbDir); err != nil {
+		logBootPhase("app.init_observability", phaseStarted)
 		return err
 	}
+	logBootPhase("app.init_observability", phaseStarted)
+	phaseStarted = time.Now()
 	if err := a.initSubsystems(dbDir, st); err != nil {
+		logBootPhase("app.init_subsystems", phaseStarted)
 		return err
 	}
+	logBootPhase("app.init_subsystems", phaseStarted)
 
 	// Probe provider binaries once on boot so the thread-level banner can
 	// surface "claude not found" / "codex too old" before the user opens
@@ -558,10 +569,15 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	// in the chat and the tray, since no live agent will ever observe
 	// their completion. See docs/architecture/turn-lifecycle.md
 	// §Crash recovery.
+	recoverStarted := time.Now()
 	if recovered, err := a.triage.RecoverOrphanedBackgroundTasks(); err != nil {
+		logBootPhase("app.recover_orphaned_background_tasks", recoverStarted)
 		log.Printf("app: recover Claude background launches: %v", err)
 	} else if recovered > 0 {
+		logBootPhase("app.recover_orphaned_background_tasks", recoverStarted)
 		log.Printf("app: recovered %d Claude background launches as session_died", recovered)
+	} else {
+		logBootPhase("app.recover_orphaned_background_tasks", recoverStarted)
 	}
 	a.checkpoints = checkpoint.NewStore()
 	a.registry = discussion.NewRegistry(st)
