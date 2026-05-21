@@ -106,6 +106,17 @@ const ARRIVAL_VELOCITY_THRESHOLD = 0.5;
 // regressions. First and last ticks of every chase are always
 // recorded via the springTickSinceLastTrace reset at chase boundaries.
 const SPRING_TICK_TRACE_SAMPLE = 12;
+// Overshoot magnitude at which the contentRO overshoot guard snaps
+// scrollTop instantly instead of letting the symmetric spring chase
+// the lower target. Small overshoots (≤ this) come from transient
+// streamdown re-renders — parseIncompleteMarkdown auto-balancing
+// unclosed code fences / backticks / lists momentarily shrinks
+// scrollHeight by a handful of pixels — and snapping for them produced
+// the user-visible "viewport jumps upward then springs back" regression
+// on plain-text streams. Large overshoots (virtua applyJump-style
+// mis-corrections, content collapse) still snap instantly so the user
+// doesn't watch the viewport drift down across many frames.
+const SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX = 50;
 
 // ===== Warm-up (quiescence) gate =====
 // After attach() or forceStick(), the controller stays in sync-pin mode
@@ -407,7 +418,14 @@ export function createUseStickToBottomController(
   let springToken = 0;
   let springGen = 0;
   let springFrameHandle: number | null = null;
-  let lastGrewAt = 0;
+  // Bumped on any target change while a spring may be chasing — positive
+  // contentRO deltas, notifyLiveContentMaybeGrew nudges, and (when the
+  // sync-pin write is suppressed by the spring carve-out) negative
+  // contentRO deltas too. The retain check in the spring tick uses this
+  // to keep chasing across chunk boundaries instead of arriving-then-
+  // restarting (visibly jittery). "TargetChanged" rather than "Grew"
+  // because the symmetric spring now follows shrinks as well as growths.
+  let lastTargetChangedAt = 0;
   let springStopRequested = false;
 
   // ===== Restore-snap consent state =====
@@ -740,10 +758,10 @@ export function createUseStickToBottomController(
     velocity = 0;
     accumulated = 0;
     lastTickAt = null;
-    // Reset the grow timestamp so a stale value can't trick a fresh
-    // chase into thinking it's "stillChasing" right out of the gate
-    // (matches the historical 80LoC-spring cleanup semantics).
-    lastGrewAt = 0;
+    // Reset the target-change timestamp so a stale value can't trick a
+    // fresh chase into thinking it's within the retain window right out
+    // of the gate (matches the historical 80LoC-spring cleanup semantics).
+    lastTargetChangedAt = 0;
   }
 
   // Shared gate predicate. Used by both `startSpringIfNeeded` and the
@@ -796,14 +814,23 @@ export function createUseStickToBottomController(
       const current = scrollEl.scrollTop;
       const diff = target - current;
 
-      if (current < target) {
+      if (diff !== 0) {
         velocity = (DEFAULT_SPRING.damping * velocity + DEFAULT_SPRING.stiffness * diff) / DEFAULT_SPRING.mass;
         accumulated += velocity * dt;
         const next = current + accumulated;
         // Pre-clamp in JS so we know the post-state without a second
-        // layout read just to check whether the browser clamped.
-        const clamped = next > target ? target : next;
-        writeCaller = next > target ? 'spring.overshoot' : 'spring.tick';
+        // layout read just to check whether the browser clamped. Cross-
+        // target clamps in EITHER direction count as kinematic
+        // overshoot: a positive-diff chase overshoots when
+        // `next > target`, a negative-diff chase (the symmetric branch
+        // that lets the spring follow shrinks) overshoots when
+        // `next < target`. Both clamp to `target` and zero `accumulated`
+        // below.
+        const crossedTarget =
+          (current < target && next > target)
+          || (current > target && next < target);
+        const clamped = crossedTarget ? target : next;
+        writeCaller = crossedTarget ? 'spring.overshoot' : 'spring.tick';
         writeScrollTop(clamped);
         if (scrollEl.scrollTop !== current) accumulated = 0;
       }
@@ -812,15 +839,17 @@ export function createUseStickToBottomController(
       // comparison; the time delta uses rAF's `now` (matches
       // `nowMs()` in test environments because `performance.now` is
       // mocked to read the same source rAF passes the callback).
-      // Mode flip mid-flight (turn ended) makes `stillChasing` false,
-      // so the spring lands on its next arrival check rather than
-      // chasing for another RETAIN_ANIMATION_DURATION_MS.
+      // Mode flip mid-flight (turn ended) or RETAIN_ANIMATION_DURATION_MS
+      // elapsing without another target-change event makes
+      // `withinTargetChangeRetainWindow` false, so the spring lands on
+      // its next arrival check rather than chasing forever. Bidirectional
+      // — applies to downward chases (shrinks) as well as upward (growth).
       const wantsSpringNow = options.animationMode?.() === 'spring';
-      const stillChasing = wantsSpringNow && now - lastGrewAt < RETAIN_ANIMATION_DURATION_MS;
+      const withinTargetChangeRetainWindow = wantsSpringNow && now - lastTargetChangedAt < RETAIN_ANIMATION_DURATION_MS;
       const arrived =
         Math.abs(scrollEl.scrollTop - target) < ARRIVAL_DISTANCE_PX
         && Math.abs(velocity) < ARRIVAL_VELOCITY_THRESHOLD;
-      if (arrived && !stillChasing) {
+      if (arrived && !withinTargetChangeRetainWindow) {
         // Snap to the exact target on arrival so the final paint lands
         // pixel-perfect rather than 0.5px above the bottom.
         writeCaller = 'spring.arrive';
@@ -894,7 +923,8 @@ export function createUseStickToBottomController(
       // refresh side effect; with the lift, the trace and gate read
       // the same `isNearBottomState` and the IIFE disappears.
       refreshIsNearBottom();
-      const overshoot = scrollEl.scrollTop > targetScrollTop();
+      const overshootMagnitude = Math.max(0, scrollEl.scrollTop - targetScrollTop());
+      const overshoot = overshootMagnitude > 0;
       const positiveWillPin = delta > 0
         && isAtBottomState
         && !escapedFromLockState
@@ -908,6 +938,7 @@ export function createUseStickToBottomController(
         next: Math.round(nextHeight),
         delta: Math.round(delta),
         overshoot,
+        overshootMagnitude: Math.round(overshootMagnitude),
         positiveWillPin,
         negativeWillPin,
         isAtBottomState,
@@ -921,18 +952,41 @@ export function createUseStickToBottomController(
       }));
 
       // Overscroll guard: if browser auto-clamping or virtua corrections
-      // pushed us past the target, snap back. Gated on the same
-      // escape / pause flags as the positive / negative pin branches
-      // below — when the user has escaped, the browser's own clamp
-      // will fix any out-of-range scrollTop on the next paint, and we
-      // must not yank them back to the bottom under any condition.
-      // Without this gate, an `applyJump` shift past the new bottom
-      // while the user was reading mid-history (esp. with shrinking
-      // content above the viewport) could snap them to bottom.
+      // pushed us past the target, snap back. Two clauses past the
+      // escape / pause / overshoot gates:
+      //
+      // 1. No spring is in flight (`springToken === 0`): any overshoot
+      //    snaps. There is no other writer that will absorb it. This is
+      //    the original Bug-A defense for virtua applyJump landing past
+      //    the bottom while the cascade is still settling — the warm
+      //    gate keeps the spring suppressed, so this branch is always
+      //    the one reached during the cascade.
+      // 2. Spring is in flight AND magnitude exceeds the threshold:
+      //    snap. A large overshoot absorbed by the spring is fatal to
+      //    follow UX (the user watches the viewport drift down 100+ px
+      //    across many frames). Snapping keeps the existing "negative
+      //    delta mid-spring lets the spring converge" contract.
+      //
+      // Small overshoots during a spring chase (≤ threshold) fall
+      // through both clauses and are absorbed by the symmetric spring:
+      // it sees `diff < 0` and damps `current` down to `target` across
+      // rAF ticks. This is what fixes the parseIncompleteMarkdown
+      // jitter — token-close-then-reopen rebalances shrink scrollHeight
+      // by a handful of pixels, the old unconditional guard snapped
+      // scrollTop down inside the RO callback, the spring re-extended
+      // back up on the very next tick, and the user saw a few-pixel
+      // up-down oscillation per chunk.
+      //
+      // Escape and pause gates remain unchanged — the threshold is an
+      // additional relaxation, not a replacement.
+      // prefers-reduced-motion users still get the snap on small
+      // overshoots: `springGateOpen()` returns false for them so
+      // `springToken === 0` and clause 1 fires.
       if (
         overshoot
         && !escapedFromLockState
         && pauseDepth === 0
+        && (springToken === 0 || overshootMagnitude > SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX)
       ) {
         writeCaller = 'contentRO.overshoot';
         writeScrollTop(targetScrollTop());
@@ -953,12 +1007,12 @@ export function createUseStickToBottomController(
         // Spring path: starts a velocity-spring chase that interpolates
         // toward the moving bottom across rAF frames. The user sees the
         // viewport smoothly follow streaming content. Each subsequent
-        // positive delta during the chase bumps `lastGrewAt` so the
-        // spring keeps chasing across chunk boundaries instead of
+        // positive delta during the chase bumps `lastTargetChangedAt` so
+        // the spring keeps chasing across chunk boundaries instead of
         // arriving-then-restarting (visibly jittery).
         if (positiveWillPin) {
           if (warm && springGateOpen()) {
-            lastGrewAt = nowMs();
+            lastTargetChangedAt = nowMs();
             startSpringIfNeeded();
           } else {
             writeCaller = 'contentRO.positiveDelta';
@@ -993,24 +1047,36 @@ export function createUseStickToBottomController(
           // spring's first paint and the spring ticks against
           // current==target with no perceptible motion. The spring
           // reads targetScrollTop() each tick and absorbs the
-          // corrected target naturally. Note: the overshoot guard at
-          // lines 698-700 above is also synchronous and CAN fire
-          // mid-spring when the spring has chased past the new
-          // (lower) target — by design (the existing "negative delta
-          // mid-spring lets the spring converge" test relies on it
-          // to clamp `scrollTop > target` once the spring would
-          // otherwise stop). The carve-out only addresses the case
-          // where overshoot=false (the virtua estimate→measured
-          // pair, since the +90 spring barely moves before -56
-          // arrives). Bug A defense (sync-pin running during the
+          // corrected target naturally. Note: the overshoot guard
+          // above is threshold-gated on the spring (`springToken === 0
+          // OR overshootMagnitude > SPRING_OVERSHOOT_INSTANT_SNAP_
+          // THRESHOLD_PX`). Large overshoots (e.g. the existing
+          // "negative delta mid-spring lets the spring converge"
+          // test's 200+px shrink) still snap inside the RO callback;
+          // small overshoots (the parseIncompleteMarkdown token-
+          // close-then-reopen regression — a few-pixel shrink) are
+          // absorbed by the symmetric spring instead. For the +90 /
+          // -56 estimate-correct pair the spring has barely moved by
+          // the time the correction arrives, so overshoot is false
+          // and the negative-delta gate is the only path that needed
+          // suppression. Bug A defense (sync-pin running during the
           // !warm cascade) is preserved by warm-gate ordering: the
           // cascade fires while `!warm`, springGateOpen requires
           // `warm`, so springToken stays 0 during the cascade and
           // the sync-pin runs as before. See frontend/AGENTS.md
-          // "Negative-delta re-pin honors logical intent".
+          // "Spring carve-out".
           if (springToken === 0) {
             writeCaller = 'contentRO.negativeDelta';
             writeScrollTop(targetScrollTop());
+          } else {
+            // Spring is the single writer mid-chase; sync write is
+            // suppressed above. The target nonetheless moved (downward),
+            // so bump the retain timestamp — otherwise a small negative
+            // correction between chunks could let
+            // `withinTargetChangeRetainWindow` lapse and the spring
+            // would arrive-and-stop while a follow-up chunk was on its
+            // way.
+            lastTargetChangedAt = nowMs();
           }
         }
       }
@@ -1601,7 +1667,7 @@ export function createUseStickToBottomController(
 
     const target = targetScrollTop();
     if (willSpring && scrollEl && scrollEl.scrollTop < target) {
-      lastGrewAt = nowMs();
+      lastTargetChangedAt = nowMs();
       startSpringIfNeeded();
       return;
     }
@@ -1766,7 +1832,7 @@ export function createUseStickToBottomController(
     cancelTargetAnimation();
     cancelSpring();
     springStopRequested = false;
-    lastGrewAt = 0;
+    lastTargetChangedAt = 0;
     clearWarmupTimers();
     warm = false;
     resizeDifference = 0;

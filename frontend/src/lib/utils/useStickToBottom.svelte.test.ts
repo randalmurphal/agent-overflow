@@ -624,8 +624,8 @@ describe('createUseStickToBottomController', () => {
       //
       // Geometry: scrollTop sits 60 px above target so the geometric
       // near-bottom check is true, but new target stays above scrollTop
-      // so the overshoot guard (separate, unconditional) does not fire
-      // and pollute the assertion.
+      // so the overshoot guard (separate, gated on escape/pause/spring)
+      // does not fire and pollute the assertion.
       const ro = getRO();
       ro.fire(contentEl, 800); // initial; scrollTop=400, target=400
       geom.scrollTop = 340; // distance = 1000 - 340 - 600 = 60 (near-bottom)
@@ -2289,9 +2289,9 @@ describe('createUseStickToBottomController — spring chase', () => {
       // starts during the cascade and springToken stays 0 — the
       // negative-pin sync write runs as it always did.
       //
-      // Geometry is chosen so the overshoot guard (lines 698-700) does
-      // NOT fire, isolating the negative-delta sync-pin as the only
-      // possible writer of the asserted scrollTop change: scrollTop
+      // Geometry is chosen so the `contentRO.overshoot` write site
+      // does NOT fire, isolating the negative-delta sync-pin as the
+      // only possible writer of the asserted scrollTop change: scrollTop
       // must be BELOW the new target after the shrink, so
       // `scrollTop > target` is false and overshoot is bypassed.
       const ro = getRO();
@@ -3654,41 +3654,197 @@ describe('createUseStickToBottomController — spring chase', () => {
     it('negative delta mid-spring lets the spring converge on the new (lower) target', async () => {
       // Negative deltas (content shrinking — Streamdown removing a
       // typesetting placeholder, a row collapsing) change the moving
-      // bottom without cancelling an in-flight spring. The spring
-      // reads targetScrollTop() each tick, so it should retarget and
-      // converge on the new bottom without overshooting or
-      // oscillating. The negative-delta re-pin path may also write
-      // (when the new geometry leaves us near-bottom); both writers
-      // must converge to the same target.
+      // bottom without cancelling an in-flight spring. The spring's
+      // tick branch is `if (diff !== 0)`, so it chases a lower target
+      // with the same damping/stiffness/mass as it chases higher
+      // targets. This test isolates the symmetric-down convergence
+      // path: pick a shrink whose overshoot magnitude stays under the
+      // SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX (50 px) so the
+      // overshoot guard does NOT snap, leaving the spring as the sole
+      // writer. The complementary "small negative delta" test below
+      // checks the synchronous no-snap and the final convergence; this
+      // one captures the intermediate frame to prove the spring walks
+      // DOWN gradually across rAF ticks instead of arriving in one
+      // step.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150); // warm
 
-      // Kick a spring with a large positive delta so it'll be in
-      // flight for many frames.
+      // Kick spring then take ONE frame so it's still well in flight
+      // (positive velocity, lastTargetChangedAt fresh) when the shrink
+      // fires. Avoids the retain-window-expired branch where the spring
+      // has already arrived and springToken === 0.
       geom.scrollHeight = 1400;
       geom.contentHeight = 1200;
       ro.fire(contentEl, 1200);
       await nextFrame();
+      const beforeShrink = geom.scrollTop;
+      expect(beforeShrink).toBeGreaterThan(400);
+      expect(beforeShrink).toBeLessThan(800);
+
+      // Shrink so the new target sits 40 px below beforeShrink — under
+      // the 50 px threshold, so the overshoot guard does NOT snap.
+      // Spring sees diff < 0 and damps `current` down toward target.
+      const newTarget = beforeShrink - 40;
+      const newScrollHeight = newTarget + 600;
+      geom.scrollHeight = newScrollHeight;
+      geom.contentHeight = newScrollHeight - 200;
+      ro.fire(contentEl, geom.contentHeight);
+
+      // Synchronous RO callback did not snap (threshold-gated guard).
+      expect(geom.scrollTop).toBe(beforeShrink);
+
+      // Continued damping converges on the new (lower) target. We
+      // cannot assert an intermediate scrollTop strictly between
+      // beforeShrink and newTarget on the next tick because the
+      // spring's residual upward velocity from the kick produces a
+      // would-be `next` greater than current — the browser clamps
+      // scrollTop to scrollHeight - clientHeight = newTarget, so the
+      // first post-shrink frame lands exactly at newTarget. The
+      // bidirectional `if (diff !== 0)` branch is what allows velocity
+      // to decay and the spring to settle there; the asymmetric
+      // pre-fix branch (`if (current < target)`) skipped the velocity
+      // update entirely and left the spring chasing forever.
+      await advanceUntil(() => Math.abs(geom.scrollTop - newTarget) <= 1);
+      expect(Math.abs(geom.scrollTop - newTarget)).toBeLessThanOrEqual(1);
+    });
+
+    it('small negative delta mid-spring (<50px overshoot) is absorbed by the symmetric spring', async () => {
+      // The streaming jitter regression: parseIncompleteMarkdown
+      // auto-closes a partial code fence between chunks, scrollHeight
+      // transiently shrinks by a few pixels, then the next chunk
+      // reopens it. Old behavior — the unconditional overshoot guard
+      // snapped scrollTop downward inside the RO callback, and the
+      // spring re-extended on the next tick — visible as per-chunk
+      // up-down jitter. New behavior — overshoots below the threshold
+      // fall through both guard clauses and are absorbed by the
+      // symmetric spring (current > target damps toward target across
+      // rAF ticks).
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      // Kick a small spring chase: target 500, spring starts at 400.
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+      await nextFrame();
       const midScrollTop = geom.scrollTop;
       expect(midScrollTop).toBeGreaterThan(400);
-      expect(midScrollTop).toBeLessThan(800);
+      expect(midScrollTop).toBeLessThan(500);
 
-      // Content shrinks below the spring's current scrollTop. New
-      // target = 800 - 600 = 200, which is BELOW where the spring is
-      // currently chasing. The spring must back off, not overshoot.
-      geom.scrollHeight = 800;
-      geom.contentHeight = 600;
-      ro.fire(contentEl, 600);
+      // Shrink so the new target is ~30 px below midScrollTop —
+      // overshoot magnitude ≈ 30, comfortably under the 50 px
+      // threshold.
+      const newTarget = midScrollTop - 30;
+      const newScrollHeight = newTarget + 600;
+      geom.scrollHeight = newScrollHeight;
+      geom.contentHeight = newScrollHeight - 200;
+      ro.fire(contentEl, geom.contentHeight);
 
-      // Spring converges to the new (lower) target. Since
-      // targetScrollTop() = max(0, 800 - 600) = 200, the spring's
-      // current scrollTop (> 200) is above target — `current < target`
-      // is false, so the spring tick stops advancing and arrives.
-      // The sync-pin overshoot guard inside contentRO clamps any
-      // scrollTop > target down to target.
-      await advanceUntil(() => geom.scrollTop <= 200);
-      expect(geom.scrollTop).toBeLessThanOrEqual(200);
+      // Critical assertion: scrollTop did NOT snap inside the RO
+      // callback. The threshold-gated overshoot guard let the spring
+      // be the single writer.
+      expect(geom.scrollTop).toBe(midScrollTop);
+
+      // The symmetric spring converges to the new (lower) target
+      // across ticks.
+      await advanceUntil(() => Math.abs(geom.scrollTop - newTarget) <= 1);
+    });
+
+    it('large negative delta mid-spring (>50px overshoot) still snaps instantly via threshold bypass', async () => {
+      // The "negative delta mid-spring lets the spring converge" test
+      // above asserts the post-snap value. This isolates the "snap
+      // happens inside the RO callback" timing — the symmetric spring
+      // would have taken many frames to converge from a 100+ px
+      // overshoot, and the threshold bypasses that path because the
+      // user would see the viewport drift down across many frames.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+      await nextFrame();
+      const midScrollTop = geom.scrollTop;
+      expect(midScrollTop).toBeGreaterThan(400);
+
+      // 100 px overshoot — well over threshold.
+      const newTarget = midScrollTop - 100;
+      const newScrollHeight = newTarget + 600;
+      geom.scrollHeight = newScrollHeight;
+      geom.contentHeight = newScrollHeight - 200;
+      ro.fire(contentEl, geom.contentHeight);
+
+      // Snapped inside the RO callback, before any further rAF.
+      expect(geom.scrollTop).toBe(newTarget);
+    });
+
+    it('streamdown token-close-then-reopen pattern (~22px shrink mid-chunk) does not jump the viewport', async () => {
+      // Reproduces the user-visible streaming bug: while streaming
+      // chat text through svelte-streamdown with
+      // parseIncompleteMarkdown=true, an unclosed code fence is
+      // auto-balanced (DOM transiently shrinks), then the next chunk
+      // reopens it (DOM grows again). Pre-fix, the shrink's
+      // unconditional overshoot guard snapped scrollTop downward
+      // inside the RO callback; the spring was already mid-chase and
+      // re-extended on the next tick — visible as per-chunk up-down
+      // jitter on plain-text streams that contain partial markdown
+      // tokens.
+      //
+      // For the bug to trigger, the spring must be near its target
+      // when the shrink lands so scrollTop > new target (overshoot).
+      // Streaming reproduces this naturally because the spring chases
+      // each chunk's growth to within a pixel before the next one
+      // arrives; we mirror it by advancing many frames after the
+      // initial kick so the spring is close to converged.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Small chunk arrives. Smaller kick reaches near-target inside
+      // the retain window: the spring is overdamped so it approaches
+      // target exponentially and a 50 px chase settles in a handful
+      // of frames (well under RETAIN_ANIMATION_DURATION_MS = 350 ms).
+      // Use advanceUntil so the test is not coupled to specific
+      // spring-tuning constants (damping/stiffness/mass).
+      geom.scrollHeight = 1050;
+      geom.contentHeight = 850;
+      ro.fire(contentEl, 850); // target=450, spring starts at 400
+
+      // Wait for the spring to reach near its target.
+      await advanceUntil(() => geom.scrollTop >= 440);
+      const beforeShrink = geom.scrollTop;
+      expect(beforeShrink).toBeLessThanOrEqual(450);
+
+      // parseIncompleteMarkdown closes an unclosed fence — content
+      // shrinks by ~22 px (well below the 50 px threshold). Spring is
+      // still chasing (springToken !== 0); new target ≈ beforeShrink
+      // - 22, so scrollTop > target → overshoot magnitude ≈ 22.
+      const shrinkPx = 22;
+      geom.scrollHeight = 1050 - shrinkPx;
+      geom.contentHeight = 850 - shrinkPx;
+      ro.fire(contentEl, geom.contentHeight);
+
+      // Bug regression: scrollTop must NOT snap inside the RO call.
+      // Pre-fix the unconditional overshoot guard would have written
+      // scrollTop to the new (lower) target before this line returned.
+      expect(geom.scrollTop).toBe(beforeShrink);
+
+      // The next chunk grows scrollHeight back; the spring is still
+      // in flight (the carve-out's else branch bumped
+      // lastTargetChangedAt on the suppressed negative write, keeping
+      // the retain window alive across the shrink) and chases the new
+      // (higher) target. The synchronous RO callback for the new
+      // chunk does not cause another snap.
+      geom.scrollHeight = 1070;
+      geom.contentHeight = 870;
+      ro.fire(contentEl, 870);
+      expect(geom.scrollTop).toBe(beforeShrink);
+
+      // Spring converges to the final target.
+      await advanceUntil(() => Math.abs(geom.scrollTop - 470) <= 1);
     });
 
     it('estimate-correct pair during spring leaves spring as single writer (no sync-pin race)', async () => {

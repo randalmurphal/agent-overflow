@@ -405,26 +405,45 @@ frontend layers on top:
   assistant text animates"). The carve-out suppresses the
   negative-delta synchronous write while a spring is chasing — the
   spring reads `targetScrollTop()` each tick and absorbs the
-  corrected target on its next frame. Note: the carve-out is
-  scoped to the negative-delta branch only. The overshoot guard
-  above it (`if (scrollEl.scrollTop > targetScrollTop())`) remains
-  unconditional and CAN write mid-spring; that's by design — it's
-  what lets the existing "negative delta mid-spring lets the spring
-  converge" test clamp scrollTop when a sufficiently large shrink
-  leaves the spring's current position past the new (lower) target.
-  For the +ESTIMATE / -CORRECTION virtua pair the spring has barely
-  moved by the time the correction arrives, so overshoot is false
-  and the negative-delta gate is the only path that needed
-  suppression. The cascade defense above (Bug A) is preserved by
+  corrected target on its next frame. The spring is also bidirectional
+  (the tick branch is `if (diff !== 0)`, so the same physics chases
+  either a higher or lower target with the same damping/stiffness/
+  mass). The carve-out's `else` bumps `lastTargetChangedAt = nowMs()`
+  so the retain window stays alive across the suppressed shrink and
+  the spring doesn't arrive-and-stop before the next chunk lands.
+  The overshoot guard above the negative-delta branch
+  (`if (scrollEl.scrollTop > targetScrollTop())`) is **threshold-gated
+  on the spring**: it fires when overshoot is non-zero AND the user is
+  not escaped AND no pause lease is held AND (`springToken === 0` OR
+  `overshootMagnitude > SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX`
+  (50 px)). Small overshoots mid-spring (≤ threshold) are absorbed by
+  the symmetric spring — `parseIncompleteMarkdown` auto-closing an
+  unclosed code fence between streaming chunks shrinks scrollHeight
+  by a handful of pixels, and the old unconditional guard snapped
+  scrollTop inside the RO callback before the spring could damp it,
+  producing the user-visible "viewport jumps up, then springs back
+  down" jitter on plain-text streams. Large overshoots (the existing
+  "negative delta mid-spring lets the spring converge" test's 200+
+  px shrink) still snap inside the RO callback so the user doesn't
+  watch the viewport drift down across many frames. For the
+  +ESTIMATE / -CORRECTION virtua pair the spring has barely moved
+  by the time the correction arrives, so overshoot is false and the
+  negative-delta carve-out is still the path that suppresses the
+  race. The cascade defense above (Bug A) is preserved by
   **warm-gate ordering**: the row-remeasurement cascade fires while
   `!warm`, but `springGateOpen` requires `warm`, so the spring
   never starts during the cascade window and `springToken === 0`
-  lets the sync-pin run exactly when the cascade defense needs it.
+  lets the sync-pin and the overshoot guard run as before.
   Regression coverage in `useStickToBottom.svelte.test.ts`:
   "negative delta while !warm sync-pins via negative-delta branch"
   (Bug A defense — geometry chosen so overshoot is bypassed,
   isolating the negative-delta path) + "estimate-correct pair
-  during spring leaves spring as single writer" (Bug B fix).
+  during spring leaves spring as single writer" (Bug B fix) +
+  "small negative delta mid-spring (<50px overshoot) is absorbed by
+  the symmetric spring" + "large negative delta mid-spring (>50px
+  overshoot) still snaps instantly" + "streamdown token-close-then-
+  reopen pattern does not jump the viewport" (the
+  parseIncompleteMarkdown regression coverage).
 - **Layout decoupling** — `ChatView.svelte` positions the composer +
   live-turn UI + below-bar as an absolute overlay inside the timeline's
   relative container. A `--composer-height` CSS variable, written by a
@@ -625,8 +644,14 @@ also exposed through `window.__agentOverflowUiTrace` in the dev
 console (`.dump()` / `.recent(50)` / `.filePath()`). The scroll
 controller records around every decision point: `scroll.contentRO`
 (every resize delta with `positiveWillPin` / `negativeWillPin` /
-`isAtBottomState` / `isNearBottomState` / `escapedFromLockState` /
-`pauseDepth` snapshot), `scroll.escape.set` (when escape flips),
+`overshoot` / `overshootMagnitude` / `isAtBottomState` /
+`isNearBottomState` / `escapedFromLockState` / `pauseDepth` snapshot —
+for spring-mode jitter regressions, scan for records with
+`overshootMagnitude > 0 && overshootMagnitude ≤ 50` preceded by
+recent `spring.tick` writes; those are the absorbed-overshoot frames
+where the pre-2026-05 unconditional guard would have snapped scrollTop
+inside the RO callback and the threshold-gated guard does not),
+`scroll.escape.set` (when escape flips),
 `scroll.refreshIsNearBottom` (when the geometric flag changes),
 plus `chat.state` / `chat.dom` snapshot traces from MessageTimeline.
 
