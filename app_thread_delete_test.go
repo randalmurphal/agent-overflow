@@ -143,16 +143,35 @@ func TestDeleteThreadStopsActiveSessionAndRemovesFromMap(t *testing.T) {
 func TestDeleteThreadClearsSystemPromptAndDeliberationForParent(t *testing.T) {
 	app := newTestAppWithStore(t)
 
+	// Threads + channels have a circular FK relationship (channel.thread_id
+	// → threads.id, threads.discussion_id → channels.id). Create threads
+	// first without discussion_id, then channel, then UPDATE the
+	// discussion_id — same pattern production uses in
+	// app_discussion_start.go.
 	parent := testThread("thread-delete-discussion-parent")
-	parent.DiscussionID = "channel-delete"
 	if err := app.store.CreateThread(parent); err != nil {
 		t.Fatalf("CreateThread(parent) error = %v", err)
 	}
 	child := testThread("thread-delete-discussion-child")
 	child.ParentThreadID = parent.ID
-	child.DiscussionID = "channel-delete"
 	if err := app.store.CreateThread(child); err != nil {
 		t.Fatalf("CreateThread(child) error = %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.CreateChannel(store.Channel{
+		ID: "channel-delete", ThreadID: parent.ID,
+		Type: "deliberation", Status: "open",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateChannel() error = %v", err)
+	}
+	parent.DiscussionID = "channel-delete"
+	if err := app.store.UpdateThread(parent); err != nil {
+		t.Fatalf("UpdateThread(parent) error = %v", err)
+	}
+	child.DiscussionID = "channel-delete"
+	if err := app.store.UpdateThread(child); err != nil {
+		t.Fatalf("UpdateThread(child) error = %v", err)
 	}
 
 	app.setThreadSystemPrompt(parent.ID, "parent prompt")
@@ -187,16 +206,33 @@ func TestDeleteThreadClearsSystemPromptAndDeliberationForParent(t *testing.T) {
 func TestDeleteThreadChildOnlyLeavesParentDeliberationIntact(t *testing.T) {
 	app := newTestAppWithStore(t)
 
+	// Threads + channels have a circular FK relationship — create both
+	// threads first, then the channel, then UPDATE discussion_id (same
+	// pattern as production app_discussion_start.go).
 	parent := testThread("thread-delete-child-only-parent")
-	parent.DiscussionID = "channel-child-only"
 	if err := app.store.CreateThread(parent); err != nil {
 		t.Fatalf("CreateThread(parent) error = %v", err)
 	}
 	child := testThread("thread-delete-child-only-child")
 	child.ParentThreadID = parent.ID
-	child.DiscussionID = "channel-child-only"
 	if err := app.store.CreateThread(child); err != nil {
 		t.Fatalf("CreateThread(child) error = %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.CreateChannel(store.Channel{
+		ID: "channel-child-only", ThreadID: parent.ID,
+		Type: "deliberation", Status: "open",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateChannel() error = %v", err)
+	}
+	parent.DiscussionID = "channel-child-only"
+	if err := app.store.UpdateThread(parent); err != nil {
+		t.Fatalf("UpdateThread(parent) error = %v", err)
+	}
+	child.DiscussionID = "channel-child-only"
+	if err := app.store.UpdateThread(child); err != nil {
+		t.Fatalf("UpdateThread(child) error = %v", err)
 	}
 
 	app.installDeliberation("channel-child-only", 4)

@@ -269,7 +269,7 @@ CREATE TABLE "threads" (
         CHECK(auto_compact_extended_percent BETWEEN 0 AND 90),
     runtime_mode             TEXT    NOT NULL DEFAULT 'full-access'
         CHECK(runtime_mode IN ('approval-required','auto-accept-edits','full-access')),
-    discussion_id            TEXT,
+    discussion_id            TEXT    REFERENCES channels(id) ON DELETE SET NULL,
     parent_thread_id         TEXT    REFERENCES threads(id) ON DELETE SET NULL,
     forked_from_thread_id    TEXT    REFERENCES threads(id) ON DELETE SET NULL,
     last_token_usage         TEXT    NOT NULL DEFAULT ''
@@ -314,11 +314,14 @@ CREATE INDEX idx_diff_review_comments_scope
 -- rowid is larger. Putting the partial filtered indexes last keeps
 -- ListLiveBackgroundTasks etc. on their intended index instead of
 -- falling back to idx_items_thread_turn_item_unique.
+--
+-- No standalone idx_items_id is needed: every WHERE items.id = ?
+-- query in the codebase also constrains items.thread_id = ? (verified
+-- by audit), so the composite PRIMARY KEY (thread_id, id) covers them.
+-- Adding a bare-id lookup later? Bring the index back in the same
+-- commit as the new query.
 CREATE INDEX idx_items_thread
     ON items(thread_id, turn_index, item_index);
-
-CREATE INDEX idx_items_id
-    ON items(id);
 
 CREATE UNIQUE INDEX idx_items_thread_turn_item_unique
     ON items(thread_id, turn_index, item_index);

@@ -539,6 +539,11 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 	app.channels = discussion.NewChannelService(app.store)
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
 
+	// Threads + channels have a circular FK relationship
+	// (channel.thread_id → threads.id, threads.discussion_id → channels.id).
+	// Production resolves it by creating threads first without
+	// discussion_id, creating the channel, then UPDATE-ing each
+	// thread's discussion_id. Tests follow the same pattern.
 	now := time.Now().UnixMilli()
 	parent := store.Thread{
 		ID:            "thread-parent",
@@ -548,7 +553,6 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 		WorkspacePath: "/tmp/workspace",
 		Model:         "gpt-5.4",
 		Mode:          "discussion",
-		DiscussionID:  "channel-1",
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -565,7 +569,6 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 			WorkspacePath:  parent.WorkspacePath,
 			Model:          parent.Model,
 			Mode:           "discussion",
-			DiscussionID:   parent.DiscussionID,
 			ParentThreadID: parent.ID,
 			CreatedAt:      now,
 			UpdatedAt:      now,
@@ -578,7 +581,6 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 			WorkspacePath:  parent.WorkspacePath,
 			Model:          parent.Model,
 			Mode:           "discussion",
-			DiscussionID:   parent.DiscussionID,
 			ParentThreadID: parent.ID,
 			CreatedAt:      now + 1,
 			UpdatedAt:      now + 1,
@@ -590,8 +592,9 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 		}
 	}
 
+	const channelID = "channel-1"
 	if err := app.store.CreateChannel(store.Channel{
-		ID:        parent.DiscussionID,
+		ID:        channelID,
 		ThreadID:  parent.ID,
 		Type:      "deliberation",
 		Status:    "open",
@@ -600,7 +603,17 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 	}); err != nil {
 		t.Fatalf("CreateChannel() error = %v", err)
 	}
-	app.installDeliberation(parent.DiscussionID, 2)
+	parent.DiscussionID = channelID
+	if err := app.store.UpdateThread(parent); err != nil {
+		t.Fatalf("UpdateThread(parent) error = %v", err)
+	}
+	for i := range children {
+		children[i].DiscussionID = channelID
+		if err := app.store.UpdateThread(children[i]); err != nil {
+			t.Fatalf("UpdateThread(%s) error = %v", children[i].ID, err)
+		}
+	}
+	app.installDeliberation(channelID, 2)
 
 	firstHandler := app.sessionEventHandler(children[0].ID, "session-a", "")
 	firstHandler(provider.ProviderEvent{

@@ -30,7 +30,7 @@ func TestCreateThreadWithNewFields(t *testing.T) {
 	s := newTestStore(t)
 	proj := newTestProject(t, s, "proj-new-fields", "/home/user/project")
 
-	// First create a parent thread so the FK is valid.
+	// First create a parent thread so the parent_thread_id FK is valid.
 	parent := makeThread("parent-1", "claude")
 	parent.ProjectID = proj.ID
 	parent.Mode = "chat"
@@ -38,7 +38,16 @@ func TestCreateThreadWithNewFields(t *testing.T) {
 		t.Fatalf("create parent: %v", err)
 	}
 
+	// And a channel so the discussion_id FK is valid.
 	now := time.Now().UnixMilli()
+	if err := s.CreateChannel(Channel{
+		ID: "disc-abc", ThreadID: "parent-1",
+		Type: "deliberation", Status: "open",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
 	thr := Thread{
 		ID:                 "thread-new-fields",
 		ProjectID:          proj.ID,
@@ -199,6 +208,15 @@ func TestUpdateThreadNewFields(t *testing.T) {
 	parent.ProjectID = proj.ID
 	if err := s.CreateThread(parent); err != nil {
 		t.Fatalf("create parent: %v", err)
+	}
+
+	// Channel for the discussion_id FK on the upcoming update.
+	if err := s.CreateChannel(Channel{
+		ID: "disc-xyz", ThreadID: "thread-upd-parent",
+		Type: "deliberation", Status: "open",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create channel: %v", err)
 	}
 
 	// Update with new field values.
