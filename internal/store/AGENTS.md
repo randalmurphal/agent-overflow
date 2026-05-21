@@ -9,9 +9,14 @@ root `CLAUDE.md` principle 3.
   `Payload` shared shapes.
 - `migrate.go` — forward-only migration chain with the per-version
   upgrade SQL.
-- `items.go` / `payloads.go` — timeline item + heavy-payload tables.
-  `items.go` is large; it owns every read/write against `items` so the
-  single-table invariants stay co-located.
+- `items.go` / `items_read.go` / `items_write.go` /
+  `items_lifecycle.go` / `payloads.go` — timeline item + heavy-payload
+  tables. `items.go` carries the shared core (constants, scanners,
+  `applyItemDefaults`, the private tx insert helpers); reads,
+  writes/upserts/deletes, and the live-state surface (Has/Count/Mark/
+  Force/Flip) live in the matching `items_*.go` siblings. All four
+  are in package `store` so the single-table invariants stay
+  co-located — split by responsibility, not visibility.
 - `threads.go` / `thread_view.go` / `thread_forks.go` — threads table
   plus the `ThreadView` translation layer that hydrates `SessionOptions`
   for the provider packages.
