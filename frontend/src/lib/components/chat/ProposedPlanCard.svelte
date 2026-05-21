@@ -93,7 +93,7 @@
     </div>
   </div>
 
-  <div class="pr-24 sm:pr-28" data-testid="proposed-plan-body-shell">
+  <div data-testid="proposed-plan-body-shell">
     <ProposedPlanBody
       markdown={displayedMarkdown}
       capped={cappedBody}

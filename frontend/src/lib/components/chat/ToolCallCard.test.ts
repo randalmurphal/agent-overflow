@@ -1178,7 +1178,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(queryByTestId("tool-call-card")).toBeNull();
     expect(getByTestId("proposed-plan-card")).toBeInTheDocument();
     expect(getByTestId("proposed-plan-body-shell").textContent).toContain("long first heading");
-    expect(getByTestId("proposed-plan-body-shell").className).toContain("pr-24");
+    expect(getByTestId("proposed-plan-body-shell").className).not.toContain("pr-24");
     expect(getByTestId("proposed-plan-body-shell").className).not.toContain("ml-[5.25rem]");
     expect(getByTestId("proposed-plan-body-shell").className).not.toContain("px-3");
     expect(getByTestId("proposed-plan-actions")).toBeInTheDocument();
