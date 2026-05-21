@@ -483,8 +483,8 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	}
 	// Lifecycle row first so the file-change / command-mutation helpers
 	// below find an existing item to attach their rich payload onto via
-	// UpdateItemPayload — otherwise they'd race to AppendItem with the
-	// same evt.ItemID and trip the UNIQUE id constraint.
+	// UpsertItem — otherwise they'd race to AppendItem with the same
+	// evt.ItemID and trip the UNIQUE id constraint.
 	if err := r.persistToolCallLaunch(evt); err != nil {
 		return err
 	}

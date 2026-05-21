@@ -237,13 +237,17 @@ func TestSettleNonStreamingRowStillDrainsQueue(t *testing.T) {
 	// 3. Flip the row OUT of streaming externally. In production this can
 	//    happen via the fatal-error crash-flip path, which transitions
 	//    every streaming/running row to errored before the content block
-	//    stop arrives. We reach in with UpdateItemStatus to mimic the
-	//    end state regardless of which path produced it. Look up the
-	//    actual item id (text:<turn>:<segmentIndex>) rather than
-	//    hard-coding it — the segment counter's value is internal to the
-	//    router and the test shouldn't be coupled to it.
+	//    stop arrives. We reach in with UpsertItem to mimic the end state
+	//    regardless of which path produced it. Look up the actual item
+	//    id (text:<turn>:<segmentIndex>) rather than hard-coding it —
+	//    the segment counter's value is internal to the router and the
+	//    test shouldn't be coupled to it.
 	textRow := firstItemByKind(t, st, "t1", "assistant_text")
-	if err := st.UpdateItemStatus(textRow.ID, "errored", "streaming — interrupted", "", time.Now().UnixMilli()); err != nil {
+	textRow.Status = "errored"
+	textRow.Summary = "streaming — interrupted"
+	textRow.PayloadID = ""
+	textRow.UpdatedAt = time.Now().UnixMilli()
+	if _, err := st.UpsertItem(textRow, nil); err != nil {
 		t.Fatalf("flip row status out of streaming: %v", err)
 	}
 
@@ -325,9 +329,13 @@ func TestSettleStreamingThinkingNonStreamingRowStillDrainsQueue(t *testing.T) {
 		t.Fatalf("precondition: background_done should be queued, got %d", len(doneQueued))
 	}
 
-	// 3. Flip the thinking row out of streaming externally.
+	// 3. Flip the thinking row out of streaming externally — same
+	//    crash-flip mimic as the text variant above, via UpsertItem.
 	thinkRow := firstItemByKind(t, st, "t1", "thinking")
-	if err := st.UpdateItemStatus(thinkRow.ID, "errored", "pondering — interrupted", thinkRow.PayloadID, time.Now().UnixMilli()); err != nil {
+	thinkRow.Status = "errored"
+	thinkRow.Summary = "pondering — interrupted"
+	thinkRow.UpdatedAt = time.Now().UnixMilli()
+	if _, err := st.UpsertItem(thinkRow, nil); err != nil {
 		t.Fatalf("flip row status: %v", err)
 	}
 

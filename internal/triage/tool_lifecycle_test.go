@@ -1003,7 +1003,7 @@ func TestMcpCompletionContentAttachesPayload(t *testing.T) {
 // with the legacy tool_result helpers: when a file_change start arrives,
 // persistToolCallLaunch creates the lifecycle row first; the existing
 // persistFileChangeToolResult then attaches a tool_result payload to
-// THAT row via UpdateItemPayload (no second item appended). Result: one
+// THAT row via UpsertItem (no second item appended). Result: one
 // row per file-change tool call, with both a status field and the rich
 // inline-diff payload.
 func TestToolStartFileChangeReusesIDForRichPayload(t *testing.T) {

@@ -424,42 +424,6 @@ func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (
 	return int(n), nil
 }
 
-// UpdateItemPayload updates a single item's payload link, summary, and
-// timestamp. The parent thread's updated_at is NOT touched — payload
-// upgrades are a row mutation, not a sidebar-worthy interaction. Triage
-// bumps activity via MarkThreadActivity at the user_text /
-// turn-settle / approval-request boundaries.
-//
-// Returns an error if the item does not exist or its thread has been
-// deleted (caught by RowsAffected on the UPDATE), instead of silently
-// succeeding on a no-op update.
-func (s *Store) UpdateItemPayload(id, payloadID, summary string, createdAt int64) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("store: begin update item payload tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	result, err := tx.Exec(
-		`UPDATE items SET payload_id = ?, summary = ?, updated_at = ? WHERE id = ?`,
-		nilIfEmpty(payloadID), summary, createdAt, id,
-	)
-	if err != nil {
-		return fmt.Errorf("store: update item payload %s: %w", id, err)
-	}
-	if err := requireRowsAffected(
-		result,
-		fmt.Sprintf("store: update item payload %s", id),
-	); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit update item payload tx: %w", err)
-	}
-	return nil
-}
-
 // UpdateItemMeta rewrites only the `meta` column on a single item
 // row, scoped to the owning thread. Used by the fork-time UUID remap
 // in `app_thread_fork.go::remapForkedClaudeUUIDs` to refresh a
@@ -485,52 +449,6 @@ func (s *Store) UpdateItemMeta(threadID, id, meta string) error {
 		result,
 		fmt.Sprintf("store: update item meta %s/%s", threadID, id),
 	)
-}
-
-// UpdateItemStatus transitions an inline tool-call item from its current
-// status (typically "running") to the supplied status, replaces its
-// summary, and re-links (or clears) its payload_id. status must be one
-// of the four values the v14 CHECK constraint allows; an invalid value
-// surfaces as a SQLite CHECK error.
-//
-// Inline tool calls use this method to flip running → completed|errored
-// without rewriting any other item. Background launches do NOT go through
-// here — their completion is a NEW item appended via AppendCompletionItem,
-// keeping the launch row frozen.
-//
-// Does NOT bump threads.updated_at — sidebar activity is owned by the
-// turn-settle / interaction-point paths via MarkThreadActivity. Tool
-// completions inside an active turn don't move the sidebar; the bump
-// arrives when the turn itself settles.
-//
-// Returns sql.ErrNoRows (wrapped) if no item matches id.
-func (s *Store) UpdateItemStatus(id, status, summary, payloadID string, createdAt int64) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("store: begin update item status tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	result, err := tx.Exec(
-		`UPDATE items
-		 SET status = ?, summary = ?, payload_id = ?, updated_at = ?
-		 WHERE id = ?`,
-		status, summary, nilIfEmpty(payloadID), createdAt, id,
-	)
-	if err != nil {
-		return fmt.Errorf("store: update item status %s: %w", id, err)
-	}
-	if err := requireRowsAffected(
-		result,
-		fmt.Sprintf("store: update item status %s", id),
-	); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit update item status tx: %w", err)
-	}
-	return nil
 }
 
 // AppendCompletionItem writes the second row of a backgrounded tool-call

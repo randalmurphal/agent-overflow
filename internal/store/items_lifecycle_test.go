@@ -156,127 +156,6 @@ func TestInsertItemDefaultsStatusToCompleted(t *testing.T) {
 	}
 }
 
-// --- UpdateItemStatus ---
-
-func TestUpdateItemStatusTransitionsRunningToCompleted(t *testing.T) {
-	s := newTestStore(t)
-	now := int64(1000)
-	if err := s.CreateThread(Thread{
-		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-	if err := s.InsertItem(Item{
-		ID: "i", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
-		Kind: "tool_call", Role: "assistant", Summary: "ls",
-		Status: "running", CreatedAt: now,
-	}); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
-
-	if err := s.UpdateItemStatus("i", "completed", "ls output", "", 2000); err != nil {
-		t.Fatalf("update: %v", err)
-	}
-
-	got, _, err := s.GetThreadItem("t", "i")
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if got.Status != "completed" {
-		t.Errorf("Status = %q, want %q", got.Status, "completed")
-	}
-	if got.Summary != "ls output" {
-		t.Errorf("Summary = %q, want %q", got.Summary, "ls output")
-	}
-	if got.CreatedAt != 1000 {
-		t.Errorf("CreatedAt = %d, want 1000", got.CreatedAt)
-	}
-	if got.UpdatedAt != 2000 {
-		t.Errorf("UpdatedAt = %d, want 2000", got.UpdatedAt)
-	}
-
-	// Thread's updated_at is decoupled from item status flips. Tool
-	// completions inside an active turn don't move the sidebar; the
-	// bump arrives when the turn settles via Store.MarkThreadActivity.
-	thr, err := s.GetThread("t")
-	if err != nil {
-		t.Fatalf("get thread: %v", err)
-	}
-	if thr.UpdatedAt != 1000 {
-		t.Errorf("thread UpdatedAt = %d, want 1000 (UpdateItemStatus must not bump activity)", thr.UpdatedAt)
-	}
-}
-
-func TestUpdateItemStatusLinksPayload(t *testing.T) {
-	s := newTestStore(t)
-	now := int64(1000)
-	if err := s.CreateThread(Thread{
-		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-	if err := s.InsertItem(Item{
-		ID: "i", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
-		Kind: "tool_call", Role: "assistant", Summary: "ls",
-		Status: "running", CreatedAt: now,
-	}); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
-	if err := s.InsertPayload(Payload{
-		ID: "p", Kind: "tool_result", Meta: "{}", Data: []byte("output"), CreatedAt: now,
-	}); err != nil {
-		t.Fatalf("insert payload: %v", err)
-	}
-
-	if err := s.UpdateItemStatus("i", "completed", "ls output", "p", 2000); err != nil {
-		t.Fatalf("update: %v", err)
-	}
-	got, _, err := s.GetThreadItem("t", "i")
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if got.PayloadID != "p" {
-		t.Errorf("PayloadID = %q, want p", got.PayloadID)
-	}
-}
-
-// TestUpdateItemStatusErrorsOnMissingItem proves the RowsAffected guard
-// fires; a silent no-op would mask a stale id in a caller's hand.
-func TestUpdateItemStatusErrorsOnMissingItem(t *testing.T) {
-	s := newTestStore(t)
-	err := s.UpdateItemStatus("no-such-item", "completed", "x", "", 1)
-	if err == nil {
-		t.Fatal("expected error for missing item")
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		t.Errorf("expected sql.ErrNoRows (wrapped), got %v", err)
-	}
-}
-
-func TestUpdateItemStatusRejectsInvalidStatus(t *testing.T) {
-	s := newTestStore(t)
-	now := int64(1000)
-	if err := s.CreateThread(Thread{
-		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if err := s.InsertItem(Item{
-		ID: "i", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
-		Kind: "tool_call", Role: "assistant", Status: "running", CreatedAt: now,
-	}); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
-	// A value outside the CHECK constraint must surface as an error.
-	err := s.UpdateItemStatus("i", "halfway", "x", "", 2)
-	if err == nil {
-		t.Fatal("expected CHECK violation, got nil")
-	}
-}
-
 // --- AppendCompletionItem ---
 
 func TestAppendCompletionItemPairsLaunchAndCompletion(t *testing.T) {
@@ -1221,6 +1100,76 @@ func TestGetThreadItemByPayloadIDScopesLookupToOwnerThread(t *testing.T) {
 	}
 	if foundMissing {
 		t.Fatal("expected missing thread lookup to return found=false")
+	}
+}
+
+// TestGetThreadItemScopesLookupToOwnerThread pins the thread isolation
+// contract of GetThreadItem(threadID, id). Triage upserts items keyed by
+// (thread_id, id), and the composite PK on items enforces that two
+// threads can independently hold rows with the same id (e.g.
+// `text:0:0`). GetThreadItem must respect that scoping — asking thread B
+// for an id that lives only on thread A must return found=false, not
+// silently return thread A's row.
+func TestGetThreadItemScopesLookupToOwnerThread(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	for _, threadID := range []string{"t-a", "t-b"} {
+		if err := s.CreateThread(Thread{
+			ID: threadID, ProjectID: defaultTestProjectID, Title: threadID, Provider: "claude", WorkspacePath: "/tmp",
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("create thread %s: %v", threadID, err)
+		}
+	}
+	if err := s.InsertItem(Item{
+		ID: "shared-id", ThreadID: "t-a", TurnIndex: 0, ItemIndex: 0,
+		Kind: "assistant_text", Role: "assistant", Summary: "owner a",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert owner-a row: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "shared-id", ThreadID: "t-b", TurnIndex: 0, ItemIndex: 0,
+		Kind: "assistant_text", Role: "assistant", Summary: "owner b",
+		CreatedAt: now + 1, UpdatedAt: now + 1,
+	}); err != nil {
+		t.Fatalf("insert owner-b row: %v", err)
+	}
+
+	gotA, foundA, err := s.GetThreadItem("t-a", "shared-id")
+	if err != nil {
+		t.Fatalf("lookup t-a: %v", err)
+	}
+	if !foundA {
+		t.Fatal("expected lookup on owning thread to succeed")
+	}
+	if gotA.Summary != "owner a" {
+		t.Fatalf("t-a lookup returned summary %q, want %q", gotA.Summary, "owner a")
+	}
+
+	gotB, foundB, err := s.GetThreadItem("t-b", "shared-id")
+	if err != nil {
+		t.Fatalf("lookup t-b: %v", err)
+	}
+	if !foundB {
+		t.Fatal("expected lookup on second owning thread to succeed")
+	}
+	if gotB.Summary != "owner b" {
+		t.Fatalf("t-b lookup returned summary %q, want %q", gotB.Summary, "owner b")
+	}
+
+	// A thread that has no row for shared-id must report not-found,
+	// not leak either owner's row.
+	if err := s.CreateThread(Thread{
+		ID: "t-other", ProjectID: defaultTestProjectID, Title: "t-other", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create t-other: %v", err)
+	}
+	if _, found, err := s.GetThreadItem("t-other", "shared-id"); err != nil {
+		t.Fatalf("lookup t-other: %v", err)
+	} else if found {
+		t.Fatal("expected lookup on unrelated thread to return found=false")
 	}
 }
 

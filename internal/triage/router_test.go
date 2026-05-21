@@ -2353,7 +2353,15 @@ func TestLateTextDeltaDoesNotResurrectSettledRow(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("handle initial text: %v", err)
 	}
-	if err := st.UpdateItemStatus("text:0:1", statusCompleted, "hello", "", time.Now().UnixMilli()); err != nil {
+	textRow, found, err := st.GetThreadItem("t1", "text:0:1")
+	if err != nil || !found {
+		t.Fatalf("get text row: found=%v err=%v", found, err)
+	}
+	textRow.Status = statusCompleted
+	textRow.Summary = "hello"
+	textRow.PayloadID = ""
+	textRow.UpdatedAt = time.Now().UnixMilli()
+	if _, err := st.UpsertItem(textRow, nil); err != nil {
 		t.Fatalf("settle text row: %v", err)
 	}
 	if err := router.Handle(provider.ProviderEvent{
@@ -2393,7 +2401,9 @@ func TestLateThinkingDeltaDoesNotResurrectSettledRowOrPayload(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("get thinking row: found=%v err=%v", found, err)
 	}
-	if err := st.UpdateItemStatus(item.ID, statusCompleted, item.Summary, item.PayloadID, time.Now().UnixMilli()); err != nil {
+	item.Status = statusCompleted
+	item.UpdatedAt = time.Now().UnixMilli()
+	if _, err := st.UpsertItem(item, nil); err != nil {
 		t.Fatalf("settle thinking row: %v", err)
 	}
 	if err := router.Handle(provider.ProviderEvent{
