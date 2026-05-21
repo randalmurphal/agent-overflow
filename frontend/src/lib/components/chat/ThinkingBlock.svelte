@@ -15,6 +15,7 @@
     THINKING_PAYLOAD_EXPANSION_STATE_KEY,
     thinkingPayloadVersionForItem,
   } from '../../utils/payloadVersion';
+  import { nonOverlappingSuffix } from '../../utils/textOverlap';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
@@ -48,17 +49,17 @@
 
   const isStreaming = $derived(item.status === 'streaming');
 
-  // Body text source. `item.summary` is the single source of truth: the
-  // pane appends deltas in place during streaming, tail-trimmed to the
-  // server-side rune cap (`THINKING_TAIL_RUNES` in
-  // `stores/thread.svelte.ts`). The completion upsert carries the same
-  // tail, so settle is visually a no-op. After the user expands,
-  // `expansion.displayData` carries the full payload fetched from
-  // SQLite. Pick the longer of the two: the live tail covers streaming
-  // + collapsed-after-settle; the persisted full text covers expanded.
+  // Body text source. `item.summary` is the bounded live tail: it is the
+  // only source used while collapsed. After expansion, the full payload
+  // comes from SQLite and future deltas append into the expansion handle.
+  // While the row is still streaming, merge the live tail over the full
+  // payload so a stale read cannot hide text that was already visible in
+  // the collapsed row.
   const bodyText = $derived.by<string>(() => {
     const live = item.summary ?? '';
     const persisted = expansion.displayData ?? '';
+    if (!expanded) return live;
+    if (isStreaming) return mergeStreamingExpandedText(persisted, live);
     return persisted.length > live.length ? persisted : live;
   });
 
@@ -109,6 +110,12 @@
   }
 
   const canCopy = $derived(!isStreaming && /\S/.test(item.summary ?? ''));
+
+  function mergeStreamingExpandedText(persisted: string, liveTail: string): string {
+    if (!persisted) return liveTail;
+    if (!liveTail) return persisted;
+    return persisted + nonOverlappingSuffix(persisted, liveTail);
+  }
 </script>
 
 <div class="group/thinking">

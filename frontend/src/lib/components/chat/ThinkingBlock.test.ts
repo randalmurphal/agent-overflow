@@ -226,6 +226,66 @@ describe('<ThinkingBlock>', () => {
     expect(getPayloadData).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps the live tail visible when an expanded streaming payload read is stale', async () => {
+    const thinking = makeItem({
+      id: 'think:0:0',
+      kind: 'thinking',
+      status: 'streaming',
+      summary: 'live tail',
+      payloadId: 'thinking-payload',
+      updatedAt: 1,
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-1' }), [thinking]);
+    setBindingMock('GetPayloadData', async () => ({ data: 'full payload before ' }));
+
+    const { container, getByRole } = render(ThinkingBlock, {
+      props: { pane, item: pane.items[0] },
+    });
+
+    await fireEvent.click(getByRole('button', { name: /toggle thinking block/i }));
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="thinking-body"]')?.textContent)
+        .toBe('full payload before live tail');
+    });
+  });
+
+  it('repairs a stale expanded streaming payload before appending the next live delta', async () => {
+    const thinking = makeItem({
+      id: 'think:0:0',
+      kind: 'thinking',
+      status: 'streaming',
+      summary: 'live tail',
+      payloadId: 'thinking-payload',
+      updatedAt: 1,
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-1' }), [thinking]);
+    setBindingMock('GetPayloadData', async () => ({ data: 'full payload before ' }));
+
+    const { container, getByRole, rerender } = render(ThinkingBlock, {
+      props: { pane, item: pane.items[0] },
+    });
+
+    await fireEvent.click(getByRole('button', { name: /toggle thinking block/i }));
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="thinking-body"]')?.textContent)
+        .toBe('full payload before live tail');
+    });
+
+    pane.applyItemDelta({
+      threadId: 'thread-1',
+      itemId: 'think:0:0',
+      kind: 'thinking',
+      delta: ' more',
+      updatedAt: 2,
+    });
+    await rerender({ pane, item: pane.items[0] });
+    await tick();
+
+    expect(container.querySelector('[data-testid="thinking-body"]')?.textContent)
+      .toBe('full payload before live tail more');
+  });
+
   it('copies the refreshed completed payload when a row settles while expanded', async () => {
     const thinking = makeItem({
       id: 'think:0:0',

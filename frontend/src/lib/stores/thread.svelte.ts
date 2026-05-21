@@ -1673,6 +1673,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
           THINKING_PAYLOAD_EXPANSION_STATE_KEY,
           evt.delta,
           thinkingPayloadVersionForItem(nextItem),
+          current.summary,
         );
       }
     },

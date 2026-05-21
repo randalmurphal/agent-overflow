@@ -29,6 +29,7 @@ export interface ThreadRowUiState {
     stateKey: string,
     delta: string,
     payloadVersion?: unknown,
+    previousLiveTail?: string,
   ): void;
   isSubagentGroupExpanded(groupKey: string): boolean;
   toggleSubagentGroupExpanded(groupKey: string): boolean;
@@ -241,12 +242,13 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     stateKey: string,
     delta: string,
     payloadVersion?: unknown,
+    previousLiveTail?: string,
   ): void {
     const keys = itemExpansionKeysByState.get(itemId)?.get(stateKey);
     if (!keys || keys.size === 0) return;
     for (const key of keys) {
       const entry = expansionStates.get(key);
-      entry?.handle.appendLiveDelta(delta, payloadVersion);
+      entry?.handle.appendLiveDelta(delta, payloadVersion, previousLiveTail);
     }
   }
 

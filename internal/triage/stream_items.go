@@ -137,6 +137,7 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 		}
 		return r.emitInline(evt)
 	}
+	flushThinkingAfterEmit := r.stageThinkingPersistenceForEmit(evt.ThreadID, itemID, payloadID, evt.Content, now)
 	r.emitItemDelta(ItemDeltaEvent{
 		ThreadID:  evt.ThreadID,
 		ItemID:    itemID,
@@ -144,8 +145,10 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 		Delta:     evt.Content,
 		UpdatedAt: now,
 	})
-	if err := r.bufferThinkingPersistence(evt.ThreadID, itemID, payloadID, evt.Content, now); err != nil {
-		return fmt.Errorf("thinking delta buffer %s: %w", itemID, err)
+	if flushThinkingAfterEmit {
+		if err := r.flushStreamingItem(evt.ThreadID, itemID); err != nil {
+			return fmt.Errorf("thinking delta flush %s: %w", itemID, err)
+		}
 	}
 	return r.emitInline(evt)
 }

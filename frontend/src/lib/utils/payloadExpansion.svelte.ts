@@ -1,6 +1,7 @@
 import { GetPayloadChunk, GetPayloadData, GetPayloadPreview } from '../stores/bindings';
 import { payloadVersionKey, readPayloadCache, writePayloadCache } from './payloadDataCache';
 import { boundedPayloadVersionString } from './payloadVersion';
+import { nonOverlappingSuffix } from './textOverlap';
 
 export const DEFAULT_PAYLOAD_PREVIEW_BYTES = 32 * 1024;
 export const DEFAULT_PAYLOAD_CHUNK_BYTES = 256 * 1024;
@@ -26,8 +27,10 @@ export interface PayloadExpansionHandle {
    * The delta is ignored while collapsed, queued while the initial full
    * load is still pending, and applied only to the currently loaded
    * payload id. Preview-only handles do not accept live appends.
+   * `previousLiveTail` lets a newly-expanded streaming payload repair a
+   * stale initial snapshot using only the already-bounded row summary.
    */
-  appendLiveDelta(delta: string, payloadVersion?: unknown): void;
+  appendLiveDelta(delta: string, payloadVersion?: unknown, previousLiveTail?: string): void;
   toggle(): Promise<void>;
   expand(): Promise<void>;
   ensureLoaded(): Promise<boolean>;
@@ -103,7 +106,12 @@ export function createPayloadExpansion(
   let activeFullLoad: Promise<void> | null = null;
   let loadedPayloadID: string | null = null;
   let loadedPayloadVersion: unknown;
-  let pendingLiveDeltas: Array<{ payloadID: string; delta: string; payloadVersion: unknown }> = [];
+  let pendingLiveDeltas: Array<{
+    payloadID: string;
+    delta: string;
+    payloadVersion: unknown;
+    previousLiveTail?: string;
+  }> = [];
   let overridePayloadVersion = $state<unknown>(undefined);
   let hasOverridePayloadVersion = $state(false);
 
@@ -352,29 +360,45 @@ export function createPayloadExpansion(
     loadedPayloadVersion = nextPayloadVersion;
   }
 
+  function appendMissingLiveTail(previousLiveTail: string | undefined, nextPayloadVersion: unknown): void {
+    if (!previousLiveTail) return;
+    const existing = displayData ?? '';
+    const suffix = nonOverlappingSuffix(existing, previousLiveTail);
+    appendLoadedLiveDelta(suffix, nextPayloadVersion);
+  }
+
   function replayPendingLiveDeltas(): void {
     if (pendingLiveDeltas.length === 0) return;
     const pending = pendingLiveDeltas;
     pendingLiveDeltas = [];
     for (const live of pending) {
       if (live.payloadID !== loadedPayloadID) continue;
-      const existing = displayData ?? '';
-      const suffix = nonOverlappingSuffix(existing, live.delta);
-      appendLoadedLiveDelta(suffix, live.payloadVersion);
+      appendMissingLiveTail(live.previousLiveTail, live.payloadVersion);
+      appendLoadedLiveDelta(nonOverlappingSuffix(displayData ?? '', live.delta), live.payloadVersion);
     }
   }
 
-  function appendLiveDelta(delta: string, nextPayloadVersion: unknown = currentPayloadVersion()): void {
+  function appendLiveDelta(
+    delta: string,
+    nextPayloadVersion: unknown = currentPayloadVersion(),
+    previousLiveTail?: string,
+  ): void {
     if (!delta || !expanded || error !== null) return;
     const id = currentPayloadID();
     if (!id) return;
     if (chunks.length === 0 || loadingPreview || loadingFull) {
-      pendingLiveDeltas.push({ payloadID: id, delta, payloadVersion: nextPayloadVersion });
+      pendingLiveDeltas.push({
+        payloadID: id,
+        delta,
+        payloadVersion: nextPayloadVersion,
+        previousLiveTail,
+      });
       return;
     }
     if (loadedPayloadID !== id) return;
     if (!hasFullChunks) return;
-    appendLoadedLiveDelta(delta, nextPayloadVersion);
+    appendMissingLiveTail(previousLiveTail, nextPayloadVersion);
+    appendLoadedLiveDelta(nonOverlappingSuffix(displayData ?? '', delta), nextPayloadVersion);
   }
 
   function collapse(): void {
@@ -539,17 +563,6 @@ function payloadTextFromBindingData(data: unknown, operation: string): string {
   if (typeof data === 'string') return data;
   const kind = Array.isArray(data) ? 'array' : data === null ? 'null' : typeof data;
   throw new Error(`${operation} returned non-string payload data (${kind})`);
-}
-
-function nonOverlappingSuffix(existing: string, delta: string): string {
-  if (!existing || !delta) return delta;
-  const maxOverlap = Math.min(existing.length, delta.length);
-  for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
-    if (existing.endsWith(delta.slice(0, overlap))) {
-      return delta.slice(overlap);
-    }
-  }
-  return delta;
 }
 
 export function formatPayloadSize(bytes: number): string {

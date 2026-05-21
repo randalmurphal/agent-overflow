@@ -75,13 +75,38 @@ func (r *Router) bufferThinkingPersistence(threadID, itemID, payloadID, delta st
 	})
 }
 
+func (r *Router) stageThinkingPersistenceForEmit(threadID, itemID, payloadID, delta string, updatedAt int64) bool {
+	return r.stageStreamPersistence(pendingStreamFlush{
+		threadID:     threadID,
+		itemID:       itemID,
+		kind:         itemKindThinking,
+		payloadID:    payloadID,
+		summaryDelta: delta,
+		payloadDelta: delta,
+		updatedAt:    updatedAt,
+	}, false)
+}
+
 func (r *Router) bufferStreamPersistence(delta pendingStreamFlush) error {
-	if delta.summaryDelta == "" && delta.payloadDelta == "" {
+	flushNow := r.stageStreamPersistence(delta, true)
+	if !flushNow {
 		return nil
+	}
+	return r.flushStreamingItem(delta.threadID, delta.itemID)
+}
+
+// stageStreamPersistence records a live delta in the in-memory flush buffer.
+// When flushOnThreshold is false, the caller owns the threshold flush after
+// its wire-visible side effect has run. That preserves the invariant that
+// GetPayloadData can flush any delta already visible to the frontend without
+// putting threshold SQLite writes before live event emission.
+func (r *Router) stageStreamPersistence(delta pendingStreamFlush, flushOnThreshold bool) bool {
+	if delta.summaryDelta == "" && delta.payloadDelta == "" {
+		return false
 	}
 
 	key := streamPersistKey(delta.threadID, delta.itemID)
-	var pending *pendingStreamFlush
+	flushNow := false
 
 	r.mu.Lock()
 	buffer := r.streamPersistBuffers[key]
@@ -102,16 +127,15 @@ func (r *Router) bufferStreamPersistence(delta pendingStreamFlush) error {
 	}
 
 	if len(buffer.summaryDelta)+len(buffer.payloadDelta) >= streamPersistByteThreshold {
-		pending = r.takeStreamPersistenceLocked(key)
+		flushNow = true
+		if !flushOnThreshold {
+			r.scheduleStreamPersistenceLocked(key, buffer)
+		}
 	} else {
 		r.scheduleStreamPersistenceLocked(key, buffer)
 	}
 	r.mu.Unlock()
-
-	if pending == nil {
-		return nil
-	}
-	return r.flushStreamPersistence(*pending)
+	return flushNow
 }
 
 func (r *Router) scheduleStreamPersistenceLocked(key string, buffer *streamPersistBuffer) {

@@ -132,6 +132,21 @@ describe('payloadExpansion', () => {
     expect(data).toHaveBeenCalledTimes(1);
   });
 
+  it('repairs a stale full payload from the previous live tail before appending a delta', async () => {
+    setBindingMock('GetPayloadData', async () => ({ data: 'full before ' }));
+
+    const expansion = createPayloadExpansion(
+      'payload-live-stale',
+      'thread-live-stale',
+      { loadMode: 'full', payloadVersion: () => 'streaming' },
+    );
+
+    await expansion.expand();
+    expansion.appendLiveDelta(' more', 'streaming', 'live tail');
+
+    expect(expansion.displayData).toBe('full before live tail more');
+  });
+
   it('queues live deltas while the initial full payload load is pending', async () => {
     let resolvePayload!: (value: { data: string }) => void;
     setBindingMock('GetPayloadData', async () => (
@@ -154,6 +169,30 @@ describe('payloadExpansion', () => {
 
     expect(expansion.displayData).toBe('seed live');
   });
+
+  it('repairs a stale pending full payload from the previous live tail before queued deltas', async () => {
+    let resolvePayload!: (value: { data: string }) => void;
+    setBindingMock('GetPayloadData', async () => (
+      new Promise<{ data: string }>((resolve) => {
+        resolvePayload = resolve;
+      })
+    ));
+
+    const expansion = createPayloadExpansion(
+      'payload-live-pending-stale',
+      'thread-live-pending-stale',
+      { loadMode: 'full', payloadVersion: () => 'streaming' },
+    );
+
+    const expand = expansion.expand();
+    await vi.waitFor(() => expect(getBindingMock('GetPayloadData')).toHaveBeenCalledTimes(1));
+    expansion.appendLiveDelta(' more', 'streaming', 'live tail');
+    resolvePayload({ data: 'full before ' });
+    await expand;
+
+    expect(expansion.displayData).toBe('full before live tail more');
+  });
+
 
   it('skips cache reads and writes when cache is disabled', async () => {
     writePayloadCache('thread-cache-off', 'payload-cache-off', 1, {
