@@ -32,3 +32,7 @@ ralph-*.log
 frontend/package.json.md5
 .claude/
 .playwright-mcp
+
+# Throwaway cmd/* binaries built into the repo root via `go build ./cmd/<name>`
+/db-rebake
+/dump-schema

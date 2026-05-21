@@ -188,12 +188,7 @@ func approvalSummary(request provider.ApprovalRequest) string {
 }
 
 func approvalDeclinesExecution(decision string) bool {
-	switch decision {
-	case "declined", "timeout":
-		return true
-	default:
-		return false
-	}
+	return decision == "declined"
 }
 
 func approvalLosesExecution(decision string) bool {

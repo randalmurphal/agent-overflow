@@ -17,7 +17,7 @@ import (
 //   - CHECK constraints reject bogus values
 //   - the completion-of partial index is created
 
-func TestMigrationV14AddsLifecycleColumns(t *testing.T) {
+func TestItemsTableHasLifecycleColumns(t *testing.T) {
 	s := newTestStore(t)
 
 	cols, err := tableColumns(s.db, "items")
@@ -30,95 +30,15 @@ func TestMigrationV14AddsLifecycleColumns(t *testing.T) {
 		}
 	}
 
-	rows, err := s.db.Query("SELECT name FROM sqlite_master WHERE type='index' AND name = 'idx_items_completion_of'")
-	if err != nil {
-		t.Fatalf("query index: %v", err)
-	}
-	defer rows.Close()
-	var found bool
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		if name == "idx_items_completion_of" {
-			found = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows err: %v", err)
-	}
-	if !found {
-		t.Error("idx_items_completion_of index missing after v14")
+	var name string
+	if err := s.db.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='index' AND name = 'idx_items_completion_of'",
+	).Scan(&name); err != nil {
+		t.Errorf("idx_items_completion_of index missing: %v", err)
 	}
 }
 
-// TestMigrationV14BackfillsExistingRows simulates an upgrade from a pre-v15
-// database: pre-populate an item under the pre-v15 schema, then apply v15
-// and confirm the destructive reset dropped legacy chat rows.
-func TestMigrationV14BackfillsExistingRows(t *testing.T) {
-	db := openSQLiteDB(t)
-
-	if err := configureDatabase(db); err != nil {
-		t.Fatalf("configureDatabase: %v", err)
-	}
-	if err := ensureMigrationTable(db); err != nil {
-		t.Fatalf("ensureMigrationTable: %v", err)
-	}
-	// Apply every migration except v15 (and anything that follows it)
-	// so we're on the pre-v15 schema. Later migrations that assume the
-	// v15-shaped items table (e.g. v16's idx_items_payload_id) would
-	// break against the pre-v15 layout.
-	for _, m := range migrations {
-		if m.Version >= 15 {
-			continue
-		}
-		if err := applyMigration(db, m); err != nil {
-			t.Fatalf("apply v%d: %v", m.Version, err)
-		}
-	}
-
-	if _, err := db.Exec(`INSERT INTO projects
-		(id, path, name, created_at, updated_at)
-		VALUES ('p-pre', '/tmp/test', 'Pre-v14 Project', 1000, 1000)`); err != nil {
-		t.Fatalf("seed project: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO threads
-		(id, project_id, title, provider, workspace_path, model, created_at, updated_at)
-		VALUES ('t-pre', 'p-pre', 'Pre-v14', 'claude', '/tmp', '', 1000, 1000)`); err != nil {
-		t.Fatalf("seed thread: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO items
-		(id, thread_id, turn_index, item_index, kind, role, summary, parent_tool_use_id, created_at)
-		VALUES ('i-pre', 't-pre', 0, 0, 'text', 'assistant', 'body', '', 1000)`); err != nil {
-		t.Fatalf("seed item: %v", err)
-	}
-
-	// Find v15 in the migration list and apply it.
-	var v15 *Migration
-	for i := range migrations {
-		if migrations[i].Version == 15 {
-			v15 = &migrations[i]
-			break
-		}
-	}
-	if v15 == nil {
-		t.Fatal("v15 migration missing from list")
-	}
-	if err := applyMigration(db, *v15); err != nil {
-		t.Fatalf("apply v15: %v", err)
-	}
-
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM items`).Scan(&count); err != nil {
-		t.Fatalf("count items after v15 reset: %v", err)
-	}
-	if count != 0 {
-		t.Fatalf("expected v15 reset to clear legacy items, got %d", count)
-	}
-}
-
-func TestMigrationV14StatusCheckRejectsBogusValue(t *testing.T) {
+func TestItemsStatusCheckRejectsBogusValue(t *testing.T) {
 	s := newTestStore(t)
 
 	if _, err := s.db.Exec(`INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at)
@@ -154,7 +74,7 @@ func TestMigrationV14StatusCheckRejectsBogusValue(t *testing.T) {
 	}
 }
 
-func TestMigrationV14IsBackgroundCheckRejectsBogusValue(t *testing.T) {
+func TestItemsIsBackgroundCheckRejectsBogusValue(t *testing.T) {
 	s := newTestStore(t)
 
 	if _, err := s.db.Exec(`INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at)

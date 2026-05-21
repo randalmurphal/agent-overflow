@@ -8,11 +8,10 @@ import (
 	"time"
 )
 
-// Migration v15 renames the old provider-specific parent column to the
-// provider-neutral `parent_id`. The column stores the parent tool_call id
-// for nested child items; an empty string round-trips as empty.
+// items.parent_id stores the parent tool_call id for nested child items;
+// an empty string round-trips as empty.
 
-func TestMigrationV4AddsParentIDColumn(t *testing.T) {
+func TestItemsParentIDColumnExists(t *testing.T) {
 	s := newTestStore(t)
 
 	cols, err := tableColumns(s.db, "items")
@@ -21,30 +20,6 @@ func TestMigrationV4AddsParentIDColumn(t *testing.T) {
 	}
 	if !cols["parent_id"] {
 		t.Fatalf("items.parent_id column missing (columns=%v)", cols)
-	}
-
-	rows, err := s.db.Query("SELECT version, name FROM migration_versions ORDER BY version")
-	if err != nil {
-		t.Fatalf("query migrations: %v", err)
-	}
-	defer rows.Close()
-
-	var found bool
-	for rows.Next() {
-		var v int
-		var name string
-		if err := rows.Scan(&v, &name); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		if v == 4 && name == "subagent_correlation" {
-			found = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows err: %v", err)
-	}
-	if !found {
-		t.Error("migration_versions missing v4 subagent_correlation row")
 	}
 }
 
