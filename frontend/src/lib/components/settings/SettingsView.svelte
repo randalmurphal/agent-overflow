@@ -13,6 +13,18 @@
   import KeybindingsSettings from './KeybindingsSettings.svelte';
   import McpServersSettings from './McpServersSettings.svelte';
   import ObservabilitySettings from './ObservabilitySettings.svelte';
+  import { Version } from '../../stores/bindings';
+
+  let appVersion = $state('');
+  $effect(() => {
+    Version()
+      .then((v: string) => {
+        appVersion = v;
+      })
+      .catch(() => {
+        appVersion = '';
+      });
+  });
 
   type Section =
     | 'general'
@@ -174,4 +186,8 @@
       </div>
     </div>
   </div>
+
+  <footer class="border-t border-border-subtle px-5 py-2 text-[11px] text-fg-subtle shrink-0">
+    Agent Overflow{appVersion ? ` v${appVersion}` : ''}
+  </footer>
 </div>

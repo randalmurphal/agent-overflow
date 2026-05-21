@@ -27,6 +27,13 @@ WSL_BUILD_MODE ?= build
 
 GO_PACKAGE_ROOTS := . ./cmd/... ./internal/... ./build/...
 
+# Single source of truth for the release version is build/config.yml#info.version.
+# `make build` reads it and forwards it via VERSION= to wails3 build, which the
+# platform Taskfiles consume as {{.VERSION | default "dev"}} to stamp
+# main.version via -ldflags="-X main.version=...". Override at the make command
+# line for one-off builds: `make build VERSION=0.0.2-rc1`.
+VERSION ?= $(shell grep '^  version:' build/config.yml | sed 's/.*"\(.*\)".*/\1/')
+
 ifeq ($(shell uname -s),Darwin)
 HOST_ARCH := $(shell uname -m)
 # Apple Silicon macOS binaries cannot target earlier than 11.0. Keep
@@ -167,7 +174,7 @@ build-wsl:
 	WSL_LAUNCHER_MODE="$$(case "$(WSL_BUILD_MODE)" in build:dev) echo dev ;; *) echo prod ;; esac)" VERSION="$(WSL_VERSION)" wails3 task windows:build:wsl
 
 build:
-	wails3 build
+	VERSION="$(VERSION)" wails3 build
 
 test:
 	$(MAKE) go-test

@@ -2253,6 +2253,17 @@ export function UploadAttachment(threadID: string, filename: string, mimeType: s
 }
 
 /**
+ * Version returns the build-stamped semantic version (e.g. "0.0.1") or
+ * "dev" for unstamped builds. The frontend's Settings footer reads
+ * this to display the current release. Read-only, no FS / process /
+ * settings touch — intentionally NOT in LocalOnlyMethods so a
+ * remote --connect client sees the backend's version too.
+ */
+export function Version(): $CancellablePromise<string> {
+    return $Call.ByID(2431199839);
+}
+
+/**
  * WriteTerminal writes base64-encoded data to the given terminal. The
  * payload is base64 rather than a raw string so that non-UTF-8 byte
  * sequences (control codes, mouse events, binary heredocs) round-trip

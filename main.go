@@ -54,6 +54,13 @@ const headlessShutdownTimeout = 10 * time.Second
 // WebView2.
 const bootstrapStdoutPrefix = "__AO_BOOTSTRAP__:"
 
+// version is stamped at link time via `-ldflags="-X main.version=..."`.
+// Defaults to "dev" for unstamped builds (bare `go build`, IDE runs).
+// Single source of truth is build/config.yml#info.version; the
+// production Taskfiles read it as {{.VERSION}} and pass it through
+// ldflags. App.Version surfaces it on the wire for the Settings footer.
+var version = "dev"
+
 func main() {
 	flags, err := parseFlags(os.Args[1:])
 	if err != nil {
