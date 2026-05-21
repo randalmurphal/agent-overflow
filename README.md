@@ -3,6 +3,32 @@
 Desktop app for using coding agents (Claude Code, Codex) with a shared UX.
 Built on Go 1.25, Wails v3, and Svelte 5.
 
+## For friends helping test
+
+This is pre-alpha. There's no installer, no auto-update, no code
+signing — Gatekeeper / SmartScreen will warn on first launch, click
+through. Get a build from Randy or build it yourself (see *Setup*
+below). When you hit something wrong, the runtime logs and SQLite DB
+live in your platform's config directory (see *Files & locations*
+below); zip the `logs/` folder and send it along with what you were
+doing.
+
+## Files & locations
+
+The app writes everything under your OS's user-config directory:
+
+| Platform | Config root |
+|---|---|
+| macOS | `~/Library/Application Support/agent-overflow/` |
+| Linux | `~/.config/agent-overflow/` (honors `$XDG_CONFIG_HOME`) |
+| Windows | `%APPDATA%\agent-overflow\` |
+
+Inside that root: `agent-overflow.db` (SQLite — every thread, item,
+payload, attachment metadata), `logs/` (NDJSON provider stdio capture
+when `AGENT_OVERFLOW_DEBUG=provider`, plus runtime logs), `attachments/`
+(uploaded image / file bytes referenced by the DB), `design-workdirs/`
+(per-thread design-mode scratch trees), and `settings.json`.
+
 ## Setup
 
 Requires Go 1.25+, Node 24+, and pnpm 10+. On Linux, Wails v3 also needs
