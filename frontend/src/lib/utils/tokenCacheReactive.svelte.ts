@@ -4,7 +4,16 @@
 // the worker dispatch lands. Kept separate from `tokenCache.ts` so
 // the underlying data structure stays unit-testable as plain TS.
 
-import { createTokenCache, type TokenCache } from './tokenCache';
+import type { DiffTheme } from './diffHighlighterPool';
+import { stripPatchLinePrefix, type PatchLine } from './patchFiles';
+import { patchLineSourceKey } from './patchLineHash';
+import {
+  createTokenCache,
+  TOKENIZE_MAX_LINE_LENGTH,
+  tokenCacheKeyFromSig,
+  type LineToken,
+  type TokenCache,
+} from './tokenCache';
 
 let sharedCache: TokenCache | null = null;
 let sharedReactiveCache: TokenCache | null = null;
@@ -89,4 +98,33 @@ export function resetSharedTokenCacheForTest(): void {
   sharedCache = null;
   sharedReactiveCache = null;
   sharedGeneration = 0;
+}
+
+/**
+ * Reactive read-side helper shared by every patch-line renderer
+ * (DiffFileBlock, DiffSidebarFile, DiffPanelFileCard). Returns the
+ * cached Shiki tokens for `line`, or null when the line is meta,
+ * empty, over the per-line cap, or simply not in the cache yet.
+ *
+ * Reading the generation counter registers a reactive dep, so when a
+ * worker dispatch lands (cache.set bumps the generation), callers
+ * re-evaluate against the now-populated cache. Filtering on
+ * line.type / length before computing the hash key keeps the hot
+ * render path cheap when most rows can't be tokenized.
+ */
+export function getCachedTokensForLine(
+  line: PatchLine,
+  threadId: string,
+  theme: DiffTheme,
+  lang: string,
+): LineToken[] | null {
+  getSharedTokenCacheGeneration();
+  if (line.type === 'meta') return null;
+  const text = stripPatchLinePrefix(line);
+  if (text.length === 0 || text.length > TOKENIZE_MAX_LINE_LENGTH) return null;
+  return (
+    getSharedTokenCache().get(
+      tokenCacheKeyFromSig(threadId, theme, lang, patchLineSourceKey(line)),
+    ) ?? null
+  );
 }

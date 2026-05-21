@@ -1,9 +1,36 @@
-import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/svelte';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import DiffPanelFileCard from './DiffPanelFileCard.svelte';
 import { parsePatchFiles } from '../../../utils/patchFiles';
+import { resetSharedTokenCacheForTest } from '../../../utils/tokenCacheReactive.svelte';
+
+// Stub the Shiki worker pool — happy-dom's Web Worker support is
+// incomplete and the real pool would never resolve. The spy lets us
+// assert that the card's $effect actually posts a tokenize batch
+// once the user opens a file with a known-language extension.
+const tokenizeSpy = vi.fn();
+vi.mock('../../../utils/diffHighlighterPool', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../utils/diffHighlighterPool')>();
+  return {
+    ...actual,
+    getSharedDiffHighlighterPool: () => ({
+      tokenize: tokenizeSpy,
+      terminate: vi.fn(),
+      get isActive() {
+        return true;
+      },
+    }),
+  };
+});
 
 describe('<DiffPanelFileCard>', () => {
+  beforeEach(() => {
+    resetSharedTokenCacheForTest();
+    tokenizeSpy.mockReset();
+    tokenizeSpy.mockResolvedValue([]);
+  });
+
   it('hides git diff metadata from the expanded body', () => {
     const [file] = parsePatchFiles(`diff --git a/test-ui.txt b/test-ui.txt
 new file mode 100644
@@ -19,6 +46,7 @@ index 0000000..572d5d9
       props: {
         file,
         open: true,
+        threadId: 'thread-test',
         workspacePath: '/tmp/project',
         viewMode: 'stacked',
         wordWrap: false,
@@ -50,6 +78,7 @@ index 0000000..572d5d9
       props: {
         file,
         open: true,
+        threadId: 'thread-test',
         workspacePath: '/tmp/project',
         viewMode: 'stacked',
         wordWrap: false,
@@ -66,6 +95,7 @@ index 0000000..572d5d9
     await rerender({
       file,
       open: true,
+      threadId: 'thread-test',
       workspacePath: '/tmp/project',
       viewMode: 'stacked',
       wordWrap: false,
@@ -78,5 +108,94 @@ index 0000000..572d5d9
 
     await fireEvent.click(screen.getAllByLabelText('Add comment')[0]);
     expect(screen.getByPlaceholderText('Comment on this line')).toBeInTheDocument();
+  });
+
+  it('dispatches syntax-highlight tokens for a non-plaintext file when expanded', async () => {
+    const [file] = parsePatchFiles(`diff --git a/foo.ts b/foo.ts
+--- a/foo.ts
++++ b/foo.ts
+@@ -1 +1 @@
+-const x = 1;
++const x = 2;
+`);
+
+    render(DiffPanelFileCard, {
+      props: {
+        file,
+        open: true,
+        threadId: 'thread-test',
+        workspacePath: '/tmp/project',
+        viewMode: 'stacked',
+        wordWrap: false,
+        onToggle: vi.fn(),
+      },
+    });
+
+    await waitFor(() => {
+      expect(tokenizeSpy).toHaveBeenCalled();
+    });
+    const callArg = tokenizeSpy.mock.calls[0]?.[0] as {
+      lines: string[];
+      lang: string;
+      theme: string;
+    };
+    expect(callArg.lang).toBe('typescript');
+    // Lines are passed with the +/- prefix stripped (the worker
+    // tokenizes source text, not diff syntax).
+    expect(callArg.lines).toEqual(expect.arrayContaining(['const x = 1;', 'const x = 2;']));
+  });
+
+  it('does not dispatch tokens for a closed card', async () => {
+    const [file] = parsePatchFiles(`diff --git a/foo.ts b/foo.ts
+--- a/foo.ts
++++ b/foo.ts
+@@ -1 +1 @@
+-const x = 1;
++const x = 2;
+`);
+
+    render(DiffPanelFileCard, {
+      props: {
+        file,
+        open: false,
+        threadId: 'thread-test',
+        workspacePath: '/tmp/project',
+        viewMode: 'stacked',
+        wordWrap: false,
+        onToggle: vi.fn(),
+      },
+    });
+
+    // Give the effect microtask a beat to settle — if dispatch were
+    // unconditional, it would have fired by now.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(tokenizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('skips dispatch for plaintext file extensions', async () => {
+    const [file] = parsePatchFiles(`diff --git a/notes.txt b/notes.txt
+--- a/notes.txt
++++ b/notes.txt
+@@ -1 +1 @@
+-hello
++world
+`);
+
+    render(DiffPanelFileCard, {
+      props: {
+        file,
+        open: true,
+        threadId: 'thread-test',
+        workspacePath: '/tmp/project',
+        viewMode: 'stacked',
+        wordWrap: false,
+        onToggle: vi.fn(),
+      },
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(tokenizeSpy).not.toHaveBeenCalled();
   });
 });

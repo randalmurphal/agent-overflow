@@ -321,12 +321,21 @@
         <div class="py-8 text-center text-[13px] text-fg-muted">No checkpoints yet.</div>
       {:else if files.length === 0}
         <div class="py-8 text-center text-[13px] text-fg-muted">No changes in this range.</div>
-      {:else}
-        <div class="space-y-2" data-testid="diff-viewer">
+      {:else if threadId}
+        <!--
+          `threadId` is guaranteed here because `loadDiff` only writes
+          `diffText` when `pane.thread` is set, but effects fire after
+          the reactive flush so the prop can transiently narrow to null
+          on thread clear. The branch keeps `threadId: string` honest
+          on `DiffPanelFileCard` without forcing the card to handle a
+          nullable id internally.
+        -->
+        <div class="space-y-1" data-testid="diff-viewer">
           {#each fileRows as { file, rowId } (rowId)}
             <DiffPanelFileCard
               {file}
               open={expanded.has(rowId)}
+              {threadId}
               workspacePath={paneWorkspacePath(pane)}
               {viewMode}
               {wordWrap}

@@ -32,15 +32,10 @@
   import { getDiffTheme } from '../../stores/diffTheme.svelte';
   import type { DiffTheme } from '../../utils/diffHighlighterPool';
   import type { PatchFile, PatchLine } from '../../utils/patchFiles';
-  import { stripPatchLinePrefix } from '../../utils/patchFiles';
   import { lineTintClass } from '../../utils/diffLineTint';
   import { languageFromPath } from '../../utils/diffLanguage';
-  import { TOKENIZE_MAX_LINE_LENGTH, tokenCacheKeyFromSig, type LineToken } from '../../utils/tokenCache';
-  import {
-    getSharedTokenCache,
-    getSharedTokenCacheGeneration,
-  } from '../../utils/tokenCacheReactive.svelte';
-  import { patchLineSourceKey } from '../../utils/patchLineHash';
+  import type { LineToken } from '../../utils/tokenCache';
+  import { getCachedTokensForLine } from '../../utils/tokenCacheReactive.svelte';
   import { openDiffSidebar, isPromoteModifier } from './diffSidebarTrigger';
   import { INLINE_DIFF_PREVIEW_LINE_COUNT } from '../../utils/inlineThreshold';
   import { classifyToolName } from './toolCardHeader';
@@ -179,16 +174,8 @@
     });
   });
 
-  const cache = getSharedTokenCache();
-
   function getTokens(line: PatchLine): LineToken[] | null {
-    getSharedTokenCacheGeneration();
-    if (line.type === 'meta') return null;
-    const text = stripPatchLinePrefix(line);
-    if (text.length === 0 || text.length > TOKENIZE_MAX_LINE_LENGTH) return null;
-    return (
-      cache.get(tokenCacheKeyFromSig(threadId, theme, lang, patchLineSourceKey(line))) ?? null
-    );
+    return getCachedTokensForLine(line, threadId, theme, lang);
   }
 
   function parseHunkHeader(content: string): { oldStart: number; newStart: number } | null {

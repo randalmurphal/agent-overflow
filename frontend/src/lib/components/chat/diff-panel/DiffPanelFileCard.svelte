@@ -1,17 +1,25 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import MessageSquarePlus from 'lucide-svelte/icons/message-square-plus';
   import Plus from 'lucide-svelte/icons/plus';
   import Icon from '../../primitives/Icon.svelte';
   import EditorLink from '../../common/EditorLink.svelte';
+  import DiffLineContent from '../DiffLineContent.svelte';
+  import { dispatchInlineFileTokens } from '../diffInlineTokenize';
+  import { getDiffTheme } from '../../../stores/diffTheme.svelte';
+  import type { DiffTheme } from '../../../utils/diffHighlighterPool';
+  import { languageFromPath } from '../../../utils/diffLanguage';
   import {
     buildPatchDisplayRows,
     buildSplitDisplayRows,
     type PatchDisplayRow,
     type PatchFile,
-    type SplitDisplayRow,
+    type PatchLine,
   } from '../../../utils/patchFiles';
   import { lineTintClass } from '../../../utils/diffLineTint';
+  import type { LineToken } from '../../../utils/tokenCache';
+  import { getCachedTokensForLine } from '../../../utils/tokenCacheReactive.svelte';
   import type { DiffReviewComment, DiffReviewCommentInput, DiffReviewScope } from '../../../types/models';
 
   interface CommentAnchor {
@@ -25,6 +33,10 @@
   interface Props {
     file: PatchFile;
     open: boolean;
+    /** Owning thread id — partitions the Shiki token cache so a
+     *  thread switch's eviction in `clearTokensForThread` drops only
+     *  the outgoing thread's lines. */
+    threadId: string;
     /** Absolute base directory for resolving the repo-relative
      *  `file.path` when the user hits the editor-link affordance. */
     workspacePath: string;
@@ -41,6 +53,7 @@
   let {
     file,
     open,
+    threadId,
     workspacePath,
     viewMode,
     wordWrap,
@@ -55,6 +68,30 @@
   let draftAnchor: CommentAnchor | null = $state(null);
   let draftBody = $state('');
   let saving = $state(false);
+
+  // Tokenization gated on `open`: workspace diffs commonly have 50+
+  // files closed by default, so dispatching for unopened files would
+  // be wasted work. The shared `dispatchInlineFileTokens` writes into
+  // the (theme, threadId, lang, lineHash)-partitioned cache, and
+  // `getCachedTokensForLine` reads back through a reactive generation
+  // counter so tokens fade in as the worker resolves.
+  let theme: DiffTheme = $derived(getDiffTheme());
+  let lang = $derived(languageFromPath(file.path));
+
+  $effect(() => {
+    if (!open) return;
+    const themeNow = theme;
+    const langNow = lang;
+    const idNow = threadId;
+    const linesNow = file.lines;
+    untrack(() => {
+      void dispatchInlineFileTokens(linesNow, idNow, langNow, themeNow);
+    });
+  });
+
+  function getTokens(line: PatchLine): LineToken[] | null {
+    return getCachedTokensForLine(line, threadId, theme, lang);
+  }
 
   // Line numbers come from hunk headers in file.lines; displayRows
   // intentionally omits diff metadata while retaining real old/new
@@ -138,21 +175,22 @@
   }
 </script>
 
-<section class="overflow-hidden rounded-[var(--radius-control)] border border-border-subtle bg-card/30">
+<section class="overflow-hidden" data-testid="diff-panel-file">
   <!--
     Header: button toggles open/closed, EditorLink sibling opens the
     file in the user's editor. Same dual-control layout used by
-    DiffFileBlock to avoid nested interactives.
+    DiffFileBlock to avoid nested interactives. The outer card frame
+    moves onto the expanded body — collapsed rows read as a clean
+    path list, expanded rows carry the visible edge.
   -->
-  <div class="group/diff-panel-file flex w-full items-center gap-2 px-3 py-2 hover:bg-surface-2/40">
+  <div class="group/diff-panel-file flex w-full items-center gap-2 rounded-[var(--radius-control)] px-2 py-1 hover:bg-surface-2/40">
     <button
       class="flex flex-1 min-w-0 items-center gap-2 text-left bg-transparent border-0 p-0 cursor-pointer"
       onclick={onToggle}
       data-testid="diff-panel-file-toggle"
       data-path={file.path}
     >
-      <Icon icon={ChevronDown} size={14} class={open ? '' : '-rotate-90'} />
-      <span class="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-accent">FileChange</span>
+      <Icon icon={ChevronDown} size={12} class={open ? '' : '-rotate-90'} />
       <span class="min-w-0 truncate font-mono text-[12px] text-fg">{file.path}</span>
       <span class="shrink-0 text-[11px] text-success">+{file.additions}</span>
       <span class="shrink-0 text-[11px] text-error">-{file.deletions}</span>
@@ -179,7 +217,7 @@
   {#if open}
     {#if draftAnchor?.side === 'file'}
       <form
-        class="border-t border-border-subtle bg-surface-1/80 px-3 py-2"
+        class="mt-1 rounded-[var(--radius-control)] border border-border-subtle bg-surface-1/80 px-3 py-2"
         onsubmit={saveComment}
       >
         <textarea
@@ -195,12 +233,12 @@
       </form>
     {/if}
     {#if fileComments.length > 0}
-      <div class="border-t border-border-subtle bg-surface-1/50 px-3 py-1.5 text-[11px] text-fg-muted">
+      <div class="mt-1 rounded-[var(--radius-control)] border border-border-subtle bg-surface-1/50 px-3 py-1.5 text-[11px] text-fg-muted">
         {fileComments.length} file comment{fileComments.length === 1 ? '' : 's'}
       </div>
     {/if}
     {#if viewMode === 'split' && splitRows}
-      <div class="max-h-[42rem] overflow-auto border-t border-border-subtle bg-surface-0 font-mono text-[12px] leading-relaxed">
+      <div class="mt-1 max-h-[42rem] overflow-auto rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 font-mono text-[12px] leading-relaxed">
         {#each splitRows as row}
           <div class="grid grid-cols-2 border-b border-border-subtle/40 last:border-b-0">
             <div class="min-w-0 border-r border-border-subtle/50 {splitCellClass(row.left)}">
@@ -226,7 +264,7 @@
         {/each}
       </div>
     {:else}
-      <div class="max-h-[42rem] overflow-auto border-t border-border-subtle bg-surface-0 font-mono text-[12px] leading-relaxed">
+      <div class="mt-1 max-h-[42rem] overflow-auto rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 font-mono text-[12px] leading-relaxed">
         {#each displayRows as row (row.id)}
           {@render diffLineRow(row, row.newLine || row.oldLine, wordWrap, commentable, () => startComment(rowAnchor(row)))}
           {#if draftAnchor && anchorKey(draftAnchor) === anchorKey(rowAnchor(row))}
@@ -261,7 +299,7 @@
         </button>
       {/if}
     </div>
-    <pre class="min-w-0 px-2 py-0.5 {wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'}">{row.line.content}</pre>
+    <pre class="min-w-0 px-2 py-0.5 {wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'}"><DiffLineContent line={row.line} tokens={getTokens(row.line)} /></pre>
   </div>
 {/snippet}
 

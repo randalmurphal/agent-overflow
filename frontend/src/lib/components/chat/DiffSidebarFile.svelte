@@ -28,19 +28,14 @@
   import {
     buildPatchDisplayRows,
     buildSplitDisplayRows,
-    stripPatchLinePrefix,
   } from '../../utils/patchFiles';
   import { lineTintClass } from '../../utils/diffLineTint';
   import type { FileVirtualizerHandle } from '../../utils/diffSidebarVirtualizer.svelte';
   import { languageFromPath } from '../../utils/diffLanguage';
   import type { DiffTheme } from '../../utils/diffHighlighterPool';
   import type { DiffViewMode } from '../../stores/diffPanel.svelte';
-  import { tokenCacheKeyFromSig, type LineToken, TOKENIZE_MAX_LINE_LENGTH } from '../../utils/tokenCache';
-  import {
-    getSharedTokenCache,
-    getSharedTokenCacheGeneration,
-  } from '../../utils/tokenCacheReactive.svelte';
-  import { patchLineSourceKey } from '../../utils/patchLineHash';
+  import type { LineToken } from '../../utils/tokenCache';
+  import { getCachedTokensForLine } from '../../utils/tokenCacheReactive.svelte';
 
   interface Props {
     file: PatchFile;
@@ -156,21 +151,10 @@
   });
   let gutterChars = $derived(Math.max(2, String(maxLineNo).length));
 
-  const cache = getSharedTokenCache();
   let lang = $derived(languageFromPath(file.path));
 
   function getTokens(line: PatchLine): LineToken[] | null {
-    // Reactive dep on the module-level generation counter — when
-    // DiffSidebarBody's dispatch lands new tokens (or the diffTheme
-    // store evicts a prior theme), every visible line re-evaluates
-    // its lookup against the now-populated cache.
-    getSharedTokenCacheGeneration();
-    if (line.type === 'meta') return null;
-    // Filter out lines we'd never tokenize before paying the
-    // (memoized) hash cost.
-    const text = stripPatchLinePrefix(line);
-    if (text.length === 0 || text.length > TOKENIZE_MAX_LINE_LENGTH) return null;
-    return cache.get(tokenCacheKeyFromSig(threadId, theme, lang, patchLineSourceKey(line))) ?? null;
+    return getCachedTokensForLine(line, threadId, theme, lang);
   }
 
   // HTML5 forbids whitespace in id values, and file paths can carry
