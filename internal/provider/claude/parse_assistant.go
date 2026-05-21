@@ -185,6 +185,7 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	// thread's open turn; the failure still closes the parent turn.
 	if errorEnum := assistantErrorEnum(raw, msg); errorEnum != "" {
 		errMeta, _ := json.Marshal(map[string]any{
+			"api_error_enum":       errorEnum,
 			"error":                errorEnum,
 			"fatal":                true,
 			"expect_turn_complete": true,

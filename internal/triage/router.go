@@ -804,6 +804,16 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 		itemKind = itemKindAPIError
 		itemMeta = string(evt.Meta)
 	}
+	summary := stringsx.FirstNonEmptyTrimmed(evt.Content, "Provider error")
+	parentID := eventParentID(evt)
+	if r.hasMatchingErrorItem(evt.ThreadID, turnIndex, itemKind, summary, parentID) {
+		if fatal {
+			if err := r.finishFatalProviderError(evt.ThreadID, now, summary, evt.Meta); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	errorItem := store.Item{
 		ID:        nextErrorID(turnIndex, scope, r.nextErrorSequence(evt.ThreadID, turnIndex, scope)),
 		ThreadID:  evt.ThreadID,
@@ -811,9 +821,9 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 		Kind:      itemKind,
 		Role:      "system",
 		Status:    statusCompleted,
-		Summary:   stringsx.FirstNonEmptyTrimmed(evt.Content, "Provider error"),
+		Summary:   summary,
 		Meta:      itemMeta,
-		ParentID:  eventParentID(evt),
+		ParentID:  parentID,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -822,27 +832,34 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 	}
 
 	if fatal {
-		if err := r.drainInterruptQueue(evt.ThreadID, true); err != nil {
+		if err := r.finishFatalProviderError(evt.ThreadID, now, summary, evt.Meta); err != nil {
 			return err
-		}
-		r.clearOpenTurn(evt.ThreadID)
-		r.closeTurnSpan(evt.ThreadID, errors.New(stringsx.FirstNonEmptyTrimmed(evt.Content, "provider error")))
-
-		// Synthesize a truncated TurnComplete only when no wire
-		// TurnComplete is expected downstream. `meta.expect_turn_complete`
-		// opts in to "the subprocess is still alive, a real wire
-		// TurnComplete will still arrive" — the common case for a fatal
-		// EventError that represents a mid-turn refusal. Absent that
-		// opt-in we assume the subprocess exited (stdout EOF, crash)
-		// and emit the synthetic TurnComplete so the frontend working
-		// indicator flips off even without a wire event.
-		if !fatalExpectsWireTurnComplete(evt.Meta) {
-			if err := r.synthesizeTruncatedTurnComplete(evt.ThreadID, now); err != nil {
-				return err
-			}
 		}
 	}
 
+	return nil
+}
+
+func (r *Router) finishFatalProviderError(threadID string, now int64, summary string, meta json.RawMessage) error {
+	if err := r.drainInterruptQueue(threadID, true); err != nil {
+		return err
+	}
+	r.clearOpenTurn(threadID)
+	r.closeTurnSpan(threadID, errors.New(summary))
+
+	// Synthesize a truncated TurnComplete only when no wire
+	// TurnComplete is expected downstream. `meta.expect_turn_complete`
+	// opts in to "the subprocess is still alive, a real wire
+	// TurnComplete will still arrive" — the common case for a fatal
+	// EventError that represents a mid-turn refusal. Absent that
+	// opt-in we assume the subprocess exited (stdout EOF, crash)
+	// and emit the synthetic TurnComplete so the frontend working
+	// indicator flips off even without a wire event.
+	if !fatalExpectsWireTurnComplete(meta) {
+		if err := r.synthesizeTruncatedTurnComplete(threadID, now); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -861,8 +878,50 @@ func apiErrorEnum(meta json.RawMessage) string {
 	if json.Unmarshal(meta, &m) != nil {
 		return ""
 	}
-	enum, _ := m["error"].(string)
-	return strings.TrimSpace(enum)
+	enum, _ := m["api_error_enum"].(string)
+	if enum = strings.TrimSpace(enum); enum != "" {
+		return enum
+	}
+
+	enum, _ = m["error"].(string)
+	enum = strings.TrimSpace(enum)
+	if enum == "" || !isLegacyAssistantErrorMeta(m, enum) {
+		return ""
+	}
+	return enum
+}
+
+func isLegacyAssistantErrorMeta(meta map[string]any, enum string) bool {
+	// Backwards-compatible with older live Claude assistant.error events:
+	// they carried the enum in meta.error and were tagged as expecting a
+	// real result envelope. Codex fatal notifications also used
+	// meta.error for raw human text, but do not carry this opt-in.
+	expectTurnComplete, _ := meta["expect_turn_complete"].(bool)
+	return expectTurnComplete && isLegacyAssistantErrorEnum(enum)
+}
+
+func isLegacyAssistantErrorEnum(enum string) bool {
+	switch enum {
+	case "authentication_failed",
+		"billing_error",
+		"rate_limit",
+		"invalid_request",
+		"server_error",
+		"unknown",
+		"max_output_tokens":
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *Router) hasMatchingErrorItem(threadID string, turnIndex int, kind string, summary string, parentID string) bool {
+	found, err := r.store.HasMatchingSystemItem(threadID, turnIndex, kind, parentID, summary)
+	if err != nil {
+		log.Printf("triage: matching error row duplicate check: %v", err)
+		return false
+	}
+	return found
 }
 
 // fatalExpectsWireTurnComplete reports whether a fatal error carries

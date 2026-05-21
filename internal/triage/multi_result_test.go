@@ -988,6 +988,7 @@ func TestAssistantErrorThenResultSettlesExactlyOnce(t *testing.T) {
 	// expect_turn_complete:true, error: rate_limit}. The opt-in flag
 	// suppresses synthesis so the real wire result settles the turn.
 	errMeta, _ := json.Marshal(map[string]any{
+		"api_error_enum":       "rate_limit",
 		"fatal":                true,
 		"expect_turn_complete": true,
 		"error":                "rate_limit",
@@ -1052,6 +1053,153 @@ func TestAssistantErrorThenResultSettlesExactlyOnce(t *testing.T) {
 	}
 	if turn.ErrorMessage != apiError {
 		t.Fatalf("turn errorMessage = %q, want %q", turn.ErrorMessage, apiError)
+	}
+}
+
+func TestNormalizedAPIErrorEnumCreatesAPIErrorRow(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	errMeta, _ := json.Marshal(map[string]any{
+		"api_error_enum": "future_provider_enum",
+		"error":          "future_provider_enum",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventError, ThreadID: "t1",
+		Content: "Future provider API error", Meta: errMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("api error: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %+v, want exactly one api_error row", items)
+	}
+	if items[0].Kind != itemKindAPIError {
+		t.Fatalf("kind = %q, want %q", items[0].Kind, itemKindAPIError)
+	}
+}
+
+func TestCodexFatalNotificationAndFailedTurnCreateOneGenericErrorRow(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	const errorMessage = "Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again."
+	codexMeta, _ := json.Marshal(map[string]any{
+		"fatal": true,
+		"error": errorMessage,
+		"wire": map[string]any{
+			"error": map[string]any{"message": errorMessage},
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventError, ThreadID: "t1",
+		Content: errorMessage, Meta: codexMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("codex fatal notification: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventError, ThreadID: "t1",
+		Content:   errorMessage,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("codex failed turn duplicate: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	var genericErrors, apiErrors int
+	for _, it := range items {
+		switch it.Kind {
+		case "error":
+			genericErrors++
+			if it.Summary != errorMessage {
+				t.Fatalf("error summary = %q, want %q", it.Summary, errorMessage)
+			}
+		case itemKindAPIError:
+			apiErrors++
+		}
+	}
+	if genericErrors != 1 {
+		t.Fatalf("generic error rows = %d, want 1; items=%+v", genericErrors, items)
+	}
+	if apiErrors != 0 {
+		t.Fatalf("api_error rows = %d, want 0; items=%+v", apiErrors, items)
+	}
+}
+
+func TestDuplicateFatalErrorStillDrainsInterruptQueue(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	const errorMessage = "provider failure"
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventError, ThreadID: "t1",
+		Content:   errorMessage,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("non-fatal error: %v", err)
+	}
+
+	insertToolCallItem(t, st, "t1", "launch-ok", "Bash", "Bash", statusRunning)
+	valid := validDrainCompletion("complete:launch-ok", "launch-ok", 11, 2)
+	valid.item.Status = statusCompleted
+	router.mu.Lock()
+	router.interruptQueue["t1"] = []queuedPersistence{valid}
+	router.mu.Unlock()
+
+	fatalMeta, _ := json.Marshal(map[string]any{"fatal": true})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventError, ThreadID: "t1",
+		Content: errorMessage, Meta: fatalMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("duplicate fatal error: %v", err)
+	}
+
+	done := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(done) != 1 {
+		t.Fatalf("background_done rows = %+v, want one drained row", done)
+	}
+	if done[0].Status != statusErrored {
+		t.Fatalf("background_done status = %q, want %q", done[0].Status, statusErrored)
+	}
+	if !strings.Contains(done[0].Summary, "— interrupted") {
+		t.Fatalf("background_done summary = %q, want interrupted suffix", done[0].Summary)
+	}
+
+	errors := findItemsByKind(t, st, "t1", "error")
+	if len(errors) != 1 {
+		t.Fatalf("error rows = %+v, want duplicate fatal to reuse existing row", errors)
 	}
 }
 

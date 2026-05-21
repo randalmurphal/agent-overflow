@@ -325,6 +325,28 @@ func (s *Store) ListTurnItemsSansPayload(threadID string, turnIndex int) ([]Item
 	return items, rows.Err()
 }
 
+func (s *Store) HasMatchingSystemItem(threadID string, turnIndex int, kind, parentID, summary string) (bool, error) {
+	var exists int
+	err := s.db.QueryRow(
+		`SELECT EXISTS(
+			SELECT 1
+			  FROM items
+			 WHERE thread_id = ?
+			   AND turn_index = ?
+			   AND kind = ?
+			   AND role = 'system'
+			   AND parent_id = ?
+			   AND summary = ?
+			 LIMIT 1
+		)`,
+		threadID, turnIndex, kind, parentID, summary,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("store: matching system item for thread %s turn %d: %w", threadID, turnIndex, err)
+	}
+	return exists != 0, nil
+}
+
 // LatestToolCallByName returns the most-recently-inserted tool_call row
 // in (threadID, turnIndex) whose lower(tool_name) equals any of
 // toolNames. Matches the iteration pattern in triage.findLatestToolCall

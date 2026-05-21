@@ -1609,6 +1609,41 @@ func TestListTurnItemsSansPayloadSkipsPayloadJoin(t *testing.T) {
 	}
 }
 
+func TestHasMatchingSystemItemScopesExactErrorRow(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	if err := s.CreateThread(Thread{
+		ID: "t-match", ProjectID: defaultTestProjectID, Title: "T", Provider: "codex", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	if _, err := s.AppendItem(Item{
+		ID: "error-1", ThreadID: "t-match", TurnIndex: 0, Kind: "error",
+		Role: "system", Status: "completed", Summary: "same failure",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("append error item: %v", err)
+	}
+
+	found, err := s.HasMatchingSystemItem("t-match", 0, "error", "", "same failure")
+	if err != nil {
+		t.Fatalf("HasMatchingSystemItem exact: %v", err)
+	}
+	if !found {
+		t.Fatal("expected exact system error match")
+	}
+
+	found, err = s.HasMatchingSystemItem("t-match", 0, "api_error", "", "same failure")
+	if err != nil {
+		t.Fatalf("HasMatchingSystemItem wrong kind: %v", err)
+	}
+	if found {
+		t.Fatal("wrong kind matched")
+	}
+}
+
 // TestForceCloseRunningToolCallsInTurnFlipsOnlyOrphanInlineTools pins
 // the three-way filter in the new accessor: only rows that are
 // (1) kind=tool_call, (2) status=running, (3) is_background=0 flip. A

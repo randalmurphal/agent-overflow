@@ -58,6 +58,9 @@ func TestParseAssistant_ErrorEnumEmitsFatalEventError(t *testing.T) {
 			if meta["error"] != tc.enum {
 				t.Fatalf("meta.error: got %v, want %q", meta["error"], tc.enum)
 			}
+			if meta["api_error_enum"] != tc.enum {
+				t.Fatalf("meta.api_error_enum: got %v, want %q", meta["api_error_enum"], tc.enum)
+			}
 			if v, ok := meta["fatal"].(bool); !ok || !v {
 				t.Fatalf("meta.fatal: got %v, want true", meta["fatal"])
 			}
