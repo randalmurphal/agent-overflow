@@ -9,7 +9,7 @@
 			"FileDescription": "Desktop app for using coding agents with a shared UX",
 			"LegalCopyright": "(c) 2026, Randy Murphy",
 			"ProductName": "Agent Overflow",
-			"Comments": "Wails v3 + Svelte 5 + Go"
+			"Comments": "Desktop app for using coding agents with a shared UX"
 		}
 	}
 }

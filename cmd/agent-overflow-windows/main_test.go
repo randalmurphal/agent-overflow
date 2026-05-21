@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -126,6 +127,34 @@ func TestForwardDebugEnvToWSL_PrependsToExistingWSLENV(t *testing.T) {
 	}
 	if !strings.Contains(got, prior) {
 		t.Errorf("WSLENV = %q, lost prior rules %q", got, prior)
+	}
+}
+
+func TestOpenLogPermissionConstants(t *testing.T) {
+	if launcherPrivateDirPerm != 0o700 {
+		t.Fatalf("launcherPrivateDirPerm = %o, want 700", launcherPrivateDirPerm)
+	}
+	if launcherLogFilePerm != 0o600 {
+		t.Fatalf("launcherLogFilePerm = %o, want 600", launcherLogFilePerm)
+	}
+}
+
+func TestOpenLogCreatesLogUnderAppData(t *testing.T) {
+	appData := t.TempDir()
+	t.Setenv("APPDATA", appData)
+
+	f, err := openLog()
+	if err != nil {
+		t.Fatalf("openLog: %v", err)
+	}
+	defer f.Close()
+
+	want := filepath.Join(appData, "agent-overflow", "launcher.log")
+	if f.Name() != want {
+		t.Fatalf("log path = %q, want %q", f.Name(), want)
+	}
+	if _, err := f.WriteString("hello\n"); err != nil {
+		t.Fatalf("write log: %v", err)
 	}
 }
 

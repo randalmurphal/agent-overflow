@@ -2,6 +2,7 @@
 build/bin/
 frontend/dist/
 bin/
+dist/
 
 # Task runner cache
 .task/

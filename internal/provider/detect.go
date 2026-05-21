@@ -34,8 +34,8 @@ type ProviderStatus struct {
 // given binaryPath) and attempts to retrieve its version.
 //
 // name must be "claude" or "codex" — it selects the version-parsing function.
-// If the binary is found but the version command fails, the provider is still
-// reported as "ready" with an empty version and the error in Message.
+// If the binary is found but the version command fails, the provider is
+// reported as installed-but-unusable with Status="error".
 func DetectProvider(name, binaryPath string) ProviderStatus {
 	resolvedPath, err := exec.LookPath(binaryPath)
 	if err != nil {
@@ -69,6 +69,7 @@ func DetectProvider(name, binaryPath string) ProviderStatus {
 	}
 
 	if versionErr != nil {
+		status.Status = "error"
 		status.Message = fmt.Sprintf("version check failed: %v", versionErr)
 		return status
 	}

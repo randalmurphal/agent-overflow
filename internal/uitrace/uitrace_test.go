@@ -3,6 +3,7 @@ package uitrace
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +37,28 @@ func TestAppendWritesJSONLines(t *testing.T) {
 	if got[0] != `{"label":"chat.state","data":{"threadId":"thread-1"}}` {
 		t.Fatalf("first line = %q", got[0])
 	}
+}
+
+func TestAppendUsesPrivatePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits are not stable on Windows")
+	}
+	dir := t.TempDir()
+	traceDir := filepath.Join(dir, DirName)
+	if err := os.MkdirAll(traceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	tr, err := New(dir)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	if _, err := tr.Append([]string{`{"label":"chat.state"}`}); err != nil {
+		t.Fatalf("Append returned error: %v", err)
+	}
+
+	assertMode(t, traceDir, 0o700)
+	assertMode(t, tr.Path(), 0o600)
 }
 
 func TestAppendEmptyBatchIsNoOp(t *testing.T) {
@@ -338,5 +361,16 @@ func TestBookmarkWhenNoTraceExistsReturnsEmpty(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("bookmark dir has %d entries, want 0", len(entries))
+	}
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("mode %s = %o, want %o", path, got, want)
 	}
 }

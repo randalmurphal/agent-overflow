@@ -11,6 +11,11 @@ import (
 
 const defaultMaxBytes int64 = 10 * 1024 * 1024 // 10 MB
 
+const (
+	privateDirPerm    os.FileMode = 0o700
+	sensitiveFilePerm os.FileMode = 0o600
+)
+
 // LogEntry is a single structured log record serialized as one JSON line.
 type LogEntry struct {
 	Timestamp string `json:"ts"`
@@ -39,13 +44,17 @@ func NewLogger(path string, maxBytes int64) (*Logger, error) {
 	}
 
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := ensurePrivateDir(dir); err != nil {
 		return nil, fmt.Errorf("logging: create parent dirs: %w", err)
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, sensitiveFilePerm)
 	if err != nil {
 		return nil, fmt.Errorf("logging: open file: %w", err)
+	}
+	if err := chmodSensitiveFile(path); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("logging: repair file permissions: %w", err)
 	}
 
 	info, err := f.Stat()
@@ -114,23 +123,50 @@ func (l *Logger) rotate() error {
 	if err := os.Rename(l.path, backup1); err != nil {
 		// If renaming current file fails, try to reopen it anyway so the
 		// logger remains usable.
-		f, openErr := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		f, openErr := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, sensitiveFilePerm)
 		if openErr != nil {
 			l.file = nil
 			return fmt.Errorf("rename current and reopen: %w (rename: %w)", openErr, err)
 		}
+		_ = chmodSensitiveFile(l.path)
 		l.file = f
 		return fmt.Errorf("rename current to .1: %w", err)
 	}
+	_ = chmodSensitiveFile(backup1)
+	_ = chmodSensitiveFile(backup2)
+	_ = chmodSensitiveFile(backup3)
 
-	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, sensitiveFilePerm)
 	if err != nil {
 		l.file = nil
 		return fmt.Errorf("create new log file: %w", err)
 	}
+	if err := chmodSensitiveFile(l.path); err != nil {
+		_ = f.Close()
+		l.file = nil
+		return fmt.Errorf("repair new log file permissions: %w", err)
+	}
 	l.file = f
 	l.written = 0
 	return nil
+}
+
+func ensurePrivateDir(path string) error {
+	if err := os.MkdirAll(path, privateDirPerm); err != nil {
+		return err
+	}
+	return os.Chmod(path, privateDirPerm)
+}
+
+func chmodSensitiveFile(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil
+	}
+	return os.Chmod(path, sensitiveFilePerm)
 }
 
 func (l *Logger) logValue(value any) error {

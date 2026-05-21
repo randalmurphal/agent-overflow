@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -187,6 +188,43 @@ func TestUpdatePersistsAndMergesOverDefaults(t *testing.T) {
 	if !seenThreadJump {
 		t.Fatal("default thread.jump.1 binding missing after override")
 	}
+}
+
+func TestUpdateUsesPrivatePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits are not stable on Windows")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	svc, err := New(dir)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := svc.Update([]Keybinding{{Key: "mod+k", Command: "palette.open"}}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	assertMode(t, dir, 0o700)
+	assertMode(t, svc.Path(), 0o600)
+}
+
+func TestGetRepairsExistingFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits are not stable on Windows")
+	}
+	svc := newServiceWithTempDir(t)
+	if err := os.WriteFile(svc.Path(), []byte(`[{"key":"mod+k","command":"palette.open"}]`), 0o644); err != nil {
+		t.Fatalf("writing keybindings file: %v", err)
+	}
+
+	if _, err := svc.Get(); err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+
+	assertMode(t, svc.Path(), 0o600)
 }
 
 func TestUpdateRejectsEmptyKeyOrCommand(t *testing.T) {
@@ -402,5 +440,16 @@ func TestPathLayout(t *testing.T) {
 	want := filepath.Join(dir, FileName)
 	if svc.Path() != want {
 		t.Fatalf("Path() = %q, want %q", svc.Path(), want)
+	}
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("mode %s = %o, want %o", path, got, want)
 	}
 }

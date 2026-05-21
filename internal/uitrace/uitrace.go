@@ -23,6 +23,9 @@ const (
 	MaxBatchBytes  = 2 * 1024 * 1024
 	MaxLineBytes   = 64 * 1024
 	MaxFileBytes   = 10 * 1024 * 1024
+
+	privateDirPerm    os.FileMode = 0o700
+	sensitiveFilePerm os.FileMode = 0o600
 )
 
 // Tracer appends compact dev-only UI render trace records to a JSONL
@@ -75,16 +78,20 @@ func (t *Tracer) Append(lines []string) (string, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if err := os.MkdirAll(filepath.Dir(t.path), 0755); err != nil {
+	if err := ensurePrivateDir(filepath.Dir(t.path)); err != nil {
 		return "", fmt.Errorf("create ui trace directory: %w", err)
 	}
 	if err := rotateIfNeeded(t.path, int64(byteCount)); err != nil {
 		return "", err
 	}
 
-	file, err := os.OpenFile(t.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(t.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, sensitiveFilePerm)
 	if err != nil {
 		return "", fmt.Errorf("open ui trace file: %w", err)
+	}
+	if err := chmodSensitiveFile(t.path); err != nil {
+		_ = file.Close()
+		return "", fmt.Errorf("repair ui trace file permissions: %w", err)
 	}
 	defer file.Close()
 
@@ -113,15 +120,19 @@ func (t *Tracer) Bookmark(now time.Time) (string, error) {
 	defer t.mu.Unlock()
 
 	bookmarkDir := filepath.Join(filepath.Dir(t.path), BookmarkSubdir)
-	if err := os.MkdirAll(bookmarkDir, 0755); err != nil {
+	if err := ensurePrivateDir(bookmarkDir); err != nil {
 		return "", fmt.Errorf("create ui trace bookmark directory: %w", err)
 	}
 	name := fmt.Sprintf("bug-report-%s.jsonl", now.UTC().Format("20060102T150405Z"))
 	dest := filepath.Join(bookmarkDir, name)
 
-	out, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, sensitiveFilePerm)
 	if err != nil {
 		return "", fmt.Errorf("create ui trace bookmark file: %w", err)
+	}
+	if err := chmodSensitiveFile(dest); err != nil {
+		_ = out.Close()
+		return "", fmt.Errorf("repair ui trace bookmark permissions: %w", err)
 	}
 	defer out.Close()
 
@@ -202,5 +213,26 @@ func rotateIfNeeded(path string, pendingBytes int64) error {
 	if err := os.Rename(path, rotatedPath); err != nil {
 		return fmt.Errorf("rotate ui trace file: %w", err)
 	}
+	if err := chmodSensitiveFile(rotatedPath); err != nil {
+		return fmt.Errorf("repair rotated ui trace permissions: %w", err)
+	}
 	return nil
+}
+
+func ensurePrivateDir(path string) error {
+	if err := os.MkdirAll(path, privateDirPerm); err != nil {
+		return err
+	}
+	return os.Chmod(path, privateDirPerm)
+}
+
+func chmodSensitiveFile(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil
+	}
+	return os.Chmod(path, sensitiveFilePerm)
 }

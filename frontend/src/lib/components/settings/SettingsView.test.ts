@@ -39,6 +39,7 @@ const BASE_SETTINGS: Settings = {
 async function seed(): Promise<void> {
   setBindingMock('GetSettings', async () => BASE_SETTINGS);
   setBindingMock('UpdateSettings', async () => BASE_SETTINGS);
+  setBindingMock('Version', async () => '0.0.1');
   setBindingMock('GetProviderStatuses', async () => []);
   setBindingMock('GetModelsForProvider', async () => []);
   setBindingMock('ListDiscussions', async () => []);

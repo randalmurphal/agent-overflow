@@ -25,6 +25,7 @@
   import { MCPServer as MCPServerCtor } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
+  import ConfirmDialog from '../shared/ConfirmDialog.svelte';
 
   type ProviderKind = 'claude' | 'codex';
   type Transport = 'stdio' | 'http' | 'sse' | 'streamable_http';
@@ -35,6 +36,7 @@
   let saving = $state(false);
   let editing = $state<EditTarget | null>(null);
   let formError = $state<string | null>(null);
+  let pendingDelete = $state<MCPServer | null>(null);
 
   function emptyInitial() {
     return {
@@ -153,11 +155,14 @@
     }
   }
 
-  async function handleDelete(server: MCPServer): Promise<void> {
-    const confirmed = window.confirm(
-      `Delete MCP server "${server.name}"? This removes it from ${server.provider === 'claude' ? 'Claude' : 'Codex'} config.`,
-    );
-    if (!confirmed) return;
+  function requestDelete(server: MCPServer): void {
+    pendingDelete = server;
+  }
+
+  async function confirmDelete(): Promise<void> {
+    const server = pendingDelete;
+    pendingDelete = null;
+    if (!server) return;
     try {
       await mcpServersStore.deleteServer(server.provider, server.name);
       await mcpServersStore.loadAllProviders();
@@ -334,7 +339,7 @@
                   type="button"
                   title="Delete"
                   aria-label="Delete"
-                  onclick={() => void handleDelete(server)}
+                  onclick={() => requestDelete(server)}
                   class={GHOST_BUTTON_CLASS}
                   data-testid="mcp-delete-{server.provider}-{server.name}"
                 >
@@ -360,3 +365,15 @@
     </ul>
   {/if}
 </section>
+
+<ConfirmDialog
+  open={pendingDelete !== null}
+  title="Delete MCP Server"
+  description={pendingDelete
+    ? `Delete MCP server "${pendingDelete.name}"? This removes it from ${pendingDelete.provider === 'claude' ? 'Claude' : 'Codex'} config.`
+    : ''}
+  confirmLabel="Delete"
+  destructive={true}
+  onConfirm={() => { void confirmDelete(); }}
+  onCancel={() => { pendingDelete = null; }}
+/>

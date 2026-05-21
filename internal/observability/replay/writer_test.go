@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,29 @@ func TestNewWriterCreatesParentDir(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("file not created: %v", err)
 	}
+}
+
+func TestNewWriterUsesPrivatePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits are not stable on Windows")
+	}
+	dir := filepath.Join(t.TempDir(), "replay")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	path := filepath.Join(dir, "thread-a.jsonl")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	w, err := NewWriter(path, WriterConfig{})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	defer w.Close()
+
+	assertMode(t, dir, 0o700)
+	assertMode(t, path, 0o600)
 }
 
 func TestWriterWriteAppendsNDJSON(t *testing.T) {
@@ -294,5 +318,16 @@ func TestWriterContentIsLineDelimited(t *testing.T) {
 	}
 	if count != 10 {
 		t.Errorf("parsed %d lines, want 10", count)
+	}
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("mode %s = %o, want %o", path, got, want)
 	}
 }

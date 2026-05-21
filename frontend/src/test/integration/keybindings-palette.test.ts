@@ -115,7 +115,38 @@ describe('App integration — keybindings + palette', () => {
     await fireEvent.keyDown(input, { key: 'Enter' });
     await flush(10);
 
+    expect(archiveMock).not.toHaveBeenCalled();
+    await waitFor(() => expect(rendered.getByRole('dialog', { name: 'Archive Thread' })).toBeInTheDocument());
+    await fireEvent.click(rendered.getByRole('button', { name: 'Archive' }));
+    await flush(10);
+
     await waitFor(() => expect(archiveMock).toHaveBeenCalled());
+  });
+
+  it('palette thread delete requires confirmation before deleting', async () => {
+    const thread = makeThread({ title: 'To Be Deleted' });
+    const deleteMock = setBindingMock('DeleteThread', async () => {});
+    setBindingMock('StopSession', async () => {});
+    const rendered = await mountBareApp([thread]);
+    const rows = rendered.getAllByText(thread.title);
+    await fireEvent.click(rows[0]);
+    await flush(15);
+
+    const { openPalette } = await import('../../lib/stores/palette.svelte');
+    openPalette();
+    await flush();
+    const input = rendered.getByTestId('command-palette-input') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'thread delete' } });
+    await flush();
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    await flush(10);
+
+    expect(deleteMock).not.toHaveBeenCalled();
+    await waitFor(() => expect(rendered.getByRole('dialog', { name: 'Delete Thread' })).toBeInTheDocument());
+    await fireEvent.click(rendered.getByRole('button', { name: 'Delete' }));
+    await flush(10);
+
+    await waitFor(() => expect(deleteMock).toHaveBeenCalled());
   });
 
   it('Escape closes the palette and returns to the app shell', async () => {

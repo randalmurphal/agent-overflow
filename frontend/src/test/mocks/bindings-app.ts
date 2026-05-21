@@ -125,6 +125,7 @@ export const ListPayloadMetas = dispatch('ListPayloadMetas');
 
 export const GetSettings = dispatch('GetSettings');
 export const UpdateSettings = dispatch('UpdateSettings');
+export const Version = dispatch('Version');
 
 // Per-provider/model context window + auto-compact thresholds.
 // GetContextSettings hydrates the form; the two updates persist either

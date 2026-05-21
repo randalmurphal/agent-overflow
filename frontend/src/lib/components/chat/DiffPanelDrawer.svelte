@@ -27,6 +27,7 @@
   import DiffPanelHeaderBar from './diff-panel/DiffPanelHeaderBar.svelte';
   import DiffPanelChipStrip from './diff-panel/DiffPanelChipStrip.svelte';
   import DiffPanelFileCard from './diff-panel/DiffPanelFileCard.svelte';
+  import ConfirmDialog from '../shared/ConfirmDialog.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -40,6 +41,7 @@
   let editingCommentId = $state<string | null>(null);
   let editingBody = $state('');
   let sendingComments = $state(false);
+  let confirmExpandAll = $state(false);
   let checkpointRequestID = 0;
   let diffRequestID = 0;
   let commentsRequestID = 0;
@@ -169,10 +171,16 @@
   }
 
   function setAllFiles(open: boolean): void {
-    if (open && totals.files > 40 && !window.confirm(`Expand all ${totals.files} changed files? Large diffs can take a moment to render.`)) {
+    if (open && totals.files > 40) {
+      confirmExpandAll = true;
       return;
     }
     expanded = open ? new Set(fileRows.map((row) => row.rowId)) : new Set();
+  }
+
+  function confirmExpandAllFiles(): void {
+    confirmExpandAll = false;
+    expanded = new Set(fileRows.map((row) => row.rowId));
   }
 
   async function createComment(input: DiffReviewCommentInput): Promise<void> {
@@ -390,3 +398,12 @@
     {/if}
   </div>
 </section>
+
+<ConfirmDialog
+  open={confirmExpandAll}
+  title="Expand All Files"
+  description={`Expand all ${totals.files} changed files? Large diffs can take a moment to render.`}
+  confirmLabel="Expand all"
+  onConfirm={confirmExpandAllFiles}
+  onCancel={() => { confirmExpandAll = false; }}
+/>

@@ -30,19 +30,19 @@ import {
   focusPaneComposerIfEditableActive,
   isPaneComposerFocused,
 } from '../components/panes/paneComposerFocus';
-import { getThreadById, removeThread } from './threads.svelte';
-import { forkThreadAction } from '../components/sidebar/threadRowActions';
+import { getThreadById } from './threads.svelte';
+import {
+  archiveThreadAction,
+  deleteThreadAction,
+  forkThreadAction,
+  type ThreadActionCtx,
+} from '../components/sidebar/threadRowActions';
 import { userFacingError } from '../utils/userFacingError';
 import { getTerminalFocused } from '../components/terminal/terminalStore.svelte';
 import {
   ApprovalResponse,
-  ArchiveThread,
-  DeleteThread,
-  StopSession,
-  GitCommit,
   GitPull,
   GitPush,
-  GitCreatePR,
   InterruptTurn,
   RespondToApproval,
   RespondToUserInput,
@@ -53,6 +53,8 @@ import {
 import { cycleMode } from '../utils/modeCycle';
 import { runInterruptOrRevert } from './revertOnInterrupt.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
+import { getSettings } from './settings.svelte';
+import { requestThreadActionConfirmation } from './threadActionConfirmations.svelte';
 import {
   clearSidebarCursor,
   getSidebarCursorThreadId,
@@ -90,6 +92,17 @@ function withActiveThread(
     return;
   }
   void run(pane.thread, pane);
+}
+
+function commandThreadActionCtx(thread: Thread, pane: ThreadPane): ThreadActionCtx {
+  return {
+    thread,
+    isActive: pane.threadId === thread.id,
+    clearPane: () => pane.clear(),
+    switchPane: async (next) => { await openThreadInPane(next, pane); },
+    reportError: (msg) => pane.setGeneralError(msg),
+    replacePaneThread: (next) => pane.replaceThread(next),
+  };
 }
 
 export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
@@ -260,21 +273,12 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     when: 'hasActiveThread',
     run: (ctx) =>
       withActiveThread(ctx, async (t, pane) => {
-        try {
-          // StopSession can fail if the provider process is already gone;
-          // that's fine — we log and continue so the archive still lands.
-          // Swallowing silently would hide stuck-session errors that
-          // otherwise require a user-visible retry.
-          await StopSession(t.id).catch((stopErr) => {
-            console.error('Failed to stop session before archive:', stopErr);
-          });
-          await ArchiveThread(t.id);
-          removeThread(t.id);
-          pane.clear();
-          addToast('info', 'Thread archived.');
-        } catch (err) {
-          addToast('error', userFacingError(err));
+        const actionCtx = commandThreadActionCtx(t, pane);
+        if (getSettings().confirmArchive) {
+          requestThreadActionConfirmation('archive', actionCtx);
+          return;
         }
+        await archiveThreadAction(actionCtx);
       }),
   });
 
@@ -306,20 +310,16 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     when: 'hasActiveThread',
     run: (ctx) =>
       withActiveThread(ctx, async (t, pane) => {
-        try {
-          // Same rationale as thread.archive above — log instead of
-          // silently swallowing a StopSession failure so the cleanup
-          // doesn't become invisible debt.
-          await StopSession(t.id).catch((stopErr) => {
-            console.error('Failed to stop session before delete:', stopErr);
-          });
-          await DeleteThread(t.id);
-          removeThread(t.id);
-          pane.clear();
-          addToast('info', 'Thread deleted.');
-        } catch (err) {
-          addToast('error', userFacingError(err));
+        if (t.parentThreadId) {
+          addToast('warning', 'Discussion child threads are deleted with their parent.');
+          return;
         }
+        const actionCtx = commandThreadActionCtx(t, pane);
+        if (getSettings().confirmDelete) {
+          requestThreadActionConfirmation('delete', actionCtx);
+          return;
+        }
+        await deleteThreadAction(actionCtx);
       }),
   });
 
@@ -696,15 +696,8 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '✓',
     when: 'hasActiveThread',
     run: (ctx) =>
-      withActiveThread(ctx, async (t) => {
-        const subject = window.prompt('Commit subject');
-        if (!subject) return;
-        try {
-          await GitCommit(t.id, subject, '');
-          addToast('success', 'Commit created.');
-        } catch (err) {
-          addToast('error', userFacingError(err));
-        }
+      withActiveThread(ctx, (_t, pane) => {
+        openShipChanges(pane.paneId);
       }),
   });
 
@@ -746,15 +739,8 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '⇥',
     when: 'hasActiveThread',
     run: (ctx) =>
-      withActiveThread(ctx, async (t) => {
-        const title = window.prompt('Pull/merge request title', t.title);
-        if (!title) return;
-        try {
-          await GitCreatePR(t.id, title, '', false);
-          addToast('success', 'Request opened.');
-        } catch (err) {
-          addToast('error', userFacingError(err));
-        }
+      withActiveThread(ctx, (_t, pane) => {
+        openShipChanges(pane.paneId);
       }),
   });
 

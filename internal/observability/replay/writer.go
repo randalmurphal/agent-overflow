@@ -19,6 +19,9 @@ const (
 	// batch so the hot path stays fast; the trade-off is up to N unflushed
 	// events can be lost if the app crashes uncleanly.
 	defaultFsyncEvery int = 64
+
+	privateDirPerm    os.FileMode = 0o700
+	sensitiveFilePerm os.FileMode = 0o600
 )
 
 // Writer is an append-only NDJSON writer for one thread's replay log.
@@ -53,12 +56,16 @@ type WriterConfig struct {
 // so reopening an existing file preserves earlier records.
 func NewWriter(path string, cfg WriterConfig) (*Writer, error) {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := ensurePrivateDir(dir); err != nil {
 		return nil, fmt.Errorf("replay: create parent dirs %s: %w", dir, err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, sensitiveFilePerm)
 	if err != nil {
 		return nil, fmt.Errorf("replay: open %s: %w", path, err)
+	}
+	if err := chmodSensitiveFile(path); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("replay: repair file permissions %s: %w", path, err)
 	}
 	info, err := f.Stat()
 	if err != nil {
@@ -176,22 +183,49 @@ func (w *Writer) rotate() error {
 	_ = os.Rename(backup1, backup2)
 	if err := os.Rename(w.path, backup1); err != nil {
 		// Best-effort: try to reopen the current file so we stay usable.
-		f, openErr := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		f, openErr := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, sensitiveFilePerm)
 		if openErr != nil {
 			w.file = nil
 			return fmt.Errorf("rename current and reopen: %w (rename: %w)", openErr, err)
 		}
+		_ = chmodSensitiveFile(w.path)
 		w.file = f
 		return fmt.Errorf("rename current to .1: %w", err)
 	}
+	_ = chmodSensitiveFile(backup1)
+	_ = chmodSensitiveFile(backup2)
+	_ = chmodSensitiveFile(backup3)
 
-	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, sensitiveFilePerm)
 	if err != nil {
 		w.file = nil
 		return fmt.Errorf("create new file after rotate: %w", err)
+	}
+	if err := chmodSensitiveFile(w.path); err != nil {
+		_ = f.Close()
+		w.file = nil
+		return fmt.Errorf("repair new replay file permissions: %w", err)
 	}
 	w.file = f
 	w.written = 0
 	w.writesSince = 0
 	return nil
+}
+
+func ensurePrivateDir(path string) error {
+	if err := os.MkdirAll(path, privateDirPerm); err != nil {
+		return err
+	}
+	return os.Chmod(path, privateDirPerm)
+}
+
+func chmodSensitiveFile(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil
+	}
+	return os.Chmod(path, sensitiveFilePerm)
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +97,35 @@ func TestNewStoreRejectsNegativeMaxSize(t *testing.T) {
 	}
 }
 
+func TestNewStoreRepairsPrivatePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits are not stable on Windows")
+	}
+	meta, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { meta.Close() })
+
+	root := filepath.Join(t.TempDir(), "attachments")
+	threadDir := filepath.Join(root, "thread-a")
+	filePath := filepath.Join(threadDir, "image.png")
+	if err := os.MkdirAll(threadDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filePath, []byte("png"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := NewStore(Config{RootDir: root}, meta); err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	assertMode(t, root, 0o700)
+	assertMode(t, threadDir, 0o700)
+	assertMode(t, filePath, 0o600)
+}
+
 func TestUploadAndReadRoundTrip(t *testing.T) {
 	attStore, meta := newTestStores(t)
 	seedThread(t, meta, "t1")
@@ -135,6 +165,14 @@ func TestUploadAndReadRoundTrip(t *testing.T) {
 	}
 	if len(bytes) != int(record.Size) {
 		t.Fatalf("size mismatch: got %d want %d", len(bytes), record.Size)
+	}
+	if runtime.GOOS != "windows" {
+		_, path, ok, err := attStore.Get(record.ID)
+		if err != nil || !ok {
+			t.Fatalf("Get: ok=%v err=%v", ok, err)
+		}
+		assertMode(t, filepath.Dir(path), 0o700)
+		assertMode(t, path, 0o600)
 	}
 }
 
@@ -458,5 +496,16 @@ func TestUploadSanitisesThreadIDToPreventEscape(t *testing.T) {
 	absPath := filepath.Join(attStore.root, record.RelativePath)
 	if !strings.HasPrefix(absPath, attStore.root) {
 		t.Fatalf("path %q escaped root %q", absPath, attStore.root)
+	}
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("mode %s = %o, want %o", path, got, want)
 	}
 }

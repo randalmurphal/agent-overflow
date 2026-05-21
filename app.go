@@ -59,6 +59,11 @@ func (a *App) DesignServer() http.Handler {
 // succeed because the app is tearing down.
 var ErrShuttingDown = errors.New("app: shutting down")
 
+const (
+	appPrivateDirPerm    os.FileMode = 0o700
+	appSensitiveFilePerm os.FileMode = 0o600
+)
+
 // App is the primary Wails-bound struct, registered as a v3 service.
 type App struct {
 	app         *application.App
@@ -482,14 +487,27 @@ func (a *App) initStores() (string, *store.Store, error) {
 		dataDir = homeDir
 	}
 	dbDir := filepath.Join(dataDir, "agent-overflow")
-	if err := os.MkdirAll(dbDir, 0755); err != nil {
+	if err := ensureAppPrivateDir(dbDir); err != nil {
 		return "", nil, fmt.Errorf("failed to create data directory %s: %w", dbDir, err)
 	}
+	if err := repairStartupOwnedPaths(dbDir); err != nil {
+		return "", nil, err
+	}
 	dbPath := filepath.Join(dbDir, "agent-overflow.db")
+	if err := prepareAppSensitiveFile(dbPath); err != nil {
+		return "", nil, fmt.Errorf("failed to prepare database file %s: %w", dbPath, err)
+	}
 
 	st, err := store.New(dbPath)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to open database: %w", err)
+	}
+	if err := repairSQLiteSidecarPermissions(dbPath); err != nil {
+		closeErr := st.Close()
+		return "", nil, errors.Join(
+			fmt.Errorf("failed to repair database file permissions: %w", err),
+			errorsx.WrapLifecycle("close store after database permission repair failure", closeErr),
+		)
 	}
 
 	a.store = st
@@ -505,6 +523,117 @@ func (a *App) initStores() (string, *store.Store, error) {
 		)
 	}
 	return dbDir, st, nil
+}
+
+func repairStartupOwnedPaths(dbDir string) error {
+	for _, dir := range []string{
+		filepath.Join(dbDir, "logs"),
+		filepath.Join(dbDir, "attachments"),
+		filepath.Join(dbDir, "replay"),
+		filepath.Join(dbDir, uitrace.DirName),
+		filepath.Join(dbDir, uitrace.DirName, uitrace.BookmarkSubdir),
+	} {
+		if err := repairAppOwnedTreeIfExists(dir); err != nil {
+			return fmt.Errorf("failed to repair permissions for %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+func ensureAppPrivateDir(path string) error {
+	if err := os.MkdirAll(path, appPrivateDirPerm); err != nil {
+		return err
+	}
+	return os.Chmod(path, appPrivateDirPerm)
+}
+
+func repairAppOwnedTreeIfExists(root string) error {
+	info, err := os.Lstat(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil
+	}
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if entry.IsDir() {
+			return chmodIfModeDiffers(path, appPrivateDirPerm)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			return chmodIfModeDiffers(path, appSensitiveFilePerm)
+		}
+		return nil
+	})
+}
+
+func prepareAppSensitiveFile(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to use symlinked sensitive file")
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing to use non-regular sensitive file")
+		}
+	}
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, appSensitiveFilePerm)
+	if err != nil {
+		return err
+	}
+	if closeErr := file.Close(); closeErr != nil {
+		return closeErr
+	}
+	return chmodAppSensitiveFileIfExists(path)
+}
+
+func repairSQLiteSidecarPermissions(dbPath string) error {
+	for _, path := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if err := chmodAppSensitiveFileIfExists(path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func chmodAppSensitiveFileIfExists(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil
+	}
+	return chmodIfModeDiffers(path, appSensitiveFilePerm)
+}
+
+func chmodIfModeDiffers(path string, want os.FileMode) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode().Perm() == want {
+		return nil
+	}
+	return os.Chmod(path, want)
 }
 
 // initObservability wires the opt-in OTEL provider and the per-thread

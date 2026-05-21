@@ -6,7 +6,7 @@ performance, memory efficiency, and minimal code.
 
 ## Stack
 
-- **Backend**: Go 1.25, Wails v3 (system webview shell only), SQLite via
+- **Backend**: Go 1.26, Wails v3 (system webview shell only), SQLite via
   `modernc.org/sqlite` (pure Go, no CGO). WAL mode.
 - **Frontend**: Svelte 5 (runes), Vite 8 (Rolldown), Tailwind CSS 4, TypeScript.
 - **IPC**: HTTP+WebSocket via `internal/transport/`. Wails' binding generator
@@ -19,7 +19,7 @@ performance, memory efficiency, and minimal code.
 
 ## Commands
 
-Requires Go 1.25+, Node 24+, and pnpm 10+. On Linux, install
+Requires Go 1.26.2+, Node 24+, and pnpm 10+. On Linux, install
 `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `pkg-config`, and `gcc`
 before `make install`.
 
@@ -30,6 +30,8 @@ before `make install`.
 - `make go-test` — `go test ./...` with repo-standard platform env
 - `make check` — `make go-build` + `pnpm run check`
 - `make test` — `make go-test` + `pnpm test`
+- `make verify` — full release gate
+- `make release` — builds direct-install artifacts in `dist/release/<version>/`
 
 Every task must leave `make go-build`, `make go-test`, `pnpm run check`, and
 `pnpm run build` passing. On macOS, use the Make targets rather than bare

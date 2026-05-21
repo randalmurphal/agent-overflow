@@ -17,7 +17,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -60,6 +59,10 @@ const bootstrapStdoutPrefix = "__AO_BOOTSTRAP__:"
 // production Taskfiles read it as {{.VERSION}} and pass it through
 // ldflags. App.Version surfaces it on the wire for the Settings footer.
 var version = "dev"
+
+// nativeMode is stamped to "dev" by Wails dev builds. Production defaults to
+// embedded assets even if FRONTEND_DEVSERVER_URL leaks in from a dirty shell.
+var nativeMode = "prod"
 
 func main() {
 	flags, err := parseFlags(os.Args[1:])
@@ -581,10 +584,14 @@ func desktopSingleInstanceOptions(window func() *application.WebviewWindow) *app
 }
 
 func nativeSingleInstanceMode() string {
-	if os.Getenv("FRONTEND_DEVSERVER_URL") != "" || strings.Contains(filepath.Base(os.Args[0]), "agent-overflow-dev") {
+	if isNativeDevMode() {
 		return "dev"
 	}
 	return "prod"
+}
+
+func isNativeDevMode() bool {
+	return nativeMode == "dev"
 }
 
 func logBootPhase(phase string, started time.Time) {
@@ -625,16 +632,17 @@ func loadPersistedNetworkSettings() settings.NetworkSettings {
 // buildAssetHandler returns the http.Handler that the transport mounts
 // at "/" for non-RPC requests. Two cases:
 //
-//   - FRONTEND_DEVSERVER_URL set: `wails3 dev` is running the Vite dev
-//     server. We proxy every request through so HMR's WebSocket and
-//     module fetches reach the live bundler. Without this, the embedded
-//     dist would shadow the dev server and HMR breaks silently.
-//   - FRONTEND_DEVSERVER_URL empty: production / `wails3 build` path.
+//   - Dev build + FRONTEND_DEVSERVER_URL set: `wails3 dev` is running
+//     the Vite dev server. We proxy every request through so HMR's
+//     WebSocket and module fetches reach the live bundler. Production
+//     binaries deliberately ignore the env var so a dirty shell cannot
+//     replace the embedded release assets.
+//   - Otherwise: production / `wails3 build` path.
 //     Serve the embedded frontend/dist bundle. http.FS over fs.Sub is
 //     the safe pairing — http.Dir would expose path traversal of the
 //     developer's local filesystem.
 func buildAssetHandler(embeddedAssets embed.FS) (http.Handler, error) {
-	if devURL := os.Getenv("FRONTEND_DEVSERVER_URL"); devURL != "" {
+	if devURL := os.Getenv("FRONTEND_DEVSERVER_URL"); devURL != "" && isNativeDevMode() {
 		parsed, err := url.Parse(devURL)
 		if err != nil {
 			return nil, fmt.Errorf("parse FRONTEND_DEVSERVER_URL %q: %w", devURL, err)

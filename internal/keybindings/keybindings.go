@@ -36,6 +36,11 @@ const FileName = "keybindings.json"
 // cap are dropped from the tail by Update.
 const MaxCount = 256
 
+const (
+	privateDirPerm    os.FileMode = 0o700
+	sensitiveFilePerm os.FileMode = 0o600
+)
+
 // Defaults are returned when the config file is missing or malformed.
 // User entries with DefaultID override that exact default row;
 // entries with only DefaultKey use the legacy (command, when,
@@ -199,6 +204,9 @@ func readFile(path string) ([]Keybinding, error) {
 		}
 		return nil, fmt.Errorf("read keybindings: %w", err)
 	}
+	if err := chmodSensitiveFile(path); err != nil {
+		return nil, fmt.Errorf("repair keybindings permissions: %w", err)
+	}
 	if len(data) == 0 {
 		return nil, nil
 	}
@@ -214,7 +222,7 @@ func readFile(path string) ([]Keybinding, error) {
 // config.
 func writeFile(path string, bindings []Keybinding) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := ensurePrivateDir(dir); err != nil {
 		return fmt.Errorf("create keybindings dir: %w", err)
 	}
 	data, err := json.MarshalIndent(bindings, "", "  ")
@@ -228,6 +236,11 @@ func writeFile(path string, bindings []Keybinding) error {
 		return fmt.Errorf("create temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
+	if err := os.Chmod(tmpPath, sensitiveFilePerm); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("repair temp file permissions: %w", err)
+	}
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmpPath)
@@ -246,7 +259,28 @@ func writeFile(path string, bindings []Keybinding) error {
 		os.Remove(tmpPath)
 		return fmt.Errorf("rename temp file: %w", err)
 	}
+	if err := chmodSensitiveFile(path); err != nil {
+		return fmt.Errorf("repair keybindings permissions: %w", err)
+	}
 	return nil
+}
+
+func ensurePrivateDir(path string) error {
+	if err := os.MkdirAll(path, privateDirPerm); err != nil {
+		return err
+	}
+	return os.Chmod(path, privateDirPerm)
+}
+
+func chmodSensitiveFile(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil
+	}
+	return os.Chmod(path, sensitiveFilePerm)
 }
 
 // Merge applies user overrides over defaults.

@@ -5,8 +5,6 @@ includes:
   windows: ./build/windows/Taskfile.yml
   darwin: ./build/darwin/Taskfile.yml
   linux: ./build/linux/Taskfile.yml
-  ios: ./build/ios/Taskfile.yml
-  android: ./build/android/Taskfile.yml
 
 vars:
   APP_NAME: "agent-overflow"
@@ -39,26 +37,6 @@ tasks:
     cmds:
       - task: common:setup:docker
 
-  build:server:
-    summary: Builds the application in server mode (no GUI, HTTP server only)
-    cmds:
-      - task: common:build:server
-
-  run:server:
-    summary: Runs the application in server mode
-    cmds:
-      - task: common:run:server
-
-  build:docker:
-    summary: Builds a Docker image for server mode deployment
-    cmds:
-      - task: common:build:docker
-
-  run:docker:
-    summary: Builds and runs the Docker image
-    cmds:
-      - task: common:run:docker
-
   build:wsl:
     summary: |
       Phase D: builds the Windows .exe + bundled Linux ELF for WSL-backed deployment.
@@ -70,7 +48,7 @@ tasks:
 
   package:wsl:zip:
     summary: |
-      Phase D: zips the Windows .exe + Linux ELF for distribution from a non-Windows host.
-      Run `iscc build/windows/installer.iss` on a Windows host for the real installer.
+      Zips the WSL-backed Windows launcher for direct distribution.
+      The Linux backend is embedded in the launcher; do not ship a sidecar ELF.
     cmds:
       - task: windows:package:wsl:zip

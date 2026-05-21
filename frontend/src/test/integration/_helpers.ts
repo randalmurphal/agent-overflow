@@ -31,6 +31,7 @@ import { getAllDrafts, resetForTest as resetDraftThreadsForTest } from '../../li
 import { resetRuntimeModeDraftsForTest } from '../../lib/stores/runtimeModeDraft.svelte';
 import { resetProviderModelsForTest } from '../../lib/stores/providerModels.svelte';
 import { resetSettingsForTest } from '../../lib/stores/settings.svelte';
+import { resetThreadActionConfirmationsForTest } from '../../lib/stores/threadActionConfirmations.svelte';
 import {
   getQueueForThread,
   replaceQueueForThread,
@@ -70,6 +71,7 @@ export function resetAppState(): void {
   resetDraftThreadsForTest();
   resetRuntimeModeDraftsForTest();
   resetSettingsForTest();
+  resetThreadActionConfirmationsForTest();
   resetProviderModelsForTest();
   // Per-thread send queue is in-memory only; clear it between tests
   // so a stale queued item from a prior case doesn't drain into the
@@ -84,6 +86,7 @@ export function resetAppState(): void {
 // App renders without the "called without a mock" explosion.
 export function installAppDefaults(): void {
   setBindingMock('GetSettings', async () => null);
+  setBindingMock('Version', async () => '0.0.1');
   setBindingMock('ListThreads', async () => []);
   setBindingMock('GetKeybindings', async () => []);
   setBindingMock('GetProviderStatuses', async () => []);

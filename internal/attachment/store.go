@@ -25,6 +25,11 @@ const DefaultMaxSize int64 = 10 * 1024 * 1024
 // mirrors have one backend source of truth.
 const DefaultMaxCount = 8
 
+const (
+	privateDirPerm    os.FileMode = 0o700
+	sensitiveFilePerm os.FileMode = 0o600
+)
+
 // allowedMIMEs maps MIME types to the filename extension we persist them as.
 // Keeping this tight (images only) makes the attachment dir safe to serve as
 // static content.
@@ -78,7 +83,7 @@ func NewStore(cfg Config, meta *store.Store) (*Store, error) {
 	if cfg.MaxSize == 0 {
 		cfg.MaxSize = DefaultMaxSize
 	}
-	if err := os.MkdirAll(cfg.RootDir, 0o755); err != nil {
+	if err := ensurePrivateTree(cfg.RootDir); err != nil {
 		return nil, fmt.Errorf("attachment: create root %s: %w", cfg.RootDir, err)
 	}
 	return &Store{root: cfg.RootDir, maxSize: cfg.MaxSize, meta: meta}, nil
@@ -142,13 +147,13 @@ func (s *Store) Upload(threadID, filename, mimeType, dataB64 string, createdAt i
 		return store.Attachment{}, fmt.Errorf("attachment: refusing to write outside %s", absRoot)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(absolutePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(absolutePath), privateDirPerm); err != nil {
 		return store.Attachment{}, fmt.Errorf("attachment: mkdir: %w", err)
 	}
 	// Stage bytes to a sibling tmp file so a crash between here and the
 	// final rename leaves only a .tmp (no orphan row, no visible final
 	// file).
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+	if err := os.WriteFile(tmpPath, data, sensitiveFilePerm); err != nil {
 		return store.Attachment{}, fmt.Errorf("attachment: write tmp file: %w", err)
 	}
 
@@ -371,4 +376,36 @@ func sanitizeThreadID(threadID string) string {
 		clean = "unknown"
 	}
 	return clean
+}
+
+func ensurePrivateTree(root string) error {
+	if err := ensurePrivateDir(root); err != nil {
+		return err
+	}
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if entry.IsDir() {
+			return os.Chmod(path, privateDirPerm)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			return os.Chmod(path, sensitiveFilePerm)
+		}
+		return nil
+	})
+}
+
+func ensurePrivateDir(path string) error {
+	if err := os.MkdirAll(path, privateDirPerm); err != nil {
+		return err
+	}
+	return os.Chmod(path, privateDirPerm)
 }

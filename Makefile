@@ -1,4 +1,4 @@
-.PHONY: install dev dev-wsl build build-wsl test check go-build go-test test-race
+.PHONY: install dev dev-wsl build build-wsl test check verify release go-build go-test test-race
 
 # `make dev DEBUG=1` / `make dev-wsl DEBUG=1` enables every debug surface
 # wired through this Makefile: frontend UI render tracing and raw provider
@@ -24,8 +24,9 @@ endif
 # enforced by the build-wsl recipe — only `build` and `build:dev` are
 # valid pnpm scripts here.
 WSL_BUILD_MODE ?= build
+WSL_VERSION ?= $(VERSION)
 
-GO_PACKAGE_ROOTS := . ./cmd/... ./internal/... ./build/...
+GO_PACKAGE_ROOTS := . ./cmd/... ./internal/...
 
 # Single source of truth for the release version is build/config.yml#info.version.
 # `make build` reads it and forwards it via VERSION= to wails3 build, which the
@@ -183,3 +184,9 @@ test:
 check:
 	$(MAKE) go-build
 	cd frontend && pnpm run check
+
+verify:
+	./scripts/release-check.sh
+
+release:
+	./scripts/build-release.sh --version "$(VERSION)"

@@ -82,6 +82,11 @@ var launcherMode = "prod"
 // backend to drain before tearing the Job Object down.
 const shutdownTimeout = 5 * time.Second
 
+const (
+	launcherPrivateDirPerm os.FileMode = 0o700
+	launcherLogFilePerm    os.FileMode = 0o600
+)
+
 // bootstrapProbeAttemptTimeout caps a single HTTP attempt against the
 // WSL-side /bootstrap.json. RST / connection-refused arrives in
 // milliseconds; a real timeout means the request reached the kernel
@@ -337,14 +342,25 @@ func openLog() (*os.File, error) {
 	if !ok {
 		return nil, fmt.Errorf("openLog: AppData unresolvable")
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, launcherPrivateDirPerm); err != nil {
 		return nil, err
 	}
-	return os.OpenFile(
+	if err := os.Chmod(dir, launcherPrivateDirPerm); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(
 		filepath.Join(dir, "launcher.log"),
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY,
-		0o644,
+		launcherLogFilePerm,
 	)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(f.Name(), launcherLogFilePerm); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
 }
 
 // launcherApp is the Wails service exposing PickDistro to the picker

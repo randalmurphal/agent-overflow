@@ -77,8 +77,8 @@ func TestDetectProviderVersionError(t *testing.T) {
 	if !status.Installed {
 		t.Fatal("expected Installed=true when binary exists")
 	}
-	if status.Status != "ready" {
-		t.Fatalf("expected Status 'ready' even on version error, got %q", status.Status)
+	if status.Status != "error" {
+		t.Fatalf("expected Status 'error' on version error, got %q", status.Status)
 	}
 	if status.Version != "" {
 		t.Fatalf("expected empty Version on error, got %q", status.Version)

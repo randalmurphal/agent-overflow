@@ -31,6 +31,11 @@ import {
   resetTerminalFocusForTest,
 } from '../components/terminal/terminalStore.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import {
+  getPendingThreadActionConfirmation,
+  resetThreadActionConfirmationsForTest,
+} from './threadActionConfirmations.svelte';
+import { loadSettings, resetSettingsForTest } from './settings.svelte';
 import type { Thread } from '../types/models';
 import { FOCUS_TERMINAL_EVENT } from './events';
 
@@ -47,8 +52,21 @@ function readyPane(overrides: Partial<Thread> = {}): ReturnType<typeof createThr
     approvals: [],
     userInputs: [],
   }));
+  setBindingMock('GetThreadLiveState', async (threadId: string) => ({
+    threadId,
+    activeTurn: null,
+    queueItems: [],
+    interactive: { approvals: [], userInputs: [] },
+    todo: null,
+  }));
+  setBindingMock('AutoResumeThread', async () => {});
   setBindingMock('ListRecentTurns', async () => []);
   setBindingMock('ListThreadCheckpoints', async () => []);
+  setBindingMock('ListThreadSliceAround', async () => ({
+    items: [],
+    oldestTurnIndex: -1,
+    hasMore: false,
+  }));
   setBindingMock('ListItems', async () => []);
   setBindingMock('ListPayloadMetas', async () => []);
   const pane = createThreadPane();
@@ -83,6 +101,21 @@ function mountComposerForPane(paneId: string): {
   return {
     textarea,
     cleanup: () => document.body.removeChild(root),
+  };
+}
+
+function installPromptMock(): {
+  promptMock: ReturnType<typeof vi.fn>;
+  restore: () => void;
+} {
+  const previousPrompt = window.prompt;
+  const promptMock = vi.fn();
+  window.prompt = promptMock;
+  return {
+    promptMock,
+    restore: () => {
+      window.prompt = previousPrompt;
+    },
   };
 }
 
@@ -423,6 +456,65 @@ function registerFixtureCommands(pane: ReturnType<typeof createThreadPane>): voi
   });
 }
 
+describe('thread archive/delete command safety', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetThreadActionConfirmationsForTest();
+    resetSettingsForTest();
+  });
+
+  it('routes thread.archive through the confirmation flow before archiving', () => {
+    const pane = readyPane();
+    const archiveMock = setBindingMock('ArchiveThread', async () => {});
+    registerFixtureCommands(pane);
+
+    runCommand('thread.archive', makeCommandContext(pane, {}));
+
+    const pending = getPendingThreadActionConfirmation();
+    expect(pending?.kind).toBe('archive');
+    expect(pending?.ctx.thread.id).toBe('thread-1');
+    expect(archiveMock).not.toHaveBeenCalled();
+  });
+
+  it('routes thread.delete through the confirmation flow before deleting', () => {
+    const pane = readyPane();
+    const deleteMock = setBindingMock('DeleteThread', async () => {});
+    registerFixtureCommands(pane);
+
+    runCommand('thread.delete', makeCommandContext(pane, {}));
+
+    const pending = getPendingThreadActionConfirmation();
+    expect(pending?.kind).toBe('delete');
+    expect(pending?.ctx.thread.id).toBe('thread-1');
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it('deletes directly when delete confirmations are disabled', async () => {
+    const pane = readyPane();
+    const deleteMock = setBindingMock('DeleteThread', async () => {});
+    setBindingMock('StopSession', async () => {});
+    setBindingMock('GetSettings', async () => ({ confirmDelete: false }));
+    await loadSettings();
+    registerFixtureCommands(pane);
+
+    runCommand('thread.delete', makeCommandContext(pane, {}));
+
+    expect(getPendingThreadActionConfirmation()).toBeNull();
+    await vi.waitFor(() => expect(deleteMock).toHaveBeenCalledWith('thread-1'));
+  });
+
+  it('does not offer direct deletion for discussion child threads', () => {
+    const pane = readyPane({ parentThreadId: 'parent-1' });
+    const deleteMock = setBindingMock('DeleteThread', async () => {});
+    registerFixtureCommands(pane);
+
+    runCommand('thread.delete', makeCommandContext(pane, {}));
+
+    expect(getPendingThreadActionConfirmation()).toBeNull();
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('search.messages command', () => {
   beforeEach(() => {
     clearCommandRegistry();
@@ -619,6 +711,76 @@ describe('git.ship command', () => {
     runCommand('git.ship', makeCommandContext(pane, {}));
 
     expect(openedForPaneIds).toEqual([pane.paneId]);
+  });
+});
+
+describe('git commit/PR command safety', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+  });
+
+  it('opens Ship Changes for git.commit instead of prompting and calling GitCommit directly', () => {
+    const pane = readyPane();
+    const openedForPaneIds: string[] = [];
+    const { promptMock, restore } = installPromptMock();
+    const commitMock = setBindingMock('GitCommit', async () => ({
+      action: 'commit',
+      commitSha: 'abc1234',
+    }));
+    registerBuiltinCommands({
+      openSettings: () => {},
+      openThreadForm: () => {},
+      openThreadFromPR: () => {},
+      openShipChanges: (paneId) => {
+        openedForPaneIds.push(paneId);
+      },
+      requestRename: () => {},
+      requestDiscussion: () => {},
+      focusThreadSearch: () => {},
+      requestThreadJump: () => {},
+    });
+
+    try {
+      runCommand('git.commit', makeCommandContext(pane, {}));
+
+      expect(openedForPaneIds).toEqual([pane.paneId]);
+      expect(promptMock).not.toHaveBeenCalled();
+      expect(commitMock).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it('opens Ship Changes for git.openPR instead of prompting and creating directly', () => {
+    const pane = readyPane();
+    const openedForPaneIds: string[] = [];
+    const { promptMock, restore } = installPromptMock();
+    const createPrMock = setBindingMock('GitCreatePR', async () => ({
+      action: 'pr',
+      prUrl: 'https://example.test/pr/1',
+    }));
+    registerBuiltinCommands({
+      openSettings: () => {},
+      openThreadForm: () => {},
+      openThreadFromPR: () => {},
+      openShipChanges: (paneId) => {
+        openedForPaneIds.push(paneId);
+      },
+      requestRename: () => {},
+      requestDiscussion: () => {},
+      focusThreadSearch: () => {},
+      requestThreadJump: () => {},
+    });
+
+    try {
+      runCommand('git.openPR', makeCommandContext(pane, {}));
+
+      expect(openedForPaneIds).toEqual([pane.paneId]);
+      expect(promptMock).not.toHaveBeenCalled();
+      expect(createPrMock).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
   });
 });
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -54,6 +55,29 @@ func TestLogWritesNDJSON(t *testing.T) {
 			t.Errorf("line %d: msg = %q, want %q", i, got.Message, entries[i].Message)
 		}
 	}
+}
+
+func TestNewLoggerUsesPrivatePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits are not stable on Windows")
+	}
+	dir := filepath.Join(t.TempDir(), "logs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	path := filepath.Join(dir, "test.log")
+	if err := os.WriteFile(path, []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	lg, err := NewLogger(path, 0)
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	defer lg.Close()
+
+	assertMode(t, dir, 0o700)
+	assertMode(t, path, 0o600)
 }
 
 func TestLogSetsTimestamp(t *testing.T) {
@@ -358,5 +382,16 @@ func TestRotateReturnsErrorWhenRenameAndReopenFail(t *testing.T) {
 	}
 	if lg.file != nil {
 		t.Fatal("logger file should be nil when reopen fails")
+	}
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("mode %s = %o, want %o", path, got, want)
 	}
 }

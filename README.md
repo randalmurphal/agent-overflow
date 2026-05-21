@@ -1,17 +1,18 @@
 # Agent Overflow
 
 Desktop app for using coding agents (Claude Code, Codex) with a shared UX.
-Built on Go 1.25, Wails v3, and Svelte 5.
+Built on Go 1.26, Wails v3, and Svelte 5.
 
 ## For friends helping test
 
-This is pre-alpha. There's no installer, no auto-update, no code
-signing — Gatekeeper / SmartScreen will warn on first launch, click
-through. Get a build from Randy or build it yourself (see *Setup*
-below). When you hit something wrong, the runtime logs and SQLite DB
-live in your platform's config directory (see *Files & locations*
-below); zip the `logs/` folder and send it along with what you were
-doing.
+This is a direct test release. There is no auto-update or code signing,
+so Gatekeeper / SmartScreen will warn on first launch. Install from the
+artifact bundle with `install.sh`; build from source only if you're
+developing the app.
+
+When something breaks, runtime logs and the SQLite DB live in your
+platform's config directory (see *Files & locations* below). Zip the
+`logs/` folder and send it with what you were doing.
 
 ## Files & locations
 
@@ -21,7 +22,8 @@ The app writes everything under your OS's user-config directory:
 |---|---|
 | macOS | `~/Library/Application Support/agent-overflow/` |
 | Linux | `~/.config/agent-overflow/` (honors `$XDG_CONFIG_HOME`) |
-| Windows | `%APPDATA%\agent-overflow\` |
+| Windows via WSL | WSL distro Linux config root, e.g. `~/.config/agent-overflow/` |
+| Windows launcher | `%APPDATA%\agent-overflow\` for launcher config/logs only |
 
 Inside that root: `agent-overflow.db` (SQLite — every thread, item,
 payload, attachment metadata), `logs/` (NDJSON provider stdio capture
@@ -31,13 +33,35 @@ when `AGENT_OVERFLOW_DEBUG=provider`, plus runtime logs), `attachments/`
 
 ## Setup
 
-Requires Go 1.25+, Node 24+, and pnpm 10+. On Linux, Wails v3 also needs
+Requires Go 1.26.2+, Node 24+, and pnpm 10+. On Linux, Wails v3 also needs
 `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `pkg-config`, and `gcc`
 (install via your distro's package manager).
 
 ```sh
 make install    # installs wails3 CLI (via go.mod tool directive) + pnpm deps
 ```
+
+## Direct install
+
+Release artifacts are built into `dist/release/<version>/` by
+`make release`. The installer copies those artifacts; it does not build
+from source.
+
+```sh
+./install.sh --linux ./agent-overflow-linux-amd64
+./install.sh --macos ./AgentOverflow-macos.zip
+./install.sh --wsl ./agent-overflow-wsl-amd64.exe
+```
+
+Linux installs to `~/.local/bin` and writes the desktop entry/icon under
+`~/.local/share`. macOS installs to `~/Applications/Agent Overflow.app`.
+The WSL installer must be run from inside WSL; it copies the Windows
+launcher to `%LOCALAPPDATA%\Programs\Agent Overflow\agent-overflow.exe`
+on the Windows filesystem so Windows does not run it through
+`\\wsl.localhost`.
+
+Use `--dry-run` to preview, `--system` for system locations where
+supported, and `--uninstall` to remove app-owned install files.
 
 ## Run
 
@@ -71,6 +95,7 @@ in.
 ```sh
 make check      # go build + frontend type check
 make test       # go test + frontend unit tests
+make verify     # full release gate
 ```
 
 ## Remote access
