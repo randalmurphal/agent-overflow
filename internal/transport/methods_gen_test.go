@@ -6,8 +6,195 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"testing"
 )
+
+// wireSafeMethods is the hand-maintained allow-list of every App method
+// the dispatcher exposes to non-loopback (LAN-attached) peers. It is
+// the positive partner to LocalOnlyMethods: the union of the two MUST
+// cover every entry in GeneratedMethods.
+//
+// The list lives in test scope (not internalmethods.go) on purpose:
+// nothing in the runtime dispatcher consults it. The dispatcher
+// already refuses LocalOnlyMethods from non-loopback peers and lets
+// everything else through; this map is a forcing function that makes
+// "let everything else through" a deliberate per-method choice instead
+// of an implicit default.
+//
+// Adding a new App method falls into one of these cases:
+//
+//  1. The method touches local FS, spawns processes, mutates settings,
+//     controls a provider session, writes attachments, or returns
+//     credentials. Add to LocalOnlyMethods in internalmethods.go (with
+//     a category-block comment explaining the threat shape).
+//  2. The method is safe for a LAN-attached token-holder to call.
+//     Add to wireSafeMethods below.
+//
+// TestGeneratedMethods_AllClassified will fail with a missing-name
+// pointer if a new method lands without a classification. The test
+// failure message names the method and reminds the developer to pick
+// one branch — never default by silence.
+var wireSafeMethods = map[string]bool{
+	// Project lifecycle (CRUD, sort, archive). User-driven UI surface
+	// the remote browser must reach.
+	"ArchiveProject":             true,
+	"UnarchiveProject":           true,
+	"DeleteProject":              true,
+	"RenameProject":              true,
+	"ListProjects":               true,
+	"UpdateProjectSortPositions": true,
+
+	// Thread lifecycle (CRUD, archive, pin, read/unread). Same
+	// user-driven UI surface.
+	"ArchiveThread":   true,
+	"UnarchiveThread": true,
+	"DeleteThread":    true,
+	"RenameThread":    true,
+	"GetThread":       true,
+	"ListThreads":     true,
+	"PinThread":       true,
+	"UnpinThread":     true,
+	"MarkThreadRead":  true,
+	"MarkThreadUnread": true,
+	"SwitchThread":    true,
+	"GetThreadRuntimeMode": true,
+
+	// Timeline reads (item slice / turn / search). The bytes-bearing
+	// payload reads are LocalOnly in category 1; metadata listings
+	// here are safe.
+	"GetThreadItem":          true,
+	"ListItems":              true,
+	"ListItemsBeforeTurn":    true,
+	"ListRecentThreadItems":  true,
+	"ListRecentTurns":        true,
+	"ListThreadSliceAround":  true,
+	"SearchThreadMessages":   true,
+
+	// Live-state counts (the per-thread surface is LocalOnly in
+	// category 2 because it leaks composer drafts; these are
+	// global-thread-count reads with no sensitive content).
+	"CountRunningBackgroundTasks": true,
+	"ListLiveBackgroundTasks":     true,
+
+	// Discussion CRUD + transcript reads. Channel messages are the
+	// user's deliberation surface from the browser. PostChannelMessage
+	// is grouped here because today it inserts a "human" intervention
+	// row without spawning a provider subprocess — the LocalOnly
+	// SendMessage path is what drives the AI turn. Audit again if
+	// discussion channels grow a side-effecting path.
+	"CreateDiscussion":          true,
+	"DeleteDiscussion":          true,
+	"UpdateDiscussion":          true,
+	"GetDiscussion":             true,
+	"ListDiscussions":           true,
+	"ListDiscussionsForThread":  true,
+	"GetChannelMessages":        true,
+	"PostChannelMessage":        true,
+
+	// Proposed-plan inline comments. CRUD is wire-safe; the
+	// LocalOnly SendPlanRevisionComments path is what hands them to
+	// the provider for a revision turn.
+	"CreateProposedPlanComment":  true,
+	"DeleteProposedPlanComment":  true,
+	"UpdateProposedPlanComment":  true,
+	"ListProposedPlanComments":   true,
+	"ListThreadProposedPlans":    true,
+
+	// Design-mode read of stored option choices. Workdir mutations
+	// are LocalOnly in category 4.
+	"ListDesignOptions": true,
+
+	// Attachment listings (metadata only — bytes/thumbnails are
+	// LocalOnly in category 4).
+	"ListAttachments": true,
+
+	// Composer-favorite reads (writes go through SetChatBarFavorite,
+	// which is LocalOnly in category 3).
+	"ListChatBarFavorites": true,
+
+	// Settings reads. GetSettings defensively redacts every
+	// RemoteEndpoint.Token before returning so the LAN-bound caller
+	// cannot enumerate saved credentials; the on-demand
+	// GetRemoteEndpointToken path stays loopback-only in category 6.
+	"GetSettings":         true,
+	"GetEditorSettings":   true,
+	"GetContextSettings":  true,
+	// GetKeybindings: see the explicit carve-out comment in
+	// internalmethods.go above the LocalOnlyMethods map. Frontend
+	// has no client-side defaults; LocalOnly would zero every
+	// keyboard shortcut on the remote browser. Mutations stay
+	// LocalOnly in category 3.
+	"GetKeybindings": true,
+
+	// Host environment probe (no FS read, no credential).
+	"IsWSL": true,
+
+	// Build version string.
+	"Version": true,
+}
+
+// TestGeneratedMethods_AllClassified is the positive partner to
+// TestLocalOnlyMethods_AllExist. It walks every GeneratedMethods entry
+// and asserts the method is classified as EITHER LocalOnly (in
+// internalmethods.go) OR wireSafe (the allowlist above) — never
+// neither. A new App method that lands without a classification fails
+// the test with a name + remediation pointer.
+//
+// Failure here means a new method needs a deliberate LAN-safety
+// decision: lock it down in LocalOnlyMethods or add it to
+// wireSafeMethods.
+func TestGeneratedMethods_AllClassified(t *testing.T) {
+	var unclassified []string
+	for _, m := range GeneratedMethods {
+		if !LocalOnlyMethods[m.Name] && !wireSafeMethods[m.Name] {
+			unclassified = append(unclassified, m.Name)
+		}
+	}
+	if len(unclassified) == 0 {
+		return
+	}
+	sort.Strings(unclassified)
+	t.Fatalf(
+		"%d App methods landed without a LAN-safety classification.\n"+
+			"Each method below must be added to EITHER LocalOnlyMethods "+
+			"(internal/transport/internalmethods.go) — for methods that touch "+
+			"local FS, spawn processes, mutate settings, control a provider "+
+			"session, write attachments, or return credentials — OR "+
+			"wireSafeMethods (this file) for methods that are safe to expose "+
+			"to LAN-attached peers.\nUnclassified: %v",
+		len(unclassified), unclassified,
+	)
+}
+
+// TestWireSafeMethods_AllExist guards wireSafeMethods against silent
+// decay (the symmetric check to TestLocalOnlyMethods_AllExist). A
+// rename in the App receiver should fail the test rather than leave a
+// stale entry that quietly stops covering anything.
+func TestWireSafeMethods_AllExist(t *testing.T) {
+	known := make(map[string]bool, len(GeneratedMethods))
+	for _, m := range GeneratedMethods {
+		known[m.Name] = true
+	}
+	for name := range wireSafeMethods {
+		if !known[name] {
+			t.Errorf("wireSafeMethods[%q] does not match any entry in GeneratedMethods — typo or stale entry", name)
+		}
+	}
+}
+
+// TestWireSafeAndLocalOnlyDisjoint asserts the two classification sets
+// don't overlap. A method classified both ways is a logic bug: the
+// runtime would refuse it from LAN callers (LocalOnly wins in the
+// dispatcher), while the test gate would treat it as deliberately
+// exposed. Catching the overlap statically is the right place.
+func TestWireSafeAndLocalOnlyDisjoint(t *testing.T) {
+	for name := range wireSafeMethods {
+		if LocalOnlyMethods[name] {
+			t.Errorf("%q appears in both wireSafeMethods and LocalOnlyMethods — pick one", name)
+		}
+	}
+}
 
 // TestMethodsGen_InSync regenerates methods_gen.go into a tempfile and
 // asserts the bytes match the committed file. A developer who adds an
