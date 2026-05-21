@@ -36,12 +36,6 @@ import * as mcpstatus$0 from "./internal/mcpstatus/models.js";
 import * as network$0 from "./internal/network/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as otel$0 from "./internal/observability/otel/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as replay$0 from "./internal/observability/replay/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
 import * as provider$0 from "./internal/provider/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -1235,9 +1229,9 @@ export function ListProposedPlanComments(threadID: string, planItemID: string): 
  * ListRecentThreadItems loads the tail of a thread's history into the
  * timeline pane: the last `turnLimit` turns (defaulting to
  * initialTurnWindow when <= 0) plus enough surrounding turns to keep
- * the total item count in [minWindowItems, maxWindowItems], plus any
- * subagent ancestors those items reference. This is the binding the
- * frontend calls on thread switch.
+ * the total item count in [500, maxWindowItems], plus any subagent
+ * ancestors those items reference. This is the binding the frontend
+ * calls on thread switch.
  */
 export function ListRecentThreadItems(threadID: string, turnLimit: number): $CancellablePromise<store$0.PagedItems> {
     return $Call.ByID(2604956482, threadID, turnLimit).then(($result: any) => {
@@ -1643,15 +1637,6 @@ export function RenameThread(id: string, title: string): $CancellablePromise<voi
 }
 
 /**
- * ReplayManager returns the active replay manager. May be nil before startup.
- */
-export function ReplayManager(): $CancellablePromise<replay$0.Manager | null> {
-    return $Call.ByID(3320777729).then(($result: any) => {
-        return $$createType76($result);
-    });
-}
-
-/**
  * ResetKeybindings deletes the user file so GetKeybindings returns
  * defaults.
  */
@@ -1721,7 +1706,7 @@ export function SavePayloadToFile(threadID: string, payloadID: string): $Cancell
  */
 export function SearchThreadMessages(query: string, limit: number): $CancellablePromise<store$0.ThreadMessageHit[]> {
     return $Call.ByID(3644945077, query, limit).then(($result: any) => {
-        return $$createType78($result);
+        return $$createType76($result);
     });
 }
 
@@ -1731,7 +1716,7 @@ export function SearchThreadMessages(query: string, limit: number): $Cancellable
  */
 export function SearchWorkspaceFiles(threadID: string, query: string, limit: number): $CancellablePromise<$models.WorkspaceFileSearchResult> {
     return $Call.ByID(3852272821, threadID, query, limit).then(($result: any) => {
-        return $$createType79($result);
+        return $$createType77($result);
     });
 }
 
@@ -1947,17 +1932,6 @@ export function SwitchThread(threadID: string): $CancellablePromise<store$0.Thre
 }
 
 /**
- * Telemetry returns the active OpenTelemetry provider. Returns nil when the
- * app has not completed ServiceStartup. Exported for tests that need to
- * inspect or replace the provider at runtime.
- */
-export function Telemetry(): $CancellablePromise<otel$0.Provider | null> {
-    return $Call.ByID(669486408).then(($result: any) => {
-        return $$createType81($result);
-    });
-}
-
-/**
  * TouchRemoteEndpoint bumps the LastUsedAt timestamp on the named
  * record. Used by the settings UI's "Connect" affordance so the
  * list can sort or visually emphasise recently-used endpoints.
@@ -1974,7 +1948,7 @@ export function TouchRemoteEndpoint(id: string): $CancellablePromise<void> {
  */
 export function TriggerMcpAuth(threadID: string, name: string): $CancellablePromise<$models.MCPAuthInitResult> {
     return $Call.ByID(1291217507, threadID, name).then(($result: any) => {
-        return $$createType82($result);
+        return $$createType78($result);
     });
 }
 
@@ -2342,11 +2316,7 @@ const $$createType71 = wsllauncher$0.Distro.createFrom;
 const $$createType72 = $Create.Array($$createType71);
 const $$createType73 = $models.TerminalHandle.createFrom;
 const $$createType74 = provider$0.AccountInfo.createFrom;
-const $$createType75 = replay$0.Manager.createFrom;
-const $$createType76 = $Create.Nullable($$createType75);
-const $$createType77 = store$0.ThreadMessageHit.createFrom;
-const $$createType78 = $Create.Array($$createType77);
-const $$createType79 = $models.WorkspaceFileSearchResult.createFrom;
-const $$createType80 = otel$0.Provider.createFrom;
-const $$createType81 = $Create.Nullable($$createType80);
-const $$createType82 = $models.MCPAuthInitResult.createFrom;
+const $$createType75 = store$0.ThreadMessageHit.createFrom;
+const $$createType76 = $Create.Array($$createType75);
+const $$createType77 = $models.WorkspaceFileSearchResult.createFrom;
+const $$createType78 = $models.MCPAuthInitResult.createFrom;

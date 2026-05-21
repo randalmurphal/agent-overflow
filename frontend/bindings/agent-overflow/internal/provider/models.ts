@@ -18,7 +18,7 @@ import * as json$0 from "../../../encoding/json/models.js";
  * returned by `account/rateLimits/read` (planType + apiProvider hint).
  * 
  * Empty SubscriptionType + empty TokenSource are the unauthenticated
- * signal forge has used historically; consumers branch on that.
+ * signal; consumers branch on that.
  */
 export class AccountInfo {
     "subscriptionType"?: string;
@@ -551,7 +551,7 @@ export class ReasoningEffortOption {
 /**
  * UserInputAnswer stores one or more selected answers for a question.
  * It marshals as a string for single-select answers and a string array for
- * multi-select answers to match the frontend/Forge contract.
+ * multi-select answers to match the frontend contract.
  */
 export type UserInputAnswer = any;
 
