@@ -965,36 +965,55 @@ func TestPollClaudeMCPAfterOAuth_QuerierRebindsBetweenTicks(t *testing.T) {
 }
 
 // TestPollClaudeMCPAfterOAuth_ShutdownGuardSuppressesTerminal pins
-// the drainTriage race fix: when shuttingDown flips true mid-poll,
-// the terminal-state branch must NOT Put into the cache, emit
+// the drainTriage race fix: appCancel runs in Shutdown step 1b
+// BEFORE drainTriage. If ctx flipped to Done() between the query
+// returning a terminal status and the side effects running, the
+// terminal branch must NOT Put into the cache, emit
 // mcp:oauth-completed, or call emitErrorToThread — those routes
-// touch a SQLite store that's about to close. The poll exits
-// cleanly without side effects.
+// touch a SQLite store that's about to close. Both Connected and
+// Failed branches share the guard at the top of the case; cover
+// both via subtests so a regression that scoped the guard to one
+// branch wouldn't slip past. Failed additionally exercises
+// emitErrorToThread, the most dangerous triage-touching path.
 func TestPollClaudeMCPAfterOAuth_ShutdownGuardSuppressesTerminal(t *testing.T) {
-	app := newTestAppWithStore(t)
-	app.shuttingDown.Store(true)
-	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed", "mcp:status")
-
-	getQuerier := scriptedQuerier(
-		[][]claude.MCPServerStatus{
-			{{Name: "late", Status: "connected"}},
-		},
-		nil,
-	)
-
-	app.pollClaudeMCPAfterOAuth(
-		context.Background(),
-		"thread-1",
-		"late",
-		zeroIntervals(6),
-		getQuerier,
-	)
-
-	if _, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "late"}); ok {
-		t.Error("cache must not be populated after shutdown has flipped")
+	cases := []struct {
+		name   string
+		status string
+	}{
+		{name: "Connected", status: "connected"},
+		{name: "Failed", status: "failed"},
 	}
-	if got := len(snapshot()); got != 0 {
-		t.Errorf("expected zero emissions during shutdown, got %d", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := newTestAppWithStore(t)
+			snapshot := captureOrderedEmissions(app, "mcp:oauth-completed", "mcp:status")
+
+			ctx, cancel := context.WithCancel(context.Background())
+
+			app.pollClaudeMCPAfterOAuth(
+				ctx,
+				"thread-1",
+				"late",
+				zeroIntervals(6),
+				func() claudeMCPStatusQuerier {
+					return func(ctx context.Context) ([]claude.MCPServerStatus, error) {
+						// Simulate Shutdown step 1b running mid-query: by
+						// the time the querier returns, ctx is canceled
+						// and the terminal-status branch must observe
+						// ctx.Err().
+						cancel()
+						return []claude.MCPServerStatus{{Name: "late", Status: tc.status}}, nil
+					}
+				},
+			)
+
+			if _, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "late"}); ok {
+				t.Error("cache must not be populated after ctx is canceled")
+			}
+			if got := len(snapshot()); got != 0 {
+				t.Errorf("expected zero emissions after ctx cancel, got %d", got)
+			}
+		})
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -776,6 +777,8 @@ func newTestApp(t *testing.T) (*App, func()) {
 		settings:    settings.NewService(t.TempDir()),
 		sessions:    make(map[string]session),
 	}
+	app.appCtx, app.appCancel = context.WithCancel(context.Background())
+	t.Cleanup(app.appCancel)
 	return app, func() { st.Close() }
 }
 

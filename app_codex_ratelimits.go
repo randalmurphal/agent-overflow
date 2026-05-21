@@ -12,6 +12,10 @@ import (
 // only the rate-limit snapshot. It deliberately bypasses codexProbeCache:
 // scheduled refreshes are about current quota state, not account-plan metadata.
 func (a *App) probeCodexRateLimits(ctx context.Context) {
+	// Cheap fail-fast: ctx cancellation would also short-circuit the
+	// subprocess spawn below, but skipping the binary path resolution
+	// and process startup is cheaper than letting them allocate and
+	// immediately abort.
 	if a.shuttingDown.Load() {
 		return
 	}

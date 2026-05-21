@@ -28,6 +28,9 @@ var rateLimitProbeHTTPClient = &http.Client{}
 // is non-critical (the rings just stay at their last-known value), so
 // transient failures should not surface a banner.
 func (a *App) probeClaudeRateLimits(ctx context.Context) {
+	// Cheap fail-fast: ctx cancellation would also short-circuit the
+	// HTTP call below, but skipping the credential read and HTTP setup
+	// is cheaper than letting them allocate and immediately abort.
 	if a.shuttingDown.Load() {
 		return
 	}
@@ -64,12 +67,11 @@ func (a *App) rateLimitProbeClient() *http.Client {
 //     sessions so an active user sees the rings refresh after each
 //     model response.
 //
-// Stop semantics: the goroutine checks `a.shuttingDown` on every tick
-// and returns when it flips. Worst-case the goroutine outlives
-// Shutdown by one tick interval; the HTTP client has no long-lived
-// resources to leak. Tested manually because injecting a fake clock
-// into the loop would require additional plumbing for ~5 lines of
-// glue.
+// Stop semantics: the loop's `select` arms on `appCtx.Done()` so
+// Shutdown step 1b's `appCancel()` breaks it out immediately, and the
+// in-flight HTTP probe receives the same cancellation through the
+// lifeCtx-derived ctx and aborts mid-request. The HTTP client has no
+// long-lived resources to leak.
 func (a *App) startClaudeRateLimitProbeLoop() {
 	a.startRateLimitProbeLoop(rateLimitProbeLoop{
 		probeImmediately: true,

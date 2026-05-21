@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,52 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 )
+
+// TestStartRateLimitProbeLoop_ExitsOnAppCtxCancel pins Step 1b's wiring
+// into the probe loop: a regression that swapped a.lifeCtx() back to
+// context.Background() (or dropped the <-ctx.Done() select arm) would
+// keep the goroutine alive after Shutdown returned. Drive the loop
+// with a probe stub that signals on each call, cancel appCtx after the
+// startup probe lands, and confirm no further probe fires.
+func TestStartRateLimitProbeLoop_ExitsOnAppCtxCancel(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	probeFired := make(chan struct{}, 4)
+	hasActive := func() bool { return true }
+	probe := func(ctx context.Context) {
+		select {
+		case probeFired <- struct{}{}:
+		default:
+		}
+	}
+
+	app.startRateLimitProbeLoop(rateLimitProbeLoop{
+		probeImmediately: true,
+		hasActiveSession: hasActive,
+		probe:            probe,
+	})
+
+	// Wait for the startup probe so we know the goroutine reached the
+	// select-loop body, not still mid-spawn.
+	select {
+	case <-probeFired:
+	case <-time.After(time.Second):
+		t.Fatal("startup probe never fired")
+	}
+
+	// Cancel appCtx the same way Shutdown step 1b does.
+	app.appCancel()
+
+	// The select arm on ctx.Done() must win — no further probe calls.
+	// rateLimitProbeInterval is 2 minutes in production, so any probe
+	// inside this window is the spurious post-cancel call we're
+	// guarding against.
+	select {
+	case <-probeFired:
+		t.Fatal("probe fired after appCancel — loop did not honour ctx.Done()")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
 
 // TestSessionEventHandlerTurnCompleteFiresProviderRateLimitProbe verifies
 // the turn-complete trigger dispatches to the matching provider probe. The

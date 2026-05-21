@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -53,9 +52,9 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			// event handlers.
 			switch providerType {
 			case string(provider.Claude):
-				go a.probeClaudeRateLimits(context.Background())
+				go a.probeClaudeRateLimits(a.lifeCtx())
 			case string(provider.Codex):
-				go a.probeCodexRateLimits(context.Background())
+				go a.probeCodexRateLimits(a.lifeCtx())
 			}
 		}
 

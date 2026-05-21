@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -1093,6 +1094,8 @@ func newTestAppWithStore(t *testing.T) *App {
 		deliberations:       make(map[string]*discussion.Deliberation),
 		gitWatchPumps:       make(map[string]*gitWatchPump),
 	}
+	app.appCtx, app.appCancel = context.WithCancel(context.Background())
+	t.Cleanup(app.appCancel)
 	ensureDefaultTestProject(t, app)
 	return app
 }

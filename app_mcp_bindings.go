@@ -359,7 +359,7 @@ type claudeMCPOAuthPoll struct {
 // path (getQuerier returning nil between ticks) and the shutdown
 // guard inside pollClaudeMCPAfterOAuth still apply.
 func (a *App) startClaudeMCPOAuthPoll(threadID, serverName string) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(a.lifeCtx())
 	poll := &claudeMCPOAuthPoll{cancel: cancel}
 
 	a.claudeMCPOAuthPollsMu.Lock()
@@ -472,12 +472,12 @@ func (a *App) pollClaudeMCPAfterOAuth(
 		mapped := claude.MCPStatusFromRaw(entry.Status)
 		switch mapped {
 		case mcpstatus.StatusConnected, mcpstatus.StatusFailed:
-			// Shutdown race guard: drainTriage may have already
-			// returned 0, so a triage.Handle call from
-			// emitErrorToThread below could write to a closing
-			// SQLite. Bail before any side effect once shutdown
-			// has flipped.
-			if a.shuttingDown.Load() {
+			// Shutdown race guard. appCtx is cancelled in Shutdown
+			// step 1b, BEFORE drainTriage. If we landed here between
+			// the query returning and the side effects, ctx.Err()
+			// has flipped — bail before emitErrorToThread can file a
+			// triage.Handle past the drain barrier.
+			if ctx.Err() != nil {
 				return
 			}
 			sanitizedErr := sanitizeMCPError(entry.Error)
@@ -662,10 +662,20 @@ func (a *App) setClaudeMcpDisabled(thread store.Thread, name string, disabled bo
 		// reading the latest disk state and pushing again.
 		unlock := a.threadLocks().Lock(thread.ID)
 		defer unlock()
-		if err := a.reconcileClaudeMCPLive(thread); err != nil {
-			a.emitErrorToThread(thread.ID, fmt.Sprintf("mcp: live reconcile failed: %v", err))
-			log.Printf("mcp: thread %s claude live reconcile: %v", thread.ID, err)
+		err := a.reconcileClaudeMCPLive(thread)
+		if err == nil {
+			return
 		}
+		log.Printf("mcp: thread %s claude live reconcile: %v", thread.ID, err)
+		// Shutdown race guard. appCancel runs in Shutdown step 1b
+		// BEFORE drainTriage; an in-flight RPC then returns ctx.Canceled
+		// here. Skip emitErrorToThread so we don't file a triage.Handle
+		// past the drain barrier — same invariant the OAuth poller's
+		// ctx.Err() check enforces.
+		if a.lifeCtx().Err() != nil {
+			return
+		}
+		a.emitErrorToThread(thread.ID, fmt.Sprintf("mcp: live reconcile failed: %s", sanitizeMCPError(err.Error())))
 	}()
 	return nil
 }
@@ -707,7 +717,7 @@ func (a *App) reconcileClaudeMCPLive(thread store.Thread) error {
 		}
 		target[srv.Name] = spec
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(a.lifeCtx(), 30*time.Second)
 	defer cancel()
 	diff, err := sess.claude.SetMCPServers(ctx, target)
 	if err != nil {
@@ -825,12 +835,22 @@ func (a *App) setCodexMcpEnabled(thread store.Thread, name string, enabled bool)
 		// same Codex session.
 		unlock := a.threadLocks().Lock(thread.ID)
 		defer unlock()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(a.lifeCtx(), 30*time.Second)
 		defer cancel()
-		if err := sess.codex.RefreshMCPServers(ctx); err != nil {
-			a.emitErrorToThread(thread.ID, fmt.Sprintf("mcp: live reload failed: %v", err))
-			log.Printf("mcp: thread %s codex live reload: %v", thread.ID, err)
+		err := sess.codex.RefreshMCPServers(ctx)
+		if err == nil {
+			return
 		}
+		log.Printf("mcp: thread %s codex live reload: %v", thread.ID, err)
+		// Shutdown race guard. appCancel runs in Shutdown step 1b
+		// BEFORE drainTriage; an in-flight RPC then returns ctx.Canceled
+		// here. Skip emitErrorToThread so we don't file a triage.Handle
+		// past the drain barrier — same invariant the OAuth poller's
+		// ctx.Err() check enforces.
+		if ctx.Err() != nil {
+			return
+		}
+		a.emitErrorToThread(thread.ID, fmt.Sprintf("mcp: live reload failed: %s", sanitizeMCPError(err.Error())))
 	}()
 	return nil
 }

@@ -173,7 +173,7 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 // testable: TestStartSessionTriggersCodexReconcile installs a probe stub
 // and asserts this runs exactly when opts.Resume != "".
 func (a *App) reconcileCodexAfterStart(threadID string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(a.lifeCtx(), 30*time.Second)
 	defer cancel()
 	result, err := a.ReconcileCodexOnReopen(ctx, threadID)
 	if err != nil {

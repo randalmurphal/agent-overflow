@@ -39,7 +39,7 @@ func (a *App) runAccountProbe(r providerProbeRunner) (provider.AccountInfo, erro
 		return cached, nil
 	}
 
-	info, err := r.probe(context.Background())
+	info, err := r.probe(a.lifeCtx())
 	if err != nil {
 		return provider.AccountInfo{}, err
 	}

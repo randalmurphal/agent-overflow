@@ -130,8 +130,21 @@ type App struct {
 	// shuttingDown is flipped to true once Shutdown begins. Binding entry
 	// points that spin up new work (StartSession, SendMessage, ReconnectSession)
 	// check it and fail fast with ErrShuttingDown so late RPCs can't race
-	// with subsystem teardown.
+	// with subsystem teardown. Pairs with appCtx: binding entry points
+	// read this for fast-fail; in-flight goroutines derive from appCtx
+	// via lifeCtx() so cancellation propagates through downstream I/O.
+	// New code: pick by call site (entry point vs goroutine), not by
+	// preference.
 	shuttingDown atomic.Bool
+	// appCtx is the App-lifetime context shared by every fire-and-forget
+	// goroutine that has no narrower scope (rate-limit probe loop, Claude
+	// OAuth-completion poller, MCP live-reconcile callbacks, etc).
+	// appCancel is invoked inside Shutdown between the shuttingDown flip
+	// and drainTriage so in-flight goroutines unblock their I/O and exit
+	// before the drain barrier instead of after. Initialised in
+	// ServiceStartup; tests build it directly via newTestApp.
+	appCtx    context.Context
+	appCancel context.CancelFunc
 	mu           sync.Mutex
 	sessions     map[string]session // threadID → active session
 	// threadActionLocks serializes per-thread workflows that must observe a
@@ -384,6 +397,12 @@ func (a *App) SetTransportServer(s *transport.Server) {
 // search) boot last once their inputs are ready.
 func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
 	a.app = application.Get()
+
+	// Initialise the App-lifetime ctx before any goroutine spawn so the
+	// probe loops, OAuth poller, MCP reconcile callbacks, and any future
+	// fire-and-forget worker can derive from a single cancellable parent
+	// instead of context.Background.
+	a.appCtx, a.appCancel = context.WithCancel(context.Background())
 
 	dbDir, st, err := a.initStores()
 	if err != nil {
@@ -669,6 +688,26 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 	}
 
+	// Step 1b: cancel the App-lifetime ctx so fire-and-forget goroutines
+	// (rate-limit probe loop, Claude OAuth poller, MCP live-reconcile
+	// callbacks) unblock their I/O and exit BEFORE drainTriage runs.
+	// Ordering matters: cancelling after the drain would let in-flight
+	// goroutines issue triage.Handle calls past the barrier; cancelling
+	// here lets them observe ctx.Done() and return without filing more
+	// work. Routed through record() so the existing
+	// shutdownStepFn/shutdownInjectErrFn hooks observe it — the order
+	// test (TestShutdownWalksDocumentedOrder) pins the BEFORE-drainTriage
+	// placement. CancelFunc itself can't fail, so the recorded error is
+	// always nil in production; shutdownInjectErrFn could synthesise one
+	// for aggregation-test purposes. appCancel is nil-safe for tests that
+	// construct *App without ServiceStartup.
+	record("cancel app context", func() error {
+		if a.appCancel != nil {
+			a.appCancel()
+		}
+		return nil
+	}())
+
 	// Step 2: drain the triage reactor. Any Handle() calls currently
 	// running (dispatched from provider sessionEventHandlers) get to
 	// finish. We use a short timeout so a stuck goroutine can't block
@@ -878,6 +917,18 @@ func contextWithTimeout(parent context.Context, timeout time.Duration) (context.
 // tests exercise directly.
 func (a *App) ServiceShutdown() error {
 	return a.Shutdown(context.Background())
+}
+
+// lifeCtx returns the App-lifetime ctx fire-and-forget goroutines should
+// derive from. Returns context.Background when appCtx is unset, which
+// happens for tests that build *App as a struct literal without calling
+// ServiceStartup — they get a never-cancelled ctx (matching the
+// pre-appCtx behaviour) instead of a nil-parent panic.
+func (a *App) lifeCtx() context.Context {
+	if a.appCtx != nil {
+		return a.appCtx
+	}
+	return context.Background()
 }
 
 // --- Item operations ---

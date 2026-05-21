@@ -255,6 +255,12 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 	// returns after the screenshot manager's browserCtx is cancelled.
 	// See app.go Step 7/7b for the deadlock rationale.
 	want := []string{
+		// "cancel app context" MUST appear before "drain triage" —
+		// fire-and-forget goroutines bound to appCtx need to observe
+		// ctx.Done() and stop filing triage.Handle calls BEFORE the
+		// drain barrier runs. Cancelling after the drain would let
+		// in-flight goroutines slip past it.
+		"cancel app context",
 		"drain triage",
 		"drain flush dispatch",
 		"close replay manager",

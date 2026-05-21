@@ -72,7 +72,7 @@ func (a *App) generateCodexThreadTitle(
 	attachments []store.Attachment,
 	cfg textgen.Config,
 ) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), threadtitle.Timeout)
+	ctx, cancel := context.WithTimeout(a.lifeCtx(), threadtitle.Timeout)
 	defer cancel()
 
 	_, workspace, err := a.resolveGitPaths(thread)
@@ -113,7 +113,7 @@ func (a *App) generateClaudeThreadTitle(
 	attachments []store.Attachment,
 	cfg textgen.Config,
 ) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), threadtitle.Timeout)
+	ctx, cancel := context.WithTimeout(a.lifeCtx(), threadtitle.Timeout)
 	defer cancel()
 
 	_, workspace, err := a.resolveGitPaths(thread)
