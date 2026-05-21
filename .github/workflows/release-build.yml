@@ -1,0 +1,203 @@
+name: Release build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build. Leave empty to use build/config.yml.
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  linux-wsl:
+    name: Linux and WSL artifacts
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${REQUESTED_VERSION}" ]]; then
+            version="${REQUESTED_VERSION#v}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(sed -n 's/^  version: "\([^"]*\)"/\1/p' build/config.yml)"
+          fi
+          case "$version" in
+            ""|.*|-*|*..*|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._+-]*)
+              echo "Unsafe version: $version" >&2
+              exit 2
+              ;;
+          esac
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.2"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev zip
+
+      - name: Install project tools
+        run: |
+          corepack enable
+          make install
+
+      - name: Verify committed release metadata
+        run: |
+          ./scripts/sync-release-version.sh "$VERSION"
+          git diff --exit-code
+
+      - name: Build release artifacts
+        run: ./scripts/build-release.sh --version "$VERSION" --skip-macos
+
+      - name: Upload raw Linux and WSL artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-wsl-raw
+          path: |
+            dist/release/${{ env.VERSION }}/agent-overflow-linux-amd64
+            dist/release/${{ env.VERSION }}/agent-overflow-wsl-amd64.exe
+          if-no-files-found: error
+
+  macos:
+    name: macOS artifact
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${REQUESTED_VERSION}" ]]; then
+            version="${REQUESTED_VERSION#v}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(sed -n 's/^  version: "\([^"]*\)"/\1/p' build/config.yml)"
+          fi
+          case "$version" in
+            ""|.*|-*|*..*|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._+-]*)
+              echo "Unsafe version: $version" >&2
+              exit 2
+              ;;
+          esac
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.2"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install project tools
+        run: |
+          corepack enable
+          make install
+
+      - name: Verify committed release metadata
+        run: |
+          ./scripts/sync-release-version.sh "$VERSION"
+          git diff --exit-code
+
+      - name: Build macOS app bundle
+        run: |
+          VERSION="$VERSION" wails3 task darwin:package
+          mkdir -p "dist/release/$VERSION"
+          ( cd bin && zip -qr "../dist/release/$VERSION/AgentOverflow-macos.zip" "agent-overflow.app" )
+
+      - name: Upload raw macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-raw
+          path: dist/release/${{ env.VERSION }}/AgentOverflow-macos.zip
+          if-no-files-found: error
+
+  package:
+    name: Package release assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs:
+      - linux-wsl
+      - macos
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${REQUESTED_VERSION}" ]]; then
+            version="${REQUESTED_VERSION#v}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(sed -n 's/^  version: "\([^"]*\)"/\1/p' build/config.yml)"
+          fi
+          case "$version" in
+            ""|.*|-*|*..*|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._+-]*)
+              echo "Unsafe version: $version" >&2
+              exit 2
+              ;;
+          esac
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Download Linux and WSL artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-wsl-raw
+          path: dist/release/${{ env.VERSION }}
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-raw
+          path: dist/release/${{ env.VERSION }}
+
+      - name: Package install assets
+        shell: bash
+        run: ./scripts/package-release-assets.sh "dist/release/$VERSION"
+
+      - name: Upload packaged release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-overflow-release-${{ env.VERSION }}
+          path: dist/release/${{ env.VERSION }}/*
+          if-no-files-found: error
+
+      - name: Publish GitHub release assets
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_tag="v$VERSION"
+          gh release view "$release_tag" >/dev/null 2>&1 || gh release create "$release_tag" --title "Agent Overflow $release_tag" --notes "Direct test release."
+          gh release upload "$release_tag" dist/release/"$VERSION"/* --clobber

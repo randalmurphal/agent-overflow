@@ -103,21 +103,6 @@ validate_launcher() {
 	fi
 }
 
-checksum_dir() {
-	dir=$1
-	(
-		cd "$dir"
-		rm -f SHASUMS256
-		hash_cmd=sha256sum
-		if ! command -v sha256sum >/dev/null 2>&1; then
-			hash_cmd="shasum -a 256"
-		fi
-		find . -maxdepth 1 -type f ! -name SHASUMS256 -print | sort | while IFS= read -r file; do
-			$hash_cmd "$file"
-		done > SHASUMS256
-	)
-}
-
 validate_version
 require_clean_tree
 sync_version
@@ -180,11 +165,7 @@ if [ "$SKIP_MACOS" -eq 0 ]; then
 	esac
 fi
 
-copy_file "$ROOT_DIR/scripts/install.sh" "$OUT_DIR/install.sh"
-copy_file "$ROOT_DIR/build/appicon.png" "$OUT_DIR/appicon.png"
-copy_file "$ROOT_DIR/build/linux/agent-overflow.desktop" "$OUT_DIR/agent-overflow.desktop"
-chmod +x "$OUT_DIR/install.sh"
-checksum_dir "$OUT_DIR"
+"$ROOT_DIR/scripts/package-release-assets.sh" "$OUT_DIR"
 
 require_clean_tree
 echo "Release artifacts written to $OUT_DIR"

@@ -43,25 +43,59 @@ make install    # installs wails3 CLI (via go.mod tool directive) + pnpm deps
 
 ## Direct install
 
-Release artifacts are built into `dist/release/<version>/` by
-`make release`. The installer copies those artifacts; it does not build
-from source.
+The normal tester path is a GitHub release asset install. The script
+auto-detects Linux, macOS, or WSL, downloads the matching artifact,
+verifies `SHASUMS256`, and copies it into the platform install location.
 
 ```sh
-./install.sh --linux ./agent-overflow-linux-amd64
-./install.sh --macos ./AgentOverflow-macos.zip
-./install.sh --wsl ./agent-overflow-wsl-amd64.exe
+curl -fsSL https://github.com/randalmurphal/agent-overflow/releases/latest/download/install.sh | sh
+```
+
+Pin a specific release when you do not want "latest":
+
+```sh
+curl -fsSL https://github.com/randalmurphal/agent-overflow/releases/download/v0.0.1/install.sh | sh -s -- --version 0.0.1
+```
+
+Before an official release exists, use the same installer against a local
+release directory. `make release` writes artifacts to
+`dist/release/<version>/`; the `--source` path makes the installer read
+from that directory instead of GitHub. A Linux/WSL host can produce the
+Linux and WSL artifacts; the macOS zip is produced on macOS unless a
+working `wails-cross` Docker image is available.
+
+```sh
+make release
+./scripts/install.sh --linux --download --source ./dist/release/0.0.1
+./scripts/install.sh --macos --download --source ./dist/release/0.0.1
+./scripts/install.sh --wsl --download --source ./dist/release/0.0.1
 ```
 
 Linux installs to `~/.local/bin` and writes the desktop entry/icon under
 `~/.local/share`. macOS installs to `~/Applications/Agent Overflow.app`.
 The WSL installer must be run from inside WSL; it copies the Windows
 launcher to `%LOCALAPPDATA%\Programs\Agent Overflow\agent-overflow.exe`
-on the Windows filesystem so Windows does not run it through
-`\\wsl.localhost`.
+on the Windows filesystem and creates a Start Menu shortcut at
+`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Agent Overflow.lnk`.
+That shortcut is what makes Agent Overflow show up in Windows app search
+with its icon, and the local `%LOCALAPPDATA%` copy keeps Windows from
+running it through `\\wsl.localhost`.
 
 Use `--dry-run` to preview, `--system` for system locations where
-supported, and `--uninstall` to remove app-owned install files.
+supported, and `--uninstall` to remove app-owned install files. Passing a
+local artifact path still works when you want to bypass download mode:
+
+```sh
+./scripts/install.sh --linux ./dist/release/0.0.1/agent-overflow-linux-amd64
+./scripts/install.sh --macos ./dist/release/0.0.1/AgentOverflow-macos.zip
+./scripts/install.sh --wsl ./dist/release/0.0.1/agent-overflow-wsl-amd64.exe
+```
+
+The installer download path has a local smoke test:
+
+```sh
+./scripts/test-install-download.sh
+```
 
 ## Run
 
