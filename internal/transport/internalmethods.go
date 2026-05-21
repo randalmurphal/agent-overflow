@@ -53,10 +53,13 @@ var InternalServiceMethods = map[string]bool{
 //     editor preference, keybindings, generic settings patch). Letting
 //     a LAN peer flip BindAll, mutate the origin allow-list, or rewrite
 //     editor / keybinding state defeats the whole opt-in security model.
-//  4. Attachment / payload writes: UploadAttachment writes user-chosen
-//     bytes to disk under the config dir; DeleteAttachment removes
-//     filesystem entries. Both are local-FS mutation under user-supplied
-//     keys and must stay loopback-only.
+//  4. Attachment / payload local-FS surface. UploadAttachment writes
+//     user-chosen bytes to disk under the config dir; DeleteAttachment
+//     removes filesystem entries; GetAttachmentData / GetAttachmentThumbnail
+//     read those bytes back. Reads stay loopback-only on the same doctrine
+//     as the diff-returning bindings (category 1): the attachment id is
+//     opaque to the wire but a LAN-attached token-holder enumerating
+//     thread ids could pull every uploaded image / file in one pass.
 //  5. Local-FS bookkeeping: terminal-process control (CloseTerminal,
 //     ResizeTerminal — they steer host PTY children) and the UI render
 //     trace writer (writes JSONL into the user's config directory).
@@ -158,6 +161,17 @@ var LocalOnlyMethods = map[string]bool{
 	"GetModelsForProvider": true,
 	"CreateProject":        true,
 	"ListAvailableEditors": true,
+	// GenerateCommitMessage runs `claude` / `codex` in the workspace
+	// cwd with --dangerously-skip-permissions and the model emits a
+	// commit message from the staged diff. That's a local-process
+	// invocation under user-attacker control (the workspace path is
+	// derived from the thread); same class as the Git*/CLI surface.
+	"GenerateCommitMessage": true,
+	// SearchWorkspaceFiles shells `git ls-files` inside the thread's
+	// workspace cwd. The argv is fixed but the cwd is user-supplied
+	// through the thread record — keep with the rest of the local-CLI
+	// invocations for doctrine consistency.
+	"SearchWorkspaceFiles": true,
 
 	// 2. Session control (provider subprocess spawn / steer).
 	"StartSession":             true,
@@ -235,10 +249,18 @@ var LocalOnlyMethods = map[string]bool{
 	// as the rest of the settings-mutation block: a token leak must
 	// not let a remote peer reconfigure the local user's launcher.
 	"SetWSLDistroPreference": true,
+	// ReconfigureObservability reconciles the live observability stack
+	// against a Settings snapshot the caller supplies. Toggling the
+	// replay writer flips on-disk NDJSON capture under the config dir;
+	// tracing changes feed the user's restart-required state. Same
+	// settings-mutation threat shape.
+	"ReconfigureObservability": true,
 
-	// 4. Attachment / payload writes (local-FS mutation).
-	"UploadAttachment": true,
-	"DeleteAttachment": true,
+	// 4. Attachment / payload local-FS surface (writes + reads).
+	"UploadAttachment":       true,
+	"DeleteAttachment":       true,
+	"GetAttachmentData":      true,
+	"GetAttachmentThumbnail": true,
 	// Design-mode local-FS + coordination surface. The frontend posts
 	// iframe-captured diagnostics into the per-thread ring and
 	// reads/writes the per-thread design workdir (option-set

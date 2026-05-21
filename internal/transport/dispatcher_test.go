@@ -648,6 +648,8 @@ func (p *privilegedApp) SendDiffReviewComments() string               { return "
 func (p *privilegedApp) GetModelsForProvider() string                 { return "ok" }
 func (p *privilegedApp) CreateProject() string                        { return "ok" }
 func (p *privilegedApp) ListAvailableEditors() string                 { return "ok" }
+func (p *privilegedApp) GenerateCommitMessage() string                { return "ok" }
+func (p *privilegedApp) SearchWorkspaceFiles() string                 { return "ok" }
 
 // 2. Session control.
 func (p *privilegedApp) StartSession() string                   { return "ok" }
@@ -708,10 +710,13 @@ func (p *privilegedApp) ResetKeybindings() string             { return "ok" }
 func (p *privilegedApp) SetChatBarFavorite() string           { return "ok" }
 func (p *privilegedApp) SetThreadRuntimeMode() string         { return "ok" }
 func (p *privilegedApp) SetWSLDistroPreference() string       { return "ok" }
+func (p *privilegedApp) ReconfigureObservability() string     { return "ok" }
 
-// 4. Attachment / payload writes.
+// 4. Attachment / payload local-FS surface.
 func (p *privilegedApp) UploadAttachment() string       { return "ok" }
 func (p *privilegedApp) DeleteAttachment() string       { return "ok" }
+func (p *privilegedApp) GetAttachmentData() string      { return "ok" }
+func (p *privilegedApp) GetAttachmentThumbnail() string { return "ok" }
 func (p *privilegedApp) IngestDiagnosticBatch() string  { return "ok" }
 func (p *privilegedApp) EnsureDesignWorkdir() string    { return "ok" }
 func (p *privilegedApp) DismissDesignOptionSet() string { return "ok" }
