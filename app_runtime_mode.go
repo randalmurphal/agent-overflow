@@ -5,7 +5,6 @@ import (
 	"log"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/threadmode"
 )
 
 // runtimeModeLockAttemptedForTest lets the lock-order regression test observe
@@ -14,9 +13,8 @@ import (
 var runtimeModeLockAttemptedForTest func(threadID string)
 
 // ThreadRuntimeModeChangedEvent is the payload emitted after the runtime
-// mode for a thread is updated. Mirrors the interaction-mode event shape for
-// compatibility with older frontend code. Runtime-mode changes now restart
-// active sessions synchronously, so needsReconnect is always false on success.
+// mode for a thread is updated. Runtime-mode changes now restart active
+// sessions synchronously, so needsReconnect is always false on success.
 type ThreadRuntimeModeChangedEvent struct {
 	ThreadID       string `json:"threadId"`
 	RuntimeMode    string `json:"runtimeMode"`
@@ -32,40 +30,6 @@ func (a *App) GetThreadRuntimeMode(threadID string) (string, error) {
 		return "", fmt.Errorf("get runtime mode: %w", err)
 	}
 	return string(provider.NormalizeRuntimeMode(t.RuntimeMode)), nil
-}
-
-// SetThreadRuntimeMode is the legacy binding name preserved only while
-// the frontend migration lands (Wave 2c+). The implementation routes to
-// UpdateThreadRuntimeMode and returns the older event struct.
-//
-// The new per-field binding UpdateThreadRuntimeMode in app_threads.go
-// is the going-forward surface and returns store.Thread directly.
-func (a *App) SetThreadRuntimeMode(threadID, mode string) (ThreadRuntimeModeChangedEvent, error) {
-	t, err := a.store.GetThread(threadID)
-	if err != nil {
-		return ThreadRuntimeModeChangedEvent{}, fmt.Errorf("set runtime mode: %w", err)
-	}
-	normalized, err := threadmode.ParseRuntime(mode)
-	if err != nil {
-		return ThreadRuntimeModeChangedEvent{}, fmt.Errorf("set runtime mode: %w", err)
-	}
-	if provider.NormalizeRuntimeMode(t.RuntimeMode) == normalized {
-		return ThreadRuntimeModeChangedEvent{
-			ThreadID:       threadID,
-			RuntimeMode:    string(normalized),
-			NeedsReconnect: false,
-		}, nil
-	}
-
-	if _, err := a.UpdateThreadRuntimeMode(threadID, string(normalized)); err != nil {
-		return ThreadRuntimeModeChangedEvent{}, err
-	}
-
-	return ThreadRuntimeModeChangedEvent{
-		ThreadID:       threadID,
-		RuntimeMode:    string(normalized),
-		NeedsReconnect: false,
-	}, nil
 }
 
 func (a *App) emitRuntimeModeChanged(threadID string, mode provider.RuntimeMode) {

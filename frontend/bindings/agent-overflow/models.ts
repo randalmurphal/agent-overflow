@@ -1195,41 +1195,6 @@ export class ThreadLiveState {
 }
 
 /**
- * ThreadRuntimeModeChangedEvent is the payload emitted after the runtime
- * mode for a thread is updated. Mirrors the interaction-mode event shape for
- * compatibility with older frontend code. Runtime-mode changes now restart
- * active sessions synchronously, so needsReconnect is always false on success.
- */
-export class ThreadRuntimeModeChangedEvent {
-    "threadId": string;
-    "runtimeMode": string;
-    "needsReconnect": boolean;
-
-    /** Creates a new ThreadRuntimeModeChangedEvent instance. */
-    constructor($$source: Partial<ThreadRuntimeModeChangedEvent> = {}) {
-        if (!("threadId" in $$source)) {
-            this["threadId"] = "";
-        }
-        if (!("runtimeMode" in $$source)) {
-            this["runtimeMode"] = "";
-        }
-        if (!("needsReconnect" in $$source)) {
-            this["needsReconnect"] = false;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new ThreadRuntimeModeChangedEvent instance from a string or object.
-     */
-    static createFrom($$source: any = {}): ThreadRuntimeModeChangedEvent {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new ThreadRuntimeModeChangedEvent($$parsedSource as Partial<ThreadRuntimeModeChangedEvent>);
-    }
-}
-
-/**
  * WorkspaceFileSearchResult is the RPC shape for workspace-file search hits.
  */
 export class WorkspaceFileSearchResult {

@@ -15,14 +15,14 @@ import (
 type ProbeConfig struct {
 	Binary  string // default: "claude"
 	WorkDir string
-	Timeout time.Duration // default: 8s (matches forge's CAPABILITIES_PROBE_TIMEOUT_MS)
+	Timeout time.Duration // default: 8s
 }
 
-// defaultProbeTimeout matches forge's `CAPABILITIES_PROBE_TIMEOUT_MS`.
+// defaultProbeTimeout is the per-spawn deadline.
 const defaultProbeTimeout = 8 * time.Second
 
 // DefaultProbeTTL is how long a successful probe result stays cached for a
-// given binary path. Matches forge's subscription-probe TTL.
+// given binary path.
 const DefaultProbeTTL = 5 * time.Minute
 
 // probeInitRequestID is the request_id we send for the probe's

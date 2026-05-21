@@ -24,6 +24,12 @@ import (
 // runs the actual spawn and shutdown of a provider subprocess for a
 // given thread.
 
+// codexReopenReconcileTimeout bounds the on-reopen probe that asks
+// the Codex app-server whether the thread needs a `thread/resume`
+// after a session start. Runs in a background goroutine; the user
+// has already seen the session come up.
+const codexReopenReconcileTimeout = 30 * time.Second
+
 // StartSession is the Wails-bound entry point for "bring this thread's
 // provider subprocess up." The sendMessage path also calls
 // startSessionNow via runSessionStart when a thread has no active
@@ -173,7 +179,7 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 // testable: TestStartSessionTriggersCodexReconcile installs a probe stub
 // and asserts this runs exactly when opts.Resume != "".
 func (a *App) reconcileCodexAfterStart(threadID string) {
-	ctx, cancel := context.WithTimeout(a.lifeCtx(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(a.lifeCtx(), codexReopenReconcileTimeout)
 	defer cancel()
 	result, err := a.ReconcileCodexOnReopen(ctx, threadID)
 	if err != nil {

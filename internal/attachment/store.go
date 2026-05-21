@@ -17,7 +17,7 @@ import (
 )
 
 // DefaultMaxSize is the largest attachment payload we accept. The knob is
-// configurable via Config.MaxSize but defaults to 10 MiB to match forge.
+// configurable via Config.MaxSize but defaults to 10 MiB.
 const DefaultMaxSize int64 = 10 * 1024 * 1024
 
 // DefaultMaxCount is the largest number of image attachments accepted for a

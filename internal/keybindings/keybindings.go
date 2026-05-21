@@ -42,12 +42,11 @@ const MaxCount = 256
 // original key) identity, and older entries without either field
 // fall back to the first matching (command, when) default.
 //
-// Parity note: these mirror forge's DEFAULT_KEYBINDINGS in
-// /Users/randy/repos/forge/apps/server/src/keybindings.ts with the
+// The set is a curated subset of common editor / chat actions:
 // entries that don't apply to agent-overflow (terminal.split,
-// script.*.run, most editor.* commands) removed, and with the
-// command-palette / app-level actions this wave introduces layered on
-// top.
+// script.*.run, most editor.* commands) are omitted, and the
+// command-palette / app-level actions this wave introduces are
+// layered on top.
 var Defaults = []Keybinding{
 	// Keybinding-overhaul swap: mod+j / mod+k are reserved for the
 	// sidebar visual selector (no DOM focus change). Terminal

@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+// rebindOldServerShutdownTimeout bounds the graceful shutdown of the
+// retired http.Server after a Rebind. Hijacked WebSockets are
+// untouched (their goroutines own the connection lifetime); this only
+// covers in-flight HTTP handlers. 5s matches the upper bound a fresh
+// HTTP request would tolerate before the client gives up.
+const rebindOldServerShutdownTimeout = 5 * time.Second
+
 // RebindOptions carries optional per-rebind configuration. A nil value
 // (or zero-valued struct) leaves the corresponding field unchanged —
 // today only OriginPatterns is settable, but new fields can be added
@@ -148,7 +155,7 @@ func (s *Server) Rebind(addr string, opts *RebindOptions) error {
 	// the slice naturally drains under steady-state churn.
 	if oldSrv != nil {
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), rebindOldServerShutdownTimeout)
 			defer cancel()
 			if err := oldSrv.Shutdown(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 				log.Printf("transport: rebind: shutdown old server: %v", err)

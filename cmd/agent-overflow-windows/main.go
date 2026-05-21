@@ -97,16 +97,14 @@ const bootstrapProbeAttemptTimeout = 1 * time.Second
 // but the launcher's first probe lands inside that window and gets
 // "actively refused" by Windows even though the backend is healthy.
 // Polling past the install bumps every cold boot through the race
-// without flapping. The probe now covers both localhost-forwarding
-// setup and the backend's readiness-gated ServiceStartup window, so
-// it uses the same 30 s shape as forge's daemon-readiness loop.
+// without flapping. The probe covers both localhost-forwarding setup
+// and the backend's readiness-gated ServiceStartup window.
 const bootstrapProbeDeadline = 30 * time.Second
 
 // bootstrapProbePollInterval is the gap between failed-probe retries.
-// 250 ms matches forge/apps/desktop/src/main.ts's connectViaWsl loop
-// — fast enough that the WSL2 forwarder install almost never costs us
-// more than one extra hop, slow enough that we don't melt the CPU when
-// the backend genuinely never comes up.
+// 250 ms is fast enough that the WSL2 forwarder install almost never
+// costs us more than one extra hop, slow enough that we don't melt the
+// CPU when the backend genuinely never comes up.
 const bootstrapProbePollInterval = 250 * time.Millisecond
 
 func main() {
@@ -621,10 +619,9 @@ func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) 
 	// and the launcher's first probe usually lands inside that race —
 	// Windows returns RST and we'd surface a misleading
 	// connectivity-error page even though the backend is healthy and
-	// the forwarder is about to catch up. forge's connectViaWsl
-	// (apps/desktop/src/main.ts) handles this with a 250 ms / 30 s
-	// loop; we use the same shape because the backend may now publish
-	// its bootstrap port before ServiceStartup has released readiness.
+	// the forwarder is about to catch up. We use a 250 ms / 30 s probe
+	// loop because the backend may now publish its bootstrap port before
+	// ServiceStartup has released readiness.
 	//
 	// Transport errors (refused / timeout / DNS failure) are
 	// transient and trigger a retry. An HTTP-level response (any

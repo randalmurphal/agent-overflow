@@ -35,6 +35,26 @@ var ErrMCPSessionUnavailable = errors.New("mcp: thread session not available")
 // their definitions.
 var ErrMCPReadOnlyEntry = errors.New("mcp: entry is not user-managed")
 
+const (
+	// mcpEphemeralFetchTimeout bounds the one-shot `claude mcp list` /
+	// `codex mcpServerStatus/list` subprocess invocations that back the
+	// popup's initial fetch and explicit Refresh. Generous enough to
+	// absorb a slow first-launch CLI warm-up without leaving the popup
+	// spinning indefinitely if the binary is wedged.
+	mcpEphemeralFetchTimeout = 20 * time.Second
+	// mcpAuthRoundTripTimeout bounds the provider-side MCP OAuth
+	// handshake. The user is interacting with a browser tab during the
+	// flow, so a longer ceiling is intentional — too short and a
+	// distracted approval re-issues a fresh login.
+	mcpAuthRoundTripTimeout = 60 * time.Second
+	// mcpLiveReconcileTimeout bounds the per-thread live reconcile
+	// sent to an active provider session (Claude `mcp_set_servers`,
+	// Codex `RefreshMCPServers`). 30s is the same ceiling as
+	// reconcileCodexAfterStart and absorbs the provider's per-server
+	// connect fan-out without holding a thread-action lock forever.
+	mcpLiveReconcileTimeout = 30 * time.Second
+)
+
 // MCPServer is the wire shape every MCP binding speaks. It unifies
 // claudeconfig.Server (which carries Source + the per-workspace
 // Disabled flag) and codexconfig.Server (which carries a global
@@ -173,7 +193,7 @@ func (a *App) GetMcpServerStatus(providerName, name string, force bool) (mcpstat
 	if err != nil {
 		return mcpstatus.ServerStatus{}, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), mcpEphemeralFetchTimeout)
 	defer cancel()
 	return a.mcpStatus().GetOrFetch(ctx, key, fetcher, force)
 }
@@ -207,7 +227,7 @@ func (a *App) RefreshMcpServerStatus(providerName string) ([]mcpstatus.ServerSta
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), mcpEphemeralFetchTimeout)
 	defer cancel()
 	servers, err := a.mcpStatus().RefreshProvider(ctx, prov, fetcher)
 	if err != nil {
@@ -272,7 +292,7 @@ func (a *App) TriggerMcpAuth(threadID, name string) (MCPAuthInitResult, error) {
 	if !ok {
 		return MCPAuthInitResult{}, ErrMCPSessionUnavailable
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), mcpAuthRoundTripTimeout)
 	defer cancel()
 	switch thread.Provider {
 	case string(provider.Claude):
@@ -717,7 +737,7 @@ func (a *App) reconcileClaudeMCPLive(thread store.Thread) error {
 		}
 		target[srv.Name] = spec
 	}
-	ctx, cancel := context.WithTimeout(a.lifeCtx(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(a.lifeCtx(), mcpLiveReconcileTimeout)
 	defer cancel()
 	diff, err := sess.claude.SetMCPServers(ctx, target)
 	if err != nil {
@@ -835,7 +855,7 @@ func (a *App) setCodexMcpEnabled(thread store.Thread, name string, enabled bool)
 		// same Codex session.
 		unlock := a.threadLocks().Lock(thread.ID)
 		defer unlock()
-		ctx, cancel := context.WithTimeout(a.lifeCtx(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(a.lifeCtx(), mcpLiveReconcileTimeout)
 		defer cancel()
 		err := sess.codex.RefreshMCPServers(ctx)
 		if err == nil {

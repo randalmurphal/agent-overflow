@@ -17,7 +17,6 @@ import (
 	"time"
 )
 
-// Defaults tuned to match forge's behaviour closely enough for parity.
 const (
 	DefaultTTL         = 15 * time.Second
 	DefaultMaxEntries  = 25_000

@@ -316,7 +316,7 @@ interface ModeChangedPayload {
 
 /**
  * Payload for thread:runtime_mode_changed — emitted whenever
- * SetThreadRuntimeMode persists a change. Runtime-mode changes restart
+ * UpdateThreadRuntimeMode persists a change. Runtime-mode changes restart
  * active sessions synchronously, so needsReconnect is false on success and
  * kept only for compatibility with the older event shape.
  */

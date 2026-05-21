@@ -708,7 +708,6 @@ func (p *privilegedApp) SetEditorSettings() string            { return "ok" }
 func (p *privilegedApp) UpdateKeybindings() string            { return "ok" }
 func (p *privilegedApp) ResetKeybindings() string             { return "ok" }
 func (p *privilegedApp) SetChatBarFavorite() string           { return "ok" }
-func (p *privilegedApp) SetThreadRuntimeMode() string         { return "ok" }
 func (p *privilegedApp) SetWSLDistroPreference() string       { return "ok" }
 func (p *privilegedApp) ReconfigureObservability() string     { return "ok" }
 

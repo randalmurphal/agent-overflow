@@ -11,6 +11,13 @@ import (
 	"agent-overflow/internal/threadmode"
 )
 
+// applyActiveModeTimeout bounds the synchronous Claude
+// `set_permission_mode` RPC we send when the user flips chat/plan
+// while a session is live. Short — the RPC is a state nudge with no
+// per-server fan-out — but generous enough to survive a momentary
+// stall before we mark the session reconnect-required.
+const applyActiveModeTimeout = 5 * time.Second
+
 // ThreadModeChangedEvent is emitted whenever a thread's mode is updated
 // while a provider session is active. The frontend uses NeedsReconnect
 // to show a toast that prompts the user to reconnect — the running
@@ -67,7 +74,7 @@ func (a *App) applyActiveModeChange(threadID string, sess session, mode provider
 	switch mode {
 	case provider.ModeChat, provider.ModePlan:
 		if sess.claude != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), applyActiveModeTimeout)
 			defer cancel()
 			if err := sess.claude.SetInteractionMode(ctx, mode); err != nil {
 				log.Printf("thread %s: apply active Claude mode %q failed: %v", threadID, mode, err)

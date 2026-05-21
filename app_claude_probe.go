@@ -12,8 +12,7 @@ import (
 // claudeProbeCache is a package-level cache shared across App instances
 // within the process. Probe results depend only on the binary path and
 // the ambient Claude auth state, not on App configuration, so a single
-// cache per process is correct and mirrors how forge's capabilities
-// probe behaves.
+// cache per process is correct.
 //
 // The cache is guarded by claudeProbeCacheMu rather than sync.Once so
 // tests can reassign claudeProbeCache to a fresh instance between

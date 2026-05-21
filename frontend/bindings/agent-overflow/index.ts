@@ -39,7 +39,6 @@ export {
     TerminalOpenOptions,
     TerminalReplay,
     ThreadLiveState,
-    ThreadRuntimeModeChangedEvent,
     WorkspaceFileSearchResult,
     WorktreeStatus
 } from "./models.js";

@@ -4,7 +4,7 @@
 // Refs live under refs/agent-overflow/checkpoints/<b64url(threadID)>/...
 // Thread IDs are base64url-encoded because UUIDs contain dashes that are legal
 // in ref path components, but general thread IDs could be surprising — the
-// encoding keeps every character path-safe (parity with forge's mechanism).
+// encoding keeps every character path-safe.
 package checkpoint
 
 import (

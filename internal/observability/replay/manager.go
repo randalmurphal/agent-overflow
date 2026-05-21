@@ -458,6 +458,8 @@ func (m *Manager) RemoveThreadLog(threadID string) error {
 // mid-write, or (b) ctx is cancelled. Used by tests to let the background
 // goroutine finish processing before inspecting the on-disk file.
 func (m *Manager) waitForDrain(ctx context.Context) error {
+	tick := time.NewTicker(2 * time.Millisecond)
+	defer tick.Stop()
 	for {
 		if m.QueueLen() == 0 && m.inflight.Load() == 0 {
 			return nil
@@ -465,7 +467,7 @@ func (m *Manager) waitForDrain(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(2 * time.Millisecond):
+		case <-tick.C:
 		}
 	}
 }

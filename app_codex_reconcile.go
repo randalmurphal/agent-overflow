@@ -190,10 +190,8 @@ func (a *App) flipRunningBgRowsAsSessionEnded(items []store.Item) (int, error) {
 }
 
 // ReconcileResult is the caller-facing summary of a single reconcile
-// pass. The fields are structured for both the eventual binding
-// surface (we'll want these in bindings/ once we wire the frontend)
-// and the tests that need to introspect the outcome without parsing
-// store rows after the fact.
+// pass. The fields are structured so tests can introspect the outcome
+// without parsing store rows after the fact.
 type ReconcileResult struct {
 	ThreadID    string                 `json:"threadId"`
 	Status      codex.ThreadStatusKind `json:"status"`

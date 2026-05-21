@@ -71,13 +71,12 @@ func (a *App) GenerateCommitMessage(threadID string) (GeneratedCommitMessage, er
 // t3-code's GitCore.getCommitContext: stage → read summary → read patch
 // → read branch.
 //
-// NOTE ON STAGE-ALL SAFETY: this mirrors t3-code and forge parity — the
-// commit dialog expects "describe everything I'm about to commit". Users
-// who want to pick files commit through the CommitStep's per-file diff
-// preview after this returns. Running `git add -A` here can pick up
-// untracked files the user didn't mean to commit; the dialog shows the
-// staged diff before the commit is executed, so the user has the last
-// word. Flagged in the wave report.
+// NOTE ON STAGE-ALL SAFETY: the commit dialog expects "describe
+// everything I'm about to commit". Users who want to pick files commit
+// through the CommitStep's per-file diff preview after this returns.
+// Running `git add -A` here can pick up untracked files the user didn't
+// mean to commit; the dialog shows the staged diff before the commit is
+// executed, so the user has the last word.
 func (a *App) gatherStagedDiffForCommit(thread store.Thread) (summary, patch, branch string, err error) {
 	_, workspace, err := a.resolveGitPaths(thread)
 	if err != nil {

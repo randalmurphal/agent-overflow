@@ -49,7 +49,7 @@ type MCPServer struct {
 // returned by `account/rateLimits/read` (planType + apiProvider hint).
 //
 // Empty SubscriptionType + empty TokenSource are the unauthenticated
-// signal forge has used historically; consumers branch on that.
+// signal; consumers branch on that.
 type AccountInfo struct {
 	SubscriptionType string `json:"subscriptionType,omitempty"`
 	TokenSource      string `json:"tokenSource,omitempty"`

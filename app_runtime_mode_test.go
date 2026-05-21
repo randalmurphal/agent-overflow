@@ -12,8 +12,8 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// createRuntimeTestThread seeds a thread the SetThreadRuntimeMode binding
-// can operate on. Returns the ID so tests don't hard-code it.
+// createRuntimeTestThread seeds a thread the runtime-mode bindings can
+// operate on. Returns the ID so tests don't hard-code it.
 func createRuntimeTestThread(t *testing.T, app *App, mode provider.RuntimeMode) string {
 	t.Helper()
 	id := "rt-" + strings.ReplaceAll(string(mode), "-", "_")
@@ -51,135 +51,6 @@ func emissionsFor(m *sync.Map, name string) []any {
 		return nil
 	}
 	return raw.([]any)
-}
-
-// TestSetThreadRuntimeModeHappyPath: persists, emits, reports no reconnect
-// when no session is active.
-func TestSetThreadRuntimeModeHappyPath(t *testing.T) {
-	app := newTestAppWithStore(t)
-	emissions := captureEmissions(app)
-	id := createRuntimeTestThread(t, app, provider.RuntimeFullAccess)
-
-	got, err := app.SetThreadRuntimeMode(id, string(provider.RuntimeAutoAcceptEdits))
-	if err != nil {
-		t.Fatalf("SetThreadRuntimeMode: %v", err)
-	}
-	if got.RuntimeMode != string(provider.RuntimeAutoAcceptEdits) {
-		t.Errorf("returned mode = %q, want %q", got.RuntimeMode, provider.RuntimeAutoAcceptEdits)
-	}
-	if got.NeedsReconnect {
-		t.Error("no active session — NeedsReconnect should be false")
-	}
-
-	stored, err := app.store.GetThread(id)
-	if err != nil {
-		t.Fatalf("GetThread: %v", err)
-	}
-	if stored.RuntimeMode != string(provider.RuntimeAutoAcceptEdits) {
-		t.Errorf("persisted mode = %q, want %q", stored.RuntimeMode, provider.RuntimeAutoAcceptEdits)
-	}
-
-	fired := emissionsFor(emissions, "thread:runtime_mode_changed")
-	if len(fired) != 1 {
-		t.Fatalf("expected 1 runtime_mode_changed emission, got %d", len(fired))
-	}
-}
-
-// TestSetThreadRuntimeModeRejectsInvalid rejects unknown strings so the UI
-// surfaces an error rather than silently coercing to the default.
-func TestSetThreadRuntimeModeRejectsInvalid(t *testing.T) {
-	app := newTestAppWithStore(t)
-	emissions := captureEmissions(app)
-	id := createRuntimeTestThread(t, app, provider.RuntimeFullAccess)
-
-	_, err := app.SetThreadRuntimeMode(id, "yolo")
-	if err == nil {
-		t.Fatal("expected error for invalid mode, got nil")
-	}
-	// Store stays unchanged.
-	stored, _ := app.store.GetThread(id)
-	if stored.RuntimeMode != string(provider.RuntimeFullAccess) {
-		t.Errorf("persisted mode mutated to %q on invalid set", stored.RuntimeMode)
-	}
-	if fired := emissionsFor(emissions, "thread:runtime_mode_changed"); len(fired) != 0 {
-		t.Errorf("no event should fire on invalid mode, got %d", len(fired))
-	}
-}
-
-// TestSetThreadRuntimeModeIdempotent: same mode is a no-op — doesn't tear
-// down a session, doesn't re-emit, returns NeedsReconnect=false.
-func TestSetThreadRuntimeModeIdempotent(t *testing.T) {
-	app := newTestAppWithStore(t)
-	emissions := captureEmissions(app)
-	id := createRuntimeTestThread(t, app, provider.RuntimeAutoAcceptEdits)
-
-	// Simulate an active session so we can confirm the idempotent path
-	// does NOT set NeedsReconnect.
-	app.sessions[id] = session{token: "t"}
-
-	got, err := app.SetThreadRuntimeMode(id, string(provider.RuntimeAutoAcceptEdits))
-	if err != nil {
-		t.Fatalf("SetThreadRuntimeMode: %v", err)
-	}
-	if got.NeedsReconnect {
-		t.Error("idempotent set should NOT request reconnect")
-	}
-	if fired := emissionsFor(emissions, "thread:runtime_mode_changed"); len(fired) != 0 {
-		t.Errorf("no-op should not emit, got %d emissions", len(fired))
-	}
-}
-
-// TestSetThreadRuntimeModeRestartsWhenSessionActive asserts the legacy binding
-// preserves its response shape while the new runtime mode is applied by a
-// synchronous session restart.
-func TestSetThreadRuntimeModeRestartsWhenSessionActive(t *testing.T) {
-	app := newTestAppWithStore(t)
-	emissions := captureEmissions(app)
-	id := createRuntimeTestThread(t, app, provider.RuntimeApprovalRequired)
-
-	app.sessions[id] = session{token: "t"}
-
-	var startCalls int
-	app.startSessionFn = func(threadID string) error {
-		startCalls++
-		if threadID != id {
-			t.Fatalf("startSessionFn threadID = %q, want %q", threadID, id)
-		}
-		stored, err := app.store.GetThread(id)
-		if err != nil {
-			t.Fatalf("GetThread during restart: %v", err)
-		}
-		if stored.RuntimeMode != string(provider.RuntimeFullAccess) {
-			t.Fatalf("restart saw runtime mode = %q, want full-access", stored.RuntimeMode)
-		}
-		return nil
-	}
-
-	got, err := app.SetThreadRuntimeMode(id, string(provider.RuntimeFullAccess))
-	if err != nil {
-		t.Fatalf("SetThreadRuntimeMode: %v", err)
-	}
-	if got.NeedsReconnect {
-		t.Error("runtime-mode changes restart synchronously; NeedsReconnect should be false")
-	}
-	if startCalls != 1 {
-		t.Fatalf("startSessionFn calls = %d, want 1", startCalls)
-	}
-	stored, _ := app.store.GetThread(id)
-	if stored.RuntimeMode != string(provider.RuntimeFullAccess) {
-		t.Errorf("persisted mode = %q, want full-access", stored.RuntimeMode)
-	}
-	fired := emissionsFor(emissions, "thread:runtime_mode_changed")
-	if len(fired) != 1 {
-		t.Fatalf("expected 1 runtime_mode_changed emission, got %d", len(fired))
-	}
-	evt, ok := fired[0].(ThreadRuntimeModeChangedEvent)
-	if !ok {
-		t.Fatalf("runtime_mode_changed payload type = %T", fired[0])
-	}
-	if evt.NeedsReconnect {
-		t.Fatal("runtime_mode_changed NeedsReconnect = true, want false after synchronous restart")
-	}
 }
 
 func TestUpdateThreadRuntimeModeRollsBackWhenRestartFails(t *testing.T) {
@@ -391,16 +262,16 @@ func TestSendRuntimeModeChangeRestartsAfterInflightStart(t *testing.T) {
 	}
 }
 
-// TestGetThreadRuntimeModeRoundTrips ensures that the read side of the
-// binding returns exactly what SetThreadRuntimeMode persisted — the
-// normalization path doesn't clobber a valid mode on the way out.
+// TestGetThreadRuntimeModeRoundTrips ensures the read side returns exactly
+// what UpdateThreadRuntimeMode persisted — the normalization path doesn't
+// clobber a valid mode on the way out.
 func TestGetThreadRuntimeModeRoundTrips(t *testing.T) {
 	app := newTestAppWithStore(t)
 	id := createRuntimeTestThread(t, app, provider.RuntimeFullAccess)
 
 	for _, mode := range provider.AllRuntimeModes {
-		if _, err := app.SetThreadRuntimeMode(id, string(mode)); err != nil {
-			t.Fatalf("SetThreadRuntimeMode(%s): %v", mode, err)
+		if _, err := app.UpdateThreadRuntimeMode(id, string(mode)); err != nil {
+			t.Fatalf("UpdateThreadRuntimeMode(%s): %v", mode, err)
 		}
 		got, err := app.GetThreadRuntimeMode(id)
 		if err != nil {

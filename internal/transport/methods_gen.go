@@ -173,7 +173,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SetEditorSettings", ID: 3655340267}, // main.App.SetEditorSettings
 	{Name: "SetMcpServerEnabled", ID: 3696908699}, // main.App.SetMcpServerEnabled
 	{Name: "SetNetworkSettings", ID: 3915514446}, // main.App.SetNetworkSettings
-	{Name: "SetThreadRuntimeMode", ID: 1115610690}, // main.App.SetThreadRuntimeMode
 	{Name: "SetWSLDistroPreference", ID: 3978807241}, // main.App.SetWSLDistroPreference
 	{Name: "StartDiscussion", ID: 3188309099}, // main.App.StartDiscussion
 	{Name: "StartDiscussionByID", ID: 2336869067}, // main.App.StartDiscussionByID

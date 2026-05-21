@@ -318,7 +318,6 @@ export const ListThreadCheckpoints = dispatch('ListThreadCheckpoints');
 
 // Thread runtime mode
 export const GetThreadRuntimeMode = dispatch('GetThreadRuntimeMode');
-export const SetThreadRuntimeMode = dispatch('SetThreadRuntimeMode');
 
 // Dev-only UI render tracing
 export const AppendUIRenderTraceBatch = dispatch('AppendUIRenderTraceBatch');

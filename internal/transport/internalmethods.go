@@ -242,7 +242,6 @@ var LocalOnlyMethods = map[string]bool{
 	"UpdateKeybindings":            true,
 	"ResetKeybindings":             true,
 	"SetChatBarFavorite":           true,
-	"SetThreadRuntimeMode":         true,
 	// SetWSLDistroPreference rewrites the Windows launcher's
 	// wsl.json — the next launch will boot whatever distro a LAN
 	// peer talked the user's backend into saving. Same threat shape

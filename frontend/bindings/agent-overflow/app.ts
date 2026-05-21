@@ -1836,20 +1836,6 @@ export function SetNetworkSettings(s: network$0.Settings): $CancellablePromise<n
 }
 
 /**
- * SetThreadRuntimeMode is the legacy binding name preserved only while
- * the frontend migration lands (Wave 2c+). The implementation routes to
- * UpdateThreadRuntimeMode and returns the older event struct.
- * 
- * The new per-field binding UpdateThreadRuntimeMode in app_threads.go
- * is the going-forward surface and returns store.Thread directly.
- */
-export function SetThreadRuntimeMode(threadID: string, mode: string): $CancellablePromise<$models.ThreadRuntimeModeChangedEvent> {
-    return $Call.ByID(1115610690, threadID, mode).then(($result: any) => {
-        return $$createType80($result);
-    });
-}
-
-/**
  * SetWSLDistroPreference persists the new distro pick to the
  * launcher's wsl.json. The change applies on the next Windows-side
  * launch; the running backend stays in its current distro for the
@@ -1967,7 +1953,7 @@ export function SwitchThread(threadID: string): $CancellablePromise<store$0.Thre
  */
 export function Telemetry(): $CancellablePromise<otel$0.Provider | null> {
     return $Call.ByID(669486408).then(($result: any) => {
-        return $$createType82($result);
+        return $$createType81($result);
     });
 }
 
@@ -1988,7 +1974,7 @@ export function TouchRemoteEndpoint(id: string): $CancellablePromise<void> {
  */
 export function TriggerMcpAuth(threadID: string, name: string): $CancellablePromise<$models.MCPAuthInitResult> {
     return $Call.ByID(1291217507, threadID, name).then(($result: any) => {
-        return $$createType83($result);
+        return $$createType82($result);
     });
 }
 
@@ -2221,8 +2207,7 @@ export function UpdateThreadReasoningEffort(id: string, effort: string): $Cancel
 
 /**
  * UpdateThreadRuntimeMode persists the runtime mode and restarts the
- * session if one is live. Replaces the older SetThreadRuntimeMode
- * naming; kept as a single surface so the frontend speaks one shape.
+ * session if one is live.
  */
 export function UpdateThreadRuntimeMode(id: string, mode: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(325190827, id, mode).then(($result: any) => {
@@ -2362,7 +2347,6 @@ const $$createType76 = $Create.Nullable($$createType75);
 const $$createType77 = store$0.ThreadMessageHit.createFrom;
 const $$createType78 = $Create.Array($$createType77);
 const $$createType79 = $models.WorkspaceFileSearchResult.createFrom;
-const $$createType80 = $models.ThreadRuntimeModeChangedEvent.createFrom;
-const $$createType81 = otel$0.Provider.createFrom;
-const $$createType82 = $Create.Nullable($$createType81);
-const $$createType83 = $models.MCPAuthInitResult.createFrom;
+const $$createType80 = otel$0.Provider.createFrom;
+const $$createType81 = $Create.Nullable($$createType80);
+const $$createType82 = $models.MCPAuthInitResult.createFrom;

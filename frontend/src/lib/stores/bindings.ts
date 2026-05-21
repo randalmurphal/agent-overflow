@@ -183,7 +183,6 @@ export {
 
   // Thread runtime mode (three-tier approval axis)
   GetThreadRuntimeMode,
-  SetThreadRuntimeMode,
 
   // Dev-only UI render tracing
   AppendUIRenderTraceBatch,

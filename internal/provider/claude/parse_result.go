@@ -31,10 +31,9 @@ import (
 //
 // Interrupted detection: Claude does not expose a `"interrupted"`
 // stop_reason. Interruption surfaces as `subtype=error_during_execution`
-// + `errors[]` containing "aborted" or "interrupted" (see forge's
-// sdkMessageParsing.ts reference and the Python SDK's SDKResultError
-// shape, which uses `errors: string[]` — there is no `error`
-// (singular) field on the wire). Interrupt wins over error: a user
+// + `errors[]` containing "aborted" or "interrupted" (see the Python
+// SDK's SDKResultError shape, which uses `errors: string[]` — there is
+// no `error` (singular) field on the wire). Interrupt wins over error: a user
 // abort that surfaces through the same envelope still maps to
 // `stop_reason="interrupted"` (no `meta.error`), so the working
 // indicator clears as cancelled rather than as a hard failure.
@@ -176,9 +175,8 @@ func joinNonEmpty(parts []string, sep string) string {
 // detectInterrupted tests whether a non-error `result` envelope is
 // really an interrupted turn. The shape we key on is
 // `subtype=error_during_execution` combined with any entry in
-// `errors[]` containing `"aborted"` or `"interrupted"` — lifted from
-// forge's sdkMessageParsing.ts reference so both adapters agree on
-// the heuristic.
+// `errors[]` containing `"aborted"` or `"interrupted"` — the same
+// heuristic the upstream Python SDK uses for interrupted results.
 func detectInterrupted(subtype string, errorsRaw json.RawMessage) bool {
 	if subtype != "error_during_execution" {
 		return false

@@ -46,8 +46,7 @@ type wslInstallPath struct {
 }
 
 // wslInstallTable holds the well-known Windows install locations for
-// each editor we detect on WSL. Sourced from forge's open.ts plus
-// CodexMonitor's Tauri bridge — these paths match what the vendors
+// each editor we detect on WSL. These paths match what the vendors
 // install during a default Windows setup. Editors missing from this
 // table have no /mnt/c fallback and rely on PATH only.
 var wslInstallTable = map[string]wslInstallPath{

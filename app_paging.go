@@ -11,12 +11,12 @@ import (
 // Windowed history constants. `sliceAroundDefaultItems` and
 // `paginationItems` size the user-facing loads so SubagentGroup
 // collapse (a heavy subagent turn rolls up to one card) doesn't leave
-// the rendered timeline visually truncated. `initialTurnWindow` /
-// `minWindowItems` / `maxWindowItems` exist for the legacy
-// `ListRecentThreadItems` transport-gap-recovery probe only.
+// the rendered timeline visually truncated. `initialTurnWindow` sizes
+// the legacy `ListRecentThreadItems` transport-gap-recovery probe;
+// `maxWindowItems` bounds that probe AND serves as a shared DoS cap
+// for the two viewport bindings below.
 const (
 	initialTurnWindow = 50
-	minWindowItems    = 500
 	maxWindowItems    = 2000
 
 	// paginationItems is the default item budget for an explicit
@@ -46,14 +46,17 @@ const (
 // ListRecentThreadItems loads the tail of a thread's history into the
 // timeline pane: the last `turnLimit` turns (defaulting to
 // initialTurnWindow when <= 0) plus enough surrounding turns to keep
-// the total item count in [minWindowItems, maxWindowItems], plus any
-// subagent ancestors those items reference. This is the binding the
-// frontend calls on thread switch.
+// the total item count in [500, maxWindowItems], plus any subagent
+// ancestors those items reference. This is the binding the frontend
+// calls on thread switch.
 func (a *App) ListRecentThreadItems(threadID string, turnLimit int) (store.PagedItems, error) {
 	if turnLimit <= 0 {
 		turnLimit = initialTurnWindow
 	}
-	floor, _, err := a.store.PickInitialFloorTurn(threadID, turnLimit, minWindowItems, maxWindowItems)
+	// 500: floor on accumulated item count so an unusually sparse tail
+	// (lots of empty turns, one-line plan_update bursts) still loads a
+	// useful viewport.
+	floor, _, err := a.store.PickInitialFloorTurn(threadID, turnLimit, 500, maxWindowItems)
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list recent thread items: %w", err)
 	}

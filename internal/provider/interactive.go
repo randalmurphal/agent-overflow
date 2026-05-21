@@ -234,7 +234,7 @@ func isReservedUserInputQuestionID(id string) bool {
 
 // UserInputAnswer stores one or more selected answers for a question.
 // It marshals as a string for single-select answers and a string array for
-// multi-select answers to match the frontend/Forge contract.
+// multi-select answers to match the frontend contract.
 type UserInputAnswer []string
 
 // SingleUserInputAnswer constructs a single-answer response value.

@@ -453,10 +453,10 @@ func readIntValueFromTask(task map[string]json.RawMessage) (int, bool) {
 }
 
 // indexToolUseResults builds a map from tool_use_id → the structured
-// result object. Mirrors the forge adapter's behavior: tool_use_result can
-// be a single object, an object keyed by tool_use_id, or an array. Returns
-// an empty (but non-nil) map when the input is absent so callers can use
-// zero-value lookups safely.
+// result object. tool_use_result can be a single object, an object
+// keyed by tool_use_id, or an array. Returns an empty (but non-nil)
+// map when the input is absent so callers can use zero-value lookups
+// safely.
 func indexToolUseResults(value json.RawMessage) map[string]json.RawMessage {
 	results := make(map[string]json.RawMessage)
 	if len(value) == 0 {

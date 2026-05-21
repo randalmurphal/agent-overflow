@@ -89,8 +89,8 @@ func EventFromDetect(ps provider.ProviderStatus) Event {
 }
 
 // ClaudeUnauthenticated reports whether a ProbeAccount result
-// indicates the user isn't logged in. forge uses the same signal
-// (empty subscription + empty token source) to route users to
+// indicates the user isn't logged in. Empty subscription + empty
+// token source is the logged-out signal that routes users to
 // `claude login`.
 func ClaudeUnauthenticated(info provider.AccountInfo) bool {
 	return info.SubscriptionType == "" && info.TokenSource == ""

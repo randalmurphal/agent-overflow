@@ -550,8 +550,7 @@ func (a *App) UpdateThreadContextWindow(id string, tokens int) (store.Thread, er
 }
 
 // UpdateThreadRuntimeMode persists the runtime mode and restarts the
-// session if one is live. Replaces the older SetThreadRuntimeMode
-// naming; kept as a single surface so the frontend speaks one shape.
+// session if one is live.
 func (a *App) UpdateThreadRuntimeMode(id, mode string) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update runtime mode: store unavailable")
