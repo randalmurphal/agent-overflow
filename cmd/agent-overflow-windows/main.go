@@ -11,7 +11,7 @@
 //     under ~/.local/bin/agent-overflow if the version on disk
 //     doesn't match what's bundled.
 //  4. Spawns wsl.exe -d <distro> -- ~/.local/bin/agent-overflow
-//     --listen 127.0.0.1:0 --print-url-fd 3 and pins the child to a
+//     --listen 127.0.0.1:0 --print-url-fd 0 and pins the child to a
 //     Win32 Job Object so closing this process kills the WSL-side one.
 //  5. Reads the bootstrap line { port, token } back from the child.
 //  6. Points the Wails WebView2 window at

@@ -390,12 +390,11 @@ func runDesktop(listenAddr string) {
 //     identical to the Wails-managed path.
 //   - App.Shutdown drains the transport server + flushes subsystems.
 //
-// Bootstrap delivery: the spec asks for fd 3, but propagating a real
-// fd 3 through `wsl.exe` is unreliable across Windows versions. We
-// try fd 3 first (so a unit test or Linux-side launcher can read the
-// "clean" channel) and fall back to a stdout sentinel when fd 3 isn't
-// open. The Windows-side launcher only knows how to scan stdout, so
-// in practice that fallback path is the daily-driver.
+// Bootstrap delivery: a positive --print-url-fd asks for a clean fd
+// channel, but propagating fd 3 through `wsl.exe` is unreliable across
+// Windows versions. The Windows launcher passes fd=0 to skip that
+// doomed probe and use the stdout sentinel directly; Linux-side test
+// rigs and direct invocations can still pass fd=3 for the clean channel.
 //
 // Boot order is writeBootstrap-before-ServiceStartup with a readiness
 // gate: the launcher receives the {port,token} as soon as transport is
@@ -496,10 +495,10 @@ func shutdownHeadless(appService *App, srv *transport.Server) {
 // launcher a clean separation from any startup chatter the backend
 // prints to stdout/stderr. In practice, propagating a real fd 3
 // through `wsl.exe` is unreliable on Windows — the wsl.exe process
-// only forwards stdout (1) and stderr (2). So we try fd 3 first
-// (Linux-side test rigs and direct invocations get the clean channel)
-// and fall back to a sentinel-prefixed stdout line that the Windows
-// launcher knows how to recognise.
+// only forwards stdout (1) and stderr (2). So positive fd values try
+// the clean channel first (Linux-side test rigs and direct invocations
+// can pass fd=3), while fd=0 goes directly to the sentinel-prefixed
+// stdout line that the Windows launcher knows how to recognise.
 func writeBootstrap(fd int, srv *transport.Server) error {
 	bs := struct {
 		Port  int    `json:"port"`

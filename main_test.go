@@ -44,24 +44,35 @@ func TestParseFlagsConnectMode(t *testing.T) {
 		args        []string
 		wantConnect string
 		wantHeadles bool
+		wantFD      int
 	}{
 		{
 			name:        "default desktop",
 			args:        nil,
 			wantConnect: "",
 			wantHeadles: false,
+			wantFD:      0,
 		},
 		{
 			name:        "connect URL",
 			args:        []string{"--connect", "ws://host:1234?token=t"},
 			wantConnect: "ws://host:1234?token=t",
 			wantHeadles: false,
+			wantFD:      0,
 		},
 		{
 			name:        "headless via fd",
 			args:        []string{"--print-url-fd", "3"},
 			wantConnect: "",
 			wantHeadles: true,
+			wantFD:      3,
+		},
+		{
+			name:        "headless via stdout sentinel",
+			args:        []string{"--print-url-fd", "0"},
+			wantConnect: "",
+			wantHeadles: true,
+			wantFD:      0,
 		},
 	}
 	for _, c := range cases {
@@ -75,6 +86,9 @@ func TestParseFlagsConnectMode(t *testing.T) {
 			}
 			if got.headless != c.wantHeadles {
 				t.Errorf("headless = %v, want %v", got.headless, c.wantHeadles)
+			}
+			if got.printURLFD != c.wantFD {
+				t.Errorf("printURLFD = %d, want %d", got.printURLFD, c.wantFD)
 			}
 		})
 	}
