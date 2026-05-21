@@ -4,6 +4,7 @@ import UnifiedThreadPicker from './UnifiedThreadPicker.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { refreshThreads } from '../../stores/threads.svelte';
 import {
+  projectTurnStarted,
   resetForTest as resetThreadStatuses,
   setThreadStatus,
 } from '../../stores/threadStatuses.svelte';
@@ -44,6 +45,10 @@ beforeEach(async () => {
 
 function makePane() {
   return createThreadPane();
+}
+
+function markThreadRunning(threadId: string): void {
+  projectTurnStarted(threadId, `turn:${threadId}`, 0, 0);
 }
 
 // ---- Visibility ----
@@ -325,7 +330,7 @@ describe('<UnifiedThreadPicker> — status dots', () => {
       makeThread({ id: 'idle', title: 'Quiet' }),
       makeThread({ id: 'busy', title: 'Busy' }),
     ]);
-    setThreadStatus('busy', 'running');
+    markThreadRunning('busy');
     const pane = makePane();
     const { getByTestId } = render(UnifiedThreadPicker, {
       open: true,
@@ -347,7 +352,7 @@ describe('<UnifiedThreadPicker> — status dots', () => {
     await seedThreads([
       makeThread({ id: 'discussion', title: 'Roundtable', mode: 'discussion' }),
     ]);
-    setThreadStatus('discussion', 'running');
+    markThreadRunning('discussion');
     const pane = makePane();
     const { getByTestId } = render(UnifiedThreadPicker, {
       open: true,
@@ -383,7 +388,7 @@ describe('<UnifiedThreadPicker> — status dots', () => {
     await seedThreads([
       makeThread({ id: 'interrupted', title: 'Stopped', hasIncompleteTurn: true }),
     ]);
-    setThreadStatus('interrupted', 'running');
+    markThreadRunning('interrupted');
     const pane = makePane();
     const { getByTestId } = render(UnifiedThreadPicker, {
       open: true,

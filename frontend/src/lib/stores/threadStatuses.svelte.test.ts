@@ -5,6 +5,7 @@ import {
   getActiveTurn,
   getThreadStatus,
   hasPendingSend,
+  isThreadWorking,
   projectApprovalRequest,
   projectApprovalResolution,
   projectPlanReady,
@@ -67,7 +68,7 @@ describe('threadStatuses store', () => {
     )).toBe(false);
   });
 
-  it('tracks multiple active items before returning to idle', () => {
+  it('does not derive working from active timeline item rows', () => {
     projectThreadItem(makeItem({
       id: 'text-1',
       kind: 'assistant_text',
@@ -80,14 +81,15 @@ describe('threadStatuses store', () => {
       isBackground: false,
     }));
 
-    expect(getThreadStatus('thread-1')).toBe('running');
+    expect(isThreadWorking('thread-1')).toBe(false);
+    expect(getThreadStatus('thread-1')).toBe('idle');
 
     projectThreadItem(makeItem({
       id: 'text-1',
       kind: 'assistant_text',
       status: 'completed',
     }));
-    expect(getThreadStatus('thread-1')).toBe('running');
+    expect(getThreadStatus('thread-1')).toBe('idle');
 
     projectThreadItem(makeItem({
       id: 'tool-1',
@@ -99,11 +101,7 @@ describe('threadStatuses store', () => {
   });
 
   it('lets pending approvals dominate and resolves by requestId fallback', () => {
-    projectThreadItem(makeItem({
-      id: 'text-1',
-      kind: 'assistant_text',
-      status: 'streaming',
-    }));
+    projectTurnStarted('thread-1', 'turn-1', 0, 0);
     expect(getThreadStatus('thread-1')).toBe('running');
 
     projectApprovalRequest('thread-1', 'req-1');
@@ -112,11 +110,7 @@ describe('threadStatuses store', () => {
     projectApprovalResolution(undefined, 'req-1');
     expect(getThreadStatus('thread-1')).toBe('running');
 
-    projectThreadItem(makeItem({
-      id: 'text-1',
-      kind: 'assistant_text',
-      status: 'completed',
-    }));
+    projectTurnCompleted('thread-1', 'turn-1');
     expect(getThreadStatus('thread-1')).toBe('idle');
   });
 
@@ -137,12 +131,7 @@ describe('threadStatuses store', () => {
     }));
     expect(getThreadStatus('thread-1')).toBe('idle');
 
-    projectThreadItem(makeItem({
-      id: 'tool-1',
-      kind: 'tool_call',
-      status: 'running',
-      isBackground: false,
-    }));
+    projectTurnStarted('thread-1', 'turn-1', 0, 0);
     expect(getThreadStatus('thread-1')).toBe('running');
   });
 
@@ -228,6 +217,52 @@ describe('threadStatuses store', () => {
       // Even if the send flag is cleared later, the turn keeps running.
       projectSendResolved('thread-1');
       expect(getThreadStatus('thread-1')).toBe('running');
+    });
+
+    it('treats queued messages as the same working bridge the composer uses', () => {
+      seedQueueItem('thread-1', { message: 'queued follow-up' });
+
+      expect(isThreadWorking('thread-1')).toBe(true);
+      expect(getThreadStatus('thread-1')).toBe('running');
+
+      replaceQueueForThread('thread-1', []);
+      expect(isThreadWorking('thread-1')).toBe(false);
+      expect(getThreadStatus('thread-1')).toBe('idle');
+    });
+
+    it('reveals an error that was masked by queue-only working after the queue clears', () => {
+      seedQueueItem('thread-1', { message: 'queued follow-up' });
+
+      projectThreadItem(makeItem({
+        id: 'error-1',
+        kind: 'error',
+        role: 'system',
+        status: 'completed',
+      }));
+      expect(getThreadStatus('thread-1')).toBe('running');
+
+      replaceQueueForThread('thread-1', []);
+      expect(getThreadStatus('thread-1')).toBe('error');
+    });
+
+    it('reveals plan-ready that was masked by queue-only working after the queue clears', () => {
+      seedQueueItem('thread-1', { message: 'queued follow-up' });
+
+      projectPlanReady('thread-1');
+      expect(getThreadStatus('thread-1')).toBe('running');
+
+      replaceQueueForThread('thread-1', []);
+      expect(getThreadStatus('thread-1')).toBe('plan-ready');
+    });
+
+    it('reveals interrupted that was masked by queue-only working after the queue clears', () => {
+      seedQueueItem('thread-1', { message: 'queued follow-up' });
+
+      projectTurnCompleted('thread-1', 'turn-1', { aborted: true });
+      expect(getThreadStatus('thread-1')).toBe('running');
+
+      replaceQueueForThread('thread-1', []);
+      expect(getThreadStatus('thread-1')).toBe('interrupted');
     });
   });
 
@@ -478,9 +513,11 @@ describe('threadStatuses store', () => {
         payloadKind: 'proposed_plan',
         status: 'streaming',
       }));
-      // Streaming items land as active-item → running, not plan-ready.
-      // The plan-ready flag only kicks in on terminal completed status.
+      // Streaming item rows are history/display state, not thread
+      // liveness. The plan-ready flag only kicks in on terminal
+      // completed status.
       expect(getThreadStatus('thread-1')).not.toBe('plan-ready');
+      expect(getThreadStatus('thread-1')).toBe('idle');
     });
 
     it('turn_started clears plan-ready (user accepted or rejected)', () => {
@@ -499,14 +536,9 @@ describe('threadStatuses store', () => {
       expect(getThreadStatus('thread-1')).toBe('idle');
     });
 
-    it('running trumps plan-ready while a tool_call is active', () => {
+    it('running trumps plan-ready while a turn is active', () => {
       projectPlanReady('thread-1');
-      projectThreadItem(makeItem({
-        id: 'tool-1',
-        kind: 'tool_call',
-        status: 'running',
-        isBackground: false,
-      }));
+      projectTurnStarted('thread-1', 'turn-1', 0, 0);
       expect(getThreadStatus('thread-1')).toBe('running');
     });
 

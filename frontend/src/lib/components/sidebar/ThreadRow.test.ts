@@ -10,6 +10,7 @@ import { refreshThreads, getThreads } from '../../stores/threads.svelte';
 import {
   beginThreadLiveStateHydration,
   finishThreadLiveStateHydration,
+  projectTurnStarted,
   resetForTest as resetThreadStatuses,
   setThreadStatus,
 } from '../../stores/threadStatuses.svelte';
@@ -25,6 +26,7 @@ import {
 import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { emitItemEventUpsert } from '../../../test/helpers/chat';
 import { THREAD_ROW_DRAG_MIME } from '../../utils/threadDragPayload';
 
@@ -53,6 +55,10 @@ function nextFrame(): Promise<void> {
   return new Promise((resolve) => {
     requestAnimationFrame(() => resolve());
   });
+}
+
+function markThreadRunning(threadId: string): void {
+  projectTurnStarted(threadId, `turn:${threadId}`, 0, 0);
 }
 
 function makeDataTransfer(): DataTransfer {
@@ -574,7 +580,7 @@ describe('<ThreadRow> live status dot', () => {
   });
 
   it('renders a success pulsing dot labelled Working when running in chat mode', () => {
-    setThreadStatus('t-run', 'running');
+    markThreadRunning('t-run');
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, {
       props: { thread: makeThread({ id: 't-run', mode: 'chat' }), pane },
@@ -589,7 +595,7 @@ describe('<ThreadRow> live status dot', () => {
 
   // Regression: row must react LIVE to status changes pushed into the
   // projection store AFTER it mounted. This mirrors what happens in
-  // production when a running row first starts streaming items while
+  // production when a running row first receives a turn-start signal while
   // the sidebar is already rendered. Before the fix, the pill never
   // appeared because the $derived wasn't recomputing on statuses-store
   // reassignment.
@@ -600,7 +606,7 @@ describe('<ThreadRow> live status dot', () => {
     });
     expect(queryByTestId('thread-row-status-dot')).toBeNull();
 
-    setThreadStatus('t-post', 'running');
+    markThreadRunning('t-post');
     // Drain microtasks so the $derived recomputes and the DOM
     // reconciles.
     for (let i = 0; i < 3; i += 1) await Promise.resolve();
@@ -610,17 +616,15 @@ describe('<ThreadRow> live status dot', () => {
     expect(dot.getAttribute('aria-label')).toBe('Working');
   });
 
-  // Full-stack regression: drive the exact wire-level path the live app
-  // uses. provider:item_event upsert → applyItemStreamEvent (in events.ts) →
-  // projectThreadItem → setThreadStatus → $derived → DOM. If this fails
-  // but the direct-setThreadStatus test above passes, the break is in
-  // the event plumbing, not the reactivity.
-  it('flips the pill to Working when a streaming assistant_text arrives via provider:item_event', async () => {
+  // Regression: durable item status is not thread liveness. A stale
+  // foreground running item from history must not keep the sidebar
+  // stuck on Working after the backend turn has already completed.
+  it('does not flip the pill to Working from a running provider:item_event row alone', async () => {
     const { setupEventListeners } = await import('../../stores/events');
     const cleanup = setupEventListeners();
     try {
       const pane = createThreadPane();
-      const { queryByTestId, getByTestId } = render(ThreadRow, {
+      const { queryByTestId } = render(ThreadRow, {
         props: { thread: makeThread({ id: 't-stream', mode: 'chat' }), pane },
       });
       expect(queryByTestId('thread-row-status-dot')).toBeNull();
@@ -630,18 +634,18 @@ describe('<ThreadRow> live status dot', () => {
         threadId: 't-stream',
         turnIndex: 0,
         itemIndex: 0,
-        kind: 'assistant_text',
+        kind: 'tool_call',
         role: 'assistant',
-        status: 'streaming',
-        summary: 'hello',
+        status: 'running',
+        summary: 'advisor',
+        toolName: 'advisor',
+        isBackground: false,
         createdAt: 1,
         updatedAt: 1,
       });
       await nextFrame();
 
-      const dot = getByTestId('thread-row-status-dot');
-      expect(dot.getAttribute('data-status')).toBe('running');
-      expect(dot.getAttribute('aria-label')).toBe('Working');
+      expect(queryByTestId('thread-row-status-dot')).toBeNull();
     } finally {
       cleanup();
     }
@@ -652,7 +656,7 @@ describe('<ThreadRow> live status dot', () => {
   // re-rendering the row with a new thread object after replaceThread;
   // here we drive it via rerender({ thread: ... }).
   it('flips the pill label when thread.mode changes mid-turn', async () => {
-    setThreadStatus('t-mode', 'running');
+    markThreadRunning('t-mode');
     const pane = createThreadPane();
     const chat = makeThread({ id: 't-mode', mode: 'chat' });
     const { getByTestId, rerender } = render(ThreadRow, {
@@ -670,27 +674,21 @@ describe('<ThreadRow> live status dot', () => {
     expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Discussing');
   });
 
-  it('flips the pill to Working when a streaming thinking item arrives via provider:item_event', async () => {
+  it('flips the pill to Working when provider:turn_started arrives', async () => {
     const { setupEventListeners } = await import('../../stores/events');
     const cleanup = setupEventListeners();
     try {
       const pane = createThreadPane();
       const { queryByTestId, getByTestId } = render(ThreadRow, {
-        props: { thread: makeThread({ id: 't-think', mode: 'chat' }), pane },
+        props: { thread: makeThread({ id: 't-turn', mode: 'chat' }), pane },
       });
       expect(queryByTestId('thread-row-status-dot')).toBeNull();
 
-      emitItemEventUpsert({
-        id: 'thinking-1',
-        threadId: 't-think',
+      emitWailsEvent('provider:turn_started', {
+        threadId: 't-turn',
+        turnId: 'turn-1',
         turnIndex: 0,
-        itemIndex: 0,
-        kind: 'thinking',
-        role: 'assistant',
-        status: 'streaming',
-        summary: 'pondering',
-        createdAt: 1,
-        updatedAt: 1,
+        startedAt: 1,
       });
       await nextFrame();
 
@@ -702,7 +700,7 @@ describe('<ThreadRow> live status dot', () => {
   });
 
   it('labels the pill "Planning" when running in plan mode', () => {
-    setThreadStatus('t-plan', 'running');
+    markThreadRunning('t-plan');
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, {
       props: { thread: makeThread({ id: 't-plan', mode: 'plan' }), pane },
@@ -757,7 +755,7 @@ describe('<ThreadRow> live status dot', () => {
   });
 
   it('does not apply a glow class when the row is merely running', () => {
-    setThreadStatus('t-glow-run', 'running');
+    markThreadRunning('t-glow-run');
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, {
       props: { thread: makeThread({ id: 't-glow-run' }), pane },
@@ -825,7 +823,7 @@ describe('<ThreadRow> live status dot', () => {
   });
 
   it('live running overrides durable Interrupted', () => {
-    setThreadStatus('t-live-over-durable', 'running');
+    markThreadRunning('t-live-over-durable');
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, {
       props: {
@@ -851,7 +849,7 @@ describe('<ThreadRow> live status dot', () => {
   });
 
   it('uses the thread id (not some shared row instance) for the lookup', () => {
-    setThreadStatus('t-a', 'running');
+    markThreadRunning('t-a');
     setThreadStatus('t-b', 'error');
     const pane = createThreadPane();
     // Scope each query to its own render's baseElement so duplicate

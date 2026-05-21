@@ -18,7 +18,7 @@ import {
   resetPaneLayoutForTest,
   setPaneLayoutItemsForTest,
 } from '../../stores/paneLayout.svelte';
-import { setThreadStatus } from '../../stores/threadStatuses.svelte';
+import { projectTurnStarted, setThreadStatus } from '../../stores/threadStatuses.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
 import {
@@ -269,7 +269,7 @@ describe('<ChatHeader>', () => {
 
   it('renders the attention dot when the thread reports live status', async () => {
     const pane = await buildPane(makeThread({ id: 'attention-thread', title: 'Running' }));
-    setThreadStatus('attention-thread', 'running');
+    projectTurnStarted('attention-thread', 'turn:attention-thread', 0, 0);
     const { getByTestId } = render(ChatHeader, { props: { pane } });
     await tick();
     const dot = getByTestId('pane-attention-dot');

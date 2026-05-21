@@ -433,7 +433,7 @@ describe('setupEventListeners', () => {
     expect(getThreads()[0]?.hasActionableProposedPlan).toBe(false);
   });
 
-  it('projects running -> idle from ordered item_event upserts', async () => {
+  it('does not project thread running from ordered item_event upserts', async () => {
     const pane = await buildPane();
     getAllPanes().set('main', pane);
 
@@ -448,7 +448,7 @@ describe('setupEventListeners', () => {
       item: streamingItem,
     });
     await nextFrame();
-    expect(getThreadStatus('thread-1')).toBe('running');
+    expect(getThreadStatus('thread-1')).toBe('idle');
 
     const completedItem = makeItem({
       id: 'text-1',
@@ -464,7 +464,7 @@ describe('setupEventListeners', () => {
     expect(getThreadStatus('thread-1')).toBe('idle');
   });
 
-  it('projects item status synchronously while timeline upserts wait for the frame batch', async () => {
+  it('does not derive status from item rows while timeline upserts wait for the frame batch', async () => {
     const pane = await buildPane();
     getAllPanes().set('main', pane);
 
@@ -479,7 +479,7 @@ describe('setupEventListeners', () => {
       item: streamingItem,
     });
 
-    expect(getThreadStatus('thread-1')).toBe('running');
+    expect(getThreadStatus('thread-1')).toBe('idle');
     expect(pane.items).toEqual([]);
 
     await nextFrame();

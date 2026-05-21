@@ -10,8 +10,8 @@ import {
   resetSidebarForTest,
 } from '../../../stores/sidebar.svelte';
 import {
+  projectTurnStarted,
   resetForTest as resetThreadStatuses,
-  setThreadStatus,
 } from '../../../stores/threadStatuses.svelte';
 import type { Item, Project, ProjectWithCounts, Thread } from '../../../types/models';
 import {
@@ -34,6 +34,10 @@ function wrap(id: string, overrides: Partial<Project> = {}): ProjectWithCounts {
     threadCount: 0,
     lastActive: 0,
   };
+}
+
+function markThreadRunning(threadId: string): void {
+  projectTurnStarted(threadId, `turn:${threadId}`, 0, 0);
 }
 
 function thread(id: string, overrides: Partial<Thread> = {}): Thread {
@@ -172,7 +176,7 @@ describe('<ProjectItem>', () => {
     const pane = createThreadPane();
     const runningThread = thread('t-running', { title: 'Active work' });
     await pane.switchThread(runningThread);
-    setThreadStatus(runningThread.id, 'running');
+    markThreadRunning(runningThread.id);
 
     const { getByTestId, queryByTestId, getByText } = render(ProjectItem, {
       props: {

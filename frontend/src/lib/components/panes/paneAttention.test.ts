@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { resolveThreadStatusPill } from '../../utils/threadStatusPill';
-import { setThreadStatus, type ThreadLiveStatus } from '../../stores/threadStatuses.svelte';
+import {
+  projectTurnStarted,
+  setThreadStatus,
+  type ThreadLiveStatus,
+} from '../../stores/threadStatuses.svelte';
 import type { Thread } from '../../types/models';
 import { resolvePaneAttentionDot } from './paneAttention';
 
@@ -39,7 +43,11 @@ describe('pane attention helpers', () => {
         ? { lastReadAt: 0, latestTurnCompletedAt: 1 }
         : { id: `pane-attention-test-thread-${status}` },
     );
-    if (status !== 'idle') setThreadStatus(thread.id, status);
+    if (status === 'running') {
+      projectTurnStarted(thread.id, `turn:${thread.id}`, 0, 0);
+    } else if (status !== 'idle') {
+      setThreadStatus(thread.id, status);
+    }
 
     const dot = resolvePaneAttentionDot(thread);
     const expected = resolveThreadStatusPill(thread, status);

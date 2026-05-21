@@ -18,8 +18,7 @@
 
   import { onDestroy, onMount } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { getActiveTurn, hasPendingSend } from '../../stores/threadStatuses.svelte';
-  import { hasQueueItems } from '../../stores/sendQueue.svelte';
+  import { getActiveTurn, isThreadWorking } from '../../stores/threadStatuses.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import { createBackgroundController } from './activityRailBackground.svelte';
   import ActivityRailTodosBody from './ActivityRailTodosBody.svelte';
@@ -39,10 +38,7 @@
   let now = $state(Date.now());
 
   let activeTurn = $derived(getActiveTurn(pane.threadId));
-  let bridgeActive = $derived(
-    hasQueueItems(pane.threadId) || hasPendingSend(pane.threadId),
-  );
-  let isWorking = $derived(activeTurn !== null || bridgeActive);
+  let isWorking = $derived(isThreadWorking(pane.threadId));
 
   let elapsedLabel = $derived.by(() => {
     if (!activeTurn) return '0s';

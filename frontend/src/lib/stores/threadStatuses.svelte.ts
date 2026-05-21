@@ -1,7 +1,11 @@
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import type { ApprovalKind } from '../types/events';
 import type { Item, Thread } from '../types/models';
-import { clearForThread as clearSendQueueForThread } from './sendQueue.svelte';
+import {
+  clearForThread as clearSendQueueForThread,
+  hasQueueItems,
+  resetForTest as resetSendQueueForTest,
+} from './sendQueue.svelte';
 
 /**
  * ActiveTurn is the live in-flight turn for a thread. Populated from
@@ -12,8 +16,8 @@ import { clearForThread as clearSendQueueForThread } from './sendQueue.svelte';
  * activity is live backend state, never derived from persisted items).
  *
  * The shape lives here because this store owns the per-thread active-
- * turn map: both the sidebar pill and the chat working indicator read
- * from it (single source of truth). Survives thread switches because
+ * turn map used by the composite `isThreadWorking` predicate and the
+ * activity rail elapsed timer. Survives thread switches because
  * nothing clears it on switch — that's the load-bearing fix for "I
  * switched threads and lost the working indicator on a turn that's
  * still in flight."
@@ -38,7 +42,8 @@ export function sameActiveTurn(left: ActiveTurn | null, right: ActiveTurn | null
 // approval, error). Durable boot status such as interrupted turns and
 // actionable proposed plans is derived from Thread rows instead.
 //
-// Running is derived from three orthogonal sources, OR'd together:
+// Running is derived from the same live sources the composer activity
+// rail uses, OR'd together:
 //
 //   1. Optimistic send: the user hit the Send button and we've dispatched
 //      SendMessage to the backend. This covers the new-thread spawn gap
@@ -50,10 +55,14 @@ export function sameActiveTurn(left: ActiveTurn | null, right: ActiveTurn | null
 //      the authoritative "the provider is working right now" signal
 //      (invariant 22: turn activity is wire-pushed, never derived from
 //      items).
-//   3. Active items: a streaming assistant_text / thinking item or a
-//      running tool_call that hasn't yet settled. This catches any stray
-//      running work outside a turn (e.g. a background tool outliving the
-//      turn on Claude).
+//   3. Send queue bridge: queued or flushed messages that have not yet
+//      produced the provider-visible user-message echo. This keeps the
+//      indicator hot between queue registration, provider write, and
+//      round-start confirmation.
+//
+// Durable timeline item rows are deliberately not part of this
+// calculation. A stale foreground tool_call with status=running is
+// history/display state, not proof that the provider is working now.
 //
 // Recalculation priority is: pending approval, awaiting input, running,
 // error, plan-ready, interrupted, idle.
@@ -69,18 +78,17 @@ export type ThreadLiveStatus =
 
 let statuses: Map<string, ThreadLiveStatus> = $state(new Map());
 let liveStateHydratingThreads: Set<string> = $state(new Set());
-const activeItemIDsByThread = new Map<string, Set<string>>();
 const approvalIDsByThread = new Map<string, Set<string>>();
 const awaitingInputIDsByThread = new Map<string, Set<string>>();
 const approvalThreadByID = new Map<string, string>();
-// activeTurnByThread is the global per-thread ActiveTurn registry —
-// the single source of truth for "is a turn in flight on this
-// thread?". SvelteMap (from `svelte/reactivity`) is the
-// doc-recommended pattern for reactive Map state in Svelte 5: .set /
-// .delete are tracked individually, so writers don't have to rebuild
-// the binding via `new Map(prev).set(...)` on every update. Readers
-// (`getActiveTurn`, the OR projection in `recalculateThreadStatus`)
-// see the same value either way; only the write hot path benefits.
+// activeTurnByThread is the global per-thread ActiveTurn registry.
+// `isThreadWorking` combines it with pending-send and send-queue bridge
+// state to answer "is this thread working?". SvelteMap (from
+// `svelte/reactivity`) is the doc-recommended pattern for reactive Map
+// state in Svelte 5: .set / .delete are tracked individually, so
+// writers don't have to rebuild the binding via `new Map(prev).set(...)`
+// on every update. Readers (`getActiveTurn`, `isThreadWorking`) see the
+// same value either way; only the write hot path benefits.
 //
 // Under the per-wire-round emission cadence (see
 // internal/triage/AGENTS.md "Wire-round vs logical-turn"), each entry
@@ -116,13 +124,6 @@ function removeTrackedID(map: Map<string, Set<string>>, threadId: string, id: st
   }
 }
 
-function isActiveTimelineItem(item: Item): boolean {
-  return (
-    ((item.kind === 'assistant_text' || item.kind === 'thinking') && item.status === 'streaming')
-    || (item.kind === 'tool_call' && item.status === 'running' && !item.isBackground)
-  );
-}
-
 function recalculateThreadStatus(threadId: string): void {
   // Priority mirrors forge's Sidebar.logic.ts. Blocking approvals
   // outrank everything else because the provider can't advance until
@@ -138,12 +139,8 @@ function recalculateThreadStatus(threadId: string): void {
     setThreadStatus(threadId, 'awaiting-input');
     return;
   }
-  if (
-    pendingSendThreads.has(threadId)
-    || activeTurnByThread.has(threadId)
-    || (activeItemIDsByThread.get(threadId)?.size ?? 0) > 0
-  ) {
-    setThreadStatus(threadId, 'running');
+  if (isThreadWorking(threadId)) {
+    setThreadStatus(threadId, 'idle');
     return;
   }
   if (errorThreads.has(threadId)) {
@@ -171,7 +168,18 @@ function recalculateThreadStatus(threadId: string): void {
  * to render no dot, so callers don't need to special-case undefined.
  */
 export function getThreadStatus(threadId: string): ThreadLiveStatus {
-  return statuses.get(threadId) ?? 'idle';
+  const stored = statuses.get(threadId) ?? 'idle';
+  if ((approvalIDsByThread.get(threadId)?.size ?? 0) > 0 || stored === 'pending-approval') {
+    return 'pending-approval';
+  }
+  if ((awaitingInputIDsByThread.get(threadId)?.size ?? 0) > 0 || stored === 'awaiting-input') {
+    return 'awaiting-input';
+  }
+  if (isThreadWorking(threadId)) return 'running';
+  if (errorThreads.has(threadId) || stored === 'error') return 'error';
+  if (planReadyThreads.has(threadId) || stored === 'plan-ready') return 'plan-ready';
+  if (interruptedThreads.has(threadId) || stored === 'interrupted') return 'interrupted';
+  return 'idle';
 }
 
 export function getEffectiveThreadStatus(
@@ -226,7 +234,9 @@ export function isThreadLiveStateHydrationCurrent(threadId: string, token: numbe
 /**
  * Set or replace a thread's live status. Writing 'idle' is equivalent
  * to clearing — we drop the entry so the map doesn't grow with stale
- * idle-only rows across long sessions.
+ * idle-only rows across long sessions. Runtime Working is derived by
+ * `isThreadWorking`, so production projections should not persist
+ * `running` in this map.
  */
 export function setThreadStatus(threadId: string, status: ThreadLiveStatus): void {
   if (status === 'idle') {
@@ -248,7 +258,6 @@ export function setThreadStatus(threadId: string, status: ThreadLiveStatus): voi
  * only and must not outlive their thread.
  */
 export function clearThreadStatus(threadId: string): void {
-  activeItemIDsByThread.delete(threadId);
   activeTurnByThread.delete(threadId);
   completedTurnIDsByThread.delete(threadId);
   pendingSendThreads.delete(threadId);
@@ -325,6 +334,13 @@ export function projectSendResolved(threadId: string, opts: { error?: boolean } 
 export function hasPendingSend(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
   return pendingSendThreads.has(threadId);
+}
+
+export function isThreadWorking(threadId: string | null | undefined): boolean {
+  if (!threadId) return false;
+  return activeTurnByThread.has(threadId)
+    || pendingSendThreads.has(threadId)
+    || hasQueueItems(threadId);
 }
 
 export function isSendInFlight(threadId: string | null | undefined, paneSendInFlight: boolean): boolean {
@@ -500,13 +516,12 @@ function hasCompletedTurnID(threadId: string, turnId: string): boolean {
 
 /**
  * Read the live in-flight turn for a thread. Returns null when no
- * turn is active or the thread id is empty/null/undefined. The single
- * source of truth for "is the working indicator on?" — both the
- * activity rail's Working segment (chat view) and the sidebar pill
- * consume this. Survives thread switches because nothing in pane
- * lifecycle clears it. Accepts null/undefined so callers can pass
- * `pane.threadId` (which is `string | null` while the pane is empty)
- * without a fallback dance at every call site.
+ * turn is active or the thread id is empty/null/undefined. The
+ * activity rail also uses this as the elapsed-time anchor when
+ * `isThreadWorking` is true. Survives thread switches because nothing
+ * in pane lifecycle clears it. Accepts null/undefined so callers can
+ * pass `pane.threadId` (which is `string | null` while the pane is
+ * empty) without a fallback dance at every call site.
  */
 export function getActiveTurn(threadId: string | null | undefined): ActiveTurn | null {
   if (!threadId) return null;
@@ -514,11 +529,10 @@ export function getActiveTurn(threadId: string | null | undefined): ActiveTurn |
 }
 
 /**
- * Feed a live item upsert into the sidebar-status projection. This is the
- * canonical chat-state path: running rows keep the dot hot, terminal rows
- * clear their own ids, and inline error rows leave the thread in an error
- * state until the user views the thread or a new active item / turn
- * supersedes it.
+ * Feed a live item upsert into the sidebar-status projection. Item rows can
+ * surface attention states such as errors and actionable plans, but they do
+ * not decide whether the thread is working. Liveness belongs to backend turn
+ * signals plus the send/queue bridge; persisted timeline rows can be stale.
  */
 export function projectThreadItem(item: Item): void {
   if (!item?.threadId || !item.id) return;
@@ -526,15 +540,9 @@ export function projectThreadItem(item: Item): void {
   if (item.kind === 'error') {
     pendingSendThreads.delete(item.threadId);
     errorThreads.add(item.threadId);
-  } else if (item.kind === 'user_text' || isActiveTimelineItem(item)) {
+  } else if (item.kind === 'user_text') {
     errorThreads.delete(item.threadId);
     interruptedThreads.delete(item.threadId);
-  }
-
-  if (isActiveTimelineItem(item)) {
-    trackedIDsFor(activeItemIDsByThread, item.threadId).add(item.id);
-  } else {
-    removeTrackedID(activeItemIDsByThread, item.threadId, item.id);
   }
 
   // A completed proposed_plan item means the agent has produced a plan
@@ -670,29 +678,11 @@ export function projectPlanResolved(threadId: string): void {
 }
 
 /**
- * Count of threads currently in a non-idle state. Reactive via $state,
- * so any future sidebar section-header badge ("3 active") can bind to
- * this without subscribing to the whole map.
- */
-export function getNonIdleThreadCount(): number {
-  return statuses.size;
-}
-
-/**
- * Read-only view onto the status map. Primarily for tests that want to
- * assert "nothing other than these threads has a status".
- */
-export function getAllThreadStatuses(): Map<string, ThreadLiveStatus> {
-  return statuses;
-}
-
-/**
  * Wipe the entire map. Only intended for test isolation — production
  * code should use clearThreadStatus per id. Also wipes the per-thread
- * send queue so tests start from a clean slate.
+ * send queue because `isThreadWorking` reads that bridge state.
  */
 export function resetForTest(): void {
-  activeItemIDsByThread.clear();
   activeTurnByThread.clear();
   completedTurnIDsByThread.clear();
   pendingSendThreads.clear();
@@ -703,6 +693,7 @@ export function resetForTest(): void {
   errorThreads.clear();
   interruptedThreads.clear();
   liveStateHydrationTokenByThread.clear();
+  resetSendQueueForTest();
   liveStateHydratingThreads = new Set();
   if (statuses.size === 0) return;
   statuses = new Map();
