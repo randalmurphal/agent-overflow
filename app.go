@@ -523,7 +523,7 @@ func (a *App) initObservability(ctx context.Context, dbDir string) error {
 		// no-op provider so the rest of the app still boots. Users will
 		// see the failure via the app log; the settings toggle remains on
 		// so they can fix the endpoint and restart.
-		fmt.Printf("observability: tracing setup failed, proceeding without telemetry: %v\n", err)
+		log.Printf("observability: tracing setup failed, proceeding without telemetry: %v", err)
 		telemetry, _ = obsotel.NewProvider(ctx, obsotel.Config{Enabled: false})
 	}
 	a.telemetry = telemetry

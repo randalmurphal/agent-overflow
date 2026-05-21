@@ -90,8 +90,8 @@ type PendingInteractiveRequests struct {
 // ElicitationRequest is the frontend-facing shape for an MCP elicitation
 // request, extracted from the raw provider payload. Only one of
 // (RequestedSchema) or (URL + ElicitationID) is populated depending on Mode.
-// Wire contract lives at:
-// /home/rmurphy/repos/codex/codex-rs/app-server-protocol/schema/typescript/v2/McpServerElicitationRequestParams.ts
+// Wire contract lives in the upstream codex repo at
+// codex-rs/app-server-protocol/schema/typescript/v2/McpServerElicitationRequestParams.ts.
 type ElicitationRequest struct {
 	Mode       string `json:"mode"`                 // "form" or "url"
 	Message    string `json:"message"`              // human-readable prompt shown to the user

@@ -36,3 +36,6 @@ frontend/package.json.md5
 # Throwaway cmd/* binaries built into the repo root via `go build ./cmd/<name>`
 /db-rebake
 /dump-schema
+
+# Stale Wails v2 bindings — current bindings live in frontend/bindings/
+frontend/wailsjs/

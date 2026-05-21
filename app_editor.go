@@ -30,8 +30,8 @@ type EditorInfo struct {
 // vendor's WSL bridge (PATH-resolved shim that targets /mnt/c, or a
 // direct hit under /mnt/c/Users/.../AppData or /mnt/c/Program Files).
 // Linux-native installs are intentionally absent from the available
-// set even when their binary is on PATH — see
-// /Users/randy/.claude/projects/-Users-randy-repos-agent-overflow/memory/feedback_wsl_editor_bridge.md.
+// set even when their binary is on PATH — see editor.DetectEditors
+// for the WSL-bridge resolution rules.
 func (a *App) ListAvailableEditors() ([]EditorInfo, error) {
 	detected := editor.DetectEditors(context.Background())
 	out := make([]EditorInfo, 0, len(detected))
@@ -64,8 +64,7 @@ func (a *App) ListAvailableEditors() ([]EditorInfo, error) {
 // Windows-installed app reachable via the vendor's WSL bridge; a
 // Linux-native `code-oss` (or equivalent) on PATH is deliberately
 // rejected because it would render via WSLg and miss the user's
-// actual editor environment. See
-// /Users/randy/.claude/projects/-Users-randy-repos-agent-overflow/memory/feedback_wsl_editor_bridge.md.
+// actual editor environment.
 //
 // Errors flow back to the frontend as user-facing toasts; the strings
 // here are intentionally friendly — "no editor available" names

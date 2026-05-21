@@ -1068,8 +1068,8 @@ export function ListAttachments(threadID: string): $CancellablePromise<store$0.A
  * vendor's WSL bridge (PATH-resolved shim that targets /mnt/c, or a
  * direct hit under /mnt/c/Users/.../AppData or /mnt/c/Program Files).
  * Linux-native installs are intentionally absent from the available
- * set even when their binary is on PATH — see
- * /Users/randy/.claude/projects/-Users-randy-repos-agent-overflow/memory/feedback_wsl_editor_bridge.md.
+ * set even when their binary is on PATH — see editor.DetectEditors
+ * for the WSL-bridge resolution rules.
  */
 export function ListAvailableEditors(): $CancellablePromise<$models.EditorInfo[]> {
     return $Call.ByID(2556802234).then(($result: any) => {
@@ -1392,8 +1392,7 @@ export function OpenExternalURL(rawURL: string): $CancellablePromise<void> {
  * Windows-installed app reachable via the vendor's WSL bridge; a
  * Linux-native `code-oss` (or equivalent) on PATH is deliberately
  * rejected because it would render via WSLg and miss the user's
- * actual editor environment. See
- * /Users/randy/.claude/projects/-Users-randy-repos-agent-overflow/memory/feedback_wsl_editor_bridge.md.
+ * actual editor environment.
  * 
  * Errors flow back to the frontend as user-facing toasts; the strings
  * here are intentionally friendly — "no editor available" names

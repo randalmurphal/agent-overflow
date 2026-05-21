@@ -95,6 +95,11 @@ export enum Source {
  * regardless of which provider reported it. The string values match
  * the JSON the bindings hand the frontend; the enum is closed so the
  * UI can switch over it exhaustively.
+ * 
+ * Provider-native → Status projection lives in the provider packages
+ * (`internal/provider/claude/mcpstatus.go`,
+ * `internal/provider/codex/mcpstatus.go`) so each adapter owns its
+ * own wire vocabulary.
  */
 export enum Status {
     /**

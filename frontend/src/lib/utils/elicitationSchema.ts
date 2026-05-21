@@ -1,6 +1,6 @@
 // Normalizes the MCP elicitation form schema that arrives from Codex into a
 // flat list of fields the UI can render. The input shape taxonomy is defined
-// upstream at /home/rmurphy/repos/codex/codex-rs/app-server-protocol/
+// upstream in the codex repo at codex-rs/app-server-protocol/
 // schema/typescript/v2/McpElicitation*.ts. The output here is a single
 // discriminated union so the component doesn't need to know about the many
 // schema variants (titled vs untitled enums, legacy enumNames, single vs

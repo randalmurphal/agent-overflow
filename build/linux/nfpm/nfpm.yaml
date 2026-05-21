@@ -12,7 +12,7 @@ priority: "extra"
 maintainer: ${GIT_COMMITTER_NAME} <${GIT_COMMITTER_EMAIL}>
 description: "Desktop app for using coding agents with a shared UX"
 vendor: "Agent Overflow"
-homepage: "https://wails.io"
+homepage: ""
 license: "MIT"
 release: "1"
 
