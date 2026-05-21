@@ -31,6 +31,20 @@ export default defineConfig({
   },
   test: {
     environment: 'happy-dom',
+    environmentOptions: {
+      happyDOM: {
+        settings: {
+          navigation: {
+            // Component tests assert iframe attributes and mocked
+            // postMessage behavior; they do not need happy-dom to
+            // perform real /design/... iframe navigations. Letting
+            // those fetches run leaves aborted async tasks behind
+            // during cleanup and floods stderr with teardown noise.
+            disableChildFrameNavigation: true,
+          },
+        },
+      },
+    },
     globals: false,
     setupFiles: ['./src/test/setup.ts'],
     include: ['src/**/*.{test,spec}.{ts,js}'],
