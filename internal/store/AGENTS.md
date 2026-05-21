@@ -30,7 +30,9 @@ root `CLAUDE.md` principle 3.
   `internal/checkpoint`.
 - `drafts.go` — composer drafts per thread.
 - `chat_bar.go` — composer favorites and last-used model profile seeds.
-- `search.go` — FTS across items/threads.
+- `search.go` — case-insensitive substring search across thread titles
+  and item summaries via `LOWER + LIKE`. A future migration can swap
+  to an FTS5 virtual table without changing the return shape.
 - `sqlutil.go` — shared SQL helpers.
 
 ## Responsibility boundary

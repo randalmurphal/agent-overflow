@@ -1,7 +1,6 @@
 package store
 
 import (
-	"database/sql"
 	"fmt"
 	"strings"
 )
@@ -150,9 +149,3 @@ func dedupeTitleHits(hits []ThreadMessageHit) []ThreadMessageHit {
 	}
 	return out
 }
-
-// sql.ErrNoRows isn't imported directly — using it here via the standard
-// library to document the intent without the check actually firing under
-// our query shape. Left to silence the linter's "unused import" complaint
-// in a later refactor.
-var _ = sql.ErrNoRows
