@@ -64,6 +64,10 @@ import {
 import { getThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
 import { ListThreadSliceAround } from './bindings';
 import {
+  THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+  thinkingPayloadVersionForItem,
+} from '../utils/payloadVersion';
+import {
   beginThreadLiveStateHydration,
   finishThreadLiveStateHydration,
   getActiveTurn,
@@ -1661,7 +1665,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // quiet on unchanged rows. The streaming row is genuinely growing,
       // so a fresh reference for the row whose content changed is the
       // correct signal.
-      items[index] = { ...current, summary: nextSummary };
+      const nextItem = { ...current, summary: nextSummary, updatedAt: evt.updatedAt };
+      items[index] = nextItem;
+      if (nextItem.kind === 'thinking') {
+        rowUiState.appendLivePayloadDeltaForItem(
+          nextItem.id,
+          THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+          evt.delta,
+          thinkingPayloadVersionForItem(nextItem),
+        );
+      }
     },
 
     // ---- Per-row UI state (survives virtua remount) ----

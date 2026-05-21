@@ -11,6 +11,10 @@
   import { addToast } from '../../stores/toast.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
+  import {
+    THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+    thinkingPayloadVersionForItem,
+  } from '../../utils/payloadVersion';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
@@ -20,10 +24,23 @@
       : createPayloadExpansion(
           () => item.payloadId,
           () => item.threadId,
-          { payloadVersion: () => item.updatedAt },
+          {
+            payloadVersion: () => thinkingPayloadVersionForItem(item),
+            loadMode: 'full',
+            cacheEnabled: () => item.status !== 'streaming',
+          },
         ),
   );
-  const expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
+  const expansion = $derived(
+    pane
+      ? pane.expansionStateFor(item, {
+          loadMode: 'full',
+          stateKey: THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+          payloadVersion: thinkingPayloadVersionForItem,
+          cacheEnabled: (currentItem) => currentItem?.status !== 'streaming',
+        })
+      : localFallback!,
+  );
   keepExpandedPayloadFresh(
     () => expansion,
     () => Boolean(item.payloadId),
@@ -71,10 +88,6 @@
       expansion.collapse();
     } else {
       await expansion.expand();
-      // Full content inline — no "show more" affordance.
-      if (expansion.hasMore) {
-        await expansion.showFull();
-      }
     }
   }
 
@@ -91,7 +104,7 @@
   // regardless of whether the row was previously expanded.
   async function getCopyText(): Promise<string> {
     if (!expansion.expanded) await expansion.expand();
-    if (expansion.hasMore) await expansion.showFull();
+    await expansion.ensureLoaded();
     return expansion.displayData ?? item.summary ?? '';
   }
 

@@ -109,6 +109,78 @@ describe('payloadExpansion', () => {
     expect(chunk).not.toHaveBeenCalled();
   });
 
+  it('appends live deltas only after a full payload is expanded', async () => {
+    let version = 1;
+    const data = setBindingMock('GetPayloadData', async () => ({ data: 'seed' }));
+
+    const expansion = createPayloadExpansion(
+      'payload-live',
+      'thread-live',
+      { loadMode: 'full', payloadVersion: () => version },
+    );
+
+    expansion.appendLiveDelta(' ignored', 2);
+    expect(expansion.displayData).toBeNull();
+
+    await expansion.expand();
+    expect(expansion.displayData).toBe('seed');
+
+    version = 2;
+    expansion.appendLiveDelta(' delta', 2);
+    expect(expansion.displayData).toBe('seed delta');
+    await expansion.ensureLoaded();
+    expect(data).toHaveBeenCalledTimes(1);
+  });
+
+  it('queues live deltas while the initial full payload load is pending', async () => {
+    let resolvePayload!: (value: { data: string }) => void;
+    setBindingMock('GetPayloadData', async () => (
+      new Promise<{ data: string }>((resolve) => {
+        resolvePayload = resolve;
+      })
+    ));
+
+    const expansion = createPayloadExpansion(
+      'payload-live-pending',
+      'thread-live-pending',
+      { loadMode: 'full', payloadVersion: () => 'streaming' },
+    );
+
+    const expand = expansion.expand();
+    await vi.waitFor(() => expect(getBindingMock('GetPayloadData')).toHaveBeenCalledTimes(1));
+    expansion.appendLiveDelta(' live', 'streaming');
+    resolvePayload({ data: 'seed live' });
+    await expand;
+
+    expect(expansion.displayData).toBe('seed live');
+  });
+
+  it('skips cache reads and writes when cache is disabled', async () => {
+    writePayloadCache('thread-cache-off', 'payload-cache-off', 1, {
+      chunks: ['stale cached'],
+      hasFullChunks: true,
+      totalSize: 12,
+      isComplete: true,
+      loadedBytes: 12,
+    });
+    const data = setBindingMock('GetPayloadData', async () => ({ data: 'fresh payload' }));
+
+    const expansion = createPayloadExpansion(
+      'payload-cache-off',
+      'thread-cache-off',
+      { loadMode: 'full', payloadVersion: () => 1, cacheEnabled: false },
+    );
+
+    expect(expansion.displayData).toBeNull();
+    await expansion.expand();
+    expect(expansion.displayData).toBe('fresh payload');
+
+    expansion.collapse();
+    await expansion.expand();
+
+    expect(data).toHaveBeenCalledTimes(2);
+  });
+
   it('surfaces non-string payload data as a load error instead of caching it', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: { text: 'not a string' } as unknown as string,

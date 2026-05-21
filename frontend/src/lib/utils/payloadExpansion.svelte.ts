@@ -21,6 +21,13 @@ export interface PayloadExpansionHandle {
    * any caller that needs to run a transform before rendering.
    */
   readonly displayData: string | null;
+  /**
+   * Append a provider delta into an already-expanded full payload.
+   * The delta is ignored while collapsed, queued while the initial full
+   * load is still pending, and applied only to the currently loaded
+   * payload id. Preview-only handles do not accept live appends.
+   */
+  appendLiveDelta(delta: string, payloadVersion?: unknown): void;
   toggle(): Promise<void>;
   expand(): Promise<void>;
   ensureLoaded(): Promise<boolean>;
@@ -36,6 +43,7 @@ type ThreadIDSource = string | undefined | (() => string | undefined);
 type PayloadVersionSource = unknown | (() => unknown);
 type PayloadAvailableSource = boolean | (() => boolean);
 type PayloadExpansionSource = PayloadExpansionHandle | (() => PayloadExpansionHandle);
+type PayloadCacheEnabledSource = boolean | (() => boolean);
 
 export interface PayloadExpansionOptions {
   previewBytes?: number;
@@ -43,6 +51,14 @@ export interface PayloadExpansionOptions {
   requestTimeoutMs?: number;
   payloadVersion?: PayloadVersionSource;
   loadMode?: 'preview' | 'full';
+  /**
+   * Controls the module-level payload cache. Most payloads are immutable
+   * once linked to an item and should use the default cache. Live payloads
+   * that grow behind a stable id, such as streaming thinking blocks, should
+   * disable caching until they settle so collapse/re-expand fetches the
+   * current body rather than an earlier snapshot.
+   */
+  cacheEnabled?: PayloadCacheEnabledSource;
   /**
    * When true, the expansion auto-expands as soon as the payloadID is
    * available — at construction if already set, otherwise via an
@@ -66,6 +82,7 @@ export function createPayloadExpansion(
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_PAYLOAD_REQUEST_TIMEOUT_MS;
   const payloadVersion = options.payloadVersion;
   const loadMode = options.loadMode ?? 'preview';
+  const cacheEnabled = options.cacheEnabled;
 
   let expanded = $state(false);
   let loadingPreview = $state(false);
@@ -86,6 +103,7 @@ export function createPayloadExpansion(
   let activeFullLoad: Promise<void> | null = null;
   let loadedPayloadID: string | null = null;
   let loadedPayloadVersion: unknown;
+  let pendingLiveDeltas: Array<{ payloadID: string; delta: string; payloadVersion: unknown }> = [];
   let overridePayloadVersion = $state<unknown>(undefined);
   let hasOverridePayloadVersion = $state(false);
 
@@ -154,6 +172,11 @@ export function createPayloadExpansion(
     return version;
   }
 
+  function currentCacheEnabled(): boolean {
+    if (cacheEnabled === undefined) return true;
+    return typeof cacheEnabled === 'function' ? cacheEnabled() : cacheEnabled;
+  }
+
   function setPayloadVersion(version: unknown): void {
     if (Object.is(currentPayloadVersion(), version)) return;
     overridePayloadVersion = version;
@@ -181,9 +204,11 @@ export function createPayloadExpansion(
     loadedBytes = 0;
     loadedPayloadID = null;
     loadedPayloadVersion = undefined;
+    pendingLiveDeltas = [];
   }
 
   function hydrateFromCache(opts: { expandOnHit: boolean }): boolean {
+    if (!currentCacheEnabled()) return false;
     const id = currentPayloadID();
     const tid = currentThreadID();
     if (!id || !tid) return false;
@@ -237,13 +262,8 @@ export function createPayloadExpansion(
         loadedBytes = result.nextOffset;
         loadedPayloadID = id;
         loadedPayloadVersion = version;
-        writePayloadCache(ownerThreadID, id, version, {
-          chunks,
-          hasFullChunks,
-          totalSize,
-          isComplete,
-          loadedBytes,
-        });
+        replayPendingLiveDeltas();
+        writeLoadedPayloadCache(ownerThreadID, id, version);
         return true;
       } catch (err) {
         if (generation !== requestGeneration || !expanded) return false;
@@ -309,6 +329,54 @@ export function createPayloadExpansion(
     return loadPreview();
   }
 
+  function writeLoadedPayloadCache(ownerThreadID: string, id: string, version: unknown): void {
+    if (!currentCacheEnabled()) return;
+    writePayloadCache(ownerThreadID, id, version, {
+      chunks,
+      hasFullChunks,
+      totalSize,
+      isComplete,
+      loadedBytes,
+    });
+  }
+
+  function appendLoadedLiveDelta(delta: string, nextPayloadVersion: unknown): void {
+    if (!delta) {
+      loadedPayloadVersion = nextPayloadVersion;
+      return;
+    }
+    chunks = [...chunks, delta];
+    totalSize += delta.length;
+    loadedBytes += delta.length;
+    isComplete = true;
+    loadedPayloadVersion = nextPayloadVersion;
+  }
+
+  function replayPendingLiveDeltas(): void {
+    if (pendingLiveDeltas.length === 0) return;
+    const pending = pendingLiveDeltas;
+    pendingLiveDeltas = [];
+    for (const live of pending) {
+      if (live.payloadID !== loadedPayloadID) continue;
+      const existing = displayData ?? '';
+      const suffix = nonOverlappingSuffix(existing, live.delta);
+      appendLoadedLiveDelta(suffix, live.payloadVersion);
+    }
+  }
+
+  function appendLiveDelta(delta: string, nextPayloadVersion: unknown = currentPayloadVersion()): void {
+    if (!delta || !expanded || error !== null) return;
+    const id = currentPayloadID();
+    if (!id) return;
+    if (chunks.length === 0 || loadingPreview || loadingFull) {
+      pendingLiveDeltas.push({ payloadID: id, delta, payloadVersion: nextPayloadVersion });
+      return;
+    }
+    if (loadedPayloadID !== id) return;
+    if (!hasFullChunks) return;
+    appendLoadedLiveDelta(delta, nextPayloadVersion);
+  }
+
   function collapse(): void {
     expanded = false;
     loadingPreview = false;
@@ -365,13 +433,7 @@ export function createPayloadExpansion(
         totalSize = content.totalSize;
         loadedBytes = content.nextOffset;
         isComplete = content.isComplete;
-        writePayloadCache(ownerThreadID, id, version, {
-          chunks,
-          hasFullChunks,
-          totalSize,
-          isComplete,
-          loadedBytes,
-        });
+        writeLoadedPayloadCache(ownerThreadID, id, version);
       } catch (err) {
         if (generation !== requestGeneration || !expanded) return;
         error = err instanceof Error ? err.message : String(err);
@@ -424,6 +486,7 @@ export function createPayloadExpansion(
       return expanded && chunks.length > 0 && !isComplete;
     },
     get displayData() { return displayData; },
+    appendLiveDelta,
     toggle,
     expand,
     ensureLoaded,
@@ -476,6 +539,17 @@ function payloadTextFromBindingData(data: unknown, operation: string): string {
   if (typeof data === 'string') return data;
   const kind = Array.isArray(data) ? 'array' : data === null ? 'null' : typeof data;
   throw new Error(`${operation} returned non-string payload data (${kind})`);
+}
+
+function nonOverlappingSuffix(existing: string, delta: string): string {
+  if (!existing || !delta) return delta;
+  const maxOverlap = Math.min(existing.length, delta.length);
+  for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
+    if (existing.endsWith(delta.slice(0, overlap))) {
+      return delta.slice(overlap);
+    }
+  }
+  return delta;
 }
 
 export function formatPayloadSize(bytes: number): string {

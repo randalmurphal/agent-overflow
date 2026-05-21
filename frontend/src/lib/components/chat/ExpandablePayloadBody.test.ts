@@ -16,6 +16,7 @@ function expansionHandle(overrides: Partial<PayloadExpansionHandle> = {}): Paylo
     hasMore: true,
     payloadVersion: 'version-a',
     displayData: 'visible output',
+    appendLiveDelta: vi.fn(() => {}),
     toggle: vi.fn(async () => {}),
     expand: vi.fn(async () => {}),
     ensureLoaded: vi.fn(async () => true),

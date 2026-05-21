@@ -24,6 +24,12 @@ export interface ThreadRowUiState {
     threadId: string,
     options?: PayloadExpansionStateOptions | unknown,
   ): PayloadExpansionHandle;
+  appendLivePayloadDeltaForItem(
+    itemId: string,
+    stateKey: string,
+    delta: string,
+    payloadVersion?: unknown,
+  ): void;
   isSubagentGroupExpanded(groupKey: string): boolean;
   toggleSubagentGroupExpanded(groupKey: string): boolean;
   attachmentCacheFor(itemId: string): AttachmentPreviewCache;
@@ -49,12 +55,13 @@ export interface RowExpansionStateOptions
    * changes do not invalidate loaded payload content.
    */
   payloadVersion?: (item: Item | undefined) => unknown;
+  cacheEnabled?: boolean | ((item: Item | undefined) => boolean);
 }
 
 export interface PayloadExpansionStateOptions
   extends Pick<
     PayloadExpansionOptions,
-    'loadMode' | 'loadOnMount' | 'previewBytes' | 'chunkBytes' | 'requestTimeoutMs'
+    'loadMode' | 'loadOnMount' | 'previewBytes' | 'chunkBytes' | 'requestTimeoutMs' | 'cacheEnabled'
   > {
   stateKey?: string;
   payloadVersion?: unknown;
@@ -74,6 +81,7 @@ function normalizePayloadExpansionStateOptions(
       || 'previewBytes' in optionsOrPayloadVersion
       || 'chunkBytes' in optionsOrPayloadVersion
       || 'requestTimeoutMs' in optionsOrPayloadVersion
+      || 'cacheEnabled' in optionsOrPayloadVersion
     )
   ) {
     return optionsOrPayloadVersion as PayloadExpansionStateOptions;
@@ -83,6 +91,20 @@ function normalizePayloadExpansionStateOptions(
 
 function expansionRegistryKey(parts: readonly unknown[]): string {
   return JSON.stringify(parts);
+}
+
+function rowCacheEnabled(
+  cacheEnabled: RowExpansionStateOptions['cacheEnabled'],
+  item: Item | undefined,
+): boolean {
+  if (cacheEnabled === undefined) return true;
+  return typeof cacheEnabled === 'function' ? cacheEnabled(item) : cacheEnabled;
+}
+
+function cacheEnabledRegistryKey(cacheEnabled: unknown): string {
+  if (cacheEnabled === undefined) return 'cache-default';
+  if (typeof cacheEnabled === 'function') return 'cache-dynamic';
+  return cacheEnabled ? 'cache-on' : 'cache-off';
 }
 
 interface ExpansionRegistryEntry {
@@ -97,6 +119,7 @@ interface ExpansionRegistryEntry {
  */
 export function createThreadRowUiState(options: ThreadRowUiStateOptions): ThreadRowUiState {
   const expansionStates = new Map<string, ExpansionRegistryEntry>();
+  const itemExpansionKeysByState = new Map<string, Map<string, Set<string>>>();
   let subagentGroupExpanded: Set<string> = $state(new Set());
   const attachmentBlobs = new Map<string, Map<string, ImagePreviewItem>>();
   let attachmentCacheEpoch = 0;
@@ -106,15 +129,17 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     rowOptions: RowExpansionStateOptions = {},
   ): PayloadExpansionHandle {
     const loadMode = rowOptions.loadMode ?? 'preview';
+    const stateKey = rowOptions.stateKey ?? 'default';
     const key = expansionRegistryKey([
       'i',
       item.id,
       loadMode,
       rowOptions.loadOnMount ? 'auto' : 'manual',
-      rowOptions.stateKey ?? 'default',
+      stateKey,
       rowOptions.previewBytes ?? 'preview-default',
       rowOptions.chunkBytes ?? 'chunk-default',
       rowOptions.requestTimeoutMs ?? 'timeout-default',
+      cacheEnabledRegistryKey(rowOptions.cacheEnabled),
     ]);
     let cached = expansionStates.get(key);
     if (cached) return cached.handle;
@@ -122,6 +147,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     const itemId = item.id;
     const getCurrentItem = (): Item | undefined => options.getItemById(itemId);
     const currentPayloadVersion = rowOptions.payloadVersion ?? payloadVersionForItem;
+    const currentCacheEnabled = (): boolean => rowCacheEnabled(rowOptions.cacheEnabled, getCurrentItem());
     cached = createRegistryExpansion(() =>
       createPayloadExpansion(
         () => getCurrentItem()?.payloadId,
@@ -133,10 +159,22 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
           previewBytes: rowOptions.previewBytes,
           chunkBytes: rowOptions.chunkBytes,
           requestTimeoutMs: rowOptions.requestTimeoutMs,
+          cacheEnabled: currentCacheEnabled,
         },
       ),
     );
     expansionStates.set(key, cached);
+    let stateKeys = itemExpansionKeysByState.get(itemId);
+    if (!stateKeys) {
+      stateKeys = new Map();
+      itemExpansionKeysByState.set(itemId, stateKeys);
+    }
+    let keysForState = stateKeys.get(stateKey);
+    if (!keysForState) {
+      keysForState = new Set();
+      stateKeys.set(stateKey, keysForState);
+    }
+    keysForState.add(key);
     return cached.handle;
   }
 
@@ -157,6 +195,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       payloadOptions.previewBytes ?? 'preview-default',
       payloadOptions.chunkBytes ?? 'chunk-default',
       payloadOptions.requestTimeoutMs ?? 'timeout-default',
+      cacheEnabledRegistryKey(payloadOptions.cacheEnabled),
     ]);
     let cached = expansionStates.get(key);
     if (cached) {
@@ -175,6 +214,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
           previewBytes: payloadOptions.previewBytes,
           chunkBytes: payloadOptions.chunkBytes,
           requestTimeoutMs: payloadOptions.requestTimeoutMs,
+          cacheEnabled: payloadOptions.cacheEnabled,
         },
       ),
     );
@@ -194,6 +234,20 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       throw new Error('Failed to create payload expansion state');
     }
     return { handle, dispose };
+  }
+
+  function appendLivePayloadDeltaForItem(
+    itemId: string,
+    stateKey: string,
+    delta: string,
+    payloadVersion?: unknown,
+  ): void {
+    const keys = itemExpansionKeysByState.get(itemId)?.get(stateKey);
+    if (!keys || keys.size === 0) return;
+    for (const key of keys) {
+      const entry = expansionStates.get(key);
+      entry?.handle.appendLiveDelta(delta, payloadVersion);
+    }
   }
 
   function isSubagentGroupExpanded(groupKey: string): boolean {
@@ -255,6 +309,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       entry.dispose();
     }
     expansionStates.clear();
+    itemExpansionKeysByState.clear();
     subagentGroupExpanded = new Set();
     attachmentCacheEpoch += 1;
     disposeAttachmentBlobs();
@@ -263,6 +318,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   return {
     expansionStateFor,
     expansionStateForPayload,
+    appendLivePayloadDeltaForItem,
     isSubagentGroupExpanded,
     toggleSubagentGroupExpanded,
     attachmentCacheFor,

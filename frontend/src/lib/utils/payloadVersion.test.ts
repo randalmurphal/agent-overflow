@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { makeItem } from '../../test/helpers/chat';
-import { boundedPayloadVersionString, payloadVersionForItem } from './payloadVersion';
+import {
+  boundedPayloadVersionString,
+  payloadVersionForItem,
+  thinkingPayloadVersionForItem,
+} from './payloadVersion';
 
 describe('payloadVersion', () => {
   it('derives payload versions from stable payload signatures before timestamps', () => {
@@ -46,5 +50,39 @@ describe('payloadVersion', () => {
 
     expect(boundedPayloadVersionString(first)).toBe(boundedPayloadVersionString(first));
     expect(boundedPayloadVersionString(first)).not.toBe(boundedPayloadVersionString(second));
+  });
+
+  it('keeps streaming thinking versions stable across deltas', () => {
+    const first = thinkingPayloadVersionForItem(makeItem({
+      kind: 'thinking',
+      payloadId: 'thinking-payload',
+      status: 'streaming',
+      updatedAt: 1,
+    }));
+    const second = thinkingPayloadVersionForItem(makeItem({
+      kind: 'thinking',
+      payloadId: 'thinking-payload',
+      status: 'streaming',
+      updatedAt: 2,
+    }));
+
+    expect(second).toBe(first);
+  });
+
+  it('changes settled thinking versions when the payload timestamp changes', () => {
+    const first = thinkingPayloadVersionForItem(makeItem({
+      kind: 'thinking',
+      payloadId: 'thinking-payload',
+      status: 'completed',
+      updatedAt: 1,
+    }));
+    const second = thinkingPayloadVersionForItem(makeItem({
+      kind: 'thinking',
+      payloadId: 'thinking-payload',
+      status: 'completed',
+      updatedAt: 2,
+    }));
+
+    expect(second).not.toBe(first);
   });
 });

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Item } from '../types/models';
 import { makeItem } from '../../test/helpers/chat';
 import { __resetPayloadCacheForTest, writePayloadCache } from '../utils/payloadDataCache';
+import { THINKING_PAYLOAD_EXPANSION_STATE_KEY } from '../utils/payloadVersion';
 import { createThreadRowUiState } from './threadRowUiState.svelte';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 
@@ -146,6 +147,123 @@ describe('createThreadRowUiState', () => {
     await expand;
     expect(first.displayData).toBe('loaded payload');
     expect(preview).toHaveBeenCalledTimes(1);
+  });
+
+  it('appends live payload deltas to existing item-keyed handles only', async () => {
+    const items = new Map<string, Item>();
+    const item = makeItem({
+      id: 'think:0:0',
+      kind: 'thinking',
+      payloadId: 'thinking-payload',
+      threadId: 'thread-a',
+      updatedAt: 1,
+    });
+    items.set(item.id, item);
+    const getPayloadData = setBindingMock('GetPayloadData', async () => ({ data: 'seed' }));
+    const rowUiState = createThreadRowUiState({
+      getItemById(itemId: string): Item | undefined {
+        return items.get(itemId);
+      },
+    });
+
+    rowUiState.appendLivePayloadDeltaForItem(
+      item.id,
+      THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+      ' ignored',
+      2,
+    );
+
+    const expansion = rowUiState.expansionStateFor(item, {
+      loadMode: 'full',
+      stateKey: THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+      payloadVersion: (currentItem) => currentItem?.updatedAt,
+    });
+    await expansion.expand();
+    expect(expansion.displayData).toBe('seed');
+
+    const updated = { ...item, updatedAt: 2 };
+    items.set(item.id, updated);
+    rowUiState.appendLivePayloadDeltaForItem(
+      item.id,
+      THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+      ' live',
+      updated.updatedAt,
+    );
+
+    expect(expansion.displayData).toBe('seed live');
+    await expansion.ensureLoaded();
+    expect(getPayloadData).toHaveBeenCalledTimes(1);
+  });
+
+  it('evaluates item-keyed cache policy against the latest item reference', async () => {
+    const items = new Map<string, Item>();
+    const item = makeItem({
+      id: 'think:0:0',
+      kind: 'thinking',
+      status: 'streaming',
+      payloadId: 'thinking-payload',
+      threadId: 'thread-a',
+      updatedAt: 1,
+    });
+    items.set(item.id, item);
+    const rowUiState = createThreadRowUiState({
+      getItemById(itemId: string): Item | undefined {
+        return items.get(itemId);
+      },
+    });
+
+    const expansion = rowUiState.expansionStateFor(item, {
+      loadMode: 'full',
+      stateKey: THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+      payloadVersion: (currentItem) => currentItem?.updatedAt,
+      cacheEnabled: (currentItem) => currentItem?.status !== 'streaming',
+    });
+
+    const completed = { ...item, status: 'completed' as const, updatedAt: 2 };
+    items.set(item.id, completed);
+    writePayloadCache('thread-a', 'thinking-payload', 2, {
+      chunks: ['cached complete'],
+      hasFullChunks: true,
+      totalSize: 15,
+      isComplete: true,
+      loadedBytes: 15,
+    });
+    const getPayloadData = setBindingMock('GetPayloadData', async () => {
+      throw new Error('completed thinking should hydrate from cache');
+    });
+
+    await expansion.expand();
+
+    expect(expansion.displayData).toBe('cached complete');
+    expect(getPayloadData).not.toHaveBeenCalled();
+  });
+
+  it('keeps payload-keyed cache policies isolated', async () => {
+    writePayloadCache('thread-a', 'payload-a', 'version-a', {
+      chunks: ['cached payload'],
+      hasFullChunks: true,
+      totalSize: 14,
+      isComplete: true,
+      loadedBytes: 14,
+    });
+    const getPayloadData = setBindingMock('GetPayloadData', async () => ({ data: 'fresh payload' }));
+    const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+
+    const cached = rowUiState.expansionStateForPayload(
+      'payload-a',
+      'thread-a',
+      { payloadVersion: 'version-a', loadMode: 'full', cacheEnabled: true },
+    );
+    const uncached = rowUiState.expansionStateForPayload(
+      'payload-a',
+      'thread-a',
+      { payloadVersion: 'version-a', loadMode: 'full', cacheEnabled: false },
+    );
+
+    expect(uncached).not.toBe(cached);
+    await uncached.expand();
+    expect(uncached.displayData).toBe('fresh payload');
+    expect(getPayloadData).toHaveBeenCalledTimes(1);
   });
 
   it('does not collide item-keyed expansion handles when ids contain key delimiters', () => {

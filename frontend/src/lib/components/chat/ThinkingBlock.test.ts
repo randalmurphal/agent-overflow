@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThinkingBlock from './ThinkingBlock.svelte';
-import { makeItem } from '../../../test/helpers/chat';
+import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 
 describe('<ThinkingBlock>', () => {
@@ -66,11 +66,7 @@ describe('<ThinkingBlock>', () => {
   });
 
   it('removes the max-height cap once expanded', async () => {
-    setBindingMock('GetPayloadPreview', async () => ({
-      data: 'full reasoning text',
-      totalSize: 19,
-      isComplete: true,
-    }));
+    setBindingMock('GetPayloadData', async () => ({ data: 'full reasoning text' }));
     const { container, getByRole } = render(ThinkingBlock, {
       props: {
         item: makeItem({
@@ -154,11 +150,7 @@ describe('<ThinkingBlock>', () => {
   });
 
   it('copies the full payload via the getter, even without an explicit expand', async () => {
-    setBindingMock('GetPayloadPreview', async () => ({
-      data: 'loaded reasoning text',
-      totalSize: 21,
-      isComplete: true,
-    }));
+    setBindingMock('GetPayloadData', async () => ({ data: 'loaded reasoning text' }));
     const writeText = vi.fn(async () => {});
     Object.defineProperty(navigator, 'clipboard', {
       value: { writeText },
@@ -178,5 +170,99 @@ describe('<ThinkingBlock>', () => {
 
     await fireEvent.click(getByLabelText('Copy thinking'));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('loaded reasoning text'));
+  });
+
+  it('streams into the expanded full body and refetches current payload after collapse', async () => {
+    const thinking = makeItem({
+      id: 'think:0:0',
+      kind: 'thinking',
+      status: 'streaming',
+      summary: 'seed',
+      payloadId: 'thinking-payload',
+      updatedAt: 1,
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-1' }), [thinking]);
+    const payloads = ['seed', 'seed live collapsed'];
+    const getPayloadData = setBindingMock('GetPayloadData', async () => ({
+      data: payloads.shift() ?? 'seed live collapsed',
+    }));
+
+    const { container, getByRole, rerender } = render(ThinkingBlock, {
+      props: { pane, item: pane.items[0] },
+    });
+
+    await fireEvent.click(getByRole('button', { name: /toggle thinking block/i }));
+    await waitFor(() => expect(container.querySelector('[data-testid="thinking-body"]')?.textContent).toBe('seed'));
+
+    pane.applyItemDelta({
+      threadId: 'thread-1',
+      itemId: 'think:0:0',
+      kind: 'thinking',
+      delta: ' live',
+      updatedAt: 2,
+    });
+    await rerender({ pane, item: pane.items[0] });
+    await tick();
+    expect(container.querySelector('[data-testid="thinking-body"]')?.textContent).toBe('seed live');
+    expect(getPayloadData).toHaveBeenCalledTimes(1);
+
+    await fireEvent.click(getByRole('button', { name: /toggle thinking block/i }));
+    await tick();
+    expect(container.querySelector('[data-testid="thinking-body"]')?.className).toMatch(/max-h-\[3lh\]/);
+
+    pane.applyItemDelta({
+      threadId: 'thread-1',
+      itemId: 'think:0:0',
+      kind: 'thinking',
+      delta: ' collapsed',
+      updatedAt: 3,
+    });
+    await rerender({ pane, item: pane.items[0] });
+    await tick();
+    expect(container.querySelector('[data-testid="thinking-body"]')?.textContent).toBe('seed live collapsed');
+
+    await fireEvent.click(getByRole('button', { name: /toggle thinking block/i }));
+    await waitFor(() => expect(container.querySelector('[data-testid="thinking-body"]')?.textContent).toBe('seed live collapsed'));
+    expect(getPayloadData).toHaveBeenCalledTimes(2);
+  });
+
+  it('copies the refreshed completed payload when a row settles while expanded', async () => {
+    const thinking = makeItem({
+      id: 'think:0:0',
+      kind: 'thinking',
+      status: 'streaming',
+      summary: 'seed',
+      payloadId: 'thinking-payload',
+      updatedAt: 1,
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-1' }), [thinking]);
+    const payloads = ['seed', 'seed final'];
+    setBindingMock('GetPayloadData', async () => ({
+      data: payloads.shift() ?? 'seed final',
+    }));
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+      writable: true,
+    });
+
+    const { getByRole, getByLabelText, rerender } = render(ThinkingBlock, {
+      props: { pane, item: pane.items[0] },
+    });
+
+    await fireEvent.click(getByRole('button', { name: /toggle thinking block/i }));
+    await waitFor(() => expect(getByRole('button', { name: /toggle thinking block/i }).getAttribute('aria-expanded')).toBe('true'));
+
+    pane.upsertItem({
+      ...pane.items[0],
+      status: 'completed',
+      summary: 'seed final',
+      updatedAt: 2,
+    });
+    await rerender({ pane, item: pane.items[0] });
+    await fireEvent.click(getByLabelText('Copy thinking'));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('seed final'));
   });
 });

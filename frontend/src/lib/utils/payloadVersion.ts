@@ -3,6 +3,7 @@ import { parseJsonObject } from './parseJsonObject';
 
 const PAYLOAD_VERSION_EDGE_CHARS = 64;
 const PAYLOAD_VERSION_INLINE_MAX_CHARS = 160;
+export const THINKING_PAYLOAD_EXPANSION_STATE_KEY = 'thinking-full';
 
 function stableStringHash(value: string): string {
   let hash = 0x811c9dc5;
@@ -48,4 +49,19 @@ export function payloadVersionForItem(item: Item | undefined): unknown {
     ?? (payloadMeta ? boundedPayloadVersionString(payloadMeta) : undefined)
     ?? item.updatedAt
   );
+}
+
+export function thinkingPayloadVersionForItem(item: Item | undefined): unknown {
+  if (!item) return undefined;
+  if (item.status === 'streaming') {
+    return JSON.stringify([
+      item.payloadId ?? '',
+      'streaming',
+    ]);
+  }
+  return JSON.stringify([
+    item.payloadId ?? '',
+    item.status,
+    item.updatedAt,
+  ]);
 }

@@ -963,6 +963,7 @@ describe('createThreadPane', () => {
     expect(pane.items.length).toBe(initialLength);
     expect(pane.timelineRevision).toBe(initialRevision);
     expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe('hello world!');
+    expect(pane.items.find((item) => item.id === 'text:0:0')?.updatedAt).toBe(124);
   });
 
   it('thinking-row deltas trim to the 400-rune tail in place', async () => {
@@ -992,6 +993,7 @@ describe('createThreadPane', () => {
     const after = pane.items.find((item) => item.id === 'think:0:0')?.summary ?? '';
     expect([...after].length).toBe(400);
     expect(after.endsWith('a'.repeat(400))).toBe(true);
+    expect(pane.items.find((item) => item.id === 'think:0:0')?.updatedAt).toBe(100);
   });
 
   it('replaces the streaming row on completion upsert', async () => {
