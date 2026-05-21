@@ -54,7 +54,7 @@ func TestInsertItemPersistsParentID(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	got, found, err := s.GetItem("item-child")
+	got, found, err := s.GetThreadItem(threadID, "item-child")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestInsertItemEmptyParentIDRoundTrips(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	got, found, err := s.GetItem("item-top")
+	got, found, err := s.GetThreadItem(threadID, "item-top")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}

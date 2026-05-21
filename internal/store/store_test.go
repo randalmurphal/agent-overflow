@@ -1192,7 +1192,7 @@ func TestUpsertTurnPayloadLinksUnlinkedItem(t *testing.T) {
 		t.Fatalf("upsert turn payload: %v", err)
 	}
 
-	got, found, err := s.GetItem("item-unlinked")
+	got, found, err := s.GetThreadItem("t1", "item-unlinked")
 	if err != nil {
 		t.Fatalf("get item: %v", err)
 	}
@@ -1344,7 +1344,7 @@ func TestUpsertTurnPayloadConcurrentWritesNoOrphans(t *testing.T) {
 		t.Fatalf("expected exactly 1 payload after concurrent writers, got %d", payloads)
 	}
 
-	item, ok, err := s.GetItem("item-concurrent")
+	item, ok, err := s.GetThreadItem("t1", "item-concurrent")
 	if err != nil {
 		t.Fatalf("get item: %v", err)
 	}
@@ -1472,7 +1472,7 @@ func TestUpdateItemPayloadDoesNotBumpThread(t *testing.T) {
 	if got.UpdatedAt != 100 {
 		t.Errorf("thread updated_at after payload upgrade: got %d, want 100 (no implicit bump)", got.UpdatedAt)
 	}
-	item, ok, err := s.GetItem("i-1")
+	item, ok, err := s.GetThreadItem("t-atomic", "i-1")
 	if err != nil {
 		t.Fatalf("get item: %v", err)
 	}
@@ -1527,7 +1527,7 @@ func TestUpdateItemPayloadConcurrentCallsSerialise(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get thread: %v", err)
 	}
-	item, ok, err := s.GetItem("i-1")
+	item, ok, err := s.GetThreadItem("t-conc", "i-1")
 	if err != nil {
 		t.Fatalf("get item: %v", err)
 	}

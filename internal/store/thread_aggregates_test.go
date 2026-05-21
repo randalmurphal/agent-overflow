@@ -253,7 +253,7 @@ func TestMarkLiveBackgroundToolCallsInactiveClearsOnlyLiveTopLevelLaunches(t *te
 		t.Fatalf("rows affected = %d, want 1", count)
 	}
 
-	run, ok, err := s.GetItem("run")
+	run, ok, err := s.GetThreadItem("t", "run")
 	if err != nil {
 		t.Fatalf("get run: %v", err)
 	}
@@ -267,14 +267,14 @@ func TestMarkLiveBackgroundToolCallsInactiveClearsOnlyLiveTopLevelLaunches(t *te
 		t.Fatalf("run meta = %q, want live_background_active=false", run.Meta)
 	}
 
-	completedLaunch, _, err := s.GetItem("completed-launch")
+	completedLaunch, _, err := s.GetThreadItem("t", "completed-launch")
 	if err != nil {
 		t.Fatalf("get completed launch: %v", err)
 	}
 	if completedLaunch.Status != "running" {
 		t.Fatalf("completed launch status = %q, want running", completedLaunch.Status)
 	}
-	child, _, err := s.GetItem("child")
+	child, _, err := s.GetThreadItem("t", "child")
 	if err != nil {
 		t.Fatalf("get child: %v", err)
 	}

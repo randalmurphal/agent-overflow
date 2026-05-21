@@ -308,7 +308,7 @@ func TestResolveRevertCheckpointReturnsPersisted(t *testing.T) {
 		t.Fatalf("save checkpoint: %v", err)
 	}
 
-	userItem, ok, err := app.store.GetItem("u:0")
+	userItem, ok, err := app.store.GetThreadItem(thread.ID, "u:0")
 	if err != nil {
 		t.Fatalf("get item: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestResolveRevertCheckpointSynthesizesWhenMissing(t *testing.T) {
 	thread := createCheckpointTestThread(t, app, "rc-missing", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
 
-	userItem, ok, err := app.store.GetItem("u:0")
+	userItem, ok, err := app.store.GetThreadItem(thread.ID, "u:0")
 	if err != nil {
 		t.Fatalf("get item: %v", err)
 	}

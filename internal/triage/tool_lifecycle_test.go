@@ -614,7 +614,7 @@ func TestInlineCompletionPreservesRichPayload(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	preCompletion, _, _ := st.GetItem("fc-rich")
+	preCompletion, _, _ := st.GetThreadItem("t1", "fc-rich")
 	if preCompletion.PayloadID == "" {
 		t.Fatalf("file_change start failed to attach payload — test setup invalid")
 	}
@@ -642,7 +642,7 @@ func TestInlineCompletionPreservesRichPayload(t *testing.T) {
 		t.Fatalf("complete: %v", err)
 	}
 
-	postCompletion, _, _ := st.GetItem("fc-rich")
+	postCompletion, _, _ := st.GetThreadItem("t1", "fc-rich")
 	if postCompletion.PayloadID == "" {
 		t.Fatalf("payload wiped on completion (B1 regression)")
 	}
@@ -679,7 +679,7 @@ func TestInlineCompletionAttachesPayloadWhenNoneExists(t *testing.T) {
 		t.Fatalf("complete: %v", err)
 	}
 
-	item, _, _ := st.GetItem("bash-1")
+	item, _, _ := st.GetThreadItem("t1", "bash-1")
 	if item.PayloadID == "" {
 		t.Fatalf("expected command_output payload attached to inline completion")
 	}
@@ -723,7 +723,7 @@ func TestInlineBashCompletionStoresFailureMessage(t *testing.T) {
 		t.Fatalf("complete: %v", err)
 	}
 
-	item, _, _ := st.GetItem("bash-fail")
+	item, _, _ := st.GetThreadItem("t1", "bash-fail")
 	var meta CommandOutputMeta
 	if err := json.Unmarshal([]byte(item.PayloadMeta), &meta); err != nil {
 		t.Fatalf("payload meta: %v", err)
@@ -762,7 +762,7 @@ func TestToolCompletionPayloadStoresPreviewMetadata(t *testing.T) {
 		t.Fatalf("complete: %v", err)
 	}
 
-	item, found, err := st.GetItem("tool-preview")
+	item, found, err := st.GetThreadItem("t1", "tool-preview")
 	if err != nil || !found {
 		t.Fatalf("item missing: found=%v err=%v", found, err)
 	}
@@ -837,7 +837,7 @@ func TestToolCompletionWithoutContentDoesNotAttachEmptyPayload(t *testing.T) {
 		t.Fatalf("complete: %v", err)
 	}
 
-	item, _, _ := st.GetItem("web-1")
+	item, _, _ := st.GetThreadItem("t1", "web-1")
 	if item.PayloadID != "" {
 		t.Fatalf("metadata-only completion attached empty payload %q", item.PayloadID)
 	}
@@ -886,7 +886,7 @@ func TestToolCompletionMergesCodexWaitAgentMeta(t *testing.T) {
 		t.Fatalf("complete: %v", err)
 	}
 
-	item, _, _ := st.GetItem("wait-1")
+	item, _, _ := st.GetThreadItem("t1", "wait-1")
 	var meta map[string]any
 	if err := json.Unmarshal([]byte(item.Meta), &meta); err != nil {
 		t.Fatalf("parse item meta: %v", err)
@@ -940,7 +940,7 @@ func TestToolCompletionPreservesCodexWaitStartReceiversSeparatelyOnReplay(t *tes
 		t.Fatalf("complete: %v", err)
 	}
 
-	item, _, _ := st.GetItem("wait-1")
+	item, _, _ := st.GetThreadItem("t1", "wait-1")
 	var meta map[string]any
 	if err := json.Unmarshal([]byte(item.Meta), &meta); err != nil {
 		t.Fatalf("parse item meta: %v", err)
@@ -986,7 +986,7 @@ func TestMcpCompletionContentAttachesPayload(t *testing.T) {
 		t.Fatalf("complete: %v", err)
 	}
 
-	item, _, _ := st.GetItem("mcp-1")
+	item, _, _ := st.GetThreadItem("t1", "mcp-1")
 	if item.PayloadID == "" {
 		t.Fatal("expected MCP result payload")
 	}
@@ -1084,7 +1084,7 @@ func TestTaskStartedMergesTaskIDIntoItemMeta(t *testing.T) {
 		t.Fatalf("task_started meta update: %v", err)
 	}
 
-	item, _, err := st.GetItem("tool-bg-meta")
+	item, _, err := st.GetThreadItem("t1", "tool-bg-meta")
 	if err != nil {
 		t.Fatalf("get item: %v", err)
 	}
@@ -1140,7 +1140,7 @@ func TestSubagentModelMergesIntoItemMetaWithoutClobber(t *testing.T) {
 		t.Fatalf("subagent_model meta update: %v", err)
 	}
 
-	item, _, err := st.GetItem("agent-tool-1")
+	item, _, err := st.GetThreadItem("t1", "agent-tool-1")
 	if err != nil {
 		t.Fatalf("get item: %v", err)
 	}
@@ -1169,7 +1169,7 @@ func TestSubagentModelMergesIntoItemMetaWithoutClobber(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("redundant subagent_model meta update: %v", err)
 	}
-	item2, _, _ := st.GetItem("agent-tool-1")
+	item2, _, _ := st.GetThreadItem("t1", "agent-tool-1")
 	if item2.UpdatedAt != item.UpdatedAt {
 		t.Errorf("redundant meta update bumped UpdatedAt: was=%d now=%d", item.UpdatedAt, item2.UpdatedAt)
 	}
@@ -1220,7 +1220,7 @@ func TestCodexSpawnLabelMetaUpdatePreservesFullReceiverList(t *testing.T) {
 		t.Fatalf("meta update: %v", err)
 	}
 
-	item, _, err := st.GetItem("spawn-1")
+	item, _, err := st.GetThreadItem("t1", "spawn-1")
 	if err != nil {
 		t.Fatalf("get item: %v", err)
 	}
@@ -2408,7 +2408,7 @@ func TestForceClosedRow_LateCompletionDoesNotResurrect(t *testing.T) {
 	// Sanity: the force-close safety net ran and left the row errored
 	// with the force-close marker — without this, the later
 	// resurrection assertion wouldn't be meaningful.
-	preLate, ok, err := st.GetItem("late-complete")
+	preLate, ok, err := st.GetThreadItem("t1", "late-complete")
 	if err != nil || !ok {
 		t.Fatalf("missing late-complete row before late event: found=%v err=%v", ok, err)
 	}
@@ -2429,7 +2429,7 @@ func TestForceClosedRow_LateCompletionDoesNotResurrect(t *testing.T) {
 		t.Fatalf("late complete: %v", err)
 	}
 
-	postLate, ok, err := st.GetItem("late-complete")
+	postLate, ok, err := st.GetThreadItem("t1", "late-complete")
 	if err != nil || !ok {
 		t.Fatalf("missing late-complete row after late event: found=%v err=%v", ok, err)
 	}
@@ -2696,7 +2696,7 @@ func TestAskUserQuestionLifecycle_InterruptForceClosesToErrored(t *testing.T) {
 		t.Fatalf("turn complete: %v", err)
 	}
 
-	item, ok, err := st.GetItem("ask-interrupted")
+	item, ok, err := st.GetThreadItem("t1", "ask-interrupted")
 	if err != nil || !ok {
 		t.Fatalf("missing ask-interrupted: found=%v err=%v", ok, err)
 	}

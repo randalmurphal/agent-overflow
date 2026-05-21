@@ -535,7 +535,7 @@ func TestFileChangeCompletionWithoutLaunchPreservesTerminalStatus(t *testing.T) 
 				t.Fatalf("complete: %v", err)
 			}
 
-			item, found, err := st.GetItem("fc-" + tc.name)
+			item, found, err := st.GetThreadItem("t1", "fc-" + tc.name)
 			if err != nil {
 				t.Fatalf("get item: %v", err)
 			}

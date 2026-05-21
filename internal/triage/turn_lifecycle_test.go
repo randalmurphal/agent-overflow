@@ -531,7 +531,7 @@ func TestHandleEventTurnComplete_ForceClosesOrphans(t *testing.T) {
 	}
 
 	for _, id := range []string{"inline-1", "inline-2"} {
-		item, ok, err := st.GetItem(id)
+		item, ok, err := st.GetThreadItem("t1", id)
 		if err != nil || !ok {
 			t.Fatalf("missing %s: found=%v err=%v", id, ok, err)
 		}
@@ -597,7 +597,7 @@ func TestHandleEventTurnComplete_ExemptsBackgroundedLaunches(t *testing.T) {
 	}
 
 	// Background launch stays running — it must NOT be force-closed.
-	bg, ok, err := st.GetItem("bg-exempt")
+	bg, ok, err := st.GetThreadItem("t1", "bg-exempt")
 	if err != nil || !ok {
 		t.Fatalf("missing bg-exempt: found=%v err=%v", ok, err)
 	}
@@ -609,7 +609,7 @@ func TestHandleEventTurnComplete_ExemptsBackgroundedLaunches(t *testing.T) {
 	}
 
 	// Inline launch MUST be force-closed in the same pass.
-	inline, ok, err := st.GetItem("inline-exempt")
+	inline, ok, err := st.GetThreadItem("t1", "inline-exempt")
 	if err != nil || !ok {
 		t.Fatalf("missing inline-exempt: found=%v err=%v", ok, err)
 	}
@@ -724,7 +724,7 @@ func TestMarkUserInterrupt_ExemptsBackgroundedLaunches(t *testing.T) {
 	}
 
 	// Backgrounded launch stays running — it must NOT be flipped.
-	bg, ok, err := st.GetItem("bg-stopped-exempt")
+	bg, ok, err := st.GetThreadItem("t1", "bg-stopped-exempt")
 	if err != nil || !ok {
 		t.Fatalf("missing bg-stopped-exempt: found=%v err=%v", ok, err)
 	}
@@ -737,7 +737,7 @@ func TestMarkUserInterrupt_ExemptsBackgroundedLaunches(t *testing.T) {
 	}
 
 	// Inline launch must flip to errored with the stopped suffix.
-	inline, ok, err := st.GetItem("inline-stopped")
+	inline, ok, err := st.GetThreadItem("t1", "inline-stopped")
 	if err != nil || !ok {
 		t.Fatalf("missing inline-stopped: found=%v err=%v", ok, err)
 	}
@@ -749,7 +749,7 @@ func TestMarkUserInterrupt_ExemptsBackgroundedLaunches(t *testing.T) {
 	}
 
 	// "Stopped by user" system error row is persisted.
-	sys, ok, err := st.GetItem(errID)
+	sys, ok, err := st.GetThreadItem("t1", errID)
 	if err != nil || !ok {
 		t.Fatalf("missing system error row %s: found=%v err=%v", errID, ok, err)
 	}

@@ -852,27 +852,6 @@ func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item,
 	return item, true, nil
 }
 
-func (s *Store) GetItem(id string) (Item, bool, error) {
-	row := s.db.QueryRow(
-		`SELECT `+itemColumns+`
-		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
-		  WHERE items.id = ?
-		  ORDER BY items.created_at DESC
-		  LIMIT 1`,
-		id,
-	)
-
-	item, err := scanItemRow(row)
-	if err == sql.ErrNoRows {
-		return Item{}, false, nil
-	}
-	if err != nil {
-		return Item{}, false, fmt.Errorf("store: get item %s: %w", id, err)
-	}
-	return item, true, nil
-}
-
 // FindToolCallItemByTaskID resolves a thread's tool_call row whose persisted
 // items.meta JSON carries a top-level task_id matching taskID. Used by the
 // background completion router when a Claude task_updated/task_notification

@@ -200,7 +200,7 @@ func TestRevertToMessageCheckpointWithOptionsClearsRunningBackgroundTasks(t *tes
 	if len(live) != 0 {
 		t.Fatalf("live background tasks after confirmed revert = %+v, want none", live)
 	}
-	bg, ok, err := app.store.GetItem("bg:0")
+	bg, ok, err := app.store.GetThreadItem(thread.ID, "bg:0")
 	if err != nil {
 		t.Fatalf("get background item: %v", err)
 	}

@@ -111,7 +111,7 @@ func TestInsertItemRoundTripsLifecycleFields(t *testing.T) {
 	if err := s.InsertItem(in); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	got, ok, err := s.GetItem("i-running")
+	got, ok, err := s.GetThreadItem("t", "i-running")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestInsertItemDefaultsStatusToCompleted(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	got, _, err := s.GetItem("i")
+	got, _, err := s.GetThreadItem("t", "i")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestUpdateItemStatusTransitionsRunningToCompleted(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 
-	got, _, err := s.GetItem("i")
+	got, _, err := s.GetThreadItem("t", "i")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestUpdateItemStatusLinksPayload(t *testing.T) {
 	if err := s.UpdateItemStatus("i", "completed", "ls output", "p", 2000); err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	got, _, err := s.GetItem("i")
+	got, _, err := s.GetThreadItem("t", "i")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestAppendCompletionItemPairsLaunchAndCompletion(t *testing.T) {
 		t.Errorf("completion item_index = %d, want 1 (after text at 0)", idx)
 	}
 
-	got, ok, err := s.GetItem("completion")
+	got, ok, err := s.GetThreadItem("t", "completion")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -380,7 +380,7 @@ func TestAppendCompletionItemForcesInvariants(t *testing.T) {
 	if _, err := s.AppendCompletionItem(launch, completion, nil); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	got, _, err := s.GetItem("completion")
+	got, _, err := s.GetThreadItem("t", "completion")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -426,7 +426,7 @@ func TestAppendCompletionItemWithPayloadPersistsAtomically(t *testing.T) {
 		t.Errorf("completion item_index = %d, want 1", idx)
 	}
 
-	got, _, err := s.GetItem("completion")
+	got, _, err := s.GetThreadItem("t", "completion")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -1729,7 +1729,7 @@ func TestForceCloseRunningToolCallsInTurnFlipsOnlyOrphanInlineTools(t *testing.T
 
 	// Cross-check the persisted state matches what the accessor
 	// returned.
-	orphan, ok, err := s.GetItem("inline-orphan")
+	orphan, ok, err := s.GetThreadItem("t-fc", "inline-orphan")
 	if err != nil || !ok {
 		t.Fatalf("get orphan: found=%v err=%v", ok, err)
 	}
@@ -1737,7 +1737,7 @@ func TestForceCloseRunningToolCallsInTurnFlipsOnlyOrphanInlineTools(t *testing.T
 		t.Errorf("persisted orphan status = %q, want errored", orphan.Status)
 	}
 
-	done, ok, err := s.GetItem("inline-complete")
+	done, ok, err := s.GetThreadItem("t-fc", "inline-complete")
 	if err != nil || !ok {
 		t.Fatalf("get done: found=%v err=%v", ok, err)
 	}
@@ -1745,7 +1745,7 @@ func TestForceCloseRunningToolCallsInTurnFlipsOnlyOrphanInlineTools(t *testing.T
 		t.Errorf("already-completed row flipped: status = %q, want completed", done.Status)
 	}
 
-	bg, ok, err := s.GetItem("bg-running")
+	bg, ok, err := s.GetThreadItem("t-fc", "bg-running")
 	if err != nil || !ok {
 		t.Fatalf("get bg: found=%v err=%v", ok, err)
 	}
@@ -1753,7 +1753,7 @@ func TestForceCloseRunningToolCallsInTurnFlipsOnlyOrphanInlineTools(t *testing.T
 		t.Errorf("bg tool_call flipped despite is_background=1 (invariant 24): status = %q", bg.Status)
 	}
 
-	txt, ok, err := s.GetItem("text-streaming")
+	txt, ok, err := s.GetThreadItem("t-fc", "text-streaming")
 	if err != nil || !ok {
 		t.Fatalf("get text: found=%v err=%v", ok, err)
 	}
@@ -1863,7 +1863,7 @@ func TestFlipGhostBackgroundRowsOnStartFlipsOnlyRunningBackgroundToolCalls(t *te
 	}
 
 	// Cross-check persisted state matches the returned rows.
-	match, ok, err := s.GetItem("ghost-match")
+	match, ok, err := s.GetThreadItem("t-ghost", "ghost-match")
 	if err != nil || !ok {
 		t.Fatalf("get ghost-match: found=%v err=%v", ok, err)
 	}
@@ -1873,7 +1873,7 @@ func TestFlipGhostBackgroundRowsOnStartFlipsOnlyRunningBackgroundToolCalls(t *te
 
 	// Everything else is unchanged.
 	for _, id := range []string{"ghost-done", "ghost-inline", "ghost-text"} {
-		it, ok, err := s.GetItem(id)
+		it, ok, err := s.GetThreadItem("t-ghost", id)
 		if err != nil || !ok {
 			t.Fatalf("get %s: found=%v err=%v", id, ok, err)
 		}
@@ -1955,7 +1955,7 @@ func TestFlipGhostBackgroundRowsOnStartScopedPerThread(t *testing.T) {
 		t.Fatalf("flip a: %v", err)
 	}
 
-	aRow, _, err := s.GetItem("t-ghost-a-row")
+	aRow, _, err := s.GetThreadItem("t-ghost-a", "t-ghost-a-row")
 	if err != nil {
 		t.Fatalf("get a row: %v", err)
 	}
@@ -1963,7 +1963,7 @@ func TestFlipGhostBackgroundRowsOnStartScopedPerThread(t *testing.T) {
 		t.Errorf("t-ghost-a row status = %q, want errored", aRow.Status)
 	}
 
-	bRow, _, err := s.GetItem("t-ghost-b-row")
+	bRow, _, err := s.GetThreadItem("t-ghost-b", "t-ghost-b-row")
 	if err != nil {
 		t.Fatalf("get b row: %v", err)
 	}

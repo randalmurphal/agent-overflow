@@ -1460,7 +1460,7 @@ func TestInterrupt_LeavesBackgroundTasksRunning(t *testing.T) {
 
 			// The backgrounded row must be untouched: still running,
 			// no " — stopped" / " — interrupted" suffix.
-			after, ok, err := app.store.GetItem(bgID)
+			after, ok, err := app.store.GetThreadItem(thread.ID, bgID)
 			if err != nil || !ok {
 				t.Fatalf("GetItem(bg) found=%v err=%v", ok, err)
 			}
