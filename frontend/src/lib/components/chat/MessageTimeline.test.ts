@@ -412,7 +412,7 @@ describe('<MessageTimeline>', () => {
     expect(getAllByText('Ship it').length).toBeGreaterThan(0);
   });
 
-  it('renders proposed plan tables with Streamdown as the table scroller', async () => {
+  it('renders proposed plan tables with Streamdown wrapping within the message width', async () => {
     const planMarkdown = [
       '# Behavior Spec',
       '',
@@ -441,7 +441,8 @@ describe('<MessageTimeline>', () => {
 
     const tableWrapper = container.querySelector('[data-streamdown-table]');
     expect(tableWrapper).not.toBeNull();
-    expect(tableWrapper).toHaveClass('overflow-x-auto');
+    expect(tableWrapper).toHaveClass('overflow-visible');
+    expect(tableWrapper).toHaveClass('max-w-full');
     expect(tableWrapper?.querySelector('table')).not.toBeNull();
   });
 
