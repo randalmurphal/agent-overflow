@@ -20,7 +20,7 @@ replace() {
 	file=$1
 	pattern=$2
 	replacement=$3
-	count=$(perl -0ne "my @matches = /$pattern/g; print scalar @matches" "$file")
+	count=$(perl -0ne "my @matches = m{$pattern}g; print scalar @matches" "$file")
 	[ "$count" -gt 0 ] || { echo "ERROR: pattern did not match $file: $pattern" >&2; exit 1; }
 	perl -0pi -e "s{$pattern}{$replacement}g" "$file"
 }
