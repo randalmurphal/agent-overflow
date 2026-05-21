@@ -79,6 +79,15 @@ var InternalServiceMethods = map[string]bool{
 // privileged vs simply absent. The bookkeeping cost is one map lookup
 // per call.
 //
+// Intentionally NOT in this set: GetKeybindings. The frontend's
+// keybindings loader has no client-side defaults — a method_not_found
+// refusal zeros every keyboard shortcut for remote-browser users. The
+// returned data is UI preferences (chord → command), not credentials,
+// and the mutation companions (UpdateKeybindings / ResetKeybindings)
+// stay in category 3 so a LAN-attached peer still cannot rewrite the
+// user's bindings. A future reviewer running this same exercise: don't
+// silently flip it without revisiting the remote-browser UX cost.
+//
 // Updates to this set must keep the names in sync with the App-side
 // declarations. methods_gen_test.go gates that contract by failing if
 // any LocalOnlyMethods entry is missing from GeneratedMethods.
@@ -172,6 +181,21 @@ var LocalOnlyMethods = map[string]bool{
 	// through the thread record — keep with the rest of the local-CLI
 	// invocations for doctrine consistency.
 	"SearchWorkspaceFiles": true,
+	// Payload reads return raw bytes persisted by triage — tool call
+	// diffs, command outputs, file-read results, thinking blocks. The
+	// threat shape matches the diff-returning bindings above: bulk
+	// content disclosure in a single wire call, even though the bytes
+	// live in SQLite rather than a git ref. A token-holder enumerating
+	// thread ids (via the wire-safe thread listings) could pull every
+	// agent-edited diff and command output one thread at a time.
+	// ListPayloadMetas surfaces the same enumeration shape without the
+	// bytes — what tool calls fired, on which thread — and the precedent
+	// from the diff/checkpoint surface is "lock down now; opening later
+	// once a remote workflow needs them is a breaking change."
+	"GetPayloadPreview": true,
+	"GetPayloadChunk":   true,
+	"GetPayloadData":    true,
+	"ListPayloadMetas":  true,
 
 	// 2. Session control (provider subprocess spawn / steer).
 	"StartSession":             true,
@@ -277,6 +301,14 @@ var LocalOnlyMethods = map[string]bool{
 	// 5. Local-FS bookkeeping.
 	"AppendUIRenderTraceBatch": true,
 	"BookmarkUIRenderTrace":    true,
+	// GetUIRenderTracePath returns the absolute path to the trace JSONL
+	// under the user config dir — same path-disclosure shape as
+	// GetDesignWorkdirInfo in category 4. The trace is a dev-only debug
+	// surface; a remote browser has no reason to know the backend's
+	// config-dir layout, and a LAN-attached token-holder fingerprinting
+	// the host filesystem layout is the threat we lock the writer
+	// companions down for.
+	"GetUIRenderTracePath": true,
 
 	// 6. Credential retrieval / endpoint enumeration. Plaintext token
 	// retrieval is a single-call credential leak; bulk listing reveals
@@ -284,6 +316,16 @@ var LocalOnlyMethods = map[string]bool{
 	// the wire shape. Defense-in-depth: keep both off the LAN.
 	"GetRemoteEndpointToken": true,
 	"ListRemoteEndpoints":    true,
+	// GetNetworkSettings returns network.Settings, which carries the
+	// current ephemeral auth token verbatim (the user can copy the
+	// share URL with token in the query string). A LAN-attached
+	// token-holder calling this hands the next attacker the same
+	// token — single-call credential leak, same class as
+	// GetRemoteEndpointToken above. SetNetworkSettings is already
+	// loopback-only in category 3 (settings mutation); locking the
+	// read companion keeps the token off the LAN regardless of which
+	// direction the call comes from.
+	"GetNetworkSettings": true,
 
 	// 7. WSL inventory / preference. ListWSLDistros spawns wsl.exe per
 	// invocation — that's an external-process invocation under category 1

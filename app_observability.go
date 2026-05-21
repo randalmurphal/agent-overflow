@@ -9,11 +9,22 @@ import (
 // Telemetry returns the active OpenTelemetry provider. Returns nil when the
 // app has not completed ServiceStartup. Exported for tests that need to
 // inspect or replace the provider at runtime.
+//
+// `//wails:ignore` keeps this off the wire — `*obsotel.Provider` is a
+// process-internal handle, not a JSON-serialisable value, and nothing in
+// the frontend should reach in for it.
+//
+//wails:ignore
 func (a *App) Telemetry() *obsotel.Provider {
 	return a.telemetry
 }
 
 // ReplayManager returns the active replay manager. May be nil before startup.
+//
+// `//wails:ignore` for the same reason as Telemetry — internal handle,
+// not a wire-exposed value.
+//
+//wails:ignore
 func (a *App) ReplayManager() *replay.Manager {
 	return a.replay
 }

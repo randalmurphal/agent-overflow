@@ -650,6 +650,10 @@ func (p *privilegedApp) CreateProject() string                        { return "
 func (p *privilegedApp) ListAvailableEditors() string                 { return "ok" }
 func (p *privilegedApp) GenerateCommitMessage() string                { return "ok" }
 func (p *privilegedApp) SearchWorkspaceFiles() string                 { return "ok" }
+func (p *privilegedApp) GetPayloadPreview() string                    { return "ok" }
+func (p *privilegedApp) GetPayloadChunk() string                      { return "ok" }
+func (p *privilegedApp) GetPayloadData() string                       { return "ok" }
+func (p *privilegedApp) ListPayloadMetas() string                     { return "ok" }
 
 // 2. Session control.
 func (p *privilegedApp) StartSession() string                   { return "ok" }
@@ -725,10 +729,12 @@ func (p *privilegedApp) GetDesignWorkdirInfo() string   { return "ok" }
 // 5. Local-FS bookkeeping.
 func (p *privilegedApp) AppendUIRenderTraceBatch() string { return "ok" }
 func (p *privilegedApp) BookmarkUIRenderTrace() string    { return "ok" }
+func (p *privilegedApp) GetUIRenderTracePath() string     { return "ok" }
 
 // 6. Credential retrieval / endpoint enumeration.
 func (p *privilegedApp) GetRemoteEndpointToken() string { return "ok" }
 func (p *privilegedApp) ListRemoteEndpoints() string    { return "ok" }
+func (p *privilegedApp) GetNetworkSettings() string     { return "ok" }
 
 // 7. WSL inventory / preference.
 func (p *privilegedApp) ListWSLDistros() string         { return "ok" }

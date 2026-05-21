@@ -153,7 +153,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RemoveOtherWorktree", ID: 2899196344}, // main.App.RemoveOtherWorktree
 	{Name: "RenameProject", ID: 3728890856}, // main.App.RenameProject
 	{Name: "RenameThread", ID: 727416435}, // main.App.RenameThread
-	{Name: "ReplayManager", ID: 3320777729}, // main.App.ReplayManager
 	{Name: "ResetKeybindings", ID: 2775767393}, // main.App.ResetKeybindings
 	{Name: "ResizeTerminal", ID: 1887984285}, // main.App.ResizeTerminal
 	{Name: "RespondToApproval", ID: 1919237704}, // main.App.RespondToApproval
@@ -181,7 +180,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "StopClaudeTask", ID: 536320598}, // main.App.StopClaudeTask
 	{Name: "StopSession", ID: 3838500111}, // main.App.StopSession
 	{Name: "SwitchThread", ID: 3897387725}, // main.App.SwitchThread
-	{Name: "Telemetry", ID: 669486408}, // main.App.Telemetry
 	{Name: "TouchRemoteEndpoint", ID: 2647456459}, // main.App.TouchRemoteEndpoint
 	{Name: "TriggerMcpAuth", ID: 1291217507}, // main.App.TriggerMcpAuth
 	{Name: "UnarchiveProject", ID: 2561521885}, // main.App.UnarchiveProject
