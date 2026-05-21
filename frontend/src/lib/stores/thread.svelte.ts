@@ -960,7 +960,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       try {
         await AutoResumeThread(newThread.id);
       } catch (err) {
-        console.debug('Thread auto-resume skipped or failed:', err);
+        // The Go binding only returns an error for the GetThread DB lookup
+        // or a transport failure — both root causes the parallel SwitchThread
+        // call above hits at the same time and surfaces via its own toast.
+        // Session-start failures fire from a backend goroutine through
+        // emitErrorToThread, not this binding's return path. A user-visible
+        // toast here would double-report the same root cause.
+        console.error('Thread auto-resume failed:', err);
       }
     })();
 

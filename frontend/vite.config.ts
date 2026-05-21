@@ -33,6 +33,10 @@ export default defineConfig({
     },
   },
   build: {
+    // Production builds ship without sourcemaps. Vite 8 already defaults
+    // to false; pinned explicitly so a future default flip can't leak the
+    // source map into a shipped binary.
+    sourcemap: false,
     rolldownOptions: {
       output: {
         codeSplitting: {
