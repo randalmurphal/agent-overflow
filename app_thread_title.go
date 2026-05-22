@@ -7,8 +7,8 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
-	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/textgen"
@@ -46,6 +46,14 @@ func (a *App) maybeGenerateThreadTitleWithAttachments(thread store.Thread, conte
 	}()
 }
 
+// generatedThreadTitle drives the configured text-generation CLI to produce
+// a short thread title. Layer 2 retry is handled by runTextGenWithFallback:
+// if the configured provider's CLI fails for any reason other than context
+// cancellation, the call retries once with the alternate provider provided
+// its binary resolves and there's time left in the shared deadline.
+//
+// The deadline is shared across both attempts so total wall-clock budget
+// stays at threadtitle.Timeout regardless of how many providers we try.
 func (a *App) generatedThreadTitle(thread store.Thread, message string, attachments []store.Attachment) (string, error) {
 	if a.generateThreadTitleFn != nil {
 		raw, err := a.generateThreadTitleFn(thread, message, attachments)
@@ -55,26 +63,43 @@ func (a *App) generatedThreadTitle(thread store.Thread, message string, attachme
 		return threadtitle.Sanitize(raw), nil
 	}
 
-	cfg := a.resolveTextGenerationConfig()
+	deadline := time.Now().Add(threadtitle.Timeout)
+	primary := a.resolveTextGenerationConfig()
+	return runTextGenWithFallback(a, primary, deadline, func(cfg textgen.Config) (string, error) {
+		return a.runThreadTitleOnce(cfg, thread, message, attachments, deadline)
+	})
+}
+
+// runThreadTitleOnce dispatches a single thread-title attempt to the
+// provider named in cfg, deriving the per-attempt context from the shared
+// deadline so two attempts together stay within threadtitle.Timeout.
+func (a *App) runThreadTitleOnce(
+	cfg textgen.Config,
+	thread store.Thread,
+	message string,
+	attachments []store.Attachment,
+	deadline time.Time,
+) (string, error) {
+	ctx, cancel := context.WithDeadline(a.lifeCtx(), deadline)
+	defer cancel()
+
 	switch cfg.Provider {
 	case string(provider.Codex):
-		return a.generateCodexThreadTitle(thread, message, attachments, cfg)
+		return a.generateCodexThreadTitle(ctx, cfg, thread, message, attachments)
 	case string(provider.Claude):
-		return a.generateClaudeThreadTitle(thread, message, attachments, cfg)
+		return a.generateClaudeThreadTitle(ctx, cfg, thread, message, attachments)
 	default:
 		return "", fmt.Errorf("generate thread title: unsupported provider %q; expected 'codex' or 'claude'", cfg.Provider)
 	}
 }
 
 func (a *App) generateCodexThreadTitle(
+	ctx context.Context,
+	cfg textgen.Config,
 	thread store.Thread,
 	message string,
 	attachments []store.Attachment,
-	cfg textgen.Config,
 ) (string, error) {
-	ctx, cancel := context.WithTimeout(a.lifeCtx(), threadtitle.Timeout)
-	defer cancel()
-
 	_, workspace, err := a.resolveGitPaths(thread)
 	if err != nil {
 		return "", err
@@ -90,9 +115,13 @@ func (a *App) generateCodexThreadTitle(
 		extra = append(extra, "--image", imagePath)
 	}
 
+	// The CLI helper's timeout arg is only used to format the
+	// "timed out after X" error message — actual cancellation rides
+	// on ctx. Use time-until-deadline so a Layer 2 retry's misreport
+	// stays honest about the budget the alternate actually got.
 	raw, err := textgen.RunCodex(
 		ctx, cfg, workspace, threadtitle.CodexSchemaJSON,
-		extra, threadtitle.BuildPrompt(message, attachments), threadtitle.Timeout,
+		extra, threadtitle.BuildPrompt(message, attachments), remainingBudget(ctx, threadtitle.Timeout),
 	)
 	if err != nil {
 		return "", err
@@ -108,14 +137,12 @@ func (a *App) generateCodexThreadTitle(
 }
 
 func (a *App) generateClaudeThreadTitle(
+	ctx context.Context,
+	cfg textgen.Config,
 	thread store.Thread,
 	message string,
 	attachments []store.Attachment,
-	cfg textgen.Config,
 ) (string, error) {
-	ctx, cancel := context.WithTimeout(a.lifeCtx(), threadtitle.Timeout)
-	defer cancel()
-
 	_, workspace, err := a.resolveGitPaths(thread)
 	if err != nil {
 		return "", err
@@ -123,7 +150,7 @@ func (a *App) generateClaudeThreadTitle(
 
 	stdout, err := textgen.RunClaude(
 		ctx, cfg, workspace, threadtitle.ClaudeSchemaJSON,
-		nil, threadtitle.BuildPrompt(message, attachments), threadtitle.Timeout,
+		nil, threadtitle.BuildPrompt(message, attachments), remainingBudget(ctx, threadtitle.Timeout),
 	)
 	if err != nil {
 		return "", err
@@ -152,10 +179,6 @@ func (a *App) applyGeneratedThreadTitle(threadID, title string) error {
 		a.emitEvent("thread:updated", thread)
 	}
 	return nil
-}
-
-func (a *App) defaultModelForProvider(providerName string) string {
-	return chatmodel.FallbackModelForProvider(providerName)
 }
 
 func (a *App) threadTitleImagePaths(threadID string, attachments []store.Attachment) ([]string, error) {

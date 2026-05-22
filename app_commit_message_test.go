@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -381,6 +382,153 @@ func TestGenerateCommitMessage_InvalidProviderCoercesToDefault(t *testing.T) {
 	}
 }
 
+// ---- Layer 2 (runtime retry) tests for GenerateCommitMessage ----
+
+// TestGenerateCommitMessage_Layer2PrimaryFailsAlternateSucceeds covers the
+// Codex-down case: configured Codex CLI fails (auth, rate limit, network),
+// but Claude is also installed. The orchestrator retries with Claude and
+// surfaces its structured commit message.
+func TestGenerateCommitMessage_Layer2PrimaryFailsAlternateSucceeds(t *testing.T) {
+	app := newCommitMsgTestApp(t)
+	workspace := initCommitMsgRepo(t)
+	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("dirty: %v", err)
+	}
+	app.lookPathFn = fakeLookPath("claude", "codex") // both installed.
+
+	now := time.Now().UnixMilli()
+	if err := app.store.CreateThread(store.Thread{
+		ID: "t-l2-fallback", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Codex),
+		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	var specs []textgen.CLISpec
+	app.textGenerationExecutor = func(_ context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
+		specs = append(specs, spec)
+		if spec.Binary == "codex" {
+			return textgen.CLIResult{Stderr: "Error: rate limit exceeded", ExitCode: 1}, nil
+		}
+		return textgen.CLIResult{
+			Stdout:   `{"structured_output":{"subject":"Fallback via Claude","body":"After Codex failed."}}`,
+			ExitCode: 0,
+		}, nil
+	}
+
+	got, err := app.GenerateCommitMessage("t-l2-fallback")
+	if err != nil {
+		t.Fatalf("commit message: %v", err)
+	}
+	if got.Subject != "Fallback via Claude" {
+		t.Fatalf("subject = %q, want fallback subject", got.Subject)
+	}
+	if len(specs) != 2 {
+		t.Fatalf("executor called %d times, want 2", len(specs))
+	}
+	if specs[0].Binary != "codex" || specs[1].Binary != "claude" {
+		t.Fatalf("call order = [%s, %s], want [codex, claude]", specs[0].Binary, specs[1].Binary)
+	}
+}
+
+func TestGenerateCommitMessage_Layer2BothFailReturnsPrimaryError(t *testing.T) {
+	app := newCommitMsgTestApp(t)
+	workspace := initCommitMsgRepo(t)
+	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("dirty: %v", err)
+	}
+	app.lookPathFn = fakeLookPath("claude", "codex")
+
+	now := time.Now().UnixMilli()
+	if err := app.store.CreateThread(store.Thread{
+		ID: "t-l2-both-fail", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Codex),
+		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	app.textGenerationExecutor = func(_ context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
+		msg := "codex auth expired"
+		if spec.Binary == "claude" {
+			msg = "claude rate limited"
+		}
+		return textgen.CLIResult{Stderr: msg, ExitCode: 1}, nil
+	}
+
+	_, err := app.GenerateCommitMessage("t-l2-both-fail")
+	if err == nil {
+		t.Fatal("expected error when both providers fail")
+	}
+	if !strings.Contains(err.Error(), "codex auth expired") {
+		t.Fatalf("primary error should surface; got: %v", err)
+	}
+	if strings.Contains(err.Error(), "claude rate limited") {
+		t.Fatalf("alternate error leaked: %v", err)
+	}
+}
+
+func TestGenerateCommitMessage_Layer2AlternateMissingNoRetry(t *testing.T) {
+	app := newCommitMsgTestApp(t)
+	workspace := initCommitMsgRepo(t)
+	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("dirty: %v", err)
+	}
+	// Codex configured, only Codex on PATH. Codex fails — no Claude to fall back to.
+	app.lookPathFn = fakeLookPath("codex")
+
+	now := time.Now().UnixMilli()
+	if err := app.store.CreateThread(store.Thread{
+		ID: "t-l2-no-alt", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Codex),
+		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	calls := 0
+	app.textGenerationExecutor = func(_ context.Context, _ textgen.CLISpec) (textgen.CLIResult, error) {
+		calls++
+		return textgen.CLIResult{Stderr: "codex boom", ExitCode: 1}, nil
+	}
+
+	if _, err := app.GenerateCommitMessage("t-l2-no-alt"); err == nil {
+		t.Fatal("expected error")
+	}
+	if calls != 1 {
+		t.Fatalf("executor called %d times, want 1", calls)
+	}
+}
+
+func TestGenerateCommitMessage_Layer2ContextCanceledNoRetry(t *testing.T) {
+	app := newCommitMsgTestApp(t)
+	workspace := initCommitMsgRepo(t)
+	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("dirty: %v", err)
+	}
+	app.lookPathFn = fakeLookPath("claude", "codex")
+
+	now := time.Now().UnixMilli()
+	if err := app.store.CreateThread(store.Thread{
+		ID: "t-l2-canceled", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Codex),
+		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	calls := 0
+	app.textGenerationExecutor = func(_ context.Context, _ textgen.CLISpec) (textgen.CLIResult, error) {
+		calls++
+		return textgen.CLIResult{}, context.Canceled
+	}
+
+	_, err := app.GenerateCommitMessage("t-l2-canceled")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if calls != 1 {
+		t.Fatalf("executor called %d times, want 1 (ctx canceled = no retry)", calls)
+	}
+}
+
 // initCommitMsgRepo creates a clean git repo with one committed file.
 func initCommitMsgRepo(t *testing.T) string {
 	t.Helper()
@@ -440,4 +588,3 @@ func nextArgAfter(args []string, flag string) string {
 func extractCodexOutputPath(args []string) string {
 	return nextArgAfter(args, "--output-last-message")
 }
-

@@ -7,9 +7,54 @@ import (
 	"agent-overflow/internal/store"
 )
 
-func TestFallbackProvider(t *testing.T) {
+func TestFallbackProvider_EmptyProbeDefaultsToClaude(t *testing.T) {
+	// No probe data → Claude (canonical default, consistent error surface).
 	if got := FallbackProvider(); got != string(provider.Claude) {
-		t.Fatalf("FallbackProvider = %q, want %q", got, provider.Claude)
+		t.Fatalf("FallbackProvider() = %q, want %q", got, provider.Claude)
+	}
+	if got := FallbackProvider([]string{}...); got != string(provider.Claude) {
+		t.Fatalf("FallbackProvider([]...) = %q, want %q", got, provider.Claude)
+	}
+}
+
+func TestFallbackProvider_BothAvailablePrefersClaude(t *testing.T) {
+	got := FallbackProvider(string(provider.Claude), string(provider.Codex))
+	if got != string(provider.Claude) {
+		t.Fatalf("FallbackProvider(both) = %q, want %q", got, provider.Claude)
+	}
+}
+
+func TestFallbackProvider_OnlyCodexAvailableReturnsCodex(t *testing.T) {
+	got := FallbackProvider(string(provider.Codex))
+	if got != string(provider.Codex) {
+		t.Fatalf("FallbackProvider(codex) = %q, want %q", got, provider.Codex)
+	}
+}
+
+func TestFallbackProvider_OnlyClaudeAvailableReturnsClaude(t *testing.T) {
+	got := FallbackProvider(string(provider.Claude))
+	if got != string(provider.Claude) {
+		t.Fatalf("FallbackProvider(claude) = %q, want %q", got, provider.Claude)
+	}
+}
+
+func TestFallbackProvider_UnknownProvidersIgnored(t *testing.T) {
+	// Probe with only unknown names → defaults to Claude.
+	got := FallbackProvider("bogus", "phantom")
+	if got != string(provider.Claude) {
+		t.Fatalf("FallbackProvider(unknown) = %q, want %q", got, provider.Claude)
+	}
+}
+
+func TestFallbackProvider_MixedKnownAndUnknown(t *testing.T) {
+	// Unknown names mixed with a known Codex → still picks Codex (Claude
+	// isn't in the list, the unknowns can't substitute).
+	if got := FallbackProvider("bogus", string(provider.Codex)); got != string(provider.Codex) {
+		t.Fatalf("FallbackProvider(bogus, codex) = %q, want %q", got, provider.Codex)
+	}
+	// Same with Claude in the list — Claude wins regardless of position.
+	if got := FallbackProvider("bogus", string(provider.Claude)); got != string(provider.Claude) {
+		t.Fatalf("FallbackProvider(bogus, claude) = %q, want %q", got, provider.Claude)
 	}
 }
 
@@ -48,6 +93,17 @@ func TestFallbackProfile_PreservesExplicitInputs(t *testing.T) {
 	}
 	if got.Model != "claude-haiku-4-5" {
 		t.Fatalf("Model = %q", got.Model)
+	}
+}
+
+func TestFallbackProfile_RoutesBlankProviderViaAvailability(t *testing.T) {
+	// Only Codex available, no provider preference → seed picks Codex.
+	got := FallbackProfile("", "", string(provider.Codex))
+	if got.Provider != string(provider.Codex) {
+		t.Fatalf("FallbackProfile(blank, [codex]) provider = %q, want %q", got.Provider, provider.Codex)
+	}
+	if got.Model == "" {
+		t.Fatalf("model should be filled from Codex registry, got empty")
 	}
 }
 

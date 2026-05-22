@@ -46,9 +46,15 @@ func (a *App) rememberChatModelProfile(thread store.Thread) {
 //   - provider only → most recent profile for that provider, else fallback
 //   - model only → infer provider, then look up the (provider, model) row
 //   - both set → look up the (provider, model) row, else fallback
+//
+// When the provider has to be inferred (both-blank or model-only cases),
+// the choice is informed by which provider binaries resolve on PATH so a
+// Codex-only environment doesn't seed a Claude default that won't work.
 func (a *App) seedChatModelProfile(providerName, model string) store.ChatModelProfile {
 	providerName = strings.TrimSpace(providerName)
 	model = strings.TrimSpace(model)
+
+	available := a.availableTextGenerationProviders()
 
 	switch {
 	case providerName == "" && model == "":
@@ -61,7 +67,7 @@ func (a *App) seedChatModelProfile(providerName, model string) store.ChatModelPr
 				log.Printf("chat profile: load latest: %v", err)
 			}
 		}
-		return chatmodel.FallbackProfile("", "")
+		return chatmodel.FallbackProfile("", "", available...)
 	case providerName != "" && model == "":
 		if a.store != nil {
 			profile, err := a.store.LatestChatModelProfileForProvider(providerName)
@@ -72,9 +78,11 @@ func (a *App) seedChatModelProfile(providerName, model string) store.ChatModelPr
 				log.Printf("chat profile: load latest for provider %s: %v", providerName, err)
 			}
 		}
+		// providerName is explicit here, so FallbackProvider is never
+		// consulted — omit the availability arg.
 		return chatmodel.FallbackProfile(providerName, "")
 	case providerName == "" && model != "":
-		providerName = chatmodel.FallbackProvider()
+		providerName = chatmodel.FallbackProvider(available...)
 	}
 	model = provider.NormalizeModelSlug(providerName, model)
 

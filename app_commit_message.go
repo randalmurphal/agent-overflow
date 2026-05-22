@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/commitmsg"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/textgen"
 )
@@ -24,6 +26,13 @@ type GeneratedCommitMessage struct {
 // default, Claude as an alternative) to draft a structured commit
 // subject + body. Routing mirrors t3-code's RoutingTextGeneration.
 //
+// Layer 2 fallback is handled by runTextGenWithFallback: if the configured
+// provider's CLI fails for any reason other than context cancellation,
+// the call retries once with the alternate provider provided its binary
+// resolves and there's time left in the shared deadline. The user sees
+// Codex's structured `{subject, body}` even if Codex is down — silently —
+// as long as Claude is installed.
+//
 // Errors short-circuit in four shapes the frontend can render cleanly:
 //   - unknown thread
 //   - empty staged diff ("nothing to commit")
@@ -39,9 +48,6 @@ func (a *App) GenerateCommitMessage(threadID string) (GeneratedCommitMessage, er
 		return GeneratedCommitMessage{}, fmt.Errorf("generate commit message: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), commitmsg.Timeout)
-	defer cancel()
-
 	summary, patch, branch, err := a.gatherStagedDiffForCommit(thread)
 	if err != nil {
 		return GeneratedCommitMessage{}, fmt.Errorf("generate commit message: %w", err)
@@ -51,12 +57,31 @@ func (a *App) GenerateCommitMessage(threadID string) (GeneratedCommitMessage, er
 	}
 
 	prompt := commitmsg.BuildPrompt(summary, patch, branch)
-	cfg := a.resolveTextGenerationConfig()
+	deadline := time.Now().Add(commitmsg.Timeout)
+	primary := a.resolveTextGenerationConfig()
+	return runTextGenWithFallback(a, primary, deadline, func(cfg textgen.Config) (GeneratedCommitMessage, error) {
+		return a.runCommitMessageOnce(cfg, thread, prompt, deadline)
+	})
+}
+
+// runCommitMessageOnce dispatches a single commit-message attempt to the
+// provider named in cfg, deriving the per-attempt context from the shared
+// deadline so two attempts together stay within commitmsg.Timeout. Parents
+// on a.lifeCtx() so commit-message subprocesses cancel on app shutdown
+// instead of orphaning past the binding return — matches runThreadTitleOnce.
+func (a *App) runCommitMessageOnce(
+	cfg textgen.Config,
+	thread store.Thread,
+	prompt string,
+	deadline time.Time,
+) (GeneratedCommitMessage, error) {
+	ctx, cancel := context.WithDeadline(a.lifeCtx(), deadline)
+	defer cancel()
 
 	switch cfg.Provider {
-	case "codex":
+	case string(provider.Codex):
 		return a.generateCodexCommitMessage(ctx, cfg, thread, prompt)
-	case "claude":
+	case string(provider.Claude):
 		return a.generateClaudeCommitMessage(ctx, cfg, thread, prompt)
 	default:
 		return GeneratedCommitMessage{}, fmt.Errorf(
@@ -114,7 +139,7 @@ func (a *App) generateCodexCommitMessage(
 		return GeneratedCommitMessage{}, err
 	}
 
-	raw, err := textgen.RunCodex(ctx, cfg, workspace, commitmsg.CodexSchemaJSON, nil, prompt, commitmsg.Timeout)
+	raw, err := textgen.RunCodex(ctx, cfg, workspace, commitmsg.CodexSchemaJSON, nil, prompt, remainingBudget(ctx, commitmsg.Timeout))
 	if err != nil {
 		return GeneratedCommitMessage{}, err
 	}
@@ -155,7 +180,7 @@ func (a *App) generateClaudeCommitMessage(
 		extra = append(extra, "--effort", cfg.Effort)
 	}
 
-	stdout, err := textgen.RunClaude(ctx, cfg, workspace, commitmsg.ClaudeSchemaJSON, extra, prompt, commitmsg.Timeout)
+	stdout, err := textgen.RunClaude(ctx, cfg, workspace, commitmsg.ClaudeSchemaJSON, extra, prompt, remainingBudget(ctx, commitmsg.Timeout))
 	if err != nil {
 		return GeneratedCommitMessage{}, err
 	}

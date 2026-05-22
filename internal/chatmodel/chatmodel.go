@@ -19,7 +19,35 @@ import (
 // FallbackProvider names the provider used when no other signal narrows
 // the choice. Claude is the desktop app's first-class provider; Codex
 // is reachable but optional.
-func FallbackProvider() string {
+//
+// availableProviders lists which provider binaries the caller has
+// confirmed resolve on PATH (via `exec.LookPath` or equivalent). Omit
+// the arg when no probe data is available — the function then returns
+// Claude unconditionally (the historical canonical default, which fails
+// loudly when invoked and is the right surface for the error path).
+//
+// Resolution order when probe data IS available:
+//   - Claude present → Claude (preserves prior behavior when both
+//     providers are installed).
+//   - else Codex present → Codex (only fallback for Claude-missing
+//     environments).
+//   - else → Claude (caller's error path stays consistent).
+func FallbackProvider(availableProviders ...string) string {
+	if len(availableProviders) == 0 {
+		return string(provider.Claude)
+	}
+	hasCodex := false
+	for _, p := range availableProviders {
+		switch p {
+		case string(provider.Claude):
+			return string(provider.Claude)
+		case string(provider.Codex):
+			hasCodex = true
+		}
+	}
+	if hasCodex {
+		return string(provider.Codex)
+	}
 	return string(provider.Claude)
 }
 
@@ -37,10 +65,15 @@ func FallbackModelForProvider(providerName string) string {
 // FallbackProfile is the zero-history baseline: enough fields populated
 // for the UI to render a chat bar even when SQLite has no
 // previously-remembered profile for this (provider, model) pair.
-func FallbackProfile(providerName, model string) store.ChatModelProfile {
+//
+// availableProviders is forwarded to FallbackProvider for the blank-
+// provider case; see that function's doc for the semantics. Omit the
+// arg when the caller passes an explicit providerName (the slice is
+// only consulted when providerName is blank).
+func FallbackProfile(providerName, model string, availableProviders ...string) store.ChatModelProfile {
 	providerName = strings.TrimSpace(providerName)
 	if providerName == "" {
-		providerName = FallbackProvider()
+		providerName = FallbackProvider(availableProviders...)
 	}
 	model = strings.TrimSpace(model)
 	if model == "" {

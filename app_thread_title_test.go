@@ -457,6 +457,183 @@ func TestGeneratedThreadTitle_RoutesToClaudeWhenConfigured(t *testing.T) {
 	}
 }
 
+// ---- Layer 2 (runtime retry) tests for generatedThreadTitle ----
+
+// TestGeneratedThreadTitle_Layer2PrimaryFailsAlternateSucceeds covers the
+// canonical Layer 2 case: Codex is on PATH but its CLI fails (auth, rate
+// limit, OpenAI down, etc.). The orchestrator must retry with Claude when
+// Claude is also installed, and surface Claude's title.
+func TestGeneratedThreadTitle_Layer2PrimaryFailsAlternateSucceeds(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.lookPathFn = fakeLookPath("claude", "codex") // both installed.
+
+	thread := testThread("thread-title-l2-fallback")
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	var specs []textgen.CLISpec
+	app.textGenerationExecutor = func(_ context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
+		specs = append(specs, spec)
+		if spec.Binary == "codex" {
+			// Simulate auth/rate-limit failure.
+			return textgen.CLIResult{
+				Stderr:   "Error: unauthorized — token expired",
+				ExitCode: 1,
+			}, nil
+		}
+		// Claude succeeds.
+		return textgen.CLIResult{
+			Stdout:   `{"structured_output":{"title":"Fallback title via Claude"}}`,
+			ExitCode: 0,
+		}, nil
+	}
+
+	got, err := app.generatedThreadTitle(thread, "Fix title gen.", nil)
+	if err != nil {
+		t.Fatalf("generatedThreadTitle: %v", err)
+	}
+	if got != "Fallback title via Claude" {
+		t.Fatalf("title = %q, want fallback from Claude", got)
+	}
+	if len(specs) != 2 {
+		t.Fatalf("executor called %d times, want 2 (primary + alternate)", len(specs))
+	}
+	if specs[0].Binary != "codex" {
+		t.Fatalf("first invocation binary = %q, want codex", specs[0].Binary)
+	}
+	if specs[1].Binary != "claude" {
+		t.Fatalf("retry invocation binary = %q, want claude", specs[1].Binary)
+	}
+	// The retry must use Claude's default model, not whatever was set for Codex.
+	if model := nextArgAfter(specs[1].Args, "--model"); model != textgen.DefaultClaudeModel {
+		t.Fatalf("retry model = %q, want %q (always default for alternate)", model, textgen.DefaultClaudeModel)
+	}
+}
+
+func TestGeneratedThreadTitle_Layer2BothFailReturnsPrimaryError(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.lookPathFn = fakeLookPath("claude", "codex")
+
+	thread := testThread("thread-title-l2-both-fail")
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	app.textGenerationExecutor = func(_ context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
+		stderr := "codex went boom"
+		if spec.Binary == "claude" {
+			stderr = "claude also went boom"
+		}
+		return textgen.CLIResult{Stderr: stderr, ExitCode: 1}, nil
+	}
+
+	_, err := app.generatedThreadTitle(thread, "anything", nil)
+	if err == nil {
+		t.Fatal("expected error when both providers fail")
+	}
+	// Primary error surfaces — not the alternate's.
+	if !strings.Contains(err.Error(), "codex went boom") {
+		t.Fatalf("error should carry primary (codex) failure: %v", err)
+	}
+	if strings.Contains(err.Error(), "claude also went boom") {
+		t.Fatalf("alternate error leaked: %v", err)
+	}
+}
+
+func TestGeneratedThreadTitle_Layer2AlternateMissingNoRetry(t *testing.T) {
+	app := newTestAppWithStore(t)
+	// Configured codex; ONLY codex on PATH. Codex CLI fails. There's no
+	// claude to fall back to, so the orchestrator must NOT call the
+	// executor a second time.
+	app.lookPathFn = fakeLookPath("codex")
+
+	thread := testThread("thread-title-l2-no-alt")
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	calls := 0
+	app.textGenerationExecutor = func(_ context.Context, _ textgen.CLISpec) (textgen.CLIResult, error) {
+		calls++
+		return textgen.CLIResult{Stderr: "codex boom", ExitCode: 1}, nil
+	}
+
+	_, err := app.generatedThreadTitle(thread, "anything", nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if calls != 1 {
+		t.Fatalf("executor called %d times, want 1 (no alternate available)", calls)
+	}
+}
+
+func TestGeneratedThreadTitle_Layer2ContextCanceledNoRetry(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.lookPathFn = fakeLookPath("claude", "codex")
+
+	thread := testThread("thread-title-l2-canceled")
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	calls := 0
+	app.textGenerationExecutor = func(_ context.Context, _ textgen.CLISpec) (textgen.CLIResult, error) {
+		calls++
+		// Simulate the app shutting down mid-call: surface ctx.Canceled
+		// from the executor. The orchestrator must NOT retry.
+		return textgen.CLIResult{}, context.Canceled
+	}
+
+	_, err := app.generatedThreadTitle(thread, "anything", nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if calls != 1 {
+		t.Fatalf("executor called %d times, want 1 (ctx canceled = no retry)", calls)
+	}
+}
+
+// TestGeneratedThreadTitle_Layer1SubstitutesThenLayer2NoAlternate is the
+// composed-fallback case: configured Codex is missing (Layer 1 substitutes
+// Claude), Claude runs and fails, the Layer 2 orchestrator asks for the
+// alternate (Codex) and finds its binary still missing → no retry. This
+// guards against a regression where the substitution mutates Layer 2's
+// "alternate" search and accidentally points back at Claude (self-retry)
+// or where the alternate-missing branch loses its `ok=false` guard.
+func TestGeneratedThreadTitle_Layer1SubstitutesThenLayer2NoAlternate(t *testing.T) {
+	app := newTestAppWithStore(t)
+	// Default settings prefer Codex; only Claude is on PATH.
+	app.lookPathFn = fakeLookPath("claude")
+
+	thread := testThread("thread-title-l1l2-no-alt")
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	calls := 0
+	app.textGenerationExecutor = func(_ context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
+		calls++
+		if spec.Binary != "claude" {
+			t.Fatalf("unexpected binary %q — Layer 1 should have substituted to claude", spec.Binary)
+		}
+		return textgen.CLIResult{Stderr: "claude boom", ExitCode: 1}, nil
+	}
+
+	_, err := app.generatedThreadTitle(thread, "anything", nil)
+	if err == nil {
+		t.Fatal("expected error from claude failing")
+	}
+	if calls != 1 {
+		t.Fatalf("executor called %d times, want 1 (Layer 1 substituted to Claude, Layer 2 alternate Codex unavailable)", calls)
+	}
+}
+
 // TestApplyGeneratedThreadTitleCompareAndSwapSkipsWhenTitleChanged exercises
 // the race guard: if the user renamed the thread between the generation call
 // and the apply call, UpdateTitleIfCurrent reports 0 rows affected and the
@@ -496,4 +673,3 @@ func TestApplyGeneratedThreadTitleCompareAndSwapSkipsWhenTitleChanged(t *testing
 		t.Fatalf("stored title = %q, want user-picked preserved", stored.Title)
 	}
 }
-

@@ -207,18 +207,88 @@ func TestDecodeClaudeStructuredLastLine_MalformedJSON(t *testing.T) {
 
 func TestNormalizeStructuredOutputLine(t *testing.T) {
 	cases := map[string]string{
-		`"  hello   world  "`:         "hello world",
-		"first\nsecond":                "first",
-		"  `quoted`  ":                 "quoted",
-		"":                             "",
-		"already clean":                "already clean",
-		`'leading single'`:             "leading single",
-		"multi\nline\nthird":           "multi",
+		`"  hello   world  "`: "hello world",
+		"first\nsecond":       "first",
+		"  `quoted`  ":        "quoted",
+		"":                    "",
+		"already clean":       "already clean",
+		`'leading single'`:    "leading single",
+		"multi\nline\nthird":  "multi",
 	}
 	for in, want := range cases {
 		if got := NormalizeStructuredOutputLine(in); got != want {
 			t.Errorf("Normalize(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestPickAvailableProvider_PreferredAvailable(t *testing.T) {
+	lookPath := func(bin string) error {
+		if bin == "codex" || bin == "claude" {
+			return nil
+		}
+		return exec.ErrNotFound
+	}
+	if got := PickAvailableProvider("codex", "claude", "codex", lookPath); got != "codex" {
+		t.Fatalf("both available, prefer codex: got %q, want codex", got)
+	}
+	if got := PickAvailableProvider("claude", "claude", "codex", lookPath); got != "claude" {
+		t.Fatalf("both available, prefer claude: got %q, want claude", got)
+	}
+}
+
+func TestPickAvailableProvider_PreferredMissingFallsBack(t *testing.T) {
+	onlyClaude := func(bin string) error {
+		if bin == "claude" {
+			return nil
+		}
+		return exec.ErrNotFound
+	}
+	if got := PickAvailableProvider("codex", "claude", "codex", onlyClaude); got != "claude" {
+		t.Fatalf("only claude installed but prefer codex: got %q, want claude", got)
+	}
+
+	onlyCodex := func(bin string) error {
+		if bin == "codex" {
+			return nil
+		}
+		return exec.ErrNotFound
+	}
+	if got := PickAvailableProvider("claude", "claude", "codex", onlyCodex); got != "codex" {
+		t.Fatalf("only codex installed but prefer claude: got %q, want codex", got)
+	}
+}
+
+func TestPickAvailableProvider_NeitherAvailableReturnsPreferred(t *testing.T) {
+	none := func(string) error { return exec.ErrNotFound }
+	if got := PickAvailableProvider("codex", "claude", "codex", none); got != "codex" {
+		t.Fatalf("neither installed, prefer codex: got %q, want codex (so caller surfaces the codex error)", got)
+	}
+	if got := PickAvailableProvider("claude", "claude", "codex", none); got != "claude" {
+		t.Fatalf("neither installed, prefer claude: got %q, want claude", got)
+	}
+}
+
+func TestPickAvailableProvider_EmptyBinaryPathTreatedAsUnavailable(t *testing.T) {
+	always := func(string) error { return nil }
+	// Empty codexBinary means we can't probe it — must fall back to claude.
+	if got := PickAvailableProvider("codex", "claude", "", always); got != "claude" {
+		t.Fatalf("empty codex binary, claude available: got %q, want claude", got)
+	}
+}
+
+func TestPickAvailableProvider_UnknownPreferredReturnedVerbatim(t *testing.T) {
+	always := func(string) error { return nil }
+	if got := PickAvailableProvider("nonsense", "claude", "codex", always); got != "nonsense" {
+		t.Fatalf("unknown preferred should pass through: got %q", got)
+	}
+}
+
+func TestPickAvailableProvider_NilLookPathReturnsPreferred(t *testing.T) {
+	// Defensive: production callers always supply lookPath, but a nil
+	// callback shouldn't panic.
+	if got := PickAvailableProvider("codex", "claude", "codex", nil); got != "codex" {
+		t.Fatalf("nil lookPath: got %q, want codex (pass-through)", got)
 	}
 }
 

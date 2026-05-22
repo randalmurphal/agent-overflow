@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/provider"
 )
 
 const (
@@ -34,6 +36,48 @@ const (
 	DefaultCodexModel  = "gpt-5.4-mini"
 	DefaultClaudeModel = "claude-haiku-4-5"
 )
+
+// PickAvailableProvider returns the preferred provider's name when its
+// binary resolves on the local system, otherwise the alternate provider's
+// name when ITS binary resolves, otherwise the preferred provider unchanged
+// (caller surfaces the "binary not found" error downstream).
+//
+// `preferred` must be one of "claude" or "codex" (the values backing
+// provider.Claude / provider.Codex). An unknown `preferred` is returned
+// unchanged — the caller decides whether to error out.
+//
+// The two-provider universe is hardcoded here, matching the rest of the
+// codebase (DefaultCodexModel / DefaultClaudeModel above, the explicit
+// switches in app_text_generation.go). Adding a third provider would mean
+// rewriting these explicit branches rather than threading a registry.
+func PickAvailableProvider(
+	preferred, claudeBinary, codexBinary string,
+	lookPath func(string) error,
+) string {
+	if lookPath == nil {
+		return preferred
+	}
+	available := func(bin string) bool {
+		return bin != "" && lookPath(bin) == nil
+	}
+	switch preferred {
+	case string(provider.Claude):
+		if available(claudeBinary) {
+			return string(provider.Claude)
+		}
+		if available(codexBinary) {
+			return string(provider.Codex)
+		}
+	case string(provider.Codex):
+		if available(codexBinary) {
+			return string(provider.Codex)
+		}
+		if available(claudeBinary) {
+			return string(provider.Claude)
+		}
+	}
+	return preferred
+}
 
 // Config captures the resolved provider, binary path, model, reasoning
 // effort, and a (mockable) CLI executor for a text-generation run.
