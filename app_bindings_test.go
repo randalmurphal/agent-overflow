@@ -732,8 +732,8 @@ func TestUpdateThreadModelSelectionUsesTargetProviderModelProfile(t *testing.T) 
 	app := newTestAppWithStore(t)
 	if err := app.store.UpsertChatModelProfile(store.ChatModelProfile{
 		Provider:        "codex",
-		Model:           "gpt-5.5",
-		ReasoningEffort: "medium",
+		Model:           "gpt-5.4",
+		ReasoningEffort: "xhigh",
 		FastMode:        true,
 		ContextWindow:   provider.CodexExtendedContextWindow,
 		RuntimeMode:     "auto-accept-edits",
@@ -749,15 +749,15 @@ func TestUpdateThreadModelSelectionUsesTargetProviderModelProfile(t *testing.T) 
 		t.Fatalf("UpdateThread(max): %v", err)
 	}
 
-	updated, err := app.UpdateThreadModelSelection(thread.ID, "codex", "gpt-5.5")
+	updated, err := app.UpdateThreadModelSelection(thread.ID, "codex", "gpt-5.4")
 	if err != nil {
 		t.Fatalf("UpdateThreadModelSelection: %v", err)
 	}
-	if updated.Provider != "codex" || updated.Model != "gpt-5.5" {
-		t.Fatalf("provider/model = %s/%s, want codex/gpt-5.5", updated.Provider, updated.Model)
+	if updated.Provider != "codex" || updated.Model != "gpt-5.4" {
+		t.Fatalf("provider/model = %s/%s, want codex/gpt-5.4", updated.Provider, updated.Model)
 	}
-	if updated.ReasoningEffort != "medium" {
-		t.Fatalf("ReasoningEffort = %q, want medium", updated.ReasoningEffort)
+	if updated.ReasoningEffort != "xhigh" {
+		t.Fatalf("ReasoningEffort = %q, want xhigh", updated.ReasoningEffort)
 	}
 	if !updated.FastMode {
 		t.Fatal("FastMode = false, want true from saved profile")
@@ -767,6 +767,35 @@ func TestUpdateThreadModelSelectionUsesTargetProviderModelProfile(t *testing.T) 
 	}
 	if updated.RuntimeMode != "auto-accept-edits" {
 		t.Fatalf("RuntimeMode = %q, want auto-accept-edits", updated.RuntimeMode)
+	}
+}
+
+func TestUpdateThreadModelSelectionClampsStaleCodexGPT55Profile(t *testing.T) {
+	app := newTestAppWithStore(t)
+	if err := app.store.UpsertChatModelProfile(store.ChatModelProfile{
+		Provider:        "codex",
+		Model:           "gpt-5.5",
+		ReasoningEffort: "medium",
+		FastMode:        true,
+		ContextWindow:   provider.CodexExtendedContextWindow,
+		RuntimeMode:     "auto-accept-edits",
+	}); err != nil {
+		t.Fatalf("UpsertChatModelProfile: %v", err)
+	}
+	thread, err := createTestThread(t, app, "claude", "/tmp/provider-model-stale-gpt55-profile", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+
+	updated, err := app.UpdateThreadModelSelection(thread.ID, "codex", "gpt-5.5")
+	if err != nil {
+		t.Fatalf("UpdateThreadModelSelection: %v", err)
+	}
+	if updated.Provider != "codex" || updated.Model != "gpt-5.5" {
+		t.Fatalf("provider/model = %s/%s, want codex/gpt-5.5", updated.Provider, updated.Model)
+	}
+	if updated.ContextWindow != provider.CodexStandardContextWindow {
+		t.Fatalf("ContextWindow = %d, want %d", updated.ContextWindow, provider.CodexStandardContextWindow)
 	}
 }
 

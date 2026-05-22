@@ -6,17 +6,18 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 )
 
 func TestGetContextSettingsReturnsProviderModelOptions(t *testing.T) {
 	app := newTestAppWithStore(t)
 
-	profile, err := app.GetContextSettings("codex", "gpt-5.5")
+	profile, err := app.GetContextSettings("codex", "gpt-5.4")
 	if err != nil {
-		t.Fatalf("GetContextSettings(codex/gpt-5.5): %v", err)
+		t.Fatalf("GetContextSettings(codex/gpt-5.4): %v", err)
 	}
-	if profile.ContextWindow != 272000 {
-		t.Fatalf("ContextWindow = %d, want default 272000", profile.ContextWindow)
+	if profile.ContextWindow != provider.CodexStandardContextWindow {
+		t.Fatalf("ContextWindow = %d, want default %d", profile.ContextWindow, provider.CodexStandardContextWindow)
 	}
 	if len(profile.ContextWindows) != 2 {
 		t.Fatalf("ContextWindows len = %d, want 2", len(profile.ContextWindows))
@@ -24,6 +25,44 @@ func TestGetContextSettingsReturnsProviderModelOptions(t *testing.T) {
 	if profile.ContextWindows[0].Tokens != provider.CodexStandardContextWindow ||
 		profile.ContextWindows[1].Tokens != provider.CodexExtendedContextWindow {
 		t.Fatalf("ContextWindows = %+v, want codex standard + extended", profile.ContextWindows)
+	}
+}
+
+func TestGetContextSettingsReturnsStandardOnlyForCodexGPT55(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	profile, err := app.GetContextSettings("codex", "gpt-5.5")
+	if err != nil {
+		t.Fatalf("GetContextSettings(codex/gpt-5.5): %v", err)
+	}
+	if profile.ContextWindow != provider.CodexStandardContextWindow {
+		t.Fatalf("ContextWindow = %d, want %d", profile.ContextWindow, provider.CodexStandardContextWindow)
+	}
+	if len(profile.ContextWindows) != 1 || profile.ContextWindows[0].Tokens != provider.CodexStandardContextWindow {
+		t.Fatalf("ContextWindows = %+v, want standard-only", profile.ContextWindows)
+	}
+}
+
+func TestGetContextSettingsClampsStaleCodexGPT55Profile(t *testing.T) {
+	app := newTestAppWithStore(t)
+	if err := app.store.UpsertChatModelProfile(store.ChatModelProfile{
+		Provider:      "codex",
+		Model:         "gpt-5.5",
+		ContextWindow: provider.CodexExtendedContextWindow,
+		RuntimeMode:   "default",
+	}); err != nil {
+		t.Fatalf("UpsertChatModelProfile: %v", err)
+	}
+
+	profile, err := app.GetContextSettings("codex", "gpt-5.5")
+	if err != nil {
+		t.Fatalf("GetContextSettings(codex/gpt-5.5): %v", err)
+	}
+	if profile.ContextWindow != provider.CodexStandardContextWindow {
+		t.Fatalf("ContextWindow = %d, want %d", profile.ContextWindow, provider.CodexStandardContextWindow)
+	}
+	if len(profile.ContextWindows) != 1 || profile.ContextWindows[0].Tokens != provider.CodexStandardContextWindow {
+		t.Fatalf("ContextWindows = %+v, want standard-only", profile.ContextWindows)
 	}
 }
 
@@ -68,7 +107,7 @@ func TestUpdateContextSettingsProfileValidatesPercentAndWindow(t *testing.T) {
 
 func TestUpdateThreadContextSettingsPersistsAndRemembersProfile(t *testing.T) {
 	app := newTestAppWithStore(t)
-	thread, err := createTestThread(t, app, "codex", "/tmp/context-settings", "gpt-5.5", "")
+	thread, err := createTestThread(t, app, "codex", "/tmp/context-settings", "gpt-5.4", "")
 	if err != nil {
 		t.Fatalf("createTestThread: %v", err)
 	}
@@ -90,7 +129,7 @@ func TestUpdateThreadContextSettingsPersistsAndRemembersProfile(t *testing.T) {
 		t.Fatalf("auto compact = %d/%d, want 75/88", updated.AutoCompactStandardPercent, updated.AutoCompactExtendedPercent)
 	}
 
-	profile, err := app.store.GetChatModelProfile("codex", "gpt-5.5")
+	profile, err := app.store.GetChatModelProfile("codex", "gpt-5.4")
 	if err != nil {
 		t.Fatalf("GetChatModelProfile: %v", err)
 	}
@@ -157,7 +196,7 @@ func TestUpdateThreadContextSettingsClearsLastTokenUsageAndEmitsReset(t *testing
 
 func TestUpdateThreadContextSettingsRestartsActiveSession(t *testing.T) {
 	app := newTestAppWithStore(t)
-	thread, err := createTestThread(t, app, "codex", "/tmp/context-settings-active", "gpt-5.5", "")
+	thread, err := createTestThread(t, app, "codex", "/tmp/context-settings-active", "gpt-5.4", "")
 	if err != nil {
 		t.Fatalf("createTestThread: %v", err)
 	}
@@ -171,7 +210,7 @@ func TestUpdateThreadContextSettingsRestartsActiveSession(t *testing.T) {
 
 	if _, err := app.UpdateThreadContextSettings(thread.ID, ContextSettingsUpdate{
 		Provider:                   "codex",
-		Model:                      "gpt-5.5",
+		Model:                      "gpt-5.4",
 		ContextWindow:              provider.CodexExtendedContextWindow,
 		AutoCompactStandardPercent: 75,
 		AutoCompactExtendedPercent: 88,

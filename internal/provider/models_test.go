@@ -100,7 +100,7 @@ func TestCodexModelCapabilitiesAndContextWindows(t *testing.T) {
 		def      string
 	}{
 		{"gpt-5.4", true, []int{CodexStandardContextWindow, CodexExtendedContextWindow}, "xhigh"},
-		{"gpt-5.5", true, []int{CodexStandardContextWindow, CodexExtendedContextWindow}, "medium"},
+		{"gpt-5.5", true, []int{CodexStandardContextWindow}, "medium"},
 		{"gpt-5.2", false, []int{CodexStandardContextWindow}, "medium"},
 		{"gpt-5.3-codex", false, []int{CodexStandardContextWindow}, "medium"},
 		{"gpt-5.4-mini", false, []int{CodexStandardContextWindow}, "medium"},

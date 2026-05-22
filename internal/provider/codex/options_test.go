@@ -139,35 +139,54 @@ func TestConfigFromOptionsFastModeUnsupportedModelOmitsServiceTier(t *testing.T)
 func TestConfigFromOptionsContextWindowAndAutoCompact(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:                   "codex",
-		Model:                      "gpt-5.5",
+		Model:                      "gpt-5.4",
 		ContextWindow:              provider.CodexExtendedContextWindow,
 		AutoCompactExtendedPercent: 80,
 	})
 	if cfg.ContextWindow != provider.CodexExtendedContextWindow {
 		t.Errorf("ContextWindow = %d, want %d", cfg.ContextWindow, provider.CodexExtendedContextWindow)
 	}
-	if cfg.AutoCompactTokenLimit != 800000 {
-		t.Errorf("AutoCompactTokenLimit = %d, want 800000", cfg.AutoCompactTokenLimit)
+	wantLimit := provider.CodexExtendedContextWindow * 80 / 100
+	if cfg.AutoCompactTokenLimit != wantLimit {
+		t.Errorf("AutoCompactTokenLimit = %d, want %d", cfg.AutoCompactTokenLimit, wantLimit)
 	}
 }
 
 func TestConfigFromOptionsFastModeKeepsSelectedModelContext(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:                   "codex",
-		Model:                      "gpt-5.5",
+		Model:                      "gpt-5.4",
 		FastMode:                   true,
 		ContextWindow:              provider.CodexExtendedContextWindow,
 		AutoCompactStandardPercent: 70,
 		AutoCompactExtendedPercent: 80,
 	})
-	if cfg.Model != "gpt-5.5" {
-		t.Fatalf("Model = %q, want gpt-5.5", cfg.Model)
+	if cfg.Model != "gpt-5.4" {
+		t.Fatalf("Model = %q, want gpt-5.4", cfg.Model)
 	}
 	if cfg.ContextWindow != provider.CodexExtendedContextWindow {
 		t.Errorf("ContextWindow = %d, want selected model extended context", cfg.ContextWindow)
 	}
-	if cfg.AutoCompactTokenLimit != 800000 {
-		t.Errorf("AutoCompactTokenLimit = %d, want 800000", cfg.AutoCompactTokenLimit)
+	wantLimit := provider.CodexExtendedContextWindow * 80 / 100
+	if cfg.AutoCompactTokenLimit != wantLimit {
+		t.Errorf("AutoCompactTokenLimit = %d, want %d", cfg.AutoCompactTokenLimit, wantLimit)
+	}
+}
+
+func TestConfigFromOptionsClampsUnsupportedExtendedContext(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{
+		Provider:                   "codex",
+		Model:                      "gpt-5.5",
+		ContextWindow:              provider.CodexExtendedContextWindow,
+		AutoCompactStandardPercent: 70,
+		AutoCompactExtendedPercent: 80,
+	})
+	if cfg.ContextWindow != provider.CodexStandardContextWindow {
+		t.Errorf("ContextWindow = %d, want selected model standard context", cfg.ContextWindow)
+	}
+	wantLimit := provider.CodexStandardContextWindow * 70 / 100
+	if cfg.AutoCompactTokenLimit != wantLimit {
+		t.Errorf("AutoCompactTokenLimit = %d, want %d", cfg.AutoCompactTokenLimit, wantLimit)
 	}
 }
 

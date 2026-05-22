@@ -96,7 +96,7 @@ var CodexModels = []ModelInfo{
 		Name:             "GPT-5.5",
 		Provider:         "codex",
 		Capabilities:     []string{ModelCapabilityFastMode},
-		ContextWindows:   codexExtendedContextOptions(),
+		ContextWindows:   codexStandardContextOptions(),
 		ReasoningEfforts: codexEffortOptions("medium"),
 	},
 	{

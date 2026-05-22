@@ -10,7 +10,7 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-func TestListModelsUsesCodexModelListMetadata(t *testing.T) {
+func TestListModelsUsesCodexMetadataAndStaticContextWindows(t *testing.T) {
 	binary := writeModelListFakeCodex(t, `[{"model":"gpt-5.5","displayName":"gpt-5.5","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"low","description":"Fast responses with lighter reasoning"},{"reasoningEffort":"high","description":"Greater reasoning depth for complex problems"},{"reasoningEffort":"xhigh","description":"Extra high reasoning depth for complex problems"}],"defaultReasoningEffort":"high","additionalSpeedTiers":["fast"]},{"model":"legacy-hidden","displayName":"Legacy Hidden","hidden":true,"supportedReasoningEfforts":[{"reasoningEffort":"low","description":"Low"}],"defaultReasoningEffort":"low","additionalSpeedTiers":[]}]`)
 
 	models, err := ListModels(context.Background(), ModelListConfig{
@@ -34,10 +34,9 @@ func TestListModelsUsesCodexModelListMetadata(t *testing.T) {
 	if !contains(model.Capabilities, provider.ModelCapabilityFastMode) {
 		t.Errorf("Capabilities = %#v, want fast mode", model.Capabilities)
 	}
-	if len(model.ContextWindows) != 2 ||
-		model.ContextWindows[0].Tokens != provider.CodexStandardContextWindow ||
-		model.ContextWindows[1].Tokens != provider.CodexExtendedContextWindow {
-		t.Fatalf("ContextWindows = %#v, want codex standard + extended", model.ContextWindows)
+	if len(model.ContextWindows) != 1 ||
+		model.ContextWindows[0].Tokens != provider.CodexStandardContextWindow {
+		t.Fatalf("ContextWindows = %#v, want codex standard only", model.ContextWindows)
 	}
 	if len(model.ReasoningEfforts) != 3 {
 		t.Fatalf("ReasoningEfforts len = %d, want 3", len(model.ReasoningEfforts))
@@ -75,6 +74,11 @@ func TestListModelsFollowsPagination(t *testing.T) {
 	}
 	if models[0].Slug != "gpt-5.4" || models[1].Slug != "gpt-5.4-mini" {
 		t.Fatalf("models = %#v, want paged gpt-5.4 then gpt-5.4-mini", models)
+	}
+	if len(models[0].ContextWindows) != 2 ||
+		models[0].ContextWindows[0].Tokens != provider.CodexStandardContextWindow ||
+		models[0].ContextWindows[1].Tokens != provider.CodexExtendedContextWindow {
+		t.Fatalf("gpt-5.4 ContextWindows = %#v, want codex standard + extended", models[0].ContextWindows)
 	}
 }
 
