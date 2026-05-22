@@ -39,8 +39,6 @@ import (
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/uitrace"
 	"agent-overflow/internal/workspacefiles"
-
-	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // DesignServer returns the http.Handler that serves the per-thread
@@ -64,9 +62,18 @@ const (
 	appSensitiveFilePerm os.FileMode = 0o600
 )
 
-// App is the primary Wails-bound struct, registered as a v3 service.
+// App is the primary Wails-bound struct, registered as a v3 service
+// in desktop mode and driven directly via Start() in the headless WSL
+// backend mode. The App itself does not import the Wails application
+// package; the desktop-mode bindings live in app_desktop.go behind the
+// !nogui build tag so the WSL payload can compile without libwebkit2gtk
+// and other GTK runtime dependencies pulled in by Wails' cgo bindings.
 type App struct {
-	app         *application.App
+	// saveDialog opens the native save-file dialog. Wired by
+	// ServiceStartup in desktop mode (app_desktop.go); left nil in the
+	// headless WSL backend, where there is no native window to attach a
+	// dialog to and the frontend uses a download fallback instead.
+	saveDialog  savePayloadPicker
 	store       *store.Store
 	git         *gitops.Core
 	gitWatch    *gitwatch.Manager
@@ -411,7 +418,12 @@ func (a *App) SetTransportServer(s *transport.Server) {
 	a.transportServer.Store(s)
 }
 
-// ServiceStartup is called by Wails v3 when the service is initialised.
+// Start runs the App's startup phases. Called by ServiceStartup in
+// desktop mode (app_desktop.go, behind the !nogui build tag) and
+// directly by runHeadless in the WSL backend mode. Splitting the body
+// out of ServiceStartup keeps the Wails dependency confined to the
+// desktop build — see App struct doc.
+//
 // The body is split into three phases (initStores → initObservability →
 // initSubsystems) so the dependency order is obvious: stores boot first
 // because every other subsystem either embeds the store or reads from it,
@@ -419,11 +431,11 @@ func (a *App) SetTransportServer(s *transport.Server) {
 // before it can accept events, and the remaining subsystems (triage,
 // checkpoints, discussion, design, terminals, attachments, workspace
 // search) boot last once their inputs are ready.
-func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
+//
+//wails:ignore
+func (a *App) Start(ctx context.Context) error {
 	started := time.Now()
 	defer logBootPhase("app.service_startup.total", started)
-
-	a.app = application.Get()
 
 	// Initialise the App-lifetime ctx before any goroutine spawn so the
 	// probe loops, OAuth poller, MCP reconcile callbacks, and any future

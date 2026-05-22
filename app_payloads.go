@@ -97,18 +97,14 @@ func (a *App) resolveSavePayloadPicker() savePayloadPicker {
 	if a.savePayloadPickerFn != nil {
 		return a.savePayloadPickerFn
 	}
-	// Headless mode (Phase D's WSL backend) doesn't construct a Wails
-	// app — the native save dialog is replaced by a frontend-side
+	// a.saveDialog is wired by the desktop-mode ServiceStartup
+	// (app_desktop.go). Headless mode (Phase D's WSL backend) leaves it
+	// nil — the native save dialog is replaced by a frontend-side
 	// download path. Returning nil makes SavePayloadToFile error out
 	// with a clear "requires active application" message; the WSL
 	// frontend never invokes this path because its UI uses the
 	// download fallback.
-	if a.app == nil {
-		return nil
-	}
-	return func(filename string) (string, error) {
-		return a.app.Dialog.SaveFile().SetFilename(filename).PromptForSingleSelection()
-	}
+	return a.saveDialog
 }
 
 func (a *App) SavePayloadToFile(threadID string, payloadID string) (string, error) {

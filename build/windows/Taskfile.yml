@@ -69,38 +69,29 @@ tasks:
     summary: |
       Cross-compile the Linux ELF backend bundled into the Windows .exe.
 
-      Linux requires CGO (GTK bindings) for the full Wails build, and
-      the alpha-76 -tags server path has a known interface mismatch
-      that blocks pure-Go cross-compile. This task is a placeholder:
-      run it on a Linux host or under Docker (build/docker/Dockerfile.cross
-      via `task setup:docker`) where CGO + GTK are available.
+      Built with `-tags nogui` so the Wails desktop code (runDesktop,
+      runClient, the *application.App save-file dialog) is compiled out
+      via the matching //go:build !nogui guards in main_desktop.go and
+      app_desktop.go. With Wails excluded, nothing in the import graph
+      uses cgo any more, so CGO_ENABLED=0 produces a fully statically
+      linked binary that runs on any Linux x86_64 system regardless of
+      installed libraries. This is what fixes "error while loading
+      shared libraries: libwebkit2gtk-4.1.so.0" on fresh Ubuntu installs
+      where the user hasn't apt-installed the GTK/WebKit runtime.
 
-      Run this on Linux/WSL for release artifacts. macOS without the
-      cross Docker image leaves the placeholder in place for development
-      builds only; release scripts reject that artifact.
+      Static linking also means no Docker cross-compile environment is
+      needed — native `go build` from macOS / Linux / Windows produces
+      identical artifacts. The build:wsl:windows-launcher task downstream
+      embeds whichever ELF this task leaves at the payload path.
     internal: true
     cmds:
       - mkdir -p cmd/agent-overflow-windows/payload {{.BIN_DIR | default "bin"}}
       # Pre-clean the output: build:wsl:restore-payload-placeholder
       # leaves 68 bytes of ASCII placeholder text here at the tail of
       # the prior build, and `go build -o` refuses to overwrite a file
-      # that isn't a recognized Go binary. The macOS-without-Docker
-      # branch below intentionally leaves the placeholder alone so
-      # //go:embed still has bytes to bind to.
-      - cmd: rm -f cmd/agent-overflow-windows/payload/agent-overflow-linux
-        platforms: [linux]
-      - cmd: GOOS=linux GOARCH=amd64 CGO_ENABLED=1 CC="${CC:-gcc}" go build -tags production -trimpath -buildvcs=false -ldflags="-w -s -X main.version={{.VERSION | default "dev"}}" -o cmd/agent-overflow-windows/payload/agent-overflow-linux ./
-        platforms: [linux]
-      - cmd: |
-          if command -v docker > /dev/null 2>&1 && docker image inspect wails-cross > /dev/null 2>&1; then
-            rm -f cmd/agent-overflow-windows/payload/agent-overflow-linux
-            docker run --rm -v "$(pwd):/app" -w /app wails-cross sh -c \
-              'GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go build -tags production -trimpath -buildvcs=false -ldflags="-w -s -X main.version={{.VERSION | default "dev"}}" -o cmd/agent-overflow-windows/payload/agent-overflow-linux ./'
-          else
-            echo "WARNING: skipping Linux payload cross-compile (run on Linux or set up Docker via 'task setup:docker')."
-            echo "         The existing cmd/agent-overflow-windows/payload/agent-overflow-linux placeholder is unchanged."
-          fi
-        platforms: [darwin]
+      # that isn't a recognized Go binary.
+      - rm -f cmd/agent-overflow-windows/payload/agent-overflow-linux
+      - GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags production,nogui -trimpath -buildvcs=false -ldflags="-w -s -X main.version={{.VERSION | default "dev"}}" -o cmd/agent-overflow-windows/payload/agent-overflow-linux ./
       # Stash a copy in bin/ (gitignored) so package:wsl:zip and any
       # follow-on consumer can read the real ELF after the build:wsl
       # task restores the embed-dir placeholder.
