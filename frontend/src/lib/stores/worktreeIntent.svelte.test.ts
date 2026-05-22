@@ -48,6 +48,7 @@ const SETTINGS: Settings = {
   observabilityEventLogEnabled: false,
   network: { bindAll: false },
   retention: { days: 30 },
+  gitlabSelfHostedHosts: [],
 };
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {

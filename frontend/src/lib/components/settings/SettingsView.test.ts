@@ -35,6 +35,7 @@ const BASE_SETTINGS: Settings = {
   observabilityEventLogEnabled: false,
   network: { bindAll: false },
   retention: { days: 30 },
+  gitlabSelfHostedHosts: [],
 };
 
 async function seed(): Promise<void> {

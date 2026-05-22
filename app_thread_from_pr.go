@@ -47,7 +47,7 @@ func (a *App) CreateThreadFromPR(
 		return store.Thread{}, err
 	}
 	if number <= 0 {
-		return store.Thread{}, fmt.Errorf("PR number must be positive, got %d", number)
+		return store.Thread{}, fmt.Errorf("%s number must be positive, got %d", prthread.ForgeNoun(forgeID), number)
 	}
 	providerName = strings.TrimSpace(providerName)
 	if providerName == "" {
@@ -114,7 +114,7 @@ func (a *App) CreateThreadFromPR(
 	}
 
 	if err := a.store.CreateThread(thread); err != nil {
-		return store.Thread{}, fmt.Errorf("create thread from PR: %w", err)
+		return store.Thread{}, fmt.Errorf("create thread from %s: %w", prthread.ForgeNounLong(forgeID), err)
 	}
 	a.rememberChatModelProfile(thread)
 	if a.settings != nil && workspace != "" {
@@ -135,12 +135,12 @@ func (a *App) CreateThreadFromPR(
 	if err := a.store.InsertItem(userItem); err != nil {
 		// Roll back the thread so we don't leave a half-constructed row.
 		_ = a.store.DeleteThread(thread.ID)
-		return store.Thread{}, fmt.Errorf("create thread from PR: persist first item: %w", err)
+		return store.Thread{}, fmt.Errorf("create thread from %s: persist first item: %w", prthread.ForgeNounLong(forgeID), err)
 	}
 
 	refreshed, err := a.store.GetThread(thread.ID)
 	if err != nil {
-		return store.Thread{}, fmt.Errorf("create thread from PR: reload thread: %w", err)
+		return store.Thread{}, fmt.Errorf("create thread from %s: reload thread: %w", prthread.ForgeNounLong(forgeID), err)
 	}
 	return refreshed, nil
 }

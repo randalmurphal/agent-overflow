@@ -306,7 +306,7 @@ export function createShipChangesState(): ShipChangesState {
     beginCreatePR() {
       assertPhase(phase, ['pr.review']);
       if (prTitle.trim() === '') {
-        throw new Error('shipChanges: cannot open PR with an empty title');
+        throw new Error('shipChanges: title is required');
       }
       error = null;
       phase = 'pr.busy';

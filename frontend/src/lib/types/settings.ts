@@ -111,6 +111,14 @@ export interface Settings {
   retention: RetentionPersistedSettings;
 
   /**
+   * Self-hosted GitLab hostnames (bare hosts, e.g.
+   * "gitlab.mycompany.com"). Origin URLs whose host matches an entry
+   * classify as the "gitlab" forge in addition to the literal
+   * gitlab.com match. Empty / undefined means "no self-hosted hosts".
+   */
+  gitlabSelfHostedHosts: string[];
+
+  /**
    * Phase F --connect target list. Optional in the wire shape because
    * the Go side persists with `omitempty` — fresh installs have no
    * remoteEndpoints key and TS callers should treat undefined as the

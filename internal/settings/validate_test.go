@@ -1,8 +1,10 @@
 package settings
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -328,6 +330,125 @@ func TestRetentionClampsOverflowingDaysOnLoad(t *testing.T) {
 	got := NewService(dir).Get()
 	if got.Retention.Days != MaxRetentionDays {
 		t.Fatalf("Retention.Days = %d, want %d (clamped from 999999999)", got.Retention.Days, MaxRetentionDays)
+	}
+}
+
+func TestGitLabSelfHostedHostsUpdateNormalisesEntries(t *testing.T) {
+	svc := NewService(t.TempDir())
+
+	// Empty entries are rejected on the strict (Update) path; the load
+	// path drops them silently. Confirm the reject before checking the
+	// happy-path normalisation.
+	updated, err := svc.Update(map[string]any{
+		"gitlabSelfHostedHosts": []string{
+			"gitlab.mycompany.com",
+			"",
+		},
+	})
+	if err == nil {
+		t.Fatalf("Update with empty host entry should fail, got %+v", updated)
+	}
+
+	// Clean list round-trips with normalisation (trim + lowercase +
+	// dedupe).
+	got, err := svc.Update(map[string]any{
+		"gitlabSelfHostedHosts": []string{
+			"  Gitlab.MyCompany.com  ",
+			"gl.example.test",
+			"gitlab.mycompany.com",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	want := []string{"gitlab.mycompany.com", "gl.example.test"}
+	if len(got.GitLabSelfHostedHosts) != len(want) {
+		t.Fatalf("GitLabSelfHostedHosts = %v, want %v", got.GitLabSelfHostedHosts, want)
+	}
+	for i, h := range want {
+		if got.GitLabSelfHostedHosts[i] != h {
+			t.Errorf("GitLabSelfHostedHosts[%d] = %q, want %q", i, got.GitLabSelfHostedHosts[i], h)
+		}
+	}
+}
+
+func TestGitLabSelfHostedHostsRejectsBadInputs(t *testing.T) {
+	svc := NewService(t.TempDir())
+	cases := []struct {
+		name  string
+		hosts []string
+	}{
+		{"scheme prefix", []string{"https://gitlab.example.com"}},
+		{"trailing path", []string{"gitlab.example.com/group/repo"}},
+		{"with port", []string{"gitlab.example.com:443"}},
+		{"with userinfo", []string{"git@gitlab.example.com"}},
+		{"contains space", []string{"gitlab example.com"}},
+		{"single-label (no dot)", []string{"localhost"}},
+		{"leading dot", []string{".gitlab.example.com"}},
+		{"trailing dot", []string{"gitlab.example.com."}},
+		{"double dot", []string{"gitlab..example.com"}},
+		{"hyphen edge", []string{"-gitlab.example.com"}},
+		{"redundant github.com", []string{"github.com"}},
+		{"redundant gitlab.com", []string{"GitLab.com"}},
+		{"invalid char", []string{"gitlab_example.com"}},
+		{"label too long", []string{strings.Repeat("a", 64) + ".example.com"}},
+		{"hostname too long", []string{strings.Repeat("a", 60) + "." + strings.Repeat("b", 60) + "." + strings.Repeat("c", 60) + "." + strings.Repeat("d", 60) + ".example.com"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := svc.Update(map[string]any{
+				"gitlabSelfHostedHosts": tc.hosts,
+			}); err == nil {
+				t.Fatalf("Update(%v) error = nil, want validation failure", tc.hosts)
+			}
+		})
+	}
+}
+
+func TestGitLabSelfHostedHostsRejectsTooMany(t *testing.T) {
+	svc := NewService(t.TempDir())
+	hosts := make([]string, MaxGitLabSelfHostedHosts+1)
+	for i := range hosts {
+		hosts[i] = fmt.Sprintf("host-%d.example.com", i)
+	}
+	if _, err := svc.Update(map[string]any{"gitlabSelfHostedHosts": hosts}); err == nil {
+		t.Fatalf("Update with %d hosts should fail", len(hosts))
+	}
+}
+
+func TestGitLabSelfHostedHostsSanitizesOnLoad(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	data := []byte(`{
+  "gitlabSelfHostedHosts": [
+    "  Gitlab.Example.com  ",
+    "",
+    "https://other.example.com",
+    "gitlab.example.com",
+    "github.com",
+    "ok.example.com"
+  ]
+}
+`)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got := NewService(dir).Get()
+	want := []string{"gitlab.example.com", "ok.example.com"}
+	if len(got.GitLabSelfHostedHosts) != len(want) {
+		t.Fatalf("GitLabSelfHostedHosts = %v, want %v", got.GitLabSelfHostedHosts, want)
+	}
+	for i, h := range want {
+		if got.GitLabSelfHostedHosts[i] != h {
+			t.Errorf("[%d] = %q, want %q", i, got.GitLabSelfHostedHosts[i], h)
+		}
+	}
+}
+
+func TestGitLabSelfHostedHostsDefaultIsNil(t *testing.T) {
+	got := NewService(t.TempDir()).Get()
+	if got.GitLabSelfHostedHosts != nil {
+		t.Fatalf("GitLabSelfHostedHosts default = %v, want nil", got.GitLabSelfHostedHosts)
 	}
 }
 

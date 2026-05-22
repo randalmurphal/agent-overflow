@@ -5,6 +5,7 @@
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import PaneDensitySection from './PaneDensitySection.svelte';
+  import GitLabHostsSection from './GitLabHostsSection.svelte';
   import { INPUT_CLASS, SELECT_CLASS } from './styles';
 
   // Mirrors internal/settings.MaxRetentionDays. Hard-capped on the Go
@@ -223,6 +224,8 @@
       </SettingsField>
     </div>
   </section>
+
+  <GitLabHostsSection />
 
   <section data-testid="settings-retention">
     <SettingsHeader

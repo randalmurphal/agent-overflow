@@ -123,6 +123,100 @@ describe('<GeneralSettings> — Retention', () => {
   });
 });
 
+describe('<GeneralSettings> — Self-hosted GitLab hosts', () => {
+  beforeEach(async () => {
+    await seed();
+  });
+
+  it('renders the section with the empty state by default', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    expect(getByTestId('settings-gitlab-hosts')).toBeTruthy();
+    expect(getByTestId('settings-gitlab-hosts-empty')).toBeTruthy();
+  });
+
+  it('adds a valid host through the Add button', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    const input = getByTestId('settings-gitlab-host-input') as HTMLInputElement;
+    const add = getByTestId('settings-gitlab-host-add') as HTMLButtonElement;
+    input.value = 'gitlab.mycompany.com';
+    await fireEvent.input(input);
+    await fireEvent.click(add);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls[0][0]).toEqual({
+      gitlabSelfHostedHosts: ['gitlab.mycompany.com'],
+    });
+  });
+
+  it('lowercases and trims a host before saving', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    const input = getByTestId('settings-gitlab-host-input') as HTMLInputElement;
+    const add = getByTestId('settings-gitlab-host-add') as HTMLButtonElement;
+    input.value = '  Gitlab.Example.Test  ';
+    await fireEvent.input(input);
+    await fireEvent.click(add);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock!.mock.calls[0][0]).toEqual({
+      gitlabSelfHostedHosts: ['gitlab.example.test'],
+    });
+  });
+
+  it('removes a host when its Remove button is clicked', async () => {
+    await seed({ gitlabSelfHostedHosts: ['gitlab.example.test', 'gl.other.test'] });
+    const { getByTestId } = render(GeneralSettings);
+    const remove = getByTestId('settings-gitlab-host-remove-gitlab.example.test') as HTMLButtonElement;
+    await fireEvent.click(remove);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock!.mock.calls[0][0]).toEqual({
+      gitlabSelfHostedHosts: ['gl.other.test'],
+    });
+  });
+
+  it('rejects scheme-prefixed input with an inline error', async () => {
+    const { getByTestId, queryByTestId } = render(GeneralSettings);
+    const input = getByTestId('settings-gitlab-host-input') as HTMLInputElement;
+    input.value = 'https://gitlab.example.test';
+    await fireEvent.input(input);
+
+    expect(queryByTestId('settings-gitlab-host-error')).toBeTruthy();
+    const add = getByTestId('settings-gitlab-host-add') as HTMLButtonElement;
+    expect(add.disabled).toBe(true);
+  });
+
+  it('rejects a duplicate host with an inline error', async () => {
+    await seed({ gitlabSelfHostedHosts: ['gitlab.example.test'] });
+    const { getByTestId, queryByTestId } = render(GeneralSettings);
+    const input = getByTestId('settings-gitlab-host-input') as HTMLInputElement;
+    input.value = 'gitlab.example.test';
+    await fireEvent.input(input);
+
+    expect(queryByTestId('settings-gitlab-host-error')).toBeTruthy();
+    const add = getByTestId('settings-gitlab-host-add') as HTMLButtonElement;
+    expect(add.disabled).toBe(true);
+  });
+
+  it('rejects github.com / gitlab.com as redundant', async () => {
+    const { getByTestId, queryByTestId } = render(GeneralSettings);
+    const input = getByTestId('settings-gitlab-host-input') as HTMLInputElement;
+    input.value = 'gitlab.com';
+    await fireEvent.input(input);
+
+    expect(queryByTestId('settings-gitlab-host-error')).toBeTruthy();
+  });
+
+  it('rejects single-label hostnames', async () => {
+    const { getByTestId, queryByTestId } = render(GeneralSettings);
+    const input = getByTestId('settings-gitlab-host-input') as HTMLInputElement;
+    input.value = 'localhost';
+    await fireEvent.input(input);
+
+    expect(queryByTestId('settings-gitlab-host-error')).toBeTruthy();
+  });
+});
+
 describe('<GeneralSettings> — Font selectors', () => {
   beforeEach(async () => {
     await seed();

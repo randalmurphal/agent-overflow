@@ -346,6 +346,17 @@ export class Settings {
     "retention": RetentionSettings;
 
     /**
+     * GitLabSelfHostedHosts is the user's allowlist of self-hosted
+     * GitLab hostnames (bare hosts, e.g. "gitlab.mycompany.com").
+     * Origin URLs whose host matches an entry classify as the "gitlab"
+     * forge, enabling the Ship Changes wizard, MR labels, and the
+     * `glab` CLI integration. `gitlab.com` does not need to be listed;
+     * it is recognised by literal hostname match. Entries are stored
+     * lowercase, deduped, and stripped of scheme/path on write.
+     */
+    "gitlabSelfHostedHosts"?: string[];
+
+    /**
      * RemoteEndpoints stores the user's `--connect` targets: remote-
      * hosted backends the desktop binary can attach to instead of
      * booting a local transport. Persisted as a flat list keyed by
@@ -464,7 +475,8 @@ export class Settings {
         const $$createField27_0 = $$createType1;
         const $$createField28_0 = $$createType2;
         const $$createField29_0 = $$createType3;
-        const $$createField30_0 = $$createType5;
+        const $$createField30_0 = $$createType0;
+        const $$createField31_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
@@ -478,8 +490,11 @@ export class Settings {
         if ("retention" in $$parsedSource) {
             $$parsedSource["retention"] = $$createField29_0($$parsedSource["retention"]);
         }
+        if ("gitlabSelfHostedHosts" in $$parsedSource) {
+            $$parsedSource["gitlabSelfHostedHosts"] = $$createField30_0($$parsedSource["gitlabSelfHostedHosts"]);
+        }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField30_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField31_0($$parsedSource["remoteEndpoints"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

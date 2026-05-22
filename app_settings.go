@@ -93,6 +93,18 @@ func (a *App) UpdateSettings(patch map[string]any) (settings.Settings, error) {
 	if _, ok := patch["codexBinaryPath"]; ok {
 		a.refreshCodexModelCatalog()
 	}
+	if _, ok := patch["gitlabSelfHostedHosts"]; ok {
+		// The forge classifier reads from a Core-held snapshot; push
+		// the new list and drop every cached cwd classification so
+		// the next git-status refresh reclassifies. Without
+		// invalidation, repos whose origin matches the new allowlist
+		// would stay classified as "" until forgeDetectionTTL
+		// expired (up to 5 minutes).
+		if a.git != nil {
+			a.git.SetGitLabHosts(next.GitLabSelfHostedHosts)
+			a.git.InvalidateAllForgeCache()
+		}
+	}
 	return next, nil
 }
 

@@ -159,3 +159,45 @@ describe('parsePRReference — rejection', () => {
     expect(r.error).toMatch(/Unrecognised/);
   });
 });
+
+describe('parsePRReference — self-hosted GitLab', () => {
+  it('rejects self-hosted host when not in allowlist', () => {
+    const r = parsePRReference('https://gitlab.mycompany.com/group/repo/-/merge_requests/9');
+    expect(r.ok).toBe(false);
+  });
+
+  it('parses self-hosted host when in allowlist', () => {
+    const r = parsePRReference(
+      'https://gitlab.mycompany.com/group/repo/-/merge_requests/9',
+      { gitlabHosts: ['gitlab.mycompany.com'] },
+    );
+    if (!r.ok) throw new Error('expected ok, got: ' + r.error);
+    expect(r.value).toEqual({ forge: 'gitlab', namespace: 'group', repo: 'repo', number: 9 });
+  });
+
+  it('still accepts gitlab.com when an allowlist is set', () => {
+    const r = parsePRReference(
+      'https://gitlab.com/group/repo/-/merge_requests/1',
+      { gitlabHosts: ['gitlab.mycompany.com'] },
+    );
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.value.forge).toBe('gitlab');
+  });
+
+  it('parses self-hosted subgroup paths', () => {
+    const r = parsePRReference(
+      'https://gl.example.test/group/sub/repo/-/merge_requests/12',
+      { gitlabHosts: ['gl.example.test'] },
+    );
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.value).toEqual({ forge: 'gitlab', namespace: 'group/sub', repo: 'repo', number: 12 });
+  });
+
+  it('rejects lookalike host even when a partial-match suffix is allowlisted', () => {
+    const r = parsePRReference(
+      'https://evil.gitlab.mycompany.com.attacker.com/g/r/-/merge_requests/1',
+      { gitlabHosts: ['gitlab.mycompany.com'] },
+    );
+    expect(r.ok).toBe(false);
+  });
+});

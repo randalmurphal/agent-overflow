@@ -30,6 +30,7 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     observabilityEventLogEnabled: false,
     network: { bindAll: false },
     retention: { days: 30 },
+    gitlabSelfHostedHosts: [],
     ...overrides,
   };
 }

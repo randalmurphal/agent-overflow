@@ -532,6 +532,11 @@ func (a *App) initStores() (string, *store.Store, error) {
 	a.git = gitops.NewCore()
 	a.gitWatch = gitwatch.NewManager(a.git.Status)
 	a.settings = settings.NewService(dbDir)
+	// Seed the git Core's GitLab self-hosted host snapshot from the
+	// persisted settings before any Status / DetectForge call sees a
+	// stale empty list. The settings service is lazy-loaded on first
+	// Get; reading here forces the load and warms the cache too.
+	a.git.SetGitLabHosts(a.settings.Get().GitLabSelfHostedHosts)
 	a.logger, err = logging.NewProviderEventLogger(dbDir)
 	if err != nil {
 		closeErr := st.Close()

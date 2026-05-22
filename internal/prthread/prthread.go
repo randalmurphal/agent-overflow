@@ -31,6 +31,26 @@ const MaxInlinedDiffBytes = 256 * 1024
 // case.
 const MaxTitleRunes = 120
 
+// ForgeNoun returns the short noun ("PR" / "MR") for the given forge
+// id. Unknown / empty forge ids fall back to "PR" — the same fallback
+// the frontend `forgeLabels` helper uses — so user-visible error
+// strings stay readable when classification is incomplete.
+func ForgeNoun(forgeID string) string {
+	if forgeID == "gitlab" {
+		return "MR"
+	}
+	return "PR"
+}
+
+// ForgeNounLong returns the long-form noun ("pull request" / "merge
+// request") for the given forge id. Same fallback rule as ForgeNoun.
+func ForgeNounLong(forgeID string) string {
+	if forgeID == "gitlab" {
+		return "merge request"
+	}
+	return "pull request"
+}
+
 // FormatTitle renders the sidebar title prefix per forge: "PR #N" for
 // GitHub, "MR !N" for GitLab — matching each forge's native conventions
 // for referencing change requests.

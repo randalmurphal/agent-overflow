@@ -99,6 +99,10 @@ func validateSettings(current Settings) (Settings, error) {
 	}
 
 	var err error
+	current.GitLabSelfHostedHosts, err = validateGitLabHosts(current.GitLabSelfHostedHosts)
+	if err != nil {
+		return Settings{}, err
+	}
 	current.WorktreeBranchPrefix, err = validateWorktreeBranchPrefix(current.WorktreeBranchPrefix)
 	if err != nil {
 		return Settings{}, err
@@ -200,6 +204,7 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		DefaultSettings.CodexBinaryPath,
 	)
 	current.RecentWorkspaces = normalizeRecentWorkspaces(current.RecentWorkspaces)
+	current.GitLabSelfHostedHosts = sanitizeGitLabHosts(current.GitLabSelfHostedHosts)
 	current.ObservabilityOtlpEndpoint = strings.TrimSpace(current.ObservabilityOtlpEndpoint)
 
 	current.DefaultThreadEnvMode = sanitizeOption(
@@ -408,6 +413,151 @@ func normalizeBinaryPath(value, fallback string) string {
 		return fallback
 	}
 	return trimmed
+}
+
+// MaxGitLabSelfHostedHosts caps the allowlist length. A self-hosted-
+// GitLab user usually has one or two corporate hosts; an upper bound of
+// 50 leaves comfortable headroom while keeping the linear scan in
+// classifyOriginURL cheap.
+const MaxGitLabSelfHostedHosts = 50
+
+// validateGitLabHosts strictly validates and normalises the gitlab-host
+// allowlist on Update. Hosts are trimmed, lowercased, deduped, and
+// rejected if they look like anything other than a bare hostname.
+// Empty list / nil round-trip as nil (omitted from sparse JSON).
+func validateGitLabHosts(hosts []string) ([]string, error) {
+	if len(hosts) == 0 {
+		return nil, nil
+	}
+	if len(hosts) > MaxGitLabSelfHostedHosts {
+		return nil, fmt.Errorf(
+			"gitlabSelfHostedHosts has %d entries, max is %d",
+			len(hosts), MaxGitLabSelfHostedHosts,
+		)
+	}
+	out := make([]string, 0, len(hosts))
+	seen := make(map[string]struct{}, len(hosts))
+	for _, raw := range hosts {
+		host := strings.ToLower(strings.TrimSpace(raw))
+		if host == "" {
+			return nil, fmt.Errorf("gitlabSelfHostedHosts contains an empty entry")
+		}
+		if err := validateBareHostname(host); err != nil {
+			return nil, fmt.Errorf("gitlabSelfHostedHosts: %w", err)
+		}
+		if host == "github.com" || host == "gitlab.com" {
+			return nil, fmt.Errorf(
+				"gitlabSelfHostedHosts must not contain %q (already recognised by literal match)",
+				host,
+			)
+		}
+		if _, dup := seen[host]; dup {
+			continue
+		}
+		seen[host] = struct{}{}
+		out = append(out, host)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// sanitizeGitLabHosts is the lenient load-time counterpart to
+// validateGitLabHosts. Invalid entries are dropped (with a log line) so
+// a hand-edited settings.json with one bad host doesn't strand the
+// whole allowlist. Caps the slice length defensively.
+func sanitizeGitLabHosts(hosts []string) []string {
+	if len(hosts) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(hosts))
+	seen := make(map[string]struct{}, len(hosts))
+	for _, raw := range hosts {
+		host := strings.ToLower(strings.TrimSpace(raw))
+		if host == "" {
+			continue
+		}
+		if err := validateBareHostname(host); err != nil {
+			log.Printf("settings: dropping invalid gitlabSelfHostedHosts entry %q: %v", raw, err)
+			continue
+		}
+		if host == "github.com" || host == "gitlab.com" {
+			log.Printf("settings: dropping redundant gitlabSelfHostedHosts entry %q (already recognised)", host)
+			continue
+		}
+		if _, dup := seen[host]; dup {
+			continue
+		}
+		seen[host] = struct{}{}
+		out = append(out, host)
+		if len(out) >= MaxGitLabSelfHostedHosts {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// RFC 1035 §3.1 caps an FQDN at 255 octets in the wire encoding, which
+// works out to 253 visible characters (one trailing length byte + a
+// root-label null byte). Per-label cap is 63 octets. Enforcing both
+// keeps allowlist entries within the same bounds the OS resolver and
+// `git remote` use, so we reject malformed inputs early instead of
+// memoising a host that could never match a real origin URL.
+const (
+	maxHostnameLength = 253
+	maxHostLabelLength = 63
+)
+
+// validateBareHostname rejects inputs that aren't a bare DNS hostname.
+// We deliberately stay conservative: ASCII letters/digits/dot/hyphen
+// only, no scheme, no path, no port, no spaces. This matches the
+// canonicalisation extractRemoteHost performs on origin URLs, so an
+// allowlist entry compares equal to the host extracted from any
+// well-formed git remote URL.
+func validateBareHostname(host string) error {
+	if host == "" {
+		return fmt.Errorf("hostname is empty")
+	}
+	if len(host) > maxHostnameLength {
+		return fmt.Errorf("hostname is %d characters, max is %d", len(host), maxHostnameLength)
+	}
+	if strings.Contains(host, "://") {
+		return fmt.Errorf("%q must not include a scheme", host)
+	}
+	if strings.ContainsAny(host, "/?#@:") {
+		return fmt.Errorf("%q must be a bare hostname (no scheme, path, port, or userinfo)", host)
+	}
+	for _, r := range host {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '.' || r == '-':
+		default:
+			return fmt.Errorf("%q contains invalid character %q", host, r)
+		}
+	}
+	if strings.HasPrefix(host, ".") || strings.HasSuffix(host, ".") {
+		return fmt.Errorf("%q must not start or end with a dot", host)
+	}
+	if strings.HasPrefix(host, "-") || strings.HasSuffix(host, "-") {
+		return fmt.Errorf("%q must not start or end with a hyphen", host)
+	}
+	if strings.Contains(host, "..") {
+		return fmt.Errorf("%q must not contain consecutive dots", host)
+	}
+	if !strings.Contains(host, ".") {
+		return fmt.Errorf("%q must contain at least one dot", host)
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) > maxHostLabelLength {
+			return fmt.Errorf("hostname label %q is %d characters, max is %d", label, len(label), maxHostLabelLength)
+		}
+	}
+	return nil
 }
 
 func normalizeRecentWorkspaces(paths []string) []string {

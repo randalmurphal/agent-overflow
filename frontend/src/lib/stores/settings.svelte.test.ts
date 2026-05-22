@@ -32,6 +32,7 @@ const FULL_SETTINGS: Settings = {
   observabilityEventLogEnabled: false,
   network: { bindAll: false },
   retention: { days: 30 },
+  gitlabSelfHostedHosts: [],
 };
 
 describe('settings store', () => {

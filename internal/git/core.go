@@ -74,6 +74,14 @@ type Core struct {
 	// construction so reads are lock-free.
 	forges map[string]Forge
 
+	// gitlabHosts is the current snapshot of self-hosted GitLab
+	// hostnames (lowercase, deduped, validated) that classify as the
+	// "gitlab" forge in addition to the literal gitlab.com match.
+	// Replaced wholesale by SetGitLabHosts; reads take a copy under
+	// the RWMutex so classification never races a settings update.
+	gitlabHostsMu sync.RWMutex
+	gitlabHosts   []string
+
 	// fetchCache records the last time MaybeFetchRemotes successfully
 	// ran `git fetch` against a given canonical repo root. Keyed by the
 	// repository top-level path so worktrees of the same repo share

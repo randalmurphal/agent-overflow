@@ -332,9 +332,16 @@ func TestCreateThreadFromPRRejectsInvalidInputs(t *testing.T) {
 
 	if _, err := app.CreateThreadFromPR("owner/repo", 0, string(provider.Claude), "claude-sonnet-4-6", "github"); err == nil {
 		t.Fatal("number=0 should fail")
+	} else if !strings.Contains(err.Error(), "PR number must be positive") {
+		t.Fatalf("github invalid-number error = %v, want PR-noun message", err)
 	}
 	if _, err := app.CreateThreadFromPR("owner/repo", -3, string(provider.Claude), "claude-sonnet-4-6", "github"); err == nil {
 		t.Fatal("number<0 should fail")
+	}
+	if _, err := app.CreateThreadFromPR("group/repo", 0, string(provider.Claude), "claude-sonnet-4-6", "gitlab"); err == nil {
+		t.Fatal("gitlab number=0 should fail")
+	} else if !strings.Contains(err.Error(), "MR number must be positive") {
+		t.Fatalf("gitlab invalid-number error = %v, want MR-noun message", err)
 	}
 	if _, err := app.CreateThreadFromPR("owner/repo", 1, "", "claude-sonnet-4-6", "github"); err == nil {
 		t.Fatal("empty provider should fail")

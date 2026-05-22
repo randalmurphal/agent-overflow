@@ -76,6 +76,34 @@ func TestBuildUserMessageGitLabHeaderUsesMRSigil(t *testing.T) {
 	}
 }
 
+func TestForgeNoun(t *testing.T) {
+	cases := []struct{ id, want string }{
+		{"gitlab", "MR"},
+		{"github", "PR"},
+		{"", "PR"},
+		{"bitbucket", "PR"},
+	}
+	for _, tc := range cases {
+		if got := ForgeNoun(tc.id); got != tc.want {
+			t.Errorf("ForgeNoun(%q) = %q, want %q", tc.id, got, tc.want)
+		}
+	}
+}
+
+func TestForgeNounLong(t *testing.T) {
+	cases := []struct{ id, want string }{
+		{"gitlab", "merge request"},
+		{"github", "pull request"},
+		{"", "pull request"},
+		{"bitbucket", "pull request"},
+	}
+	for _, tc := range cases {
+		if got := ForgeNounLong(tc.id); got != tc.want {
+			t.Errorf("ForgeNounLong(%q) = %q, want %q", tc.id, got, tc.want)
+		}
+	}
+}
+
 func TestFormatTitleGitHub(t *testing.T) {
 	if got := FormatTitle("github", 12, " Add feature  "); got != "PR #12: Add feature" {
 		t.Fatalf("FormatTitle = %q", got)

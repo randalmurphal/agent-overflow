@@ -7,6 +7,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { prependThread } from '../../stores/threads.svelte';
   import { openThreadInPane } from '../../stores/panes.svelte';
+  import { getSettings } from '../../stores/settings.svelte';
   import {
     getProviderDefinition,
     PROVIDER_SETTINGS_ORDER,
@@ -32,11 +33,16 @@
   // don't switch the pane or flash a toast on a dialog they dismissed.
   let submitGeneration = 0;
 
+  // Self-hosted GitLab allowlist extends the URL parser so users can
+  // paste their corporate-host MR URLs. Short refs are forge-neutral
+  // already and don't need this list.
+  let gitlabHosts = $derived(getSettings().gitlabSelfHostedHosts ?? []);
+
   // Live validation feedback — computed each render so the "Create" button's
   // disabled state tracks exactly what the submit path would see.
   let parsed = $derived.by<{ ok: true; value: ParsedPRReference } | { ok: false; error: string } | null>(() => {
     if (url.trim() === '') return null;
-    return parsePRReference(url);
+    return parsePRReference(url, { gitlabHosts });
   });
   let parseErrorMessage = $derived(parsed && !parsed.ok ? parsed.error : null);
   let canSubmit = $derived(

@@ -15,6 +15,8 @@ reads/writes — stays in `app_thread_from_pr.go`.
 |---|---|
 | `MaxInlinedDiffBytes` | 256 KB cap on the inlined patch. Beyond this, `TruncateDiff` appends a marker recording how many bytes were dropped. |
 | `MaxTitleRunes` | 120-rune cap on the thread title (sidebar truncates anything wider). |
+| `ForgeNoun(forgeID) string` | Forge-aware short noun ("PR" / "MR"). Used by error strings and toast copy so GitLab users see "MR" instead of "PR". Unknown ids fall back to "PR". |
+| `ForgeNounLong(forgeID) string` | Long-form counterpart ("pull request" / "merge request"). Same fallback rule. |
 | `FormatTitle(forgeID, number, prTitle) string` | "PR #N: <title>" for GitHub, "MR !N: <title>" for GitLab. |
 | `BuildUserMessage(ref, meta, diff) string` | Composes the first user message: title, link, author, branches, file count, body, and a fenced patch block. Uses `FenceForContent` so inner triple-backtick runs don't close the fence prematurely. |
 | `FenceForContent(content) string` | Picks a backtick fence strictly longer than the longest backtick run found in content (minimum 3). |

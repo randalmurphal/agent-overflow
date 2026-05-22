@@ -103,7 +103,7 @@ func (c *Core) Status(cwd string) (GitStatus, error) {
 	originURL, hasOriginRemote := c.originURL(cwd)
 	forge := ""
 	if hasOriginRemote {
-		forge = classifyOriginURL(originURL)
+		forge = classifyOriginURL(originURL, c.gitLabHostsSnapshot())
 	}
 	// Populate the forge cache so any concurrent DetectForge call
 	// (e.g. through forgeFor → ListOpenPRs below) reuses the same

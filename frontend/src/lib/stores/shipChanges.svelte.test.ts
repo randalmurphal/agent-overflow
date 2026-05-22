@@ -275,7 +275,7 @@ describe('createShipChangesState', () => {
 
     it('beginCreatePR() throws when the title is blank', () => {
       store.setPRTitle('   ');
-      expect(() => store.beginCreatePR()).toThrow(/empty title/i);
+      expect(() => store.beginCreatePR()).toThrow(/title is required/i);
       expect(store.phase).toBe('pr.review');
     });
 

@@ -50,7 +50,7 @@ func (c *Core) DetectForge(cwd string) string {
 	url, ok := c.originURL(cwd)
 	forge := ""
 	if ok {
-		forge = classifyOriginURL(url)
+		forge = classifyOriginURL(url, c.gitLabHostsSnapshot())
 	}
 	c.storeForgeCache(cwd, forge, now)
 	return forge
@@ -86,8 +86,51 @@ func (c *Core) InvalidateForgeCache(cwd string) {
 	delete(c.forgeCache, cwd)
 }
 
+// InvalidateAllForgeCache drops every cached forge classification.
+// Use when the configured GitLab self-hosted host list changes — every
+// cwd's classification could have flipped, and waiting up to
+// forgeDetectionTTL for stale entries to expire would leave Ship
+// Changes showing "remote is not GitHub or GitLab" against repos that
+// just became recognised.
+func (c *Core) InvalidateAllForgeCache() {
+	c.forgeCacheMu.Lock()
+	defer c.forgeCacheMu.Unlock()
+	clear(c.forgeCache)
+}
+
+// SetGitLabHosts replaces the self-hosted GitLab hostname snapshot
+// classifyOriginURL consults. Callers (the app's settings side-effect
+// hook) typically pair this with InvalidateAllForgeCache so the next
+// Status / DetectForge call reclassifies under the new list rather
+// than waiting for the per-cwd TTL window to expire. A defensive copy
+// is taken so the caller is free to mutate its slice afterwards.
+func (c *Core) SetGitLabHosts(hosts []string) {
+	var snapshot []string
+	if len(hosts) > 0 {
+		snapshot = make([]string, len(hosts))
+		copy(snapshot, hosts)
+	}
+	c.gitlabHostsMu.Lock()
+	c.gitlabHosts = snapshot
+	c.gitlabHostsMu.Unlock()
+}
+
+// gitLabHostsSnapshot returns a read-locked copy of the current
+// allowlist for classifyOriginURL. Returns nil when no hosts are
+// configured — nil iterates zero times in the classifier's loop.
+func (c *Core) gitLabHostsSnapshot() []string {
+	c.gitlabHostsMu.RLock()
+	defer c.gitlabHostsMu.RUnlock()
+	if len(c.gitlabHosts) == 0 {
+		return nil
+	}
+	out := make([]string, len(c.gitlabHosts))
+	copy(out, c.gitlabHosts)
+	return out
+}
+
 // classifyOriginURL parses a git remote URL and returns the forge id
-// ("github" | "gitlab" | "") for v1's literal hostname matching.
+// ("github" | "gitlab" | "") for literal hostname matching.
 //
 // Accepted shapes (per host):
 //
@@ -96,17 +139,31 @@ func (c *Core) InvalidateForgeCache(cwd string) {
 //	SSH URL:  ssh://git@github.com/owner/repo[.git]
 //	git://    git://github.com/owner/repo[.git]
 //
-// Anything else (Bitbucket, Gitea, self-hosted) returns "" so the
-// caller surfaces "no forge integration available" to the user.
-func classifyOriginURL(remoteURL string) string {
-	switch extractRemoteHost(remoteURL) {
+// `gitlabHosts` is the user-configured allowlist of self-hosted GitLab
+// hostnames; entries match against the canonicalised extractRemoteHost
+// value, so all four URL shapes work for self-hosted GitLab too.
+// Entries are expected to be pre-normalised (lowercase, bare hostname);
+// settings.validateGitLabHosts enforces that on write.
+//
+// Anything else (Bitbucket, Gitea, unrecognised self-hosted) returns ""
+// so the caller surfaces "no forge integration available" to the user.
+func classifyOriginURL(remoteURL string, gitlabHosts []string) string {
+	host := extractRemoteHost(remoteURL)
+	switch host {
 	case "github.com":
 		return "github"
 	case "gitlab.com":
 		return "gitlab"
-	default:
+	}
+	if host == "" {
 		return ""
 	}
+	for _, h := range gitlabHosts {
+		if h == host {
+			return "gitlab"
+		}
+	}
+	return ""
 }
 
 // extractRemoteHost reduces a git remote URL to its canonical lowercase

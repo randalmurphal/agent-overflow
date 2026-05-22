@@ -55,10 +55,88 @@ func TestClassifyOriginURL(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifyOriginURL(tc.url); got != tc.want {
-				t.Errorf("classifyOriginURL(%q) = %q, want %q", tc.url, got, tc.want)
+			if got := classifyOriginURL(tc.url, nil); got != tc.want {
+				t.Errorf("classifyOriginURL(%q, nil) = %q, want %q", tc.url, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestClassifyOriginURLWithSelfHostedGitLab(t *testing.T) {
+	hosts := []string{"gitlab.mycompany.com", "gl.example.test"}
+	cases := []struct {
+		name string
+		url  string
+		want string
+	}{
+		// Self-hosted GitLab — recognised when the host is in the
+		// allowlist.
+		{"self-hosted https", "https://gitlab.mycompany.com/group/repo", "gitlab"},
+		{"self-hosted https with .git", "https://gitlab.mycompany.com/group/repo.git", "gitlab"},
+		{"self-hosted ssh alias", "git@gitlab.mycompany.com:group/repo.git", "gitlab"},
+		{"self-hosted ssh url", "ssh://git@gitlab.mycompany.com/group/repo.git", "gitlab"},
+		{"self-hosted mixed case", "https://GITLAB.mycompany.com/group/repo", "gitlab"},
+		{"second allowlist host", "https://gl.example.test/group/repo", "gitlab"},
+		// gitlab.com / github.com still match literally even with
+		// allowlist configured.
+		{"literal gitlab.com still works", "https://gitlab.com/group/repo", "gitlab"},
+		{"literal github.com still works", "https://github.com/owner/repo", "github"},
+		// Lookalike-host rejections (security regression guards).
+		{"lookalike domain", "https://evil-gitlab.mycompany.com.attacker.com/x", ""},
+		{"unlisted self-hosted", "https://gitlab.other.com/x/y", ""},
+		{"empty allowlist host", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyOriginURL(tc.url, hosts); got != tc.want {
+				t.Errorf("classifyOriginURL(%q, %v) = %q, want %q", tc.url, hosts, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSetGitLabHostsClassificationRoundTrip(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "remote", "add", "origin", "https://gitlab.mycompany.com/group/repo.git")
+
+	core := NewCore()
+	if got := core.DetectForge(repo); got != "" {
+		t.Fatalf("DetectForge before SetGitLabHosts = %q, want empty", got)
+	}
+
+	core.SetGitLabHosts([]string{"gitlab.mycompany.com"})
+	// Cache still has the stale "" entry from the first call — without
+	// InvalidateAllForgeCache the new allowlist would be invisible until
+	// forgeDetectionTTL elapsed.
+	if got := core.DetectForge(repo); got != "" {
+		t.Errorf("DetectForge before invalidation = %q, want empty (cached)", got)
+	}
+
+	core.InvalidateAllForgeCache()
+	if got := core.DetectForge(repo); got != "gitlab" {
+		t.Errorf("DetectForge after SetGitLabHosts + invalidation = %q, want gitlab", got)
+	}
+
+	// Removing the host should reclassify back to "" once invalidated.
+	core.SetGitLabHosts(nil)
+	core.InvalidateAllForgeCache()
+	if got := core.DetectForge(repo); got != "" {
+		t.Errorf("DetectForge after SetGitLabHosts(nil) = %q, want empty", got)
+	}
+}
+
+func TestInvalidateAllForgeCacheClearsEveryEntry(t *testing.T) {
+	core := NewCore()
+	now := core.nowFn()
+	core.storeForgeCache("/repo/a", "github", now)
+	core.storeForgeCache("/repo/b", "gitlab", now)
+
+	core.InvalidateAllForgeCache()
+
+	core.forgeCacheMu.RLock()
+	defer core.forgeCacheMu.RUnlock()
+	if len(core.forgeCache) != 0 {
+		t.Fatalf("forgeCache size = %d, want 0", len(core.forgeCache))
 	}
 }
 

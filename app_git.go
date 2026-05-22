@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/prthread"
 	"agent-overflow/internal/store"
 )
 
@@ -440,7 +441,7 @@ func (a *App) GitCreatePR(threadID, title, body string, draft bool) (gitops.GitA
 		Action:  "pr",
 		Branch:  core.CurrentBranch(workspace),
 		PRURL:   url,
-		Message: "Created pull request",
+		Message: "Created " + prthread.ForgeNounLong(core.DetectForge(workspace)),
 	}, nil
 }
 
