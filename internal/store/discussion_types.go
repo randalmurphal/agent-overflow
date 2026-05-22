@@ -38,6 +38,14 @@ type Channel struct {
 }
 
 // ChannelMessage is one ordered message within a channel.
+//
+// Meta is JSON-shaped optional sidecar data persisted alongside the
+// raw message content. Today it carries the pathlinks allowlist
+// (`pathRefs`) stamped at PostMessage time so the frontend's markdown
+// linkifier knows which file references in the rendered text point
+// at real files in the thread's workspace. The column is nullable
+// (pre-v2 rows have no value); callers should treat absence as
+// "no allowlist".
 type ChannelMessage struct {
 	ID        string `json:"id"`
 	ChannelID string `json:"channelId"`
@@ -46,5 +54,6 @@ type ChannelMessage struct {
 	FromID    string `json:"fromId"`
 	FromRole  string `json:"fromRole,omitempty"`
 	Content   string `json:"content"`
+	Meta      string `json:"meta,omitempty"`
 	CreatedAt int64  `json:"createdAt"`
 }

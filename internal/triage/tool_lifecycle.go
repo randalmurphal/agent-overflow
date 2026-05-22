@@ -186,6 +186,16 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 		item.Decision = r.takeApprovalDecision(evt.ThreadID, itemID)
 	}
 
+	// AskUserQuestion / request_user_input rows render question + option
+	// text through ChatMarkdown, so validate any path-shaped tokens in
+	// the question body and option labels/descriptions/previews against
+	// the workspace. Validated allowlist lands on item.Meta.pathRefs.
+	// `meta.input.questions[]` is the same shape on both Claude
+	// (AskUserQuestion) and Codex (request_user_input).
+	if texts := userInputValidationTexts(toolName, item.Meta); len(texts) > 0 {
+		r.enrichPathRefsFromTexts(evt.ThreadID, &item, texts...)
+	}
+
 	// Promote heavy tool inputs (Edit/Write/MultiEdit/NotebookEdit
 	// content) out of items.meta into a sibling tool_call_input
 	// payload so the persisted row + the live emit stay small. On a
@@ -194,6 +204,54 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 	// original launch's payload is canonical.
 	inputPayload := r.shapeToolItemMeta(&item, now)
 	return r.persistItemWithInputPayload(item, nil, inputPayload)
+}
+
+// userInputValidationTexts returns the set of human-readable text
+// sources from an AskUserQuestion / request_user_input meta that the
+// frontend will render through ChatMarkdown. `q.question` and
+// `option.preview` are the only two fields that flow through
+// ChatMarkdown today (see AskUserQuestionCard.svelte); `option.label`
+// and `option.description` render as plain `<p>` so they have no
+// linkifier to feed. Returning extra strings here would pay regex +
+// stat cost for tokens whose match would never be displayed as a link.
+//
+// Returns empty when the tool isn't a user-input prompt or the meta
+// is missing the questions array. A malformed JSON payload is logged
+// (matching the policy in mergePathRefsIntoMeta) and skipped — the
+// row still persists, just without an allowlist.
+func userInputValidationTexts(toolName, metaJSON string) []string {
+	switch strings.TrimSpace(toolName) {
+	case "AskUserQuestion", "request_user_input":
+	default:
+		return nil
+	}
+	if strings.TrimSpace(metaJSON) == "" {
+		return nil
+	}
+	var top struct {
+		Input struct {
+			Questions []provider.UserInputQuestion `json:"questions"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal([]byte(metaJSON), &top); err != nil {
+		log.Printf("triage: pathlinks user-input meta unmarshal: %v", err)
+		return nil
+	}
+	if len(top.Input.Questions) == 0 {
+		return nil
+	}
+	texts := make([]string, 0, len(top.Input.Questions)*2)
+	for _, question := range top.Input.Questions {
+		if q := strings.TrimSpace(question.Question); q != "" {
+			texts = append(texts, q)
+		}
+		for _, option := range question.Options {
+			if preview := strings.TrimSpace(option.Preview); preview != "" {
+				texts = append(texts, preview)
+			}
+		}
+	}
+	return texts
 }
 
 func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
@@ -312,6 +370,16 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 			// the tool lifecycle completes cleanly.
 			log.Printf("triage: rebuild command_output meta %s: %v", launch.PayloadID, err)
 		}
+	}
+
+	// Advisor result body renders through ChatMarkdown when the row is
+	// expanded. Validate path-shaped tokens in evt.Content against the
+	// workspace so the linkifier has an allowlist for the advisor body.
+	// The validator runs on the completion event's content (the full
+	// result text); advisor runs inline (no streaming) so this is the
+	// only persist site that sees the body.
+	if strings.EqualFold(launch.ToolName, "advisor") && evt.Content != "" {
+		r.enrichPathRefsFromTexts(evt.ThreadID, &launch, evt.Content)
 	}
 
 	payload := completionPayloadForLaunch(launch, evt, meta, now)

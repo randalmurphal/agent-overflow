@@ -16,6 +16,8 @@
 // source. If exact round-trip ever becomes a requirement, that is the
 // point to revisit (with a markdown library that exposes positions).
 
+import { PATH_LINK_HREF_PREFIX } from './pathLinkExtension';
+
 type ListContext = {
   kind: 'ol' | 'ul';
   index: number;
@@ -182,13 +184,12 @@ function formatInlineCode(text: string): string {
 
 function serializeAnchor(el: HTMLElement, ctx: SerializeContext): string {
   const text = serializeChildren(el, ctx);
-  // Path linkifier emits href="#" + data-path. The visible text
-  // already IS the path; emitting `[path](#)` would be wrong, and
-  // `[path](path)` would be misleading because the link doesn't
-  // point at a URL — it triggers an editor-open binding. Plain
-  // text is the truthful result.
-  if (el.classList.contains('editor-link')) return text;
   const href = el.getAttribute('href');
+  // Path-link anchors emit `agent-overflow:open?path=...`. The visible
+  // text already IS the path; emitting `[path](agent-overflow:open?…)`
+  // would smuggle our internal scheme into the clipboard. Plain text
+  // is the truthful result for editor-open affordances.
+  if (href && href.startsWith(PATH_LINK_HREF_PREFIX)) return text;
   if (!href || href === '#') return text;
   return `[${escapeLinkText(text)}](${escapeLinkHref(href)})`;
 }

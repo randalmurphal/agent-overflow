@@ -1,222 +1,91 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { waitFor } from '@testing-library/svelte';
 import {
-  enhancePathLinks,
   ensureMarkdownCopyDelegate,
+  ensurePathLinkClickDelegate,
   __resetMarkdownCopyDelegateForTest,
   __resetPathLinkDelegateForTest,
 } from './markdownEnhance';
+import { buildPathLinkHref } from './pathLinkExtension';
 import { setBindingMock, getBindingMock } from '../../test/mocks/bindings-app';
 
-describe('enhancePathLinks', () => {
+describe('ensurePathLinkClickDelegate', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     __resetPathLinkDelegateForTest();
   });
 
-  it('replaces inline file paths in prose with editor-link anchors', () => {
-    const container = document.createElement('div');
-    container.innerHTML = '<p>see src/lib/foo.ts:12 for context</p>';
-
-    enhancePathLinks(container, '');
-
-    const link = container.querySelector('a.editor-link');
-    expect(link).not.toBeNull();
-    expect(link?.getAttribute('data-path')).toBe('src/lib/foo.ts');
-    expect(link?.getAttribute('data-line')).toBe('12');
-    expect(link?.textContent).toBe('src/lib/foo.ts:12');
+  afterEach(() => {
+    document.body.innerHTML = '';
+    __resetPathLinkDelegateForTest();
   });
 
-  it('does not linkify paths inside <pre><code> blocks', () => {
-    const container = document.createElement('div');
-    container.innerHTML = '<pre><code>see src/lib/foo.ts here</code></pre>';
+  function mountAnchor(href: string): HTMLAnchorElement {
+    const a = document.createElement('a');
+    a.href = href;
+    a.textContent = href;
+    document.body.appendChild(a);
+    return a;
+  }
 
-    enhancePathLinks(container, '');
-
-    expect(container.querySelector('a.editor-link')).toBeNull();
-  });
-
-  it('linkifies paths inside inline <code> outside <pre>', () => {
-    const container = document.createElement('div');
-    container.innerHTML = '<p>see <code>src/lib/foo.ts</code> note</p>';
-
-    enhancePathLinks(container, '');
-
-    const link = container.querySelector('code a.editor-link');
-    expect(link).not.toBeNull();
-    expect(link?.getAttribute('data-path')).toBe('src/lib/foo.ts');
-  });
-
-  it('skips URL-shaped tokens', () => {
-    const container = document.createElement('div');
-    container.innerHTML = '<p>visit https://example.com/foo for docs</p>';
-
-    enhancePathLinks(container, '');
-
-    expect(container.querySelector('a.editor-link')).toBeNull();
-  });
-
-  it('invokes OpenInEditor with the workspacePath stamped at linkify time', async () => {
+  it('forwards clicks on agent-overflow:open anchors to OpenInEditor', async () => {
     const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
-    const container = document.createElement('div');
-    container.innerHTML = '<p>see src/lib/foo.ts:12 for context</p>';
-    document.body.appendChild(container);
+    ensurePathLinkClickDelegate();
+    const link = mountAnchor(buildPathLinkHref('src/foo.ts', 42, 7, '/repo'));
 
-    enhancePathLinks(container, '/home/user/repo');
-
-    const link = container.querySelector('a.editor-link') as HTMLAnchorElement;
     link.click();
+
     await waitFor(() => {
       expect(mock).toHaveBeenCalledTimes(1);
     });
-    expect(mock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0, '/home/user/repo']);
-    container.remove();
-    void getBindingMock; // keep helper reachable for future cases
+    expect(mock.mock.calls[0]).toEqual(['src/foo.ts', 42, 7, '/repo']);
+    void getBindingMock; // helper kept reachable for future cases
   });
 
-  it('falls back to empty workspacePath when none was supplied', async () => {
+  it('forwards line=0/col=0 when the href omits them', async () => {
     const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
-    const container = document.createElement('div');
-    container.innerHTML = '<p>see src/lib/bar.ts for context</p>';
-    document.body.appendChild(container);
+    ensurePathLinkClickDelegate();
+    const link = mountAnchor(buildPathLinkHref('a.ts', undefined, undefined, ''));
 
-    enhancePathLinks(container, '');
-
-    const link = container.querySelector('a.editor-link') as HTMLAnchorElement;
     link.click();
-    await waitFor(() => {
-      expect(mock).toHaveBeenCalledTimes(1);
-    });
-    expect(mock.mock.calls[0]).toEqual(['src/lib/bar.ts', 0, 0, '']);
-    container.remove();
+
+    await waitFor(() => expect(mock).toHaveBeenCalledTimes(1));
+    expect(mock.mock.calls[0]).toEqual(['a.ts', 0, 0, '']);
   });
 
-  it('is idempotent — re-running on already-linkified DOM does not double-wrap', () => {
-    // ChatMarkdown's $effect re-runs `enhancePathLinks` on every
-    // post-streaming source change. The walker explicitly skips text
-    // nodes that already live inside an editor-link, so re-runs are
-    // no-ops on already-converted spans.
-    const container = document.createElement('div');
-    container.innerHTML = '<p>see src/lib/foo.ts for context</p>';
-    enhancePathLinks(container, '');
-    const after1 = container.innerHTML;
-    enhancePathLinks(container, '');
-    const after2 = container.innerHTML;
-    expect(after2).toBe(after1);
-    expect(container.querySelectorAll('a.editor-link')).toHaveLength(1);
+  it('prevents default so the browser does not navigate to the custom scheme', () => {
+    setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+    ensurePathLinkClickDelegate();
+    const link = mountAnchor(buildPathLinkHref('src/foo.ts', undefined, undefined, ''));
+
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+    const allowed = link.dispatchEvent(event);
+
+    expect(allowed).toBe(false);
   });
 
-  describe('allowlist mode (pathRefs from Go validation)', () => {
-    it('wraps only paths the allowlist contains', () => {
-      // `src/foo.ts` shows up in pathRefs (Go validated). `bogus/x.bad`
-      // shape-matches the local regex but is not in the allowlist —
-      // it must NOT linkify in allowlist mode.
-      const container = document.createElement('div');
-      container.innerHTML = '<p>real src/foo.ts and bogus/x.bad nope</p>';
-      enhancePathLinks(container, '', [{ path: 'src/foo.ts' }]);
-      const links = container.querySelectorAll('a.editor-link');
-      expect(links).toHaveLength(1);
-      expect(links[0].getAttribute('data-path')).toBe('src/foo.ts');
-    });
+  it('ignores anchors that do NOT use the agent-overflow: scheme', () => {
+    const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+    ensurePathLinkClickDelegate();
+    const link = mountAnchor('https://example.com/foo.ts');
 
-    it('empty allowlist short-circuits — nothing wraps', () => {
-      // The "Go saw nothing real" case: even path-shaped tokens that
-      // would have passed the local regex stay plain text.
-      const container = document.createElement('div');
-      container.innerHTML = '<p>see src/lib/foo.ts and src/lib/bar.ts</p>';
-      enhancePathLinks(container, '', []);
-      expect(container.querySelectorAll('a.editor-link')).toHaveLength(0);
-    });
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+    const allowed = link.dispatchEvent(event);
 
-    it('emits one anchor per occurrence when the same path appears multiple times', () => {
-      // The Go side stat's once, the wire carries one PathRef per
-      // occurrence — but the frontend doesn't actually consume the
-      // per-occurrence metadata; it derives a unique-path Set and
-      // wraps every textual occurrence. Either way the user sees all
-      // instances linkified.
-      const container = document.createElement('div');
-      container.innerHTML = '<p>we edited src/foo.ts, but src/foo.ts still has the bug</p>';
-      enhancePathLinks(container, '', [{ path: 'src/foo.ts' }]);
-      const links = container.querySelectorAll('a.editor-link');
-      expect(links).toHaveLength(2);
-      for (const link of Array.from(links)) {
-        expect(link.getAttribute('data-path')).toBe('src/foo.ts');
-        expect(link.textContent).toBe('src/foo.ts');
-      }
-    });
+    expect(allowed).toBe(true);
+    expect(mock).not.toHaveBeenCalled();
+  });
 
-    it('captures :line:col suffix from text even though allowlist entry has none', () => {
-      // The path string `src/foo.ts` is allowlisted; the text adds a
-      // line:col suffix. The wrapped span includes the suffix and
-      // data-line/data-col are populated from the text — not from
-      // the PathRef.
-      const container = document.createElement('div');
-      container.innerHTML = '<p>see src/foo.ts:42:7 for the bug</p>';
-      enhancePathLinks(container, '', [{ path: 'src/foo.ts' }]);
-      const link = container.querySelector('a.editor-link');
-      expect(link).not.toBeNull();
-      expect(link?.getAttribute('data-path')).toBe('src/foo.ts');
-      expect(link?.getAttribute('data-line')).toBe('42');
-      expect(link?.getAttribute('data-col')).toBe('7');
-      expect(link?.textContent).toBe('src/foo.ts:42:7');
-    });
+  it('idempotent install — repeated calls do not multi-fire', async () => {
+    const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+    ensurePathLinkClickDelegate();
+    ensurePathLinkClickDelegate();
+    ensurePathLinkClickDelegate();
+    const link = mountAnchor(buildPathLinkHref('src/foo.ts', undefined, undefined, ''));
 
-    it('@-prefix widens the wrapped span but data-path stays bare', () => {
-      // Visual fix: today's regex's lookbehind excluded `@`, so
-      // `@src/foo.ts` rendered as `@<link>src/foo.ts</link>` with a
-      // floating `@`. The allowlist matcher includes the `@` in the
-      // wrapped span when the boundary check on the char before `@`
-      // passes — and the click handler still navigates by the bare
-      // file path stored on data-path.
-      const container = document.createElement('div');
-      container.innerHTML = '<p>see @src/foo.ts for context</p>';
-      enhancePathLinks(container, '', [{ path: 'src/foo.ts' }]);
-      const link = container.querySelector('a.editor-link');
-      expect(link).not.toBeNull();
-      expect(link?.textContent).toBe('@src/foo.ts');
-      expect(link?.getAttribute('data-path')).toBe('src/foo.ts');
-    });
+    link.click();
 
-    it('rejects email-tail paths even when the path body is allowlisted', () => {
-      // `host/path.ts` happens to be in the allowlist (some unrelated
-      // workspace file with that name), but the text mentions it
-      // inside the email `name@host/path.ts`. The lookbehind on the
-      // char before the `@` is `e` (alphanumeric) so the boundary
-      // check fails and nothing wraps.
-      const container = document.createElement('div');
-      container.innerHTML = '<p>contact name@host/path.ts please</p>';
-      enhancePathLinks(container, '', [{ path: 'host/path.ts' }]);
-      expect(container.querySelectorAll('a.editor-link')).toHaveLength(0);
-    });
-
-    it('longest-first sort prevents nested overlap when paths are siblings', () => {
-      // Both `src/foo.ts` and `elsewhere/src/foo.ts` are in the
-      // allowlist (separate validated files). In a single text where
-      // only the longer path appears, the shorter one would naively
-      // match inside it — overlap avoidance must prevent a double
-      // wrap.
-      const container = document.createElement('div');
-      container.innerHTML = '<p>see elsewhere/src/foo.ts for the bug</p>';
-      enhancePathLinks(container, '', [
-        { path: 'src/foo.ts' },
-        { path: 'elsewhere/src/foo.ts' },
-      ]);
-      const links = container.querySelectorAll('a.editor-link');
-      expect(links).toHaveLength(1);
-      expect(links[0].getAttribute('data-path')).toBe('elsewhere/src/foo.ts');
-    });
-
-    it('falls back to local regex when pathRefs is undefined', () => {
-      // Non-assistant surfaces (ChannelView, ProposedPlan, etc.) leave
-      // pathRefs unset. The local regex still produces today's behavior
-      // — including matching `src/lib/foo.ts` without fs validation.
-      const container = document.createElement('div');
-      container.innerHTML = '<p>see src/lib/foo.ts for context</p>';
-      enhancePathLinks(container, '', undefined);
-      const link = container.querySelector('a.editor-link');
-      expect(link).not.toBeNull();
-      expect(link?.getAttribute('data-path')).toBe('src/lib/foo.ts');
-    });
+    await waitFor(() => expect(mock).toHaveBeenCalledTimes(1));
   });
 });
 

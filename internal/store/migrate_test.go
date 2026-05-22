@@ -96,11 +96,16 @@ func TestMigrationVersionTrackingPostSquash(t *testing.T) {
 		t.Fatalf("rows err: %v", err)
 	}
 
-	if len(got) != 1 {
-		t.Fatalf("expected exactly 1 migration_versions row after squash, got %d: %+v", len(got), got)
+	if len(got) == 0 {
+		t.Fatalf("expected migration_versions to be populated, got %d rows", len(got))
 	}
 	if got[0].version != 1 || got[0].name != "initial_schema" {
-		t.Fatalf("expected (1, initial_schema), got (%d, %q)", got[0].version, got[0].name)
+		t.Fatalf("expected first row (1, initial_schema), got (%d, %q)", got[0].version, got[0].name)
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i].version != got[i-1].version+1 {
+			t.Fatalf("migration_versions has a gap: row %d has version %d after %d", i, got[i].version, got[i-1].version)
+		}
 	}
 }
 

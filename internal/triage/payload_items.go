@@ -167,6 +167,12 @@ func (r *Router) handleProposedPlan(evt provider.ProviderEvent) error {
 		item.UpdatedAt = now
 	}
 
+	// Plan markdown lives in evt.Content (the payload data), not in
+	// item.Summary (which is the plan title). Validate the plan body
+	// against the workspace so the frontend can linkify file mentions
+	// in the rendered plan and inline-comment review surface.
+	r.enrichPathRefsFromTexts(evt.ThreadID, &item, evt.Content)
+
 	if err := r.attachPayloadToItemQuiet(item, evt, "proposed_plan", item.Summary, true); err != nil {
 		return err
 	}

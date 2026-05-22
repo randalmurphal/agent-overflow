@@ -373,14 +373,28 @@ element (`data-code-source` / `data-mermaid-source` / `data-math-source`
 `markdownSerialize.ts`'s copy-as-markdown round-trip and
 `DiagramInteractionHost`'s right-click "copy source" still work.
 
-`markdownEnhance.ts` is now a thin file that re-exports the markdown-
-aware copy delegate (`ensureMarkdownCopyDelegate`) and ships
-`enhancePathLinks(container, workspacePath)` for the project-relative
-path linkifier — the only post-Streamdown enhancement we still own.
-The path linkifier walks text nodes for `src/lib/foo.ts:L:C` style
-patterns, replacing them with `<a class="editor-link">` anchors that a
-document-level click delegate routes to the `OpenInEditor` binding.
-ChatMarkdown calls it from a `$effect` once `streaming` flips false.
+Path linkification runs inside marked's parse, not as a post-render
+DOM walker. `pathLinkExtension.ts` builds an inline marked extension
+keyed on the server-validated `PathRef[]` allowlist on `item.meta`
+(`internal/pathlinks` produces the allowlist on every agent-prose
+surface — assistant_text, channel messages, proposed plans,
+ask-user-question, advisor); each match emits a `link` token whose
+href starts with `PATH_LINK_HREF_PREFIX`
+(`agent-overflow:open?nonce=<per-page-load>&`). Streamdown's
+`transformUrl` admits hrefs starting with that exact prefix only, so
+agent prose written as `[click](agent-overflow:open?path=/etc/passwd)`
+gets filtered out before any anchor is rendered — the nonce is
+unguessable from prose because the agent never observes the rendered
+DOM. Allowlisted paths wrapped in backticks (`` `src/foo.ts` ``) also
+linkify — the emitted link token carries a `codespan` child so the
+rendered DOM is `<a href="agent-overflow:open?…"><code>src/foo.ts</code></a>`,
+preserving the monospace pill UX while routing clicks to the editor.
+Non-allowlisted backtick spans fall through to marked's built-in
+codespan tokenizer and render as plain `<code>`. `markdownEnhance.ts`
+is now a thin file that re-exports the markdown-aware copy delegate
+(`ensureMarkdownCopyDelegate`) and the path-link click delegate
+(`ensurePathLinkClickDelegate`) that routes clicks on validated
+anchors to the `OpenInEditor` binding.
 
 All other module-level caches (shiki highlighter, mermaid SVG promise
 cache, language extension map) live inside `svelte-streamdown` itself.

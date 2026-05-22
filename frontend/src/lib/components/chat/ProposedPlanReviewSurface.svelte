@@ -14,7 +14,7 @@
     UpdateProposedPlanComment,
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
-  import type { ProposedPlanComment } from '../../types/models';
+  import type { PathRef, ProposedPlanComment } from '../../types/models';
 
   interface Props {
     threadId: string;
@@ -26,6 +26,11 @@
      *  linkifier finds in the plan markdown. Threaded down from the
      *  caller so an in-thread plan review hits the editor correctly. */
     workspacePath?: string;
+    /** Go-validated path allowlist stamped on the proposed_plan item's
+     *  meta. The review surface splits the same plan markdown across
+     *  blocks for inline commenting; the allowlist applies to all
+     *  blocks because they're slices of the validated source. */
+    pathRefs?: PathRef[];
   }
 
   interface PendingSelection {
@@ -50,7 +55,7 @@
     highlighted: boolean;
   }
 
-  let { threadId, planItemId, markdown, comments, onRefresh, workspacePath = '' }: Props = $props();
+  let { threadId, planItemId, markdown, comments, onRefresh, workspacePath = '', pathRefs = [] }: Props = $props();
 
   let surfaceRoot: HTMLDivElement | undefined = $state(undefined);
   let pendingSelection: PendingSelection | null = $state(null);
@@ -240,7 +245,7 @@
             view.highlighted ? 'bg-accent/5' : '',
           ].join(' ')}
         >
-          <ChatMarkdown source={block.markdown} {workspacePath} class="select-text" />
+          <ChatMarkdown source={block.markdown} {workspacePath} {pathRefs} class="select-text" />
         </div>
         {#if view.anchoredComments.length > 0}
           <div class="mt-2 space-y-2 pl-3">

@@ -23,6 +23,7 @@
     parseProposedPlanPayloadMeta,
   } from '../../utils/proposedPlan';
   import { createPlanSaveDialog } from '../../utils/planSaveDialog.svelte';
+  import { getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { isUiRenderTraceEnabled, recordUiTrace, scheduleDomUiTrace } from '../../utils/uiRenderTrace';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -67,6 +68,10 @@
   // Compute once per markdown change so ReviewSurface's `sourceBlocks` derivation
   // doesn't re-split on every comment add/edit.
   const normalizedMarkdown = $derived(planMarkdown !== null ? normalizePlanMarkdownForExport(planMarkdown) : '');
+  // pathRefs lands on the proposed_plan item.meta at handleProposedPlan
+  // time, so the review surface and the chat card show the same
+  // allowlist for the same plan markdown.
+  const pathRefs = $derived(getPathRefsFromMeta(currentPlan?.meta) ?? []);
 
   const planExport = createPlanSaveDialog(ensurePlanMarkdown, () => ctx.threadId);
 
@@ -252,6 +257,7 @@
               markdown={normalizedMarkdown}
               {comments}
               workspacePath={ctx.workspacePath}
+              {pathRefs}
               onRefresh={() => refreshPlanComments(threadId, planKey)}
             />
           {/key}

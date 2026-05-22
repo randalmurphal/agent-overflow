@@ -58,10 +58,10 @@ func (s *Store) DeleteChannel(id string) error {
 func (s *Store) InsertChannelMessage(msg ChannelMessage) error {
 	_, err := s.db.Exec(
 		`INSERT INTO channel_messages (
-			id, channel_id, sequence, from_type, from_id, from_role, content, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, channel_id, sequence, from_type, from_id, from_role, content, meta, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.ID, msg.ChannelID, msg.Sequence, msg.FromType, msg.FromID, nilIfEmpty(msg.FromRole),
-		msg.Content, msg.CreatedAt,
+		msg.Content, nilIfEmpty(msg.Meta), msg.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert channel message %s: %w", msg.ID, err)
@@ -76,12 +76,12 @@ func (s *Store) InsertChannelMessage(msg ChannelMessage) error {
 func (s *Store) InsertChannelMessageAtomic(msg ChannelMessage) (int, error) {
 	var sequence int
 	err := s.db.QueryRow(
-		`INSERT INTO channel_messages (id, channel_id, sequence, from_type, from_id, from_role, content, created_at)
-		 SELECT ?, ?, COALESCE(MAX(sequence), -1) + 1, ?, ?, ?, ?, ?
+		`INSERT INTO channel_messages (id, channel_id, sequence, from_type, from_id, from_role, content, meta, created_at)
+		 SELECT ?, ?, COALESCE(MAX(sequence), -1) + 1, ?, ?, ?, ?, ?, ?
 		 FROM channel_messages WHERE channel_id = ?
 		 RETURNING sequence`,
 		msg.ID, msg.ChannelID, msg.FromType, msg.FromID, nilIfEmpty(msg.FromRole),
-		msg.Content, msg.CreatedAt, msg.ChannelID,
+		msg.Content, nilIfEmpty(msg.Meta), msg.CreatedAt, msg.ChannelID,
 	).Scan(&sequence)
 	if err != nil {
 		return 0, fmt.Errorf("store: insert channel message atomic %s: %w", msg.ID, err)
@@ -90,7 +90,7 @@ func (s *Store) InsertChannelMessageAtomic(msg ChannelMessage) (int, error) {
 }
 
 func (s *Store) ListChannelMessages(channelID string, afterSeq, limit int) ([]ChannelMessage, error) {
-	baseQuery := `SELECT id, channel_id, sequence, from_type, from_id, COALESCE(from_role, ''), content, created_at
+	baseQuery := `SELECT id, channel_id, sequence, from_type, from_id, COALESCE(from_role, ''), content, COALESCE(meta, ''), created_at
 		FROM channel_messages WHERE channel_id = ? AND sequence > ? ORDER BY sequence ASC`
 	args := []any{channelID, afterSeq}
 	if limit > 0 {
@@ -115,6 +115,7 @@ func (s *Store) ListChannelMessages(channelID string, afterSeq, limit int) ([]Ch
 			&msg.FromID,
 			&msg.FromRole,
 			&msg.Content,
+			&msg.Meta,
 			&msg.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan channel message: %w", err)

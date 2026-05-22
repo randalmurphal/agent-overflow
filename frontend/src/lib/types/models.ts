@@ -118,13 +118,15 @@ export type ItemKind =
 
 /**
  * One validated file-path reference for the chat surface's auto
- * linkifier. Produced by `internal/pathlinks` Go-side at message
- * settle time and shipped on `Item.meta` (key: `pathRefs`). The
- * frontend trusts each entry as a confirmed file path and wraps the
- * matching prose token in an `<a class="editor-link">`. An `@`
- * preceding the occurrence is widened into the wrapped span by the
- * frontend at find-and-wrap time; `path` here always carries the
- * real file path without any `@` prefix.
+ * linkifier. Produced by `internal/pathlinks` Go-side and shipped on
+ * `Item.meta` (key: `pathRefs`). The frontend trusts each entry as a
+ * confirmed file path and emits a marked `link` token with an
+ * `agent-overflow:open?path=…` href during the initial markdown parse
+ * (`utils/pathLinkExtension.ts`). A document-level click delegate
+ * forwards the click to `OpenInEditor`. An `@` preceding the
+ * occurrence is widened into the wrapped span at tokenizer time; the
+ * `path` here always carries the real file path without any `@`
+ * prefix.
  */
 export interface PathRef {
   path: string;

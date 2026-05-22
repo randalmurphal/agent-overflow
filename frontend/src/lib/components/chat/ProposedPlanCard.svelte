@@ -10,6 +10,7 @@
     shouldCapProposedPlanBody,
   } from '../../utils/proposedPlan';
   import { createPlanSaveDialog } from '../../utils/planSaveDialog.svelte';
+  import { getPathRefsFromMeta } from '../../utils/pathLinkify';
   import ProposedPlanActions from './ProposedPlanActions.svelte';
   import ProposedPlanBody from './ProposedPlanBody.svelte';
   import ProposedPlanSaveModal from './ProposedPlanSaveModal.svelte';
@@ -48,6 +49,11 @@
   const cappedBody = $derived(shouldCapProposedPlanBody(meta));
   const planMarkdown = $derived(expansion.displayData);
   const displayedMarkdown = $derived(planMarkdown ?? meta.preview);
+  // pathRefs is stamped onto the proposed_plan item meta at write time
+  // (internal/triage/payload_items.go#handleProposedPlan). The body is
+  // the same plan markdown the validator saw, so the allowlist applies
+  // to both the inline card body and the review surface.
+  const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? []);
 
   const planExport = createPlanSaveDialog(ensurePlanMarkdown, () => pane.threadId);
 
@@ -96,6 +102,7 @@
       loading={expansion.loading}
       error={expansion.error}
       workspacePath={paneWorkspacePath(pane)}
+      {pathRefs}
     />
     {#if isAccepted}
       <p class="mt-2 text-[11px] text-fg-hint" data-testid="proposed-plan-accepted">

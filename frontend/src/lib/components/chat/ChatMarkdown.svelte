@@ -16,24 +16,32 @@
   // shiki / mermaid / katex / copy buttons. The library handles all four
   // natively as opt-in components.
   //
-  // What we still own as a post-process pass:
-  //   - **Path linkification** — wrapping `src/lib/foo.ts:42` style
-  //     paths that appear in PROSE TEXT (not as markdown links) with
-  //     editor-open anchors. The library doesn't know about our
-  //     project-relative path resolution, and walking text nodes after
-  //     render is the simplest correct path. Skipped while streaming
-  //     for the same reason as before — the source is moving and
-  //     re-walking on every chunk would burn cycles.
-  //   - **Markdown-aware copy** — the document-level `copy` delegate
-  //     reads `.markdown-body` and serializes the selected range back
-  //     to markdown. Outer wrapper still carries that class.
+  // **Path linkification** is now part of the initial markdown parse:
+  // `pathLinkExtension.ts` builds a marked inline extension that turns
+  // each server-validated path in `pathRefs` into a real markdown `link`
+  // token. By the time the DOM exists, the anchor is already settled —
+  // no post-render walker, no visible "shift" when streaming ends. A
+  // document-level click delegate (installed by markdownEnhance.ts)
+  // intercepts clicks on `agent-overflow:open?path=…` hrefs and forwards
+  // to the `OpenInEditor` binding.
+  //
+  // **Markdown-aware copy** still runs through the document-level copy
+  // delegate, reading `.markdown-body` and serializing the selected
+  // range back to markdown. Outer wrapper still carries that class.
 
   import { Streamdown } from 'svelte-streamdown';
   import StreamdownCodeHost from './markdown/StreamdownCodeHost.svelte';
   import StreamdownMermaidHost from './markdown/StreamdownMermaidHost.svelte';
   import StreamdownMathHost from './markdown/StreamdownMathHost.svelte';
   import { chatMarkdownTheme, extraShikiLanguages } from './markdown/streamdownTheme';
-  import { enhancePathLinks, ensureMarkdownCopyDelegate } from '../../utils/markdownEnhance';
+  import {
+    ensureMarkdownCopyDelegate,
+    ensurePathLinkClickDelegate,
+  } from '../../utils/markdownEnhance';
+  import {
+    PATH_LINK_HREF_PREFIX,
+    buildPathLinkExtension,
+  } from '../../utils/pathLinkExtension';
   import type { PathRef } from '../../types/models';
 
   let {
@@ -52,39 +60,46 @@
      *  to-open will surface a clear "requires workspacePath" error. */
     workspacePath?: string;
     /** Server-validated allowlist of file paths to linkify in prose.
-     *  Pass the parsed `pathRefs` from `Item.meta` for assistant_text
-     *  rows; non-enriched surfaces leave undefined and `enhancePathLinks`
-     *  falls back to the local regex (today's behavior). An empty
-     *  array means "Go saw nothing real, render plain text" — pre-
-     *  pathlinks history rows pass `[]` rather than `undefined` so
-     *  they don't fall back to the regex and re-acquire false
-     *  positives that were never validated. */
+     *  When defined, only paths in this list get the `agent-overflow:`
+     *  link treatment. Pass `[]` (not `undefined`) on surfaces that
+     *  haven't been wired to a validation pipeline yet, so the marked
+     *  extension is skipped entirely rather than fabricating links. */
     pathRefs?: PathRef[];
     class?: string;
   } = $props();
 
   let root: HTMLDivElement | undefined = $state();
 
-  // Install the markdown-aware copy delegate once per page lifetime.
-  // Lives on document; subsequent ChatMarkdown mounts are no-ops here.
+  // Install document-level delegates once per page lifetime. Subsequent
+  // ChatMarkdown mounts are no-ops; subsequent calls from other surfaces
+  // share the same listeners.
   $effect(() => {
     ensureMarkdownCopyDelegate();
+    ensurePathLinkClickDelegate();
   });
 
-  // Path-link enrichment runs after Streamdown has settled the DOM for
-  // a given source. Skipped during streaming because (a) text nodes are
-  // mutating and walking them mid-stream would re-linkify partial
-  // paths repeatedly, and (b) the user can't click yet anyway. Once
-  // streaming flips off, the source is settled and we walk the rendered
-  // tree once. Subsequent source changes (rare on a completed item)
-  // re-run the walker; the linkifier skips already-converted anchors.
-  $effect(() => {
-    void source;
-    void pathRefs;
-    if (streaming) return;
-    if (!root) return;
-    enhancePathLinks(root, workspacePath, pathRefs);
-  });
+  // Marked inline extension derived from the validated allowlist. The
+  // extension is rebuilt on every change to `pathRefs` / `workspacePath`
+  // — both should be stable across streaming chunks, so the rebuild
+  // cost is negligible. When the allowlist is empty (or undefined), the
+  // primitive returns undefined and we pass no extensions array, leaving
+  // Streamdown to render unenriched markdown.
+  const pathLinkExtension = $derived(
+    pathRefs && pathRefs.length > 0
+      ? buildPathLinkExtension(pathRefs, workspacePath)
+      : undefined,
+  );
+  const extensions = $derived(pathLinkExtension ? [pathLinkExtension] : undefined);
+
+  // The path-link prefix carries a per-page-load nonce so only links
+  // emitted by our marked extension pass Streamdown's `transformUrl`
+  // gate. The default `*` sentinel only scopes http/https URLs (see
+  // streamdown's url.js); custom schemes need an exact prefix match
+  // on the canonical href. Agent prose like
+  // `[click](agent-overflow:open?path=/etc/passwd)` cannot satisfy
+  // the nonce-prefixed form and is rejected before any anchor is
+  // rendered.
+  const allowedLinkPrefixes = ['*', PATH_LINK_HREF_PREFIX];
 </script>
 
 <div
@@ -97,10 +112,11 @@
     baseTheme="tailwind"
     theme={chatMarkdownTheme}
     shikiLanguages={extraShikiLanguages}
-    allowedLinkPrefixes={['*']}
+    {allowedLinkPrefixes}
     allowedImagePrefixes={['*']}
     renderHtml={false}
     controls={{ code: false, table: false }}
+    {extensions}
     components={{
       code: StreamdownCodeHost,
       mermaid: StreamdownMermaidHost,

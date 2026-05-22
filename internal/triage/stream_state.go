@@ -323,6 +323,13 @@ func (r *Router) doSettleStreamingText(threadID, itemID, status, finalContent st
 	// represents a streaming slot that just closed; without the drain,
 	// queued non-streaming rows behind the lock would leak.
 	defer r.finishSettle(threadID)
+	// The live-stream path-refs cache only exists for streaming rows.
+	// Clear it AFTER flushStreamingItem so the final-flush emit still
+	// sees the prior hash and short-circuits in the common case where
+	// the last 250ms window added no new paths. Clearing before the
+	// flush would force a redundant action:meta emit and UpdateItemMeta
+	// for every settled text row with paths.
+	defer r.clearStreamingPathRefs(threadID, itemID)
 
 	if err := r.flushStreamingItem(threadID, itemID); err != nil {
 		return err
@@ -464,29 +471,38 @@ func (r *Router) nextTextItemID(threadID string, turnIndex int, scope string) st
 	return textItemID(turnIndex, scope, r.segmentIndexByScope[key])
 }
 
-// enrichPathRefs is the settle-time hook that validates path-shaped
-// tokens in the item's summary against the workspace filesystem and
-// stores the resulting allowlist on item.Meta. Only assistant_text
-// rows are enriched today; user_text and thinking rows render
-// through plain-text components and don't consume the allowlist.
+// enrichPathRefs is the settle-time hook for assistant_text rows.
+// Delegates to enrichPathRefsFromTexts using item.Summary as the only
+// validation source. Kept as a wrapper so the streaming-text settle
+// path stays unchanged.
 //
-// Failures are non-fatal: a missing thread record or a malformed
-// existing meta JSON falls back to skipping enrichment so the
-// settle path stays robust under partial state. The cost (Go regex
-// + os.Stat × unique paths) is sub-frame for realistic messages —
-// see internal/pathlinks/AGENTS.md for measured ranges.
+// Other persist sites (ProposedPlan, AskUserQuestion, advisor result,
+// ChannelMessage) live in different fields than item.Summary and call
+// enrichPathRefsFromTexts directly with the correct source.
 func (r *Router) enrichPathRefs(threadID string, item *store.Item) {
 	if item.Kind != itemKindAssistantText {
 		return
 	}
-	if item.Summary == "" {
-		return
-	}
+	r.enrichPathRefsFromTexts(threadID, item, item.Summary)
+}
+
+// enrichPathRefsFromTexts is the explicit-source variant. It validates
+// path-shaped tokens across one or more text sources against the
+// workspace filesystem and stores the resulting allowlist on item.Meta.
+// Per-item dedupe keeps the slice size bounded when several sources
+// reference the same path.
+//
+// Failures are non-fatal: a missing thread record or a malformed
+// existing meta JSON falls back to skipping enrichment so the
+// persist path stays robust under partial state. The cost (Go regex
+// + os.Stat × unique paths) is sub-frame for realistic messages —
+// see internal/pathlinks/AGENTS.md for measured ranges.
+func (r *Router) enrichPathRefsFromTexts(threadID string, item *store.Item, sources ...string) {
 	workspacePath := r.workspacePathFor(threadID)
 	if workspacePath == "" {
 		return
 	}
-	refs := pathlinks.ExtractAndValidate(workspacePath, item.Summary)
+	refs := extractPathRefsFromTexts(workspacePath, sources)
 	if len(refs) == 0 {
 		return
 	}
@@ -496,6 +512,100 @@ func (r *Router) enrichPathRefs(threadID string, item *store.Item) {
 		return
 	}
 	item.Meta = merged
+}
+
+// extractPathRefsFromTexts runs the per-source pathlinks validator
+// and concatenates the results. Duplicates across sources are kept
+// because PathRefs carry occurrence-level info — the frontend wraps
+// per-occurrence, and the per-source ExtractAndValidate already dedupes
+// its own stat calls so cost stays bounded.
+func extractPathRefsFromTexts(workspacePath string, sources []string) []pathlinks.PathRef {
+	var all []pathlinks.PathRef
+	for _, text := range sources {
+		if text == "" {
+			continue
+		}
+		refs := pathlinks.ExtractAndValidate(workspacePath, text)
+		if len(refs) == 0 {
+			continue
+		}
+		all = append(all, refs...)
+	}
+	return all
+}
+
+// clearStreamingPathRefs drops the live-stream pathRefs dedupe cache
+// for a single (threadID, itemID). Called when a streaming row
+// transitions out of streaming state (doSettleStreamingText) so the
+// cache doesn't outlive the row. Per-thread sweeps in
+// CleanupThread / ResetThreadForRollback / clearActiveStreamBlocksForTurnLocked
+// cover the broader teardown paths.
+func (r *Router) clearStreamingPathRefs(threadID, itemID string) {
+	if threadID == "" || itemID == "" {
+		return
+	}
+	key := streamPersistKey(threadID, itemID)
+	r.mu.Lock()
+	delete(r.streamingPathRefsLast, key)
+	r.mu.Unlock()
+}
+
+// enrichStreamingPathRefsAndEmit re-validates path-shaped tokens
+// against the live Summary of an in-flight assistant_text row,
+// persists the resulting allowlist via UpdateItemMeta (which does NOT
+// bump updated_at), and emits a `provider:item_event` with
+// action:"meta" so the frontend can re-render path links mid-stream.
+//
+// Why this exists: settle-time enrichment (enrichPathRefs) only fires
+// when the stream ends, so a user watching a long assistant_text
+// stream sees raw paths until the model finishes. This helper runs on
+// every flush-persistence tick for an assistant_text row, gated by a
+// per-row last-merged cache so unchanged validator output
+// short-circuits before the SQLite UPDATE and the event emit.
+//
+// `item` is the row AppendItemSummary just returned to the caller —
+// caller-side invariants (only fires from flushStreamPersistence's
+// itemKindAssistantText case after a successful summary append) make
+// the kind/status fields trustworthy without a re-fetch.
+//
+// An empty refs slice is a no-op: triage's settle path leaves meta
+// untouched when nothing validates, so the streaming path mirrors
+// that — no need to push `{"pathRefs":[]}` rows just to confirm
+// "still no paths." Once a path appears the merged value differs
+// from the cached one, emission fires.
+//
+// Best-effort: a thread without a workspace or a merge failure
+// returns silently. The settle path will re-run enrichPathRefs
+// against the final summary either way.
+func (r *Router) enrichStreamingPathRefsAndEmit(item store.Item, updatedAt int64) {
+	workspacePath := r.workspacePathFor(item.ThreadID)
+	if workspacePath == "" {
+		return
+	}
+	refs := extractPathRefsFromTexts(workspacePath, []string{item.Summary})
+	if len(refs) == 0 {
+		return
+	}
+	merged, err := mergePathRefsIntoMeta(item.Meta, refs)
+	if err != nil {
+		log.Printf("triage: streaming pathlinks merge meta for %s: %v", item.ID, err)
+		return
+	}
+	key := streamPersistKey(item.ThreadID, item.ID)
+	r.mu.Lock()
+	previous := r.streamingPathRefsLast[key]
+	r.mu.Unlock()
+	if previous == merged {
+		return
+	}
+	if err := r.store.UpdateItemMeta(item.ThreadID, item.ID, merged); err != nil {
+		log.Printf("triage: streaming pathlinks UpdateItemMeta %s: %v", item.ID, err)
+		return
+	}
+	r.mu.Lock()
+	r.streamingPathRefsLast[key] = merged
+	r.mu.Unlock()
+	r.emit("provider:item_event", newItemStreamMeta(item.ThreadID, item.ID, item.Kind, merged, updatedAt))
 }
 
 // workspacePathFor returns the WorkspacePath for threadID, using a
@@ -541,7 +651,7 @@ func mergePathRefsIntoMeta(meta string, refs []pathlinks.PathRef) (string, error
 	// skips both the unmarshal and the map allocation.
 	trimmed := strings.TrimSpace(meta)
 	if trimmed == "" || trimmed == "{}" {
-		return marshalPathRefsOnly(refs)
+		return pathlinks.MarshalRefsJSON(refs)
 	}
 	obj := map[string]json.RawMessage{}
 	// json.Unmarshal into the map preserves the raw bytes of
@@ -549,24 +659,14 @@ func mergePathRefsIntoMeta(meta string, refs []pathlinks.PathRef) (string, error
 	if err := json.Unmarshal([]byte(trimmed), &obj); err != nil {
 		// Not a JSON object — overwrite. Log so corruption is visible.
 		log.Printf("triage: pathlinks merge skipped corrupt meta: %v", err)
-		return marshalPathRefsOnly(refs)
+		return pathlinks.MarshalRefsJSON(refs)
 	}
 	encoded, err := json.Marshal(refs)
 	if err != nil {
 		return "", err
 	}
-	obj["pathRefs"] = encoded
+	obj[pathlinks.MetaKey] = encoded
 	out, err := json.Marshal(obj)
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
-}
-
-func marshalPathRefsOnly(refs []pathlinks.PathRef) (string, error) {
-	out, err := json.Marshal(struct {
-		PathRefs []pathlinks.PathRef `json:"pathRefs"`
-	}{PathRefs: refs})
 	if err != nil {
 		return "", err
 	}

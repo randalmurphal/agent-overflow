@@ -47,6 +47,7 @@
     type AskQuestion,
   } from './askUserQuestionData';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
+  import { getPathRefsFromMeta } from '../../utils/pathLinkify';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
@@ -74,6 +75,12 @@
   }
 
   const itemMeta = $derived(parseJsonObject(item.meta));
+
+  // pathRefs is stamped onto the AskUserQuestion / request_user_input
+  // item.meta at persistToolCallLaunch time. The same allowlist applies
+  // to every question/option body the card renders through ChatMarkdown
+  // — they all flowed through the validator off the same workspace.
+  const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? []);
 
   const questions = $derived.by<AskQuestion[]>(() => {
     return extractQuestions(itemMeta);
@@ -202,7 +209,13 @@
                   {q.header}
                 </p>
               {/if}
-              <p class="text-xs text-fg">{q.question}</p>
+              <div class="text-xs text-fg" data-testid="ask-user-question-prompt">
+                <ChatMarkdown
+                  source={q.question}
+                  workspacePath={paneWorkspacePath(pane)}
+                  {pathRefs}
+                />
+              </div>
               {#if q.options && q.options.length > 0}
                 <ul class="ml-2 space-y-1">
                   {#each q.options as option (option.label)}
@@ -236,6 +249,7 @@
                             <ChatMarkdown
                               source={option.preview}
                               workspacePath={paneWorkspacePath(pane)}
+                              {pathRefs}
                               class="text-[11px]"
                             />
                           </div>

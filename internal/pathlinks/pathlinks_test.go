@@ -338,4 +338,81 @@ func TestExtractAndValidate(t *testing.T) {
 			t.Fatalf("expected order [src/b.ts, src/a.ts], got %#v", got)
 		}
 	})
+
+	t.Run("rejects workspace-internal symlink that points outside the workspace", func(t *testing.T) {
+		// Threat: an agent with prior Bash/Write access plants a
+		// symlink inside the workspace pointing at a host-sensitive
+		// file (`docs/notes.md` → `/etc/passwd`) and then references
+		// it in prose. Without symlink resolution, the lexical Rel
+		// check passes (path is inside workspace) and os.Stat
+		// follows the symlink — the link would then be clickable
+		// and would open /etc/passwd in the user's $EDITOR.
+		root := t.TempDir()
+		ws := filepath.Join(root, "ws")
+		if err := os.MkdirAll(filepath.Join(ws, "docs"), 0o755); err != nil {
+			t.Fatalf("mkdir ws/docs: %v", err)
+		}
+		target := filepath.Join(root, "outside.txt")
+		if err := os.WriteFile(target, []byte("secret"), 0o644); err != nil {
+			t.Fatalf("seed target: %v", err)
+		}
+		link := filepath.Join(ws, "docs", "notes.md")
+		if err := os.Symlink(target, link); err != nil {
+			t.Skipf("symlink unsupported in this test env: %v", err)
+		}
+		got := ExtractAndValidate(ws, "look at docs/notes.md please")
+		if got != nil {
+			t.Fatalf("expected nil for symlink-escape, got %#v", got)
+		}
+	})
+
+	t.Run("accepts a workspace-internal symlink that resolves inside the workspace", func(t *testing.T) {
+		// Mirror case: a symlink whose target IS inside the
+		// workspace (e.g. versioned `current/readme.md → v1.0/readme.md`)
+		// is safe and should still linkify. Path body needs at least
+		// one '/' to satisfy pathPattern, so set it up as a nested
+		// directory entry rather than a top-level file.
+		ws := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(ws, "v1.0"), 0o755); err != nil {
+			t.Fatalf("mkdir v1.0: %v", err)
+		}
+		real := filepath.Join(ws, "v1.0", "readme.md")
+		if err := os.WriteFile(real, nil, 0o644); err != nil {
+			t.Fatalf("seed real: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Join(ws, "current"), 0o755); err != nil {
+			t.Fatalf("mkdir current: %v", err)
+		}
+		link := filepath.Join(ws, "current", "readme.md")
+		if err := os.Symlink(real, link); err != nil {
+			t.Skipf("symlink unsupported: %v", err)
+		}
+		got := ExtractAndValidate(ws, "see current/readme.md for details")
+		if len(got) != 1 || got[0].Path != "current/readme.md" {
+			t.Fatalf("expected one ref for current/readme.md, got %#v", got)
+		}
+	})
+
+	t.Run("workspace path that is itself behind a symlink still validates real files", func(t *testing.T) {
+		// On macOS /tmp is a symlink to /private/tmp; the lexical Rel
+		// check against the unresolved workspacePath would treat
+		// candidates resolved through EvalSymlinks as escaping. The
+		// fix EvalSymlinks BOTH sides of the comparison.
+		base := t.TempDir()
+		realWs := filepath.Join(base, "real")
+		if err := os.MkdirAll(filepath.Join(realWs, "src"), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(realWs, "src", "foo.ts"), nil, 0o644); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		aliasWs := filepath.Join(base, "alias")
+		if err := os.Symlink(realWs, aliasWs); err != nil {
+			t.Skipf("symlink unsupported: %v", err)
+		}
+		got := ExtractAndValidate(aliasWs, "edit src/foo.ts now")
+		if len(got) != 1 || got[0].Path != "src/foo.ts" {
+			t.Fatalf("expected ref for src/foo.ts via aliased workspace, got %#v", got)
+		}
+	})
 }

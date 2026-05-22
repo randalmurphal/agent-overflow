@@ -1,19 +1,23 @@
 // Pure utility: extract file-path references from a free-text string.
 //
-// This is the **fallback** matcher. The canonical path-link pipeline
-// runs in Go: `internal/pathlinks.ExtractAndValidate` produces a
-// workspace-validated allowlist on assistant_text settle, and
-// `markdownEnhance.ts` wraps only those tokens (allowlist mode). This
-// file's `findPathRanges` is used in two narrow places:
-//   1. Non-assistant surfaces that don't carry a Go-validated allowlist
-//      (ChannelView, ProposedPlan, AskUserQuestion,
-//      ComposerPendingUserInputPanel). `enhancePathLinks` falls back
-//      here when `pathRefs` is undefined.
-//   2. `toolCardPreview.ts` — trusted-source leading-path detection
-//      in tool card headers, where no fs check is needed.
-// Both consumers tolerate false positives because they're either
-// already in trusted contexts (#2) or surface-limited (#1) — but new
-// callers should prefer the Go-validated allowlist whenever possible.
+// The canonical path-link pipeline runs in Go:
+// `internal/pathlinks.ExtractAndValidate` produces a workspace-validated
+// `PathRef[]` allowlist on every surface that renders agent prose
+// (assistant_text, channel messages, proposed plans, ask-user-question
+// rows, advisor rows). The allowlist rides on `item.meta` /
+// `msg.meta` under the `pathRefs` key (see
+// `internal/pathlinks.MetaKey`); the frontend reads it via
+// `getPathRefsFromMeta` and hands it to `pathLinkExtension.ts`, which
+// builds a marked inline extension that emits link tokens during the
+// initial parse. That is the only path that produces clickable path
+// anchors — agent prose can no longer linkify itself.
+//
+// `findPathRanges` below is the local matcher; it has exactly one
+// consumer left: `toolCardPreview.ts` uses it for trusted-source
+// leading-path detection in tool card headers (the path comes from the
+// provider's tool-call args, not free-form agent prose, so no fs check
+// is needed). Don't add new callers — anything rendering untrusted
+// prose must use the Go-validated allowlist via `getPathRefsFromMeta`.
 //
 // The shapes we want to match are:
 //   path/to/file.ext
@@ -98,13 +102,14 @@ export interface PathRange {
 // tail of `https://example.com/foo` (the `e` before `x` is alphanumeric)
 // and `@scope/pkg` (the `@` is the immediately-preceding char). The
 // rejection of `@`-prefixed tokens is intentional here: this regex is
-// the **local** matcher used by `toolCardPreview.ts` and by
-// `enhancePathLinks` fallback for non-enriched surfaces — neither
-// path has fs validation, so an `@scope/pkg.something` shape can't
-// be told apart from `@workspace/file.ts` without one. Allowlist
-// mode in `enhancePathLinks` builds its own matcher that DOES
-// include `@`-prefix widening, because each path in the allowlist
-// has already been validated by Go against the workspace fs.
+// the local matcher used by `toolCardPreview.ts` against
+// trusted-source tool-call args; without fs validation, an
+// `@scope/pkg.something` shape can't be told apart from
+// `@workspace/file.ts`. Untrusted prose goes through the Go-validated
+// allowlist on `item.meta.pathRefs` instead — that path widens to
+// `@workspace/...` shapes safely because each entry has already been
+// validated by `internal/pathlinks.ExtractAndValidate` against the
+// workspace fs.
 const PATH_PATTERN =
   /(?:^|(?<=[\s(\[{,;'"`<>=]))((?:\.{0,2}\/|\/)?[\w.\-~]+(?:\/[\w.\-~]+)+)(?::(\d+)(?::(\d+))?)?/g;
 

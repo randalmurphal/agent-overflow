@@ -728,6 +728,12 @@ function applyItemStreamEvent(evt: ItemStreamEvent): void {
     if (!isBoundedString(evt.kind, 128)) return;
     if (!isBoundedString(evt.delta) || evt.delta === '') return;
     if (!isFiniteNumber(evt.updatedAt)) return;
+  } else if (evt.action === 'meta') {
+    if (!isBoundedString(evt.threadId, 512)) return;
+    if (!isBoundedString(evt.itemId, 512) || evt.itemId.trim() === '') return;
+    if (!isBoundedString(evt.kind, 128)) return;
+    if (!isBoundedString(evt.meta)) return;
+    if (!isFiniteNumber(evt.updatedAt)) return;
   } else {
     return;
   }
@@ -805,6 +811,20 @@ function flushItemEventQueue(): void {
       flushPendingDeltas();
       if (!isValidItemForThread(evt.item, evt.threadId)) continue;
       pendingUpserts.push({ item: evt.item, countsAsActivity: evt.countsAsActivity });
+      continue;
+    }
+    if (evt.action === 'meta') {
+      // Re-validated meta blob (e.g. live path-link allowlist for an
+      // in-flight assistant_text row). Pending deltas for the same row
+      // must apply FIRST so the new meta lands against text the user
+      // has already seen; upserts in the same batch must apply too so
+      // the row exists by the time we set its meta.
+      flushPendingDeltas();
+      flushPendingUpserts();
+      for (const pane of iterPanes()) {
+        if (pane.threadId !== evt.threadId) continue;
+        pane.applyItemMeta(evt);
+      }
       continue;
     }
     if (evt.action !== 'delta') continue;

@@ -6,6 +6,7 @@ import {
   installExternalLinkDelegate,
   safeExternalURL,
 } from './externalLinks';
+import { buildPathLinkHref } from './pathLinkExtension';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { resetRunMode, setRunMode } from '../../test/runMode';
 
@@ -171,12 +172,14 @@ describe('installExternalLinkDelegate', () => {
     expect(open).not.toHaveBeenCalled();
   });
 
-  it('leaves editor links to the editor-link delegate', () => {
+  it('leaves path-link anchors (agent-overflow: scheme) to the path-link delegate', () => {
     const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
     cleanup = installExternalLinkDelegate();
     const link = document.createElement('a');
-    link.href = '#';
-    link.className = 'editor-link';
+    // Use buildPathLinkHref so the nonce baked into the prefix is
+    // present — that's what the delegate checks for and what a real
+    // anchor mounted by the marked extension would carry.
+    link.href = buildPathLinkHref('src/foo.ts', undefined, undefined, '');
     document.body.appendChild(link);
 
     const event = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });

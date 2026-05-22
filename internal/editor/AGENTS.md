@@ -22,8 +22,10 @@ editor reachable via the vendor's WSL Remote integration.
 - `spawn.go` + `spawn_unix.go` / `spawn_windows.go` — argv assembly
   per launch style, OS-specific `SysProcAttr` so the child outlives
   the parent, and `ResolvePath` — the path-shape contract `Open`
-  enforces (absolute-canonical pass-through, relative-against-workspace
-  joining, traversal-escape rejection).
+  enforces (absolute-canonical pass-through when no workspace is
+  supplied; absolute-with-workspace must be inside the workspace;
+  relative-against-workspace joining with traversal-escape and
+  symlink-escape rejection).
 
 ## Responsibility boundary
 

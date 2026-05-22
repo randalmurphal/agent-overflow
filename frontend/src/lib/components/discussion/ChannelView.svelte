@@ -11,6 +11,7 @@
   import Button from '../primitives/Button.svelte';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import ScrollToBottomButton from '../chat/ScrollToBottomButton.svelte';
+  import { getPathRefsFromMeta } from '../../utils/pathLinkify';
 
   let {
     pane,
@@ -316,6 +317,7 @@
               <ChatMarkdown
                 source={msg.content}
                 workspacePath={paneWorkspacePath(pane)}
+                pathRefs={getPathRefsFromMeta(msg.meta) ?? []}
                 class="text-[13px] text-fg break-words"
               />
             </div>

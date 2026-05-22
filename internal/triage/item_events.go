@@ -5,6 +5,14 @@ import "agent-overflow/internal/store"
 const (
 	itemStreamActionUpsert = "upsert"
 	itemStreamActionDelta  = "delta"
+	// itemStreamActionMeta carries a re-validated `meta` blob for a
+	// row that already exists on the frontend. Used today to push
+	// fresh `pathRefs` allowlists onto in-flight assistant_text rows
+	// so links can render mid-stream instead of only at settle.
+	// Frontend consumers preserve delta ordering: any pending deltas
+	// for the same row flush BEFORE the meta replaces the row, so
+	// the meta lands against text the user has already seen.
+	itemStreamActionMeta = "meta"
 )
 
 type ItemStreamEvent struct {
@@ -15,6 +23,7 @@ type ItemStreamEvent struct {
 	ItemID           string      `json:"itemId,omitempty"`
 	Kind             string      `json:"kind,omitempty"`
 	Delta            string      `json:"delta,omitempty"`
+	Meta             string      `json:"meta,omitempty"`
 	UpdatedAt        int64       `json:"updatedAt,omitempty"`
 }
 
@@ -39,5 +48,16 @@ func newItemStreamDelta(evt ItemDeltaEvent) ItemStreamEvent {
 		Kind:      evt.Kind,
 		Delta:     evt.Delta,
 		UpdatedAt: evt.UpdatedAt,
+	}
+}
+
+func newItemStreamMeta(threadID, itemID, kind, meta string, updatedAt int64) ItemStreamEvent {
+	return ItemStreamEvent{
+		Action:    itemStreamActionMeta,
+		ThreadID:  threadID,
+		ItemID:    itemID,
+		Kind:      kind,
+		Meta:      meta,
+		UpdatedAt: updatedAt,
 	}
 }

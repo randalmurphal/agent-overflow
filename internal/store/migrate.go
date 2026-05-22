@@ -32,6 +32,11 @@ var migrations = []Migration{
 		Name:    "initial_schema",
 		SQL:     initialSchemaSQL,
 	},
+	{
+		Version: 2,
+		Name:    "channel_messages_meta",
+		SQL:     `ALTER TABLE channel_messages ADD COLUMN meta TEXT NULL;`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

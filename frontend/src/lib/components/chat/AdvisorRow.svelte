@@ -32,6 +32,7 @@
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { createRunningElapsed } from './useRunningElapsed.svelte';
   import ExpandablePayloadBody from './ExpandablePayloadBody.svelte';
+  import { getPathRefsFromMeta } from '../../utils/pathLinkify';
 
   // Server-side preview is capped at 240 chars in
   // internal/triage/tool_lifecycle.go#completionPayload; the
@@ -106,6 +107,11 @@
   );
 
   keepExpandedPayloadFresh(() => expansion, () => Boolean(item.payloadId));
+
+  // Advisor body text is validated at persistToolCallCompletion time
+  // (see internal/triage/tool_lifecycle.go). The validated allowlist
+  // lives on item.meta.pathRefs alongside item.meta.advisor_model.
+  const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? []);
 </script>
 
 <div class="group/tool overflow-hidden" data-testid="advisor-row" data-tool-kind="brain">
@@ -162,6 +168,6 @@
 
 {#snippet advisorBodyContent({ data, testId }: { data: string; testId: string })}
   <div class="px-3 py-2 text-[12px] leading-relaxed text-fg-muted" data-testid={testId}>
-    <ChatMarkdown source={data} workspacePath={paneWorkspacePath(pane)} />
+    <ChatMarkdown source={data} workspacePath={paneWorkspacePath(pane)} {pathRefs} />
   </div>
 {/snippet}

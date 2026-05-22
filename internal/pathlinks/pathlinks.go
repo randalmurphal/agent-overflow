@@ -33,11 +33,31 @@
 package pathlinks
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 )
+
+// MetaKey is the JSON object key under which a validated PathRef
+// allowlist lives on persisted item / channel-message meta. The
+// frontend's getPathRefsFromMeta reads the same key — keep them in
+// sync.
+const MetaKey = "pathRefs"
+
+// MarshalRefsJSON returns `{"pathRefs":[...]}` for the given refs.
+// Centralised so triage and discussion can't drift on the wire shape
+// — both call this, never re-emit the struct literal inline.
+func MarshalRefsJSON(refs []PathRef) (string, error) {
+	out, err := json.Marshal(struct {
+		PathRefs []PathRef `json:"pathRefs"`
+	}{PathRefs: refs})
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
 
 // PathRef is one validated path occurrence. Multiple occurrences of
 // the same Path produce multiple PathRef entries so the frontend can
@@ -184,6 +204,17 @@ func extractAndValidate(workspacePath, text string, stat statFunc) []PathRef {
 	if workspacePath == "" || !filepath.IsAbs(workspacePath) || filepath.Clean(workspacePath) != workspacePath {
 		return nil
 	}
+	// Resolve the workspace's own symlinks once. The boundary check
+	// must compare symlink-resolved paths on both sides, or a workspace
+	// whose own path contains a symlink prefix (macOS /tmp →
+	// /private/tmp is the classic case) will produce false negatives
+	// against candidates that EvalSymlinks resolves through the same
+	// prefix. A missing/unreadable workspace drops everything because
+	// no further check can be trusted.
+	realWorkspace, err := filepath.EvalSymlinks(workspacePath)
+	if err != nil {
+		return nil
+	}
 	matches := pathPattern.FindAllStringSubmatchIndex(text, -1)
 	if len(matches) == 0 {
 		return nil
@@ -249,7 +280,7 @@ func extractAndValidate(workspacePath, text string, stat statFunc) []PathRef {
 	// One stat per unique path, in source order.
 	validated := make(map[string]struct{}, len(uniqueOrder))
 	for _, token := range uniqueOrder {
-		resolved, ok := resolveInsideWorkspace(workspacePath, token)
+		resolved, ok := resolveInsideWorkspace(workspacePath, realWorkspace, token)
 		if !ok {
 			continue
 		}
@@ -283,20 +314,35 @@ func extractAndValidate(workspacePath, text string, stat statFunc) []PathRef {
 
 // resolveInsideWorkspace returns the absolute path to stat for
 // `token` (relative paths joined to workspacePath, absolutes
-// cleaned) and reports whether the result is inside workspacePath.
-// A `..` traversal that escapes, or an absolute path that doesn't
-// share workspacePath's prefix, returns ok=false.
+// cleaned) and reports whether the result is inside workspacePath
+// AFTER following any symlinks in the candidate path.
+//
+// `realWorkspace` is the symlink-resolved form of workspacePath,
+// computed once by the caller — see extractAndValidate.
+//
+// The symlink resolution closes the workspace-internal-symlink
+// escape: a file `workspace/notes` that is a symlink to
+// `/etc/passwd` passes the lexical Rel check on its raw path but
+// resolves outside the workspace once EvalSymlinks runs. Without
+// this step, `os.Stat` would happily follow the symlink and emit a
+// PathRef for a path the user never authored. EvalSymlinks also
+// fails on broken/missing paths, which is the right behavior — a
+// path that doesn't exist on disk has no business validating.
 //
 // workspacePath is guaranteed to be absolute + canonical here —
 // extractAndValidate's preamble rejects anything else.
-func resolveInsideWorkspace(workspacePath, token string) (string, bool) {
+func resolveInsideWorkspace(workspacePath, realWorkspace, token string) (string, bool) {
 	var resolved string
 	if filepath.IsAbs(token) {
 		resolved = filepath.Clean(token)
 	} else {
 		resolved = filepath.Join(workspacePath, token)
 	}
-	rel, err := filepath.Rel(workspacePath, resolved)
+	realResolved, err := filepath.EvalSymlinks(resolved)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(realWorkspace, realResolved)
 	if err != nil {
 		return "", false
 	}

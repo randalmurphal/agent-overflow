@@ -2,9 +2,11 @@ package discussion
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
+	"agent-overflow/internal/pathlinks"
 	"agent-overflow/internal/store"
 
 	"github.com/google/uuid"
@@ -98,6 +100,7 @@ func (cs *ChannelService) PostMessage(input PostMessageInput) (store.ChannelMess
 		FromID:    input.FromID,
 		FromRole:  input.FromRole,
 		Content:   input.Content,
+		Meta:      cs.buildChannelMessageMeta(channel.ThreadID, input.Content),
 		CreatedAt: time.Now().UnixMilli(),
 	}
 	sequence, err := cs.store.InsertChannelMessageAtomic(msg)
@@ -106,6 +109,38 @@ func (cs *ChannelService) PostMessage(input PostMessageInput) (store.ChannelMess
 	}
 	msg.Sequence = sequence
 	return msg, nil
+}
+
+// buildChannelMessageMeta runs path-shaped tokens in content through
+// the workspace filesystem allowlist and returns a JSON meta sidecar.
+// The result is the empty string when there are no validated paths
+// (pre-pathlinks behavior preserved). The frontend's markdown
+// linkifier consumes the `pathRefs` key — mirrors the assistant_text
+// settle-time enrichment in `internal/triage/stream_state.go`.
+//
+// Failures are non-fatal: a missing thread record (deleted concurrently
+// with the post) or a marshal error logs and falls back to empty meta.
+// Persistence must not be blocked on enrichment.
+func (cs *ChannelService) buildChannelMessageMeta(threadID, content string) string {
+	thread, err := cs.store.GetThread(threadID)
+	if err != nil {
+		log.Printf("discussion: pathlinks lookup thread %s: %v", threadID, err)
+		return ""
+	}
+	workspacePath := strings.TrimSpace(thread.WorkspacePath)
+	if workspacePath == "" {
+		return ""
+	}
+	refs := pathlinks.ExtractAndValidate(workspacePath, content)
+	if len(refs) == 0 {
+		return ""
+	}
+	encoded, err := pathlinks.MarshalRefsJSON(refs)
+	if err != nil {
+		log.Printf("discussion: pathlinks marshal meta thread=%s: %v", threadID, err)
+		return ""
+	}
+	return encoded
 }
 
 // GetMessages returns ordered channel messages after the given sequence cursor.

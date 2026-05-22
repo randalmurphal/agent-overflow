@@ -252,8 +252,21 @@ func (r *Router) flushAllStreamPersistence() error {
 func (r *Router) flushStreamPersistence(flush pendingStreamFlush) error {
 	switch flush.kind {
 	case itemKindAssistantText:
-		_, err := r.store.AppendItemSummary(flush.threadID, flush.itemID, flush.summaryDelta, flush.updatedAt)
-		return ignoreLateStreamPersistence(err)
+		updated, err := r.store.AppendItemSummary(flush.threadID, flush.itemID, flush.summaryDelta, flush.updatedAt)
+		if err := ignoreLateStreamPersistence(err); err != nil {
+			return err
+		}
+		// Live path-link validation: re-run the workspace allowlist
+		// against the row's running summary so path tokens in this
+		// flush become clickable mid-stream. Best-effort, dedupes
+		// against the previous merged meta. The fresh Item returned by
+		// AppendItemSummary is the same row enrich needs — pass it
+		// through to skip a redundant SQLite read on the hot path. See
+		// enrichStreamingPathRefsAndEmit.
+		if err == nil {
+			r.enrichStreamingPathRefsAndEmit(updated, flush.updatedAt)
+		}
+		return nil
 	case itemKindThinking:
 		updated, err := r.store.AppendItemSummaryTail(
 			flush.threadID,

@@ -1700,6 +1700,26 @@ func filterItemStreamEvents(emissions []emitted) []ItemStreamEvent {
 	return out
 }
 
+// filterItemEventMetas returns the subset of provider:item_event
+// emissions with action=meta. Used by the live path-refs tests to
+// assert that mid-stream linkification fires and dedupes without
+// scanning unrelated channels. Mirrors filterItemEventUpserts /
+// filterItemEventDeltas for the third action variant.
+func filterItemEventMetas(emissions []emitted) []ItemStreamEvent {
+	out := make([]ItemStreamEvent, 0)
+	for _, e := range emissions {
+		if e.eventName != "provider:item_event" {
+			continue
+		}
+		event, ok := e.data.(ItemStreamEvent)
+		if !ok || event.Action != itemStreamActionMeta {
+			continue
+		}
+		out = append(out, event)
+	}
+	return out
+}
+
 func filterItemEventDeltas(emissions []emitted) []ItemDeltaEvent {
 	out := make([]ItemDeltaEvent, 0)
 	for _, e := range emissions {

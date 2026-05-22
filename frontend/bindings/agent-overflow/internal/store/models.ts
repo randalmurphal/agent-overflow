@@ -55,6 +55,14 @@ export class Attachment {
 
 /**
  * ChannelMessage is one ordered message within a channel.
+ * 
+ * Meta is JSON-shaped optional sidecar data persisted alongside the
+ * raw message content. Today it carries the pathlinks allowlist
+ * (`pathRefs`) stamped at PostMessage time so the frontend's markdown
+ * linkifier knows which file references in the rendered text point
+ * at real files in the thread's workspace. The column is nullable
+ * (pre-v2 rows have no value); callers should treat absence as
+ * "no allowlist".
  */
 export class ChannelMessage {
     "id": string;
@@ -64,6 +72,7 @@ export class ChannelMessage {
     "fromId": string;
     "fromRole"?: string;
     "content": string;
+    "meta"?: string;
     "createdAt": number;
 
     /** Creates a new ChannelMessage instance. */

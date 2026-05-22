@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { serializeRangeToMarkdown } from './markdownSerialize';
+import { PATH_LINK_HREF_PREFIX } from './pathLinkExtension';
 
 // Range over the entire content of an element. Used by most of the
 // per-shape tests below — they construct a DOM that mirrors what
@@ -58,14 +59,29 @@ describe('serializeRangeToMarkdown — inline', () => {
     expect(serializeRangeToMarkdown(selectAll(host))).toBe('[label](https://x.example)');
   });
 
-  it('emits path-link enrichment (.editor-link) as plain text', () => {
-    // The path linkifier produces href="#" + data-path; rendering
-    // those as `[text](#)` would pollute the clipboard with a dummy
-    // anchor, so the serializer collapses them to text.
+  it('emits path-link anchors (agent-overflow:open) as plain text', () => {
+    // Path links carry our custom nonce-prefixed scheme; rendering them
+    // as `[text](agent-overflow:open?…)` would smuggle the internal
+    // scheme into the clipboard, so the serializer collapses them to
+    // text. The nonce is per-page-load so the test composes the prefix
+    // from the same constant the serializer consumes.
     const host = asMarkdownBody(
-      '<p>see <a class="editor-link" href="#" data-path="src/x.ts">src/x.ts</a></p>',
+      `<p>see <a href="${PATH_LINK_HREF_PREFIX}path=src%2Fx.ts">src/x.ts</a></p>`,
     );
     expect(serializeRangeToMarkdown(selectAll(host))).toBe('see src/x.ts');
+  });
+
+  it('round-trips a path-link anchor wrapping a codespan back to `path` markdown', () => {
+    // Wrapped-form path links render as `<a><code>src/x.ts</code></a>`.
+    // The serializer must walk into the `<code>` child via
+    // serializeChildren so the clipboard receives `` `src/x.ts` ``,
+    // matching the input markdown — not the path-link href, not the
+    // bare path text. This is the round-trip contract for the wrapped
+    // branch of the marked extension.
+    const host = asMarkdownBody(
+      `<p>see <a href="${PATH_LINK_HREF_PREFIX}path=src%2Fx.ts"><code>src/x.ts</code></a> here</p>`,
+    );
+    expect(serializeRangeToMarkdown(selectAll(host))).toBe('see `src/x.ts` here');
   });
 
   it('emits <br> as a markdown hard break', () => {

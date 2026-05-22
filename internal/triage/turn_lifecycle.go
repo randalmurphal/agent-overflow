@@ -720,6 +720,13 @@ func (r *Router) clearActiveStreamBlocksForTurnLocked(threadID string, turnIndex
 		}
 		delete(r.streamPersistBuffers, key)
 	}
+	// streamingPathRefsLast is keyed by streamPersistKey
+	// (threadID|itemID). Assistant_text ids carry the turn index in
+	// their suffix (textItemID → "text:<turnIndex>:[scope:]<n>"), so
+	// the prefix "threadID|text:<turnIndex>:" sweeps every entry this
+	// turn allocated — scoped (subagent) variants share the same
+	// turn-index segment because scope appears AFTER it.
+	deleteByPrefix(r.streamingPathRefsLast, threadID+"|text:"+fmt.Sprintf("%d:", turnIndex))
 }
 
 // claimTurnSettlement records that handleTurnComplete has begun logical-turn
@@ -1113,6 +1120,7 @@ func (r *Router) CleanupThread(threadID string) {
 			delete(r.streamPersistBuffers, key)
 		}
 	}
+	deleteByPrefix(r.streamingPathRefsLast, prefix)
 	deleteByPrefix(r.terminalInteractionSeq, prefix)
 	deleteByPrefix(r.settledTurns, prefix)
 	// currentRoundByThread is keyed by threadID — a single delete is the
@@ -1214,6 +1222,7 @@ func (r *Router) ResetThreadForRollback(threadID string) {
 			delete(r.streamPersistBuffers, key)
 		}
 	}
+	deleteByPrefix(r.streamingPathRefsLast, prefix)
 	deleteByPrefix(r.terminalInteractionSeq, prefix)
 	deleteByPrefix(r.settledTurns, prefix)
 	delete(r.currentRoundByThread, threadID)

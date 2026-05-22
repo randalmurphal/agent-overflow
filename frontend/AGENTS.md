@@ -719,10 +719,22 @@ auto-close while streaming (`parseIncompleteMarkdown={streaming}`).
 The library uses a token-keyed `{#each}` over marked blocks under the
 hood, so DOM identity is preserved across content updates — text
 selection, scroll-within-code, and previously-rendered shiki/mermaid
-nodes all survive streaming chunks. Two custom post-process passes
-remain in `markdownEnhance.ts`: project-relative path linkification
-(`enhancePathLinks`) and the document-level markdown-aware copy
-delegate (`ensureMarkdownCopyDelegate`).
+nodes all survive streaming chunks.
+
+Path linkification happens INSIDE the initial marked parse, not as a
+post-render walker. `pathLinkExtension.ts` builds an inline marked
+extension keyed on the server-validated `PathRef[]` allowlist on
+`item.meta`; each match emits a `link` token whose href starts with
+`PATH_LINK_HREF_PREFIX` (a per-page-load nonce baked into
+`agent-overflow:open?nonce=…&`). Streamdown's `transformUrl` only
+admits hrefs that start with that exact prefix, so agent prose
+written as `[click](agent-overflow:open?path=/etc/passwd)` is
+filtered out before any anchor is rendered — the agent cannot guess
+the nonce because it never observes the rendered DOM.
+`markdownEnhance.ts` now only owns two document-level delegates:
+`ensurePathLinkClickDelegate` (routes clicks on the validated anchors
+to the `OpenInEditor` binding) and `ensureMarkdownCopyDelegate`
+(markdown-aware copy).
 
 ANSI-like payloads render through `AnsiText.svelte`, which builds an
 HTML string from raw bytes and applies it to a stable `<pre>` via

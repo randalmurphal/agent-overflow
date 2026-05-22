@@ -51,18 +51,33 @@ type SpawnOptions struct {
 // returns the absolute path to spawn the editor against.
 //
 // Rules:
-//   - Absolute path → must already be canonical (filepath.Clean is a
-//     no-op). Returned unchanged. WorkspacePath is ignored.
+//   - Absolute path + WorkspacePath supplied → must be canonical AND
+//     remain a sub-path of WorkspacePath after symlink resolution.
+//     This mirrors the relative-path branch and closes the gap an
+//     attacker would otherwise exploit by passing
+//     path = "/etc/passwd" alongside any workspace.
+//   - Absolute path + no WorkspacePath → must be canonical, returned
+//     unchanged. Used by project-open affordances that hand us a
+//     project root directly; the trust boundary above this is the
+//     OpenInEditor binding's authz.
 //   - Relative path → WorkspacePath must be supplied, absolute, and
 //     canonical. The result is filepath.Join(workspacePath, path).
-//     The joined result must remain a sub-path of WorkspacePath; a
-//     `..`-traversal that escapes the workspace is rejected.
+//     The joined result must remain a sub-path of WorkspacePath
+//     after symlink resolution; a `..`-traversal that escapes (or a
+//     workspace-internal symlink whose target sits outside) is
+//     rejected.
 //
 // Why the escape guard is the load-bearing check: the LAN-bind threat
 // model lets a token-holder over the network call OpenInEditor. Without
 // the sub-path check, path = "../../../../etc/passwd" + workspace =
 // "/home/user/repo" Joins to "/etc/passwd" cleanly and the canonical
 // check passes. filepath.Rel surfaces the escape unambiguously.
+//
+// Symlink resolution is best-effort — when the joined path does not
+// exist yet (the user is opening a new file), EvalSymlinks fails and
+// we fall back to the lexical Rel check on the unresolved form. The
+// validator (internal/pathlinks) catches symlink-escape candidates
+// before they ever reach this code, so this is defense-in-depth.
 func ResolvePath(path, workspacePath string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("editor: open: path is required")
@@ -70,6 +85,18 @@ func ResolvePath(path, workspacePath string) (string, error) {
 	if filepath.IsAbs(path) {
 		if filepath.Clean(path) != path {
 			return "", fmt.Errorf("editor: open: path must be canonical (no traversal), got %q", path)
+		}
+		if workspacePath == "" {
+			return path, nil
+		}
+		if !filepath.IsAbs(workspacePath) {
+			return "", fmt.Errorf("editor: open: workspacePath must be absolute, got %q", workspacePath)
+		}
+		if filepath.Clean(workspacePath) != workspacePath {
+			return "", fmt.Errorf("editor: open: workspacePath must be canonical, got %q", workspacePath)
+		}
+		if err := ensureInsideWorkspace(path, workspacePath); err != nil {
+			return "", err
 		}
 		return path, nil
 	}
@@ -83,18 +110,39 @@ func ResolvePath(path, workspacePath string) (string, error) {
 		return "", fmt.Errorf("editor: open: workspacePath must be canonical, got %q", workspacePath)
 	}
 	joined := filepath.Join(workspacePath, path)
-	rel, err := filepath.Rel(workspacePath, joined)
-	if err != nil {
-		return "", fmt.Errorf("editor: open: resolve %q against %q: %w", path, workspacePath, err)
-	}
-	// rel == ".." or starts with "..<sep>" means joined sits outside
-	// workspacePath. rel == "." means joined equals workspacePath
-	// itself, which is fine (opening the workspace dir). Anything else
-	// is a normal sub-path.
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("editor: open: path %q escapes workspace %q", path, workspacePath)
+	if err := ensureInsideWorkspace(joined, workspacePath); err != nil {
+		return "", err
 	}
 	return joined, nil
+}
+
+// ensureInsideWorkspace returns nil if `target` resolves to a path
+// inside `workspacePath` after symlink resolution, an error otherwise.
+//
+// When either side cannot be EvalSymlinks'd (most often because the
+// target file does not exist yet), the check falls back to the lexical
+// Rel comparison so the new-file flow keeps working. The validator
+// (internal/pathlinks) already runs the symlink check at extraction
+// time for agent-supplied paths, so this layer is the LAN-bind
+// safety floor for direct OpenInEditor callers.
+func ensureInsideWorkspace(target, workspacePath string) error {
+	realTarget, errTarget := filepath.EvalSymlinks(target)
+	realWorkspace, errWs := filepath.EvalSymlinks(workspacePath)
+	useReal := errTarget == nil && errWs == nil
+	cmpTarget := target
+	cmpWorkspace := workspacePath
+	if useReal {
+		cmpTarget = realTarget
+		cmpWorkspace = realWorkspace
+	}
+	rel, err := filepath.Rel(cmpWorkspace, cmpTarget)
+	if err != nil {
+		return fmt.Errorf("editor: open: resolve %q against %q: %w", target, workspacePath, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("editor: open: path %q escapes workspace %q", target, workspacePath)
+	}
+	return nil
 }
 
 // lookPath is the indirection seam exec.LookPath flows through. Tests

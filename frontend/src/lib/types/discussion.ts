@@ -57,7 +57,9 @@ export type ChannelFromType = 'agent' | 'human' | string;
 /**
  * One ordered message in a channel. `sequence` is the monotonic ordering
  * assigned by the backend. `fromRole` is present when `fromType` is `agent`
- * and identifies which participant spoke.
+ * and identifies which participant spoke. `meta` is the optional JSON
+ * sidecar populated at PostMessage time; today it carries the
+ * `pathRefs` allowlist the markdown linkifier consumes.
  */
 export interface ChannelMessage {
   id: string;
@@ -67,6 +69,7 @@ export interface ChannelMessage {
   fromId: string;
   fromRole: string | undefined;
   content: string;
+  meta?: string;
   createdAt: number;
 }
 

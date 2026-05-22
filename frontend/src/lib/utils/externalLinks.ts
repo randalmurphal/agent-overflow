@@ -2,6 +2,7 @@ import { OpenExternalURL } from '../stores/bindings';
 import { addToast } from '../stores/toast.svelte';
 import { runMode } from '../transport/runMode';
 import { errString } from './errors';
+import { PATH_LINK_HREF_PREFIX } from './pathLinkExtension';
 
 let delegateInstallCount = 0;
 
@@ -68,9 +69,8 @@ function handleExternalLinkClick(event: MouseEvent): void {
 
   const link = target.closest<HTMLAnchorElement>('a[href]');
   if (!link) return;
-  if (link.classList.contains('editor-link')) return;
-
   const rawHref = link.getAttribute('href');
+  if (rawHref && rawHref.startsWith(PATH_LINK_HREF_PREFIX)) return;
   const safeURL = safeExternalURL(rawHref);
   if (!safeURL) return;
 

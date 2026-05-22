@@ -741,6 +741,183 @@ describe('setupEventListeners', () => {
     expect(pane.items.find((item) => item.id === 'text-1')?.summary).toBe('base post stream');
   });
 
+  it('applies item_event meta to the matching row and replaces by reference', async () => {
+    const pane = await buildPane();
+    const base = makeItem({
+      id: 'text-1',
+      kind: 'assistant_text',
+      status: 'streaming',
+      summary: 'see src/foo.ts and more',
+      meta: '',
+    });
+    pane.upsertItem(base);
+    getAllPanes().set('main', pane);
+    const before = pane.items.find((item) => item.id === 'text-1');
+    expect(before).toBeDefined();
+
+    const metaJson = '{"pathRefs":[{"path":"src/foo.ts"}]}';
+    emitWailsEvent('provider:item_event', {
+      action: 'meta',
+      threadId: 'thread-1',
+      itemId: 'text-1',
+      kind: 'assistant_text',
+      meta: metaJson,
+      updatedAt: 5,
+    });
+    await nextFrame();
+
+    const after = pane.items.find((item) => item.id === 'text-1');
+    expect(after?.meta).toBe(metaJson);
+    // ChatMarkdown derives its path-link extension from item.meta and
+    // re-runs only when the reference changes — mutating in place would
+    // not trigger the $derived rebuild and links would stay raw until
+    // the next upsert.
+    expect(after).not.toBe(before);
+    // The producer (UpdateItemMeta) intentionally does not bump
+    // updated_at; the frontend must preserve it so virtua + thread cache
+    // don't treat this re-render as a content change.
+    expect(after?.updatedAt).toBe(before?.updatedAt);
+    expect(after?.summary).toBe(before?.summary);
+  });
+
+  it('flushes pending deltas before applying item_event meta', async () => {
+    const pane = await buildPane();
+    pane.upsertItem(makeItem({
+      id: 'text-1',
+      kind: 'assistant_text',
+      status: 'streaming',
+      summary: 'see src/foo.ts',
+      meta: '',
+    }));
+    getAllPanes().set('main', pane);
+
+    // Same-batch delta + meta. The meta must land against the appended
+    // text the user has already seen, so deltas have to flush FIRST.
+    // End-state assertions (summary + meta) can't discriminate ordering
+    // because `applyItemDelta` and `applyItemMeta` both spread from the
+    // current row and preserve non-target fields — flipping their call
+    // order produces the same final summary/meta. Spy on both methods
+    // so the test asserts the actual call sequence the flush contract
+    // promises, not just an incidentally-equivalent end state.
+    const deltaSpy = vi.spyOn(pane, 'applyItemDelta');
+    const metaSpy = vi.spyOn(pane, 'applyItemMeta');
+
+    emitWailsEvent('provider:item_event', {
+      action: 'delta',
+      threadId: 'thread-1',
+      itemId: 'text-1',
+      kind: 'assistant_text',
+      delta: ' padding',
+      updatedAt: 4,
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'meta',
+      threadId: 'thread-1',
+      itemId: 'text-1',
+      kind: 'assistant_text',
+      meta: '{"pathRefs":[{"path":"src/foo.ts"}]}',
+      updatedAt: 5,
+    });
+    await nextFrame();
+
+    expect(deltaSpy).toHaveBeenCalledOnce();
+    expect(metaSpy).toHaveBeenCalledOnce();
+    // Vitest exposes invocationCallOrder on every spy; it's a monotonic
+    // counter across all spies. Asserting delta < meta proves the
+    // flush loop ran the pending delta queue before applying the meta.
+    expect(deltaSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      metaSpy.mock.invocationCallOrder[0],
+    );
+
+    const row = pane.items.find((item) => item.id === 'text-1');
+    expect(row?.summary).toBe('see src/foo.ts padding');
+    expect(row?.meta).toBe('{"pathRefs":[{"path":"src/foo.ts"}]}');
+  });
+
+  it('flushes pending upserts in the same batch before applying meta', async () => {
+    const pane = await buildPane();
+    getAllPanes().set('main', pane);
+
+    // No prior upsert via pane.upsertItem — the row is created by the
+    // queued upsert in the same batch as the meta. Both arrive in one
+    // microtask; the meta event references the new row by id, so the
+    // upsert MUST flush before the meta or applyItemMeta finds no
+    // index and drops silently.
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-1',
+      item: makeItem({
+        id: 'text-1',
+        kind: 'assistant_text',
+        status: 'streaming',
+        summary: 'see src/foo.ts',
+        meta: '',
+      }),
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'meta',
+      threadId: 'thread-1',
+      itemId: 'text-1',
+      kind: 'assistant_text',
+      meta: '{"pathRefs":[{"path":"src/foo.ts"}]}',
+      updatedAt: 5,
+    });
+    await nextFrame();
+
+    const row = pane.items.find((item) => item.id === 'text-1');
+    expect(row?.meta).toBe('{"pathRefs":[{"path":"src/foo.ts"}]}');
+  });
+
+  it('ignores item_event meta for a thread without a matching pane', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    pane.upsertItem(makeItem({
+      id: 'text-1',
+      threadId: 'thread-a',
+      kind: 'assistant_text',
+      status: 'streaming',
+      summary: 'stable',
+      meta: '',
+    }));
+    getAllPanes().set('a', pane);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'meta',
+      threadId: 'thread-other',
+      itemId: 'text-1',
+      kind: 'assistant_text',
+      meta: '{"pathRefs":[{"path":"src/foo.ts"}]}',
+      updatedAt: 5,
+    });
+    await nextFrame();
+
+    expect(pane.items.find((item) => item.id === 'text-1')?.meta).toBe('');
+  });
+
+  it('drops item_event meta payloads that fail validation', async () => {
+    const pane = await buildPane();
+    pane.upsertItem(makeItem({
+      id: 'text-1',
+      kind: 'assistant_text',
+      status: 'streaming',
+      summary: 'stable',
+      meta: '',
+    }));
+    getAllPanes().set('main', pane);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'meta',
+      threadId: 'thread-1',
+      itemId: 'text-1',
+      kind: 'assistant_text',
+      // meta intentionally non-string to trip isBoundedString
+      meta: { pathRefs: [{ path: 'src/foo.ts' }] },
+      updatedAt: 5,
+    });
+    await nextFrame();
+
+    expect(pane.items.find((item) => item.id === 'text-1')?.meta).toBe('');
+  });
+
   it('drops item_event payloads with unknown actions', async () => {
     const pane = await buildPane();
     pane.upsertItem(makeItem({

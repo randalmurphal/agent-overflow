@@ -225,6 +225,18 @@ type Router struct {
 	// stable string — fine on its own, but adds up across the
 	// 10-30 text blocks per heavy turn. Keyed by threadID.
 	workspacePathByThread map[string]string
+	// streamingPathRefsLast dedupes the live-stream pathRefs meta
+	// emissions per streaming assistant_text row. Each flushed
+	// summary delta re-runs the validator against the row's running
+	// Summary and emits action:"meta" only when the resulting JSON
+	// changes; the most-common case (typing forward through text
+	// that has no new path-shaped tokens) short-circuits cheaply.
+	// Keyed by streamPersistKey(threadID,itemID); cleared at
+	// doSettleStreamingText, clearActiveStreamBlocksForTurnLocked,
+	// CleanupThread, and ResetThreadForRollback so a torn-down
+	// streaming row can't leak its last-seen hash into the next
+	// turn or session.
+	streamingPathRefsLast map[string]string
 	// revertedTurns marks threads whose next provider:turn_completed
 	// emission should carry RevertedUserMessage=true. Set by the App
 	// layer's revert-on-interrupt path BEFORE it tears down the
@@ -287,6 +299,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		wireOnlyUserTextSeen:       make(map[string]map[string]struct{}),
 		queuedFlushItems:           make(map[string][]QueuedFlushItem),
 		workspacePathByThread:      make(map[string]string),
+		streamingPathRefsLast:      make(map[string]string),
 		revertedTurns:              make(map[string]struct{}),
 	}
 }

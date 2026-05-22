@@ -4,6 +4,7 @@ import type {
   ApprovalRequest,
   ContextWindow,
   ItemDeltaEvent,
+  ItemMetaEvent,
   PendingInteractiveRequests,
   TodoStep,
   ProviderStatusEvent,
@@ -1692,6 +1693,28 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
           current.summary,
         );
       }
+    },
+
+    applyItemMeta(evt: ItemMetaEvent): void {
+      // Re-validated meta blob for an in-flight row. Today's only
+      // producer is triage's streaming path-link allowlist: each text
+      // flush re-runs the validator and pushes the resulting pathRefs
+      // JSON so anchors render mid-stream. The producer dedupes
+      // identical merges so by the time this fires the meta is
+      // genuinely new.
+      if (!evt.itemId) return;
+      if (thread && evt.threadId !== thread.id) return;
+      const index = itemIndexById.get(evt.itemId);
+      if (index === undefined) return;
+      const current = items[index];
+      if (current.meta === evt.meta) return;
+      // Replace the entry rather than mutating in place: ChatMarkdown's
+      // $derived path-link extension keys off `item.meta`, so a fresh
+      // reference is the reactive signal that re-runs the extension
+      // build. updatedAt is preserved — triage's UpdateItemMeta does
+      // not bump updated_at, and we don't want this re-render to look
+      // like a content change to virtua / threadItemCache.
+      items[index] = { ...current, meta: evt.meta };
     },
 
     // ---- Per-row UI state (survives virtua remount) ----

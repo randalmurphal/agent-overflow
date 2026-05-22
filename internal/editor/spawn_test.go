@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -361,6 +363,102 @@ func TestOpen_RejectsTraversalPath(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(),"canonical") {
 		t.Fatalf("expected error to mention 'canonical', got %q", err.Error())
+	}
+}
+
+// TestResolvePath_AbsoluteWithWorkspaceRejectsOutsidePath pins the
+// defense-in-depth gap closed for absolute paths: a network token
+// holder calling OpenInEditor with path="/etc/passwd" alongside ANY
+// workspacePath must not get an editor pointed at /etc/passwd. The
+// pre-fix branch returned the canonical absolute path unchanged.
+func TestResolvePath_AbsoluteWithWorkspaceRejectsOutsidePath(t *testing.T) {
+	ws := t.TempDir()
+	_, err := ResolvePath("/etc/passwd", ws)
+	if err == nil {
+		t.Fatalf("expected error for absolute path outside workspace, got nil")
+	}
+	if !strings.Contains(err.Error(), "escapes workspace") {
+		t.Fatalf("expected error to mention 'escapes workspace', got %q", err.Error())
+	}
+}
+
+// TestResolvePath_AbsoluteWithWorkspaceAcceptsInsidePath asserts the
+// new containment rule allows absolute paths that ARE inside the
+// supplied workspace — that's the legitimate case the validator
+// emits when the agent writes an absolute path inside the repo.
+func TestResolvePath_AbsoluteWithWorkspaceAcceptsInsidePath(t *testing.T) {
+	ws := t.TempDir()
+	inside := filepath.Join(ws, "src", "foo.ts")
+	if err := os.MkdirAll(filepath.Dir(inside), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(inside, nil, 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, err := ResolvePath(inside, ws)
+	if err != nil {
+		t.Fatalf("ResolvePath: %v", err)
+	}
+	if got != inside {
+		t.Fatalf("expected %q, got %q", inside, got)
+	}
+}
+
+// TestResolvePath_AbsoluteWithoutWorkspaceStillTrusted preserves the
+// project-open code path: callers that hand us a project root with
+// no workspace context (e.g. the sidebar's "Open in editor" menu)
+// still get the canonical absolute back unchanged.
+func TestResolvePath_AbsoluteWithoutWorkspaceStillTrusted(t *testing.T) {
+	got, err := ResolvePath("/tmp/project-root", "")
+	if err != nil {
+		t.Fatalf("ResolvePath: %v", err)
+	}
+	if got != "/tmp/project-root" {
+		t.Fatalf("expected pass-through, got %q", got)
+	}
+}
+
+// TestResolvePath_RejectsSymlinkEscape covers the defense-in-depth
+// symlink check at the click-time editor boundary. The validator
+// already runs this check at extraction time; the click-time mirror
+// catches future bypasses where a path reaches OpenInEditor without
+// having gone through pathlinks.ExtractAndValidate.
+func TestResolvePath_RejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatalf("mkdir ws: %v", err)
+	}
+	outside := filepath.Join(root, "outside.txt")
+	if err := os.WriteFile(outside, nil, 0o644); err != nil {
+		t.Fatalf("seed outside: %v", err)
+	}
+	link := filepath.Join(ws, "evil.md")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unsupported in this test env: %v", err)
+	}
+	_, err := ResolvePath("evil.md", ws)
+	if err == nil {
+		t.Fatalf("expected symlink-escape rejection, got nil")
+	}
+	if !strings.Contains(err.Error(), "escapes workspace") {
+		t.Fatalf("expected 'escapes workspace' error, got %q", err.Error())
+	}
+}
+
+// TestResolvePath_NewFileFlowStillWorks asserts that the fallback to
+// the lexical check kicks in when the target file does not exist
+// yet — opening a new file via path is a legitimate workflow that
+// the symlink resolution must not break.
+func TestResolvePath_NewFileFlowStillWorks(t *testing.T) {
+	ws := t.TempDir()
+	got, err := ResolvePath("new/file.md", ws)
+	if err != nil {
+		t.Fatalf("ResolvePath: %v", err)
+	}
+	want := filepath.Join(ws, "new", "file.md")
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
 	}
 }
 

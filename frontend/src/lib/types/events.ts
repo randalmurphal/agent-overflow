@@ -138,6 +138,23 @@ export interface ItemDeltaEvent {
   updatedAt: number;
 }
 
+/**
+ * Re-validated `meta` blob for an in-flight row. Used by triage's
+ * streaming path-link validator: each flushed text delta re-runs the
+ * workspace allowlist and pushes the resulting `pathRefs` JSON onto the
+ * existing row so path tokens can become clickable mid-stream instead of
+ * only after the model finishes. Frontend listeners MUST flush any
+ * queued deltas for the same `itemId` before applying the meta so the
+ * allowlist lands against text the user has already seen.
+ */
+export interface ItemMetaEvent {
+  threadId: string;
+  itemId: string;
+  kind: string;
+  meta: string;
+  updatedAt: number;
+}
+
 export type ItemStreamEvent =
 	  | {
 	      action: 'upsert';
@@ -145,7 +162,8 @@ export type ItemStreamEvent =
 	      item: Item;
 	      countsAsActivity?: boolean;
 	    }
-	  | ({ action: 'delta' } & ItemDeltaEvent);
+	  | ({ action: 'delta' } & ItemDeltaEvent)
+	  | ({ action: 'meta' } & ItemMetaEvent);
 
 /**
  * RateLimitsSnapshot mirrors the Go `provider.RateLimitsSnapshot` payload.
