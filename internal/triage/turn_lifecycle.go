@@ -665,6 +665,28 @@ func (r *Router) openTurnIndex(threadID string) (int, bool) {
 	return turnIndex, ok
 }
 
+// hasInFlightTurnOrRound reports whether the router still has any
+// turn or wire-round state for threadID worth synthesizing a
+// truncated turn-complete against. Used by CleanupThread and
+// handleSessionDied so the round-2+ re-round case (handleInit's
+// maybeEmitReRoundOnInit branch sets currentRoundByThread WITHOUT
+// calling setOpenTurn — counters survive the multi-result boundary
+// by design) still produces a frontend `provider:turn_completed`
+// when the session dies mid-round-2. Without the currentRoundByThread
+// arm of this check, the openTurns map alone misses the round-2+
+// case because clearOpenTurn cleared it at the end of round 1.
+func (r *Router) hasInFlightTurnOrRound(threadID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.openTurns[threadID]; ok {
+		return true
+	}
+	if _, ok := r.currentRoundByThread[threadID]; ok {
+		return true
+	}
+	return false
+}
+
 func (r *Router) setOpenTurn(threadID string, turnIndex int) {
 	r.mu.Lock()
 	r.openTurns[threadID] = turnIndex
@@ -1038,7 +1060,7 @@ func (r *Router) WaitForPendingSettles() {
 // thanks to claimTurnSettlement.
 func (r *Router) CleanupThread(threadID string) {
 	cleanupAt := time.Now().UnixMilli()
-	if _, ok := r.openTurnIndex(threadID); ok {
+	if r.hasInFlightTurnOrRound(threadID) {
 		if err := r.synthesizeTruncatedTurnComplete(threadID, cleanupAt); err != nil {
 			log.Printf("triage: synthesize turn-complete on cleanup for thread %s: %v", threadID, err)
 		}

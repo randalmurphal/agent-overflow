@@ -107,34 +107,30 @@ func WriteForkFileForLastKeptTurn(
 	if lastKeptTurn < 0 {
 		return "", "", nil, ErrSessionEmpty
 	}
-	srcSessionID := sessionIDFromPath(srcPath)
+	return writeForkFileFromTranscript(srcPath, customTitle, func(transcript []map[string]any) (string, error) {
+		return sliceUUIDInTranscript(transcript, lastKeptTurn+1)
+	})
+}
 
-	f, err := os.Open(srcPath)
-	if err != nil {
-		return "", "", nil, fmt.Errorf("sessionfork: open source: %w", err)
-	}
-	defer f.Close()
-
-	transcript, contentReplacements, err := parseTranscript(f, srcSessionID)
-	if err != nil {
-		return "", "", nil, fmt.Errorf("sessionfork: parse transcript: %w", err)
-	}
-
-	upToMessageUUID, err := sliceUUIDInTranscript(transcript, lastKeptTurn+1)
-	if err != nil {
-		return "", "", nil, err
-	}
-
-	newID, lines, uuidMap, err := buildLines(transcript, contentReplacements, srcSessionID, upToMessageUUID, customTitle)
-	if err != nil {
-		return "", "", nil, err
-	}
-
-	newID, newPath, err = writeForkOutput(srcPath, newID, lines)
-	if err != nil {
-		return "", "", nil, err
-	}
-	return newID, newPath, uuidMap, nil
+// WriteForkFileFullTranscript opens srcPath ONCE, parses the transcript
+// in memory, and writes a new <newID>.jsonl containing the entire
+// transcript (no slice). Used as the slice-at-EOF fallback for revert
+// when the anchor message is missing from the JSONL (the common cause:
+// the Claude subprocess died before persisting the user's latest
+// prompt). From Claude's perspective the JSONL is already in the right
+// state — the missing user prompt was never seen. Cloning preserves
+// the new-session-id contract the revert pipeline depends on, so the
+// thread row's SessionRef advances and the composer's rehydration of
+// the missing message via AO's DB stays in lockstep.
+func WriteForkFileFullTranscript(
+	srcPath string,
+	customTitle string,
+) (newSessionID string, newPath string, uuidMap map[string]string, err error) {
+	return writeForkFileFromTranscript(srcPath, customTitle, func(_ []map[string]any) (string, error) {
+		// Empty anchor instructs buildLines to skip slicing and clone
+		// the full transcript with fresh UUIDs.
+		return "", nil
+	})
 }
 
 // WriteForkFileForUserMessageUUID opens srcPath ONCE, parses the
@@ -159,6 +155,11 @@ func WriteForkFileForLastKeptTurn(
 // should treat that as a hard error rather than silently falling
 // back to the ordinal walk; a wrong-source revert is worse than no
 // revert.
+//
+// Returns `ErrSessionEmpty` when the message is the very first real
+// prompt in the transcript — mirrors `SliceUUIDForLastKeptTurn(-1)`
+// so `revertClaudeThreadToMessage` can route through its
+// "checkpoint.TurnIndex == 0" branch identically.
 func WriteForkFileForUserMessageUUID(
 	srcPath string,
 	upToUserMessageUUID string,
@@ -167,6 +168,30 @@ func WriteForkFileForUserMessageUUID(
 	if upToUserMessageUUID == "" {
 		return "", "", nil, fmt.Errorf("sessionfork: empty user message uuid")
 	}
+	return writeForkFileFromTranscript(srcPath, customTitle, func(transcript []map[string]any) (string, error) {
+		upToParentUUID, err := parentUUIDForUserMessageUUIDInTranscript(transcript, upToUserMessageUUID)
+		if err != nil {
+			return "", err
+		}
+		if upToParentUUID == "" {
+			return "", ErrSessionEmpty
+		}
+		return upToParentUUID, nil
+	})
+}
+
+// writeForkFileFromTranscript is the shared open/parse/build/write
+// pipeline behind every WriteForkFile* entry point. computeAnchor
+// receives the parsed transcript and returns the upToMessageUUID
+// passed to buildLines (or "" for a full-transcript clone). Any
+// error returned by computeAnchor propagates verbatim so callers can
+// inspect sentinels like ErrSessionEmpty / ErrMessageNotFound /
+// ErrUserTurnOutOfRange.
+func writeForkFileFromTranscript(
+	srcPath string,
+	customTitle string,
+	computeAnchor func(transcript []map[string]any) (string, error),
+) (newSessionID string, newPath string, uuidMap map[string]string, err error) {
 	srcSessionID := sessionIDFromPath(srcPath)
 
 	f, err := os.Open(srcPath)
@@ -180,21 +205,12 @@ func WriteForkFileForUserMessageUUID(
 		return "", "", nil, fmt.Errorf("sessionfork: parse transcript: %w", err)
 	}
 
-	upToParentUUID, err := parentUUIDForUserMessageUUIDInTranscript(transcript, upToUserMessageUUID)
+	upToMessageUUID, err := computeAnchor(transcript)
 	if err != nil {
 		return "", "", nil, err
 	}
-	// upToParentUUID == "" means the user message is the very first
-	// real prompt in the transcript — the caller wants to clear the
-	// session entirely rather than slice. Mirror the
-	// `SliceUUIDForLastKeptTurn(-1)` → ErrSessionEmpty contract so
-	// `revertClaudeThreadToMessage` can route through its
-	// "checkpoint.TurnIndex == 0" branch identically.
-	if upToParentUUID == "" {
-		return "", "", nil, ErrSessionEmpty
-	}
 
-	newID, lines, uuidMap, err := buildLines(transcript, contentReplacements, srcSessionID, upToParentUUID, customTitle)
+	newID, lines, uuidMap, err := buildLines(transcript, contentReplacements, srcSessionID, upToMessageUUID, customTitle)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -287,7 +303,10 @@ func parentUUIDForUserMessageUUIDInTranscript(transcript []map[string]any, messa
 // the file.
 //
 // Returns ("", nil) when userTurnIndex == 0 (no preceding entry).
-// Returns ErrUserTurnOutOfRange if no Nth real prompt exists.
+// Returns ErrUserTurnAtTranscriptEnd when userTurnIndex == count
+// (recoverable: slice point is past the last persisted prompt,
+// callers can fall back to a whole-transcript copy). Returns
+// ErrUserTurnOutOfRange for any larger gap.
 func sliceUUIDInTranscript(transcript []map[string]any, userTurnIndex int) (string, error) {
 	if userTurnIndex == 0 {
 		return "", nil
@@ -305,6 +324,9 @@ func sliceUUIDInTranscript(transcript []map[string]any, userTurnIndex int) (stri
 			return parent, nil
 		}
 		count++
+	}
+	if userTurnIndex == count {
+		return "", fmt.Errorf("%w: requested %d, found %d", ErrUserTurnAtTranscriptEnd, userTurnIndex, count)
 	}
 	return "", fmt.Errorf("%w: requested %d, found %d", ErrUserTurnOutOfRange, userTurnIndex, count)
 }

@@ -282,3 +282,138 @@ func TestCleanupThreadWithoutOpenTurnIsNoop(t *testing.T) {
 		t.Fatalf("expected no turn_completed synthesis without open turn, got %d", len(completed))
 	}
 }
+
+// TestCleanupThreadSynthesizesAfterRound2PlusReRound pins the
+// regression that left the FE working indicator stranded when a Claude
+// session died mid-round-2+: handleInit's re-round branch sets
+// currentRoundByThread WITHOUT calling setOpenTurn (id-allocating
+// counters must survive the multi-result boundary — see
+// multi_result_test.go for the rationale). Before the fix,
+// CleanupThread's guard checked openTurnIndex only, missed the live
+// round, and skipped synthesize; afterwards delete(currentRoundByThread)
+// ran anyway, leaving the FE with a stuck activeTurnByThread entry
+// and no path to a wire turn_completed.
+//
+// The fix gates synthesize on hasInFlightTurnOrRound (openTurns OR
+// currentRoundByThread). This test models the wire sequence:
+//
+//	EventTurnStart    (round 1 begins; openTurns + currentRoundByThread set)
+//	EventTurnComplete (round 1 ends; both cleared)
+//	EventInit         (round 2 begins via maybeEmitReRoundOnInit;
+//	                   currentRoundByThread set, openTurns stays empty)
+//	<session dies>
+//	CleanupThread     (must synthesize because round 2 is open)
+func TestCleanupThreadSynthesizesAfterRound2PlusReRound(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("round 1 complete: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventInit,
+		ThreadID:  "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("re-init: %v", err)
+	}
+
+	// Sanity-check the precondition: openTurns is empty (clearOpenTurn
+	// cleared it at the round-1 complete) but currentRoundByThread is
+	// set (maybeEmitReRoundOnInit just opened round 2). This is the
+	// state the bug fix targets — if either side drifts, the regression
+	// guard would silently pass on a different code path.
+	if _, ok := router.openTurnIndex("t1"); ok {
+		t.Fatal("precondition: openTurns must be empty after round-1 complete")
+	}
+	if !router.hasInFlightTurnOrRound("t1") {
+		t.Fatal("precondition: round 2 must be live in currentRoundByThread")
+	}
+	*emissions = nil
+
+	router.CleanupThread("t1")
+
+	completed := filterEmissions(*emissions, "provider:turn_completed")
+	if len(completed) != 1 {
+		t.Fatalf("expected 1 truncated turn_completed for round 2, got %d (%+v)", len(completed), *emissions)
+	}
+	payload, ok := completed[0].data.(TurnCompletedEvent)
+	if !ok {
+		t.Fatalf("payload type: got %T, want TurnCompletedEvent", completed[0].data)
+	}
+	if !payload.Aborted {
+		t.Fatalf("expected aborted=true on truncated synthesis, got %+v", payload)
+	}
+}
+
+// TestSessionStatusErrorSynthesizesAfterRound2PlusReRound is the
+// session-died (rather than CleanupThread) variant of the same gate
+// regression. handleSessionDied shared the openTurnIndex-only guard
+// with CleanupThread; the same hasInFlightTurnOrRound fix covers it.
+func TestSessionStatusErrorSynthesizesAfterRound2PlusReRound(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("round 1 complete: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventInit,
+		ThreadID:  "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("re-init: %v", err)
+	}
+	*emissions = nil
+
+	exitMeta, _ := json.Marshal(provider.ProcessExitInfo{
+		Reason: "provider process exited unexpectedly",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventSessionStatus,
+		ThreadID:  "t1",
+		Content:   "error",
+		Meta:      exitMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("session-status error: %v", err)
+	}
+
+	completed := filterEmissions(*emissions, "provider:turn_completed")
+	if len(completed) != 1 {
+		t.Fatalf("expected 1 truncated turn_completed for round 2, got %d (%+v)", len(completed), *emissions)
+	}
+	payload, ok := completed[0].data.(TurnCompletedEvent)
+	if !ok {
+		t.Fatalf("payload type: got %T, want TurnCompletedEvent", completed[0].data)
+	}
+	if !payload.Aborted {
+		t.Fatalf("expected aborted=true on truncated synthesis, got %+v", payload)
+	}
+}

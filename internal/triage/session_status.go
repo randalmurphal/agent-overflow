@@ -71,7 +71,7 @@ func (r *Router) handleSessionDied(evt provider.ProviderEvent) error {
 		log.Printf("triage: persist session_died notification: %v", err)
 	}
 
-	if _, ok := r.openTurnIndex(evt.ThreadID); ok {
+	if r.hasInFlightTurnOrRound(evt.ThreadID) {
 		if err := r.synthesizeTruncatedTurnComplete(evt.ThreadID, now); err != nil {
 			log.Printf("triage: synthesize turn-complete on session_died: %v", err)
 		}

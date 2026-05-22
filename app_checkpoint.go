@@ -557,7 +557,22 @@ func writeClaudeSessionSlice(
 		}
 		log.Printf("%s: stored provider_user_message_id %q not in session %s — falling back to ordinal slice; check fork remap coverage", logCtx, uuid, srcPath)
 	}
-	return sessionfork.WriteForkFileForLastKeptTurn(srcPath, fallbackLastKeptTurn, "")
+	newID, newPath, uuidMap, err := sessionfork.WriteForkFileForLastKeptTurn(srcPath, fallbackLastKeptTurn, "")
+	if err == nil {
+		return newID, newPath, uuidMap, nil
+	}
+	if errors.Is(err, sessionfork.ErrUserTurnAtTranscriptEnd) {
+		// Slice anchor lands one past the last persisted user prompt:
+		// AO recorded the user_text row but the Claude CLI died before
+		// writing that prompt to the JSONL. Clone the JSONL as-is — the
+		// file is already at the right cut point from Claude's side
+		// (it never saw the missing prompt), and AO's composer
+		// rehydration restores the missing message from the DB so the
+		// user can re-edit and resend.
+		log.Printf("%s: revert anchor past JSONL end (%v) — cloning full transcript", logCtx, err)
+		return sessionfork.WriteForkFileFullTranscript(srcPath, "")
+	}
+	return "", "", nil, err
 }
 
 func (a *App) deleteCheckpointRefs(ctx context.Context, threadID, action string, refs []store.CheckpointRef) error {

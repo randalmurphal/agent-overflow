@@ -111,6 +111,14 @@
     pane.clearGeneralError();
     try {
       await ReconnectSession(pane.threadId);
+      // Re-pull from the backend even on success. The backend's
+      // CleanupThread synthesizes a truncated provider:turn_completed
+      // when triage state was live, but events that fire during the
+      // round-trip can race the FE pane's reactive state. Refreshing
+      // is the cheap belt-and-braces fix that matches the
+      // transport-gap recovery path and clears any stale activeTurn /
+      // streaming flags the user might still see.
+      await pane.refreshFromBackend();
     } catch (err) {
       console.error('Failed to reconnect:', err);
       pane.setGeneralError(userFacingError(err));

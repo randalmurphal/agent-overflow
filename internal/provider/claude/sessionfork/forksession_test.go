@@ -3,6 +3,8 @@ package sessionfork
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -246,6 +248,87 @@ func TestBuildForkLines_PreservesUnknownFields(t *testing.T) {
 		}
 		if got != want {
 			t.Errorf("forked entry mutated %q: got %q, want %q", k, got, want)
+		}
+	}
+}
+
+// TestWriteForkFileForLastKeptTurn_AtTranscriptEnd pins the
+// recoverable boundary that the revert pipeline relies on: asking
+// for the slice point past the last persisted user prompt returns
+// the wrapped ErrUserTurnAtTranscriptEnd sentinel (and still matches
+// ErrUserTurnOutOfRange for any broad callers).
+func TestWriteForkFileForLastKeptTurn_AtTranscriptEnd(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "src.jsonl")
+	if err := os.WriteFile(srcPath, []byte(simple3TurnsJSONL), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	// simple3TurnsJSONL has 3 real prompts. lastKeptTurn=2 asks for
+	// the slice point at the 3rd user prompt's end-of-turn — that's
+	// FindUUIDBeforeUserTurn(3) under the hood (lastKept+1), exactly
+	// one past the last persisted prompt.
+	_, _, _, err := WriteForkFileForLastKeptTurn(srcPath, 2, "")
+	if !errors.Is(err, ErrUserTurnAtTranscriptEnd) {
+		t.Fatalf("err=%v, want ErrUserTurnAtTranscriptEnd", err)
+	}
+	if !errors.Is(err, ErrUserTurnOutOfRange) {
+		t.Fatalf("err=%v should still match ErrUserTurnOutOfRange for broad callers", err)
+	}
+}
+
+// TestWriteForkFileFullTranscript_HappyPath covers the slice-at-EOF
+// fallback the revert pipeline routes to when the anchor is missing
+// from the JSONL: clone every transcript entry under a fresh session
+// id, returning a new file the caller can adopt as SessionRef. The
+// uuidMap covers every transcript entry so the same helpers that
+// remap UUIDs for normal forks continue to work.
+func TestWriteForkFileFullTranscript_HappyPath(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "src.jsonl")
+	if err := os.WriteFile(srcPath, []byte(simple3TurnsJSONL), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	newID, newPath, uuidMap, err := WriteForkFileFullTranscript(srcPath, "")
+	if err != nil {
+		t.Fatalf("WriteForkFileFullTranscript: %v", err)
+	}
+	if newID == "" {
+		t.Fatal("expected non-empty new session id")
+	}
+	if newPath == srcPath {
+		t.Fatalf("new path = src path %q, want a fresh sibling file", srcPath)
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("expected new transcript at %s: %v", newPath, err)
+	}
+	// All six original transcript entries should be remapped. The
+	// helper is byUuid so we just check the count — value content is
+	// covered by the BuildForkLines suite above.
+	if got, want := len(uuidMap), 6; got != want {
+		t.Errorf("uuidMap entries = %d, want %d", got, want)
+	}
+	// The new file must carry the new sessionId on every transcript
+	// line so `claude --resume <newID>` finds it.
+	data, err := os.ReadFile(newPath)
+	if err != nil {
+		t.Fatalf("read new transcript: %v", err)
+	}
+	for i, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var e map[string]any
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("line %d: %v", i, err)
+		}
+		entryType, _ := e["type"].(string)
+		// Custom-title rows carry sessionId on a different shape; skip
+		// the strict assertion for those and rely on the BuildForkLines
+		// tests to cover them.
+		if entryType == "" {
+			continue
+		}
+		if got, _ := e["sessionId"].(string); got != newID {
+			t.Errorf("line %d sessionId=%q, want %q", i, got, newID)
 		}
 	}
 }

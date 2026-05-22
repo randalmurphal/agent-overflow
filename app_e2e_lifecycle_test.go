@@ -1478,21 +1478,34 @@ func TestE2E_SendMessageUnknownThread(t *testing.T) {
 }
 
 // TestE2E_InterruptTurnWithoutSession: InterruptTurn on a thread with no
-// active session should fail with a clear error, not crash.
+// active session should silently no-op. The FE may call interrupt during
+// recovery (after a crashed/disconnected session) and surfacing an error
+// banner during recovery is worse than dropping the call — the session is
+// already gone and there is nothing to interrupt.
 func TestE2E_InterruptTurnWithoutSession(t *testing.T) {
-	app, _ := setupE2EApp(t)
+	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	err = app.InterruptTurn(thread.ID)
-	if err == nil {
-		t.Fatal("InterruptTurn without session: err = nil, want failure")
+	before := len(bus.allEvents())
+
+	if err := app.InterruptTurn(thread.ID); err != nil {
+		t.Fatalf("InterruptTurn without session: err = %v, want nil (silent no-op)", err)
 	}
-	if !strings.Contains(err.Error(), "no active session") {
-		t.Fatalf("error = %v, want 'no active session'", err)
+
+	// The no-op contract is stronger than just "returns nil": the call
+	// MUST NOT synthesize a turn_completed, a stop marker, or an error
+	// event behind the user's back. A regression that swallows the
+	// missing-session check but accidentally fans out a spurious event
+	// (e.g. by routing through triage's MarkUserInterrupt before the
+	// session-presence guard) would pass an err-only assertion.
+	after := bus.allEvents()
+	if len(after) != before {
+		t.Fatalf("InterruptTurn without session emitted %d unexpected events: %s",
+			len(after)-before, summarizeEvents(after[before:]))
 	}
 }
 

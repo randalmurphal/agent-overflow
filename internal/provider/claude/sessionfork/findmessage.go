@@ -14,6 +14,25 @@ import (
 // last real user prompt in the source transcript.
 var ErrUserTurnOutOfRange = errors.New("sessionfork: user turn index out of range")
 
+// ErrUserTurnAtTranscriptEnd is the off-by-exactly-one variant of
+// ErrUserTurnOutOfRange. It is returned when userTurnIndex == count —
+// the caller asked for the slice point AFTER the last persisted user
+// prompt, which has no anchor entry in the JSONL because nothing came
+// after it. The most common cause is the Claude subprocess dying
+// before it persisted the user's most recent prompt to its session
+// JSONL — AO's checkpoint table records the user_text row at TurnIndex
+// N but the JSONL only has prompts 0..N-1. Revert callers should
+// detect this and route to a "copy the JSONL as-is" path rather than
+// failing the revert; the JSONL is already in the right state from
+// Claude's perspective (it never saw the missing prompt), so a
+// whole-transcript clone is the semantically correct slice point.
+//
+// Wraps ErrUserTurnOutOfRange so existing `errors.Is(err,
+// ErrUserTurnOutOfRange)` callers continue to match; the more specific
+// sentinel only matters for callers that want the recoverable-vs-fatal
+// distinction.
+var ErrUserTurnAtTranscriptEnd = fmt.Errorf("%w: at transcript end", ErrUserTurnOutOfRange)
+
 // FindParentUUIDForUserMessageUUID streams the JSONL and returns the
 // parentUuid of the real user prompt with the given Claude message UUID.
 // This is the message-keyed equivalent of FindUUIDBeforeUserTurn and is
@@ -124,6 +143,9 @@ func FindUUIDBeforeUserTurn(r io.Reader, userTurnIndex int) (string, error) {
 	}
 	if err := scanner.Err(); err != nil {
 		return "", fmt.Errorf("sessionfork: scan: %w", err)
+	}
+	if userTurnIndex == count {
+		return "", fmt.Errorf("%w: requested %d, found %d", ErrUserTurnAtTranscriptEnd, userTurnIndex, count)
 	}
 	return "", fmt.Errorf("%w: requested %d, found %d", ErrUserTurnOutOfRange, userTurnIndex, count)
 }

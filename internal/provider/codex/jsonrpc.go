@@ -273,16 +273,20 @@ func (s *Session) readLoop() {
 		s.drainPendingApprovals("lost", true, false)
 
 		if !s.closing.Load() {
+			// Any unexpected read-loop exit while we weren't the one
+			// closing is abnormal — including a clean exit-code-0
+			// without a host-initiated close. Triage gates synthesizing
+			// the truncated turn-complete on the "error" signal, so a
+			// missed emission here leaves the FE working indicator
+			// stuck. MarshalProcessExitMeta tolerates a nil exitErr.
 			exitErr := provider.WaitProcessExitErr(s.proc)
-			if exitErr != nil {
-				s.onEvent(provider.ProviderEvent{
-					Kind:      provider.EventSessionStatus,
-					ThreadID:  s.threadID,
-					Content:   "error",
-					Meta:      provider.MarshalProcessExitMeta(exitErr),
-					Timestamp: time.Now(),
-				})
-			}
+			s.onEvent(provider.ProviderEvent{
+				Kind:      provider.EventSessionStatus,
+				ThreadID:  s.threadID,
+				Content:   "error",
+				Meta:      provider.MarshalProcessExitMeta(exitErr),
+				Timestamp: time.Now(),
+			})
 		}
 
 		s.onEvent(provider.ProviderEvent{

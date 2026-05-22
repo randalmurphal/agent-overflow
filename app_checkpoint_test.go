@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -553,6 +554,135 @@ func TestRevertToMessageCheckpointFallbackHandlesCompactBoundary(t *testing.T) {
 	assertClaudeSessionText(t, workspace, updated.SessionRef,
 		[]string{"first", "reply 0", "second", "reply 1"},
 		[]string{"third", "reply 2"})
+}
+
+// TestRevertToMessageCheckpointTolerantOfMissingJSONLAnchor pins the
+// bricked-session recovery path: AO recorded a user_text row at
+// TurnIndex=N, but the Claude subprocess died before persisting that
+// prompt to its session JSONL (the JSONL only has prompts at indexes
+// 0..N-1). Without the slice-at-EOF fallback, revert returned
+// "Requested N, found N" (sessionfork.ErrUserTurnAtTranscriptEnd
+// formatted into a toast) and the user was stuck — neither edit nor
+// retry was possible from the UI.
+//
+// With the fallback in place, the revert succeeds and clones the
+// full JSONL under a new session id. The composer rehydrates the
+// missing message from AO's DB, the new SessionRef is durable, and
+// the user can edit/resend.
+func TestRevertToMessageCheckpointTolerantOfMissingJSONLAnchor(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	const sessionID = "bricked-session"
+	// JSONL has only ONE real user prompt (u0) — simulates the
+	// subprocess dying after AO sent the next prompt but before
+	// Claude persisted it. AO's DB still has both user_text rows.
+	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"bricked-session","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"bricked-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+`)
+	thread := createCheckpointTestThread(t, app, "t-bricked", "claude", workspace)
+	thread.SessionRef = sessionID
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	// Checkpoint references a JSONL UUID that does NOT exist in the
+	// file (the message was never persisted). The UUID-keyed branch
+	// returns ErrMessageNotFound, then the ordinal walk returns
+	// ErrUserTurnAtTranscriptEnd, and the fallback clones the JSONL
+	// as-is.
+	if err := app.store.SaveCheckpoint(store.Checkpoint{
+		ID:                    "chk-bricked",
+		ThreadID:              thread.ID,
+		UserItemID:            "user:1",
+		TurnIndex:             1,
+		ProviderUserMessageID: "u1-never-persisted",
+		RefName:               checkpoint.ThreadRefPrefix(thread.ID) + "message/bricked",
+		CapturedAt:            time.Now().UnixMilli(),
+		WorkspacePath:         workspace,
+	}); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+
+	if err := app.RevertToMessageCheckpoint(thread.ID, "user:1", RevertModeConversationOnly); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef == "" || updated.SessionRef == sessionID {
+		t.Fatalf("thread session ref = %q, want fresh fork session", updated.SessionRef)
+	}
+	// The cloned JSONL must preserve every original entry — that's the
+	// whole point of slice-at-EOF.
+	assertClaudeSessionText(t, workspace, updated.SessionRef,
+		[]string{"first", "reply 0"},
+		nil)
+}
+
+// TestRevertToMessageCheckpointRejectsLargerJSONLGap is the negative
+// boundary for the slice-at-EOF fallback above. The recovery path is
+// scoped to the single off-by-one case (AO recorded TurnIndex=N but
+// the JSONL has prompts only through N-1); a larger gap means
+// something else is wrong (corrupt JSONL, wrong session ref,
+// misaligned indices). Hard-erroring on gap >= 2 keeps the fallback's
+// "this is the bricked-session recovery, not a generic anchor-missing
+// blanket" contract documented at the test level — if sessionfork
+// ever widens ErrUserTurnAtTranscriptEnd to cover gap >= 1, this test
+// will fail and force a deliberate scope decision.
+func TestRevertToMessageCheckpointRejectsLargerJSONLGap(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	const sessionID = "wide-gap-session"
+	// JSONL has ONE real user prompt (u0). AO's DB will have THREE
+	// (user:0, user:1, user:2) — gap of 2 between AO and JSONL.
+	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"wide-gap-session","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"wide-gap-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+`)
+	thread := createCheckpointTestThread(t, app, "t-wide-gap", "claude", workspace)
+	thread.SessionRef = sessionID
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	insertUserItem(t, app.store, thread.ID, "user:2", 2, "third")
+	if err := app.store.SaveCheckpoint(store.Checkpoint{
+		ID:                    "chk-wide-gap",
+		ThreadID:              thread.ID,
+		UserItemID:            "user:2",
+		TurnIndex:             2,
+		ProviderUserMessageID: "u2-never-persisted",
+		RefName:               checkpoint.ThreadRefPrefix(thread.ID) + "message/wide-gap",
+		CapturedAt:            time.Now().UnixMilli(),
+		WorkspacePath:         workspace,
+	}); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+
+	err := app.RevertToMessageCheckpoint(thread.ID, "user:2", RevertModeConversationOnly)
+	if err == nil {
+		t.Fatal("revert with gap >= 2: err = nil, want ErrUserTurnOutOfRange")
+	}
+	if !errors.Is(err, sessionfork.ErrUserTurnOutOfRange) {
+		t.Fatalf("revert with gap >= 2: err = %v, want wrapping sessionfork.ErrUserTurnOutOfRange", err)
+	}
+	if errors.Is(err, sessionfork.ErrUserTurnAtTranscriptEnd) {
+		t.Fatalf("revert with gap >= 2: error matched ErrUserTurnAtTranscriptEnd (the off-by-one sentinel), want only the broader ErrUserTurnOutOfRange — fallback scope leaked")
+	}
 }
 
 func TestRevertToMessageCheckpointSlicesClaudeSessionFromPendingForkRef(t *testing.T) {

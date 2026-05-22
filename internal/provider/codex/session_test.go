@@ -3744,6 +3744,60 @@ func TestCodexCloseWaitsForDisconnectedHandler(t *testing.T) {
 	}
 }
 
+// TestCodexReadLoopEmitsErrorStatusOnCleanUnexpectedExit pins the
+// Codex-side mirror of the Claude quiet-disconnect bug fix. An
+// app-server that exits with status 0 without us asking it to close
+// is still abnormal — triage's handleSessionDied needs the "error"
+// signal to synthesize the truncated turn-complete so the FE working
+// indicator clears. The previous `exitErr != nil` gate dropped this
+// emission when the process exited cleanly or when WaitProcessExitErr
+// hit its 100ms timeout before the OS reaped the child.
+func TestCodexReadLoopEmitsErrorStatusOnCleanUnexpectedExit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "sh",
+		Args:   []string{"-c", "sleep 0.05; exit 0"},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	eventCh := make(chan provider.ProviderEvent, 100)
+	s := &Session{
+		proc:          proc,
+		threadID:      testThread,
+		codexThreadID: "test",
+		pending:       make(map[int64]chan json.RawMessage),
+		onEvent: func(evt provider.ProviderEvent) {
+			eventCh <- evt
+		},
+		cancel:   cancel,
+		readDone: make(chan struct{}),
+	}
+	go s.readLoop()
+
+	var gotError, gotDisconnected bool
+	timeout := time.After(5 * time.Second)
+	for !(gotError && gotDisconnected) {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind != provider.EventSessionStatus {
+				continue
+			}
+			switch evt.Content {
+			case "error":
+				gotError = true
+			case "disconnected":
+				gotDisconnected = true
+			}
+		case <-timeout:
+			t.Fatalf("timeout waiting for error+disconnected on clean unexpected exit (gotError=%v gotDisconnected=%v)", gotError, gotDisconnected)
+		}
+	}
+}
+
 func TestCodexReadLoopEmitsErrorStatusOnUnexpectedExit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

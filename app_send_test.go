@@ -1200,15 +1200,23 @@ func TestRespondToApprovalNoProviderError(t *testing.T) {
 	}
 }
 
-func TestInterruptTurnNoActiveSessionError(t *testing.T) {
+// TestInterruptTurnMissingSessionIsNoOp pins the tolerant contract:
+// interrupting a thread with no live session returns nil instead of
+// erroring. This matches runPlainInterruptLocked's behavior and
+// closes the user-visible regression where a session that died on
+// the readLoop's "disconnected" path produced a "No active session
+// for thread X" banner the moment the user clicked Stop — with no
+// session to stop, the action is a successful no-op and Reconnect
+// is the recovery path. The previous string-matching guard
+// (`strings.Contains(err.Error(), "no active session")`) was the
+// only surface check; if InterruptTurn grows a new failure mode
+// that should surface, route it through a distinct error rather
+// than re-introducing this one.
+func TestInterruptTurnMissingSessionIsNoOp(t *testing.T) {
 	app := newTestAppWithStore(t)
 
-	err := app.InterruptTurn("nonexistent-thread")
-	if err == nil {
-		t.Fatal("InterruptTurn() error = nil, want no active session error")
-	}
-	if !strings.Contains(err.Error(), "no active session") {
-		t.Fatalf("InterruptTurn() error = %v, want no active session", err)
+	if err := app.InterruptTurn("nonexistent-thread"); err != nil {
+		t.Fatalf("InterruptTurn(nonexistent) error = %v, want nil", err)
 	}
 }
 

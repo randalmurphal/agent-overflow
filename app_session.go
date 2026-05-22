@@ -336,11 +336,12 @@ func (a *App) SendMessageWithOptions(threadID string, content string, opts SendM
 }
 
 // InterruptTurn fires a provider-level interrupt on the thread's active
-// session. Returns an error when no session is active, the provider
-// surface isn't wired up, or the provider's Interrupt call failed
-// (e.g. CLI never acked the control_request — surfaces as a toast so
-// a wedged Claude Code CLI is visible to the user rather than silently
-// masked).
+// session. Returns nil when no session is active — the subprocess is
+// already gone, there is nothing to interrupt, and surfacing an error
+// banner here would just paper over the more useful "Reconnect" path.
+// Other failure modes (the provider's Interrupt call failed, the CLI
+// never acked the control_request) DO surface as errors so a wedged
+// Claude Code CLI is visible to the user.
 //
 // Spec: on user interrupt, any streaming items on the current turn are
 // flipped to errored with a " — stopped" suffix, and a system `error`
@@ -355,7 +356,8 @@ func (a *App) InterruptTurn(threadID string) error {
 	}
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
-		return fmt.Errorf("no active session for thread %s", threadID)
+		// Mirrors runPlainInterruptLocked's tolerant contract.
+		return nil
 	}
 
 	providerSess := sess.providerSession()

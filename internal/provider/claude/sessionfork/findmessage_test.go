@@ -92,6 +92,36 @@ func TestFindUUIDBeforeUserTurn_OutOfRange(t *testing.T) {
 	if !errors.Is(err, ErrUserTurnOutOfRange) {
 		t.Fatalf("err=%v, want ErrUserTurnOutOfRange", err)
 	}
+	// 99 is well past the last prompt (count=3); the more specific
+	// at-transcript-end sentinel must NOT match — that's reserved for
+	// the off-by-exactly-one case the revert fallback consumes.
+	if errors.Is(err, ErrUserTurnAtTranscriptEnd) {
+		t.Fatalf("err=%v matched ErrUserTurnAtTranscriptEnd, want only ErrUserTurnOutOfRange (gap is %d, not 1)", err, 99-3)
+	}
+}
+
+// TestFindUUIDBeforeUserTurn_AtTranscriptEnd pins the boundary where
+// userTurnIndex is one past the last persisted prompt. Real-world
+// trigger: AO's checkpoint table tracks a user_text row at TurnIndex
+// N, but the Claude subprocess died before persisting that prompt to
+// its session JSONL, so the JSONL count is N. The revert pipeline
+// catches this sentinel and falls back to WriteForkFileFullTranscript;
+// without the distinct sentinel, the user sees "Revert failed:
+// Requested N, found N" instead of a successful revert + composer
+// rehydration.
+func TestFindUUIDBeforeUserTurn_AtTranscriptEnd(t *testing.T) {
+	// withToolResultsJSONL has 3 real prompts (u1, u2, u3 at indexes
+	// 0, 1, 2). Index 3 is exactly one past the end.
+	_, err := FindUUIDBeforeUserTurn(strings.NewReader(withToolResultsJSONL), 3)
+	if !errors.Is(err, ErrUserTurnAtTranscriptEnd) {
+		t.Fatalf("err=%v, want ErrUserTurnAtTranscriptEnd", err)
+	}
+	// The narrower sentinel still wraps ErrUserTurnOutOfRange so any
+	// existing callers that match on the broader error continue to
+	// work.
+	if !errors.Is(err, ErrUserTurnOutOfRange) {
+		t.Fatalf("err=%v must also match ErrUserTurnOutOfRange (errors.Is chain)", err)
+	}
 }
 
 func TestFindUUIDBeforeUserTurn_SkipsSidechainPrompt(t *testing.T) {

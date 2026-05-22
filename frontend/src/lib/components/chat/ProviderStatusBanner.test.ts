@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import ProviderStatusBanner from './ProviderStatusBanner.svelte';
 import {
@@ -68,6 +68,26 @@ describe('<ProviderStatusBanner>', () => {
     await fireEvent.click(getByText('Reconnect'));
 
     expect(reconnect).toHaveBeenCalledWith('thread-1');
+  });
+
+  // Regression: a successful Reconnect must also pull the backend's
+  // current state into the pane. The backend's CleanupThread synthesizes
+  // a truncated provider:turn_completed, but events that fire during the
+  // round-trip can race the pane's reactive state — without the refresh,
+  // a user who had a stuck working indicator before reconnecting can
+  // still see stale activeTurn / streaming flags afterward.
+  it('refreshes pane state from backend after a successful reconnect', async () => {
+    const pane = await buildPane();
+    pane.setGeneralError('session exploded');
+    setBindingMock('ReconnectSession', async () => {});
+    const refresh = vi.spyOn(pane, 'refreshFromBackend').mockResolvedValue();
+
+    const { getByText } = render(ProviderStatusBanner, { props: { pane } });
+    await fireEvent.click(getByText('Reconnect'));
+
+    await waitFor(() => {
+      expect(refresh).toHaveBeenCalledOnce();
+    });
   });
 
   // Regression: when the backend emits `status='not_found'` without an
