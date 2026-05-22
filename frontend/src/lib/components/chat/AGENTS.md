@@ -364,8 +364,9 @@ Adding a new panel kind:
 
 `ChatMarkdown.svelte` mounts `<Streamdown>` (svelte-streamdown), which
 owns marked-based parsing, shiki highlighting, KaTeX typesetting,
-mermaid rendering, and `parseIncompleteMarkdown` auto-close for
-streaming sources. Three thin Svelte hosts under
+mermaid rendering, and block-level `parseIncompleteMarkdown` auto-close
+for streaming sources (open code fences, table rows, blockquotes — but
+NOT inline emphasis; see the patch note below). Three thin Svelte hosts under
 `components/chat/markdown/` wrap the library's built-in Code, Mermaid,
 and Math components and stamp the original source onto a wrapping
 element (`data-code-source` / `data-mermaid-source` / `data-math-source`
@@ -402,17 +403,43 @@ Per-row remount is still cheap because Streamdown's caches survive
 component remounts at the library level.
 
 We ship a pnpm patch against `svelte-streamdown@3.0.1`
-(`frontend/patches/svelte-streamdown@3.0.1.patch`) that fixes two
-upstream defects in `parseIncompleteMarkdown`: (1) `Block.svelte` did
-not honor the `parseIncompleteMarkdown={false}` prop, so the
-auto-balancer ran on settled blocks; (2) the single-asterisk and
-single-underscore plugins counted delimiters inside backtick inline-
-code spans, balancing them with a stray trailing copy at end-of-
-paragraph. Parser bugs in this pipeline go upstream-then-patch — do
-not duplicate the fix in `markdownEnhance.ts` or in `ChatMarkdown`'s
-host wrappers. Regression coverage lives in
-`AssistantMessage.test.ts` (`'does not append a stray ...'` cases).
-Pin `svelte-streamdown` to an exact version in `package.json` so a
+(`frontend/patches/svelte-streamdown@3.0.1.patch`) covering three
+upstream defects in `parseIncompleteMarkdown`:
+
+1. `Block.svelte` did not honor the `parseIncompleteMarkdown={false}`
+   prop, so the auto-balancer ran on settled blocks. The patch
+   short-circuits the parse when streaming is off.
+2. The single-asterisk and single-underscore plugins counted
+   delimiters inside backtick inline-code spans, balancing them with
+   a stray trailing copy at end-of-paragraph (e.g.
+   `` `_CLAIM_SQL` and there. `` rendered as `` `_CLAIM_SQL` and
+   there._ ``). The patch adds an `isWithinInlineCode` helper and
+   excludes those positions from the count.
+3. Streamdown's `createDefaultPlugins` synthesises a closer for any
+   unmatched inline-emphasis delimiter at end-of-line — `**partial`,
+   `` `partial ``, `~~partial`, `_partial`, `*partial`, subscript,
+   superscript, inline math. Mid-stream the synthesised closer
+   migrates outward as the model appends more text, producing a
+   visible "spreading" effect for every assistant response that
+   contains inline markdown (most prominently `~~` strikethrough
+   absorbing unrelated prose). The patch terminates
+   `createDefaultPlugins` with a `.filter()` that drops the ten
+   inline-emphasis plugins (`boldItalic`, `bold`,
+   `doubleUnderscoreItalic`, `strikethrough`,
+   `singleAsteriskItalic`, `inlineCode`,
+   `singleUnderscoreItalic`, `subscript`, `superscript`,
+   `inlineMath`) so unterminated inline markers stay LITERAL until
+   the real closer arrives. Block-level plugins (open code fences,
+   tables, blockquotes) are intentionally kept — they fail less
+   visibly and the closer they synthesise IS the correct one.
+
+Parser bugs in this pipeline go upstream-then-patch — do not
+duplicate the fix in `markdownEnhance.ts` or in `ChatMarkdown`'s host
+wrappers. Regression coverage lives in `AssistantMessage.test.ts`:
+the `'does not append a stray ...'` cases pin defects (1) and (2);
+the `'does not synthesise a $name closer mid-stream'` `it.each` matrix
+pins defect (3) for each of the five user-facing delimiters. Pin
+`svelte-streamdown` to an exact version in `package.json` so a
 `pnpm update` cannot silently move past the patch target.
 
 ## Test environment notes

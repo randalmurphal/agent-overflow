@@ -714,8 +714,10 @@ with our own thin host wrappers (`StreamdownCodeHost`, `StreamdownMermaidHost`,
 `data-mermaid-source`, and `data-math-source` so `markdownSerialize.ts`'s
 copy-as-markdown round-trip keeps working. Streamdown owns markdown
 parsing (via `marked`), shiki highlighting, KaTeX typesetting, mermaid
-rendering, link/image URL prefix safety, and graceful incomplete-token
-auto-close while streaming (`parseIncompleteMarkdown={streaming}`).
+rendering, link/image URL prefix safety, and BLOCK-LEVEL incomplete-token
+auto-close while streaming (`parseIncompleteMarkdown={streaming}` — see
+`components/chat/AGENTS.md` for the pnpm patch that drops the runaway
+inline-emphasis plugins).
 The library uses a token-keyed `{#each}` over marked blocks under the
 hood, so DOM identity is preserved across content updates — text
 selection, scroll-within-code, and previously-rendered shiki/mermaid

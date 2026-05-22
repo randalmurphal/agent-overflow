@@ -4,13 +4,15 @@ import { makeItem } from '../../../test/helpers/chat';
 import AssistantMessage from './AssistantMessage.svelte';
 
 describe('<AssistantMessage>', () => {
-  it('renders incomplete markdown by auto-closing the dangling marker during stream', async () => {
-    // Streamdown's `parseIncompleteMarkdown` flag (we set it from
-    // `streaming`) auto-closes unterminated tokens so a partial bold
-    // span (`**markdown`) renders bold immediately rather than
-    // showing raw asterisks until the closer arrives. This gives a
-    // smoother streaming UX than the legacy behaviour of waiting for
-    // the closer.
+  it('renders an unterminated inline marker as literal text during stream', async () => {
+    // `patches/svelte-streamdown@3.0.1.patch` strips Streamdown's
+    // inline-emphasis plugins from `IncompleteMarkdownParser.createDefaultPlugins`,
+    // so unterminated `**`, `~~`, backtick, `_`, etc. are no longer
+    // speculatively closed mid-stream. The user sees literal `**markdown`
+    // until the real closer arrives, then one clean transition to a bold
+    // span — the alternative (speculative close → unbalanced regrowth on
+    // the next chunk) produced visible "spreading" jitter on every
+    // assistant response containing inline markdown.
     const { getByTestId } = render(AssistantMessage, {
       props: {
         item: makeItem({
@@ -23,14 +25,12 @@ describe('<AssistantMessage>', () => {
     const body = getByTestId('assistant-message-body');
     expect(body.getAttribute('data-render-mode')).toBe('client-markdown');
     await waitFor(() => {
-      // Auto-closed asterisks are gone; the text content reads as the
-      // user-visible string, with `markdown` inside a strong element.
-      expect(body.textContent).toContain('streaming markdown');
-      expect(body.querySelector('strong')?.textContent).toBe('markdown');
+      expect(body.textContent).toContain('streaming **markdown');
+      expect(body.querySelector('strong')).toBeNull();
     });
   });
 
-  it('keeps the same body wrapper when completed markdown renders on the client', async () => {
+  it('promotes the dangling marker to a strong element once the closer arrives', async () => {
     const { getByTestId, rerender } = render(AssistantMessage, {
       props: {
         item: makeItem({
@@ -62,19 +62,23 @@ describe('<AssistantMessage>', () => {
     });
   });
 
-  // Regression: svelte-streamdown's `parseIncompleteMarkdown` was counting
-  // single italic delimiters inside inline code spans and balancing them
-  // with a trailing copy at end of paragraph (e.g. `` `_CLAIM_SQL` `` made
-  // the next sentence end with `there._`). We ship a pnpm patch
-  // (`patches/svelte-streamdown@*.patch`) that (a) makes Block.svelte honor
-  // `streamdown.parseIncompleteMarkdown === false`, and (b) adds an
-  // `isWithinInlineCode` helper that the singleAsteriskItalic /
-  // singleUnderscoreItalic plugins consult. The two `status` values exercise
-  // distinct patched paths: `'completed'` flips `parseIncompleteMarkdown`
-  // to false in ChatMarkdown, hitting the Block.svelte short-circuit;
-  // `'streaming'` keeps the balancer running and exercises the
-  // isWithinInlineCode skip inside the plugins. Both failure modes need
-  // independent coverage so a partial revert is caught.
+  // Regression: svelte-streamdown's `parseIncompleteMarkdown` used to
+  // count single italic/code delimiters across the WHOLE line — including
+  // contents of inline code spans — and balance them with a trailing
+  // copy at end of paragraph (e.g. `` `_CLAIM_SQL` `` made the next
+  // sentence end with `there._`). The 2026-05 patch revision removes
+  // Streamdown's inline-emphasis plugins entirely
+  // (boldItalic / bold / strikethrough / singleAsteriskItalic /
+  // inlineCode / singleUnderscoreItalic / subscript / superscript /
+  // inlineMath — see `patches/svelte-streamdown@*.patch` `.filter`
+  // at the end of `createDefaultPlugins`), so there is nothing left
+  // to balance. The two `status` values still cover both gating paths:
+  // `'completed'` flips `parseIncompleteMarkdown` off entirely (the
+  // `Block.svelte` short-circuit from the original patch), and
+  // `'streaming'` runs the remaining (block-level) plugins. Either path
+  // regressing — a future Streamdown update putting the inline plugins
+  // back, or the filter losing a name — would resurface the stray
+  // delimiter.
   const inlineCodeBalanceCases = [
     {
       name: 'underscore inside inline code',
@@ -129,6 +133,119 @@ describe('<AssistantMessage>', () => {
       expect(em?.textContent).toBe('real');
     });
   });
+
+  it('still renders ~~double-tilde~~ as legitimate strikethrough', async () => {
+    // Positive control: the streamdown filter patch only removes
+    // INLINE-EMPHASIS plugins from `parseIncompleteMarkdown`'s
+    // speculative-close list — it does NOT modify marked's GFM `del`
+    // tokenizer. A real `~~struck~~` pair must still render as `<del>`
+    // through Streamdown's normal parse path. If a future patch
+    // revision accidentally disables GFM strikethrough at the marked
+    // level, this test catches it.
+    const { getByTestId } = render(AssistantMessage, {
+      props: {
+        item: makeItem({
+          status: 'completed',
+          summary: 'this is ~~struck out~~ now.',
+        }),
+      },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const del = body.querySelector('del');
+      expect(del).not.toBeNull();
+      expect(del?.textContent).toBe('struck out');
+    });
+  });
+
+  // Regression for the "runaway-spread" streaming jitter: Streamdown's
+  // inline-emphasis plugins used to speculatively close unmatched
+  // delimiters at end-of-line. On the next chunk the synthesized closer
+  // disappeared and the formatted span "grew" to absorb the new text,
+  // producing a visible spreading effect for every `**bold`, `` `code` ``,
+  // `~~strike`, `_italic`, `*italic` token while the model was still
+  // writing — strikethrough across unrelated prose was the most visible
+  // symptom (a `~~partial` mid-stream synthesised `~~partial~~` →
+  // `<del>partial</del>`, and the closer migrated outward on each chunk).
+  // The `IncompleteMarkdownParser.createDefaultPlugins` `.filter` we
+  // ship in `patches/svelte-streamdown@3.0.1.patch` drops those plugins,
+  // so partial tokens stay literal until the real closer arrives. Each
+  // delimiter that was previously in the filtered plugin list gets an
+  // independent regression case: a future Streamdown update putting any
+  // single plugin back surfaces under exactly one test.
+  it.each([
+    { name: 'unmatched bold', delimiter: '**', dom: 'strong' as const },
+    { name: 'unmatched inline code', delimiter: '`', dom: 'code' as const },
+    { name: 'unmatched strikethrough', delimiter: '~~', dom: 'del' as const },
+    { name: 'unmatched underscore italic', delimiter: '_', dom: 'em' as const },
+    { name: 'unmatched asterisk italic', delimiter: '*', dom: 'em' as const },
+  ])('does not synthesise a $name closer mid-stream', async ({ delimiter, dom }) => {
+    const partial = `mid-stream ${delimiter}this is a longer phrase that should not auto-close`;
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'streaming', summary: partial }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      expect(body.textContent).toContain(partial);
+      expect(body.querySelector(dom)).toBeNull();
+    });
+  });
+
+  // Progressive-streaming regression: the user-visible "spreading"
+  // symptom required watching DOM stability across multiple incremental
+  // rerenders, not just a one-shot atomic mount. Without the filter the
+  // synthesised closer used to migrate outward on every chunk (e.g.
+  // `~~partial` → `<del>partial</del>` → `<del>partial w</del>` →
+  // `<del>partial wo</del>`...) producing the visible jitter. With the
+  // filter the row contains the raw delimiter as plain text at EVERY
+  // intermediate state and only collapses into the styled element on
+  // the closing chunk.
+  it.each([
+    { name: 'bold', delimiter: '**', dom: 'strong' as const },
+    { name: 'inline code', delimiter: '`', dom: 'code' as const },
+    { name: 'strikethrough', delimiter: '~~', dom: 'del' as const },
+    { name: 'underscore italic', delimiter: '_', dom: 'em' as const },
+    { name: 'asterisk italic', delimiter: '*', dom: 'em' as const },
+  ])(
+    'keeps $name partial literal across progressive stream chunks until closer arrives',
+    async ({ delimiter, dom }) => {
+      const opener = `progressive ${delimiter}`;
+      const inner = 'word';
+      const closer = delimiter;
+      const after = ' tail';
+      const closingSummary = `${opener}${inner}${closer}${after}`;
+
+      const { getByTestId, rerender } = render(AssistantMessage, {
+        props: { item: makeItem({ status: 'streaming', summary: opener }) },
+      });
+      const body = getByTestId('assistant-message-body');
+      await waitFor(() => {
+        expect(body.textContent).toContain(opener);
+        expect(body.querySelector(dom)).toBeNull();
+      });
+
+      // Stream the inner text one character at a time; before the
+      // closer arrives the unmatched delimiter must NEVER produce
+      // the styled element.
+      for (let i = 1; i <= inner.length; i++) {
+        const partial = `${opener}${inner.slice(0, i)}`;
+        await rerender({ item: makeItem({ status: 'streaming', summary: partial }) });
+        await waitFor(() => {
+          expect(body.textContent).toContain(partial);
+          expect(body.querySelector(dom)).toBeNull();
+        });
+      }
+
+      // Closer arrives — the styled element should now exist with the
+      // correct inner text only, NOT some grown-out runaway span.
+      await rerender({ item: makeItem({ status: 'streaming', summary: closingSummary }) });
+      await waitFor(() => {
+        const el = body.querySelector(dom);
+        expect(el).not.toBeNull();
+        expect(el?.textContent).toBe(inner);
+      });
+    },
+  );
 
   it('keeps inline command flags visually atomic', async () => {
     const { getByTestId } = render(AssistantMessage, {
