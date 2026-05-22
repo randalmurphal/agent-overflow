@@ -49,8 +49,8 @@ func TestExtractProposedPlanMetaMarksShortPreviewUntruncated(t *testing.T) {
 	if meta.PreviewTruncated {
 		t.Fatalf("PreviewTruncated = true, want false")
 	}
-	if meta.Preview != "Do one thing." {
-		t.Fatalf("Preview = %q, want body without title", meta.Preview)
+	if meta.Preview != "# Short\n\nDo one thing." {
+		t.Fatalf("Preview = %q, want full plan content", meta.Preview)
 	}
 	encoded, err := json.Marshal(meta)
 	if err != nil {

@@ -1151,7 +1151,7 @@ describe("<ToolCallCard> header dispatcher", () => {
   });
 
   it("delegates to ProposedPlanCard when payloadKind=proposed_plan", async () => {
-    const planMarkdown = "# plan with a long first heading that needs action clearance";
+    const planMarkdown = "# plan with a long first heading that needs action clearance\n\n## Summary\n\nKeep every heading.";
     setBindingMock("GetPayloadData", async () => ({ data: planMarkdown }));
     const item = makeItem({
       id: "plan",
@@ -1178,6 +1178,8 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(queryByTestId("tool-call-card")).toBeNull();
     expect(getByTestId("proposed-plan-card")).toBeInTheDocument();
     expect(getByTestId("proposed-plan-body-shell").textContent).toContain("long first heading");
+    expect(getByTestId("proposed-plan-body-shell").textContent).toContain("Summary");
+    expect(getByTestId("proposed-plan-body-shell").textContent).toContain("Keep every heading.");
     expect(getByTestId("proposed-plan-body-shell").className).not.toContain("pr-24");
     expect(getByTestId("proposed-plan-body-shell").className).not.toContain("ml-[5.25rem]");
     expect(getByTestId("proposed-plan-body-shell").className).not.toContain("px-3");

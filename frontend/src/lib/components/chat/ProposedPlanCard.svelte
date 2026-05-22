@@ -8,7 +8,6 @@
     parseProposedPlanPayloadMeta,
     proposedPlanPayloadVersion,
     shouldCapProposedPlanBody,
-    stripDisplayedPlanMarkdown,
   } from '../../utils/proposedPlan';
   import { createPlanSaveDialog } from '../../utils/planSaveDialog.svelte';
   import ProposedPlanActions from './ProposedPlanActions.svelte';
@@ -48,10 +47,7 @@
   const canOpenCurrentPlanSidebar = $derived(Boolean(item?.id) && currentPlan?.id === item?.id);
   const cappedBody = $derived(shouldCapProposedPlanBody(meta));
   const planMarkdown = $derived(expansion.displayData);
-  const displayedMarkdown = $derived.by(() => {
-    const source = planMarkdown ?? meta.preview;
-    return planMarkdown ? stripDisplayedPlanMarkdown(source) : source;
-  });
+  const displayedMarkdown = $derived(planMarkdown ?? meta.preview);
 
   const planExport = createPlanSaveDialog(ensurePlanMarkdown, () => pane.threadId);
 

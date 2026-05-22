@@ -245,7 +245,7 @@ func proposedPlanTitle(planMarkdown string) string {
 }
 
 func buildCollapsedPlanPreview(planMarkdown string, maxLines int) (string, bool) {
-	sourceLines := strings.Split(strings.TrimRight(stripDisplayedPlanMarkdown(planMarkdown), "\n"), "\n")
+	sourceLines := strings.Split(strings.TrimRight(planMarkdown, "\n"), "\n")
 	var preview []string
 	visibleLines := 0
 	hasMore := false
@@ -272,24 +272,4 @@ func buildCollapsedPlanPreview(planMarkdown string, maxLines int) (string, bool)
 		preview = append(preview, "", "...")
 	}
 	return strings.Join(preview, "\n"), hasMore
-}
-
-func stripDisplayedPlanMarkdown(planMarkdown string) string {
-	lines := strings.Split(strings.TrimRight(planMarkdown, "\n"), "\n")
-	if len(lines) == 0 {
-		return ""
-	}
-	if strings.HasPrefix(strings.TrimSpace(lines[0]), "#") {
-		lines = lines[1:]
-	}
-	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
-		lines = lines[1:]
-	}
-	if len(lines) > 0 && strings.EqualFold(strings.TrimSpace(strings.TrimLeft(lines[0], "# ")), "summary") {
-		lines = lines[1:]
-		for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
-			lines = lines[1:]
-		}
-	}
-	return strings.Join(lines, "\n")
 }

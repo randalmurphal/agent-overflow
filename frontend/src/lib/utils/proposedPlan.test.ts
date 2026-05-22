@@ -1,6 +1,6 @@
 // Pure string transforms used by ProposedPlanCard. Each path is load-
-// bearing for what the user sees when a plan renders, so the
-// title-stripping and filename sanitization both deserve a test.
+// bearing for what the user sees when a plan renders, so title extraction
+// and filename sanitization both deserve a test.
 
 import { describe, expect, it } from 'vitest';
 import {
@@ -14,7 +14,6 @@ import {
   proposedPlanTitle,
   shouldCapProposedPlanBody,
   splitProposedPlanMarkdownBlocks,
-  stripDisplayedPlanMarkdown,
 } from './proposedPlan';
 import type { Item } from '../types/models';
 
@@ -61,36 +60,6 @@ describe('proposedPlanTitle', () => {
     // The regex uses the /m flag so any line that starts with a heading
     // marker qualifies — falls out of the match at the first one.
     expect(proposedPlanTitle('body\n# Title later\nmore body')).toBe('Title later');
-  });
-});
-
-describe('stripDisplayedPlanMarkdown', () => {
-  it('removes the leading heading line', () => {
-    expect(stripDisplayedPlanMarkdown('# Title\n\nbody')).toBe('body');
-  });
-
-  it('does not strip a heading that is not the first non-empty line', () => {
-    // If the first line is plain text, no heading strip happens.
-    expect(stripDisplayedPlanMarkdown('body text\n# Still here')).toBe('body text\n# Still here');
-  });
-
-  it('additionally strips a "Summary" H1 that follows the title heading', () => {
-    // The classic ProposedPlan markdown is:
-    //   # <title>
-    //   # Summary
-    //   <summary body>
-    // Stripping "Summary" collapses the two redundant headings.
-    expect(
-      stripDisplayedPlanMarkdown('# Title\n\n## Summary\n\nthe plan'),
-    ).toBe('the plan');
-  });
-
-  it('handles trailing whitespace by trimming the end', () => {
-    expect(stripDisplayedPlanMarkdown('# Title\nbody   \n\n')).toBe('body');
-  });
-
-  it('returns an empty string if all content is stripped', () => {
-    expect(stripDisplayedPlanMarkdown('# Title')).toBe('');
   });
 });
 
