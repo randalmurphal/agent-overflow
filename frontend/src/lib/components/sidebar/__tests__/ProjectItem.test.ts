@@ -117,7 +117,7 @@ describe('<ProjectItem>', () => {
     expect(isProjectExpanded('p1')).toBe(true);
   });
 
-  it('pencil button is hidden by default but invokes onNewThread when clicked', async () => {
+  it('new-thread button is hidden by default but invokes onNewThread when clicked', async () => {
     const onNewThread = vi.fn();
     const pane = createThreadPane();
     const { getByTestId } = render(ProjectItem, {
@@ -128,11 +128,11 @@ describe('<ProjectItem>', () => {
         onNewThread,
       },
     });
-    const pencil = getByTestId('project-item-new-thread') as HTMLButtonElement;
+    const newThreadButton = getByTestId('project-item-new-thread') as HTMLButtonElement;
     // Visual hover state is CSS-only; the test asserts the class lives,
     // not that it's currently applied (happy-dom can't simulate :hover).
-    expect(pencil.className).toContain('group-hover:opacity-100');
-    await fireEvent.click(pencil);
+    expect(newThreadButton.className).toContain('group-hover:opacity-100');
+    await fireEvent.click(newThreadButton);
     expect(onNewThread).toHaveBeenCalledWith('p1');
   });
 
@@ -150,7 +150,7 @@ describe('<ProjectItem>', () => {
     expect(getByTestId('project-thread-list-empty')).toBeInTheDocument();
   });
 
-  it('clicking the pencil does not bubble to the row toggle', async () => {
+  it('clicking the new-thread button does not bubble to the row toggle', async () => {
     const onNewThread = vi.fn();
     const pane = createThreadPane();
     const { getByTestId } = render(ProjectItem, {
@@ -163,7 +163,7 @@ describe('<ProjectItem>', () => {
     });
     await fireEvent.click(getByTestId('project-item-new-thread'));
     // The click should not have toggled expansion — only onNewThread fires.
-    // Default is expanded, so it stays expanded after the pencil click.
+    // Default is expanded, so it stays expanded after the new-thread click.
     expect(isProjectExpanded('p1')).toBe(true);
     expect(onNewThread).toHaveBeenCalledTimes(1);
   });

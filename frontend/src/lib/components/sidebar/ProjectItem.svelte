@@ -1,5 +1,5 @@
 <script lang="ts">
-  // A single project row. Chevron + folder + name + hover-pencil on the
+  // A single project row. Chevron + folder + name + new-thread action on the
   // right for "new thread here". Right-click opens a small context menu
   // (Rename / Archive / Delete) rendered via ProjectContextMenu.
   //
@@ -32,7 +32,7 @@
   import { userFacingError } from '../../utils/userFacingError';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import FolderOpen from 'lucide-svelte/icons/folder-open';
-  import Pencil from 'lucide-svelte/icons/pencil';
+  import Plus from 'lucide-svelte/icons/plus';
   import Icon from '../primitives/Icon.svelte';
   import ProjectContextMenu from './ProjectContextMenu.svelte';
   import ProjectThreadList from './ProjectThreadList.svelte';
@@ -52,7 +52,7 @@
     project: ProjectWithCounts;
     threads: Thread[];
     pane: ThreadPane | null;
-    /** Called with the project id when the user clicks the hover pencil
+    /** Called with the project id when the user clicks the new-thread button
      * (or otherwise signals "create a new thread in this project"). */
     onNewThread?: (projectId: string) => void;
     /** Current rendered ordering of project ids (visible projects in
@@ -131,7 +131,7 @@
     }
   }
 
-  function handlePencilClick(e: MouseEvent): void {
+  function handleNewThreadClick(e: MouseEvent): void {
     e.stopPropagation();
     onNewThread?.(project.project.id);
   }
@@ -332,13 +332,13 @@
       </span>
       <button
         type="button"
-        onclick={handlePencilClick}
+        onclick={handleNewThreadClick}
         title="New Thread in This Project"
         aria-label="New Thread in This Project"
         data-testid="project-item-new-thread"
         class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       >
-        <Icon icon={Pencil} size={12} strokeWidth={2} class="opacity-90" />
+        <Icon icon={Plus} size={12} strokeWidth={2} class="opacity-90" />
       </button>
     {/if}
   </div>
