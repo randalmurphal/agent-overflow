@@ -66,6 +66,25 @@ describe('<BackgroundTaskTrayRow>', () => {
     expect(getByRole('button', { name: 'Toggle Command Output: git status --short' })).toBeInTheDocument();
   });
 
+  it('strips shell wrappers from truncated live Codex tray command summaries', () => {
+    const launch = makeItem({
+      id: 'bg-codex-truncated-command',
+      kind: 'tool_call',
+      toolName: 'command_execution',
+      summary: "Bash: /usr/bin/zsh -lc 'uv run pytest tests/unit/db/test_migration_steps.py tests/uni…",
+      status: 'running',
+      isBackground: true,
+      meta: JSON.stringify({ source: 'unifiedExecStartup' }),
+    });
+
+    const { getByTestId, queryByText } = renderTrayRow(taskFor(launch));
+
+    expect(getByTestId('command-output-command').textContent).toBe(
+      'uv run pytest tests/unit/db/test_migration_steps.py tests/uni…',
+    );
+    expect(queryByText("/usr/bin/zsh -lc 'uv run pytest tests/unit/db/test_migration_steps.py tests/uni…")).toBeNull();
+  });
+
   it('strips shell wrappers from completed Codex tray command payload metadata', () => {
     const launch = makeItem({
       id: 'bg-codex-launch',

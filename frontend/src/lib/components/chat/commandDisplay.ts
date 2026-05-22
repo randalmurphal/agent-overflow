@@ -183,13 +183,24 @@ export function stripShellWrapper(command: string): string {
   if (!raw) return raw;
 
   const words = splitShellWords(raw);
-  if (!words || words.length < 3) return raw;
+  if (!words) return stripTruncatedShellWrapper(raw);
+  if (words.length < 3) return raw;
 
   const shell = basename(words[0]);
   if ((shell === 'bash' || shell === 'zsh') && words[1] === '-lc') {
-    return words[2] ?? raw;
+    return words.slice(2).join(' ') || raw;
   }
   return raw;
+}
+
+function stripTruncatedShellWrapper(raw: string): string {
+  const match = raw.match(/^(\S*[/\\])?(?:bash|zsh)\s+-lc\s+(.+)$/);
+  if (!match) return raw;
+  const script = (match[2] ?? '').trimStart();
+  if (script.startsWith("'") || script.startsWith('"')) {
+    return script.slice(1);
+  }
+  return script;
 }
 
 function basename(path: string): string {

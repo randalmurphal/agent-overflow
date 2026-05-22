@@ -22,6 +22,16 @@ describe('commandDisplay', () => {
     expect(stripShellWrapper("/usr/bin/zsh -lc 'git status --short'")).toBe('git status --short');
   });
 
+  it('strips shell wrappers from truncated command previews with unterminated quotes', () => {
+    const truncated = "/usr/bin/zsh -lc 'uv run pytest tests/unit/db/test_migration_steps.py tests/uni…";
+
+    expect(stripShellWrapper(truncated)).toBe('uv run pytest tests/unit/db/test_migration_steps.py tests/uni…');
+  });
+
+  it('strips shell wrappers from unquoted shell preview text', () => {
+    expect(stripShellWrapper('/usr/bin/zsh -lc uv run pytest')).toBe('uv run pytest');
+  });
+
   it('preserves quoted scripts when splitting shell words', () => {
     const words = splitShellWords(
       `/bin/zsh -lc 'python3 -c '"'"'print("Hello, world!")'"'"''`,
