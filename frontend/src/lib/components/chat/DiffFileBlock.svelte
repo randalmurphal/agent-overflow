@@ -231,7 +231,17 @@
     <span
       class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75 font-mono"
       data-testid="diff-file-path"
-    >{displayPath}</span>
+    >
+      <EditorLink
+        path={file.path}
+        workspacePath={workspacePath ?? ''}
+        label={displayPath}
+        openLabel={displayPath}
+        stopPropagation
+        tone="inherit"
+        class="max-w-full truncate align-baseline hover:text-accent focus-visible:text-accent"
+      />
+    </span>
     <span
       class="ml-auto flex gap-2 text-[11px] shrink-0 tabular-nums"
       data-testid="diff-file-counts"
@@ -239,13 +249,6 @@
       {#if file.additions > 0}<span class="text-success">+{file.additions}</span>{/if}
       {#if file.deletions > 0}<span class="text-error">-{file.deletions}</span>{/if}
     </span>
-    <EditorLink
-      path={file.path}
-      workspacePath={workspacePath ?? ''}
-      asIcon
-      stopPropagation
-      class="opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100"
-    />
     {#if canPromoteToSidebar}
       <button
         type="button"

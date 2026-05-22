@@ -50,6 +50,10 @@
     ariaLabel?: string;
     /** Complete tooltip text. Defaults to `ariaLabel`. */
     title?: string;
+    /** Inline mode colour treatment. Default keeps existing accent-link
+     *  styling; inherit lets dense rows make the surrounding text carry
+     *  the idle colour and reveal link affordance on hover/focus. */
+    tone?: 'accent' | 'inherit';
     class?: string;
   }
 
@@ -64,6 +68,7 @@
     openLabel,
     ariaLabel,
     title,
+    tone = 'accent',
     class: className = '',
   }: Props = $props();
 
@@ -71,6 +76,9 @@
   const generatedAriaLabel = $derived(openInEditorLabel(targetLabel, line, col));
   const effectiveAriaLabel = $derived(ariaLabel ?? generatedAriaLabel);
   const effectiveTitle = $derived(title ?? effectiveAriaLabel);
+  const inlineToneClass = $derived(
+    tone === 'inherit' ? 'text-inherit hover:underline' : 'text-accent hover:underline',
+  );
 
   function openInEditorLabel(target: string, line: number, col: number): string {
     const suffix = line > 0 ? `:${line}${col > 0 ? `:${col}` : ''}` : '';
@@ -117,7 +125,9 @@
        href. tabindex=0 + Enter/Space activation come for free with
        <button>. The font-[inherit] override keeps the surrounding
        paragraph's font family / size — browsers reset both on <button>
-       by default. The text colour stays anchor-accent on purpose. -->
+       by default. Inline links default to accent text; dense rows can
+       opt into inherited idle colour while preserving hover/focus link
+       affordance. -->
   <button
     type="button"
     role="link"
@@ -127,8 +137,9 @@
     data-testid="editor-link"
     data-path={path}
     class={[
-      'cursor-pointer text-accent hover:underline bg-transparent border-0 p-0 text-left',
+      'cursor-pointer bg-transparent border-0 p-0 text-left',
       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded',
+      inlineToneClass,
       className,
     ].join(' ')}
     style="font: inherit;"

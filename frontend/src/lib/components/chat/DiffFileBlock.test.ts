@@ -5,10 +5,11 @@
 // affordances.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import DiffFileBlock from './DiffFileBlock.svelte';
 import type { PatchFile, PatchLine } from '../../utils/patchFiles';
 import type { ThreadPane } from '../../stores/thread.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 function ctx(content: string): PatchLine {
   return { type: 'context', content: ' ' + content };
@@ -298,16 +299,41 @@ describe('<DiffFileBlock>', () => {
     expect(open).not.toHaveBeenCalled();
   });
 
-  it('renders an EditorLink icon for the file path (asIcon mode)', () => {
+  it('renders the file path as the editor link without the pen icon', () => {
     const file = makePatchFile();
-    const { container } = render(DiffFileBlock, {
+    const { getByTestId, queryByTestId } = render(DiffFileBlock, {
       props: { file, threadId: 'thread-1', workspacePath: '/tmp/workspace' },
     });
-    const editorLink = container.querySelector('[data-testid="editor-link-icon"]');
-    expect(editorLink).not.toBeNull();
-    // The aria-label embeds the file path so screen-reader users see
-    // which file the icon opens.
-    expect(editorLink?.getAttribute('aria-label') ?? '').toContain('src/foo.ts');
+    const path = getByTestId('diff-file-path');
+    const editorLink = getByTestId('editor-link');
+    expect(path.textContent).toBe('src/foo.ts');
+    expect(editorLink.textContent).toBe('src/foo.ts');
+    expect(editorLink.getAttribute('aria-label') ?? '').toContain('src/foo.ts');
+    expect(queryByTestId('editor-link-icon')).toBeNull();
+  });
+
+  it('clicking the file path opens the file in the editor without promoting to sidebar', async () => {
+    const openSidebar = vi.fn();
+    const openEditor = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+    const pane = fakePane(openSidebar) as ThreadPane;
+    const file = makePatchFile();
+    const { getByTestId } = render(DiffFileBlock, {
+      props: {
+        pane,
+        file,
+        payloadId: 'p-file',
+        threadId: 'thread-1',
+        workspacePath: '/tmp/workspace',
+      },
+    });
+
+    await fireEvent.click(getByTestId('editor-link'));
+
+    await waitFor(() => {
+      expect(openEditor).toHaveBeenCalledTimes(1);
+    });
+    expect(openEditor.mock.calls[0]).toEqual(['src/foo.ts', 0, 0, '/tmp/workspace']);
+    expect(openSidebar).not.toHaveBeenCalled();
   });
 
   it('renders the body with line-tint backgrounds even before tokens land', () => {
