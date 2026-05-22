@@ -6,5 +6,6 @@ export {
     NetworkSettings,
     RemoteEndpoint,
     RemoteEndpointSummary,
+    RetentionSettings,
     Settings
 } from "./models.js";

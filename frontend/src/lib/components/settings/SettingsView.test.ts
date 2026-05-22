@@ -34,6 +34,7 @@ const BASE_SETTINGS: Settings = {
   observabilityOtlpEndpoint: '',
   observabilityEventLogEnabled: false,
   network: { bindAll: false },
+  retention: { days: 30 },
 };
 
 async function seed(): Promise<void> {

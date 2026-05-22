@@ -34,6 +34,19 @@ type EditorSettings struct {
 	Preference string `json:"preference"`
 }
 
+// RetentionSettings groups TTL cleanup preferences for the background
+// sweeper that prunes stale threads (and their on-disk side effects)
+// plus dated provider-event log files and bug-report bookmark files.
+// Persisted as a nested object so future retention knobs (per-resource
+// overrides, exemption lists) can land without reshuffling Settings.
+type RetentionSettings struct {
+	// Days is the age threshold in days. Threads whose updated_at is
+	// older than now-(Days*24h) are eligible for sweep, as are dated
+	// provider-event log files and bug-report bookmark files. A value
+	// of 0 disables the sweep entirely.
+	Days int `json:"days"`
+}
+
 // CurrentSchemaVersion is the version stamped on every Update-written
 // settings file. Bump on any breaking shape change so a future loader
 // can branch on the version and run a one-shot migration before
@@ -155,6 +168,11 @@ type Settings struct {
 	// when later WSL detection finds a higher-priority option.
 	Editor EditorSettings `json:"editor"`
 
+	// Retention controls the background TTL sweep. Default
+	// Retention.Days = 30 cleans threads, dated provider-event logs,
+	// and bug-report bookmark files older than the window. 0 disables.
+	Retention RetentionSettings `json:"retention"`
+
 	// RemoteEndpoints stores the user's `--connect` targets: remote-
 	// hosted backends the desktop binary can attach to instead of
 	// booting a local transport. Persisted as a flat list keyed by
@@ -211,6 +229,9 @@ var DefaultSettings = Settings{
 	ObservabilityTracingEnabled:  false,
 	ObservabilityOtlpEndpoint:    "",
 	ObservabilityEventLogEnabled: false,
+	// 30 days is the default retention window. The cleanup loop reads
+	// this on every tick, so toggling it doesn't require a restart.
+	Retention: RetentionSettings{Days: 30},
 }
 
 // AutoCompactPercents returns the per-tier compact thresholds for the

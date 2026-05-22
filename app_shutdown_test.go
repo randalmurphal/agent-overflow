@@ -266,6 +266,12 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		"close replay manager",
 		"shutdown telemetry",
 		"stop idle session reaper",
+		// "stop retention cleanup" MUST appear between
+		// "stop idle session reaper" and "close provider sessions" —
+		// the sweep calls deleteThreadTreeLocked which mutates
+		// a.sessions via stopSession; running it concurrently with
+		// Step 4's snapshotAndClear would race the session map.
+		"stop retention cleanup",
 		"close provider sessions",
 		"close design reactor",
 		"close gitwatch manager",

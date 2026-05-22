@@ -156,6 +156,60 @@ func (t *Tracer) Bookmark(now time.Time) (string, error) {
 	return dest, nil
 }
 
+// PruneBookmarksOlderThan removes bug-report bookmark files under
+// <configDir>/<DirName>/<BookmarkSubdir> whose mtime is strictly
+// older than `cutoff`. Returns the count of removed files and an
+// aggregated error covering all failures. Non-existent bookmark
+// directory returns (0, nil).
+//
+// Only files matching `bug-report-*.jsonl` are considered so a future
+// bookmark variant or a user-saved scratch file doesn't disappear
+// silently. mtime is the single source of truth — the timestamp in
+// the filename is set at creation and stays stable, so it would still
+// match for a file the user just opened to copy out of.
+func PruneBookmarksOlderThan(configDir string, cutoff time.Time) (int, error) {
+	if configDir == "" {
+		return 0, errors.New("ui trace path unavailable before app data directory is initialized")
+	}
+	dir := filepath.Join(configDir, DirName, BookmarkSubdir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("uitrace: read bookmark dir %s: %w", dir, err)
+	}
+
+	var (
+		removed int
+		errs    []error
+	)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, "bug-report-") || !strings.HasSuffix(name, ".jsonl") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("stat %s: %w", name, err))
+			continue
+		}
+		if !info.ModTime().Before(cutoff) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			errs = append(errs, fmt.Errorf("remove %s: %w", name, err))
+			continue
+		}
+		removed++
+	}
+
+	return removed, errors.Join(errs...)
+}
+
 func appendFile(dst io.Writer, srcPath string) (bool, error) {
 	src, err := os.Open(srcPath)
 	if err != nil {

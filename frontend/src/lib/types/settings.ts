@@ -101,6 +101,16 @@ export interface Settings {
   network: NetworkPersistedSettings;
 
   /**
+   * Retention TTL window for the background cleanup sweep. Threads
+   * whose updated_at is older than retention.days days are removed
+   * along with their on-disk side effects (attachments, design
+   * workdirs, replay logs, checkpoint git refs in the user's repo).
+   * Dated provider-event log files and bug-report bookmark files are
+   * pruned on the same cutoff. 0 disables the sweep entirely.
+   */
+  retention: RetentionPersistedSettings;
+
+  /**
    * Phase F --connect target list. Optional in the wire shape because
    * the Go side persists with `omitempty` — fresh installs have no
    * remoteEndpoints key and TS callers should treat undefined as the
@@ -112,6 +122,11 @@ export interface Settings {
 export interface NetworkPersistedSettings {
   /** When true, the transport server binds to 0.0.0.0 instead of 127.0.0.1. */
   bindAll: boolean;
+}
+
+export interface RetentionPersistedSettings {
+  /** Age threshold in days. 0 disables the sweep. */
+  days: number;
 }
 
 /**

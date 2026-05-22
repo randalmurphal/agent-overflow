@@ -69,6 +69,60 @@ describe('<GeneralSettings> — Pane density', () => {
   });
 });
 
+describe('<GeneralSettings> — Retention', () => {
+  beforeEach(async () => {
+    await seed();
+  });
+
+  it('renders the retention input with the default value', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    expect(getByTestId('settings-retention')).toBeTruthy();
+    const input = getByTestId('settings-retention-days') as HTMLInputElement;
+    expect(input.value).toBe('30');
+  });
+
+  it('shows the disabled-cleanup hint when retention days is 0', async () => {
+    await seed({ retention: { days: 0 } });
+    const { getByText } = render(GeneralSettings);
+    expect(
+      getByText(/automatic cleanup is disabled/i),
+    ).toBeTruthy();
+  });
+
+  it('dispatches retention patch on blur with parsed integer', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    const input = getByTestId('settings-retention-days') as HTMLInputElement;
+    input.value = '7';
+    await fireEvent.blur(input);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls[0][0]).toEqual({ retention: { days: 7 } });
+  });
+
+  it('coerces non-numeric input to 0 (disabled)', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    const input = getByTestId('settings-retention-days') as HTMLInputElement;
+    input.value = 'banana';
+    await fireEvent.blur(input);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls[0][0]).toEqual({ retention: { days: 0 } });
+  });
+
+  it('coerces negative input to 0 (disabled)', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    const input = getByTestId('settings-retention-days') as HTMLInputElement;
+    input.value = '-5';
+    await fireEvent.blur(input);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls[0][0]).toEqual({ retention: { days: 0 } });
+  });
+});
+
 describe('<GeneralSettings> — Font selectors', () => {
   beforeEach(async () => {
     await seed();

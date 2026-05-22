@@ -163,6 +163,9 @@ func validateSettings(current Settings) (Settings, error) {
 	); err != nil {
 		return Settings{}, err
 	}
+	if err := validateRetentionDays(current.Retention.Days); err != nil {
+		return Settings{}, err
+	}
 	return current, nil
 }
 
@@ -254,6 +257,7 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		current.CodexAutoCompactExtendedPercent,
 		DefaultSettings.CodexAutoCompactExtendedPercent,
 	)
+	current.Retention.Days = sanitizeRetentionDays(current.Retention.Days)
 	return current
 }
 
@@ -270,6 +274,47 @@ func sanitizeAutoCompactPercent(field string, value, fallback int) int {
 	}
 	log.Printf("settings: invalid %s %d, using default %d", field, value, fallback)
 	return fallback
+}
+
+// MaxRetentionDays caps the retention window at ~100 years. The hard
+// ceiling exists because the sweep computes `time.Duration(days) * 24
+// * time.Hour`, which overflows int64 nanoseconds around 106_751 days
+// and produces a positive Duration after negation — a cutoff in the
+// future would delete every row. Capping well below that boundary
+// keeps the arithmetic well-defined without constraining any plausible
+// human-scale retention policy.
+const MaxRetentionDays = 36500
+
+// validateRetentionDays rejects negative and arithmetic-unsafe values.
+// Zero is legal — it means "disable the sweep" — but a negative
+// integer is a caller bug because there is no policy a negative window
+// could represent, and a value above MaxRetentionDays risks Duration
+// overflow downstream.
+func validateRetentionDays(value int) error {
+	if value < 0 {
+		return fmt.Errorf("retention.days must be non-negative, got %d", value)
+	}
+	if value > MaxRetentionDays {
+		return fmt.Errorf("retention.days must be at most %d, got %d", MaxRetentionDays, value)
+	}
+	return nil
+}
+
+// sanitizeRetentionDays clamps a hand-edited out-of-range value rather
+// than rejecting the whole file at load. Negatives clamp to 0
+// (disabled); over-cap values clamp to MaxRetentionDays. Matches the
+// auto-compact sanitize pattern — load-time leniency, write-time
+// strictness.
+func sanitizeRetentionDays(value int) int {
+	if value < 0 {
+		log.Printf("settings: invalid retention.days %d, disabling sweep", value)
+		return 0
+	}
+	if value > MaxRetentionDays {
+		log.Printf("settings: retention.days %d exceeds %d, clamping", value, MaxRetentionDays)
+		return MaxRetentionDays
+	}
+	return value
 }
 
 func validateOption(field, value string, allowed map[string]struct{}) error {

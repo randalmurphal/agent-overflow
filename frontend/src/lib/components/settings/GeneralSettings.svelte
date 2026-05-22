@@ -7,6 +7,11 @@
   import PaneDensitySection from './PaneDensitySection.svelte';
   import { INPUT_CLASS, SELECT_CLASS } from './styles';
 
+  // Mirrors internal/settings.MaxRetentionDays. Hard-capped on the Go
+  // side as well; bounding the input here keeps the UI honest and stops
+  // a typo from triggering the load-time clamp.
+  const MAX_RETENTION_DAYS = 36500;
+
   let settings = $derived(getSettings());
 
   const ENV_OPTIONS: Array<{ value: ThreadEnvMode; label: string }> = [
@@ -214,6 +219,41 @@
           checked={settings.confirmDelete}
           ariaLabel="Toggle Delete Confirmation"
           onToggle={(value) => updateSetting('confirmDelete', value)}
+        />
+      </SettingsField>
+    </div>
+  </section>
+
+  <section data-testid="settings-retention">
+    <SettingsHeader
+      eyebrow="Storage"
+      title="Automatic Cleanup"
+      description="Old threads, dated provider-event logs, and bug-report bookmarks are removed in the background once they pass the retention window."
+    />
+    <div class="mt-4 flex flex-col gap-1">
+      <SettingsField
+        label="Retention (days)"
+        hint={settings.retention.days === 0
+          ? 'Automatic cleanup is disabled. Nothing will be removed automatically.'
+          : 'Threads (with their attachments, design workdirs, replay logs, and checkpoint git refs), provider-event logs, and bug-report bookmarks older than this are cleaned up automatically. Set to 0 to disable.'}
+        htmlFor="retention-days"
+      >
+        <input
+          id="retention-days"
+          data-testid="settings-retention-days"
+          type="number"
+          min="0"
+          max={MAX_RETENTION_DAYS}
+          step="1"
+          value={settings.retention.days}
+          onblur={(e) => {
+            const raw = (e.target as HTMLInputElement).value;
+            const parsed = parseInt(raw, 10);
+            let next = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+            if (next > MAX_RETENTION_DAYS) next = MAX_RETENTION_DAYS;
+            void updateSetting('retention', { days: next });
+          }}
+          class="{INPUT_CLASS} max-w-[6rem]"
         />
       </SettingsField>
     </div>

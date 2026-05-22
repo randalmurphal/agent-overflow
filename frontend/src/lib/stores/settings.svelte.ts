@@ -37,6 +37,10 @@ const DEFAULT_SETTINGS: Settings = {
   // safe out-of-the-box behaviour. Toggling on through Settings →
   // Network rebinds the transport without restarting the app.
   network: { bindAll: false },
+  // 30-day retention mirrors internal/settings.DefaultSettings so a
+  // fresh frontend boot before GetSettings returns shows the right
+  // default in the GeneralSettings input.
+  retention: { days: 30 },
 };
 
 function defaultSettings(): Settings {
@@ -44,6 +48,7 @@ function defaultSettings(): Settings {
     ...DEFAULT_SETTINGS,
     recentWorkspaces: [...DEFAULT_SETTINGS.recentWorkspaces],
     network: { ...DEFAULT_SETTINGS.network },
+    retention: { ...DEFAULT_SETTINGS.retention },
   };
 }
 

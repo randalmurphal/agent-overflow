@@ -169,6 +169,40 @@ export class RemoteEndpointSummary {
 }
 
 /**
+ * RetentionSettings groups TTL cleanup preferences for the background
+ * sweeper that prunes stale threads (and their on-disk side effects)
+ * plus dated provider-event log files and bug-report bookmark files.
+ * Persisted as a nested object so future retention knobs (per-resource
+ * overrides, exemption lists) can land without reshuffling Settings.
+ */
+export class RetentionSettings {
+    /**
+     * Days is the age threshold in days. Threads whose updated_at is
+     * older than now-(Days*24h) are eligible for sweep, as are dated
+     * provider-event log files and bug-report bookmark files. A value
+     * of 0 disables the sweep entirely.
+     */
+    "days": number;
+
+    /** Creates a new RetentionSettings instance. */
+    constructor($$source: Partial<RetentionSettings> = {}) {
+        if (!("days" in $$source)) {
+            this["days"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RetentionSettings instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RetentionSettings {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RetentionSettings($$parsedSource as Partial<RetentionSettings>);
+    }
+}
+
+/**
  * Settings holds all user-configurable preferences.
  */
 export class Settings {
@@ -305,6 +339,13 @@ export class Settings {
     "editor": EditorSettings;
 
     /**
+     * Retention controls the background TTL sweep. Default
+     * Retention.Days = 30 cleans threads, dated provider-event logs,
+     * and bug-report bookmark files older than the window. 0 disables.
+     */
+    "retention": RetentionSettings;
+
+    /**
      * RemoteEndpoints stores the user's `--connect` targets: remote-
      * hosted backends the desktop binary can attach to instead of
      * booting a local transport. Persisted as a flat list keyed by
@@ -408,6 +449,9 @@ export class Settings {
         if (!("editor" in $$source)) {
             this["editor"] = (new EditorSettings());
         }
+        if (!("retention" in $$source)) {
+            this["retention"] = (new RetentionSettings());
+        }
 
         Object.assign(this, $$source);
     }
@@ -419,7 +463,8 @@ export class Settings {
         const $$createField5_0 = $$createType0;
         const $$createField27_0 = $$createType1;
         const $$createField28_0 = $$createType2;
-        const $$createField29_0 = $$createType4;
+        const $$createField29_0 = $$createType3;
+        const $$createField30_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
@@ -430,8 +475,11 @@ export class Settings {
         if ("editor" in $$parsedSource) {
             $$parsedSource["editor"] = $$createField28_0($$parsedSource["editor"]);
         }
+        if ("retention" in $$parsedSource) {
+            $$parsedSource["retention"] = $$createField29_0($$parsedSource["retention"]);
+        }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField29_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField30_0($$parsedSource["remoteEndpoints"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }
@@ -441,5 +489,6 @@ export class Settings {
 const $$createType0 = $Create.Array($Create.Any);
 const $$createType1 = NetworkSettings.createFrom;
 const $$createType2 = EditorSettings.createFrom;
-const $$createType3 = RemoteEndpoint.createFrom;
-const $$createType4 = $Create.Array($$createType3);
+const $$createType3 = RetentionSettings.createFrom;
+const $$createType4 = RemoteEndpoint.createFrom;
+const $$createType5 = $Create.Array($$createType4);

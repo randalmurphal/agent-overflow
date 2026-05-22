@@ -254,6 +254,83 @@ func TestTextGenerationSanitizesInvalidOnLoad(t *testing.T) {
 	}
 }
 
+func TestRetentionDefaultIsThirtyDays(t *testing.T) {
+	got := NewService(t.TempDir()).Get()
+	if got.Retention.Days != 30 {
+		t.Fatalf("Retention.Days default = %d, want 30", got.Retention.Days)
+	}
+}
+
+func TestRetentionUpdateRoundTrip(t *testing.T) {
+	svc := NewService(t.TempDir())
+
+	// Zero is legal (disables the sweep).
+	got, err := svc.Update(map[string]any{
+		"retention": map[string]any{"days": 0},
+	})
+	if err != nil {
+		t.Fatalf("retention.days=0: %v", err)
+	}
+	if got.Retention.Days != 0 {
+		t.Fatalf("retention.days=0 round-trip: got %d, want 0", got.Retention.Days)
+	}
+
+	// Custom positive value round-trips.
+	got, err = svc.Update(map[string]any{
+		"retention": map[string]any{"days": 7},
+	})
+	if err != nil {
+		t.Fatalf("retention.days=7: %v", err)
+	}
+	if got.Retention.Days != 7 {
+		t.Fatalf("retention.days=7 round-trip: got %d, want 7", got.Retention.Days)
+	}
+}
+
+func TestRetentionRejectsNegativeOnWrite(t *testing.T) {
+	svc := NewService(t.TempDir())
+	if _, err := svc.Update(map[string]any{
+		"retention": map[string]any{"days": -5},
+	}); err == nil {
+		t.Fatal("Update(retention.days=-5) should fail validation")
+	}
+}
+
+func TestRetentionSanitizesNegativeOnLoad(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(`{"retention": {"days": -3}}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got := NewService(dir).Get()
+	if got.Retention.Days != 0 {
+		t.Fatalf("Retention.Days = %d, want 0 (clamped from -3)", got.Retention.Days)
+	}
+}
+
+func TestRetentionRejectsOverflowingDaysOnWrite(t *testing.T) {
+	svc := NewService(t.TempDir())
+	// Above MaxRetentionDays so the Duration math downstream stays
+	// well-defined regardless of user input.
+	if _, err := svc.Update(map[string]any{
+		"retention": map[string]any{"days": MaxRetentionDays + 1},
+	}); err == nil {
+		t.Fatal("Update(retention.days > MaxRetentionDays) should fail validation")
+	}
+}
+
+func TestRetentionClampsOverflowingDaysOnLoad(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(`{"retention": {"days": 999999999}}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got := NewService(dir).Get()
+	if got.Retention.Days != MaxRetentionDays {
+		t.Fatalf("Retention.Days = %d, want %d (clamped from 999999999)", got.Retention.Days, MaxRetentionDays)
+	}
+}
+
 func TestUpdateDefaultsBlankBinaryPaths(t *testing.T) {
 	svc := NewService(t.TempDir())
 

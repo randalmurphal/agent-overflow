@@ -31,6 +31,7 @@ const FULL_SETTINGS: Settings = {
   observabilityOtlpEndpoint: '',
   observabilityEventLogEnabled: false,
   network: { bindAll: false },
+  retention: { days: 30 },
 };
 
 describe('settings store', () => {

@@ -364,6 +364,105 @@ func TestBookmarkWhenNoTraceExistsReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestPruneBookmarksOlderThan(t *testing.T) {
+	dir := t.TempDir()
+	bookmarkDir := filepath.Join(dir, DirName, BookmarkSubdir)
+	if err := os.MkdirAll(bookmarkDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	now := time.Now()
+	cutoff := now.Add(-7 * 24 * time.Hour)
+
+	files := []struct {
+		name     string
+		mtime    time.Time
+		wantGone bool
+		describe string
+	}{
+		{
+			name:     "bug-report-20260101T120000Z.jsonl",
+			mtime:    now.Add(-30 * 24 * time.Hour),
+			wantGone: true,
+			describe: "old bookmark: removed",
+		},
+		{
+			name:     "bug-report-20260520T120000Z.jsonl",
+			mtime:    now.Add(-1 * time.Hour),
+			wantGone: false,
+			describe: "recent bookmark: kept",
+		},
+		{
+			name:     "bug-report-edge.jsonl",
+			mtime:    cutoff, // mtime equal to cutoff is NOT strictly older
+			wantGone: false,
+			describe: "boundary mtime: kept (strict <)",
+		},
+		{
+			name:     "not-a-bookmark.txt",
+			mtime:    now.Add(-30 * 24 * time.Hour),
+			wantGone: false,
+			describe: "unrelated file: ignored",
+		},
+		{
+			name:     "bug-report-no-extension",
+			mtime:    now.Add(-30 * 24 * time.Hour),
+			wantGone: false,
+			describe: "missing .jsonl suffix: ignored",
+		},
+	}
+
+	for _, f := range files {
+		path := filepath.Join(bookmarkDir, f.name)
+		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+			t.Fatalf("seed %s: %v", f.name, err)
+		}
+		if err := os.Chtimes(path, f.mtime, f.mtime); err != nil {
+			t.Fatalf("chtimes %s: %v", f.name, err)
+		}
+	}
+
+	got, err := PruneBookmarksOlderThan(dir, cutoff)
+	if err != nil {
+		t.Fatalf("PruneBookmarksOlderThan: %v", err)
+	}
+
+	wantRemoved := 0
+	for _, f := range files {
+		if f.wantGone {
+			wantRemoved++
+		}
+	}
+	if got != wantRemoved {
+		t.Fatalf("removed count = %d, want %d", got, wantRemoved)
+	}
+	for _, f := range files {
+		_, err := os.Stat(filepath.Join(bookmarkDir, f.name))
+		switch {
+		case f.wantGone && err == nil:
+			t.Errorf("%s (%s): still present", f.name, f.describe)
+		case !f.wantGone && err != nil:
+			t.Errorf("%s (%s): missing: %v", f.name, f.describe, err)
+		}
+	}
+}
+
+func TestPruneBookmarksOlderThanMissingDir(t *testing.T) {
+	n, err := PruneBookmarksOlderThan(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatalf("missing dir should be (0, nil): %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("missing dir count = %d, want 0", n)
+	}
+}
+
+func TestPruneBookmarksOlderThanEmptyConfigDir(t *testing.T) {
+	if _, err := PruneBookmarksOlderThan("", time.Now()); err == nil {
+		t.Fatal("empty configDir should return an error to match New's contract")
+	}
+}
+
 func assertMode(t *testing.T, path string, want os.FileMode) {
 	t.Helper()
 	info, err := os.Stat(path)

@@ -29,6 +29,7 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     observabilityOtlpEndpoint: '',
     observabilityEventLogEnabled: false,
     network: { bindAll: false },
+    retention: { days: 30 },
     ...overrides,
   };
 }

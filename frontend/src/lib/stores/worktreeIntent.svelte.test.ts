@@ -47,6 +47,7 @@ const SETTINGS: Settings = {
   observabilityOtlpEndpoint: '',
   observabilityEventLogEnabled: false,
   network: { bindAll: false },
+  retention: { days: 30 },
 };
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {

@@ -231,6 +231,15 @@ type App struct {
 	// can't fire mid-teardown and race the session snapshot.
 	idleReaperStop chan struct{}
 	idleReaperWG   sync.WaitGroup
+	// retentionCleanupStop signals the retention TTL sweep goroutine to
+	// exit. Set by startRetentionCleanup during ServiceStartup; closed
+	// exactly once by Shutdown between the idle reaper stop and the
+	// parallel session close. The sweep writes to SQLite and calls
+	// deleteThreadTreeLocked (which mutates a.sessions via stopSession)
+	// — both must finish before subsequent shutdown steps tear down the
+	// store and snapshot the session map.
+	retentionCleanupStop chan struct{}
+	retentionCleanupWG   sync.WaitGroup
 	// codexRateLimitProbeRunning coalesces explicit Codex rate-limit refreshes.
 	// Each refresh spawns a short-lived app-server subprocess, so concurrent
 	// turn-complete and periodic triggers should share "already refreshing"
@@ -282,6 +291,10 @@ type App struct {
 	// idleReaperNowFn is a test-only clock injection for the reaper.
 	// Production leaves it nil and reaperNow reads time.Now directly.
 	idleReaperNowFn func() time.Time
+	// retentionNowFn is a test-only clock injection for the retention
+	// sweep. Production leaves it nil and retentionNow reads time.Now
+	// directly. Mirrors idleReaperNowFn.
+	retentionNowFn func() time.Time
 }
 
 // session wraps a provider session regardless of type. Exactly one of
@@ -462,6 +475,11 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	// idle past IdleReapThreshold so leaked subprocesses can't pile up
 	// across long-running app sessions. See app_session_reaper.go.
 	a.startIdleSessionReaper()
+
+	// Start the retention TTL sweep. Reads Settings.Retention.Days
+	// every tick so toggling retention on/off (or changing the window)
+	// doesn't require a restart. See app_retention_cleanup.go.
+	a.startRetentionCleanup()
 
 	return nil
 }
@@ -886,6 +904,16 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// goroutine returns.
 	a.stopIdleSessionReaper()
 	record("stop idle session reaper", nil)
+
+	// Step 3c: stop the retention TTL sweep. The sweep writes to
+	// SQLite (cascading thread deletes) and calls deleteThreadTreeLocked
+	// which mutates a.sessions via stopSession — running it concurrently
+	// with Step 4's snapshotAndClear would race the session map, and
+	// running it past Step 9's store close would write to a torn-down
+	// store. stopRetentionCleanup is idempotent and blocks until the
+	// goroutine returns.
+	a.stopRetentionCleanup()
+	record("stop retention cleanup", nil)
 
 	// Step 4: stop provider sessions. Each session's Close tears down
 	// its own design-thread state as part of the same parallel closer,
