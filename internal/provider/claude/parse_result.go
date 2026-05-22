@@ -1,8 +1,17 @@
 // Package claude — parser for `result`-type NDJSON lines. The `result`
 // envelope is Claude's authoritative turn-complete signal (see
 // docs/references/claude-wire.md §result). This file owns the mapping
-// from the envelope into `EventTurnComplete`; context-meter updates come
-// only from top-level assistant/message_delta usage snapshots.
+// from the envelope into `EventTurnComplete`. Context-meter updates
+// flow through `message_delta.usage` in parse_stream.go; the trailing
+// message_delta of every turn already carries the parent-only
+// cumulative sum that `result.modelUsage[parent_model]` would
+// surface (same value on the wire), so re-emitting from the result
+// envelope would be a redundant duplicate of an already-correct
+// meter reading. The advisor's own per-call usage surfaces only via
+// `result.modelUsage[advisor_model]` (and is filtered by
+// parse_assistant.go advisorOnly when it arrives as a standalone
+// assistant frame), never as a stray message_delta into the parent
+// stream.
 
 package claude
 
@@ -15,19 +24,21 @@ import (
 )
 
 // parseResult converts a Claude `result` envelope into an
-// `EventTurnComplete`. The typed turn-complete payload carries the final
+// `EventTurnComplete`. The payload carries the final
 // assistant_message_id (tracked in-stream from the last `assistant`
-// envelope), the observed `stop_reason`, the usage snapshot, an
-// `aborted: true` flag when the envelope shape indicates an interrupted
-// turn, and an `error` string when the turn ended in a non-interrupted
-// error. The four `error_*` subtypes (per
+// envelope), the observed `stop_reason`, the aggregated usage
+// snapshot (cost/billing accounting only — not a context-meter
+// signal), an `aborted: true` flag when the envelope shape indicates
+// an interrupted turn, and an `error` string when the turn ended in a
+// non-interrupted error. The four `error_*` subtypes (per
 // SDKResultError: `error_during_execution`, `error_max_turns`,
 // `error_max_budget_usd`, `error_max_structured_output_retries`) are
 // the explicit error path; a `subtype=success` envelope with
 // `is_error:true` covers the case where an `assistant.error` flagged
-// the turn but the final summary type stayed `success`. `terminal_reason`
-// is intentionally not carried into the normalized completion payload; the
-// raw line remains available for replay/debug.
+// the turn but the final summary type stayed `success`.
+// `terminal_reason` is intentionally not carried into the normalized
+// completion payload; the raw line remains available for
+// replay/debug.
 //
 // Interrupted detection: Claude does not expose a `"interrupted"`
 // stop_reason. Interruption surfaces as `subtype=error_during_execution`
@@ -45,9 +56,7 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 
 	// Extract usage/cost data from the result summary. If the wire
 	// didn't include a cost and we know the model, price the usage
-	// here for turn-complete accounting only. Do not emit this as a
-	// context-meter update; Claude's result.usage is cumulative across
-	// API calls in the turn.
+	// here for turn-complete accounting only.
 	usage := extractResultUsage(raw)
 	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
 		if usage.TotalCostUSD == 0 && model != "" {

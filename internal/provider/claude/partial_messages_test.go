@@ -405,144 +405,72 @@ func TestParseStreamEventSubagentMessageDeltaEndTurnDoesNotEmitParentSoftTurnCom
 	}
 }
 
-// --- Advisor: message_delta usage suppression ---
+// --- Advisor + message_delta usage ---
 //
-// Claude's `message_delta` carries CUMULATIVE usage across every API
-// call that SSE message generated. When the message contains an
-// advisor block (`server_tool_use` / `advisor_tool_result`) the
-// advisor's separate API call inflates `cache_read_input_tokens` by
-// roughly the parent's context size (the advisor loads the parent's
-// cache too), so the message_delta total is ~2x the parent's actual
-// window. Pushing that to EventTokenUsage clobbers the parent's
-// context meter with a doubled value. The parser tracks
-// per-message "has advisor block?" between message_start and
-// message_delta and suppresses the usage emit when set — the
-// parent's correct per-call usage is still emitted from the
-// non-advisor assistant envelopes.
-//
-// Wire shape (paraphrased from the May-19 capture of
-// srvtoolu_01XrvFDa22jtChJqLhSoXnTH on msg_01TRHGRTMvngb8sahiv9):
-//   - assistant envelopes for thinking/text/tool_use blocks all
-//     report the parent's true cache_read=142901
-//   - the trailing message_delta reports cache_read=286173 (~2×)
-// We assert by counting EventTokenUsage events emitted from the
-// stream path — the message_delta must contribute 0 when an advisor
-// was involved.
+// `message_delta` carries the cumulative `usage` snapshot for the SSE
+// message that just ended. The cumulative total INCLUDES the
+// contribution of any advisor block the message ran, because the
+// parent's next API call replays the advisor response into its prompt
+// — that is the value the parent's context meter must reflect, not
+// the pre-advisor reading. The parser emits EventTokenUsage from
+// every well-formed message_delta.usage; advisor's own separate
+// 200K-window API call surfaces only via terminal `result.modelUsage`
+// keyed on the advisor model, never as a stray message_delta into
+// the parent stream. See parse_assistant.go advisorOnly for the
+// envelope-level filter that drops advisor's standalone usage frames.
 
-func TestParseStreamEventMessageDeltaSuppressesUsageWhenAdvisorCalled(t *testing.T) {
+func TestParseStreamEventMessageDeltaEmitsUsageWhenAdvisorCalled(t *testing.T) {
 	parser := NewParser()
 
-	// New SSE message begins.
 	if _, err := parser.ParseLine(testThread, []byte(
 		`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_advisor_call","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
 	)); err != nil {
 		t.Fatalf("message_start parse: %v", err)
 	}
 
-	// content_block_start for the server_tool_use (advisor call).
 	if _, err := parser.ParseLine(testThread, []byte(
 		`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_e2e","name":"advisor","input":{}}}}`,
 	)); err != nil {
 		t.Fatalf("content_block_start parse: %v", err)
 	}
 
-	// Trailing message_delta with the inflated cumulative usage.
 	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":2,"output_tokens":531,"cache_read_input_tokens":286173,"cache_creation_input_tokens":1619}}}`)
 	events, err := parser.ParseLine(testThread, line)
 	if err != nil {
 		t.Fatalf("message_delta parse: %v", err)
 	}
-	for _, evt := range events {
-		if evt.Kind == provider.EventTokenUsage {
-			t.Fatalf("advisor-containing message_delta must NOT emit EventTokenUsage: %+v", evt)
-		}
-	}
-	// The soft turn-complete still fires — the usage gate is independent.
+	var usageEvent *provider.ProviderEvent
 	var sawSoft bool
-	for _, evt := range events {
+	for i, evt := range events {
+		if evt.Kind == provider.EventTokenUsage {
+			usageEvent = &events[i]
+		}
 		if evt.Kind == provider.EventTurnComplete {
 			sawSoft = true
 		}
+	}
+	if usageEvent == nil {
+		t.Fatalf("expected EventTokenUsage from message_delta even when advisor was involved: %+v", events)
+	}
+	var window provider.ContextWindow
+	if err := json.Unmarshal(usageEvent.Meta, &window); err != nil {
+		t.Fatalf("unmarshal window: %v", err)
+	}
+	if want := 2 + 286173 + 1619; window.UsedTokens != want {
+		t.Fatalf("UsedTokens: got %d, want %d", window.UsedTokens, want)
 	}
 	if !sawSoft {
 		t.Fatalf("expected soft EventTurnComplete from message_delta(stop_reason=end_turn): %+v", events)
 	}
 }
 
-func TestParseStreamEventMessageDeltaSuppressesUsageWhenAdvisorResult(t *testing.T) {
-	// The advisor result envelope shares the same msg_id as the
-	// call but rides its own message_start/content_block_start
-	// sequence on the wire. The flag must be set by the
-	// advisor_tool_result block type too — not just server_tool_use
-	// — because the cumulative usage on the result-message's
-	// message_delta is just as inflated.
-	parser := NewParser()
-	if _, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_advisor_result","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
-	)); err != nil {
-		t.Fatalf("message_start parse: %v", err)
-	}
-	if _, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"advisor_tool_result","tool_use_id":"srvtoolu_e2e","content":{"type":"advisor_result","text":"hi"}}}}`,
-	)); err != nil {
-		t.Fatalf("content_block_start parse: %v", err)
-	}
-	events, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":2,"output_tokens":531,"cache_read_input_tokens":286173}}}`,
-	))
-	if err != nil {
-		t.Fatalf("message_delta parse: %v", err)
-	}
-	for _, evt := range events {
-		if evt.Kind == provider.EventTokenUsage {
-			t.Fatalf("advisor_tool_result message_delta must NOT emit EventTokenUsage: %+v", evt)
-		}
-	}
-}
-
-func TestParseStreamEventMessageDeltaSuppressesUsageWhenMixedContentIncludesAdvisor(t *testing.T) {
-	// In the real wire one SSE message carries text/thinking blocks
-	// alongside the advisor server_tool_use (the model writes a few
-	// lines, then calls the advisor). The message_delta's cumulative
-	// usage is still inflated, so ANY advisor block in the message
-	// must trigger suppression — not only the advisor-only case.
-	parser := NewParser()
-	if _, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_mixed","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
-	)); err != nil {
-		t.Fatalf("message_start parse: %v", err)
-	}
-	if _, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
-	)); err != nil {
-		t.Fatalf("text block start parse: %v", err)
-	}
-	if _, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_mix","name":"advisor","input":{}}}}`,
-	)); err != nil {
-		t.Fatalf("advisor block start parse: %v", err)
-	}
-	events, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":2,"output_tokens":531,"cache_read_input_tokens":286173}}}`,
-	))
-	if err != nil {
-		t.Fatalf("message_delta parse: %v", err)
-	}
-	for _, evt := range events {
-		if evt.Kind == provider.EventTokenUsage {
-			t.Fatalf("mixed (text+advisor) message_delta must NOT emit EventTokenUsage: %+v", evt)
-		}
-	}
-}
-
-func TestParseStreamEventMessageDeltaEmitsUsageAfterAdvisorMessageEnds(t *testing.T) {
-	// Regression guard for the flag-leak case: an advisor message
-	// followed by a clean text-only message must NOT carry the
-	// advisor suppression into the next message_delta. message_start
-	// is the boundary that resets the flag.
+func TestParseStreamEventMessageDeltaEmitsUsageAcrossMessages(t *testing.T) {
+	// Two SSE messages in a row, the first containing an advisor block,
+	// the second text-only. Both message_delta usage snapshots must
+	// reach the context meter — the parent's window grew across the
+	// advisor call and again across the follow-up.
 	parser := NewParser()
 
-	// First message: advisor — usage must be suppressed.
 	if _, err := parser.ParseLine(testThread, []byte(
 		`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_advisor","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
 	)); err != nil {
@@ -559,13 +487,16 @@ func TestParseStreamEventMessageDeltaEmitsUsageAfterAdvisorMessageEnds(t *testin
 	if err != nil {
 		t.Fatalf("advisor message_delta parse: %v", err)
 	}
+	var advisorUsage []provider.ProviderEvent
 	for _, evt := range advisorEvents {
 		if evt.Kind == provider.EventTokenUsage {
-			t.Fatalf("advisor message_delta must NOT emit EventTokenUsage: %+v", evt)
+			advisorUsage = append(advisorUsage, evt)
 		}
 	}
+	if len(advisorUsage) != 1 {
+		t.Fatalf("expected 1 EventTokenUsage from advisor message_delta, got %d: %+v", len(advisorUsage), advisorEvents)
+	}
 
-	// Second message: text-only — usage MUST emit.
 	if _, err := parser.ParseLine(testThread, []byte(
 		`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_text","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
 	)); err != nil {
@@ -582,56 +513,21 @@ func TestParseStreamEventMessageDeltaEmitsUsageAfterAdvisorMessageEnds(t *testin
 	if err != nil {
 		t.Fatalf("text message_delta parse: %v", err)
 	}
-	var usageEvents []provider.ProviderEvent
+	var textUsage []provider.ProviderEvent
 	for _, evt := range textEvents {
 		if evt.Kind == provider.EventTokenUsage {
-			usageEvents = append(usageEvents, evt)
+			textUsage = append(textUsage, evt)
 		}
 	}
-	if len(usageEvents) != 1 {
-		t.Fatalf("expected 1 EventTokenUsage after clean message_start reset, got %d: %+v", len(usageEvents), textEvents)
+	if len(textUsage) != 1 {
+		t.Fatalf("expected 1 EventTokenUsage from text message_delta, got %d: %+v", len(textUsage), textEvents)
 	}
 	var window provider.ContextWindow
-	if err := json.Unmarshal(usageEvents[0].Meta, &window); err != nil {
+	if err := json.Unmarshal(textUsage[0].Meta, &window); err != nil {
 		t.Fatalf("unmarshal window: %v", err)
 	}
-	if window.UsedTokens != 1+143000 {
-		t.Fatalf("UsedTokens: got %d, want %d", window.UsedTokens, 1+143000)
-	}
-}
-
-func TestParseStreamEventMessageDeltaEmitsUsageWhenNoAdvisorEverSeen(t *testing.T) {
-	// Plain text-only message: the advisor flag is never set, so the
-	// existing message_delta path must continue to emit
-	// EventTokenUsage. Mirrors the legacy behavior pinned by
-	// TestParseStreamEventMessageDeltaUsageUpdatesContextWindow but
-	// goes through the full preamble (message_start +
-	// content_block_start) so the gate is exercised end-to-end.
-	parser := NewParser()
-	if _, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_plain","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
-	)); err != nil {
-		t.Fatalf("message_start parse: %v", err)
-	}
-	if _, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
-	)); err != nil {
-		t.Fatalf("content_block_start parse: %v", err)
-	}
-	events, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","usage":{"input_tokens":10,"output_tokens":50,"cache_read_input_tokens":100,"cache_creation_input_tokens":5}}}`,
-	))
-	if err != nil {
-		t.Fatalf("message_delta parse: %v", err)
-	}
-	var saw bool
-	for _, evt := range events {
-		if evt.Kind == provider.EventTokenUsage {
-			saw = true
-		}
-	}
-	if !saw {
-		t.Fatalf("non-advisor message_delta must emit EventTokenUsage: %+v", events)
+	if want := 1 + 143000; window.UsedTokens != want {
+		t.Fatalf("UsedTokens: got %d, want %d", window.UsedTokens, want)
 	}
 }
 

@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/provider"
 )
 
 func TestParseResult_SuccessIsErrorUsesResultFallback(t *testing.T) {
@@ -36,4 +38,32 @@ func TestParseResult_ResultFallbackIsBounded(t *testing.T) {
 	if meta.ErrorMessage != want {
 		t.Fatalf("ErrorMessage length/content mismatch: got len=%d want len=%d", len(meta.ErrorMessage), len(want))
 	}
+}
+
+// TestParseResult_DoesNotEmitContextWindowFromModelUsage pins the
+// deliberate non-behavior: `result.modelUsage[parent_model]` carries
+// the same parent-only cumulative sum the trailing message_delta
+// already emitted as EventTokenUsage (see parse_stream.go), so the
+// result envelope skips a redundant duplicate. `result` only emits
+// EventTurnComplete.
+func TestParseResult_DoesNotEmitContextWindowFromModelUsage(t *testing.T) {
+	parser := NewParser()
+	if _, err := parser.ParseLine(testThread, []byte(
+		`{"type":"system","subtype":"init","session_id":"s1","cwd":"/tmp","tools":[],"model":"claude-opus-4-6[1m]","uuid":"u1"}`,
+	)); err != nil {
+		t.Fatalf("init parse: %v", err)
+	}
+
+	line := []byte(`{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","usage":{"input_tokens":9,"output_tokens":19716,"cache_read_input_tokens":98723,"cache_creation_input_tokens":57915},"modelUsage":{"claude-opus-4-6[1m]":{"inputTokens":9,"outputTokens":19716,"cacheReadInputTokens":98723,"cacheCreationInputTokens":57915,"contextWindow":1000000}}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("result parse: %v", err)
+	}
+
+	for _, evt := range events {
+		if evt.Kind == provider.EventTokenUsage {
+			t.Fatalf("result envelope must not emit EventTokenUsage: %+v", evt)
+		}
+	}
+	requireWireTurnComplete(t, events)
 }

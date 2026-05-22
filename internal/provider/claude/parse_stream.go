@@ -39,15 +39,6 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 	parentToolUseID := readRawString(raw["parent_tool_use_id"])
 
 	switch eventType {
-	case "message_start":
-		// Boundary marker for a fresh SSE message. Clear the
-		// per-parent advisor-tracking flag so the upcoming
-		// message_delta is gated by whether THIS message's
-		// content blocks include an advisor; without the reset
-		// a prior message's advisor flag would silently suppress
-		// the next message's correct usage emission.
-		p.resetStreamMessageHasAdvisor(parentToolUseID)
-		return nil, nil
 	case "content_block_start":
 		index, _ := readIntAtAnyKey(eventRaw, "index")
 		var block map[string]json.RawMessage
@@ -59,9 +50,6 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 			return nil, nil
 		}
 		p.rememberStreamBlock(parentToolUseID, index, blockType)
-		if blockType == "server_tool_use" || blockType == "advisor_tool_result" {
-			p.markStreamMessageHasAdvisor(parentToolUseID)
-		}
 		meta, _ := json.Marshal(map[string]any{
 			"index":         index,
 			"blockType":     blockType,
@@ -131,25 +119,16 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 			return nil, nil
 		}
 	case "message_delta":
-		// `message_delta` is the only stream_event case that can emit
-		// two events from one envelope: an EventTokenUsage from the
-		// `usage` snapshot (drives the context meter) AND a soft
-		// EventTurnComplete from the inner `delta.stop_reason` (drives
-		// the working indicator off when the parent stops emitting,
-		// without waiting for the wire `result` — see invariants.md §27).
-		//
-		// The `usage` here is CUMULATIVE across every API call this
-		// SSE message generated, including the advisor's separate API
-		// call when an advisor block fired inside the message. That
-		// inflates `cache_read_input_tokens` by ~the parent's context
-		// size (the advisor's own input loads the parent's cache too),
-		// roughly doubling the reported window. Suppressing the usage
-		// emit when an advisor was involved keeps the parent's context
-		// meter from being clobbered with the doubled total; the
-		// parent's per-call usage is still emitted from the
-		// non-advisor assistant envelopes inside the same SSE message.
+		// `message_delta` can emit two events from one envelope: an
+		// EventTokenUsage from the `usage` snapshot (drives the
+		// context meter) AND a soft EventTurnComplete from the inner
+		// `delta.stop_reason` (drives the working indicator off when
+		// the parent stops emitting, without waiting for the wire
+		// `result` — see invariants.md §27). The two gates are
+		// independent; a malformed envelope missing one field
+		// must still let the other fire.
 		var events []provider.ProviderEvent
-		if usageRaw := eventObj["usage"]; len(usageRaw) > 0 && !p.streamMessageHasAdvisorBlock(parentToolUseID) {
+		if usageRaw := eventObj["usage"]; len(usageRaw) > 0 {
 			var usage assistantUsage
 			if json.Unmarshal(usageRaw, &usage) == nil {
 				events = appendContextUsageEvent(events, threadID, parentToolUseID, now, usage)
