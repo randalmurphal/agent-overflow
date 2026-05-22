@@ -13,6 +13,14 @@ import (
 )
 
 func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) func(provider.ProviderEvent) {
+	// deathReported flips true if the read loop emits a session_status
+	// "error" — the wire-typed signal for an abnormal exit (signal, crash,
+	// clean exit-0 we didn't initiate). Captured in the closure so the
+	// disconnected branch can distinguish "process died on its own" (auto-
+	// reconnect candidate) from "we asked it to stop" (no-op). Plain bool
+	// — the returned handler is invoked synchronously by a single read-loop
+	// goroutine, so no atomic is needed.
+	var deathReported bool
 	return func(evt provider.ProviderEvent) {
 		// Design-mode tools used to be wired through Claude event
 		// interception (handleClaudeDesignTool); after the v42 rewrite
@@ -30,6 +38,15 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// the dedicated startup-update handler.
 		if evt.Kind == provider.EventInit && providerType == string(provider.Claude) {
 			a.ingestClaudeInitMCPStatus(evt.Meta)
+		}
+
+		// A successful turn start is the wire-level proof that the new
+		// session is alive and serving. Reset the per-thread auto-
+		// reconnect attempt counter so a later (unrelated) death gets a
+		// fresh recovery attempt instead of falling straight through to
+		// the banner.
+		if evt.Kind == provider.EventTurnStart {
+			a.clearAutoReconnectAttempted(threadID)
 		}
 
 		if a.triage != nil {
@@ -58,10 +75,72 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			}
 		}
 
+		if evt.Kind == provider.EventSessionStatus && evt.Content == "error" {
+			deathReported = true
+		}
+
 		if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
 			a.unregisterSession(threadID, sessionToken)
+			if deathReported {
+				go a.attemptAutoReconnect(threadID)
+			}
 		}
 	}
+}
+
+// attemptAutoReconnect is the recovery hook fired after the read loop
+// observed an abnormal exit ("error" → "disconnected" pair) on a session.
+// At this point the provider process is already reaped and the session is
+// unregistered, so there are no live background processes to disturb; the
+// orphaned tool_call rows in the store match exactly what manual Reconnect
+// would have left behind. We resume from the thread's stored SessionRef
+// when one exists and the death is the first since the last observed
+// turn_started; if reconnect itself fails or a second death lands before
+// the new session reaches turn_started, the session_died banner already
+// dispatched stays put for the user to act on.
+func (a *App) attemptAutoReconnect(threadID string) {
+	if a.shuttingDown.Load() {
+		return
+	}
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		log.Printf("app: auto-reconnect lookup failed for %s: %v", threadID, err)
+		return
+	}
+	if thread.SessionRef == "" && thread.PendingForkRef == "" {
+		// Death before the provider published a resume cursor — nothing
+		// to --resume against. Leave the banner up; the user can decide
+		// whether to retry or abandon the thread. Don't consume the
+		// attempt slot here: a later (manually-started) session that
+		// reaches system/init and then dies still deserves an auto-
+		// reconnect attempt.
+		return
+	}
+	if !a.markAutoReconnectAttempted(threadID) {
+		return
+	}
+	if err := a.ReconnectSession(threadID); err != nil {
+		log.Printf("app: auto-reconnect after session death failed for %s: %v", threadID, err)
+	}
+}
+
+func (a *App) markAutoReconnectAttempted(threadID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.autoReconnectAttempted == nil {
+		a.autoReconnectAttempted = make(map[string]bool)
+	}
+	if a.autoReconnectAttempted[threadID] {
+		return false
+	}
+	a.autoReconnectAttempted[threadID] = true
+	return true
+}
+
+func (a *App) clearAutoReconnectAttempted(threadID string) {
+	a.mu.Lock()
+	delete(a.autoReconnectAttempted, threadID)
+	a.mu.Unlock()
 }
 
 // recordSessionActivity is the single chokepoint that bumps a session's

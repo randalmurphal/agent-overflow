@@ -72,14 +72,45 @@ func (a *App) resumeThreadAfterFocus(thread store.Thread) {
 
 // ReconnectSession tears down the current session and starts a fresh one using
 // the thread's stored resume cursor.
+//
+// Single-flight across the stop-then-start pair: a second concurrent caller
+// returns nil without doing any work. Without the gate, a second call's
+// stopSession can yank the new session out from under the first call's
+// in-flight startSession (runSessionStart serialises starts but not stops),
+// leaving the thread with no live session despite both calls completing
+// "successfully". This matters for the auto-reconnect path racing a manual
+// click on the banner Reconnect button.
 func (a *App) ReconnectSession(threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
+	if !a.acquireReconnect(threadID) {
+		return nil
+	}
+	defer a.releaseReconnect(threadID)
 	if err := a.stopSession(threadID); err != nil {
 		return err
 	}
 	return a.startSession(threadID)
+}
+
+func (a *App) acquireReconnect(threadID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.reconnectingThreads == nil {
+		a.reconnectingThreads = make(map[string]bool)
+	}
+	if a.reconnectingThreads[threadID] {
+		return false
+	}
+	a.reconnectingThreads[threadID] = true
+	return true
+}
+
+func (a *App) releaseReconnect(threadID string) {
+	a.mu.Lock()
+	delete(a.reconnectingThreads, threadID)
+	a.mu.Unlock()
 }
 
 func (a *App) startSession(threadID string) error {

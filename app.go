@@ -176,6 +176,18 @@ type App struct {
 	// threadID → in-flight session start. Concurrent callers wait for the
 	// first start attempt instead of spawning duplicate provider runtimes.
 	startingSessions map[string]*sessionStart
+	// threadID → in-flight ReconnectSession. Single-flight gate around the
+	// stop-then-start pair so a rapid double-click (or manual click racing
+	// the auto-reconnect path) cannot interleave a second stopSession with
+	// the first startSession and yank the new session before it registers.
+	reconnectingThreads map[string]bool
+	// threadID → an auto-reconnect attempt has already fired since the last
+	// observed turn_started for this thread. Stops the recovery path from
+	// hammering a provider that dies cleanly on every spawn (broken binary,
+	// missing creds at OS level). Cleared by the EventTurnStart observer in
+	// sessionEventHandler so a session that genuinely came back online and
+	// then dies later gets a fresh attempt.
+	autoReconnectAttempted map[string]bool
 	// threadID → persisted in-process system prompt overrides used for
 	// discussion participants and other non-default session starts.
 	threadSystemPrompts map[string]string
@@ -385,12 +397,14 @@ func (s session) providerSession() provider.Session {
 
 func NewApp() *App {
 	return &App{
-		sessions:            make(map[string]session),
-		threadActionLocks:   newThreadActionLocks(),
-		startingSessions:    make(map[string]*sessionStart),
-		threadSystemPrompts: make(map[string]string),
-		deliberations:       make(map[string]*discussion.Deliberation),
-		gitWatchPumps:       make(map[string]*gitWatchPump),
+		sessions:               make(map[string]session),
+		threadActionLocks:      newThreadActionLocks(),
+		startingSessions:       make(map[string]*sessionStart),
+		reconnectingThreads:    make(map[string]bool),
+		autoReconnectAttempted: make(map[string]bool),
+		threadSystemPrompts:    make(map[string]string),
+		deliberations:          make(map[string]*discussion.Deliberation),
+		gitWatchPumps:          make(map[string]*gitWatchPump),
 	}
 }
 

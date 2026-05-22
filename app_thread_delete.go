@@ -98,6 +98,7 @@ func (a *App) deleteThreadTreeLocked(threadID string) error {
 	}
 	a.clearThreadSystemPrompt(threadID)
 	a.removeDeliberation(thread)
+	a.clearAutoReconnectAttempted(threadID)
 	if err := a.cleanupThreadCheckpoints(threadID, thread, threadFound); err != nil {
 		errs = append(errs, fmt.Errorf("cleanup checkpoints: %w", err))
 	}

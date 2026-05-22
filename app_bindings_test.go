@@ -1116,12 +1116,14 @@ func newTestAppWithStore(t *testing.T) *App {
 	})
 
 	app := &App{
-		store:               st,
-		sessions:            make(map[string]session),
-		startingSessions:    make(map[string]*sessionStart),
-		threadSystemPrompts: make(map[string]string),
-		deliberations:       make(map[string]*discussion.Deliberation),
-		gitWatchPumps:       make(map[string]*gitWatchPump),
+		store:                  st,
+		sessions:               make(map[string]session),
+		startingSessions:       make(map[string]*sessionStart),
+		reconnectingThreads:    make(map[string]bool),
+		autoReconnectAttempted: make(map[string]bool),
+		threadSystemPrompts:    make(map[string]string),
+		deliberations:          make(map[string]*discussion.Deliberation),
+		gitWatchPumps:          make(map[string]*gitWatchPump),
 	}
 	app.appCtx, app.appCancel = context.WithCancel(context.Background())
 	t.Cleanup(app.appCancel)

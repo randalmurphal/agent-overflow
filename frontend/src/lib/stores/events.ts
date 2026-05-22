@@ -914,6 +914,14 @@ function applyTurnStarted(evt: TurnStartedEvent): void {
     hasActionableProposedPlan: false,
     hasIncompleteTurn: false,
   });
+  // A wire turn-start is proof the provider session is alive and
+  // serving — any stale session_died banner for this thread is now
+  // contradicted by visible streaming. Scoped to session-kind so this
+  // doesn't clobber an orthogonal error sharing the slot.
+  for (const pane of iterPanes()) {
+    if (pane.threadId !== evt.threadId) continue;
+    pane.clearSessionError();
+  }
 }
 
 /**
@@ -986,7 +994,7 @@ function applySessionDied(evt: SessionDiedEvent): void {
   const message = sessionDiedBannerMessage(evt);
   for (const pane of iterPanes()) {
     if (pane.threadId !== evt.threadId) continue;
-    pane.setGeneralError(message);
+    pane.setSessionError(message);
   }
 }
 

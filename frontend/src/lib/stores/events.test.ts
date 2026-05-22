@@ -1619,6 +1619,82 @@ describe('setupEventListeners', () => {
     expect(hasPendingSend('thread-1')).toBe(false);
     expect(getThreadStatus('thread-1')).toBe('error');
     expect(pane.generalError).toBe('provider exited before turn start');
+    expect(pane.generalErrorKind).toBe('session');
+  });
+
+  it('a fresh turn_started clears a stale session-death banner for the same thread', async () => {
+    // Simulates the recovery UX: provider died → banner set →
+    // user sends a new message → auto-reconnect (or lazy-start) →
+    // turn_started arrives. The banner must auto-dismiss because
+    // a wire-level turn-start is unambiguous proof the session is
+    // alive again.
+    const pane = await buildPane(makeThread({ id: 'thread-recovery', provider: 'claude' }));
+    getAllPanes().set('main', pane);
+
+    emitWailsEvent('provider:session_died', {
+      threadId: 'thread-recovery',
+      exitCode: 1,
+      reason: 'session died on us',
+    });
+    expect(pane.generalError).toBe('session died on us');
+    expect(pane.generalErrorKind).toBe('session');
+
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-recovery',
+      turnId: 'turn-recover',
+      turnIndex: 0,
+      startedAt: 1234,
+    });
+
+    expect(pane.generalError).toBeNull();
+    expect(pane.generalErrorKind).toBeNull();
+  });
+
+  it('turn_started preserves orthogonal generalError (e.g. failed rename) that shares the slot', async () => {
+    // The grab-bag generalError slot is used by ~16 surfaces beyond
+    // session-death (failed rename, git status, thread load, builtin
+    // commands, etc). A new turn invalidates session errors but does
+    // NOT invalidate those — a rename that failed is still a failure
+    // even after the next prompt produces a turn.
+    const pane = await buildPane(makeThread({ id: 'thread-other-err', provider: 'claude' }));
+    getAllPanes().set('main', pane);
+
+    pane.setGeneralError('Failed to rename thread');
+    expect(pane.generalErrorKind).toBeNull();
+
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-other-err',
+      turnId: 'turn-noclear',
+      turnIndex: 0,
+      startedAt: 1234,
+    });
+
+    expect(pane.generalError).toBe('Failed to rename thread');
+    expect(pane.generalErrorKind).toBeNull();
+  });
+
+  it('turn_started for thread A does not clear a session-death banner on thread B', async () => {
+    const paneA = await buildPane(makeThread({ id: 'thread-aa', provider: 'claude' }));
+    const paneB = await buildPane(makeThread({ id: 'thread-bb', provider: 'claude' }));
+    getAllPanes().set('a', paneA);
+    getAllPanes().set('b', paneB);
+
+    emitWailsEvent('provider:session_died', {
+      threadId: 'thread-bb',
+      exitCode: 1,
+      reason: 'thread-bb is dead',
+    });
+    expect(paneB.generalError).toBe('thread-bb is dead');
+
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-aa',
+      turnId: 'turn-aa',
+      turnIndex: 0,
+      startedAt: 1234,
+    });
+
+    expect(paneB.generalError).toBe('thread-bb is dead');
+    expect(paneB.generalErrorKind).toBe('session');
   });
 
   // --- Turn lifecycle routing (Wave 2) ---------------------------------------

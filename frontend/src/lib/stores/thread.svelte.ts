@@ -374,6 +374,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // provider's own session/auth/rate-limit state) — consumers treat
   // them as two independent reasons to show the top-of-pane banner.
   let generalError: string | null = $state(null);
+  // generalErrorKind tags the source of the current generalError so the
+  // turn-start clear path can target session-death banners specifically
+  // without wiping orthogonal errors (rename failed, git status, thread
+  // load) that happen to be visible. `null` ≡ "any kind" or "no error";
+  // `'session'` ≡ the message came from a provider session_died event.
+  let generalErrorKind: 'session' | null = $state(null);
   let loading: boolean = $state(false);
   /**
    * Spinner-flash gate. `loading` flips true the instant `switchThread`
@@ -805,6 +811,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     contextWindow = seedContextWindow(newThread);
     providerBanner = undefined;
     generalError = null;
+    generalErrorKind = null;
     sendInFlight = false;
     channelState.clear();
     designState.reset();
@@ -1007,6 +1014,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
             oldestLoadedTurnIndex = null;
             hasMoreHistory = false;
             generalError = `Failed to load thread items: ${errString(err)}`;
+            generalErrorKind = null;
             addToast('error', 'Failed to load thread items');
           },
         );
@@ -1074,6 +1082,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get contextWindow() { return contextWindow; },
     get providerBanner() { return providerBanner; },
     get generalError() { return generalError; },
+    get generalErrorKind() { return generalErrorKind; },
     get loading() { return loading; },
     /**
      * Spinner-flash gate. The MessageTimeline reads this instead of
@@ -1275,6 +1284,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       contextWindow = null;
       providerBanner = undefined;
       generalError = null;
+      generalErrorKind = null;
       loading = false;
       sendInFlight = false;
       showTerminal = false;
@@ -1693,10 +1703,34 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     setGeneralError(message: string | null): void {
       generalError = message;
+      // Untagged write: any prior session-kind tag is invalidated by a
+      // newer message landing in the same slot. The kind tracks the slot's
+      // current occupant, not a history.
+      generalErrorKind = null;
+    },
+
+    setSessionError(message: string): void {
+      generalError = message;
+      generalErrorKind = 'session';
     },
 
     clearGeneralError(): void {
       generalError = null;
+      generalErrorKind = null;
+    },
+
+    /**
+     * Clears the banner only if the current message came from a provider
+     * session_died event. Called from the `provider:turn_started` handler
+     * so a fresh turn auto-dismisses the stale "session died" banner
+     * without clobbering orthogonal errors (rename failed, git status,
+     * thread load) that happen to be visible in the same slot.
+     */
+    clearSessionError(): void {
+      if (generalErrorKind === 'session') {
+        generalError = null;
+        generalErrorKind = null;
+      }
     },
 
     setSendInFlight(value: boolean): void {
