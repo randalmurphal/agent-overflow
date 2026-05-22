@@ -217,6 +217,20 @@ func codexCommandFromMeta(raw json.RawMessage) string {
 	return parsed.Input.Command
 }
 
+func codexLiveUnifiedExecMeta(command string) string {
+	meta := map[string]any{
+		"source": "unifiedExecStartup",
+	}
+	if trimmed := strings.TrimSpace(command); trimmed != "" {
+		meta["command"] = trimmed
+	}
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		return `{"source":"unifiedExecStartup"}`
+	}
+	return string(encoded)
+}
+
 func codexExitCodeFromMeta(raw json.RawMessage) int {
 	var parsed struct {
 		ExitCode      int `json:"exitCode"`
@@ -1042,7 +1056,7 @@ func (r *Router) ListLiveCodexBackgroundTasks(threadID string, _ int64, _ int64)
 			ParentID:     tracker.parentID,
 			IsBackground: tracker.backgrounded,
 			ToolName:     "command_execution",
-			Meta:         `{"source":"unifiedExecStartup"}`,
+			Meta:         codexLiveUnifiedExecMeta(tracker.command),
 			CreatedAt:    tracker.createdAt,
 			UpdatedAt:    tracker.updatedAt,
 		}

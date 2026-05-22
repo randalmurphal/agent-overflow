@@ -383,6 +383,7 @@ describe('<CommandOutput>', () => {
     expect(getByTestId('command-output-icon')).toBeInTheDocument();
     expect(getByTestId('command-output-label').textContent?.trim()).toBe('bash');
     expect(getByTestId('command-output-command').textContent).toBe('pnpm test');
+    expect(getByTestId('command-output-command')).toHaveAttribute('title', 'pnpm test');
   });
 
   it('keeps long bash commands inside the body column so they cannot overflow into the timestamp', () => {

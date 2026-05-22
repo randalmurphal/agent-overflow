@@ -130,6 +130,13 @@ func TestCodexUnifiedExecStartWaitsForTypedTerminalInteraction(t *testing.T) {
 	if live[0].ID != "cmd-live" || live[0].IsBackground || live[0].Status != statusRunning {
 		t.Fatalf("unexpected pre-yield running item: %+v", live[0])
 	}
+	meta := decodeItemMetaMap(t, live[0].Meta)
+	if meta["command"] != "sleep 15" {
+		t.Fatalf("live command meta = %v, want full command", meta["command"])
+	}
+	if _, ok := meta["process_id"]; ok {
+		t.Fatalf("live command meta leaked process_id: %+v", meta)
+	}
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTextDelta, ThreadID: "t1", Content: "continuing",
 		Timestamp: time.Now(),

@@ -67,6 +67,7 @@ describe('<BackgroundTaskTrayRow>', () => {
   });
 
   it('strips shell wrappers from truncated live Codex tray command summaries', () => {
+    const fullCommand = "/usr/bin/zsh -lc 'uv run pytest tests/unit/db/test_migration_steps.py tests/unit/db/test_policy_steps.py'";
     const launch = makeItem({
       id: 'bg-codex-truncated-command',
       kind: 'tool_call',
@@ -74,13 +75,17 @@ describe('<BackgroundTaskTrayRow>', () => {
       summary: "Bash: /usr/bin/zsh -lc 'uv run pytest tests/unit/db/test_migration_steps.py tests/uni…",
       status: 'running',
       isBackground: true,
-      meta: JSON.stringify({ source: 'unifiedExecStartup' }),
+      meta: JSON.stringify({ source: 'unifiedExecStartup', command: fullCommand }),
     });
 
     const { getByTestId, queryByText } = renderTrayRow(taskFor(launch));
 
     expect(getByTestId('command-output-command').textContent).toBe(
-      'uv run pytest tests/unit/db/test_migration_steps.py tests/uni…',
+      'uv run pytest tests/unit/db/test_migration_steps.py tests/unit/db/test_policy_steps.py',
+    );
+    expect(getByTestId('command-output-command')).toHaveAttribute(
+      'title',
+      'uv run pytest tests/unit/db/test_migration_steps.py tests/unit/db/test_policy_steps.py',
     );
     expect(queryByText("/usr/bin/zsh -lc 'uv run pytest tests/unit/db/test_migration_steps.py tests/uni…")).toBeNull();
   });

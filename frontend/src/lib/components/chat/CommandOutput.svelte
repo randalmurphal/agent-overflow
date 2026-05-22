@@ -14,7 +14,6 @@
   import AnsiText from './AnsiText.svelte';
   import {
     commandErrorForItem,
-    commandTextForItem,
     displayCommandForItem,
   } from './commandDisplay';
   import { parseJsonObject } from '../../utils/parseJsonObject';
@@ -86,7 +85,6 @@
   let hasBody = $derived(
     hasPayload || deferredOutputState === 'loading' || deferredOutputState === 'error',
   );
-  let rawCommand = $derived(commandTextForItem(effectiveDisplayItem, meta));
   let displayCommand = $derived(displayCommandForItem(effectiveDisplayItem, meta));
   let isBackgroundedLaunch = $derived(
     effectiveStatusItem.kind === 'tool_call' && effectiveStatusItem.isBackground === true,
@@ -139,7 +137,13 @@
   {/snippet}
 
   {#snippet headerBody()}
-    <span class="min-w-0 flex-1 truncate font-mono text-[12px] text-fg-muted" data-testid="command-output-command">{displayCommand}</span>
+    <span
+      class="min-w-0 flex-1 truncate font-mono text-[12px] text-fg-muted"
+      title={displayCommand || undefined}
+      data-testid="command-output-command"
+    >
+      {displayCommand}
+    </span>
   {/snippet}
 
   {#snippet headerActions()}
