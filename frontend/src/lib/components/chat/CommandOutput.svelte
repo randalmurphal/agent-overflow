@@ -171,7 +171,7 @@
     expanded={expansion.expanded}
     expandable={hasBody}
     controls={hasBody ? `cmd-output-${payloadId || item.id}` : undefined}
-    ariaLabel={`Toggle Command Output: ${rawCommand}`}
+    ariaLabel={`Toggle Command Output: ${displayCommand}`}
     testId="command-output-toggle"
     class="rounded-[var(--radius-control)] px-1 py-1 text-[12px] {hasBody ? 'hover:bg-surface-2/20' : ''}"
     onToggle={(event) => preservePaneScrollAnchor(pane, event, () => expansion.toggle())}

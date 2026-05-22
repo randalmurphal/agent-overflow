@@ -49,6 +49,59 @@ describe('<BackgroundTaskTrayRow>', () => {
     expect(getByTestId('command-output-status')).toHaveAttribute('data-state', 'backgrounded');
   });
 
+  it('strips shell wrappers from live Codex tray command summaries', () => {
+    const launch = makeItem({
+      id: 'bg-codex-live-command',
+      kind: 'tool_call',
+      toolName: 'command_execution',
+      summary: "Bash: /usr/bin/zsh -lc 'git status --short'",
+      status: 'running',
+      isBackground: true,
+      meta: JSON.stringify({ source: 'unifiedExecStartup' }),
+    });
+
+    const { getByTestId, getByRole } = renderTrayRow(taskFor(launch));
+
+    expect(getByTestId('command-output-command').textContent).toBe('git status --short');
+    expect(getByRole('button', { name: 'Toggle Command Output: git status --short' })).toBeInTheDocument();
+  });
+
+  it('strips shell wrappers from completed Codex tray command payload metadata', () => {
+    const launch = makeItem({
+      id: 'bg-codex-launch',
+      kind: 'tool_call',
+      toolName: 'command_execution',
+      summary: "Bash: /usr/bin/zsh -lc 'pnpm test'",
+      status: 'running',
+      isBackground: true,
+      meta: JSON.stringify({ source: 'unifiedExecStartup' }),
+    });
+    const completion = makeItem({
+      id: 'bg-codex-completion',
+      kind: 'tool_completion',
+      completionOf: launch.id,
+      toolName: 'command_execution',
+      status: 'completed',
+      payloadKind: 'command_output',
+      payloadId: 'payload-command',
+      payloadMeta: JSON.stringify({
+        command: "/usr/bin/zsh -lc 'pnpm test'",
+        exitCode: 0,
+        lineCount: 4,
+        preview: 'pass',
+      }),
+    });
+
+    const { getByTestId, queryByText } = renderTrayRow(taskFor(launch, {
+      completion,
+      status: 'completed',
+      elapsedMs: 8_000,
+    }));
+
+    expect(getByTestId('command-output-command').textContent).toBe('pnpm test');
+    expect(queryByText("/usr/bin/zsh -lc 'pnpm test'")).toBeNull();
+  });
+
   it('routes Claude Agent tray rows through AgentRow', () => {
     const launch = makeItem({
       id: 'bg-agent',
