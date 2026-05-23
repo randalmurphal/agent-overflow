@@ -97,6 +97,13 @@
       confirm = null;
       return;
     }
+    // The worktree list query needs a real thread row. Materialize a
+    // placeholder before falling through to the fetch.
+    const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+    if (!threadId || pane.thread?.id !== threadId) {
+      open = false;
+      return;
+    }
     await refreshWorktreeList();
   }
 

@@ -87,6 +87,21 @@ export function clearRuntimeModeDraft(threadId: string): void {
   persistOverrides();
 }
 
+// Re-key a draft placeholder's runtime-mode draft under its newly-
+// materialized thread id. Called from ThreadPane.ensureMaterializedThread
+// after CreateThread returns so a runtime mode chosen on the placeholder
+// survives into the real row.
+export function migrateRuntimeModeDraft(fromThreadId: string, toThreadId: string): void {
+  if (fromThreadId === toThreadId) return;
+  const mode = overrides[fromThreadId];
+  if (mode === undefined) return;
+  const next = { ...overrides };
+  delete next[fromThreadId];
+  next[toThreadId] = mode;
+  overrides = next;
+  persistOverrides();
+}
+
 export function resetRuntimeModeDraftsForTest(): void {
   overrides = {};
   if (typeof localStorage === 'undefined') return;

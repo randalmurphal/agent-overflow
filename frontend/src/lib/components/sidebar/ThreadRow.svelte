@@ -16,6 +16,7 @@
   } from '../../stores/threadStatuses.svelte';
   import type { Thread } from '../../types/models';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
+  import FileText from 'lucide-svelte/icons/file-text';
   import FolderGit2 from 'lucide-svelte/icons/folder-git-2';
   import Icon from '../primitives/Icon.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
@@ -385,6 +386,16 @@
       onclick={(e) => e.stopPropagation()}
     />
   {:else}
+    {#if thread.isDraft}
+      <span
+        class="inline-flex items-center shrink-0 text-fg-subtle"
+        data-testid="thread-row-draft-icon"
+        aria-label="Draft thread"
+        title="Draft"
+      >
+        <Icon icon={FileText} size={11} strokeWidth={1.75} class="opacity-70" />
+      </span>
+    {/if}
     <span
       data-testid="thread-row-title"
       class="text-xs truncate flex-1 min-w-0 {unread ? 'font-semibold text-fg' : ''}"

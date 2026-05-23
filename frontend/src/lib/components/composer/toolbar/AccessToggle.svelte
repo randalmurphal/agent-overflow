@@ -79,7 +79,7 @@
     open = !open;
   }
 
-  function selectMode(mode: RuntimeMode): void {
+  async function selectMode(mode: RuntimeMode): Promise<void> {
     if (!pane.thread) {
       closeMenu();
       return;
@@ -88,7 +88,12 @@
       closeMenu();
       return;
     }
-    setRuntimeModeDraft(pane.thread.id, mode);
+    const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+    if (!threadId) {
+      closeMenu();
+      return;
+    }
+    setRuntimeModeDraft(threadId, mode);
     closeMenu();
   }
 
@@ -143,7 +148,7 @@
         label={tier.label}
         description={tier.description}
         checked={tier.mode === current}
-        onSelect={() => selectMode(tier.mode)}
+        onSelect={() => void selectMode(tier.mode)}
       >
         {#snippet icon()}
           <Icon icon={tier.icon} size={14} strokeWidth={1.75} />

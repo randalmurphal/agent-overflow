@@ -91,6 +91,14 @@ export interface Thread {
    * historical Interrupted state, not live Working state.
    */
   hasIncompleteTurn?: boolean;
+  /**
+   * True when no items have been persisted for the thread. The sidebar
+   * renders a draft indicator and pins draft rows to the top of their
+   * project group. Project sort excludes drafts from "last activity" so
+   * creating or configuring an unsent thread does not move the project to
+   * the top — only real activity (first message send and onward) counts.
+   */
+  isDraft?: boolean;
 }
 
 /**

@@ -115,9 +115,10 @@
   }
 
   async function toggleServer(server: MCPServer, enable: boolean): Promise<void> {
-    if (!pane.threadId) return;
+    const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+    if (!threadId) return;
     try {
-      await mcpServersStore.setEnabled(pane.threadId, server.name, enable);
+      await mcpServersStore.setEnabled(threadId, server.name, enable);
       // Refresh so the unified Disabled flag reflects the new file state.
       if (pane.thread) {
         await mcpServersStore.loadForThread(pane.thread.provider, pane.thread.workspacePath ?? '');
@@ -128,13 +129,14 @@
   }
 
   async function signIn(server: MCPServer): Promise<void> {
-    if (!pane.threadId) return;
     if (server.disabled) {
       addToast('info', `Enable ${server.name} first, then sign in.`);
       return;
     }
+    const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+    if (!threadId) return;
     try {
-      const res = await mcpServersStore.triggerAuth(pane.threadId, server.name);
+      const res = await mcpServersStore.triggerAuth(threadId, server.name);
       if (res?.authUrl) {
         await OpenExternalURL(res.authUrl);
       } else {

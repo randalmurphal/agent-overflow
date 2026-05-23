@@ -1008,11 +1008,12 @@ export function InterruptAndRevertIfClean(threadID: string): $CancellablePromise
 
 /**
  * InterruptTurn fires a provider-level interrupt on the thread's active
- * session. Returns an error when no session is active, the provider
- * surface isn't wired up, or the provider's Interrupt call failed
- * (e.g. CLI never acked the control_request — surfaces as a toast so
- * a wedged Claude Code CLI is visible to the user rather than silently
- * masked).
+ * session. Returns nil when no session is active — the subprocess is
+ * already gone, there is nothing to interrupt, and surfacing an error
+ * banner here would just paper over the more useful "Reconnect" path.
+ * Other failure modes (the provider's Interrupt call failed, the CLI
+ * never acked the control_request) DO surface as errors so a wedged
+ * Claude Code CLI is visible to the user.
  * 
  * Spec: on user interrupt, any streaming items on the current turn are
  * flipped to errored with a " — stopped" suffix, and a system `error`
@@ -1572,6 +1573,14 @@ export function ReconfigureObservability(prev: settings$0.Settings, next: settin
 /**
  * ReconnectSession tears down the current session and starts a fresh one using
  * the thread's stored resume cursor.
+ * 
+ * Single-flight across the stop-then-start pair: a second concurrent caller
+ * returns nil without doing any work. Without the gate, a second call's
+ * stopSession can yank the new session out from under the first call's
+ * in-flight startSession (runSessionStart serialises starts but not stops),
+ * leaving the thread with no live session despite both calls completing
+ * "successfully". This matters for the auto-reconnect path racing a manual
+ * click on the banner Reconnect button.
  */
 export function ReconnectSession(threadID: string): $CancellablePromise<void> {
     return $Call.ByID(1420075138, threadID);

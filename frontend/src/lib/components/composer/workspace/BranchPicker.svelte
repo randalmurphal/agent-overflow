@@ -153,7 +153,14 @@
     open = !open;
     if (!open) return;
     if (!pane.thread || loading) return;
-    const threadId = pane.thread.id;
+    // BranchPicker needs a real thread to fetch git state. If the
+    // current pane only carries a placeholder, materialize before
+    // running the fetch pipeline.
+    const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+    if (!threadId || pane.thread?.id !== threadId) {
+      open = false;
+      return;
+    }
     lastOpenBranchKey = branchRefreshKey(threadId, currentBranch);
     loading = true;
     const fetchBranches = refreshBranches(threadId);

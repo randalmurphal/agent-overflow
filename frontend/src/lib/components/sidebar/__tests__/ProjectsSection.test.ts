@@ -127,7 +127,14 @@ describe('<ProjectsSection>', () => {
     expect(ids).toEqual(['p-stale', 'p-fresh']);
   });
 
-  it('re-sorts when syncThread carries newer project activity', async () => {
+  it('does not re-sort when syncThread carries a setting/config update', async () => {
+    // syncThread carries the result of in-place setters (model swap,
+    // worktree path change, branch checkout, rename, etc.) which do
+    // NOT count as activity — backend MarkThreadActivity is the only
+    // legitimate sort-bump path. The frontend mirrors that contract:
+    // syncThread no longer touches project activity, so projects keep
+    // their existing order across setting changes on any of their
+    // threads.
     await seedProjects([
       { project: mkProject('p-stale', { name: 'Stale' }), threadCount: 1, lastActive: 100 },
       { project: mkProject('p-fresh', { name: 'Fresh' }), threadCount: 1, lastActive: 9000 },
@@ -154,7 +161,7 @@ describe('<ProjectsSection>', () => {
     const ids = Array.from(
       container.querySelectorAll('[data-testid="project-item"]'),
     ).map((el) => el.getAttribute('data-project-id'));
-    expect(ids).toEqual(['p-stale', 'p-fresh']);
+    expect(ids).toEqual(['p-fresh', 'p-stale']);
   });
 
   it('switches to createdAt sort and re-orders projects', async () => {

@@ -182,6 +182,20 @@ export function clearWorktreeIntent(threadId: string): void {
   intents = next;
 }
 
+// Re-key a draft placeholder's intent under its newly-materialized
+// thread id. Called from ThreadPane.ensureMaterializedThread after
+// CreateThread returns so worktree/branch picks made on the placeholder
+// (keyed by the synthetic placeholder id) survive into the real row.
+export function migrateWorktreeIntent(fromThreadId: string, toThreadId: string): void {
+  if (fromThreadId === toThreadId) return;
+  const existing = intents.get(fromThreadId);
+  if (!existing) return;
+  const next = new Map(intents);
+  next.delete(fromThreadId);
+  next.set(toThreadId, existing);
+  intents = next;
+}
+
 export function resetForTest(): void {
   intents = new Map();
 }

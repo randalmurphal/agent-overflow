@@ -42,6 +42,7 @@
   } from '../../stores/diffReviewComments.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { registerQueueItem } from '../../stores/sendQueue.svelte';
+  import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
   import { getThreadById, prependThread, removeThread } from '../../stores/threads.svelte';
   import {
     hasRuntimeModeDraft,
@@ -52,8 +53,6 @@
   import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
   import { sourceFromProposedPlanItem } from '../../utils/proposedPlan';
   import type { DiffReviewComment, ProposedPlanComment, SourceDiffReview, SourceProposedPlan } from '../../types/models';
-  import { findDraftEntry, setProjectDraft } from '../../stores/draftThreads.svelte';
-  import { seedDefaultWorktreeIntentForDraft } from '../../stores/worktreeIntent.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -79,7 +78,7 @@
 
   const uploads = createComposerUploads({
     getThreadId: () => pane.threadId,
-    ensureThreadId: ensureMaterializedThread,
+    ensureThreadId: () => pane.ensureMaterializedThread(),
     getAttachmentCount: () => draft.attachments.length,
     addAttachment: (a, insertion) => imagePlaceholders.addUploadedAttachment(a, insertion),
     removeAttachment: (id) => draft.removeAttachment(id),
@@ -207,12 +206,18 @@
     locallyImplementedPlanIds = new Set();
   });
 
+  // Hide an empty materialized-draft thread from the sidebar so a "+ New"
+  // that the user typed into and then fully erased doesn't linger as a
+  // dead row. Backend ListThreadsWithItems already excludes it on the
+  // next refresh; this local prune keeps the sidebar in sync without
+  // waiting for that round-trip. Re-show as soon as content returns.
+  // Only operates on draft threads (isDraft=true) — real threads with
+  // history are never touched by this effect.
   $effect(() => {
     const threadId = pane.threadId;
     if (!threadId || draft.threadId !== threadId || draft.hydrating) return;
     if (sending || pane.sendInFlight || isTurnActive) return;
-    const entry = findDraftEntry(threadId);
-    if (!entry) return;
+    if (pane.thread?.isDraft !== true) return;
     if (pane.items.length > 0) return;
     const draftHasContent = hasDraftContent;
     untrack(() => {
@@ -225,36 +230,6 @@
       removeThread(threadId);
     });
   });
-
-  let materializingThread: Promise<string | null> | null = null;
-
-  async function ensureMaterializedThread(): Promise<string | null> {
-    if (pane.threadId) return pane.threadId;
-    const placeholder = pane.draftPlaceholder;
-    if (!placeholder) return null;
-    if (materializingThread) return materializingThread;
-    const placeholderId = placeholder.id;
-    materializingThread = (async () => {
-      try {
-        const created = await pane.materializeDraftPlaceholder();
-        if (!created) return null;
-        if (pane.draftPlaceholder?.id !== placeholderId) return null;
-        seedDefaultWorktreeIntentForDraft(created);
-        setProjectDraft(placeholder.projectId, placeholder.mode, created);
-        prependThread(created);
-        pane.adoptMaterializedDraftThread(created);
-        await draft.adoptThread(created.id);
-        return created.id;
-      } catch (err) {
-        console.error('Failed to create draft thread:', err);
-        pane.setGeneralError(`Failed to create thread: ${String(err)}`);
-        return null;
-      } finally {
-        materializingThread = null;
-      }
-    })();
-    return materializingThread;
-  }
 
   // Initial focus per thread entry. ChatView stays mounted across
   // placeholder materialization so the same draft store can finish the
@@ -305,8 +280,7 @@
   async function send(includeReviewComments = true) {
     if (!canSend) return;
     if (!pane.threadId) {
-      const materializedId = await ensureMaterializedThread();
-      if (!materializedId) return;
+      if (!(await pane.ensureMaterializedThread())) return;
     }
     const planSourceForImplement = latestPlanSource;
     if (planSourceForImplement && !hasDraftContent && !hasDraftPlanComments && !hasDraftDiffReviewComments) {
@@ -552,7 +526,7 @@
         draft.setContent(value);
       }
       if (pane.hasDraftPlaceholder && value.trim().length > 0) {
-        void ensureMaterializedThread();
+        void pane.ensureMaterializedThread();
       }
     }
     autosizeTextarea();
@@ -627,12 +601,25 @@
     return expandedChips.has(id);
   }
 
+  let releaseDraftRegistration: (() => void) | null = null;
+
   onMount(() => {
     releasePlanEvents = retainProposedPlanEventListener(() => pane.threadId);
+    // The pane's ensureMaterializedThread() flow looks up the draft
+    // store via this registry so it can adopt the new thread id after
+    // CreateThread returns. ChatView typically registers the same store
+    // on its own mount; the registry's first-wins semantics make this
+    // call a no-op there (and the returned dispose a no-op too) so the
+    // single owner stays the parent. We still register here so a
+    // standalone Composer mount (tests, future design-only composer
+    // path) has a working registration.
+    releaseDraftRegistration = registerComposerDraft(pane.paneId, draft);
   });
 
   onDestroy(() => {
     releasePlanEvents?.();
+    releaseDraftRegistration?.();
+    releaseDraftRegistration = null;
     mentions.closeMention();
   });
 </script>

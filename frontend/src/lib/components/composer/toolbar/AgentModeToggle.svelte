@@ -45,7 +45,9 @@
     const next = cycleMode(currentMode);
     applying = true;
     try {
-      const updated = (await UpdateThreadMode(pane.thread.id, next)) as Thread;
+      const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+      if (!threadId) return;
+      const updated = (await UpdateThreadMode(threadId, next)) as Thread;
       syncThread(updated);
     } catch (err) {
       console.error('agent mode toggle: UpdateThreadMode failed', err);

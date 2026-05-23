@@ -1,18 +1,14 @@
-import { CreateThread } from './bindings';
 import { getProject } from './projects.svelte';
 import {
-  getProjectDraft,
-  setProjectDraft,
-  type DraftMode,
-} from './draftThreads.svelte';
-import {
-  openThreadInNewPane,
-  openThreadInPane,
+  ensureMainPane,
+  ensurePaneInLayout,
+  getFocusedPaneOrNull,
+  openEmptyPane,
 } from './panes.svelte';
 import { expandProject } from './sidebar.svelte';
 import type { ThreadPane } from './thread.svelte';
-import { seedDefaultWorktreeIntentForDraft } from './worktreeIntent.svelte';
-import type { Thread } from '../types/models';
+
+export type DraftMode = 'chat' | 'design';
 
 export interface OpenDraftThreadOptions {
   projectId: string;
@@ -21,28 +17,35 @@ export interface OpenDraftThreadOptions {
   openInNewPane?: boolean;
 }
 
-export async function openDraftThreadForProject(options: OpenDraftThreadOptions): Promise<Thread> {
+/**
+ * Open a fresh in-pane draft placeholder for a project. The placeholder is
+ * a pure UI state — no SQLite row is written. The first composer input
+ * (typed text, paste, attachment upload) or toolbar action calls
+ * `pane.ensureMaterializedThread()`, which creates the backend row,
+ * prepends it to the sidebar with `isDraft=true`, and points the
+ * composer-draft store at the new id. "+ New" repeated without any
+ * action simply replaces the prior placeholder, so the user can spin up
+ * and discard threads freely.
+ *
+ * Returns the pane the placeholder was opened in so callers can layer
+ * additional state (e.g. seed-from-plan flows) on top.
+ */
+export async function openDraftThreadForProject(
+  options: OpenDraftThreadOptions,
+): Promise<ThreadPane> {
   const { projectId, mode, targetPane, openInNewPane = false } = options;
   expandProject(projectId);
-  const existing = getProjectDraft(projectId, mode);
-  if (existing) {
-    if (openInNewPane) await openThreadInNewPane(existing);
-    else if (targetPane) await openThreadInPane(existing, targetPane);
-    else await openThreadInPane(existing);
-    return existing;
-  }
   const project = getProject(projectId)?.project;
   if (!project) {
     throw new Error('Project not found');
   }
-  const created = await CreateThread({
-    projectId,
-    mode: mode === 'design' ? 'design' : 'chat',
-  });
-  setProjectDraft(projectId, mode, created);
-  seedDefaultWorktreeIntentForDraft(created);
-  if (openInNewPane) await openThreadInNewPane(created);
-  else if (targetPane) await openThreadInPane(created, targetPane);
-  else await openThreadInPane(created);
-  return created;
+  const pane: ThreadPane = openInNewPane
+    ? openEmptyPane()
+    : (targetPane ?? getFocusedPaneOrNull() ?? ensureMainPane());
+  // The placeholder is in-memory only — it doesn't go through
+  // openThreadInPane, so we need to make sure the pane is mounted in
+  // the layout grid ourselves. openEmptyPane already attaches itself.
+  ensurePaneInLayout(pane.paneId);
+  pane.startDraftPlaceholder(project, mode);
+  return pane;
 }

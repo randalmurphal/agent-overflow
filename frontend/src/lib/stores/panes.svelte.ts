@@ -7,7 +7,6 @@ import {
   movePaneLayoutItem,
   removePaneLayoutItem,
 } from './paneLayout.svelte';
-import { touchProjectActivity } from './projects.svelte';
 import { getThreadById, replaceThread as replaceThreadInRegistry } from './threads.svelte';
 import { REVEAL_PANE_EVENT } from './eventNames';
 
@@ -48,6 +47,20 @@ function addThreadPaneToLayout(paneId: string, insertIndex?: number): void {
     kind: 'thread',
     ratio: averagePaneRatio(),
   }, insertIndex, { persist: false });
+}
+
+/**
+ * Ensure the pane is mounted in the layout grid. Idempotent: if the
+ * pane is already present, no layout mutation happens. Used by the
+ * draft-placeholder open flow (`openDraftThreadForProject`) so a
+ * pane can host the composer before any real thread row exists.
+ */
+export function ensurePaneInLayout(paneId: string): void {
+  if (hasLayoutPane(paneId)) return;
+  addThreadPaneToLayout(paneId);
+  focusedPaneId = paneId;
+  requestPaneReveal(paneId);
+  requestPanePersistence();
 }
 
 function nextPaneId(): string {
@@ -357,6 +370,23 @@ export async function openThreadInNewPane(thread: Thread, insertIndex?: number):
   return replaceThreadInPane(thread, pane, 'committed');
 }
 
+/**
+ * Create a brand-new pane committed to the layout and return it without
+ * loading a thread. Callers populate it next — typically by calling
+ * `pane.startDraftPlaceholder(project, mode)` for the "+ New Thread in
+ * new pane" keyboard shortcut.
+ */
+export function openEmptyPane(insertIndex?: number): ThreadPane {
+  const paneId = nextPaneId();
+  const pane = createPane(paneId);
+  addThreadPaneToLayout(paneId, insertIndex);
+  registerPane(paneId, pane, 'committed');
+  focusedPaneId = paneId;
+  requestPaneReveal(paneId);
+  requestPanePersistence();
+  return pane;
+}
+
 export async function openThreadIdInNewPane(threadId: string, insertIndex?: number): Promise<ThreadPane | null> {
   const existing = findPaneShowingThread(threadId);
   if (existing) {
@@ -407,6 +437,16 @@ export function moveFocusedPane(direction: -1 | 1): void {
  * (preserving local read markers / latest-completion timestamps across
  * server-pushed updates) keep using `syncThreadRow` — that helper does
  * `syncThread`'s fan-out plus the merge.
+ *
+ * `syncThread` deliberately does NOT bump project last-activity. The
+ * backend's documented invariant (internal/store/threads.go) is that
+ * in-place setters (model/branch/workspace/rename/...) do not write
+ * threads.updated_at; real activity flows through
+ * MarkThreadActivity at three sites (user_text persist, approval /
+ * user-input request, turn complete). The frontend mirrors those
+ * three sites via syncThreadActivity in events.ts, which is the
+ * legitimate sort-bump path. An unconditional touchProjectActivity
+ * here would re-sort the project on every toolbar action.
  */
 export function syncThread(thread: Thread): void {
   replaceThreadInRegistry(thread);
@@ -414,5 +454,4 @@ export function syncThread(thread: Thread): void {
     if (pane.threadId !== thread.id || !pane.thread) continue;
     pane.replaceThread(thread);
   }
-  touchProjectActivity(thread.projectId, thread.updatedAt);
 }

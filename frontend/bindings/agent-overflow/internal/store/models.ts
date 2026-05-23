@@ -891,6 +891,15 @@ export class Thread {
      */
     "hasIncompleteTurn": boolean;
 
+    /**
+     * IsDraft is true when no items have been persisted for the thread.
+     * Used by the sidebar to render a draft indicator and by the project
+     * sort projection to exclude drafts from "last activity" so creating
+     * or configuring an unsent thread does not move the project to the
+     * top. It is not a persisted threads column.
+     */
+    "isDraft": boolean;
+
     /** Creates a new Thread instance. */
     constructor($$source: Partial<Thread> = {}) {
         if (!("id" in $$source)) {
@@ -949,6 +958,9 @@ export class Thread {
         }
         if (!("hasIncompleteTurn" in $$source)) {
             this["hasIncompleteTurn"] = false;
+        }
+        if (!("isDraft" in $$source)) {
+            this["isDraft"] = false;
         }
 
         Object.assign(this, $$source);

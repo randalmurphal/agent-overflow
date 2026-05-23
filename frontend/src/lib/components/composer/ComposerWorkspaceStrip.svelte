@@ -29,10 +29,8 @@
     data-testid="composer-workspace-strip"
   >
     <ProjectPicker {pane} />
-    {#if pane.threadId}
-      <EnvPicker {pane} {workspaceLock} />
-      <BranchPicker {pane} {workspaceLock} />
-      <WorktreeNameInput {pane} workspaceDirty={false} />
-    {/if}
+    <EnvPicker {pane} {workspaceLock} />
+    <BranchPicker {pane} {workspaceLock} />
+    <WorktreeNameInput {pane} workspaceDirty={false} />
   </div>
 {/if}

@@ -199,10 +199,24 @@ function resolveDisplay(
 }
 
 /**
- * compareTreeNodes — pinned-tier first (with within-tier pinnedAt-desc
- * tiebreak), then sort group, then activity desc, then id for stability.
+ * compareTreeNodes — drafts pinned to the very top (newest createdAt
+ * first), then pinned-tier (with within-tier pinnedAt-desc tiebreak),
+ * then sort group, then activity desc, then id for stability. Drafts
+ * outrank pinned because the user is actively composing them and needs
+ * them surfaced regardless of pin state.
  */
 function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number {
+  const leftDraft = left.thread.isDraft === true;
+  const rightDraft = right.thread.isDraft === true;
+  if (leftDraft !== rightDraft) return leftDraft ? -1 : 1;
+  if (leftDraft && rightDraft) {
+    if (right.thread.createdAt !== left.thread.createdAt) {
+      return right.thread.createdAt > left.thread.createdAt ? 1 : -1;
+    }
+    if (left.thread.id === right.thread.id) return 0;
+    return left.thread.id < right.thread.id ? 1 : -1;
+  }
+
   const leftPinned = left.thread.pinnedAt ?? 0;
   const rightPinned = right.thread.pinnedAt ?? 0;
   if (leftPinned !== rightPinned) {
@@ -345,11 +359,15 @@ export function previewSidebarThreads(input: {
 }): PreviewThreadsResult {
   const limit = input.limit ?? THREAD_PREVIEW_LIMIT;
 
-  // Pinned tier always renders. Slice only operates on the unpinned tail.
+  // Drafts and pinned both render outside the truncated unpinned tail.
+  // Drafts come first to match compareTreeNodes (the user is actively
+  // composing them; pin state is a slower-moving curation choice).
+  const drafts: SidebarTreeNode[] = [];
   const pinned: SidebarTreeNode[] = [];
   const rest: SidebarTreeNode[] = [];
   for (const node of input.nodes) {
-    if (node.thread.pinnedAt != null) pinned.push(node);
+    if (node.thread.isDraft === true) drafts.push(node);
+    else if (node.thread.pinnedAt != null) pinned.push(node);
     else rest.push(node);
   }
 
@@ -357,25 +375,27 @@ export function previewSidebarThreads(input: {
   const tail = rest.slice(limit);
 
   if (tail.length === 0) {
-    return { visibleNodes: [...pinned, ...head], hiddenNodes: [] };
+    return { visibleNodes: [...drafts, ...pinned, ...head], hiddenNodes: [] };
   }
 
-  // Active thread might already be in head; if it is, we just hide the tail.
+  // Active thread might already be in drafts/pinned/head; if so, hide the tail.
   const activeId = input.activeThreadId;
-  const activeInHead = !activeId ? false : head.some((n) => n.thread.id === activeId);
-  const pinnedHasActive = !activeId ? false : pinned.some((n) => n.thread.id === activeId);
-  if (!activeId || activeInHead || pinnedHasActive) {
-    return { visibleNodes: [...pinned, ...head], hiddenNodes: tail };
+  const isActive = (n: SidebarTreeNode) => n.thread.id === activeId;
+  const activeAboveTail = !activeId
+    ? false
+    : drafts.some(isActive) || pinned.some(isActive) || head.some(isActive);
+  if (!activeId || activeAboveTail) {
+    return { visibleNodes: [...drafts, ...pinned, ...head], hiddenNodes: tail };
   }
 
   // Active thread sits in the tail — float it back to visibility but
   // keep the rest of the tail hidden.
-  const activeNode = tail.find((n) => n.thread.id === activeId);
+  const activeNode = tail.find(isActive);
   if (!activeNode) {
-    return { visibleNodes: [...pinned, ...head], hiddenNodes: tail };
+    return { visibleNodes: [...drafts, ...pinned, ...head], hiddenNodes: tail };
   }
   return {
-    visibleNodes: [...pinned, ...head, activeNode],
+    visibleNodes: [...drafts, ...pinned, ...head, activeNode],
     hiddenNodes: tail.filter((n) => n.thread.id !== activeId),
   };
 }

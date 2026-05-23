@@ -139,7 +139,9 @@
       return;
     }
     try {
-      const updated = (await UpdateThreadReasoningEffort(pane.thread.id, next)) as Thread;
+      const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+      if (!threadId) return;
+      const updated = (await UpdateThreadReasoningEffort(threadId, next)) as Thread;
       syncThread(updated);
     } catch (err) {
       console.error('UpdateThreadReasoningEffort failed:', err);
@@ -155,7 +157,9 @@
       return;
     }
     try {
-      const updated = (await UpdateThreadFastMode(pane.thread.id, on)) as Thread;
+      const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+      if (!threadId) return;
+      const updated = (await UpdateThreadFastMode(threadId, on)) as Thread;
       syncThread(updated);
     } catch (err) {
       console.error('UpdateThreadFastMode failed:', err);
@@ -171,7 +175,9 @@
       return;
     }
     try {
-      const updated = (await UpdateThreadContextWindow(pane.thread.id, tokens)) as Thread;
+      const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+      if (!threadId) return;
+      const updated = (await UpdateThreadContextWindow(threadId, tokens)) as Thread;
       syncThread(updated);
     } catch (err) {
       console.error('UpdateThreadContextWindow failed:', err);

@@ -79,7 +79,12 @@
   // turn completion).
   let showLimitRings = $derived(pane.isLocked && !!pane.thread?.provider);
   let providerID = $derived(asProviderID(pane.thread?.provider));
-  let hasPersistedThread = $derived(Boolean(pane.threadId));
+  // Pickers render against either a persisted thread or a draft
+  // placeholder. The pane carries a synthetic thread object in both
+  // cases so the pickers can read its mode/provider/etc.; on
+  // placeholders, the picker actions individually call
+  // `pane.ensureMaterializedThread()` before talking to the backend.
+  let hasComposableSurface = $derived(pane.canCompose);
   let toolbarEl: HTMLDivElement | undefined = $state(undefined);
   let compactToolbar = $state(true);
   let measureFrame = 0;
@@ -133,7 +138,7 @@
   data-composer-toolbar
   data-testid="composer-toolbar"
 >
-  {#if hasPersistedThread}
+  {#if hasComposableSurface}
     <ModelProviderMenu {pane} />
     <EffortMenu {pane} />
     {#if isDesignThread}

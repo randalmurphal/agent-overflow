@@ -150,6 +150,36 @@ describe('buildSidebarThreadTree', () => {
     expect(tree.map((n) => n.thread.id)).toEqual(['later', 'earlier']);
   });
 
+  it('puts drafts above pinned and a needs-attention thread', () => {
+    const draftOld = mkThread('draft-old', { isDraft: true, createdAt: 100 });
+    const draftNew = mkThread('draft-new', { isDraft: true, createdAt: 200 });
+    const pinned = mkThread('pinned', { updatedAt: 9000, pinnedAt: 500 });
+    const blocking = mkThread('blocking', { updatedAt: 8000 });
+    const tree = buildSidebarThreadTree({
+      threads: [pinned, blocking, draftOld, draftNew],
+      liveStatusOf: liveStatusMap({ blocking: 'pending-approval' }),
+    });
+    expect(tree.map((n) => n.thread.id)).toEqual([
+      'draft-new',
+      'draft-old',
+      'pinned',
+      'blocking',
+    ]);
+  });
+
+  it('orders drafts by createdAt desc with a stable id tiebreak', () => {
+    // The comparator's id tiebreak returns `left < right ? 1 : -1`, so
+    // ties are broken descending by id. Matches the other tiers'
+    // stability tiebreak; the test pins the contract.
+    const draftA = mkThread('draft-a', { isDraft: true, createdAt: 100 });
+    const draftB = mkThread('draft-b', { isDraft: true, createdAt: 100 });
+    const tree = buildSidebarThreadTree({
+      threads: [draftA, draftB],
+      liveStatusOf: liveStatusMap({}),
+    });
+    expect(tree.map((n) => n.thread.id)).toEqual(['draft-b', 'draft-a']);
+  });
+
   it('bubbles a child error to the parent display status', () => {
     const parent = mkThread('parent', { updatedAt: 9000 });
     const child = mkThread('child', { parentThreadId: 'parent', updatedAt: 5000 });
@@ -424,6 +454,30 @@ describe('previewSidebarThreads', () => {
     const result = previewSidebarThreads({ nodes: tree, activeThreadId: null });
     expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 1);
     expect(result.visibleNodes[0].thread.id).toBe('pinned');
+    expect(result.hiddenNodes).toHaveLength(3);
+  });
+
+  it('keeps drafts above pinned and never hides them', () => {
+    const draft = mkThread('draft', { isDraft: true, createdAt: 5000 });
+    const pinned = mkThread('pinned', { pinnedAt: 1000, updatedAt: 1 });
+    const rest = Array.from({ length: 9 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i }));
+    const tree = buildAt([draft, pinned, ...rest]);
+    const result = previewSidebarThreads({ nodes: tree, activeThreadId: null });
+    // Drafts AND pinned ride above the head; the hidden tail shrinks
+    // by the same amount whether the extras are drafts or pinned.
+    expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 2);
+    expect(result.visibleNodes[0].thread.id).toBe('draft');
+    expect(result.visibleNodes[1].thread.id).toBe('pinned');
+    expect(result.hiddenNodes.map((n) => n.thread.id)).toEqual(['t6', 't7', 't8']);
+  });
+
+  it('does not double-include the active thread when it is already a draft', () => {
+    const draft = mkThread('draft', { isDraft: true, createdAt: 5000 });
+    const rest = Array.from({ length: 9 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i }));
+    const tree = buildAt([draft, ...rest]);
+    const result = previewSidebarThreads({ nodes: tree, activeThreadId: 'draft' });
+    const ids = result.visibleNodes.map((n) => n.thread.id);
+    expect(ids.filter((id) => id === 'draft')).toHaveLength(1);
     expect(result.hiddenNodes).toHaveLength(3);
   });
 

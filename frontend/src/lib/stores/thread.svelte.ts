@@ -35,8 +35,18 @@ import {
   SwitchThread,
   AutoResumeThread,
 } from './bindings';
-import { replaceThread } from './threads.svelte';
+import { prependThread, replaceThread } from './threads.svelte';
 import { leaseDuringSettle } from '../utils/scrollLeaseDuringTransition';
+import {
+  clearWorktreeIntent,
+  migrateWorktreeIntent,
+  seedDefaultWorktreeIntentForDraft,
+} from './worktreeIntent.svelte';
+import {
+  clearRuntimeModeDraft,
+  migrateRuntimeModeDraft,
+} from './runtimeModeDraft.svelte';
+import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 
 import { addToast } from './toast.svelte';
 import { createDiffPanelState, type DiffPanelState } from './diffPanel.svelte';
@@ -402,6 +412,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // dispatch window. Cleared on thread switch in clear() so the pane
   // doesn't carry sending state into the next thread.
   let sendInFlight: boolean = $state(false);
+  // materializingThreadPromise coalesces concurrent ensureMaterializedThread
+  // callers — composer input, paste/upload, send, toolbar pickers — into a
+  // single CreateThread call. Cleared in `finally` so a subsequent
+  // placeholder can materialize on its own.
+  let materializingThreadPromise: Promise<string | null> | null = null;
   let showTerminal: boolean = $state(false);
   // Diff panel is per-pane; created once and reset on thread switch so its
   // caches don't leak between threads.
@@ -1277,6 +1292,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
 
     clear(): void {
+      // Any intent staged against the (about-to-be-discarded) placeholder
+      // id must die with it — otherwise repeated "+ New" clicks, thread
+      // switches, or pane closes leak entries keyed by ids the rest of
+      // the app no longer reads. Cleanup is keyed on the placeholder id
+      // because real threads keep their entries until the thread itself
+      // is removed by the backend.
+      if (draftPlaceholder) {
+        clearWorktreeIntent(draftPlaceholder.id);
+        clearRuntimeModeDraft(draftPlaceholder.id);
+      }
       thread = null;
       draftPlaceholder = null;
       replaceTimelineItems([]);
@@ -1324,6 +1349,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
 
     startDraftPlaceholder(project: Project, mode: DraftPlaceholderMode = 'chat'): void {
+      // clear() drops any intent staged against the prior placeholder id,
+      // so "+ New" on top of an existing placeholder doesn't leak entries.
       this.clear();
       const now = Date.now();
       const placeholder: DraftThreadPlaceholder = {
@@ -1347,6 +1374,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         createdAt: now,
         updatedAt: now,
         archived: false,
+        // Match the backend projection: a synthetic placeholder has no
+        // items, so isDraft is the truth even before the row exists.
+        // Any consumer reading pane.thread?.isDraft gets the right
+        // answer in both placeholder and materialized phases.
+        isDraft: true,
       };
       activeTab = mode === 'design' ? 'design' : 'chat';
       switchGeneration++;
@@ -1373,6 +1405,56 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         activeTab = 'chat';
       }
       switchGeneration++;
+    },
+
+    /**
+     * Materialize a draft placeholder into a real thread row, or return the
+     * existing thread id when one is already present. Coalesces concurrent
+     * callers so composer-input, paste/upload, send, and toolbar pickers
+     * don't each race to `CreateThread`. Resolves to null when the pane
+     * has neither a thread nor a placeholder, or when the placeholder was
+     * replaced (e.g. another "+ New" click) before the create resolved —
+     * the stale-create guard checks the placeholder id at completion.
+     *
+     * Side effects on success: seeds the default worktree intent for the
+     * new thread, prepends it to the sidebar threads registry, adopts it
+     * on the pane, and points the pane's registered composer-draft store
+     * at the new thread id (so typed text saved against the placeholder
+     * id flushes through to the real thread row).
+     */
+    async ensureMaterializedThread(): Promise<string | null> {
+      const existingId = draftPlaceholder ? null : thread?.id ?? null;
+      if (existingId) return existingId;
+      const placeholder = draftPlaceholder;
+      if (!placeholder) return null;
+      if (materializingThreadPromise) return materializingThreadPromise;
+      const placeholderId = placeholder.id;
+      materializingThreadPromise = (async () => {
+        try {
+          const created = await this.materializeDraftPlaceholder();
+          if (!created) return null;
+          if (draftPlaceholder?.id !== placeholderId) return null;
+          // Re-key any intent staged against the placeholder id BEFORE we
+          // adopt the real thread — worktree/branch picks and runtime-mode
+          // toggles made on the placeholder otherwise become orphaned when
+          // the lookups switch to the materialized thread id.
+          migrateWorktreeIntent(placeholderId, created.id);
+          migrateRuntimeModeDraft(placeholderId, created.id);
+          seedDefaultWorktreeIntentForDraft(created);
+          prependThread(created);
+          this.adoptMaterializedDraftThread(created);
+          const draftStore = getComposerDraftForPane(paneId);
+          if (draftStore) await draftStore.adoptThread(created.id);
+          return created.id;
+        } catch (err) {
+          console.error('Failed to create draft thread:', err);
+          this.setGeneralError(`Failed to create thread: ${errString(err)}`);
+          return null;
+        } finally {
+          materializingThreadPromise = null;
+        }
+      })();
+      return materializingThreadPromise;
     },
 
     /**

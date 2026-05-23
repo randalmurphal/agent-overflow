@@ -27,30 +27,28 @@ describe('App integration — thread creation', () => {
     installAppDefaults();
   });
 
-  it('creates a hidden draft from the per-project pencil with the normal composer controls', async () => {
+  it('opens an unpersisted draft placeholder from the per-project pencil with the normal composer controls', async () => {
     const existing = makeThread({ id: 'existing', title: 'Existing Thread' });
-    const created = makeThread({
-      id: 'sidebar-created',
-      title: 'Fresh Thread',
-      projectId: 'proj-int',
-    });
     setBindingMock('ListThreads', async () => [existing]);
     seedSidebarProject([existing]);
-    const createMock = setBindingMock('CreateThread', async () => created);
+    // No CreateThread should be called until the user actually types.
+    const createMock = setBindingMock('CreateThread', async () => {
+      throw new Error('CreateThread should not be called for placeholder open');
+    });
     setBindingMock('StartSession', async () => {});
     installThreadViewDefaults();
 
-    const { findByTestId, findAllByText } = render(App);
+    const { findByTestId } = render(App);
     await flush(10);
 
     const pencil = await findByTestId('project-item-new-thread');
     await fireEvent.click(pencil);
-    await waitFor(() => expect(createMock).toHaveBeenCalled());
-    // CreateThread takes a CreateThreadOptions struct as its sole arg.
-    // + New is mode-contextual; the default Chat tab forwards mode='chat'.
-    expect(createMock.mock.calls[0][0]).toEqual({ projectId: 'proj-int', mode: 'chat' });
-    const matches = await findAllByText('Fresh Thread');
-    expect(matches.length).toBeGreaterThan(0);
+    await flush(10);
+
+    // Placeholder open is a local UI-only operation — no DB row yet.
+    expect(createMock).not.toHaveBeenCalled();
+    // The composer toolbar mounts against the placeholder so the user
+    // can configure model/effort/etc. before their first keystroke.
     expect(await findByTestId('composer-model-menu-trigger')).toBeInTheDocument();
     expect(await findByTestId('composer-effort-trigger')).toBeInTheDocument();
     expect(await findByTestId('composer-agent-mode-toggle')).toBeInTheDocument();
@@ -92,7 +90,7 @@ describe('App integration — thread creation', () => {
     expect(getModels).not.toHaveBeenCalled();
   });
 
-  it('surfaces backend error when draft creation fails', async () => {
+  it('surfaces backend error when draft materialization fails on first input', async () => {
     const existing = makeThread({ id: 'existing', title: 'Existing Thread' });
     setBindingMock('ListThreads', async () => [existing]);
     seedSidebarProject([existing]);
@@ -101,15 +99,19 @@ describe('App integration — thread creation', () => {
     });
     installThreadViewDefaults();
 
-    const { findByTestId } = render(App);
+    const { findByTestId, findByLabelText } = render(App);
     await flush(10);
 
     const pencil = await findByTestId('project-item-new-thread');
     await fireEvent.click(pencil);
     await flush(10);
-    // A toast surface event is emitted; the test asserts no thread was
-    // navigated to, which is the user-visible outcome.
-    expect(document.body.textContent).toMatch(/db locked/i);
+    // Typing into the placeholder kicks off CreateThread; the failure
+    // is rendered to the user as a pane-level error string.
+    const textarea = await findByLabelText('Message Input') as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: 'first char' } });
+    await waitFor(() => {
+      expect(document.body.textContent).toMatch(/db locked/i);
+    });
   });
 
   it('creates a thread from a PR URL via the command palette', async () => {

@@ -37,10 +37,6 @@ import {
   setThreadEnvMode,
   worktreeIntentForThread,
 } from '../../stores/worktreeIntent.svelte';
-import {
-  getProjectDraft,
-  resetForTest as resetDraftThreadsForTest,
-} from '../../stores/draftThreads.svelte';
 import { getThreadById, removeThread } from '../../stores/threads.svelte';
 import type { Project } from '../../types/models';
 
@@ -130,7 +126,6 @@ describe('<Composer>', () => {
     resetWorktreeIntent();
     resetSendQueueForTest();
     resetThreadStatuses();
-    resetDraftThreadsForTest();
     installDraftMocks();
     setBindingMock('SendMessageWithOptions', async () => makeTestThread({ runtimeMode: 'full-access' }));
     setBindingMock('InterruptTurn', async () => {});
@@ -293,7 +288,9 @@ describe('<Composer>', () => {
     expect(pane.draftPlaceholder?.projectId).toBe(secondProject.id);
     expect(pane.threadId).toBeNull();
     expect(pane.thread?.id).not.toBe('materialized-stale');
-    expect(getProjectDraft(firstProject.id, 'chat')).toBeUndefined();
+    // The stale create resolution must NOT prepend the materialized
+    // row — the pane already swapped to a different placeholder.
+    expect(getThreadById('materialized-stale')).toBeUndefined();
   });
 
   it('hides an emptied materialized draft and re-shows the same draft when text returns', async () => {
@@ -306,6 +303,7 @@ describe('<Composer>', () => {
       projectId: project.id,
       workspacePath: project.path,
       projectPath: project.path,
+      isDraft: true,
     });
     removeThread(created.id);
     setBindingMock('CreateThread', async () => created);
@@ -314,16 +312,17 @@ describe('<Composer>', () => {
     const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
 
     await fireEvent.input(textarea, { target: { value: 'draft text' } });
-    await waitFor(() => expect(getProjectDraft(project.id, 'chat')?.id).toBe(created.id));
-    expect(getThreadById(created.id)?.id).toBe(created.id);
+    await waitFor(() => expect(getThreadById(created.id)?.id).toBe(created.id));
+    expect(getThreadById(created.id)?.isDraft).toBe(true);
 
     await fireEvent.input(textarea, { target: { value: '' } });
     await waitFor(() => expect(getThreadById(created.id)).toBeUndefined());
-    expect(getProjectDraft(project.id, 'chat')?.id).toBe(created.id);
+    // Pane retains the materialized thread; only the sidebar row is hidden.
+    expect(pane.thread?.id).toBe(created.id);
 
     await fireEvent.input(textarea, { target: { value: 'draft text again' } });
     await waitFor(() => expect(getThreadById(created.id)?.id).toBe(created.id));
-    expect(getProjectDraft(project.id, 'chat')?.id).toBe(created.id);
+    expect(getThreadById(created.id)?.isDraft).toBe(true);
   });
 
   it('sends the draft and clears it on success', async () => {

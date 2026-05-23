@@ -90,13 +90,14 @@
 
   async function startDiscussion(def: DiscussionDefinition): Promise<void> {
     if (!pane.thread) return;
-    const threadId = pane.thread.id;
     // Collapse the menu immediately on click. The async StartDiscussion
     // work continues in the background — matches the Codex/Claude
     // model-picker UX where the menu disappears on pick and the
     // toast/state update lands a moment later.
     onSelect?.();
     try {
+      const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+      if (!threadId) return;
       await StartDiscussionByID(threadId, def.id);
       // StartDiscussion does NOT emit `thread:updated`, so we refresh the
       // thread manually — matching DiscussionStartFlow. Without this the

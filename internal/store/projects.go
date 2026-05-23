@@ -110,13 +110,23 @@ func (s *Store) ListProjects() ([]Project, error) {
 
 // ListProjectsWithThreadCounts returns every non-archived project plus
 // its thread count and the most-recent thread timestamp. The LEFT JOIN
-// keeps projects with zero threads in the result.
+// keeps projects with zero threads in the result. Draft threads (no
+// items persisted) are excluded from the last_active MAX so creating or
+// configuring an unsent thread does not move the project to the top of
+// the sidebar — only real activity (first message send and onward,
+// gated by MarkThreadActivity) counts.
 func (s *Store) ListProjectsWithThreadCounts() ([]ProjectWithCounts, error) {
 	rows, err := s.db.Query(
 		`SELECT p.id, p.path, p.name, p.color, p.sort_position,
 		        p.created_at, p.updated_at, p.archived,
 		        COALESCE(COUNT(t.id), 0) AS thread_count,
-		        COALESCE(MAX(t.updated_at), 0) AS last_active
+		        COALESCE(
+		          MAX(CASE
+		            WHEN EXISTS (SELECT 1 FROM items i WHERE i.thread_id = t.id)
+		            THEN t.updated_at
+		          END),
+		          0
+		        ) AS last_active
 		 FROM projects p
 		 LEFT JOIN threads t ON t.project_id = p.id AND t.archived = 0
 		 WHERE p.archived = 0

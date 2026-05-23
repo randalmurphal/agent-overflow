@@ -52,7 +52,8 @@ const threadColumns = `id, project_id,
        WHERE turns.thread_id = threads.id
        ORDER BY turns.turn_index DESC
        LIMIT 1
-    ), 0)`
+    ), 0),
+    NOT EXISTS (SELECT 1 FROM items WHERE items.thread_id = threads.id)`
 
 // -- Validation errors for enum fields. Each binding checks against the
 // -- list before hitting SQLite so the caller sees a typed error instead
@@ -132,7 +133,7 @@ func validAutoCompactPercent(percent int) bool {
 
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
-	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn int
+	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, isDraft int
 	var latestTurnCompletedAt, lastReadAt, pinnedAt sql.NullInt64
 	if err := scanner.Scan(
 		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
@@ -142,7 +143,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.AutoCompactStandardPercent, &t.AutoCompactExtendedPercent, &t.RuntimeMode,
 		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
 		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt, &pinnedAt,
-		&hasActionableProposedPlan, &hasIncompleteTurn,
+		&hasActionableProposedPlan, &hasIncompleteTurn, &isDraft,
 	); err != nil {
 		return Thread{}, err
 	}
@@ -150,6 +151,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	t.Archived = archived != 0
 	t.HasActionableProposedPlan = hasActionableProposedPlan != 0
 	t.HasIncompleteTurn = hasIncompleteTurn != 0
+	t.IsDraft = isDraft != 0
 	if latestTurnCompletedAt.Valid {
 		v := latestTurnCompletedAt.Int64
 		t.LatestTurnCompletedAt = &v

@@ -121,6 +121,12 @@ type Thread struct {
 	// mid-turn, so the sidebar should show Interrupted, not live Working.
 	// It is not a persisted threads column.
 	HasIncompleteTurn bool `json:"hasIncompleteTurn"`
+	// IsDraft is true when no items have been persisted for the thread.
+	// Used by the sidebar to render a draft indicator and by the project
+	// sort projection to exclude drafts from "last activity" so creating
+	// or configuring an unsent thread does not move the project to the
+	// top. It is not a persisted threads column.
+	IsDraft bool `json:"isDraft"`
 }
 
 type ThreadContextSettings struct {

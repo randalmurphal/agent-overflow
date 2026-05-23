@@ -1,23 +1,21 @@
 <script lang="ts">
   // Project trigger in the composer workspace strip. Lets the user
-  // re-target a freshly-created draft thread (the one parked here by
-  // clicking a project's "+ New" pencil) to a different project without
+  // re-target a fresh draft thread to a different project without
   // going back to the sidebar.
   //
-  // Lock policy: the picker is interactive only while the thread is
-  // still a draft — i.e. `findDraftEntry(thread.id)` returns the slot
-  // entry. Once the user sends, `Composer.send` calls
-  // `clearProjectDraft`, the entry disappears, and the picker becomes a
-  // static label showing the project the thread belongs to. Switching
+  // Lock policy: the picker is interactive only while the pane shows a
+  // draft — either an unmaterialized placeholder, or a materialized
+  // thread with `isDraft=true` (no items persisted yet). Once the user
+  // sends, the backend returns `isDraft=false`, and the picker becomes
+  // a static label showing the project the thread belongs to. Switching
   // projects on a thread with messages would mean re-targeting messages
   // mid-conversation, which isn't a thing we support.
   //
-  // Switch flow mirrors `ProjectsSection.handleNewThread`: look up an
-  // existing draft for (projectId, mode); switch to it if present;
-  // otherwise create a fresh hidden backend draft, seed its worktree
-  // intent default, and switch. The previous project's draft (if any) is left
-  // in the draftThreads cache — same behavior as the user clicking
-  // pencil on multiple projects in succession.
+  // Switch flow: replace the current placeholder with one for the new
+  // project. Any materialized draft for the previous project stays in
+  // the sidebar (its composer-draft row keeps it visible) — same
+  // behavior as clicking the sidebar pencil on multiple projects in
+  // succession.
 
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import FolderIcon from 'lucide-svelte/icons/folder';
@@ -28,15 +26,7 @@
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import { getProject, getProjects } from '../../../stores/projects.svelte';
-  import {
-    findDraftEntry,
-    getProjectDraft,
-    setProjectDraft,
-    type DraftMode,
-  } from '../../../stores/draftThreads.svelte';
-  import { CreateThread } from '../../../stores/bindings';
-  import { openThreadInPane } from '../../../stores/panes.svelte';
-  import { seedDefaultWorktreeIntentForDraft } from '../../../stores/worktreeIntent.svelte';
+  import type { DraftMode } from '../../../stores/threadCreation.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
 
@@ -56,12 +46,12 @@
   // shapes for the same selection.
   let draftMode = $derived<DraftMode>(pane.activeTab === 'design' ? 'design' : 'chat');
 
-  // The picker is locked once the thread has sent at least one message
-  // (i.e. it's no longer in the draft cache). Project re-targeting on a
-  // populated thread is not supported; the user can spin a new thread in
-  // the other project via the sidebar pencil if they want to "move".
-  let draftEntry = $derived(pane.threadId ? findDraftEntry(pane.threadId) : undefined);
-  let isLocked = $derived(!pane.thread || (!pane.hasDraftPlaceholder && !draftEntry));
+  // Picker is interactive while the pane is sitting on a draft (either
+  // unmaterialized placeholder or materialized but no-items-yet).
+  // Project re-targeting on a populated thread is not supported.
+  let isLocked = $derived(
+    !pane.thread || (!pane.hasDraftPlaceholder && pane.thread.isDraft !== true),
+  );
 
   let activeProjectId = $derived(pane.thread?.projectId ?? null);
   let activeProjectName = $derived.by(() => {
@@ -80,7 +70,7 @@
     triggerEl?.focus();
   }
 
-  async function selectProject(projectId: string): Promise<void> {
+  function selectProject(projectId: string): void {
     if (isLocked || switching) return;
     if (projectId === activeProjectId) {
       closeMenu();
@@ -88,20 +78,9 @@
     }
     switching = true;
     try {
-      const existing = getProjectDraft(projectId, draftMode);
-      if (existing) {
-        await openThreadInPane(existing, pane);
-        return;
-      }
       const project = getProject(projectId)?.project;
       if (!project) throw new Error('Project not found');
-      const created = await CreateThread({
-        projectId,
-        mode: draftMode === 'design' ? 'design' : 'chat',
-      });
-      setProjectDraft(projectId, draftMode, created);
-      seedDefaultWorktreeIntentForDraft(created);
-      await openThreadInPane(created, pane);
+      pane.startDraftPlaceholder(project, draftMode);
     } catch (err) {
       console.error('Failed to switch draft project:', err);
       addToast('error', userFacingError(err));

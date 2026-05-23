@@ -1,5 +1,17 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createThreadPane, LIVE_TODO_AUTOHIDE_MS } from './thread.svelte';
+import {
+  hasRuntimeModeDraft,
+  resetRuntimeModeDraftsForTest,
+  setRuntimeModeDraft,
+} from './runtimeModeDraft.svelte';
+import {
+  resetForTest as resetWorktreeIntent,
+  setAttachBranch,
+  setThreadEnvMode,
+  worktreeIntentForThread,
+} from './worktreeIntent.svelte';
+import type { Project } from '../types/models';
 import {
   getActiveTurn,
   getThreadStatus,
@@ -92,6 +104,57 @@ describe('createThreadPane', () => {
     expect(pane.generalError).toBeNull();
     expect(pane.isLocked).toBe(false);
     expect(getActiveTurn(pane.threadId) !== null).toBe(false);
+  });
+
+  it('drops stale placeholder intent when "+ New" replaces an unsent draft', () => {
+    // Repeated "+ New" without typing would otherwise leak worktree
+    // and runtime-mode entries keyed by the prior placeholder id —
+    // they're unreachable (no Thread points at them) but stay in the
+    // stores until reset. Verify startDraftPlaceholder cleans them up
+    // before staging the next placeholder.
+    resetWorktreeIntent();
+    resetRuntimeModeDraftsForTest();
+    try {
+      const pane = createThreadPane();
+      const projectA: Project = {
+        id: 'p-1',
+        path: '/tmp/p1',
+        name: 'p1',
+        sortPosition: 0,
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+      };
+      // Use a distinct project for the second placeholder so the
+      // synthesised draft id differs even when both startDraftPlaceholder
+      // calls land in the same millisecond — otherwise the cleanup and
+      // a "no-op" cannot be distinguished by querying the same id back.
+      const projectB: Project = { ...projectA, id: 'p-2', path: '/tmp/p2', name: 'p2' };
+
+      pane.startDraftPlaceholder(projectA, 'chat');
+      const firstPlaceholder = pane.thread;
+      expect(firstPlaceholder).not.toBeNull();
+      expect(firstPlaceholder!.id.startsWith('draft:')).toBe(true);
+
+      setThreadEnvMode(firstPlaceholder!, 'new-worktree');
+      setAttachBranch(firstPlaceholder!, 'feature/x');
+      setRuntimeModeDraft(firstPlaceholder!.id, 'approval-required');
+
+      expect(worktreeIntentForThread(firstPlaceholder!).attachBranch).toBe('feature/x');
+      expect(hasRuntimeModeDraft(firstPlaceholder!)).toBe(true);
+
+      pane.startDraftPlaceholder(projectB, 'chat');
+      expect(pane.thread?.id).not.toBe(firstPlaceholder!.id);
+
+      // The intent stores key by thread.id — query against the prior
+      // placeholder thread to confirm the entries are gone.
+      expect(worktreeIntentForThread(firstPlaceholder!).mode).toBe('local');
+      expect(worktreeIntentForThread(firstPlaceholder!).attachBranch).toBe('');
+      expect(hasRuntimeModeDraft(firstPlaceholder!)).toBe(false);
+    } finally {
+      resetWorktreeIntent();
+      resetRuntimeModeDraftsForTest();
+    }
   });
 
   // `isLocked` tracks whether the user has committed the

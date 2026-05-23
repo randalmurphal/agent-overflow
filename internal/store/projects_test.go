@@ -110,13 +110,28 @@ func TestListProjectsWithThreadCounts(t *testing.T) {
 		t.Fatalf("CreateProject(populated): %v", err)
 	}
 
-	// Two threads in "populated", updated_at 100/200.
+	// Two threads in "populated", updated_at 100/200, both with items so
+	// they contribute to last_active. Drafts (no items) are excluded —
+	// see TestListProjectsWithThreadCountsExcludesDrafts.
 	for i, ts := range []int64{100, 200} {
-		th := makeThread("t"+string(rune('0'+i)), "claude")
+		id := "t" + string(rune('0'+i))
+		th := makeThread(id, "claude")
 		th.ProjectID = populated.ID
 		th.UpdatedAt = ts
 		if err := s.CreateThread(th); err != nil {
 			t.Fatalf("CreateThread: %v", err)
+		}
+		if err := s.InsertItem(Item{
+			ID:        id + "-item",
+			ThreadID:  id,
+			TurnIndex: 0,
+			ItemIndex: 0,
+			Kind:      "user_text",
+			Role:      "user",
+			Summary:   "hi",
+			CreatedAt: ts,
+		}); err != nil {
+			t.Fatalf("InsertItem(%s): %v", id, err)
 		}
 	}
 
@@ -135,6 +150,72 @@ func TestListProjectsWithThreadCounts(t *testing.T) {
 	}
 	if pwc, ok := byID["proj-populated"]; !ok || pwc.ThreadCount != 2 || pwc.LastActive != 200 {
 		t.Errorf("populated project: got %+v, want count=2 lastActive=200", pwc)
+	}
+}
+
+// TestListProjectsWithThreadCountsExcludesDrafts pins the contract that
+// draft threads (no persisted items) do NOT contribute to the project's
+// last_active. Creating or configuring an unsent thread must not move
+// the project to the top of the sidebar — only real activity (gated by
+// MarkThreadActivity on first user_text persist and onward) counts.
+func TestListProjectsWithThreadCountsExcludesDrafts(t *testing.T) {
+	s := newTestStore(t)
+
+	proj := newProject("proj-mixed", "/tmp/mixed", "mixed")
+	if err := s.CreateProject(proj); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	// Two threads. The older one (updated_at=100) has an item and is
+	// "real activity". The newer one (updated_at=999) is a draft with
+	// no items — like clicking "+ New" and changing the model on a
+	// fresh thread. Without the draft exclusion this would lift
+	// last_active to 999 even though no message was ever sent.
+	withItems := makeThread("t-real", "claude")
+	withItems.ProjectID = proj.ID
+	withItems.UpdatedAt = 100
+	if err := s.CreateThread(withItems); err != nil {
+		t.Fatalf("CreateThread(real): %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID:        "item-real",
+		ThreadID:  withItems.ID,
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Summary:   "hi",
+		CreatedAt: 100,
+	}); err != nil {
+		t.Fatalf("InsertItem: %v", err)
+	}
+
+	draft := makeThread("t-draft", "claude")
+	draft.ProjectID = proj.ID
+	draft.UpdatedAt = 999
+	if err := s.CreateThread(draft); err != nil {
+		t.Fatalf("CreateThread(draft): %v", err)
+	}
+
+	got, err := s.ListProjectsWithThreadCounts()
+	if err != nil {
+		t.Fatalf("ListProjectsWithThreadCounts: %v", err)
+	}
+	var pwc ProjectWithCounts
+	for _, candidate := range got {
+		if candidate.Project.ID == proj.ID {
+			pwc = candidate
+			break
+		}
+	}
+	if pwc.Project.ID != proj.ID {
+		t.Fatalf("project %s not in results", proj.ID)
+	}
+	if pwc.ThreadCount != 2 {
+		t.Errorf("ThreadCount = %d, want 2 (drafts count toward total)", pwc.ThreadCount)
+	}
+	if pwc.LastActive != 100 {
+		t.Errorf("LastActive = %d, want 100 (draft with updated_at=999 excluded)", pwc.LastActive)
 	}
 }
 

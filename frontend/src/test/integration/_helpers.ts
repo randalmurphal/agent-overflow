@@ -27,7 +27,6 @@ import type { Project, ProjectWithCounts, Thread } from '../../lib/types/models'
 import type { GitStatus } from '../../lib/types/git';
 import { resetProjectsForTest } from '../../lib/stores/projects.svelte';
 import { resetSidebarForTest, expandProject } from '../../lib/stores/sidebar.svelte';
-import { getAllDrafts, resetForTest as resetDraftThreadsForTest } from '../../lib/stores/draftThreads.svelte';
 import { resetRuntimeModeDraftsForTest } from '../../lib/stores/runtimeModeDraft.svelte';
 import { resetProviderModelsForTest } from '../../lib/stores/providerModels.svelte';
 import { resetSettingsForTest } from '../../lib/stores/settings.svelte';
@@ -64,11 +63,6 @@ export function resetAppState(): void {
   // project list / collapsed chevrons don't inherit from a prior case.
   resetProjectsForTest();
   resetSidebarForTest();
-  // Module-scoped draft pointers persist across tests in a worker, so
-  // clear them here — otherwise test A's draft thread can be reused
-  // by test B's "New Thread" click and the backend mock for the
-  // second test never fires.
-  resetDraftThreadsForTest();
   resetRuntimeModeDraftsForTest();
   resetSettingsForTest();
   resetThreadActionConfirmationsForTest();
@@ -132,9 +126,6 @@ export function installThreadViewDefaults(): void {
     const id = typeof threadId === 'string' ? threadId : 'thread-1';
     const listedThread = getThreads().find((thread) => thread.id === id);
     if (listedThread) return listedThread;
-    for (const draft of getAllDrafts().values()) {
-      if (draft.id === id) return draft;
-    }
     return makeThread({ id });
   });
   // ChatView may fire MarkThreadRead while keeping the active thread row

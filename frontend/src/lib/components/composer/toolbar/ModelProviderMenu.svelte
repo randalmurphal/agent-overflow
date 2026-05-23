@@ -116,7 +116,6 @@
     slug: string,
   ): Promise<void> {
     if (!pane.thread || applying) return;
-    const threadId = pane.thread.id;
     const currentProvider = pane.thread.provider;
     const currentModel = pane.thread.model;
     if (provider === currentProvider && slug === currentModel) {
@@ -126,6 +125,8 @@
 
     applying = true;
     try {
+      const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+      if (!threadId) return;
       const updated = (await UpdateThreadModelSelection(threadId, provider, slug)) as Thread;
       syncThread(updated);
     } catch (err) {
@@ -180,9 +181,10 @@
 
   async function startFavoriteDiscussion(fav: ChatBarFavorite): Promise<void> {
     if (!pane.thread) return;
-    const threadId = pane.thread.id;
     closeMenu();
     try {
+      const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+      if (!threadId) return;
       await StartDiscussionByID(threadId, fav.value);
       try {
         const refreshed = (await GetThread(threadId)) as Thread;
