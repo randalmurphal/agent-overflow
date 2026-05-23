@@ -58,20 +58,21 @@ export function formatCost(usd: number): string {
 }
 
 /**
- * Format a duration in seconds as "Xs" (<60s) or "Xm Ys" (>=60s).
+ * Format a duration in seconds as "Xs" (<60s), "Xm Ys" (<1h), or
+ * "Xh Ym" (>=1h).
  * Used by compact duration labels. Negative / non-finite inputs clamp
  * to zero; callers that want the section omitted
  * should branch on the zero case themselves.
  *
- * Examples: 12 -> "12s", 60 -> "1m 0s", 90 -> "1m 30s", 3600 -> "60m 0s".
+ * Examples: 12 -> "12s", 60 -> "1m 0s", 90 -> "1m 30s", 3600 -> "1h 0m".
  */
 export function formatElapsedSeconds(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0s';
   const whole = Math.floor(seconds);
   if (whole < 60) return `${whole}s`;
   const minutes = Math.floor(whole / 60);
-  const remainder = whole % 60;
-  return `${minutes}m ${remainder}s`;
+  if (minutes < 60) return `${minutes}m ${whole % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
 /**

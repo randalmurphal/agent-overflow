@@ -9,10 +9,17 @@ describe('formatElapsedSeconds', () => {
     expect(formatElapsedSeconds(59)).toBe('59s');
   });
 
-  it('formats >=60s values as "Xm Ys"', () => {
+  it('formats minute-length values as "Xm Ys"', () => {
     expect(formatElapsedSeconds(60)).toBe('1m 0s');
     expect(formatElapsedSeconds(90)).toBe('1m 30s');
-    expect(formatElapsedSeconds(3_600)).toBe('60m 0s');
+    expect(formatElapsedSeconds(3_599)).toBe('59m 59s');
+  });
+
+  it('formats hour-length values as "Xh Ym"', () => {
+    expect(formatElapsedSeconds(3_600)).toBe('1h 0m');
+    expect(formatElapsedSeconds(3_660)).toBe('1h 1m');
+    expect(formatElapsedSeconds(7_199)).toBe('1h 59m');
+    expect(formatElapsedSeconds(7_200)).toBe('2h 0m');
   });
 
   it('clamps negative / non-finite values to zero rather than rendering garbage', () => {
