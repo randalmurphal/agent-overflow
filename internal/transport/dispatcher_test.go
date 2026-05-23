@@ -690,6 +690,7 @@ func (p *privilegedApp) RespondToApproval() string              { return "ok" }
 func (p *privilegedApp) RespondToUserInput() string             { return "ok" }
 func (p *privilegedApp) CreateThread() string                   { return "ok" }
 func (p *privilegedApp) CreateThreadFromPR() string             { return "ok" }
+func (p *privilegedApp) GetThreadDefaults() string              { return "ok" }
 func (p *privilegedApp) ForkThread() string                     { return "ok" }
 func (p *privilegedApp) ForkThreadFromMessage() string          { return "ok" }
 func (p *privilegedApp) StopClaudeTask() string                 { return "ok" }
