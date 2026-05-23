@@ -1,7 +1,8 @@
 <script lang="ts">
   // Workspace strip rendered INSIDE the composer card as the bottom-
-  // most row. Project picker leads on the left (interactive while the
-  // thread is still a draft, locked once it sends), then the env
+  // most row. Thread-mode picker leads on the left (interactive while
+  // the thread is a draft, read-only label once committed since mode
+  // is post-creation-immutable), then the project picker, then the env
   // (workspace/worktree) picker, then the worktree branch-name input
   // slotted next to it when the user has staged a new worktree, then
   // the branch picker. The whole group sits on the left so the strip
@@ -9,6 +10,7 @@
   // controls.
 
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import ThreadModePicker from './workspace/ThreadModePicker.svelte';
   import ProjectPicker from './workspace/ProjectPicker.svelte';
   import EnvPicker from './workspace/EnvPicker.svelte';
   import BranchPicker from './workspace/BranchPicker.svelte';
@@ -28,6 +30,7 @@
     class="flex min-w-0 items-center gap-2 border-t border-border-subtle px-3 py-1.5 text-[11px] text-fg-muted"
     data-testid="composer-workspace-strip"
   >
+    <ThreadModePicker {pane} />
     <ProjectPicker {pane} />
     <EnvPicker {pane} {workspaceLock} />
     <BranchPicker {pane} {workspaceLock} />

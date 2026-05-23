@@ -53,11 +53,10 @@ describe('resolveDraftTargetProject', () => {
     addProjectLocal(makeProject({ id: 'project-1', path: '/tmp/p1', name: 'Project One' }));
     const pane = createThreadPane({ paneId: 'main' });
     pane.replaceThread(makeThread({ projectId: 'project-2', mode: 'design' }));
-    pane.setActiveTab('design');
 
-    const resolved = resolveDraftTargetProject(pane);
+    const resolved = resolveDraftTargetProject(pane, 'chat');
 
-    expect(resolved).toEqual({ projectId: 'project-2', mode: 'design' });
+    expect(resolved).toEqual({ projectId: 'project-2', mode: 'chat' });
   });
 
   it('falls back to the most recently active project when the pane has no thread', () => {
@@ -66,7 +65,7 @@ describe('resolveDraftTargetProject', () => {
     addProjectLocal(makeProject({ id: 'newer', path: '/tmp/new', name: 'Newer' }));
     const pane = createThreadPane({ paneId: 'main' });
 
-    const resolved = resolveDraftTargetProject(pane);
+    const resolved = resolveDraftTargetProject(pane, 'chat');
 
     expect(resolved).toEqual({ projectId: 'newer', mode: 'chat' });
   });
@@ -75,7 +74,7 @@ describe('resolveDraftTargetProject', () => {
     addProjectLocal(makeProject({ id: 'older', path: '/tmp/old', name: 'Older' }));
     addProjectLocal(makeProject({ id: 'newer', path: '/tmp/new', name: 'Newer' }));
 
-    const resolved = resolveDraftTargetProject(null);
+    const resolved = resolveDraftTargetProject(null, 'chat');
 
     expect(resolved).toEqual({ projectId: 'newer', mode: 'chat' });
   });
@@ -83,22 +82,31 @@ describe('resolveDraftTargetProject', () => {
   it('returns null when no projects exist at all', () => {
     const pane = createThreadPane({ paneId: 'main' });
 
-    const resolved = resolveDraftTargetProject(pane);
+    const resolved = resolveDraftTargetProject(pane, 'chat');
 
     expect(resolved).toBeNull();
   });
 
   it('returns null when no projects exist and target pane is also null', () => {
-    expect(resolveDraftTargetProject(null)).toBeNull();
+    expect(resolveDraftTargetProject(null, 'chat')).toBeNull();
   });
 
-  it('preserves the pane activeTab when falling back to the recent project', () => {
+  it('flows the requested mode through when falling back to the recent project', () => {
     addProjectLocal(makeProject({ id: 'newer', path: '/tmp/new', name: 'Newer' }));
     const pane = createThreadPane({ paneId: 'main' });
-    pane.setActiveTab('design');
 
-    const resolved = resolveDraftTargetProject(pane);
+    const resolved = resolveDraftTargetProject(pane, 'design');
 
     expect(resolved).toEqual({ projectId: 'newer', mode: 'design' });
+  });
+
+  it('flows the requested mode through when the pane has a thread', () => {
+    addProjectLocal(makeProject({ id: 'project-1', path: '/tmp/p1', name: 'Project One' }));
+    const pane = createThreadPane({ paneId: 'main' });
+    pane.replaceThread(makeThread({ projectId: 'project-1', mode: 'chat' }));
+
+    const resolved = resolveDraftTargetProject(pane, 'design');
+
+    expect(resolved).toEqual({ projectId: 'project-1', mode: 'design' });
   });
 });

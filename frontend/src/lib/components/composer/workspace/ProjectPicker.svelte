@@ -40,11 +40,11 @@
   let open = $state(false);
   let switching = $state(false);
 
-  // Drafts are mode-keyed. The active tab decides which mode a switch
-  // creates a draft in — matches the "+ New" pencil behavior so the
-  // composer picker and the sidebar pencil produce identical thread
-  // shapes for the same selection.
-  let draftMode = $derived<DraftMode>(pane.activeTab === 'design' ? 'design' : 'chat');
+  // Drafts are mode-keyed. The loaded thread's mode decides which mode
+  // a project switch creates a draft in — matches the sidebar buttons
+  // so a chat draft stays chat when its project flips, and a design
+  // draft stays design.
+  let draftMode = $derived<DraftMode>(pane.thread?.mode === 'design' ? 'design' : 'chat');
 
   // Picker is interactive while the pane is sitting on a draft (either
   // unmaterialized placeholder or materialized but no-items-yet).

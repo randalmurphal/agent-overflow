@@ -445,16 +445,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   const channelState = createThreadChannelState();
   const designState = createThreadDesignState();
 
-  // Top-level mode tab (Chat | Design). Drives the segmented control in
-  // ChatHeader and the layout decision in ChatView when no thread is loaded
-  // (the empty-state pane needs to know whether the user is sitting on the
-  // Chat tab or the Design tab). Once a thread loads, switchThread() syncs
-  // this from thread.mode so the tab tracks the active thread's type.
-  // Discussion threads bypass the top-tab UI entirely (DiscussionView owns
-  // its own surface) so we leave activeTab unchanged in that case — when the
-  // user navigates away the tab still carries the user's last intent.
-  let activeTab: 'chat' | 'design' = $state('chat');
-
   // Shared right-side panel slot. The shell width and the active panel are
   // saved per thread so plan/diff/payload views swap inside one stable pane
   // instead of mounting separate sidebars with separate width stores.
@@ -926,20 +916,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   }
 
   /**
-   * Commit the incoming thread to the pane. Sets `thread`, syncs the
-   * top tab to the thread's mode (Discussion threads bypass the tab
-   * UI so we leave activeTab unchanged), restores the per-thread RHS
-   * panel snapshot, and re-opens the diff panel when the restored
-   * panel was a diff-checkpoint.
+   * Commit the incoming thread to the pane. Sets `thread`, restores
+   * the per-thread RHS panel snapshot, and re-opens the diff panel
+   * when the restored panel was a diff-checkpoint.
    */
   function commitIncomingThread(newThread: Thread): void {
     draftPlaceholder = null;
     thread = newThread;
-    if (newThread.mode === 'design') {
-      activeTab = 'design';
-    } else if (newThread.mode === 'chat' || newThread.mode === 'plan') {
-      activeTab = 'chat';
-    }
     rhsPanelSlot.restoreForThread(newThread.id);
     if (
       newThread.mode === 'design'
@@ -1196,7 +1179,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get pendingClarification() { return designState.pendingClarification; },
     get activeOptionSet() { return designState.activeOptionSet; },
     get designViewport() { return designState.designViewport; },
-    get activeTab() { return activeTab; },
     get activeRhsPanel() { return rhsPanelSlot.activePanel; },
     get rhsSidebarWidth() { return rhsPanelSlot.width; },
     get showPlanSidebar() { return rhsPanelSlot.activePanel?.kind === 'plan'; },
@@ -1414,7 +1396,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         // answer in both placeholder and materialized phases.
         isDraft: true,
       };
-      activeTab = mode === 'design' ? 'design' : 'chat';
       switchGeneration++;
     },
 
@@ -1433,11 +1414,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       draftPlaceholder = null;
       thread = materializedThread;
       contextWindow = seedContextWindow(materializedThread);
-      if (materializedThread.mode === 'design') {
-        activeTab = 'design';
-      } else if (materializedThread.mode === 'chat' || materializedThread.mode === 'plan') {
-        activeTab = 'chat';
-      }
       switchGeneration++;
     },
 
@@ -2181,17 +2157,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     setDesignViewport(viewport: DesignViewport): void {
       designState.setDesignViewport(viewport);
-    },
-
-    /**
-     * Set the top-level mode tab. Called from the ChatHeader segmented
-     * control on user click and from switchThread() on thread load. The
-     * caller owns the side effects (finding the most-recent thread of the
-     * target type, switching to it, or clearing thread state for the
-     * design empty-state); this only flips the slot.
-     */
-    setActiveTab(tab: 'chat' | 'design'): void {
-      activeTab = tab;
     },
 
     clearDesign(): void {

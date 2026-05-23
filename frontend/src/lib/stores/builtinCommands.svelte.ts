@@ -74,6 +74,8 @@ export interface BuiltinCommandHooks {
   // from panes.svelte#openThreadInNewPane, which opens an existing
   // thread in a new pane).
   openThreadFormInNewPane?: () => void;
+  openDesignThreadForm: () => void;
+  openDesignThreadFormInNewPane?: () => void;
   openThreadFromPR: () => void;
   openShipChanges: (paneId: string) => void;
   requestRename: (thread: Thread) => void;
@@ -132,6 +134,8 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     openSettings,
     openThreadForm,
     openThreadFormInNewPane,
+    openDesignThreadForm,
+    openDesignThreadFormInNewPane,
     openThreadFromPR,
     openShipChanges,
     requestRename,
@@ -193,6 +197,22 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '+',
     editableReachable: true,
     run: () => openThreadFormInNewPane?.(),
+  });
+
+  registerCommand({
+    id: 'thread.new.design',
+    label: 'Thread: New Design',
+    icon: '+',
+    editableReachable: true,
+    run: () => openDesignThreadForm(),
+  });
+
+  registerCommand({
+    id: 'thread.newPane.design',
+    label: 'Thread: New Design in New Pane',
+    icon: '+',
+    editableReachable: true,
+    run: () => openDesignThreadFormInNewPane?.(),
   });
 
   registerCommand({

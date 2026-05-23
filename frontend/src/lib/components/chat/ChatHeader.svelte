@@ -1,10 +1,9 @@
 <script lang="ts">
   // Chat header: thread title + project chip on the left, action cluster
   // on the right (Open-in-editor, git actions, terminal toggle, diff
-  // toggle). The Chat | Design mode-tab control lives in the sidebar
-  // (ModeTabs.svelte) so it can stay visible across empty state and
-  // loaded threads, and so it doesn't compete with per-thread chrome
-  // here.
+  // toggle). Thread mode (chat vs design) is read from `pane.thread.mode`
+  // and surfaced by the composer's ThreadModePicker; nothing here needs
+  // to render mode chrome.
   //
   // The inline-rename flow below mirrors the behavior the old
   // ChatView.svelte header used: click the title to switch to an input,

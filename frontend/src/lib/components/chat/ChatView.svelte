@@ -8,8 +8,6 @@
   import ThreadTerminalPlacement from '../terminal/ThreadTerminalPlacement.svelte';
   import DiscussionView from '../discussion/DiscussionView.svelte';
   import DesignClarificationPicker from '../design/DesignClarificationPicker.svelte';
-  import ModeEmptyForProject from './ModeEmptyForProject.svelte';
-  import { getProject } from '../../stores/projects.svelte';
   import RhsSidebarShell from './RhsSidebarShell.svelte';
   import ChatHeader from './ChatHeader.svelte';
   import ExpandedImageDialog from './ExpandedImageDialog.svelte';
@@ -325,33 +323,6 @@
     !!pane.thread && pane.thread.mode === 'design',
   );
 
-  // The active mode tab ('chat' | 'design') is the user's intent. The
-  // loaded thread's mode is what's actually open. When they disagree —
-  // e.g. user is on a chat thread but clicked the Design tab and there
-  // are no design threads in the project — we render an "empty for
-  // project" overlay instead of the chat surface, so the UI matches
-  // the user's intent. Discussion threads bypass the tab UI entirely.
-  function tabForThreadMode(mode: string | undefined): 'chat' | 'design' | null {
-    if (mode === 'design') return 'design';
-    if (mode === 'chat' || mode === 'plan') return 'chat';
-    return null;
-  }
-  let inModeMismatch = $derived(
-    !!pane.thread
-      && !inDiscussionMode
-      && tabForThreadMode(pane.thread.mode) !== null
-      && tabForThreadMode(pane.thread.mode) !== pane.activeTab,
-  );
-
-  // Project name lookup for the mode-mismatch empty state. Falls back to
-  // an empty string if the project list hasn't loaded yet — the empty
-  // state copy still reads as "in this project".
-  let mismatchProjectName = $derived.by(() => {
-    if (!inModeMismatch || !pane.thread?.projectId) return '';
-    const project = getProject(pane.thread.projectId);
-    return project?.project.name ?? '';
-  });
-
   function openImagePreview(preview: ExpandedImagePreview): void {
     // If a previous preview is still open (rapid re-click on a different
     // image before the dialog has closed), revoke its blob URLs before
@@ -588,17 +559,6 @@
 
 {#if pane.thread && inDiscussionMode}
   <DiscussionView {pane} />
-{:else if pane.thread && inModeMismatch}
-  <!--
-    Mode-mismatch overlay: tab and thread.mode disagree, with no thread
-    of the target mode in the project. We keep pane.thread loaded for
-    fast tab-back navigation, but the surface shows the target mode's
-    empty state with project context. ChatHeader / composer for the
-    mismatched thread are intentionally hidden.
-  -->
-  <div bind:this={chatRoot} data-ui-surface="chat-mode-mismatch" data-thread-id={pane.thread.id} class="flex h-full min-h-0">
-    <ModeEmptyForProject mode={pane.activeTab} projectName={mismatchProjectName} />
-  </div>
 {:else if pane.thread}
   <!-- Standard chat surface. RhsSidebarShell carries plan, diff, payload,
        and design preview panels. -->
@@ -619,10 +579,9 @@
     />
   </div>
 {:else}
-  <!-- No thread loaded → no project context. Per the design-mode spec
-       tab click is a pure no-op in this state (tab pill still updates
-       for visual feedback, but no auto-navigation or thread creation).
-       The user picks a project + thread from the sidebar to proceed. -->
+  <!-- No thread loaded → no project context. The user picks a project
+       + thread from the sidebar (or hits "+" in a project row) to
+       proceed. -->
   <div
     bind:this={chatRoot}
     data-ui-surface="chat-empty"

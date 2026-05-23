@@ -17,19 +17,22 @@ export type DraftMode = 'chat' | 'design';
  * keybinding firing without a focused thread). Prefers the focused
  * pane's current project, then falls back to the most recently active
  * project (ListProjects is sorted server-side by lastActive
- * descending). Returns null when no projects exist at all — the
- * caller should surface "add a project first".
+ * descending). Mode flows through from the caller — "+ New" defaults
+ * to chat; the design palette command passes 'design'. Returns null
+ * when no projects exist at all — the caller should surface "add a
+ * project first".
  */
 export function resolveDraftTargetProject(
   targetPane: ThreadPane | null,
+  mode: DraftMode,
 ): { projectId: string; mode: DraftMode } | null {
   const fromPane = targetPane?.thread?.projectId;
   if (fromPane) {
-    return { projectId: fromPane, mode: targetPane!.activeTab };
+    return { projectId: fromPane, mode };
   }
   const fallback = getProjects()[0]?.project.id;
   if (!fallback) return null;
-  return { projectId: fallback, mode: targetPane?.activeTab ?? 'chat' };
+  return { projectId: fallback, mode };
 }
 
 export interface OpenDraftThreadOptions {

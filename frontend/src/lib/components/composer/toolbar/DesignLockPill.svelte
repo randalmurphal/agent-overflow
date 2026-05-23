@@ -6,7 +6,7 @@
   // so an interactive toggle would be misleading. The pill exists to
   // make the locked state legible at a glance, not to act on it.
 
-  import Frame from 'lucide-svelte/icons/frame';
+  import Palette from 'lucide-svelte/icons/palette';
   import Icon from '../../primitives/Icon.svelte';
 </script>
 
@@ -21,6 +21,6 @@
     'shrink-0 select-none',
   ].join(' ')}
 >
-  <Icon icon={Frame} size={12} strokeWidth={1.75} class="opacity-80" />
+  <Icon icon={Palette} size={12} strokeWidth={1.75} class="opacity-80" />
   <span>Design</span>
 </span>

@@ -49,6 +49,7 @@
   import {
     openDraftThreadForProject,
     resolveDraftTargetProject,
+    type DraftMode,
   } from './lib/stores/threadCreation.svelte';
   import { addToast } from './lib/stores/toast.svelte';
   import { userFacingError } from './lib/utils/userFacingError';
@@ -185,9 +186,9 @@
     if (thread) void openThreadFromNavigation(thread, getFocusedPaneOrNull() ?? ensureMainPane());
   }
 
-  function requestNewThread(openInNewPane: boolean): void {
+  function requestNewThread(openInNewPane: boolean, mode: DraftMode = 'chat'): void {
     const targetPane = getFocusedPaneOrNull();
-    const resolved = resolveDraftTargetProject(targetPane);
+    const resolved = resolveDraftTargetProject(targetPane, mode);
     if (!resolved) {
       addToast('warning', 'Add a project before creating a new thread.');
       return;
@@ -255,6 +256,8 @@
       openSettings: () => openSettings('general'),
       openThreadForm: () => requestNewThread(false),
       openThreadFormInNewPane: () => requestNewThread(true),
+      openDesignThreadForm: () => requestNewThread(false, 'design'),
+      openDesignThreadFormInNewPane: () => requestNewThread(true, 'design'),
       openThreadFromPR: () => {
         // Sidebar registers a callback that flips its local `showFromPR`
         // state. The indirection keeps dialog ownership with the sidebar,

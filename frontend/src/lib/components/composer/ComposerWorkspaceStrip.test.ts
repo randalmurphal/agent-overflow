@@ -28,11 +28,13 @@ describe('<ComposerWorkspaceStrip>', () => {
     expect(getByTestId('branch-picker-trigger')).toBeInTheDocument();
   });
 
-  it('renders env picker before branch picker in DOM order', async () => {
-    // Env (worktree) leads, branch follows — both on the left so the
-    // strip reads as a single "where am I" group. A revert or
-    // accidental re-order would otherwise sail past the existence-only
-    // assertion above.
+  it('renders thread mode picker before env and branch pickers in DOM order', async () => {
+    // Thread mode leads, then env (worktree), then branch — all
+    // on the left so the strip reads as a single "where am I" group.
+    // (The project picker also renders here when a projectId is set
+    // on the thread; this fixture intentionally omits it.) A revert
+    // or accidental re-order would otherwise sail past the
+    // existence-only assertion above.
     const pane = await buildPane(makeThread());
     const { getByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
     const strip = getByTestId('composer-workspace-strip');
@@ -40,6 +42,7 @@ describe('<ComposerWorkspaceStrip>', () => {
       strip.querySelectorAll<HTMLElement>('[data-testid$="-picker-trigger"]'),
     );
     expect(triggers.map((el) => el.getAttribute('data-testid'))).toEqual([
+      'thread-mode-picker-trigger',
       'env-picker-trigger',
       'branch-picker-trigger',
     ]);

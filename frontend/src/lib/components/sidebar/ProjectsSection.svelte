@@ -155,11 +155,12 @@
   });
 
   const handleNewThread: ProjectNewThreadHandler = async (projectId, options = {}) => {
-    // + New is mode-contextual: the active mode tab decides whether to
-    // create a chat or design thread. Each (project, mode) gets its own
-    // draft slot so a fresh chat draft and a fresh design draft can
-    // coexist for the same project.
-    const draftMode = pane?.activeTab ?? 'chat';
+    // Mode is driven by which "+" button the user clicked (chat vs
+    // design). Each (project, mode) gets its own draft slot so a fresh
+    // chat draft and a fresh design draft can coexist for the same
+    // project. Defaulting to chat keeps "+ New" from inheriting design
+    // mode just because the currently-open thread happens to be design.
+    const draftMode = options.mode ?? 'chat';
     try {
       await openDraftThreadForProject({
         projectId,

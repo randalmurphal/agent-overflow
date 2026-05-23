@@ -447,6 +447,8 @@ function registerFixtureCommands(pane: ReturnType<typeof createThreadPane>): voi
   registerBuiltinCommands({
     openSettings: () => {},
     openThreadForm: () => {},
+    openDesignThreadForm: () => {},
+    openDesignThreadFormInNewPane: () => {},
     openThreadFromPR: () => {},
     openShipChanges: () => {},
     requestRename: () => {},
@@ -698,6 +700,8 @@ describe('git.ship command', () => {
     registerBuiltinCommands({
       openSettings: () => {},
       openThreadForm: () => {},
+      openDesignThreadForm: () => {},
+      openDesignThreadFormInNewPane: () => {},
       openThreadFromPR: () => {},
       openShipChanges: (paneId) => {
         openedForPaneIds.push(paneId);
@@ -730,6 +734,8 @@ describe('git commit/PR command safety', () => {
     registerBuiltinCommands({
       openSettings: () => {},
       openThreadForm: () => {},
+      openDesignThreadForm: () => {},
+      openDesignThreadFormInNewPane: () => {},
       openThreadFromPR: () => {},
       openShipChanges: (paneId) => {
         openedForPaneIds.push(paneId);
@@ -762,6 +768,8 @@ describe('git commit/PR command safety', () => {
     registerBuiltinCommands({
       openSettings: () => {},
       openThreadForm: () => {},
+      openDesignThreadForm: () => {},
+      openDesignThreadFormInNewPane: () => {},
       openThreadFromPR: () => {},
       openShipChanges: (paneId) => {
         openedForPaneIds.push(paneId);
@@ -802,6 +810,8 @@ describe('sidebar.focus-search command', () => {
     registerBuiltinCommands({
       openSettings: () => {},
       openThreadForm: () => {},
+      openDesignThreadForm: () => {},
+      openDesignThreadFormInNewPane: () => {},
       openThreadFromPR: () => {},
       openShipChanges: () => {},
       requestRename: () => {},

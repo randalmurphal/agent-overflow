@@ -32,6 +32,7 @@
   import { userFacingError } from '../../utils/userFacingError';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import FolderOpen from 'lucide-svelte/icons/folder-open';
+  import Palette from 'lucide-svelte/icons/palette';
   import Plus from 'lucide-svelte/icons/plus';
   import Icon from '../primitives/Icon.svelte';
   import ProjectContextMenu from './ProjectContextMenu.svelte';
@@ -136,20 +137,38 @@
     }
   }
 
-  function handleNewThreadClick(e: MouseEvent): void {
+  function handleNewChatThreadClick(e: MouseEvent): void {
     e.stopPropagation();
     if (Date.now() - lastNewThreadContextMenuAt < 500) return;
     onNewThread?.(project.project.id, {
       openInNewPane: shouldOpenProjectThreadInNewPane(e),
+      mode: 'chat',
     });
   }
 
-  function handleNewThreadContextMenu(e: MouseEvent): void {
+  function handleNewChatThreadContextMenu(e: MouseEvent): void {
     if (!shouldOpenProjectThreadInNewPane(e)) return;
     e.preventDefault();
     e.stopPropagation();
     lastNewThreadContextMenuAt = Date.now();
-    onNewThread?.(project.project.id, { openInNewPane: true });
+    onNewThread?.(project.project.id, { openInNewPane: true, mode: 'chat' });
+  }
+
+  function handleNewDesignThreadClick(e: MouseEvent): void {
+    e.stopPropagation();
+    if (Date.now() - lastNewThreadContextMenuAt < 500) return;
+    onNewThread?.(project.project.id, {
+      openInNewPane: shouldOpenProjectThreadInNewPane(e),
+      mode: 'design',
+    });
+  }
+
+  function handleNewDesignThreadContextMenu(e: MouseEvent): void {
+    if (!shouldOpenProjectThreadInNewPane(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    lastNewThreadContextMenuAt = Date.now();
+    onNewThread?.(project.project.id, { openInNewPane: true, mode: 'design' });
   }
 
   function handleContextMenu(e: MouseEvent): void {
@@ -348,14 +367,25 @@
       </span>
       <button
         type="button"
-        onclick={handleNewThreadClick}
-        oncontextmenu={handleNewThreadContextMenu}
-        title="New Thread in This Project"
-        aria-label="New Thread in This Project"
+        onclick={handleNewChatThreadClick}
+        oncontextmenu={handleNewChatThreadContextMenu}
+        title="New Chat Thread in This Project"
+        aria-label="New Chat Thread in This Project"
         data-testid="project-item-new-thread"
         class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       >
         <Icon icon={Plus} size={12} strokeWidth={2} class="opacity-90" />
+      </button>
+      <button
+        type="button"
+        onclick={handleNewDesignThreadClick}
+        oncontextmenu={handleNewDesignThreadContextMenu}
+        title="New Design Thread in This Project"
+        aria-label="New Design Thread in This Project"
+        data-testid="project-item-new-design-thread"
+        class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-0.5 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+      >
+        <Icon icon={Palette} size={12} strokeWidth={2} class="opacity-90" />
       </button>
     {/if}
   </div>
