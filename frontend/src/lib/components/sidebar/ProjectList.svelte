@@ -7,13 +7,14 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { autoAnimate } from '../../utils/autoAnimate';
   import ProjectItem from './ProjectItem.svelte';
+  import type { ProjectNewThreadHandler } from './projectNewThread';
 
   interface Props {
     projects: readonly ProjectWithCounts[];
     /** Map of project id -> visible threads for that project. */
     threadsByProject: Map<string, Thread[]>;
     pane: ThreadPane | null;
-    onNewThread?: (projectId: string) => void;
+    onNewThread?: ProjectNewThreadHandler;
     /** Drag-reorder commit. Wired by ProjectsSection only when manual
      *  sort mode is active; ProjectItem ignores it otherwise. */
     onReorder?: (newOrderedIds: string[]) => void;

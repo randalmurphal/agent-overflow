@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import ProjectThreadList from '../ProjectThreadList.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
@@ -39,21 +39,53 @@ describe('<ProjectThreadList>', () => {
   });
 
   it('empty-state button calls onNewThread with the projectId', async () => {
-    let capturedId: string | null = null;
+    const onNewThread = vi.fn();
     const pane = createThreadPane();
     const { getByTestId } = render(ProjectThreadList, {
       props: {
         projectId: 'proj-42',
         threads: [],
         pane,
-        onNewThread: (id: string) => {
-          capturedId = id;
-        },
+        onNewThread,
       },
     });
     const btn = getByTestId('project-thread-list-empty');
-    btn.click();
-    expect(capturedId).toBe('proj-42');
+    await fireEvent.click(btn);
+    expect(onNewThread).toHaveBeenCalledWith('proj-42', { openInNewPane: false });
+  });
+
+  it('ctrl-clicking the empty-state button requests a new pane', async () => {
+    const onNewThread = vi.fn();
+    const pane = createThreadPane();
+    const { getByTestId } = render(ProjectThreadList, {
+      props: {
+        projectId: 'proj-42',
+        threads: [],
+        pane,
+        onNewThread,
+      },
+    });
+
+    await fireEvent.click(getByTestId('project-thread-list-empty'), { ctrlKey: true });
+
+    expect(onNewThread).toHaveBeenCalledWith('proj-42', { openInNewPane: true });
+  });
+
+  it('cmd-clicking the empty-state button requests a new pane', async () => {
+    const onNewThread = vi.fn();
+    const pane = createThreadPane();
+    const { getByTestId } = render(ProjectThreadList, {
+      props: {
+        projectId: 'proj-42',
+        threads: [],
+        pane,
+        onNewThread,
+      },
+    });
+
+    await fireEvent.click(getByTestId('project-thread-list-empty'), { metaKey: true });
+
+    expect(onNewThread).toHaveBeenCalledWith('proj-42', { openInNewPane: true });
   });
 
   it('renders thread rows when threads are present', () => {

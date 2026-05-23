@@ -12,6 +12,10 @@
   import type { Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
+    shouldOpenProjectThreadInNewPane,
+    type ProjectNewThreadHandler,
+  } from './projectNewThread';
+  import {
     collapseThreadList,
     getExpandedDiscussions,
     getThreadListVisibleLimit,
@@ -46,10 +50,11 @@
     threads: Thread[];
     pane: ThreadPane | null;
     /** Click handler for the empty-state "+ New Thread" button. */
-    onNewThread?: (projectId: string) => void;
+    onNewThread?: ProjectNewThreadHandler;
   }
 
   let { projectId, threads, pane, onNewThread }: Props = $props();
+  let lastNewThreadContextMenuAt = 0;
 
   // Tree is built per-render: cheap (small N) and lets us reactively
   // pick up effective live-status changes from the status store.
@@ -132,12 +137,28 @@
     return false;
   }
 
+  function handleEmptyNewThreadClick(e: MouseEvent): void {
+    if (Date.now() - lastNewThreadContextMenuAt < 500) return;
+    onNewThread?.(projectId, {
+      openInNewPane: shouldOpenProjectThreadInNewPane(e),
+    });
+  }
+
+  function handleEmptyNewThreadContextMenu(e: MouseEvent): void {
+    if (!shouldOpenProjectThreadInNewPane(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    lastNewThreadContextMenuAt = Date.now();
+    onNewThread?.(projectId, { openInNewPane: true });
+  }
+
 </script>
 
 {#if threads.length === 0}
   <button
     type="button"
-    onclick={() => onNewThread?.(projectId)}
+    onclick={handleEmptyNewThreadClick}
+    oncontextmenu={handleEmptyNewThreadContextMenu}
     data-testid="project-thread-list-empty"
     class="ml-4 mr-2 my-1 inline-flex items-center gap-1 rounded-[var(--radius-field)] px-2 py-1 text-[11px] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
   >

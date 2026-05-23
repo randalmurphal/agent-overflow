@@ -13,7 +13,14 @@ import {
   resetProjectsForTest,
   touchProjectActivity,
 } from '../../../stores/projects.svelte';
-import { syncThread } from '../../../stores/panes.svelte';
+import {
+  ensureMainPane,
+  getAllPanes,
+  getFocusedPaneId,
+  resetPanesForTest,
+  syncThread,
+} from '../../../stores/panes.svelte';
+import { resetPaneLayoutForTest } from '../../../stores/paneLayout.svelte';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import type { Project, ProjectWithCounts } from '../../../types/models';
 import { setThreadFilterQuery } from '../../../stores/threadFilter.svelte';
@@ -40,9 +47,21 @@ describe('<ProjectsSection>', () => {
   beforeEach(() => {
     resetSidebarForTest();
     resetProjectsForTest();
+    resetPanesForTest();
+    resetPaneLayoutForTest();
     setThreadFilterQuery('');
     setBindingMock('ListProjects', async () => []);
     setBindingMock('ListThreads', async () => []);
+    setBindingMock('GetThreadDefaults', async () => ({
+      provider: 'claude',
+      model: 'claude-sonnet-4-6',
+      reasoningEffort: '',
+      fastMode: false,
+      contextWindow: 0,
+      runtimeMode: '',
+      branch: 'main',
+      workspacePath: '/tmp/ws',
+    }));
   });
 
   it('renders the PROJECTS header and control icons', async () => {
@@ -193,5 +212,20 @@ describe('<ProjectsSection>', () => {
       container.querySelectorAll('[data-testid="project-item"]'),
     ).map((el) => el.getAttribute('data-project-id'));
     expect(ids).toEqual(['p-b', 'p-c', 'p-a']);
+  });
+
+  it('ctrl-clicking a project new-thread button opens the draft in a new pane', async () => {
+    await seedProjects([
+      { project: mkProject('p1', { name: 'Project One' }), threadCount: 0, lastActive: 0 },
+    ]);
+    const pane = ensureMainPane();
+    const { getByTestId } = render(ProjectsSection, { props: { pane } });
+    await tick();
+
+    await fireEvent.click(getByTestId('project-item-new-thread'), { ctrlKey: true });
+    await tick();
+
+    expect(getAllPanes().size).toBe(2);
+    expect(getFocusedPaneId()).toBe('pane-1');
   });
 });

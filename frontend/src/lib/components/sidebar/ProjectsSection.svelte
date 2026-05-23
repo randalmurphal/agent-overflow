@@ -29,6 +29,7 @@
   import Icon from '../primitives/Icon.svelte';
   import MicroLabel from '../primitives/MicroLabel.svelte';
   import ProjectList from './ProjectList.svelte';
+  import type { ProjectNewThreadHandler } from './projectNewThread';
   import ProjectSortMenu from './ProjectSortMenu.svelte';
   import AddProjectModal from './AddProjectModal.svelte';
 
@@ -153,7 +154,7 @@
     searchAutoExpanded = next;
   });
 
-  async function handleNewThread(projectId: string): Promise<void> {
+  const handleNewThread: ProjectNewThreadHandler = async (projectId, options = {}) => {
     // + New is mode-contextual: the active mode tab decides whether to
     // create a chat or design thread. Each (project, mode) gets its own
     // draft slot so a fresh chat draft and a fresh design draft can
@@ -164,12 +165,13 @@
         projectId,
         mode: draftMode,
         targetPane: pane,
+        openInNewPane: options.openInNewPane ?? false,
       });
     } catch (err) {
       console.error('Failed to create draft thread:', err);
       addToast('error', userFacingError(err));
     }
-  }
+  };
 
   /**
    * Commit a manual reorder. Updates each project's sortPosition

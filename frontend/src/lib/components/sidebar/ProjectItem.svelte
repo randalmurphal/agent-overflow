@@ -39,6 +39,10 @@
   import ThreadRow from './ThreadRow.svelte';
   import { buildSidebarThreadTree, rollupDisplayStatus } from '../../utils/sidebarTree';
   import {
+    shouldOpenProjectThreadInNewPane,
+    type ProjectNewThreadHandler,
+  } from './projectNewThread';
+  import {
     beginProjectDrag,
     computeReorderedIds,
     endProjectDrag,
@@ -54,7 +58,7 @@
     pane: ThreadPane | null;
     /** Called with the project id when the user clicks the new-thread button
      * (or otherwise signals "create a new thread in this project"). */
-    onNewThread?: (projectId: string) => void;
+    onNewThread?: ProjectNewThreadHandler;
     /** Current rendered ordering of project ids (visible projects in
      *  ProjectsSection). Required for DnD to compute the new order on
      *  drop without an extra round-trip. */
@@ -78,6 +82,7 @@
   let rowEl: HTMLDivElement | undefined = $state(undefined);
   let contextMenuOpen = $state(false);
   let contextMenuAnchor: HTMLElement | undefined = $state(undefined);
+  let lastNewThreadContextMenuAt = 0;
 
   // Inline rename state — mirrors the pattern in ThreadRow.
   let renaming = $state(false);
@@ -133,7 +138,18 @@
 
   function handleNewThreadClick(e: MouseEvent): void {
     e.stopPropagation();
-    onNewThread?.(project.project.id);
+    if (Date.now() - lastNewThreadContextMenuAt < 500) return;
+    onNewThread?.(project.project.id, {
+      openInNewPane: shouldOpenProjectThreadInNewPane(e),
+    });
+  }
+
+  function handleNewThreadContextMenu(e: MouseEvent): void {
+    if (!shouldOpenProjectThreadInNewPane(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    lastNewThreadContextMenuAt = Date.now();
+    onNewThread?.(project.project.id, { openInNewPane: true });
   }
 
   function handleContextMenu(e: MouseEvent): void {
@@ -333,6 +349,7 @@
       <button
         type="button"
         onclick={handleNewThreadClick}
+        oncontextmenu={handleNewThreadContextMenu}
         title="New Thread in This Project"
         aria-label="New Thread in This Project"
         data-testid="project-item-new-thread"
