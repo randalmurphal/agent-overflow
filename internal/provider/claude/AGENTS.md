@@ -205,12 +205,19 @@ start and complete. These are load-bearing rules enforced by
   `local_agent` specifically.
 - `docs/references/fixtures/claude/advisor_context_usage_20260522.summary.json`
   — sanitized summary across three captures (no advisor, one advisor,
-  two advisors). Authoritative for the
-  `message_delta.usage.iterations[]` shape and the parent-only-cumulative
-  behaviour of the top-level usage. Backs
-  `parse_stream.go::lastParentIterationUsage` and the
-  `TestParseStreamEventMessageDeltaUsesLastParentIteration*` regression
-  set.
+  two advisors). Documents the `message_delta.usage.iterations[]` shape
+  and confirms top-level is the cumulative sum across parent
+  iterations. Wire shape only — read with the
+  `advisor_pretokens_correlation_20260523` fixture (below) which
+  supplies the ground-truth anchor.
+- `docs/references/fixtures/claude/advisor_pretokens_correlation_20260523.summary.json`
+  — five production compactions correlating the trailing
+  `message_delta.usage` top-level against the following
+  `system.compact_boundary` `compactMetadata.preTokens`. Top-level
+  matches preTokens within 1-2% across both no-advisor and advisor
+  turns; iter[-1] is ~50% off on advisor turns. Authoritative for the
+  current `parse_stream.go` direct top-level read and the
+  `TestParseStreamEventMessageDeltaUsesTopLevel*` regression set.
 
 Use these in tests via file path. When fresh captures prove wire drift,
 refresh the checked-in fixtures from a new `AGENT_OVERFLOW_DEBUG=provider`

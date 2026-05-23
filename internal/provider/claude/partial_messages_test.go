@@ -407,37 +407,44 @@ func TestParseStreamEventSubagentMessageDeltaEndTurnDoesNotEmitParentSoftTurnCom
 
 // --- Advisor + message_delta usage ---
 //
-// `message_delta.usage` reports a TOP-LEVEL cumulative parent-only
-// sum across every `type:"message"` iteration in the turn. For a
+// `message_delta.usage` top-level reports the cumulative sum across
+// every parent `type:"message"` iteration in the turn. For a
 // single-parent-call turn that equals the sole iteration; for an
 // advisor turn (parent → advisor → parent) it is the SUM of the two
-// parent iterations, which double-counts cached tokens that were
-// created in iter 1 and read again in iter 3. Wire-verified on
-// Claude 2.1.139 against /tmp/advisor-spike/{out,double}.ndjson.
+// parent iterations.
 //
-// The context meter must reflect the parent's actual context at end
-// of turn, NOT the cumulative sum — otherwise the displayed value
-// scales by `(N+1)×` where N is the number of advisor calls. The
-// parser picks the LAST `type:"message"` iteration from
-// `usage.iterations[]` and emits that as EventTokenUsage; advisor
-// iterations (`type:"advisor_message"`) are skipped because they
-// belong to a separate model run with its own context window. When
-// iterations is absent the parser falls back to the top-level
-// (single-call equivalence). The advisor's own per-call usage
-// surfaces solely via terminal `result.modelUsage[advisor_model]`,
-// never as a stray message_delta into the parent stream. See
-// parse_assistant.go advisorOnly for the envelope-level filter that
-// drops advisor's standalone assistant frames.
+// The top-level sum IS what the Claude CLI's own `compactMetadata.preTokens`
+// (the value that drives auto-compact) tracks. Verified across five
+// production compactions on Claude 2.1.139 (sessions ef8fb8ee and
+// b951a768): preTokens matched top-level within 1-2% on every
+// turn — including advisor turns where the last-iteration snapshot
+// was ~2× lower. See
+// docs/references/fixtures/claude/advisor_pretokens_correlation_20260523.summary.json
+// for the per-compaction table.
+//
+// Earlier the parser extracted `usage.iterations[-1].(type=message)`
+// to "avoid an overcount" — that was wrong. The 2× ratio on advisor
+// turns is real cumulative processing the CLI counts toward
+// compaction; reading the last iteration alone undercounts by half
+// and lets compaction trigger before the user-visible meter crosses
+// any threshold. Reverted in this commit; previous fix was
+// 1c1f9467. Advisor's own per-call usage surfaces solely via
+// terminal `result.modelUsage[advisor_model]`, never as a stray
+// message_delta into the parent stream. See parse_assistant.go
+// advisorOnly for the envelope-level filter that drops advisor's
+// standalone assistant frames.
 
-func TestParseStreamEventMessageDeltaUsesLastParentIterationOnAdvisorTurn(t *testing.T) {
+func TestParseStreamEventMessageDeltaUsesTopLevelOnAdvisorTurn(t *testing.T) {
 	// Numbers lifted verbatim from /tmp/advisor-spike/out.ndjson
 	// (single-advisor capture against Claude 2.1.139):
 	//   iter 0 (parent):  input=6, cache_read=18059, cache_create=9816
 	//   iter 1 (advisor): input=29179, cache_read=0,   cache_create=0
 	//   iter 2 (parent):  input=1, cache_read=27875, cache_create=238
 	//   top-level (sum):  input=7, cache_read=45934, cache_create=10054
-	// The meter must read iter 2 (the last parent iteration, 28114
-	// tokens), NOT the top-level sum (55995 tokens, ~2× overcount).
+	// The meter must read TOP-LEVEL (55995 tokens — the cumulative
+	// sum across both parent iterations). This matches what the CLI's
+	// auto-compact trigger uses (compactMetadata.preTokens), verified
+	// against production session data.
 	parser := NewParser()
 
 	if _, err := parser.ParseLine(testThread, []byte(
@@ -474,20 +481,19 @@ func TestParseStreamEventMessageDeltaUsesLastParentIterationOnAdvisorTurn(t *tes
 	if err := json.Unmarshal(usageEvent.Meta, &window); err != nil {
 		t.Fatalf("unmarshal window: %v", err)
 	}
-	if want := 1 + 27875 + 238; window.UsedTokens != want {
-		t.Fatalf("UsedTokens: got %d, want %d (last parent iteration, NOT top-level 55995)", window.UsedTokens, want)
+	if want := 7 + 45934 + 10054; window.UsedTokens != want {
+		t.Fatalf("UsedTokens: got %d, want %d (top-level cumulative, what compactMetadata.preTokens tracks)", window.UsedTokens, want)
 	}
 	if !sawSoft {
 		t.Fatalf("expected soft EventTurnComplete from message_delta(stop_reason=end_turn): %+v", events)
 	}
 }
 
-func TestParseStreamEventMessageDeltaUsesLastParentIterationOnDoubleAdvisor(t *testing.T) {
+func TestParseStreamEventMessageDeltaUsesTopLevelOnDoubleAdvisor(t *testing.T) {
 	// Numbers from /tmp/advisor-spike/double.ndjson (two advisor calls in
 	// one turn → 5 iterations: msg, adv, msg, adv, msg). The meter must
-	// read iter 4 (the final parent iteration, 33634 tokens), NOT the
-	// top-level sum (100542 tokens, ~3× overcount — overcount scales
-	// linearly with advisor calls per turn).
+	// read top-level (100542 tokens, cumulative across all three parent
+	// iterations) — this is what the CLI counts toward compaction.
 	parser := NewParser()
 
 	if _, err := parser.ParseLine(testThread, []byte(
@@ -515,18 +521,63 @@ func TestParseStreamEventMessageDeltaUsesLastParentIterationOnDoubleAdvisor(t *t
 	if err := json.Unmarshal(usageEvent.Meta, &window); err != nil {
 		t.Fatalf("unmarshal window: %v", err)
 	}
-	if want := 1 + 33546 + 87; window.UsedTokens != want {
-		t.Fatalf("UsedTokens: got %d, want %d (last parent iteration, NOT top-level 100542)", window.UsedTokens, want)
+	if want := 8 + 84960 + 15574; window.UsedTokens != want {
+		t.Fatalf("UsedTokens: got %d, want %d (top-level cumulative, what compactMetadata.preTokens tracks)", window.UsedTokens, want)
 	}
 }
 
-func TestParseStreamEventMessageDeltaFallsBackToTopLevelWithoutIterations(t *testing.T) {
-	// A plain non-advisor turn doesn't always carry an `iterations`
-	// array on `message_delta.usage` — the parser must fall back to
-	// the top-level so the meter still updates. (Even when iterations
-	// IS present in the no-advisor case, the spike shows iterations[0]
-	// equals the top-level, so the fallback path is also the safe
-	// degenerate behaviour.)
+func TestParseStreamEventMessageDeltaUsesTopLevelOnProductionAdvisorTurn(t *testing.T) {
+	// Production capture from ~/.claude/projects/.../b951a768-*.jsonl
+	// line 125, the last assistant message_delta before
+	// compactMetadata.preTokens=294675 triggered auto-compact at
+	// line 131 (timestamp 2026-05-23T04:58:24Z).
+	//
+	// Real numbers from the wire — there are 3 iterations:
+	//   iter 0 (parent):  input=1,    cache_read=143462, cache_create=287   = 143,750
+	//   iter 1 (advisor): input=146484, (separate context window)
+	//   iter 2 (parent):  input=1,    cache_read=143749, cache_create=2417  = 146,167
+	//   top-level (sum):  input=2,    cache_read=287211, cache_create=2704  = 289,917
+	//
+	// The CLI compacted at preTokens=294,675. Top-level=289,917 is
+	// within 1.6% of that — the remaining gap is the queued user
+	// message ("do not run the dev server") + system overhead.
+	// iter[-1]=146,167 is ~50% off (would have shown ~15% on the
+	// meter while Claude saw ~30% and triggered the user's auto-compact
+	// threshold).
+	parser := NewParser()
+	if _, err := parser.ParseLine(testThread, []byte(
+		`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_prod","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
+	)); err != nil {
+		t.Fatalf("message_start parse: %v", err)
+	}
+	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":2,"output_tokens":2997,"cache_read_input_tokens":287211,"cache_creation_input_tokens":2704,"iterations":[{"type":"message","input_tokens":1,"output_tokens":1531,"cache_read_input_tokens":143462,"cache_creation_input_tokens":287},{"type":"advisor_message","model":"claude-opus-4-7","input_tokens":146484,"output_tokens":11125,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},{"type":"message","input_tokens":1,"output_tokens":1466,"cache_read_input_tokens":143749,"cache_creation_input_tokens":2417}]}}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("message_delta parse: %v", err)
+	}
+	var usageEvent *provider.ProviderEvent
+	for i, evt := range events {
+		if evt.Kind == provider.EventTokenUsage {
+			usageEvent = &events[i]
+		}
+	}
+	if usageEvent == nil {
+		t.Fatalf("expected EventTokenUsage: %+v", events)
+	}
+	var window provider.ContextWindow
+	if err := json.Unmarshal(usageEvent.Meta, &window); err != nil {
+		t.Fatalf("unmarshal window: %v", err)
+	}
+	if want := 2 + 287211 + 2704; window.UsedTokens != want {
+		t.Fatalf("UsedTokens: got %d, want %d (top-level cumulative; compactMetadata.preTokens=294675 is within 1.6%%)", window.UsedTokens, want)
+	}
+}
+
+func TestParseStreamEventMessageDeltaTopLevelWithoutIterations(t *testing.T) {
+	// A plain non-advisor turn often omits the `iterations` array on
+	// `message_delta.usage`. Top-level fields stand alone in that case
+	// (and equal iterations[0] when present), so the parser's direct
+	// top-level read still produces the right meter value.
 	parser := NewParser()
 	if _, err := parser.ParseLine(testThread, []byte(
 		`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_plain","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
@@ -560,7 +611,7 @@ func TestParseStreamEventMessageDeltaEmitsUsageAcrossMessages(t *testing.T) {
 	// Two SSE messages in a row, the first containing an advisor turn,
 	// the second text-only. Both message_delta usage snapshots must
 	// reach the context meter — the parent's window grew across each
-	// round.
+	// round. Meter reads top-level on both.
 	parser := NewParser()
 
 	if _, err := parser.ParseLine(testThread, []byte(
@@ -592,8 +643,8 @@ func TestParseStreamEventMessageDeltaEmitsUsageAcrossMessages(t *testing.T) {
 	if err := json.Unmarshal(advisorUsage[0].Meta, &firstWindow); err != nil {
 		t.Fatalf("unmarshal advisor window: %v", err)
 	}
-	if want := 1 + 27875 + 238; firstWindow.UsedTokens != want {
-		t.Fatalf("first message UsedTokens: got %d, want %d (last parent iter)", firstWindow.UsedTokens, want)
+	if want := 7 + 45934 + 10054; firstWindow.UsedTokens != want {
+		t.Fatalf("first message UsedTokens: got %d, want %d (top-level cumulative)", firstWindow.UsedTokens, want)
 	}
 
 	if _, err := parser.ParseLine(testThread, []byte(

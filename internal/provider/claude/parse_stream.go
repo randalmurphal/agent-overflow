@@ -127,9 +127,22 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 		// `result` — see invariants.md §27). The two gates are
 		// independent; a malformed envelope missing one field
 		// must still let the other fire.
+		//
+		// The top-level `usage` fields are the cumulative sum of every
+		// parent `type:"message"` iteration in this SSE message. That
+		// sum — NOT the last iteration's snapshot — is what the CLI's
+		// own auto-compact trigger uses; verified across five
+		// production compactions where `compactMetadata.preTokens`
+		// matched top-level within 1-2% and was ~2x the last-iteration
+		// snapshot on advisor turns. See
+		// docs/references/fixtures/claude/advisor_pretokens_correlation_20260523.summary.json
+		// and docs/references/claude-wire.md §Context-window usage.
 		var events []provider.ProviderEvent
 		if usageRaw := eventObj["usage"]; len(usageRaw) > 0 {
-			events = appendContextUsageEvent(events, threadID, parentToolUseID, now, lastParentIterationUsage(usageRaw))
+			var u assistantUsage
+			if json.Unmarshal(usageRaw, &u) == nil {
+				events = appendContextUsageEvent(events, threadID, parentToolUseID, now, u)
+			}
 		}
 		if soft := p.buildSoftTurnComplete(threadID, parentToolUseID, eventObj["delta"], now); soft != nil {
 			events = append(events, *soft)
@@ -201,64 +214,4 @@ func isSoftRoundCloseStopReason(s string) bool {
 		return true
 	}
 	return false
-}
-
-// lastParentIterationUsage extracts the parent's latest per-call
-// usage snapshot from a `message_delta.usage` payload. When the turn
-// involved sub-iterations (advisor or otherwise), the wire's top-level
-// usage is the cumulative parent-only SUM across every
-// `type:"message"` iteration — using it for the context meter scales
-// the displayed value with the number of parent calls in the turn
-// (1× / 2× / 3× ...), even though the model's actual context after
-// the turn is just the latest call's prompt size. The accurate
-// reading is the LAST `type:"message"` iteration; advisor entries
-// (`type:"advisor_message"`) are skipped because they belong to a
-// separate model run with its own context window. For turns with a
-// single parent call (no iterations array, or one-element
-// iterations), the iteration value equals the top-level so callers
-// don't need to special-case. Malformed payloads degrade to a zero
-// usage, which `contextWindowFromClaudeUsage` then drops.
-//
-// Verified against /tmp/advisor-spike/{control,out,double}.ndjson
-// on Claude 2.1.139:
-//
-//	control       : iterations[0]      → meter == top-level (1× overcount)
-//	single advisor: iterations[2]      → meter == top-level/2 (2× overcount avoided)
-//	double advisor: iterations[4]      → meter == top-level/3 (3× overcount avoided)
-//
-// The wire shape is documented in docs/references/claude-wire.md.
-func lastParentIterationUsage(raw json.RawMessage) assistantUsage {
-	var payload struct {
-		InputTokens              int `json:"input_tokens"`
-		OutputTokens             int `json:"output_tokens"`
-		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-		Iterations               []struct {
-			Type                     string `json:"type"`
-			InputTokens              int    `json:"input_tokens"`
-			OutputTokens             int    `json:"output_tokens"`
-			CacheReadInputTokens     int    `json:"cache_read_input_tokens"`
-			CacheCreationInputTokens int    `json:"cache_creation_input_tokens"`
-		} `json:"iterations"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return assistantUsage{}
-	}
-	for i := len(payload.Iterations) - 1; i >= 0; i-- {
-		it := payload.Iterations[i]
-		if it.Type == "message" {
-			return assistantUsage{
-				InputTokens:              it.InputTokens,
-				OutputTokens:             it.OutputTokens,
-				CacheReadInputTokens:     it.CacheReadInputTokens,
-				CacheCreationInputTokens: it.CacheCreationInputTokens,
-			}
-		}
-	}
-	return assistantUsage{
-		InputTokens:              payload.InputTokens,
-		OutputTokens:             payload.OutputTokens,
-		CacheReadInputTokens:     payload.CacheReadInputTokens,
-		CacheCreationInputTokens: payload.CacheCreationInputTokens,
-	}
 }

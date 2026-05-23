@@ -1,0 +1,149 @@
+{
+  "capturedAt": "2026-05-23T05:30:00Z",
+  "claudeCodeVersion": "2.1.139",
+  "purpose": "Establish that the cumulative top-level fields on `message_delta.usage` ARE what Claude's own auto-compact trigger uses, by correlating the trailing assistant `message_delta` against the immediately-following `system.compact_boundary` `compactMetadata.preTokens` across multiple production turns (with and without advisor calls).",
+  "rawLog": {
+    "checkedIn": false,
+    "reason": "The captures come from ~/.claude/projects/<projectslug>/<sessionId>.jsonl which contain full conversation content (file paths, code, prompts). This sanitized summary records only the usage/preTokens table and the structural relationship; no message bodies are checked in. Originals live under ~/.claude/projects/-home-rmurphy-repos-agent-overflow/ on the capturing machine (verbatim turn lines listed below)."
+  },
+  "context": {
+    "model": "claude-opus-4-7[1m]",
+    "modelContextWindow": 1000000,
+    "userCompactThresholdPercent": 30,
+    "userAutoCompactBehavior": "Compact fires when measured context >= threshold% of model context window."
+  },
+  "captures": [
+    {
+      "sessionId": "ef8fb8ee-9e2b-49d6-a686-09602ae6a2dd",
+      "compactBoundaryLine": 578,
+      "lastAssistantLine": 573,
+      "compactedAt": "2026-05-22T23:52:01.329Z",
+      "advisorIterations": 0,
+      "messageIterations": 1,
+      "topLevelUsage": {
+        "input_tokens": null,
+        "cache_creation_input_tokens": null,
+        "cache_read_input_tokens": null,
+        "_note": "Per-field values not retained in sanitized summary; only the input+cache total is meaningful here.",
+        "input_plus_cache": 292087
+      },
+      "lastMessageIterationInputPlusCache": 292087,
+      "compactMetadataPreTokens": 295710,
+      "topLevelMinusPreTokens": -3623,
+      "topLevelOverPreTokensPercent": 98.78
+    },
+    {
+      "sessionId": "ef8fb8ee-9e2b-49d6-a686-09602ae6a2dd",
+      "compactBoundaryLine": 1247,
+      "lastAssistantLine": 1241,
+      "compactedAt": "2026-05-23T00:21:12.752Z",
+      "advisorIterations": 1,
+      "messageIterations": 2,
+      "topLevelInputPlusCache": 584017,
+      "lastMessageIterationInputPlusCache": 292614,
+      "compactMetadataPreTokens": 587018,
+      "topLevelMinusPreTokens": -3001,
+      "topLevelOverPreTokensPercent": 99.49,
+      "iterMinusOneOverPreTokensPercent": 49.85,
+      "_note": "Advisor turn. iter[-1] is half of preTokens. top-level matches within 0.5%."
+    },
+    {
+      "sessionId": "ef8fb8ee-9e2b-49d6-a686-09602ae6a2dd",
+      "compactBoundaryLine": 1812,
+      "lastAssistantLine": 1804,
+      "compactedAt": "2026-05-23T04:18:20.696Z",
+      "advisorIterations": 0,
+      "messageIterations": 1,
+      "topLevelInputPlusCache": 288714,
+      "lastMessageIterationInputPlusCache": 288714,
+      "compactMetadataPreTokens": 310316,
+      "topLevelMinusPreTokens": -21602,
+      "topLevelOverPreTokensPercent": 93.04,
+      "_note": "Larger gap (~22k) explained by intervening hook outputs, nested_memory CLAUDE.md attachments (lines 1805-1809), and a fresh user prompt with an image attachment (lines 1810-1811) injected before the auto-compact check ran. The meter still tracks the parent's last accounted prompt size; the next-prompt content not yet reflected in the wire is the documented next-turn delta."
+    },
+    {
+      "sessionId": "ef8fb8ee-9e2b-49d6-a686-09602ae6a2dd",
+      "compactBoundaryLine": 2050,
+      "lastAssistantLine": 2043,
+      "compactedAt": "2026-05-23T04:34:25.693Z",
+      "advisorIterations": 1,
+      "messageIterations": 2,
+      "topLevelInputPlusCache": 347336,
+      "lastMessageIterationInputPlusCache": 174095,
+      "compactMetadataPreTokens": 348880,
+      "topLevelMinusPreTokens": -1544,
+      "topLevelOverPreTokensPercent": 99.56,
+      "iterMinusOneOverPreTokensPercent": 49.90
+    },
+    {
+      "sessionId": "b951a768-ac4e-4895-82f3-218be606110c",
+      "compactBoundaryLine": 131,
+      "lastAssistantLine": 125,
+      "compactedAt": "2026-05-23T04:58:24.670Z",
+      "advisorIterations": 1,
+      "messageIterations": 2,
+      "topLevelUsageFull": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 2704,
+        "cache_read_input_tokens": 287211,
+        "output_tokens": 2997
+      },
+      "topLevelInputPlusCache": 289917,
+      "iterationsFull": [
+        {
+          "type": "message",
+          "input_tokens": 1,
+          "cache_read_input_tokens": 143462,
+          "cache_creation_input_tokens": 287,
+          "output_tokens": 1531
+        },
+        {
+          "type": "advisor_message",
+          "model": "claude-opus-4-7",
+          "input_tokens": 146484,
+          "output_tokens": 11125,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0
+        },
+        {
+          "type": "message",
+          "input_tokens": 1,
+          "cache_read_input_tokens": 143749,
+          "cache_creation_input_tokens": 2417,
+          "output_tokens": 1466
+        }
+      ],
+      "lastMessageIterationInputPlusCache": 146167,
+      "firstMessageIterationInputPlusCache": 143750,
+      "compactMetadataPreTokens": 294675,
+      "topLevelMinusPreTokens": -4758,
+      "topLevelOverPreTokensPercent": 98.39,
+      "iterMinusOneOverPreTokensPercent": 49.60,
+      "_note": "This is the smoking-gun capture. The user's screenshot showed the meter at ~15% before this compaction (= iter[-1]=146,167 / 1M). preTokens=294,675 was what triggered auto-compact at the user's 30% threshold (1M * 0.295). Top-level=289,917 would have shown ~29% — the correct reading."
+    }
+  ],
+  "aggregateRelationships": {
+    "topLevelVsPreTokensWithinPercentForAllCaptures": 7,
+    "iterMinusOneCloseOnNoAdvisorTurns": "iter[-1] equals top-level when there are no advisor iterations (single message iteration).",
+    "iterMinusOneOffByHalfOnAdvisorTurns": "iter[-1] is ~49.5-49.9% of preTokens when there is one advisor iteration in the turn.",
+    "_note": "Outlier on no-advisor turn L1812 (-21k) is consistent with intervening next-prompt content (hook outputs, nested CLAUDE.md attachments, user-attached image) that hadn't reached the previous message_delta. Compaction sees the FULL pending context including next-prompt; the meter reflects only what the live wire stream has emitted, which is the right contract."
+  },
+  "conclusion": {
+    "contextWindowSource": "message_delta.usage top-level (input_tokens + cache_creation_input_tokens + cache_read_input_tokens). The trailing message_delta envelope on a turn is the most accurate live signal.",
+    "doNotUse": [
+      "message_delta.usage.iterations[-1] alone — undercounts by ~50% on advisor turns; the May 22 spike's 2× ratio is real cumulative processing, not double-counting",
+      "result.usage flat for the live meter (same correct cumulative as message_delta top-level, but the trailing message_delta already emitted it)",
+      "Any signal carrying parent_tool_use_id != null"
+    ],
+    "advisorWireShape": "server_tool_use(name='advisor') + advisor_tool_result are content blocks within a single parent SSE message; the parent's stream message does not terminate at the advisor call. message_delta.usage.iterations[] enumerates per-API-call breakdowns and is informational only.",
+    "implementation": "internal/provider/claude/parse_stream.go case 'message_delta' — direct json.Unmarshal of top-level usage fields into assistantUsage.",
+    "supersedes": "1c1f9467 ('Use last parent iteration for context-meter, not cumulative sum') was based on the May 22 spike without a ground-truth anchor and read the 2× ratio as overcount. compactMetadata.preTokens correlation here proves the cumulative IS the correct signal.",
+    "regressionTests": [
+      "TestParseStreamEventMessageDeltaUsesTopLevelOnAdvisorTurn",
+      "TestParseStreamEventMessageDeltaUsesTopLevelOnDoubleAdvisor",
+      "TestParseStreamEventMessageDeltaUsesTopLevelOnProductionAdvisorTurn",
+      "TestParseStreamEventMessageDeltaTopLevelWithoutIterations",
+      "TestParseStreamEventMessageDeltaEmitsUsageAcrossMessages"
+    ]
+  }
+}

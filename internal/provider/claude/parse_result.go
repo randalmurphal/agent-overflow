@@ -2,15 +2,16 @@
 // envelope is Claude's authoritative turn-complete signal (see
 // docs/references/claude-wire.md §result). This file owns the mapping
 // from the envelope into `EventTurnComplete`. Context-meter updates
-// flow through `message_delta.usage` in parse_stream.go, which
-// extracts the last `type:"message"` iteration as the parent's
-// latest per-call snapshot (see lastParentIterationUsage). The
-// `result` envelope's top-level `usage` / `modelUsage[parent_model]`
-// is the SAME cumulative parent-only sum the trailing message_delta's
-// top-level carries — using it as a meter reading would suffer the
-// same N×-overcount the iteration extractor exists to avoid (and
-// would be a duplicate emission of a value the meter already has).
-// The advisor's own per-call usage surfaces only via
+// flow through `message_delta.usage` (top-level fields, the cumulative
+// sum across parent iterations) in parse_stream.go. That cumulative
+// value IS what the CLI's own auto-compact trigger uses
+// (compactMetadata.preTokens) — verified across five production
+// compactions; see
+// docs/references/fixtures/claude/advisor_pretokens_correlation_20260523.summary.json.
+// The `result` envelope carries the same cumulative usage in its flat
+// `usage` and `modelUsage[parent_model]` fields, but emitting from
+// here would duplicate the meter reading the trailing message_delta
+// already pushed. The advisor's own per-call usage surfaces only via
 // `result.modelUsage[advisor_model]` (and is filtered by
 // parse_assistant.go advisorOnly when it arrives as a standalone
 // assistant frame), never as a stray message_delta into the parent

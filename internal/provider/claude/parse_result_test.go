@@ -41,15 +41,11 @@ func TestParseResult_ResultFallbackIsBounded(t *testing.T) {
 }
 
 // TestParseResult_DoesNotEmitContextWindowFromModelUsage pins the
-// deliberate non-behavior: `result.modelUsage[parent_model]` is the
-// cumulative parent-only sum across every `type:"message"` iteration
-// in the turn — the same value the trailing message_delta's
-// top-level usage carries before parse_stream.go's
-// lastParentIterationUsage narrows it to the last parent iteration.
-// Emitting from the result envelope would either re-introduce the
-// N×-overcount (raw modelUsage) or duplicate an already-correct
-// meter reading (parsing iterations a second time). `result` only
-// emits EventTurnComplete.
+// deliberate non-behavior: `result.modelUsage[parent_model]` carries
+// the same cumulative parent-only sum the trailing message_delta's
+// top-level usage already emitted as EventTokenUsage. Emitting again
+// from `result` would be a duplicate. `result` only emits
+// EventTurnComplete.
 func TestParseResult_DoesNotEmitContextWindowFromModelUsage(t *testing.T) {
 	parser := NewParser()
 	if _, err := parser.ParseLine(testThread, []byte(
