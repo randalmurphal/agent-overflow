@@ -46,7 +46,7 @@ func TestListModelsUsesCodexMetadataAndStaticContextWindows(t *testing.T) {
 	}
 	if model.ReasoningEfforts[0].Label != "Low" ||
 		model.ReasoningEfforts[1].Label != "High" ||
-		model.ReasoningEfforts[2].Label != "Extra High" {
+		model.ReasoningEfforts[2].Label != "xHigh" {
 		t.Errorf("ReasoningEfforts labels = %#v, want canonical tier labels", model.ReasoningEfforts)
 	}
 

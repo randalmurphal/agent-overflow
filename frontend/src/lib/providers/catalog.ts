@@ -59,7 +59,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
       { value: 'low', label: 'Low' },
       { value: 'medium', label: 'Medium' },
       { value: 'high', label: 'High' },
-      { value: 'xhigh', label: 'Extra High' },
+      { value: 'xhigh', label: 'xHigh' },
       { value: 'max', label: 'Max' },
     ],
     contextLabels: {
@@ -88,7 +88,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
       { value: 'low', label: 'Low' },
       { value: 'medium', label: 'Medium' },
       { value: 'high', label: 'High' },
-      { value: 'xhigh', label: 'Extra High' },
+      { value: 'xhigh', label: 'xHigh' },
     ],
     contextLabels: {
       standard: '272k',

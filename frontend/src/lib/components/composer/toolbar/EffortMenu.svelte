@@ -60,7 +60,7 @@
     { slug: 'low', label: 'Low' },
     { slug: 'medium', label: 'Medium' },
     { slug: 'high', label: 'High' },
-    { slug: 'xhigh', label: 'Extra High' },
+    { slug: 'xhigh', label: 'xHigh' },
   ];
 
   let currentEffort = $derived<Effort>(
@@ -80,9 +80,13 @@
   let fastModeSupported = $derived(activeModelInfo?.capabilities?.includes('fast_mode') ?? false);
 
   let availableEfforts = $derived(reasoningOptions.length > 0 ? reasoningOptions : FALLBACK_EFFORTS);
+  let currentEffortOption = $derived(
+    availableEfforts.find((option) => option.slug === currentEffort),
+  );
 
-  function titleCase(slug: Effort): string {
-    if (slug === 'xhigh') return 'Extra High';
+  function effortLabel(slug: Effort, label = ''): string {
+    if (slug === 'xhigh') return 'xHigh';
+    if (label.trim() !== '') return label;
     if (slug === 'none') return 'None';
     if (slug === 'minimal') return 'Minimal';
     return slug[0].toUpperCase() + slug.slice(1);
@@ -100,11 +104,22 @@
     return option.label || contextLabel(option.tokens);
   }
 
-  let triggerLabel = $derived(
-    currentContextWindow > 0
-      ? `${titleCase(currentEffort)} · ${contextLabel(currentContextWindow)}`
-      : titleCase(currentEffort),
+  let showContextSelection = $derived(contextOptions.length > 1);
+  let currentContextOption = $derived(
+    contextOptions.find((option) => option.tokens === currentContextWindow),
   );
+  let triggerLabel = $derived.by(() => {
+    const labelParts = [effortLabel(currentEffort, currentEffortOption?.label)];
+    if (currentFast) labelParts.unshift('Fast');
+    if (showContextSelection && currentContextWindow > 0) {
+      labelParts.push(
+        currentContextOption
+          ? contextOptionLabel(currentContextOption)
+          : contextLabel(currentContextWindow),
+      );
+    }
+    return labelParts.join(' · ');
+  });
 
   async function ensureModelMetadata(): Promise<void> {
     const provider = activeProvider;
@@ -228,7 +243,7 @@
     ].join(' ')}
   >
     <Menu ariaLabel="Effort, context, and fast mode" onClose={closeMenu}>
-      {#if contextOptions.length > 1}
+      {#if showContextSelection}
         <MenuSectionHeader label="Context" />
         {#each contextOptions as option (option.tokens)}
           <MenuItem
@@ -258,7 +273,7 @@
       <MenuSectionHeader label="Effort" />
       {#each availableEfforts as tier (tier.slug)}
         <MenuItem
-          label={tier.label}
+          label={effortLabel(tier.slug, tier.label)}
           checked={tier.slug === currentEffort}
           onSelect={() => handleEffort(tier.slug)}
         />

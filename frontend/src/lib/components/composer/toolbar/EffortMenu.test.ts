@@ -43,37 +43,64 @@ async function buildPane(thread: Thread) {
   }));
   setBindingMock("ListRecentTurns", async () => []);
   setBindingMock("ListPayloadMetas", async () => []);
-  setBindingMock("GetModelsForProvider", async () => []);
   const pane = createThreadPane();
   await pane.switchThread(thread);
   return pane;
+}
+
+function triggerText(getByTestId: (id: string) => HTMLElement): string {
+  return (getByTestId("composer-effort-trigger").textContent ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 describe("<EffortMenu>", () => {
   beforeEach(() => {
     resetBindingMocks();
     resetProviderModelsForTest();
+    setBindingMock("GetModelsForProvider", async () => []);
   });
 
-  it("renders effort and context on Claude threads", async () => {
+  it("renders effort without context before model metadata is loaded", async () => {
     const pane = await buildPane(makeThread({ provider: "claude" }));
     const { getByTestId } = render(EffortMenu, { props: { pane } });
-    const label = getByTestId("composer-effort-trigger").textContent ?? "";
-    expect(label).toMatch(/High/);
-    expect(label).toMatch(/1M/);
+    expect(triggerText(getByTestId)).toBe("High");
   });
 
-  it("renders effort and context on Codex threads", async () => {
+  it("renders context for models with multiple selectable windows", async () => {
+    setBindingMock("GetModelsForProvider", async () => [
+      {
+        slug: "gpt-5.4",
+        name: "GPT-5.4",
+        provider: "codex",
+        capabilities: [],
+        contextWindows: [
+          { tokens: 272000, label: "272k", tier: "standard" },
+          { tokens: 1000000, label: "1m", tier: "extended" },
+        ],
+        reasoningEfforts: [],
+      },
+    ]);
+    await ensureProviderModels("codex");
     const pane = await buildPane(
-      makeThread({ provider: "codex", contextWindow: 272000 }),
+      makeThread({ provider: "codex", model: "gpt-5.4", contextWindow: 272000 }),
     );
     const { getByTestId } = render(EffortMenu, { props: { pane } });
-    const label = getByTestId("composer-effort-trigger").textContent ?? "";
-    expect(label).toMatch(/High/);
-    expect(label).toMatch(/272k/);
+    expect(triggerText(getByTestId)).toBe("High · 272k");
   });
 
-  it("renders Spark's smaller context label", async () => {
+  it("hides context for models with one selectable window", async () => {
+    setBindingMock("GetModelsForProvider", async () => [
+      {
+        slug: "gpt-5.3-codex-spark",
+        name: "GPT-5.3 Codex Spark",
+        provider: "codex",
+        capabilities: [],
+        contextWindows: [{ tokens: 128000, label: "128k", tier: "standard" }],
+        reasoningEfforts: [],
+      },
+    ]);
+    await ensureProviderModels("codex");
     const pane = await buildPane(
       makeThread({
         provider: "codex",
@@ -82,8 +109,19 @@ describe("<EffortMenu>", () => {
       }),
     );
     const { getByTestId } = render(EffortMenu, { props: { pane } });
-    const label = getByTestId("composer-effort-trigger").textContent ?? "";
-    expect(label).toMatch(/128k/);
+    expect(triggerText(getByTestId)).toBe("High");
+  });
+
+  it("renders Fast in the trigger when fast mode is enabled", async () => {
+    const pane = await buildPane(makeThread({ fastMode: true }));
+    const { getByTestId } = render(EffortMenu, { props: { pane } });
+    expect(triggerText(getByTestId)).toBe("Fast · High");
+  });
+
+  it("renders xhigh as xHigh in the trigger", async () => {
+    const pane = await buildPane(makeThread({ reasoningEffort: "xhigh" }));
+    const { getByTestId } = render(EffortMenu, { props: { pane } });
+    expect(triggerText(getByTestId)).toBe("xHigh");
   });
 
   it("opens the menu and calls UpdateThreadReasoningEffort on row click", async () => {
@@ -173,7 +211,7 @@ describe("<EffortMenu>", () => {
 
     await fireEvent.click(getByTestId("composer-effort-trigger"));
     expect(
-      await findByRole("menuitem", { name: /Extra High/ }),
+      await findByRole("menuitem", { name: /xHigh/ }),
     ).toBeInTheDocument();
     expect(queryByRole("menuitem", { name: /^Max$/ })).toBeNull();
     expect(queryByRole("menuitem", { name: /Greater reasoning depth/ })).toBeNull();
@@ -211,7 +249,7 @@ describe("<EffortMenu>", () => {
     const { getByTestId, findByRole } = render(EffortMenu, { props: { pane } });
     await fireEvent.click(getByTestId("composer-effort-trigger"));
 
-    expect(await findByRole("menuitem", { name: /Extra High/ })).toBeInTheDocument();
+    expect(await findByRole("menuitem", { name: /xHigh/ })).toBeInTheDocument();
     expect(await findByRole("menuitem", { name: /^1m$/ })).toBeInTheDocument();
     expect(await findByRole("menuitem", { name: /^On$/ })).toBeInTheDocument();
     expect(getBindingMock("GetModelsForProvider")).not.toHaveBeenCalled();

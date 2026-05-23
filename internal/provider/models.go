@@ -385,7 +385,7 @@ func codexEffortOptions(defaultSlug string) []ReasoningEffortOption {
 		{Slug: "low", Label: "Low", Default: defaultSlug == "low"},
 		{Slug: "medium", Label: "Medium", Default: defaultSlug == "medium"},
 		{Slug: "high", Label: "High", Default: defaultSlug == "high"},
-		{Slug: "xhigh", Label: "Extra High", Default: defaultSlug == "xhigh"},
+		{Slug: "xhigh", Label: "xHigh", Default: defaultSlug == "xhigh"},
 	}
 }
 
@@ -402,7 +402,7 @@ func effortLabel(slug string) string {
 	case "high":
 		return "High"
 	case "xhigh":
-		return "Extra High"
+		return "xHigh"
 	case "max":
 		return "Max"
 	default:

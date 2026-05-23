@@ -140,7 +140,7 @@ func TestCodexFallbackReasoningLabelsAreTierNames(t *testing.T) {
 		{Slug: "low", Label: "Low"},
 		{Slug: "medium", Label: "Medium", Default: true},
 		{Slug: "high", Label: "High"},
-		{Slug: "xhigh", Label: "Extra High"},
+		{Slug: "xhigh", Label: "xHigh"},
 	}
 	if !slices.Equal(model.ReasoningEfforts, want) {
 		t.Fatalf("ReasoningEfforts = %#v, want %#v", model.ReasoningEfforts, want)

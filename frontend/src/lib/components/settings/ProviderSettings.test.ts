@@ -127,6 +127,8 @@ describe("<ProviderSettings> — Text generation section", () => {
       "high",
       "xhigh",
     ]);
+    const labels = Array.from(select.options).map((o) => o.textContent);
+    expect(labels).toContain("xHigh");
   });
 
   it("lists claude reasoning-effort tiers without codex-only values", async () => {
@@ -135,6 +137,9 @@ describe("<ProviderSettings> — Text generation section", () => {
     const select = getByTestId("settings-textgen-effort") as HTMLSelectElement;
     const values = Array.from(select.options).map((o) => o.value);
     expect(values).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    const labels = Array.from(select.options).map((o) => o.textContent);
+    expect(labels).toContain("xHigh");
+    expect(labels).not.toContain("Extra High");
   });
 
   it("resets incompatible text-generation effort when provider changes", async () => {
