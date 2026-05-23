@@ -58,7 +58,7 @@ describe('App integration — agent-mode toggle', () => {
     }));
     const { getByTestId } = await mountWithThread(thread);
     const btn = getByTestId('composer-agent-mode-toggle');
-    expect(btn.textContent ?? '').toMatch(/chat/i);
+    expect(btn.textContent ?? '').toMatch(/build/i);
 
     await fireEvent.click(btn);
     await waitFor(() => expect(update).toHaveBeenCalled());
@@ -85,8 +85,8 @@ describe('App integration — agent-mode toggle', () => {
         ),
       ).toBe(true),
     );
-    // The button stays on chat since the backend rejected.
-    expect(btn.textContent ?? '').toMatch(/chat/i);
+    // The button stays on build since the backend rejected.
+    expect(btn.textContent ?? '').toMatch(/build/i);
     consoleErr.mockRestore();
   });
 });

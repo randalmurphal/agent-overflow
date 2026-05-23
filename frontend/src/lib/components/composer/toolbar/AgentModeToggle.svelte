@@ -34,7 +34,7 @@
   );
 
   const MODE_LABELS: Record<CycleMode, string> = {
-    chat: 'Chat',
+    chat: 'Build',
     plan: 'Plan',
   };
 
