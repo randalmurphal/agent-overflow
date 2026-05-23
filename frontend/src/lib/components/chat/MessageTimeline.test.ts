@@ -1132,6 +1132,66 @@ describe('<MessageTimeline>', () => {
       }
     });
 
+    it('adds elapsed time only to the latest settled response divider', async () => {
+      const pane = await buildPane(undefined, [
+        makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),
+        makeItem({
+          id: 'tool:0:0',
+          itemIndex: 1,
+          kind: 'tool_call',
+          toolName: 'Bash',
+          summary: 'ls',
+        }),
+        makeItem({
+          id: 'text:0:0',
+          itemIndex: 2,
+          kind: 'assistant_text',
+          summary: 'turn 0 final',
+        }),
+        makeItem({
+          id: 'user:1',
+          turnIndex: 1,
+          itemIndex: 0,
+          kind: 'user_text',
+          role: 'user',
+          summary: 'follow up',
+        }),
+        makeItem({
+          id: 'tool:1:0',
+          turnIndex: 1,
+          itemIndex: 1,
+          kind: 'tool_call',
+          toolName: 'Bash',
+          summary: 'cat',
+        }),
+        makeItem({
+          id: 'text:1:0',
+          turnIndex: 1,
+          itemIndex: 2,
+          kind: 'assistant_text',
+          summary: 'turn 1 final',
+        }),
+      ]);
+      pane.settleTurn({
+        turnId: 'turn-1',
+        turnIndex: 1,
+        startedAt: 1_000,
+        completedAt: 65_000,
+        stopReason: 'end_turn',
+        assistantMessageId: 'text:1:0',
+        tokenUsage: null,
+        aborted: false,
+        errorMessage: '',
+      });
+
+      const { queryAllByTestId } = render(MessageTimeline, { props: { pane } });
+
+      const dividers = queryAllByTestId('response-divider');
+      expect(dividers).toHaveLength(2);
+      expect(dividers[0].textContent?.trim()).toBe('Response');
+      expect(dividers[1].textContent).toContain('Response 1m 4s');
+    });
+
     it('treats an inline subagent group as tool activity for the trailing pill', async () => {
       // Common Claude turn shape: user → inline Agent (subagent) →
       // assistant_text summary. The subagent group counts as tool

@@ -471,7 +471,7 @@ describe('App integration — messaging flow', () => {
     });
     await flush();
     const divider = await findByTestId('response-divider');
-    expect(divider.textContent).toContain('Response');
+    expect(divider.textContent).toContain('Response 4s');
 
     // No console errors throughout — if a later emit handler threw
     // or a listener swallowed an error, the divider would still

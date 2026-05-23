@@ -3,6 +3,7 @@
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { formatElapsedSeconds } from '../../utils/format';
   import { createUseStickToBottomController } from '../../utils/useStickToBottom.svelte';
   import {
     getThreadScrollSnapshot,
@@ -463,6 +464,15 @@
       findFirstVisibleIndex: (top) => listRef!.findItemIndex(top),
     })) return;
     void handleLoadOlder();
+  }
+
+  function responsePillDuration(node: TimelineNode): string {
+    if (node.kind !== 'leaf') return '';
+    const settledTurn = pane.latestSettledTurn;
+    if (settledTurn?.assistantMessageId !== node.item.id) return '';
+    const elapsedMs = settledTurn.completedAt - settledTurn.startedAt;
+    if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return '';
+    return formatElapsedSeconds(Math.floor(elapsedMs / 1_000));
   }
 
   // ============================================================
@@ -1099,6 +1109,7 @@
               <div class="mx-auto w-full max-w-[62rem] px-6">
                 {#if rowDecorations.responseDividerIndexes.has(index)}
                   {@const showResponsePill = rowDecorations.responsePillIndexes.has(index)}
+                  {@const responseDuration = responsePillDuration(node)}
                   <!-- Two visual modes share a fixed wrapper height
                        (`h-[1.625rem]` = 26px = pill chrome: text-[10px]
                        × leading-tight ≈ 12px + py-1 8px + 2× 1px border).
@@ -1121,7 +1132,7 @@
                         <span
                           class="rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[10px] uppercase leading-tight tracking-[0.14em] text-text-secondary"
                         >
-                          Response
+                          Response{#if responseDuration}{' '}<span class="normal-case tabular-nums tracking-normal">{responseDuration}</span>{/if}
                         </span>
                         <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
                       {/if}
