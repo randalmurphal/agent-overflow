@@ -1,0 +1,213 @@
+{
+  "capturedAt": "2026-05-22T15:00:00Z",
+  "claudeCodeVersion": "2.1.139",
+  "purpose": "Establish that `message_delta.usage` top-level is a cumulative parent-only sum across `type:\"message\"` iterations within one SSE message, and that the context meter must extract the last parent iteration (not the top-level) to avoid an N+1x overcount on advisor-containing turns.",
+  "rawLog": {
+    "checkedIn": false,
+    "reason": "The raw NDJSON includes local session ids, MCP server names, and the model's free-text response. This sanitized summary keeps the durable protocol facts without machine-specific or content-dependent material. Raw captures live at /tmp/advisor-spike/{control,out,double}.ndjson on the capturing machine."
+  },
+  "commandShape": [
+    "claude",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--replay-user-messages",
+    "--thinking-display",
+    "summarized",
+    "--dangerously-skip-permissions",
+    "--print"
+  ],
+  "captures": {
+    "control": {
+      "prompt": "Say hello in three words and stop. Do not use any tools.",
+      "streamEventCounts": {
+        "message_start": 1,
+        "message_delta": 1,
+        "content_block_start": 1
+      },
+      "messageDelta": {
+        "topLevel": {
+          "input_tokens": 6,
+          "cache_creation_input_tokens": 15264,
+          "cache_read_input_tokens": 18059,
+          "output_tokens": 10,
+          "inputCacheWindow": 33329
+        },
+        "iterations": [
+          {
+            "type": "message",
+            "input_tokens": 6,
+            "cache_read_input_tokens": 18059,
+            "cache_creation_input_tokens": 15264,
+            "output_tokens": 10,
+            "inputCacheWindow": 33329
+          }
+        ],
+        "lastParentIterationEqualsTopLevel": true
+      },
+      "result": {
+        "modelUsage": {
+          "claude-opus-4-7[1m]": {
+            "inputTokens": 6,
+            "cacheReadInputTokens": 18059,
+            "cacheCreationInputTokens": 15264,
+            "outputTokens": 10
+          }
+        }
+      }
+    },
+    "singleAdvisor": {
+      "prompt": "Please call advisor() now. After you get the result back, write a one-sentence summary and stop. Do not call any other tools.",
+      "streamEventCounts": {
+        "message_start": 1,
+        "message_delta": 1,
+        "content_block_start": 4,
+        "_note": "Blocks were: thinking(idx0), server_tool_use(advisor)(idx1), advisor_tool_result(idx2), text(idx3). The entire advisor flow lives inside ONE parent SSE message; advisor does not split the stream."
+      },
+      "messageDelta": {
+        "topLevel": {
+          "input_tokens": 7,
+          "cache_creation_input_tokens": 10054,
+          "cache_read_input_tokens": 45934,
+          "output_tokens": 137,
+          "inputCacheWindow": 55995
+        },
+        "iterations": [
+          {
+            "type": "message",
+            "input_tokens": 6,
+            "cache_read_input_tokens": 18059,
+            "cache_creation_input_tokens": 9816,
+            "output_tokens": 89,
+            "inputCacheWindow": 27881
+          },
+          {
+            "type": "advisor_message",
+            "model": "claude-opus-4-7",
+            "input_tokens": 29179,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "output_tokens": 677,
+            "_note": "Advisor entry. Has its own context window — never feeds the parent meter."
+          },
+          {
+            "type": "message",
+            "input_tokens": 1,
+            "cache_read_input_tokens": 27875,
+            "cache_creation_input_tokens": 238,
+            "output_tokens": 48,
+            "inputCacheWindow": 28114
+          }
+        ],
+        "lastParentIterationEqualsTopLevel": false,
+        "lastParentIterationValue": 28114,
+        "topLevelValue": 55995,
+        "overcountRatio": 1.992
+      },
+      "result": {
+        "usageFlat": {
+          "input_tokens": 7,
+          "cache_creation_input_tokens": 10054,
+          "cache_read_input_tokens": 45934,
+          "output_tokens": 137,
+          "_note": "Equals message_delta top-level on the closing envelope."
+        },
+        "modelUsage": {
+          "claude-opus-4-7[1m]": {
+            "inputTokens": 7,
+            "cacheReadInputTokens": 45934,
+            "cacheCreationInputTokens": 10054,
+            "outputTokens": 137,
+            "_note": "Parent model accounting — same cumulative SUM as message_delta top-level."
+          },
+          "claude-opus-4-7": {
+            "inputTokens": 29179,
+            "outputTokens": 677,
+            "_note": "Advisor model accounting (no [1m] suffix)."
+          }
+        }
+      }
+    },
+    "doubleAdvisor": {
+      "prompt": "Please call advisor() now. After you receive the response, call advisor() one more time. Then write a brief one-sentence summary and stop. Do not use any other tools.",
+      "streamEventCounts": {
+        "message_start": 1,
+        "message_delta": 1,
+        "content_block_start": 6,
+        "_note": "Blocks were: thinking, server_tool_use, advisor_tool_result, server_tool_use, advisor_tool_result, text — all within one SSE message."
+      },
+      "messageDelta": {
+        "topLevel": {
+          "input_tokens": 8,
+          "cache_creation_input_tokens": 15574,
+          "cache_read_input_tokens": 84960,
+          "output_tokens": 185,
+          "inputCacheWindow": 100542
+        },
+        "iterations": [
+          {
+            "type": "message",
+            "input_tokens": 6,
+            "cache_read_input_tokens": 18059,
+            "cache_creation_input_tokens": 15296,
+            "output_tokens": 94,
+            "inputCacheWindow": 33361
+          },
+          {
+            "type": "advisor_message",
+            "model": "claude-opus-4-7",
+            "input_tokens": 34664,
+            "output_tokens": 547
+          },
+          {
+            "type": "message",
+            "input_tokens": 1,
+            "cache_read_input_tokens": 33355,
+            "cache_creation_input_tokens": 191,
+            "output_tokens": 42,
+            "inputCacheWindow": 33547
+          },
+          {
+            "type": "advisor_message",
+            "model": "claude-opus-4-7",
+            "input_tokens": 34779,
+            "output_tokens": 172
+          },
+          {
+            "type": "message",
+            "input_tokens": 1,
+            "cache_read_input_tokens": 33546,
+            "cache_creation_input_tokens": 87,
+            "output_tokens": 49,
+            "inputCacheWindow": 33634
+          }
+        ],
+        "lastParentIterationEqualsTopLevel": false,
+        "lastParentIterationValue": 33634,
+        "topLevelValue": 100542,
+        "overcountRatio": 2.989
+      }
+    }
+  },
+  "conclusion": {
+    "contextWindowSource": "message_delta.usage.iterations[].filter(type='message').slice(-1)[0]. Fall back to the same envelope's top-level when iterations is absent (single-call equivalence).",
+    "doNotUse": [
+      "message_delta.usage top-level (without iteration extraction) — cumulative parent-only SUM; overcounts by (N+1)x where N is advisor calls per turn",
+      "result.usage flat — same cumulative SUM",
+      "result.modelUsage[parent_model] token totals — same cumulative SUM",
+      "result.modelUsage[advisor_model] — separate model, separate context window"
+    ],
+    "advisorWireShape": "server_tool_use(name='advisor') + advisor_tool_result are CONTENT BLOCKS within a single parent SSE message. The advisor's separate model call does NOT terminate the parent's stream message and does NOT emit its own message_start. Confirmed with 1× and 2× advisor flows.",
+    "overcountScaling": "linear in advisor count per turn — N advisors in one turn produce (N+1) parent iterations whose top-level sum is roughly (N+1)x the model's actual prompt size at end of turn, because each iteration's cache_read includes everything from prior iterations.",
+    "implementation": "internal/provider/claude/parse_stream.go::lastParentIterationUsage",
+    "regressionTests": [
+      "TestParseStreamEventMessageDeltaUsesLastParentIterationOnAdvisorTurn",
+      "TestParseStreamEventMessageDeltaUsesLastParentIterationOnDoubleAdvisor",
+      "TestParseStreamEventMessageDeltaFallsBackToTopLevelWithoutIterations",
+      "TestParseStreamEventMessageDeltaEmitsUsageAcrossMessages"
+    ]
+  }
+}

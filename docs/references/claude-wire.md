@@ -153,19 +153,56 @@ Claude exposes two distinct context-related surfaces:
 - Active `/context` parity via an inbound `control_request` with
   `request.subtype == "get_context_usage"`.
 
-For the chat context meter, the verified Claude Code 2.1.118 signal is
-the latest **top-level** `message_delta.usage` with no
-`parent_tool_use_id`, using:
+For the chat context meter, the verified Claude Code 2.1.139 signal is
+the **last `type:"message"` entry inside `message_delta.usage.iterations[]`**
+(with no `parent_tool_use_id`), using:
 
 ```text
 input_tokens + cache_creation_input_tokens + cache_read_input_tokens
 ```
 
-Do not include `output_tokens` for current context occupancy. In the
-2026-04-29 spike, this value was `15167`, exactly matching
-`get_context_usage.totalTokens`. Adding output produced `15197`, while
-`result.usage` input/cache totals produced `29888` because `result.usage`
-accumulated multiple API calls in the turn.
+Do not include `output_tokens` for current context occupancy. When
+the array is absent (or there is no `type:"message"` entry), fall
+back to the top-level fields on the same envelope — for a single-
+parent-call turn the iteration value equals the top-level value, so
+the fallback is the safe degenerate path.
+
+#### ⚠ `message_delta.usage` top-level is a cumulative SUM, not a snapshot
+
+`message_delta.usage` reports a top-level cumulative parent-only sum
+across every `type:"message"` iteration in the **same SSE message**.
+For most tool-using turns (Bash, Task, etc.) that is harmless: the
+parent's stream message ends at `tool_use`, a fresh stream message
+opens after the tool result returns, and each message_delta carries
+exactly one parent iteration so the top-level equals
+`iterations[-1]`. **The advisor changes this.**
+
+`server_tool_use(name="advisor")` is a SERVER-side tool — the
+advisor runs as a separate model call but the parent's SSE message
+does NOT terminate at the advisor block. The parent's text continues
+streaming in the same message after `advisor_tool_result` lands.
+Result: one SSE message contains N parent API calls
+(`type:"message"`) interleaved with M advisor calls
+(`type:"advisor_message"`), and the trailing `message_delta.usage`
+top-level is the SUM of all N parent iterations. Using the top-level
+as a meter reading scales the displayed value by `(N+1)×` overcount
+for N advisor calls in the turn (one advisor ⇒ ~2×, two ⇒ ~3×,
+scaling linearly because cached tokens created in iter 1 are read
+again in iter 3 etc.).
+
+Wire-verified against Claude 2.1.139
+(`fixtures/claude/advisor_context_usage_20260522.summary.json`):
+
+| Turn shape | iterations | top-level | last `type:"message"` iter | overcount if using top-level |
+| --- | --- | --- | --- | --- |
+| control (no tools, no advisor) | `[msg]` | 33329 | 33329 | 1.0× (no-op) |
+| single advisor | `[msg, adv, msg]` | 55995 | 28114 | 1.99× |
+| double advisor | `[msg, adv, msg, adv, msg]` | 100542 | 33634 | 2.99× |
+
+The implementation lives in
+`internal/provider/claude/parse_stream.go::lastParentIterationUsage`.
+
+#### Other rules
 
 Do not update the parent chat meter from Agent/Task side signals:
 `system.task_notification.usage`, `user.tool_use_result.usage`, or any
@@ -175,21 +212,26 @@ the subagent's private context/cost accounting.
 `get_context_usage` is the canonical `/context` breakdown and returns
 `totalTokens`, `maxTokens`, `rawMaxTokens`, categories, and `apiUsage`.
 Use it when exact category parity is needed; otherwise the passive
-top-level `message_delta.usage` is enough for the live meter.
+`message_delta.usage.iterations[-1]` is enough for the live meter.
 
-Captured reference:
-`fixtures/claude/context_usage_spike_20260429.summary.json`.
+Captured references:
+`fixtures/claude/context_usage_spike_20260429.summary.json`
+(Bash + Agent subagent, single iteration on message_delta) and
+`fixtures/claude/advisor_context_usage_20260522.summary.json`
+(control / single advisor / double advisor — the iteration extraction
+contract).
 
 Other captured usage-adjacent signals worth preserving for future UI:
 
 | Signal | Future use | Context-meter rule |
 | --- | --- | --- |
-| `assistant.message.usage` | Fallback if partial `message_delta` events are unavailable; useful for showing per-response usage once an assistant envelope arrives. | Top-level only, and prefer `message_delta` because assistant envelopes can be earlier snapshots. |
+| `assistant.message.usage` | Fallback if partial `message_delta` events are unavailable; useful for showing per-response usage once an assistant envelope arrives. | Top-level only, and prefer `message_delta` because assistant envelopes can be earlier snapshots. Carries no `iterations[]` — it's a single-call snapshot scoped to the assistant frame. |
 | `stream_event.event.type == "message_start"` `message.usage` | Early API-response usage snapshot, useful for diagnostics or "request started" telemetry. | Do not treat as settled context usage. |
-| `stream_event.event.type == "message_delta"` `usage` | Best passive live/settled top-level context signal; use latest top-level delta for the chat meter. | Use input + cache creation + cache read, excluding output. |
-| `result.usage.iterations[-1]` | Historical diagnostic only. It mirrored the final top-level `message_delta.usage` in one spike, but Claude documents `result.usage` as SDK cost/usage accounting, not the statusline context signal. | Do not drive the context meter from this. |
-| `result.usage` | Per-turn API-call/cost accounting. Good for "tokens spent this turn" or billing diagnostics. | Never use aggregate totals for current context occupancy. |
-| `result.modelUsage[model]` | Per-model accounting across top-level and subagent/internal calls; `contextWindow` is a useful max-window hint. | Token totals are spend/accounting, not used context. |
+| `stream_event.event.type == "message_delta"` `usage` | Best passive live/settled context signal. | Read `iterations[-1]` (last `type:"message"`); fall back to top-level only when `iterations` is absent. Use input + cache creation + cache read, excluding output. |
+| `result.usage.iterations[-1]` | Same value as `message_delta.usage.iterations[-1]` on the closing envelope. Useful for replay diagnostics. | Do not drive the live meter from `result`; the trailing message_delta already pushed the right value. |
+| `result.usage` (flat) | Per-turn API-call/cost accounting; same cumulative parent-only sum the message_delta top-level carries. Good for "tokens spent this turn" or billing diagnostics. | Never use the flat aggregate for current context occupancy — it is N× inflated whenever the turn had N advisor calls. |
+| `result.modelUsage[parent_model]` | Per-model accounting across top-level calls. Carries the same cumulative sum as `result.usage` (flat). `contextWindow` is a useful max-window hint. | Token totals are spend/accounting, not used context — same inflation as `result.usage`. |
+| `result.modelUsage[advisor_model]` | Advisor's own per-call usage (separate model run, separate context window). | Subagent-style private accounting; never updates the parent meter. |
 | `system.task_notification.usage` | Subagent/background-task progress or row-level token display. | Subagent-private accounting; do not update parent meter. |
 | `user.tool_use_result.usage` and `tool_use_result.totalTokens` | Completed Agent/Task details and subagent cost display. | Subagent-private accounting; do not update parent meter. |
 | `control_response` for `get_context_usage` | Canonical `/context` parity: exact `totalTokens`, `maxTokens`, category breakdown, and `apiUsage`; useful on resume/start or for audits. | Use `totalTokens` directly when actively requested. |
