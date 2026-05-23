@@ -1,5 +1,5 @@
 import { GetThreadDefaults } from './bindings';
-import { getProject } from './projects.svelte';
+import { getProject, getProjects } from './projects.svelte';
 import {
   ensureMainPane,
   ensurePaneInLayout,
@@ -10,6 +10,27 @@ import { expandProject } from './sidebar.svelte';
 import type { DraftPlaceholderDefaults, ThreadPane } from './thread.svelte';
 
 export type DraftMode = 'chat' | 'design';
+
+/**
+ * Resolve which project the next draft thread should land in when the
+ * source of the request doesn't supply one (e.g. the global Ctrl+N
+ * keybinding firing without a focused thread). Prefers the focused
+ * pane's current project, then falls back to the most recently active
+ * project (ListProjects is sorted server-side by lastActive
+ * descending). Returns null when no projects exist at all — the
+ * caller should surface "add a project first".
+ */
+export function resolveDraftTargetProject(
+  targetPane: ThreadPane | null,
+): { projectId: string; mode: DraftMode } | null {
+  const fromPane = targetPane?.thread?.projectId;
+  if (fromPane) {
+    return { projectId: fromPane, mode: targetPane!.activeTab };
+  }
+  const fallback = getProjects()[0]?.project.id;
+  if (!fallback) return null;
+  return { projectId: fallback, mode: targetPane?.activeTab ?? 'chat' };
+}
 
 export interface OpenDraftThreadOptions {
   projectId: string;

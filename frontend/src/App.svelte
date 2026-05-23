@@ -46,7 +46,10 @@
   import { getVisibleSidebarThreadIds } from './lib/stores/sidebarThreadOrder';
   import { setAppShellWidth } from './lib/stores/layoutMetrics.svelte';
   import DiagramInteractionHost from './lib/components/chat/DiagramInteractionHost.svelte';
-  import { openDraftThreadForProject } from './lib/stores/threadCreation.svelte';
+  import {
+    openDraftThreadForProject,
+    resolveDraftTargetProject,
+  } from './lib/stores/threadCreation.svelte';
   import { addToast } from './lib/stores/toast.svelte';
   import { userFacingError } from './lib/utils/userFacingError';
 
@@ -184,14 +187,14 @@
 
   function requestNewThread(openInNewPane: boolean): void {
     const targetPane = getFocusedPaneOrNull();
-    const projectId = targetPane?.thread?.projectId;
-    if (!projectId) {
-      addToast('warning', 'Open a project thread before creating a new thread from the keyboard.');
+    const resolved = resolveDraftTargetProject(targetPane);
+    if (!resolved) {
+      addToast('warning', 'Add a project before creating a new thread.');
       return;
     }
     void openDraftThreadForProject({
-      projectId,
-      mode: targetPane.activeTab,
+      projectId: resolved.projectId,
+      mode: resolved.mode,
       targetPane,
       openInNewPane,
     }).catch((err) => {
