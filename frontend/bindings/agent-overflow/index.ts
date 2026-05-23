@@ -38,6 +38,7 @@ export {
     TerminalHandle,
     TerminalOpenOptions,
     TerminalReplay,
+    ThreadDefaults,
     ThreadLiveState,
     WorkspaceFileSearchResult,
     WorktreeStatus

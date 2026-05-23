@@ -1,4 +1,5 @@
 import type { Item, Project, Thread } from '../types/models';
+import { asProviderID } from '../types/providers';
 import type { Checkpoint } from '../types/checkpoint';
 import type {
   ApprovalRequest,
@@ -341,6 +342,25 @@ export interface DraftThreadPlaceholder {
   projectPath: string;
   mode: DraftPlaceholderMode;
   createdAt: number;
+}
+
+/**
+ * Seed values for the synthetic placeholder thread. Callers fetch
+ * these via the `GetThreadDefaults` binding so the placeholder's
+ * toolbar (model name, effort, runtime mode) and workspace strip
+ * (current git branch) render the same values a freshly-created
+ * thread would. All fields optional — when omitted, the placeholder
+ * falls back to the previous "no model selected / no branch" surface.
+ */
+export interface DraftPlaceholderDefaults {
+  provider?: string;
+  model?: string;
+  reasoningEffort?: string;
+  fastMode?: boolean;
+  contextWindow?: number;
+  runtimeMode?: string;
+  branch?: string;
+  workspacePath?: string;
 }
 
 interface ThreadPaneOptions {
@@ -1348,7 +1368,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       switchGeneration++;
     },
 
-    startDraftPlaceholder(project: Project, mode: DraftPlaceholderMode = 'chat'): void {
+    startDraftPlaceholder(
+      project: Project,
+      mode: DraftPlaceholderMode = 'chat',
+      defaults?: DraftPlaceholderDefaults,
+    ): void {
       // clear() drops any intent staged against the prior placeholder id,
       // so "+ New" on top of an existing placeholder doesn't leak entries.
       this.clear();
@@ -1362,15 +1386,25 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         createdAt: now,
       };
       draftPlaceholder = placeholder;
+      // Seed defaults mirror what CreateThread would have used. When the
+      // caller couldn't fetch them (offline, race, etc.) we still render
+      // a usable placeholder — the toolbar pickers fall back to their
+      // own resolution paths.
+      const seededProvider = asProviderID(defaults?.provider);
       thread = {
         id: placeholder.id,
         title: 'New Thread',
-        provider: 'codex',
-        workspacePath: project.path,
+        provider: seededProvider ?? 'codex',
+        workspacePath: defaults?.workspacePath || project.path,
         projectPath: project.path,
         projectId: project.id,
         mode,
-        model: '',
+        model: defaults?.model ?? '',
+        reasoningEffort: defaults?.reasoningEffort as Thread['reasoningEffort'],
+        fastMode: defaults?.fastMode,
+        contextWindow: defaults?.contextWindow,
+        runtimeMode: defaults?.runtimeMode as Thread['runtimeMode'],
+        branch: defaults?.branch,
         createdAt: now,
         updatedAt: now,
         archived: false,

@@ -240,8 +240,11 @@ var LocalOnlyMethods = map[string]bool{
 	"RespondToUserInput":             true,
 	// Thread creation can spawn a worktree / probe the provider; the
 	// branch fork variant runs git ops, and the PR variant shells `gh`.
+	// GetThreadDefaults reads project FS to detect the current git
+	// branch, so it sits in the same FS-touching bucket.
 	"CreateThread":          true,
 	"CreateThreadFromPR":    true,
+	"GetThreadDefaults":     true,
 	"ForkThread":            true,
 	"ForkThreadFromMessage": true,
 	// Background-task control terminates host subprocesses.

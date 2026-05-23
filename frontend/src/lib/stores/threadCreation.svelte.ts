@@ -1,3 +1,4 @@
+import { GetThreadDefaults } from './bindings';
 import { getProject } from './projects.svelte';
 import {
   ensureMainPane,
@@ -6,7 +7,7 @@ import {
   openEmptyPane,
 } from './panes.svelte';
 import { expandProject } from './sidebar.svelte';
-import type { ThreadPane } from './thread.svelte';
+import type { DraftPlaceholderDefaults, ThreadPane } from './thread.svelte';
 
 export type DraftMode = 'chat' | 'design';
 
@@ -46,6 +47,17 @@ export async function openDraftThreadForProject(
   // openThreadInPane, so we need to make sure the pane is mounted in
   // the layout grid ourselves. openEmptyPane already attaches itself.
   ensurePaneInLayout(pane.paneId);
-  pane.startDraftPlaceholder(project, mode);
+  // Fetch the same seed values CreateThread would have used (last-used
+  // model profile + current git branch) so the placeholder's toolbar
+  // and workspace strip don't render "no model / no branch" before
+  // materialization. Failure here is tolerable — we still want the
+  // placeholder to appear; the user can pick from the toolbar.
+  let defaults: DraftPlaceholderDefaults | undefined;
+  try {
+    defaults = await GetThreadDefaults({ projectId, mode });
+  } catch (err) {
+    console.warn('GetThreadDefaults failed; using empty placeholder defaults', err);
+  }
+  pane.startDraftPlaceholder(project, mode, defaults);
   return pane;
 }

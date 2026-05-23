@@ -1134,6 +1134,64 @@ export class TerminalReplay {
 }
 
 /**
+ * ThreadDefaults reports the seed values CreateThread would have used
+ * for a fresh thread in the given project. The frontend reads it when
+ * staging an in-memory draft placeholder so the toolbar (model, effort,
+ * runtime mode) and the workspace strip (current git branch) render
+ * the same values the materialized thread would carry. Returned model
+ * is already normalized; reasoning effort is already coerced to a
+ * supported value for (provider, model).
+ */
+export class ThreadDefaults {
+    "provider": string;
+    "model": string;
+    "reasoningEffort": string;
+    "fastMode": boolean;
+    "contextWindow": number;
+    "runtimeMode": string;
+    "branch": string;
+    "workspacePath": string;
+
+    /** Creates a new ThreadDefaults instance. */
+    constructor($$source: Partial<ThreadDefaults> = {}) {
+        if (!("provider" in $$source)) {
+            this["provider"] = "";
+        }
+        if (!("model" in $$source)) {
+            this["model"] = "";
+        }
+        if (!("reasoningEffort" in $$source)) {
+            this["reasoningEffort"] = "";
+        }
+        if (!("fastMode" in $$source)) {
+            this["fastMode"] = false;
+        }
+        if (!("contextWindow" in $$source)) {
+            this["contextWindow"] = 0;
+        }
+        if (!("runtimeMode" in $$source)) {
+            this["runtimeMode"] = "";
+        }
+        if (!("branch" in $$source)) {
+            this["branch"] = "";
+        }
+        if (!("workspacePath" in $$source)) {
+            this["workspacePath"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadDefaults instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadDefaults {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ThreadDefaults($$parsedSource as Partial<ThreadDefaults>);
+    }
+}
+
+/**
  * ThreadLiveState is the backend-owned live projection a freshly loaded
  * frontend needs after refresh/reconnect. SQLite remains the history cache;
  * this shape carries only in-memory session state that should mirror what

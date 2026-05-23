@@ -233,6 +233,76 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 	return a.store.GetThread(t.ID)
 }
 
+// ThreadDefaults reports the seed values CreateThread would have used
+// for a fresh thread in the given project. The frontend reads it when
+// staging an in-memory draft placeholder so the toolbar (model, effort,
+// runtime mode) and the workspace strip (current git branch) render
+// the same values the materialized thread would carry. Returned model
+// is already normalized; reasoning effort is already coerced to a
+// supported value for (provider, model).
+type ThreadDefaults struct {
+	Provider        string `json:"provider"`
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoningEffort"`
+	FastMode        bool   `json:"fastMode"`
+	ContextWindow   int    `json:"contextWindow"`
+	RuntimeMode     string `json:"runtimeMode"`
+	Branch          string `json:"branch"`
+	WorkspacePath   string `json:"workspacePath"`
+}
+
+// GetThreadDefaults returns the values CreateThread would have seeded
+// for a fresh thread in the given project. Used by the frontend's draft
+// placeholder flow so "+ New" surfaces a populated toolbar (model name,
+// effort) and a real branch label before the row exists. Mode is
+// accepted only for symmetry with CreateThread — defaults don't vary by
+// mode today, but accepting it keeps the wire shape stable if that
+// changes.
+func (a *App) GetThreadDefaults(opts CreateThreadOptions) (ThreadDefaults, error) {
+	if a.store == nil {
+		return ThreadDefaults{}, fmt.Errorf("get thread defaults: store unavailable")
+	}
+	projectID := strings.TrimSpace(opts.ProjectID)
+	if projectID == "" {
+		return ThreadDefaults{}, fmt.Errorf("get thread defaults: projectId is required")
+	}
+	project, err := a.store.GetProject(projectID)
+	if err != nil {
+		return ThreadDefaults{}, fmt.Errorf("get thread defaults: resolve project %s: %w", projectID, err)
+	}
+	seed := a.seedChatModelProfile(opts.Provider, opts.Model)
+	providerName := seed.Provider
+	model := seed.Model
+	if trimmed := strings.TrimSpace(opts.Provider); trimmed != "" {
+		providerName = trimmed
+	}
+	if trimmed := strings.TrimSpace(opts.Model); trimmed != "" {
+		model = trimmed
+	}
+	model = provider.NormalizeModelSlug(providerName, model)
+	effort := string(provider.CoerceReasoningEffortForModel(
+		providerName,
+		model,
+		provider.NormalizeReasoningEffort(seed.ReasoningEffort),
+	))
+	contextWindow := seed.ContextWindow
+	options := chatmodel.ContextWindowOptions(providerName, model)
+	if len(options) > 0 && !chatmodel.ContextWindowSupported(options, contextWindow) {
+		contextWindow = provider.DefaultContextWindowForModel(providerName, model, options[0].Tokens)
+	}
+	branch := a.gitCore().CurrentBranch(project.Path)
+	return ThreadDefaults{
+		Provider:        providerName,
+		Model:           model,
+		ReasoningEffort: effort,
+		FastMode:        seed.FastMode && a.supportsFastModeForModel(providerName, model),
+		ContextWindow:   contextWindow,
+		RuntimeMode:     seed.RuntimeMode,
+		Branch:          branch,
+		WorkspacePath:   project.Path,
+	}, nil
+}
+
 // createWorktreeForNewThread is the small helper CreateThread uses when
 // WorktreeBranch is non-empty. Extracted from CreateThread so the inline
 // logic there stays focused on building the Thread row.

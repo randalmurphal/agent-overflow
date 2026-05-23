@@ -295,6 +295,7 @@ export {
 // object and cast the result without going through the class ceremony.
 import {
   CreateThread as CreateThreadRaw,
+  GetThreadDefaults as GetThreadDefaultsRaw,
   SendMessageWithOptions as SendMessageWithOptionsRaw,
   UpdateContextSettingsProfile as UpdateContextSettingsProfileRaw,
   UpdateThreadContextSettings as UpdateThreadContextSettingsRaw,
@@ -341,6 +342,21 @@ export function UpdateThreadContextSettings(
 
 export function CreateThread(opts: CreateThreadOptions): Promise<Thread> {
   return CreateThreadRaw(new CreateThreadOptionsClass(opts)) as unknown as Promise<Thread>;
+}
+
+export interface ThreadDefaults {
+  provider: string;
+  model: string;
+  reasoningEffort: string;
+  fastMode: boolean;
+  contextWindow: number;
+  runtimeMode: string;
+  branch: string;
+  workspacePath: string;
+}
+
+export function GetThreadDefaults(opts: CreateThreadOptions): Promise<ThreadDefaults> {
+  return GetThreadDefaultsRaw(new CreateThreadOptionsClass(opts)) as unknown as Promise<ThreadDefaults>;
 }
 
 export interface SendMessageOptions {
