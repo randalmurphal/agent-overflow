@@ -1806,3 +1806,128 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(contentEl?.style.visibility).toBe('hidden');
   });
 });
+
+describe('scroll integration — draft placeholder transitions', () => {
+  // The defensive `setEscapedFromLock(true)` + `armWarmup()` +
+  // `armRestoreSnap()` block in MessageTimeline.svelte's `$effect.pre`
+  // is meant to suspend auto-follow until the restore $effect runs.
+  // But the restore $effect short-circuits on `!threadId`, and
+  // `pane.threadId` returns null while `pane.draftPlaceholder` is set
+  // (see thread.svelte.ts threadId getter). Without a draft-specific
+  // branch in $effect.pre, real → draft pane transitions strand
+  // `escapedFromLockState=true` permanently, surfacing the
+  // scroll-to-bottom chip over the empty placeholder.
+
+  it('real → draft transition keeps the controller sticky (chip hidden)', async () => {
+    const realThread = makeThread({ id: 'thread-real' });
+    const pane = await buildPane(realThread, [
+      makeItem({ id: 'a', threadId: 'thread-real', summary: 'a' }),
+      makeItem({ id: 'b', threadId: 'thread-real', itemIndex: 1, summary: 'b' }),
+    ]);
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+
+    const ctrl = pane.scrollController as
+      | (PaneScrollController & { isAtBottom: boolean; escapedFromLock: boolean })
+      | null;
+    expect(ctrl).not.toBeNull();
+    if (!ctrl) return;
+    // Sanity: post-restore, the real thread is sticky-bottom.
+    expect(ctrl.escapedFromLock).toBe(false);
+    expect(ctrl.isAtBottom).toBe(true);
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull();
+
+    // Transition the same pane to a draft placeholder. This is the
+    // path "+ New Thread" / ProjectPicker / open-draft hits in
+    // production: pane.threadId flips to null while draftPlaceholder
+    // is non-null.
+    pane.startDraftPlaceholder(
+      {
+        id: 'project-draft',
+        path: '/tmp/draft-project',
+        name: 'Draft Project',
+        sortPosition: 0,
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+      },
+      'chat',
+    );
+    expect(pane.threadId).toBeNull();
+    expect(pane.hasDraftPlaceholder).toBe(true);
+
+    await tick();
+    await tick();
+
+    // The restore $effect skipped (its `if (!threadId) return;` fires
+    // on null), so the only thing keeping the controller sane on this
+    // path is the $effect.pre draft branch flipping back to sticky-
+    // bottom. Without that branch, escapedFromLockState would still
+    // be true here and the chip would render.
+    expect(ctrl.escapedFromLock).toBe(false);
+    expect(ctrl.isAtBottom).toBe(true);
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull();
+  });
+
+  it('draft → real transition still gates restore the normal way', async () => {
+    // Inverse guard: the draft branch must NOT swallow the
+    // setEscapedFromLock + armWarmup + armRestoreSnap cycle for real
+    // threads. If a future cleanup collapses both branches into
+    // markAtBottom, this test fails — the new thread's restore would
+    // never run because there is no escape to clear.
+    const draftPane = await buildPane(undefined, []);
+    draftPane.startDraftPlaceholder(
+      {
+        id: 'project-draft-2',
+        path: '/tmp/draft-project-2',
+        name: 'Draft Project 2',
+        sortPosition: 0,
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+      },
+      'chat',
+    );
+    expect(draftPane.threadId).toBeNull();
+
+    const { container } = render(MessageTimeline, { props: { pane: draftPane } });
+    await tick();
+    await tick();
+
+    // Now transition to a real thread the way materializeDraftThread
+    // does in production: switchThread to the materialized id.
+    const materialized = makeThread({ id: 'thread-from-draft' });
+    setBindingMock('SwitchThread', async () => materialized);
+    setBindingMock('ListThreadSliceAround', async () => ({
+      items: [makeItem({ id: 'm1', threadId: 'thread-from-draft' })],
+      oldestTurnIndex: 0,
+      hasMore: false,
+    }));
+    setBindingMock('GetThreadLiveState', async () => ({
+      threadId: materialized.id,
+      activeTurn: null,
+      queueItems: [],
+      interactive: { approvals: [], userInputs: [] },
+      todo: null,
+    }));
+    setBindingMock('ListRecentTurns', async () => []);
+    setBindingMock('ListThreadCheckpoints', async () => []);
+
+    await draftPane.switchThread(materialized);
+    await tick();
+    await tick();
+
+    const ctrl = draftPane.scrollController as
+      | (PaneScrollController & { isAtBottom: boolean; escapedFromLock: boolean })
+      | null;
+    expect(ctrl).not.toBeNull();
+    if (!ctrl) return;
+    // After the real thread's restore runs, the controller is back
+    // to sticky-bottom and the chip is hidden.
+    expect(ctrl.escapedFromLock).toBe(false);
+    expect(ctrl.isAtBottom).toBe(true);
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull();
+  });
+});

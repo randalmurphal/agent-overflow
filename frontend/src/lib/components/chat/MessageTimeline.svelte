@@ -554,34 +554,46 @@
         }
       }
       autoLoadOlderGate.reset();
-      stick.setEscapedFromLock(true);
-      // Re-arm the warm-up gate BEFORE the DOM update flushes. The
-      // restore $effect calls forceStick() (which also arms the gate),
-      // but that runs AFTER DOM update — so without this $effect.pre
-      // reset, the first paint of the new thread would inherit the
-      // outgoing thread's settled `isWarm=true`, making
-      // hideContentForWarmup=false during the new thread's measurement
-      // cascade. attach() can't carry this load: scrollEl/contentEl
-      // don't change across switches (MessageTimeline isn't keyed on
-      // threadId), so the attach $effect early-returns. This was the
-      // flaky-fix bug: cache-miss switches off a long-settled prior
-      // thread reproduced the visible "lands wrong, jumps to correct"
-      // sequence; cache-miss switches off an unsettled prior thread
-      // (warm=false coincidentally) hid the cascade and looked fine.
-      stick.armWarmup();
-      // Arm the one-shot restore-snap consent AFTER the defensive
-      // setEscapedFromLock — which itself clears any prior arm — so the
-      // upcoming `restoreToBottom() → stick.forceStick({reason:
-      // 'restore'})` is honored. Any outer-scroll intent between this
-      // point and the restore $effect (extremely rare; both run inside
-      // the same flush) re-clears the arm, causing the restore to NO-OP
-      // and preserving the user's intent. This is the load-bearing
-      // distinguisher between "the
-      // user has explicitly escaped" and "the $effect.pre just
-      // defensively set escape=true while preparing the new thread for
-      // restore." See useStickToBottom.svelte.ts § Restore-snap
-      // consent state.
-      stick.armRestoreSnap();
+      if (nextThreadId) {
+        stick.setEscapedFromLock(true);
+        // Re-arm the warm-up gate BEFORE the DOM update flushes. The
+        // restore $effect calls forceStick() (which also arms the gate),
+        // but that runs AFTER DOM update — so without this $effect.pre
+        // reset, the first paint of the new thread would inherit the
+        // outgoing thread's settled `isWarm=true`, making
+        // hideContentForWarmup=false during the new thread's measurement
+        // cascade. attach() can't carry this load: scrollEl/contentEl
+        // don't change across switches (MessageTimeline isn't keyed on
+        // threadId), so the attach $effect early-returns. This was the
+        // flaky-fix bug: cache-miss switches off a long-settled prior
+        // thread reproduced the visible "lands wrong, jumps to correct"
+        // sequence; cache-miss switches off an unsettled prior thread
+        // (warm=false coincidentally) hid the cascade and looked fine.
+        stick.armWarmup();
+        // Arm the one-shot restore-snap consent AFTER the defensive
+        // setEscapedFromLock — which itself clears any prior arm — so the
+        // upcoming `restoreToBottom() → stick.forceStick({reason:
+        // 'restore'})` is honored. Any outer-scroll intent between this
+        // point and the restore $effect (extremely rare; both run inside
+        // the same flush) re-clears the arm, causing the restore to NO-OP
+        // and preserving the user's intent. This is the load-bearing
+        // distinguisher between "the
+        // user has explicitly escaped" and "the $effect.pre just
+        // defensively set escape=true while preparing the new thread for
+        // restore." See useStickToBottom.svelte.ts § Restore-snap
+        // consent state.
+        stick.armRestoreSnap();
+      } else {
+        // Draft / placeholder transition (pane.threadId === null when a
+        // draft placeholder is active or the pane has no thread): the
+        // restore $effect short-circuits on `!threadId`, so the
+        // defensive escape would never be cleared and the
+        // scroll-to-bottom chip would appear over the empty "No messages
+        // yet" placeholder. There is no content to anchor against, no
+        // measurement cascade to hide, and no restore to gate — flip the
+        // controller directly back to sticky-bottom.
+        stick.markAtBottom();
+      }
     }
     scrollSnapshotThreadId = nextThreadId;
   });
