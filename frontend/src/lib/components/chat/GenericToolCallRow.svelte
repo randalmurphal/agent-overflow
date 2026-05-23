@@ -140,18 +140,6 @@
 </script>
 
 {#snippet headerActions()}
-  {#if preview.path}
-    <EditorLink
-      path={preview.path.path}
-      line={preview.path.line ?? 0}
-      col={preview.path.col ?? 0}
-      workspacePath={paneWorkspacePath(pane)}
-      openLabel={preview.text}
-      asIcon
-      stopPropagation
-      class="opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100"
-    />
-  {/if}
   <ToolDecisionChip decision={item.decision} />
   <ToolHeaderMeta
     statusSlotTestId="tool-call-card-status-slot"
@@ -180,13 +168,30 @@
     expandable={hasExpandableBody}
     controls={hasExpandableBody ? `tool-call-card-body-${item.id}` : undefined}
     testId="tool-call-card-toggle"
+    interactiveBody={preview.path !== undefined}
     class="rounded-[var(--radius-control)] px-1 py-1 {hasExpandableBody ? 'hover:bg-surface-2/20' : ''}"
     onToggle={(event) => preservePaneScrollAnchor(pane, event, toggle)}
   >
     {#snippet icon()}<ToolKindIcon kind={classification.icon} ariaLabel={classification.label} />{/snippet}
     {#snippet label()}<span data-testid="tool-call-card-label">{classification.label}</span>{/snippet}
     {#snippet body()}
-      <span class={previewClass} data-testid="tool-call-card-preview">{preview.text}</span>
+      <span class={previewClass} data-testid="tool-call-card-preview">
+        {#if preview.path}
+          <EditorLink
+            path={preview.path.path}
+            line={preview.path.line ?? 0}
+            col={preview.path.col ?? 0}
+            workspacePath={paneWorkspacePath(pane)}
+            label={preview.text}
+            openLabel={preview.text}
+            stopPropagation
+            tone="inherit"
+            class="max-w-full break-all hover:text-accent focus-visible:text-accent"
+          />
+        {:else}
+          {preview.text}
+        {/if}
+      </span>
     {/snippet}
     {#snippet actions()}
       {@render headerActions()}

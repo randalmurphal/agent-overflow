@@ -39,21 +39,24 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
   it('renders no editor-link when the input preview does not lead with a path', () => {
     const item = makeItem({ kind: 'tool_call', summary: 'Waiting on agents' });
     const { queryByTestId } = render(GenericToolCallRow, { props: { item } });
+    expect(queryByTestId('editor-link')).toBeNull();
     expect(queryByTestId('editor-link-icon')).toBeNull();
   });
 
-  it('renders an editor-link sibling when the preview leads with a path', () => {
+  it('renders the path preview itself as the editor link when the preview leads with a path', () => {
     const item = makeItem({
       kind: 'tool_call',
       toolName: 'Read',
       summary: 'src/lib/foo.ts:12',
     });
-    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
-    const link = getByTestId('editor-link-icon');
+    const { getByTestId, queryByTestId } = render(GenericToolCallRow, { props: { item } });
+    const link = getByTestId('editor-link');
     // Click target stays workspace-relative so OpenInEditor can resolve
     // it; displayed accessible name collapses to the basename.
     expect(link.getAttribute('data-path')).toBe('src/lib/foo.ts');
-    expect(getByTestId('tool-call-card-toggle')).toHaveAccessibleName(/foo\.ts:12/);
+    expect(link.textContent).toBe('foo.ts:12');
+    expect(link.getAttribute('title')).toBe('Open foo.ts:12 in editor');
+    expect(queryByTestId('editor-link-icon')).toBeNull();
   });
 
   it('shows read file basenames without clipping the visible label or editor tooltip', () => {
@@ -65,7 +68,7 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     const { getByTestId } = render(GenericToolCallRow, { props: { item } });
 
     const preview = getByTestId('tool-call-card-preview');
-    const link = getByTestId('editor-link-icon');
+    const link = getByTestId('editor-link');
     expect(preview.textContent).toBe('WaitGroup.svelte');
     expect(preview.className).not.toContain('truncate');
     expect(preview.className).toContain('break-all');
@@ -84,7 +87,7 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     const { getByTestId } = render(GenericToolCallRow, { props: { item } });
 
     expect(getByTestId('tool-call-card-toggle')).toHaveAttribute('aria-disabled', 'true');
-    await fireEvent.click(getByTestId('editor-link-icon'));
+    await fireEvent.click(getByTestId('editor-link'));
 
     await waitFor(() => {
       expect(openMock).toHaveBeenCalledTimes(1);
@@ -104,7 +107,7 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     const { getByTestId, queryByTestId } = render(GenericToolCallRow, { props: { item } });
 
     expect(queryByTestId('tool-call-card-body')).toBeNull();
-    const link = getByTestId('editor-link-icon');
+    const link = getByTestId('editor-link');
     await fireEvent.click(link);
 
     await waitFor(() => {
@@ -112,8 +115,8 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     });
     expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0, '']);
 
-    // Body did NOT expand because stopPropagation prevented the
-    // toggle's onclick from firing.
+    // Body did NOT expand because the filename link is not inside the
+    // toggle button.
     expect(queryByTestId('tool-call-card-body')).toBeNull();
   });
 
@@ -134,7 +137,7 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
       thread: { workspacePath: '/home/user/repo' },
     } as Partial<import('../../stores/thread.svelte').ThreadPane>);
     const { getByTestId } = render(GenericToolCallRow, { props: { pane, item } });
-    await fireEvent.click(getByTestId('editor-link-icon'));
+    await fireEvent.click(getByTestId('editor-link'));
     await waitFor(() => {
       expect(openMock).toHaveBeenCalledTimes(1);
     });

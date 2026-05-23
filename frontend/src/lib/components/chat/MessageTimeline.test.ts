@@ -645,7 +645,7 @@ describe('<MessageTimeline>', () => {
 
   it('keeps a single Read as a normal expandable row (grouping requires a run of >=2)', async () => {
     // Isolated reads keep their full GenericToolCallRow chrome —
-    // chev + label + body preview + hover-revealed editor-link icon.
+    // chev + label + linked body preview.
     // Without this guard, the compact row would replace EVERY Read
     // row in the timeline and lose the expansion affordance for users
     // who want to inspect the file's loaded contents inline.

@@ -129,7 +129,8 @@
         workspacePath={workspacePath}
         label={entry.label}
         openLabel={entry.label}
-        class="max-w-full break-all text-fg-muted/75 hover:text-accent"
+        tone="inherit"
+        class="max-w-full break-all text-fg-muted/75 hover:text-accent focus-visible:text-accent"
       />
     {/each}
   </span>
