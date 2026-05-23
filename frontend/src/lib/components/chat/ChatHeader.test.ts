@@ -26,7 +26,7 @@ import {
   resetProjectsForTest,
 } from '../../stores/projects.svelte';
 import { resetSidebarForTest } from '../../stores/sidebar.svelte';
-import type { Thread } from '../../types/models';
+import type { Project, Thread } from '../../types/models';
 
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
@@ -383,5 +383,92 @@ describe('<ChatHeader>', () => {
     const title = getByTestId('chat-header-title');
     expect(title).toHaveAttribute('data-focused', 'false');
     expect(title.className).not.toContain('bg-accent/15');
+  });
+
+  // --- placeholder (draft) thread coverage ---
+  //
+  // A pane in "draft placeholder" state has `pane.thread` (synthetic) but
+  // `pane.threadId === null`. The header used to gate the entire right
+  // cluster on `pane.threadId`, so users saw a bare title + close button
+  // with no Open/Terminal/Diff buttons — and the cluster only popped in
+  // after a metadata change materialized the row. The outer `pane.thread`
+  // gate is still present, but the right cluster must render on
+  // placeholders too; each button materializes-on-click via
+  // `ensureMaterializedThread()`.
+
+  function placeholderPane(paneId = 'placeholder-header') {
+    const project: Project = {
+      id: 'project-placeholder-header',
+      path: '/tmp/placeholder-header',
+      name: 'Placeholder Project',
+      sortPosition: 0,
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    };
+    const pane = createThreadPane({ paneId });
+    pane.startDraftPlaceholder(project, 'chat');
+    return { pane, project };
+  }
+
+  it('renders the right cluster (Open + Terminal + Diff) on a placeholder thread', async () => {
+    addProjectLocal({
+      id: 'project-placeholder-header',
+      path: '/tmp/placeholder-header',
+      name: 'Placeholder Project',
+      sortPosition: 0,
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    });
+    const { pane } = placeholderPane();
+    expect(pane.threadId).toBeNull();
+    expect(pane.thread?.isDraft).toBe(true);
+
+    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    await tick();
+
+    // Outer gate still passes (pane.thread is set), title renders.
+    expect(getByTestId('chat-header-title').textContent?.trim()).toBe('New Thread');
+    // Right cluster: each button must be present even though the row
+    // hasn't materialized yet. The actions self-materialize on click.
+    expect(getByTestId('chat-header-open-editor')).toBeTruthy();
+    expect(getByTestId('terminal-toggle')).toBeTruthy();
+    expect(getByTestId('diff-panel-toggle')).toBeTruthy();
+  });
+
+  it('terminal-toggle click on a placeholder materializes the thread before flipping showTerminal', async () => {
+    const { pane } = placeholderPane('placeholder-term-click');
+    const created: Thread = {
+      id: 'materialized-header-term',
+      title: 'New Thread',
+      provider: 'claude',
+      workspacePath: '/tmp/placeholder-header',
+      projectPath: '/tmp/placeholder-header',
+      projectId: 'project-placeholder-header',
+      mode: 'chat',
+      model: 'claude-sonnet-4-6',
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    };
+    const create = setBindingMock('CreateThread', async () => created);
+
+    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    await tick();
+    expect(pane.threadId).toBeNull();
+    expect(pane.showTerminal).toBe(false);
+
+    await fireEvent.click(getByTestId('terminal-toggle'));
+
+    // Wait for the materialization promise to resolve, then assert the
+    // create binding fired exactly once and showTerminal flipped on the
+    // (now-materialized) pane.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(pane.threadId).toBe('materialized-header-term');
+    expect(pane.showTerminal).toBe(true);
   });
 });

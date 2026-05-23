@@ -94,6 +94,28 @@ function withActiveThread(
   void run(pane.thread, pane);
 }
 
+/**
+ * Run a command that requires a real (materialized) thread row. On a
+ * placeholder, this triggers materialization first — same pattern as
+ * the composer toolbar pickers. Used by panel-open commands (terminal,
+ * diff) whose downstream code keys on a real `pane.threadId`.
+ */
+function withMaterializedThread(
+  ctx: CommandContext,
+  run: (threadId: string, pane: ThreadPane) => void | Promise<void>,
+): void {
+  const pane = ctx.pane;
+  if (!pane || !ctx.hasActiveThread || !pane.thread) {
+    addToast('warning', 'Open a thread before running this command.');
+    return;
+  }
+  void (async () => {
+    const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+    if (!threadId) return;
+    await run(threadId, pane);
+  })();
+}
+
 function commandThreadActionCtx(thread: Thread, pane: ThreadPane): ThreadActionCtx {
   return {
     thread,
@@ -617,7 +639,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     when: 'hasActiveThread',
     editableReachable: true,
     run: (ctx) =>
-      withActiveThread(ctx, (_t, pane) => {
+      withMaterializedThread(ctx, (_id, pane) => {
         const paneId = pane.paneId;
         if (!pane.showTerminal) {
           pane.setShowTerminal(true);
@@ -643,7 +665,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Diffs: Toggle Panel',
     icon: '±',
     when: 'hasActiveThread',
-    run: (ctx) => withActiveThread(ctx, (_t, pane) => pane.toggleDiffPanel()),
+    run: (ctx) => withMaterializedThread(ctx, (_id, pane) => pane.toggleDiffPanel()),
   });
 
   registerCommand({
@@ -652,7 +674,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '±',
     when: 'hasActiveThread',
     run: (ctx) =>
-      withActiveThread(ctx, (_t, pane) => {
+      withMaterializedThread(ctx, (_id, pane) => {
         pane.setDiffPanelOpen(true);
       }),
   });
@@ -674,7 +696,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '▶',
     when: 'hasActiveThread',
     run: (ctx) =>
-      withActiveThread(ctx, (_t, pane) => {
+      withMaterializedThread(ctx, (_id, pane) => {
         pane.setShowTerminal(true);
       }),
   });

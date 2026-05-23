@@ -36,7 +36,7 @@ import {
   resetThreadActionConfirmationsForTest,
 } from './threadActionConfirmations.svelte';
 import { loadSettings, resetSettingsForTest } from './settings.svelte';
-import type { Thread } from '../types/models';
+import type { Project, Thread } from '../types/models';
 import { FOCUS_TERMINAL_EVENT } from './events';
 
 function readyPane(overrides: Partial<Thread> = {}): ReturnType<typeof createThreadPane> {
@@ -1099,5 +1099,118 @@ describe('sidebar.cursor.open commands', () => {
     const ctx = makeCommandContext(pane, {}) as CommandContext;
     expect(isCommandEnabled('sidebar.cursor.open', ctx)).toBe(false);
     expect(isCommandEnabled('sidebar.cursor.openInNewPane', ctx)).toBe(false);
+  });
+});
+
+// --- withMaterializedThread (terminal/diff command gating on placeholders) ---
+//
+// `terminal.toggle`, `terminal.new`, `diff.panel.toggle`, and `diff.panel.open`
+// run through `withMaterializedThread` so that firing them on a placeholder
+// thread (no real DB row yet) creates the row first via `ensureMaterializedThread`.
+// Without this, the toggle would flip `pane.showTerminal=true` while
+// `ThreadTerminalPlacement` (`{#if pane.showTerminal && pane.threadId}`) refused
+// to render — a no-op click — and the diff panel would mount against the
+// synthetic draft id and hit the backend with a non-existent thread.
+
+function placeholderPane(
+  paneId = 'placeholder-cmd',
+): ReturnType<typeof createThreadPane> {
+  const pane = createThreadPane({ paneId });
+  const project: Project = {
+    id: 'project-placeholder-cmd',
+    path: '/tmp/placeholder-cmd',
+    name: 'Placeholder',
+    sortPosition: 0,
+    createdAt: 0,
+    updatedAt: 0,
+    archived: false,
+  };
+  pane.startDraftPlaceholder(project, 'chat');
+  return pane;
+}
+
+describe('withMaterializedThread (terminal/diff commands on placeholders)', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetThreadStatuses();
+  });
+
+  it('terminal.toggle on a placeholder materializes the thread before flipping showTerminal', async () => {
+    const pane = placeholderPane('term-toggle-draft');
+    const created: Thread = {
+      id: 'materialized-term-toggle',
+      title: 'New Thread',
+      provider: 'claude',
+      workspacePath: '/tmp/placeholder-cmd',
+      projectPath: '/tmp/placeholder-cmd',
+      projectId: 'project-placeholder-cmd',
+      mode: 'chat',
+      model: 'claude-sonnet-4-6',
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    };
+    const create = setBindingMock('CreateThread', async () => created);
+    registerFixtureCommands(pane);
+
+    expect(pane.threadId).toBeNull();
+    expect(pane.thread?.isDraft).toBe(true);
+    expect(pane.showTerminal).toBe(false);
+
+    const ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(ctx.hasActiveThread).toBe(true);
+    runCommand('terminal.toggle', ctx);
+
+    await vi.waitFor(() => {
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(pane.threadId).toBe('materialized-term-toggle');
+      expect(pane.showTerminal).toBe(true);
+    });
+  });
+
+  it('terminal.toggle on a real thread does not call CreateThread', async () => {
+    const pane = readyPane();
+    const create = setBindingMock('CreateThread', async () => {
+      throw new Error('CreateThread must not be called when the pane already has a real thread');
+    });
+    registerFixtureCommands(pane);
+
+    expect(pane.threadId).toBe('thread-1');
+    expect(pane.showTerminal).toBe(false);
+
+    runCommand('terminal.toggle', makeCommandContext(pane, {}) as CommandContext);
+
+    await vi.waitFor(() => expect(pane.showTerminal).toBe(true));
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('diff.panel.toggle on a placeholder materializes the thread before opening the panel', async () => {
+    const pane = placeholderPane('diff-toggle-draft');
+    const created: Thread = {
+      id: 'materialized-diff',
+      title: 'New Thread',
+      provider: 'claude',
+      workspacePath: '/tmp/placeholder-cmd',
+      projectPath: '/tmp/placeholder-cmd',
+      projectId: 'project-placeholder-cmd',
+      mode: 'chat',
+      model: 'claude-sonnet-4-6',
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    };
+    const create = setBindingMock('CreateThread', async () => created);
+    registerFixtureCommands(pane);
+
+    expect(pane.threadId).toBeNull();
+    expect(pane.diffPanel.open).toBe(false);
+
+    runCommand('diff.panel.toggle', makeCommandContext(pane, {}) as CommandContext);
+
+    await vi.waitFor(() => {
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(pane.threadId).toBe('materialized-diff');
+      expect(pane.diffPanel.open).toBe(true);
+    });
   });
 });

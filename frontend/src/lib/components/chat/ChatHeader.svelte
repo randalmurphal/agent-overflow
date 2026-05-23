@@ -145,6 +145,19 @@
       addToast('error', errString(err));
     }
   }
+
+  // Terminal / Diff / Design panels need a real thread row — terminal
+  // session id, diff backend bindings, design preview URL all key off
+  // it. On a placeholder, materialize before toggling so the click
+  // actually opens the panel instead of flipping the pressed state of
+  // a button whose downstream gate (ThreadTerminalPlacement.threadId,
+  // DiffPanelDrawer's backend bindings, /design/{threadId}/main/ URL)
+  // would otherwise reject the synthetic draft id.
+  async function ensureThenToggle(toggle: () => void): Promise<void> {
+    const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+    if (!threadId) return;
+    toggle();
+  }
 </script>
 
 {#if pane.thread}
@@ -221,9 +234,13 @@
       <Icon icon={X} size={12} strokeWidth={2} />
     </button>
 
-    <!-- Right cluster: wraps, doesn't disappear, at narrow widths. -->
+    <!-- Right cluster: wraps, doesn't disappear, at narrow widths.
+         Visible on placeholders too — the outer `pane.thread` gate
+         already filters out "no thread at all" panes, and the
+         subcomponents below self-gate on `pane.threadId` for the
+         pieces that genuinely need a persisted row (git
+         subscription). -->
     <div class="ml-auto flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
-      {#if pane.threadId}
       {#if projectBadge}
         <Button
           variant="secondary"
@@ -249,7 +266,7 @@
         pressed={pane.showTerminal}
         ariaLabel="Toggle Terminal"
         title={`Toggle Terminal (${terminalToggleChord})`}
-        onclick={() => pane.toggleTerminal()}
+        onclick={() => void ensureThenToggle(() => pane.toggleTerminal())}
         testId="terminal-toggle"
         class="shrink-0 w-6 px-0"
       >
@@ -265,7 +282,7 @@
           pressed={pane.showDesignPreviewPanel}
           ariaLabel="Toggle Design Preview"
           title="Toggle Design Preview"
-          onclick={() => pane.toggleDesignPreviewPanel()}
+          onclick={() => void ensureThenToggle(() => pane.toggleDesignPreviewPanel())}
           testId="design-preview-toggle"
           class="shrink-0 w-6 px-0"
         >
@@ -280,7 +297,7 @@
           pressed={pane.diffPanel.open}
           ariaLabel="Toggle Diff Panel"
           title={`Toggle Diff Panel (${diffPanelToggleChord})`}
-          onclick={() => pane.toggleDiffPanel()}
+          onclick={() => void ensureThenToggle(() => pane.toggleDiffPanel())}
           testId="diff-panel-toggle"
           class="shrink-0 w-6 px-0"
         >
@@ -288,7 +305,6 @@
             <Icon icon={Diff} size={12} strokeWidth={2} class="opacity-90" />
           {/snippet}
         </Button>
-      {/if}
       {/if}
     </div>
   </div>
