@@ -75,10 +75,10 @@
       {@render renderContent({ data: expansion.displayData, testId: outputTestId })}
     {:else}
       <div
-        class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 text-[11px] leading-relaxed text-fg-muted"
+        class="ansi-body min-w-0 max-w-full max-h-60 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words px-3 py-2 text-[11px] leading-relaxed text-fg-muted"
         data-testid={outputTestId}
       >
-        <AnsiText source={expansion.displayData} />
+        <AnsiText source={expansion.displayData} class="whitespace-pre-wrap break-all" />
       </div>
     {/if}
     {#if expansion.hasMore}

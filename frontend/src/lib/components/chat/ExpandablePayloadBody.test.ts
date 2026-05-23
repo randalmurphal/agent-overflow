@@ -77,4 +77,34 @@ describe('<ExpandablePayloadBody>', () => {
     expect(output.className).toContain('ansi-body');
     expect(output.textContent).toContain('plain ansi line');
   });
+
+  it('renders long default output with vertical-only scrolling and token wrapping', () => {
+    const expansion = expansionHandle({
+      displayData: [
+        'Blocking | frontend/src/lib/components/chat/TranscriptDisclosureHeader.svelte:100',
+        '| `interactiveBody` still renders the overflowed value',
+        '| aReallyLongUnbrokenTokenThatMustNotForceHorizontalScroll',
+      ].join(' '),
+      hasMore: false,
+    });
+    const { getByTestId } = render(ExpandablePayloadBody, {
+      props: {
+        expansion,
+        id: 'payload-body',
+        testPrefix: 'payload-body',
+        emptyMessage: 'No output.',
+      },
+    });
+
+    const output = getByTestId('payload-body-output');
+    const pre = output.querySelector('pre');
+    if (!pre) throw new Error('expected AnsiText to render a <pre>');
+
+    expect(output.className).toContain('overflow-y-auto');
+    expect(output.className).toContain('overflow-x-hidden');
+    expect(output.className).not.toContain('overflow-auto');
+    expect(output.textContent).toContain('aReallyLongUnbrokenTokenThatMustNotForceHorizontalScroll');
+    expect(pre.className).toContain('whitespace-pre-wrap');
+    expect(pre.className).toContain('break-all');
+  });
 });
