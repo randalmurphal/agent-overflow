@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { formatElapsedSeconds, formatResetCountdown, formatTurnTokens } from './format';
+import {
+  formatElapsedSeconds,
+  formatGiB,
+  formatResetCountdown,
+  formatTurnTokens,
+} from './format';
 
 describe('formatElapsedSeconds', () => {
   it('formats sub-60s values as "Xs"', () => {
@@ -106,5 +111,31 @@ describe('formatResetCountdown', () => {
     expect(formatResetCountdown(-1)).toBe('');
     expect(formatResetCountdown(Number.NaN)).toBe('');
     expect(formatResetCountdown(Number.POSITIVE_INFINITY)).toBe('');
+  });
+});
+
+describe('formatGiB', () => {
+  it('formats zero as "0.0"', () => {
+    expect(formatGiB(0)).toBe('0.0');
+  });
+
+  it('formats one gibibyte exactly as "1.0"', () => {
+    expect(formatGiB(1024 ** 3)).toBe('1.0');
+  });
+
+  it('formats a typical 16-GiB stick as "16.0"', () => {
+    expect(formatGiB(16 * 1024 ** 3)).toBe('16.0');
+  });
+
+  it('rounds to one decimal place', () => {
+    expect(formatGiB(1.05 * 1024 ** 3)).toBe('1.1');
+    expect(formatGiB(3.14 * 1024 ** 3)).toBe('3.1');
+  });
+
+  it('collapses NaN / Infinity / negative to "0.0" so a malformed wire frame stays readable', () => {
+    expect(formatGiB(Number.NaN)).toBe('0.0');
+    expect(formatGiB(Number.POSITIVE_INFINITY)).toBe('0.0');
+    expect(formatGiB(Number.NEGATIVE_INFINITY)).toBe('0.0');
+    expect(formatGiB(-1)).toBe('0.0');
   });
 });

@@ -15,6 +15,7 @@
   } from '../../stores/sidebarLayout.svelte';
   import SidebarSearch from './SidebarSearch.svelte';
   import ProjectsSection from './ProjectsSection.svelte';
+  import SystemStatsFooter from './SystemStatsFooter.svelte';
   import SettingsFooter from './SettingsFooter.svelte';
   import SidebarResizer from './SidebarResizer.svelte';
   import ThreadFromPRDialog from './ThreadFromPRDialog.svelte';
@@ -68,6 +69,7 @@
 >
   <SidebarSearch {registerFocusSearch} />
   <ProjectsSection {pane} />
+  <SystemStatsFooter />
   <SettingsFooter {onOpenSettings} />
   <SidebarResizer
     width={getSidebarWidth()}

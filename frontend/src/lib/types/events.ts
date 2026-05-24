@@ -422,3 +422,17 @@ export interface TokenUsageSummary {
   cacheCreationInputTokens?: number;
   totalCostUsd?: number;
 }
+
+/**
+ * Periodic host CPU + memory snapshot pushed from the Go backend on
+ * `system:stats`. Drives the sidebar SystemStatsFooter above the
+ * Settings entry. `isWsl` toggles the "WSL" label so the panel reads
+ * as WSL-specific when the backend is running inside a WSL2 distro;
+ * native Linux / macOS render without it.
+ */
+export interface SystemStatsEvent {
+  isWsl: boolean;
+  cpuPercent: number;
+  memUsedBytes: number;
+  memTotalBytes: number;
+}

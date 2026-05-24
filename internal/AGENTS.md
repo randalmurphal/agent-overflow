@@ -24,6 +24,7 @@ one closest to what you're touching.
 | `logging/` | Structured NDJSON provider-event logging. |
 | `observability/` | Opt-in OpenTelemetry tracing + NDJSON replay writer. |
 | `platform/` | Runtime-environment probes shared by host-specific packages, such as WSL detection. |
+| `sysstat/` | Host CPU + memory sampler (gopsutil wrapper) backing the sidebar system-stats footer. Pure read-only; cadence + emission owned by `app_sysstat.go`. |
 | `workspacefiles/` | Workspace-scoped file search for @-mention completion. |
 | `testutil/` | Shared test helpers (mock provider scripts, git repo, project fixtures). |
 | `stringsx/` | Tiny stdlib-only string helpers. |

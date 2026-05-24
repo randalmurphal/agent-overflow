@@ -136,3 +136,18 @@ export function formatTurnTokens(n: number): string {
   if (n >= 1_000) return `${(n / 1_000).toFixed(2)}k tokens`;
   return `${Math.floor(n)} tokens`;
 }
+
+/**
+ * Format a byte count as gibibytes (1024³) with one decimal — used by
+ * the sidebar SystemStatsFooter's `used / total GB` display. The "GB"
+ * label is colloquial (htop / Activity Monitor convention): a stick
+ * sold as 16 GB shows as 16.0 here rather than 17.2, which matches
+ * what users expect.
+ *
+ * Non-finite / negative inputs collapse to "0.0" rather than NaN so
+ * the row stays readable if the wire ever sends garbage.
+ */
+export function formatGiB(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '0.0';
+  return (bytes / 1024 ** 3).toFixed(1);
+}

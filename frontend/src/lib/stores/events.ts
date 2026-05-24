@@ -4,6 +4,7 @@ import type {
   ItemDeltaEvent,
   ItemStreamEvent,
   ProviderAccountEvent,
+  SystemStatsEvent,
   TodoUpdateEvent,
   ProviderStatusEvent,
   SessionDiedEvent,
@@ -27,6 +28,7 @@ import type {
   UserMessageRevertedEvent,
 } from '../types/checkpoint';
 import { setProviderAccount } from './accountInfo.svelte';
+import { setSystemStats } from './systemStats.svelte';
 import { asProviderID } from '../types/providers';
 import { invalidateProviderModels } from './providerModels.svelte';
 import { transportGapChannel } from '../transport/wsClient';
@@ -1099,6 +1101,28 @@ export function setupEventListeners(): () => void {
     },
   );
 
+  // system:stats — periodic host CPU + memory snapshot (~2s cadence)
+  // driving the sidebar SystemStatsFooter. Coarse aggregate values,
+  // no per-thread or per-process detail. Validate every field —
+  // anything coming over the WS could in principle be malformed, and
+  // partial-shape acceptance would let NaN/undefined propagate into
+  // the sidebar render.
+  const cancelSystemStats = wailsEventOn<SystemStatsEvent>(
+    'system:stats',
+    (evt) => {
+      if (
+        !evt ||
+        typeof evt.isWsl !== 'boolean' ||
+        typeof evt.cpuPercent !== 'number' ||
+        typeof evt.memUsedBytes !== 'number' ||
+        typeof evt.memTotalBytes !== 'number'
+      ) {
+        return;
+      }
+      setSystemStats(evt);
+    },
+  );
+
   // provider:item_event is the canonical ordered timeline mutation stream.
   // Upserts and deltas intentionally share one Wails channel so streaming
   // text cannot race lifecycle snapshots across separate event names.
@@ -1399,6 +1423,7 @@ export function setupEventListeners(): () => void {
     cancelUsage();
     cancelProviderStatus();
     cancelProviderAccount();
+    cancelSystemStats();
     cancelTurnStarted();
     cancelTurnCompleted();
     cancelSessionDied();

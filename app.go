@@ -513,6 +513,10 @@ func (a *App) Start(ctx context.Context) error {
 	// doesn't require a restart. See app_retention_cleanup.go.
 	a.startRetentionCleanup()
 
+	// Start the sidebar's host CPU/memory sampler. Emits a
+	// `system:stats` event every ~2s. See app_sysstat.go.
+	a.startSystemStatsSampler()
+
 	return nil
 }
 
