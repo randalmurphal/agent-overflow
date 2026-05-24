@@ -196,7 +196,7 @@ describe("classifyToolName", () => {
     // helper owns the disambiguated body.
     const out = classifyToolName("ToolSearch");
     expect(out.icon).toBe("search");
-    expect(out.label).toBe("tool search");
+    expect(out.label).toBe("tool");
     expect(out.isSubagent).toBe(false);
   });
 

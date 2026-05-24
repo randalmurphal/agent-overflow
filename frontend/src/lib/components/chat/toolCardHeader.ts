@@ -147,7 +147,7 @@ export function classifyToolName(
       // toolCardPreview.ts disambiguates the two shapes.
       return {
         icon: "search",
-        label: "tool search",
+        label: "tool",
         isSubagent: false,
       };
     case "TaskList":
