@@ -313,6 +313,16 @@ func (p *Parser) appendToolUseEvent(
 	if block.Name == "TodoWrite" {
 		return p.appendTodoWriteEvent(events, threadID, parentToolUseID, now, block)
 	}
+	// Claude Code 2.1.150's TaskCreate / TaskUpdate family replaces
+	// TodoWrite with per-task CRUD. We mirror TodoWrite's reroute:
+	// stage the input here and emit the EventTodoUpdate snapshot only
+	// after the matching tool_result confirms success (TaskCreate's
+	// authoritative id, TaskUpdate's success flag). TaskList / TaskGet
+	// are read-only and render as regular tool rows.
+	if block.Name == "TaskCreate" || block.Name == "TaskUpdate" {
+		p.recordPendingTaskMutation(block.ID, taskMutationOp(block.Name), block.Input, parentToolUseID)
+		return events
+	}
 
 	isBackground := hasRunInBackground(block.Input)
 	if isBackground {
@@ -386,9 +396,17 @@ func (p *Parser) appendTodoWriteEvent(
 // Keeping it a named struct (instead of map[string]string) preserves
 // type safety across the parse → marshal → triage decode round trip
 // and avoids per-step map allocation.
+//
+// `id` and `owner` are populated by the Claude Code 2.1.150+ Task*
+// family path (buildTaskSnapshotEvent); legacy TodoWrite and Codex
+// update_plan leave them empty so omitempty drops them from the
+// marshaled JSON. Keep the two producers writing this same shape so
+// triage's decodeTodoSteps stays the only decoder.
 type todoWriteStep struct {
 	Step   string `json:"step"`
 	Status string `json:"status"`
+	ID     string `json:"id,omitempty"`
+	Owner  string `json:"owner,omitempty"`
 }
 
 // extractTodoWriteSteps decodes a TodoWrite tool_use input into the
@@ -437,6 +455,199 @@ func normalizeTodoWriteStatus(raw string) string {
 	default:
 		return "pending"
 	}
+}
+
+// taskMutationOp returns the `op` tag used to discriminate pending
+// TaskCreate / TaskUpdate mutations in parse_user.go's apply path.
+// Centralised so the assistant-side recorder and the result-side
+// applier reference one source of truth.
+func taskMutationOp(toolName string) string {
+	switch toolName {
+	case "TaskCreate":
+		return "create"
+	case "TaskUpdate":
+		return "update"
+	}
+	return ""
+}
+
+// taskCreateInput is the decoded TaskCreate tool_use input. Only the
+// fields the snapshot currently renders are typed; `description`,
+// `activeForm`, and `metadata` round-trip through Claude untouched
+// because json.Unmarshal already ignores unknown fields silently.
+type taskCreateInput struct {
+	Subject string `json:"subject"`
+}
+
+func decodeTaskCreateInput(input json.RawMessage) (taskCreateInput, bool) {
+	if len(input) == 0 {
+		return taskCreateInput{}, false
+	}
+	var decoded taskCreateInput
+	if err := json.Unmarshal(input, &decoded); err != nil {
+		return taskCreateInput{}, false
+	}
+	decoded.Subject = strings.TrimSpace(decoded.Subject)
+	if decoded.Subject == "" {
+		// Subject is required per schema and is what the activity rail
+		// renders. A create with no subject would land in the widget
+		// as a blank row.
+		return taskCreateInput{}, false
+	}
+	return decoded, true
+}
+
+// taskUpdateInput is the decoded TaskUpdate tool_use input. Only the
+// fields the snapshot currently surfaces are explicitly typed; the
+// rest (addBlocks, addBlockedBy, description, activeForm, metadata)
+// are forward-compat additions left to round-trip through Claude on
+// its own.
+type taskUpdateInput struct {
+	TaskID  string `json:"taskId"`
+	Status  string `json:"status"`
+	Subject string `json:"subject"`
+	Owner   string `json:"owner"`
+}
+
+func decodeTaskUpdateInput(input json.RawMessage) (taskUpdateInput, bool) {
+	if len(input) == 0 {
+		return taskUpdateInput{}, false
+	}
+	var decoded taskUpdateInput
+	if err := json.Unmarshal(input, &decoded); err != nil {
+		return taskUpdateInput{}, false
+	}
+	decoded.TaskID = strings.TrimSpace(decoded.TaskID)
+	if decoded.TaskID == "" {
+		return taskUpdateInput{}, false
+	}
+	decoded.Status = strings.TrimSpace(decoded.Status)
+	decoded.Subject = strings.TrimSpace(decoded.Subject)
+	decoded.Owner = strings.TrimSpace(decoded.Owner)
+	return decoded, true
+}
+
+// normalizeTaskStatus reuses the TodoWrite enum mapping with two
+// adjustments:
+//
+//  1. Empty input returns `("", false)` so a TaskUpdate that does
+//     not include a `status` field leaves the existing task status
+//     alone. Callers gate mutation on the non-empty case; without
+//     this, a `TaskUpdate({owner: "..."})` would clobber the
+//     status to the normaliser's default `pending` bucket.
+//  2. `deleted` is a terminal status TaskUpdate alone can set,
+//     signalling permanent removal from the list. Callers branch on
+//     this rather than passing it through to the snapshot (deleted
+//     tasks should disappear, not render as a fourth bucket).
+func normalizeTaskStatus(raw string) (status string, deleted bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", false
+	}
+	if trimmed == "deleted" {
+		return "", true
+	}
+	return normalizeTodoWriteStatus(trimmed), false
+}
+
+// taskCreateResultID extracts the authoritative task id from a
+// TaskCreate tool_use_result. The Claude wire shape is
+// `{task: {id: "...", subject: "..."}}` — the inner id is what
+// subsequent TaskUpdate calls reference, and what we key the parser's
+// local mirror on. Empty result means the create failed; the caller
+// drops the mutation without touching state.
+func taskCreateResultID(toolUseResult json.RawMessage) string {
+	if len(toolUseResult) == 0 {
+		return ""
+	}
+	var payload struct {
+		Task struct {
+			ID string `json:"id"`
+		} `json:"task"`
+	}
+	if json.Unmarshal(toolUseResult, &payload) != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.Task.ID)
+}
+
+// taskUpdateResult captures the success flag a TaskUpdate result
+// echoes. Failed updates (`success:false`) skip the apply step so a
+// TaskUpdate that Claude rejected does not silently mutate our local
+// mirror.
+type taskUpdateResult struct {
+	Success bool
+}
+
+func decodeTaskUpdateResult(toolUseResult json.RawMessage) (taskUpdateResult, bool) {
+	if len(toolUseResult) == 0 {
+		return taskUpdateResult{}, false
+	}
+	var payload struct {
+		Success bool `json:"success"`
+	}
+	if json.Unmarshal(toolUseResult, &payload) != nil {
+		return taskUpdateResult{}, false
+	}
+	return taskUpdateResult{Success: payload.Success}, true
+}
+
+// buildTaskSnapshotEvent wraps the parser's current task list in an
+// EventTodoUpdate so it flows through the existing
+// `provider:todo_update` channel and the same activity rail widget
+// that renders TodoWrite. An empty snapshot is dropped (matches the
+// TodoWrite convention; triage's handleTodoUpdate skips its emit on
+// empty too, so emitting here would be a no-op that bloats the wire).
+func (p *Parser) buildTaskSnapshotEvent(
+	events []provider.ProviderEvent,
+	threadID, op, parentToolUseID, itemID string,
+	now time.Time,
+) []provider.ProviderEvent {
+	snapshot := p.taskSnapshot()
+	if len(snapshot) == 0 {
+		return events
+	}
+	steps := make([]todoWriteStep, 0, len(snapshot))
+	for _, task := range snapshot {
+		steps = append(steps, todoWriteStep{
+			Step:   task.Subject,
+			Status: task.Status,
+			ID:     task.ID,
+			Owner:  task.Owner,
+		})
+	}
+	meta, err := json.Marshal(map[string]any{
+		"kind":  "todo_update",
+		"title": "Updated Todos",
+		"plan":  steps,
+	})
+	if err != nil {
+		return events
+	}
+	return append(events, provider.ProviderEvent{
+		Kind:            provider.EventTodoUpdate,
+		ThreadID:        threadID,
+		ItemID:          itemID,
+		ItemType:        taskMutationToolName(op),
+		Content:         "Updated Todos",
+		Meta:            meta,
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       now,
+	})
+}
+
+// taskMutationToolName is the inverse of taskMutationOp. Used by the
+// snapshot emitter so the EventTodoUpdate row carries the originating
+// tool name in ItemType (sibling to appendTodoWriteEvent setting
+// ItemType: "TodoWrite").
+func taskMutationToolName(op string) string {
+	switch op {
+	case "create":
+		return "TaskCreate"
+	case "update":
+		return "TaskUpdate"
+	}
+	return ""
 }
 
 // appendExitPlanModeEvent converts an ExitPlanMode tool call into an

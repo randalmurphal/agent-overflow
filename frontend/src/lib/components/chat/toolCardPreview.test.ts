@@ -339,6 +339,51 @@ describe('presentToolCardInputPreview', () => {
     );
   });
 
+  describe('ToolSearch preview', () => {
+    // Claude Code 2.1.150+ deferred-tool schema loader. Without the
+    // dedicated preview branch, the body ends up displaying the raw
+    // `select:Foo` query string as if it were a tool name, which
+    // looks like a meaningless call to the user.
+    it('renames a select: query into a "Loaded schema: <names>" body', () => {
+      const item = makeItem({ toolName: 'ToolSearch', summary: 'select:TaskCreate' });
+      const itemMeta = { input: { query: 'select:TaskCreate', max_results: 1 } };
+      expect(toolCardInputPreview(item, null, itemMeta)).toBe('Loaded schema: TaskCreate');
+    });
+
+    it('lists multiple comma-separated names in the select: body', () => {
+      const item = makeItem({
+        toolName: 'ToolSearch',
+        summary: 'select:TaskCreate,TaskUpdate,TaskList',
+      });
+      const itemMeta = {
+        input: { query: 'select:TaskCreate,TaskUpdate,TaskList', max_results: 6 },
+      };
+      expect(toolCardInputPreview(item, null, itemMeta)).toBe(
+        'Loaded schema: TaskCreate, TaskUpdate, TaskList',
+      );
+    });
+
+    it('renders a keyword query verbatim', () => {
+      const item = makeItem({ toolName: 'ToolSearch', summary: 'notebook jupyter' });
+      const itemMeta = { input: { query: 'notebook jupyter', max_results: 5 } };
+      expect(toolCardInputPreview(item, null, itemMeta)).toBe('notebook jupyter');
+    });
+
+    it('falls back to the standard preview path when input.query is missing', () => {
+      // A malformed ToolSearch shape lands in fallbackPreviewForToolName,
+      // which returns the bare tool name. No crash, no silent empty
+      // preview.
+      const item = makeItem({ toolName: 'ToolSearch' });
+      expect(toolCardInputPreview(item, null, null)).toBe('ToolSearch');
+    });
+
+    it('handles select: with no names by returning "Loaded schema"', () => {
+      const item = makeItem({ toolName: 'ToolSearch', summary: 'select:' });
+      const itemMeta = { input: { query: 'select:' } };
+      expect(toolCardInputPreview(item, null, itemMeta)).toBe('Loaded schema');
+    });
+  });
+
   it('strips the MCP/<tool>: prefix on legacy MCP rows that fall through to the summary', () => {
     // Pre-redesign Items don't carry meta.mcp, so the synthesizer
     // declines and the preview falls back to item.summary. That

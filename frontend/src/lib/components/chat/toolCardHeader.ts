@@ -138,6 +138,30 @@ export function classifyToolName(
         label: raw === "Glob" ? "glob" : "grep",
         isSubagent: false,
       };
+    case "ToolSearch":
+      // Claude Code 2.1.150+ deferred-tool schema loader. The model
+      // calls this with `select:<ToolName>` (most common: schema
+      // hydration before invoking a deferred tool) or with a free-
+      // text keyword query (rarer: capability search). Both cases
+      // render with the search icon; the preview line in
+      // toolCardPreview.ts disambiguates the two shapes.
+      return {
+        icon: "search",
+        label: "tool search",
+        isSubagent: false,
+      };
+    case "TaskList":
+    case "TaskGet":
+      // Read-only members of the Claude Code 2.1.150+ Task* family
+      // (the new TodoWrite replacement). TaskCreate / TaskUpdate are
+      // intercepted in the Go parser and never reach the timeline;
+      // List/Get stay visible as regular tool rows so users can see
+      // the model inspecting its task list.
+      return {
+        icon: "checklist",
+        label: raw === "TaskGet" ? "task" : "tasks",
+        isSubagent: false,
+      };
     case "WebFetch":
     case "WebSearch":
     case "webSearch":

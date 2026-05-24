@@ -35,6 +35,10 @@ export function toolCardInputPreview(
   if (item.toolName === 'wait_agent') {
     return waitAgentPreview(item, itemMeta);
   }
+  if (item.toolName === 'ToolSearch') {
+    const search = toolSearchPreview(itemMeta);
+    if (search) return search;
+  }
   const mcp = mcpPreviewFromMeta(itemMeta);
   if (mcp) return mcp;
   const fromSummary = (item.summary ?? '').trim();
@@ -384,6 +388,41 @@ function waitAgentPreview(item: Item, meta: Record<string, unknown> | null): str
     ? 'Waiting on'
     : 'Waited on';
   return count > 0 ? `${verb} ${count} ${noun}` : `${verb} agents`;
+}
+
+/**
+ * ToolSearch is the Claude Code 2.1.150+ deferred-tool schema loader.
+ * Two query shapes appear in practice:
+ *
+ *   - `select:<Name>` or `select:<NameA>,<NameB>` — schema hydration
+ *     for one or more deferred tools. The model fires this before the
+ *     first invocation of each new tool. Render as
+ *     "Loaded schema: <Names>" so the row says what got loaded rather
+ *     than echoing the raw `select:` query.
+ *   - Free-text keyword query — rarer; the model is searching the
+ *     deferred-tool catalogue by capability. Render the query verbatim
+ *     so users see exactly what the model asked for.
+ *
+ * Falls back to the empty string when the input is missing or
+ * malformed; the caller chains through to the standard preview path.
+ */
+function toolSearchPreview(itemMeta: Record<string, unknown> | null): string {
+  const input = itemMeta?.input;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return '';
+  const query = (input as Record<string, unknown>).query;
+  if (typeof query !== 'string') return '';
+  const trimmed = query.trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('select:')) {
+    const names = trimmed
+      .slice('select:'.length)
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (names.length === 0) return 'Loaded schema';
+    return `Loaded schema: ${names.join(', ')}`;
+  }
+  return trimmed;
 }
 
 function fallbackPreviewForToolName(toolName: string | undefined): string {

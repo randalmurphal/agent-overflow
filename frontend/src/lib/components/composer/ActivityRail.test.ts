@@ -133,6 +133,49 @@ describe('<ActivityRail>', () => {
     expect((await findByTestId('activity-rail-todos-count')).textContent?.trim()).toBe('3/3');
   });
 
+  it('renders the owner badge only on Task* rows that were claimed', async () => {
+    // The Claude Code 2.1.150+ Task* family threads an `owner` field
+    // through the snapshot. The visual is added-only: empty owner
+    // matches the pre-Task* TodoWrite rendering (no badge);
+    // non-empty owner surfaces as a pill so multi-agent / teammate
+    // ownership is visible at a glance.
+    const pane = await buildPane();
+    pane.setLiveTodo([
+      { step: 'Solo task', status: 'inProgress' },
+      { step: 'Claimed task', status: 'pending', owner: 'helper-agent' },
+    ]);
+    const { findByTestId, findAllByTestId } = render(ActivityRail, {
+      props: { pane },
+    });
+    await tick();
+    await fireEvent.click(await findByTestId('activity-rail-todos-toggle'));
+    await tick();
+
+    const badges = await findAllByTestId('activity-rail-todos-owner');
+    expect(badges).toHaveLength(1);
+    expect(badges[0].textContent?.trim()).toBe('helper-agent');
+  });
+
+  it('renders no owner badge when every step has an empty/missing owner', async () => {
+    // Parity with the legacy TodoWrite + Codex update_plan rendering:
+    // an entry without an owner must not produce a chip, layout
+    // shift, or empty wrapper. This is the load-bearing "match the
+    // previous behavior" guarantee.
+    const pane = await buildPane();
+    pane.setLiveTodo([
+      { step: 'first', status: 'inProgress' },
+      { step: 'second', status: 'pending', owner: '' },
+    ]);
+    const { findByTestId, queryAllByTestId } = render(ActivityRail, {
+      props: { pane },
+    });
+    await tick();
+    await fireEvent.click(await findByTestId('activity-rail-todos-toggle'));
+    await tick();
+
+    expect(queryAllByTestId('activity-rail-todos-owner')).toHaveLength(0);
+  });
+
   it('shows the Background toggle and expanded body with rows when tasks are running', async () => {
     const launch = backgroundLaunch();
     setBindingMock('ListLiveBackgroundTasks', async () => [launch]);

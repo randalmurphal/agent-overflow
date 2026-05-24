@@ -116,9 +116,18 @@ type LiveTodoSnapshot struct {
 // `inProgress` upstream in the parser so triage and the frontend see
 // one vocabulary. Unknown values pass through; the frontend renders
 // them as pending.
+//
+// `id` and `owner` are populated by the Claude Code 2.1.150+ Task\*
+// family path (TaskCreate / TaskUpdate). Legacy TodoWrite + Codex
+// update_plan leave them empty. The frontend treats both as
+// optional: missing `id` falls back to step-string keying, missing
+// or empty `owner` suppresses the badge so the widget matches its
+// pre-Task* rendering.
 type TodoStep struct {
 	Step   string `json:"step"`
 	Status string `json:"status"`
+	ID     string `json:"id,omitempty"`
+	Owner  string `json:"owner,omitempty"`
 }
 
 // BackgroundTaskStateEvent is the frontend-facing payload for

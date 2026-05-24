@@ -124,6 +124,8 @@ func decodeTodoSteps(raw json.RawMessage) []TodoStep {
 		Plan []struct {
 			Step   string `json:"step"`
 			Status string `json:"status"`
+			ID     string `json:"id"`
+			Owner  string `json:"owner"`
 		} `json:"plan"`
 	}
 	if json.Unmarshal(raw, &decoded) != nil {
@@ -141,6 +143,8 @@ func decodeTodoSteps(raw json.RawMessage) []TodoStep {
 		steps = append(steps, TodoStep{
 			Step:   step,
 			Status: strings.TrimSpace(item.Status),
+			ID:     truncateRunes(strings.TrimSpace(item.ID), maxTodoIDRunes),
+			Owner:  truncateRunes(strings.TrimSpace(item.Owner), maxTodoOwnerRunes),
 		})
 	}
 	return steps
@@ -339,13 +343,20 @@ const (
 	// rendered list to 5 with a Show-more reveal; these caps are the
 	// outer safety net so a provider that ships a multi-MB plan can't
 	// blow up the WS payload or the pane snapshot.
-	maxTodoSteps     = 256
-	maxTodoStepRunes = 300
+	maxTodoSteps      = 256
+	maxTodoStepRunes  = 300
+	maxTodoOwnerRunes = 64
+	maxTodoIDRunes    = 64
 )
 
 func truncateRunes(value string, maxRunes int) string {
 	if maxRunes <= 0 {
 		return ""
+	}
+	// Fast path: byte length is an upper bound on rune count, so the
+	// great majority of inputs return without allocating []rune.
+	if len(value) <= maxRunes {
+		return value
 	}
 	runes := []rune(value)
 	if len(runes) <= maxRunes {

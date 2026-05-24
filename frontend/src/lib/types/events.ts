@@ -390,10 +390,19 @@ export type TodoStepStatus = 'pending' | 'inProgress' | 'completed';
 
 /**
  * TodoStep is one item in a live todo list snapshot.
+ *
+ * `id` and `owner` are populated by the Claude Code 2.1.150+ Task*
+ * family (TaskCreate / TaskUpdate). Legacy TodoWrite and Codex
+ * update_plan omit both; the widget treats them as optional —
+ * missing `id` falls back to position-based keying, missing or empty
+ * `owner` suppresses the badge so the rendering matches the
+ * pre-Task* behaviour exactly.
  */
 export interface TodoStep {
   step: string;
   status: TodoStepStatus;
+  id?: string;
+  owner?: string;
 }
 
 /**

@@ -113,8 +113,14 @@ func (p *Parser) appendToolResultBlock(
 		return events
 	}
 
-	content := extractToolResultText(block["content"])
-
+	// TaskCreate / TaskUpdate carve-out (Claude Code 2.1.150+): the
+	// tool_use staged a pending mutation in parse_assistant.go without
+	// emitting a row. Apply the mutation against the parser's local
+	// task mirror now that the authoritative result has arrived, emit
+	// the snapshot through the existing EventTodoUpdate channel so the
+	// activity rail widget gets the same shape it consumed under
+	// TodoWrite, and drop the matching completion so we don't emit an
+	// orphan row.
 	// Resolve the structured `tool_use_result` sibling for this
 	// block. `indexToolUseResults` succeeds when the wire shape
 	// is an array or a map keyed by tool_use_id, but Claude's
@@ -124,13 +130,19 @@ func (p *Parser) appendToolResultBlock(
 	// `tool_use_id` field and falls through the indexer with an
 	// empty result. The fallback to `raw["tool_use_result"]` covers
 	// that case: a single tool_use_result paired with a single
-	// tool_result block IS for that block. Used for both the
-	// standard EventToolComplete meta and the TaskOutput
-	// enrichment path below.
+	// tool_result block IS for that block. Used for the standard
+	// EventToolComplete meta, the TaskOutput enrichment path below,
+	// and the TaskCreate/TaskUpdate carve-out.
 	toolUseResultRaw := toolUseResults[toolUseID]
 	if len(toolUseResultRaw) == 0 {
 		toolUseResultRaw = raw["tool_use_result"]
 	}
+
+	if mutation, ok := p.takePendingTaskMutation(toolUseID); ok {
+		return p.applyPendingTaskMutation(events, threadID, now, mutation, toolUseID, toolUseResultRaw)
+	}
+
+	content := extractToolResultText(block["content"])
 
 	// Always emit `EventToolComplete` for the tool's own id — no
 	// short-circuit for TaskOutput or backgrounded placeholders. The
@@ -292,6 +304,79 @@ func appendToolResultCompletion(
 		Timestamp: now,
 		Raw:       line,
 	})
+}
+
+// applyPendingTaskMutation completes a TaskCreate / TaskUpdate
+// roundtrip: decode the staged input, decode the result echo,
+// mutate the parser's local task mirror, and emit a fresh
+// EventTodoUpdate snapshot. A failed mutation (TaskCreate with no
+// id in the result, TaskUpdate with success=false, decode errors)
+// drops state changes silently and emits no event — the original
+// timeline already has no row to clean up because the assistant
+// path suppressed the EventToolStart.
+//
+// The carve-out is symmetric with TodoWrite: no EventToolComplete
+// is appended either way, so the tool lifecycle invariant ("every
+// EventToolStart pairs with one EventToolComplete") remains intact —
+// neither side ever fired.
+func (p *Parser) applyPendingTaskMutation(
+	events []provider.ProviderEvent,
+	threadID string,
+	now time.Time,
+	mutation pendingTaskMutation,
+	toolUseID string,
+	toolUseResult json.RawMessage,
+) []provider.ProviderEvent {
+	var changed bool
+	switch mutation.op {
+	case "create":
+		changed = p.applyTaskCreateResult(mutation.input, toolUseResult)
+	case "update":
+		changed = p.applyTaskUpdateResult(mutation.input, toolUseResult)
+	}
+	if !changed {
+		return events
+	}
+	return p.buildTaskSnapshotEvent(events, threadID, mutation.op, mutation.parentToolUseID, toolUseID, now)
+}
+
+func (p *Parser) applyTaskCreateResult(input, toolUseResult json.RawMessage) bool {
+	decoded, ok := decodeTaskCreateInput(input)
+	if !ok {
+		return false
+	}
+	id := taskCreateResultID(toolUseResult)
+	if id == "" {
+		// No authoritative id in the result — the create either
+		// failed upstream or the wire shape drifted. Either way we
+		// can't key our local mirror, so leave state unchanged.
+		return false
+	}
+	// Pass "" for status so upsertTaskFromCreate's default-on-insert
+	// path picks "pending" for new tasks while the duplicate-id branch
+	// preserves any prior TaskUpdate status. TaskCreate doesn't own
+	// status; only TaskUpdate does.
+	return p.upsertTaskFromCreate(id, decoded.Subject, "", "")
+}
+
+func (p *Parser) applyTaskUpdateResult(input, toolUseResult json.RawMessage) bool {
+	decoded, ok := decodeTaskUpdateInput(input)
+	if !ok {
+		return false
+	}
+	// Decode the result and only skip on a confirmed failure. An
+	// absent body or unparseable result returns resultOK=false and
+	// falls through to apply — the model already saw the tool_use
+	// reach completion, so refusing to mirror the mutation locally
+	// would diverge the rail from what Claude shows. The explicit
+	// success:false branch is the single guard against confirmed
+	// rejection.
+	result, resultOK := decodeTaskUpdateResult(toolUseResult)
+	if resultOK && !result.Success {
+		return false
+	}
+	status, deleted := normalizeTaskStatus(decoded.Status)
+	return p.mutateTask(decoded.TaskID, decoded.Subject, decoded.Owner, status, deleted)
 }
 
 // extractToolResultText flattens the content of a tool_result block into a

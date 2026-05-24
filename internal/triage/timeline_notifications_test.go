@@ -225,6 +225,38 @@ func TestCleanupThreadClearsLiveTodoSnapshot(t *testing.T) {
 	}
 }
 
+// TestDecodeTodoStepsTruncatesIDAndOwner pins the wire-input bounds
+// on the optional Task* fields. The owner and id originate in model
+// output and the rail/widget receive whatever the parser emits, so the
+// rune caps are the defense against a runaway provider stuffing a
+// multi-MB string into a single snapshot field. Step bounds are
+// covered indirectly elsewhere; this is the direct boundary check.
+func TestDecodeTodoStepsTruncatesIDAndOwner(t *testing.T) {
+	// Build owner/id strings that straddle the cap exactly (64 runes
+	// passes through; 65 runes truncates).
+	longOwner := strings.Repeat("o", 65)
+	longID := strings.Repeat("i", 65)
+	exactOwner := strings.Repeat("p", 64)
+	exactID := strings.Repeat("j", 64)
+	raw := json.RawMessage(`{"plan":[
+		{"step":"first","status":"pending","id":"` + exactID + `","owner":"` + exactOwner + `"},
+		{"step":"second","status":"pending","id":"` + longID + `","owner":"` + longOwner + `"}
+	]}`)
+	steps := decodeTodoSteps(raw)
+	if len(steps) != 2 {
+		t.Fatalf("steps: got %d, want 2", len(steps))
+	}
+	if steps[0].ID != exactID || steps[0].Owner != exactOwner {
+		t.Errorf("step[0]: 64-rune values must pass through; got id=%q owner=%q", steps[0].ID, steps[0].Owner)
+	}
+	if !strings.HasSuffix(steps[1].ID, "...") || len([]rune(steps[1].ID)) != 67 {
+		t.Errorf("step[1].id: expected truncation to 64 runes + \"...\"; got %q", steps[1].ID)
+	}
+	if !strings.HasSuffix(steps[1].Owner, "...") || len([]rune(steps[1].Owner)) != 67 {
+		t.Errorf("step[1].owner: expected truncation to 64 runes + \"...\"; got %q", steps[1].Owner)
+	}
+}
+
 func TestTimelineNotificationMetaIsAllowlisted(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

@@ -90,8 +90,8 @@
     {summaryLabel}
   </div>
   <ul class="flex flex-col gap-0.5 pl-1" data-testid="activity-rail-todos-list">
-    {#each visibleSteps as entry (entry.originalIndex)}
-      <li class="flex items-start gap-1.5 py-px text-[12px] leading-snug">
+    {#each visibleSteps as entry (entry.step.id ?? entry.originalIndex)}
+      <li class="flex flex-wrap items-start gap-x-1.5 gap-y-px py-px text-[12px] leading-snug">
         <Icon
           icon={statusIcon(entry.step.status)}
           size={11}
@@ -99,6 +99,15 @@
           class={`mt-[3px] shrink-0 ${statusIconClass(entry.step.status)}`}
         />
         <span class={statusClass(entry.step.status)}>{entry.step.step}</span>
+        {#if entry.step.owner}
+          <span
+            class="mt-px inline-flex items-center rounded-full bg-surface-2/60 px-1.5 py-px font-mono text-[10px] text-fg-muted/85"
+            data-testid="activity-rail-todos-owner"
+            title="Owned by {entry.step.owner}"
+          >
+            {entry.step.owner}
+          </span>
+        {/if}
       </li>
     {/each}
     {#if !showAll && hiddenCount > 0}

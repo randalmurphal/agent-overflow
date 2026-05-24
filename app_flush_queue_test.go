@@ -1424,7 +1424,7 @@ func TestGetThreadLiveState_ReturnsServerSideSnapshot(t *testing.T) {
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind:      provider.EventTodoUpdate,
 		ThreadID:  thread.ID,
-		Meta:      json.RawMessage(`{"plan":[{"step":"one","status":"inProgress"}]}`),
+		Meta:      json.RawMessage(`{"plan":[{"step":"one","status":"inProgress","id":"1","owner":"helper-agent"}]}`),
 		Timestamp: time.UnixMilli(1_700_000_000_100),
 	}); err != nil {
 		t.Fatalf("todo update: %v", err)
@@ -1463,6 +1463,13 @@ func TestGetThreadLiveState_ReturnsServerSideSnapshot(t *testing.T) {
 	}
 	if state.Todo == nil || state.Todo.UpdatedAt != 1_700_000_000_100 || len(state.Todo.Steps) != 1 || state.Todo.Steps[0].Step != "one" {
 		t.Fatalf("Todo = %+v, want live todo snapshot", state.Todo)
+	}
+	// The Task* family (Claude Code 2.1.150+) threads `id` and `owner`
+	// through the snapshot. The refresh/reconnect path must surface
+	// them or the owner badge silently disappears after a frontend
+	// reload until the next TaskUpdate fires.
+	if state.Todo.Steps[0].ID != "1" || state.Todo.Steps[0].Owner != "helper-agent" {
+		t.Fatalf("Todo.Steps[0] = %+v, want id=1 owner=helper-agent", state.Todo.Steps[0])
 	}
 }
 

@@ -187,4 +187,32 @@ describe("classifyToolName", () => {
     expect(out.label).toBe("advisor");
     expect(out.isSubagent).toBe(false);
   });
+
+  it("ToolSearch maps to search icon with the tool-search label", () => {
+    // Claude Code 2.1.150+ deferred-tool schema loader. Without an
+    // explicit entry, ToolSearch falls through to the generic bucket
+    // and ends up rendering the raw `select:Foo` query string as if it
+    // were a tool name. The classifier owns the visual; the preview
+    // helper owns the disambiguated body.
+    const out = classifyToolName("ToolSearch");
+    expect(out.icon).toBe("search");
+    expect(out.label).toBe("tool search");
+    expect(out.isSubagent).toBe(false);
+  });
+
+  it.each([
+    ["TaskList", "tasks"],
+    ["TaskGet", "task"],
+  ])(
+    "%s renders as a checklist row with label %s",
+    (name, label) => {
+      // Read-only members of the Task* family. TaskCreate / TaskUpdate
+      // are intercepted in Go and never reach this classifier; only
+      // List/Get appear as regular timeline rows.
+      const out = classifyToolName(name);
+      expect(out.icon).toBe("checklist");
+      expect(out.label).toBe(label);
+      expect(out.isSubagent).toBe(false);
+    },
+  );
 });

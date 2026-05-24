@@ -37,6 +37,8 @@ type LiveStateTodo struct {
 type LiveStateTodoStep struct {
 	Step   string `json:"step"`
 	Status string `json:"status"`
+	ID     string `json:"id,omitempty"`
+	Owner  string `json:"owner,omitempty"`
 }
 
 // GetThreadLiveState returns the current server-side live state for a thread.
@@ -82,6 +84,8 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 			steps = append(steps, LiveStateTodoStep{
 				Step:   step.Step,
 				Status: step.Status,
+				ID:     step.ID,
+				Owner:  step.Owner,
 			})
 		}
 		state.Todo = &LiveStateTodo{
