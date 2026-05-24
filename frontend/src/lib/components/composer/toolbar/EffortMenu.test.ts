@@ -115,7 +115,7 @@ describe("<EffortMenu>", () => {
   it("renders Fast in the trigger when fast mode is enabled", async () => {
     const pane = await buildPane(makeThread({ fastMode: true }));
     const { getByTestId } = render(EffortMenu, { props: { pane } });
-    expect(triggerText(getByTestId)).toBe("Fast · High");
+    expect(triggerText(getByTestId)).toBe("High · Fast");
   });
 
   it("renders xhigh as xHigh in the trigger", async () => {
