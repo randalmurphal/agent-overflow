@@ -35,6 +35,10 @@ export function toolCardInputPreview(
   if (item.toolName === 'wait_agent') {
     return waitAgentPreview(item, itemMeta);
   }
+  if (item.toolName === 'Skill') {
+    const skill = skillPreviewFromMeta(itemMeta);
+    if (skill) return skill;
+  }
   if (item.toolName === 'ToolSearch') {
     const search = toolSearchPreview(itemMeta);
     if (search) return search;
@@ -406,6 +410,13 @@ function waitAgentPreview(item: Item, meta: Record<string, unknown> | null): str
  * Falls back to the empty string when the input is missing or
  * malformed; the caller chains through to the standard preview path.
  */
+function skillPreviewFromMeta(itemMeta: Record<string, unknown> | null): string {
+  const input = itemMeta?.input;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return '';
+  const skill = (input as Record<string, unknown>).skill;
+  return typeof skill === 'string' ? skill.trim() : '';
+}
+
 function toolSearchPreview(itemMeta: Record<string, unknown> | null): string {
   const input = itemMeta?.input;
   if (!input || typeof input !== 'object' || Array.isArray(input)) return '';

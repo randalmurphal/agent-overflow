@@ -102,6 +102,25 @@ describe('toolCardInputPreview', () => {
       );
     });
   });
+
+  describe('Skill preview', () => {
+    it('reads meta.input.skill as the inline preview', () => {
+      const item = makeItem({ toolName: 'Skill', summary: 'Skill' });
+      const itemMeta = { input: { skill: 'code-review' } };
+      expect(toolCardInputPreview(item, null, itemMeta)).toBe('code-review');
+    });
+
+    it('falls back to summary when meta.input is absent', () => {
+      const item = makeItem({ toolName: 'Skill', summary: 'Skill' });
+      expect(toolCardInputPreview(item, null, null)).toBe('Skill');
+    });
+
+    it('does not activate for non-Skill tools with a skill key in meta', () => {
+      const item = makeItem({ toolName: 'Bash', summary: 'Bash: echo hi' });
+      const itemMeta = { input: { skill: 'code-review' } };
+      expect(toolCardInputPreview(item, null, itemMeta)).toBe('Bash: echo hi');
+    });
+  });
 });
 
 describe('presentToolCardInputPreview', () => {

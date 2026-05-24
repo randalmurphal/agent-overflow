@@ -200,6 +200,13 @@ describe("classifyToolName", () => {
     expect(out.isSubagent).toBe(false);
   });
 
+  it("Skill maps to generic icon with skill label", () => {
+    const out = classifyToolName("Skill");
+    expect(out.icon).toBe("generic");
+    expect(out.label).toBe("skill");
+    expect(out.isSubagent).toBe(false);
+  });
+
   it.each([
     ["TaskList", "tasks"],
     ["TaskGet", "task"],

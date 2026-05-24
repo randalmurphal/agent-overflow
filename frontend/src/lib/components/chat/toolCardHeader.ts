@@ -200,6 +200,12 @@ export function classifyToolName(
         label: "advisor",
         isSubagent: false,
       };
+    case "Skill":
+      return {
+        icon: "generic",
+        label: "skill",
+        isSubagent: false,
+      };
   }
 
   return {

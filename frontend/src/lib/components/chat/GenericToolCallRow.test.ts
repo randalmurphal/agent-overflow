@@ -133,6 +133,24 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     expect(queryByTestId('tool-call-card-body')).toBeNull();
   });
 
+  it('renders Skill rows with the skill name as preview and a disabled chevron', async () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'Skill',
+      summary: 'Skill',
+      payloadId: 'p-skill',
+      meta: JSON.stringify({ toolName: 'Skill', input: { skill: 'code-review' } }),
+    });
+    const { getByTestId, queryByTestId } = render(GenericToolCallRow, { props: { item } });
+    expect(getByTestId('tool-call-card-label').textContent).toBe('skill');
+    expect(getByTestId('tool-call-card-preview').textContent).toBe('code-review');
+    const toggle = getByTestId('tool-call-card-toggle');
+    expect(toggle).toHaveAttribute('aria-disabled', 'true');
+    await fireEvent.click(toggle);
+    expect(queryByTestId('tool-call-card-body')).toBeNull();
+  });
+
   // Regression for the original click-to-open bug: tool-result paths
   // are usually agent-emitted relative paths, which the backend used
   // to reject. The row threads `pane.thread.workspacePath` through to
