@@ -1,8 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import { makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { createDiffPanelState } from '../../stores/diffPanel.svelte';
+import {
+  projectTurnCompleted,
+  projectTurnStarted,
+  resetForTest as resetThreadStatuses,
+} from '../../stores/threadStatuses.svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import UserMessage from './UserMessage.svelte';
 import type { UserMessageActions } from './userMessageActions';
@@ -11,6 +17,7 @@ describe('<UserMessage>', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetBindingMocks();
+    resetThreadStatuses();
     // GetAttachmentThumbnail is the inline-grid path (small bytes from the
     // SQLite thumbnail cache); GetAttachmentData is the modal lightbox path
     // (original-resolution refetch). Mock both so tests exercising either
@@ -21,6 +28,7 @@ describe('<UserMessage>', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    resetThreadStatuses();
   });
 
   function makeCheckpointedPane(userItemId = 'user:1'): ThreadPane {
@@ -159,6 +167,56 @@ describe('<UserMessage>', () => {
 
     expect(getByLabelText('Revert to this message')).toBeInTheDocument();
     expect(getByLabelText('Fork from this message')).toBeInTheDocument();
+  });
+
+  it('keeps the action toolbar in the layout (visibility:hidden) during an active turn so bubble width stays stable', async () => {
+    // Regression for the "bubble snaps wider after the agent responds"
+    // glitch: the toolbar used to unmount on getActiveTurn≠null and
+    // remount on turn-completed, which toggled the footer width as
+    // turns started/ended. The buttons now stay rendered (just
+    // invisible) so the bubble width is invariant across turn
+    // boundaries; race prevention is handled by visibility:hidden
+    // blocking pointer events.
+    const pane = makeCheckpointedPane();
+    const item = makeItem({
+      id: 'user:1',
+      threadId: 'thread-1',
+      turnIndex: 1,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'commit',
+    });
+    const actions: UserMessageActions = {
+      onRevertMessage: vi.fn(),
+      onForkMessage: vi.fn(),
+    };
+
+    const { container, getByLabelText } = render(UserMessage, {
+      props: { pane, item, actions },
+    });
+
+    const revertButton = getByLabelText('Revert to this message');
+    const forkButton = getByLabelText('Fork from this message');
+    const revertWrapper = revertButton.parentElement;
+    const forkWrapper = forkButton.parentElement;
+    expect(revertWrapper?.className).not.toContain('invisible');
+    expect(forkWrapper?.className).not.toContain('invisible');
+
+    projectTurnStarted('thread-1', 'turn-1', 1, 1000);
+    await tick();
+
+    expect(container.contains(revertButton)).toBe(true);
+    expect(container.contains(forkButton)).toBe(true);
+    expect(revertWrapper?.className).toContain('invisible');
+    expect(forkWrapper?.className).toContain('invisible');
+
+    projectTurnCompleted('thread-1', 'turn-1');
+    await tick();
+
+    expect(container.contains(revertButton)).toBe(true);
+    expect(container.contains(forkButton)).toBe(true);
+    expect(revertWrapper?.className).not.toContain('invisible');
+    expect(forkWrapper?.className).not.toContain('invisible');
   });
 
   it('requests message revert through the parent-owned handler', async () => {

@@ -59,21 +59,30 @@
   const revertBusy = $derived(actions?.revertingItemId === item.id);
   const forkBusy = $derived(actions?.forkingItemId === item.id);
 
-  // Visibility gating ensures the message action buttons are only present
-  // when at least one option is actionable:
-  //   - we have a pane to act on
-  //   - no turn currently in flight (revert/fork would race with active state)
-  //   - this exact user message has a checkpoint
-  //   - this isn't an in-flight message that hasn't landed yet
+  // Eligibility for the revert/fork message actions. Flips at most once
+  // per message lifetime — when the per-message checkpoint is captured —
+  // and then stays stable. Deliberately does NOT gate on getActiveTurn:
+  // unmounting the toolbar at turn-started / re-mounting at turn-completed
+  // toggles the bubble's footer width (no min-width on the bubble), which
+  // shows up as visible jitter on the just-sent user message. Race
+  // prevention during an active turn is handled by `actionsTurnLocked`,
+  // which renders the buttons as `visibility:hidden` — still in layout,
+  // no pointer events — instead of removing them from the DOM.
   const showMessageActions = $derived(
     pane !== undefined
       && (canRequestRevert || canRequestFork)
-      && getActiveTurn(pane.threadId) === null
       && pane.diffPanel.checkpointsLoaded
       && !pane.diffPanel.checkpointsUnavailable
       && hasMessageCheckpoint
-      && !isWireOnlyUserMessage
-      && !item.id.startsWith('local-pending-'),
+      && !isWireOnlyUserMessage,
+  );
+
+  // True while a turn is in flight on this pane's thread. Drives a
+  // `visibility:hidden` class on the action button wrappers so the
+  // bubble width stays constant across turn-started/turn-completed
+  // transitions and the buttons stay non-interactive during the turn.
+  const actionsTurnLocked = $derived(
+    pane !== undefined && getActiveTurn(pane.threadId) !== null,
   );
 
   const attachments = $derived<AttachmentPreviewSource[]>(
@@ -184,6 +193,7 @@
           <span
             bind:this={revertAnchor}
             class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100"
+            class:invisible={actionsTurnLocked}
           >
             <IconButton
               label="Revert to this message"
@@ -201,7 +211,10 @@
           </span>
         {/if}
         {#if canRequestFork}
-          <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+          <span
+            class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100"
+            class:invisible={actionsTurnLocked}
+          >
             <IconButton
               label="Fork from this message"
               size="sm"
