@@ -29,6 +29,35 @@ describe('findPathRanges', () => {
     ]);
   });
 
+  it('consumes a :line-endLine range, exposing only the start line', () => {
+    // The range bound is consumed (so the matched range covers the
+    // full `:18-23` suffix, not just `:18`) but not surfaced — callers
+    // open at the start line.
+    const text = 'see src/lib/foo.ts:18-23 for context';
+    const ranges = findPathRanges(text);
+    expect(ranges).toEqual([
+      { start: 4, end: 24, path: 'src/lib/foo.ts', line: 18, col: undefined },
+    ]);
+    // Lock the shape — no `endLine` field gets bolted on by accident.
+    // A future change that decides to surface the range bound has to
+    // update this test deliberately, not slip past it.
+    expect('endLine' in ranges[0]).toBe(false);
+    expect(text.slice(ranges[0].start, ranges[0].end)).toBe('src/lib/foo.ts:18-23');
+  });
+
+  it('degrades cleanly when the range bound is not digits', () => {
+    // `:18-foo` is the failure mode that exercises the `-\d+`
+    // alternative's lower bound. Without the `\d+` anchor, the regex
+    // could over-consume the trailing word; with it, the suffix
+    // matches `:18` only and `-foo` stays as trailing text.
+    const text = 'see src/lib/foo.ts:18-foo for context';
+    const ranges = findPathRanges(text);
+    expect(ranges).toEqual([
+      { start: 4, end: 21, path: 'src/lib/foo.ts', line: 18, col: undefined },
+    ]);
+    expect(text.slice(ranges[0].start, ranges[0].end)).toBe('src/lib/foo.ts:18');
+  });
+
   it('matches a leading-slash absolute path', () => {
     const ranges = findPathRanges('crashed at /Users/me/code/foo.ts:10');
     expect(ranges.length).toBe(1);

@@ -126,10 +126,14 @@ export function buildPathLinkExtension(
   const paths = Array.from(allowed).sort((a, b) => b.length - a.length);
 
   // Two anchored regexes used by the tokenizer:
-  //   bareRe    — `^(@)?<path>(?::\d+(?::\d+)?)?`
-  //   wrappedRe — ``^`(@)?<path>(?::\d+(?::\d+)?)?` ``  (backtick-wrapped)
-  // Group 1 = optional `@` prefix; group 2 = matched path; groups 3/4
-  // = optional `:line:col` suffix.
+  //   bareRe    — `^(@)?<path>(?::\d+(?:-\d+|:\d+)?)?`
+  //   wrappedRe — ``^`(@)?<path>(?::\d+(?:-\d+|:\d+)?)?` ``  (backtick-wrapped)
+  // Group 1 = optional `@` prefix; group 2 = matched path; group 3 =
+  // line; group 4 = col when the `:col` form is used. The `-endLine`
+  // alternative is non-capturing — clicking still opens at the start
+  // line, so the range bound is consumed (keeping the wrapped regex
+  // anchored to the trailing backtick) but not forwarded to the
+  // editor.
   //
   // Wrapped form wins against marked's built-in codespan tokenizer
   // because inline extensions run BEFORE built-ins at every position
@@ -139,7 +143,12 @@ export function buildPathLinkExtension(
   // expect for paths in prose while still routing the click to the
   // OpenInEditor binding.
   const alternation = paths.map(escapeRegex).join('|');
-  const suffix = `(?::(\\d+)(?::(\\d+))?)?`;
+  // Keep the supported suffix shapes in lockstep with
+  // `pathLinkify.ts#PATH_PATTERN` — both files must accept the same
+  // `:line` / `:line:col` / `:line-endLine` variants so an agent
+  // referencing a range gets the same treatment from the prose
+  // tokenizer and the tool-card preview matcher.
+  const suffix = `(?::(\\d+)(?:-\\d+|:(\\d+))?)?`;
   const bareRe = new RegExp(`^(@)?(${alternation})${suffix}`);
   const wrappedRe = new RegExp(`^\`(@)?(${alternation})${suffix}\``);
 

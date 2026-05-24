@@ -53,6 +53,23 @@ func TestExtractAndValidate(t *testing.T) {
 		}
 	})
 
+	t.Run("path with :line-endLine range lands on allowlist at start line", func(t *testing.T) {
+		// The frontend tokenizer (`pathLinkExtension.ts`) accepts the
+		// `:18-23` suffix and linkifies the full token; that depends on
+		// the Go extractor still emitting the path with line=18 even
+		// when the input carries a trailing `-23` the Go regex doesn't
+		// consume. Lock that contract so a future Go regex change
+		// doesn't silently break the frontend linkifier.
+		ws := seedWorkspace(t, "src/lib/foo.ts")
+		got := ExtractAndValidate(ws, "see src/lib/foo.ts:18-23 for context")
+		if len(got) != 1 {
+			t.Fatalf("expected one ref, got %#v", got)
+		}
+		if got[0].Path != "src/lib/foo.ts" || got[0].Line != 18 || got[0].Col != 0 {
+			t.Fatalf("expected {Path: src/lib/foo.ts, Line: 18, Col: 0}, got %#v", got[0])
+		}
+	})
+
 	t.Run("absolute path inside workspace validates", func(t *testing.T) {
 		ws := seedWorkspace(t, "abs.ts")
 		abs := filepath.Join(ws, "abs.ts")

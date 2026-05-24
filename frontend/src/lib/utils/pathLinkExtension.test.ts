@@ -112,6 +112,41 @@ describe('buildPathLinkExtension', () => {
     expect(links[0].href).not.toContain('col=');
   });
 
+  // The bare-form failure mode for ranges is softer than the wrapped
+  // case: without consuming `-endLine`, bareRe matches `src/foo.ts:18`
+  // and leaves `-23` as trailing plain text (visible as a blue pill
+  // glued to a gray `-23`). The suffix change consumes the range bound
+  // so the full token becomes the link surface, while the href stays
+  // at the start line.
+  it('linkifies a bare path with a :line-endLine range, opening at start line', () => {
+    const ext = buildPathLinkExtension([{ path: 'src/foo.ts' }], '');
+    const links = findLinks(lex('See src/foo.ts:18-23 for context.', ext));
+    expect(links).toHaveLength(1);
+    expect(links[0].raw).toBe('src/foo.ts:18-23');
+    expect(links[0].href).toContain('line=18');
+    expect(links[0].href).not.toContain('line=23');
+    expect(links[0].href).not.toContain('endLine');
+    expect(links[0].href).not.toContain('col=');
+  });
+
+  // Wrapped + range is the regression case from the screenshot. With
+  // the old suffix, wrappedRe required the closing backtick to land
+  // directly after `:line(:col)?`; `-23` blocked the match and marked
+  // fell through to its built-in codespan, rendering a plain pill.
+  // After the fix the full `:18-23` shape is consumed, the wrapped
+  // form succeeds, and the link emits at the start line.
+  it('linkifies a wrapped path with a :line-endLine range', () => {
+    const ext = buildPathLinkExtension([{ path: 'src/foo.ts' }], '');
+    const links = findLinks(lex('Edit `src/foo.ts:18-23` please.', ext));
+    expect(links).toHaveLength(1);
+    expect(links[0].raw).toBe('`src/foo.ts:18-23`');
+    expect(links[0].childTypes).toEqual(['codespan']);
+    expect(links[0].href).toContain('line=18');
+    expect(links[0].href).not.toContain('line=23');
+    expect(links[0].href).not.toContain('endLine');
+    expect(links[0].href).not.toContain('col=');
+  });
+
   it('ignores paths NOT in the allowlist (server validation is authoritative)', () => {
     const ext = buildPathLinkExtension([{ path: 'src/foo.ts' }], '');
     const links = findLinks(lex('See src/other/bar.ts here.', ext));

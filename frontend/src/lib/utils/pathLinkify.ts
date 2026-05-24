@@ -110,8 +110,17 @@ export interface PathRange {
 // `@workspace/...` shapes safely because each entry has already been
 // validated by `internal/pathlinks.ExtractAndValidate` against the
 // workspace fs.
+// The `-endLine` alternative on the suffix is non-capturing — the
+// caller (`toolCardPreview.ts`) only opens at the start line, so the
+// range bound is consumed (keeping the matched substring aligned with
+// the full token) without being exposed.
+//
+// Keep the supported suffix shapes in lockstep with
+// `pathLinkExtension.ts` — both files must accept the same `:line` /
+// `:line:col` / `:line-endLine` variants so a future regex tweak to
+// one surface doesn't silently leave the other behind.
 const PATH_PATTERN =
-  /(?:^|(?<=[\s(\[{,;'"`<>=]))((?:\.{0,2}\/|\/)?[\w.\-~]+(?:\/[\w.\-~]+)+)(?::(\d+)(?::(\d+))?)?/g;
+  /(?:^|(?<=[\s(\[{,;'"`<>=]))((?:\.{0,2}\/|\/)?[\w.\-~]+(?:\/[\w.\-~]+)+)(?::(\d+)(?:-\d+|:(\d+))?)?/g;
 
 // At least one of these segment shapes must appear so we don't linkify
 // trivial-looking strings. The patterns above already require >=1 `/`,
