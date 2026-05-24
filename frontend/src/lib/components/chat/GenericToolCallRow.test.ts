@@ -97,7 +97,6 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
 
   it('clicking the editor-link does NOT toggle the row body', async () => {
     const openMock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
-    // Provide a payloadId so the row renders as expandable.
     const item = makeItem({
       kind: 'tool_call',
       toolName: 'Read',
@@ -115,8 +114,22 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     });
     expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0, '']);
 
-    // Body did NOT expand because the filename link is not inside the
-    // toggle button.
+    expect(queryByTestId('tool-call-card-body')).toBeNull();
+  });
+
+  it('suppresses the dropdown for Read rows even when a payload exists', async () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'Read',
+      summary: 'src/lib/foo.ts',
+      payloadId: 'p-read',
+    });
+    const { queryByTestId, getByTestId } = render(GenericToolCallRow, { props: { item } });
+    const toggle = getByTestId('tool-call-card-toggle');
+    expect(toggle).toHaveAttribute('aria-disabled', 'true');
+    expect(toggle).toHaveAttribute('tabindex', '-1');
+    await fireEvent.click(toggle);
     expect(queryByTestId('tool-call-card-body')).toBeNull();
   });
 

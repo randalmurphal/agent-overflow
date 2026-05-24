@@ -174,6 +174,20 @@ describe('<ReadGroupRow>', () => {
     ]);
   });
 
+  it('renders a grayed-out chevron in the first column for alignment with disclosure rows', () => {
+    const group = mkGroup([
+      mkReadItem('r1', 'Read: a.go'),
+      mkReadItem('r2', 'Read: b.go'),
+    ]);
+    const { getByTestId } = render(ReadGroupRow, {
+      props: { pane: paneWithWorkspace(''), group },
+    });
+    const row = getByTestId('read-group-row');
+    const chevronSlot = row.children[0] as HTMLElement;
+    expect(chevronSlot.querySelector('svg')).not.toBeNull();
+    expect(chevronSlot.className).toContain('opacity-30');
+  });
+
   it('renders the eye tool-kind so the rail rhythm matches single Read rows', () => {
     // The continuous left rail under consecutive tool rows aligns
     // icon columns by tool kind. ReadGroupRow keeps `eye` (same as a

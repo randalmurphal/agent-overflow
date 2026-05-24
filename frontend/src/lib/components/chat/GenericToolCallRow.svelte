@@ -120,7 +120,7 @@
     return typeof error === 'string' ? error : '';
   });
 
-  let suppressBodyExpansion = $derived(item.toolName === 'TaskOutput');
+  let suppressBodyExpansion = $derived(item.toolName === 'TaskOutput' || item.toolName === 'Read');
   let hasExpandableBody = $derived(
     !suppressBodyExpansion &&
       (Boolean(item.payloadId) ||

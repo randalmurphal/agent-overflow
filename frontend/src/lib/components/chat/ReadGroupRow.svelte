@@ -5,9 +5,12 @@
   // geometry intentionally mirrors `TranscriptDisclosureHeader`'s
   // chev / icon / label / body columns so it lines up with the
   // adjacent tool rows under the continuous left rail. The chev slot
-  // renders an empty placeholder to keep the column width stable
-  // (matches non-expandable disclosure rows).
+  // renders a grayed chevron matching `TranscriptDisclosureHeader`'s
+  // `expandable={false}` rendering so the column aligns with adjacent
+  // tool rows.
 
+  import ChevronRight from 'lucide-svelte/icons/chevron-right';
+  import Icon from '../primitives/Icon.svelte';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import type { Item } from '../../types/models';
   import type { ReadGroupNode } from '../../utils/subagentGrouping';
@@ -109,7 +112,12 @@
   data-testid="read-group-row"
   data-tool-kind="eye"
 >
-  <span class="size-3 shrink-0 opacity-30" aria-hidden="true"></span>
+  <span
+    class="flex size-3 shrink-0 items-center justify-center text-fg-subtle opacity-30"
+    aria-hidden="true"
+  >
+    <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
+  </span>
   <span class="size-3.5 shrink-0 inline-flex items-center justify-center">
     <ToolKindIcon kind="eye" ariaLabel="reads" />
   </span>
