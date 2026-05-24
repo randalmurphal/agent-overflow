@@ -140,6 +140,14 @@ const SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX = 50;
 // bulk of a typical multi-second response.
 const QUIET_MS = 100;
 const FAILSAFE_MS = 2500;
+// Shortened quiet window used when the consumer's `quietContextSignal`
+// is truthy at bump time — that signal means "I have first-hand evidence
+// the visible async typesetting (svelte-streamdown's
+// shiki / katex / mermaid) is done." We still want ONE frame of
+// contentRO silence after the last event so the post-typesetting layout
+// has time to settle, but the conservative 100ms wait that defends
+// against late typesetting is no longer needed. 16ms ≈ one rAF tick.
+const SETTLED_QUIET_MS = 16;
 
 const UP_KEYS: ReadonlySet<string> = new Set(['PageUp', 'ArrowUp', 'Home']);
 const DOWN_KEYS: ReadonlySet<string> = new Set(['PageDown', 'ArrowDown', 'End']);
@@ -335,6 +343,20 @@ export interface UseStickToBottomController {
    * thread's settled `isWarm=true`, defeating the cascade-hide gate.
    */
   armWarmup(): void;
+  /**
+   * Notify the controller that the consumer's `quietContextSignal`
+   * flipped truthy. If the warm gate is still pending and a quiet
+   * timer is currently armed, re-arm with SETTLED_QUIET_MS instead of
+   * letting the original (longer) timer run to completion. No-op if
+   * already warm, no quiet timer is in flight, or the signal is still
+   * falsy at notify time.
+   *
+   * This is the seam for "I just learned async typesetting finished
+   * mid-cascade, please shorten the wait." Without it, a 100ms bump
+   * would run to completion even though our visibility into the
+   * cascade said we could lift in 16ms.
+   */
+  notifyQuietContextSignalChanged(): void;
 }
 
 export interface UseStickToBottomOptions {
@@ -351,6 +373,26 @@ export interface UseStickToBottomOptions {
    * channel surface stay on sync-pin.
    */
   animationMode?: () => 'spring' | 'instant';
+  /**
+   * Optional consumer-supplied signal that the visible
+   * async-typesetting context has settled (e.g. all currently-mounted
+   * svelte-streamdown instances have signaled `onsettled` since the
+   * warm gate was last armed). When truthy at the moment
+   * `bumpQuietTimer` fires, the warm-gate quiet window is shortened
+   * from QUIET_MS to SETTLED_QUIET_MS — we trust there is no late
+   * typesetting wave still in flight that could land an RO event after
+   * the gate lifts and produce a one-frame flicker. When falsy, the
+   * conservative QUIET_MS is preserved.
+   *
+   * Read per-fire — this is not a subscription. To shorten an existing
+   * timer mid-flight (signal flipped truthy AFTER a 100ms bump), the
+   * consumer should call `notifyQuietContextSignalChanged()`.
+   *
+   * Defaults to undefined (preserves existing QUIET_MS behavior for
+   * surfaces that have no async-typesetting signal — Discussion's
+   * ChannelView is the canonical example).
+   */
+  quietContextSignal?: () => boolean;
 }
 
 export function createUseStickToBottomController(
@@ -537,7 +579,28 @@ export function createUseStickToBottomController(
   function bumpQuietTimer(): void {
     if (warm) return;
     if (quietTimer) clearTimeout(quietTimer);
-    quietTimer = setTimeout(() => markWarm('quiet'), QUIET_MS);
+    const settled = options.quietContextSignal?.() ?? false;
+    const delay = settled ? SETTLED_QUIET_MS : QUIET_MS;
+    quietTimer = setTimeout(() => markWarm('quiet'), delay);
+  }
+
+  function notifyQuietContextSignalChanged(): void {
+    const settled = options.quietContextSignal?.() ?? false;
+    const haveTimer = quietTimer !== null;
+    let outcome: 'rearmed' | 'noop_warm' | 'noop_no_timer' | 'noop_signal_falsy';
+    if (warm) outcome = 'noop_warm';
+    else if (!haveTimer) outcome = 'noop_no_timer';
+    else if (!settled) outcome = 'noop_signal_falsy';
+    else outcome = 'rearmed';
+    trace('scroll.warmup.signalChanged', () => ({
+      outcome,
+      settled,
+      haveTimer,
+      warm,
+    }));
+    if (outcome !== 'rearmed') return;
+    clearTimeout(quietTimer!);
+    quietTimer = setTimeout(() => markWarm('quiet'), SETTLED_QUIET_MS);
   }
 
   // ===== Geometry =====
@@ -2067,6 +2130,7 @@ export function createUseStickToBottomController(
     stopScroll,
     setEscapedFromLock,
     armWarmup: beginWarmup,
+    notifyQuietContextSignalChanged,
     armRestoreSnap,
   };
 }

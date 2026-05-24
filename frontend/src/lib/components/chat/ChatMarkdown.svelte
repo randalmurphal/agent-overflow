@@ -29,7 +29,9 @@
   // delegate, reading `.markdown-body` and serializing the selected
   // range back to markdown. Outer wrapper still carries that class.
 
+  import { getContext } from 'svelte';
   import { Streamdown } from 'svelte-streamdown';
+  import { CHAT_MARKDOWN_SETTLED_CONTEXT } from './markdownSettledContext';
   import StreamdownCodeHost from './markdown/StreamdownCodeHost.svelte';
   import StreamdownMermaidHost from './markdown/StreamdownMermaidHost.svelte';
   import StreamdownMathHost from './markdown/StreamdownMathHost.svelte';
@@ -67,6 +69,20 @@
     pathRefs?: PathRef[];
     class?: string;
   } = $props();
+
+  // Aggregation hook for the chat warm-gate "is the visible
+  // async-typesetting context settled?" signal. MessageTimeline
+  // setContext()s a one-shot mark function on every armWarmup() so
+  // every ChatMarkdown rendered inside the timeline tree contributes
+  // to the same aggregation boolean. Non-timeline ChatMarkdowns
+  // (settings preview, design canvas, etc.) get `undefined` here and
+  // simply skip the signal.
+  const markSettled = getContext<(() => void) | undefined>(
+    CHAT_MARKDOWN_SETTLED_CONTEXT,
+  );
+  const handleSettled = (): void => {
+    markSettled?.();
+  };
 
   let root: HTMLDivElement | undefined = $state();
 
@@ -117,6 +133,7 @@
     renderHtml={false}
     controls={{ code: false, table: false }}
     {extensions}
+    onsettled={handleSettled}
     components={{
       code: StreamdownCodeHost,
       mermaid: StreamdownMermaidHost,

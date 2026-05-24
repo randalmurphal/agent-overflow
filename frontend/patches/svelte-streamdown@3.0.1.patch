@@ -16,6 +16,188 @@ index b0a4b6f489414f4ceb7f11d53ab7e420d713958b..707803ff50eed00ed5d22c1f7648dc96
  	);
  	const insidePopover = getContext('POPOVER');
  </script>
+diff --git a/dist/Elements/Code.svelte b/dist/Elements/Code.svelte
+index b60d68b7df76d1e580a728f42411d0ac749ab122..7022294de7e730910649dc6f7b9da6b35b7e870d 100644
+--- a/dist/Elements/Code.svelte
++++ b/dist/Elements/Code.svelte
+@@ -50,7 +50,9 @@
+ 		const theme = streamdown.shikiTheme;
+ 		const lang = token.lang;
+ 		untrack(() => {
+-			void highlighter.load(theme, lang);
++			if (highlighter.isReady(theme, lang)) return;
++			const resolveAsync = streamdown.registerAsyncResource?.();
++			highlighter.load(theme, lang).finally(() => resolveAsync?.());
+ 		});
+ 	});
+ </script>
+diff --git a/dist/Elements/Math.svelte b/dist/Elements/Math.svelte
+index 5bdcc4a447da9dadf4edf58cbb991030a0c3dc2a..b86dcca4ca37ef1eec370737a5816a9fe0af81da 100644
+--- a/dist/Elements/Math.svelte
++++ b/dist/Elements/Math.svelte
+@@ -17,9 +17,12 @@
+ 	let katexInstance = $state<typeof import('katex') | null>(null);
+ 
+ 	onMount(() => {
+-		import('katex').then((mod) => {
+-			katexInstance = mod.default;
+-		});
++		const resolveAsync = streamdown.registerAsyncResource?.();
++		import('katex')
++			.then((mod) => {
++				katexInstance = mod.default;
++			})
++			.finally(() => resolveAsync?.());
+ 	});
+ 
+ 	let inner = $state<HTMLElement | null>(null);
+diff --git a/dist/Elements/Mermaid.svelte b/dist/Elements/Mermaid.svelte
+index 8f6382c3ff28fe730c73a3285f77752fcc540d3a..9867682ff8befa29b4ca17ba573f158a8fc6b5e0 100644
+--- a/dist/Elements/Mermaid.svelte
++++ b/dist/Elements/Mermaid.svelte
+@@ -20,7 +20,12 @@
+ 
+ 	let mermaid = $state<any>(null);
+ 	onMount(async () => {
+-		mermaid = (await import('mermaid')).default;
++		const resolveAsync = streamdown.registerAsyncResource?.();
++		try {
++			mermaid = (await import('mermaid')).default;
++		} finally {
++			resolveAsync?.();
++		}
+ 	});
+ 
+ 	const useIsInsideForMoreThanAQuarterSecond = () => {
+@@ -217,7 +222,10 @@
+ 		<div
+ 			style={streamdown.isMounted ? streamdown.animationBlockStyle : ''}
+ 			class={streamdown.theme.mermaid.base}
+-			{@attach (node) => renderMermaid(token.text, node)}
++			{@attach (node) => {
++				const resolveAsync = streamdown.registerAsyncResource?.();
++				renderMermaid(token.text, node).finally(() => resolveAsync?.());
++			}}
+ 			{@attach insider.attach}
+ 			data-expanded={'false'}
+ 		>
+diff --git a/dist/Streamdown.svelte b/dist/Streamdown.svelte
+index b11c35036bd44f047f19b3b5576b3096ed937874..be81277e1a7622c116c3d707978b70fb2bc228dc 100644
+--- a/dist/Streamdown.svelte
++++ b/dist/Streamdown.svelte
+@@ -3,6 +3,7 @@
+ 	import { StreamdownContext, type StreamdownProps } from './context.svelte.js';
+ 	import { mergeTheme, shadcnTheme } from './theme.js';
+ 	import { parseBlocks } from './marked/index.js';
++	import { onMount } from 'svelte';
+ 
+ 	let {
+ 		content = '',
+@@ -33,6 +34,7 @@
+ 		mdxComponents,
+ 		components,
+ 		static: isStatic,
++		onsettled,
+ 		...snippets
+ 	}: StreamdownProps<Source> = $props();
+ 	import { useDarkMode } from './utils/darkMode.svelte.js';
+@@ -155,6 +157,49 @@
+ 	const id = $props.id();
+ 
+ 	const blocks = $derived(isStatic ? content : parseBlocks(content, streamdown.extensions));
++
++	// onsettled fires whenever this Streamdown's async resources have all
++	// resolved. Two firing rules, gated by `armed` (true after one
++	// microtask post-onMount so children's $effects/onMounts have run and
++	// registered any work):
++	//
++	// 1. First arming: if pendingAsyncCount is already 0, fire immediately
++	//    — there was no async work to wait for (plain text, fully-cached
++	//    highlighter / katex / mermaid).
++	// 2. After first fire: re-fire on every transition from >0 to 0.
++	//    Streaming chunks can re-introduce pending work (a new code fence
++	//    arrives mid-stream and needs highlighter.load); consumers can
++	//    debounce on their side if they only care about the first.
++	//
++	// The microtask defer protects against a mount-time race where the
++	// parent's $effect would observe pendingAsyncCount === 0 before child
++	// $effects had run and called registerAsyncResource(). In Svelte 5,
++	// child $effects flush before the parent's, so by the next microtask
++	// after onMount all children have registered.
++	let settledArmed = $state(false);
++	let prevPending = 0;
++	let firstFireDone = false;
++	onMount(() => {
++		queueMicrotask(() => {
++			settledArmed = true;
++		});
++	});
++	$effect(() => {
++		if (!settledArmed) return;
++		const curr = streamdown.pendingAsyncCount;
++		if (!firstFireDone) {
++			if (curr === 0) {
++				firstFireDone = true;
++				onsettled?.();
++			}
++			prevPending = curr;
++			return;
++		}
++		if (prevPending > 0 && curr === 0) {
++			onsettled?.();
++		}
++		prevPending = curr;
++	});
+ </script>
+ 
+ <div bind:this={element} class={className}>
+diff --git a/dist/context.svelte.d.ts b/dist/context.svelte.d.ts
+index d3f64ab18b514401c6515515d09c55825d5dd95c..9e5821a9e77df2d91c31a01cac3805d897b18e6e 100644
+--- a/dist/context.svelte.d.ts
++++ b/dist/context.svelte.d.ts
+@@ -24,6 +24,8 @@ export declare class StreamdownContext<Source extends Record<string, any> = Reco
+         footnotes: Map<string, Footnote>;
+     };
+     isMounted: boolean;
++    pendingAsyncCount: number;
++    registerAsyncResource(): () => void;
+     get animationTextStyle(): string | undefined;
+     get animationBlockStyle(): string | undefined;
+     constructor(props: Omit<StreamdownProps, keyof Snippets | 'class'> & {
+@@ -176,5 +178,6 @@ export type StreamdownProps<Source extends Record<string, any> = Record<string,
+             id: string;
+         }, any, any>;
+     };
++    onsettled?: () => void;
+ } & Partial<Snippets<Source>>;
+ export {};
+diff --git a/dist/context.svelte.js b/dist/context.svelte.js
+index 1131b2c3261d104c151289c31e126dea2167ab30..4325191ac0af03ce76ab8c114fb68c1d1ef457d0 100644
+--- a/dist/context.svelte.js
++++ b/dist/context.svelte.js
+@@ -5,6 +5,22 @@ export class StreamdownContext {
+         footnotes: new Map()
+     };
+     isMounted = false;
++    // Count of async resources currently in-flight: highlighter loads,
++    // katex module import, mermaid module import / render. Each call to
++    // `registerAsyncResource()` increments and returns a one-shot resolve
++    // function that decrements. Reactive so consumers (Streamdown.svelte's
++    // onsettled wiring, embedding apps) can subscribe via $effect.
++    pendingAsyncCount = $state(0);
++    registerAsyncResource() {
++        this.pendingAsyncCount += 1;
++        let done = false;
++        return () => {
++            if (done)
++                return;
++            done = true;
++            this.pendingAsyncCount -= 1;
++        };
++    }
+     get animationTextStyle() {
+         return getContext('POPOVER')
+             ? undefined
 diff --git a/dist/utils/parse-incomplete-markdown.js b/dist/utils/parse-incomplete-markdown.js
 index 63a979fbe298a9a4a88bfb3d3cd6bba6a3ba1e95..7fb491f4c38f713277d323c75520af15b772fb9c 100644
 --- a/dist/utils/parse-incomplete-markdown.js

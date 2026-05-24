@@ -2315,6 +2315,168 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
   });
 
+  describe('warm-up gate — quietContextSignal', () => {
+    // These tests construct their own controller because they need to
+    // pass a quietContextSignal option that the outer beforeEach's
+    // controller does not provide.
+
+    let localScrollEl: HTMLDivElement;
+    let localContentEl: HTMLDivElement;
+    let localGeom: Geometry;
+    let localController: UseStickToBottomController;
+    let settled = false;
+
+    function getLocalRO(): MockResizeObserver {
+      const ro = MockResizeObserver.instances.at(-1);
+      if (!ro) throw new Error('no ResizeObserver was created');
+      return ro;
+    }
+
+    function buildLocalController(opts: { signal: (() => boolean) | undefined }): void {
+      localScrollEl = document.createElement('div');
+      localContentEl = document.createElement('div');
+      localScrollEl.appendChild(localContentEl);
+      document.body.appendChild(localScrollEl);
+      localGeom = { scrollHeight: 1000, clientHeight: 600, scrollTop: 400, contentHeight: 800 };
+      stubGeometry(localScrollEl, localContentEl, localGeom);
+      localController = createUseStickToBottomController({
+        animationMode: () => 'instant',
+        quietContextSignal: opts.signal,
+      });
+      localController.attach(localScrollEl, localContentEl);
+    }
+
+    beforeEach(() => {
+      settled = false;
+    });
+
+    afterEach(() => {
+      localController?.detach();
+      localScrollEl?.remove();
+    });
+
+    it('signal truthy at first RO fire shortens the quiet window to ~one frame', async () => {
+      // Baseline established by the existing warm-up gate suite: with no
+      // signal, isWarm flips at QUIET_MS (100ms). With the signal truthy
+      // at bump time, we use SETTLED_QUIET_MS (16ms) instead.
+      settled = true;
+      buildLocalController({ signal: () => settled });
+      const ro = getLocalRO();
+      ro.fire(localContentEl, 800);
+      // 30ms is well past SETTLED_QUIET_MS (16ms) but well short of
+      // QUIET_MS (100ms). If the shortcut works, warm is true here;
+      // otherwise we'd still be waiting until ~100ms.
+      await waitMs(30);
+      expect(localController.isWarm).toBe(true);
+    });
+
+    it('signal falsy at first RO fire preserves QUIET_MS', async () => {
+      // The signal is false at bump time. We should still need to wait
+      // out QUIET_MS (100ms). At 30ms it has not flipped; at 150ms it
+      // has — matches the baseline timing.
+      buildLocalController({ signal: () => settled });
+      const ro = getLocalRO();
+      ro.fire(localContentEl, 800);
+      await waitMs(30);
+      expect(localController.isWarm).toBe(false);
+      await waitMs(150);
+      expect(localController.isWarm).toBe(true);
+    });
+
+    it('notifyQuietContextSignalChanged shortens an already-armed QUIET_MS timer', async () => {
+      // Real-world sequence: RO fires, signal is still false, timer
+      // arms for QUIET_MS. Later (e.g. ~50ms in) Streamdown's
+      // onsettled fires, MessageTimeline flips the aggregation boolean
+      // truthy, and calls notifyQuietContextSignalChanged. The
+      // remaining wait should be ~SETTLED_QUIET_MS, not the remaining
+      // ~50ms of the original QUIET_MS.
+      buildLocalController({ signal: () => settled });
+      const ro = getLocalRO();
+      ro.fire(localContentEl, 800);
+      await waitMs(50);
+      expect(localController.isWarm).toBe(false);
+
+      settled = true;
+      localController.notifyQuietContextSignalChanged();
+      // The re-armed timer is SETTLED_QUIET_MS=16ms from this moment,
+      // not from the original RO fire. 30ms covers it with margin.
+      await waitMs(30);
+      expect(localController.isWarm).toBe(true);
+    });
+
+    it('notifyQuietContextSignalChanged is a no-op when signal is still falsy', async () => {
+      // Defensive: the consumer might fire the notify spuriously, or
+      // race with a reset. If the signal still reads false, we keep
+      // the existing 100ms timer.
+      buildLocalController({ signal: () => settled });
+      const ro = getLocalRO();
+      ro.fire(localContentEl, 800);
+      await waitMs(50);
+      expect(localController.isWarm).toBe(false);
+
+      // Signal remains false; notify is a no-op.
+      localController.notifyQuietContextSignalChanged();
+      await waitMs(30);
+      // Total elapsed is ~80ms; original QUIET_MS timer hasn't fired.
+      expect(localController.isWarm).toBe(false);
+      await waitMs(50);
+      // Past the original 100ms now; warm has flipped via the original timer.
+      expect(localController.isWarm).toBe(true);
+    });
+
+    it('notifyQuietContextSignalChanged is a no-op when already warm', async () => {
+      buildLocalController({ signal: () => settled });
+      const ro = getLocalRO();
+      ro.fire(localContentEl, 800);
+      await waitMs(150);
+      expect(localController.isWarm).toBe(true);
+
+      // Flip signal truthy AFTER warm. Notify should not do anything
+      // observable — there is nothing to shorten.
+      settled = true;
+      expect(() => localController.notifyQuietContextSignalChanged()).not.toThrow();
+      expect(localController.isWarm).toBe(true);
+    });
+
+    it('notifyQuietContextSignalChanged is a no-op when no quiet timer is armed', async () => {
+      // beginWarmup only arms the failsafe; the quiet timer arms on
+      // the first contentRO event. If the consumer notifies before any
+      // RO fired (e.g. signal flips while the slice is still loading
+      // and contentEl is unmounted), the call must be safe.
+      buildLocalController({ signal: () => settled });
+      settled = true;
+      expect(() => localController.notifyQuietContextSignalChanged()).not.toThrow();
+      expect(localController.isWarm).toBe(false);
+    });
+
+    it('armWarmup() re-armed cascade: signal toggled mid-cycle does not leak across re-arm', async () => {
+      // After signal flips truthy and warm lands, a fresh armWarmup
+      // cycle begins. The signal IS still truthy (the consumer hasn't
+      // reset its aggregation boolean inline — the aggregation reset
+      // happens around armWarmup at the MessageTimeline layer, not
+      // here). For the controller in isolation, the second cascade
+      // should use whatever the signal reads at bump time. If the
+      // consumer keeps it truthy, the second cascade ALSO uses the
+      // short window. That's a valid state — it means typesetting was
+      // confirmed done before the warm gate even armed.
+      buildLocalController({ signal: () => settled });
+      const ro = getLocalRO();
+      ro.fire(localContentEl, 800);
+      await waitMs(150);
+      expect(localController.isWarm).toBe(true);
+
+      // Second cycle: armWarmup() drops warm back to false. signal is
+      // false at bump time, so QUIET_MS rules.
+      localController.armWarmup();
+      expect(localController.isWarm).toBe(false);
+      ro.fire(localContentEl, 810);
+      await waitMs(30);
+      expect(localController.isWarm).toBe(false);
+      await waitMs(150);
+      expect(localController.isWarm).toBe(true);
+    });
+  });
+
   describe('spring chase', () => {
     it('engages on positive delta when warm AND mode=spring', async () => {
       const ro = getRO();

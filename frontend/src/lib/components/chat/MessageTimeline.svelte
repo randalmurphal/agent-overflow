@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { onDestroy, tick, untrack } from 'svelte';
+  import { onDestroy, setContext, tick, untrack } from 'svelte';
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import { createUseStickToBottomController } from '../../utils/useStickToBottom.svelte';
+  import { CHAT_MARKDOWN_SETTLED_CONTEXT } from './markdownSettledContext';
   import {
     getThreadScrollSnapshot,
     setThreadScrollSnapshot,
@@ -225,9 +226,35 @@
   // 2.5s failsafe) defends against the e00723f regression where
   // mount-time virtua remeasurement + Streamdown typesetting would
   // spring-chase a thread restore visibly.
+  // Warm-gate aggregation: rising-edge-once boolean that flips true the
+  // first time ANY ChatMarkdown rendered inside the timeline tree fires
+  // `onsettled` since the last `armWarmup()` call. Reset to false by
+  // `armWarmupWithReset()` below. The controller reads this via
+  // `quietContextSignal` to shorten the warm-gate quiet window from
+  // QUIET_MS (100ms) to SETTLED_QUIET_MS (16ms) once we have first-hand
+  // evidence that the visible async-typesetting cascade (shiki / katex
+  // / mermaid) finished — the conservative 100ms wait exists to defend
+  // against a late typesetting wave landing an RO event after the gate
+  // lifts, and that defense is no longer needed once we know
+  // typesetting is done.
+  let anyMarkdownSettledSinceArm = $state(false);
+
   const stick = createUseStickToBottomController({
     animationMode: () => (getActiveTurn(pane.threadId) ? 'spring' : 'instant'),
+    quietContextSignal: () => anyMarkdownSettledSinceArm,
   });
+
+  function markMarkdownSettled(): void {
+    if (anyMarkdownSettledSinceArm) return;
+    anyMarkdownSettledSinceArm = true;
+    stick.notifyQuietContextSignalChanged();
+  }
+  setContext(CHAT_MARKDOWN_SETTLED_CONTEXT, markMarkdownSettled);
+
+  function armWarmupWithReset(): void {
+    anyMarkdownSettledSinceArm = false;
+    stick.armWarmup();
+  }
 
   let hostLayoutRetryToken = 0;
 
@@ -602,7 +629,7 @@
         // thread reproduced the visible "lands wrong, jumps to correct"
         // sequence; cache-miss switches off an unsettled prior thread
         // (warm=false coincidentally) hid the cascade and looked fine.
-        stick.armWarmup();
+        armWarmupWithReset();
         // Arm the one-shot restore-snap consent AFTER the defensive
         // setEscapedFromLock — which itself clears any prior arm — so the
         // upcoming `restoreToBottom() → stick.forceStick({reason:

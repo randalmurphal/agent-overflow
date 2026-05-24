@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   svelte-streamdown@3.0.1:
-    hash: 4220b0c52b2ed6d279fe1c786155356ef64aa25e9656e9095d914fb462990d5c
+    hash: 1e44288c6b05ec0ddc5d034306005bf945770ef5359be0009c91c56077d8113a
     path: patches/svelte-streamdown@3.0.1.patch
 
 importers:
@@ -66,7 +66,7 @@ importers:
         version: 5.55.4
       svelte-streamdown:
         specifier: 3.0.1
-        version: 3.0.1(patch_hash=4220b0c52b2ed6d279fe1c786155356ef64aa25e9656e9095d914fb462990d5c)(svelte@5.55.4)
+        version: 3.0.1(patch_hash=1e44288c6b05ec0ddc5d034306005bf945770ef5359be0009c91c56077d8113a)(svelte@5.55.4)
       virtua:
         specifier: 0.49.1
         version: 0.49.1(svelte@5.55.4)
@@ -2857,7 +2857,7 @@ snapshots:
     transitivePeerDependencies:
       - picomatch
 
-  svelte-streamdown@3.0.1(patch_hash=4220b0c52b2ed6d279fe1c786155356ef64aa25e9656e9095d914fb462990d5c)(svelte@5.55.4):
+  svelte-streamdown@3.0.1(patch_hash=1e44288c6b05ec0ddc5d034306005bf945770ef5359be0009c91c56077d8113a)(svelte@5.55.4):
     dependencies:
       '@floating-ui/dom': 1.7.6
       '@shikijs/langs': 3.23.0
