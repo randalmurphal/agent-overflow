@@ -101,12 +101,10 @@
         <span class={statusClass(entry.step.status)}>{entry.step.step}</span>
         {#if entry.step.owner}
           <span
-            class="mt-px inline-flex items-center rounded-full bg-surface-2/60 px-1.5 py-px font-mono text-[10px] text-fg-muted/85"
+            class="font-mono text-[10px] text-fg-muted/65"
             data-testid="activity-rail-todos-owner"
             title="Owned by {entry.step.owner}"
-          >
-            {entry.step.owner}
-          </span>
+          >({entry.step.owner})</span>
         {/if}
       </li>
     {/each}

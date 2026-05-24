@@ -153,7 +153,7 @@ describe('<ActivityRail>', () => {
 
     const badges = await findAllByTestId('activity-rail-todos-owner');
     expect(badges).toHaveLength(1);
-    expect(badges[0].textContent?.trim()).toBe('helper-agent');
+    expect(badges[0].textContent?.trim()).toBe('(helper-agent)');
   });
 
   it('renders no owner badge when every step has an empty/missing owner', async () => {
