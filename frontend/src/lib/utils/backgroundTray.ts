@@ -135,7 +135,7 @@ export function countRunningTrayTasks(items: readonly Item[]): number {
 }
 
 /**
- * Human-readable elapsed-time label — `12s` / `3m 7s` / `1h 12m`.
+ * Human-readable elapsed-time label — `12s` / `3m 7s` / `1h 12m 5s`.
  * Tray rows call this once per 1s tick against the task's live
  * elapsedMs; the formatting stays frontend-rendered because the Go
  * side computes raw deltas without locale-aware formatting.
@@ -148,7 +148,7 @@ export function formatElapsed(ms: number): string {
   if (minutes < 60) return `${minutes}m ${remSec}s`;
   const hours = Math.floor(minutes / 60);
   const remMin = minutes % 60;
-  return `${hours}h ${remMin}m`;
+  return `${hours}h ${remMin}m ${remSec}s`;
 }
 
 /**

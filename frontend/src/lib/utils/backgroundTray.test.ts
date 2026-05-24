@@ -225,9 +225,9 @@ describe('formatElapsed', () => {
     expect(formatElapsed(59 * 60_000 + 59_000)).toBe('59m 59s');
   });
 
-  it('formats hour-granularity durations as `Nh Mm`', () => {
-    expect(formatElapsed(3_600_000)).toBe('1h 0m');
-    expect(formatElapsed(3_600_000 + 12 * 60_000)).toBe('1h 12m');
+  it('formats hour-granularity durations as `Nh Mm Ss`', () => {
+    expect(formatElapsed(3_600_000)).toBe('1h 0m 0s');
+    expect(formatElapsed(3_600_000 + 12 * 60_000)).toBe('1h 12m 0s');
   });
 });
 
