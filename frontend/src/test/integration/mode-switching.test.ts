@@ -1,8 +1,9 @@
-// Integration tests for the in-thread agent-mode toggle. After the
-// design-mode rebuild, thread *type* (design / discussion) is immutable
-// and the composer toolbar carries either AgentModeToggle (chat ↔ plan
-// on chat threads) or DesignLockPill (display-only on design threads).
-// These tests mount App, select a thread, and exercise the toggle path.
+// Integration tests for the in-thread agent-mode toggle. Thread *type*
+// (design / discussion) is immutable post-creation; on chat threads the
+// composer toolbar carries AgentModeToggle (chat ↔ plan), and on design
+// / discussion threads the slot is empty (the in-pane ThreadModePicker
+// in the workspace strip already surfaces the mode). These tests mount
+// App, select a thread, and exercise the toggle path.
 
 import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
@@ -42,12 +43,14 @@ describe('App integration — agent-mode toggle', () => {
     resetAppState();
   });
 
-  it('shows the design lock pill on a design thread', async () => {
+  it('renders no agent-mode toggle on a design thread', async () => {
     const thread = makeThread({ title: 'Design Thread', mode: 'design' });
-    const { getByTestId, queryByTestId } = await mountWithThread(thread);
-    expect(getByTestId('composer-design-lock-pill')).toBeTruthy();
-    // The chat/plan toggle must NOT be present on design threads.
+    const { queryByTestId } = await mountWithThread(thread);
+    // Design threads have no chat ↔ plan toggle and no display-only
+    // mode pill in the composer toolbar — the ThreadModePicker in the
+    // workspace strip is the canonical mode indicator.
     expect(queryByTestId('composer-agent-mode-toggle')).toBeNull();
+    expect(queryByTestId('composer-design-lock-pill')).toBeNull();
   });
 
   it('toggles chat → plan via the composer button and calls UpdateThreadMode', async () => {

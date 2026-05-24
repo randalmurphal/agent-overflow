@@ -68,6 +68,20 @@ async function buildPane(thread: Thread) {
   setBindingMock('ListRecentTurns', async () => []);
   setBindingMock('ListThreadCheckpoints', async () => []);
   setBindingMock('AutoResumeThread', async () => null);
+  // ThreadModePicker fetches fresh defaults via GetThreadDefaults
+  // before swapping the placeholder so the new mode picks up the
+  // seeded model / branch / effort. Tests mock a stable payload so
+  // assertions on the spy don't race the binding.
+  setBindingMock('GetThreadDefaults', async () => ({
+    provider: 'claude',
+    model: 'claude-sonnet-4-6',
+    reasoningEffort: 'medium',
+    fastMode: false,
+    contextWindow: 200000,
+    runtimeMode: 'chat',
+    branch: 'main',
+    workspacePath: '/repo',
+  }));
   const pane = createThreadPane();
   await pane.switchThread(thread);
   return pane;
@@ -145,19 +159,29 @@ describe('<ThreadModePicker>', () => {
     expect(designItem.textContent ?? '').not.toContain('✓');
   });
 
-  it('selecting Design on a chat draft flips the placeholder via startDraftPlaceholder', async () => {
+  it('selecting Design on a chat draft flips the placeholder with seeded defaults', async () => {
     const pane = await buildPane(makeThread({ isDraft: true }));
     const spy = vi.spyOn(pane, 'startDraftPlaceholder');
     const { getByTestId, findByRole } = render(ThreadModePicker, { props: { pane } });
     await fireEvent.click(getByTestId('thread-mode-picker-trigger'));
     const designItem = await findByRole('menuitem', { name: /Design/ });
     await fireEvent.click(designItem);
-    // Mode flip routes through the same primitive ProjectPicker uses, so the
-    // draft swap stays uniform: pane store mints a new placeholder, composer
-    // draft text survives via the paneId-keyed registry.
-    expect(spy).toHaveBeenCalledTimes(1);
+    // Flip goes through flipPaneDraftPlaceholder, which awaits
+    // GetThreadDefaults before calling startDraftPlaceholder — the spy
+    // fires only after the binding resolves.
+    await vi.waitFor(() => {
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
     expect(spy.mock.calls[0][1]).toBe('design');
     expect(spy.mock.calls[0][0]).toMatchObject({ id: 'project-1' });
+    // The seeded defaults from GetThreadDefaults flow into the
+    // placeholder so the new design draft's toolbar isn't blank
+    // (regression: switching to design used to drop the seeded model
+    // and branch).
+    expect(spy.mock.calls[0][2]).toMatchObject({
+      model: 'claude-sonnet-4-6',
+      branch: 'main',
+    });
   });
 
   it('selecting the current mode is a no-op (no re-fire of startDraftPlaceholder)', async () => {
@@ -167,6 +191,11 @@ describe('<ThreadModePicker>', () => {
     await fireEvent.click(getByTestId('thread-mode-picker-trigger'));
     const chatItem = await findByRole('menuitem', { name: /Chat/ });
     await fireEvent.click(chatItem);
+    // Microtask boundary in case any async path was triggered; the
+    // no-op assertion has to wait long enough for a hypothetical flip
+    // call to land before declaring "didn't fire".
+    await Promise.resolve();
+    await Promise.resolve();
     expect(spy).not.toHaveBeenCalled();
   });
 });

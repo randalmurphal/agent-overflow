@@ -14,7 +14,6 @@
   import ModelProviderMenu from './ModelProviderMenu.svelte';
   import EffortMenu from './EffortMenu.svelte';
   import AgentModeToggle from './AgentModeToggle.svelte';
-  import DesignLockPill from './DesignLockPill.svelte';
   import AccessToggle from './AccessToggle.svelte';
   import McpServersTrigger from './McpServersTrigger.svelte';
   import PlanSidebarToggleButton from './PlanSidebarToggleButton.svelte';
@@ -65,7 +64,9 @@
 
   // Mode-toggle slot rules (immutable thread type policy):
   //   - chat threads: AgentModeToggle (chat ↔ plan)
-  //   - design threads: DesignLockPill (display-only)
+  //   - design threads: nothing — design is its own surface; the
+  //     in-pane ThreadModePicker in the workspace strip already
+  //     surfaces the thread's mode, no second indicator needed here
   //   - discussion threads: nothing — discussion has its own composer flow
   let isDesignThread = $derived(pane.thread?.mode === 'design');
   let isDiscussionThread = $derived(pane.thread?.mode === 'discussion');
@@ -141,9 +142,7 @@
   {#if hasComposableSurface}
     <ModelProviderMenu {pane} />
     <EffortMenu {pane} />
-    {#if isDesignThread}
-      <DesignLockPill />
-    {:else if !isDiscussionThread}
+    {#if !isDesignThread && !isDiscussionThread}
       <AgentModeToggle {pane} />
     {/if}
     <AccessToggle {pane} />

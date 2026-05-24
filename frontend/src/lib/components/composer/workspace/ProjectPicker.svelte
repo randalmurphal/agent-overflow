@@ -26,7 +26,10 @@
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import { getProject, getProjects } from '../../../stores/projects.svelte';
-  import type { DraftMode } from '../../../stores/threadCreation.svelte';
+  import {
+    flipPaneDraftPlaceholder,
+    type DraftMode,
+  } from '../../../stores/threadCreation.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
 
@@ -70,7 +73,7 @@
     triggerEl?.focus();
   }
 
-  function selectProject(projectId: string): void {
+  async function selectProject(projectId: string): Promise<void> {
     if (isLocked || switching) return;
     if (projectId === activeProjectId) {
       closeMenu();
@@ -80,7 +83,12 @@
     try {
       const project = getProject(projectId)?.project;
       if (!project) throw new Error('Project not found');
-      pane.startDraftPlaceholder(project, draftMode);
+      // flipPaneDraftPlaceholder fetches the destination project's seed
+      // defaults (current branch, last-used model for the project) so
+      // the placeholder doesn't surface as a blank toolbar after the
+      // project flip. Calling pane.startDraftPlaceholder directly would
+      // drop those values.
+      await flipPaneDraftPlaceholder(pane, project, draftMode);
     } catch (err) {
       console.error('Failed to switch draft project:', err);
       addToast('error', userFacingError(err));

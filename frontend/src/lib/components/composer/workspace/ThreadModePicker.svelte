@@ -21,7 +21,10 @@
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import { getProject } from '../../../stores/projects.svelte';
-  import type { DraftMode } from '../../../stores/threadCreation.svelte';
+  import {
+    flipPaneDraftPlaceholder,
+    type DraftMode,
+  } from '../../../stores/threadCreation.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
 
@@ -61,7 +64,7 @@
     triggerEl?.focus();
   }
 
-  function selectMode(next: DraftMode): void {
+  async function selectMode(next: DraftMode): Promise<void> {
     if (isLocked || switching) return;
     if (next === currentMode) {
       closeMenu();
@@ -76,7 +79,11 @@
     try {
       const project = getProject(projectId)?.project;
       if (!project) throw new Error('Project not found');
-      pane.startDraftPlaceholder(project, next);
+      // flipPaneDraftPlaceholder fetches fresh seed defaults (model,
+      // effort, branch) before swapping the placeholder so the new
+      // mode's toolbar isn't blank. Calling pane.startDraftPlaceholder
+      // directly would drop the seeded values.
+      await flipPaneDraftPlaceholder(pane, project, next);
     } catch (err) {
       console.error('Failed to switch draft mode:', err);
       addToast('error', userFacingError(err));
@@ -120,11 +127,11 @@
       placement="top-start"
       role="none"
     >
-      <Menu ariaLabel="Thread Mode" onClose={closeMenu}>
+      <Menu ariaLabel="Thread Mode" onClose={closeMenu} minWidthClass="min-w-[140px]">
         <MenuItem
           label="Chat"
           checked={currentMode === 'chat'}
-          onSelect={() => selectMode('chat')}
+          onSelect={() => void selectMode('chat')}
         >
           {#snippet icon()}
             <Icon icon={MessagesSquare} size={12} strokeWidth={2} class="opacity-90" />
@@ -133,7 +140,7 @@
         <MenuItem
           label="Design"
           checked={currentMode === 'design'}
-          onSelect={() => selectMode('design')}
+          onSelect={() => void selectMode('design')}
         >
           {#snippet icon()}
             <Icon icon={Palette} size={12} strokeWidth={2} class="opacity-90" />

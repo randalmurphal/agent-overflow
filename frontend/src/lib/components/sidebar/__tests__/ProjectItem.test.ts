@@ -133,7 +133,7 @@ describe('<ProjectItem>', () => {
     // not that it's currently applied (happy-dom can't simulate :hover).
     expect(newThreadButton.className).toContain('group-hover:opacity-100');
     await fireEvent.click(newThreadButton);
-    expect(onNewThread).toHaveBeenCalledWith('p1', { openInNewPane: false, mode: 'chat' });
+    expect(onNewThread).toHaveBeenCalledWith('p1', { openInNewPane: false });
   });
 
   it('ctrl-clicking the new-thread button requests a new pane', async () => {
@@ -150,7 +150,7 @@ describe('<ProjectItem>', () => {
 
     await fireEvent.click(getByTestId('project-item-new-thread'), { ctrlKey: true });
 
-    expect(onNewThread).toHaveBeenCalledWith('p1', { openInNewPane: true, mode: 'chat' });
+    expect(onNewThread).toHaveBeenCalledWith('p1', { openInNewPane: true });
   });
 
   it('cmd-clicking the new-thread button also requests a new pane', async () => {
@@ -167,7 +167,7 @@ describe('<ProjectItem>', () => {
 
     await fireEvent.click(getByTestId('project-item-new-thread'), { metaKey: true });
 
-    expect(onNewThread).toHaveBeenCalledWith('p1', { openInNewPane: true, mode: 'chat' });
+    expect(onNewThread).toHaveBeenCalledWith('p1', { openInNewPane: true });
   });
 
   it('ctrl-contextmenu on the new-thread button opens a new pane and does not open the project menu', async () => {
@@ -184,42 +184,8 @@ describe('<ProjectItem>', () => {
 
     await fireEvent.contextMenu(getByTestId('project-item-new-thread'), { ctrlKey: true });
 
-    expect(onNewThread).toHaveBeenCalledWith('p1', { openInNewPane: true, mode: 'chat' });
+    expect(onNewThread).toHaveBeenCalledWith('p1', { openInNewPane: true });
     expect(queryByRole('menu')).toBeNull();
-  });
-
-  it('clicking the new-design-thread button passes mode=design', async () => {
-    const onNewThread = vi.fn();
-    const pane = createThreadPane();
-    const { getByTestId } = render(ProjectItem, {
-      props: {
-        project: wrap('p1'),
-        threads: [],
-        pane,
-        onNewThread,
-      },
-    });
-    const designButton = getByTestId('project-item-new-design-thread') as HTMLButtonElement;
-    expect(designButton.className).toContain('group-hover:opacity-100');
-    await fireEvent.click(designButton);
-    expect(onNewThread).toHaveBeenCalledWith('p1', { openInNewPane: false, mode: 'design' });
-  });
-
-  it('ctrl-clicking the new-design-thread button requests a new pane with mode=design', async () => {
-    const onNewThread = vi.fn();
-    const pane = createThreadPane();
-    const { getByTestId } = render(ProjectItem, {
-      props: {
-        project: wrap('p1'),
-        threads: [],
-        pane,
-        onNewThread,
-      },
-    });
-
-    await fireEvent.click(getByTestId('project-item-new-design-thread'), { ctrlKey: true });
-
-    expect(onNewThread).toHaveBeenCalledWith('p1', { openInNewPane: true, mode: 'design' });
   });
 
   it('renders nested threads when expanded', async () => {

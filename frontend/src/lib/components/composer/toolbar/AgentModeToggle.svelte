@@ -4,10 +4,10 @@
   // `mode.cycle` command (Shift+Tab) calls — both go through cycleMode
   // so the keyboard shortcut and the button stay in lockstep.
   //
-  // This component renders ONLY on threads where the type is mutable
-  // (chat). Design and discussion threads have immutable types: their
-  // composer carries DesignLockPill / no toggle instead. The owner
-  // (ComposerToolbar) decides which to render based on pane.thread.mode.
+  // This component renders ONLY on chat threads. Design and discussion
+  // threads have immutable types and their composer omits this slot
+  // entirely; the in-pane ThreadModePicker in the workspace strip is
+  // where the mode is surfaced. ComposerToolbar gates the render.
 
   import Bot from 'lucide-svelte/icons/bot';
   import type { ThreadPane } from '../../../stores/thread.svelte';

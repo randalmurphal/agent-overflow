@@ -2,12 +2,14 @@
   // Workspace strip rendered INSIDE the composer card as the bottom-
   // most row. Thread-mode picker leads on the left (interactive while
   // the thread is a draft, read-only label once committed since mode
-  // is post-creation-immutable), then the project picker, then the env
-  // (workspace/worktree) picker, then the worktree branch-name input
-  // slotted next to it when the user has staged a new worktree, then
-  // the branch picker. The whole group sits on the left so the strip
-  // reads as a single "where am I" cluster rather than several opposing
-  // controls.
+  // is post-creation-immutable), then the project picker. Chat threads
+  // additionally surface the env (workspace/worktree) picker, an
+  // optional worktree branch-name input when the user has staged a new
+  // worktree, and the branch picker. Design threads stop after the
+  // project — they operate against the project root and have no
+  // worktree/branch surface to switch.
+  // The whole group sits on the left so the strip reads as a single
+  // "where am I" cluster rather than several opposing controls.
 
   import type { ThreadPane } from '../../stores/thread.svelte';
   import ThreadModePicker from './workspace/ThreadModePicker.svelte';
@@ -23,6 +25,7 @@
 
   let { pane }: Props = $props();
   let workspaceLock = createWorkspaceChangeLockState(() => pane);
+  let isDesignThread = $derived(pane.thread?.mode === 'design');
 </script>
 
 {#if pane.thread}
@@ -32,8 +35,10 @@
   >
     <ThreadModePicker {pane} />
     <ProjectPicker {pane} />
-    <EnvPicker {pane} {workspaceLock} />
-    <BranchPicker {pane} {workspaceLock} />
-    <WorktreeNameInput {pane} workspaceDirty={false} />
+    {#if !isDesignThread}
+      <EnvPicker {pane} {workspaceLock} />
+      <BranchPicker {pane} {workspaceLock} />
+      <WorktreeNameInput {pane} workspaceDirty={false} />
+    {/if}
   </div>
 {/if}

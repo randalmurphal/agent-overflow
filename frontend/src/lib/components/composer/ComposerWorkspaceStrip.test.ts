@@ -28,6 +28,19 @@ describe('<ComposerWorkspaceStrip>', () => {
     expect(getByTestId('branch-picker-trigger')).toBeInTheDocument();
   });
 
+  it('hides the env and branch pickers on a design thread', async () => {
+    // Design threads operate against the project root with no
+    // worktree/branch surface to switch — so the strip stops after the
+    // project picker. Mode is post-creation-immutable, so a fixture
+    // with mode=design is sufficient (no flip path to test).
+    const pane = await buildPane(makeThread({ mode: 'design' }));
+    const { getByTestId, queryByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
+    expect(getByTestId('composer-workspace-strip')).toBeInTheDocument();
+    expect(getByTestId('thread-mode-picker-trigger')).toBeInTheDocument();
+    expect(queryByTestId('env-picker-trigger')).toBeNull();
+    expect(queryByTestId('branch-picker-trigger')).toBeNull();
+  });
+
   it('renders thread mode picker before env and branch pickers in DOM order', async () => {
     // Thread mode leads, then env (worktree), then branch — all
     // on the left so the strip reads as a single "where am I" group.

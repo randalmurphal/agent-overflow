@@ -155,16 +155,15 @@
   });
 
   const handleNewThread: ProjectNewThreadHandler = async (projectId, options = {}) => {
-    // Mode is driven by which "+" button the user clicked (chat vs
-    // design). Each (project, mode) gets its own draft slot so a fresh
-    // chat draft and a fresh design draft can coexist for the same
-    // project. Defaulting to chat keeps "+ New" from inheriting design
-    // mode just because the currently-open thread happens to be design.
-    const draftMode = options.mode ?? 'chat';
+    // Sidebar "+" always opens a chat draft. Design drafts are created
+    // from the in-pane ThreadModePicker (or the "Thread: New Design"
+    // palette commands) — keeping the sidebar single-purpose avoids
+    // doubling the button count for an entry point most users won't
+    // reach for.
     try {
       await openDraftThreadForProject({
         projectId,
-        mode: draftMode,
+        mode: 'chat',
         targetPane: pane,
         openInNewPane: options.openInNewPane ?? false,
       });

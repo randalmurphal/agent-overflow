@@ -18,9 +18,22 @@
     ariaLabel: string;
     children: Snippet;
     onClose?: () => void;
+    /**
+     * Tailwind class controlling the menu's minimum width. Defaults to
+     * 200px, which fits the descriptions / long paths most pickers in
+     * the composer toolbar render. Pickers with only short labels
+     * (e.g. ThreadModePicker's "Chat" / "Design") should pass a
+     * tighter value so the popup doesn't look balloon-wide.
+     */
+    minWidthClass?: string;
   }
 
-  let { ariaLabel, children, onClose }: Props = $props();
+  let {
+    ariaLabel,
+    children,
+    onClose,
+    minWidthClass = 'min-w-[200px]',
+  }: Props = $props();
 
   let containerEl: HTMLDivElement | undefined = $state(undefined);
 
@@ -152,7 +165,7 @@
   aria-orientation="vertical"
   aria-label={ariaLabel}
   onkeydown={handleKeydown}
-  class="bg-surface-1 border border-border-subtle rounded-[var(--radius-control)] shadow-menu py-1 min-w-[200px] focus-visible:outline-none"
+  class="bg-surface-1 border border-border-subtle rounded-[var(--radius-control)] shadow-menu py-1 {minWidthClass} focus-visible:outline-none"
   data-menu
 >
   {@render children()}

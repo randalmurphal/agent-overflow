@@ -8,8 +8,36 @@ import {
 } from './panes.svelte';
 import { expandProject } from './sidebar.svelte';
 import type { DraftPlaceholderDefaults, ThreadPane } from './thread.svelte';
+import type { Project } from '../types/models';
 
 export type DraftMode = 'chat' | 'design';
+
+/**
+ * Fetch fresh seed defaults and replace the pane's draft placeholder
+ * with one keyed on the new (project, mode). The composer pickers
+ * (ProjectPicker, ThreadModePicker) both call this to keep the
+ * placeholder's toolbar (model, effort, runtime mode) and workspace
+ * strip (current git branch) populated across flips — calling
+ * `pane.startDraftPlaceholder` directly drops the seeded values and
+ * the toolbar/branch render empty.
+ *
+ * Defaults-fetch failures are swallowed to a warning (mirrors the
+ * shape of openDraftThreadForProject): an empty toolbar is better
+ * than failing the flip on a UI gesture.
+ */
+export async function flipPaneDraftPlaceholder(
+  pane: ThreadPane,
+  project: Project,
+  mode: DraftMode,
+): Promise<void> {
+  let defaults: DraftPlaceholderDefaults | undefined;
+  try {
+    defaults = await GetThreadDefaults({ projectId: project.id, mode });
+  } catch (err) {
+    console.warn('GetThreadDefaults failed; using empty placeholder defaults', err);
+  }
+  pane.startDraftPlaceholder(project, mode, defaults);
+}
 
 /**
  * Resolve which project the next draft thread should land in when the

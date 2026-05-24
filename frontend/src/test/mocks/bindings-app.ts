@@ -63,6 +63,7 @@ function dispatch(name: string) {
 export const ArchiveThread = dispatch('ArchiveThread');
 export const UnarchiveThread = dispatch('UnarchiveThread');
 export const CreateThread = dispatch('CreateThread');
+export const GetThreadDefaults = dispatch('GetThreadDefaults');
 export const DeleteThread = dispatch('DeleteThread');
 export const ForkThread = dispatch('ForkThread');
 export const GetThread = dispatch('GetThread');

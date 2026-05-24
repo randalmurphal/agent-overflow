@@ -1,8 +1,5 @@
-import type { DraftMode } from '../../stores/threadCreation.svelte';
-
 export interface ProjectNewThreadOptions {
   openInNewPane?: boolean;
-  mode?: DraftMode;
 }
 
 export type ProjectNewThreadHandler = (
