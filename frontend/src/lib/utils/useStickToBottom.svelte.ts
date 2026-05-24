@@ -456,16 +456,28 @@ export function createUseStickToBottomController(
   // ScrollTop` which flips `controllerOwnsScrollTopWrite` to bypass the
   // gate. External writes (virtua, future libs, browser auto-anchor)
   // are evaluated against the controller's intent: when the user is
-  // sticking-and-engaged AND the warm gate has cleared, drop them so
-  // the spring/sync-pin in contentRO stays the single writer; when the
-  // user is reading mid-thread (escaped), auto-follow is paused, or the
-  // warm-up cascade is still running (attach + restore both reset
-  // `warm`), pass them through so above-viewport visual stability still
-  // works and virtua's mount-cascade `$fixScrollJump` compensation can
-  // settle the slice correctly. `externalScrollIgnoreUntil` (set by
-  // `runExternalScroll`) also passes through so explicit programmatic
-  // scrolls — load-older anchor restore, search-hit scrollToIndex —
-  // are honored even while sticking.
+  // sticking-and-engaged AND the warm gate has cleared AND a spring
+  // chase is currently in flight (`springToken !== 0`), drop them so
+  // the spring stays the single writer for the duration of the chase.
+  // Otherwise pass through:
+  //   - user is reading mid-thread (escaped), auto-follow is paused, or
+  //     the warm-up cascade is still running (attach + restore both
+  //     reset `warm`) — above-viewport visual stability matters and
+  //     virtua's mount-cascade `$fixScrollJump` compensation must land;
+  //   - `animationMode === 'instant'` — the controller would sync-pin
+  //     to the same target virtua is writing, so racing them produces a
+  //     mis-pinned frame; letting virtua's write land first arrives at
+  //     the right place in the same paint;
+  //   - no spring is in flight (`springToken === 0`) — the gate's sole
+  //     purpose is keeping the spring as single writer during a chase;
+  //     with no chase, suppression has nothing to protect and just
+  //     desynchronizes virtua's internal scrollOffset from DOM
+  //     scrollTop (bug-report-20260524T200233Z: thread-switch flicker
+  //     on actively-streaming threads — 15/15 suppressions at
+  //     springToken=0 produced the visible mis-pinned frame).
+  // `externalScrollIgnoreUntil` (set by `runExternalScroll`) also
+  // passes through so explicit programmatic scrolls — load-older anchor
+  // restore, search-hit scrollToIndex — are honored even while sticking.
   let savedScrollTopDescriptor: PropertyDescriptor | undefined;
   let savedScrollTopWasOwn = false;
   let externalScrollTopGateInstalled = false;
@@ -535,6 +547,7 @@ export function createUseStickToBottomController(
   let warm = $state(false);
   let quietTimer: ReturnType<typeof setTimeout> | null = null;
   let failsafeTimer: ReturnType<typeof setTimeout> | null = null;
+  let hasFirstContentRO = false;
 
   function clearWarmupTimers(): void {
     if (quietTimer) {
@@ -561,6 +574,7 @@ export function createUseStickToBottomController(
   function beginWarmup(): void {
     clearWarmupTimers();
     warm = false;
+    hasFirstContentRO = false;
     // ONLY arm the failsafe. The quiet timer is armed by `bumpQuietTimer`
     // on the FIRST contentRO event — gating the "quiet" signal on actual
     // RO evidence is what defends against the load-bearing case where
@@ -578,28 +592,37 @@ export function createUseStickToBottomController(
 
   function bumpQuietTimer(): void {
     if (warm) return;
+    hasFirstContentRO = true;
     if (quietTimer) clearTimeout(quietTimer);
-    const settled = options.quietContextSignal?.() ?? false;
-    const delay = settled ? SETTLED_QUIET_MS : QUIET_MS;
-    quietTimer = setTimeout(() => markWarm('quiet'), delay);
+    if (!options.quietContextSignal) {
+      quietTimer = setTimeout(() => markWarm('quiet'), QUIET_MS);
+      return;
+    }
+    const settled = options.quietContextSignal();
+    if (!settled) {
+      quietTimer = null;
+      return;
+    }
+    quietTimer = setTimeout(() => markWarm('quiet'), SETTLED_QUIET_MS);
   }
 
   function notifyQuietContextSignalChanged(): void {
     const settled = options.quietContextSignal?.() ?? false;
     const haveTimer = quietTimer !== null;
-    let outcome: 'rearmed' | 'noop_warm' | 'noop_no_timer' | 'noop_signal_falsy';
+    let outcome: 'armed' | 'rearmed' | 'noop_warm' | 'noop_no_ro' | 'noop_signal_falsy';
     if (warm) outcome = 'noop_warm';
-    else if (!haveTimer) outcome = 'noop_no_timer';
     else if (!settled) outcome = 'noop_signal_falsy';
-    else outcome = 'rearmed';
+    else if (!haveTimer && !hasFirstContentRO) outcome = 'noop_no_ro';
+    else if (haveTimer) outcome = 'rearmed';
+    else outcome = 'armed';
     trace('scroll.warmup.signalChanged', () => ({
       outcome,
       settled,
       haveTimer,
       warm,
     }));
-    if (outcome !== 'rearmed') return;
-    clearTimeout(quietTimer!);
+    if (outcome === 'noop_warm' || outcome === 'noop_no_ro' || outcome === 'noop_signal_falsy') return;
+    if (quietTimer) clearTimeout(quietTimer);
     quietTimer = setTimeout(() => markWarm('quiet'), SETTLED_QUIET_MS);
   }
 
@@ -1910,7 +1933,24 @@ export function createUseStickToBottomController(
           origSet.call(el, value);
           return;
         }
-        // Warm + sticking-and-engaged + spring chase wanted. Drop
+        // No spring is in flight (`springToken === 0`). The gate's
+        // sole purpose is to keep the spring as the single writer
+        // during a chase — when no chase exists, suppression has no
+        // target to protect and only blocks legitimate virtua
+        // `$fixScrollJump` anchor preservation. The original sync-pin
+        // path that would otherwise race virtua only runs while
+        // `mode === 'instant'` (handled above); in spring mode without
+        // an active chase the controller is dormant, so virtua's write
+        // is the only writer and must land. Regression evidence:
+        // bug-report-20260524T200233Z had 15/15 externalWriteSuppressed
+        // events at springToken=0 producing the thread-switch flicker
+        // on actively-streaming threads (mode=spring, warm cleared
+        // between chunks, no chase running when virtua compensated).
+        if (springToken === 0) {
+          origSet.call(el, value);
+          return;
+        }
+        // Warm + sticking-and-engaged + spring chase in flight. Drop
         // the write so the spring in the contentRO callback is the
         // single writer responding to content growth. virtua's
         // `$fixScrollJump` would otherwise snap scrollTop to the

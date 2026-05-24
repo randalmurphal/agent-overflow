@@ -56,7 +56,7 @@ index 8f6382c3ff28fe730c73a3285f77752fcc540d3a..9867682ff8befa29b4ca17ba573f158a
 --- a/dist/Elements/Mermaid.svelte
 +++ b/dist/Elements/Mermaid.svelte
 @@ -20,7 +20,12 @@
- 
+
  	let mermaid = $state<any>(null);
  	onMount(async () => {
 -		mermaid = (await import('mermaid')).default;
@@ -67,20 +67,8 @@ index 8f6382c3ff28fe730c73a3285f77752fcc540d3a..9867682ff8befa29b4ca17ba573f158a
 +			resolveAsync?.();
 +		}
  	});
- 
+
  	const useIsInsideForMoreThanAQuarterSecond = () => {
-@@ -217,7 +222,10 @@
- 		<div
- 			style={streamdown.isMounted ? streamdown.animationBlockStyle : ''}
- 			class={streamdown.theme.mermaid.base}
--			{@attach (node) => renderMermaid(token.text, node)}
-+			{@attach (node) => {
-+				const resolveAsync = streamdown.registerAsyncResource?.();
-+				renderMermaid(token.text, node).finally(() => resolveAsync?.());
-+			}}
- 			{@attach insider.attach}
- 			data-expanded={'false'}
- 		>
 diff --git a/dist/Streamdown.svelte b/dist/Streamdown.svelte
 index b11c35036bd44f047f19b3b5576b3096ed937874..be81277e1a7622c116c3d707978b70fb2bc228dc 100644
 --- a/dist/Streamdown.svelte

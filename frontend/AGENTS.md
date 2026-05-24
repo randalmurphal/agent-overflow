@@ -313,9 +313,16 @@ frontend layers on top:
   the freshly mounted slice), OR when `animationMode()==='instant'`
   (the controller's contentRO would respond with a synchronous
   sync-pin to the same target virtua wants — letting virtua's write
-  land first eliminates the cross-RO-instance timing gap, see below).
+  land first eliminates the cross-RO-instance timing gap, see below),
+  OR when no spring is currently in flight (`springToken === 0` — the
+  gate's sole purpose is keeping the spring as single writer during a
+  chase; with no chase, suppression has nothing to protect and just
+  desynchronizes virtua's internal scrollOffset from DOM scrollTop,
+  bug-report-20260524T200233Z: 15/15 suppressions at springToken=0
+  produced the thread-switch flicker on actively-streaming threads).
   Dropped only when warm AND sticking-and-engaged AND
-  `animationMode()==='spring'` — the only case where virtua's
+  `animationMode()==='spring'` AND a spring chase is currently in
+  flight (`springToken !== 0`) — the only case where virtua's
   one-paint snap would pre-empt the controller's interpolated chase.
   The pre-warm pass-through is what prevents the original
   thread-switch flicker and revert-puts-you-at-top regressions,
