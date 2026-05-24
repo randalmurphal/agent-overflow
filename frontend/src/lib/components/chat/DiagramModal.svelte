@@ -75,6 +75,10 @@
     svg.setAttribute('height', String(height));
     svg.style.maxWidth = 'none';
     svg.style.maxHeight = 'none';
+    svg.style.transform = 'none';
+    svg.style.transformOrigin = '';
+    svg.style.willChange = '';
+    svg.style.transformBox = '';
   }
 
   // Recompute the "fit to canvas" transform. Used on initial open and
@@ -82,7 +86,13 @@
   // panned/zoomed).
   function fitToCanvas(): void {
     if (!canvasEl || !transformHostEl) return;
-    const svg = transformHostEl.querySelector<SVGSVGElement>('svg');
+    // The preferred selector won't match inside displayHtml because the
+    // id-isolation regex (/mermaid-[a-z0-9]+/) rewrites the attribute
+    // name to data-mermaid-<suffix>. The fallback is safe here since
+    // callers now pass only the diagram SVG outerHTML (no toolbar icons).
+    const svg =
+      transformHostEl.querySelector<SVGSVGElement>('svg[data-mermaid-svg]') ??
+      transformHostEl.querySelector<SVGSVGElement>('svg');
     if (!svg) return;
     const canvasRect = canvasEl.getBoundingClientRect();
 
@@ -254,7 +264,9 @@
           // reach the canvas, which means `e.target.closest('svg')`
           // would miss — the target is the canvas div. Query the SVG
           // explicitly from the host and hand it to the caller.
-          const svg = transformHostEl?.querySelector<SVGSVGElement>('svg');
+          const svg =
+            transformHostEl?.querySelector<SVGSVGElement>('svg[data-mermaid-svg]') ??
+            transformHostEl?.querySelector<SVGSVGElement>('svg');
           if (svg) onContextMenu?.(e, svg);
         }}
         onwheel={handleWheel}

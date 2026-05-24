@@ -47,7 +47,9 @@
     if (!(e.target instanceof Element)) return;
     const host = e.target.closest<HTMLElement>('[data-mermaid-source]');
     if (!host) return;
-    const svg = host.querySelector<SVGSVGElement>('svg');
+    const svg =
+      host.querySelector<SVGSVGElement>('svg[data-mermaid-svg]') ??
+      host.querySelector<SVGSVGElement>('svg');
     if (!svg) return;
     e.preventDefault();
     menu = { x: e.clientX, y: e.clientY, svg, context: 'inline' };
@@ -90,7 +92,9 @@
       }
       case 'expand': {
         const host = current.svg.closest<HTMLElement>('[data-mermaid-source]');
-        if (host) modalHtml = host.innerHTML;
+        const diagramSvg =
+          host?.querySelector<SVGSVGElement>('svg[data-mermaid-svg]') ?? current.svg;
+        modalHtml = diagramSvg.outerHTML;
         break;
       }
       case 'close':
@@ -139,10 +143,17 @@
     modalHtml = '';
   }
 
+  function handleExpandEvent(e: Event): void {
+    const detail = (e as CustomEvent<{ html: string }>).detail;
+    if (detail?.html) modalHtml = detail.html;
+  }
+
   onMount(() => {
     document.addEventListener('contextmenu', handleInlineContextMenu);
+    document.addEventListener('diagram-expand', handleExpandEvent);
     return () => {
       document.removeEventListener('contextmenu', handleInlineContextMenu);
+      document.removeEventListener('diagram-expand', handleExpandEvent);
     };
   });
 </script>

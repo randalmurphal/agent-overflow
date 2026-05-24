@@ -28,7 +28,23 @@
   const themeKey = $derived(getResolvedTheme());
 </script>
 
-<div class="mermaid streamdown-mermaid-host" data-mermaid-source={token.text}>
+<div
+  class="mermaid streamdown-mermaid-host"
+  data-mermaid-source={token.text}
+  onclickcapture={(e: MouseEvent) => {
+    if (!(e.target instanceof Element)) return;
+    if (!e.target.closest('[aria-label="Toggle expand"]')) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const wrapper = e.currentTarget as HTMLElement;
+    const svg = wrapper.querySelector('svg[data-mermaid-svg]');
+    if (svg) {
+      document.dispatchEvent(
+        new CustomEvent('diagram-expand', { detail: { html: svg.outerHTML } }),
+      );
+    }
+  }}
+>
   {#key themeKey}
     <Mermaid {token} {id} />
   {/key}
