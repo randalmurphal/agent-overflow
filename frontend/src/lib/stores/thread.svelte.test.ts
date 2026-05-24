@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { flushSync } from 'svelte';
 import { createThreadPane, LIVE_TODO_AUTOHIDE_MS } from './thread.svelte';
 import {
   hasRuntimeModeDraft,
@@ -2423,6 +2424,75 @@ describe('createThreadPane', () => {
       // pre-revert items would be the cached snapshot if the
       // sameThreadReswitch guard were missing.
       expect(pane.items.map((it) => it.id)).toEqual(['a']);
+    });
+
+    it('bumps switchGeneration on every switchThread (including same-thread re-switch)', async () => {
+      // The revert-to-checkpoint flow calls pane.switchThread(currentThread).
+      // pane.threadId does not change on that path, so MessageTimeline's
+      // restore $effect.pre would miss the event if it keyed only on
+      // pane.threadId. Exposing switchGeneration gives the timeline a
+      // second discriminator so the reset path (restoredThreadId = null,
+      // armWarmup, armRestoreSnap) still fires and the viewport restores
+      // to bottom instead of sticking at scrollTop=0 with the "Load older
+      // messages" banner visible. This test locks in the contract
+      // MessageTimeline depends on; the timeline-side behavior is
+      // covered by the integration test for revert flow.
+      const pane = createThreadPane();
+      const initial = pane.switchGeneration;
+
+      await pane.switchThread(makeThread({ id: 'thread-a' }));
+      const afterFirst = pane.switchGeneration;
+      expect(afterFirst).toBeGreaterThan(initial);
+
+      // Different thread — generation bumps as expected.
+      await pane.switchThread(makeThread({ id: 'thread-b' }));
+      const afterSecond = pane.switchGeneration;
+      expect(afterSecond).toBeGreaterThan(afterFirst);
+
+      // Same-thread re-switch (the revert path). Without the bump,
+      // MessageTimeline's restore reset path would never fire.
+      await pane.switchThread(makeThread({ id: 'thread-b' }));
+      const afterReswitch = pane.switchGeneration;
+      expect(afterReswitch).toBeGreaterThan(afterSecond);
+    });
+
+    it('switchGeneration getter is reactive: $effect re-fires on same-thread re-switch', async () => {
+      // Imperative reads of `pane.switchGeneration` between awaits would
+      // pass even if the underlying `let` weren't `$state` — they just
+      // observe whatever value the getter happens to return. But
+      // MessageTimeline's `$effect.pre` consumes the getter inside a
+      // reactive scope; if the backing storage isn't `$state`, the
+      // dependency never registers and the effect never re-fires on
+      // same-thread re-switch. Symptom: revert still lands at the very
+      // top with "Load older messages" visible, exactly the bug this
+      // fix targets. This test mounts a real $effect on the getter and
+      // asserts the effect re-fires after each bump.
+      const pane = createThreadPane();
+      const observed: number[] = [];
+
+      const stop = $effect.root(() => {
+        $effect(() => {
+          observed.push(pane.switchGeneration);
+        });
+      });
+
+      try {
+        flushSync();
+        const baseline = observed.length;
+
+        await pane.switchThread(makeThread({ id: 'thread-a' }));
+        flushSync();
+        expect(observed.length).toBeGreaterThan(baseline);
+
+        // Same-thread re-switch — the load-bearing case.
+        await pane.switchThread(makeThread({ id: 'thread-a' }));
+        flushSync();
+        // Must increase again: a non-$state getter would NOT re-fire the
+        // effect (Svelte 5 reactivity requires $state for tracking).
+        expect(observed.at(-1)).toBeGreaterThan(observed[baseline] ?? -1);
+      } finally {
+        stop();
+      }
     });
 
     it('mergeMissingItemsById preserves the existing item reference for unchanged rows', async () => {

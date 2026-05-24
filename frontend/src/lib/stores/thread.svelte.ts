@@ -512,9 +512,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   /**
    * Generation counter for switchThread. Incremented on every switchThread
    * entry so a slow paged fetch from thread A cannot clobber thread B's
-   * items when the user flips between them quickly.
+   * items when the user flips between them quickly. Also exposed
+   * publicly via the `switchGeneration` getter so MessageTimeline's
+   * `$effect.pre` can detect same-thread re-switch (the
+   * revert-to-checkpoint flow) and re-run its restore reset path —
+   * must be `$state` for that effect dependency to track.
    */
-  let switchGeneration = 0;
+  let switchGeneration = $state(0);
 
   /**
    * Windowed-history state. The pane holds a contiguous tail of the
@@ -1192,6 +1196,21 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get diffSidebarRestoreState() { return rhsPanelSlot.diffPayloadRestoreState; },
     /** Diagnostic — total snapshots held by the RHS panel slot. */
     get rhsPanelSnapshotCount() { return rhsPanelSlot.snapshotCount; },
+    /**
+     * Monotonically increasing counter bumped at the top of every
+     * `switchThread`, `clear`, `startDraftPlaceholder`, and
+     * `adoptMaterializedDraftThread` call. Exposed so consumers can
+     * detect a same-thread re-switch — the path the revert-to-checkpoint
+     * flow takes when it calls `switchThread(currentThread)` to reload
+     * items in place. `pane.threadId` doesn't change on that path, so
+     * any reset logic keyed purely on the thread id (the
+     * MessageTimeline restore-effect.pre, in particular) would miss the
+     * event and leave stale scroll state (the regression: revert lands
+     * at the very top, showing "Load older messages"). Track this
+     * alongside `pane.threadId` and run the reset branch when EITHER
+     * value changes.
+     */
+    get switchGeneration() { return switchGeneration; },
 
     // --- Thread switching ---
 

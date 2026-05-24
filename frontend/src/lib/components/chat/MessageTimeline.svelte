@@ -141,6 +141,18 @@
   // thread switch can dispose the previous snapshot before the next
   // restore completes.
   let scrollSnapshotThreadId: string | null = $state(null);
+  // Last observed `pane.switchGeneration`. Paired with
+  // `scrollSnapshotThreadId` so the restore-effect.pre reset path fires
+  // on same-thread re-switch (the revert-to-checkpoint flow calls
+  // `pane.switchThread(currentThread)` to reload items in place; the
+  // thread id doesn't change but the generation counter bumps). Without
+  // this discriminator, revert leaves `restoredThreadId === threadId`
+  // and the restore $effect early-returns — the viewport sticks at
+  // scrollTop=0 with the "Load older messages" banner visible. The
+  // sentinel `-1` makes the first effect run a no-op for the
+  // `if (scrollSnapshotThreadId)` branch (since scrollSnapshotThreadId
+  // is null on mount, no restoredThreadId reset is needed).
+  let scrollSnapshotSwitchGeneration = -1;
   // Token bumped on every external "interrupt" — thread switch, user
   // scroll, programmatic scrollToItem — so async restore work can detect
   // staleness and bail.
@@ -540,11 +552,22 @@
   // user scroll IS the snapshot.
   $effect.pre(() => {
     const nextThreadId = pane.threadId;
-    if (scrollSnapshotThreadId !== nextThreadId) {
+    // Same-thread re-switch (revert-to-checkpoint flow) keeps
+    // `pane.threadId` constant but bumps `pane.switchGeneration`. We
+    // need the reset path to run in that case too — otherwise
+    // `restoredThreadId` stays equal to `threadId`, the restore
+    // $effect early-returns, and the viewport sticks at scrollTop=0.
+    const nextSwitchGeneration = pane.switchGeneration;
+    const threadIdChanged = scrollSnapshotThreadId !== nextThreadId;
+    const switchGenerationChanged = scrollSnapshotSwitchGeneration !== nextSwitchGeneration;
+    if (threadIdChanged || switchGenerationChanged) {
       if (isUiRenderTraceEnabled()) {
         recordUiTrace('timeline.restore.effectPre', {
           oldThreadId: scrollSnapshotThreadId,
           newThreadId: nextThreadId,
+          oldSwitchGeneration: scrollSnapshotSwitchGeneration,
+          newSwitchGeneration: nextSwitchGeneration,
+          sameThreadReswitch: !threadIdChanged && switchGenerationChanged,
           scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
           scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
           clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
@@ -606,6 +629,7 @@
       }
     }
     scrollSnapshotThreadId = nextThreadId;
+    scrollSnapshotSwitchGeneration = nextSwitchGeneration;
   });
 
   $effect(() => {

@@ -393,6 +393,41 @@ export function createUseStickToBottomController(
   let ignoreScrollToTop = -1;
   let externalScrollIgnoreUntil = 0;
   let externalScrollClearTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // ===== External scrollTop write gate =====
+  // virtua's `$fixScrollJump` writes `scrollTop` DIRECTLY when a row's
+  // ResizeObserver fires for an above-viewport / viewport-spanning row
+  // (virtua@0.49.1 core/index.js:259-266, called from the J:m hook).
+  // That's an entirely separate writer from `listRef.scrollToIndex(...)`
+  // — it fires during streaming when the assistant row grows past the
+  // viewport top, with no `runExternalScroll` wrapper to tag it. The
+  // resulting `scrollTop` jump (typically one line) pre-empts the
+  // spring chase: the next spring tick reads the bumped `scrollTop`
+  // as `current`, sees `diff === 0`, and arrives without animating —
+  // user sees a 1–2 line snap mid-stream where the spring should have
+  // chased smoothly. Captured live in a bookmarked trace (24 untagged
+  // jumps in a single long-stream session; the spring.arrive at 29360
+  // → untagged scroll at 29387 sequence is the canonical reproducer).
+  //
+  // Defense: own the scrollTop property descriptor on `scrollEl` while
+  // attached. The controller's writes route through `writeProgrammatic
+  // ScrollTop` which flips `controllerOwnsScrollTopWrite` to bypass the
+  // gate. External writes (virtua, future libs, browser auto-anchor)
+  // are evaluated against the controller's intent: when the user is
+  // sticking-and-engaged AND the warm gate has cleared, drop them so
+  // the spring/sync-pin in contentRO stays the single writer; when the
+  // user is reading mid-thread (escaped), auto-follow is paused, or the
+  // warm-up cascade is still running (attach + restore both reset
+  // `warm`), pass them through so above-viewport visual stability still
+  // works and virtua's mount-cascade `$fixScrollJump` compensation can
+  // settle the slice correctly. `externalScrollIgnoreUntil` (set by
+  // `runExternalScroll`) also passes through so explicit programmatic
+  // scrolls — load-older anchor restore, search-hit scrollToIndex —
+  // are honored even while sticking.
+  let savedScrollTopDescriptor: PropertyDescriptor | undefined;
+  let savedScrollTopWasOwn = false;
+  let externalScrollTopGateInstalled = false;
+  let controllerOwnsScrollTopWrite = false;
   let recentDownIntentUntil = 0;
   let recentDownIntentVersion = 0;
   let recentDownIntentClearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -643,7 +678,18 @@ export function createUseStickToBottomController(
     const beforeTop = scrollEl.scrollTop;
     const beforeHeight = scrollEl.scrollHeight;
     const beforeClient = scrollEl.clientHeight;
-    scrollEl.scrollTop = value;
+    // Bypass the external-write gate for our own writes. The gate's
+    // job is to filter writes from OTHER writers (virtua's
+    // $fixScrollJump, browser auto-anchor); the controller is always
+    // allowed to write through. Try/finally rather than a guard at
+    // top of the gate's setter so the flag is cleared even if the
+    // browser throws on a clamped write.
+    controllerOwnsScrollTopWrite = true;
+    try {
+      scrollEl.scrollTop = value;
+    } finally {
+      controllerOwnsScrollTopWrite = false;
+    }
     // Tag using the BROWSER-rounded read so the scroll handler's
     // `scrollTop === ignoreScrollToTop` check matches.
     ignoreScrollToTop = scrollEl.scrollTop;
@@ -1713,12 +1759,146 @@ export function createUseStickToBottomController(
     };
   }
 
+  // ===== External scrollTop write gate (install / uninstall) =====
+  // See the state block earlier in the file for the motivating
+  // regression. The gate is installed as a property descriptor on the
+  // scroll element's `scrollTop` accessor; that captures BOTH the
+  // production case (inherited from Element.prototype) and the test
+  // case (where stubGeometry installs an own-property accessor to back
+  // a plain Geometry object). The captured accessor is the "real"
+  // setter; the gate's setter only decides whether to delegate.
+  function installExternalScrollTopGate(el: HTMLElement): void {
+    if (externalScrollTopGateInstalled) return;
+    const own = Object.getOwnPropertyDescriptor(el, 'scrollTop');
+    const inherited = own ? undefined : Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    const captured = own ?? inherited;
+    if (!captured || typeof captured.get !== 'function' || typeof captured.set !== 'function') {
+      // Environments without an accessor (very old browsers, exotic
+      // mocks) skip the gate. The controller still functions; it just
+      // can't filter external writes.
+      return;
+    }
+    savedScrollTopDescriptor = own;
+    savedScrollTopWasOwn = own !== undefined;
+    const origGet = captured.get;
+    const origSet = captured.set;
+    Object.defineProperty(el, 'scrollTop', {
+      configurable: true,
+      enumerable: captured.enumerable ?? true,
+      get(): number {
+        return origGet.call(el) as number;
+      },
+      set(value: number): void {
+        // Controller-owned writes always pass through. The flag is set
+        // by `writeProgrammaticScrollTop` around the actual assignment
+        // and cleared in its finally block.
+        if (controllerOwnsScrollTopWrite) {
+          origSet.call(el, value);
+          return;
+        }
+        // Explicit programmatic scrolls via `runExternalScroll` (load-
+        // older anchor restore, search-hit `scrollToIndex`) tag a
+        // short ignore window before the write fires. Pass through so
+        // the user's intentional jump lands even while sticking.
+        if (externalScrollIgnoreUntil > nowMs()) {
+          origSet.call(el, value);
+          return;
+        }
+        // Pre-warm: attach() and `forceStick({reason:'restore'})` both
+        // call `beginWarmup()` so `warm===false` covers the mount-
+        // cascade window (per-row ROs firing as virtua first mounts a
+        // slice, and the post-restore measurement settle). virtua's
+        // `$fixScrollJump` writes during that window are legitimate
+        // compensation for above-viewport remeasurements — suppressing
+        // them desynchronizes virtua's internal scrollOffset from the
+        // DOM, which manifested as the revert-puts-you-at-top
+        // regression and the thread-switch flicker (right→wrong→right
+        // settle). The consumer hides the surface while `!isWarm`
+        // (MessageTimeline cascade-hide), so any pre-warm $fixScrollJump
+        // isn't user-visible. Once warm, the surface is shown and the
+        // gate becomes the single writer arbiter again.
+        //
+        // The user is reading mid-thread (escaped) or another surface
+        // has paused auto-follow. Above-viewport visual stability
+        // matters here — virtua's `$fixScrollJump` is keeping the
+        // visible row anchored against a remeasure above the viewport.
+        // Pass through.
+        if (!warm || !isAtBottomState || escapedFromLockState || pauseDepth !== 0) {
+          origSet.call(el, value);
+          return;
+        }
+        // animationMode === 'instant': the controller's contentRO
+        // would respond to this growth with a synchronous sync-pin,
+        // not a spring chase. virtua's `$fixScrollJump` and the
+        // controller's pin would BOTH write the same target (the new
+        // bottom). Letting virtua's write land first is strictly
+        // better: contentEl's contentRO fires in a separate RO
+        // delivery loop from virtua's per-row ROs (different observer
+        // instances), so the controller's pin lands ~3ms later. In
+        // that gap the DOM sits with the new scrollHeight but the
+        // old scrollTop — a visible "right → wrong → right" flicker
+        // where the bottom of a row that grew is briefly cut off
+        // (bug-report-20260524T183128Z: seq 149 reveal at correct
+        // bottom, seq 150 suppressed virtua write to 21839, seq 151
+        // contentRO 3ms later pinning to 21839). Pass through so
+        // virtua and the controller arrive at the same target in the
+        // same paint.
+        if (options.animationMode?.() === 'instant') {
+          origSet.call(el, value);
+          return;
+        }
+        // Warm + sticking-and-engaged + spring chase wanted. Drop
+        // the write so the spring in the contentRO callback is the
+        // single writer responding to content growth. virtua's
+        // `$fixScrollJump` would otherwise snap scrollTop to the
+        // new bottom in one paint, pre-empting the spring's
+        // interpolation and producing a user-visible 1–2 line snap.
+        // The contentRO fire that follows the row remeasure will
+        // see `scrollTop` still at the spring's current position,
+        // compute a positive delta, and continue the chase smoothly.
+        trace('scroll.externalWriteSuppressed', () => ({
+          requested: Math.round(value),
+          current: Math.round(origGet.call(el) as number),
+          springToken,
+          warm,
+          isAtBottomState,
+          escapedFromLockState,
+          pauseDepth,
+          scrollHeight: Math.round((scrollEl?.scrollHeight ?? 0)),
+          clientHeight: Math.round((scrollEl?.clientHeight ?? 0)),
+        }));
+      },
+    });
+    externalScrollTopGateInstalled = true;
+  }
+
+  function uninstallExternalScrollTopGate(el: HTMLElement): void {
+    if (!externalScrollTopGateInstalled) return;
+    if (savedScrollTopWasOwn && savedScrollTopDescriptor) {
+      // Restore the prior own-property accessor (test stubGeometry,
+      // or anything else that owned it before us).
+      Object.defineProperty(el, 'scrollTop', savedScrollTopDescriptor);
+    } else {
+      // We installed an own-property where there was only an inherited
+      // one (production). Removing it lets the prototype accessor
+      // resume answering reads / writes.
+      delete (el as unknown as { scrollTop?: number }).scrollTop;
+    }
+    savedScrollTopDescriptor = undefined;
+    savedScrollTopWasOwn = false;
+    externalScrollTopGateInstalled = false;
+  }
+
   // ===== Lifecycle =====
   function attach(nextScrollEl: HTMLElement, nextContentEl: HTMLElement): void {
     if (scrollEl === nextScrollEl && contentEl === nextContentEl) return;
     detach();
     scrollEl = nextScrollEl;
     contentEl = nextContentEl;
+    // Install the external-write gate BEFORE anything else can fire
+    // an RO or touch scrollTop, so virtua's per-row ResizeObservers
+    // (which fire on mount) hit the gate from frame zero.
+    installExternalScrollTopGate(nextScrollEl);
     // Start the warm gate at attach. The first contentRO callback
     // fires for whatever content is already there, then virtua's per-
     // row ROs and Streamdown's typesetting cascade — all of which
@@ -1808,6 +1988,11 @@ export function createUseStickToBottomController(
   }
 
   function detach(): void {
+    // Restore the original scrollTop descriptor BEFORE tearing down
+    // the rest. Once uninstalled, virtua's writes (if any) flow
+    // through unchanged — the symmetric case of attach() installing
+    // before any RO can fire.
+    if (scrollEl) uninstallExternalScrollTopGate(scrollEl);
     contentRO?.disconnect();
     contentRO = undefined;
     detachWheel?.();

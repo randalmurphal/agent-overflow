@@ -132,6 +132,21 @@ shape. Operational rules for code in this directory:
   some switches (e.g. rapid back-to-back switches where the prior
   thread's QUIET_MS=100ms quiet window hadn't yet closed) and the
   cascade was hidden by accident.
+
+  **The same `$effect.pre` must also react to `pane.switchGeneration`,
+  not just `pane.threadId`.** Revert-to-checkpoint
+  (`executeRevertToUserMessage` in ChatView) calls
+  `pane.switchThread(currentThread)` to reload items in place. The
+  thread id doesn't change, but the pane's switch generation counter
+  bumps. Without watching that counter, the restore reset path
+  (`restoredThreadId = null`, `restoreToken++`, `armWarmup`,
+  `armRestoreSnap`) never fires; `restoredThreadId === threadId` stays
+  true, the restore `$effect` early-returns, and the viewport sticks
+  at scrollTop=0 with the "Load older messages" banner visible —
+  exactly the regression that motivated this discriminator.
+  MessageTimeline tracks both `scrollSnapshotThreadId` and
+  `scrollSnapshotSwitchGeneration` and runs the reset branch when
+  EITHER value changes.
 - **`overflow-anchor: none` on `scrollEl` is load-bearing.** Browser
   default scroll anchoring adjusts `scrollTop` whenever an element above
   the viewport changes size, to keep the topmost-visible element fixed.

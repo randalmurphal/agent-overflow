@@ -286,12 +286,57 @@ frontend layers on top:
   Programmatic scrolls go through `forceStick(opts?)` / `markAtBottom()` /
   `notifyContentMaybeGrew()` / `pauseAutoScroll()` /
   `runExternalScroll()` / `stopScroll()` / `animateScrollTo()` /
-  `armRestoreSnap()`; the one place virtua writes scrollTop is
-  `listRef.scrollToIndex(...)`, which MUST run inside
+  `armRestoreSnap()`; the one place app code routes virtua to
+  scrollTop is `listRef.scrollToIndex(...)`, which MUST run inside
   `stick.runExternalScroll(() => listRef.scrollToIndex(...))` so the
   controller tags virtua's next scroll event and does not auto-restick
   mid-jump if the measurement loop lands near the bottom. Never write
   `scrollTop` directly.
+  **`$fixScrollJump` is virtua's OTHER scrollTop writer** —
+  invoked internally from per-row ResizeObservers when a
+  viewport-spanning row remeasures (virtua@0.49.1
+  `core/index.js:259-266`, called via `J:m`). Streaming text growing
+  the assistant row past the viewport top fires it repeatedly. It has
+  no `runExternalScroll` wrapper, no scroll-event tag, and lands
+  exactly at the new bottom in a single paint — pre-empting any
+  in-flight spring chase and producing a user-visible 1–2 line snap.
+  Defense: the controller installs a property-descriptor gate on
+  `scrollEl.scrollTop` in `attach()` and restores the prior descriptor
+  in `detach()`. Controller-owned writes (everything routed through
+  `writeProgrammaticScrollTop`) flip `controllerOwnsScrollTopWrite`
+  to bypass the gate. External writes are evaluated against intent:
+  passed through while escaped, paused, inside a `runExternalScroll`
+  window (so load-older anchor restore and search-hit `scrollToIndex`
+  still land), OR while the warm-up gate is open (`warm===false`, which
+  covers initial `attach()` and `forceStick({reason:'restore'})` —
+  letting virtua's mount-cascade `$fixScrollJump` compensation land on
+  the freshly mounted slice), OR when `animationMode()==='instant'`
+  (the controller's contentRO would respond with a synchronous
+  sync-pin to the same target virtua wants — letting virtua's write
+  land first eliminates the cross-RO-instance timing gap, see below).
+  Dropped only when warm AND sticking-and-engaged AND
+  `animationMode()==='spring'` — the only case where virtua's
+  one-paint snap would pre-empt the controller's interpolated chase.
+  The pre-warm pass-through is what prevents the original
+  thread-switch flicker and revert-puts-you-at-top regressions,
+  since the consumer hides the surface while `!isWarm` so pre-warm
+  jumps aren't user-visible anyway. The instant-mode pass-through
+  is what fixes the post-warm flicker on idle thread switches
+  (bug-report-20260524T183128Z): virtua's per-row ROs and the
+  controller's contentEl RO are SEPARATE observer instances, so
+  they fire in different RO delivery loops with a ~3ms gap; in
+  that gap the DOM has the new `scrollHeight` but the old
+  `scrollTop`, leaving the bottom of a row that just grew briefly
+  cut off (visible "right → wrong → right" sequence after warm).
+  When the controller would sync-pin (instant), virtua and the
+  controller pick the SAME scrollTop target — letting virtua
+  land first eliminates the gap. The captured descriptor may be
+  inherited from `Element.prototype` (production) OR an
+  own-property accessor (tests' `stubGeometry`); the gate handles
+  both, so unit tests reading `geom.scrollTop` still see the writes
+  that actually pass through. Regression coverage:
+  `useStickToBottom.svelte.test.ts` describe-block "external scrollTop
+  write gate (virtua $fixScrollJump defense)".
   `prefers-reduced-motion: reduce` forces the sync-pin path
   unconditionally — the spring is suppressed regardless of
   `animationMode`.

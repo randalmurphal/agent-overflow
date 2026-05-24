@@ -3974,4 +3974,285 @@ describe('createUseStickToBottomController — spring chase', () => {
       await advanceUntil(() => geom.scrollTop === 800);
     });
   });
+
+  // virtua's `$fixScrollJump` writes `scrollTop` directly on the scroll
+  // element when an above-viewport / viewport-spanning row remeasures.
+  // During pure-text streaming on a long thread, that fires repeatedly
+  // — each one pre-empts the in-flight spring with an instant jump,
+  // visible to the user as a 1–2 line snap. The external-write gate
+  // captures the scrollTop property descriptor on attach and filters
+  // writes from outside the controller against intent. These tests
+  // simulate virtua's untagged write by assigning `scrollEl.scrollTop`
+  // directly (no controller call), the same way virtua's writer does.
+  describe('external scrollTop write gate (virtua $fixScrollJump defense)', () => {
+    it('drops an external scrollTop write while sticking-and-engaged', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      // Start a spring chase so the gate has something to protect.
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+      const springStart = geom.scrollTop;
+      expect(springStart).toBeGreaterThan(400);
+      expect(springStart).toBeLessThan(800);
+
+      // virtua-style untagged write: assigning `scrollEl.scrollTop`
+      // directly. Under the old behaviour this would land instantly
+      // (the spring would then read the new value as `current` on its
+      // next tick and arrive without animating).
+      scrollEl.scrollTop = 800;
+
+      // Gate suppressed it: geometry unchanged.
+      expect(geom.scrollTop).toBe(springStart);
+
+      // Spring continues chasing across subsequent frames.
+      await advanceUntil(() => geom.scrollTop === 800);
+    });
+
+    it('passes an external scrollTop write through when the user has escaped', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      controller.setEscapedFromLock(true);
+
+      // External writer (virtua compensating for an above-viewport row
+      // remeasure to keep visible content stable). The user is reading
+      // mid-thread, so visual stability matters — let it through.
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      scrollEl.scrollTop = 500;
+
+      expect(geom.scrollTop).toBe(500);
+    });
+
+    it('passes an external scrollTop write through while auto-scroll is paused', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      const release = controller.pauseAutoScroll();
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      scrollEl.scrollTop = 500;
+
+      expect(geom.scrollTop).toBe(500);
+      release();
+    });
+
+    it('passes an external scrollTop write through inside runExternalScroll', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      // Simulate `listRef.scrollToIndex(...)` style call wrapped in
+      // the controller's external-scroll tag. preserveIntent keeps
+      // isAtBottomState true so the only thing letting the write
+      // through is the externalScrollIgnoreUntil window.
+      controller.runExternalScroll(
+        () => {
+          scrollEl.scrollTop = 600;
+        },
+        { preserveIntent: true },
+      );
+
+      expect(geom.scrollTop).toBe(600);
+    });
+
+    it('controller-owned writes (forceStick / contentRO sync-pin) bypass the gate', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // forceStick goes through writeScrollTop → writeProgrammaticScrollTop
+      // which flips the controllerOwnsScrollTopWrite bypass flag. Even
+      // though the controller is sticking-and-engaged (the same gate
+      // state that suppresses external writes), our own write lands.
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      controller.forceStick();
+
+      expect(geom.scrollTop).toBe(800);
+    });
+
+    it('passes an external scrollTop write through during the mount cascade (warm===false)', async () => {
+      // Regression for the thread-switch flicker / revert-puts-you-at-top
+      // regressions. Pre-warm, virtua's per-row ROs fire as it mounts the
+      // slice; some of those ROs report heights that differ from virtua's
+      // ESTIMATED_ROW_SIZE, and virtua compensates via $fixScrollJump to
+      // keep the visible row anchored. If the gate suppresses those
+      // writes, virtua's internal scrollOffset diverges from DOM
+      // scrollTop and the user sees the wrong viewport for a frame
+      // before contentRO eventually fires and instant-pins to bottom.
+      //
+      // attach() in beforeEach already called beginWarmup() so warm
+      // starts false. We do NOT fire any contentRO event yet so the
+      // QUIET_MS timer never starts and warm stays false.
+      expect(controller.isWarm).toBe(false);
+      expect(controller.isAtBottom).toBe(true);
+      expect(controller.escapedFromLock).toBe(false);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      // virtua $fixScrollJump-style write while sticking-and-engaged
+      // but pre-warm: must pass through so virtua's mount compensation
+      // lands.
+      scrollEl.scrollTop = 500;
+      expect(geom.scrollTop).toBe(500);
+    });
+
+    it('passes an external scrollTop write through after forceStick({reason:"restore"}) re-arms the warm gate', async () => {
+      // Regression for revert-puts-you-at-top: the same-thread re-switch
+      // path calls forceStick({reason:'restore'}) which resets warm to
+      // false to give virtua's mount cascade a clean measurement window.
+      // The gate must honor that re-armed pre-warm state — otherwise
+      // virtua's $fixScrollJump for the freshly mounted slice gets
+      // dropped and the user lands on the wrong row.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm settles via QUIET_MS
+      expect(controller.isWarm).toBe(true);
+
+      // Simulate the restore-snap consent + restore call that runs
+      // during a thread switch / revert.
+      controller.armRestoreSnap();
+      controller.forceStick({ reason: 'restore' });
+      // forceStick({reason:'restore'}) re-armed the warm gate.
+      expect(controller.isWarm).toBe(false);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      // virtua $fixScrollJump-style write during the post-restore mount
+      // cascade: must pass through.
+      scrollEl.scrollTop = 500;
+      expect(geom.scrollTop).toBe(500);
+    });
+
+    it('resumes suppression once the post-restore warm gate clears', async () => {
+      // Companion to the previous test: after the restore-armed warm
+      // gate settles, the original streaming-snap defense must come
+      // back online. Otherwise we'd have permanently disarmed the gate
+      // on every restore.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      controller.armRestoreSnap();
+      controller.forceStick({ reason: 'restore' });
+      expect(controller.isWarm).toBe(false);
+
+      // Settle the restore warm-up: fire RO once to start the quiet
+      // timer, then wait it out.
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+
+      // Now start a spring chase and verify the gate suppresses again.
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+      const springStart = geom.scrollTop;
+      expect(springStart).toBeGreaterThan(400);
+      expect(springStart).toBeLessThan(800);
+
+      scrollEl.scrollTop = 800;
+      // Gate suppressed it again (the post-restore warm settled).
+      expect(geom.scrollTop).toBe(springStart);
+    });
+
+    it('passes an external scrollTop write through when animationMode is instant (the controller would sync-pin, not spring-chase)', async () => {
+      // Regression for the thread-switch flicker on idle threads
+      // (bug-report-20260524T183128Z): on a switch into a non-streaming
+      // thread (getActiveTurn===null → animationMode='instant'), a late
+      // ResizeObserver fire after warm causes virtua's $fixScrollJump
+      // and the controller's contentRO to both want to pin scrollTop
+      // to the new bottom. They fire in DIFFERENT RO delivery loops
+      // (virtua's per-row ROs vs the controller's contentEl RO), so
+      // there's a ~3ms gap where the DOM has the new scrollHeight but
+      // the old scrollTop — visible as the bottom of a row being cut
+      // off, then snapping into view. When the controller would
+      // sync-pin (instant mode), virtua's write lands at the same
+      // target as the controller's pin and arrives in the same paint
+      // as the layout change. Suppressing it just delays the correct
+      // write by one RO delivery loop.
+      mode = 'instant';
+
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm settles via QUIET_MS
+      expect(controller.isWarm).toBe(true);
+
+      // contentEl grows (e.g. a row in the viewport completes async
+      // typesetting). virtua's per-row RO fires first and writes
+      // scrollTop to compensate. Under the old gate this was dropped
+      // (warm + sticking-and-engaged) and the user saw a brief
+      // mis-pinned frame. With the instant-mode pass-through, the
+      // write lands immediately.
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      scrollEl.scrollTop = 800;
+
+      expect(geom.scrollTop).toBe(800);
+    });
+
+    it('still suppresses external writes when animationMode is spring (gate stays load-bearing during streaming)', async () => {
+      // Counterpart to the previous test: when animationMode='spring'
+      // (a turn is running and the controller wants to smoothly chase
+      // the moving bottom), virtua's $fixScrollJump landing in one
+      // paint would pre-empt the spring's interpolation. The gate
+      // must still drop in that case. This is the original
+      // streaming-snap defense; the explicit test belongs next to the
+      // instant-mode pass-through so the discriminator can't drift.
+      mode = 'spring';
+
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Start a spring chase.
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+      const springStart = geom.scrollTop;
+      expect(springStart).toBeGreaterThan(400);
+      expect(springStart).toBeLessThan(800);
+
+      // virtua-style untagged write while spring is in flight.
+      scrollEl.scrollTop = 800;
+
+      // Gate suppressed it: scrollTop did not jump to 800; the spring
+      // is still the single writer.
+      expect(geom.scrollTop).toBe(springStart);
+    });
+
+    it('restores the original scrollTop descriptor on detach', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      controller.detach();
+
+      // After detach the test's stubGeometry accessor is back in
+      // charge — direct writes hit the geometry object unmodified
+      // (subject to its own clamp at maxTarget). geom.scrollHeight
+      // is 1000 and clientHeight 600, so maxTarget is 400 and a write
+      // of 300 lands as 300. This is what attach() captured before
+      // installing the gate; if uninstall left the gate in place,
+      // the write would have been suppressed (the controller's
+      // sticking-and-engaged flags survive detach) and we'd still
+      // read whatever value was there at detach time.
+      scrollEl.scrollTop = 300;
+      expect(geom.scrollTop).toBe(300);
+
+      // Re-attach so afterEach's detach() doesn't double-fire.
+      controller.attach(scrollEl, contentEl);
+    });
+  });
 });
