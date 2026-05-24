@@ -469,7 +469,7 @@
   function responsePillDuration(node: TimelineNode): string {
     if (node.kind !== 'leaf') return '';
     const settledTurn = pane.latestSettledTurn;
-    if (settledTurn?.assistantMessageId !== node.item.id) return '';
+    if (settledTurn?.turnIndex !== node.item.turnIndex) return '';
     const elapsedMs = settledTurn.completedAt - settledTurn.startedAt;
     if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return '';
     return formatElapsedSeconds(Math.floor(elapsedMs / 1_000));

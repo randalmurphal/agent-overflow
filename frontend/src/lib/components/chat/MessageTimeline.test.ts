@@ -1178,7 +1178,7 @@ describe('<MessageTimeline>', () => {
         startedAt: 1_000,
         completedAt: 65_000,
         stopReason: 'end_turn',
-        assistantMessageId: 'text:1:0',
+        assistantMessageId: 'provider-message-id',
         tokenUsage: null,
         aborted: false,
         errorMessage: '',
