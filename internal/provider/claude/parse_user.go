@@ -327,56 +327,83 @@ func (p *Parser) applyPendingTaskMutation(
 	toolUseID string,
 	toolUseResult json.RawMessage,
 ) []provider.ProviderEvent {
-	var changed bool
 	switch mutation.op {
 	case "create":
-		changed = p.applyTaskCreateResult(mutation.input, toolUseResult)
+		return p.emitTaskCreate(events, threadID, now, mutation, toolUseID, toolUseResult)
 	case "update":
-		changed = p.applyTaskUpdateResult(mutation.input, toolUseResult)
+		return p.emitTaskUpdate(events, threadID, now, mutation, toolUseID, toolUseResult)
 	}
-	if !changed {
-		return events
-	}
-	return p.buildTaskSnapshotEvent(events, threadID, mutation.op, mutation.parentToolUseID, toolUseID, now)
+	return events
 }
 
-func (p *Parser) applyTaskCreateResult(input, toolUseResult json.RawMessage) bool {
-	decoded, ok := decodeTaskCreateInput(input)
+func (p *Parser) emitTaskCreate(
+	events []provider.ProviderEvent,
+	threadID string,
+	now time.Time,
+	mutation pendingTaskMutation,
+	toolUseID string,
+	toolUseResult json.RawMessage,
+) []provider.ProviderEvent {
+	decoded, ok := decodeTaskCreateInput(mutation.input)
 	if !ok {
-		return false
+		return events
 	}
 	id := taskCreateResultID(toolUseResult)
 	if id == "" {
-		// No authoritative id in the result — the create either
-		// failed upstream or the wire shape drifted. Either way we
-		// can't key our local mirror, so leave state unchanged.
-		return false
+		return events
 	}
-	// Pass "" for status so upsertTaskFromCreate's default-on-insert
-	// path picks "pending" for new tasks while the duplicate-id branch
-	// preserves any prior TaskUpdate status. TaskCreate doesn't own
-	// status; only TaskUpdate does.
-	return p.upsertTaskFromCreate(id, decoded.Subject, "", "")
+	meta, err := json.Marshal(provider.TaskCreateMeta{
+		TaskID:  id,
+		Subject: decoded.Subject,
+	})
+	if err != nil {
+		return events
+	}
+	return append(events, provider.ProviderEvent{
+		Kind:            provider.EventTaskCreate,
+		ThreadID:        threadID,
+		ItemID:          toolUseID,
+		ParentToolUseID: mutation.parentToolUseID,
+		Meta:            meta,
+		Timestamp:       now,
+	})
 }
 
-func (p *Parser) applyTaskUpdateResult(input, toolUseResult json.RawMessage) bool {
-	decoded, ok := decodeTaskUpdateInput(input)
+func (p *Parser) emitTaskUpdate(
+	events []provider.ProviderEvent,
+	threadID string,
+	now time.Time,
+	mutation pendingTaskMutation,
+	toolUseID string,
+	toolUseResult json.RawMessage,
+) []provider.ProviderEvent {
+	decoded, ok := decodeTaskUpdateInput(mutation.input)
 	if !ok {
-		return false
+		return events
 	}
-	// Decode the result and only skip on a confirmed failure. An
-	// absent body or unparseable result returns resultOK=false and
-	// falls through to apply — the model already saw the tool_use
-	// reach completion, so refusing to mirror the mutation locally
-	// would diverge the rail from what Claude shows. The explicit
-	// success:false branch is the single guard against confirmed
-	// rejection.
 	result, resultOK := decodeTaskUpdateResult(toolUseResult)
 	if resultOK && !result.Success {
-		return false
+		return events
 	}
 	status, deleted := normalizeTaskStatus(decoded.Status)
-	return p.mutateTask(decoded.TaskID, decoded.Subject, decoded.Owner, status, deleted)
+	meta, err := json.Marshal(provider.TaskUpdateMeta{
+		TaskID:  decoded.TaskID,
+		Status:  status,
+		Subject: decoded.Subject,
+		Owner:   decoded.Owner,
+		Deleted: deleted,
+	})
+	if err != nil {
+		return events
+	}
+	return append(events, provider.ProviderEvent{
+		Kind:            provider.EventTaskUpdate,
+		ThreadID:        threadID,
+		ItemID:          toolUseID,
+		ParentToolUseID: mutation.parentToolUseID,
+		Meta:            meta,
+		Timestamp:       now,
+	})
 }
 
 // extractToolResultText flattens the content of a tool_result block into a

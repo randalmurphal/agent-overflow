@@ -1130,6 +1130,7 @@ func (r *Router) CleanupThread(threadID string) {
 	// StopSession during a round).
 	delete(r.currentRoundByThread, threadID)
 	delete(r.latestTodoByThread, threadID)
+	delete(r.tasksByThread, threadID)
 	delete(r.openAPIRetryRows, threadID)
 	// Drop the Codex background projector's per-thread trackers. A
 	// restarted session never inherits trackers from a prior session —
@@ -1227,6 +1228,7 @@ func (r *Router) ResetThreadForRollback(threadID string) {
 	deleteByPrefix(r.settledTurns, prefix)
 	delete(r.currentRoundByThread, threadID)
 	delete(r.latestTodoByThread, threadID)
+	delete(r.tasksByThread, threadID)
 	delete(r.openAPIRetryRows, threadID)
 	r.clearPendingSendsLocked(threadID)
 	r.clearWireOnlyUserTextLocked(threadID)

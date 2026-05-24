@@ -47,24 +47,14 @@ type Parser struct {
 	// parse_user.go appendToolResultCompletion.
 	todoWriteToolUses map[string]bool
 	// pendingTaskMutations holds the raw input of an in-flight
-	// `TaskCreate` / `TaskUpdate` call between its assistant tool_use and
-	// the matching user tool_result. The mutation is applied to
-	// tasksByID + taskOrder only when the result arrives, so TaskCreate
-	// uses the authoritative id from `tool_use_result.task.id` and
-	// failed TaskUpdate calls (success:false in the result) do not
-	// silently corrupt the local state. See
-	// parse_assistant.go appendToolUseEvent (TaskCreate/TaskUpdate
-	// branch) and parse_user.go applyPendingTaskMutation.
+	// `TaskCreate` / `TaskUpdate` call between its assistant tool_use
+	// and the matching user tool_result. On result, the parser emits a
+	// per-task EventTaskCreate or EventTaskUpdate; triage's Router
+	// accumulates the mutations into a per-thread mirror that survives
+	// session resume. See parse_assistant.go appendToolUseEvent
+	// (TaskCreate/TaskUpdate branch) and parse_user.go
+	// applyPendingTaskMutation.
 	pendingTaskMutations map[string]pendingTaskMutation
-	// tasksByID holds the parser's local mirror of the Claude task list
-	// keyed by the wire-assigned id. It is the source of truth for the
-	// EventTodoUpdate snapshot emitted on every successful mutation
-	// (per-task CRUD on the wire, snapshot-shaped for the frontend
-	// widget that previously consumed TodoWrite). The companion
-	// taskOrder preserves insertion order so the snapshot remains
-	// stable across mutations.
-	tasksByID map[string]parsedTask
-	taskOrder []string
 	// advisorToolUses flags `server_tool_use` IDs (the `srvtoolu_*`
 	// prefix) emitted by Claude's server-side advisor tool. The matching
 	// `advisor_tool_result` content block on a later assistant envelope
@@ -149,8 +139,6 @@ func (p *Parser) Close() {
 	p.backgroundToolUses = nil
 	p.todoWriteToolUses = nil
 	p.pendingTaskMutations = nil
-	p.tasksByID = nil
-	p.taskOrder = nil
 	p.advisorToolUses = nil
 	p.toolUseParents = nil
 	p.taskToolUses = nil
@@ -338,19 +326,6 @@ type pendingTaskMutation struct {
 	parentToolUseID string
 }
 
-// parsedTask is the parser's in-memory mirror of one entry in the
-// Claude task list (TaskCreate / TaskUpdate family — the v2.1.150
-// replacement for TodoWrite). Status is the normalised camelCase enum
-// shared with TodoWrite and Codex update_plan; owner is empty when
-// nobody has claimed the task (the main-agent / unassigned case the
-// frontend renders without a badge).
-type parsedTask struct {
-	ID      string
-	Subject string
-	Status  string
-	Owner   string
-}
-
 // recordPendingTaskMutation stages a TaskCreate/TaskUpdate input until
 // its matching tool_result arrives in parse_user.go. Bounded on the
 // same wholesale-reset principle as the other correlation maps; the
@@ -382,114 +357,6 @@ func (p *Parser) takePendingTaskMutation(toolUseID string) (pendingTaskMutation,
 		delete(p.pendingTaskMutations, toolUseID)
 	}
 	return mutation, ok
-}
-
-// upsertTaskFromCreate installs a new task into the parser's state
-// using the authoritative id from `tool_use_result.task.id`. When the
-// id is already present (out-of-order replay, hostile wire) the
-// existing entry is preserved and the upsert is treated as an update
-// for subject/owner/status so the snapshot stays stable. Returns true
-// when the task was newly inserted.
-func (p *Parser) upsertTaskFromCreate(id, subject, owner, status string) bool {
-	if p == nil || id == "" {
-		return false
-	}
-	if p.tasksByID == nil {
-		p.tasksByID = make(map[string]parsedTask)
-	}
-	if existing, exists := p.tasksByID[id]; exists {
-		// Existing id wins; treat duplicate create as an update so we
-		// don't reorder the snapshot or lose state from prior updates.
-		// Status is only ever set by TaskUpdate in practice — callers
-		// pass "" so a TaskCreate replay can't clobber the prior status.
-		if subject != "" {
-			existing.Subject = subject
-		}
-		if owner != "" {
-			existing.Owner = owner
-		}
-		if status != "" {
-			existing.Status = status
-		}
-		p.tasksByID[id] = existing
-		return false
-	}
-	if len(p.tasksByID) >= parserTaskMapCap {
-		// Cap-and-reject (not cap-and-reset): tasksByID holds
-		// user-facing state, so dropping the whole list to admit one
-		// more would be more destructive than refusing the insert.
-		return false
-	}
-	if status == "" {
-		status = "pending"
-	}
-	p.tasksByID[id] = parsedTask{
-		ID:      id,
-		Subject: subject,
-		Status:  status,
-		Owner:   owner,
-	}
-	p.taskOrder = append(p.taskOrder, id)
-	return true
-}
-
-// mutateTask applies a TaskUpdate to an existing task. Empty string
-// fields leave the corresponding stored value unchanged; status is
-// only overwritten when the caller supplied a non-empty value (the
-// normaliser returns "" for "no change", distinct from "pending"). A
-// status of "deleted" removes the task from both the map and the
-// order slice. Returns false when no task with that id is known —
-// the caller logs but does not error.
-func (p *Parser) mutateTask(id, subject, owner, status string, deleted bool) bool {
-	if p == nil || id == "" || p.tasksByID == nil {
-		return false
-	}
-	if deleted {
-		if _, ok := p.tasksByID[id]; !ok {
-			return false
-		}
-		delete(p.tasksByID, id)
-		for i, existing := range p.taskOrder {
-			if existing == id {
-				p.taskOrder = append(p.taskOrder[:i], p.taskOrder[i+1:]...)
-				break
-			}
-		}
-		return true
-	}
-	task, ok := p.tasksByID[id]
-	if !ok {
-		return false
-	}
-	if subject != "" {
-		task.Subject = subject
-	}
-	if owner != "" {
-		task.Owner = owner
-	}
-	if status != "" {
-		task.Status = status
-	}
-	p.tasksByID[id] = task
-	return true
-}
-
-// taskSnapshot returns the current task state in insertion order so
-// the EventTodoUpdate payload mirrors the order the model created
-// tasks in. Returns nil (not an empty slice) when no tasks are
-// tracked so callers can `if len(...) == 0 { drop }` symmetrically
-// with the TodoWrite path.
-func (p *Parser) taskSnapshot() []parsedTask {
-	if p == nil || len(p.taskOrder) == 0 {
-		return nil
-	}
-	out := make([]parsedTask, 0, len(p.taskOrder))
-	for _, id := range p.taskOrder {
-		if task, ok := p.tasksByID[id]; ok {
-			out = append(out, task)
-		}
-	}
-	return out
 }
 
 // markAdvisor records that the given tool_use ID came from a
@@ -528,15 +395,11 @@ func (p *Parser) clearAdvisor(toolUseID string) {
 // parserTaskMapCap bounds parser correlation maps such as
 // taskToolUses, toolUseParents, todoWriteToolUses, and
 // pendingTaskMutations so abandoned entries cannot grow the parser's
-// per-session state without bound. The default policy is replace
-// wholesale — losing a late-arriving lookup for an ancient task is
-// benign because the corresponding store row is already terminal.
-//
-// `tasksByID` deliberately uses cap-and-reject instead: it holds
-// user-facing state (the live activity rail's task list), so dropping
-// the whole list to admit one more would be more destructive than
-// refusing the insert. The cap is well above any realistic in-flight
-// task fan-out so either policy only fires on pathological abandonment.
+// per-session state without bound. When the cap is hit the map is
+// replaced wholesale, which may lose a late-arriving lookup for an
+// ancient task; that is benign because the corresponding store row is
+// already terminal, and the cap is well above any realistic in-flight
+// task fan-out.
 const parserTaskMapCap = 1024
 
 // parserStreamBlockCap bounds streamBlockTypes for the same reason —

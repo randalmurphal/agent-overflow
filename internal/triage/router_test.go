@@ -70,6 +70,8 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventTokenUsage:                 true,
 		provider.EventError:                      true,
 		provider.EventTodoUpdate:                 true,
+		provider.EventTaskCreate:                 true,
+		provider.EventTaskUpdate:                 true,
 		provider.EventNotification:               true,
 		provider.EventAPIRetry:                   true, // transient retry envelopes; rendered as inline timeline rows hiding attempts < 4
 		provider.EventCompactBoundary:            true,

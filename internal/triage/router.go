@@ -110,6 +110,13 @@ type Router struct {
 	// per thread for frontend refresh / reconnect. Todo state is session
 	// state, not history; this map is the backend-owned live projection.
 	latestTodoByThread map[string]LiveTodoSnapshot
+	// tasksByThread is the per-thread mirror of the Claude Task*
+	// family task list. Survives any number of Parser recreations
+	// within the process lifetime so a TaskUpdate against an id
+	// created before session resume still routes correctly. Cleared
+	// by CleanupThread and ResetThreadForRollback. Bounded by
+	// maxTasksPerThread on insert (cap-and-reject).
+	tasksByThread map[string]*threadTasks
 	// turnSpans holds the active span for each in-flight turn so we can
 	// close it when the matching EventTurnComplete arrives. Keyed by
 	// threadID since the provider treats each thread as its own turn
@@ -288,6 +295,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		settledTurns:               make(map[string]bool),
 		currentRoundByThread:       make(map[string]ActiveTurnSnapshot),
 		latestTodoByThread:         make(map[string]LiveTodoSnapshot),
+		tasksByThread:              make(map[string]*threadTasks),
 		turnSpans:                  make(map[string]trace.Span),
 		stoppedThreads:             make(map[string]struct{}),
 		unknownSessionStatusLogged: make(map[string]struct{}),
@@ -401,6 +409,10 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		return r.handleError(evt)
 	case provider.EventTodoUpdate:
 		return r.handleTodoUpdate(evt)
+	case provider.EventTaskCreate:
+		return r.handleTaskCreate(evt)
+	case provider.EventTaskUpdate:
+		return r.handleTaskUpdate(evt)
 	case provider.EventNotification:
 		return r.handleTimelineNotification(evt)
 	case provider.EventAPIRetry:

@@ -398,7 +398,8 @@ func (p *Parser) appendTodoWriteEvent(
 // and avoids per-step map allocation.
 //
 // `id` and `owner` are populated by the Claude Code 2.1.150+ Task*
-// family path (buildTaskSnapshotEvent); legacy TodoWrite and Codex
+// family path (triage projects per-task events into this shape via
+// taskStepsLocked); legacy TodoWrite and Codex
 // update_plan leave them empty so omitempty drops them from the
 // marshaled JSON. Keep the two producers writing this same shape so
 // triage's decodeTodoSteps stays the only decoder.
@@ -590,64 +591,6 @@ func decodeTaskUpdateResult(toolUseResult json.RawMessage) (taskUpdateResult, bo
 		return taskUpdateResult{}, false
 	}
 	return taskUpdateResult{Success: payload.Success}, true
-}
-
-// buildTaskSnapshotEvent wraps the parser's current task list in an
-// EventTodoUpdate so it flows through the existing
-// `provider:todo_update` channel and the same activity rail widget
-// that renders TodoWrite. An empty snapshot is dropped (matches the
-// TodoWrite convention; triage's handleTodoUpdate skips its emit on
-// empty too, so emitting here would be a no-op that bloats the wire).
-func (p *Parser) buildTaskSnapshotEvent(
-	events []provider.ProviderEvent,
-	threadID, op, parentToolUseID, itemID string,
-	now time.Time,
-) []provider.ProviderEvent {
-	snapshot := p.taskSnapshot()
-	if len(snapshot) == 0 {
-		return events
-	}
-	steps := make([]todoWriteStep, 0, len(snapshot))
-	for _, task := range snapshot {
-		steps = append(steps, todoWriteStep{
-			Step:   task.Subject,
-			Status: task.Status,
-			ID:     task.ID,
-			Owner:  task.Owner,
-		})
-	}
-	meta, err := json.Marshal(map[string]any{
-		"kind":  "todo_update",
-		"title": "Updated Todos",
-		"plan":  steps,
-	})
-	if err != nil {
-		return events
-	}
-	return append(events, provider.ProviderEvent{
-		Kind:            provider.EventTodoUpdate,
-		ThreadID:        threadID,
-		ItemID:          itemID,
-		ItemType:        taskMutationToolName(op),
-		Content:         "Updated Todos",
-		Meta:            meta,
-		ParentToolUseID: parentToolUseID,
-		Timestamp:       now,
-	})
-}
-
-// taskMutationToolName is the inverse of taskMutationOp. Used by the
-// snapshot emitter so the EventTodoUpdate row carries the originating
-// tool name in ItemType (sibling to appendTodoWriteEvent setting
-// ItemType: "TodoWrite").
-func taskMutationToolName(op string) string {
-	switch op {
-	case "create":
-		return "TaskCreate"
-	case "update":
-		return "TaskUpdate"
-	}
-	return ""
 }
 
 // appendExitPlanModeEvent converts an ExitPlanMode tool call into an

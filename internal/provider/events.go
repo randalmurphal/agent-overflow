@@ -24,6 +24,16 @@ const (
 	EventTokenUsage        EventKind = "token_usage"
 	EventError             EventKind = "error"
 	EventTodoUpdate        EventKind = "todo_update"
+
+	// EventTaskCreate and EventTaskUpdate are per-task CRUD events
+	// emitted by the Claude Code 2.1.150+ Task* parser path. Triage
+	// accumulates them into a per-thread task mirror and projects each
+	// mutation as an EventTodoUpdate snapshot for the activity rail.
+	// The pair replaces the parser-side snapshot that previously lived
+	// on the per-Session Parser — this placement survives session
+	// resume because triage's Router outlives any individual Parser.
+	EventTaskCreate EventKind = "task_create"
+	EventTaskUpdate EventKind = "task_update"
 	EventNotification      EventKind = "notification"
 
 	// EventAPIRetry surfaces transient-retry envelopes from both providers
@@ -127,6 +137,8 @@ var AllEventKinds = []EventKind{
 	EventTokenUsage,
 	EventError,
 	EventTodoUpdate,
+	EventTaskCreate,
+	EventTaskUpdate,
 	EventNotification,
 	EventAPIRetry,
 	EventCompactBoundary,
@@ -212,3 +224,23 @@ type TruncatedTurnCompleteMeta struct {
 }
 
 func (*TruncatedTurnCompleteMeta) isTurnCompleteMeta() {}
+
+// TaskCreateMeta is the typed payload for EventTaskCreate.
+// Triage decodes it from ProviderEvent.Meta via json.Unmarshal.
+type TaskCreateMeta struct {
+	TaskID  string `json:"taskId"`
+	Subject string `json:"subject"`
+}
+
+// TaskUpdateMeta is the typed payload for EventTaskUpdate.
+// Empty Status/Subject/Owner means "no change" — triage applies
+// partial mutation with the same precedence the parser's mutateTask
+// used. Deleted is a separate boolean so the partial-update rule
+// stays orthogonal to the terminal delete signal.
+type TaskUpdateMeta struct {
+	TaskID  string `json:"taskId"`
+	Status  string `json:"status,omitempty"`
+	Subject string `json:"subject,omitempty"`
+	Owner   string `json:"owner,omitempty"`
+	Deleted bool   `json:"deleted,omitempty"`
+}

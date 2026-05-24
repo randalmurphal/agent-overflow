@@ -30,20 +30,32 @@ type timelineNotificationMeta struct {
 // resurrecting stale todo state.
 func (r *Router) handleTodoUpdate(evt provider.ProviderEvent) error {
 	steps := decodeTodoSteps(evt.Meta)
+	r.projectTodoSnapshot(evt.ThreadID, steps, eventTimestampMillis(evt))
+	return nil
+}
+
+// projectTodoSnapshot is the shared write-path for all producers of the
+// activity-rail todo list (Codex update_plan, legacy Claude TodoWrite,
+// new Claude Task* family). Empty steps clears the live snapshot
+// without emitting (frontend treats absence and empty identically;
+// provider parsers suppress empty updates before they reach triage).
+// Callers do NOT re-dispatch a synthetic EventTodoUpdate through Handle;
+// that would re-fire the stopped-thread check, api-retry
+// forward-progress check, and the test-only eventHook.
+func (r *Router) projectTodoSnapshot(threadID string, steps []TodoStep, updatedAt int64) {
 	if len(steps) == 0 {
-		r.clearLiveTodoSnapshot(evt.ThreadID)
-		return nil
+		r.clearLiveTodoSnapshot(threadID)
+		return
 	}
 	r.setLiveTodoSnapshot(LiveTodoSnapshot{
-		ThreadID:  evt.ThreadID,
+		ThreadID:  threadID,
 		Steps:     steps,
-		UpdatedAt: eventTimestampMillis(evt),
+		UpdatedAt: updatedAt,
 	})
 	r.emit("provider:todo_update", TodoUpdateEvent{
-		ThreadID: evt.ThreadID,
+		ThreadID: threadID,
 		Steps:    steps,
 	})
-	return nil
 }
 
 func (r *Router) setLiveTodoSnapshot(snapshot LiveTodoSnapshot) {
