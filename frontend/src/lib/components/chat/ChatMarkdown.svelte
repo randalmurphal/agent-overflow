@@ -36,6 +36,7 @@
   import StreamdownMermaidHost from './markdown/StreamdownMermaidHost.svelte';
   import StreamdownMathHost from './markdown/StreamdownMathHost.svelte';
   import { chatMarkdownTheme, extraShikiLanguages } from './markdown/streamdownTheme';
+  import { unwrapMarkdownFence } from './markdown/unwrapMarkdownFence';
   import {
     ensureMarkdownCopyDelegate,
     ensurePathLinkClickDelegate,
@@ -116,6 +117,8 @@
   // the nonce-prefixed form and is rejected before any anchor is
   // rendered.
   const allowedLinkPrefixes = ['*', PATH_LINK_HREF_PREFIX];
+
+  const processedSource = $derived(unwrapMarkdownFence(source));
 </script>
 
 <div
@@ -123,7 +126,7 @@
   class={['markdown-body', className].filter(Boolean).join(' ')}
 >
   <Streamdown
-    content={source}
+    content={processedSource}
     parseIncompleteMarkdown={streaming}
     baseTheme="tailwind"
     theme={chatMarkdownTheme}

@@ -143,6 +143,39 @@ describe('<ChatMarkdown> path-link rendering', () => {
     expect(anyOpenAnchor).toBeNull();
   });
 
+  it('unwraps a ```markdown fence so inner code blocks render correctly', async () => {
+    const source = [
+      '```markdown',
+      '',
+      '## Heading',
+      '',
+      'Some prose.',
+      '',
+      '```go',
+      'func main() {}',
+      '```',
+      '',
+      'More text.',
+      '',
+      '```',
+    ].join('\n');
+
+    const { container } = render(ChatMarkdown, {
+      props: { source, pathRefs: [] },
+    });
+
+    await waitFor(() => {
+      const heading = container.querySelector('h2');
+      expect(heading).not.toBeNull();
+      expect(heading?.textContent).toContain('Heading');
+    });
+
+    const codeBlocks = container.querySelectorAll('[data-code-source]');
+    expect(codeBlocks.length).toBe(1);
+    expect(codeBlocks[0].getAttribute('data-code-source')).toContain('func main()');
+    expect(container.textContent).toContain('More text.');
+  });
+
   it('does not encode the workspace param when workspacePath is empty', async () => {
     const { container } = render(ChatMarkdown, {
       props: {
