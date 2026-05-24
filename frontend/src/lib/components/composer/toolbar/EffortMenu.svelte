@@ -110,7 +110,7 @@
   );
   let triggerLabel = $derived.by(() => {
     const labelParts = [effortLabel(currentEffort, currentEffortOption?.label)];
-    if (currentFast) labelParts.unshift('Fast');
+    if (currentFast) labelParts.push('Fast');
     if (showContextSelection && currentContextWindow > 0) {
       labelParts.push(
         currentContextOption
