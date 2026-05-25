@@ -252,7 +252,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     }
   }
 
-  async function adoptThread(id: string): Promise<void> {
+  function adoptThread(id: string): void {
     if (threadId === id) return;
     clearDebounce();
     pendingSaveGeneration++;
@@ -261,15 +261,10 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     hydrating = false;
     error = null;
     clearOptimisticRestoredDraftMarker();
-    hasPendingSave = true;
-    const snapshot = buildSnapshot();
-    rememberDraftSnapshot(id, snapshot);
-    try {
-      await saveSnapshot(id, snapshot, 'Failed to save draft');
-      hasPendingSave = false;
-    } catch {
-      // saveSnapshot already recorded the user-facing error and retained
-      // the local snapshot for this newly-materialized thread.
+    rememberDraftSnapshot(id, buildSnapshot());
+    if (content.trim() || attachments.length > 0 || terminalChips.length > 0 || sourceProposedPlan) {
+      hasPendingSave = true;
+      queueSave();
     }
   }
 
@@ -433,7 +428,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
      * turn in this thread should be a regular turn, not "implementing the
      * plan again."
      */
-    async clearAfterSend(): Promise<void> {
+    clearAfterSend(): void {
       const id = threadId;
       markOptimisticRestoredDraftDirty();
       clearDebounce();
@@ -445,12 +440,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       hasPendingSave = false;
       if (id) {
         forgetDraftSnapshot(id);
-      }
-      if (!id) return;
-      try {
-        await ClearDraft(id);
-      } catch (err) {
-        error = `Failed to clear draft: ${errString(err)}`;
+        void ClearDraft(id).catch(() => {});
       }
     },
 

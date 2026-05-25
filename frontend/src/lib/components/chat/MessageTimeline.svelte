@@ -300,7 +300,8 @@
   // scrollTop pinned, but rows can still shift between paints. The
   // warmup gate reveals content after QUIET_MS=100ms of contentRO
   // silence or the FAILSAFE_MS=2500ms ceiling.
-  let hideContentForWarmup = $derived(!stick.isWarm);
+  const WARMUP_HIDE_THRESHOLD = 5;
+  let hideContentForWarmup = $derived(!stick.isWarm && pane.items.length > WARMUP_HIDE_THRESHOLD);
 
   // Publish the controller on the pane so external surfaces (sidebar
   // resizers, resizable drawers) can acquire a `pauseAutoScroll()` lease
@@ -614,7 +615,7 @@
         }
       }
       autoLoadOlderGate.reset();
-      if (nextThreadId) {
+      if (nextThreadId && scrollSnapshotThreadId) {
         stick.setEscapedFromLock(true);
         // Re-arm the warm-up gate BEFORE the DOM update flushes. The
         // restore $effect calls forceStick() (which also arms the gate),
@@ -643,6 +644,12 @@
         // restore." See useStickToBottom.svelte.ts § Restore-snap
         // consent state.
         stick.armRestoreSnap();
+      } else if (nextThreadId) {
+        // Placeholder → materialized transition: the timeline was empty
+        // so there is no measurement cascade to hide. Skip the warm-up
+        // gate so the optimistic user message renders immediately.
+        stick.skipWarmup();
+        stick.markAtBottom();
       } else {
         // Draft / placeholder transition (pane.threadId === null when a
         // draft placeholder is active or the pane has no thread): the

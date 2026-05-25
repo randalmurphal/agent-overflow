@@ -52,7 +52,7 @@
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
   import { sourceFromProposedPlanItem } from '../../utils/proposedPlan';
-  import type { DiffReviewComment, ProposedPlanComment, SourceDiffReview, SourceProposedPlan } from '../../types/models';
+  import type { DiffReviewComment, Item, ProposedPlanComment, SourceDiffReview, SourceProposedPlan } from '../../types/models';
 
   interface Props {
     pane: ThreadPane;
@@ -359,8 +359,7 @@
         pane.setGeneralError(`Failed to queue message: ${String(err)}`);
         return;
       }
-      draft.setContent('');
-      await draft.clearAfterSend();
+      draft.clearAfterSend();
       resetTextareaHeight();
       return;
     }
@@ -380,12 +379,30 @@
       sourceProposedPlan: draftSourcePlan,
     };
 
-    draft.setContent('');
-    await draft.clearAfterSend();
+    draft.clearAfterSend();
     resetTextareaHeight();
 
+    const lastItem = pane.items.length > 0 ? pane.items[pane.items.length - 1] : null;
+    const nextTurn = lastItem ? lastItem.turnIndex + 1 : 0;
+    const optimisticId = `user:${nextTurn}`;
+    const now = Date.now();
+    const optimisticItem: Item = {
+      id: optimisticId,
+      threadId: threadId!,
+      turnIndex: nextTurn,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      status: 'completed',
+      summary: message,
+      createdAt: now,
+      updatedAt: now,
+    };
+    pane.trackOptimisticItem(optimisticId);
+    pane.upsertItems([optimisticItem]);
+
     try {
-      await dispatchSend({
+      const sent = await dispatchSend({
         threadId,
         message,
         attachmentIds: snapshot.attachments.map((attachment) => attachment.id),
@@ -410,6 +427,10 @@
           preparingWorktree = false;
         },
       });
+      if (!sent && pane.isOptimisticItem(optimisticId)) {
+        pane.removeItemById(optimisticId);
+        pane.untrackOptimisticItem(optimisticId);
+      }
       if (diffReviewSourceForSend) {
         await refreshDiffReviewComments(threadId, diffReviewSourceForSend.scope, diffReviewSourceForSend.sourceKey);
       }

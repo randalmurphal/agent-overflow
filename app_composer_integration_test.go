@@ -540,10 +540,9 @@ func TestComposer_AttachmentNotLostOnDraftSave(t *testing.T) {
 	}
 }
 
-// TestComposer_SendMessageClearsDraft documents the CURRENT contract: the Go
-// backend does NOT clear the draft when SendMessage succeeds. The frontend's
-// send() handler is responsible for calling ClearDraft. Locking this
-// behaviour in a test makes any future silent change loud.
+// TestComposer_SendMessageClearsDraft verifies the backend clears the draft
+// row after persisting the user message. The frontend fires a fire-and-forget
+// ClearDraft as defense-in-depth, but the backend is the authoritative cleanup.
 func TestComposer_SendMessageClearsDraft(t *testing.T) {
 	app, _ := newComposerTestApp(t)
 	thread := composerSeedThread(t, app, "thr-send-draft", "")
@@ -575,14 +574,12 @@ func TestComposer_SendMessageClearsDraft(t *testing.T) {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
-	// CONTRACT: Go backend does NOT clear drafts on send; that's a frontend
-	// concern. If this flips someday, update the comment and expected value.
 	got, err := app.GetDraft(thread.ID)
 	if err != nil {
 		t.Fatalf("GetDraft: %v", err)
 	}
-	if got.Content != "draft text" {
-		t.Fatalf("CONTRACT regression? Draft content = %q, want unchanged \"draft text\"", got.Content)
+	if got.Content != "" {
+		t.Fatalf("Draft should be cleared after send, got content = %q", got.Content)
 	}
 }
 

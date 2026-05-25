@@ -218,8 +218,8 @@ describe('<Composer>', () => {
       attachmentIds: [],
     }));
     expect(create).toHaveBeenCalledWith({ projectId: 'project-placeholder', mode: 'chat' });
-    expect(save).toHaveBeenCalledWith('materialized-send', 'first send', [], [], null);
-    expect(clear).toHaveBeenCalledWith('materialized-send');
+    expect(save).not.toHaveBeenCalled();
+    await waitFor(() => expect(clear).toHaveBeenCalledWith('materialized-send'));
     expect(draft.threadId).toBe('materialized-send');
     expect(draft.content).toBe('');
   });

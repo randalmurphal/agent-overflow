@@ -37,6 +37,20 @@ var migrations = []Migration{
 		Name:    "channel_messages_meta",
 		SQL:     `ALTER TABLE channel_messages ADD COLUMN meta TEXT NULL;`,
 	},
+	{
+		Version: 3,
+		Name:    "thread_drafts_has_content",
+		SQL: `ALTER TABLE thread_drafts ADD COLUMN has_content INTEGER NOT NULL DEFAULT 0 CHECK(has_content IN (0,1));
+
+UPDATE thread_drafts SET has_content = 1
+WHERE TRIM(content) <> ''
+   OR COALESCE(attachments, '[]') NOT IN ('', '[]', 'null')
+   OR COALESCE(terminal_chips, '[]') NOT IN ('', '[]', 'null')
+   OR pending_plan_implementation IS NOT NULL;
+
+CREATE INDEX idx_thread_drafts_has_content
+  ON thread_drafts(thread_id) WHERE has_content = 1;`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

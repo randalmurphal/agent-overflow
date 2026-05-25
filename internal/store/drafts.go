@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // ThreadDraft is the composer draft state for a single thread. Attachments
@@ -64,16 +65,24 @@ func (s *Store) UpsertThreadDraft(d ThreadDraft) error {
 	if d.PendingPlanImplementation != "" {
 		pendingPlan = d.PendingPlanImplementation
 	}
+	hasContent := 0
+	if strings.TrimSpace(d.Content) != "" ||
+		(d.Attachments != "" && d.Attachments != "[]" && d.Attachments != "null") ||
+		(d.TerminalChips != "" && d.TerminalChips != "[]" && d.TerminalChips != "null") ||
+		d.PendingPlanImplementation != "" {
+		hasContent = 1
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO thread_drafts (thread_id, content, attachments, terminal_chips, pending_plan_implementation, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)
+		`INSERT INTO thread_drafts (thread_id, content, attachments, terminal_chips, pending_plan_implementation, updated_at, has_content)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(thread_id) DO UPDATE SET
 			content = excluded.content,
 			attachments = excluded.attachments,
 			terminal_chips = excluded.terminal_chips,
 			pending_plan_implementation = excluded.pending_plan_implementation,
-			updated_at = excluded.updated_at`,
-		d.ThreadID, d.Content, d.Attachments, d.TerminalChips, pendingPlan, d.UpdatedAt,
+			updated_at = excluded.updated_at,
+			has_content = excluded.has_content`,
+		d.ThreadID, d.Content, d.Attachments, d.TerminalChips, pendingPlan, d.UpdatedAt, hasContent,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert thread draft %s: %w", d.ThreadID, err)

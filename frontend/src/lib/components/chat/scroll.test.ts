@@ -1744,7 +1744,9 @@ describe('scroll integration — useStickToBottom wiring', () => {
     const threadB = makeThread({ id: 'thread-b-cross' });
     setBindingMock('SwitchThread', async () => threadB);
     setBindingMock('ListThreadSliceAround', async () => ({
-      items: [makeItem({ id: 'b1', threadId: 'thread-b-cross' })],
+      items: Array.from({ length: 10 }, (_, i) =>
+        makeItem({ id: `b${i}`, threadId: 'thread-b-cross', itemIndex: i }),
+      ),
       oldestTurnIndex: 0,
       hasMore: false,
     }));
@@ -1787,10 +1789,12 @@ describe('scroll integration — useStickToBottom wiring', () => {
     // warmup signal. The cascade happens behind a hidden contentEl; the
     // user only sees the first post-warmup frame, by which point
     // measurements have settled and scrollTop is at the correct bottom.
-    const pane = await buildPane(undefined, [
-      makeItem({ id: 'a', summary: 'a' }),
-      makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
-    ]);
+    // Uses > WARMUP_HIDE_THRESHOLD items so the visibility gate engages.
+    const pane = await buildPane(undefined,
+      Array.from({ length: 10 }, (_, i) =>
+        makeItem({ id: `item-${i}`, itemIndex: i, summary: `item ${i}` }),
+      ),
+    );
     const { container } = render(MessageTimeline, { props: { pane } });
     await tick();
     await tick();

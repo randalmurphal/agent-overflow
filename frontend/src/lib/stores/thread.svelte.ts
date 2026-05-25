@@ -432,6 +432,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // dispatch window. Cleared on thread switch in clear() so the pane
   // doesn't carry sending state into the next thread.
   let sendInFlight: boolean = $state(false);
+  const optimisticItemIds = new Set<string>();
   // materializingThreadPromise coalesces concurrent ensureMaterializedThread
   // callers — composer input, paste/upload, send, toolbar pickers — into a
   // single CreateThread call. Cleared in `finally` so a subsequent
@@ -604,6 +605,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       oldestLoadedTurnIndex,
     });
     if (!next) return null;
+    if (optimisticItemIds.size > 0) {
+      for (const changed of next.changedItems) {
+        optimisticItemIds.delete(changed.id);
+      }
+    }
     items = next.items;
     if (next.indexesNeedRebuild) {
       rebuildItemIndexes(items);
@@ -843,6 +849,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     generalError = null;
     generalErrorKind = null;
     sendInFlight = false;
+    optimisticItemIds.clear();
     channelState.clear();
     designState.reset();
     // Bottom-drawer state is pane-scoped: opening the terminal on thread
@@ -1334,6 +1341,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       generalErrorKind = null;
       loading = false;
       sendInFlight = false;
+      optimisticItemIds.clear();
       showTerminal = false;
       rhsPanelSlot.reset();
       channelState.clear();
@@ -1473,7 +1481,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
           prependThread(created);
           this.adoptMaterializedDraftThread(created);
           const draftStore = getComposerDraftForPane(paneId);
-          if (draftStore) await draftStore.adoptThread(created.id);
+          if (draftStore) draftStore.adoptThread(created.id);
           return created.id;
         } catch (err) {
           console.error('Failed to create draft thread:', err);
@@ -1869,6 +1877,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     setSendInFlight(value: boolean): void {
       sendInFlight = value;
+    },
+
+    trackOptimisticItem(id: string): void {
+      optimisticItemIds.add(id);
+    },
+
+    isOptimisticItem(id: string): boolean {
+      return optimisticItemIds.has(id);
+    },
+
+    untrackOptimisticItem(id: string): void {
+      optimisticItemIds.delete(id);
     },
 
     setContextWindow(data: ContextWindow): void {

@@ -251,6 +251,9 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		return store.Item{}, fmt.Errorf("send message: persist user message: %w", err)
 	}
 	userMsgKept = true
+	if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
+		log.Printf("send message: delete draft for thread %s: %v", threadID, draftErr)
+	}
 	a.captureMessageCheckpoint(thread, userItem)
 	// Click-time plan/diff-review acceptance. Sticky: a subsequent
 	// sendToProvider failure does NOT revert the marks — the user

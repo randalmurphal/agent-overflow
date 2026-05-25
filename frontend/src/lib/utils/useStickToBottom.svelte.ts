@@ -344,6 +344,12 @@ export interface UseStickToBottomController {
    */
   armWarmup(): void;
   /**
+   * Force the warm-up gate open immediately. Use when the caller knows
+   * there is no measurement cascade to hide — e.g. the placeholder →
+   * materialized transition where the timeline was empty.
+   */
+  skipWarmup(): void;
+  /**
    * Notify the controller that the consumer's `quietContextSignal`
    * flipped truthy. If the warm gate is still pending and a quiet
    * timer is currently armed, re-arm with SETTLED_QUIET_MS instead of
@@ -2002,12 +2008,6 @@ export function createUseStickToBottomController(
     // an RO or touch scrollTop, so virtua's per-row ResizeObservers
     // (which fire on mount) hit the gate from frame zero.
     installExternalScrollTopGate(nextScrollEl);
-    // Start the warm gate at attach. The first contentRO callback
-    // fires for whatever content is already there, then virtua's per-
-    // row ROs and Streamdown's typesetting cascade — all of which
-    // should sync-pin (silent) regardless of animationMode until the
-    // controller observes contentRO quiet for QUIET_MS or the
-    // FAILSAFE_MS deadline trips.
     beginWarmup();
     trace('scroll.attach', () => ({
       surface: nextScrollEl.dataset?.testid ?? '',
@@ -2170,6 +2170,12 @@ export function createUseStickToBottomController(
     stopScroll,
     setEscapedFromLock,
     armWarmup: beginWarmup,
+    skipWarmup(): void {
+      if (!warm) {
+        warm = true;
+        clearWarmupTimers();
+      }
+    },
     notifyQuietContextSignalChanged,
     armRestoreSnap,
   };

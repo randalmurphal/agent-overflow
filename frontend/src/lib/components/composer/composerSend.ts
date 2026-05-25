@@ -71,7 +71,7 @@ export interface SendOptions {
  * pane's local `sending` flag around this call so the UI reflects in-
  * flight state — this function intentionally knows nothing about it.
  */
-export async function dispatchSend(opts: SendOptions): Promise<void> {
+export async function dispatchSend(opts: SendOptions): Promise<boolean> {
   let sendStarted = false;
   try {
     let threadForSend = opts.currentThread;
@@ -115,6 +115,7 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
     const updated = (await SendMessageWithOptions(opts.threadId, opts.message, sendOptions)) as Thread;
     syncThread(updated);
     clearRuntimeModeDraft(opts.threadId);
+    return true;
   } catch (err) {
     console.error('Failed to send message:', err);
     // Flip to error so the sidebar pill reads "Failed" — the user
@@ -135,5 +136,6 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
     } else {
       opts.reportError(`Failed to send message: ${errString(err)}`);
     }
+    return false;
   }
 }

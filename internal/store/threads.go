@@ -253,12 +253,7 @@ func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 		    OR EXISTS (
 		         SELECT 1 FROM thread_drafts
 		          WHERE thread_drafts.thread_id = threads.id
-		            AND (
-		              TRIM(thread_drafts.content) <> ''
-		              OR COALESCE(thread_drafts.attachments, '[]') NOT IN ('', '[]', 'null')
-		              OR COALESCE(thread_drafts.terminal_chips, '[]') NOT IN ('', '[]', 'null')
-		              OR thread_drafts.pending_plan_implementation IS NOT NULL
-		            )
+		            AND thread_drafts.has_content = 1
 		       )
 		   )
 		 ORDER BY updated_at DESC`,

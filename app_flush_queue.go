@@ -373,6 +373,9 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 	// (persistDeferredUserText) so the queued message lands after rows
 	// the model emitted between dispatch and echo.
 	a.triage.RegisterPendingFlushSend(threadID, item.ID, userItem)
+	if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
+		log.Printf("flush queue: delete draft for thread %s: %v", threadID, draftErr)
+	}
 
 	sendOpts := provider.SendOptions{
 		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
