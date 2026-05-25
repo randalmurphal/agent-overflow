@@ -21,10 +21,13 @@ import (
 
 const (
 	// idleReapThreshold is the inactivity window after which a session
-	// becomes a reap candidate. Matches t3-code's default. Treated as a
-	// floor: a session that crossed the threshold mid-sweep is reaped
-	// on the next tick rather than the boundary tick.
-	idleReapThreshold = 30 * time.Minute
+	// becomes a reap candidate. Treated as a floor: a session that
+	// crossed the threshold mid-sweep is reaped on the next tick rather
+	// than the boundary tick. Lowered from 30 min (t3-code's default) to
+	// 15 min because each Claude process holds ~288 MB RSS; at 18+
+	// threads visited in a session the memory pressure outweighs the
+	// cold-start cost of a lazy respawn.
+	idleReapThreshold = 15 * time.Minute
 
 	// idleReapInterval is the sweep cadence. Five minutes is long
 	// enough to keep the per-tick cost negligible (one map walk + at
