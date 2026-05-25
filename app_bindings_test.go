@@ -363,7 +363,7 @@ func TestCreateThreadAddsRecentWorkspace(t *testing.T) {
 	}
 }
 
-func TestSwitchThreadAutoResumesStoredSession(t *testing.T) {
+func TestAutoResumeThreadIsNoOp(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-auto")
 	thread.SessionRef = "provider-session-1"
@@ -377,76 +377,17 @@ func TestSwitchThreadAutoResumesStoredSession(t *testing.T) {
 		return nil
 	}
 
-	got, err := app.SwitchThread(thread.ID)
-	if err != nil {
-		t.Fatalf("SwitchThread() error = %v", err)
-	}
-	if got.ID != thread.ID {
-		t.Fatalf("thread ID = %q, want %q", got.ID, thread.ID)
-	}
 	if err := app.AutoResumeThread(thread.ID); err != nil {
 		t.Fatalf("AutoResumeThread() error = %v", err)
 	}
 
 	select {
 	case threadID := <-started:
-		if threadID != thread.ID {
-			t.Fatalf("startSession thread = %q, want %q", threadID, thread.ID)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for auto-resume")
+		t.Fatalf("unexpected session start for %s — AutoResumeThread should be a no-op", threadID)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 
-func TestSwitchThreadAutoResumeSessionInitDoesNotTouchUpdatedAt(t *testing.T) {
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-auto-preserve-updated")
-	thread.SessionRef = "provider-session-1"
-	thread.UpdatedAt = 1000
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-	insertCompletedTurnForAppTest(t, app, thread.ID, "turn-auto-preserve-updated", 1200, 1500)
-
-	started := make(chan struct{}, 1)
-	app.startSessionFn = func(threadID string) error {
-		if err := app.store.UpdateSessionRef(threadID, "provider-session-2"); err != nil {
-			return err
-		}
-		started <- struct{}{}
-		return nil
-	}
-
-	if _, err := app.SwitchThread(thread.ID); err != nil {
-		t.Fatalf("SwitchThread() error = %v", err)
-	}
-	if err := app.AutoResumeThread(thread.ID); err != nil {
-		t.Fatalf("AutoResumeThread() error = %v", err)
-	}
-
-	select {
-	case <-started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for auto-resume")
-	}
-
-	stored, err := app.store.GetThread(thread.ID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
-	if stored.UpdatedAt != thread.UpdatedAt {
-		t.Fatalf("UpdatedAt = %d, want %d", stored.UpdatedAt, thread.UpdatedAt)
-	}
-	if stored.LastReadAt == nil {
-		t.Fatalf("LastReadAt = nil, want thread marked read")
-	}
-	if stored.LatestTurnCompletedAt == nil {
-		t.Fatalf("LatestTurnCompletedAt = nil, want completed turn")
-	}
-	if *stored.LastReadAt < *stored.LatestTurnCompletedAt {
-		t.Fatalf("LastReadAt = %d, want >= latest turn completed %d", *stored.LastReadAt, *stored.LatestTurnCompletedAt)
-	}
-}
 
 func TestSwitchThreadMarksThreadReadBeforeReturning(t *testing.T) {
 	app := newTestAppWithStore(t)
@@ -486,113 +427,8 @@ func TestSwitchThreadMarksThreadReadBeforeReturning(t *testing.T) {
 	}
 }
 
-func TestSwitchThreadCoalescesConcurrentAutoResume(t *testing.T) {
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-auto-coalesce")
-	thread.SessionRef = "provider-session-1"
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
 
-	started := make(chan string, 2)
-	release := make(chan struct{})
-	app.startSessionFn = func(threadID string) error {
-		started <- threadID
-		<-release
-		return nil
-	}
 
-	if _, err := app.SwitchThread(thread.ID); err != nil {
-		t.Fatalf("first SwitchThread() error = %v", err)
-	}
-	if err := app.AutoResumeThread(thread.ID); err != nil {
-		t.Fatalf("first AutoResumeThread() error = %v", err)
-	}
-
-	select {
-	case threadID := <-started:
-		if threadID != thread.ID {
-			t.Fatalf("startSession thread = %q, want %q", threadID, thread.ID)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for first auto-resume")
-	}
-
-	if _, err := app.SwitchThread(thread.ID); err != nil {
-		t.Fatalf("second SwitchThread() error = %v", err)
-	}
-	if err := app.AutoResumeThread(thread.ID); err != nil {
-		t.Fatalf("second AutoResumeThread() error = %v", err)
-	}
-
-	select {
-	case threadID := <-started:
-		t.Fatalf("unexpected duplicate auto-resume for %s", threadID)
-	case <-time.After(200 * time.Millisecond):
-	}
-
-	close(release)
-}
-
-func TestSwitchThreadSkipsAutoResumeWithoutSessionRef(t *testing.T) {
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-no-resume")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-
-	started := make(chan string, 1)
-	app.startSessionFn = func(threadID string) error {
-		started <- threadID
-		return nil
-	}
-
-	if _, err := app.SwitchThread(thread.ID); err != nil {
-		t.Fatalf("SwitchThread() error = %v", err)
-	}
-	if err := app.AutoResumeThread(thread.ID); err != nil {
-		t.Fatalf("AutoResumeThread() error = %v", err)
-	}
-
-	select {
-	case threadID := <-started:
-		t.Fatalf("unexpected auto-resume for %s", threadID)
-	case <-time.After(200 * time.Millisecond):
-	}
-}
-
-func TestSwitchThreadAutoResumeFailureEmitsErrorEvent(t *testing.T) {
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-resume-error")
-	thread.SessionRef = "provider-session-1"
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-
-	emitted := collectErrorItemUpserts(t, app, 1)
-	app.startSessionFn = func(threadID string) error {
-		return fmt.Errorf("boom")
-	}
-
-	if _, err := app.SwitchThread(thread.ID); err != nil {
-		t.Fatalf("SwitchThread() error = %v", err)
-	}
-	if err := app.AutoResumeThread(thread.ID); err != nil {
-		t.Fatalf("AutoResumeThread() error = %v", err)
-	}
-
-	select {
-	case item := <-emitted:
-		if item.ThreadID != thread.ID {
-			t.Fatalf("error thread = %q, want %q", item.ThreadID, thread.ID)
-		}
-		if item.Summary != "auto-resume failed: boom" {
-			t.Fatalf("error content = %q, want %q", item.Summary, "auto-resume failed: boom")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for auto-resume error item")
-	}
-}
 
 func TestReconnectSessionStopsThenStarts(t *testing.T) {
 	app := &App{}

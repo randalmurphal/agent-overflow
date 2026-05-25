@@ -118,38 +118,6 @@ func TestForkThreadRejectsThreadsWithoutMessages(t *testing.T) {
 	}
 }
 
-func TestSwitchThreadAutoResumesPendingFork(t *testing.T) {
-	app := newTestAppWithStore(t)
-
-	thread := testThread("thread-pending-fork")
-	thread.Provider = string(provider.Claude)
-	thread.PendingForkRef = "claude-session-123"
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-
-	started := make(chan string, 1)
-	app.startSessionFn = func(threadID string) error {
-		started <- threadID
-		return nil
-	}
-
-	if _, err := app.SwitchThread(thread.ID); err != nil {
-		t.Fatalf("SwitchThread() error = %v", err)
-	}
-	if err := app.AutoResumeThread(thread.ID); err != nil {
-		t.Fatalf("AutoResumeThread() error = %v", err)
-	}
-
-	select {
-	case threadID := <-started:
-		if threadID != thread.ID {
-			t.Fatalf("startSession thread = %q, want %q", threadID, thread.ID)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for pending fork auto-resume")
-	}
-}
 
 func TestForkThreadUsesActiveCodexSession(t *testing.T) {
 	app := newTestAppWithStore(t)
