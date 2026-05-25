@@ -96,7 +96,7 @@ func makeRepoDir(t *testing.T) string {
 func TestSubscribeReturnsInitialStatus(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
-	mgr := NewManager(stub.fn())
+	mgr := NewManager(stub.fn(), nil)
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -115,7 +115,7 @@ func TestSubscribeReturnsErrorOnInitialFetchFailure(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{})
 	stub.failNext.Store(true)
-	mgr := NewManager(stub.fn())
+	mgr := NewManager(stub.fn(), nil)
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -129,7 +129,7 @@ func TestSubscribeReturnsErrorOnInitialFetchFailure(t *testing.T) {
 func TestFsEventTriggersDedupedUpdate(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
-	mgr := NewManager(stub.fn())
+	mgr := NewManager(stub.fn(), nil)
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -163,7 +163,7 @@ func TestFsEventTriggersDedupedUpdate(t *testing.T) {
 func TestMultipleSubscribersShareWatcher(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
-	mgr := NewManager(stub.fn())
+	mgr := NewManager(stub.fn(), nil)
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -200,7 +200,7 @@ func TestMultipleSubscribersShareWatcher(t *testing.T) {
 func TestLastUnsubscribeStopsWatcher(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
-	mgr := NewManager(stub.fn())
+	mgr := NewManager(stub.fn(), nil)
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -245,7 +245,7 @@ func TestLastUnsubscribeStopsWatcher(t *testing.T) {
 func TestPollingFallbackEmitsUpdates(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
-	mgr := NewManager(stub.fn())
+	mgr := NewManager(stub.fn(), nil)
 	// Force watcher install to fail so the watcher uses the polling
 	// fallback. This validates the inotify-exhaustion path without
 	// actually running out of watches.
@@ -281,7 +281,7 @@ func TestPollingFallbackEmitsUpdates(t *testing.T) {
 func TestManagerCloseDrainsSubscribers(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
-	mgr := NewManager(stub.fn())
+	mgr := NewManager(stub.fn(), nil)
 
 	dir := makeRepoDir(t)
 	sub, err := mgr.Subscribe(dir)
@@ -309,7 +309,7 @@ func TestManagerCloseDrainsSubscribers(t *testing.T) {
 func TestStatusFnFailureDoesNotEmit(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
-	mgr := NewManager(stub.fn())
+	mgr := NewManager(stub.fn(), nil)
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -352,7 +352,7 @@ func TestConcurrentRefreshAndUnsubscribe(t *testing.T) {
 		n := current.Add(1)
 		return gitops.GitStatus{IsRepo: true, Branch: "main", AheadCount: int(n)}, nil
 	}
-	mgr := NewManager(statusFn)
+	mgr := NewManager(statusFn, nil)
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -435,7 +435,7 @@ func TestConcurrentRefreshAndUnsubscribe(t *testing.T) {
 func TestSupersedeOnOverflow(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main", AheadCount: 1})
-	mgr := NewManager(stub.fn())
+	mgr := NewManager(stub.fn(), nil)
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -491,7 +491,7 @@ func TestWatcherPanicRecovery(t *testing.T) {
 		}
 		panic("simulated statusFn panic")
 	}
-	mgr := NewManager(statusFn)
+	mgr := NewManager(statusFn, nil)
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -527,7 +527,7 @@ func TestManagerCloseBlocksUntilWatchersExit(t *testing.T) {
 		<-release
 		return gitops.GitStatus{IsRepo: true, Branch: "main"}, nil
 	}
-	mgr := NewManager(statusFn)
+	mgr := NewManager(statusFn, nil)
 
 	dir := makeRepoDir(t)
 	subDone := make(chan struct{})
@@ -574,7 +574,7 @@ func TestManagerCloseBlocksUntilWatchersExit(t *testing.T) {
 // and the system-path defense-in-depth backstop.
 func TestSubscribeRejectsEmptyCwd(t *testing.T) {
 	t.Parallel()
-	mgr := NewManager(newStubStatus(gitops.GitStatus{}).fn())
+	mgr := NewManager(newStubStatus(gitops.GitStatus{}).fn(), nil)
 	t.Cleanup(mgr.Close)
 	if _, err := mgr.Subscribe(""); err == nil {
 		t.Fatalf("Subscribe(\"\") must error")
@@ -583,7 +583,7 @@ func TestSubscribeRejectsEmptyCwd(t *testing.T) {
 
 func TestSubscribeRejectsNonexistentPath(t *testing.T) {
 	t.Parallel()
-	mgr := NewManager(newStubStatus(gitops.GitStatus{}).fn())
+	mgr := NewManager(newStubStatus(gitops.GitStatus{}).fn(), nil)
 	t.Cleanup(mgr.Close)
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	if _, err := mgr.Subscribe(missing); err == nil {
@@ -599,7 +599,7 @@ func TestSubscribeRejectsNonexistentPath(t *testing.T) {
 
 func TestSubscribeRejectsSystemPath(t *testing.T) {
 	t.Parallel()
-	mgr := NewManager(newStubStatus(gitops.GitStatus{}).fn())
+	mgr := NewManager(newStubStatus(gitops.GitStatus{}).fn(), nil)
 	t.Cleanup(mgr.Close)
 	for _, p := range []string{"/", "/etc", "/var"} {
 		if _, err := os.Stat(p); err != nil {
@@ -618,7 +618,7 @@ func TestSubscribeSurfacesInitialFetchFailureWithoutLeak(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{})
 	stub.failNext.Store(true)
-	mgr := NewManager(stub.fn())
+	mgr := NewManager(stub.fn(), nil)
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -639,7 +639,7 @@ func TestSubscribeSurfacesInitialFetchFailureWithoutLeak(t *testing.T) {
 func TestSharedCwdReusesFreshLastStatus(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
-	mgr := NewManager(stub.fn())
+	mgr := NewManager(stub.fn(), nil)
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -670,4 +670,101 @@ func mustCanonical(t *testing.T, p string) string {
 		t.Fatalf("canonicalize: %v", err)
 	}
 	return c
+}
+
+// TestFastStatusFnSkipsPRThenRefreshDelivers verifies that when
+// FastStatusFn is set, Subscribe returns immediately with the fast
+// status (no PR info), and the follow-up async refresh delivers the
+// full status via Updates().
+func TestFastStatusFnSkipsPRThenRefreshDelivers(t *testing.T) {
+	t.Parallel()
+	fastStatus := gitops.GitStatus{
+		IsRepo: true, Branch: "feat", Forge: "github",
+	}
+	fullStatus := gitops.GitStatus{
+		IsRepo: true, Branch: "feat", Forge: "github",
+		OpenPRURL: "https://github.com/o/r/pull/42", OpenPRNumber: 42,
+	}
+
+	fastStub := newStubStatus(fastStatus)
+	fullStub := newStubStatus(fullStatus)
+	mgr := NewManager(fullStub.fn(), fastStub.fn())
+	t.Cleanup(mgr.Close)
+
+	dir := makeRepoDir(t)
+	sub, err := mgr.Subscribe(dir)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer sub.Close()
+
+	if got := sub.Initial(); got.OpenPRURL != "" {
+		t.Fatalf("Initial() should not have PR info, got OpenPRURL=%q", got.OpenPRURL)
+	}
+	if got := sub.Initial(); got.Branch != "feat" {
+		t.Fatalf("Initial() branch = %q, want feat", got.Branch)
+	}
+
+	got := recvWithin(t, sub, 5*time.Second)
+	if got.OpenPRURL != "https://github.com/o/r/pull/42" {
+		t.Fatalf("follow-up update OpenPRURL = %q, want PR URL", got.OpenPRURL)
+	}
+	if got.OpenPRNumber != 42 {
+		t.Fatalf("follow-up update OpenPRNumber = %d, want 42", got.OpenPRNumber)
+	}
+}
+
+// TestFastStatusFnNilFallsBackToStatusFn verifies that when
+// FastStatusFn is nil, Subscribe uses statusFn for the initial fetch.
+func TestFastStatusFnNilFallsBackToStatusFn(t *testing.T) {
+	t.Parallel()
+	stub := newStubStatus(gitops.GitStatus{
+		IsRepo: true, Branch: "main",
+		OpenPRURL: "https://github.com/o/r/pull/1", OpenPRNumber: 1,
+	})
+	mgr := NewManager(stub.fn(), nil)
+	t.Cleanup(mgr.Close)
+
+	dir := makeRepoDir(t)
+	sub, err := mgr.Subscribe(dir)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer sub.Close()
+
+	if got := sub.Initial(); got.OpenPRURL != "https://github.com/o/r/pull/1" {
+		t.Fatalf("Initial() OpenPRURL = %q, want PR URL", got.OpenPRURL)
+	}
+}
+
+// TestNoAsyncRefreshWithoutForge verifies that Subscribe does not
+// request an async refresh when the initial status has no forge
+// (no remote, or unsupported host). The watcher should not spawn
+// a pointless PR lookup.
+func TestNoAsyncRefreshWithoutForge(t *testing.T) {
+	t.Parallel()
+	fastStatus := gitops.GitStatus{
+		IsRepo: true, Branch: "main", Forge: "",
+	}
+	var fullCalls atomic.Int32
+	fullFn := func(cwd string) (gitops.GitStatus, error) {
+		fullCalls.Add(1)
+		return fastStatus, nil
+	}
+	fastStub := newStubStatus(fastStatus)
+	mgr := NewManager(fullFn, fastStub.fn())
+	t.Cleanup(mgr.Close)
+
+	dir := makeRepoDir(t)
+	sub, err := mgr.Subscribe(dir)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer sub.Close()
+
+	// Give the watcher time to process a potential refresh.
+	expectNoUpdate(t, sub, 500*time.Millisecond)
+	if n := fullCalls.Load(); n != 0 {
+		t.Fatalf("full statusFn called %d times, want 0 (no forge = no async refresh)", n)
+	}
 }

@@ -178,7 +178,7 @@ func newFullyWiredTestApp(t *testing.T) (*App, *shutdownRecorder) {
 	// we wire it for parity with production.
 	app.gitWatch = gitwatch.NewManager(func(string) (gitops.GitStatus, error) {
 		return gitops.GitStatus{}, nil
-	})
+	}, nil)
 	// A never-started screenshot.Manager Closes cleanly (the package
 	// treats Close as a no-op when allocCancel/browserCancel are nil)
 	// so we wire it for parity with production without paying the

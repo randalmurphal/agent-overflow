@@ -122,6 +122,73 @@ describe('<GitActionsControl> subscribe model', () => {
     expect(errorButton).toBeInTheDocument();
   });
 
+  it('does not escalate to pane.setGeneralError on subscribe failure', async () => {
+    const pane = await buildPane();
+    const setGeneralError = vi.spyOn(pane, 'setGeneralError');
+    setBindingMock('GitStatusSubscribe', async () => {
+      throw new Error('timeout');
+    });
+    setBindingMock('GitStatusUnsubscribe', async () => {});
+    render(GitActionsControl, { props: { pane } });
+    await flush();
+    expect(setGeneralError).not.toHaveBeenCalled();
+  });
+
+  it('retries subscribe with backoff after transient failure', async () => {
+    vi.useFakeTimers();
+    try {
+      const pane = await buildPane();
+      let callCount = 0;
+      const subscribeFn = setBindingMock('GitStatusSubscribe', async () => {
+        callCount++;
+        if (callCount === 1) throw new Error('transient');
+        return { id: 'sub-retry', status: status() };
+      });
+      setBindingMock('GitStatusUnsubscribe', async () => {});
+
+      const { findByTestId, queryByTestId } = render(GitActionsControl, { props: { pane } });
+
+      // First attempt fails — error button appears.
+      await flush();
+      await vi.waitFor(() => expect(queryByTestId('git-actions-error')).toBeInTheDocument());
+      expect(callCount).toBe(1);
+
+      // Advance past the 3s retry delay.
+      await vi.advanceTimersByTimeAsync(3_000);
+      await flush();
+
+      // Second attempt succeeds — error button disappears, normal
+      // control renders.
+      await vi.waitFor(() => expect(queryByTestId('git-actions-error')).toBeNull());
+      expect(subscribeFn).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels pending retry timer on cleanup', async () => {
+    vi.useFakeTimers();
+    try {
+      const pane = await buildPane();
+      setBindingMock('GitStatusSubscribe', async () => {
+        throw new Error('always fails');
+      });
+      setBindingMock('GitStatusUnsubscribe', async () => {});
+
+      const { unmount } = render(GitActionsControl, { props: { pane } });
+      await flush();
+
+      // Unmount before the retry fires — should not throw or leak.
+      unmount();
+
+      // Advance past what would have been the retry delay.
+      await vi.advanceTimersByTimeAsync(10_000);
+      await flush();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('renders the Ship Changes menu entry in a valid repo', async () => {
     const pane = await buildPane();
     installSubscribeMock(status({ isRepo: true, hasChanges: true }));

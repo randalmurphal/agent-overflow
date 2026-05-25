@@ -139,7 +139,6 @@
     } catch (err) {
       console.error('Failed to refresh git status:', err);
       statusError = true;
-      pane.setGeneralError(`Failed to load git status: ${errString(err)}`);
     }
   }
 
@@ -194,25 +193,25 @@
       return;
     }
 
+    const subscribeTo = id;
     let cancelled = false;
     let cancelEvent: (() => void) | null = null;
     let activeId: string | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryDelayMs = 3_000;
+    const MAX_RETRY_DELAY_MS = 30_000;
 
-    void (async () => {
+    async function attemptSubscribe(): Promise<void> {
       try {
-        const result = (await GitStatusSubscribe(id)) as GitStatusSubscriptionResult;
+        const result = (await GitStatusSubscribe(subscribeTo)) as GitStatusSubscriptionResult;
         if (cancelled) {
-          // Effect re-ran before subscribe resolved; release the
-          // freshly-created subscription rather than orphaning it.
-          // The connection-tied safety net would catch this on
-          // disconnect, but releasing eagerly keeps the watcher
-          // refcount honest in steady state.
           void GitStatusUnsubscribe(result.id).catch(() => undefined);
           return;
         }
         activeId = result.id;
         applyObservedStatus(result.status);
         statusError = false;
+        retryDelayMs = 3_000;
 
         cancelEvent = wailsEventOn<GitStatusEvent>('git:status', (payload) => {
           if (!payload || payload.subscriptionId !== activeId) return;
@@ -221,14 +220,21 @@
       } catch (err) {
         if (cancelled) return;
         console.error('GitStatusSubscribe failed:', err);
-        status = null;
         statusError = true;
-        pane.setGeneralError(`Failed to subscribe to git status: ${errString(err)}`);
+        retryTimer = setTimeout(() => {
+          if (cancelled) return;
+          retryTimer = null;
+          void attemptSubscribe();
+        }, retryDelayMs);
+        retryDelayMs = Math.min(retryDelayMs * 2, MAX_RETRY_DELAY_MS);
       }
-    })();
+    }
+
+    void attemptSubscribe();
 
     return () => {
       cancelled = true;
+      if (retryTimer !== null) clearTimeout(retryTimer);
       if (cancelEvent) cancelEvent();
       if (activeId) {
         void GitStatusUnsubscribe(activeId).catch(() => undefined);

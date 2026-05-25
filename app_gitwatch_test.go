@@ -39,7 +39,7 @@ func (s *stubGitWatch) setStatus(next gitops.GitStatus) {
 
 func installGitWatchForTest(t *testing.T, app *App, stub *stubGitWatch) {
 	t.Helper()
-	app.gitWatch = gitwatch.NewManager(stub.fn())
+	app.gitWatch = gitwatch.NewManager(stub.fn(), nil)
 	t.Cleanup(app.gitWatch.Close)
 }
 

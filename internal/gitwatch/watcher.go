@@ -83,8 +83,9 @@ type workspaceWatcher struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	eventsCh chan notify.EventInfo
-	done     chan struct{}
+	eventsCh  chan notify.EventInfo
+	refreshCh chan struct{}
+	done      chan struct{}
 
 	// fallbackPolling is set in start() before the run goroutine begins
 	// and never written after — safe to read from the run goroutine
@@ -104,6 +105,7 @@ func newWorkspaceWatcher(cwd string, statusFn StatusFn, initial gitops.GitStatus
 		ctx:        ctx,
 		cancel:     cancel,
 		eventsCh:   make(chan notify.EventInfo, notifyChannelSize),
+		refreshCh:  make(chan struct{}, 1),
 		done:       make(chan struct{}),
 		lastStatus: initial,
 	}
@@ -213,7 +215,20 @@ func (w *workspaceWatcher) run() {
 			w.refresh()
 		case <-pollCh:
 			w.refresh()
+		case <-w.refreshCh:
+			w.refresh()
 		}
+	}
+}
+
+// requestRefresh asks the run loop to do a full statusFn refresh on
+// its next iteration. Non-blocking; coalesces with any pending request.
+// Used by the Manager to trigger a follow-up refresh after the initial
+// fast subscribe returns without PR info.
+func (w *workspaceWatcher) requestRefresh() {
+	select {
+	case w.refreshCh <- struct{}{}:
+	default:
 	}
 }
 

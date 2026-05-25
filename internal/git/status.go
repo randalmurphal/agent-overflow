@@ -124,6 +124,53 @@ func (c *Core) Status(cwd string) (GitStatus, error) {
 	return status, nil
 }
 
+// StatusFast is the same as Status but uses only cached PR info,
+// avoiding the network call to gh/glab. Returns immediately even when
+// the PR cache is cold — the caller is expected to arrange a follow-up
+// full Status call that warms the cache and broadcasts the PR fields.
+func (c *Core) StatusFast(cwd string) (GitStatus, error) {
+	result, err := c.run(cwd, "status", "--porcelain=v2", "--branch")
+	if err != nil {
+		return GitStatus{}, err
+	}
+	if result.exitCode != 0 {
+		if strings.Contains(strings.ToLower(result.stderr), "not a git repository") {
+			return GitStatus{IsRepo: false}, nil
+		}
+		return GitStatus{}, fmt.Errorf("git status failed: %s", strings.TrimSpace(result.stderr))
+	}
+
+	unstagedNumstat, err := c.run(cwd, "diff", "--numstat")
+	if err != nil {
+		return GitStatus{}, err
+	}
+	stagedNumstat, err := c.run(cwd, "diff", "--cached", "--numstat")
+	if err != nil {
+		return GitStatus{}, err
+	}
+
+	defaultBranch, _ := c.defaultBranchName(cwd)
+	originURL, hasOriginRemote := c.originURL(cwd)
+	forge := ""
+	if hasOriginRemote {
+		forge = classifyOriginURL(originURL, c.gitLabHostsSnapshot())
+	}
+	c.storeForgeCache(cwd, forge, c.nowFn())
+
+	status := parseStatusOutput(result.stdout, unstagedNumstat.stdout, stagedNumstat.stdout)
+	status.IsRepo = true
+	status.HasOriginRemote = hasOriginRemote
+	status.Forge = forge
+	status.IsDefaultBranch = isDefaultBranchName(status.Branch, defaultBranch)
+	status.PendingOperation = c.pendingOperation(cwd)
+
+	if status.Branch != "" {
+		status.OpenPRURL, status.OpenPRNumber = c.lookupOpenPRCached(cwd, status.Branch)
+	}
+
+	return status, nil
+}
+
 // pendingOperation detects an in-progress merge, rebase, or bisect by
 // inspecting well-known files under the repository's git directory. Returns
 // "" when the repo is idle.
@@ -566,6 +613,22 @@ func isRemoteBranchName(name string, remoteNames []string) bool {
 		}
 	}
 	return false
+}
+
+// lookupOpenPRCached returns cached PR info without making a network
+// call. Returns ("", 0) on cache miss. Used by StatusFast to keep
+// the initial subscribe path free of network calls.
+func (c *Core) lookupOpenPRCached(cwd, branch string) (string, int) {
+	if branch == "" {
+		return "", 0
+	}
+	key := prCacheKey(cwd, branch)
+	c.prCacheMu.RLock()
+	defer c.prCacheMu.RUnlock()
+	if entry, ok := c.prCache[key]; ok && entry.expiresAt.After(c.nowFn()) {
+		return entry.url, entry.number
+	}
+	return "", 0
 }
 
 func (c *Core) lookupOpenPR(cwd, branch string) (string, int) {

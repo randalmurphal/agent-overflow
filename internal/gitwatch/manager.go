@@ -17,7 +17,16 @@ type StatusFn func(cwd string) (gitops.GitStatus, error)
 // Manager owns the per-cwd watchers and subscriber fan-out. One Manager
 // per *App is the expected wiring. Safe for concurrent use.
 type Manager struct {
+	// statusFn is the full status function including network calls (e.g.
+	// gh/glab PR lookup). Used by the watcher's debounce refresh where
+	// the PR cache is warm and the call isn't on the RPC critical path.
 	statusFn StatusFn
+
+	// fastStatusFn is the fast variant that skips network calls (uses
+	// cache-only for PR info). Used for the initial Subscribe fetch so
+	// the RPC returns immediately. When nil, statusFn is used instead.
+	// Must be set before the first Subscribe call.
+	fastStatusFn StatusFn
 
 	mu       sync.Mutex
 	watchers map[string]*workspaceWatcher // canonical cwd → watcher
@@ -29,14 +38,17 @@ type Manager struct {
 	installFn func(cwd string, ch chan<- notify.EventInfo) error
 }
 
-// NewManager constructs a Manager. statusFn is required.
-func NewManager(statusFn StatusFn) *Manager {
+// NewManager constructs a Manager. statusFn is required; fastStatusFn
+// is optional (when nil, statusFn is used for the initial subscribe
+// fetch too — legacy behavior).
+func NewManager(statusFn StatusFn, fastStatusFn StatusFn) *Manager {
 	if statusFn == nil {
 		panic("gitwatch: NewManager requires a non-nil StatusFn")
 	}
 	return &Manager{
-		statusFn: statusFn,
-		watchers: make(map[string]*workspaceWatcher),
+		statusFn:     statusFn,
+		fastStatusFn: fastStatusFn,
+		watchers:     make(map[string]*workspaceWatcher),
 	}
 }
 
@@ -84,7 +96,13 @@ func (m *Manager) Subscribe(cwd string) (*Subscription, error) {
 	// Slow path: fetch initial outside the lock (statusFn shells out
 	// to git and can take tens of milliseconds; holding m.mu here
 	// would serialise unrelated Subscribe / Close calls behind it).
-	initial, err := m.statusFn(canon)
+	// Use fastStatusFn when available — it skips the network PR lookup
+	// so the RPC returns immediately on cold cache.
+	initialFn := m.fastStatusFn
+	if initialFn == nil {
+		initialFn = m.statusFn
+	}
+	initial, err := initialFn(canon)
 	if err != nil {
 		return nil, err
 	}
@@ -109,6 +127,17 @@ func (m *Manager) Subscribe(cwd string) (*Subscription, error) {
 	sub := w.addSubscriber(initial)
 	m.mu.Unlock()
 	sub.closer = func() { m.releaseSubscriber(canon, sub) }
+
+	// When the fast path returned without PR info and the branch has a
+	// recognised forge, request a full refresh from the watcher. The
+	// watcher's statusFn (the full variant) will do the network PR
+	// lookup, populate the cache, and broadcast the updated status to
+	// all subscribers. This keeps the network call off the Subscribe
+	// RPC critical path.
+	if m.fastStatusFn != nil && initial.Branch != "" && initial.Forge != "" && initial.OpenPRURL == "" {
+		w.requestRefresh()
+	}
+
 	return sub, nil
 }
 
