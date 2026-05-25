@@ -34,10 +34,7 @@ describe('<DiffPanelDrawer>', () => {
     await fireEvent.click(secondMessage);
     await fireEvent.click(getByTestId('diff-message-jump'));
 
-    expect(requestScrollToItem).toHaveBeenCalledWith('user-1', {
-      behavior: 'animated',
-      flash: true,
-    });
+    expect(requestScrollToItem).toHaveBeenCalledWith('user-1', { flash: true });
   });
 
   // Regression: when a non-empty session diff produced a real

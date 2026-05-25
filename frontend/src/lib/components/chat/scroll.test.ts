@@ -608,10 +608,7 @@ describe('scroll integration — scroll to item', () => {
     vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(true);
 
     const { container } = render(MessageTimeline, { props: { pane } });
-    pane.requestScrollToItem('user:target', {
-      behavior: 'animated',
-      flash: true,
-    });
+    pane.requestScrollToItem('user:target', { flash: true });
 
     await waitFor(() => {
       const target = container.querySelector('[data-target-flash="true"]');

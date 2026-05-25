@@ -157,10 +157,7 @@
 
   function jumpToSelectedCheckpoint(): void {
     if (!selectedCheckpoint) return;
-    pane.requestScrollToItem(selectedCheckpoint.userItemId, {
-      behavior: 'animated',
-      flash: true,
-    });
+    pane.requestScrollToItem(selectedCheckpoint.userItemId, { flash: true });
   }
 
   function toggleFile(rowId: string): void {

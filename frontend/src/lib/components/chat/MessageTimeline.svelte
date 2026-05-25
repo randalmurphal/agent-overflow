@@ -35,10 +35,8 @@
   import type { UserMessageActions } from './userMessageActions';
   import {
     captureTimelineAnchor,
-    centeredScrollTop,
     createAutoLoadOlderGate,
     resolveVisibleTimelineNodeIndex,
-    timelineRowElementForIndex,
   } from './timelineScroll';
   import { createTimelineTargetFlash } from './timelineTargetFlash.svelte';
 
@@ -460,16 +458,6 @@
     return resolveVisibleTimelineNodeIndex(groupedNodes, pane.items, itemId);
   }
 
-  function rowElementForIndex(index: number): HTMLElement | null {
-    return timelineRowElementForIndex(contentEl, index);
-  }
-
-  function centeredScrollTopForIndex(index: number): number {
-    if (!scrollEl || !listRef) return 0;
-    const rowTop = listRef.getItemOffset(index);
-    const rowHeight = rowElementForIndex(index)?.getBoundingClientRect().height ?? ESTIMATED_ROW_SIZE;
-    return centeredScrollTop(rowTop, rowHeight, scrollEl.clientHeight);
-  }
 
   // ============================================================
   // Virtualizer scroll callbacks → snapshot persist
@@ -957,7 +945,7 @@
 
   async function scrollToItem(
     id: string,
-    options: { behavior: 'instant' | 'animated'; flash: boolean },
+    options: { flash: boolean },
   ): Promise<void> {
     if (!listRef || !id) return;
     const myToken = ++restoreToken;
@@ -973,21 +961,9 @@
     if (idx < 0) return;
     const targetNode = groupedNodes[idx];
     const targetItemId = targetNode?.kind === 'leaf' ? targetNode.item.id : id;
-    // Programmatic jump elsewhere — cancel any in-flight
-    // animateScrollTo + escape so the new position holds. `smooth:
-    // true` would route through the browser's native smooth scroll
-    // (scrollEl.scrollTo({behavior:'smooth'})), which fires its own
-    // scroll events asynchronously and races the controller — drop it.
-    if (options.behavior === 'animated' && scrollEl) {
-      const targetTop = centeredScrollTopForIndex(idx);
-      const result = await stick.animateScrollTo(targetTop);
-      await tick();
-      if (myToken !== restoreToken || result !== 'completed') return;
-    } else {
-      stick.runExternalScroll(() => {
-        listRef?.scrollToIndex(idx, { align: 'center' });
-      });
-    }
+    stick.runExternalScroll(() => {
+      listRef?.scrollToIndex(idx, { align: 'center' });
+    });
     if (options.flash) targetFlash.flash(targetItemId);
   }
 
@@ -997,10 +973,7 @@
     if (req.nonce === 0) return;
     if (req.nonce === lastHandledScrollNonce) return;
     lastHandledScrollNonce = req.nonce;
-    void scrollToItem(req.itemId, {
-      behavior: req.behavior,
-      flash: req.flash,
-    });
+    void scrollToItem(req.itemId, { flash: req.flash });
   });
 
   onDestroy(() => {

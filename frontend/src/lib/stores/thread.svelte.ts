@@ -293,14 +293,12 @@ export interface PaneScrollController {
 }
 
 export interface ScrollToItemOptions {
-  behavior?: 'instant' | 'animated';
   flash?: boolean;
 }
 
 interface ScrollToItemRequest {
   itemId: string;
   nonce: number;
-  behavior: 'instant' | 'animated';
   flash: boolean;
 }
 
@@ -562,7 +560,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   let scrollToItemRequest: ScrollToItemRequest = $state({
     itemId: '',
     nonce: 0,
-    behavior: 'instant',
     flash: false,
   });
 
@@ -1657,7 +1654,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       scrollToItemRequest = {
         itemId: itemID,
         nonce: scrollToItemRequest.nonce + 1,
-        behavior: options.behavior ?? 'instant',
         flash: options.flash ?? false,
       };
     },
