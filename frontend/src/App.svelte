@@ -16,7 +16,7 @@
   import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
   import { applyTheme } from './lib/utils/theme';
   import { applyFonts } from './lib/utils/fonts';
-  import { applyFontScale } from './lib/utils/zoom';
+  import { applyFontScale, installZoomKeybindings } from './lib/utils/zoom';
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
   import PaneHost from './lib/components/panes/PaneHost.svelte';
   import Toast from './lib/components/shared/Toast.svelte';
@@ -253,6 +253,7 @@
     void loadSettingsAndWarmModelCatalogs();
     installUiRenderTraceApi();
     const cleanupExternalLinks = installExternalLinkDelegate();
+    const cleanupZoomKeys = installZoomKeybindings();
 
     // Register the built-in commands. The hooks close over stable references
     // so commands see the live pane state each time they run.
@@ -297,6 +298,7 @@
     return () => {
       cleanupEvents();
       cleanupExternalLinks();
+      cleanupZoomKeys();
       window.removeEventListener(OPEN_SETTINGS_EVENT, handleOpenSettings);
     };
   });

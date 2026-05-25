@@ -30,8 +30,10 @@ func Browser() map[string]func(application.Window) {
 // the launcher's mutable URL — set after the WSL backend probes
 // successfully — can be picked up.
 func BrowserWithReload(reloadURL func() string) map[string]func(application.Window) {
-	zoomIn := func(window application.Window) { window.ZoomIn() }
-	zoomOut := func(window application.Window) { window.ZoomOut() }
+	// Zoom is handled in the frontend via the fontSize setting
+	// (Ctrl/Cmd+Plus/Minus adjusts by 1px). The keybindings here
+	// are no-ops that suppress the webview's native viewport zoom.
+	suppressZoom := func(application.Window) {}
 	toggleFullscreen := func(window application.Window) { window.ToggleFullscreen() }
 
 	reload := func(window application.Window) {
@@ -60,9 +62,9 @@ func BrowserWithReload(reloadURL func() string) map[string]func(application.Wind
 	}
 
 	return map[string]func(application.Window){
-		"CmdOrCtrl+plus":    zoomIn,
-		"CmdOrCtrl+=":       zoomIn,
-		"CmdOrCtrl+-":       zoomOut,
+		"CmdOrCtrl+plus":    suppressZoom,
+		"CmdOrCtrl+=":       suppressZoom,
+		"CmdOrCtrl+-":       suppressZoom,
 		"CmdOrCtrl+r":       reload,
 		"CmdOrCtrl+Shift+r": forceReload,
 		"F11":               toggleFullscreen,
