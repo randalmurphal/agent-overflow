@@ -318,7 +318,8 @@ pre, code, kbd, samp, .ansi-body {
   border-radius: var(--radius-field);
   padding: 0.75rem;
   margin: 0.5rem 0;
-  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 .markdown-body pre code {
   background: transparent;

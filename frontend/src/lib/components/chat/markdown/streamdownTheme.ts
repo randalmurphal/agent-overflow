@@ -66,7 +66,7 @@ export const chatMarkdownTheme: ThemeOverride = {
     skeleton: 'block rounded-md font-mono text-transparent bg-surface-2/60 scale-y-90 w-fit animate-pulse whitespace-nowrap',
     // The pre/code body. Transparent bg so it inherits the wrapper's
     // surface-1; tightened horizontal padding.
-    pre: 'overflow-x-auto font-mono p-3 bg-transparent',
+    pre: 'whitespace-pre-wrap break-words font-mono p-3 bg-transparent',
     line: 'block',
   },
   // Inline code. `app.css` already styles `.markdown-body code` via
