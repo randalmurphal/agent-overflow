@@ -79,13 +79,21 @@ WSL child down on parent exit regardless of this failure mode.
 ## Job Object lifetime
 
 Windows: `Launch` creates a `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`
-with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, assigns the wsl.exe child
-to it, and resumes the suspended primary thread. When the parent
+with `KILL_ON_JOB_CLOSE | SILENT_BREAKAWAY_OK`, assigns the wsl.exe
+child to it, and resumes the suspended primary thread. When the parent
 process (the Windows .exe) exits, all of its handles close, including
 the Job Object handle — the kernel translates that into a kill signal
-for the WSL-side process. This is the only reliable way on Windows
-to ensure a wsl.exe child doesn't outlive the launcher, because
-wsl.exe forks a vmcompute helper that's hard to track by PID.
+for the explicitly-assigned `wsl.exe` process, which terminates the
+WSL session and cascades to all Linux processes in the distro.
+
+`SILENT_BREAKAWAY_OK` ensures that child processes of job members
+automatically do NOT inherit the job. Without this, Windows-side
+processes spawned through WSL interop (browsers via rundll32, VS Code,
+editors) inherit the job from `wsl.exe` and get killed when the
+launcher closes. The breakaway is safe because the WSL2 VM lifecycle
+is managed by the Host Compute Service (HCS), not by our job —
+killing `wsl.exe` signals HCS to tear down the session regardless of
+whether helper processes broke away.
 
 The `CREATE_SUSPENDED` + adopt-then-resume sequence avoids a race:
 without `CREATE_SUSPENDED`, a fast-failing child could exit before

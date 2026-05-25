@@ -276,13 +276,25 @@ func newPlatformLauncher() (platformLauncher, error) {
 		return nil, fmt.Errorf("CreateJobObject: %w", err)
 	}
 
-	// Configure the job to kill every contained process when the job
-	// handle goes away. Without KILL_ON_JOB_CLOSE the Windows side
-	// would close cleanly while the WSL child kept running, holding
-	// the listener port and the SQLite write lock indefinitely.
+	// KILL_ON_JOB_CLOSE: kill every explicitly-assigned process (wsl.exe)
+	// when the job handle goes away. This terminates the WSL session,
+	// which cascades to all Linux processes in the distro. Without it
+	// the WSL child keeps running, holding the listener port and the
+	// SQLite write lock indefinitely.
+	//
+	// SILENT_BREAKAWAY_OK: child processes of job members automatically
+	// do NOT inherit the job. Without this, Windows-side processes
+	// spawned through WSL interop (browsers via rundll32, VS Code, etc.)
+	// inherit the job from wsl.exe and get killed when the launcher
+	// closes — even though they're standalone apps the user expects to
+	// outlive us. The breakaway is safe because the WSL2 VM lifecycle is
+	// managed by the Host Compute Service (HCS), not by our job —
+	// killing wsl.exe signals HCS to tear down the session regardless
+	// of whether helper processes broke away.
 	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
 		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
-			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
+				windows.JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
 		},
 	}
 	if _, err := windows.SetInformationJobObject(

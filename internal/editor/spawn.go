@@ -170,7 +170,7 @@ var startCmd = func(cmd *exec.Cmd) error {
 var observeFastExit = defaultObserveFastExit
 
 // Open spawns the chosen editor with the supplied path and cursor
-// placement. The child runs in its own process group (POSIX) /
+// placement. The child runs in its own session (POSIX) /
 // hidden-window (Windows) so it survives the parent process exiting
 // — open-in-editor is fire-and-forget by design.
 //

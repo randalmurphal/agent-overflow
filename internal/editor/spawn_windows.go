@@ -9,12 +9,12 @@ import (
 )
 
 // applyDetachAttrs configures the spawn so the editor survives the
-// caller exiting. On Windows there is no Setpgid analogue; the
-// closest equivalent is HideWindow + DETACHED_PROCESS so the editor
-// doesn't borrow our console window for output. We deliberately do
-// not use cmd.exe / .cmd shims here — the editor binary is invoked
-// directly by absolute path so quoting bugs around paths with spaces
-// can't matter.
+// caller exiting. On Windows there is no Setsid analogue; the closest
+// equivalent is HideWindow + DETACHED_PROCESS so the editor doesn't
+// borrow our console window for output. We deliberately do not use
+// cmd.exe / .cmd shims here — the editor binary is invoked directly
+// by absolute path so quoting bugs around paths with spaces can't
+// matter.
 func applyDetachAttrs(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
