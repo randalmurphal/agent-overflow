@@ -2903,15 +2903,28 @@ func TestBuildUserInputResponseResultAnswers(t *testing.T) {
 	}
 }
 
-func TestBuildUserInputResponseResultRejectsApprovalDecisions(t *testing.T) {
-	for _, decision := range []string{"decline", "cancel", "bogus"} {
+func TestBuildUserInputResponseResultRejectsUnknownDecision(t *testing.T) {
+	_, _, err := buildUserInputResponseResult(provider.UserInputResponse{
+		RequestID: "7",
+		Decision:  "bogus",
+	})
+	if !errors.Is(err, provider.ErrInvalidUserInputDecision) {
+		t.Fatalf("error = %v, want ErrInvalidUserInputDecision", err)
+	}
+}
+
+func TestBuildUserInputResponseResultAcceptsDeclineDecisions(t *testing.T) {
+	for _, decision := range []string{"decline", "cancel", "deny"} {
 		t.Run(decision, func(t *testing.T) {
-			_, _, err := buildUserInputResponseResult(provider.UserInputResponse{
+			_, result, err := buildUserInputResponseResult(provider.UserInputResponse{
 				RequestID: "7",
 				Decision:  decision,
 			})
-			if !errors.Is(err, provider.ErrInvalidUserInputDecision) {
-				t.Fatalf("error = %v, want ErrInvalidUserInputDecision", err)
+			if err != nil {
+				t.Fatalf("unexpected error for %q: %v", decision, err)
+			}
+			if result == nil {
+				t.Fatal("result is nil")
 			}
 		})
 	}

@@ -141,15 +141,16 @@ type UserInputResponse struct {
 // callbacks that no longer have a live provider request behind them.
 var ErrStaleInteractiveRequest = errors.New("provider: stale interactive request")
 
-// ErrInvalidUserInputDecision marks a user-input response that uses approval
-// decision vocabulary. Structured user input is answer collection; turn
-// cancellation goes through Interrupt, not a user-input JSON-RPC result.
+// ErrInvalidUserInputDecision marks a user-input response whose decision
+// value is not a recognized accept or decline synonym.
 var ErrInvalidUserInputDecision = errors.New("provider: invalid user-input decision")
 
 func NormalizeUserInputDecision(decision string) (string, error) {
 	switch decision {
 	case "", "accept", "allow":
 		return "accept", nil
+	case "deny", "decline", "cancel":
+		return "decline", nil
 	default:
 		return "", fmt.Errorf("%w: %q", ErrInvalidUserInputDecision, decision)
 	}
