@@ -228,6 +228,7 @@ export class Settings {
      */
     "sansFont": string;
     "monoFont": string;
+    "fontSize": number;
     "recentWorkspaces": string[];
     "diffWordWrap": boolean;
     "streamingEnabled": boolean;
@@ -388,6 +389,9 @@ export class Settings {
         if (!("monoFont" in $$source)) {
             this["monoFont"] = "";
         }
+        if (!("fontSize" in $$source)) {
+            this["fontSize"] = 0;
+        }
         if (!("recentWorkspaces" in $$source)) {
             this["recentWorkspaces"] = [];
         }
@@ -471,30 +475,30 @@ export class Settings {
      * Creates a new Settings instance from a string or object.
      */
     static createFrom($$source: any = {}): Settings {
-        const $$createField5_0 = $$createType0;
-        const $$createField27_0 = $$createType1;
-        const $$createField28_0 = $$createType2;
-        const $$createField29_0 = $$createType3;
-        const $$createField30_0 = $$createType0;
-        const $$createField31_0 = $$createType5;
+        const $$createField6_0 = $$createType0;
+        const $$createField28_0 = $$createType1;
+        const $$createField29_0 = $$createType2;
+        const $$createField30_0 = $$createType3;
+        const $$createField31_0 = $$createType0;
+        const $$createField32_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
-            $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
+            $$parsedSource["recentWorkspaces"] = $$createField6_0($$parsedSource["recentWorkspaces"]);
         }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField27_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField28_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField28_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField29_0($$parsedSource["editor"]);
         }
         if ("retention" in $$parsedSource) {
-            $$parsedSource["retention"] = $$createField29_0($$parsedSource["retention"]);
+            $$parsedSource["retention"] = $$createField30_0($$parsedSource["retention"]);
         }
         if ("gitlabSelfHostedHosts" in $$parsedSource) {
-            $$parsedSource["gitlabSelfHostedHosts"] = $$createField30_0($$parsedSource["gitlabSelfHostedHosts"]);
+            $$parsedSource["gitlabSelfHostedHosts"] = $$createField31_0($$parsedSource["gitlabSelfHostedHosts"]);
         }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField31_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField32_0($$parsedSource["remoteEndpoints"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

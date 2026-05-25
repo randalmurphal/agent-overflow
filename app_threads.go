@@ -339,6 +339,11 @@ func (a *App) ListThreads() ([]store.Thread, error) {
 	return a.store.ListThreadsWithItems()
 }
 
+// ListArchivedThreads returns every archived thread for the settings panel.
+func (a *App) ListArchivedThreads() ([]store.Thread, error) {
+	return a.store.ListArchivedThreads()
+}
+
 // GetThread returns a single thread row.
 func (a *App) GetThread(id string) (store.Thread, error) {
 	return a.store.GetThread(id)

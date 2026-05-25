@@ -110,6 +110,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "InterruptTurn", ID: 850013031}, // main.App.InterruptTurn
 	{Name: "IsWSL", ID: 2789068977}, // main.App.IsWSL
 	{Name: "LatestDesignOptionSet", ID: 4252906991}, // main.App.LatestDesignOptionSet
+	{Name: "ListArchivedThreads", ID: 2451527188}, // main.App.ListArchivedThreads
 	{Name: "ListAttachments", ID: 1730798413}, // main.App.ListAttachments
 	{Name: "ListAvailableEditors", ID: 2556802234}, // main.App.ListAvailableEditors
 	{Name: "ListChatBarFavorites", ID: 2114948965}, // main.App.ListChatBarFavorites

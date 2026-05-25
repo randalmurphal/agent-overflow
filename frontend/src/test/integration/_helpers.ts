@@ -18,7 +18,6 @@ import {
 } from '../../lib/stores/paneLayoutPersistence';
 import {
   clearThreadSelection,
-  setIncludeArchived,
   setThreadFilterQuery,
   setWorkspaceFilter,
 } from '../../lib/stores/threadFilter.svelte';
@@ -56,7 +55,6 @@ export function resetAppState(): void {
   resetPaneLayoutPersistenceForTest();
   localStorage.removeItem(PANE_LAYOUT_STORAGE_KEY);
   setThreadFilterQuery('');
-  setIncludeArchived(false);
   setWorkspaceFilter(null);
   clearThreadSelection();
   // Reset the projects-first sidebar state so tests that expect a clean

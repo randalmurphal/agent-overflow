@@ -21,13 +21,11 @@ import {
   PinThread,
   RenameThread,
   StopSession,
-  UnarchiveThread,
   UnpinThread,
 } from '../../stores/bindings';
 import {
   prependThread,
   removeThread,
-  replaceThread,
   updateThreadLastRead,
   updateThreadPinnedAt,
   updateThreadTitle,
@@ -90,23 +88,6 @@ export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
     closePanesShowingThread(ctx.thread.id);
   } catch (err) {
     console.error('Failed to archive thread:', err);
-    ctx.reportError(userFacingError(err));
-  }
-}
-
-export async function unarchiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
-  try {
-    // Cast bridges the Wails-generated `Thread` type (provider: string)
-    // and the local frontend `Thread` type (provider: 'claude' | 'codex').
-    // The two are structurally identical at runtime — only the literal
-    // narrowing of `provider` differs.
-    const restored = (await UnarchiveThread(ctx.thread.id)) as Thread;
-    // Patch the in-memory list so the row loses its archived style
-    // immediately. Sidebar's filter uses the `archived` flag directly.
-    replaceThread(restored);
-    addToast('info', `Unarchived "${restored.title || 'thread'}".`);
-  } catch (err) {
-    console.error('Failed to unarchive thread:', err);
     ctx.reportError(userFacingError(err));
   }
 }

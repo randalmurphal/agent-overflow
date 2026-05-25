@@ -283,6 +283,29 @@ func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 	return threads, rows.Err()
 }
 
+// ListArchivedThreads returns every archived thread, newest-touched first.
+// Used by the settings panel to surface threads that have been hidden from
+// the sidebar so the user can unarchive or permanently delete them.
+func (s *Store) ListArchivedThreads() ([]Thread, error) {
+	rows, err := s.db.Query(
+		`SELECT ` + threadColumns + ` FROM threads WHERE archived = 1 ORDER BY updated_at DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list archived threads: %w", err)
+	}
+	defer rows.Close()
+
+	var threads []Thread
+	for rows.Next() {
+		t, err := scanThread(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan archived thread row: %w", err)
+		}
+		threads = append(threads, t)
+	}
+	return threads, rows.Err()
+}
+
 // ListThreadsByProject returns all non-archived threads belonging to a
 // project, newest-touched first. Used by the sidebar to render the threads
 // nested under a project row.

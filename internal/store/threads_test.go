@@ -809,6 +809,70 @@ func TestListThreadsWithItemsHidesEmptyDrafts(t *testing.T) {
 	}
 }
 
+func TestListArchivedThreads(t *testing.T) {
+	s := newTestStore(t)
+	proj := newTestProject(t, s, "proj-archive-list", "/tmp/archive")
+
+	now := time.Now().UnixMilli()
+	active := Thread{
+		ID: "thread-active", ProjectID: proj.ID, Title: "Active",
+		Provider: "claude", WorkspacePath: "/tmp/a", Model: "claude-sonnet-4-6",
+		Mode: "chat", CreatedAt: now, UpdatedAt: now,
+	}
+	archived1 := Thread{
+		ID: "thread-arch-1", ProjectID: proj.ID, Title: "Archived 1",
+		Provider: "claude", WorkspacePath: "/tmp/a", Model: "claude-sonnet-4-6",
+		Mode: "chat", CreatedAt: now, UpdatedAt: now, Archived: true,
+	}
+	archived2 := Thread{
+		ID: "thread-arch-2", ProjectID: proj.ID, Title: "Archived 2",
+		Provider: "claude", WorkspacePath: "/tmp/a", Model: "claude-sonnet-4-6",
+		Mode: "chat", CreatedAt: now, UpdatedAt: now + 1, Archived: true,
+	}
+	for _, thr := range []Thread{active, archived1, archived2} {
+		if err := s.CreateThread(thr); err != nil {
+			t.Fatalf("CreateThread(%s): %v", thr.ID, err)
+		}
+	}
+
+	got, err := s.ListArchivedThreads()
+	if err != nil {
+		t.Fatalf("ListArchivedThreads: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (only archived threads)", len(got))
+	}
+	// Newest-touched first.
+	if got[0].ID != archived2.ID {
+		t.Errorf("got[0] = %q, want %q (newest first)", got[0].ID, archived2.ID)
+	}
+	if got[1].ID != archived1.ID {
+		t.Errorf("got[1] = %q, want %q", got[1].ID, archived1.ID)
+	}
+
+	// Active threads must not appear.
+	for _, thr := range got {
+		if thr.ID == active.ID {
+			t.Errorf("active thread %q should not appear in archived list", active.ID)
+		}
+	}
+
+	// Unarchiving removes from the archived list.
+	if err := s.UnarchiveThread(archived1.ID); err != nil {
+		t.Fatalf("UnarchiveThread: %v", err)
+	}
+	got2, err := s.ListArchivedThreads()
+	if err != nil {
+		t.Fatalf("ListArchivedThreads after unarchive: %v", err)
+	}
+	if len(got2) != 1 {
+		t.Fatalf("len = %d, want 1 after unarchive", len(got2))
+	}
+	if got2[0].ID != archived2.ID {
+		t.Errorf("remaining = %q, want %q", got2[0].ID, archived2.ID)
+	}
+}
+
 func TestListThreadsWithItemsSurfacesNonEmptyDrafts(t *testing.T) {
 	// Drafts can carry user-authored text or source-plan context before
 	// the first item exists. ListThreadsWithItems must surface them so the

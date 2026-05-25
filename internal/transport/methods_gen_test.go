@@ -47,12 +47,13 @@ var wireSafeMethods = map[string]bool{
 
 	// Thread lifecycle (CRUD, archive, pin, read/unread). Same
 	// user-driven UI surface.
-	"ArchiveThread":   true,
-	"UnarchiveThread": true,
-	"DeleteThread":    true,
-	"RenameThread":    true,
-	"GetThread":       true,
-	"ListThreads":     true,
+	"ArchiveThread":        true,
+	"UnarchiveThread":      true,
+	"DeleteThread":         true,
+	"RenameThread":         true,
+	"GetThread":            true,
+	"ListArchivedThreads":  true,
+	"ListThreads":          true,
 	"PinThread":       true,
 	"UnpinThread":     true,
 	"MarkThreadRead":  true,

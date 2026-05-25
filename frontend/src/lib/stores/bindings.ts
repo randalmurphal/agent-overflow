@@ -12,6 +12,7 @@ export {
   ForkThread,
   ForkThreadFromMessage,
   GetThread,
+  ListArchivedThreads,
   ListThreads,
   MarkThreadRead,
   MarkThreadUnread,

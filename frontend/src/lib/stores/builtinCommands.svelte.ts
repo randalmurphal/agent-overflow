@@ -46,7 +46,6 @@ import {
   InterruptTurn,
   RespondToApproval,
   RespondToUserInput,
-  UnarchiveThread,
   UpdateThreadMode,
   UserInputResponse,
 } from './bindings';
@@ -321,27 +320,6 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           return;
         }
         await archiveThreadAction(actionCtx);
-      }),
-  });
-
-  registerCommand({
-    id: 'thread.unarchive',
-    label: 'Thread: Unarchive (restore)',
-    icon: '▣',
-    when: 'hasActiveThread',
-    run: (ctx) =>
-      withActiveThread(ctx, async (t) => {
-        if (!t.archived) {
-          addToast('info', 'Thread is not archived.');
-          return;
-        }
-        try {
-          const restored = (await UnarchiveThread(t.id)) as Thread;
-          syncThread(restored);
-          addToast('info', 'Thread unarchived.');
-        } catch (err) {
-          addToast('error', userFacingError(err));
-        }
       }),
   });
 

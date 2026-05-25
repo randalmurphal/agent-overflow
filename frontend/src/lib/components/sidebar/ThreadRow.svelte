@@ -29,7 +29,6 @@
   import {
     archiveThreadAction,
     renameThreadAction,
-    unarchiveThreadAction,
     type ThreadActionCtx,
   } from './threadRowActions';
   import {
@@ -225,11 +224,6 @@
     const label = relativeTime(timestampMs, getSettings().timestampFormat);
     if (getSettings().timestampFormat !== 'locale') return label;
     return label === 'just now' ? 'now' : label.replace(/ ago$/, '');
-  }
-
-  async function handleUnarchive(e: MouseEvent) {
-    e.stopPropagation();
-    await unarchiveThreadAction(ctx());
   }
 
   function handleContextMenu(e: MouseEvent) {
@@ -437,9 +431,7 @@
         class="absolute inset-y-0 right-0 flex items-center opacity-0 pointer-events-none transition-opacity duration-150 group-hover/thread-item:opacity-100 group-hover/thread-item:pointer-events-auto group-focus-within/thread-row:opacity-100 group-focus-within/thread-row:pointer-events-auto"
       >
         <ThreadRowActions
-          {thread}
           onArchive={handleArchive}
-          onUnarchive={handleUnarchive}
         />
       </div>
     </div>
@@ -483,7 +475,7 @@
 <ConfirmDialog
   open={showArchiveConfirm}
   title="Archive Thread"
-  description="This will hide the thread from the sidebar. Toggle 'Include archived' and use the Unarchive action to bring it back."
+  description="This will hide the thread from the sidebar. Open Settings → Archived to find it later."
   confirmLabel="Archive"
   onConfirm={() => { showArchiveConfirm = false; void archiveThreadAction(ctx()); }}
   onCancel={() => { showArchiveConfirm = false; }}

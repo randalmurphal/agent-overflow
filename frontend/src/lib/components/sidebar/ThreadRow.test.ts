@@ -1,10 +1,10 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
-import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadRow from './ThreadRow.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { ensureMainPane, getFocusedPaneId, resetPanesForTest } from '../../stores/panes.svelte';
-import { getPaneLayoutItems, resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
+import { resetPanesForTest } from '../../stores/panes.svelte';
+import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { refreshThreads, getThreads } from '../../stores/threads.svelte';
 import {
@@ -73,7 +73,7 @@ function makeDataTransfer(): DataTransfer {
   } as unknown as DataTransfer;
 }
 
-describe('<ThreadRow> unarchive', () => {
+describe('<ThreadRow> archive action', () => {
   beforeEach(async () => {
     resetPanesForTest();
     resetPaneLayoutForTest();
@@ -84,100 +84,11 @@ describe('<ThreadRow> unarchive', () => {
     resetKeyboardModifiersForTest();
   });
 
-  it('does not show the unarchive action for an active thread', async () => {
+  it('shows the archive action button', async () => {
     const thread = makeThread({ archived: false });
     const pane = createThreadPane();
-    const { queryByTestId, getByTestId } = render(ThreadRow, { props: { thread, pane } });
-    expect(queryByTestId('thread-row-unarchive')).toBeNull();
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
     expect(getByTestId('thread-row-archive')).toBeInTheDocument();
-  });
-
-  it('shows the unarchive action for an archived thread', async () => {
-    const thread = makeThread({ archived: true });
-    const pane = ensureMainPane();
-    const { getByTestId, queryByTestId } = render(ThreadRow, { props: { thread, pane } });
-    expect(getByTestId('thread-row-unarchive')).toBeInTheDocument();
-    expect(queryByTestId('thread-row-archive')).toBeNull();
-  });
-
-  it('clicking Unarchive calls UnarchiveThread and patches the in-memory thread list', async () => {
-    const thread = makeThread({ id: 'to-restore', title: 'Stale', archived: true, updatedAt: 10 });
-    setBindingMock('ListThreads', async () => [thread]);
-    await refreshThreads();
-
-    const restoreMock = setBindingMock('UnarchiveThread', async () => ({
-      ...thread,
-      archived: false,
-      updatedAt: 20,
-    }));
-
-    const pane = createThreadPane();
-    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
-    await fireEvent.click(getByTestId('thread-row-unarchive'));
-    // Drain microtasks so the store mutation in the click handler lands.
-    for (let i = 0; i < 3; i += 1) await Promise.resolve();
-
-    expect(restoreMock).toHaveBeenCalledWith('to-restore');
-    const row = getThreads().find((t) => t.id === 'to-restore');
-    expect(row?.archived).toBe(false);
-    expect(row?.updatedAt).toBe(20);
-  });
-
-  it('unarchive failure surfaces the error through the pane state', async () => {
-    const thread = makeThread({ id: 'fail-restore', archived: true });
-    setBindingMock('UnarchiveThread', async () => {
-      throw new Error('rpc down');
-    });
-
-    const pane = createThreadPane();
-    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
-    await fireEvent.click(getByTestId('thread-row-unarchive'));
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(pane.generalError ?? '').toMatch(/Rpc down\.|rpc down/i);
-  });
-
-  it('shift-clicking the row on an archived thread still invokes the select handler', async () => {
-    const thread = makeThread({ id: 'archived-click', archived: true });
-    let invokedWith: string | null = null;
-    const pane = createThreadPane();
-    const { getByTestId } = render(ThreadRow, {
-      props: {
-        thread,
-        pane,
-        onSelectClick: (modifier) => {
-          invokedWith = modifier ?? 'single';
-          return true;
-        },
-      },
-    });
-    await fireEvent.click(getByTestId('thread-row'), { shiftKey: true });
-    expect(invokedWith).toBe('range');
-  });
-
-  it('ctrl-clicking the row opens the thread in a new pane', async () => {
-    const thread = makeThread({ id: 'new-pane-click', archived: true });
-    const switchThread = setBindingMock('SwitchThread', async () => thread);
-    setBindingMock('ListRecentThreadItems', async () => ({
-      items: [], oldestTurnIndex: -1, hasMore: false,
-    }));
-    setBindingMock('ListThreadSliceAround', async () => ({
-      items: [], oldestTurnIndex: -1, hasMore: false,
-    }));
-    setBindingMock('ListRecentTurns', async () => []);
-    setBindingMock('ListThreadCheckpoints', async () => []);
-    setBindingMock('GetThreadLiveState', async () => null);
-    setBindingMock('ListPendingInteractiveRequests', async () => null);
-    setBindingMock('AutoResumeThread', async () => null);
-
-    const pane = ensureMainPane();
-    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
-    await fireEvent.click(getByTestId('thread-row'), { ctrlKey: true });
-
-    await waitFor(() => expect(switchThread).toHaveBeenCalledWith('new-pane-click'));
-    await waitFor(() => expect(getFocusedPaneId()).not.toBe('main'));
-    expect(getPaneLayoutItems().map((item) => item.paneId)).toContain(getFocusedPaneId());
   });
 });
 
