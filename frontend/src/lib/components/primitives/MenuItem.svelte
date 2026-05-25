@@ -16,6 +16,7 @@
     label: string;
     description?: string;
     icon?: Snippet;
+    indicator?: Snippet;
     kbd?: string;
     suffix?: string;
     checked?: boolean;
@@ -36,6 +37,7 @@
     label,
     description,
     icon,
+    indicator,
     kbd,
     suffix,
     checked = false,
@@ -151,7 +153,9 @@
       <span class="block truncate text-[11px] leading-4 text-fg-hint">{description}</span>
     {/if}
   </span>
-  {#if checked}
+  {#if indicator}
+    {@render indicator()}
+  {:else if checked}
     <span class="text-accent/80" aria-hidden="true">&#10003;</span>
   {/if}
   {#if kbd}

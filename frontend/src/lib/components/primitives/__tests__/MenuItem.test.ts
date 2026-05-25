@@ -100,4 +100,12 @@ describe('<MenuItem>', () => {
     const { getByRole } = render(Harness, { props: { label: 'Item' } });
     expect(getByRole('menuitem').className).toContain('hover:bg-surface-2/40');
   });
+
+  it('renders indicator snippet instead of checkmark when indicator is provided', () => {
+    const { container, getByTestId } = render(Harness, {
+      props: { label: 'MCP', checked: true, showIndicator: true },
+    });
+    expect(getByTestId('menuitem-indicator')).toBeInTheDocument();
+    expect(container.textContent).not.toContain('✓');
+  });
 });

@@ -201,7 +201,6 @@
         <MenuItem
           label={server.name}
           description={describe(server, status, key)}
-          checked={inSet}
           onSelect={() => void toggleServer(server, !inSet)}
           actionLabel={needsAuth ? 'Sign in' : 'Refresh'}
           actionTitle={needsAuth ? `Sign in to ${server.name}` : `Re-check ${server.name}`}
@@ -211,6 +210,18 @@
             else void refresh(server);
           }}
         >
+          {#snippet indicator()}
+            <span
+              class="relative inline-flex h-4 w-7 shrink-0 items-center rounded-full border transition-all duration-200
+                {inSet ? 'border-accent/40 bg-accent/85' : 'border-border bg-surface-2/80'}"
+              aria-hidden="true"
+            >
+              <span
+                class="block h-3 w-3 rounded-full bg-text-primary shadow-sm transition-transform duration-200
+                  {inSet ? 'translate-x-[13px]' : 'translate-x-[1px]'}"
+              ></span>
+            </span>
+          {/snippet}
           {#snippet icon()}
             <span
               class={['inline-block h-[8px] w-[8px] rounded-full', STATUS_DOT[key]].join(' ')}

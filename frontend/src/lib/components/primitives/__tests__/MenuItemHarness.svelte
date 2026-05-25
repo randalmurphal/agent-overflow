@@ -15,6 +15,7 @@
     onSelect = undefined as (() => void) | undefined,
     variant = 'default' as 'default' | 'danger',
     showIcon = false,
+    showIndicator = false,
   }: {
     label?: string;
     kbd?: string;
@@ -25,10 +26,17 @@
     onSelect?: () => void;
     variant?: 'default' | 'danger';
     showIcon?: boolean;
+    showIndicator?: boolean;
   } = $props();
 </script>
 
-{#if showIcon}
+{#if showIndicator}
+  <MenuItem {label} {kbd} {suffix} {title} {checked} {disabled} {onSelect} {variant}>
+    {#snippet indicator()}
+      <span data-testid="menuitem-indicator">toggle</span>
+    {/snippet}
+  </MenuItem>
+{:else if showIcon}
   <MenuItem {label} {kbd} {suffix} {title} {checked} {disabled} {onSelect} {variant}>
     {#snippet icon()}
       <span data-testid="menuitem-icon">*</span>
